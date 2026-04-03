@@ -2,7 +2,13 @@ streamlit
 chromadb
 packaging
 langchain
+langchain-community
+langchain-openai
+langchain-core
 langchain-chroma
+httpx
+numpy
+certifi
 chromadb
 streamlit-chromadb-connection
 fastapi
