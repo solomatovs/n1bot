@@ -1,0 +1,19 @@
+services:
+  n1bot:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: n1bot
+    volumes:
+      - ./chroma_app_db:/app/chroma_app_db
+      - ./.streamlit:/app/.streamlit:ro
+    environment:
+      - CHROMA_DB_PATH=/app/chroma_app_db
+    restart: always
+    networks:
+      - default
+
+networks:
+  default:
+    name: docker
+    external: true
