@@ -27,7 +27,7 @@ urllib3.disable_warnings()
 # ========================= Page & Config
 st.set_page_config(page_title="N1 Hub RAG — MQ", layout="wide")
 
-APP_DB_PATH = Path(os.getenv("CHROMA_DB_PATH", "./chroma_app_db")).as_posix()
+APP_DB_PATH = Path(os.environ["CHROMA_DB_PATH"]).as_posix()
 LITELLM_URL: str = st.secrets.get("LITELLM_URL")
 LITELLM_API_KEY: str = st.secrets.get("LITELLM_API_KEY")
 

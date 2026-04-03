@@ -1,6 +1,6 @@
 # v 8 n1helper  - раРАБОЧАЯ ВЕРСИЯ
 from __future__ import annotations
-import os, re, uuid
+import re, uuid
 
 import re
 import requests
@@ -33,8 +33,8 @@ import urllib3
 urllib3.disable_warnings()
 
 EMBEDDING_MODEL: str = st.secrets.get("EMBEDDING_MODEL")
-LLM_TIMEOUT: int = int(st.secrets.get("LLM_TIMEOUT", 600))
-EMBEDDING_TIMEOUT: int = int(st.secrets.get("EMBEDDING_TIMEOUT", 120))
+LLM_TIMEOUT: int = int(st.secrets["LLM_TIMEOUT"])
+EMBEDDING_TIMEOUT: int = int(st.secrets["EMBEDDING_TIMEOUT"])
 
 
 # =========================
@@ -432,16 +432,16 @@ def _get_client(db_path: str) -> chromadb.PersistentClient:
 
 def getVectorstore(name: str, db_path: str, llm_base_url: str,
                    embedding_model: Optional[str] = None) -> Chroma:
-    model = embedding_model or os.getenv("EMBEDDING_MODEL", EMBEDDING_MODEL )
+    model = embedding_model or EMBEDDING_MODEL
     client = _get_client(db_path)
     
     # Используем LiteLLMEmbeddings (который мы создали ранее)
     embedding = LiteLLMEmbeddings(
         model=model,
         base_url=llm_base_url,
-        api_key=st.secrets.get("LITELLM_API_KEY", "sk-fe1ZWrr7lPUN7tb8ZFlYEw")
+        api_key=st.secrets["LITELLM_API_KEY"]
     )
-    
+
     return Chroma(client=client, collection_name=name, embedding_function=embedding)
 
 
@@ -454,9 +454,9 @@ def store2Chroma(
     embedding_model: Optional[str] = None,
 ):
     if llm_base_url is None:
-        llm_base_url = st.secrets.get("OLLAMA_API_URL", "https://spb99akl-dgx02.gazprom-neft.local")
-    
-    api_key = st.secrets.get("LITELLM_API_KEY", "sk-fe1ZWrr7lPUN7tb8ZFlYEw")
+        llm_base_url = st.secrets["OLLAMA_API_URL"]
+
+    api_key = st.secrets["LITELLM_API_KEY"]
     
     # Создаем клиент для проверки
     try:
@@ -475,7 +475,7 @@ def store2Chroma(
     client = _get_client(db_path)
     client.get_or_create_collection(name=collection_name)
 
-    model = embedding_model or os.getenv("EMBEDDING_MODEL", EMBEDDING_MODEL)
+    model = embedding_model or EMBEDDING_MODEL
     
     embedding = LiteLLMEmbeddings(
         model=model,
@@ -545,14 +545,14 @@ def getOpenAI(base_url: str) -> OpenAI:
         verify=False,  # Отключаем проверку SSL
         timeout=float(LLM_TIMEOUT),
         headers={
-            "Authorization": f"Bearer {st.secrets.get('LITELLM_API_KEY', 'unused')}",
+            "Authorization": f"Bearer {st.secrets['LITELLM_API_KEY']}",
             "Content-Type": "application/json"
         }
     )
     
     return OpenAI(
         base_url=base_url,
-        api_key=st.secrets.get("LITELLM_API_KEY", "sk-fe1ZWrr7lPUN7tb8ZFlYEw"),
+        api_key=st.secrets["LITELLM_API_KEY"],
         http_client=http_client
     )
 
