@@ -678,7 +678,8 @@ def retrieve_docs(
 
     variants = gen_query_variants(openai, llm_model, query, n=mq_variants)
     rank_lists: List[List[Document]] = []
-    
+    errors: List[str] = []
+
     for v in variants:
         try:
             retr = vectorstore.as_retriever(
@@ -691,13 +692,18 @@ def retrieve_docs(
             rank_lists.append(results)
         except Exception as e:
             print(f"Ошибка при поиске для варианта '{v}': {e}")
+            errors.append(str(e))
             rank_lists.append([])
-    
+
     merged = rrf_merge(rank_lists)
-    
+
+    # Если все варианты упали с ошибкой — пробрасываем
+    if not merged and errors:
+        raise RuntimeError(f"Ошибка поиска по векторной БД: {errors[0]}")
+
     # Переранжируем результаты с учетом релевантности
     reranked = _rerank_results(merged, query, query_type)
-    
+
     return reranked[:total_top]
 
 
@@ -768,20 +774,32 @@ def generate_answer_with_context(
     print(f"server={llm_base_url} \nmodel={model} \nquery={query} \nembed_collection_name={embed_collection_name}")
     ollama_openai_url=llm_base_url
     # ollama_api_url=llm_base_url
-    openai = getOpenAI(llm_base_url)
+    try:
+        openai = getOpenAI(llm_base_url)
+    except Exception as e:
+        return f"Ошибка подключения к LLM ({llm_base_url}): {e}"
+
     base_api = (ollama_openai_url.replace("/v1", "")).rstrip("/")
-    vectorstore = getVectorstore(embed_collection_name, db_path=db_path,
-                                 llm_base_url=base_api, embedding_model=embedding_model)
+    try:
+        vectorstore = getVectorstore(embed_collection_name, db_path=db_path,
+                                     llm_base_url=base_api, embedding_model=embedding_model)
+    except Exception as e:
+        return f"Ошибка подключения к векторной БД (коллекция '{embed_collection_name}'): {e}"
+
     print(vectorstore)
-    cands = retrieve_docs(
-        vectorstore, query,
-        use_multi_query=use_multi_query,
-        openai=openai, llm_model=model,
-        k_single=max(top_n, 12),
-        mq_variants=mq_variants,
-        k_per_variant=k_per_variant,
-        total_top=max(top_n, 12),
-    )
+    try:
+        cands = retrieve_docs(
+            vectorstore, query,
+            use_multi_query=use_multi_query,
+            openai=openai, llm_model=model,
+            k_single=max(top_n, 12),
+            mq_variants=mq_variants,
+            k_per_variant=k_per_variant,
+            total_top=max(top_n, 12),
+        )
+    except Exception as e:
+        return f"Ошибка поиска документов: {e}"
+
     if not cands:
         return "Я не нашёл релевантный контекст по вашей коллекции."
 
