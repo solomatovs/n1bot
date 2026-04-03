@@ -160,7 +160,8 @@ with tabChat:
     cols = st.columns([3, 1, 1])
     with cols[0]:
         list_models=get_openai_models()
-        selected_model_name=st.selectbox("Модель генерации",list_models)
+        default_idx = list_models.index(DEFAULT_MODEL) if DEFAULT_MODEL in list_models else 0
+        selected_model_name=st.selectbox("Модель генерации",list_models, index=default_idx)
         DEFAULT_MODEL=selected_model_name
     with cols[1]:
         use_mq = st.checkbox("Multi-query", value=True, help="Переформулировки + RRF")

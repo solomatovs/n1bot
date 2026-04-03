@@ -33,6 +33,8 @@ import urllib3
 urllib3.disable_warnings()
 
 EMBEDDING_MODEL: str = st.secrets.get("EMBEDDING_MODEL")
+LLM_TIMEOUT: int = int(st.secrets.get("LLM_TIMEOUT", 600))
+EMBEDDING_TIMEOUT: int = int(st.secrets.get("EMBEDDING_TIMEOUT", 120))
 
 
 # =========================
@@ -541,9 +543,9 @@ def getOpenAI(base_url: str) -> OpenAI:
     # Создаем кастомный HTTPX клиент с отключенной проверкой SSL
     http_client = httpx.Client(
         verify=False,  # Отключаем проверку SSL
-        timeout=60.0,  # Таймаут 60 секунд
+        timeout=float(LLM_TIMEOUT),
         headers={
-            "Authorization": f"Bearer {st.secrets.get('LITELLM_API_KEY', 'sk-fe1ZWrr7lPUN7tb8ZFlYEw')}",
+            "Authorization": f"Bearer {st.secrets.get('LITELLM_API_KEY', 'unused')}",
             "Content-Type": "application/json"
         }
     )
@@ -987,17 +989,17 @@ class LiteLLMEmbeddings(Embeddings):
         self,
         model: str,
         base_url: str,
-        api_key: str = "sk-fe1ZWrr7lPUN7tb8ZFlYEw",
-        timeout: int = 60
+        api_key: str = "unused",
+        timeout: int = None
     ):
         self.model = model
         self.base_url = base_url.rstrip('/')
         self.api_key = api_key
-        
+
         # Создаем HTTPX клиент
         self.client = httpx.Client(
             verify=False,  # Отключаем проверку SSL
-            timeout=timeout,
+            timeout=float(timeout if timeout is not None else EMBEDDING_TIMEOUT),
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json"
