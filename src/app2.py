@@ -170,36 +170,118 @@ with tabChat:
     #         st.session_state.available_models = get_available_models(OLLAMA_API_URL)
     #         st.rerun()
 
-    for q, a in st.session_state.chat_history:
+    for item in st.session_state.chat_history:
+        if len(item) == 3:
+            q, a, thinking = item
+        else:
+            q, a = item
+            thinking = ""
         with st.chat_message("user"):
             st.markdown(q)
         with st.chat_message("assistant"):
+            if thinking:
+                with st.expander("Процесс размышления", expanded=False):
+                    st.markdown(thinking)
             st.markdown(a)
 
     if user_prompt := st.chat_input("Введите ваш вопрос…"):
+        thinking_text = ""
+        oai_client = None
+        reply = ""
         with st.chat_message("user"):
             st.markdown(user_prompt)
         with st.chat_message("assistant"):
-            with st.spinner("Думаю…"):
-                reply = n1h.generate_answer_with_context(
-                    embed_collection_name=st.session_state.selected_collection,
-                    query=user_prompt,
-                    # model=st.session_state.selected_model_name,
-                    model=DEFAULT_MODEL,
-                    top_n=12,
-                    db_path=APP_DB_PATH,
-                    llm_base_url=OLLAMA_API_URL,  # Используем base URL без /v1
-                    embedding_model=None,
-                    use_multi_query=bool(use_mq),
-                    mq_variants=3,
-                    k_per_variant=6,
-                    variant_offset=0,
-                    exclude_page_ids=[],
-                    answers_per_variant=3,
-                )
-                st.markdown(reply)
+            # 1) Подготовка RAG-контекста (поиск по векторной БД)
+            with st.spinner("Ищу контекст…"):
+                try:
+                    oai_client, messages, sources_block = n1h.prepare_rag_context(
+                        embed_collection_name=st.session_state.selected_collection,
+                        query=user_prompt,
+                        model=DEFAULT_MODEL,
+                        top_n=12,
+                        db_path=APP_DB_PATH,
+                        llm_base_url=OLLAMA_API_URL,
+                        embedding_model=None,
+                        use_multi_query=bool(use_mq),
+                        mq_variants=3,
+                        k_per_variant=6,
+                        variant_offset=0,
+                        exclude_page_ids=[],
+                        answers_per_variant=3,
+                    )
+                except Exception as e:
+                    st.error(f"Ошибка: {e}")
+                    oai_client = None
 
-        st.session_state.chat_history.append((user_prompt, reply))
+            if oai_client is None:
+                reply = "Я не нашёл релевантный контекст по вашей коллекции."
+                st.markdown(reply)
+            else:
+                # 2) Стриминг ответа с отображением thinking
+                thinking_text = ""
+                answer_text = ""
+                in_think = False
+                think_done = False
+
+                thinking_expander = st.expander("Процесс размышления", expanded=True)
+                thinking_placeholder = thinking_expander.empty()
+                answer_placeholder = st.empty()
+
+                stream = oai_client.chat.completions.create(
+                    model=DEFAULT_MODEL,
+                    messages=messages,
+                    temperature=0,
+                    stream=True,
+                )
+
+                for chunk in stream:
+                    delta = chunk.choices[0].delta
+                    if not delta.content:
+                        continue
+                    token = delta.content
+
+                    # Парсим <think> теги (Qwen 3 thinking mode)
+                    buf = token
+                    while buf:
+                        if in_think:
+                            end_idx = buf.find("</think>")
+                            if end_idx != -1:
+                                thinking_text += buf[:end_idx]
+                                buf = buf[end_idx + len("</think>"):]
+                                in_think = False
+                                think_done = True
+                                thinking_placeholder.markdown(thinking_text)
+                            else:
+                                thinking_text += buf
+                                buf = ""
+                                thinking_placeholder.markdown(thinking_text + "▌")
+                        else:
+                            start_idx = buf.find("<think>")
+                            if start_idx != -1:
+                                # Текст до <think> — это ответ
+                                answer_text += buf[:start_idx]
+                                buf = buf[start_idx + len("<think>"):]
+                                in_think = True
+                            else:
+                                answer_text += buf
+                                buf = ""
+                                if answer_text.strip():
+                                    answer_placeholder.markdown(answer_text + "▌")
+
+                # Финализация
+                if thinking_text.strip():
+                    thinking_placeholder.markdown(thinking_text)
+                else:
+                    thinking_expander.empty()
+                    # Скрываем пустой expander — перезаписываем контейнер
+                    thinking_expander = None
+
+                if sources_block:
+                    answer_text = f"{answer_text}\n\n---\n**Источники:**\n{sources_block}"
+                answer_placeholder.markdown(answer_text)
+                reply = answer_text
+
+        st.session_state.chat_history.append((user_prompt, reply, thinking_text if oai_client else ""))
         st.session_state.last_prompt_base = user_prompt
         st.session_state.variants[user_prompt] = 0
         used = set(_extract_page_ids_from_answer(reply))

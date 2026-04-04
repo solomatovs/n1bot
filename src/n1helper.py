@@ -835,6 +835,67 @@ def generate_answer_with_context(
         answer = f"{answer}\n\n---\n**Источники:**\n{sources_block}"
     return answer
 
+
+def prepare_rag_context(
+    embed_collection_name: str,
+    query: str,
+    model: str,
+    top_n: int,
+    db_path: str,
+    llm_base_url: str,
+    embedding_model: Optional[str] = None,
+    use_multi_query: bool = True,
+    mq_variants: int = 3,
+    k_per_variant: int = 6,
+    variant_offset: int = 0,
+    exclude_page_ids: Optional[List[str]] = None,
+    answers_per_variant: int = 3,
+):
+    """Подготавливает RAG-контекст и возвращает (openai_client, messages, sources_block).
+    Raises Exception при ошибках."""
+    ollama_openai_url = llm_base_url
+    openai = getOpenAI(llm_base_url)
+
+    base_api = (ollama_openai_url.replace("/v1", "")).rstrip("/")
+    vectorstore = getVectorstore(embed_collection_name, db_path=db_path,
+                                 llm_base_url=base_api, embedding_model=embedding_model)
+
+    cands = retrieve_docs(
+        vectorstore, query,
+        use_multi_query=use_multi_query,
+        openai=openai, llm_model=model,
+        k_single=max(top_n, 12),
+        mq_variants=mq_variants,
+        k_per_variant=k_per_variant,
+        total_top=max(top_n, 12),
+    )
+
+    if not cands:
+        return None, None, None
+
+    cands = _group_limit_per_page(cands, per_page=1)
+
+    if exclude_page_ids:
+        excl = set(str(x) for x in exclude_page_ids)
+        cands = [d for d in cands if _pid_from_meta(d.metadata or {}) not in excl]
+
+    start = max(0, variant_offset * answers_per_variant)
+    selected = cands[start:start + answers_per_variant] or cands[:answers_per_variant]
+
+    context = "\n\n".join(d.page_content for d in selected)
+    sources_block = _build_sources(selected)
+
+    messages = [
+        {"role": "system",
+         "content": ("Ты — эксперт по корпоративной базе знаний. "
+                     "Отвечай ТОЛЬКО по предоставленному контексту, не ищи ничего в интернете.")},
+        {"role": "user",
+         "content": f"Контекст:\n{context}\n\nВопрос: {query}\n\nДай чёткий ответ."},
+    ]
+
+    return openai, messages, sources_block
+
+
 # =========================
 # Confluence ingest
 # =========================
