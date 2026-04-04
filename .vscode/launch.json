@@ -1,0 +1,25 @@
+{
+    // Используйте IntelliSense, чтобы узнать о возможных атрибутах.
+    // Наведите указатель мыши, чтобы просмотреть описания существующих атрибутов.
+    // Для получения дополнительной информации посетите: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Streamlit: app2.py (port 8501)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "streamlit",
+            "args": [
+                "run", "${workspaceFolder}/src/app2.py",
+                "--server.port=8501",
+                "--server.address=0.0.0.0",
+                "--server.headless=true"
+            ],
+            "console": "integratedTerminal",
+            "env": {
+                "CHROMA_DB_PATH": "${workspaceFolder}/docker/chroma_app_db"
+            },
+            "jinja": true
+        },
+    ]
+}
