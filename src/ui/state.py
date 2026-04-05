@@ -69,6 +69,22 @@ class SearchParams:
     k_per_variant: int = 6
     # -- генерация --
     temperature: float = 0.0
+    top_p: float = 1.0
+    max_tokens: int | None = None
+    frequency_penalty: float = 0.0
+    presence_penalty: float = 0.0
+
+    def llm_kwargs(self) -> dict:
+        """Параметры генерации для передачи в OpenAI API."""
+        kwargs: dict = {
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "frequency_penalty": self.frequency_penalty,
+            "presence_penalty": self.presence_penalty,
+        }
+        if self.max_tokens is not None:
+            kwargs["max_tokens"] = self.max_tokens
+        return kwargs
 
 
 DEFAULT_SYSTEM_PROMPT = (

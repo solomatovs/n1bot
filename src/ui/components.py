@@ -195,12 +195,51 @@ def render_search_settings(container: DeltaGenerator) -> SearchParams:
 
         # -- Группа: Генерация --
         st.markdown("##### Генерация")
-        temperature = st.slider(
-            "Температура",
-            min_value=0.0, max_value=1.0, value=defaults.temperature, step=0.05,
-            help="0 = детерминированный ответ, 1 = максимальная креативность",
-            key="sp_temperature",
+        col_t, col_tp = st.columns(2)
+        with col_t:
+            temperature = st.slider(
+                "Температура",
+                min_value=0.0, max_value=2.0, value=defaults.temperature, step=0.05,
+                help="0 = детерминированный, 2 = максимальная креативность",
+                key="sp_temperature",
+            )
+        with col_tp:
+            top_p = st.slider(
+                "Top-p (nucleus)",
+                min_value=0.0, max_value=1.0, value=defaults.top_p, step=0.05,
+                help="Отсекает маловероятные токены. 1.0 = без ограничений",
+                key="sp_top_p",
+            )
+
+        use_max_tokens = st.checkbox(
+            "Ограничить длину ответа",
+            value=defaults.max_tokens is not None,
+            key="sp_use_max_tokens",
         )
+        max_tokens: int | None = None
+        if use_max_tokens:
+            max_tokens = st.slider(
+                "Макс. токенов",
+                min_value=64, max_value=4096, value=defaults.max_tokens or 1024, step=64,
+                help="Максимальная длина ответа модели в токенах",
+                key="sp_max_tokens",
+            )
+
+        col_fp, col_pp = st.columns(2)
+        with col_fp:
+            frequency_penalty = st.slider(
+                "Frequency penalty",
+                min_value=-2.0, max_value=2.0, value=defaults.frequency_penalty, step=0.1,
+                help="Штраф за повторение слов. >0 = меньше повторов",
+                key="sp_freq_penalty",
+            )
+        with col_pp:
+            presence_penalty = st.slider(
+                "Presence penalty",
+                min_value=-2.0, max_value=2.0, value=defaults.presence_penalty, step=0.1,
+                help="Штраф за повторение тем. >0 = больше разнообразия",
+                key="sp_pres_penalty",
+            )
 
     return SearchParams(
         top_n=top_n,
@@ -211,6 +250,10 @@ def render_search_settings(container: DeltaGenerator) -> SearchParams:
         mq_variants=mq_variants,
         k_per_variant=k_per_variant,
         temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
+        frequency_penalty=frequency_penalty,
+        presence_penalty=presence_penalty,
     )
 
 

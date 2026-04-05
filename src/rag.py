@@ -1,21 +1,36 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 import httpx
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
 from config import LLM_TIMEOUT, secret
-from retrieval import (
-    build_sources,
-    group_limit_per_page,
-    retrieve_docs,
-)
+from retrieval import RetrievalService, build_sources
 from ui.state import AppConfig, PromptParams, SearchParams
 from vectorstore import VectorStoreService
 
+
+# ---------------------------------------------------------------------------
+# Типизированные ошибки
+# ---------------------------------------------------------------------------
+
+class RagError(Exception):
+    """Базовая ошибка RAG-пайплайна."""
+
+
+class EmptyContextError(RagError):
+    """Не найдено релевантных документов в векторной базе."""
+
+
+class LLMGenerationError(RagError):
+    """Ошибка при генерации ответа моделью."""
+
+
+# ---------------------------------------------------------------------------
+# Результат
+# ---------------------------------------------------------------------------
 
 @dataclass
 class RagContext:
@@ -25,16 +40,21 @@ class RagContext:
     sources_block: str
 
 
+# ---------------------------------------------------------------------------
+# Сервис
+# ---------------------------------------------------------------------------
+
 class RagService:
     """Сервис подготовки RAG-контекста.
 
-    Инкапсулирует инфраструктурные зависимости (БД, LLM-клиент),
+    Инкапсулирует инфраструктурные зависимости (поиск, LLM-клиент),
     чтобы методы принимали только параметры конкретного запроса.
     """
 
     def __init__(self, cfg: AppConfig) -> None:
-        self._vs = VectorStoreService(cfg)
         self._client = self._create_openai_client(cfg.litellm_url)
+        vs = VectorStoreService(cfg)
+        self._retrieval = RetrievalService(vs, self._client)
 
     def prepare_context(
         self,
@@ -43,29 +63,17 @@ class RagService:
         model: str,
         params: SearchParams,
         prompts: PromptParams,
-    ) -> Optional[RagContext]:
-        """Подготавливает RAG-контекст. Возвращает RagContext или None."""
-        vectorstore = self._vs.get_vectorstore(collection_name)
+    ) -> RagContext:
+        """Подготавливает RAG-контекст.
 
-        cands = retrieve_docs(
-            vectorstore,
-            query,
-            use_multi_query=params.use_multi_query,
-            openai=self._client,
-            llm_model=model,
-            k_single=params.top_n,
-            mq_variants=params.mq_variants,
-            k_per_variant=params.k_per_variant,
-            total_top=params.top_n,
-            content_types=params.content_types,
-        )
+        Raises:
+            EmptyContextError: если не найдено релевантных документов.
+        """
+        docs = self._retrieval.search(collection_name, query, model, params)
+        if not docs:
+            raise EmptyContextError("Не найдено релевантных документов по запросу.")
 
-        if not cands:
-            return None
-
-        cands = group_limit_per_page(cands, per_page=params.per_page)
-        selected = cands[:params.answers_per_variant]
-
+        selected = docs[:params.answers_per_variant]
         context = "\n\n".join(d.page_content for d in selected)
         sources_block = build_sources(selected)
 
@@ -84,28 +92,27 @@ class RagService:
         params: SearchParams,
         prompts: PromptParams,
     ) -> str:
-        """Полный пайплайн: поиск контекста + генерация ответа."""
-        try:
-            ctx = self.prepare_context(
-                collection_name=collection_name,
-                query=query,
-                model=model,
-                params=params,
-                prompts=prompts,
-            )
-        except Exception as e:
-            return f"Ошибка подготовки контекста: {e}"
+        """Полный пайплайн: поиск контекста + генерация ответа.
 
-        if ctx is None:
-            return "Я не нашёл релевантный контекст по вашей коллекции."
+        Raises:
+            EmptyContextError: если не найдено релевантных документов.
+            LLMGenerationError: если модель не смогла сгенерировать ответ.
+        """
+        ctx = self.prepare_context(
+            collection_name=collection_name,
+            query=query,
+            model=model,
+            params=params,
+            prompts=prompts,
+        )
 
         try:
             resp = ctx.client.chat.completions.create(
-                model=model, messages=ctx.messages, temperature=params.temperature,
+                model=model, messages=ctx.messages, **params.llm_kwargs(),
             )  # type: ignore[arg-type]
             answer = resp.choices[0].message.content or ""
         except Exception as e:
-            return f"Не удалось сгенерировать ответ: {e}"
+            raise LLMGenerationError(f"Не удалось сгенерировать ответ: {e}") from e
 
         if ctx.sources_block:
             answer = f"{answer}\n\n---\n**Источники:**\n{ctx.sources_block}"

@@ -1,11 +1,9 @@
 """Вкладка «Чат» — ответы на вопросы по базе знаний."""
 from __future__ import annotations
 
-from typing import Optional
-
 import streamlit as st
 
-from rag import RagContext, RagService
+from rag import EmptyContextError, RagContext, RagError, RagService
 from ui.components import (
     collection_selector,
     extract_page_ids_from_answer,
@@ -47,37 +45,21 @@ def render(cfg: AppConfig, state: SessionState) -> None:
         st.markdown(user_prompt)
 
     with st.chat_message("assistant"):
-        ctx = _fetch_context(rag, state, user_prompt, active_model, search_params, prompt_params)
-
-        if ctx is not None:
-            rag_context = _extract_rag_context(ctx.messages)
-
-        if ctx is None:
+        try:
+            ctx = _fetch_context(rag, state, user_prompt, active_model, search_params, prompt_params)
+        except EmptyContextError:
             reply = "Я не нашёл релевантный контекст по вашей коллекции."
             st.markdown(reply)
+        except RagError as e:
+            reply = f"Ошибка: {e}"
+            st.error(reply)
         else:
+            rag_context = _extract_rag_context(ctx.messages)
             if rag_context:
                 with st.expander("Найденный контекст из базы знаний", expanded=False):
                     st.markdown(rag_context)
 
-            renderer = StreamRenderer(st.container())
-            stream = ctx.client.chat.completions.create(
-                model=active_model,
-                messages=ctx.messages,
-                temperature=search_params.temperature,
-                stream=True,
-            )
-            for chunk in stream:
-                renderer.feed(chunk.choices[0].delta)
-            renderer.finalise()
-
-            if ctx.sources_block:
-                renderer.set_answer(
-                    f"{renderer.state.answer}\n\n---\n**Источники:**\n{ctx.sources_block}"
-                )
-
-            reply = renderer.state.answer
-            thinking_text = renderer.state.thinking
+            reply, thinking_text = _stream_response(ctx, active_model, search_params)
 
     state.push_message(ChatMessage(
         question=user_prompt,
@@ -101,19 +83,41 @@ def _fetch_context(
     model: str,
     params: SearchParams,
     prompts: PromptParams,
-) -> Optional[RagContext]:
+) -> RagContext:
+    """Получить RAG-контекст. Пробрасывает RagError при ошибках."""
     with st.spinner("Ищу контекст…"):
-        try:
-            return rag.prepare_context(
-                collection_name=str(state.selected_collection),
-                query=prompt,
-                model=model,
-                params=params,
-                prompts=prompts,
-            )
-        except Exception as e:
-            st.error(f"Ошибка: {e}")
-            return None
+        return rag.prepare_context(
+            collection_name=str(state.selected_collection),
+            query=prompt,
+            model=model,
+            params=params,
+            prompts=prompts,
+        )
+
+
+def _stream_response(
+    ctx: RagContext,
+    model: str,
+    params: SearchParams,
+) -> tuple[str, str]:
+    """Стримить ответ от LLM. Возвращает (answer, thinking)."""
+    renderer = StreamRenderer(st.container())
+    stream = ctx.client.chat.completions.create(
+        model=model,
+        messages=ctx.messages,
+        stream=True,
+        **params.llm_kwargs(),
+    )
+    for chunk in stream:
+        renderer.feed(chunk.choices[0].delta)
+    renderer.finalise()
+
+    if ctx.sources_block:
+        renderer.set_answer(
+            f"{renderer.state.answer}\n\n---\n**Источники:**\n{ctx.sources_block}"
+        )
+
+    return renderer.state.answer, renderer.state.thinking
 
 
 def _extract_rag_context(messages: list) -> str:

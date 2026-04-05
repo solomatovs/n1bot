@@ -7,6 +7,9 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from openai import OpenAI
 
+from ui.state import SearchParams
+from vectorstore import VectorStoreService
+
 
 # ---------------------------------------------------------------------------
 # Конфигурация реранкинга
@@ -31,7 +34,7 @@ RETRIEVAL_CONFIG = RetrievalConfig()
 # Генерация переформулировок
 # ---------------------------------------------------------------------------
 
-def gen_query_variants(openai: OpenAI, model: str, q: str, n: int) -> List[str]:
+def _gen_query_variants(openai: OpenAI, model: str, q: str, n: int) -> List[str]:
     prompt = f"Дай {n} кратких переформулировок запроса; по одной на строку.\nЗапрос: {q}"
     try:
         r = openai.chat.completions.create(
@@ -49,7 +52,7 @@ def gen_query_variants(openai: OpenAI, model: str, q: str, n: int) -> List[str]:
 # RRF слияние
 # ---------------------------------------------------------------------------
 
-def rrf_merge(rank_lists: List[List[Document]], k: int = RETRIEVAL_CONFIG.rrf_k) -> List[Document]:
+def _rrf_merge(rank_lists: List[List[Document]], k: int = RETRIEVAL_CONFIG.rrf_k) -> List[Document]:
     scores: Dict[str, float] = {}
     pick: Dict[str, Document] = {}
 
@@ -69,7 +72,7 @@ def _pid_from_meta(md: Dict) -> str:
     return str(md.get("page_id") or "unknown")
 
 
-def group_limit_per_page(docs: List[Document], per_page: int) -> List[Document]:
+def _group_limit_per_page(docs: List[Document], per_page: int) -> List[Document]:
     by: Dict[str, List[Document]] = {}
     for d in docs:
         pid = _pid_from_meta(d.metadata or {})
@@ -79,6 +82,10 @@ def group_limit_per_page(docs: List[Document], per_page: int) -> List[Document]:
         picked.extend(lst[:per_page])
     return picked
 
+
+# ---------------------------------------------------------------------------
+# Форматирование источников
+# ---------------------------------------------------------------------------
 
 def build_sources(docs: List[Document]) -> str:
     lines: List[str] = []
@@ -165,7 +172,7 @@ def _rerank_results(docs: List[Document], query_type: str) -> List[Document]:
 
 
 # ---------------------------------------------------------------------------
-# Основной поиск
+# Построение фильтра
 # ---------------------------------------------------------------------------
 
 def _infer_content_types(query_type: str) -> Optional[List[str]]:
@@ -195,43 +202,79 @@ def _build_search_filter(
     return {"$and": conditions}
 
 
-def retrieve_docs(
-    vectorstore: Chroma,
-    query: str,
-    use_multi_query: bool,
-    openai: Optional[OpenAI],
-    llm_model: Optional[str],
-    k_single: int,
-    mq_variants: int,
-    k_per_variant: int,
-    total_top: int,
-    content_types: Optional[List[str]] = None,
-) -> List[Document]:
-    query_type = _classify_query_type(query)
-    search_filters = _build_search_filter(content_types, query_type)
+# ---------------------------------------------------------------------------
+# Сервис поиска
+# ---------------------------------------------------------------------------
 
-    if not use_multi_query or openai is None or not llm_model:
-        retr = vectorstore.as_retriever(search_kwargs={"k": k_single, "filter": search_filters})
+class RetrievalService:
+    """Сервис поиска документов в векторном хранилище.
+
+    Инкапсулирует VectorStoreService и OpenAI-клиент,
+    чтобы метод search принимал только параметры запроса.
+    """
+
+    def __init__(self, vs_service: VectorStoreService, openai_client: OpenAI) -> None:
+        self._vs = vs_service
+        self._client = openai_client
+
+    def search(
+        self,
+        collection_name: str,
+        query: str,
+        model: str,
+        params: SearchParams,
+    ) -> List[Document]:
+        """Найти релевантные документы по запросу."""
+        vectorstore = self._vs.get_vectorstore(collection_name)
+        query_type = _classify_query_type(query)
+        search_filters = _build_search_filter(params.content_types, query_type)
+
+        if not params.use_multi_query:
+            return self._single_query_search(vectorstore, query, params.top_n, search_filters)
+
+        cands = self._multi_query_search(
+            vectorstore, query, model, params, search_filters,
+        )
+
+        reranked = _rerank_results(cands, query_type)
+        return _group_limit_per_page(reranked[:params.top_n], per_page=params.per_page)
+
+    # -- приватные методы ------------------------------------------------------
+
+    @staticmethod
+    def _single_query_search(
+        vectorstore: Chroma, query: str, k: int, filters: dict,
+    ) -> List[Document]:
+        retr = vectorstore.as_retriever(search_kwargs={"k": k, "filter": filters})
         return retr.invoke(query) or []
 
-    variants = gen_query_variants(openai, llm_model, query, n=mq_variants)
-    rank_lists: List[List[Document]] = []
-    errors: List[str] = []
+    def _multi_query_search(
+        self,
+        vectorstore: Chroma,
+        query: str,
+        model: str,
+        params: SearchParams,
+        filters: dict,
+    ) -> List[Document]:
+        variants = _gen_query_variants(self._client, model, query, n=params.mq_variants)
+        rank_lists: List[List[Document]] = []
+        errors: List[str] = []
 
-    for v in variants:
-        try:
-            retr = vectorstore.as_retriever(search_kwargs={"k": k_per_variant, "filter": search_filters})
-            results = retr.invoke(v) or []
-            rank_lists.append(results)
-        except Exception as e:
-            print(f"Ошибка при поиске для варианта '{v}': {e}")
-            errors.append(str(e))
-            rank_lists.append([])
+        for v in variants:
+            try:
+                retr = vectorstore.as_retriever(
+                    search_kwargs={"k": params.k_per_variant, "filter": filters},
+                )
+                results = retr.invoke(v) or []
+                rank_lists.append(results)
+            except Exception as e:
+                print(f"Ошибка при поиске для варианта '{v}': {e}")
+                errors.append(str(e))
+                rank_lists.append([])
 
-    merged = rrf_merge(rank_lists)
+        merged = _rrf_merge(rank_lists)
 
-    if not merged and errors:
-        raise RuntimeError(f"Ошибка поиска по векторной БД: {errors[0]}")
+        if not merged and errors:
+            raise RuntimeError(f"Ошибка поиска по векторной БД: {errors[0]}")
 
-    reranked = _rerank_results(merged, query_type)
-    return reranked[:total_top]
+        return merged
