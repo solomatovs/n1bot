@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import streamlit as st
 
-from rag import prepare_rag_context
+from typing import Optional
+
+from rag import RagContext, prepare_rag_context
 from ui.components import (
     collection_selector,
     extract_page_ids_from_answer,
@@ -37,18 +39,17 @@ def render(cfg: AppConfig, state: SessionState) -> None:
     thinking_text = ""
     rag_context = ""
     reply = ""
-    oai_client = None
 
     with st.chat_message("user"):
         st.markdown(user_prompt)
 
     with st.chat_message("assistant"):
-        oai_client, messages, sources_block = _fetch_context(cfg, state, user_prompt, active_model, use_mq)
+        ctx = _fetch_context(cfg, state, user_prompt, active_model, use_mq)
 
-        if messages:
-            rag_context = _extract_rag_context(messages)
+        if ctx is not None:
+            rag_context = _extract_rag_context(ctx.messages)
 
-        if oai_client is None or messages is None:
+        if ctx is None:
             reply = "Я не нашёл релевантный контекст по вашей коллекции."
             st.markdown(reply)
         else:
@@ -57,9 +58,9 @@ def render(cfg: AppConfig, state: SessionState) -> None:
                     st.markdown(rag_context)
 
             renderer = StreamRenderer(st.container())
-            stream = oai_client.chat.completions.create(
+            stream = ctx.client.chat.completions.create(
                 model=active_model,
-                messages=messages,
+                messages=ctx.messages,
                 temperature=0,
                 stream=True,
             )
@@ -67,9 +68,9 @@ def render(cfg: AppConfig, state: SessionState) -> None:
                 renderer.feed(chunk.choices[0].delta)
             renderer.finalise()
 
-            if sources_block:
+            if ctx.sources_block:
                 renderer.set_answer(
-                    f"{renderer.state.answer}\n\n---\n**Источники:**\n{sources_block}"
+                    f"{renderer.state.answer}\n\n---\n**Источники:**\n{ctx.sources_block}"
                 )
 
             reply = renderer.state.answer
@@ -90,7 +91,7 @@ def render(cfg: AppConfig, state: SessionState) -> None:
 # Приватные вспомогательные функции
 # ---------------------------------------------------------------------------
 
-def _fetch_context(cfg, state, prompt, model, use_mq):
+def _fetch_context(cfg: AppConfig, state: SessionState, prompt: str, model: str, use_mq: bool) -> Optional[RagContext]:
     with st.spinner("Ищу контекст…"):
         try:
             return prepare_rag_context(
@@ -110,10 +111,10 @@ def _fetch_context(cfg, state, prompt, model, use_mq):
             )
         except Exception as e:
             st.error(f"Ошибка: {e}")
-            return None, None, None
+            return None
 
 
-def _extract_rag_context(messages) -> str:
+def _extract_rag_context(messages: list) -> str:
     for msg in messages:
         if msg.get("role") == "user":
             return str(msg.get("content", ""))

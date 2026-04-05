@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 import httpx
 import streamlit as st
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
+
+
+@dataclass
+class RagContext:
+    """Результат подготовки RAG-контекста."""
+    client: OpenAI
+    messages: list[ChatCompletionMessageParam]
+    sources_block: str
 
 from config import LLM_TIMEOUT, secret
 from retrieval import (
@@ -55,8 +64,8 @@ def prepare_rag_context(
     variant_offset: int = 0,
     exclude_page_ids: Optional[List[str]] = None,
     answers_per_variant: int = 3,
-):
-    """Подготавливает RAG-контекст. Возвращает (openai_client, messages, sources_block)."""
+) -> Optional[RagContext]:
+    """Подготавливает RAG-контекст. Возвращает RagContext или None."""
     openai = get_openai(llm_base_url)
 
     base_api = llm_base_url.replace("/v1", "").rstrip("/")
@@ -77,7 +86,7 @@ def prepare_rag_context(
     )
 
     if not cands:
-        return None, None, None
+        return None
 
     cands = group_limit_per_page(cands, per_page=1)
 
@@ -102,7 +111,7 @@ def prepare_rag_context(
         {"role": "user", "content": f"Контекст:\n{context}\n\nВопрос: {query}\n\nДай чёткий ответ."},
     ]
 
-    return openai, messages, sources_block
+    return RagContext(client=openai, messages=messages, sources_block=sources_block)
 
 
 def generate_answer_with_context(
@@ -121,7 +130,7 @@ def generate_answer_with_context(
     answers_per_variant: int = 3,
 ) -> str:
     try:
-        openai, messages, sources_block = prepare_rag_context(
+        ctx = prepare_rag_context(
             embed_collection_name=embed_collection_name,
             query=query,
             model=model,
@@ -139,15 +148,15 @@ def generate_answer_with_context(
     except Exception as e:
         return f"Ошибка подготовки контекста: {e}"
 
-    if openai is None or messages is None:
+    if ctx is None:
         return "Я не нашёл релевантный контекст по вашей коллекции."
 
     try:
-        resp = openai.chat.completions.create(model=model, messages=messages, temperature=0)  # type: ignore[arg-type]
+        resp = ctx.client.chat.completions.create(model=model, messages=ctx.messages, temperature=0)  # type: ignore[arg-type]
         answer = resp.choices[0].message.content or ""
     except Exception as e:
         return f"Не удалось сгенерировать ответ: {e}"
 
-    if sources_block:
-        answer = f"{answer}\n\n---\n**Источники:**\n{sources_block}"
+    if ctx.sources_block:
+        answer = f"{answer}\n\n---\n**Источники:**\n{ctx.sources_block}"
     return answer

@@ -41,7 +41,7 @@ def _render_space_loader(cfg: AppConfig) -> None:
         return
 
     try:
-        pages, ok_docs, bad_docs = ingest_space_incremental(
+        result = ingest_space_incremental(
             base_url=cfg.confluence_url,
             token=cfg.confluence_token,
             space_key=space_key,
@@ -52,8 +52,8 @@ def _render_space_loader(cfg: AppConfig) -> None:
             verify_ssl=False,
         )
         st.success(
-            f"Готово. Обработано страниц: {pages}. "
-            f"Успешно добавлено документов: {ok_docs}, ошибок: {bad_docs}"
+            f"Готово. Обработано страниц: {result.processed_pages}. "
+            f"Успешно добавлено документов: {result.ok_docs}, ошибок: {result.bad_docs}"
         )
         st.cache_data.clear()
     except Exception as e:

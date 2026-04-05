@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Optional
 
 import requests
 import streamlit as st
@@ -8,6 +9,21 @@ from langchain_core.documents import Document
 
 from chunking import split_into_chunks_semantic
 from config import enc
+
+
+@dataclass
+class DocumentsResult:
+    """Результат добавления документов в векторное хранилище."""
+    ok: int
+    bad: int
+
+
+@dataclass
+class IngestionResult:
+    """Результат импорта пространства Confluence."""
+    processed_pages: int
+    ok_docs: int
+    bad_docs: int
 from vectorstore import get_vectorstore
 
 
@@ -74,7 +90,7 @@ def append_documents(
     db_path: str,
     ollama_api_url: str,
     embedding_model: Optional[str] = None,
-) -> Tuple[int, int]:
+) -> DocumentsResult:
     vs = get_vectorstore(collection_name, db_path=db_path, llm_base_url=ollama_api_url, embedding_model=embedding_model)
     ok = 0
     bad = 0
@@ -88,7 +104,7 @@ def append_documents(
                 ok += 1
             except Exception:
                 bad += 1
-    return ok, bad
+    return DocumentsResult(ok=ok, bad=bad)
 
 
 def ingest_space_incremental(
@@ -102,13 +118,13 @@ def ingest_space_incremental(
     max_pages: Optional[int] = None,
     verify_ssl: bool = False,
     embedding_model: Optional[str] = None,
-) -> Tuple[int, int, int]:
+) -> IngestionResult:
     from langchain_community.document_loaders import ConfluenceLoader
     from langchain_community.document_loaders.confluence import ContentFormat
 
     page_ids = list_space_page_ids(base_url, token, space_key, verify_ssl=verify_ssl)
     if not page_ids:
-        return (0, 0, 0)
+        return IngestionResult(processed_pages=0, ok_docs=0, bad_docs=0)
 
     if max_pages is not None and max_pages > 0:
         page_ids = page_ids[:max_pages]
@@ -141,7 +157,7 @@ def ingest_space_incremental(
             prepared = normalize_as_original(chunks, space_key, pid, base_url=base_url)
             ids = make_chunk_ids(space_key, pid, len(prepared))
 
-            _ok, _bad = append_documents(
+            result = append_documents(
                 collection_name,
                 prepared,
                 ids,
@@ -149,13 +165,13 @@ def ingest_space_incremental(
                 ollama_api_url=ollama_api_url,
                 embedding_model=embedding_model,
             )
-            ok_docs += _ok
-            bad_docs += _bad
+            ok_docs += result.ok
+            bad_docs += result.bad
             processed_pages += 1
 
             pbar.progress(
                 idx / total_pages,
-                text=f"Стр. {idx}/{total_pages} (pageId={pid}) — добавлено {_ok}, ошибок {_bad}",
+                text=f"Стр. {idx}/{total_pages} (pageId={pid}) — добавлено {result.ok}, ошибок {result.bad}",
             )
         except Exception as e:
             processed_pages += 1
@@ -165,4 +181,4 @@ def ingest_space_incremental(
             )
 
     pbar.empty()
-    return processed_pages, ok_docs, bad_docs
+    return IngestionResult(processed_pages=processed_pages, ok_docs=ok_docs, bad_docs=bad_docs)
