@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Dict, List, Protocol
+from typing import Callable, Dict, List, Protocol
 
 import numpy as np
 from langchain_core.documents import Document
@@ -28,7 +28,11 @@ class ChunkingStrategy(Protocol):
         ImageChunkingStrategy    — для изображений (OCR → текст → чанки)
     """
 
-    def split_documents(self, docs: List[Document]) -> List[Document]: ...
+    def split_documents(
+        self,
+        docs: List[Document],
+        on_section: Callable[[int, int, str], None] | None = None,
+    ) -> List[Document]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -50,22 +54,37 @@ class AdvancedChunker:
         )
         self._tokenizer = enc
 
-    def split_documents(self, docs: List[Document]) -> List[Document]:
-        """Разбить список документов на чанки."""
+    def split_documents(
+        self,
+        docs: List[Document],
+        on_section: Callable[[int, int, str], None] | None = None,
+    ) -> List[Document]:
+        """Разбить список документов на чанки.
+
+        Args:
+            on_section: callback(index, total, section_title) — прогресс по секциям.
+        """
         all_chunks: List[Document] = []
         for doc in docs:
-            chunks = self._process_document(doc)
+            chunks = self._process_document(doc, on_section)
             all_chunks.extend(chunks)
         return all_chunks
 
     # -- приватные методы ------------------------------------------------------
 
-    def _process_document(self, doc: Document) -> List[Document]:
+    def _process_document(
+        self,
+        doc: Document,
+        on_section: Callable[[int, int, str], None] | None = None,
+    ) -> List[Document]:
         text = doc.page_content
         metadata = doc.metadata.copy()
         sections = _split_into_sections(text)
+        total = len(sections)
         chunks: List[Document] = []
-        for section in sections:
+        for idx, section in enumerate(sections, start=1):
+            if on_section:
+                on_section(idx, total, section.get("title", ""))
             section_chunks = self._chunk_section(section, metadata)
             chunks.extend(section_chunks)
         return chunks

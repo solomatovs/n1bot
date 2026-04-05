@@ -67,9 +67,9 @@ class IngestionResult:
 # ---------------------------------------------------------------------------
 
 class ProgressCallback(Protocol):
-    """Протокол для отображения прогресса загрузки."""
+    """Протокол для отображения прогресса."""
 
-    def on_page(self, index: int, total: int, page_id: str, status: str) -> None: ...
+    def on_step(self, index: int, total: int, label: str) -> None: ...
 
     def on_complete(self) -> None: ...
 
@@ -77,7 +77,7 @@ class ProgressCallback(Protocol):
 class NoOpProgress:
     """Заглушка прогресса — ничего не делает."""
 
-    def on_page(self, index: int, total: int, page_id: str, status: str) -> None:
+    def on_step(self, index: int, total: int, label: str) -> None:
         pass
 
     def on_complete(self) -> None:
@@ -150,13 +150,13 @@ class BatchPageLoader:
                 result = self._page_loader.load(pid)
                 if result.documents:
                     all_docs.extend(result.documents)
-                    cb.on_page(idx, total, pid, f"загружено ({len(result.documents)} док.)")
+                    cb.on_step(idx, total, f"pageId={pid} — загружено ({len(result.documents)} док.)")
                 else:
-                    cb.on_page(idx, total, pid, "пусто")
+                    cb.on_step(idx, total, f"pageId={pid} — пусто")
             except PageLoadError as e:
                 log.warning("Не удалось загрузить страницу %s: %s", pid, e.cause)
                 errors.append(e)
-                cb.on_page(idx, total, pid, f"ошибка: {e.cause}")
+                cb.on_step(idx, total, f"pageId={pid} — ошибка: {e.cause}")
 
         cb.on_complete()
         return BatchResult(loaded=all_docs, failed=errors)
@@ -281,22 +281,47 @@ class IngestionService:
         self._chunker = chunker
         self._vs = vs_service
 
-    def ingest(
+    def chunk(
         self,
         documents: List[Document],
+        progress: ProgressCallback | None = None,
+    ) -> List[Document]:
+        """Разбить документы на чанки с прогрессом по документам.
+
+        Raises:
+            IngestionError: если чанкинг не произвёл ни одного документа.
+        """
+        cb = progress or NoOpProgress()
+        total = len(documents)
+        all_chunks: List[Document] = []
+
+        for idx, doc in enumerate(documents, start=1):
+            title = (doc.metadata or {}).get("title", f"документ {idx}")
+
+            def section_progress(sec_idx: int, sec_total: int, sec_title: str) -> None:
+                cb.on_step(idx, total, f"{title} — секция {sec_idx}/{sec_total}: {sec_title}")
+
+            doc_chunks = self._chunker.split_documents([doc], on_section=section_progress)
+            all_chunks.extend(doc_chunks)
+
+        cb.on_complete()
+
+        if not all_chunks:
+            raise IngestionError("Чанкинг не произвёл ни одного документа")
+        return all_chunks
+
+    def store(
+        self,
+        chunks: List[Document],
         collection_name: str,
         storage_params: StorageParams,
     ) -> IngestionResult:
-        """Разбить документы на чанки и сохранить в ChromaDB.
+        """Сохранить чанки в ChromaDB.
 
         Raises:
-            IngestionError: если не удалось сохранить ни одного чанка.
             EmbeddingConnectionError: если не удалось подключиться к эмбеддингам.
             DocumentStorageError: если все батчи завершились ошибкой.
         """
-        chunks = self._chunker.split_documents(documents)
-        if not chunks:
-            raise IngestionError("Чанкинг не произвёл ни одного документа")
 
         store = self._vs.store_documents(
             chunks,
@@ -304,4 +329,4 @@ class IngestionService:
             batch_size=storage_params.batch_size,
         )
         stored_count = len(store.get().get("documents", []) or []) if store else 0
-        return IngestionResult(input_documents=len(documents), chunks_stored=stored_count)
+        return IngestionResult(input_documents=len(chunks), chunks_stored=stored_count)

@@ -61,20 +61,28 @@ def _render_page_tab(cfg: AppConfig) -> None:
         return
 
     try:
-        loader = _create_batch_loader(cfg)
-        progress = StreamlitProgress()
-        batch_result = loader.load(page_ids, progress)
+        with st.status("Загрузка...", expanded=True) as status:
+            st.write(f"Загружаю {len(page_ids)} страниц из Confluence...")
+            loader = _create_batch_loader(cfg)
+            progress = StreamlitProgress()
+            batch_result = loader.load(page_ids, progress)
 
-        if not batch_result.loaded:
-            st.error("Не удалось загрузить ни одной страницы.")
-            return
+            if not batch_result.loaded:
+                status.update(label="Ошибка", state="error")
+                st.error("Не удалось загрузить ни одной страницы.")
+                return
 
-        ingestion = _create_ingestion_service(cfg, chunking_params)
-        result = ingestion.ingest(batch_result.loaded, col_name, storage_params)
-        st.success(
-            f"Загружено страниц: {batch_result.ok_count}. "
-            f"Документов в коллекции: {result.chunks_stored}"
-        )
+            st.write(f"Загружено: {batch_result.ok_count} страниц. Разбиваю на чанки...")
+            ingestion = _create_ingestion_service(cfg, chunking_params)
+            chunk_progress = StreamlitProgress("Чанкинг...")
+            chunks = ingestion.chunk(batch_result.loaded, chunk_progress)
+
+            st.write(f"Получено {len(chunks)} чанков. Сохраняю в ChromaDB...")
+            result = ingestion.store(chunks, col_name, storage_params)
+
+            status.update(label="Готово", state="complete")
+            st.write(f"Сохранено в коллекцию «{col_name}»: {result.chunks_stored} документов")
+
         st.cache_data.clear()
     except AppError as e:
         st.error(f"Ошибка: {e}")
@@ -100,20 +108,30 @@ def _render_space_tab(cfg: AppConfig) -> None:
         return
 
     try:
-        space_loader = _create_space_loader(cfg, space_params)
-        progress = StreamlitProgress()
-        batch_result = space_loader.load(space_key, progress)
+        with st.status("Загрузка пространства...", expanded=True) as status:
+            st.write(f"Получаю список страниц пространства «{space_key}»...")
+            space_loader = _create_space_loader(cfg, space_params)
+            progress = StreamlitProgress()
+            batch_result = space_loader.load(space_key, progress)
 
-        if not batch_result.loaded:
-            st.error("Не удалось загрузить ни одной страницы из пространства.")
-            return
+            if not batch_result.loaded:
+                status.update(label="Ошибка", state="error")
+                st.error("Не удалось загрузить ни одной страницы из пространства.")
+                return
 
-        ingestion = _create_ingestion_service(cfg, chunking_params)
-        result = ingestion.ingest(batch_result.loaded, col_name, storage_params)
-        st.success(
-            f"Загружено страниц: {batch_result.ok_count}, ошибок: {batch_result.failed_count}. "
-            f"Документов в коллекции: {result.chunks_stored}"
-        )
+            st.write(
+                f"Загружено: {batch_result.ok_count} страниц, "
+                f"ошибок: {batch_result.failed_count}. Разбиваю на чанки..."
+            )
+            ingestion = _create_ingestion_service(cfg, chunking_params)
+            chunk_progress = StreamlitProgress("Чанкинг...")
+            chunks = ingestion.chunk(batch_result.loaded, chunk_progress)
+            st.write(f"Получено {len(chunks)} чанков. Сохраняю в ChromaDB...")
+            result = ingestion.store(chunks, col_name, storage_params)
+
+            status.update(label="Готово", state="complete")
+            st.write(f"Сохранено в коллекцию «{col_name}»: {result.chunks_stored} документов")
+
         st.cache_data.clear()
     except AppError as e:
         st.error(f"Ошибка: {e}")
@@ -126,13 +144,13 @@ def _render_space_tab(cfg: AppConfig) -> None:
 class StreamlitProgress:
     """Реализация ProgressCallback через st.progress."""
 
-    def __init__(self) -> None:
-        self._pbar = st.progress(0.0, text="Начинаю загрузку…")
+    def __init__(self, label: str = "Начинаю…") -> None:
+        self._pbar = st.progress(0.0, text=label)
 
-    def on_page(self, index: int, total: int, page_id: str, status: str) -> None:
+    def on_step(self, index: int, total: int, label: str) -> None:
         self._pbar.progress(
             index / max(total, 1),
-            text=f"Стр. {index}/{total} (pageId={page_id}) — {status}",
+            text=f"{index}/{total} — {label}",
         )
 
     def on_complete(self) -> None:

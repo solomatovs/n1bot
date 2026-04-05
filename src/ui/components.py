@@ -338,16 +338,20 @@ def render_chunking_settings(key_prefix: str = "cp") -> ChunkingParams:
 # Настройки загрузки из Confluence (раздельные для pageIds и spaceKey)
 # ---------------------------------------------------------------------------
 
+BATCH_SIZE_OPTIONS = [8, 16, 32, 64, 128]
+
+
 def _render_storage_params(key_prefix: str) -> StorageParams:
     """Параметры сохранения в ChromaDB."""
     defaults = StorageParams()
-    batch_size = st.slider(
+    batch_size = st.selectbox(
         "Размер батча для ChromaDB",
-        min_value=1, max_value=128, value=defaults.batch_size, step=8,
-        help="Количество документов, сохраняемых за одну операцию в ChromaDB",
+        options=BATCH_SIZE_OPTIONS,
+        index=BATCH_SIZE_OPTIONS.index(defaults.batch_size),
+        help="Количество документов, сохраняемых за одну операцию. Меньше = надёжнее, больше = быстрее",
         key=f"{key_prefix}_batch_size",
     )
-    return StorageParams(batch_size=batch_size)
+    return StorageParams(batch_size=batch_size or defaults.batch_size)
 
 
 def render_page_id_settings() -> StorageParams:
