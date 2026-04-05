@@ -1,17 +1,21 @@
+"""Семантический чанкинг документов — генераторный стриминг."""
 from __future__ import annotations
 
 import logging
 import re
-from typing import Callable, Dict, List, Protocol
+from typing import Dict, Iterator, List, Protocol, Union
 
 import numpy as np
 from langchain_core.documents import Document
 
 from config import EMBEDDING_MODEL, enc
 from embeddings import LiteLLMEmbeddings
+from events import ChunkProduced, SectionChunked
 from ui.state import AppConfig, ChunkingParams
 
 log = logging.getLogger(__name__)
+
+ChunkEvent = Union[SectionChunked, ChunkProduced]
 
 
 # ---------------------------------------------------------------------------
@@ -19,20 +23,9 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class ChunkingStrategy(Protocol):
-    """Стратегия разбиения документов на чанки.
+    """Стратегия разбиения документов на чанки (генераторная)."""
 
-    Реализации:
-        MarkdownChunkingStrategy — текущая (markdown-текст из Confluence)
-    Будущие:
-        PdfChunkingStrategy      — для PDF-вложений (через unstructured)
-        ImageChunkingStrategy    — для изображений (OCR → текст → чанки)
-    """
-
-    def split_documents(
-        self,
-        docs: List[Document],
-        on_section: Callable[[int, int, str], None] | None = None,
-    ) -> List[Document]: ...
+    def split_documents(self, docs: List[Document]) -> Iterator[ChunkEvent]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +35,7 @@ class ChunkingStrategy(Protocol):
 class AdvancedChunker:
     """Семантический чанкер документов.
 
-    Принимает конфигурацию приложения (для эмбеддингов) и параметры чанкинга.
+    Yield-based: каждая секция и каждый чанк — отдельное событие.
     """
 
     def __init__(self, cfg: AppConfig, params: ChunkingParams) -> None:
@@ -54,69 +47,57 @@ class AdvancedChunker:
         )
         self._tokenizer = enc
 
-    def split_documents(
-        self,
-        docs: List[Document],
-        on_section: Callable[[int, int, str], None] | None = None,
-    ) -> List[Document]:
-        """Разбить список документов на чанки.
-
-        Args:
-            on_section: callback(index, total, section_title) — прогресс по секциям.
-        """
-        all_chunks: List[Document] = []
+    def split_documents(self, docs: List[Document]) -> Iterator[ChunkEvent]:
+        """Разбить документы на чанки, yielding события."""
         for doc in docs:
-            chunks = self._process_document(doc, on_section)
-            all_chunks.extend(chunks)
-        return all_chunks
+            yield from self._process_document(doc)
 
     # -- приватные методы ------------------------------------------------------
 
-    def _process_document(
-        self,
-        doc: Document,
-        on_section: Callable[[int, int, str], None] | None = None,
-    ) -> List[Document]:
+    def _process_document(self, doc: Document) -> Iterator[ChunkEvent]:
         text = doc.page_content
         metadata = doc.metadata.copy()
         sections = _split_into_sections(text)
         total = len(sections)
-        chunks: List[Document] = []
-        for idx, section in enumerate(sections, start=1):
-            if on_section:
-                on_section(idx, total, section.get("title", ""))
-            section_chunks = self._chunk_section(section, metadata)
-            chunks.extend(section_chunks)
-        return chunks
 
-    def _chunk_section(self, section: Dict, metadata: Dict) -> List[Document]:
+        for idx, section in enumerate(sections, start=1):
+            yield SectionChunked(
+                doc_index=0,
+                doc_total=0,
+                section_index=idx,
+                section_total=total,
+                section_title=section.get("title", ""),
+            )
+            for chunk in self._chunk_section(section, metadata):
+                yield ChunkProduced(chunk=chunk, cumulative_chunks=0)
+
+    def _chunk_section(self, section: Dict, metadata: Dict) -> Iterator[Document]:
         content = section["content"]
         content_type = _detect_content_type(content)
         match content_type:
             case "code":
-                return [self._create_chunk([content], metadata, section, "code")]
+                yield self._create_chunk([content], metadata, section, "code")
             case "table":
-                return [self._create_chunk([content], metadata, section, "table")]
+                yield self._create_chunk([content], metadata, section, "table")
             case "list":
-                return self._chunk_list(content, metadata, section)
+                yield from self._chunk_list(content, metadata, section)
             case _:
-                return self._chunk_text(content, metadata, section)
+                yield from self._chunk_text(content, metadata, section)
 
-    def _chunk_text(self, text: str, metadata: Dict, section: Dict) -> List[Document]:
+    def _chunk_text(self, text: str, metadata: Dict, section: Dict) -> Iterator[Document]:
         """Семантический чанкинг текста с фоллбэком на параграфы."""
         try:
-            return self._chunk_text_semantic(text, metadata, section)
+            yield from self._chunk_text_semantic(text, metadata, section)
         except (ConnectionError, ValueError, RuntimeError) as e:
             log.warning("Семантический чанкинг не удался, фоллбэк на параграфы: %s", e)
-            return self._chunk_by_paragraphs(text, metadata, section)
+            yield from self._chunk_by_paragraphs(text, metadata, section)
 
-    def _chunk_text_semantic(self, text: str, metadata: Dict, section: Dict) -> List[Document]:
+    def _chunk_text_semantic(self, text: str, metadata: Dict, section: Dict) -> Iterator[Document]:
         paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
         if not paragraphs:
-            return []
+            return
 
         vecs = self._embedding.embed_documents(paragraphs)
-        chunks: List[Document] = []
         current_chunk: List[str] = []
         current_tokens = 0
         prev_vec = None
@@ -136,52 +117,47 @@ class AdvancedChunker:
                 current_tokens += para_tokens
             else:
                 if current_chunk:
-                    chunks.append(self._create_chunk(current_chunk, metadata, section, "semantic"))
+                    yield self._create_chunk(current_chunk, metadata, section, "semantic")
                 current_chunk = [para]
                 current_tokens = para_tokens
                 prev_vec = vec
 
         if current_chunk:
-            chunks.append(self._create_chunk(current_chunk, metadata, section, "semantic"))
-        return chunks
+            yield self._create_chunk(current_chunk, metadata, section, "semantic")
 
-    def _chunk_by_paragraphs(self, text: str, metadata: Dict, section: Dict) -> List[Document]:
+    def _chunk_by_paragraphs(self, text: str, metadata: Dict, section: Dict) -> Iterator[Document]:
         paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-        chunks: List[Document] = []
         current_chunk: List[str] = []
         current_tokens = 0
 
         for para in paragraphs:
             para_tokens = self._count_tokens(para)
             if current_tokens + para_tokens > self._params.max_tokens and current_chunk:
-                chunks.append(self._create_chunk(current_chunk, metadata, section, "paragraph"))
+                yield self._create_chunk(current_chunk, metadata, section, "paragraph")
                 current_chunk = []
                 current_tokens = 0
             current_chunk.append(para)
             current_tokens += para_tokens
 
         if current_chunk:
-            chunks.append(self._create_chunk(current_chunk, metadata, section, "paragraph"))
-        return chunks
+            yield self._create_chunk(current_chunk, metadata, section, "paragraph")
 
-    def _chunk_list(self, list_text: str, metadata: Dict, section: Dict) -> List[Document]:
+    def _chunk_list(self, list_text: str, metadata: Dict, section: Dict) -> Iterator[Document]:
         items = re.split(r"\n(?=[\d+\.\-\*\+]\s)", list_text)
-        chunks: List[Document] = []
         current_chunk: List[str] = []
         current_tokens = 0
 
         for item in items:
             item_tokens = self._count_tokens(item)
             if current_tokens + item_tokens > self._params.max_tokens and current_chunk:
-                chunks.append(self._create_chunk(current_chunk, metadata, section, "list"))
+                yield self._create_chunk(current_chunk, metadata, section, "list")
                 current_chunk = []
                 current_tokens = 0
             current_chunk.append(item)
             current_tokens += item_tokens
 
         if current_chunk:
-            chunks.append(self._create_chunk(current_chunk, metadata, section, "list"))
-        return chunks
+            yield self._create_chunk(current_chunk, metadata, section, "list")
 
     def _create_chunk(self, content_parts: List[str], metadata: Dict, section: Dict, chunk_type: str) -> Document:
         content = "\n\n".join(content_parts)
