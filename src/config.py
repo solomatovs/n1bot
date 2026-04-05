@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import os
+
 import ssl
 import warnings
+import urllib3
 from typing import List
 
-import urllib3
+import streamlit as st
 
 # SSL: отключаем проверку и предупреждения глобально
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -20,22 +23,17 @@ else:
 # ---------------------------------------------------------------------------
 # Streamlit secrets (env vars override)
 # ---------------------------------------------------------------------------
-import os
-import streamlit as st
 
 
 def secret(key: str, default: str = "") -> str:
     """Return env var if set, otherwise fall back to st.secrets."""
     val = os.environ.get(key)
     if val is not None:
-        print(f"[config] {key} = {val!r} (from env)")
         return val
     try:
         val = st.secrets.get(key, default)
-        print(f"[config] {key} = {val!r} (from secrets.toml)")
         return val
     except Exception:
-        print(f"[config] {key} = {default!r} (default)")
         return default
 
 

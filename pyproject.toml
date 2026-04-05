@@ -1,0 +1,41 @@
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "n1bot"
+version = "0.1.0"
+description = "N1 Hub RAG — Streamlit UI for Confluence knowledge base"
+authors = ["Sergei Solomatov"]
+packages = [{ include = "**/*.py", from = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+streamlit = "*"
+chromadb = "*"
+langchain = "*"
+langchain-community = "*"
+langchain-openai = "*"
+langchain-core = "*"
+langchain-chroma = "*"
+httpx = "*"
+numpy = "*"
+openai = "*"
+tiktoken = "*"
+requests = "*"
+pandas = "*"
+pysqlite3-binary = "*"
+markdownify = "*"
+atlassian-python-api = "*"
+pydantic = "*"
+
+[tool.pyright]
+include = ["src"]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+reportMissingImports = true
+reportMissingTypeStubs = false
+reportUnusedImport = true
+reportUnusedVariable = true

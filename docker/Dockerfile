@@ -84,7 +84,8 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/glibc-2.28 /opt/glibc-2.28
-RUN ln -sf /opt/glibc-2.28/lib/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2
+RUN ln -sf /opt/glibc-2.28/lib/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2 && \
+    ln -sf /opt/glibc-2.28/lib/libc.so.6 /lib/x86_64-linux-gnu/libc.so.6
 
 COPY --from=builder /opt/gcc-8/lib64/libstdc++.so.6* /usr/lib/x86_64-linux-gnu/
 COPY --from=builder /opt/gcc-8/lib64/libgcc_s.so.1  /lib/x86_64-linux-gnu/libgcc_s.so.1
@@ -96,72 +97,36 @@ ENV PATH="/opt/python3.11/bin:${PATH}"
 RUN python3 --version && pip3 --version
 
 # ============================================================
-# Stage 3: wheels-builder — скачивание и компиляция wheels
+# Stage 3: deps — установка Python-зависимостей
 # ============================================================
-FROM base AS wheels-builder
+FROM base AS deps
 
-# build-essential нужен для компиляции sdist-пакетов
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         build-essential libssl-dev libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY src/requirements.txt /tmp/requirements.txt
+COPY pyproject.toml /tmp/pyproject.toml
 
-# Скачиваем бинарные wheels с PyPI
-RUN mkdir -p /tmp/wheels && \
-    pip3 download \
-        --dest /tmp/wheels \
-        --only-binary=:all: \
-        --platform manylinux2014_x86_64 \
-        --platform manylinux_2_17_x86_64 \
-        --platform manylinux_2_28_x86_64 \
-        --platform linux_x86_64 \
-        --platform any \
-        --python-version 3.11 \
-        --implementation cp \
-        --abi cp311 \
-        --abi none \
-        -r /tmp/requirements.txt \
-    || true
+# Генерируем requirements.txt из pyproject.toml
+RUN pip3 install --no-cache-dir tomli && \
+    python3 -c "import tomli,pathlib; data=tomli.loads(pathlib.Path('/tmp/pyproject.toml').read_text()); deps=data['tool']['poetry']['dependencies']; [print(n if v=='*' else f'{n}{v}') for n,v in deps.items() if n!='python']" > /tmp/requirements.txt
 
-# Скачиваем sdist для пакетов без wheels
-RUN mkdir -p /tmp/sdist && \
-    pip3 download \
-        --dest /tmp/sdist \
-        --no-binary=:all: \
-        -r /tmp/requirements.txt \
-    || true
-
-# Собираем итоговые wheels
-RUN mkdir -p /opt/wheels && \
-    pip3 wheel \
-        --no-index \
-        --no-cache-dir \
-        --find-links=/tmp/wheels \
-        --find-links=/tmp/sdist \
-        --wheel-dir=/opt/wheels \
-        -r /tmp/requirements.txt && \
-    rm -rf /tmp/wheels /tmp/sdist
+# Обновляем pip (24.0 не берёт wheels для некоторых пакетов) и устанавливаем
+RUN pip3 install --no-cache-dir --upgrade pip && \
+    pip3 install --no-cache-dir --only-binary=:all: -r /tmp/requirements.txt && \
+    rm -rf /tmp/requirements.txt
 
 # ============================================================
-# Stage 4: export wheels (optional)
-# docker build --target=wheels-export --output=type=local,dest=./wheels-built .
-# ============================================================
-FROM scratch AS wheels-export
-COPY --from=wheels-builder /opt/wheels /wheels
-
-# ============================================================
-# Stage 5: runtime
+# Stage 4: runtime
 # ============================================================
 FROM base
 
 WORKDIR /app
 
-COPY --from=wheels-builder /opt/wheels /tmp/wheels
-COPY src/requirements.txt .
-RUN pip3 install --no-cache-dir --no-index --find-links=/tmp/wheels -r requirements.txt && \
-    rm -rf /tmp/wheels
+# Копируем установленные пакеты из deps stage
+COPY --from=deps /opt/python3.11/lib/python3.11/site-packages /opt/python3.11/lib/python3.11/site-packages
+COPY --from=deps /opt/python3.11/bin /opt/python3.11/bin
 
 COPY src/ ./src/
 
