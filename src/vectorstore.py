@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 import time
-from typing import List, Optional
+from typing import List
 
 import chromadb
+import chromadb.errors
 import streamlit as st
 from chromadb.config import Settings
 from langchain_chroma import Chroma
@@ -11,7 +13,10 @@ from langchain_core.documents import Document
 
 from config import EMBEDDING_MODEL
 from embeddings import LiteLLMEmbeddings
+from errors import DocumentStorageError, EmbeddingConnectionError
 from ui.state import AppConfig
+
+log = logging.getLogger(__name__)
 
 
 class VectorStoreService:
@@ -37,10 +42,14 @@ class VectorStoreService:
         docs: List[Document],
         collection_name: str,
         batch_size: int = 16,
-    ) -> Optional[chromadb.Collection]:
-        """Сохранить документы в ChromaDB с прогрессом."""
-        if not self._check_embedding_connection():
-            return None
+    ) -> chromadb.Collection:
+        """Сохранить документы в ChromaDB с прогрессом.
+
+        Raises:
+            EmbeddingConnectionError: если не удалось подключиться к сервису эмбеддингов.
+            DocumentStorageError: если ни один документ не удалось сохранить.
+        """
+        self._verify_embedding_connection()
 
         client = self._get_client()
         client.get_or_create_collection(name=collection_name)
@@ -51,6 +60,7 @@ class VectorStoreService:
         docs = [self._normalize_document(d) for d in docs]
         total = len(docs)
         ok, bad = 0, 0
+        batch_errors: list[str] = []
         pbar = st.progress(0.0, text="Начинаю загрузку…")
 
         for i in range(0, total, batch_size):
@@ -59,8 +69,11 @@ class VectorStoreService:
                 time.sleep(0.5)
                 vectorstore.add_documents(batch)
                 ok += len(batch)
-            except Exception as e:
-                st.warning(f"Ошибка на батче {i + 1}-{i + len(batch)}: {e}")
+            except chromadb.errors.ChromaError as e:
+                msg = f"Батч {i + 1}-{i + len(batch)}: {e}"
+                log.warning(msg)
+                st.warning(msg)
+                batch_errors.append(msg)
                 bad += len(batch)
             finally:
                 pbar.progress(
@@ -69,6 +82,13 @@ class VectorStoreService:
                 )
 
         pbar.empty()
+
+        if ok == 0 and bad > 0:
+            raise DocumentStorageError(
+                f"Не удалось сохранить ни одного документа из {total}. "
+                f"Ошибки: {'; '.join(batch_errors)}"
+            )
+
         st.success(f"Готово. Успешно: {ok}, с ошибкой: {bad}")
         return client.get_collection(collection_name)
 
@@ -91,14 +111,18 @@ class VectorStoreService:
             api_key=self._api_key,
         )
 
-    def _check_embedding_connection(self) -> bool:
+    def _verify_embedding_connection(self) -> None:
+        """Проверить подключение к сервису эмбеддингов.
+
+        Raises:
+            EmbeddingConnectionError: если подключение не удалось.
+        """
         try:
             self._create_embedding().embed_query("test")
-            st.success("Подключение к liteLLM работает")
-            return True
-        except Exception as e:
-            st.error(f"Ошибка подключения к liteLLM: {e}")
-            return False
+        except (ConnectionError, OSError, ValueError) as e:
+            raise EmbeddingConnectionError(
+                f"Не удалось подключиться к сервису эмбеддингов: {e}"
+            ) from e
 
     @staticmethod
     def _normalize_document(d: Document) -> Document:

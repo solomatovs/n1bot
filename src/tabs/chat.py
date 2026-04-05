@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import streamlit as st
 
-from rag import EmptyContextError, RagContext, RagError, RagService
+from errors import AppError, EmptyContextError
+from rag import RagContext, RagService
 from ui.components import (
     collection_selector,
     extract_page_ids_from_answer,
@@ -50,7 +51,7 @@ def render(cfg: AppConfig, state: SessionState) -> None:
         except EmptyContextError:
             reply = "Я не нашёл релевантный контекст по вашей коллекции."
             st.markdown(reply)
-        except RagError as e:
+        except AppError as e:
             reply = f"Ошибка: {e}"
             st.error(reply)
         else:

@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import List, Optional
 
+import chromadb.errors
 import requests
 import streamlit as st
 from langchain_core.documents import Document
 
 from chunking import split_into_chunks_semantic
 from config import enc
+from errors import DocumentStorageError, IngestionError
 from vectorstore import VectorStoreService
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -89,19 +94,33 @@ def append_documents(
     docs: List[Document],
     ids: List[str],
 ) -> DocumentsResult:
+    """Добавить документы в коллекцию с фоллбэком на поштучную вставку.
+
+    Raises:
+        DocumentStorageError: если не удалось сохранить ни одного документа.
+    """
     vs = vs_service.get_vectorstore(collection_name)
     ok = 0
     bad = 0
+    errors: list[str] = []
     try:
         vs.add_documents(docs, ids=ids)
         ok += len(docs)
-    except Exception:
+    except chromadb.errors.ChromaError as batch_err:
+        log.warning("Батч-вставка не удалась, переключаюсь на поштучную: %s", batch_err)
         for d, _id in zip(docs, ids):
             try:
                 vs.add_documents([d], ids=[_id])
                 ok += 1
-            except Exception:
+            except chromadb.errors.ChromaError as single_err:
+                log.warning("Не удалось вставить документ %s: %s", _id, single_err)
+                errors.append(f"{_id}: {single_err}")
                 bad += 1
+
+    if ok == 0 and bad > 0:
+        raise DocumentStorageError(
+            f"Не удалось сохранить ни одного документа. Ошибки: {'; '.join(errors)}"
+        )
     return DocumentsResult(ok=ok, bad=bad)
 
 
@@ -168,12 +187,20 @@ def ingest_space_incremental(
                 idx / total_pages,
                 text=f"Стр. {idx}/{total_pages} (pageId={pid}) — добавлено {result.ok}, ошибок {result.bad}",
             )
-        except Exception as e:
+        except (chromadb.errors.ChromaError, DocumentStorageError, ConnectionError, ValueError) as e:
+            log.error("Ошибка при обработке страницы %s: %s", pid, e)
             processed_pages += 1
+            bad_docs += 1
             pbar.progress(
                 idx / total_pages,
                 text=f"Стр. {idx}/{total_pages} (pageId={pid}) — ошибка: {e}",
             )
 
     pbar.empty()
+
+    if ok_docs == 0 and bad_docs > 0:
+        raise IngestionError(
+            f"Не удалось импортировать ни одной страницы из {total_pages}"
+        )
+
     return IngestionResult(processed_pages=processed_pages, ok_docs=ok_docs, bad_docs=bad_docs)

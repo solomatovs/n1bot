@@ -8,6 +8,7 @@ from langchain_community.document_loaders.confluence import ContentFormat
 from chunking import split_into_chunks_semantic
 from config import enc
 from confluence import ingest_space_incremental
+from errors import AppError
 from ui.state import AppConfig, SessionState
 from vectorstore import VectorStoreService
 
@@ -57,7 +58,7 @@ def _render_space_loader(cfg: AppConfig) -> None:
             f"Успешно добавлено документов: {result.ok_docs}, ошибок: {result.bad_docs}"
         )
         st.cache_data.clear()
-    except Exception as e:
+    except AppError as e:
         st.error(f"Ошибка загрузки: {e}")
 
 

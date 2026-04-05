@@ -1,8 +1,10 @@
 """Вкладка «Векторное хранилище» — просмотр и управление коллекциями."""
 from __future__ import annotations
 
+import chromadb.errors
 import streamlit as st
 
+from errors import VectorStoreError
 from ui.components import (
     fetch_collection_df,
     get_collection_preview,
@@ -44,7 +46,7 @@ def render(cfg: AppConfig, state: SessionState) -> None:
             st.cache_data.clear()
             st.cache_resource.clear()
             st.rerun()
-        except Exception as e:
+        except (VectorStoreError, chromadb.errors.ChromaError) as e:
             st.error(f"Не удалось удалить: {e}")
 
 
@@ -53,5 +55,5 @@ def _show_full_collection(cfg: AppConfig, name: str) -> None:
         df = fetch_collection_df(cfg.chroma_db_path, name, preview=False)
         st.success(f"Документов: {len(df)} в «{name}»")
         st.dataframe(df, height=500)
-    except Exception as e:
+    except (chromadb.errors.ChromaError, ValueError) as e:
         st.error(f"Ошибка при получении коллекции: {e}")

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import Dict, List, Optional
 
 import numpy as np
-from langchain_ollama import OllamaEmbeddings
 from langchain_core.documents import Document
+from langchain_ollama import OllamaEmbeddings
 
 from config import EMBEDDING_MODEL, enc
+
+log = logging.getLogger(__name__)
 
 
 class AdvancedChunker:
@@ -105,7 +108,8 @@ class AdvancedChunker:
                 chunks.append(self._create_chunk(current_chunk, metadata, section, "semantic"))
             return chunks
 
-        except Exception:
+        except (ConnectionError, ValueError, RuntimeError) as e:
+            log.warning("Семантический чанкинг не удался, фоллбэк на параграфы: %s", e)
             return self._chunk_by_sentences(text, metadata, section)
 
     def _chunk_by_sentences(self, text: str, metadata: Dict, section: Dict) -> List[Document]:

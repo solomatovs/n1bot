@@ -1,6 +1,7 @@
 """Переиспользуемые UI-компоненты Streamlit."""
 from __future__ import annotations
 
+import logging
 import re
 from typing import List
 
@@ -9,10 +10,13 @@ import requests
 import streamlit as st
 
 import chromadb
+import chromadb.errors
 from chromadb.config import Settings
 from streamlit.delta_generator import DeltaGenerator
 
 from ui.state import AppConfig, ChatMessage, ContentType, PromptParams, SearchParams
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -31,7 +35,8 @@ def get_chroma_client(db_path: str):  # -> chromadb.PersistentClient
 def list_collections(db_path: str) -> List[str]:
     try:
         return [c.name for c in get_chroma_client(db_path).list_collections()]
-    except Exception as ex:
+    except (chromadb.errors.ChromaError, ValueError, OSError) as ex:
+        log.warning("Не удалось получить список коллекций: %s", ex)
         st.warning(f"Не удалось получить список коллекций: {ex}")
         return []
 
@@ -45,7 +50,8 @@ def get_openai_models(litellm_url: str, api_key: str) -> List[str]:
         )
         resp.raise_for_status()
         return sorted(m["id"] for m in resp.json()["data"])
-    except Exception as e:
+    except (requests.RequestException, KeyError, ValueError) as e:
+        log.warning("Ошибка получения моделей: %s", e)
         st.error(f"Ошибка получения моделей: {e}")
         return []
 
@@ -73,7 +79,8 @@ def fetch_collection_df(
 def get_collection_preview(db_path: str, collection_name: str) -> pd.DataFrame:
     try:
         return fetch_collection_df(db_path, collection_name, preview=True)
-    except Exception as e:
+    except (chromadb.errors.ChromaError, ValueError, OSError) as e:
+        log.warning("Ошибка загрузки данных: %s", e)
         st.error(f"Ошибка загрузки данных: {e}")
         return pd.DataFrame({"id": [], "text": [], "metadata": []})
 

@@ -3,34 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import httpx
+from openai import APIError as OpenAIAPIError
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
 from config import LLM_TIMEOUT, secret
+from errors import EmptyContextError, LLMGenerationError
 from retrieval import RetrievalService, build_sources
 from ui.state import AppConfig, PromptParams, SearchParams
 from vectorstore import VectorStoreService
 
-
-# ---------------------------------------------------------------------------
-# Типизированные ошибки
-# ---------------------------------------------------------------------------
-
-class RagError(Exception):
-    """Базовая ошибка RAG-пайплайна."""
-
-
-class EmptyContextError(RagError):
-    """Не найдено релевантных документов в векторной базе."""
-
-
-class LLMGenerationError(RagError):
-    """Ошибка при генерации ответа моделью."""
-
-
-# ---------------------------------------------------------------------------
-# Результат
-# ---------------------------------------------------------------------------
 
 @dataclass
 class RagContext:
@@ -111,7 +93,7 @@ class RagService:
                 model=model, messages=ctx.messages, **params.llm_kwargs(),
             )  # type: ignore[arg-type]
             answer = resp.choices[0].message.content or ""
-        except Exception as e:
+        except OpenAIAPIError as e:
             raise LLMGenerationError(f"Не удалось сгенерировать ответ: {e}") from e
 
         if ctx.sources_block:
