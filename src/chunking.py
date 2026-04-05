@@ -4,7 +4,7 @@ import re
 from typing import Dict, List, Optional
 
 import numpy as np
-from langchain_community.embeddings import OllamaEmbeddings
+from langchain_ollama import OllamaEmbeddings
 from langchain_core.documents import Document
 
 from config import EMBEDDING_MODEL, enc

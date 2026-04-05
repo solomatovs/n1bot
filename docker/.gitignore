@@ -5,3 +5,4 @@ chroma_app_db
 python-src
 glibc-src
 gcc-src
+wheels

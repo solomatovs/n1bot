@@ -112,13 +112,21 @@ COPY pyproject.toml /tmp/pyproject.toml
 RUN pip3 install --no-cache-dir tomli && \
     python3 -c "import tomli,pathlib; data=tomli.loads(pathlib.Path('/tmp/pyproject.toml').read_text()); deps=data['tool']['poetry']['dependencies']; [print(n if v=='*' else f'{n}{v}') for n,v in deps.items() if n!='python']" > /tmp/requirements.txt
 
-# Обновляем pip (24.0 не берёт wheels для некоторых пакетов) и устанавливаем
+# Обновляем pip и скачиваем wheels + устанавливаем
 RUN pip3 install --no-cache-dir --upgrade pip && \
-    pip3 install --no-cache-dir --only-binary=:all: -r /tmp/requirements.txt && \
+    pip3 download --only-binary=:all: --dest /opt/wheels -r /tmp/requirements.txt && \
+    pip3 install --no-cache-dir --no-index --find-links=/opt/wheels -r /tmp/requirements.txt && \
     rm -rf /tmp/requirements.txt
 
 # ============================================================
-# Stage 4: runtime
+# Stage 4: wheels-export (использовать с --output)
+# docker build --target=wheels-export --output=type=local,dest=./wheels -f docker/Dockerfile .
+# ============================================================
+FROM scratch AS wheels-export
+COPY --from=deps /opt/wheels /wheels
+
+# ============================================================
+# Stage 5: runtime
 # ============================================================
 FROM base
 

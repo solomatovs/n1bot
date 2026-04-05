@@ -3,3 +3,4 @@ __pycache__
 *.pyc
 *.pyo
 *.pyd
+chroma_debug_db
