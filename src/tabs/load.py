@@ -1,4 +1,4 @@
-"""Confluence loading tab — ingest pages and spaces into ChromaDB."""
+"""Вкладка загрузки — импорт страниц и пространств из Confluence в ChromaDB."""
 from __future__ import annotations
 
 import streamlit as st
@@ -24,7 +24,7 @@ def render(cfg: AppConfig, state: SessionState) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Space loader
+# Загрузка пространства
 # ---------------------------------------------------------------------------
 
 def _render_space_loader(cfg: AppConfig) -> None:
@@ -61,7 +61,7 @@ def _render_space_loader(cfg: AppConfig) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Page loader
+# Загрузка страниц
 # ---------------------------------------------------------------------------
 
 def _render_page_loader(cfg: AppConfig) -> None:

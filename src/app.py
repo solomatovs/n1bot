@@ -1,4 +1,4 @@
-"""N1 Hub RAG — Streamlit UI entry point."""
+"""N1 Hub RAG — точка входа Streamlit UI."""
 from __future__ import annotations
 
 import sys
@@ -16,14 +16,14 @@ import streamlit as st
 from tabs import chat, data, load
 from ui.state import AppConfig, SessionState
 
-# ========================= Page config
+# ========================= Конфигурация страницы
 st.set_page_config(page_title="N1 Hub RAG — MQ", layout="wide")
 
-# ========================= Shared state
+# ========================= Общее состояние
 cfg = AppConfig()
 state = SessionState(cfg)
 
-# ========================= Tabs
+# ========================= Вкладки
 tab_chat, tab_load, tab_data = st.tabs(["Чат", "Загрузка из Confluence", "Векторное хранилище"])
 
 with tab_chat:

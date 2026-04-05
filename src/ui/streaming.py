@@ -1,4 +1,4 @@
-"""Stream parser for LLM responses — Strategy pattern for thinking extraction."""
+"""Парсер потока ответов LLM — паттерн Стратегия для извлечения размышлений."""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -9,19 +9,19 @@ from streamlit.delta_generator import DeltaGenerator
 
 
 # ---------------------------------------------------------------------------
-# Strategy: how to extract "thinking" from a stream chunk
+# Стратегия: как извлекать «размышления» из чанка стрима
 # ---------------------------------------------------------------------------
 
 class ThinkingStrategy(ABC):
-    """Base class for thinking-extraction strategies."""
+    """Базовый класс стратегий извлечения размышлений."""
 
     @abstractmethod
     def process(self, state: StreamState, delta: object) -> None:
-        """Mutate *state* with data extracted from *delta*."""
+        """Обновить *state* данными, извлечёнными из *delta*."""
 
 
 class ReasoningFieldStrategy(ThinkingStrategy):
-    """Extract thinking from ``delta.reasoning_content`` (DeepSeek / o1 via LiteLLM)."""
+    """Извлечение размышлений из поля ``delta.reasoning_content`` (DeepSeek / o1 через LiteLLM)."""
 
     def process(self, state: StreamState, delta: object) -> None:
         reasoning = getattr(delta, "reasoning_content", None) or ""
@@ -37,7 +37,7 @@ class ReasoningFieldStrategy(ThinkingStrategy):
 
 
 class ThinkTagStrategy(ThinkingStrategy):
-    """Extract thinking from inline ``<think>...</think>`` tags inside ``delta.content``."""
+    """Извлечение размышлений из инлайн-тегов ``<think>...</think>`` внутри ``delta.content``."""
 
     def process(self, state: StreamState, delta: object) -> None:
         token = getattr(delta, "content", None) or ""
@@ -71,7 +71,7 @@ class ThinkTagStrategy(ThinkingStrategy):
 
 
 # ---------------------------------------------------------------------------
-# Mutable state accumulated during streaming
+# Изменяемое состояние, накапливаемое в процессе стриминга
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -93,11 +93,11 @@ class StreamState:
 
 
 # ---------------------------------------------------------------------------
-# StreamRenderer — orchestrates strategies and Streamlit placeholders
+# StreamRenderer — оркестрирует стратегии и Streamlit-плейсхолдеры
 # ---------------------------------------------------------------------------
 
 class StreamRenderer:
-    """Orchestrates streaming: runs strategies, flushes to Streamlit placeholders."""
+    """Оркестрирует стриминг: запускает стратегии, обновляет Streamlit-плейсхолдеры."""
 
     STRATEGIES: list[type[ThinkingStrategy]] = [ReasoningFieldStrategy, ThinkTagStrategy]
 
@@ -114,14 +114,14 @@ class StreamRenderer:
         return self._state
 
     def feed(self, delta: object) -> None:
-        """Process one streaming delta through all strategies, then flush UI."""
+        """Обработать один delta стрима через все стратегии и обновить UI."""
         self._state.reset_dirty()
         for strategy in self._strategies:
             strategy.process(self._state, delta)
         self._flush()
 
     def finalise(self) -> None:
-        """Call once after the stream ends to clean up placeholders."""
+        """Вызвать один раз после завершения стрима для финализации плейсхолдеров."""
         if self._state.thinking.strip():
             self._thinking_ph.markdown(self._state.thinking)
         else:
@@ -131,11 +131,11 @@ class StreamRenderer:
             self._answer_ph.markdown(self._state.answer)
 
     def set_answer(self, text: str) -> None:
-        """Override the answer text (e.g. to append sources)."""
+        """Заменить текст ответа (например, для добавления источников)."""
         self._state.answer = text
         self._answer_ph.markdown(text)
 
-    # -- private ---------------------------------------------------------------
+    # -- приватные методы ------------------------------------------------------
 
     def _flush(self) -> None:
         s = self._state

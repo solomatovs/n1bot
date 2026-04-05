@@ -1,4 +1,4 @@
-"""Typed session-state management for the Streamlit app."""
+"""Типизированное управление состоянием сессии Streamlit."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -11,7 +11,7 @@ from config import secret
 
 
 # ---------------------------------------------------------------------------
-# Application-level constants derived from secrets / env
+# Конфигурация приложения из секретов / переменных окружения
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -30,7 +30,7 @@ class AppConfig:
 
 
 # ---------------------------------------------------------------------------
-# Chat message — single item in the conversation history
+# Сообщение чата — один элемент истории переписки
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -42,14 +42,14 @@ class ChatMessage:
 
 
 # ---------------------------------------------------------------------------
-# Session state facade — typed access to st.session_state
+# Фасад состояния сессии — типизированный доступ к st.session_state
 # ---------------------------------------------------------------------------
 
 _KEY = "_app_state_init"
 
 
 class SessionState:
-    """Thin typed wrapper around ``st.session_state``."""
+    """Типизированная обёртка над ``st.session_state``."""
 
     def __init__(self, cfg: AppConfig) -> None:
         if _KEY not in st.session_state:
@@ -61,7 +61,7 @@ class SessionState:
             st.session_state.variants: Dict[str, int] = {}
             st.session_state.used_page_ids: Dict[str, Set[str]] = {}
 
-    # -- properties ----------------------------------------------------------
+    # -- свойства ------------------------------------------------------------
 
     @property
     def selected_collection(self) -> str:
@@ -99,7 +99,7 @@ class SessionState:
     def used_page_ids(self) -> Dict[str, Set[str]]:
         return st.session_state.used_page_ids
 
-    # -- helpers -------------------------------------------------------------
+    # -- вспомогательные методы -----------------------------------------------
 
     def push_message(self, msg: ChatMessage) -> None:
         self.chat_history.append(msg)

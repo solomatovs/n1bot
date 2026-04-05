@@ -1,4 +1,4 @@
-"""Vector store tab — browse and manage collections."""
+"""Вкладка «Векторное хранилище» — просмотр и управление коллекциями."""
 from __future__ import annotations
 
 import streamlit as st

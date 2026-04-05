@@ -1,4 +1,4 @@
-"""Reusable Streamlit UI components."""
+"""Переиспользуемые UI-компоненты Streamlit."""
 from __future__ import annotations
 
 import re
@@ -15,7 +15,7 @@ from ui.state import AppConfig, ChatMessage
 
 
 # ---------------------------------------------------------------------------
-# Cached resources
+# Кэшируемые ресурсы
 # ---------------------------------------------------------------------------
 
 @st.cache_resource(show_spinner=False)
@@ -50,7 +50,7 @@ def get_openai_models(litellm_url: str, api_key: str) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
-# Collection helpers
+# Помощники для коллекций
 # ---------------------------------------------------------------------------
 
 def fetch_collection_df(
@@ -78,11 +78,11 @@ def get_collection_preview(db_path: str, collection_name: str) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Selectors
+# Селекторы
 # ---------------------------------------------------------------------------
 
 def collection_selector(cfg: AppConfig, *, key: str, current: str) -> str:
-    """Render a collection selectbox and return the chosen value."""
+    """Отрисовать селектор коллекции и вернуть выбранное значение."""
     colls = list_collections(cfg.chroma_db_path)
     index = colls.index(current) if current in colls else 0
     return st.selectbox(
@@ -94,18 +94,18 @@ def collection_selector(cfg: AppConfig, *, key: str, current: str) -> str:
 
 
 def model_selector(cfg: AppConfig) -> str:
-    """Render a model selectbox and return the chosen value."""
+    """Отрисовать селектор модели и вернуть выбранное значение."""
     models = get_openai_models(cfg.litellm_url, cfg.litellm_api_key)
     default_idx = models.index(cfg.default_model) if cfg.default_model in models else 0
     return st.selectbox("Модель генерации", models, index=default_idx) or cfg.default_model
 
 
 # ---------------------------------------------------------------------------
-# Chat history renderer
+# Рендер истории чата
 # ---------------------------------------------------------------------------
 
 def render_chat_history(history: List[ChatMessage]) -> None:
-    """Render the full chat history with expanders for context and thinking."""
+    """Отрисовать историю чата с раскрывающимися блоками контекста и размышлений."""
     for msg in history:
         with st.chat_message("user"):
             st.markdown(msg.question)
@@ -120,7 +120,7 @@ def render_chat_history(history: List[ChatMessage]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Utilities
+# Утилиты
 # ---------------------------------------------------------------------------
 
 def extract_page_ids_from_answer(text: str) -> set[str]:

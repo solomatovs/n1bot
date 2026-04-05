@@ -1,4 +1,4 @@
-"""Chat tab — question answering over the knowledge base."""
+"""Вкладка «Чат» — ответы на вопросы по базе знаний."""
 from __future__ import annotations
 
 import streamlit as st
@@ -87,7 +87,7 @@ def render(cfg: AppConfig, state: SessionState) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Private helpers
+# Приватные вспомогательные функции
 # ---------------------------------------------------------------------------
 
 def _fetch_context(cfg, state, prompt, model, use_mq):
