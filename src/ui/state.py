@@ -87,6 +87,13 @@ class SearchParams:
         return kwargs
 
 
+@dataclass
+class ChunkingParams:
+    """Параметры чанкинга документов."""
+    max_tokens: int = 500
+    similarity_threshold: float = 0.7
+
+
 DEFAULT_SYSTEM_PROMPT = (
     "Ты — эксперт по корпоративной базе знаний. "
     "Отвечай ТОЛЬКО по предоставленному контексту, не ищи ничего в интернете."

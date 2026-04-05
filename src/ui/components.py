@@ -14,7 +14,7 @@ import chromadb.errors
 from chromadb.config import Settings
 from streamlit.delta_generator import DeltaGenerator
 
-from ui.state import AppConfig, ChatMessage, ContentType, PromptParams, SearchParams
+from ui.state import AppConfig, ChatMessage, ChunkingParams, ContentType, PromptParams, SearchParams
 
 log = logging.getLogger(__name__)
 
@@ -291,6 +291,37 @@ def render_prompt_settings(container: DeltaGenerator) -> PromptParams:
     return PromptParams(
         system_prompt=system_prompt,
         user_template=user_template,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Настройки чанкинга
+# ---------------------------------------------------------------------------
+
+def render_chunking_settings() -> ChunkingParams:
+    """Отрисовать настройки чанкинга и вернуть ChunkingParams."""
+    defaults = ChunkingParams()
+
+    with st.expander("Настройки чанкинга", expanded=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            max_tokens = st.slider(
+                "Макс. токенов на чанк",
+                min_value=100, max_value=2000, value=defaults.max_tokens, step=50,
+                help="Максимальный размер одного чанка в токенах",
+                key="cp_max_tokens",
+            )
+        with col2:
+            similarity = st.slider(
+                "Порог схожести",
+                min_value=0.0, max_value=1.0, value=defaults.similarity_threshold, step=0.05,
+                help="Параграфы со схожестью выше порога объединяются в один чанк",
+                key="cp_similarity",
+            )
+
+    return ChunkingParams(
+        max_tokens=max_tokens,
+        similarity_threshold=similarity,
     )
 
 

@@ -9,8 +9,7 @@ import requests
 import streamlit as st
 from langchain_core.documents import Document
 
-from chunking import split_into_chunks_semantic
-from config import enc
+from chunking import AdvancedChunker  # noqa: TCH001
 from errors import DocumentStorageError, IngestionError
 from vectorstore import VectorStoreService
 
@@ -126,11 +125,11 @@ def append_documents(
 
 def ingest_space_incremental(
     vs_service: VectorStoreService,
+    chunker: AdvancedChunker,
     base_url: str,
     token: str,
     space_key: str,
     collection_name: str,
-    ollama_api_url: str,
     summarize: bool = False,
     max_pages: Optional[int] = None,
     verify_ssl: bool = False,
@@ -169,7 +168,7 @@ def ingest_space_incremental(
                 pbar.progress(idx / total_pages, text=f"Страница {idx}/{total_pages}: пусто")
                 continue
 
-            chunks = split_into_chunks_semantic(docs, ollama_api_url=ollama_api_url, tokenizer=enc, max_tokens=500)
+            chunks = chunker.split_documents(docs)
             prepared = normalize_as_original(chunks, space_key, pid, base_url=base_url)
             ids = make_chunk_ids(space_key, pid, len(prepared))
 

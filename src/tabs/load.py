@@ -5,10 +5,10 @@ import streamlit as st
 from langchain_community.document_loaders import ConfluenceLoader
 from langchain_community.document_loaders.confluence import ContentFormat
 
-from chunking import split_into_chunks_semantic
-from config import enc
+from chunking import AdvancedChunker
 from confluence import ingest_space_incremental
 from errors import AppError
+from ui.components import render_chunking_settings
 from ui.state import AppConfig, SessionState
 from vectorstore import VectorStoreService
 
@@ -16,19 +16,21 @@ from vectorstore import VectorStoreService
 def render(cfg: AppConfig, state: SessionState) -> None:
     st.title("Загрузка данных из Confluence")
 
+    chunking_params = render_chunking_settings()
+
     source_type = st.radio("Источник", ["pageIds", "spaceKey"], horizontal=True, key="classic_src")
 
     if source_type == "spaceKey":
-        _render_space_loader(cfg)
+        _render_space_loader(cfg, chunking_params)
     elif source_type == "pageIds":
-        _render_page_loader(cfg)
+        _render_page_loader(cfg, chunking_params)
 
 
 # ---------------------------------------------------------------------------
 # Загрузка пространства
 # ---------------------------------------------------------------------------
 
-def _render_space_loader(cfg: AppConfig) -> None:
+def _render_space_loader(cfg: AppConfig, chunking_params) -> None:
     st.subheader("Загрузить пространство")
     space_key = st.text_input("Space Key", key="spaceKey_stream")
     col_name = st.text_input("Collection name", key="pCol_stream", value=space_key or "")
@@ -43,14 +45,15 @@ def _render_space_loader(cfg: AppConfig) -> None:
 
     try:
         vs_service = VectorStoreService(cfg)
+        chunker = AdvancedChunker(cfg, chunking_params)
         result = ingest_space_incremental(
             vs_service=vs_service,
+            chunker=chunker,
             base_url=cfg.confluence_url,
             token=cfg.confluence_token,
             space_key=space_key,
             collection_name=col_name,
-            ollama_api_url=cfg.litellm_url,
-            summarize=bool(summarize),
+            summarize=summarize,
             verify_ssl=False,
         )
         st.success(
@@ -66,7 +69,7 @@ def _render_space_loader(cfg: AppConfig) -> None:
 # Загрузка страниц
 # ---------------------------------------------------------------------------
 
-def _render_page_loader(cfg: AppConfig) -> None:
+def _render_page_loader(cfg: AppConfig, chunking_params) -> None:
     st.subheader("Загрузка страницы")
 
     pids = st.text_input("Page IDs через запятую", key="pIds")
@@ -99,7 +102,8 @@ def _render_page_loader(cfg: AppConfig) -> None:
             st.warning("Укажите имя коллекции.")
         else:
             vs_service = VectorStoreService(cfg)
-            chunks = split_into_chunks_semantic(docs, ollama_api_url=cfg.litellm_url, tokenizer=enc)
+            chunker = AdvancedChunker(cfg, chunking_params)
+            chunks = chunker.split_documents(docs)
             store = vs_service.store_documents(
                 chunks,
                 collection_name=col_name,
