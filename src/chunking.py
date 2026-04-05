@@ -6,9 +6,9 @@ from typing import Dict, List, Optional
 
 import numpy as np
 from langchain_core.documents import Document
-from langchain_ollama import OllamaEmbeddings
 
-from config import EMBEDDING_MODEL, enc
+from config import EMBEDDING_MODEL, enc, secret
+from embeddings import LiteLLMEmbeddings
 
 log = logging.getLogger(__name__)
 
@@ -77,7 +77,11 @@ class AdvancedChunker:
 
     def _chunk_text(self, text: str, metadata: Dict, section: Dict, ollama_api_url: str) -> List[Document]:
         try:
-            embedding = OllamaEmbeddings(model=EMBEDDING_MODEL, base_url=ollama_api_url)
+            embedding = LiteLLMEmbeddings(
+                model=EMBEDDING_MODEL,
+                base_url=ollama_api_url,
+                api_key=secret("LITELLM_API_KEY"),
+            )
             paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
             if not paragraphs:
                 return []
