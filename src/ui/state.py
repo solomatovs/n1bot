@@ -56,10 +56,10 @@ class SessionState:
             st.session_state[_KEY] = True
             st.session_state.selected_collection = cfg.default_collection
             st.session_state.selected_model_name = cfg.default_model
-            st.session_state.chat_history: List[ChatMessage] = []
+            st.session_state.chat_history = []
             st.session_state.last_prompt_base = ""
-            st.session_state.variants: Dict[str, int] = {}
-            st.session_state.used_page_ids: Dict[str, Set[str]] = {}
+            st.session_state.variants = {}
+            st.session_state.used_page_ids = {}
 
     # -- свойства ------------------------------------------------------------
 

@@ -9,6 +9,7 @@ from langchain_core.documents import Document
 
 from chunking import split_into_chunks_semantic
 from config import enc
+from vectorstore import get_vectorstore
 
 
 @dataclass
@@ -24,7 +25,6 @@ class IngestionResult:
     processed_pages: int
     ok_docs: int
     bad_docs: int
-from vectorstore import get_vectorstore
 
 
 def list_space_page_ids(

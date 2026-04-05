@@ -5,7 +5,7 @@ import sys
 
 # sqlite hack для некоторых окружений
 try:
-    import pysqlite3  # type: ignore
+    import pysqlite3  # type: ignore  # noqa: F401
 
     sys.modules["sqlite3"] = sys.modules["pysqlite3"]
 except Exception:

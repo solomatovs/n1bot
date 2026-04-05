@@ -1,20 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional
 
 import httpx
-import streamlit as st
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
-
-
-@dataclass
-class RagContext:
-    """Результат подготовки RAG-контекста."""
-    client: OpenAI
-    messages: list[ChatCompletionMessageParam]
-    sources_block: str
 
 from config import LLM_TIMEOUT, secret
 from retrieval import (
@@ -23,6 +14,14 @@ from retrieval import (
     retrieve_docs,
 )
 from vectorstore import get_vectorstore
+
+
+@dataclass
+class RagContext:
+    """Результат подготовки RAG-контекста."""
+    client: OpenAI
+    messages: list[ChatCompletionMessageParam]
+    sources_block: str
 
 
 def get_openai(base_url: str) -> OpenAI:
@@ -104,7 +103,7 @@ def prepare_rag_context(
         {
             "role": "system",
             "content": (
-                "Ты — эксперт по ��орпоративной базе знаний. "
+                "Ты — эксперт по корпоративной базе знаний. "
                 "Отвечай ТОЛЬКО по предоставленному контексту, не ищи ничего в интернете."
             ),
         },

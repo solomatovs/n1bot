@@ -19,7 +19,7 @@ from ui.state import AppConfig, ChatMessage
 # ---------------------------------------------------------------------------
 
 @st.cache_resource(show_spinner=False)
-def get_chroma_client(db_path: str) -> chromadb.ClientAPI:
+def get_chroma_client(db_path: str):  # -> chromadb.PersistentClient
     return chromadb.PersistentClient(
         path=db_path,
         settings=Settings(anonymized_telemetry=False),
