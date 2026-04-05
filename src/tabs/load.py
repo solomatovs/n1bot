@@ -9,7 +9,7 @@ from chunking import split_into_chunks_semantic
 from config import enc
 from confluence import ingest_space_incremental
 from ui.state import AppConfig, SessionState
-from vectorstore import store_to_chroma
+from vectorstore import VectorStoreService
 
 
 def render(cfg: AppConfig, state: SessionState) -> None:
@@ -41,12 +41,13 @@ def _render_space_loader(cfg: AppConfig) -> None:
         return
 
     try:
+        vs_service = VectorStoreService(cfg)
         result = ingest_space_incremental(
+            vs_service=vs_service,
             base_url=cfg.confluence_url,
             token=cfg.confluence_token,
             space_key=space_key,
             collection_name=col_name,
-            db_path=cfg.chroma_db_path,
             ollama_api_url=cfg.litellm_url,
             summarize=bool(summarize),
             verify_ssl=False,
@@ -96,13 +97,12 @@ def _render_page_loader(cfg: AppConfig) -> None:
         elif not col_name:
             st.warning("Укажите имя коллекции.")
         else:
+            vs_service = VectorStoreService(cfg)
             chunks = split_into_chunks_semantic(docs, ollama_api_url=cfg.litellm_url, tokenizer=enc)
-            store = store_to_chroma(
+            store = vs_service.store_documents(
                 chunks,
                 collection_name=col_name,
-                db_path=cfg.chroma_db_path,
                 batch_size=32,
-                llm_base_url=cfg.litellm_url,
             )
             if store is not None:
                 store_data = store.get()

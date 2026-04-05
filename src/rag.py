@@ -14,7 +14,7 @@ from retrieval import (
     retrieve_docs,
 )
 from ui.state import AppConfig, PromptParams, SearchParams
-from vectorstore import get_vectorstore
+from vectorstore import VectorStoreService
 
 
 @dataclass
@@ -33,8 +33,7 @@ class RagService:
     """
 
     def __init__(self, cfg: AppConfig) -> None:
-        self._cfg = cfg
-        self._base_api = cfg.litellm_url.replace("/v1", "").rstrip("/")
+        self._vs = VectorStoreService(cfg)
         self._client = self._create_openai_client(cfg.litellm_url)
 
     def prepare_context(
@@ -46,12 +45,7 @@ class RagService:
         prompts: PromptParams,
     ) -> Optional[RagContext]:
         """Подготавливает RAG-контекст. Возвращает RagContext или None."""
-        vectorstore = get_vectorstore(
-            collection_name,
-            db_path=self._cfg.chroma_db_path,
-            llm_base_url=self._base_api,
-            embedding_model=None,
-        )
+        vectorstore = self._vs.get_vectorstore(collection_name)
 
         cands = retrieve_docs(
             vectorstore,

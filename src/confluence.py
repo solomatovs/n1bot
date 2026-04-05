@@ -9,7 +9,7 @@ from langchain_core.documents import Document
 
 from chunking import split_into_chunks_semantic
 from config import enc
-from vectorstore import get_vectorstore
+from vectorstore import VectorStoreService
 
 
 @dataclass
@@ -84,14 +84,12 @@ def make_chunk_ids(space_key: str, page_id: str, count: int, suffix: str = "") -
 
 
 def append_documents(
+    vs_service: VectorStoreService,
     collection_name: str,
     docs: List[Document],
     ids: List[str],
-    db_path: str,
-    ollama_api_url: str,
-    embedding_model: Optional[str] = None,
 ) -> DocumentsResult:
-    vs = get_vectorstore(collection_name, db_path=db_path, llm_base_url=ollama_api_url, embedding_model=embedding_model)
+    vs = vs_service.get_vectorstore(collection_name)
     ok = 0
     bad = 0
     try:
@@ -108,16 +106,15 @@ def append_documents(
 
 
 def ingest_space_incremental(
+    vs_service: VectorStoreService,
     base_url: str,
     token: str,
     space_key: str,
     collection_name: str,
-    db_path: str,
     ollama_api_url: str,
     summarize: bool = False,
     max_pages: Optional[int] = None,
     verify_ssl: bool = False,
-    embedding_model: Optional[str] = None,
 ) -> IngestionResult:
     from langchain_community.document_loaders import ConfluenceLoader
     from langchain_community.document_loaders.confluence import ContentFormat
@@ -158,12 +155,10 @@ def ingest_space_incremental(
             ids = make_chunk_ids(space_key, pid, len(prepared))
 
             result = append_documents(
+                vs_service,
                 collection_name,
                 prepared,
                 ids,
-                db_path=db_path,
-                ollama_api_url=ollama_api_url,
-                embedding_model=embedding_model,
             )
             ok_docs += result.ok
             bad_docs += result.bad

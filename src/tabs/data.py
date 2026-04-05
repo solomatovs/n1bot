@@ -9,7 +9,7 @@ from ui.components import (
     list_collections,
 )
 from ui.state import AppConfig, SessionState
-from vectorstore import remove_collection
+from vectorstore import VectorStoreService
 
 
 def render(cfg: AppConfig, state: SessionState) -> None:
@@ -38,7 +38,8 @@ def render(cfg: AppConfig, state: SessionState) -> None:
 
     if st.button(f"Удалить коллекцию «{state.selected_collection}»", type="primary"):
         try:
-            remove_collection(state.selected_collection, db_path=cfg.chroma_db_path)
+            vs_service = VectorStoreService(cfg)
+            vs_service.remove_collection(state.selected_collection)
             st.success("Коллекция удалена.")
             st.cache_data.clear()
             st.cache_resource.clear()
