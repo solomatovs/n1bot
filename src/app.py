@@ -172,14 +172,21 @@ with tabChat:
         use_mq = st.checkbox("Multi-query", value=True, help="Переформулировки + RRF")
 
     for item in st.session_state.chat_history:
-        if len(item) == 3:
+        if len(item) == 4:
+            q, a, thinking, rag_ctx = item
+        elif len(item) == 3:
             q, a, thinking = item
+            rag_ctx = ""
         else:
             q, a = item
             thinking = ""
+            rag_ctx = ""
         with st.chat_message("user"):
             st.markdown(q)
         with st.chat_message("assistant"):
+            if rag_ctx:
+                with st.expander("Найденный контекст из базы знаний", expanded=False):
+                    st.markdown(rag_ctx)
             if thinking:
                 with st.expander("Процесс размышления", expanded=False):
                     st.markdown(thinking)
@@ -213,10 +220,22 @@ with tabChat:
                     st.error(f"Ошибка: {e}")
                     oai_client = None
 
+            # Извлекаем RAG-контекст из сообщения для пользователя
+            rag_context = ""
+            if messages:
+                for msg in messages:
+                    if msg.get("role") == "user":
+                        rag_context = str(msg.get("content", ""))
+                        break
+
             if oai_client is None or messages is None:
                 reply = "Я не нашёл релевантный контекст по вашей коллекции."
                 st.markdown(reply)
             else:
+                if rag_context:
+                    with st.expander("Найденный контекст из базы знаний", expanded=False):
+                        st.markdown(rag_context)
+
                 thinking_text = ""
                 answer_text = ""
                 in_think = False
@@ -281,7 +300,11 @@ with tabChat:
                 answer_placeholder.markdown(answer_text)
                 reply = answer_text
 
-        st.session_state.chat_history.append((user_prompt, reply, thinking_text if oai_client else ""))
+        st.session_state.chat_history.append((
+            user_prompt, reply,
+            thinking_text if oai_client else "",
+            rag_context if oai_client else "",
+        ))
         st.session_state.last_prompt_base = user_prompt
         st.session_state.variants[user_prompt] = 0
         used = set(_extract_page_ids_from_answer(reply))
