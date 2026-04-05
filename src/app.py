@@ -234,9 +234,17 @@ with tabChat:
 
                 for chunk in stream:
                     delta = chunk.choices[0].delta
-                    if not delta.content:
+
+                    # 1) reasoning_content — отдельное поле (DeepSeek / o1 через LiteLLM)
+                    reasoning = getattr(delta, "reasoning_content", None) or ""
+                    if reasoning:
+                        thinking_text += reasoning
+                        thinking_placeholder.markdown(thinking_text + "▌")
+
+                    # 2) content — может содержать инлайн <think>...</think>
+                    token = delta.content or ""
+                    if not token:
                         continue
-                    token = delta.content
 
                     buf = token
                     while buf:
