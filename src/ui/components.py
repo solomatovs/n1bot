@@ -14,7 +14,16 @@ import chromadb.errors
 from chromadb.config import Settings
 from streamlit.delta_generator import DeltaGenerator
 
-from ui.state import AppConfig, ChatMessage, ChunkingParams, ContentType, PromptParams, SearchParams
+from ui.state import (
+    AppConfig,
+    ChatMessage,
+    ChunkingParams,
+    ContentType,
+    PromptParams,
+    SearchParams,
+    SpaceLoadParams,
+    StorageParams,
+)
 
 log = logging.getLogger(__name__)
 
@@ -298,7 +307,7 @@ def render_prompt_settings(container: DeltaGenerator) -> PromptParams:
 # Настройки чанкинга
 # ---------------------------------------------------------------------------
 
-def render_chunking_settings() -> ChunkingParams:
+def render_chunking_settings(key_prefix: str = "cp") -> ChunkingParams:
     """Отрисовать настройки чанкинга и вернуть ChunkingParams."""
     defaults = ChunkingParams()
 
@@ -309,20 +318,78 @@ def render_chunking_settings() -> ChunkingParams:
                 "Макс. токенов на чанк",
                 min_value=100, max_value=2000, value=defaults.max_tokens, step=50,
                 help="Максимальный размер одного чанка в токенах",
-                key="cp_max_tokens",
+                key=f"{key_prefix}_max_tokens",
             )
         with col2:
             similarity = st.slider(
                 "Порог схожести",
                 min_value=0.0, max_value=1.0, value=defaults.similarity_threshold, step=0.05,
                 help="Параграфы со схожестью выше порога объединяются в один чанк",
-                key="cp_similarity",
+                key=f"{key_prefix}_similarity",
             )
 
     return ChunkingParams(
         max_tokens=max_tokens,
         similarity_threshold=similarity,
     )
+
+
+# ---------------------------------------------------------------------------
+# Настройки загрузки из Confluence (раздельные для pageIds и spaceKey)
+# ---------------------------------------------------------------------------
+
+def _render_storage_params(key_prefix: str) -> StorageParams:
+    """Параметры сохранения в ChromaDB."""
+    defaults = StorageParams()
+    batch_size = st.slider(
+        "Размер батча для ChromaDB",
+        min_value=1, max_value=128, value=defaults.batch_size, step=8,
+        help="Количество документов, сохраняемых за одну операцию в ChromaDB",
+        key=f"{key_prefix}_batch_size",
+    )
+    return StorageParams(batch_size=batch_size)
+
+
+def render_page_id_settings() -> StorageParams:
+    """Настройки для режима загрузки по Page IDs."""
+    with st.expander("Настройки загрузки", expanded=False):
+        storage_params = _render_storage_params("pid")
+    return storage_params
+
+
+def render_space_settings() -> tuple[SpaceLoadParams, StorageParams]:
+    """Настройки для режима загрузки пространства."""
+    defaults = SpaceLoadParams()
+
+    with st.expander("Настройки загрузки", expanded=False):
+        st.markdown("##### Пространство")
+        col1, col2 = st.columns(2)
+        with col1:
+            api_page_limit = st.slider(
+                "Страниц на запрос API",
+                min_value=1, max_value=200, value=defaults.api_page_limit, step=10,
+                help="Размер страницы при пагинации Confluence REST API",
+                key="sp_api_page_limit",
+            )
+        with col2:
+            use_max_pages = st.checkbox(
+                "Ограничить количество страниц",
+                value=defaults.max_pages is not None,
+                key="sp_use_max_pages",
+            )
+            max_pages: int | None = None
+            if use_max_pages:
+                max_pages = st.number_input(
+                    "Макс. страниц",
+                    min_value=1, value=defaults.max_pages or 100,
+                    key="sp_max_pages",
+                )
+
+        st.divider()
+        storage_params = _render_storage_params("sp")
+
+    space_params = SpaceLoadParams(api_page_limit=api_page_limit, max_pages=max_pages)
+    return space_params, storage_params
 
 
 # ---------------------------------------------------------------------------

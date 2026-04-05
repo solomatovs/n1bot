@@ -51,8 +51,26 @@ class DocumentStorageError(VectorStoreError):
 
 
 # ---------------------------------------------------------------------------
-# Импорт из Confluence
+# Загрузка из Confluence
 # ---------------------------------------------------------------------------
 
 class IngestionError(AppError):
-    """Ошибка при импорте данных из Confluence."""
+    """Ошибка при импорте данных."""
+
+
+class PageLoadError(IngestionError):
+    """Не удалось загрузить страницу из Confluence."""
+
+    def __init__(self, page_id: str, cause: Exception) -> None:
+        self.page_id = page_id
+        self.cause = cause
+        super().__init__(f"Не удалось загрузить страницу {page_id}: {cause}")
+
+
+class SpaceEnumerationError(IngestionError):
+    """Не удалось получить список страниц пространства."""
+
+    def __init__(self, space_key: str, cause: Exception) -> None:
+        self.space_key = space_key
+        self.cause = cause
+        super().__init__(f"Не удалось перечислить страницы пространства '{space_key}': {cause}")

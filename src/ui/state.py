@@ -94,6 +94,19 @@ class ChunkingParams:
     similarity_threshold: float = 0.7
 
 
+@dataclass
+class SpaceLoadParams:
+    """Параметры загрузки пространства Confluence."""
+    api_page_limit: int = 50
+    max_pages: int | None = None
+
+
+@dataclass
+class StorageParams:
+    """Параметры сохранения в ChromaDB."""
+    batch_size: int = 32
+
+
 DEFAULT_SYSTEM_PROMPT = (
     "Ты — эксперт по корпоративной базе знаний. "
     "Отвечай ТОЛЬКО по предоставленному контексту, не ищи ничего в интернете."

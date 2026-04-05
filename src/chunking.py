@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Dict, List
+from typing import Dict, List, Protocol
 
 import numpy as np
 from langchain_core.documents import Document
@@ -13,6 +13,27 @@ from ui.state import AppConfig, ChunkingParams
 
 log = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Protocol — точка расширения для будущих стратегий чанкинга
+# ---------------------------------------------------------------------------
+
+class ChunkingStrategy(Protocol):
+    """Стратегия разбиения документов на чанки.
+
+    Реализации:
+        MarkdownChunkingStrategy — текущая (markdown-текст из Confluence)
+    Будущие:
+        PdfChunkingStrategy      — для PDF-вложений (через unstructured)
+        ImageChunkingStrategy    — для изображений (OCR → текст → чанки)
+    """
+
+    def split_documents(self, docs: List[Document]) -> List[Document]: ...
+
+
+# ---------------------------------------------------------------------------
+# MarkdownChunkingStrategy (она же AdvancedChunker)
+# ---------------------------------------------------------------------------
 
 class AdvancedChunker:
     """Семантический чанкер документов.
