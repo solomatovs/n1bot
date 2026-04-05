@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Set
 
@@ -32,6 +33,43 @@ class AppConfig:
 # ---------------------------------------------------------------------------
 # Сообщение чата — один элемент истории переписки
 # ---------------------------------------------------------------------------
+
+class ContentType(Enum):
+    """Типы контента в векторном хранилище."""
+    TEXT = "text", "Текст"
+    CODE = "code", "Код"
+    TABLE = "table", "Таблицы"
+    PARAGRAPH = "paragraph", "Параграфы"
+    LIST = "list", "Списки"
+
+    def __init__(self, key: str, label: str) -> None:
+        self._key = key
+        self._label = label
+
+    @property
+    def key(self) -> str:
+        return self._key
+
+    @property
+    def label(self) -> str:
+        return self._label
+
+
+@dataclass
+class SearchParams:
+    """Параметры поиска и генерации, управляемые пользователем."""
+    # -- поиск --
+    top_n: int = 12
+    answers_per_variant: int = 3
+    per_page: int = 1
+    content_types: list[str] | None = None
+    # -- multi-query --
+    use_multi_query: bool = True
+    mq_variants: int = 3
+    k_per_variant: int = 6
+    # -- генерация --
+    temperature: float = 0.0
+
 
 @dataclass
 class ChatMessage:

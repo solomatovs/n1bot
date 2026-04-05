@@ -10,8 +10,9 @@ import streamlit as st
 
 import chromadb
 from chromadb.config import Settings
+from streamlit.delta_generator import DeltaGenerator
 
-from ui.state import AppConfig, ChatMessage
+from ui.state import AppConfig, ChatMessage, ContentType, SearchParams
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +118,100 @@ def render_chat_history(history: List[ChatMessage]) -> None:
                 with st.expander("Процесс размышления", expanded=False):
                     st.markdown(msg.thinking)
             st.markdown(msg.answer)
+
+
+# ---------------------------------------------------------------------------
+# Настройки поиска
+# ---------------------------------------------------------------------------
+
+def render_search_settings(container: DeltaGenerator) -> SearchParams:
+    """Отрисовать панель настроек поиска в popover и вернуть SearchParams."""
+    defaults = SearchParams()
+
+    with container.popover("Настройки поиска", use_container_width=True):
+
+        # -- Группа: Поиск по векторной базе --
+        st.markdown("##### Поиск")
+        col1, col2 = st.columns(2)
+        with col1:
+            top_n = st.slider(
+                "Глубина поиска",
+                min_value=1, max_value=30, value=defaults.top_n,
+                help="Сколько кандидатов извлекать из векторной базы",
+                key="sp_top_n",
+            )
+            per_page = st.slider(
+                "Чанков с одной страницы",
+                min_value=1, max_value=5, value=defaults.per_page,
+                help="Максимум чанков с одной Confluence-страницы (дедупликация)",
+                key="sp_per_page",
+            )
+        with col2:
+            answers = st.slider(
+                "Документов в контекст",
+                min_value=1, max_value=10, value=defaults.answers_per_variant,
+                help="Сколько финальных чанков отдать модели для генерации ответа",
+                key="sp_answers",
+            )
+
+        chosen_labels = st.multiselect(
+            "Типы контента",
+            options=[ct.label for ct in ContentType],
+            default=[],
+            help="Пусто = автоопределение по запросу. Иначе поиск только по выбранным типам",
+            key="sp_content_types",
+        )
+        label_to_ct = {ct.label: ct.key for ct in ContentType}
+        content_types = [label_to_ct[lb] for lb in chosen_labels] or None
+
+        st.divider()
+
+        # -- Группа: Multi-query --
+        st.markdown("##### Multi-query")
+        use_mq = st.checkbox(
+            "Включить переформулировки + RRF",
+            value=defaults.use_multi_query,
+            key="sp_use_mq",
+        )
+        col3, col4 = st.columns(2)
+        with col3:
+            mq_variants = st.slider(
+                "Переформулировок",
+                min_value=1, max_value=5, value=defaults.mq_variants,
+                disabled=not use_mq,
+                help="Количество вариантов запроса для multi-query",
+                key="sp_mq_variants",
+            )
+        with col4:
+            k_per_variant = st.slider(
+                "Документов на вариант",
+                min_value=1, max_value=15, value=defaults.k_per_variant,
+                disabled=not use_mq,
+                help="Сколько документов извлекать на каждую переформулировку",
+                key="sp_k_per_var",
+            )
+
+        st.divider()
+
+        # -- Группа: Генерация --
+        st.markdown("##### Генерация")
+        temperature = st.slider(
+            "Температура",
+            min_value=0.0, max_value=1.0, value=defaults.temperature, step=0.05,
+            help="0 = детерминированный ответ, 1 = максимальная креативность",
+            key="sp_temperature",
+        )
+
+    return SearchParams(
+        top_n=top_n,
+        answers_per_variant=answers,
+        per_page=per_page,
+        content_types=content_types,
+        use_multi_query=use_mq,
+        mq_variants=mq_variants,
+        k_per_variant=k_per_variant,
+        temperature=temperature,
+    )
 
 
 # ---------------------------------------------------------------------------

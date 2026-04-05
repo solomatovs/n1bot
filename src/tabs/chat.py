@@ -1,9 +1,9 @@
 """Вкладка «Чат» — ответы на вопросы по базе знаний."""
 from __future__ import annotations
 
-import streamlit as st
-
 from typing import Optional
+
+import streamlit as st
 
 from rag import RagContext, prepare_rag_context
 from ui.components import (
@@ -11,8 +11,9 @@ from ui.components import (
     extract_page_ids_from_answer,
     model_selector,
     render_chat_history,
+    render_search_settings,
 )
-from ui.state import AppConfig, ChatMessage, SessionState
+from ui.state import AppConfig, ChatMessage, SearchParams, SessionState
 from ui.streaming import StreamRenderer
 
 
@@ -23,17 +24,16 @@ def render(cfg: AppConfig, state: SessionState) -> None:
         cfg, key="select_collection_chat", current=state.selected_collection,
     )
 
-    cols = st.columns([3, 1, 1])
-    with cols[0]:
+    col_model, col_settings = st.columns([3, 1])
+    with col_model:
         active_model = model_selector(cfg)
-    with cols[1]:
-        use_mq = st.checkbox("Multi-query", value=True, help="Переформулировки + RRF")
+    search_params = render_search_settings(col_settings)
 
     render_chat_history(state.chat_history)
 
     user_prompt = st.chat_input("Введите ваш вопрос…")
     if not user_prompt:
-        _render_status_bar(cfg, state, use_mq)
+        _render_status_bar(state, search_params)
         return
 
     thinking_text = ""
@@ -44,7 +44,7 @@ def render(cfg: AppConfig, state: SessionState) -> None:
         st.markdown(user_prompt)
 
     with st.chat_message("assistant"):
-        ctx = _fetch_context(cfg, state, user_prompt, active_model, use_mq)
+        ctx = _fetch_context(cfg, state, user_prompt, active_model, search_params)
 
         if ctx is not None:
             rag_context = _extract_rag_context(ctx.messages)
@@ -61,7 +61,7 @@ def render(cfg: AppConfig, state: SessionState) -> None:
             stream = ctx.client.chat.completions.create(
                 model=active_model,
                 messages=ctx.messages,
-                temperature=0,
+                temperature=search_params.temperature,
                 stream=True,
             )
             for chunk in stream:
@@ -84,30 +84,29 @@ def render(cfg: AppConfig, state: SessionState) -> None:
     ))
     state.used_page_ids[user_prompt] = extract_page_ids_from_answer(reply)
 
-    _render_status_bar(cfg, state, use_mq)
+    _render_status_bar(state, search_params)
 
 
 # ---------------------------------------------------------------------------
 # Приватные вспомогательные функции
 # ---------------------------------------------------------------------------
 
-def _fetch_context(cfg: AppConfig, state: SessionState, prompt: str, model: str, use_mq: bool) -> Optional[RagContext]:
+def _fetch_context(
+    cfg: AppConfig,
+    state: SessionState,
+    prompt: str,
+    model: str,
+    params: SearchParams,
+) -> Optional[RagContext]:
     with st.spinner("Ищу контекст…"):
         try:
             return prepare_rag_context(
                 embed_collection_name=str(state.selected_collection),
                 query=prompt,
                 model=model,
-                top_n=12,
+                params=params,
                 db_path=cfg.chroma_db_path,
                 llm_base_url=cfg.litellm_url,
-                embedding_model=None,
-                use_multi_query=bool(use_mq),
-                mq_variants=3,
-                k_per_variant=6,
-                variant_offset=0,
-                exclude_page_ids=[],
-                answers_per_variant=3,
             )
         except Exception as e:
             st.error(f"Ошибка: {e}")
@@ -121,9 +120,11 @@ def _extract_rag_context(messages: list) -> str:
     return ""
 
 
-def _render_status_bar(cfg, state, use_mq):
+def _render_status_bar(state: SessionState, params: SearchParams) -> None:
     st.caption(
-        f"Текущая модель: **{state.selected_model_name}** · "
+        f"Модель: **{state.selected_model_name}** · "
         f"Коллекция: **{state.selected_collection}** · "
-        f"Multi-query: {'ON' if use_mq else 'OFF'}"
+        f"Multi-query: {'ON' if params.use_multi_query else 'OFF'} · "
+        f"Документов: {params.answers_per_variant} · "
+        f"t={params.temperature}"
     )

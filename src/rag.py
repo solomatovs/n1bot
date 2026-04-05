@@ -13,6 +13,7 @@ from retrieval import (
     group_limit_per_page,
     retrieve_docs,
 )
+from ui.state import SearchParams
 from vectorstore import get_vectorstore
 
 
@@ -53,16 +54,12 @@ def prepare_rag_context(
     embed_collection_name: str,
     query: str,
     model: str,
-    top_n: int,
+    params: SearchParams,
     db_path: str,
     llm_base_url: str,
     embedding_model: Optional[str] = None,
-    use_multi_query: bool = True,
-    mq_variants: int = 3,
-    k_per_variant: int = 6,
     variant_offset: int = 0,
     exclude_page_ids: Optional[List[str]] = None,
-    answers_per_variant: int = 3,
 ) -> Optional[RagContext]:
     """Подготавливает RAG-контекст. Возвращает RagContext или None."""
     openai = get_openai(llm_base_url)
@@ -75,26 +72,27 @@ def prepare_rag_context(
     cands = retrieve_docs(
         vectorstore,
         query,
-        use_multi_query=use_multi_query,
+        use_multi_query=params.use_multi_query,
         openai=openai,
         llm_model=model,
-        k_single=max(top_n, 12),
-        mq_variants=mq_variants,
-        k_per_variant=k_per_variant,
-        total_top=max(top_n, 12),
+        k_single=params.top_n,
+        mq_variants=params.mq_variants,
+        k_per_variant=params.k_per_variant,
+        total_top=params.top_n,
+        content_types=params.content_types,
     )
 
     if not cands:
         return None
 
-    cands = group_limit_per_page(cands, per_page=1)
+    cands = group_limit_per_page(cands, per_page=params.per_page)
 
     if exclude_page_ids:
         excl = set(str(x) for x in exclude_page_ids)
         cands = [d for d in cands if _pid_from_meta(d.metadata or {}) not in excl]
 
-    start = max(0, variant_offset * answers_per_variant)
-    selected = cands[start : start + answers_per_variant] or cands[:answers_per_variant]
+    start = max(0, variant_offset * params.answers_per_variant)
+    selected = cands[start : start + params.answers_per_variant] or cands[:params.answers_per_variant]
 
     context = "\n\n".join(d.page_content for d in selected)
     sources_block = build_sources(selected)
@@ -117,32 +115,24 @@ def generate_answer_with_context(
     embed_collection_name: str,
     query: str,
     model: str,
-    top_n: int,
+    params: SearchParams,
     db_path: str,
     llm_base_url: str,
     embedding_model: Optional[str] = None,
-    use_multi_query: bool = True,
-    mq_variants: int = 3,
-    k_per_variant: int = 6,
     variant_offset: int = 0,
     exclude_page_ids: Optional[List[str]] = None,
-    answers_per_variant: int = 3,
 ) -> str:
     try:
         ctx = prepare_rag_context(
             embed_collection_name=embed_collection_name,
             query=query,
             model=model,
-            top_n=top_n,
+            params=params,
             db_path=db_path,
             llm_base_url=llm_base_url,
             embedding_model=embedding_model,
-            use_multi_query=use_multi_query,
-            mq_variants=mq_variants,
-            k_per_variant=k_per_variant,
             variant_offset=variant_offset,
             exclude_page_ids=exclude_page_ids,
-            answers_per_variant=answers_per_variant,
         )
     except Exception as e:
         return f"Ошибка подготовки контекста: {e}"
@@ -151,7 +141,9 @@ def generate_answer_with_context(
         return "Я не нашёл релевантный контекст по вашей коллекции."
 
     try:
-        resp = ctx.client.chat.completions.create(model=model, messages=ctx.messages, temperature=0)  # type: ignore[arg-type]
+        resp = ctx.client.chat.completions.create(
+            model=model, messages=ctx.messages, temperature=params.temperature,
+        )  # type: ignore[arg-type]
         answer = resp.choices[0].message.content or ""
     except Exception as e:
         return f"Не удалось сгенерировать ответ: {e}"

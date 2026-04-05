@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from langchain_chroma import Chroma
@@ -7,12 +8,35 @@ from langchain_core.documents import Document
 from openai import OpenAI
 
 
-def gen_query_variants(openai: OpenAI, model: str, q: str, n: int = 3) -> List[str]:
+# ---------------------------------------------------------------------------
+# Конфигурация реранкинга
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class RetrievalConfig:
+    """Параметры алгоритмов слияния и реранкинга."""
+    rrf_k: int = 60
+    mq_temperature: float = 0.3
+    boost_type_match: float = 1.5
+    boost_section: float = 1.2
+    penalty_token_count: float = 0.8
+    min_tokens: int = 50
+    max_tokens: int = 1000
+
+
+RETRIEVAL_CONFIG = RetrievalConfig()
+
+
+# ---------------------------------------------------------------------------
+# Генерация переформулировок
+# ---------------------------------------------------------------------------
+
+def gen_query_variants(openai: OpenAI, model: str, q: str, n: int) -> List[str]:
     prompt = f"Дай {n} кратких переформулировок запроса; по одной на строку.\nЗапрос: {q}"
     try:
         r = openai.chat.completions.create(
             model=model,
-            temperature=0.3,
+            temperature=RETRIEVAL_CONFIG.mq_temperature,
             messages=[{"role": "user", "content": prompt}],
         )
         lines = [s.strip("- ").strip() for s in (r.choices[0].message.content or "").splitlines() if s.strip()]
@@ -21,27 +45,31 @@ def gen_query_variants(openai: OpenAI, model: str, q: str, n: int = 3) -> List[s
         return [q]
 
 
-def rrf_merge(rank_lists: List[List[Document]], K: int = 60) -> List[Document]:
+# ---------------------------------------------------------------------------
+# RRF слияние
+# ---------------------------------------------------------------------------
+
+def rrf_merge(rank_lists: List[List[Document]], k: int = RETRIEVAL_CONFIG.rrf_k) -> List[Document]:
     scores: Dict[str, float] = {}
     pick: Dict[str, Document] = {}
 
-    def key(d: Document) -> str:
+    def doc_key(d: Document) -> str:
         md = tuple(sorted((d.metadata or {}).items()))
         return f"{hash(d.page_content)}::{hash(md)}"
 
     for rl in rank_lists:
         for rank, d in enumerate(rl):
-            k = key(d)
-            scores[k] = scores.get(k, 0.0) + 1.0 / (K + rank + 1)
-            pick.setdefault(k, d)
-    return [pick[k] for k, _ in sorted(scores.items(), key=lambda x: x[1], reverse=True)]
+            dk = doc_key(d)
+            scores[dk] = scores.get(dk, 0.0) + 1.0 / (k + rank + 1)
+            pick.setdefault(dk, d)
+    return [pick[dk] for dk, _ in sorted(scores.items(), key=lambda x: x[1], reverse=True)]
 
 
 def _pid_from_meta(md: Dict) -> str:
     return str(md.get("page_id") or "unknown")
 
 
-def group_limit_per_page(docs: List[Document], per_page: int = 1) -> List[Document]:
+def group_limit_per_page(docs: List[Document], per_page: int) -> List[Document]:
     by: Dict[str, List[Document]] = {}
     for d in docs:
         pid = _pid_from_meta(d.metadata or {})
@@ -75,7 +103,7 @@ def build_sources(docs: List[Document]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Query classification & reranking
+# Классификация запроса и реранкинг
 # ---------------------------------------------------------------------------
 
 def _classify_query_type(query: str) -> str:
@@ -91,30 +119,81 @@ def _classify_query_type(query: str) -> str:
     return "general"
 
 
-def _rerank_results(docs: List[Document], query: str, query_type: str) -> List[Document]:
-    scored_docs: List[tuple[Document, float]] = []
-    for doc in docs:
-        score = 1.0
-        metadata = doc.metadata or {}
-        chunk_type = metadata.get("chunk_type", "")
+def _is_type_match(query_type: str, chunk_type: str) -> bool:
+    """Тип чанка соответствует типу запроса."""
+    return query_type == chunk_type and query_type in ("code", "table")
 
-        if (query_type == "code" and chunk_type == "code") or (query_type == "table" and chunk_type == "table"):
-            score *= 1.5
-        if metadata.get("section_level", 0) > 0:
-            score *= 1.2
-        token_count = metadata.get("token_count", 0)
-        if token_count < 50 or token_count > 1000:
-            score *= 0.8
 
-        scored_docs.append((doc, score))
+def _has_section_structure(metadata: dict) -> bool:
+    """Чанк имеет заголовочную структуру."""
+    return metadata.get("section_level", 0) > 0
 
+
+def _is_token_count_out_of_range(token_count: int, cfg: RetrievalConfig) -> bool:
+    """Количество токенов выходит за допустимый диапазон."""
+    return token_count < cfg.min_tokens or token_count > cfg.max_tokens
+
+
+def _compute_rerank_score(query_type: str, metadata: dict, cfg: RetrievalConfig) -> float:
+    """Вычислить множитель релевантности для одного документа."""
+    score = 1.0
+    chunk_type = metadata.get("chunk_type", "")
+
+    match True:
+        case _ if _is_type_match(query_type, chunk_type):
+            score *= cfg.boost_type_match
+        case _:
+            pass
+
+    if _has_section_structure(metadata):
+        score *= cfg.boost_section
+
+    token_count = metadata.get("token_count", 0)
+    if _is_token_count_out_of_range(token_count, cfg):
+        score *= cfg.penalty_token_count
+
+    return score
+
+
+def _rerank_results(docs: List[Document], query_type: str) -> List[Document]:
+    scored_docs = [
+        (doc, _compute_rerank_score(query_type, doc.metadata or {}, RETRIEVAL_CONFIG))
+        for doc in docs
+    ]
     scored_docs.sort(key=lambda x: x[1], reverse=True)
     return [doc for doc, _ in scored_docs]
 
 
 # ---------------------------------------------------------------------------
-# Main retrieval
+# Основной поиск
 # ---------------------------------------------------------------------------
+
+def _infer_content_types(query_type: str) -> Optional[List[str]]:
+    """Определить типы контента по типу запроса (если пользователь не задал явно)."""
+    match query_type:
+        case "code":
+            return ["code"]
+        case "fact":
+            return ["text", "paragraph", "list"]
+        case _:
+            return None
+
+
+def _build_search_filter(
+    content_types: Optional[List[str]],
+    query_type: str,
+) -> dict:
+    """Собрать фильтр для ChromaDB из типов контента и типа запроса."""
+    conditions: list[dict] = [{"type": {"$eq": "original"}}]
+
+    effective_types = content_types or _infer_content_types(query_type)
+    if effective_types:
+        conditions.append({"chunk_type": {"$in": effective_types}})
+
+    if len(conditions) == 1:
+        return conditions[0]
+    return {"$and": conditions}
+
 
 def retrieve_docs(
     vectorstore: Chroma,
@@ -122,23 +201,14 @@ def retrieve_docs(
     use_multi_query: bool,
     openai: Optional[OpenAI],
     llm_model: Optional[str],
-    k_single: int = 12,
-    mq_variants: int = 3,
-    k_per_variant: int = 6,
-    total_top: int = 12,
+    k_single: int,
+    mq_variants: int,
+    k_per_variant: int,
+    total_top: int,
     content_types: Optional[List[str]] = None,
 ) -> List[Document]:
     query_type = _classify_query_type(query)
-
-    conditions: list = [{"type": {"$eq": "original"}}]
-    if content_types:
-        conditions.append({"chunk_type": {"$in": content_types}})
-    elif query_type == "code":
-        conditions.append({"chunk_type": {"$eq": "code"}})
-    elif query_type == "fact":
-        conditions.append({"chunk_type": {"$in": ["text", "paragraph", "list"]}})
-
-    search_filters = conditions[0] if len(conditions) == 1 else {"$and": conditions}
+    search_filters = _build_search_filter(content_types, query_type)
 
     if not use_multi_query or openai is None or not llm_model:
         retr = vectorstore.as_retriever(search_kwargs={"k": k_single, "filter": search_filters})
@@ -163,5 +233,5 @@ def retrieve_docs(
     if not merged and errors:
         raise RuntimeError(f"Ошибка поиска по векторной БД: {errors[0]}")
 
-    reranked = _rerank_results(merged, query, query_type)
+    reranked = _rerank_results(merged, query_type)
     return reranked[:total_top]
