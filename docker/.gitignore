@@ -1,5 +1,9 @@
 .streamlit/secrets.toml
+.env.debug
+.env.testing
 chroma_app_db
 python-src
 glibc-src
 gcc-src
+sdist
+wheels

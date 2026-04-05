@@ -7,8 +7,8 @@ services:
     volumes:
       - ./chroma_app_db:/app/chroma_app_db
       - ./.streamlit:/app/.streamlit:ro
-    environment:
-      - CHROMA_DB_PATH=/app/chroma_app_db
+    env_file:
+      - env/.env.testing
     restart: always
     networks:
       - default

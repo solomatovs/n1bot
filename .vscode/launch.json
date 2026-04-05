@@ -5,20 +5,19 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Streamlit: app2.py (port 8501)",
+            "name": "Streamlit: app.py (port 8502)",
             "type": "debugpy",
             "request": "launch",
             "module": "streamlit",
             "args": [
-                "run", "${workspaceFolder}/src/app2.py",
-                "--server.port=8501",
+                "run", "${workspaceFolder}/src/app.py",
+                "--server.port=8502",
                 "--server.address=0.0.0.0",
                 "--server.headless=true"
             ],
             "console": "integratedTerminal",
-            "env": {
-                "CHROMA_DB_PATH": "${workspaceFolder}/docker/chroma_app_db"
-            },
+            "cwd": "${workspaceFolder}/docker",
+            "envFile": "${workspaceFolder}/docker/env/.env.debug",
             "jinja": true
         },
     ]
