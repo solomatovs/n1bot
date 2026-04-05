@@ -5,15 +5,16 @@ from typing import Optional
 
 import streamlit as st
 
-from rag import RagContext, prepare_rag_context
+from rag import RagContext, RagService
 from ui.components import (
     collection_selector,
     extract_page_ids_from_answer,
     model_selector,
     render_chat_history,
+    render_prompt_settings,
     render_search_settings,
 )
-from ui.state import AppConfig, ChatMessage, SearchParams, SessionState
+from ui.state import AppConfig, ChatMessage, PromptParams, SearchParams, SessionState
 from ui.streaming import StreamRenderer
 
 
@@ -24,10 +25,11 @@ def render(cfg: AppConfig, state: SessionState) -> None:
         cfg, key="select_collection_chat", current=state.selected_collection,
     )
 
-    col_model, col_settings = st.columns([3, 1])
+    col_model, col_search, col_prompts = st.columns([3, 1, 1])
     with col_model:
         active_model = model_selector(cfg)
-    search_params = render_search_settings(col_settings)
+    search_params = render_search_settings(col_search)
+    prompt_params = render_prompt_settings(col_prompts)
 
     render_chat_history(state.chat_history)
 
@@ -36,6 +38,7 @@ def render(cfg: AppConfig, state: SessionState) -> None:
         _render_status_bar(state, search_params)
         return
 
+    rag = RagService(cfg)
     thinking_text = ""
     rag_context = ""
     reply = ""
@@ -44,7 +47,7 @@ def render(cfg: AppConfig, state: SessionState) -> None:
         st.markdown(user_prompt)
 
     with st.chat_message("assistant"):
-        ctx = _fetch_context(cfg, state, user_prompt, active_model, search_params)
+        ctx = _fetch_context(rag, state, user_prompt, active_model, search_params, prompt_params)
 
         if ctx is not None:
             rag_context = _extract_rag_context(ctx.messages)
@@ -92,21 +95,21 @@ def render(cfg: AppConfig, state: SessionState) -> None:
 # ---------------------------------------------------------------------------
 
 def _fetch_context(
-    cfg: AppConfig,
+    rag: RagService,
     state: SessionState,
     prompt: str,
     model: str,
     params: SearchParams,
+    prompts: PromptParams,
 ) -> Optional[RagContext]:
     with st.spinner("Ищу контекст…"):
         try:
-            return prepare_rag_context(
-                embed_collection_name=str(state.selected_collection),
+            return rag.prepare_context(
+                collection_name=str(state.selected_collection),
                 query=prompt,
                 model=model,
                 params=params,
-                db_path=cfg.chroma_db_path,
-                llm_base_url=cfg.litellm_url,
+                prompts=prompts,
             )
         except Exception as e:
             st.error(f"Ошибка: {e}")

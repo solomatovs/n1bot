@@ -12,7 +12,7 @@ import chromadb
 from chromadb.config import Settings
 from streamlit.delta_generator import DeltaGenerator
 
-from ui.state import AppConfig, ChatMessage, ContentType, SearchParams
+from ui.state import AppConfig, ChatMessage, ContentType, PromptParams, SearchParams
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +211,36 @@ def render_search_settings(container: DeltaGenerator) -> SearchParams:
         mq_variants=mq_variants,
         k_per_variant=k_per_variant,
         temperature=temperature,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Настройки промптов
+# ---------------------------------------------------------------------------
+
+def render_prompt_settings(container: DeltaGenerator) -> PromptParams:
+    """Отрисовать панель настроек промптов в popover и вернуть PromptParams."""
+    defaults = PromptParams()
+
+    with container.popover("Промпты", use_container_width=True):
+        system_prompt = st.text_area(
+            "Системный промпт",
+            value=defaults.system_prompt,
+            height=100,
+            help="Инструкция для модели — задаёт роль и ограничения",
+            key="pp_system",
+        )
+        user_template = st.text_area(
+            "Шаблон пользовательского сообщения",
+            value=defaults.user_template,
+            height=150,
+            help="Плейсхолдеры: {context} — текст из базы знаний, {query} — вопрос",
+            key="pp_user",
+        )
+
+    return PromptParams(
+        system_prompt=system_prompt,
+        user_template=user_template,
     )
 
 
