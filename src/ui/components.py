@@ -198,15 +198,13 @@ def render_chat_history(history: List[ChatMessage]) -> None:
 # ---------------------------------------------------------------------------
 
 def render_retrieval_settings(container: DeltaGenerator, key_prefix: str = "sp") -> SearchParams:
-    """Отрисовать настройки retrieval (поиск + multi-query) и вернуть SearchParams."""
+    """Отрисовать настройки поиска (без multi-query) и вернуть SearchParams."""
     defaults = SearchParams()
     lim = SearchLimits
     p = key_prefix
 
     with container.popover("Настройки поиска", use_container_width=True):
 
-        # -- Группа: Поиск по векторной базе --
-        st.markdown("##### Поиск")
         col1, col2 = st.columns(2)
         with col1:
             top_n = st.slider(
@@ -241,17 +239,29 @@ def render_retrieval_settings(container: DeltaGenerator, key_prefix: str = "sp")
         )
         content_types = ContentType.labels_to_keys(chosen_labels)
 
-        st.divider()
+    return SearchParams(
+        top_n=top_n,
+        answers_per_variant=answers,
+        per_page=per_page,
+        content_types=content_types,
+    )
 
-        # -- Группа: Multi-query --
-        st.markdown("##### Multi-query")
+
+def render_multiquery_settings(container: DeltaGenerator, key_prefix: str = "mq") -> SearchParams:
+    """Отрисовать настройки multi-query (переформулировки + RRF) и вернуть SearchParams."""
+    defaults = SearchParams()
+    lim = SearchLimits
+    p = key_prefix
+
+    with container.popover("Multi-query", use_container_width=True):
+
         use_mq = st.checkbox(
             "Включить переформулировки + RRF",
             value=defaults.use_multi_query,
             key=f"{p}_use_mq",
         )
-        col3, col4 = st.columns(2)
-        with col3:
+        col1, col2 = st.columns(2)
+        with col1:
             mq_variants = st.slider(
                 "Переформулировок",
                 min_value=lim.mq_variants.min, max_value=lim.mq_variants.max,
@@ -260,7 +270,7 @@ def render_retrieval_settings(container: DeltaGenerator, key_prefix: str = "sp")
                 help="Количество вариантов запроса для multi-query",
                 key=f"{p}_mq_variants",
             )
-        with col4:
+        with col2:
             k_per_variant = st.slider(
                 "Документов на вариант",
                 min_value=lim.k_per_variant.min, max_value=lim.k_per_variant.max,
@@ -278,10 +288,6 @@ def render_retrieval_settings(container: DeltaGenerator, key_prefix: str = "sp")
         )
 
     return SearchParams(
-        top_n=top_n,
-        answers_per_variant=answers,
-        per_page=per_page,
-        content_types=content_types,
         use_multi_query=use_mq,
         mq_variants=mq_variants,
         k_per_variant=k_per_variant,
