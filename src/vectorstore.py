@@ -42,8 +42,12 @@ class VectorStoreService:
     def get_vectorstore(self, collection_name: str) -> Chroma:
         """Получить Chroma vectorstore, автоматически подобрав embedding модель из metadata."""
         client = self._get_client()
-        collection = client.get_or_create_collection(collection_name)
+        collection = client.get_collection(collection_name)
         model_name = (collection.metadata or {}).get(EMBEDDING_MODEL_KEY)
+        if model_name:
+            log.info("Collection '%s' uses embedding model: %s", collection_name, model_name)
+        else:
+            log.warning("Collection '%s' has no embedding model in metadata, using default", collection_name)
         embedding = self.resolve_embedding(model_name)
         return Chroma(client=client, collection_name=collection_name, embedding_function=embedding)
 
