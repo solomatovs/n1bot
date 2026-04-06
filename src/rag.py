@@ -1,122 +1,166 @@
+"""RAG-пайплайн — генераторный стриминг: поиск → промпт → LLM → события."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import Iterator
 
 import httpx
-from openai import APIError as OpenAIAPIError
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
 from config import LLM_TIMEOUT, secret
-from errors import EmptyContextError, LLMGenerationError
+from errors import EmptyContextError
+from events import (
+    AnswerToken,
+    ChatEvent,
+    GenerationDone,
+    RetrievalDone,
+    RetrievalStarted,
+    ThinkingToken,
+)
 from retrieval import RetrievalService, build_sources
 from ui.state import AppConfig, PromptParams, SearchParams
 from vectorstore import VectorStoreService
 
 
-@dataclass
-class RagContext:
-    """Результат подготовки RAG-контекста."""
-    client: OpenAI
-    messages: list[ChatCompletionMessageParam]
-    sources_block: str
-
-
 # ---------------------------------------------------------------------------
-# Сервис
+# Парсинг <think> тегов — stateful, но только bool-флаг
 # ---------------------------------------------------------------------------
 
-class RagService:
-    """Сервис подготовки RAG-контекста.
+def _parse_think_tags(token: str, in_think: bool) -> Iterator[tuple[str, str, bool]]:
+    """Разбирает токен на фрагменты (role, text, new_in_think).
 
-    Инкапсулирует инфраструктурные зависимости (поиск, LLM-клиент),
-    чтобы методы принимали только параметры конкретного запроса.
+    Yields:
+        ("thinking", text, in_think) или ("answer", text, in_think)
     """
+    buf = token
+    while buf:
+        if in_think:
+            end = buf.find("</think>")
+            if end != -1:
+                yield ("thinking", buf[:end], False)
+                buf = buf[end + len("</think>"):]
+                in_think = False
+            else:
+                yield ("thinking", buf, True)
+                buf = ""
+        else:
+            start = buf.find("<think>")
+            if start != -1:
+                if start > 0:
+                    yield ("answer", buf[:start], True)
+                buf = buf[start + len("<think>"):]
+                in_think = True
+            else:
+                yield ("answer", buf, False)
+                buf = ""
 
-    def __init__(self, cfg: AppConfig) -> None:
-        self._client = self._create_openai_client(cfg.litellm_url)
-        vs = VectorStoreService(cfg)
-        self._retrieval = RetrievalService(vs, self._client)
 
-    def prepare_context(
-        self,
-        collection_name: str,
-        query: str,
-        model: str,
-        params: SearchParams,
-        prompts: PromptParams,
-    ) -> RagContext:
-        """Подготавливает RAG-контекст.
+# ---------------------------------------------------------------------------
+# Генераторный пайплайн чата
+# ---------------------------------------------------------------------------
 
-        Raises:
-            EmptyContextError: если не найдено релевантных документов.
-        """
-        docs = self._retrieval.search(collection_name, query, model, params)
-        if not docs:
-            raise EmptyContextError("Не найдено релевантных документов по запросу.")
+def run_chat_pipeline(
+    collection_name: str,
+    query: str,
+    model: str,
+    params: SearchParams,
+    prompts: PromptParams,
+    cfg: AppConfig,
+) -> Iterator[ChatEvent]:
+    """Полный RAG-пайплайн как генератор событий.
 
-        selected = docs[:params.answers_per_variant]
-        context = "\n\n".join(d.page_content for d in selected)
-        sources_block = build_sources(selected)
+    Yield:
+        RetrievalStarted  → начало поиска
+        RetrievalDone      → найдены документы (context + sources)
+        ThinkingToken      → токен размышления
+        AnswerToken        → токен ответа
+        GenerationDone     → генерация завершена
 
-        messages: list[ChatCompletionMessageParam] = [
-            {"role": "system", "content": prompts.system_prompt},
-            {"role": "user", "content": prompts.format_user_message(context=context, query=query)},
-        ]
+    Raises:
+        EmptyContextError: если не найдено документов.
+        RetrievalError: если поиск завершился ошибкой.
+    """
+    client = _create_openai_client(cfg.litellm_url)
+    vs = VectorStoreService(cfg)
+    retrieval = RetrievalService(vs, client)
 
-        return RagContext(client=self._client, messages=messages, sources_block=sources_block)
+    # Фаза 1: поиск
+    yield RetrievalStarted(query=query, collection=collection_name)
 
-    def generate_answer(
-        self,
-        collection_name: str,
-        query: str,
-        model: str,
-        params: SearchParams,
-        prompts: PromptParams,
-    ) -> str:
-        """Полный пайплайн: поиск контекста + генерация ответа.
+    docs = retrieval.search(collection_name, query, model, params)
+    if not docs:
+        raise EmptyContextError("Не найдено релевантных документов по запросу.")
 
-        Raises:
-            EmptyContextError: если не найдено релевантных документов.
-            LLMGenerationError: если модель не смогла сгенерировать ответ.
-        """
-        ctx = self.prepare_context(
-            collection_name=collection_name,
-            query=query,
-            model=model,
-            params=params,
-            prompts=prompts,
-        )
+    selected = docs[:params.answers_per_variant]
+    context = "\n\n".join(d.page_content for d in selected)
+    sources_block = build_sources(selected)
 
-        try:
-            resp = ctx.client.chat.completions.create(
-                model=model, messages=ctx.messages, **params.llm_kwargs(),
-            )  # type: ignore[arg-type]
-            answer = resp.choices[0].message.content or ""
-        except OpenAIAPIError as e:
-            raise LLMGenerationError(f"Не удалось сгенерировать ответ: {e}") from e
+    yield RetrievalDone(
+        documents_found=len(selected),
+        context=prompts.format_user_message(context=context, query=query),
+        sources_block=sources_block,
+    )
 
-        if ctx.sources_block:
-            answer = f"{answer}\n\n---\n**Источники:**\n{ctx.sources_block}"
-        return answer
+    # Фаза 2: стриминг от LLM
+    messages: list[ChatCompletionMessageParam] = [
+        {"role": "system", "content": prompts.system_prompt},
+        {"role": "user", "content": prompts.format_user_message(context=context, query=query)},
+    ]
 
-    @staticmethod
-    def _create_openai_client(base_url: str) -> OpenAI:
-        """Создаёт OpenAI-клиент с отключённой проверкой SSL для liteLLM."""
-        base_url = base_url.rstrip("/")
-        if not base_url.endswith("/v1"):
-            base_url = f"{base_url}/v1"
+    stream = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        stream=True,
+        **params.llm_kwargs(),
+    )
 
-        http_client = httpx.Client(
-            verify=False,
-            timeout=float(LLM_TIMEOUT),
-            headers={
-                "Authorization": f"Bearer {secret('LITELLM_API_KEY')}",
-                "Content-Type": "application/json",
-            },
-        )
-        return OpenAI(
-            base_url=base_url,
-            api_key=secret("LITELLM_API_KEY"),
-            http_client=http_client,
-        )
+    in_think = False
+
+    for chunk in stream:
+        delta = chunk.choices[0].delta
+
+        # reasoning_content (DeepSeek / o1 через LiteLLM)
+        reasoning = getattr(delta, "reasoning_content", None) or ""
+        if reasoning:
+            yield ThinkingToken(token=reasoning)
+
+        # content — может содержать <think>...</think>
+        content = getattr(delta, "content", None) or ""
+        if not content:
+            continue
+
+        for role, text, new_in_think in _parse_think_tags(content, in_think):
+            in_think = new_in_think
+            if not text:
+                continue
+            if role == "thinking":
+                yield ThinkingToken(token=text)
+            else:
+                yield AnswerToken(token=text)
+
+    yield GenerationDone()
+
+
+# ---------------------------------------------------------------------------
+# Фабрика OpenAI-клиента
+# ---------------------------------------------------------------------------
+
+def _create_openai_client(base_url: str) -> OpenAI:
+    """Создаёт OpenAI-клиент с отключённой проверкой SSL для liteLLM."""
+    base_url = base_url.rstrip("/")
+    if not base_url.endswith("/v1"):
+        base_url = f"{base_url}/v1"
+
+    http_client = httpx.Client(
+        verify=False,
+        timeout=float(LLM_TIMEOUT),
+        headers={
+            "Authorization": f"Bearer {secret('LITELLM_API_KEY')}",
+            "Content-Type": "application/json",
+        },
+    )
+    return OpenAI(
+        base_url=base_url,
+        api_key=secret("LITELLM_API_KEY"),
+        http_client=http_client,
+    )

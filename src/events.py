@@ -1,4 +1,4 @@
-"""Типизированные события пайплайна импорта."""
+"""Типизированные события пайплайнов (импорт + чат)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -99,7 +99,43 @@ class StorageDone:
 
 
 # ---------------------------------------------------------------------------
-# Объединённый тип
+# Чат — RAG pipeline
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class RetrievalStarted:
+    """Начат поиск по векторной базе."""
+    query: str
+    collection: str
+
+
+@dataclass(frozen=True)
+class RetrievalDone:
+    """Поиск завершён, найдены документы."""
+    documents_found: int
+    context: str
+    sources_block: str
+
+
+@dataclass(frozen=True)
+class ThinkingToken:
+    """Токен размышления от LLM (reasoning_content или <think>)."""
+    token: str
+
+
+@dataclass(frozen=True)
+class AnswerToken:
+    """Токен ответа от LLM."""
+    token: str
+
+
+@dataclass(frozen=True)
+class GenerationDone:
+    """Генерация ответа завершена."""
+
+
+# ---------------------------------------------------------------------------
+# Объединённые типы
 # ---------------------------------------------------------------------------
 
 PipelineEvent = Union[
@@ -113,4 +149,12 @@ PipelineEvent = Union[
     StoreBatchDone,
     StoreBatchFailed,
     StorageDone,
+]
+
+ChatEvent = Union[
+    RetrievalStarted,
+    RetrievalDone,
+    ThinkingToken,
+    AnswerToken,
+    GenerationDone,
 ]

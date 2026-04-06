@@ -1,10 +1,20 @@
 """Вкладка «Чат» — ответы на вопросы по базе знаний."""
 from __future__ import annotations
 
+from typing import Iterator
+
 import streamlit as st
 
 from errors import AppError, EmptyContextError
-from rag import RagContext, RagService
+from events import (
+    AnswerToken,
+    ChatEvent,
+    GenerationDone,
+    RetrievalDone,
+    RetrievalStarted,
+    ThinkingToken,
+)
+from rag import run_chat_pipeline
 from ui.components import (
     collection_selector,
     extract_page_ids_from_answer,
@@ -13,8 +23,7 @@ from ui.components import (
     render_prompt_settings,
     render_search_settings,
 )
-from ui.state import AppConfig, ChatMessage, PromptParams, SearchParams, SessionState
-from ui.streaming import StreamRenderer
+from ui.state import AppConfig, ChatMessage, SearchParams, SessionState
 
 
 def render(cfg: AppConfig, state: SessionState) -> None:
@@ -37,96 +46,111 @@ def render(cfg: AppConfig, state: SessionState) -> None:
         _render_status_bar(state, search_params)
         return
 
-    rag = RagService(cfg)
-    thinking_text = ""
-    rag_context = ""
-    reply = ""
-
     with st.chat_message("user"):
         st.markdown(user_prompt)
 
     with st.chat_message("assistant"):
         try:
-            ctx = _fetch_context(rag, state, user_prompt, active_model, search_params, prompt_params)
+            pipeline = run_chat_pipeline(
+                collection_name=str(state.selected_collection),
+                query=user_prompt,
+                model=active_model,
+                params=search_params,
+                prompts=prompt_params,
+                cfg=cfg,
+            )
+            result = _consume_chat_pipeline(pipeline)
         except EmptyContextError:
-            reply = "Я не нашёл релевантный контекст по вашей коллекции."
-            st.markdown(reply)
+            result = _ChatResult(answer="Я не нашёл релевантный контекст по вашей коллекции.")
+            st.markdown(result.answer)
         except AppError as e:
-            reply = f"Ошибка: {e}"
-            st.error(reply)
-        else:
-            rag_context = _extract_rag_context(ctx.messages)
-            if rag_context:
-                with st.expander("Найденный контекст из базы знаний", expanded=False):
-                    st.markdown(rag_context)
-
-            reply, thinking_text = _stream_response(ctx, active_model, search_params)
+            result = _ChatResult(answer=f"Ошибка: {e}")
+            st.error(result.answer)
 
     state.push_message(ChatMessage(
         question=user_prompt,
-        answer=reply,
-        thinking=thinking_text,
-        rag_context=rag_context,
+        answer=result.answer,
+        thinking=result.thinking,
+        rag_context=result.rag_context,
     ))
-    state.used_page_ids[user_prompt] = extract_page_ids_from_answer(reply)
+    state.used_page_ids[user_prompt] = extract_page_ids_from_answer(result.answer)
 
     _render_status_bar(state, search_params)
 
 
 # ---------------------------------------------------------------------------
-# Приватные вспомогательные функции
+# Результат чата (заполняется в _consume_chat_pipeline)
 # ---------------------------------------------------------------------------
 
-def _fetch_context(
-    rag: RagService,
-    state: SessionState,
-    prompt: str,
-    model: str,
-    params: SearchParams,
-    prompts: PromptParams,
-) -> RagContext:
-    """Получить RAG-контекст. Пробрасывает RagError при ошибках."""
-    with st.spinner("Ищу контекст…"):
-        return rag.prepare_context(
-            collection_name=str(state.selected_collection),
-            query=prompt,
-            model=model,
-            params=params,
-            prompts=prompts,
-        )
+class _ChatResult:
+    __slots__ = ("answer", "thinking", "rag_context", "sources_block")
+
+    def __init__(
+        self,
+        answer: str = "",
+        thinking: str = "",
+        rag_context: str = "",
+        sources_block: str = "",
+    ) -> None:
+        self.answer = answer
+        self.thinking = thinking
+        self.rag_context = rag_context
+        self.sources_block = sources_block
 
 
-def _stream_response(
-    ctx: RagContext,
-    model: str,
-    params: SearchParams,
-) -> tuple[str, str]:
-    """Стримить ответ от LLM. Возвращает (answer, thinking)."""
-    renderer = StreamRenderer(st.container())
-    stream = ctx.client.chat.completions.create(
-        model=model,
-        messages=ctx.messages,
-        stream=True,
-        **params.llm_kwargs(),
-    )
-    for chunk in stream:
-        renderer.feed(chunk.choices[0].delta)
-    renderer.finalise()
+# ---------------------------------------------------------------------------
+# Потребитель chat pipeline — единственное место с Streamlit-виджетами
+# ---------------------------------------------------------------------------
 
-    if ctx.sources_block:
-        renderer.set_answer(
-            f"{renderer.state.answer}\n\n---\n**Источники:**\n{ctx.sources_block}"
-        )
+def _consume_chat_pipeline(pipeline: Iterator[ChatEvent]) -> _ChatResult:
+    """Итерирует генератор чат-пайплайна, обновляя Streamlit-виджеты по событиям."""
+    result = _ChatResult()
 
-    return renderer.state.answer, renderer.state.thinking
+    thinking_expander = st.expander("Процесс размышления", expanded=True)
+    thinking_ph = thinking_expander.empty()
+    answer_ph = st.empty()
+
+    for event in pipeline:
+        match event:
+            case RetrievalStarted():
+                st.caption("Ищу релевантный контекст…")
+
+            case RetrievalDone(context=ctx, sources_block=sb):
+                result.rag_context = ctx
+                result.sources_block = sb
+                with st.expander("Найденный контекст из базы знаний", expanded=False):
+                    st.markdown(ctx)
+
+            case ThinkingToken(token=tok):
+                result.thinking += tok
+                thinking_ph.markdown(result.thinking + "▌")
+
+            case AnswerToken(token=tok):
+                result.answer += tok
+                if result.answer.strip():
+                    answer_ph.markdown(result.answer + "▌")
+
+            case GenerationDone():
+                pass
+
+    # Финализация
+    if result.thinking.strip():
+        thinking_ph.markdown(result.thinking)
+    else:
+        thinking_expander.empty()
+
+    if result.sources_block:
+        result.answer = f"{result.answer}\n\n---\n**Источники:**\n{result.sources_block}"
+
+    if result.answer.strip():
+        answer_ph.markdown(result.answer)
+
+    return result
 
 
-def _extract_rag_context(messages: list) -> str:
-    for msg in messages:
-        if msg.get("role") == "user":
-            return str(msg.get("content", ""))
-    return ""
-
+# ---------------------------------------------------------------------------
+# Статусная строка
+# ---------------------------------------------------------------------------
 
 def _render_status_bar(state: SessionState, params: SearchParams) -> None:
     st.caption(
