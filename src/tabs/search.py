@@ -31,9 +31,11 @@ def render(services: AppServices, state: SessionState) -> None:
 
     search_params = render_retrieval_settings(st.container(), key_prefix="srch_sp")
 
-    query = st.text_input("Запрос для поиска", key="search_query")
+    with st.form("search_form"):
+        query = st.text_input("Запрос для поиска", key="search_query")
+        submitted = st.form_submit_button("Найти")
 
-    if not st.button("Найти", key="btn_search"):
+    if not submitted:
         return
 
     if not query:

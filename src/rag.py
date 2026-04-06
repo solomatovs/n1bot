@@ -44,7 +44,7 @@ def run_search_pipeline(
     ctx = create_query_context(
         query=query,
         collection_name=collection_name,
-        model="",
+        model=services.cfg.default_model,
         search_params=params,
         prompt_params=prompts,
         services=services,
