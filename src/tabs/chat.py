@@ -109,10 +109,9 @@ def _consume_chat_pipeline(pipeline: Iterator[ChatEvent]) -> _ChatResult:
     """Итерирует генератор чат-пайплайна, обновляя Streamlit-виджеты по событиям."""
     result = _ChatResult()
 
-    thinking_expander = st.expander("Процесс размышления", expanded=True)
-    thinking_ph = thinking_expander.empty()
+    thinking_expander = None
+    thinking_ph = None
     answer_ph = st.empty()
-
     status_ph = st.empty()
 
     for event in pipeline:
@@ -138,6 +137,9 @@ def _consume_chat_pipeline(pipeline: Iterator[ChatEvent]) -> _ChatResult:
                     st.markdown(ctx)
 
             case ThinkingToken(token=tok):
+                if thinking_expander is None:
+                    thinking_expander = st.expander("Процесс размышления", expanded=True)
+                    thinking_ph = thinking_expander.empty()
                 result.thinking += tok
                 thinking_ph.markdown(result.thinking + "▌")
 
@@ -150,10 +152,8 @@ def _consume_chat_pipeline(pipeline: Iterator[ChatEvent]) -> _ChatResult:
                 status_ph.empty()
 
     # Финализация
-    if result.thinking.strip():
+    if thinking_ph is not None and result.thinking.strip():
         thinking_ph.markdown(result.thinking)
-    else:
-        thinking_expander.empty()
 
     if result.sources_block:
         result.answer = f"{result.answer}\n\n---\n**Источники:**\n{result.sources_block}"
