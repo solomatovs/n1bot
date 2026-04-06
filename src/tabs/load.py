@@ -28,13 +28,13 @@ from ui.state import SessionState
 def render(services: AppServices, state: SessionState) -> None:
     st.title("Загрузка данных из Confluence")
 
-    tab_pages, tab_space = st.tabs(["По Page IDs", "По Space Key"])
-
-    with tab_pages:
-        _render_page_tab(services)
+    tab_space, tab_pages = st.tabs(["По Space Key", "По Page IDs"])
 
     with tab_space:
         _render_space_tab(services)
+
+    with tab_pages:
+        _render_page_tab(services)
 
 
 # ---------------------------------------------------------------------------
