@@ -1,6 +1,7 @@
 """Вкладка «Чат» — ответы на вопросы по базе знаний."""
 from __future__ import annotations
 
+import dataclasses
 from typing import Iterator
 
 import streamlit as st
@@ -21,8 +22,9 @@ from ui.components import (
     collection_selector,
     model_selector,
     render_chat_history,
+    render_generation_settings,
     render_prompt_settings,
-    render_search_settings,
+    render_retrieval_settings,
 )
 from bootstrap import AppServices
 from ui.state import ChatMessage, SearchParams, SessionState
@@ -35,11 +37,21 @@ def render(services: AppServices, state: SessionState) -> None:
         services.cfg, key="select_collection_chat", current=state.selected_collection,
     )
 
-    col_model, col_search, col_prompts = st.columns([3, 1, 1])
+    col_model, col_retrieval, col_gen, col_prompts = st.columns([3, 1, 1, 1])
     with col_model:
         active_model = model_selector(services.cfg)
-    search_params = render_search_settings(col_search)
+    retrieval_params = render_retrieval_settings(col_retrieval)
+    gen_params = render_generation_settings(col_gen)
     prompt_params = render_prompt_settings(col_prompts)
+
+    search_params = dataclasses.replace(
+        retrieval_params,
+        temperature=gen_params.temperature,
+        top_p=gen_params.top_p,
+        max_tokens=gen_params.max_tokens,
+        frequency_penalty=gen_params.frequency_penalty,
+        presence_penalty=gen_params.presence_penalty,
+    )
 
     render_chat_history(state.chat_history)
 

@@ -17,7 +17,7 @@ from query_pipeline.events import (
 from rag import run_search_pipeline
 from ui.components import (
     collection_selector,
-    render_search_settings,
+    render_retrieval_settings,
 )
 from ui.state import PromptParams, SessionState
 
@@ -29,7 +29,7 @@ def render(services: AppServices, state: SessionState) -> None:
         services.cfg, key="select_collection_search", current=state.selected_collection,
     )
 
-    search_params = render_search_settings(st.container(), key_prefix="srch_sp")
+    search_params = render_retrieval_settings(st.container(), key_prefix="srch_sp")
 
     query = st.text_input("Запрос для поиска", key="search_query")
 

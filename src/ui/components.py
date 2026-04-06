@@ -145,8 +145,8 @@ def render_chat_history(history: List[ChatMessage]) -> None:
 # Настройки поиска
 # ---------------------------------------------------------------------------
 
-def render_search_settings(container: DeltaGenerator, key_prefix: str = "sp") -> SearchParams:
-    """Отрисовать панель настроек поиска в popover и вернуть SearchParams."""
+def render_retrieval_settings(container: DeltaGenerator, key_prefix: str = "sp") -> SearchParams:
+    """Отрисовать настройки retrieval (поиск + multi-query) и вернуть SearchParams."""
     defaults = SearchParams()
     lim = SearchLimits
     p = key_prefix
@@ -219,10 +219,25 @@ def render_search_settings(container: DeltaGenerator, key_prefix: str = "sp") ->
                 key=f"{p}_k_per_var",
             )
 
-        st.divider()
+    return SearchParams(
+        top_n=top_n,
+        answers_per_variant=answers,
+        per_page=per_page,
+        content_types=content_types,
+        use_multi_query=use_mq,
+        mq_variants=mq_variants,
+        k_per_variant=k_per_variant,
+    )
 
-        # -- Группа: Генерация --
-        st.markdown("##### Генерация")
+
+def render_generation_settings(container: DeltaGenerator, key_prefix: str = "sp") -> SearchParams:
+    """Отрисовать настройки генерации (LLM) и вернуть SearchParams с параметрами генерации."""
+    defaults = SearchParams()
+    lim = SearchLimits
+    p = key_prefix
+
+    with container.popover("Настройки генерации", use_container_width=True):
+
         col_t, col_tp = st.columns(2)
         with col_t:
             temperature = st.slider(
@@ -275,13 +290,6 @@ def render_search_settings(container: DeltaGenerator, key_prefix: str = "sp") ->
             )
 
     return SearchParams(
-        top_n=top_n,
-        answers_per_variant=answers,
-        per_page=per_page,
-        content_types=content_types,
-        use_multi_query=use_mq,
-        mq_variants=mq_variants,
-        k_per_variant=k_per_variant,
         temperature=temperature,
         top_p=top_p,
         max_tokens=max_tokens,
