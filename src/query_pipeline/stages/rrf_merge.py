@@ -28,7 +28,7 @@ class RRFMergeStage:
 
         if not ctx.merged_docs and ctx.search_errors:
             raise RetrievalError(
-                f"Все варианты поиска завершились ошибкой: {'; '.join(ctx.search_errors)}"
+                f"All search variants failed: {'; '.join(ctx.search_errors)}"
             )
 
         yield StageCompleted(stage=self.name, detail=f"{len(ctx.merged_docs)} документов после слияния")
