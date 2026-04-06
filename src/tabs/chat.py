@@ -118,10 +118,10 @@ def _consume_chat_pipeline(pipeline: Iterator[ChatEvent]) -> _ChatResult:
     for event in pipeline:
         match event:
             case StageStarted(stage=name):
-                status_ph.caption(f"⏳ {name}...")
+                status_ph.caption(f"{name}...")
 
             case StageCompleted(stage=name, detail=d):
-                status_ph.caption(f"✓ {name}: {d}")
+                status_ph.caption(f"{name}: {d}")
 
             case QueryVariantsGenerated(variants=vs):
                 with st.expander("Переформулировки запроса", expanded=False):
