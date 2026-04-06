@@ -68,8 +68,8 @@ docker/
 ### Скачивание исходников
 
 ```bash
-cd docker && \
-curl -L -o glibc-src/glibc-2.28.tar.xz     https://ftp.wayne.edu/gnu/glibc/glibc-2.28.tar.xz && \
+cd docker && mkdir -p glibc-src gcc-src python-src && \
+curl -L -o glibc-src/glibc-2.28.tar.xz      https://ftp.wayne.edu/gnu/glibc/glibc-2.28.tar.xz && \
 curl -L -o gcc-src/gcc-8.5.0.tar.xz         https://ftp.wayne.edu/gnu/gcc/gcc-8.5.0/gcc-8.5.0.tar.xz && \
 curl -L -o gcc-src/gmp-6.1.2.tar.xz         https://ftp.wayne.edu/gnu/gmp/gmp-6.1.2.tar.xz && \
 curl -L -o gcc-src/mpfr-4.0.2.tar.xz        https://ftp.wayne.edu/gnu/mpfr/mpfr-4.0.2.tar.xz && \
