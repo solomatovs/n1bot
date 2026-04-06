@@ -70,47 +70,24 @@ def _fetch_model_info(base_url: str, api_key: str) -> List[dict]:
         return []
 
 
-def _filter_models_by_mode(base_url: str, api_key: str, mode: str) -> List[str]:
-    """Отфильтровать модели по mode (chat, embedding, ...)."""
-    data = _fetch_model_info(base_url, api_key)
+def get_chat_models(cfg: AppConfig) -> List[str]:
+    """Получить список chat-моделей (mode == 'chat')."""
+    data = _fetch_model_info(cfg.litellm_base_url, cfg.litellm_api_key)
     return sorted(
         m.get("model_name", "")
         for m in data
-        if m.get("model_info", {}).get("mode") == mode
+        if m.get("model_info", {}).get("mode") == "chat"
     )
 
 
-def get_chat_models(cfg: AppConfig) -> List[str]:
-    """Получить список chat-моделей (для генерации)."""
-    models = _filter_models_by_mode(cfg.litellm_base_url, cfg.litellm_api_key, "chat")
-    if not models:
-        log.warning("No chat models found, falling back to /models endpoint")
-        return _fetch_all_model_ids(cfg)
-    return models
-
-
 def get_embedding_models(cfg: AppConfig) -> List[str]:
-    """Получить список embedding-моделей."""
-    models = _filter_models_by_mode(cfg.litellm_base_url, cfg.litellm_api_key, "embedding")
-    if not models:
-        log.warning("No embedding models found, falling back to /models endpoint")
-        return _fetch_all_model_ids(cfg)
-    return models
-
-
-@st.cache_data(ttl=CacheTTL.models, show_spinner=False)
-def _fetch_all_model_ids(cfg: AppConfig) -> List[str]:
-    """Fallback: получить все модели через /v1/models (без фильтрации)."""
-    try:
-        resp = requests.get(
-            f"{cfg.openai_url.rstrip('/')}/models",
-            headers={"Authorization": f"Bearer {cfg.litellm_api_key}"},
-        )
-        resp.raise_for_status()
-        return sorted(m["id"] for m in resp.json()["data"])
-    except (requests.RequestException, KeyError, ValueError) as e:
-        log.warning("Failed to fetch models: %s", e)
-        return []
+    """Получить список embedding-моделей (mode != 'chat')."""
+    data = _fetch_model_info(cfg.litellm_base_url, cfg.litellm_api_key)
+    return sorted(
+        m.get("model_name", "")
+        for m in data
+        if m.get("model_info", {}).get("mode") != "chat"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -161,13 +138,16 @@ def _safe_index(items: List[str], value: str, fallback: int = 0) -> int:
 def collection_selector(cfg: AppConfig, *, key: str, current: str) -> str:
     """Отрисовать селектор коллекции и вернуть выбранное значение."""
     colls = list_collections(cfg.chroma_db_path)
-    index = _safe_index(colls, current)
-    return st.selectbox(
+    if not colls:
+        st.warning("Нет доступных коллекций.")
+        return current
+    selected: str | None = st.selectbox(
         "Имя векторной БД (коллекция)",
-        colls or [current],
-        index=index,
+        colls,
+        index=_safe_index(colls, current),
         key=key,
-    ) or current
+    )
+    return selected if selected is not None else colls[0]
 
 
 def model_selector(cfg: AppConfig) -> str:
@@ -176,7 +156,10 @@ def model_selector(cfg: AppConfig) -> str:
     if not models:
         st.warning("Нет доступных моделей генерации.")
         return cfg.default_model
-    return st.selectbox("Модель генерации", models, index=_safe_index(models, cfg.default_model)) or models[0]
+    selected: str | None = st.selectbox(
+        "Модель генерации", models, index=_safe_index(models, cfg.default_model),
+    )
+    return selected if selected is not None else models[0]
 
 
 def embedding_model_selector(cfg: AppConfig, *, key: str = "embedding_model") -> str:
@@ -185,7 +168,10 @@ def embedding_model_selector(cfg: AppConfig, *, key: str = "embedding_model") ->
     if not models:
         st.warning("Нет доступных embedding моделей.")
         return cfg.embedding_model
-    return st.selectbox("Embedding модель", models, index=_safe_index(models, cfg.embedding_model), key=key) or models[0]
+    selected: str | None = st.selectbox(
+        "Embedding модель", models, index=_safe_index(models, cfg.embedding_model), key=key,
+    )
+    return selected if selected is not None else models[0]
 
 
 # ---------------------------------------------------------------------------
