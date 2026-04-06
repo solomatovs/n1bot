@@ -146,6 +146,7 @@ class SearchParams:
     use_multi_query: bool = True
     mq_variants: int = 3
     k_per_variant: int = 6
+    mq_prompt_template: str = "Дай {n} кратких переформулировок запроса; по одной на строку.\nЗапрос: {query}"
     # -- генерация --
     temperature: float = 0.0
     top_p: float = 1.0

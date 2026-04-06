@@ -218,6 +218,13 @@ def render_retrieval_settings(container: DeltaGenerator, key_prefix: str = "sp")
                 help="Сколько документов извлекать на каждую переформулировку",
                 key=f"{p}_k_per_var",
             )
+        mq_prompt_template = st.text_area(
+            "Промпт переформулировки",
+            value=defaults.mq_prompt_template,
+            disabled=not use_mq,
+            help="Плейсхолдеры: {n} — количество, {query} — запрос пользователя",
+            key=f"{p}_mq_prompt",
+        )
 
     return SearchParams(
         top_n=top_n,
@@ -227,6 +234,7 @@ def render_retrieval_settings(container: DeltaGenerator, key_prefix: str = "sp")
         use_multi_query=use_mq,
         mq_variants=mq_variants,
         k_per_variant=k_per_variant,
+        mq_prompt_template=mq_prompt_template,
     )
 
 

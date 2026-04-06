@@ -28,7 +28,7 @@ class GenQueryVariantsStage:
             return
 
         n = ctx.search_params.mq_variants
-        prompt = f"Дай {n} кратких переформулировок запроса; по одной на строку.\nЗапрос: {ctx.query}"
+        prompt = ctx.search_params.mq_prompt_template.format(n=n, query=ctx.query)
 
         try:
             r = ctx.openai_client.chat.completions.create(
