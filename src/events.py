@@ -1,7 +1,7 @@
 """Типизированные события пайплайна импорта."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Union
 
 from langchain_core.documents import Document

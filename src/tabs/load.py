@@ -1,24 +1,27 @@
 """Вкладка загрузки — импорт страниц и пространств из Confluence в ChromaDB."""
 from __future__ import annotations
 
+from typing import Iterator
+
 import streamlit as st
 
-from chunking import AdvancedChunker
 from errors import AppError
-from loaders import (
-    BatchPageLoader,
-    IngestionService,
-    PageLoader,
-    SpaceLoader,
+from events import (
+    ChunkingDone,
+    ChunkProduced,
+    LoadingDone,
+    PageFailed,
+    PageLoaded,
+    PipelineEvent,
+    SectionChunked,
+    SpaceEnumerated,
+    StorageDone,
+    StoreBatchDone,
+    StoreBatchFailed,
 )
+from loaders import run_page_pipeline, run_space_pipeline
 from ui.components import render_chunking_settings, render_page_id_settings, render_space_settings
-from ui.state import (
-    AppConfig,
-    ChunkingParams,
-    SessionState,
-    SpaceLoadParams,
-)
-from vectorstore import VectorStoreService
+from ui.state import AppConfig, SessionState
 
 
 def render(cfg: AppConfig, state: SessionState) -> None:
@@ -61,28 +64,14 @@ def _render_page_tab(cfg: AppConfig) -> None:
         return
 
     try:
-        with st.status("Загрузка...", expanded=True) as status:
-            st.write(f"Загружаю {len(page_ids)} страниц из Confluence...")
-            loader = _create_batch_loader(cfg)
-            progress = StreamlitProgress()
-            batch_result = loader.load(page_ids, progress)
-
-            if not batch_result.loaded:
-                status.update(label="Ошибка", state="error")
-                st.error("Не удалось загрузить ни одной страницы.")
-                return
-
-            st.write(f"Загружено: {batch_result.ok_count} страниц. Разбиваю на чанки...")
-            ingestion = _create_ingestion_service(cfg, chunking_params)
-            chunk_progress = StreamlitProgress("Чанкинг...")
-            chunks = ingestion.chunk(batch_result.loaded, chunk_progress)
-
-            st.write(f"Получено {len(chunks)} чанков. Сохраняю в ChromaDB...")
-            result = ingestion.store(chunks, col_name, storage_params)
-
-            status.update(label="Готово", state="complete")
-            st.write(f"Сохранено в коллекцию «{col_name}»: {result.chunks_stored} документов")
-
+        pipeline = run_page_pipeline(
+            page_ids=page_ids,
+            collection_name=col_name,
+            cfg=cfg,
+            chunking_params=chunking_params,
+            storage_params=storage_params,
+        )
+        _consume_pipeline(pipeline)
         st.cache_data.clear()
     except AppError as e:
         st.error(f"Ошибка: {e}")
@@ -108,70 +97,76 @@ def _render_space_tab(cfg: AppConfig) -> None:
         return
 
     try:
-        with st.status("Загрузка пространства...", expanded=True) as status:
-            st.write(f"Получаю список страниц пространства «{space_key}»...")
-            space_loader = _create_space_loader(cfg, space_params)
-            progress = StreamlitProgress()
-            batch_result = space_loader.load(space_key, progress)
-
-            if not batch_result.loaded:
-                status.update(label="Ошибка", state="error")
-                st.error("Не удалось загрузить ни одной страницы из пространства.")
-                return
-
-            st.write(
-                f"Загружено: {batch_result.ok_count} страниц, "
-                f"ошибок: {batch_result.failed_count}. Разбиваю на чанки..."
-            )
-            ingestion = _create_ingestion_service(cfg, chunking_params)
-            chunk_progress = StreamlitProgress("Чанкинг...")
-            chunks = ingestion.chunk(batch_result.loaded, chunk_progress)
-            st.write(f"Получено {len(chunks)} чанков. Сохраняю в ChromaDB...")
-            result = ingestion.store(chunks, col_name, storage_params)
-
-            status.update(label="Готово", state="complete")
-            st.write(f"Сохранено в коллекцию «{col_name}»: {result.chunks_stored} документов")
-
+        pipeline = run_space_pipeline(
+            space_key=space_key,
+            collection_name=col_name,
+            cfg=cfg,
+            space_params=space_params,
+            chunking_params=chunking_params,
+            storage_params=storage_params,
+        )
+        _consume_pipeline(pipeline)
         st.cache_data.clear()
     except AppError as e:
         st.error(f"Ошибка: {e}")
 
 
 # ---------------------------------------------------------------------------
-# Streamlit-реализация ProgressCallback
+# Единый обработчик потока событий
 # ---------------------------------------------------------------------------
 
-class StreamlitProgress:
-    """Реализация ProgressCallback через st.progress."""
+def _consume_pipeline(pipeline: Iterator[PipelineEvent]) -> None:
+    """Итерирует генератор пайплайна, обновляя Streamlit-виджеты по событиям."""
+    with st.status("Загрузка...", expanded=True) as status:
+        pbar = st.progress(0.0)
+        msg = st.empty()
 
-    def __init__(self, label: str = "Начинаю…") -> None:
-        self._pbar = st.progress(0.0, text=label)
+        for event in pipeline:
+            match event:
+                # -- Загрузка --
+                case SpaceEnumerated(space_key=sk, total=n):
+                    msg.write(f"Пространство «{sk}»: найдено {n} страниц")
 
-    def on_step(self, index: int, total: int, label: str) -> None:
-        self._pbar.progress(
-            index / max(total, 1),
-            text=f"{index}/{total} — {label}",
-        )
+                case PageLoaded(page_id=pid, index=i, total=t):
+                    pbar.progress(i / t, text=f"{i}/{t} — загружена страница {pid}")
 
-    def on_complete(self) -> None:
-        self._pbar.empty()
+                case PageFailed(page_id=pid, index=i, total=t):
+                    pbar.progress(i / t, text=f"{i}/{t} — ошибка: {pid}")
 
+                case LoadingDone(ok_count=ok, failed_count=bad):
+                    if ok == 0:
+                        pbar.empty()
+                        status.update(label="Ошибка", state="error")
+                        st.error("Не удалось загрузить ни одной страницы.")
+                        return
+                    msg.write(f"Загружено: {ok} страниц, ошибок: {bad}")
+                    pbar.progress(0.0, text="Чанкинг...")
 
-# ---------------------------------------------------------------------------
-# Фабрики сервисов
-# ---------------------------------------------------------------------------
+                # -- Чанкинг --
+                case SectionChunked(doc_index=di, doc_total=dt, section_index=si, section_total=st_, section_title=title):
+                    pbar.progress(
+                        di / dt,
+                        text=f"Чанкинг {di}/{dt} — секция {si}/{st_}: {title}",
+                    )
 
-def _create_batch_loader(cfg: AppConfig) -> BatchPageLoader:
-    return BatchPageLoader(PageLoader(cfg))
+                case ChunkProduced():
+                    pass
 
+                case ChunkingDone(total_chunks=n):
+                    msg.write(f"Получено {n} чанков. Сохраняю в ChromaDB...")
+                    pbar.progress(0.0, text="Сохранение...")
 
-def _create_space_loader(cfg: AppConfig, space_params: SpaceLoadParams) -> SpaceLoader:
-    batch = _create_batch_loader(cfg)
-    return SpaceLoader(batch, cfg, space_params)
+                # -- Сохранение --
+                case StoreBatchDone(total_stored=stored, total_chunks=total):
+                    pbar.progress(
+                        stored / max(total, 1),
+                        text=f"Сохранено: {stored}/{total}",
+                    )
 
+                case StoreBatchFailed(error=err):
+                    st.warning(f"Ошибка батча: {err}")
 
-def _create_ingestion_service(cfg: AppConfig, chunking_params: ChunkingParams) -> IngestionService:
-    return IngestionService(
-        chunker=AdvancedChunker(cfg, chunking_params),
-        vs_service=VectorStoreService(cfg),
-    )
+                case StorageDone(total_stored=stored, total_failed=bad):
+                    pbar.empty()
+                    status.update(label="Готово", state="complete")
+                    msg.write(f"Готово. Сохранено: {stored}, ошибок: {bad}")

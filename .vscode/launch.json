@@ -1,7 +1,4 @@
 {
-    // Используйте IntelliSense, чтобы узнать о возможных атрибутах.
-    // Наведите указатель мыши, чтобы просмотреть описания существующих атрибутов.
-    // Для получения дополнительной информации посетите: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
         {
@@ -20,5 +17,21 @@
             "envFile": "${workspaceFolder}/docker/env/.env.debug",
             "jinja": true
         },
+        {
+            "name": "Test: Streaming Pipeline",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tests/test_streaming_pipeline.py",
+            "args": [
+                "--space", "PAAS",
+                "--max-pages", "3",
+                "--batch-size", "8"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/docker/env/.env.debug",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "jinja": true
+        }
     ]
 }

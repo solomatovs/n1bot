@@ -30,6 +30,15 @@ markdownify = "*"
 atlassian-python-api = "*"
 pydantic = "*"
 
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+ruff = "*"
+pyright = "*"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
 [tool.pyright]
 include = ["src"]
 venvPath = "."

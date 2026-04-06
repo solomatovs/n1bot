@@ -1,36 +1,49 @@
-"""Иерархия загрузчиков Confluence и пайплайн импорта в ChromaDB.
+"""Иерархия загрузчиков Confluence и пайплайн импорта — генераторный стриминг.
 
 Архитектура (композиция снизу вверх):
     PageLoader          — загрузка одной страницы
-    BatchPageLoader     — загрузка списка страниц (использует PageLoader)
-    SpaceLoader         — загрузка пространства (использует BatchPageLoader)
-    IngestionService    — чанкинг + сохранение (source-agnostic)
+    BatchPageLoader     — загрузка списка страниц (yield PageLoaded/PageFailed)
+    SpaceLoader         — загрузка пространства (yield SpaceEnumerated + delegate)
+
+Pipeline-оркестраторы:
+    run_page_pipeline   — загрузка по page IDs → чанкинг → сохранение
+    run_space_pipeline  — загрузка по space key → чанкинг → сохранение
 """
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from typing import List, Protocol
+from dataclasses import dataclass
+from typing import Iterator, List
 
+import chromadb.errors
 import requests
 from langchain_community.document_loaders import ConfluenceLoader
 from langchain_community.document_loaders.confluence import ContentFormat
 from langchain_core.documents import Document
 
-from chunking import ChunkingStrategy  # noqa: TCH001
-from errors import (
-    IngestionError,
-    PageLoadError,
-    SpaceEnumerationError,
+from chunking import AdvancedChunker, ChunkingStrategy
+from errors import PageLoadError, SpaceEnumerationError
+from events import (
+    ChunkingDone,
+    ChunkProduced,
+    LoadingDone,
+    PageFailed,
+    PageLoaded,
+    PipelineEvent,
+    SectionChunked,
+    SpaceEnumerated,
+    StorageDone,
+    StoreBatchDone,
+    StoreBatchFailed,
 )
-from ui.state import AppConfig, SpaceLoadParams, StorageParams
+from ui.state import AppConfig, ChunkingParams, SpaceLoadParams, StorageParams
 from vectorstore import VectorStoreService
 
 log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Результаты
+# Результат загрузки одной страницы (внутренний)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -40,59 +53,12 @@ class PageResult:
     documents: List[Document]
 
 
-@dataclass
-class BatchResult:
-    """Результат загрузки нескольких страниц."""
-    loaded: List[Document]
-    failed: List[PageLoadError] = field(default_factory=list)
-
-    @property
-    def ok_count(self) -> int:
-        return len(self.loaded)
-
-    @property
-    def failed_count(self) -> int:
-        return len(self.failed)
-
-
-@dataclass
-class IngestionResult:
-    """Результат пайплайна импорта."""
-    input_documents: int
-    chunks_stored: int
-
-
-# ---------------------------------------------------------------------------
-# Прогресс (Protocol — отвязан от Streamlit)
-# ---------------------------------------------------------------------------
-
-class ProgressCallback(Protocol):
-    """Протокол для отображения прогресса."""
-
-    def on_step(self, index: int, total: int, label: str) -> None: ...
-
-    def on_complete(self) -> None: ...
-
-
-class NoOpProgress:
-    """Заглушка прогресса — ничего не делает."""
-
-    def on_step(self, index: int, total: int, label: str) -> None:
-        pass
-
-    def on_complete(self) -> None:
-        pass
-
-
 # ---------------------------------------------------------------------------
 # PageLoader — загрузка одной страницы
 # ---------------------------------------------------------------------------
 
 class PageLoader:
-    """Загружает одну страницу Confluence по ID.
-
-    Самый нижний уровень иерархии загрузчиков.
-    """
+    """Загружает одну страницу Confluence по ID."""
 
     def __init__(self, cfg: AppConfig) -> None:
         self._base_url = cfg.confluence_url
@@ -122,55 +88,50 @@ class PageLoader:
 
 
 # ---------------------------------------------------------------------------
-# BatchPageLoader — загрузка списка страниц
+# BatchPageLoader — загрузка списка страниц (генератор)
 # ---------------------------------------------------------------------------
 
 class BatchPageLoader:
-    """Загружает несколько страниц, делегируя PageLoader.
-
-    Собирает результаты и ошибки, не прерываясь при сбое отдельных страниц.
-    """
+    """Загружает несколько страниц, yield событие на каждую."""
 
     def __init__(self, page_loader: PageLoader) -> None:
         self._page_loader = page_loader
 
-    def load(
-        self,
-        page_ids: List[str],
-        progress: ProgressCallback | None = None,
-    ) -> BatchResult:
-        """Загрузить все страницы из списка."""
-        cb = progress or NoOpProgress()
+    def load(self, page_ids: List[str]) -> Iterator[PipelineEvent]:
+        """Yield PageLoaded | PageFailed на каждую страницу, затем LoadingDone."""
         total = len(page_ids)
-        all_docs: List[Document] = []
-        errors: List[PageLoadError] = []
+        ok_count = 0
+        failed_count = 0
 
         for idx, pid in enumerate(page_ids, start=1):
             try:
                 result = self._page_loader.load(pid)
-                if result.documents:
-                    all_docs.extend(result.documents)
-                    cb.on_step(idx, total, f"pageId={pid} — загружено ({len(result.documents)} док.)")
-                else:
-                    cb.on_step(idx, total, f"pageId={pid} — пусто")
+                ok_count += 1
+                yield PageLoaded(
+                    page_id=pid,
+                    documents=result.documents,
+                    index=idx,
+                    total=total,
+                )
             except PageLoadError as e:
                 log.warning("Не удалось загрузить страницу %s: %s", pid, e.cause)
-                errors.append(e)
-                cb.on_step(idx, total, f"pageId={pid} — ошибка: {e.cause}")
+                failed_count += 1
+                yield PageFailed(
+                    page_id=pid,
+                    error=e.cause,
+                    index=idx,
+                    total=total,
+                )
 
-        cb.on_complete()
-        return BatchResult(loaded=all_docs, failed=errors)
+        yield LoadingDone(ok_count=ok_count, failed_count=failed_count)
 
 
 # ---------------------------------------------------------------------------
-# SpaceLoader — загрузка пространства
+# SpaceLoader — загрузка пространства (генератор)
 # ---------------------------------------------------------------------------
 
 class SpaceLoader:
-    """Загружает все страницы из пространства Confluence.
-
-    Перечисляет ID страниц через REST API, затем делегирует BatchPageLoader.
-    """
+    """Загружает все страницы пространства — yield SpaceEnumerated, затем delegate."""
 
     def __init__(
         self,
@@ -183,12 +144,8 @@ class SpaceLoader:
         self._token = cfg.confluence_token
         self._params = params
 
-    def load(
-        self,
-        space_key: str,
-        progress: ProgressCallback | None = None,
-    ) -> BatchResult:
-        """Загрузить все страницы пространства.
+    def load(self, space_key: str) -> Iterator[PipelineEvent]:
+        """Yield SpaceEnumerated, затем делегирует BatchPageLoader.
 
         Raises:
             SpaceEnumerationError: если не удалось получить список страниц.
@@ -198,14 +155,10 @@ class SpaceLoader:
         if self._params.max_pages is not None and self._params.max_pages > 0:
             page_ids = page_ids[:self._params.max_pages]
 
-        return self._batch_loader.load(page_ids, progress)
+        yield SpaceEnumerated(space_key=space_key, total=len(page_ids))
+        yield from self._batch_loader.load(page_ids)
 
     def _enumerate_page_ids(self, space_key: str) -> List[str]:
-        """Получить ID всех страниц пространства через REST API.
-
-        Raises:
-            SpaceEnumerationError: при ошибке HTTP или парсинга.
-        """
         try:
             return self._paginate_space(space_key)
         except (requests.RequestException, KeyError, ValueError) as e:
@@ -240,93 +193,148 @@ class SpaceLoader:
 
 
 # ---------------------------------------------------------------------------
-# Нормализация документов
+# Pipeline-оркестраторы (per-page streaming, без аккумуляторов)
 # ---------------------------------------------------------------------------
 
-class DocumentNormalizer:
-    """Обогащение документов метаданными Confluence."""
+def _streaming_pipeline(
+    loading_events: Iterator[PipelineEvent],
+    chunker: ChunkingStrategy,
+    vs_service: VectorStoreService,
+    collection_name: str,
+    storage_params: StorageParams,
+) -> Iterator[PipelineEvent]:
+    """Общий потоковый пайплайн: загрузка → чанкинг → сохранение.
 
-    @staticmethod
-    def normalize(docs: List[Document], space_key: str, page_id: str, base_url: str) -> List[Document]:
-        """Добавить метаданные Confluence к каждому документу."""
-        url = f"{base_url.rstrip('/')}/pages/viewpage.action?pageId={page_id}"
-        out: List[Document] = []
-        for d in docs:
-            md = dict(getattr(d, "metadata", {}) or {})
-            md.setdefault("type", "original")
-            md["source"] = "confluence"
-            md["space_key"] = space_key
-            md["page_id"] = page_id
-            md.setdefault("url", url)
-            out.append(Document(page_content=d.page_content, metadata=md))
-        return out
-
-    @staticmethod
-    def make_chunk_ids(space_key: str, page_id: str, count: int) -> List[str]:
-        """Сгенерировать детерминированные ID чанков."""
-        return [f"{space_key}-{page_id}-{i:03d}" for i in range(count)]
-
-
-# ---------------------------------------------------------------------------
-# IngestionService — чанкинг + сохранение (source-agnostic)
-# ---------------------------------------------------------------------------
-
-class IngestionService:
-    """Пайплайн: документы -> чанки -> ChromaDB.
-
-    Не зависит от источника данных — принимает list[Document].
+    Обрабатывает постранично: загрузил страницу → чанки → в батч → сохранил.
+    В памяти только текущая страница + текущий батч.
     """
+    vs_service.verify_embedding_connection()
+    vectorstore = vs_service.get_vectorstore(collection_name)
+    batch_size = storage_params.batch_size
 
-    def __init__(self, chunker: ChunkingStrategy, vs_service: VectorStoreService) -> None:
-        self._chunker = chunker
-        self._vs = vs_service
+    batch: list[Document] = []
+    batch_idx = 0
+    total_stored = 0
+    total_failed = 0
+    cumulative_chunks = 0
+    has_documents = False
 
-    def chunk(
-        self,
-        documents: List[Document],
-        progress: ProgressCallback | None = None,
-    ) -> List[Document]:
-        """Разбить документы на чанки с прогрессом по документам.
+    for event in loading_events:
+        yield event
 
-        Raises:
-            IngestionError: если чанкинг не произвёл ни одного документа.
-        """
-        cb = progress or NoOpProgress()
-        total = len(documents)
-        all_chunks: List[Document] = []
+        if not isinstance(event, PageLoaded):
+            continue
 
-        for idx, doc in enumerate(documents, start=1):
-            title = (doc.metadata or {}).get("title", f"документ {idx}")
+        if not event.documents:
+            continue
 
-            def section_progress(sec_idx: int, sec_total: int, sec_title: str) -> None:
-                cb.on_step(idx, total, f"{title} — секция {sec_idx}/{sec_total}: {sec_title}")
+        has_documents = True
 
-            doc_chunks = self._chunker.split_documents([doc], on_section=section_progress)
-            all_chunks.extend(doc_chunks)
+        # Чанкинг текущей страницы — yield события, собираем чанки в батч
+        for chunk_event in chunker.split_documents(event.documents):
+            if isinstance(chunk_event, SectionChunked):
+                yield SectionChunked(
+                    doc_index=event.index,
+                    doc_total=event.total,
+                    section_index=chunk_event.section_index,
+                    section_total=chunk_event.section_total,
+                    section_title=chunk_event.section_title,
+                )
+            elif isinstance(chunk_event, ChunkProduced):
+                cumulative_chunks += 1
+                yield ChunkProduced(chunk=chunk_event.chunk, cumulative_chunks=cumulative_chunks)
+                batch.append(chunk_event.chunk)
 
-        cb.on_complete()
+                # Батч полный — сохраняем
+                if len(batch) >= batch_size:
+                    yield from _flush_batch(
+                        vs_service, vectorstore, batch, batch_idx,
+                        total_stored, total_failed, cumulative_chunks,
+                    )
+                    total_stored += len(batch)
+                    batch = []
+                    batch_idx += 1
 
-        if not all_chunks:
-            raise IngestionError("Чанкинг не произвёл ни одного документа")
-        return all_chunks
-
-    def store(
-        self,
-        chunks: List[Document],
-        collection_name: str,
-        storage_params: StorageParams,
-    ) -> IngestionResult:
-        """Сохранить чанки в ChromaDB.
-
-        Raises:
-            EmbeddingConnectionError: если не удалось подключиться к эмбеддингам.
-            DocumentStorageError: если все батчи завершились ошибкой.
-        """
-
-        store = self._vs.store_documents(
-            chunks,
-            collection_name=collection_name,
-            batch_size=storage_params.batch_size,
+    # Дочищаем остаток батча
+    if batch:
+        yield from _flush_batch(
+            vs_service, vectorstore, batch, batch_idx,
+            total_stored, total_failed, cumulative_chunks,
         )
-        stored_count = len(store.get().get("documents", []) or []) if store else 0
-        return IngestionResult(input_documents=len(chunks), chunks_stored=stored_count)
+        total_stored += len(batch)
+
+    if has_documents and cumulative_chunks > 0:
+        yield ChunkingDone(total_chunks=cumulative_chunks)
+
+    yield StorageDone(total_stored=total_stored, total_failed=total_failed)
+
+
+def _flush_batch(
+    vs_service: VectorStoreService,
+    vectorstore,  # noqa: ANN001
+    batch: list[Document],
+    batch_idx: int,
+    total_stored: int,
+    total_failed: int,
+    total_chunks: int,
+) -> Iterator[PipelineEvent]:
+    """Сохранить один батч, yield результат."""
+    try:
+        vs_service.store_batch(vectorstore, batch)
+        yield StoreBatchDone(
+            batch_index=batch_idx,
+            total_stored=total_stored + len(batch),
+            total_chunks=total_chunks,
+        )
+    except chromadb.errors.ChromaError as e:
+        log.warning("Батч %d не удалось сохранить: %s", batch_idx, e)
+        yield StoreBatchFailed(
+            batch_index=batch_idx,
+            error=str(e),
+            total_failed=total_failed + len(batch),
+            total_chunks=total_chunks,
+        )
+
+
+def run_page_pipeline(
+    page_ids: List[str],
+    collection_name: str,
+    cfg: AppConfig,
+    chunking_params: ChunkingParams,
+    storage_params: StorageParams,
+) -> Iterator[PipelineEvent]:
+    """Полный пайплайн: загрузка по page IDs → чанкинг → сохранение (per-page streaming)."""
+    batch_loader = BatchPageLoader(PageLoader(cfg))
+    chunker = AdvancedChunker(cfg, chunking_params)
+    vs_service = VectorStoreService(cfg)
+
+    yield from _streaming_pipeline(
+        loading_events=batch_loader.load(page_ids),
+        chunker=chunker,
+        vs_service=vs_service,
+        collection_name=collection_name,
+        storage_params=storage_params,
+    )
+
+
+def run_space_pipeline(
+    space_key: str,
+    collection_name: str,
+    cfg: AppConfig,
+    space_params: SpaceLoadParams,
+    chunking_params: ChunkingParams,
+    storage_params: StorageParams,
+) -> Iterator[PipelineEvent]:
+    """Полный пайплайн: загрузка пространства → чанкинг → сохранение (per-page streaming)."""
+    batch_loader = BatchPageLoader(PageLoader(cfg))
+    space_loader = SpaceLoader(batch_loader, cfg, space_params)
+    chunker = AdvancedChunker(cfg, chunking_params)
+    vs_service = VectorStoreService(cfg)
+
+    yield from _streaming_pipeline(
+        loading_events=space_loader.load(space_key),
+        chunker=chunker,
+        vs_service=vs_service,
+        collection_name=collection_name,
+        storage_params=storage_params,
+    )
