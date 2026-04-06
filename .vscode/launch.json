@@ -16,7 +16,8 @@
             "cwd": "${workspaceFolder}/docker",
             "envFile": "${workspaceFolder}/docker/env/.env.debug",
             "python": "${workspaceFolder}/.venv/bin/python",
-            "jinja": true
+            "jinja": true,
+            "env": { "LOG_LEVEL": "DEBUG" }
         },
         {
             "name": "Test: Streaming Pipeline (загрузка)",

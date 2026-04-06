@@ -35,7 +35,7 @@ class AppServices:
 
 def bootstrap(cfg: AppConfig) -> AppServices:
     """Собрать все сервисы и пайплайны из конфигурации."""
-    configure_logging()
+    configure_logging(cfg)
     configure_ssl()
 
     embeddings = create_embeddings(cfg)
@@ -59,10 +59,20 @@ def bootstrap(cfg: AppConfig) -> AppServices:
 # Фабрики инфраструктурных клиентов
 # ---------------------------------------------------------------------------
 
-def configure_logging() -> None:
+LOG_LEVELS: dict[str, int] = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
+
+
+def configure_logging(cfg: AppConfig) -> None:
     """Настроить логирование приложения в stdout."""
+    level = LOG_LEVELS.get(cfg.log_level.upper(), logging.INFO)
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format="%(asctime)s %(levelname)-7s %(name)s — %(message)s",
         datefmt="%H:%M:%S",
         stream=sys.stdout,

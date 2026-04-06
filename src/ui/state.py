@@ -32,6 +32,7 @@ class AppConfig:
     embedding_model: str = field(default_factory=lambda: secret("EMBEDDING_MODEL"))
     llm_timeout: int = field(default_factory=lambda: int(secret("LLM_TIMEOUT", "120")))
     embedding_timeout: int = field(default_factory=lambda: int(secret("EMBEDDING_TIMEOUT", "120")))
+    log_level: str = field(default_factory=lambda: secret("LOG_LEVEL", "INFO"))
 
     @property
     def litellm_base_url(self) -> str:
