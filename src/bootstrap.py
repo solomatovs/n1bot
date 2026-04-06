@@ -5,7 +5,9 @@
 """
 from __future__ import annotations
 
+import logging
 import ssl
+import sys
 import warnings
 from dataclasses import dataclass
 
@@ -33,6 +35,7 @@ class AppServices:
 
 def bootstrap(cfg: AppConfig) -> AppServices:
     """Собрать все сервисы и пайплайны из конфигурации."""
+    configure_logging()
     configure_ssl()
 
     embeddings = create_embeddings(cfg)
@@ -55,6 +58,17 @@ def bootstrap(cfg: AppConfig) -> AppServices:
 # ---------------------------------------------------------------------------
 # Фабрики инфраструктурных клиентов
 # ---------------------------------------------------------------------------
+
+def configure_logging() -> None:
+    """Настроить логирование приложения в stdout."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(name)s — %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stdout,
+        force=True,
+    )
+
 
 def configure_ssl() -> None:
     """Отключить проверку SSL глобально (корпоративная среда)."""
