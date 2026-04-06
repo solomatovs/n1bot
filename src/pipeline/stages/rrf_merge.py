@@ -1,4 +1,4 @@
-"""Стадия 4: RRF-слияние результатов пои��ка."""
+"""Стадия 4: RRF-слияние результатов поиска."""
 from __future__ import annotations
 
 from typing import Iterator
@@ -31,4 +31,4 @@ class RRFMergeStage:
                 f"Все варианты поиска завершились ошибкой: {'; '.join(ctx.search_errors)}"
             )
 
-        yield StageCompleted(stage=self.name, detail=f"{len(ctx.merged_docs)} документов после слияни��")
+        yield StageCompleted(stage=self.name, detail=f"{len(ctx.merged_docs)} документов после слияния")

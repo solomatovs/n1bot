@@ -51,5 +51,5 @@ class VectorSearchStage:
         total_docs = sum(len(rl) for rl in rank_lists)
         yield StageCompleted(
             stage=self.name,
-            detail=f"{total_docs} документов из {len(rank_lists)} вариант��в",
+            detail=f"{total_docs} документов из {len(rank_lists)} вариантов",
         )

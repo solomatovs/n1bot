@@ -24,7 +24,7 @@ from vectorstore import VectorStoreService
 
 
 def create_default_pipeline() -> QueryPipeline:
-    """Стандартный 10-стадийны�� RAG-пайплайн."""
+    """Стандартный 10-стадийный RAG-пайплайн."""
     return QueryPipeline([
         ClassifyQueryStage(),
         GenQueryVariantsStage(),
