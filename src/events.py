@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import List, Union
 
 from langchain_core.documents import Document
+from pipeline.events import QueryVariantsGenerated, StageCompleted, StageStarted
 
 
 # ---------------------------------------------------------------------------
@@ -157,4 +158,7 @@ ChatEvent = Union[
     ThinkingToken,
     AnswerToken,
     GenerationDone,
+    StageStarted,
+    StageCompleted,
+    QueryVariantsGenerated,
 ]

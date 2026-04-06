@@ -14,6 +14,7 @@ from events import (
     RetrievalStarted,
     ThinkingToken,
 )
+from pipeline.events import QueryVariantsGenerated, StageCompleted, StageStarted
 from rag import run_chat_pipeline
 from ui.components import (
     collection_selector,
@@ -110,10 +111,23 @@ def _consume_chat_pipeline(pipeline: Iterator[ChatEvent]) -> _ChatResult:
     thinking_ph = thinking_expander.empty()
     answer_ph = st.empty()
 
+    status_ph = st.empty()
+
     for event in pipeline:
         match event:
+            case StageStarted(stage=name):
+                status_ph.caption(f"⏳ {name}...")
+
+            case StageCompleted(stage=name, detail=d):
+                status_ph.caption(f"✓ {name}: {d}")
+
+            case QueryVariantsGenerated(variants=vs):
+                with st.expander("Переформулировки запроса", expanded=False):
+                    for v in vs:
+                        st.markdown(f"- {v}")
+
             case RetrievalStarted():
-                st.caption("Ищу релевантный контекст…")
+                status_ph.caption("Ищу релевантный контекст…")
 
             case RetrievalDone(context=ctx, sources_block=sb):
                 result.rag_context = ctx
@@ -131,7 +145,7 @@ def _consume_chat_pipeline(pipeline: Iterator[ChatEvent]) -> _ChatResult:
                     answer_ph.markdown(result.answer + "▌")
 
             case GenerationDone():
-                pass
+                status_ph.empty()
 
     # Финализация
     if result.thinking.strip():

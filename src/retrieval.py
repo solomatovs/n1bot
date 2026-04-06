@@ -4,15 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-import chromadb.errors
-from langchain_chroma import Chroma
 from langchain_core.documents import Document
-from openai import APIError as OpenAIAPIError
-from openai import OpenAI
-
-from errors import RetrievalError
-from ui.state import SearchParams
-from vectorstore import VectorStoreService
 
 log = logging.getLogger(__name__)
 
@@ -34,33 +26,6 @@ class RetrievalConfig:
 
 
 RETRIEVAL_CONFIG = RetrievalConfig()
-
-
-# ---------------------------------------------------------------------------
-# Генерация переформулировок
-# ---------------------------------------------------------------------------
-
-def _gen_query_variants(openai: OpenAI, model: str, q: str, n: int) -> List[str]:
-    """Сгенерировать переформулировки запроса.
-
-    При ошибке логирует предупреждение и возвращает оригинальный запрос.
-    """
-    prompt = f"Дай {n} кратких переформулировок запроса; по одной на строку.\nЗапрос: {q}"
-    try:
-        r = openai.chat.completions.create(
-            model=model,
-            temperature=RETRIEVAL_CONFIG.mq_temperature,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        content = r.choices[0].message.content
-        if not content:
-            log.warning("Модель вернула пустой ответ при генерации переформулировок")
-            return [q]
-        lines = [s.strip("- ").strip() for s in content.splitlines() if s.strip()]
-        return [q] + lines[:n]
-    except OpenAIAPIError as e:
-        log.warning("Не удалось сгенерировать переформулировки: %s", e)
-        return [q]
 
 
 # ---------------------------------------------------------------------------
@@ -217,90 +182,3 @@ def _build_search_filter(
     return {"$and": conditions}
 
 
-# ---------------------------------------------------------------------------
-# Сервис поиска
-# ---------------------------------------------------------------------------
-
-class RetrievalService:
-    """Сервис поиска документов в векторном хранилище.
-
-    Инкапсулирует VectorStoreService и OpenAI-клиент,
-    чтобы метод search принимал только параметры запроса.
-    """
-
-    def __init__(self, vs_service: VectorStoreService, openai_client: OpenAI) -> None:
-        self._vs = vs_service
-        self._client = openai_client
-
-    def search(
-        self,
-        collection_name: str,
-        query: str,
-        model: str,
-        params: SearchParams,
-    ) -> List[Document]:
-        """Найти релевантные документы по запросу.
-
-        Raises:
-            RetrievalError: если все варианты поиска завершились ошибкой.
-        """
-        vectorstore = self._vs.get_vectorstore(collection_name)
-        query_type = _classify_query_type(query)
-        search_filters = _build_search_filter(params.content_types, query_type)
-
-        if not params.use_multi_query:
-            return self._single_query_search(vectorstore, query, params.top_n, search_filters)
-
-        cands = self._multi_query_search(
-            vectorstore, query, model, params, search_filters,
-        )
-
-        reranked = _rerank_results(cands, query_type)
-        return _group_limit_per_page(reranked[:params.top_n], per_page=params.per_page)
-
-    # -- приватные методы ------------------------------------------------------
-
-    @staticmethod
-    def _single_query_search(
-        vectorstore: Chroma, query: str, k: int, filters: dict,
-    ) -> List[Document]:
-        retr = vectorstore.as_retriever(search_kwargs={"k": k, "filter": filters})
-        return retr.invoke(query) or []
-
-    def _multi_query_search(
-        self,
-        vectorstore: Chroma,
-        query: str,
-        model: str,
-        params: SearchParams,
-        filters: dict,
-    ) -> List[Document]:
-        """Поиск с переформулировками и RRF-слиянием.
-
-        Raises:
-            RetrievalError: если все варианты поиска завершились ошибкой.
-        """
-        variants = _gen_query_variants(self._client, model, query, n=params.mq_variants)
-        rank_lists: List[List[Document]] = []
-        errors: list[str] = []
-
-        for v in variants:
-            try:
-                retr = vectorstore.as_retriever(
-                    search_kwargs={"k": params.k_per_variant, "filter": filters},
-                )
-                results = retr.invoke(v) or []
-                rank_lists.append(results)
-            except (chromadb.errors.ChromaError, RuntimeError) as e:
-                log.warning("Ошибка поиска для варианта '%s': %s", v, e)
-                errors.append(f"'{v}': {e}")
-                rank_lists.append([])
-
-        merged = _rrf_merge(rank_lists)
-
-        if not merged and errors:
-            raise RetrievalError(
-                f"Все варианты поиска завершились ошибкой: {'; '.join(errors)}"
-            )
-
-        return merged
