@@ -56,17 +56,60 @@ def list_collections(db_path: str) -> List[str]:
 
 
 @st.cache_data(ttl=CacheTTL.models, show_spinner=False)
-def get_openai_models(openai_url: str, api_key: str) -> List[str]:
+def _fetch_model_info(base_url: str, api_key: str) -> List[dict]:
+    """Получить расширенную информацию о моделях через /v1/model/info."""
     try:
         resp = requests.get(
-            f"{openai_url.rstrip('/')}/models",
+            f"{base_url.rstrip('/')}/v1/model/info",
             headers={"Authorization": f"Bearer {api_key}"},
+        )
+        resp.raise_for_status()
+        return resp.json().get("data", [])
+    except (requests.RequestException, KeyError, ValueError) as e:
+        log.warning("Failed to fetch model info: %s", e)
+        return []
+
+
+def _filter_models_by_mode(base_url: str, api_key: str, mode: str) -> List[str]:
+    """Отфильтровать модели по mode (chat, embedding, ...)."""
+    data = _fetch_model_info(base_url, api_key)
+    return sorted(
+        m.get("model_name", "")
+        for m in data
+        if m.get("model_info", {}).get("mode") == mode
+    )
+
+
+def get_chat_models(cfg: AppConfig) -> List[str]:
+    """Получить список chat-моделей (для генерации)."""
+    models = _filter_models_by_mode(cfg.litellm_base_url, cfg.litellm_api_key, "chat")
+    if not models:
+        log.warning("No chat models found, falling back to /models endpoint")
+        return _fetch_all_model_ids(cfg)
+    return models
+
+
+def get_embedding_models(cfg: AppConfig) -> List[str]:
+    """Получить список embedding-моделей."""
+    models = _filter_models_by_mode(cfg.litellm_base_url, cfg.litellm_api_key, "embedding")
+    if not models:
+        log.warning("No embedding models found, falling back to /models endpoint")
+        return _fetch_all_model_ids(cfg)
+    return models
+
+
+@st.cache_data(ttl=CacheTTL.models, show_spinner=False)
+def _fetch_all_model_ids(cfg: AppConfig) -> List[str]:
+    """Fallback: получить все модели через /v1/models (без фильтрации)."""
+    try:
+        resp = requests.get(
+            f"{cfg.openai_url.rstrip('/')}/models",
+            headers={"Authorization": f"Bearer {cfg.litellm_api_key}"},
         )
         resp.raise_for_status()
         return sorted(m["id"] for m in resp.json()["data"])
     except (requests.RequestException, KeyError, ValueError) as e:
         log.warning("Failed to fetch models: %s", e)
-        st.error(f"Ошибка получения моделей: {e}")
         return []
 
 
@@ -129,14 +172,20 @@ def collection_selector(cfg: AppConfig, *, key: str, current: str) -> str:
 
 def model_selector(cfg: AppConfig) -> str:
     """Отрисовать селектор модели генерации и вернуть выбранное значение."""
-    models = get_openai_models(cfg.openai_url, cfg.litellm_api_key)
-    return st.selectbox("Модель генерации", models, index=_safe_index(models, cfg.default_model)) or cfg.default_model
+    models = get_chat_models(cfg)
+    if not models:
+        st.warning("Нет доступных моделей генерации.")
+        return cfg.default_model
+    return st.selectbox("Модель генерации", models, index=_safe_index(models, cfg.default_model)) or models[0]
 
 
 def embedding_model_selector(cfg: AppConfig, *, key: str = "embedding_model") -> str:
     """Отрисовать селектор embedding модели и вернуть выбранное значение."""
-    models = get_openai_models(cfg.openai_url, cfg.litellm_api_key)
-    return st.selectbox("Embedding модель", models, index=_safe_index(models, cfg.embedding_model), key=key) or cfg.embedding_model
+    models = get_embedding_models(cfg)
+    if not models:
+        st.warning("Нет доступных embedding моделей.")
+        return cfg.embedding_model
+    return st.selectbox("Embedding модель", models, index=_safe_index(models, cfg.embedding_model), key=key) or models[0]
 
 
 # ---------------------------------------------------------------------------
