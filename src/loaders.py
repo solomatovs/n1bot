@@ -192,6 +192,7 @@ def run_page_pipeline(
     services: AppServices,
     chunking_params: ChunkingParams,
     storage_params: StorageParams,
+    embedding_model: str = "",
 ) -> Iterator[LoadPipelineEvent]:
     """Полный пайплайн: загрузка по page IDs -> чанкинг -> сохранение."""
     from load_pipeline.factory import create_load_context
@@ -201,6 +202,7 @@ def run_page_pipeline(
         chunking_params=chunking_params,
         storage_params=storage_params,
         services=services,
+        embedding_model=embedding_model,
         page_ids=page_ids,
     )
     yield from services.load_pipeline.run(ctx)
@@ -213,6 +215,7 @@ def run_space_pipeline(
     space_params: SpaceLoadParams,
     chunking_params: ChunkingParams,
     storage_params: StorageParams,
+    embedding_model: str = "",
 ) -> Iterator[LoadPipelineEvent]:
     """Полный пайплайн: загрузка пространства -> чанкинг -> сохранение."""
     from load_pipeline.factory import create_load_context
@@ -222,6 +225,7 @@ def run_space_pipeline(
         chunking_params=chunking_params,
         storage_params=storage_params,
         services=services,
+        embedding_model=embedding_model,
         space_key=space_key,
         space_params=space_params,
     )

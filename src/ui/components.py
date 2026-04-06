@@ -100,13 +100,25 @@ def get_collection_preview(db_path: str, collection_name: str) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Утилиты
+# ---------------------------------------------------------------------------
+
+def _safe_index(items: List[str], value: str, fallback: int = 0) -> int:
+    """Найти индекс значения в списке или вернуть fallback."""
+    try:
+        return items.index(value)
+    except ValueError:
+        return fallback
+
+
+# ---------------------------------------------------------------------------
 # Селекторы
 # ---------------------------------------------------------------------------
 
 def collection_selector(cfg: AppConfig, *, key: str, current: str) -> str:
     """Отрисовать селектор коллекции и вернуть выбранное значение."""
     colls = list_collections(cfg.chroma_db_path)
-    index = colls.index(current) if current in colls else 0
+    index = _safe_index(colls, current)
     return st.selectbox(
         "Имя векторной БД (коллекция)",
         colls or [current],
@@ -116,10 +128,15 @@ def collection_selector(cfg: AppConfig, *, key: str, current: str) -> str:
 
 
 def model_selector(cfg: AppConfig) -> str:
-    """Отрисовать селектор модели и вернуть выбранное значение."""
+    """Отрисовать селектор модели генерации и вернуть выбранное значение."""
     models = get_openai_models(cfg.openai_url, cfg.litellm_api_key)
-    default_idx = models.index(cfg.default_model) if cfg.default_model in models else 0
-    return st.selectbox("Модель генерации", models, index=default_idx) or cfg.default_model
+    return st.selectbox("Модель генерации", models, index=_safe_index(models, cfg.default_model)) or cfg.default_model
+
+
+def embedding_model_selector(cfg: AppConfig, *, key: str = "embedding_model") -> str:
+    """Отрисовать селектор embedding модели и вернуть выбранное значение."""
+    models = get_openai_models(cfg.openai_url, cfg.litellm_api_key)
+    return st.selectbox("Embedding модель", models, index=_safe_index(models, cfg.embedding_model), key=key) or cfg.embedding_model
 
 
 # ---------------------------------------------------------------------------
@@ -187,8 +204,7 @@ def render_retrieval_settings(container: DeltaGenerator, key_prefix: str = "sp")
             help="Пусто = автоопределение по запросу. Иначе поиск только по выбранным типам",
             key=f"{p}_content_types",
         )
-        label_to_ct = {ct.label: ct.key for ct in ContentType}
-        content_types = [label_to_ct[lb] for lb in chosen_labels] or None
+        content_types = ContentType.labels_to_keys(chosen_labels)
 
         st.divider()
 

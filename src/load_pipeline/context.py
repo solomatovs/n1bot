@@ -36,6 +36,9 @@ class LoadContext:
     chunker: ChunkingStrategy
     vectorstore_service: VectorStoreService
 
+    # --- Embedding модель для этой загрузки ---
+    embedding_model: str = ""
+
     # --- Опциональные входные данные (один из двух) ---
     page_ids: List[str] = field(default_factory=list)
     space_key: str = ""

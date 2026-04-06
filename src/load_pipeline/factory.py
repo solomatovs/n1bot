@@ -26,12 +26,15 @@ def create_load_context(
     chunking_params: ChunkingParams,
     storage_params: StorageParams,
     services: AppServices,
+    embedding_model: str = "",
     page_ids: Optional[List[str]] = None,
     space_key: str = "",
     space_params: Optional[SpaceLoadParams] = None,
 ) -> LoadContext:
     """Создать LoadContext из AppServices."""
-    chunker = AdvancedChunker(services.embeddings, chunking_params)
+    model = embedding_model or services.cfg.embedding_model
+    embedding = services.vectorstore_service._resolve_embedding(model)
+    chunker = AdvancedChunker(embedding, chunking_params)
 
     return LoadContext(
         collection_name=collection_name,
@@ -40,6 +43,7 @@ def create_load_context(
         storage_params=storage_params,
         chunker=chunker,
         vectorstore_service=services.vectorstore_service,
+        embedding_model=model,
         page_ids=page_ids or [],
         space_key=space_key,
         space_params=space_params or SpaceLoadParams(),

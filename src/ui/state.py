@@ -69,6 +69,13 @@ class ContentType(Enum):
     def label(self) -> str:
         return self._label
 
+    @classmethod
+    def labels_to_keys(cls, labels: List[str]) -> list[str] | None:
+        """Преобразовать выбранные labels в ключи. Пустой список → None."""
+        label_map = {ct.label: ct.key for ct in cls}
+        keys = [label_map[lb] for lb in labels if lb in label_map]
+        return keys or None
+
 
 @dataclass(frozen=True)
 class IntSliderRange:

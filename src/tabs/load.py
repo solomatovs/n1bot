@@ -21,7 +21,7 @@ from load_pipeline.events import (
 )
 from bootstrap import AppServices
 from loaders import run_page_pipeline, run_space_pipeline
-from ui.components import render_chunking_settings, render_page_id_settings, render_space_settings
+from ui.components import embedding_model_selector, render_chunking_settings, render_page_id_settings, render_space_settings
 from ui.state import SessionState
 
 
@@ -42,6 +42,7 @@ def render(services: AppServices, state: SessionState) -> None:
 # ---------------------------------------------------------------------------
 
 def _render_page_tab(services: AppServices) -> None:
+    emb_model = embedding_model_selector(services.cfg, key="pid_emb_model")
     chunking_params = render_chunking_settings(key_prefix="pid_cp")
     storage_params = render_page_id_settings()
 
@@ -71,6 +72,7 @@ def _render_page_tab(services: AppServices) -> None:
             services=services,
             chunking_params=chunking_params,
             storage_params=storage_params,
+            embedding_model=emb_model,
         )
         _consume_pipeline(pipeline)
         st.cache_data.clear()
@@ -83,6 +85,7 @@ def _render_page_tab(services: AppServices) -> None:
 # ---------------------------------------------------------------------------
 
 def _render_space_tab(services: AppServices) -> None:
+    emb_model = embedding_model_selector(services.cfg, key="sp_emb_model")
     chunking_params = render_chunking_settings(key_prefix="sp_cp")
     space_params, storage_params = render_space_settings()
 
@@ -105,6 +108,7 @@ def _render_space_tab(services: AppServices) -> None:
             space_params=space_params,
             chunking_params=chunking_params,
             storage_params=storage_params,
+            embedding_model=emb_model,
         )
         _consume_pipeline(pipeline)
         st.cache_data.clear()
