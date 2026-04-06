@@ -17,6 +17,11 @@ from config import secret
 
 @dataclass(frozen=True)
 class AppConfig:
+    """Единственный источник конфигурации приложения.
+
+    Все секреты и переменные окружения читаются здесь.
+    Остальные модули получают значения через cfg.*.
+    """
     chroma_db_path: str = field(default_factory=lambda: Path(secret("CHROMA_DB_PATH")).as_posix())
     litellm_url: str = field(default_factory=lambda: secret("LITELLM_URL"))
     litellm_api_key: str = field(default_factory=lambda: secret("LITELLM_API_KEY"))
@@ -24,10 +29,19 @@ class AppConfig:
     confluence_token: str = field(default_factory=lambda: secret("CONFLUENCE_TOKEN"))
     default_collection: str = field(default_factory=lambda: secret("DEFAULT_COLLECTION"))
     default_model: str = field(default_factory=lambda: secret("LLM_MODEL"))
+    embedding_model: str = field(default_factory=lambda: secret("EMBEDDING_MODEL"))
+    llm_timeout: int = field(default_factory=lambda: int(secret("LLM_TIMEOUT", "120")))
+    embedding_timeout: int = field(default_factory=lambda: int(secret("EMBEDDING_TIMEOUT", "120")))
+
+    @property
+    def litellm_base_url(self) -> str:
+        """Базовый URL без /v1 — для эмбеддингов и прямых запросов."""
+        return self.litellm_url.rstrip("/").removesuffix("/v1")
 
     @property
     def openai_url(self) -> str:
-        return f"{self.litellm_url.rstrip('/')}/v1"
+        """URL с /v1 — для OpenAI-совместимого API."""
+        return f"{self.litellm_base_url}/v1"
 
 
 # ---------------------------------------------------------------------------

@@ -1,13 +1,10 @@
+"""Эмбеддинги через liteLLM (OpenAI-совместимый API)."""
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List
 
 import httpx
 from langchain.embeddings.base import Embeddings
-from langchain_openai import OpenAIEmbeddings
-from pydantic import SecretStr
-
-from config import EMBEDDING_MODEL, EMBEDDING_TIMEOUT
 
 
 class LiteLLMEmbeddings(Embeddings):
@@ -17,15 +14,15 @@ class LiteLLMEmbeddings(Embeddings):
         self,
         model: str,
         base_url: str,
-        api_key: str = "unused",
-        timeout: Optional[int] = None,
-    ):
+        api_key: str,
+        timeout: int,
+    ) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.client = httpx.Client(
             verify=False,
-            timeout=float(timeout if timeout is not None else EMBEDDING_TIMEOUT),
+            timeout=float(timeout),
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
@@ -41,7 +38,7 @@ class LiteLLMEmbeddings(Embeddings):
             json={"model": self.model, "input": texts},
         )
         if response.status_code != 200:
-            raise Exception(f"Error from liteLLM: {response.status_code} - {response.text}")
+            raise ConnectionError(f"Ошибка liteLLM: {response.status_code} - {response.text}")
 
         data = response.json()
         return [item["embedding"] for item in data["data"]]
@@ -55,28 +52,3 @@ class LiteLLMEmbeddings(Embeddings):
     def __del__(self) -> None:
         if hasattr(self, "client"):
             self.client.close()
-
-
-class E5OllamaEmbeddings(OpenAIEmbeddings):
-    """Адаптер для liteLLM с префиксами E5."""
-
-    def __init__(
-        self,
-        model: str = EMBEDDING_MODEL,
-        base_url: Optional[str] = None,
-        api_key: str = "unused",
-        **kwargs,
-    ):
-        base = (base_url or "").rstrip("/")
-        super().__init__(
-            model=model,
-            base_url=f"{base}/v1",
-            api_key=SecretStr(api_key),
-            **kwargs,
-        )
-
-    def embed_query(self, text: str):
-        return super().embed_query(f"query: {text}")
-
-    def embed_documents(self, texts: List[str]):
-        return super().embed_documents([f"passage: {t}" for t in texts])

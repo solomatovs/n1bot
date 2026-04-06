@@ -8,7 +8,6 @@ from chromadb.config import Settings
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 
-from config import EMBEDDING_MODEL
 from embeddings import LiteLLMEmbeddings
 from errors import EmbeddingConnectionError
 from ui.state import AppConfig
@@ -24,9 +23,10 @@ class VectorStoreService:
 
     def __init__(self, cfg: AppConfig) -> None:
         self._db_path = cfg.chroma_db_path
-        self._base_url = cfg.litellm_url.replace("/v1", "").rstrip("/")
+        self._base_url = cfg.litellm_base_url
         self._api_key = cfg.litellm_api_key
-        self._embedding_model = EMBEDDING_MODEL
+        self._embedding_model = cfg.embedding_model
+        self._embedding_timeout = cfg.embedding_timeout
 
     def get_vectorstore(self, collection_name: str) -> Chroma:
         """Получить Chroma vectorstore для указанной коллекции."""
@@ -74,6 +74,7 @@ class VectorStoreService:
             model=self._embedding_model,
             base_url=self._base_url,
             api_key=self._api_key,
+            timeout=self._embedding_timeout,
         )
 
     @staticmethod

@@ -51,10 +51,10 @@ def list_collections(db_path: str) -> List[str]:
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def get_openai_models(litellm_url: str, api_key: str) -> List[str]:
+def get_openai_models(openai_url: str, api_key: str) -> List[str]:
     try:
         resp = requests.get(
-            f"{litellm_url.rstrip('/')}/v1/models",
+            f"{openai_url.rstrip('/')}/models",
             headers={"Authorization": f"Bearer {api_key}"},
         )
         resp.raise_for_status()
@@ -112,7 +112,7 @@ def collection_selector(cfg: AppConfig, *, key: str, current: str) -> str:
 
 def model_selector(cfg: AppConfig) -> str:
     """Отрисовать селектор модели и вернуть выбранное значение."""
-    models = get_openai_models(cfg.litellm_url, cfg.litellm_api_key)
+    models = get_openai_models(cfg.openai_url, cfg.litellm_api_key)
     default_idx = models.index(cfg.default_model) if cfg.default_model in models else 0
     return st.selectbox("Модель генерации", models, index=default_idx) or cfg.default_model
 

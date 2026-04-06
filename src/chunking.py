@@ -8,7 +8,7 @@ from typing import Dict, Iterator, List, Protocol, Union
 import numpy as np
 from langchain_core.documents import Document
 
-from config import EMBEDDING_MODEL, enc
+from config import enc
 from embeddings import LiteLLMEmbeddings
 from events import ChunkProduced, SectionChunked
 from ui.state import AppConfig, ChunkingParams
@@ -41,9 +41,10 @@ class AdvancedChunker:
     def __init__(self, cfg: AppConfig, params: ChunkingParams) -> None:
         self._params = params
         self._embedding = LiteLLMEmbeddings(
-            model=EMBEDDING_MODEL,
-            base_url=cfg.litellm_url.replace("/v1", "").rstrip("/"),
+            model=cfg.embedding_model,
+            base_url=cfg.litellm_base_url,
             api_key=cfg.litellm_api_key,
+            timeout=cfg.embedding_timeout,
         )
         self._tokenizer = enc
 

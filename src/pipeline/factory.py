@@ -4,7 +4,6 @@ from __future__ import annotations
 import httpx
 from openai import OpenAI
 
-from config import LLM_TIMEOUT, secret
 from pipeline.context import PipelineContext
 from pipeline.pipeline import QueryPipeline
 from pipeline.stages import (
@@ -25,7 +24,7 @@ from vectorstore import VectorStoreService
 
 
 def create_default_pipeline() -> QueryPipeline:
-    """Стандартный 10-стадийный RAG-пайплайн."""
+    """Стандартный 10-стадийны�� RAG-пайплайн."""
     return QueryPipeline([
         ClassifyQueryStage(),
         GenQueryVariantsStage(),
@@ -49,7 +48,7 @@ def create_pipeline_context(
     cfg: AppConfig,
 ) -> PipelineContext:
     """Создать PipelineContext со всеми зависимостями."""
-    client = _create_openai_client(cfg.litellm_url)
+    client = create_openai_client(cfg)
     vs = VectorStoreService(cfg)
 
     return PipelineContext(
@@ -64,22 +63,18 @@ def create_pipeline_context(
     )
 
 
-def _create_openai_client(base_url: str) -> OpenAI:
-    """Создаёт OpenAI-клиент с отключённой проверкой SSL для liteLLM."""
-    base_url = base_url.rstrip("/")
-    if not base_url.endswith("/v1"):
-        base_url = f"{base_url}/v1"
-
+def create_openai_client(cfg: AppConfig) -> OpenAI:
+    """Создаёт OpenAI-клиент из AppConfig."""
     http_client = httpx.Client(
         verify=False,
-        timeout=float(LLM_TIMEOUT),
+        timeout=float(cfg.llm_timeout),
         headers={
-            "Authorization": f"Bearer {secret('LITELLM_API_KEY')}",
+            "Authorization": f"Bearer {cfg.litellm_api_key}",
             "Content-Type": "application/json",
         },
     )
     return OpenAI(
-        base_url=base_url,
-        api_key=secret("LITELLM_API_KEY"),
+        base_url=cfg.openai_url,
+        api_key=cfg.litellm_api_key,
         http_client=http_client,
     )

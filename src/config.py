@@ -1,11 +1,12 @@
+"""Утилиты конфигурации — secret() и tiktoken encoder."""
 from __future__ import annotations
 
 import os
-
 import ssl
 import warnings
-import urllib3
 from typing import List
+
+import urllib3
 
 import streamlit as st
 
@@ -20,13 +21,14 @@ except AttributeError:
 else:
     ssl._create_default_https_context = _create_unverified_https_context
 
+
 # ---------------------------------------------------------------------------
 # Streamlit secrets (env vars override)
 # ---------------------------------------------------------------------------
 
 
 def secret(key: str, default: str = "") -> str:
-    """Return env var if set, otherwise fall back to st.secrets."""
+    """Получить значение из env var, иначе из st.secrets."""
     val = os.environ.get(key)
     if val is not None:
         return val
@@ -36,10 +38,6 @@ def secret(key: str, default: str = "") -> str:
     except Exception:
         return default
 
-
-EMBEDDING_MODEL: str = secret("EMBEDDING_MODEL")
-LLM_TIMEOUT: int = int(secret("LLM_TIMEOUT", "120"))
-EMBEDDING_TIMEOUT: int = int(secret("EMBEDDING_TIMEOUT", "120"))
 
 # ---------------------------------------------------------------------------
 # tiktoken (офлайн-безопасно)
