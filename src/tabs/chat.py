@@ -111,7 +111,7 @@ def _consume_chat_pipeline(pipeline: Iterator[ChatEvent]) -> _ChatResult:
 
     thinking_expander = None
     thinking_ph = None
-    answer_ph = st.empty()
+    answer_ph = None
     status_ph = st.empty()
 
     for event in pipeline:
@@ -137,13 +137,15 @@ def _consume_chat_pipeline(pipeline: Iterator[ChatEvent]) -> _ChatResult:
                     st.markdown(ctx)
 
             case ThinkingToken(token=tok):
-                if thinking_expander is None:
+                if thinking_ph is None:
                     thinking_expander = st.expander("Процесс размышления", expanded=True)
                     thinking_ph = thinking_expander.empty()
                 result.thinking += tok
                 thinking_ph.markdown(result.thinking + "▌")
 
             case AnswerToken(token=tok):
+                if answer_ph is None:
+                    answer_ph = st.empty()
                 result.answer += tok
                 if result.answer.strip():
                     answer_ph.markdown(result.answer + "▌")
@@ -158,7 +160,7 @@ def _consume_chat_pipeline(pipeline: Iterator[ChatEvent]) -> _ChatResult:
     if result.sources_block:
         result.answer = f"{result.answer}\n\n---\n**Источники:**\n{result.sources_block}"
 
-    if result.answer.strip():
+    if answer_ph is not None and result.answer.strip():
         answer_ph.markdown(result.answer)
 
     return result
