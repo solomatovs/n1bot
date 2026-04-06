@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from typing import Iterator
 
-from query_pipeline import create_default_pipeline, create_query_context
+from bootstrap import AppServices
 from query_pipeline.events import ChatEvent, RetrievalStarted
-from ui.state import AppConfig, PromptParams, SearchParams
+from query_pipeline.factory import create_query_context
+from ui.state import PromptParams, SearchParams
 
 
 def run_chat_pipeline(
@@ -14,22 +15,17 @@ def run_chat_pipeline(
     model: str,
     params: SearchParams,
     prompts: PromptParams,
-    cfg: AppConfig,
+    services: AppServices,
 ) -> Iterator[ChatEvent]:
-    """Полный RAG-пайплайн как генератор событий.
-
-    Обратно-совместимая обёртка над query_pipeline.
-    Сигнатура не изменилась — tabs/chat.py вызывает как раньше.
-    """
+    """Полный RAG-пайплайн как генератор событий."""
     yield RetrievalStarted(query=query, collection=collection_name)
 
-    pipeline = create_default_pipeline()
     ctx = create_query_context(
         query=query,
         collection_name=collection_name,
         model=model,
         search_params=params,
         prompt_params=prompts,
-        cfg=cfg,
+        services=services,
     )
-    yield from pipeline.run(ctx)
+    yield from services.query_pipeline.run(ctx)

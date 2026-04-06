@@ -11,7 +11,7 @@ from langchain_core.documents import Document
 from config import enc
 from embeddings import LiteLLMEmbeddings
 from load_pipeline.events import ChunkProduced, SectionChunked
-from ui.state import AppConfig, ChunkingParams
+from ui.state import ChunkingParams
 
 log = logging.getLogger(__name__)
 
@@ -38,14 +38,9 @@ class AdvancedChunker:
     Yield-based: каждая секция и каждый чанк — отдельное событие.
     """
 
-    def __init__(self, cfg: AppConfig, params: ChunkingParams) -> None:
+    def __init__(self, embeddings: LiteLLMEmbeddings, params: ChunkingParams) -> None:
         self._params = params
-        self._embedding = LiteLLMEmbeddings(
-            model=cfg.embedding_model,
-            base_url=cfg.litellm_base_url,
-            api_key=cfg.litellm_api_key,
-            timeout=cfg.embedding_timeout,
-        )
+        self._embedding = embeddings
         self._tokenizer = enc
 
     def split_documents(self, docs: List[Document]) -> Iterator[ChunkEvent]:

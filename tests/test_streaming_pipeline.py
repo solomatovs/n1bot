@@ -36,9 +36,9 @@ from load_pipeline.events import (
     StoreBatchDone,
     StoreBatchFailed,
 )
+from bootstrap import bootstrap
 from loaders import run_space_pipeline
 from ui.state import AppConfig, ChunkingParams, SpaceLoadParams, StorageParams
-from vectorstore import VectorStoreService
 
 
 def _fmt_mem(kb: float) -> str:
@@ -49,6 +49,7 @@ def _fmt_mem(kb: float) -> str:
 
 def run(space_key: str, max_pages: int, batch_size: int, collection: str) -> None:
     cfg = AppConfig()
+    services = bootstrap(cfg)
     tracemalloc.start()
 
     print(f"=== Потоковый пайплайн: space={space_key}, max_pages={max_pages}, batch_size={batch_size} ===\n")
@@ -59,7 +60,7 @@ def run(space_key: str, max_pages: int, batch_size: int, collection: str) -> Non
     for event in run_space_pipeline(
         space_key=space_key,
         collection_name=collection,
-        cfg=cfg,
+        services=services,
         space_params=SpaceLoadParams(api_page_limit=50, max_pages=max_pages),
         chunking_params=ChunkingParams(),
         storage_params=StorageParams(batch_size=batch_size),
@@ -122,7 +123,7 @@ def run(space_key: str, max_pages: int, batch_size: int, collection: str) -> Non
 
     # cleanup
     print(f"\nУдаляю тестовую коллекцию «{collection}»...")
-    VectorStoreService(cfg).remove_collection(collection)
+    services.vectorstore_service.remove_collection(collection)
     print("Готово.")
 
 

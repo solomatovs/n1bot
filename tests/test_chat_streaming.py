@@ -31,6 +31,7 @@ from query_pipeline.events import (
     RetrievalStarted,
     ThinkingToken,
 )
+from bootstrap import bootstrap
 from rag import run_chat_pipeline
 from ui.state import AppConfig, PromptParams, SearchParams
 
@@ -43,6 +44,7 @@ def _fmt_mem(kb: float) -> str:
 
 def run(collection: str, query: str, model: str) -> None:
     cfg = AppConfig()
+    services = bootstrap(cfg)
     params = SearchParams()
     prompts = PromptParams()
 
@@ -64,7 +66,7 @@ def run(collection: str, query: str, model: str) -> None:
         model=model,
         params=params,
         prompts=prompts,
-        cfg=cfg,
+        services=services,
     ):
         current, peak = tracemalloc.get_traced_memory()
         cur_kb = current / 1024

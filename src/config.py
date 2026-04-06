@@ -2,30 +2,14 @@
 from __future__ import annotations
 
 import os
-import ssl
-import warnings
 from typing import List
 
-import urllib3
-
 import streamlit as st
-
-# SSL: отключаем проверку и предупреждения глобально
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-warnings.filterwarnings("ignore", message="Unverified HTTPS request")
-
-try:
-    _create_unverified_https_context = ssl._create_unverified_context
-except AttributeError:
-    pass
-else:
-    ssl._create_default_https_context = _create_unverified_https_context
 
 
 # ---------------------------------------------------------------------------
 # Streamlit secrets (env vars override)
 # ---------------------------------------------------------------------------
-
 
 def secret(key: str, default: str = "") -> str:
     """Получить значение из env var, иначе из st.secrets."""
@@ -42,6 +26,7 @@ def secret(key: str, default: str = "") -> str:
 # ---------------------------------------------------------------------------
 # tiktoken (офлайн-безопасно)
 # ---------------------------------------------------------------------------
+
 try:
     import tiktoken  # type: ignore
 except Exception:

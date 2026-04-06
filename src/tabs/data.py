@@ -4,6 +4,7 @@ from __future__ import annotations
 import chromadb.errors
 import streamlit as st
 
+from bootstrap import AppServices
 from errors import VectorStoreError
 from ui.components import (
     fetch_collection_df,
@@ -11,13 +12,12 @@ from ui.components import (
     list_collections,
 )
 from ui.state import AppConfig, SessionState
-from vectorstore import VectorStoreService
 
 
-def render(cfg: AppConfig, state: SessionState) -> None:
+def render(services: AppServices, state: SessionState) -> None:
     st.title("Векторное хранилище")
 
-    colls = list_collections(cfg.chroma_db_path)
+    colls = list_collections(services.cfg.chroma_db_path)
     if colls and state.selected_collection not in colls:
         state.selected_collection = colls[0]
 
@@ -30,18 +30,17 @@ def render(cfg: AppConfig, state: SessionState) -> None:
     show_full = st.toggle("Показывать полный состав коллекции", value=False)
     if show_full:
         with st.spinner("Гружу полный состав…"):
-            _show_full_collection(cfg, state.selected_collection)
+            _show_full_collection(services.cfg, state.selected_collection)
     else:
         st.caption("Превью (сокращено до 200 символов):")
         st.dataframe(
-            get_collection_preview(cfg.chroma_db_path, state.selected_collection),
+            get_collection_preview(services.cfg.chroma_db_path, state.selected_collection),
             height=400,
         )
 
     if st.button(f"Удалить коллекцию «{state.selected_collection}»", type="primary"):
         try:
-            vs_service = VectorStoreService(cfg)
-            vs_service.remove_collection(state.selected_collection)
+            services.vectorstore_service.remove_collection(state.selected_collection)
             st.success("Коллекция удалена.")
             st.cache_data.clear()
             st.cache_resource.clear()

@@ -19,28 +19,29 @@ from load_pipeline.events import (
     StoreBatchDone,
     StoreBatchFailed,
 )
+from bootstrap import AppServices
 from loaders import run_page_pipeline, run_space_pipeline
 from ui.components import render_chunking_settings, render_page_id_settings, render_space_settings
-from ui.state import AppConfig, SessionState
+from ui.state import SessionState
 
 
-def render(cfg: AppConfig, state: SessionState) -> None:
+def render(services: AppServices, state: SessionState) -> None:
     st.title("Загрузка данных из Confluence")
 
     tab_pages, tab_space = st.tabs(["По Page IDs", "По Space Key"])
 
     with tab_pages:
-        _render_page_tab(cfg)
+        _render_page_tab(services)
 
     with tab_space:
-        _render_space_tab(cfg)
+        _render_space_tab(services)
 
 
 # ---------------------------------------------------------------------------
 # Вкладка: загрузка по Page IDs
 # ---------------------------------------------------------------------------
 
-def _render_page_tab(cfg: AppConfig) -> None:
+def _render_page_tab(services: AppServices) -> None:
     chunking_params = render_chunking_settings(key_prefix="pid_cp")
     storage_params = render_page_id_settings()
 
@@ -67,7 +68,7 @@ def _render_page_tab(cfg: AppConfig) -> None:
         pipeline = run_page_pipeline(
             page_ids=page_ids,
             collection_name=col_name,
-            cfg=cfg,
+            services=services,
             chunking_params=chunking_params,
             storage_params=storage_params,
         )
@@ -81,7 +82,7 @@ def _render_page_tab(cfg: AppConfig) -> None:
 # Вкладка: загрузка пространства
 # ---------------------------------------------------------------------------
 
-def _render_space_tab(cfg: AppConfig) -> None:
+def _render_space_tab(services: AppServices) -> None:
     chunking_params = render_chunking_settings(key_prefix="sp_cp")
     space_params, storage_params = render_space_settings()
 
@@ -100,7 +101,7 @@ def _render_space_tab(cfg: AppConfig) -> None:
         pipeline = run_space_pipeline(
             space_key=space_key,
             collection_name=col_name,
-            cfg=cfg,
+            services=services,
             space_params=space_params,
             chunking_params=chunking_params,
             storage_params=storage_params,

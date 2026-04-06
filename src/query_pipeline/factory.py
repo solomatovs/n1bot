@@ -1,8 +1,7 @@
 """Фабрика query-пайплайна и контекста."""
 from __future__ import annotations
 
-import httpx
-from openai import OpenAI
+from typing import TYPE_CHECKING
 
 from pipeline import Pipeline
 from query_pipeline.context import QueryContext
@@ -19,11 +18,13 @@ from query_pipeline.stages import (
     VectorSearchStage,
 )
 from retrieval import RetrievalConfig
-from ui.state import AppConfig, PromptParams, SearchParams
-from vectorstore import VectorStoreService
+from ui.state import PromptParams, SearchParams
+
+if TYPE_CHECKING:
+    from bootstrap import AppServices
 
 
-def create_default_pipeline() -> Pipeline:
+def create_default_query_pipeline() -> Pipeline:
     """Стандартный 10-стадийный RAG-пайплайн."""
     return Pipeline([
         ClassifyQueryStage(),
@@ -45,12 +46,9 @@ def create_query_context(
     model: str,
     search_params: SearchParams,
     prompt_params: PromptParams,
-    cfg: AppConfig,
+    services: AppServices,
 ) -> QueryContext:
-    """Создать QueryContext со всеми зависимостями."""
-    client = create_openai_client(cfg)
-    vs = VectorStoreService(cfg)
-
+    """Создать QueryContext из AppServices."""
     return QueryContext(
         query=query,
         collection_name=collection_name,
@@ -58,23 +56,6 @@ def create_query_context(
         search_params=search_params,
         prompt_params=prompt_params,
         retrieval_config=RetrievalConfig(),
-        openai_client=client,
-        vectorstore_service=vs,
-    )
-
-
-def create_openai_client(cfg: AppConfig) -> OpenAI:
-    """Создаёт OpenAI-клиент из AppConfig."""
-    http_client = httpx.Client(
-        verify=False,
-        timeout=float(cfg.llm_timeout),
-        headers={
-            "Authorization": f"Bearer {cfg.litellm_api_key}",
-            "Content-Type": "application/json",
-        },
-    )
-    return OpenAI(
-        base_url=cfg.openai_url,
-        api_key=cfg.litellm_api_key,
-        http_client=http_client,
+        openai_client=services.openai_client,
+        vectorstore_service=services.vectorstore_service,
     )

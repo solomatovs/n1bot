@@ -18,6 +18,7 @@ from langchain_community.document_loaders import ConfluenceLoader
 from langchain_community.document_loaders.confluence import ContentFormat
 from langchain_core.documents import Document
 
+from bootstrap import AppServices
 from errors import PageLoadError, SpaceEnumerationError
 from load_pipeline.events import (
     LoadingDone,
@@ -182,48 +183,46 @@ class SpaceLoader:
 
 
 # ---------------------------------------------------------------------------
-# Обратно-совместимые точки входа (делегируют load_pipeline)
+# Точки входа (делегируют load_pipeline)
 # ---------------------------------------------------------------------------
 
 def run_page_pipeline(
     page_ids: List[str],
     collection_name: str,
-    cfg: AppConfig,
+    services: AppServices,
     chunking_params: ChunkingParams,
     storage_params: StorageParams,
 ) -> Iterator[LoadPipelineEvent]:
     """Полный пайплайн: загрузка по page IDs -> чанкинг -> сохранение."""
-    from load_pipeline import create_default_load_pipeline, create_load_context
+    from load_pipeline.factory import create_load_context
 
-    pipeline = create_default_load_pipeline()
     ctx = create_load_context(
         collection_name=collection_name,
-        cfg=cfg,
         chunking_params=chunking_params,
         storage_params=storage_params,
+        services=services,
         page_ids=page_ids,
     )
-    yield from pipeline.run(ctx)
+    yield from services.load_pipeline.run(ctx)
 
 
 def run_space_pipeline(
     space_key: str,
     collection_name: str,
-    cfg: AppConfig,
+    services: AppServices,
     space_params: SpaceLoadParams,
     chunking_params: ChunkingParams,
     storage_params: StorageParams,
 ) -> Iterator[LoadPipelineEvent]:
     """Полный пайплайн: загрузка пространства -> чанкинг -> сохранение."""
-    from load_pipeline import create_default_load_pipeline, create_load_context
+    from load_pipeline.factory import create_load_context
 
-    pipeline = create_default_load_pipeline()
     ctx = create_load_context(
         collection_name=collection_name,
-        cfg=cfg,
         chunking_params=chunking_params,
         storage_params=storage_params,
+        services=services,
         space_key=space_key,
         space_params=space_params,
     )
-    yield from pipeline.run(ctx)
+    yield from services.load_pipeline.run(ctx)

@@ -13,24 +13,26 @@ except Exception:
 
 import streamlit as st
 
+from bootstrap import bootstrap
 from tabs import chat, data, load
 from ui.state import AppConfig, SessionState
 
 # ========================= Конфигурация страницы
 st.set_page_config(page_title="N1 Hub RAG — MQ", layout="wide")
 
-# ========================= Общее состояние
+# ========================= Bootstrap
 cfg = AppConfig()
+services = bootstrap(cfg)
 state = SessionState(cfg)
 
 # ========================= Вкладки
 tab_chat, tab_load, tab_data = st.tabs(["Чат", "Загрузка из Confluence", "Векторное хранилище"])
 
 with tab_chat:
-    chat.render(cfg, state)
+    chat.render(services, state)
 
 with tab_load:
-    load.render(cfg, state)
+    load.render(services, state)
 
 with tab_data:
-    data.render(cfg, state)
+    data.render(services, state)

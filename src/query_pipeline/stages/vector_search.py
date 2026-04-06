@@ -26,15 +26,14 @@ class VectorSearchStage:
         assert ctx.query_type is not None
         assert ctx.query_variants is not None
 
-        vectorstore = ctx.vectorstore_service.get_vectorstore(ctx.collection_name)
-        filters = _build_search_filter(ctx.search_params.content_types, ctx.query_type)
-
         use_multi = ctx.search_params.use_multi_query
         k = ctx.search_params.k_per_variant if use_multi else ctx.search_params.top_n
 
         rank_lists: list[list] = []
         errors: list[str] = []
 
+        filters = _build_search_filter(ctx.search_params.content_types, ctx.query_type)
+        vectorstore = ctx.vectorstore_service.get_vectorstore(ctx.collection_name)
         for variant in ctx.query_variants:
             try:
                 retr = vectorstore.as_retriever(search_kwargs={"k": k, "filter": filters})

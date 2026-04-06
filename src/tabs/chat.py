@@ -25,19 +25,20 @@ from ui.components import (
     render_prompt_settings,
     render_search_settings,
 )
-from ui.state import AppConfig, ChatMessage, SearchParams, SessionState
+from bootstrap import AppServices
+from ui.state import ChatMessage, SearchParams, SessionState
 
 
-def render(cfg: AppConfig, state: SessionState) -> None:
+def render(services: AppServices, state: SessionState) -> None:
     st.title("N1 Hub AI bots")
 
     state.selected_collection = collection_selector(
-        cfg, key="select_collection_chat", current=state.selected_collection,
+        services.cfg, key="select_collection_chat", current=state.selected_collection,
     )
 
     col_model, col_search, col_prompts = st.columns([3, 1, 1])
     with col_model:
-        active_model = model_selector(cfg)
+        active_model = model_selector(services.cfg)
     search_params = render_search_settings(col_search)
     prompt_params = render_prompt_settings(col_prompts)
 
@@ -59,7 +60,7 @@ def render(cfg: AppConfig, state: SessionState) -> None:
                 model=active_model,
                 params=search_params,
                 prompts=prompt_params,
-                cfg=cfg,
+                services=services,
             )
             result = _consume_chat_pipeline(pipeline)
         except EmptyContextError:
