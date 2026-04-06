@@ -19,7 +19,6 @@ from query_pipeline.events import (
 from rag import run_chat_pipeline
 from ui.components import (
     collection_selector,
-    extract_page_ids_from_answer,
     model_selector,
     render_chat_history,
     render_prompt_settings,
@@ -76,8 +75,6 @@ def render(services: AppServices, state: SessionState) -> None:
         thinking=result.thinking,
         rag_context=result.rag_context,
     ))
-    state.used_page_ids[user_prompt] = extract_page_ids_from_answer(result.answer)
-
     _render_status_bar(state, search_params)
 
 

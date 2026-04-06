@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from typing import List
 
 import pandas as pd
@@ -15,12 +14,18 @@ from chromadb.config import Settings
 from streamlit.delta_generator import DeltaGenerator
 
 from ui.state import (
+    BATCH_SIZE_OPTIONS,
     AppConfig,
+    CacheTTL,
     ChatMessage,
+    ChunkingLimits,
     ChunkingParams,
     ContentType,
+    PromptLimits,
     PromptParams,
+    SearchLimits,
     SearchParams,
+    SpaceLoadLimits,
     SpaceLoadParams,
     StorageParams,
 )
@@ -40,7 +45,7 @@ def get_chroma_client(db_path: str):  # -> chromadb.PersistentClient
     )
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=CacheTTL.collections, show_spinner=False)
 def list_collections(db_path: str) -> List[str]:
     try:
         return [c.name for c in get_chroma_client(db_path).list_collections()]
@@ -50,7 +55,7 @@ def list_collections(db_path: str) -> List[str]:
         return []
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=CacheTTL.models, show_spinner=False)
 def get_openai_models(openai_url: str, api_key: str) -> List[str]:
     try:
         resp = requests.get(
@@ -84,7 +89,7 @@ def fetch_collection_df(
     return pd.DataFrame({"id": ids, "text": docs, "metadata": metas})
 
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=CacheTTL.preview, show_spinner=False)
 def get_collection_preview(db_path: str, collection_name: str) -> pd.DataFrame:
     try:
         return fetch_collection_df(db_path, collection_name, preview=True)
@@ -140,9 +145,11 @@ def render_chat_history(history: List[ChatMessage]) -> None:
 # Настройки поиска
 # ---------------------------------------------------------------------------
 
-def render_search_settings(container: DeltaGenerator) -> SearchParams:
+def render_search_settings(container: DeltaGenerator, key_prefix: str = "sp") -> SearchParams:
     """Отрисовать панель настроек поиска в popover и вернуть SearchParams."""
     defaults = SearchParams()
+    lim = SearchLimits
+    p = key_prefix
 
     with container.popover("Настройки поиска", use_container_width=True):
 
@@ -152,22 +159,25 @@ def render_search_settings(container: DeltaGenerator) -> SearchParams:
         with col1:
             top_n = st.slider(
                 "Глубина поиска",
-                min_value=1, max_value=30, value=defaults.top_n,
+                min_value=lim.top_n.min, max_value=lim.top_n.max,
+                value=defaults.top_n,
                 help="Сколько кандидатов извлекать из векторной базы",
-                key="sp_top_n",
+                key=f"{p}_top_n",
             )
             per_page = st.slider(
                 "Чанков с одной страницы",
-                min_value=1, max_value=5, value=defaults.per_page,
+                min_value=lim.per_page.min, max_value=lim.per_page.max,
+                value=defaults.per_page,
                 help="Максимум чанков с одной Confluence-страницы (дедупликация)",
-                key="sp_per_page",
+                key=f"{p}_per_page",
             )
         with col2:
             answers = st.slider(
                 "Документов в контекст",
-                min_value=1, max_value=10, value=defaults.answers_per_variant,
+                min_value=lim.answers_per_variant.min, max_value=lim.answers_per_variant.max,
+                value=defaults.answers_per_variant,
                 help="Сколько финальных чанков отдать модели для генерации ответа",
-                key="sp_answers",
+                key=f"{p}_answers",
             )
 
         chosen_labels = st.multiselect(
@@ -175,7 +185,7 @@ def render_search_settings(container: DeltaGenerator) -> SearchParams:
             options=[ct.label for ct in ContentType],
             default=[],
             help="Пусто = автоопределение по запросу. Иначе поиск только по выбранным типам",
-            key="sp_content_types",
+            key=f"{p}_content_types",
         )
         label_to_ct = {ct.label: ct.key for ct in ContentType}
         content_types = [label_to_ct[lb] for lb in chosen_labels] or None
@@ -187,24 +197,26 @@ def render_search_settings(container: DeltaGenerator) -> SearchParams:
         use_mq = st.checkbox(
             "Включить переформулировки + RRF",
             value=defaults.use_multi_query,
-            key="sp_use_mq",
+            key=f"{p}_use_mq",
         )
         col3, col4 = st.columns(2)
         with col3:
             mq_variants = st.slider(
                 "Переформулировок",
-                min_value=1, max_value=5, value=defaults.mq_variants,
+                min_value=lim.mq_variants.min, max_value=lim.mq_variants.max,
+                value=defaults.mq_variants,
                 disabled=not use_mq,
                 help="Количество вариантов запроса для multi-query",
-                key="sp_mq_variants",
+                key=f"{p}_mq_variants",
             )
         with col4:
             k_per_variant = st.slider(
                 "Документов на вариант",
-                min_value=1, max_value=15, value=defaults.k_per_variant,
+                min_value=lim.k_per_variant.min, max_value=lim.k_per_variant.max,
+                value=defaults.k_per_variant,
                 disabled=not use_mq,
                 help="Сколько документов извлекать на каждую переформулировку",
-                key="sp_k_per_var",
+                key=f"{p}_k_per_var",
             )
 
         st.divider()
@@ -215,46 +227,51 @@ def render_search_settings(container: DeltaGenerator) -> SearchParams:
         with col_t:
             temperature = st.slider(
                 "Температура",
-                min_value=0.0, max_value=2.0, value=defaults.temperature, step=0.05,
+                min_value=lim.temperature.min, max_value=lim.temperature.max,
+                value=defaults.temperature, step=lim.temperature.step,
                 help="0 = детерминированный, 2 = максимальная креативность",
-                key="sp_temperature",
+                key=f"{p}_temperature",
             )
         with col_tp:
             top_p = st.slider(
                 "Top-p (nucleus)",
-                min_value=0.0, max_value=1.0, value=defaults.top_p, step=0.05,
+                min_value=lim.top_p.min, max_value=lim.top_p.max,
+                value=defaults.top_p, step=lim.top_p.step,
                 help="Отсекает маловероятные токены. 1.0 = без ограничений",
-                key="sp_top_p",
+                key=f"{p}_top_p",
             )
 
         use_max_tokens = st.checkbox(
             "Ограничить длину ответа",
-            value=defaults.max_tokens is not None,
-            key="sp_use_max_tokens",
+            value=defaults.has_max_tokens,
+            key=f"{p}_use_max_tokens",
         )
         max_tokens: int | None = None
         if use_max_tokens:
             max_tokens = st.slider(
                 "Макс. токенов",
-                min_value=64, max_value=4096, value=defaults.max_tokens or 1024, step=64,
+                min_value=lim.max_tokens.min, max_value=lim.max_tokens.max,
+                value=defaults.max_tokens_or_default, step=lim.max_tokens.step,
                 help="Максимальная длина ответа модели в токенах",
-                key="sp_max_tokens",
+                key=f"{p}_max_tokens",
             )
 
         col_fp, col_pp = st.columns(2)
         with col_fp:
             frequency_penalty = st.slider(
                 "Frequency penalty",
-                min_value=-2.0, max_value=2.0, value=defaults.frequency_penalty, step=0.1,
+                min_value=lim.frequency_penalty.min, max_value=lim.frequency_penalty.max,
+                value=defaults.frequency_penalty, step=lim.frequency_penalty.step,
                 help="Штраф за повторение слов. >0 = меньше повторов",
-                key="sp_freq_penalty",
+                key=f"{p}_freq_penalty",
             )
         with col_pp:
             presence_penalty = st.slider(
                 "Presence penalty",
-                min_value=-2.0, max_value=2.0, value=defaults.presence_penalty, step=0.1,
+                min_value=lim.presence_penalty.min, max_value=lim.presence_penalty.max,
+                value=defaults.presence_penalty, step=lim.presence_penalty.step,
                 help="Штраф за повторение тем. >0 = больше разнообразия",
-                key="sp_pres_penalty",
+                key=f"{p}_pres_penalty",
             )
 
     return SearchParams(
@@ -277,24 +294,25 @@ def render_search_settings(container: DeltaGenerator) -> SearchParams:
 # Настройки промптов
 # ---------------------------------------------------------------------------
 
-def render_prompt_settings(container: DeltaGenerator) -> PromptParams:
+def render_prompt_settings(container: DeltaGenerator, key_prefix: str = "pp") -> PromptParams:
     """Отрисовать панель настроек промптов в popover и вернуть PromptParams."""
     defaults = PromptParams()
+    p = key_prefix
 
     with container.popover("Промпты", use_container_width=True):
         system_prompt = st.text_area(
             "Системный промпт",
             value=defaults.system_prompt,
-            height=100,
+            height=PromptLimits.system_prompt_height,
             help="Инструкция для модели — задаёт роль и ограничения",
-            key="pp_system",
+            key=f"{p}_system",
         )
         user_template = st.text_area(
             "Шаблон пользовательского сообщения",
             value=defaults.user_template,
-            height=150,
+            height=PromptLimits.user_template_height,
             help="Плейсхолдеры: {context} — текст из базы знаний, {query} — вопрос",
-            key="pp_user",
+            key=f"{p}_user",
         )
 
     return PromptParams(
@@ -310,20 +328,23 @@ def render_prompt_settings(container: DeltaGenerator) -> PromptParams:
 def render_chunking_settings(key_prefix: str = "cp") -> ChunkingParams:
     """Отрисовать настройки чанкинга и вернуть ChunkingParams."""
     defaults = ChunkingParams()
+    lim = ChunkingLimits
 
     with st.expander("Настройки чанкинга", expanded=False):
         col1, col2 = st.columns(2)
         with col1:
             max_tokens = st.slider(
                 "Макс. токенов на чанк",
-                min_value=100, max_value=2000, value=defaults.max_tokens, step=50,
+                min_value=lim.max_tokens.min, max_value=lim.max_tokens.max,
+                value=defaults.max_tokens, step=lim.max_tokens.step,
                 help="Максимальный размер одного чанка в токенах",
                 key=f"{key_prefix}_max_tokens",
             )
         with col2:
             similarity = st.slider(
                 "Порог схожести",
-                min_value=0.0, max_value=1.0, value=defaults.similarity_threshold, step=0.05,
+                min_value=lim.similarity_threshold.min, max_value=lim.similarity_threshold.max,
+                value=defaults.similarity_threshold, step=lim.similarity_threshold.step,
                 help="Параграфы со схожестью выше порога объединяются в один чанк",
                 key=f"{key_prefix}_similarity",
             )
@@ -338,9 +359,6 @@ def render_chunking_settings(key_prefix: str = "cp") -> ChunkingParams:
 # Настройки загрузки из Confluence (раздельные для pageIds и spaceKey)
 # ---------------------------------------------------------------------------
 
-BATCH_SIZE_OPTIONS = [8, 16, 32, 64, 128]
-
-
 def _render_storage_params(key_prefix: str) -> StorageParams:
     """Параметры сохранения в ChromaDB."""
     defaults = StorageParams()
@@ -351,7 +369,7 @@ def _render_storage_params(key_prefix: str) -> StorageParams:
         help="Количество документов, сохраняемых за одну операцию. Меньше = надёжнее, больше = быстрее",
         key=f"{key_prefix}_batch_size",
     )
-    return StorageParams(batch_size=batch_size or defaults.batch_size)
+    return StorageParams.from_selectbox(batch_size)
 
 
 def render_page_id_settings() -> StorageParams:
@@ -369,23 +387,25 @@ def render_space_settings() -> tuple[SpaceLoadParams, StorageParams]:
         st.markdown("##### Пространство")
         col1, col2 = st.columns(2)
         with col1:
+            lim = SpaceLoadLimits
             api_page_limit = st.slider(
                 "Страниц на запрос API",
-                min_value=1, max_value=200, value=defaults.api_page_limit, step=10,
+                min_value=lim.api_page_limit.min, max_value=lim.api_page_limit.max,
+                value=defaults.api_page_limit, step=lim.api_page_limit.step,
                 help="Размер страницы при пагинации Confluence REST API",
                 key="sp_api_page_limit",
             )
         with col2:
             use_max_pages = st.checkbox(
                 "Ограничить количество страниц",
-                value=defaults.max_pages is not None,
+                value=defaults.has_max_pages,
                 key="sp_use_max_pages",
             )
             max_pages: int | None = None
             if use_max_pages:
                 max_pages = st.number_input(
                     "Макс. страниц",
-                    min_value=1, value=defaults.max_pages or 100,
+                    min_value=SpaceLoadLimits.max_pages_min, value=defaults.max_pages_or_default,
                     key="sp_max_pages",
                 )
 
@@ -394,11 +414,3 @@ def render_space_settings() -> tuple[SpaceLoadParams, StorageParams]:
 
     space_params = SpaceLoadParams(api_page_limit=api_page_limit, max_pages=max_pages)
     return space_params, storage_params
-
-
-# ---------------------------------------------------------------------------
-# Утилиты
-# ---------------------------------------------------------------------------
-
-def extract_page_ids_from_answer(text: str) -> set[str]:
-    return set(re.findall(r"-\s+[^\s:]+:(\d+)\b", text))

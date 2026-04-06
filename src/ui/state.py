@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, List
 
 import streamlit as st
 
@@ -70,6 +70,70 @@ class ContentType(Enum):
         return self._label
 
 
+@dataclass(frozen=True)
+class IntSliderRange:
+    """Границы и шаг для целочисленного UI-слайдера."""
+    min: int
+    max: int
+    step: int = 1
+
+
+@dataclass(frozen=True)
+class FloatSliderRange:
+    """Границы и шаг для дробного UI-слайдера."""
+    min: float
+    max: float
+    step: float = 0.05
+
+
+# ---------------------------------------------------------------------------
+# Границы UI-слайдеров — единый источник для всех вкладок
+# ---------------------------------------------------------------------------
+
+class SearchLimits:
+    """Границы слайдеров настроек поиска и генерации."""
+    top_n = IntSliderRange(1, 30)
+    answers_per_variant = IntSliderRange(1, 10)
+    per_page = IntSliderRange(1, 5)
+    mq_variants = IntSliderRange(1, 5)
+    k_per_variant = IntSliderRange(1, 15)
+    temperature = FloatSliderRange(0.0, 2.0, 0.05)
+    top_p = FloatSliderRange(0.0, 1.0, 0.05)
+    max_tokens = IntSliderRange(64, 4096, 64)
+    max_tokens_default: int = 1024
+    frequency_penalty = FloatSliderRange(-2.0, 2.0, 0.1)
+    presence_penalty = FloatSliderRange(-2.0, 2.0, 0.1)
+
+
+class ChunkingLimits:
+    """Границы слайдеров настроек чанкинга."""
+    max_tokens = IntSliderRange(100, 2000, 50)
+    similarity_threshold = FloatSliderRange(0.0, 1.0, 0.05)
+
+
+class PromptLimits:
+    """Параметры UI для настроек промптов."""
+    system_prompt_height: int = 100
+    user_template_height: int = 150
+
+
+class SpaceLoadLimits:
+    """Границы слайдеров настроек загрузки пространства."""
+    api_page_limit = IntSliderRange(1, 200, 10)
+    max_pages_default: int = 100
+    max_pages_min: int = 1
+
+
+class CacheTTL:
+    """Время жизни кэша Streamlit (секунды)."""
+    collections: int = 60
+    models: int = 60
+    preview: int = 20
+
+
+BATCH_SIZE_OPTIONS = [8, 16, 32, 64, 128]
+
+
 @dataclass
 class SearchParams:
     """Параметры поиска и генерации, управляемые пользователем."""
@@ -88,6 +152,16 @@ class SearchParams:
     max_tokens: int | None = None
     frequency_penalty: float = 0.0
     presence_penalty: float = 0.0
+
+    @property
+    def has_max_tokens(self) -> bool:
+        """Включено ли ограничение длины ответа."""
+        return self.max_tokens is not None
+
+    @property
+    def max_tokens_or_default(self) -> int:
+        """Значение max_tokens для UI-слайдера (с fallback на дефолт)."""
+        return self.max_tokens if self.max_tokens is not None else SearchLimits.max_tokens_default
 
     def llm_kwargs(self) -> dict:
         """Параметры генерации для передачи в OpenAI API."""
@@ -115,11 +189,27 @@ class SpaceLoadParams:
     api_page_limit: int = 50
     max_pages: int | None = None
 
+    @property
+    def has_max_pages(self) -> bool:
+        """Включено ли ограничение количества страниц."""
+        return self.max_pages is not None
+
+    @property
+    def max_pages_or_default(self) -> int:
+        """Значение max_pages для UI (с fallback на дефолт)."""
+        return self.max_pages if self.max_pages is not None else SpaceLoadLimits.max_pages_default
+
 
 @dataclass
 class StorageParams:
     """Параметры сохранения в ChromaDB."""
     batch_size: int = 32
+
+    @staticmethod
+    def from_selectbox(value: int | None) -> StorageParams:
+        """Создать из значения st.selectbox (может быть None)."""
+        defaults = StorageParams()
+        return StorageParams(batch_size=value if value is not None else defaults.batch_size)
 
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -171,7 +261,6 @@ class SessionState:
             st.session_state.chat_history = []
             st.session_state.last_prompt_base = ""
             st.session_state.variants = {}
-            st.session_state.used_page_ids = {}
 
     # -- свойства ------------------------------------------------------------
 
@@ -206,10 +295,6 @@ class SessionState:
     @property
     def variants(self) -> Dict[str, int]:
         return st.session_state.variants
-
-    @property
-    def used_page_ids(self) -> Dict[str, Set[str]]:
-        return st.session_state.used_page_ids
 
     # -- вспомогательные методы -----------------------------------------------
 

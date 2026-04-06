@@ -31,8 +31,8 @@ def render(services: AppServices, state: SessionState) -> None:
     )
 
     col_search, col_prompts = st.columns([1, 1])
-    search_params = render_search_settings(col_search)
-    prompt_params = render_prompt_settings(col_prompts)
+    search_params = render_search_settings(col_search, key_prefix="srch_sp")
+    prompt_params = render_prompt_settings(col_prompts, key_prefix="srch_pp")
 
     query = st.text_input("Запрос для поиска", key="search_query")
 
