@@ -44,7 +44,7 @@ class VectorStoreService:
         client = self._get_client()
         collection = client.get_or_create_collection(collection_name)
         model_name = (collection.metadata or {}).get(EMBEDDING_MODEL_KEY)
-        embedding = self._resolve_embedding(model_name)
+        embedding = self.resolve_embedding(model_name)
         return Chroma(client=client, collection_name=collection_name, embedding_function=embedding)
 
     def create_vectorstore(self, collection_name: str, embedding_model: str) -> Chroma:
@@ -54,7 +54,7 @@ class VectorStoreService:
             collection_name,
             metadata={EMBEDDING_MODEL_KEY: embedding_model},
         )
-        embedding = self._resolve_embedding(embedding_model)
+        embedding = self.resolve_embedding(embedding_model)
         return Chroma(client=client, collection_name=collection_name, embedding_function=embedding)
 
     def get_collection_embedding_model(self, collection_name: str) -> Optional[str]:
@@ -95,17 +95,19 @@ class VectorStoreService:
 
     # -- приватные методы ------------------------------------------------------
 
-    def _resolve_embedding(self, model_name: Optional[str]) -> LiteLLMEmbeddings:
+    def resolve_embedding(self, model_name: Optional[str], timeout: Optional[int] = None) -> LiteLLMEmbeddings:
         """Получить embedding по имени модели (из кэша или создать новый)."""
         if not model_name:
             return self._default_embedding
+
+        effective_timeout = timeout or self._cfg.embedding_timeout
 
         if model_name not in self._embedding_cache:
             self._embedding_cache[model_name] = LiteLLMEmbeddings(
                 model=model_name,
                 base_url=self._cfg.litellm_base_url,
                 api_key=self._cfg.litellm_api_key,
-                timeout=self._cfg.embedding_timeout,
+                timeout=effective_timeout,
             )
 
         return self._embedding_cache[model_name]

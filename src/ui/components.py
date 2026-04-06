@@ -363,7 +363,7 @@ def render_chunking_settings(key_prefix: str = "cp") -> ChunkingParams:
     lim = ChunkingLimits
 
     with st.expander("Настройки чанкинга", expanded=False):
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             max_tokens = st.slider(
                 "Макс. токенов на чанк",
@@ -380,10 +380,19 @@ def render_chunking_settings(key_prefix: str = "cp") -> ChunkingParams:
                 help="Параграфы со схожестью выше порога объединяются в один чанк",
                 key=f"{key_prefix}_similarity",
             )
+        with col3:
+            embedding_timeout = st.slider(
+                "Таймаут embedding (сек)",
+                min_value=lim.embedding_timeout.min, max_value=lim.embedding_timeout.max,
+                value=defaults.embedding_timeout, step=lim.embedding_timeout.step,
+                help="Максимальное время ожидания ответа от сервиса эмбеддингов",
+                key=f"{key_prefix}_emb_timeout",
+            )
 
     return ChunkingParams(
         max_tokens=max_tokens,
         similarity_threshold=similarity,
+        embedding_timeout=embedding_timeout,
     )
 
 

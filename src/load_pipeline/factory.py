@@ -33,7 +33,7 @@ def create_load_context(
 ) -> LoadContext:
     """Создать LoadContext из AppServices."""
     model = embedding_model or services.cfg.embedding_model
-    embedding = services.vectorstore_service._resolve_embedding(model)
+    embedding = services.vectorstore_service.resolve_embedding(model, timeout=chunking_params.embedding_timeout)
     chunker = AdvancedChunker(embedding, chunking_params)
 
     return LoadContext(

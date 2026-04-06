@@ -116,6 +116,7 @@ class ChunkingLimits:
     """Границы слайдеров настроек чанкинга."""
     max_tokens = IntSliderRange(100, 2000, 50)
     similarity_threshold = FloatSliderRange(0.0, 1.0, 0.05)
+    embedding_timeout = IntSliderRange(10, 600, 10)
 
 
 class PromptLimits:
@@ -189,6 +190,7 @@ class ChunkingParams:
     """Параметры чанкинга документов."""
     max_tokens: int = 500
     similarity_threshold: float = 0.7
+    embedding_timeout: int = 120
 
 
 @dataclass
