@@ -1,6 +1,7 @@
 """Эмбеддинги через liteLLM (OpenAI-совместимый API)."""
 from __future__ import annotations
 
+import time
 from typing import List
 
 import httpx
@@ -20,6 +21,7 @@ class LiteLLMEmbeddings(Embeddings):
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.timeout = timeout
         self.client = httpx.Client(
             verify=False,
             timeout=float(timeout),
@@ -33,12 +35,28 @@ class LiteLLMEmbeddings(Embeddings):
         if "e5" in self.model.lower():
             texts = [f"{prefix}{t}" for t in texts]
 
-        response = self.client.post(
-            f"{self.base_url}/v1/embeddings",
-            json={"model": self.model, "input": texts},
-        )
+        url = f"{self.base_url}/v1/embeddings"
+        payload = {"model": self.model, "input": texts}
+        start = time.monotonic()
+
+        try:
+            response = self.client.post(url, json=payload)
+        except httpx.TimeoutException as e:
+            elapsed = time.monotonic() - start
+            raise ConnectionError(
+                f"Embedding request timed out after {elapsed:.1f}s "
+                f"(timeout={self.timeout}s). "
+                f"URL: {url}, model: {self.model}, texts: {len(texts)}"
+            ) from e
+
+        elapsed = time.monotonic() - start
+
         if response.status_code != 200:
-            raise ConnectionError(f"LiteLLM error: {response.status_code} - {response.text}")
+            raise ConnectionError(
+                f"Embedding error {response.status_code} after {elapsed:.1f}s. "
+                f"URL: {url}, model: {self.model}, texts: {len(texts)}. "
+                f"Response: {response.text}"
+            )
 
         data = response.json()
         return [item["embedding"] for item in data["data"]]
