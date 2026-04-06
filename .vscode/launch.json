@@ -15,10 +15,11 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/docker",
             "envFile": "${workspaceFolder}/docker/env/.env.debug",
+            "python": "${workspaceFolder}/.venv/bin/python",
             "jinja": true
         },
         {
-            "name": "Test: Streaming Pipeline",
+            "name": "Test: Streaming Pipeline (загрузка)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/tests/test_streaming_pipeline.py",
@@ -28,7 +29,23 @@
                 "--batch-size", "8"
             ],
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
+            "cwd": "${workspaceFolder}/docker",
+            "envFile": "${workspaceFolder}/docker/env/.env.debug",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "jinja": true
+        },
+        {
+            "name": "Test: Chat Streaming (RAG + LLM)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tests/test_chat_streaming.py",
+            "args": [
+                "--collection", "PAAS",
+                "--query", "что такое ADQM?",
+                "--model", "qwen3-0.6b"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/docker",
             "envFile": "${workspaceFolder}/docker/env/.env.debug",
             "python": "${workspaceFolder}/.venv/bin/python",
             "jinja": true

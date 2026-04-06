@@ -40,7 +40,8 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 
 [tool.pyright]
-include = ["src"]
+include = ["src", "tests"]
+extraPaths = ["src", "tests"]
 venvPath = "."
 venv = ".venv"
 pythonVersion = "3.11"

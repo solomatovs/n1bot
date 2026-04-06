@@ -9,32 +9,20 @@
     python tests/test_streaming_pipeline.py
     python tests/test_streaming_pipeline.py --space PAAS --max-pages 3 --batch-size 8
 """
+# ruff: noqa: E402
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import tracemalloc
 from pathlib import Path
 
-sys.path.insert(0, "src")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-# ruff: noqa: E402
-import warnings
+from env_loader import setup
 
-warnings.filterwarnings("ignore")
-
-# Загрузить secrets из .streamlit/secrets.toml в env (для запуска без Streamlit)
-_secrets_path = Path(__file__).resolve().parent.parent / "docker" / ".streamlit" / "secrets.toml"
-if _secrets_path.exists():
-    for line in _secrets_path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        key = key.strip()
-        val = val.strip().strip('"')
-        os.environ.setdefault(key, val)
+setup()
 
 from events import (
     ChunkingDone,
@@ -97,7 +85,7 @@ def run(space_key: str, max_pages: int, batch_size: int, collection: str) -> Non
             case SectionChunked(doc_index=di, doc_total=dt, section_index=si, section_total=st_, section_title=title):
                 print(f"[SECTION]  doc {di}/{dt}, секция {si}/{st_}: {title[:50]} | mem={_fmt_mem(cur_kb)}")
 
-            case ChunkProduced(cumulative_chunks=cc):
+            case ChunkProduced(cumulative_chunks=_):
                 pass
 
             case ChunkingDone(total_chunks=n):
@@ -116,7 +104,7 @@ def run(space_key: str, max_pages: int, batch_size: int, collection: str) -> Non
     current, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
 
-    print(f"\n=== Итог ===")
+    print("\n=== Итог ===")
     print(f"Финальная память: {_fmt_mem(current / 1024)}")
     print(f"Пиковая память:   {_fmt_mem(peak / 1024)}")
 
