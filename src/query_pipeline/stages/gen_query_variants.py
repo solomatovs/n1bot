@@ -38,13 +38,13 @@ class GenQueryVariantsStage:
             )
             content = r.choices[0].message.content
             if not content:
-                log.warning("Модель вернула пустой ответ при генерации переформулировок")
+                log.warning("Model returned empty response for query variants generation")
                 ctx.query_variants = [ctx.query]
             else:
                 lines = [s.strip("- ").strip() for s in content.splitlines() if s.strip()]
                 ctx.query_variants = [ctx.query] + lines[:n]
         except OpenAIAPIError as e:
-            log.warning("Не удалось сгенерировать переформулировки: %s", e)
+            log.warning("Failed to generate query variants: %s", e)
             ctx.query_variants = [ctx.query]
 
         yield QueryVariantsGenerated(variants=ctx.query_variants)

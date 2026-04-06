@@ -50,7 +50,7 @@ class VectorStoreService:
             self._embedding.embed_query("test")
         except (ConnectionError, OSError, ValueError) as e:
             raise EmbeddingConnectionError(
-                f"Не удалось подключиться к сервису эмбеддингов: {e}"
+                f"Failed to connect to embedding service: {e}"
             ) from e
 
     def remove_collection(self, name: str) -> None:

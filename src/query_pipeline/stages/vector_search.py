@@ -40,7 +40,7 @@ class VectorSearchStage:
                 results = retr.invoke(variant) or []
                 rank_lists.append(results)
             except (chromadb.errors.ChromaError, RuntimeError) as e:
-                log.warning("Ошибка поиска для варианта '%s': %s", variant, e)
+                log.warning("Search failed for variant '%s': %s", variant, e)
                 errors.append(f"'{variant}': {e}")
                 rank_lists.append([])
 

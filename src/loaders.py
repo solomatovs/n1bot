@@ -104,7 +104,7 @@ class BatchPageLoader:
                     total=total,
                 )
             except PageLoadError as e:
-                log.warning("Не удалось загрузить страницу %s: %s", pid, e.cause)
+                log.warning("Failed to load page %s: %s", pid, e.cause)
                 failed_count += 1
                 yield PageFailed(
                     page_id=pid,

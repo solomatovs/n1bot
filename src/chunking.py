@@ -85,7 +85,7 @@ class AdvancedChunker:
         try:
             yield from self._chunk_text_semantic(text, metadata, section)
         except (ConnectionError, ValueError, RuntimeError) as e:
-            log.warning("Семантический чанкинг не удался, фоллбэк на параграфы: %s", e)
+            log.warning("Semantic chunking failed, falling back to paragraphs: %s", e)
             yield from self._chunk_by_paragraphs(text, metadata, section)
 
     def _chunk_text_semantic(self, text: str, metadata: Dict, section: Dict) -> Iterator[Document]:

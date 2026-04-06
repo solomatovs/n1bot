@@ -24,6 +24,6 @@ class TopNSelectionStage:
         ctx.selected_docs = source[:ctx.search_params.answers_per_variant]
 
         if not ctx.selected_docs:
-            raise EmptyContextError("Не найдено релевантных документов по запросу.")
+            raise EmptyContextError("No relevant documents found for the query.")
 
         yield StageCompleted(stage=self.name, detail=f"{len(ctx.selected_docs)} документов отобрано")

@@ -150,7 +150,7 @@ def _flush_batch(
         )
         return len(batch), 0
     except chromadb.errors.ChromaError as e:
-        log.warning("Батч %d не удалось сохранить: %s", batch_idx, e)
+        log.warning("Failed to store batch %d: %s", batch_idx, e)
         yield StoreBatchFailed(
             batch_index=batch_idx,
             error=str(e),

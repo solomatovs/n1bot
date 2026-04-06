@@ -45,7 +45,7 @@ def list_collections(db_path: str) -> List[str]:
     try:
         return [c.name for c in get_chroma_client(db_path).list_collections()]
     except (chromadb.errors.ChromaError, ValueError, OSError) as ex:
-        log.warning("Не удалось получить список коллекций: %s", ex)
+        log.warning("Failed to list collections: %s", ex)
         st.warning(f"Не удалось получить список коллекций: {ex}")
         return []
 
@@ -60,7 +60,7 @@ def get_openai_models(openai_url: str, api_key: str) -> List[str]:
         resp.raise_for_status()
         return sorted(m["id"] for m in resp.json()["data"])
     except (requests.RequestException, KeyError, ValueError) as e:
-        log.warning("Ошибка получения моделей: %s", e)
+        log.warning("Failed to fetch models: %s", e)
         st.error(f"Ошибка получения моделей: {e}")
         return []
 
@@ -89,7 +89,7 @@ def get_collection_preview(db_path: str, collection_name: str) -> pd.DataFrame:
     try:
         return fetch_collection_df(db_path, collection_name, preview=True)
     except (chromadb.errors.ChromaError, ValueError, OSError) as e:
-        log.warning("Ошибка загрузки данных: %s", e)
+        log.warning("Failed to load collection data: %s", e)
         st.error(f"Ошибка загрузки данных: {e}")
         return pd.DataFrame({"id": [], "text": [], "metadata": []})
 

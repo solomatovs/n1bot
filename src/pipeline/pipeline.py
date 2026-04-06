@@ -32,5 +32,5 @@ class Pipeline(Generic[TContext, TEvent]):
     def run(self, ctx: TContext) -> Iterator[TEvent]:
         """Выполнить все стадии, yield-я события по мере их появления."""
         for stage in self._stages:
-            log.debug("Pipeline: стадия '%s'", stage.name)
+            log.debug("Pipeline: stage '%s'", stage.name)
             yield from stage.run(ctx)

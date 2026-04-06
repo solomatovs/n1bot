@@ -38,7 +38,7 @@ class LiteLLMEmbeddings(Embeddings):
             json={"model": self.model, "input": texts},
         )
         if response.status_code != 200:
-            raise ConnectionError(f"Ошибка liteLLM: {response.status_code} - {response.text}")
+            raise ConnectionError(f"LiteLLM error: {response.status_code} - {response.text}")
 
         data = response.json()
         return [item["embedding"] for item in data["data"]]

@@ -1,60 +1,60 @@
-"""Иерархия типизированных ошибок приложения."""
+"""Typed application error hierarchy."""
 from __future__ import annotations
 
 
 class AppError(Exception):
-    """Базовая ошибка приложения."""
+    """Base application error."""
 
 
 # ---------------------------------------------------------------------------
-# RAG-пайплайн
+# RAG pipeline
 # ---------------------------------------------------------------------------
 
 class RagError(AppError):
-    """Ошибка RAG-пайплайна."""
+    """RAG pipeline error."""
 
 
 class EmptyContextError(RagError):
-    """Не найдено релевантных документов в векторной базе."""
+    """No relevant documents found in the vector store."""
 
 
 # ---------------------------------------------------------------------------
-# Поиск (retrieval)
+# Retrieval
 # ---------------------------------------------------------------------------
 
 class RetrievalError(AppError):
-    """Ошибка поиска документов в векторном хранилище."""
+    """Document retrieval error."""
 
 
 # ---------------------------------------------------------------------------
-# Векторное хранилище
+# Vector store
 # ---------------------------------------------------------------------------
 
 class VectorStoreError(AppError):
-    """Ошибка работы с векторным хранилищем."""
+    """Vector store operation error."""
 
 
 class EmbeddingConnectionError(VectorStoreError):
-    """Не удалось подключиться к сервису эмбеддингов."""
+    """Failed to connect to the embedding service."""
 
 
 # ---------------------------------------------------------------------------
-# Загрузка из Confluence
+# Confluence loading
 # ---------------------------------------------------------------------------
 
 class PageLoadError(AppError):
-    """Не удалось загрузить страницу из Confluence."""
+    """Failed to load a page from Confluence."""
 
     def __init__(self, page_id: str, cause: Exception) -> None:
         self.page_id = page_id
         self.cause = cause
-        super().__init__(f"Не удалось загрузить страницу {page_id}: {cause}")
+        super().__init__(f"Failed to load page {page_id}: {cause}")
 
 
 class SpaceEnumerationError(AppError):
-    """Не удалось получить список страниц пространства."""
+    """Failed to enumerate pages in a Confluence space."""
 
     def __init__(self, space_key: str, cause: Exception) -> None:
         self.space_key = space_key
         self.cause = cause
-        super().__init__(f"Не удалось перечислить страницы пространства '{space_key}': {cause}")
+        super().__init__(f"Failed to enumerate pages in space '{space_key}': {cause}")
