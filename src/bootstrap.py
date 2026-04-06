@@ -80,6 +80,7 @@ def configure_logging(cfg: AppConfig) -> None:
         stream=sys.stdout,
         force=True,
     )
+    logging.getLogger("watchdog").setLevel(logging.WARNING)
 
 
 def configure_ssl() -> None:

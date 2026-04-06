@@ -17,10 +17,9 @@ from query_pipeline.events import (
 from rag import run_search_pipeline
 from ui.components import (
     collection_selector,
-    render_prompt_settings,
     render_search_settings,
 )
-from ui.state import SessionState
+from ui.state import PromptParams, SessionState
 
 
 def render(services: AppServices, state: SessionState) -> None:
@@ -30,9 +29,7 @@ def render(services: AppServices, state: SessionState) -> None:
         services.cfg, key="select_collection_search", current=state.selected_collection,
     )
 
-    col_search, col_prompts = st.columns([1, 1])
-    search_params = render_search_settings(col_search, key_prefix="srch_sp")
-    prompt_params = render_prompt_settings(col_prompts, key_prefix="srch_pp")
+    search_params = render_search_settings(st.container(), key_prefix="srch_sp")
 
     query = st.text_input("Запрос для поиска", key="search_query")
 
@@ -48,7 +45,7 @@ def render(services: AppServices, state: SessionState) -> None:
             collection_name=str(state.selected_collection),
             query=query,
             params=search_params,
-            prompts=prompt_params,
+            prompts=PromptParams(),
             services=services,
         )
         _consume_search_pipeline(pipeline)
@@ -87,8 +84,8 @@ def _consume_search_pipeline(pipeline: Iterator[ChatEvent]) -> None:
 
                 st.subheader(f"Найдено документов: {n}")
 
-                with st.expander("Контекст (как будет отправлен в LLM)", expanded=True):
-                    st.code(ctx, language="markdown")
+                with st.expander("Найденный контекст из базы знаний", expanded=True):
+                    st.markdown(ctx)
 
                 if sb:
                     with st.expander("Источники", expanded=False):
