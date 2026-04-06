@@ -14,7 +14,7 @@ except Exception:
 import streamlit as st
 
 from bootstrap import bootstrap
-from tabs import chat, data, load
+from tabs import chat, data, load, search
 from ui.state import AppConfig, SessionState
 
 # ========================= Конфигурация страницы
@@ -26,10 +26,15 @@ services = bootstrap(cfg)
 state = SessionState(cfg)
 
 # ========================= Вкладки
-tab_chat, tab_load, tab_data = st.tabs(["Чат", "Загрузка из Confluence", "Векторное хранилище"])
+tab_chat, tab_search, tab_load, tab_data = st.tabs([
+    "Чат", "Поиск", "Загрузка из Confluence", "Векторное хранилище",
+])
 
 with tab_chat:
     chat.render(services, state)
+
+with tab_search:
+    search.render(services, state)
 
 with tab_load:
     load.render(services, state)

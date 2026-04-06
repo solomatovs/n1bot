@@ -30,6 +30,7 @@ class AppServices:
     vectorstore_service: VectorStoreService
     embeddings: LiteLLMEmbeddings
     query_pipeline: Pipeline
+    search_pipeline: Pipeline
     load_pipeline: Pipeline
 
 
@@ -42,7 +43,7 @@ def bootstrap(cfg: AppConfig) -> AppServices:
     openai_client = create_openai_client(cfg)
     vs = VectorStoreService(db_path=cfg.chroma_db_path, embedding=embeddings)
 
-    from query_pipeline.factory import create_default_query_pipeline
+    from query_pipeline.factory import create_default_query_pipeline, create_search_pipeline
     from load_pipeline.factory import create_default_load_pipeline
 
     return AppServices(
@@ -51,6 +52,7 @@ def bootstrap(cfg: AppConfig) -> AppServices:
         vectorstore_service=vs,
         embeddings=embeddings,
         query_pipeline=create_default_query_pipeline(),
+        search_pipeline=create_search_pipeline(),
         load_pipeline=create_default_load_pipeline(),
     )
 

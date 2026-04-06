@@ -1,4 +1,4 @@
-"""RAG-пайплайн — точка входа, делегирует query_pipeline."""
+"""RAG-пайплайн — точки входа, делегируют query_pipeline."""
 from __future__ import annotations
 
 from typing import Iterator
@@ -17,7 +17,7 @@ def run_chat_pipeline(
     prompts: PromptParams,
     services: AppServices,
 ) -> Iterator[ChatEvent]:
-    """Полный RAG-пайплайн как генератор событий."""
+    """Полный RAG-пайплайн как генератор событий (retrieval + LLM)."""
     yield RetrievalStarted(query=query, collection=collection_name)
 
     ctx = create_query_context(
@@ -29,3 +29,24 @@ def run_chat_pipeline(
         services=services,
     )
     yield from services.query_pipeline.run(ctx)
+
+
+def run_search_pipeline(
+    collection_name: str,
+    query: str,
+    params: SearchParams,
+    prompts: PromptParams,
+    services: AppServices,
+) -> Iterator[ChatEvent]:
+    """Retrieval-only пайплайн (стадии 1-8, без LLM генерации)."""
+    yield RetrievalStarted(query=query, collection=collection_name)
+
+    ctx = create_query_context(
+        query=query,
+        collection_name=collection_name,
+        model="",
+        search_params=params,
+        prompt_params=prompts,
+        services=services,
+    )
+    yield from services.search_pipeline.run(ctx)

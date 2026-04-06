@@ -40,6 +40,20 @@ def create_default_query_pipeline() -> Pipeline:
     ])
 
 
+def create_search_pipeline() -> Pipeline:
+    """Retrieval-only пайплайн (стадии 1-8, без LLM генерации)."""
+    return Pipeline([
+        ClassifyQueryStage(),
+        GenQueryVariantsStage(),
+        VectorSearchStage(),
+        RRFMergeStage(),
+        RerankStage(),
+        GroupByPageStage(),
+        TopNSelectionStage(),
+        ContextAssemblyStage(),
+    ])
+
+
 def create_query_context(
     query: str,
     collection_name: str,
