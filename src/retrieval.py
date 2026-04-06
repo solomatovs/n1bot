@@ -18,6 +18,7 @@ class RetrievalConfig:
     """Параметры алгоритмов слияния и реранкинга."""
     rrf_k: int = 60
     mq_temperature: float = 0.3
+    mq_max_tokens: int = 256
     boost_type_match: float = 1.5
     boost_section: float = 1.2
     penalty_token_count: float = 0.8

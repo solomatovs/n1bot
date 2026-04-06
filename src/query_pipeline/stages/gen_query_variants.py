@@ -34,6 +34,7 @@ class GenQueryVariantsStage:
             r = ctx.openai_client.chat.completions.create(
                 model=ctx.model,
                 temperature=ctx.retrieval_config.mq_temperature,
+                max_tokens=ctx.retrieval_config.mq_max_tokens,
                 messages=[{"role": "user", "content": prompt}],
             )
             content = r.choices[0].message.content

@@ -41,10 +41,9 @@ def create_default_query_pipeline() -> Pipeline:
 
 
 def create_search_pipeline() -> Pipeline:
-    """Retrieval-only пайплайн (стадии 1-8, без LLM генерации)."""
+    """Retrieval-only пайплайн — чистый vector search без LLM."""
     return Pipeline([
         ClassifyQueryStage(),
-        GenQueryVariantsStage(),
         VectorSearchStage(),
         RRFMergeStage(),
         RerankStage(),

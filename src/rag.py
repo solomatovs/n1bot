@@ -1,6 +1,7 @@
 """RAG-пайплайн — точки входа, делегируют query_pipeline."""
 from __future__ import annotations
 
+import dataclasses
 from typing import Iterator
 
 from bootstrap import AppServices
@@ -38,15 +39,17 @@ def run_search_pipeline(
     prompts: PromptParams,
     services: AppServices,
 ) -> Iterator[ChatEvent]:
-    """Retrieval-only пайплайн (стадии 1-8, без LLM генерации)."""
+    """Retrieval-only пайплайн — чистый vector search без LLM."""
     yield RetrievalStarted(query=query, collection=collection_name)
 
+    search_params = dataclasses.replace(params, use_multi_query=False)
     ctx = create_query_context(
         query=query,
         collection_name=collection_name,
-        model=services.cfg.default_model,
-        search_params=params,
+        model="",
+        search_params=search_params,
         prompt_params=prompts,
         services=services,
     )
+    ctx.query_variants = [query]
     yield from services.search_pipeline.run(ctx)

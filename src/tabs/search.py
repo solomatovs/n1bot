@@ -10,7 +10,6 @@ from errors import AppError, EmptyContextError
 from pipeline.events import StageCompleted, StageStarted
 from query_pipeline.events import (
     ChatEvent,
-    QueryVariantsGenerated,
     RetrievalDone,
     RetrievalStarted,
 )
@@ -75,11 +74,6 @@ def _consume_search_pipeline(pipeline: Iterator[ChatEvent]) -> None:
 
             case RetrievalStarted():
                 status_ph.caption("Ищу релевантный контекст…")
-
-            case QueryVariantsGenerated(variants=vs):
-                with st.expander("Переформулировки запроса", expanded=False):
-                    for v in vs:
-                        st.markdown(f"- {v}")
 
             case RetrievalDone(documents_found=n, context=ctx, sources_block=sb):
                 status_ph.empty()
