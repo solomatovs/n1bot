@@ -6,15 +6,16 @@ from typing import Iterator
 import streamlit as st
 
 from errors import AppError, EmptyContextError
-from events import (
+from pipeline.events import StageCompleted, StageStarted
+from query_pipeline.events import (
     AnswerToken,
     ChatEvent,
     GenerationDone,
+    QueryVariantsGenerated,
     RetrievalDone,
     RetrievalStarted,
     ThinkingToken,
 )
-from pipeline.events import QueryVariantsGenerated, StageCompleted, StageStarted
 from rag import run_chat_pipeline
 from ui.components import (
     collection_selector,

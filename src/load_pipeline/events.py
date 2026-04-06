@@ -1,11 +1,12 @@
-"""Типизированные события пайплайнов (импорт + чат)."""
+"""События load-пайплайна — специфичные для загрузки документов."""
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import List, Union
 
 from langchain_core.documents import Document
-from pipeline.events import QueryVariantsGenerated, StageCompleted, StageStarted
+
+from pipeline.events import StageCompleted, StageStarted
 
 
 # ---------------------------------------------------------------------------
@@ -100,65 +101,12 @@ class StorageDone:
 
 
 # ---------------------------------------------------------------------------
-# Чат — RAG pipeline
+# Объединённый тип всех событий load-пайплайна
 # ---------------------------------------------------------------------------
 
-@dataclass(frozen=True)
-class RetrievalStarted:
-    """Начат поиск по векторной базе."""
-    query: str
-    collection: str
-
-
-@dataclass(frozen=True)
-class RetrievalDone:
-    """Поиск завершён, найдены документы."""
-    documents_found: int
-    context: str
-    sources_block: str
-
-
-@dataclass(frozen=True)
-class ThinkingToken:
-    """Токен размышления от LLM (reasoning_content или <think>)."""
-    token: str
-
-
-@dataclass(frozen=True)
-class AnswerToken:
-    """Токен ответа от LLM."""
-    token: str
-
-
-@dataclass(frozen=True)
-class GenerationDone:
-    """Генерация ответа завершена."""
-
-
-# ---------------------------------------------------------------------------
-# Объединённые типы
-# ---------------------------------------------------------------------------
-
-PipelineEvent = Union[
-    SpaceEnumerated,
-    PageLoaded,
-    PageFailed,
-    LoadingDone,
-    SectionChunked,
-    ChunkProduced,
-    ChunkingDone,
-    StoreBatchDone,
-    StoreBatchFailed,
-    StorageDone,
-]
-
-ChatEvent = Union[
-    RetrievalStarted,
-    RetrievalDone,
-    ThinkingToken,
-    AnswerToken,
-    GenerationDone,
-    StageStarted,
-    StageCompleted,
-    QueryVariantsGenerated,
+LoadPipelineEvent = Union[
+    StageStarted, StageCompleted,
+    SpaceEnumerated, PageLoaded, PageFailed, LoadingDone,
+    SectionChunked, ChunkProduced, ChunkingDone,
+    StoreBatchDone, StoreBatchFailed, StorageDone,
 ]

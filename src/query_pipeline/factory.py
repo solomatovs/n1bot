@@ -1,12 +1,12 @@
-"""Фабрика пайплайнов и контекстов."""
+"""Фабрика query-пайплайна и контекста."""
 from __future__ import annotations
 
 import httpx
 from openai import OpenAI
 
-from pipeline.context import PipelineContext
-from pipeline.pipeline import QueryPipeline
-from pipeline.stages import (
+from pipeline import Pipeline
+from query_pipeline.context import QueryContext
+from query_pipeline.stages import (
     BuildMessagesStage,
     ClassifyQueryStage,
     ContextAssemblyStage,
@@ -23,9 +23,9 @@ from ui.state import AppConfig, PromptParams, SearchParams
 from vectorstore import VectorStoreService
 
 
-def create_default_pipeline() -> QueryPipeline:
+def create_default_pipeline() -> Pipeline:
     """Стандартный 10-стадийный RAG-пайплайн."""
-    return QueryPipeline([
+    return Pipeline([
         ClassifyQueryStage(),
         GenQueryVariantsStage(),
         VectorSearchStage(),
@@ -39,19 +39,19 @@ def create_default_pipeline() -> QueryPipeline:
     ])
 
 
-def create_pipeline_context(
+def create_query_context(
     query: str,
     collection_name: str,
     model: str,
     search_params: SearchParams,
     prompt_params: PromptParams,
     cfg: AppConfig,
-) -> PipelineContext:
-    """Создать PipelineContext со всеми зависимостями."""
+) -> QueryContext:
+    """Создать QueryContext со всеми зависимостями."""
     client = create_openai_client(cfg)
     vs = VectorStoreService(cfg)
 
-    return PipelineContext(
+    return QueryContext(
         query=query,
         collection_name=collection_name,
         model=model,

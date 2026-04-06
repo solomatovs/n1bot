@@ -24,7 +24,7 @@ from env_loader import setup
 
 setup()
 
-from events import (
+from query_pipeline.events import (
     AnswerToken,
     GenerationDone,
     RetrievalDone,

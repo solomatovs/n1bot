@@ -4,9 +4,9 @@ from __future__ import annotations
 from typing import Iterator
 
 from errors import RetrievalError
-from events import ChatEvent
-from pipeline.context import PipelineContext
+from query_pipeline.events import ChatEvent
 from pipeline.events import StageCompleted, StageStarted
+from query_pipeline.context import QueryContext
 from retrieval import _rrf_merge
 
 
@@ -16,7 +16,7 @@ class RRFMergeStage:
     def name(self) -> str:
         return "rrf_merge"
 
-    def run(self, ctx: PipelineContext) -> Iterator[ChatEvent]:
+    def run(self, ctx: QueryContext) -> Iterator[ChatEvent]:
         yield StageStarted(stage=self.name)
 
         assert ctx.rank_lists is not None

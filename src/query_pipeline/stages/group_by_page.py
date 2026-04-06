@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from typing import Iterator
 
-from events import ChatEvent
-from pipeline.context import PipelineContext
+from query_pipeline.events import ChatEvent
 from pipeline.events import StageCompleted, StageStarted
+from query_pipeline.context import QueryContext
 from retrieval import _group_limit_per_page
 
 
@@ -15,7 +15,7 @@ class GroupByPageStage:
     def name(self) -> str:
         return "group_by_page"
 
-    def run(self, ctx: PipelineContext) -> Iterator[ChatEvent]:
+    def run(self, ctx: QueryContext) -> Iterator[ChatEvent]:
         yield StageStarted(stage=self.name)
 
         assert ctx.reranked_docs is not None

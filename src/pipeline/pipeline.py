@@ -2,33 +2,35 @@
 from __future__ import annotations
 
 import logging
-from typing import Iterator
+from typing import Generic, Iterator, TypeVar
 
-from events import ChatEvent, RetrievalStarted
-from pipeline.context import PipelineContext
 from pipeline.protocol import PipelineStage
 
 log = logging.getLogger(__name__)
 
+TContext = TypeVar("TContext")
+TEvent = TypeVar("TEvent")
 
-class QueryPipeline:
+
+class Pipeline(Generic[TContext, TEvent]):
     """Выполняет последовательность стадий PipelineStage.
 
-    Каждая стадия получает один PipelineContext и yield-ит ChatEvent.
+    Каждая стадия получает контекст и yield-ит события.
     Оркестратор — генератор, ничего не накапливает.
+
+    TContext — тип контекста (QueryContext, LoadContext, ...).
+    TEvent — тип событий.
     """
 
-    def __init__(self, stages: list[PipelineStage]) -> None:
+    def __init__(self, stages: list[PipelineStage[TContext, TEvent]]) -> None:
         self._stages = list(stages)
 
     @property
     def stage_names(self) -> list[str]:
         return [s.name for s in self._stages]
 
-    def run(self, ctx: PipelineContext) -> Iterator[ChatEvent]:
+    def run(self, ctx: TContext) -> Iterator[TEvent]:
         """Выполнить все стадии, yield-я события по мере их появления."""
-        yield RetrievalStarted(query=ctx.query, collection=ctx.collection_name)
-
         for stage in self._stages:
             log.debug("Pipeline: стадия '%s'", stage.name)
             yield from stage.run(ctx)

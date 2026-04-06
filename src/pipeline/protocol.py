@@ -1,22 +1,24 @@
-"""Протокол стадии пайплайна."""
+"""Протокол стадии пайплайна — generic база для всех пайплайнов."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Iterator, Protocol, runtime_checkable
+from typing import Iterator, Protocol, TypeVar, runtime_checkable
 
-if TYPE_CHECKING:
-    from events import ChatEvent
-    from pipeline.context import PipelineContext
+TContext = TypeVar("TContext", contravariant=True)
+TEvent = TypeVar("TEvent", covariant=True)
 
 
 @runtime_checkable
-class PipelineStage(Protocol):
-    """Одна стадия RAG-пайплайна.
+class PipelineStage(Protocol[TContext, TEvent]):
+    """Одна стадия пайплайна.
 
     Каждая стадия читает входные данные из ctx, записывает результаты,
     и yield-ит события для наблюдаемости.
+
+    TContext — тип контекста (QueryContext, LoadContext, ...).
+    TEvent — тип событий, которые yield-ит стадия.
     """
 
     @property
     def name(self) -> str: ...
 
-    def run(self, ctx: PipelineContext) -> Iterator[ChatEvent]: ...
+    def run(self, ctx: TContext) -> Iterator[TEvent]: ...

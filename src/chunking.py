@@ -10,7 +10,7 @@ from langchain_core.documents import Document
 
 from config import enc
 from embeddings import LiteLLMEmbeddings
-from events import ChunkProduced, SectionChunked
+from load_pipeline.events import ChunkProduced, SectionChunked
 from ui.state import AppConfig, ChunkingParams
 
 log = logging.getLogger(__name__)

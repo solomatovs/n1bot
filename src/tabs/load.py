@@ -6,13 +6,13 @@ from typing import Iterator
 import streamlit as st
 
 from errors import AppError
-from events import (
+from load_pipeline.events import (
     ChunkingDone,
     ChunkProduced,
     LoadingDone,
+    LoadPipelineEvent,
     PageFailed,
     PageLoaded,
-    PipelineEvent,
     SectionChunked,
     SpaceEnumerated,
     StorageDone,
@@ -115,7 +115,7 @@ def _render_space_tab(cfg: AppConfig) -> None:
 # Единый обработчик потока событий
 # ---------------------------------------------------------------------------
 
-def _consume_pipeline(pipeline: Iterator[PipelineEvent]) -> None:
+def _consume_pipeline(pipeline: Iterator[LoadPipelineEvent]) -> None:
     """Итерирует генератор пайплайна, обновляя Streamlit-виджеты по событиям."""
     with st.status("Загрузка...", expanded=True) as status:
         pbar = st.progress(0.0)

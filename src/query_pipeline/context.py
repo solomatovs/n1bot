@@ -1,4 +1,4 @@
-"""Контекст пайплайна — изменяемое состояние, проходящее через стадии."""
+"""Контекст query-пайплайна — изменяемое состояние, проходящее через стадии."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -14,8 +14,8 @@ from vectorstore import VectorStoreService
 
 
 @dataclass
-class PipelineContext:
-    """Изменяемое состояние, проходящее через стадии пайплайна.
+class QueryContext:
+    """Изменяемое состояние, проходящее через стадии query-пайплайна.
 
     Неизменяемые входные данные задаются при создании.
     Стадии заполняют Optional-поля по мере выполнения.

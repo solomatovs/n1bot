@@ -6,9 +6,9 @@ from typing import Iterator
 
 import chromadb.errors
 
-from events import ChatEvent
-from pipeline.context import PipelineContext
+from query_pipeline.events import ChatEvent
 from pipeline.events import StageCompleted, StageStarted
+from query_pipeline.context import QueryContext
 from retrieval import _build_search_filter
 
 log = logging.getLogger(__name__)
@@ -20,7 +20,7 @@ class VectorSearchStage:
     def name(self) -> str:
         return "vector_search"
 
-    def run(self, ctx: PipelineContext) -> Iterator[ChatEvent]:
+    def run(self, ctx: QueryContext) -> Iterator[ChatEvent]:
         yield StageStarted(stage=self.name)
 
         assert ctx.query_type is not None

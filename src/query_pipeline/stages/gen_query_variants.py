@@ -6,9 +6,9 @@ from typing import Iterator
 
 from openai import APIError as OpenAIAPIError
 
-from events import ChatEvent
-from pipeline.context import PipelineContext
-from pipeline.events import QueryVariantsGenerated, StageCompleted, StageStarted
+from pipeline.events import StageCompleted, StageStarted
+from query_pipeline.context import QueryContext
+from query_pipeline.events import ChatEvent, QueryVariantsGenerated
 
 log = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ class GenQueryVariantsStage:
     def name(self) -> str:
         return "gen_query_variants"
 
-    def run(self, ctx: PipelineContext) -> Iterator[ChatEvent]:
+    def run(self, ctx: QueryContext) -> Iterator[ChatEvent]:
         yield StageStarted(stage=self.name)
 
         if not ctx.search_params.use_multi_query:

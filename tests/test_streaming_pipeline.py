@@ -24,7 +24,7 @@ from env_loader import setup
 
 setup()
 
-from events import (
+from load_pipeline.events import (
     ChunkingDone,
     ChunkProduced,
     LoadingDone,

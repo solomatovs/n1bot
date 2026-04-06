@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from typing import Iterator
 
-from events import AnswerToken, ChatEvent, GenerationDone, ThinkingToken
-from pipeline.context import PipelineContext
+from query_pipeline.events import AnswerToken, ChatEvent, GenerationDone, ThinkingToken
 from pipeline.events import StageCompleted, StageStarted
+from query_pipeline.context import QueryContext
 
 
 class LLMStreamStage:
@@ -14,7 +14,7 @@ class LLMStreamStage:
     def name(self) -> str:
         return "llm_stream"
 
-    def run(self, ctx: PipelineContext) -> Iterator[ChatEvent]:
+    def run(self, ctx: QueryContext) -> Iterator[ChatEvent]:
         yield StageStarted(stage=self.name)
 
         assert ctx.messages is not None

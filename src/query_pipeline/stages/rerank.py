@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from typing import Iterator
 
-from events import ChatEvent
-from pipeline.context import PipelineContext
+from query_pipeline.events import ChatEvent
 from pipeline.events import StageCompleted, StageStarted
+from query_pipeline.context import QueryContext
 from retrieval import _rerank_results
 
 
@@ -15,7 +15,7 @@ class RerankStage:
     def name(self) -> str:
         return "rerank"
 
-    def run(self, ctx: PipelineContext) -> Iterator[ChatEvent]:
+    def run(self, ctx: QueryContext) -> Iterator[ChatEvent]:
         yield StageStarted(stage=self.name)
 
         assert ctx.merged_docs is not None

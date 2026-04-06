@@ -4,9 +4,9 @@ from __future__ import annotations
 from typing import Iterator
 
 from errors import EmptyContextError
-from events import ChatEvent
-from pipeline.context import PipelineContext
+from query_pipeline.events import ChatEvent
 from pipeline.events import StageCompleted, StageStarted
+from query_pipeline.context import QueryContext
 
 
 class TopNSelectionStage:
@@ -15,7 +15,7 @@ class TopNSelectionStage:
     def name(self) -> str:
         return "top_n_selection"
 
-    def run(self, ctx: PipelineContext) -> Iterator[ChatEvent]:
+    def run(self, ctx: QueryContext) -> Iterator[ChatEvent]:
         yield StageStarted(stage=self.name)
 
         source = ctx.grouped_docs if ctx.grouped_docs is not None else ctx.merged_docs

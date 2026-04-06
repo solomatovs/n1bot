@@ -1,43 +1,32 @@
-"""Иерархия загрузчиков Confluence и пайплайн импорта — генераторный стриминг.
+"""Иерархия загрузчиков Confluence — генераторный стриминг.
 
 Архитектура (композиция снизу вверх):
     PageLoader          — загрузка одной страницы
     BatchPageLoader     — загрузка списка страниц (yield PageLoaded/PageFailed)
     SpaceLoader         — загрузка пространства (yield SpaceEnumerated + delegate)
 
-Pipeline-оркестраторы:
-    run_page_pipeline   — загрузка по page IDs → чанкинг → сохранение
-    run_space_pipeline  — загрузка по space key → чанкинг → сохранение
+Pipeline-оркестраторы вынесены в load_pipeline/.
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Iterator, List
+from typing import Iterator, List, Union
 
-import chromadb.errors
 import requests
 from langchain_community.document_loaders import ConfluenceLoader
 from langchain_community.document_loaders.confluence import ContentFormat
 from langchain_core.documents import Document
 
-from chunking import AdvancedChunker, ChunkingStrategy
 from errors import PageLoadError, SpaceEnumerationError
-from events import (
-    ChunkingDone,
-    ChunkProduced,
+from load_pipeline.events import (
     LoadingDone,
+    LoadPipelineEvent,
     PageFailed,
     PageLoaded,
-    PipelineEvent,
-    SectionChunked,
     SpaceEnumerated,
-    StorageDone,
-    StoreBatchDone,
-    StoreBatchFailed,
 )
 from ui.state import AppConfig, ChunkingParams, SpaceLoadParams, StorageParams
-from vectorstore import VectorStoreService
 
 log = logging.getLogger(__name__)
 
@@ -97,7 +86,7 @@ class BatchPageLoader:
     def __init__(self, page_loader: PageLoader) -> None:
         self._page_loader = page_loader
 
-    def load(self, page_ids: List[str]) -> Iterator[PipelineEvent]:
+    def load(self, page_ids: List[str]) -> Iterator[Union[PageLoaded, PageFailed, LoadingDone]]:
         """Yield PageLoaded | PageFailed на каждую страницу, затем LoadingDone."""
         total = len(page_ids)
         ok_count = 0
@@ -144,7 +133,7 @@ class SpaceLoader:
         self._token = cfg.confluence_token
         self._params = params
 
-    def load(self, space_key: str) -> Iterator[PipelineEvent]:
+    def load(self, space_key: str) -> Iterator[Union[PageLoaded, PageFailed, LoadingDone, SpaceEnumerated]]:
         """Yield SpaceEnumerated, затем делегирует BatchPageLoader.
 
         Raises:
@@ -193,108 +182,8 @@ class SpaceLoader:
 
 
 # ---------------------------------------------------------------------------
-# Pipeline-оркестраторы (per-page streaming, без аккумуляторов)
+# Обратно-совместимые точки входа (делегируют load_pipeline)
 # ---------------------------------------------------------------------------
-
-def _streaming_pipeline(
-    loading_events: Iterator[PipelineEvent],
-    chunker: ChunkingStrategy,
-    vs_service: VectorStoreService,
-    collection_name: str,
-    storage_params: StorageParams,
-) -> Iterator[PipelineEvent]:
-    """Общий потоковый пайплайн: загрузка → чанкинг → сохранение.
-
-    Обрабатывает постранично: загрузил страницу → чанки → в батч → сохранил.
-    В памяти только текущая страница + текущий батч.
-    """
-    vs_service.verify_embedding_connection()
-    vectorstore = vs_service.get_vectorstore(collection_name)
-    batch_size = storage_params.batch_size
-
-    batch: list[Document] = []
-    batch_idx = 0
-    total_stored = 0
-    total_failed = 0
-    cumulative_chunks = 0
-    has_documents = False
-
-    for event in loading_events:
-        yield event
-
-        if not isinstance(event, PageLoaded):
-            continue
-
-        if not event.documents:
-            continue
-
-        has_documents = True
-
-        # Чанкинг текущей страницы — yield события, собираем чанки в батч
-        for chunk_event in chunker.split_documents(event.documents):
-            if isinstance(chunk_event, SectionChunked):
-                yield SectionChunked(
-                    doc_index=event.index,
-                    doc_total=event.total,
-                    section_index=chunk_event.section_index,
-                    section_total=chunk_event.section_total,
-                    section_title=chunk_event.section_title,
-                )
-            elif isinstance(chunk_event, ChunkProduced):
-                cumulative_chunks += 1
-                yield ChunkProduced(chunk=chunk_event.chunk, cumulative_chunks=cumulative_chunks)
-                batch.append(chunk_event.chunk)
-
-                # Батч полный — сохраняем
-                if len(batch) >= batch_size:
-                    yield from _flush_batch(
-                        vs_service, vectorstore, batch, batch_idx,
-                        total_stored, total_failed, cumulative_chunks,
-                    )
-                    total_stored += len(batch)
-                    batch = []
-                    batch_idx += 1
-
-    # Дочищаем остаток батча
-    if batch:
-        yield from _flush_batch(
-            vs_service, vectorstore, batch, batch_idx,
-            total_stored, total_failed, cumulative_chunks,
-        )
-        total_stored += len(batch)
-
-    if has_documents and cumulative_chunks > 0:
-        yield ChunkingDone(total_chunks=cumulative_chunks)
-
-    yield StorageDone(total_stored=total_stored, total_failed=total_failed)
-
-
-def _flush_batch(
-    vs_service: VectorStoreService,
-    vectorstore,  # noqa: ANN001
-    batch: list[Document],
-    batch_idx: int,
-    total_stored: int,
-    total_failed: int,
-    total_chunks: int,
-) -> Iterator[PipelineEvent]:
-    """Сохранить один батч, yield результат."""
-    try:
-        vs_service.store_batch(vectorstore, batch)
-        yield StoreBatchDone(
-            batch_index=batch_idx,
-            total_stored=total_stored + len(batch),
-            total_chunks=total_chunks,
-        )
-    except chromadb.errors.ChromaError as e:
-        log.warning("Батч %d не удалось сохранить: %s", batch_idx, e)
-        yield StoreBatchFailed(
-            batch_index=batch_idx,
-            error=str(e),
-            total_failed=total_failed + len(batch),
-            total_chunks=total_chunks,
-        )
-
 
 def run_page_pipeline(
     page_ids: List[str],
@@ -302,19 +191,19 @@ def run_page_pipeline(
     cfg: AppConfig,
     chunking_params: ChunkingParams,
     storage_params: StorageParams,
-) -> Iterator[PipelineEvent]:
-    """Полный пайплайн: загрузка по page IDs → чанкинг → сохранение (per-page streaming)."""
-    batch_loader = BatchPageLoader(PageLoader(cfg))
-    chunker = AdvancedChunker(cfg, chunking_params)
-    vs_service = VectorStoreService(cfg)
+) -> Iterator[LoadPipelineEvent]:
+    """Полный пайплайн: загрузка по page IDs -> чанкинг -> сохранение."""
+    from load_pipeline import create_default_load_pipeline, create_load_context
 
-    yield from _streaming_pipeline(
-        loading_events=batch_loader.load(page_ids),
-        chunker=chunker,
-        vs_service=vs_service,
+    pipeline = create_default_load_pipeline()
+    ctx = create_load_context(
         collection_name=collection_name,
+        cfg=cfg,
+        chunking_params=chunking_params,
         storage_params=storage_params,
+        page_ids=page_ids,
     )
+    yield from pipeline.run(ctx)
 
 
 def run_space_pipeline(
@@ -324,17 +213,17 @@ def run_space_pipeline(
     space_params: SpaceLoadParams,
     chunking_params: ChunkingParams,
     storage_params: StorageParams,
-) -> Iterator[PipelineEvent]:
-    """Полный пайплайн: загрузка пространства → чанкинг → сохранение (per-page streaming)."""
-    batch_loader = BatchPageLoader(PageLoader(cfg))
-    space_loader = SpaceLoader(batch_loader, cfg, space_params)
-    chunker = AdvancedChunker(cfg, chunking_params)
-    vs_service = VectorStoreService(cfg)
+) -> Iterator[LoadPipelineEvent]:
+    """Полный пайплайн: загрузка пространства -> чанкинг -> сохранение."""
+    from load_pipeline import create_default_load_pipeline, create_load_context
 
-    yield from _streaming_pipeline(
-        loading_events=space_loader.load(space_key),
-        chunker=chunker,
-        vs_service=vs_service,
+    pipeline = create_default_load_pipeline()
+    ctx = create_load_context(
         collection_name=collection_name,
+        cfg=cfg,
+        chunking_params=chunking_params,
         storage_params=storage_params,
+        space_key=space_key,
+        space_params=space_params,
     )
+    yield from pipeline.run(ctx)

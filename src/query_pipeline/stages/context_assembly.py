@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from typing import Iterator
 
-from events import ChatEvent, RetrievalDone
-from pipeline.context import PipelineContext
+from query_pipeline.events import ChatEvent, RetrievalDone
 from pipeline.events import StageCompleted, StageStarted
+from query_pipeline.context import QueryContext
 from retrieval import build_sources
 
 
@@ -15,7 +15,7 @@ class ContextAssemblyStage:
     def name(self) -> str:
         return "context_assembly"
 
-    def run(self, ctx: PipelineContext) -> Iterator[ChatEvent]:
+    def run(self, ctx: QueryContext) -> Iterator[ChatEvent]:
         yield StageStarted(stage=self.name)
 
         assert ctx.selected_docs is not None
