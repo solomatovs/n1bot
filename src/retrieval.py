@@ -6,6 +6,8 @@ from typing import Dict, List, Optional
 
 from langchain_core.documents import Document
 
+from utils import extract_heading, format_source_line, get_document_metadata
+
 log = logging.getLogger(__name__)
 
 
@@ -38,7 +40,7 @@ def _rrf_merge(rank_lists: List[List[Document]], k: int = RETRIEVAL_CONFIG.rrf_k
     pick: Dict[str, Document] = {}
 
     def doc_key(d: Document) -> str:
-        md = tuple(sorted((d.metadata or {}).items()))
+        md = tuple(sorted(get_document_metadata(d).items()))
         return f"{hash(d.page_content)}::{hash(md)}"
 
     for rl in rank_lists:
@@ -46,17 +48,19 @@ def _rrf_merge(rank_lists: List[List[Document]], k: int = RETRIEVAL_CONFIG.rrf_k
             dk = doc_key(d)
             scores[dk] = scores.get(dk, 0.0) + 1.0 / (k + rank + 1)
             pick.setdefault(dk, d)
-    return [pick[dk] for dk, _ in sorted(scores.items(), key=lambda x: x[1], reverse=True)]
+    ranked_keys = sorted(scores, key=scores.get, reverse=True)  # type: ignore[arg-type]
+    return [pick[dk] for dk in ranked_keys]
 
 
-def _pid_from_meta(md: Dict) -> str:
-    return str(md.get("page_id") or "unknown")
+def _extract_page_id(metadata: Dict) -> str:
+    """Извлечь page_id из метаданных документа."""
+    return str(metadata.get("page_id") or "unknown")
 
 
 def _group_limit_per_page(docs: List[Document], per_page: int) -> List[Document]:
     by: Dict[str, List[Document]] = {}
     for d in docs:
-        pid = _pid_from_meta(d.metadata or {})
+        pid = _extract_page_id(get_document_metadata(d))
         by.setdefault(pid, []).append(d)
     picked: List[Document] = []
     for lst in by.values():
@@ -69,24 +73,22 @@ def _group_limit_per_page(docs: List[Document], per_page: int) -> List[Document]
 # ---------------------------------------------------------------------------
 
 def build_sources(docs: List[Document]) -> str:
+    """Форматировать список источников для отображения пользователю."""
     lines: List[str] = []
     seen: set = set()
     for d in docs:
-        md = d.metadata or {}
+        md = get_document_metadata(d)
         space = md.get("space_key")
         pid = md.get("page_id")
-        url = md.get("url") or ""
         if not (space and pid):
             continue
-        head = md.get("Header 1") or md.get("Header 2") or ""
+        head = extract_heading(md)
         key = (space, pid, head)
         if key in seen:
             continue
         seen.add(key)
-        line = f"- {space}:{pid} {head}".strip()
-        if url:
-            line += f" — {url}"
-        lines.append(line)
+        url = md.get("url", "")
+        lines.append(format_source_line(space, pid, head, url))
     return "\n".join(lines)
 
 
@@ -145,7 +147,7 @@ def _compute_rerank_score(query_type: str, metadata: dict, cfg: RetrievalConfig)
 
 def _rerank_results(docs: List[Document], query_type: str) -> List[Document]:
     scored_docs = [
-        (doc, _compute_rerank_score(query_type, doc.metadata or {}, RETRIEVAL_CONFIG))
+        (doc, _compute_rerank_score(query_type, get_document_metadata(doc), RETRIEVAL_CONFIG))
         for doc in docs
     ]
     scored_docs.sort(key=lambda x: x[1], reverse=True)

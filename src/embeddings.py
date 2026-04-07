@@ -6,6 +6,8 @@ from typing import List
 import httpx
 from langchain.embeddings.base import Embeddings
 
+from utils import add_prefix_to_texts, extract_embeddings
+
 
 class LiteLLMEmbeddings(Embeddings):
     """Кастомный класс эмбеддингов для liteLLM через httpx."""
@@ -18,7 +20,7 @@ class LiteLLMEmbeddings(Embeddings):
         timeout: int,
     ) -> None:
         self.model = model
-        self.base_url = base_url.rstrip("/")
+        self.base_url = base_url
         self.api_key = api_key
         self.client = httpx.Client(
             verify=False,
@@ -31,17 +33,17 @@ class LiteLLMEmbeddings(Embeddings):
 
     def _embed(self, texts: List[str], prefix: str = "") -> List[List[float]]:
         if "e5" in self.model.lower():
-            texts = [f"{prefix}{t}" for t in texts]
+            texts = add_prefix_to_texts(texts, prefix)
 
-        response = self.client.post(
-            f"{self.base_url}/v1/embeddings",
-            json={"model": self.model, "input": texts},
-        )
+        url = f"{self.base_url}/v1/embeddings"
+        response = self.client.post(url, json={"model": self.model, "input": texts})
+
         if response.status_code != 200:
-            raise ConnectionError(f"LiteLLM error: {response.status_code} - {response.text}")
+            raise ConnectionError(
+                f"LiteLLM error {response.status_code}: {response.text} (URL: {url})"
+            )
 
-        data = response.json()
-        return [item["embedding"] for item in data["data"]]
+        return extract_embeddings(response.json())
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         return self._embed(texts, prefix="passage: ")

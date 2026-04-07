@@ -36,10 +36,10 @@ class LoadContext:
     chunker: ChunkingStrategy
     vectorstore_service: VectorStoreService
 
-    # --- Опциональные входные данные (один из двух) ---
+    # --- Входные данные загрузки (заполняются фабрикой) ---
     page_ids: List[str] = field(default_factory=list)
     space_key: str = ""
-    space_params: SpaceLoadParams = field(default_factory=SpaceLoadParams)
+    space_params: Optional[SpaceLoadParams] = None
 
     # --- Заполняется LoadPagesStage (ленивый итератор загрузки) ---
     loading_events: Optional[Iterator[LoadEvent]] = None

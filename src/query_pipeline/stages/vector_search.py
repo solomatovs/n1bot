@@ -37,7 +37,9 @@ class VectorSearchStage:
         for variant in ctx.query_variants:
             try:
                 retr = vectorstore.as_retriever(search_kwargs={"k": k, "filter": filters})
-                results = retr.invoke(variant) or []
+                results = retr.invoke(variant)
+                if results is None:
+                    results = []
                 rank_lists.append(results)
             except (chromadb.errors.ChromaError, RuntimeError) as e:
                 log.warning("Search failed for variant '%s': %s", variant, e)

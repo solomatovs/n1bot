@@ -2,16 +2,24 @@
 from __future__ import annotations
 
 import logging
-import re
 from typing import Dict, Iterator, List, Protocol, Union
-
-import numpy as np
 from langchain_core.documents import Document
 
 from config import enc
 from embeddings import LiteLLMEmbeddings
 from load_pipeline.events import ChunkProduced, SectionChunked
 from ui.state import ChunkingParams
+from utils import (
+    cosine_similarity,
+    count_matching_lines,
+    is_code_line,
+    is_heading,
+    is_list_item,
+    is_table_line,
+    line_ratio,
+    split_list_items,
+    split_paragraphs,
+)
 
 log = logging.getLogger(__name__)
 
@@ -89,7 +97,7 @@ class AdvancedChunker:
             yield from self._chunk_by_paragraphs(text, metadata, section)
 
     def _chunk_text_semantic(self, text: str, metadata: Dict, section: Dict) -> Iterator[Document]:
-        paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+        paragraphs = split_paragraphs(text)
         if not paragraphs:
             return
 
@@ -100,9 +108,7 @@ class AdvancedChunker:
 
         for para, vec in zip(paragraphs, vecs):
             para_tokens = self._count_tokens(para)
-            sim = 1.0
-            if prev_vec is not None:
-                sim = float(np.dot(vec, prev_vec) / (np.linalg.norm(vec) * np.linalg.norm(prev_vec)))
+            sim = cosine_similarity(vec, prev_vec) if prev_vec is not None else 1.0
 
             if (
                 prev_vec is not None
@@ -122,7 +128,7 @@ class AdvancedChunker:
             yield self._create_chunk(current_chunk, metadata, section, "semantic")
 
     def _chunk_by_paragraphs(self, text: str, metadata: Dict, section: Dict) -> Iterator[Document]:
-        paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+        paragraphs = split_paragraphs(text)
         current_chunk: List[str] = []
         current_tokens = 0
 
@@ -139,7 +145,7 @@ class AdvancedChunker:
             yield self._create_chunk(current_chunk, metadata, section, "paragraph")
 
     def _chunk_list(self, list_text: str, metadata: Dict, section: Dict) -> Iterator[Document]:
-        items = re.split(r"\n(?=[\d+\.\-\*\+]\s)", list_text)
+        items = split_list_items(list_text)
         current_chunk: List[str] = []
         current_tokens = 0
 
@@ -185,7 +191,7 @@ def _split_into_sections(text: str) -> List[Dict]:
         line = line.strip()
         if not line:
             continue
-        heading_match = re.match(r"^(#+)\s+(.+)$", line)
+        heading_match = is_heading(line)
         if heading_match:
             if current_section:
                 sections.append(
@@ -202,15 +208,20 @@ def _split_into_sections(text: str) -> List[Dict]:
     return sections
 
 
+CODE_RATIO_THRESHOLD = 0.3
+TABLE_RATIO_THRESHOLD = 0.3
+LIST_RATIO_THRESHOLD = 0.4
+
+
 def _detect_content_type(text: str) -> str:
+    """Определить тип контента по доле характерных строк."""
     lines = text.split("\n")
-    code_lines = sum(1 for line in lines if line.startswith("    ") or "```" in line)
-    if code_lines / max(1, len(lines)) > 0.3:
+    total = len(lines)
+
+    if line_ratio(count_matching_lines(lines, is_code_line), total) > CODE_RATIO_THRESHOLD:
         return "code"
-    table_lines = sum(1 for line in lines if "|" in line and len(line.split("|")) > 2)
-    if table_lines / max(1, len(lines)) > 0.3:
+    if line_ratio(count_matching_lines(lines, is_table_line), total) > TABLE_RATIO_THRESHOLD:
         return "table"
-    list_lines = sum(1 for line in lines if re.match(r"^[\d+\.\-\*\+]\s", line))
-    if list_lines / max(1, len(lines)) > 0.4:
+    if line_ratio(count_matching_lines(lines, is_list_item), total) > LIST_RATIO_THRESHOLD:
         return "list"
     return "text"

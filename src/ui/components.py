@@ -29,6 +29,7 @@ from ui.state import (
     SpaceLoadParams,
     StorageParams,
 )
+from utils import extract_model_ids, safe_index
 
 log = logging.getLogger(__name__)
 
@@ -59,11 +60,11 @@ def list_collections(db_path: str) -> List[str]:
 def get_openai_models(openai_url: str, api_key: str) -> List[str]:
     try:
         resp = requests.get(
-            f"{openai_url.rstrip('/')}/models",
+            f"{openai_url}/models",
             headers={"Authorization": f"Bearer {api_key}"},
         )
         resp.raise_for_status()
-        return sorted(m["id"] for m in resp.json()["data"])
+        return extract_model_ids(resp.json())
     except (requests.RequestException, KeyError, ValueError) as e:
         log.warning("Failed to fetch models: %s", e)
         st.error(f"Ошибка получения моделей: {e}")
@@ -82,8 +83,8 @@ def fetch_collection_df(
     coll = get_chroma_client(db_path).get_collection(collection_name)
     data = coll.get(include=["documents", "metadatas"])
     ids = data.get("ids", [])
-    docs = data.get("documents", []) or []
-    metas = data.get("metadatas", []) or []
+    docs = data.get("documents") or []
+    metas = data.get("metadatas") or []
     if preview:
         docs = [d if isinstance(d, str) else str(d) for d in docs]
     return pd.DataFrame({"id": ids, "text": docs, "metadata": metas})
@@ -106,7 +107,7 @@ def get_collection_preview(db_path: str, collection_name: str) -> pd.DataFrame:
 def collection_selector(cfg: AppConfig, *, key: str, current: str) -> str:
     """Отрисовать селектор коллекции и вернуть выбранное значение."""
     colls = list_collections(cfg.chroma_db_path)
-    index = colls.index(current) if current in colls else 0
+    index = safe_index(colls, current)
     return st.selectbox(
         "Имя векторной БД (коллекция)",
         colls or [current],
@@ -116,10 +117,17 @@ def collection_selector(cfg: AppConfig, *, key: str, current: str) -> str:
 
 
 def model_selector(cfg: AppConfig) -> str:
-    """Отрисовать селектор модели и вернуть выбранное значение."""
+    """Отрисовать селектор LLM-модели и вернуть выбранное значение."""
     models = get_openai_models(cfg.openai_url, cfg.litellm_api_key)
-    default_idx = models.index(cfg.default_model) if cfg.default_model in models else 0
+    default_idx = safe_index(models, cfg.default_model)
     return st.selectbox("Модель генерации", models, index=default_idx) or cfg.default_model
+
+
+def embedding_model_selector(cfg: AppConfig, *, key: str = "emb_model") -> str:
+    """Отрисовать селектор embedding-модели и вернуть выбранное значение."""
+    models = get_openai_models(cfg.openai_url, cfg.litellm_api_key)
+    default_idx = safe_index(models, cfg.embedding_model)
+    return st.selectbox("Модель эмбеддингов", models, index=default_idx, key=key) or cfg.embedding_model
 
 
 # ---------------------------------------------------------------------------

@@ -6,6 +6,10 @@ class AppError(Exception):
     """Base application error."""
 
 
+class ValidationError(AppError):
+    """Required parameter is missing or invalid."""
+
+
 # ---------------------------------------------------------------------------
 # RAG pipeline
 # ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ from langchain_core.documents import Document
 
 from embeddings import LiteLLMEmbeddings
 from errors import EmbeddingConnectionError
+from utils import get_document_metadata
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +68,6 @@ class VectorStoreService:
 
     @staticmethod
     def _normalize_document(d: Document) -> Document:
-        md = dict(getattr(d, "metadata", {}) or {})
+        md = get_document_metadata(d)
         md.setdefault("type", "original")
         return Document(page_content=d.page_content, metadata=md)

@@ -20,6 +20,7 @@ from langchain_core.documents import Document
 
 from bootstrap import AppServices
 from errors import PageLoadError, SpaceEnumerationError
+from utils import extract_page_ids_from_api
 from load_pipeline.events import (
     LoadingDone,
     LoadPipelineEvent,
@@ -163,21 +164,20 @@ class SpaceLoader:
         while True:
             params = {"spaceKey": space_key, "type": "page", "limit": limit, "start": start}
             r = requests.get(
-                f"{self._base_url.rstrip('/')}/rest/api/content",
+                f"{self._base_url}/rest/api/content",
                 headers=headers,
                 params=params,
                 verify=False,
                 timeout=20,
             )
             r.raise_for_status()
-            data = r.json() or {}
-            results = data.get("results", []) or []
-            if not results:
+            page_ids = extract_page_ids_from_api(r.json())
+            if not page_ids:
                 break
-            ids.extend(str(it["id"]) for it in results if "id" in it)
-            if len(results) < limit:
+            ids.extend(page_ids)
+            if len(page_ids) < limit:
                 break
-            start += len(results)
+            start += len(page_ids)
 
         return ids
 
@@ -192,16 +192,18 @@ def run_page_pipeline(
     services: AppServices,
     chunking_params: ChunkingParams,
     storage_params: StorageParams,
+    embedding_model: str,
 ) -> Iterator[LoadPipelineEvent]:
     """Полный пайплайн: загрузка по page IDs -> чанкинг -> сохранение."""
-    from load_pipeline.factory import create_load_context
+    from load_pipeline.factory import create_page_load_context
 
-    ctx = create_load_context(
+    ctx = create_page_load_context(
+        page_ids=page_ids,
         collection_name=collection_name,
         chunking_params=chunking_params,
         storage_params=storage_params,
         services=services,
-        page_ids=page_ids,
+        embedding_model=embedding_model,
     )
     yield from services.load_pipeline.run(ctx)
 
@@ -213,16 +215,18 @@ def run_space_pipeline(
     space_params: SpaceLoadParams,
     chunking_params: ChunkingParams,
     storage_params: StorageParams,
+    embedding_model: str,
 ) -> Iterator[LoadPipelineEvent]:
     """Полный пайплайн: загрузка пространства -> чанкинг -> сохранение."""
-    from load_pipeline.factory import create_load_context
+    from load_pipeline.factory import create_space_load_context
 
-    ctx = create_load_context(
+    ctx = create_space_load_context(
+        space_key=space_key,
         collection_name=collection_name,
+        space_params=space_params,
         chunking_params=chunking_params,
         storage_params=storage_params,
         services=services,
-        space_key=space_key,
-        space_params=space_params,
+        embedding_model=embedding_model,
     )
     yield from services.load_pipeline.run(ctx)

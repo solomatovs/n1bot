@@ -6,6 +6,7 @@ from typing import Iterator
 import streamlit as st
 
 from errors import AppError
+from utils import split_comma_list
 from load_pipeline.events import (
     ChunkingDone,
     ChunkProduced,
@@ -21,7 +22,7 @@ from load_pipeline.events import (
 )
 from bootstrap import AppServices
 from loaders import run_page_pipeline, run_space_pipeline
-from ui.components import render_chunking_settings, render_page_id_settings, render_space_settings
+from ui.components import embedding_model_selector, render_chunking_settings, render_page_id_settings, render_space_settings
 from ui.state import SessionState
 
 
@@ -42,6 +43,7 @@ def render(services: AppServices, state: SessionState) -> None:
 # ---------------------------------------------------------------------------
 
 def _render_page_tab(services: AppServices) -> None:
+    emb_model = embedding_model_selector(services.cfg, key="pid_emb_model")
     chunking_params = render_chunking_settings(key_prefix="pid_cp")
     storage_params = render_page_id_settings()
 
@@ -56,7 +58,7 @@ def _render_page_tab(services: AppServices) -> None:
     if not st.button("Загрузить и сохранить", key="btn_load_pages"):
         return
 
-    page_ids = [x.strip() for x in pids_input.split(",") if x.strip()]
+    page_ids = split_comma_list(pids_input)
     if not page_ids:
         st.warning("Укажите хотя бы один Page ID.")
         return
@@ -71,6 +73,7 @@ def _render_page_tab(services: AppServices) -> None:
             services=services,
             chunking_params=chunking_params,
             storage_params=storage_params,
+            embedding_model=emb_model,
         )
         _consume_pipeline(pipeline)
         st.cache_data.clear()
@@ -83,12 +86,13 @@ def _render_page_tab(services: AppServices) -> None:
 # ---------------------------------------------------------------------------
 
 def _render_space_tab(services: AppServices) -> None:
+    emb_model = embedding_model_selector(services.cfg, key="sp_emb_model")
     chunking_params = render_chunking_settings(key_prefix="sp_cp")
     space_params, storage_params = render_space_settings()
 
     st.subheader("Загрузить пространство")
     space_key = st.text_input("Space Key", key="spaceKey_stream")
-    col_name = st.text_input("Collection name", key="pCol_stream", value=space_key or "")
+    col_name = st.text_input("Collection name", key="pCol_stream", value=space_key)
 
     if not st.button("Загрузить пространство", key="btn_load_space"):
         return
@@ -105,6 +109,7 @@ def _render_space_tab(services: AppServices) -> None:
             space_params=space_params,
             chunking_params=chunking_params,
             storage_params=storage_params,
+            embedding_model=emb_model,
         )
         _consume_pipeline(pipeline)
         st.cache_data.clear()

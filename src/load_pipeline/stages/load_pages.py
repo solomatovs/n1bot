@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Iterator, Union
 
+from errors import ValidationError
 from pipeline.events import StageCompleted, StageStarted
 from load_pipeline.context import LoadContext
 from loaders import BatchPageLoader, PageLoader, SpaceLoader
@@ -32,9 +33,13 @@ class LoadPagesStage:
         batch_loader = BatchPageLoader(page_loader)
 
         if ctx.space_key:
+            if ctx.space_params is None:
+                raise ValidationError("space_params обязателен при загрузке пространства")
             space_loader = SpaceLoader(batch_loader, ctx.cfg, ctx.space_params)
             ctx.loading_events = space_loader.load(ctx.space_key)
-        else:
+        elif ctx.page_ids:
             ctx.loading_events = batch_loader.load(ctx.page_ids)
+        else:
+            raise ValidationError("Необходимо задать space_key или page_ids")
 
         yield StageCompleted(stage=self.name, detail="итератор загрузки готов")
