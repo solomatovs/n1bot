@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from enum import Enum
 from typing import Dict, Iterator, List, Protocol, Union
+
 from langchain_core.documents import Document
 
 from config import enc
@@ -24,6 +27,26 @@ from utils import (
 log = logging.getLogger(__name__)
 
 ChunkEvent = Union[SectionChunked, ChunkProduced]
+
+
+# ---------------------------------------------------------------------------
+# Типы данных
+# ---------------------------------------------------------------------------
+
+class ContentType(Enum):
+    """Тип контента секции документа."""
+    CODE = "code"
+    TABLE = "table"
+    LIST = "list"
+    TEXT = "text"
+
+
+@dataclass(frozen=True)
+class Section:
+    """Секция markdown-документа."""
+    title: str
+    level: int
+    content: str
 
 
 # ---------------------------------------------------------------------------
@@ -70,25 +93,24 @@ class AdvancedChunker:
                 doc_total=0,
                 section_index=idx,
                 section_total=total,
-                section_title=section.get("title", ""),
+                section_title=section.title,
             )
             for chunk in self._chunk_section(section, metadata):
                 yield ChunkProduced(chunk=chunk, cumulative_chunks=0)
 
-    def _chunk_section(self, section: Dict, metadata: Dict) -> Iterator[Document]:
-        content = section["content"]
-        content_type = _detect_content_type(content)
+    def _chunk_section(self, section: Section, metadata: Dict) -> Iterator[Document]:
+        content_type = _detect_content_type(section.content)
         match content_type:
-            case "code":
-                yield self._create_chunk([content], metadata, section, "code")
-            case "table":
-                yield self._create_chunk([content], metadata, section, "table")
-            case "list":
-                yield from self._chunk_list(content, metadata, section)
-            case _:
-                yield from self._chunk_text(content, metadata, section)
+            case ContentType.CODE:
+                yield self._create_chunk([section.content], metadata, section, content_type)
+            case ContentType.TABLE:
+                yield self._create_chunk([section.content], metadata, section, content_type)
+            case ContentType.LIST:
+                yield from self._chunk_list(section.content, metadata, section)
+            case ContentType.TEXT:
+                yield from self._chunk_text(section.content, metadata, section)
 
-    def _chunk_text(self, text: str, metadata: Dict, section: Dict) -> Iterator[Document]:
+    def _chunk_text(self, text: str, metadata: Dict, section: Section) -> Iterator[Document]:
         """Семантический чанкинг текста с фоллбэком на параграфы."""
         try:
             yield from self._chunk_text_semantic(text, metadata, section)
@@ -96,7 +118,7 @@ class AdvancedChunker:
             log.warning("Semantic chunking failed, falling back to paragraphs: %s", e)
             yield from self._chunk_by_paragraphs(text, metadata, section)
 
-    def _chunk_text_semantic(self, text: str, metadata: Dict, section: Dict) -> Iterator[Document]:
+    def _chunk_text_semantic(self, text: str, metadata: Dict, section: Section) -> Iterator[Document]:
         paragraphs = split_paragraphs(text)
         if not paragraphs:
             return
@@ -119,15 +141,15 @@ class AdvancedChunker:
                 current_tokens += para_tokens
             else:
                 if current_chunk:
-                    yield self._create_chunk(current_chunk, metadata, section, "semantic")
+                    yield self._create_chunk(current_chunk, metadata, section, ContentType.TEXT)
                 current_chunk = [para]
                 current_tokens = para_tokens
                 prev_vec = vec
 
         if current_chunk:
-            yield self._create_chunk(current_chunk, metadata, section, "semantic")
+            yield self._create_chunk(current_chunk, metadata, section, ContentType.TEXT)
 
-    def _chunk_by_paragraphs(self, text: str, metadata: Dict, section: Dict) -> Iterator[Document]:
+    def _chunk_by_paragraphs(self, text: str, metadata: Dict, section: Section) -> Iterator[Document]:
         paragraphs = split_paragraphs(text)
         current_chunk: List[str] = []
         current_tokens = 0
@@ -135,16 +157,16 @@ class AdvancedChunker:
         for para in paragraphs:
             para_tokens = self._count_tokens(para)
             if current_tokens + para_tokens > self._params.max_tokens and current_chunk:
-                yield self._create_chunk(current_chunk, metadata, section, "paragraph")
+                yield self._create_chunk(current_chunk, metadata, section, ContentType.TEXT)
                 current_chunk = []
                 current_tokens = 0
             current_chunk.append(para)
             current_tokens += para_tokens
 
         if current_chunk:
-            yield self._create_chunk(current_chunk, metadata, section, "paragraph")
+            yield self._create_chunk(current_chunk, metadata, section, ContentType.TEXT)
 
-    def _chunk_list(self, list_text: str, metadata: Dict, section: Dict) -> Iterator[Document]:
+    def _chunk_list(self, list_text: str, metadata: Dict, section: Section) -> Iterator[Document]:
         items = split_list_items(list_text)
         current_chunk: List[str] = []
         current_tokens = 0
@@ -152,22 +174,24 @@ class AdvancedChunker:
         for item in items:
             item_tokens = self._count_tokens(item)
             if current_tokens + item_tokens > self._params.max_tokens and current_chunk:
-                yield self._create_chunk(current_chunk, metadata, section, "list")
+                yield self._create_chunk(current_chunk, metadata, section, ContentType.LIST)
                 current_chunk = []
                 current_tokens = 0
             current_chunk.append(item)
             current_tokens += item_tokens
 
         if current_chunk:
-            yield self._create_chunk(current_chunk, metadata, section, "list")
+            yield self._create_chunk(current_chunk, metadata, section, ContentType.LIST)
 
-    def _create_chunk(self, content_parts: List[str], metadata: Dict, section: Dict, chunk_type: str) -> Document:
+    def _create_chunk(
+        self, content_parts: List[str], metadata: Dict, section: Section, chunk_type: ContentType,
+    ) -> Document:
         content = "\n\n".join(content_parts)
         chunk_metadata = {
             **metadata,
-            "chunk_type": chunk_type,
-            "section_title": section.get("title", ""),
-            "section_level": section.get("level", 0),
+            "chunk_type": chunk_type.value,
+            "section_title": section.title,
+            "section_level": section.level,
             "token_count": self._count_tokens(content),
         }
         return Document(page_content=content, metadata=chunk_metadata)
@@ -180,10 +204,10 @@ class AdvancedChunker:
 # Вспомогательные функции
 # ---------------------------------------------------------------------------
 
-def _split_into_sections(text: str) -> List[Dict]:
+def _split_into_sections(text: str) -> List[Section]:
     lines = text.split("\n")
-    sections: List[Dict] = []
-    current_section: List[str] = []
+    sections: List[Section] = []
+    current_lines: List[str] = []
     current_title = "Без названия"
     current_level = 0
 
@@ -193,18 +217,20 @@ def _split_into_sections(text: str) -> List[Dict]:
             continue
         heading_match = is_heading(line)
         if heading_match:
-            if current_section:
-                sections.append(
-                    {"title": current_title, "level": current_level, "content": "\n".join(current_section)}
-                )
+            if current_lines:
+                sections.append(Section(
+                    title=current_title, level=current_level, content="\n".join(current_lines),
+                ))
             current_level = len(heading_match.group(1))
             current_title = heading_match.group(2)
-            current_section = []
+            current_lines = []
         else:
-            current_section.append(line)
+            current_lines.append(line)
 
-    if current_section:
-        sections.append({"title": current_title, "level": current_level, "content": "\n".join(current_section)})
+    if current_lines:
+        sections.append(Section(
+            title=current_title, level=current_level, content="\n".join(current_lines),
+        ))
     return sections
 
 
@@ -213,15 +239,15 @@ TABLE_RATIO_THRESHOLD = 0.3
 LIST_RATIO_THRESHOLD = 0.4
 
 
-def _detect_content_type(text: str) -> str:
+def _detect_content_type(text: str) -> ContentType:
     """Определить тип контента по доле характерных строк."""
     lines = text.split("\n")
     total = len(lines)
 
     if line_ratio(count_matching_lines(lines, is_code_line), total) > CODE_RATIO_THRESHOLD:
-        return "code"
+        return ContentType.CODE
     if line_ratio(count_matching_lines(lines, is_table_line), total) > TABLE_RATIO_THRESHOLD:
-        return "table"
+        return ContentType.TABLE
     if line_ratio(count_matching_lines(lines, is_list_item), total) > LIST_RATIO_THRESHOLD:
-        return "list"
-    return "text"
+        return ContentType.LIST
+    return ContentType.TEXT
