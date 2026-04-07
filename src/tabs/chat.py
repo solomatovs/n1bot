@@ -23,6 +23,7 @@ from ui.components import (
     model_selector,
     render_chat_history,
     render_generation_settings,
+    render_multiquery_settings,
     render_prompt_settings,
     render_retrieval_settings,
 )
@@ -37,15 +38,20 @@ def render(services: AppServices, state: SessionState) -> None:
         services.cfg, key="select_collection_chat", current=state.selected_collection,
     )
 
-    col_model, col_retrieval, col_gen, col_prompts = st.columns([3, 1, 1, 1])
+    col_model, col_retrieval, col_mq, col_gen, col_prompts = st.columns([3, 1, 1, 1, 1])
     with col_model:
         active_model = model_selector(services.cfg)
     retrieval_params = render_retrieval_settings(col_retrieval)
+    mq_params = render_multiquery_settings(col_mq)
     gen_params = render_generation_settings(col_gen)
     prompt_params = render_prompt_settings(col_prompts)
 
     search_params = dataclasses.replace(
         retrieval_params,
+        use_multi_query=mq_params.use_multi_query,
+        mq_variants=mq_params.mq_variants,
+        k_per_variant=mq_params.k_per_variant,
+        mq_prompt_template=mq_params.mq_prompt_template,
         temperature=gen_params.temperature,
         top_p=gen_params.top_p,
         max_tokens=gen_params.max_tokens,

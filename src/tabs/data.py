@@ -27,6 +27,9 @@ def render(services: AppServices, state: SessionState) -> None:
         key="select_collection_data",
     ) or state.selected_collection
 
+    emb_model = services.vectorstore_service.get_collection_embedding_model(state.selected_collection)
+    st.caption(f"Embedding модель: **{emb_model or 'не задана'}**")
+
     show_full = st.toggle("Показывать полный состав коллекции", value=False)
     if show_full:
         with st.spinner("Гружу полный состав…"):

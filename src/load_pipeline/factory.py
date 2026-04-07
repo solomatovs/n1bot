@@ -4,13 +4,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, List
 
 from chunking import AdvancedChunker
-from embeddings import LiteLLMEmbeddings
 from errors import ValidationError
 from load_pipeline.context import LoadContext
 from load_pipeline.stages import ChunkAndStoreStage, LoadPagesStage
 from pipeline import Pipeline
 from ui.state import ChunkingParams, SpaceLoadParams, StorageParams
-from vectorstore import VectorStoreService
 
 if TYPE_CHECKING:
     from bootstrap import AppServices
@@ -42,8 +40,9 @@ def create_page_load_context(
     if not collection_name:
         raise ValidationError("collection_name не может быть пустым")
 
-    embeddings, vs = _resolve_embeddings(services, embedding_model)
-    chunker = AdvancedChunker(embeddings, chunking_params)
+    model = embedding_model or services.cfg.embedding_model
+    embedding = services.vectorstore_service.resolve_embedding(model)
+    chunker = AdvancedChunker(embedding, chunking_params)
 
     return LoadContext(
         collection_name=collection_name,
@@ -51,7 +50,8 @@ def create_page_load_context(
         chunking_params=chunking_params,
         storage_params=storage_params,
         chunker=chunker,
-        vectorstore_service=vs,
+        vectorstore_service=services.vectorstore_service,
+        embedding_model=model,
         page_ids=page_ids,
     )
 
@@ -75,8 +75,9 @@ def create_space_load_context(
     if not collection_name:
         raise ValidationError("collection_name не может быть пустым")
 
-    embeddings, vs = _resolve_embeddings(services, embedding_model)
-    chunker = AdvancedChunker(embeddings, chunking_params)
+    model = embedding_model or services.cfg.embedding_model
+    embedding = services.vectorstore_service.resolve_embedding(model)
+    chunker = AdvancedChunker(embedding, chunking_params)
 
     return LoadContext(
         collection_name=collection_name,
@@ -84,28 +85,8 @@ def create_space_load_context(
         chunking_params=chunking_params,
         storage_params=storage_params,
         chunker=chunker,
-        vectorstore_service=vs,
+        vectorstore_service=services.vectorstore_service,
+        embedding_model=model,
         space_key=space_key,
         space_params=space_params,
     )
-
-
-# ---------------------------------------------------------------------------
-# Приватные помощники
-# ---------------------------------------------------------------------------
-
-def _resolve_embeddings(
-    services: AppServices,
-    embedding_model: str,
-) -> tuple[LiteLLMEmbeddings, VectorStoreService]:
-    """Создать или переиспользовать LiteLLMEmbeddings по имени модели."""
-    if embedding_model != services.cfg.embedding_model:
-        embeddings = LiteLLMEmbeddings(
-            model=embedding_model,
-            base_url=services.cfg.litellm_base_url,
-            api_key=services.cfg.litellm_api_key,
-            timeout=services.cfg.embedding_timeout,
-        )
-        vs = VectorStoreService(db_path=services.cfg.chroma_db_path, embedding=embeddings)
-        return embeddings, vs
-    return services.embeddings, services.vectorstore_service
