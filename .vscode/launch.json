@@ -27,7 +27,8 @@
             "args": [
                 "--space", "PAAS",
                 "--max-pages", "3",
-                "--batch-size", "8"
+                "--batch-size", "8",
+                "--embedding-model", "e5-large"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/docker",

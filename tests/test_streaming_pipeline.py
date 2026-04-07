@@ -47,7 +47,7 @@ def _fmt_mem(kb: float) -> str:
     return f"{kb:.0f}KB"
 
 
-def run(space_key: str, max_pages: int, batch_size: int, collection: str) -> None:
+def run(space_key: str, max_pages: int, batch_size: int, collection: str, embedding_model: str) -> None:
     cfg = AppConfig()
     services = bootstrap(cfg)
     tracemalloc.start()
@@ -64,6 +64,7 @@ def run(space_key: str, max_pages: int, batch_size: int, collection: str) -> Non
         space_params=SpaceLoadParams(api_page_limit=50, max_pages=max_pages),
         chunking_params=ChunkingParams(),
         storage_params=StorageParams(batch_size=batch_size),
+        embedding_model=embedding_model,
     ):
         current, peak = tracemalloc.get_traced_memory()
         cur_kb = current / 1024
@@ -133,6 +134,7 @@ if __name__ == "__main__":
     parser.add_argument("--max-pages", type=int, default=3, help="Макс. страниц для загрузки")
     parser.add_argument("--batch-size", type=int, default=8, help="Размер батча для ChromaDB")
     parser.add_argument("--collection", default="test-streaming", help="Имя тестовой коллекции")
+    parser.add_argument("--embedding-model", default="", help="Embedding модель (пусто = дефолт из конфига)")
     args = parser.parse_args()
 
     run(
@@ -140,4 +142,5 @@ if __name__ == "__main__":
         max_pages=args.max_pages,
         batch_size=args.batch_size,
         collection=args.collection,
+        embedding_model=args.embedding_model,
     )

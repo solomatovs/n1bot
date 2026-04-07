@@ -41,7 +41,7 @@ def bootstrap(cfg: AppConfig) -> AppServices:
 
     embeddings = create_embeddings(cfg)
     openai_client = create_openai_client(cfg)
-    vs = VectorStoreService(db_path=cfg.chroma_db_path, embedding=embeddings)
+    vs = VectorStoreService(db_path=cfg.chroma_db_path, default_embedding=embeddings, cfg=cfg)
 
     from query_pipeline.factory import create_default_query_pipeline, create_search_pipeline
     from load_pipeline.factory import create_default_load_pipeline

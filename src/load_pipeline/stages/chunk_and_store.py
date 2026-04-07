@@ -54,7 +54,9 @@ class ChunkAndStoreStage:
         assert ctx.loading_events is not None
 
         ctx.vectorstore_service.verify_embedding_connection()
-        vectorstore = ctx.vectorstore_service.get_vectorstore(ctx.collection_name)
+        vectorstore = ctx.vectorstore_service.create_vectorstore(
+            ctx.collection_name, ctx.embedding_model,
+        )
 
         yield from _stream_chunk_and_store(ctx, vectorstore)
 

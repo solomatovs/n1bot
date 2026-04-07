@@ -29,7 +29,6 @@ from ui.state import (
     SpaceLoadParams,
     StorageParams,
 )
-from utils import extract_model_ids, safe_index
 
 log = logging.getLogger(__name__)
 
@@ -57,18 +56,38 @@ def list_collections(db_path: str) -> List[str]:
 
 
 @st.cache_data(ttl=CacheTTL.models, show_spinner=False)
-def get_openai_models(openai_url: str, api_key: str) -> List[str]:
+def _fetch_model_info(base_url: str, api_key: str) -> List[dict]:
+    """Получить расширенную информацию о моделях через /v1/model/info."""
     try:
         resp = requests.get(
-            f"{openai_url}/models",
+            f"{base_url}/v1/model/info",
             headers={"Authorization": f"Bearer {api_key}"},
         )
         resp.raise_for_status()
-        return extract_model_ids(resp.json())
+        return resp.json().get("data", [])
     except (requests.RequestException, KeyError, ValueError) as e:
-        log.warning("Failed to fetch models: %s", e)
-        st.error(f"Ошибка получения моделей: {e}")
+        log.warning("Failed to fetch model info: %s", e)
         return []
+
+
+def get_chat_models(cfg: AppConfig) -> List[str]:
+    """Получить список chat-моделей (mode == 'chat')."""
+    data = _fetch_model_info(cfg.litellm_base_url, cfg.litellm_api_key)
+    return sorted(
+        m.get("model_name", "")
+        for m in data
+        if m.get("model_info", {}).get("mode") == "chat"
+    )
+
+
+def get_embedding_models(cfg: AppConfig) -> List[str]:
+    """Получить список embedding-моделей (mode != 'chat')."""
+    data = _fetch_model_info(cfg.litellm_base_url, cfg.litellm_api_key)
+    return sorted(
+        m.get("model_name", "")
+        for m in data
+        if m.get("model_info", {}).get("mode") != "chat"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -101,33 +120,58 @@ def get_collection_preview(db_path: str, collection_name: str) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Утилиты
+# ---------------------------------------------------------------------------
+
+def _safe_index(items: List[str], value: str, fallback: int = 0) -> int:
+    """Найти индекс значения в списке или вернуть fallback."""
+    try:
+        return items.index(value)
+    except ValueError:
+        return fallback
+
+
+# ---------------------------------------------------------------------------
 # Селекторы
 # ---------------------------------------------------------------------------
 
 def collection_selector(cfg: AppConfig, *, key: str, current: str) -> str:
     """Отрисовать селектор коллекции и вернуть выбранное значение."""
     colls = list_collections(cfg.chroma_db_path)
-    index = safe_index(colls, current)
-    return st.selectbox(
+    if not colls:
+        st.warning("Нет доступных коллекций.")
+        return current
+    selected: str | None = st.selectbox(
         "Имя векторной БД (коллекция)",
-        colls or [current],
-        index=index,
+        colls,
+        index=_safe_index(colls, current),
         key=key,
-    ) or current
+    )
+    return selected if selected is not None else colls[0]
 
 
 def model_selector(cfg: AppConfig) -> str:
-    """Отрисовать селектор LLM-модели и вернуть выбранное значение."""
-    models = get_openai_models(cfg.openai_url, cfg.litellm_api_key)
-    default_idx = safe_index(models, cfg.default_model)
-    return st.selectbox("Модель генерации", models, index=default_idx) or cfg.default_model
+    """Отрисовать селектор модели генерации и вернуть выбранное значение."""
+    models = get_chat_models(cfg)
+    if not models:
+        st.warning("Нет доступных моделей генерации.")
+        return cfg.default_model
+    selected: str | None = st.selectbox(
+        "Модель генерации", models, index=_safe_index(models, cfg.default_model),
+    )
+    return selected if selected is not None else models[0]
 
 
-def embedding_model_selector(cfg: AppConfig, *, key: str = "emb_model") -> str:
-    """Отрисовать селектор embedding-модели и вернуть выбранное значение."""
-    models = get_openai_models(cfg.openai_url, cfg.litellm_api_key)
-    default_idx = safe_index(models, cfg.embedding_model)
-    return st.selectbox("Модель эмбеддингов", models, index=default_idx, key=key) or cfg.embedding_model
+def embedding_model_selector(cfg: AppConfig, *, key: str = "embedding_model") -> str:
+    """Отрисовать селектор embedding модели и вернуть выбранное значение."""
+    models = get_embedding_models(cfg)
+    if not models:
+        st.warning("Нет доступных embedding моделей.")
+        return cfg.embedding_model
+    selected: str | None = st.selectbox(
+        "Embedding модель", models, index=_safe_index(models, cfg.embedding_model), key=key,
+    )
+    return selected if selected is not None else models[0]
 
 
 # ---------------------------------------------------------------------------
@@ -154,15 +198,13 @@ def render_chat_history(history: List[ChatMessage]) -> None:
 # ---------------------------------------------------------------------------
 
 def render_retrieval_settings(container: DeltaGenerator, key_prefix: str = "sp") -> SearchParams:
-    """Отрисовать настройки retrieval (поиск + multi-query) и вернуть SearchParams."""
+    """Отрисовать настройки поиска (без multi-query) и вернуть SearchParams."""
     defaults = SearchParams()
     lim = SearchLimits
     p = key_prefix
 
     with container.popover("Настройки поиска", use_container_width=True):
 
-        # -- Группа: Поиск по векторной базе --
-        st.markdown("##### Поиск")
         col1, col2 = st.columns(2)
         with col1:
             top_n = st.slider(
@@ -195,20 +237,31 @@ def render_retrieval_settings(container: DeltaGenerator, key_prefix: str = "sp")
             help="Пусто = автоопределение по запросу. Иначе поиск только по выбранным типам",
             key=f"{p}_content_types",
         )
-        label_to_ct = {ct.label: ct.key for ct in ContentType}
-        content_types = [label_to_ct[lb] for lb in chosen_labels] or None
+        content_types = ContentType.labels_to_keys(chosen_labels)
 
-        st.divider()
+    return SearchParams(
+        top_n=top_n,
+        answers_per_variant=answers,
+        per_page=per_page,
+        content_types=content_types,
+    )
 
-        # -- Группа: Multi-query --
-        st.markdown("##### Multi-query")
+
+def render_multiquery_settings(container: DeltaGenerator, key_prefix: str = "mq") -> SearchParams:
+    """Отрисовать настройки multi-query (переформулировки + RRF) и вернуть SearchParams."""
+    defaults = SearchParams()
+    lim = SearchLimits
+    p = key_prefix
+
+    with container.popover("Multi-query", use_container_width=True):
+
         use_mq = st.checkbox(
             "Включить переформулировки + RRF",
             value=defaults.use_multi_query,
             key=f"{p}_use_mq",
         )
-        col3, col4 = st.columns(2)
-        with col3:
+        col1, col2 = st.columns(2)
+        with col1:
             mq_variants = st.slider(
                 "Переформулировок",
                 min_value=lim.mq_variants.min, max_value=lim.mq_variants.max,
@@ -217,7 +270,7 @@ def render_retrieval_settings(container: DeltaGenerator, key_prefix: str = "sp")
                 help="Количество вариантов запроса для multi-query",
                 key=f"{p}_mq_variants",
             )
-        with col4:
+        with col2:
             k_per_variant = st.slider(
                 "Документов на вариант",
                 min_value=lim.k_per_variant.min, max_value=lim.k_per_variant.max,
@@ -235,10 +288,6 @@ def render_retrieval_settings(container: DeltaGenerator, key_prefix: str = "sp")
         )
 
     return SearchParams(
-        top_n=top_n,
-        answers_per_variant=answers,
-        per_page=per_page,
-        content_types=content_types,
         use_multi_query=use_mq,
         mq_variants=mq_variants,
         k_per_variant=k_per_variant,
@@ -355,7 +404,7 @@ def render_chunking_settings(key_prefix: str = "cp") -> ChunkingParams:
     lim = ChunkingLimits
 
     with st.expander("Настройки чанкинга", expanded=False):
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             max_tokens = st.slider(
                 "Макс. токенов на чанк",
@@ -372,10 +421,19 @@ def render_chunking_settings(key_prefix: str = "cp") -> ChunkingParams:
                 help="Параграфы со схожестью выше порога объединяются в один чанк",
                 key=f"{key_prefix}_similarity",
             )
+        with col3:
+            embedding_timeout = st.slider(
+                "Таймаут embedding (сек)",
+                min_value=lim.embedding_timeout.min, max_value=lim.embedding_timeout.max,
+                value=defaults.embedding_timeout, step=lim.embedding_timeout.step,
+                help="Максимальное время ожидания ответа от сервиса эмбеддингов",
+                key=f"{key_prefix}_emb_timeout",
+            )
 
     return ChunkingParams(
         max_tokens=max_tokens,
         similarity_threshold=similarity,
+        embedding_timeout=embedding_timeout,
     )
 
 
