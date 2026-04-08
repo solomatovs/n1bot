@@ -28,7 +28,7 @@ from load_pipeline.events import (
     PageLoaded,
     SpaceEnumerated,
 )
-from ui.state import AppConfig, ChunkingParams, SpaceLoadParams, StorageParams
+from models import AppConfig, ChunkingParams, SpaceLoadParams, StorageParams
 
 log = logging.getLogger(__name__)
 

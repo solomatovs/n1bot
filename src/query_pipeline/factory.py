@@ -18,7 +18,7 @@ from query_pipeline.stages import (
     VectorSearchStage,
 )
 from retrieval import RetrievalConfig
-from ui.state import PromptParams, SearchParams
+from models import PromptParams, SearchParams
 
 if TYPE_CHECKING:
     from bootstrap import AppServices

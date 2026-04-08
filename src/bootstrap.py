@@ -17,7 +17,7 @@ from openai import OpenAI
 
 from embeddings import LiteLLMEmbeddings
 from pipeline import Pipeline
-from ui.state import AppConfig
+from models import AppConfig
 from vectorstore import VectorStoreService
 
 

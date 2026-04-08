@@ -8,7 +8,7 @@ from errors import ValidationError
 from load_pipeline.context import LoadContext
 from load_pipeline.stages import ChunkStage, LoadPagesStage, StoreStage
 from pipeline import Pipeline
-from ui.state import ChunkingParams, SpaceLoadParams, StorageParams
+from models import ChunkingParams, SpaceLoadParams, StorageParams
 
 if TYPE_CHECKING:
     from bootstrap import AppServices

@@ -9,7 +9,7 @@ from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
 from retrieval import RetrievalConfig
-from ui.state import PromptParams, SearchParams
+from models import PromptParams, SearchParams
 from vectorstore import VectorStoreService
 
 

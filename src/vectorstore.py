@@ -11,7 +11,7 @@ from langchain_core.documents import Document
 
 from embeddings import LiteLLMEmbeddings
 from errors import EmbeddingConnectionError
-from ui.state import AppConfig
+from models import AppConfig
 from utils import get_document_metadata
 
 log = logging.getLogger(__name__)
