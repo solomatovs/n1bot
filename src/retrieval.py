@@ -6,7 +6,6 @@ from typing import Dict, List, Optional
 
 from langchain_core.documents import Document
 
-from utils import extract_heading, format_source_line, get_document_metadata
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +31,44 @@ RETRIEVAL_CONFIG = RetrievalConfig()
 
 
 # ---------------------------------------------------------------------------
+# Утилиты метаданных документов
+# ---------------------------------------------------------------------------
+
+_HEADING_KEYS = ("Header 1", "Header 2")
+
+
+class DocumentMetadata:
+    """Утилиты для работы с метаданными langchain Document."""
+
+    @staticmethod
+    def extract(doc: Document) -> dict:
+        """Извлечь metadata из Document, гарантируя dict."""
+        return dict(getattr(doc, "metadata", None) or {})
+
+    @staticmethod
+    def extract_page_id(metadata: dict) -> str:
+        """Извлечь page_id из метаданных."""
+        return str(metadata.get("page_id") or "unknown")
+
+    @staticmethod
+    def extract_heading(metadata: dict) -> str:
+        """Извлечь заголовок по приоритету ключей."""
+        for key in _HEADING_KEYS:
+            value = metadata.get(key)
+            if value:
+                return str(value)
+        return ""
+
+    @staticmethod
+    def format_source_line(space: str, pid: str, heading: str, url: str) -> str:
+        """Форматировать строку источника для отображения."""
+        line = f"- {space}:{pid} {heading}".strip()
+        if url:
+            line += f" — {url}"
+        return line
+
+
+# ---------------------------------------------------------------------------
 # RRF слияние
 # ---------------------------------------------------------------------------
 
@@ -40,7 +77,7 @@ def _rrf_merge(rank_lists: List[List[Document]], k: int = RETRIEVAL_CONFIG.rrf_k
     pick: Dict[str, Document] = {}
 
     def doc_key(d: Document) -> str:
-        md = tuple(sorted(get_document_metadata(d).items()))
+        md = tuple(sorted(DocumentMetadata.extract(d).items()))
         return f"{hash(d.page_content)}::{hash(md)}"
 
     for rl in rank_lists:
@@ -52,15 +89,10 @@ def _rrf_merge(rank_lists: List[List[Document]], k: int = RETRIEVAL_CONFIG.rrf_k
     return [pick[dk] for dk in ranked_keys]
 
 
-def _extract_page_id(metadata: Dict) -> str:
-    """Извлечь page_id из метаданных документа."""
-    return str(metadata.get("page_id") or "unknown")
-
-
 def _group_limit_per_page(docs: List[Document], per_page: int) -> List[Document]:
     by: Dict[str, List[Document]] = {}
     for d in docs:
-        pid = _extract_page_id(get_document_metadata(d))
+        pid = DocumentMetadata.extract_page_id(DocumentMetadata.extract(d))
         by.setdefault(pid, []).append(d)
     picked: List[Document] = []
     for lst in by.values():
@@ -77,18 +109,18 @@ def build_sources(docs: List[Document]) -> str:
     lines: List[str] = []
     seen: set = set()
     for d in docs:
-        md = get_document_metadata(d)
+        md = DocumentMetadata.extract(d)
         space = md.get("space_key")
         pid = md.get("page_id")
         if not (space and pid):
             continue
-        head = extract_heading(md)
+        head = DocumentMetadata.extract_heading(md)
         key = (space, pid, head)
         if key in seen:
             continue
         seen.add(key)
         url = md.get("url", "")
-        lines.append(format_source_line(space, pid, head, url))
+        lines.append(DocumentMetadata.format_source_line(space, pid, head, url))
     return "\n".join(lines)
 
 
@@ -147,7 +179,7 @@ def _compute_rerank_score(query_type: str, metadata: dict, cfg: RetrievalConfig)
 
 def _rerank_results(docs: List[Document], query_type: str) -> List[Document]:
     scored_docs = [
-        (doc, _compute_rerank_score(query_type, get_document_metadata(doc), RETRIEVAL_CONFIG))
+        (doc, _compute_rerank_score(query_type, DocumentMetadata.extract(doc), RETRIEVAL_CONFIG))
         for doc in docs
     ]
     scored_docs.sort(key=lambda x: x[1], reverse=True)

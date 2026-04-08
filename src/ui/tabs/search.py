@@ -18,7 +18,8 @@ from ui.components import (
     collection_selector,
     render_retrieval_settings,
 )
-from ui.state import PromptParams, SessionState
+from models import PromptParams
+from ui.state import SessionState
 
 
 def render(services: AppServices, state: SessionState) -> None:

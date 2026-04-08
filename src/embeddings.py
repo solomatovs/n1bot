@@ -7,7 +7,6 @@ from typing import List
 import httpx
 from langchain.embeddings.base import Embeddings
 
-from utils import add_prefix_to_texts, extract_embeddings
 
 
 class LiteLLMEmbeddings(Embeddings):
@@ -35,7 +34,7 @@ class LiteLLMEmbeddings(Embeddings):
 
     def _embed(self, texts: List[str], prefix: str = "") -> List[List[float]]:
         if "e5" in self.model.lower():
-            texts = add_prefix_to_texts(texts, prefix)
+            texts = [f"{prefix}{t}" for t in texts]
 
         url = f"{self.base_url}/v1/embeddings"
         payload = {"model": self.model, "input": texts}
@@ -60,13 +59,18 @@ class LiteLLMEmbeddings(Embeddings):
                 f"Response: {response.text}"
             )
 
-        return extract_embeddings(response.json())
+        return self._extract_embeddings(response.json())
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         return self._embed(texts, prefix="passage: ")
 
     def embed_query(self, text: str) -> List[float]:
         return self._embed([text], prefix="query: ")[0]
+
+    @staticmethod
+    def _extract_embeddings(response_json: dict) -> List[List[float]]:
+        """Извлечь векторы эмбеддингов из ответа /v1/embeddings."""
+        return [item["embedding"] for item in response_json["data"]]
 
     def __del__(self) -> None:
         if hasattr(self, "client"):

@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
+
+# src/ должен быть в sys.path для абсолютных импортов domain-кода
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # sqlite hack для некоторых окружений
 try:
@@ -24,8 +28,9 @@ except Exception:
     pass
 
 from bootstrap import bootstrap
-from tabs import chat, data, load, search
-from ui.state import AppConfig, SessionState
+from ui.tabs import chat, data, load, search
+from models import AppConfig
+from ui.state import SessionState
 
 # ========================= Конфигурация страницы
 st.set_page_config(page_title="N1 Hub RAG — MQ", layout="wide")

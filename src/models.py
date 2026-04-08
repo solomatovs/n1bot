@@ -1,12 +1,11 @@
 """Доменные модели — чистый Python, без зависимостей от UI-фреймворков."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import List, Optional
-
-from config import secret
 
 
 # ---------------------------------------------------------------------------
@@ -20,17 +19,22 @@ class AppConfig:
     Все секреты и переменные окружения читаются здесь.
     Остальные модули получают значения через cfg.*.
     """
-    chroma_db_path: str = field(default_factory=lambda: Path(secret("CHROMA_DB_PATH")).as_posix())
-    litellm_url: str = field(default_factory=lambda: secret("LITELLM_URL"))
-    litellm_api_key: str = field(default_factory=lambda: secret("LITELLM_API_KEY"))
-    confluence_url: str = field(default_factory=lambda: secret("CONFLUENCE_URL"))
-    confluence_token: str = field(default_factory=lambda: secret("CONFLUENCE_TOKEN"))
-    default_collection: str = field(default_factory=lambda: secret("DEFAULT_COLLECTION"))
-    default_model: str = field(default_factory=lambda: secret("LLM_MODEL"))
-    embedding_model: str = field(default_factory=lambda: secret("EMBEDDING_MODEL"))
-    llm_timeout: int = field(default_factory=lambda: int(secret("LLM_TIMEOUT", "120")))
-    embedding_timeout: int = field(default_factory=lambda: int(secret("EMBEDDING_TIMEOUT", "120")))
-    log_level: str = field(default_factory=lambda: secret("LOG_LEVEL", "INFO"))
+    chroma_db_path: str = field(default_factory=lambda: Path(AppConfig._secret("CHROMA_DB_PATH")).as_posix())
+    litellm_url: str = field(default_factory=lambda: AppConfig._secret("LITELLM_URL"))
+    litellm_api_key: str = field(default_factory=lambda: AppConfig._secret("LITELLM_API_KEY"))
+    confluence_url: str = field(default_factory=lambda: AppConfig._secret("CONFLUENCE_URL"))
+    confluence_token: str = field(default_factory=lambda: AppConfig._secret("CONFLUENCE_TOKEN"))
+    default_collection: str = field(default_factory=lambda: AppConfig._secret("DEFAULT_COLLECTION"))
+    default_model: str = field(default_factory=lambda: AppConfig._secret("LLM_MODEL"))
+    embedding_model: str = field(default_factory=lambda: AppConfig._secret("EMBEDDING_MODEL"))
+    llm_timeout: int = field(default_factory=lambda: int(AppConfig._secret("LLM_TIMEOUT", "120")))
+    embedding_timeout: int = field(default_factory=lambda: int(AppConfig._secret("EMBEDDING_TIMEOUT", "120")))
+    log_level: str = field(default_factory=lambda: AppConfig._secret("LOG_LEVEL", "INFO"))
+
+    @staticmethod
+    def _secret(key: str, default: str = "") -> str:
+        """Получить значение из переменной окружения."""
+        return os.environ.get(key, default)
 
     @property
     def litellm_base_url(self) -> str:

@@ -11,7 +11,8 @@ from ui.components import (
     get_collection_preview,
     list_collections,
 )
-from ui.state import AppConfig, SessionState
+from models import AppConfig
+from ui.state import SessionState
 
 
 def render(services: AppServices, state: SessionState) -> None:

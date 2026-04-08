@@ -20,7 +20,6 @@ from langchain_core.documents import Document
 
 from bootstrap import AppServices
 from errors import PageLoadError, SpaceEnumerationError
-from utils import extract_page_ids_from_api
 from load_pipeline.events import (
     LoadingDone,
     LoadPipelineEvent,
@@ -171,7 +170,7 @@ class SpaceLoader:
                 timeout=20,
             )
             r.raise_for_status()
-            page_ids = extract_page_ids_from_api(r.json())
+            page_ids = self._extract_page_ids(r.json())
             if not page_ids:
                 break
             ids.extend(page_ids)
@@ -180,6 +179,12 @@ class SpaceLoader:
             start += len(page_ids)
 
         return ids
+
+    @staticmethod
+    def _extract_page_ids(response_json: dict) -> List[str]:
+        """Извлечь ID страниц из ответа Confluence REST API."""
+        results = response_json.get("results") or []
+        return [str(item["id"]) for item in results if "id" in item]
 
 
 # ---------------------------------------------------------------------------

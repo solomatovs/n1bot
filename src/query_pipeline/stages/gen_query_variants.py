@@ -10,7 +10,6 @@ from openai import APIError as OpenAIAPIError, APITimeoutError
 from pipeline.events import StageCompleted, StageStarted
 from query_pipeline.context import QueryContext
 from query_pipeline.events import ChatEvent, QueryVariantsGenerated
-from utils import strip_list_markers
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +44,7 @@ class GenQueryVariantsStage:
                 log.warning("Model returned empty response for query variants generation")
                 ctx.query_variants = [ctx.query]
             else:
-                lines = strip_list_markers(content)
+                lines = self._strip_list_markers(content)
                 ctx.query_variants = [ctx.query] + lines[:n]
         except APITimeoutError as e:
             elapsed = time.monotonic() - start
@@ -64,3 +63,8 @@ class GenQueryVariantsStage:
 
         yield QueryVariantsGenerated(variants=ctx.query_variants)
         yield StageCompleted(stage=self.name, detail=f"{len(ctx.query_variants)} вариантов")
+
+    @staticmethod
+    def _strip_list_markers(text: str) -> list[str]:
+        """Разобрать ответ LLM с маркерами списка в чистые строки."""
+        return [s.strip("- ").strip() for s in text.splitlines() if s.strip()]

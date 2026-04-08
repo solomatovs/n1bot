@@ -28,7 +28,8 @@ from ui.components import (
     render_retrieval_settings,
 )
 from bootstrap import AppServices
-from ui.state import ChatMessage, SearchParams, SessionState
+from models import ChatMessage, SearchParams
+from ui.state import SessionState
 
 
 def render(services: AppServices, state: SessionState) -> None:
