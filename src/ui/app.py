@@ -7,30 +7,19 @@ from pathlib import Path
 # src/ должен быть в sys.path для абсолютных импортов domain-кода
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# sqlite hack для некоторых окружений
-try:
-    import pysqlite3  # type: ignore  # noqa: F401
+# Загрузить Streamlit secrets в os.environ ДО любых импортов domain-кода.
+# AppConfig._secret() читает os.environ — значения должны быть там к моменту создания.
+from ui.secrets import load_streamlit_secrets_to_env  # noqa: E402
 
-    sys.modules["sqlite3"] = sys.modules["pysqlite3"]
-except Exception:
-    pass
+load_streamlit_secrets_to_env()
 
-import os
+# Все импорты domain-кода — после загрузки secrets
+import streamlit as st  # noqa: E402
 
-import streamlit as st
-
-# Загрузить Streamlit secrets в env (для config.secret() без зависимости от st)
-try:
-    for key, value in st.secrets.items():
-        if isinstance(value, str):
-            os.environ.setdefault(key, value)
-except Exception:
-    pass
-
-from bootstrap import bootstrap
-from ui.tabs import chat, data, load, search
-from models import AppConfig
-from ui.state import SessionState
+from infrastructure.bootstrap import bootstrap  # noqa: E402
+from domain.config import AppConfig  # noqa: E402
+from ui.state import SessionState  # noqa: E402
+from ui.tabs import chat, data, load, search  # noqa: E402
 
 # ========================= Конфигурация страницы
 st.set_page_config(page_title="N1 Hub RAG — MQ", layout="wide")

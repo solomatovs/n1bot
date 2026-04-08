@@ -4,14 +4,14 @@ from __future__ import annotations
 import chromadb.errors
 import streamlit as st
 
-from bootstrap import AppServices
-from errors import VectorStoreError
+from infrastructure.bootstrap import AppServices
+from domain.errors import VectorStoreError
 from ui.components import (
     fetch_collection_df,
     get_collection_preview,
     list_collections,
 )
-from models import AppConfig
+from domain.config import AppConfig
 from ui.state import SessionState
 
 

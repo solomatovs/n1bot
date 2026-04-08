@@ -13,17 +13,10 @@ import chromadb.errors
 from chromadb.config import Settings
 from streamlit.delta_generator import DeltaGenerator
 
-from models import (
-    BATCH_SIZE_OPTIONS,
-    AppConfig,
-    ChatMessage,
-    ChunkingParams,
-    ContentType,
-    PromptParams,
-    SearchParams,
-    SpaceLoadParams,
-    StorageParams,
-)
+from domain.chat import ChatMessage, PromptParams
+from domain.config import AppConfig
+from domain.loading import BATCH_SIZE_OPTIONS, ChunkingParams, ContentType, SpaceLoadParams, StorageParams
+from domain.search import SearchParams
 from ui.state import (
     CacheTTL,
     ChunkingLimits,
