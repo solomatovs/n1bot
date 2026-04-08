@@ -191,6 +191,9 @@ class ChunkingParams:
     max_tokens: int = 500
     similarity_threshold: float = 0.7
     embedding_timeout: int = 120
+    code_ratio_threshold: float = 0.3
+    table_ratio_threshold: float = 0.3
+    list_ratio_threshold: float = 0.4
 
 
 @dataclass

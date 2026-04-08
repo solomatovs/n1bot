@@ -10,7 +10,6 @@ from langchain_core.documents import Document
 
 from config import enc
 from embeddings import LiteLLMEmbeddings
-from load_pipeline.events import ChunkProduced, SectionChunked
 from ui.state import ChunkingParams
 from utils import (
     cosine_similarity,
@@ -26,7 +25,26 @@ from utils import (
 
 log = logging.getLogger(__name__)
 
-ChunkEvent = Union[SectionChunked, ChunkProduced]
+
+# ---------------------------------------------------------------------------
+# Внутренние события чанкера (без doc_index/doc_total/cumulative_chunks)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class SectionProcessed:
+    """Секция документа обработана чанкером."""
+    section_index: int
+    section_total: int
+    section_title: str
+
+
+@dataclass(frozen=True)
+class ChunkCreated:
+    """Чанк создан чанкером."""
+    chunk: Document
+
+
+ChunkerEvent = Union[SectionProcessed, ChunkCreated]
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +74,7 @@ class Section:
 class ChunkingStrategy(Protocol):
     """Стратегия разбиения документов на чанки (генераторная)."""
 
-    def split_documents(self, docs: List[Document]) -> Iterator[ChunkEvent]: ...
+    def split_documents(self, docs: List[Document]) -> Iterator[ChunkerEvent]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +85,7 @@ class AdvancedChunker:
     """Семантический чанкер документов.
 
     Yield-based: каждая секция и каждый чанк — отдельное событие.
+    Не знает про doc_index/doc_total — это ответственность вызывающего кода.
     """
 
     def __init__(self, embeddings: LiteLLMEmbeddings, params: ChunkingParams) -> None:
@@ -74,32 +93,30 @@ class AdvancedChunker:
         self._embedding = embeddings
         self._tokenizer = enc
 
-    def split_documents(self, docs: List[Document]) -> Iterator[ChunkEvent]:
+    def split_documents(self, docs: List[Document]) -> Iterator[ChunkerEvent]:
         """Разбить документы на чанки, yielding события."""
         for doc in docs:
             yield from self._process_document(doc)
 
     # -- приватные методы ------------------------------------------------------
 
-    def _process_document(self, doc: Document) -> Iterator[ChunkEvent]:
+    def _process_document(self, doc: Document) -> Iterator[ChunkerEvent]:
         text = doc.page_content
         metadata = doc.metadata.copy()
         sections = _split_into_sections(text)
         total = len(sections)
 
         for idx, section in enumerate(sections, start=1):
-            yield SectionChunked(
-                doc_index=0,
-                doc_total=0,
+            yield SectionProcessed(
                 section_index=idx,
                 section_total=total,
                 section_title=section.title,
             )
             for chunk in self._chunk_section(section, metadata):
-                yield ChunkProduced(chunk=chunk, cumulative_chunks=0)
+                yield ChunkCreated(chunk=chunk)
 
     def _chunk_section(self, section: Section, metadata: Dict) -> Iterator[Document]:
-        content_type = _detect_content_type(section.content)
+        content_type = _detect_content_type(section.content, self._params)
         match content_type:
             case ContentType.CODE:
                 yield self._create_chunk([section.content], metadata, section, content_type)
@@ -130,13 +147,8 @@ class AdvancedChunker:
 
         for para, vec in zip(paragraphs, vecs):
             para_tokens = self._count_tokens(para)
-            sim = cosine_similarity(vec, prev_vec) if prev_vec is not None else 1.0
 
-            if (
-                prev_vec is not None
-                and sim >= self._params.similarity_threshold
-                and (current_tokens + para_tokens) <= self._params.max_tokens
-            ):
+            if self._should_merge_paragraph(prev_vec, vec, current_tokens, para_tokens):
                 current_chunk.append(para)
                 current_tokens += para_tokens
             else:
@@ -196,6 +208,20 @@ class AdvancedChunker:
         }
         return Document(page_content=content, metadata=chunk_metadata)
 
+    def _should_merge_paragraph(
+        self,
+        prev_vec: List[float] | None,
+        current_vec: List[float],
+        current_tokens: int,
+        para_tokens: int,
+    ) -> bool:
+        """Проверить, нужно ли присоединить параграф к текущему чанку."""
+        if prev_vec is None:
+            return False
+        is_similar = cosine_similarity(current_vec, prev_vec) >= self._params.similarity_threshold
+        fits_in_budget = (current_tokens + para_tokens) <= self._params.max_tokens
+        return is_similar and fits_in_budget
+
     def _count_tokens(self, text: str) -> int:
         return len(self._tokenizer.encode(text))
 
@@ -234,20 +260,15 @@ def _split_into_sections(text: str) -> List[Section]:
     return sections
 
 
-CODE_RATIO_THRESHOLD = 0.3
-TABLE_RATIO_THRESHOLD = 0.3
-LIST_RATIO_THRESHOLD = 0.4
-
-
-def _detect_content_type(text: str) -> ContentType:
+def _detect_content_type(text: str, params: ChunkingParams) -> ContentType:
     """Определить тип контента по доле характерных строк."""
     lines = text.split("\n")
     total = len(lines)
 
-    if line_ratio(count_matching_lines(lines, is_code_line), total) > CODE_RATIO_THRESHOLD:
+    if line_ratio(count_matching_lines(lines, is_code_line), total) > params.code_ratio_threshold:
         return ContentType.CODE
-    if line_ratio(count_matching_lines(lines, is_table_line), total) > TABLE_RATIO_THRESHOLD:
+    if line_ratio(count_matching_lines(lines, is_table_line), total) > params.table_ratio_threshold:
         return ContentType.TABLE
-    if line_ratio(count_matching_lines(lines, is_list_item), total) > LIST_RATIO_THRESHOLD:
+    if line_ratio(count_matching_lines(lines, is_list_item), total) > params.list_ratio_threshold:
         return ContentType.LIST
     return ContentType.TEXT

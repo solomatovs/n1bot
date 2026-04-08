@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterator, List, Optional, Union
 
-from chunking import ChunkingStrategy
+from load_pipeline.chunking import ChunkingStrategy
 from load_pipeline.events import (
     LoadingDone,
     PageFailed,
@@ -46,3 +46,6 @@ class LoadContext:
 
     # --- Заполняется LoadPagesStage (ленивый итератор загрузки) ---
     loading_events: Optional[Iterator[LoadEvent]] = None
+
+    # --- Заполняется ChunkStage (ленивый итератор ChunkResult для StoreStage) ---
+    chunk_results: Optional[Iterator] = None  # Iterator[ChunkResult] — lazy import avoids cycle
