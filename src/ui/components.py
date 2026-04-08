@@ -29,6 +29,7 @@ from ui.state import (
     SpaceLoadParams,
     StorageParams,
 )
+from utils import safe_index
 
 log = logging.getLogger(__name__)
 
@@ -123,14 +124,6 @@ def get_collection_preview(db_path: str, collection_name: str) -> pd.DataFrame:
 # Утилиты
 # ---------------------------------------------------------------------------
 
-def _safe_index(items: List[str], value: str, fallback: int = 0) -> int:
-    """Найти индекс значения в списке или вернуть fallback."""
-    try:
-        return items.index(value)
-    except ValueError:
-        return fallback
-
-
 # ---------------------------------------------------------------------------
 # Селекторы
 # ---------------------------------------------------------------------------
@@ -144,7 +137,7 @@ def collection_selector(cfg: AppConfig, *, key: str, current: str) -> str:
     selected: str | None = st.selectbox(
         "Имя векторной БД (коллекция)",
         colls,
-        index=_safe_index(colls, current),
+        index=safe_index(colls, current),
         key=key,
     )
     return selected if selected is not None else colls[0]
@@ -157,7 +150,7 @@ def model_selector(cfg: AppConfig) -> str:
         st.warning("Нет доступных моделей генерации.")
         return cfg.default_model
     selected: str | None = st.selectbox(
-        "Модель генерации", models, index=_safe_index(models, cfg.default_model),
+        "Модель генерации", models, index=safe_index(models, cfg.default_model),
     )
     return selected if selected is not None else models[0]
 
@@ -169,7 +162,7 @@ def embedding_model_selector(cfg: AppConfig, *, key: str = "embedding_model") ->
         st.warning("Нет доступных embedding моделей.")
         return cfg.embedding_model
     selected: str | None = st.selectbox(
-        "Embedding модель", models, index=_safe_index(models, cfg.embedding_model), key=key,
+        "Embedding модель", models, index=safe_index(models, cfg.embedding_model), key=key,
     )
     return selected if selected is not None else models[0]
 
@@ -447,7 +440,7 @@ def _render_storage_params(key_prefix: str) -> StorageParams:
     batch_size = st.selectbox(
         "Размер батча для ChromaDB",
         options=BATCH_SIZE_OPTIONS,
-        index=BATCH_SIZE_OPTIONS.index(defaults.batch_size),
+        index=safe_index(BATCH_SIZE_OPTIONS, defaults.batch_size),
         help="Количество документов, сохраняемых за одну операцию. Меньше = надёжнее, больше = быстрее",
         key=f"{key_prefix}_batch_size",
     )

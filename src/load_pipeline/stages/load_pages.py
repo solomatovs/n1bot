@@ -1,7 +1,7 @@
 """Стадия 1: Подготовка загрузки страниц из Confluence.
 
 Создаёт ленивый итератор загрузки в контексте.
-Сами страницы загружаются лениво на стадии ChunkAndStoreStage —
+Сами страницы загружаются лениво через ChunkStage → StoreStage —
 это сохраняет per-page streaming (загрузка → чанкинг → сохранение).
 """
 from __future__ import annotations
@@ -12,7 +12,6 @@ from typing import Iterator, Union
 from errors import ValidationError
 from pipeline.events import StageCompleted, StageStarted
 from load_pipeline.context import LoadContext
-from loaders import BatchPageLoader, PageLoader, SpaceLoader
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +26,8 @@ class LoadPagesStage:
         return "load_pages"
 
     def run(self, ctx: LoadContext) -> Iterator[LoadPagesEvent]:
+        from loaders import BatchPageLoader, PageLoader, SpaceLoader
+
         yield StageStarted(stage=self.name)
 
         page_loader = PageLoader(ctx.cfg)

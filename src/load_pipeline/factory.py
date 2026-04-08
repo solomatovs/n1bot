@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, List
 
-from chunking import AdvancedChunker
+from load_pipeline.chunking import AdvancedChunker
 from errors import ValidationError
 from load_pipeline.context import LoadContext
-from load_pipeline.stages import ChunkAndStoreStage, LoadPagesStage
+from load_pipeline.stages import ChunkStage, LoadPagesStage, StoreStage
 from pipeline import Pipeline
 from ui.state import ChunkingParams, SpaceLoadParams, StorageParams
 
@@ -15,10 +15,11 @@ if TYPE_CHECKING:
 
 
 def create_default_load_pipeline() -> Pipeline:
-    """Стандартный 2-стадийный пайплайн загрузки."""
+    """Стандартный 3-стадийный пайплайн загрузки."""
     return Pipeline([
         LoadPagesStage(),
-        ChunkAndStoreStage(),
+        ChunkStage(),
+        StoreStage(),
     ])
 
 
