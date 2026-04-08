@@ -6,7 +6,8 @@ from typing import Dict, List
 
 import streamlit as st
 
-from models import AppConfig, ChatMessage
+from domain.config import AppConfig
+from domain.chat import ChatMessage
 
 
 # ---------------------------------------------------------------------------

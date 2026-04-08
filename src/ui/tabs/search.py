@@ -5,20 +5,21 @@ from typing import Iterator
 
 import streamlit as st
 
-from bootstrap import AppServices
-from errors import AppError, EmptyContextError
-from pipeline.events import StageCompleted, StageStarted
-from query_pipeline.events import (
+from infrastructure.bootstrap import AppServices
+from domain.errors import AppError
+from domain.search import EmptyContextError
+from domain.pipeline.events import StageCompleted, StageStarted
+from application.query_pipeline.events import (
     ChatEvent,
     RetrievalDone,
     RetrievalStarted,
 )
-from rag import run_search_pipeline
+from application.rag import run_search_pipeline
 from ui.components import (
     collection_selector,
     render_retrieval_settings,
 )
-from models import PromptParams
+from domain.chat import PromptParams
 from ui.state import SessionState
 
 

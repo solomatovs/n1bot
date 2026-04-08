@@ -5,8 +5,8 @@ from typing import Iterator
 
 import streamlit as st
 
-from errors import AppError
-from load_pipeline.events import (
+from domain.errors import AppError
+from application.load_pipeline.events import (
     ChunkingDone,
     ChunkProduced,
     LoadingDone,
@@ -19,8 +19,8 @@ from load_pipeline.events import (
     StoreBatchDone,
     StoreBatchFailed,
 )
-from bootstrap import AppServices
-from loaders import run_page_pipeline, run_space_pipeline
+from infrastructure.bootstrap import AppServices
+from adapters.confluence import run_page_pipeline, run_space_pipeline
 from ui.components import embedding_model_selector, render_chunking_settings, render_page_id_settings, render_space_settings
 from ui.state import SessionState
 

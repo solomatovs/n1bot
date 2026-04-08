@@ -6,9 +6,10 @@ from typing import Iterator
 
 import streamlit as st
 
-from errors import AppError, EmptyContextError
-from pipeline.events import StageCompleted, StageStarted
-from query_pipeline.events import (
+from domain.errors import AppError
+from domain.search import EmptyContextError
+from domain.pipeline.events import StageCompleted, StageStarted
+from application.query_pipeline.events import (
     AnswerToken,
     ChatEvent,
     GenerationDone,
@@ -17,7 +18,7 @@ from query_pipeline.events import (
     RetrievalStarted,
     ThinkingToken,
 )
-from rag import run_chat_pipeline
+from application.rag import run_chat_pipeline
 from ui.components import (
     collection_selector,
     model_selector,
@@ -27,8 +28,9 @@ from ui.components import (
     render_prompt_settings,
     render_retrieval_settings,
 )
-from bootstrap import AppServices
-from models import ChatMessage, SearchParams
+from infrastructure.bootstrap import AppServices
+from domain.chat import ChatMessage
+from domain.search import SearchParams
 from ui.state import SessionState
 
 
