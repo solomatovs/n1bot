@@ -7,7 +7,7 @@ from typing import Iterator
 from bootstrap import AppServices
 from query_pipeline.events import ChatEvent, RetrievalStarted
 from query_pipeline.factory import create_query_context
-from ui.state import PromptParams, SearchParams
+from models import PromptParams, SearchParams
 
 
 def run_chat_pipeline(

@@ -1,26 +1,13 @@
-"""Утилиты конфигурации — secret() и tiktoken encoder."""
+"""Утилиты конфигурации — чистый Python, без Streamlit."""
 from __future__ import annotations
 
 import os
 from typing import List
 
-import streamlit as st
-
-
-# ---------------------------------------------------------------------------
-# Streamlit secrets (env vars override)
-# ---------------------------------------------------------------------------
 
 def secret(key: str, default: str = "") -> str:
-    """Получить значение из env var, иначе из st.secrets."""
-    val = os.environ.get(key)
-    if val is not None:
-        return val
-    try:
-        val = st.secrets.get(key, default)
-        return val
-    except Exception:
-        return default
+    """Получить значение из переменной окружения."""
+    return os.environ.get(key, default)
 
 
 # ---------------------------------------------------------------------------

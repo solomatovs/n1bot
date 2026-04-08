@@ -1,81 +1,30 @@
-"""Типизированное управление состоянием сессии Streamlit."""
+"""UI-специфичные типы — зависят от Streamlit."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import Enum
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Dict, List
 
 import streamlit as st
 
-from config import secret
+# Реэкспорт доменных моделей для обратной совместимости импортов из ui.state
+from models import (
+    BATCH_SIZE_OPTIONS as BATCH_SIZE_OPTIONS,
+    DEFAULT_SYSTEM_PROMPT as DEFAULT_SYSTEM_PROMPT,
+    DEFAULT_USER_TEMPLATE as DEFAULT_USER_TEMPLATE,
+    AppConfig as AppConfig,
+    ChatMessage as ChatMessage,
+    ChunkingParams as ChunkingParams,
+    ContentType as ContentType,
+    PromptParams as PromptParams,
+    SearchParams as SearchParams,
+    SpaceLoadParams as SpaceLoadParams,
+    StorageParams as StorageParams,
+)
 
 
 # ---------------------------------------------------------------------------
-# Конфигурация приложения из секретов / переменных окружения
+# Границы UI-слайдеров
 # ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class AppConfig:
-    """Единственный источник конфигурации приложения.
-
-    Все секреты и переменные окружения читаются здесь.
-    Остальные модули получают значения через cfg.*.
-    """
-    chroma_db_path: str = field(default_factory=lambda: Path(secret("CHROMA_DB_PATH")).as_posix())
-    litellm_url: str = field(default_factory=lambda: secret("LITELLM_URL"))
-    litellm_api_key: str = field(default_factory=lambda: secret("LITELLM_API_KEY"))
-    confluence_url: str = field(default_factory=lambda: secret("CONFLUENCE_URL"))
-    confluence_token: str = field(default_factory=lambda: secret("CONFLUENCE_TOKEN"))
-    default_collection: str = field(default_factory=lambda: secret("DEFAULT_COLLECTION"))
-    default_model: str = field(default_factory=lambda: secret("LLM_MODEL"))
-    embedding_model: str = field(default_factory=lambda: secret("EMBEDDING_MODEL"))
-    llm_timeout: int = field(default_factory=lambda: int(secret("LLM_TIMEOUT", "120")))
-    embedding_timeout: int = field(default_factory=lambda: int(secret("EMBEDDING_TIMEOUT", "120")))
-    log_level: str = field(default_factory=lambda: secret("LOG_LEVEL", "INFO"))
-
-    @property
-    def litellm_base_url(self) -> str:
-        """Базовый URL без /v1 — для эмбеддингов и прямых запросов."""
-        return self.litellm_url.rstrip("/").removesuffix("/v1")
-
-    @property
-    def openai_url(self) -> str:
-        """URL с /v1 — для OpenAI-совместимого API."""
-        return f"{self.litellm_base_url}/v1"
-
-
-# ---------------------------------------------------------------------------
-# Сообщение чата — один элемент истории переписки
-# ---------------------------------------------------------------------------
-
-class ContentType(Enum):
-    """Типы контента в векторном хранилище."""
-    TEXT = "text", "Текст"
-    CODE = "code", "Код"
-    TABLE = "table", "Таблицы"
-    PARAGRAPH = "paragraph", "Параграфы"
-    LIST = "list", "Списки"
-
-    def __init__(self, key: str, label: str) -> None:
-        self._key = key
-        self._label = label
-
-    @property
-    def key(self) -> str:
-        return self._key
-
-    @property
-    def label(self) -> str:
-        return self._label
-
-    @classmethod
-    def labels_to_keys(cls, labels: List[str]) -> list[str] | None:
-        """Преобразовать выбранные labels в ключи. Пустой список → None."""
-        label_map = {ct.label: ct.key for ct in cls}
-        keys = [label_map[lb] for lb in labels if lb in label_map]
-        return keys or None
-
 
 @dataclass(frozen=True)
 class IntSliderRange:
@@ -92,10 +41,6 @@ class FloatSliderRange:
     max: float
     step: float = 0.05
 
-
-# ---------------------------------------------------------------------------
-# Границы UI-слайдеров — единый источник для всех вкладок
-# ---------------------------------------------------------------------------
 
 class SearchLimits:
     """Границы слайдеров настроек поиска и генерации."""
@@ -139,123 +84,6 @@ class CacheTTL:
     preview: int = 20
 
 
-BATCH_SIZE_OPTIONS = [8, 16, 32, 64, 128]
-
-
-@dataclass
-class SearchParams:
-    """Параметры поиска и генерации, управляемые пользователем."""
-    # -- поиск --
-    top_n: int = 12
-    answers_per_variant: int = 3
-    per_page: int = 1
-    content_types: list[str] | None = None
-    # -- multi-query --
-    use_multi_query: bool = True
-    mq_variants: int = 3
-    k_per_variant: int = 6
-    mq_prompt_template: str = "Дай {n} кратких переформулировок запроса; по одной на строку.\nЗапрос: {query}"
-    # -- генерация --
-    temperature: float = 0.0
-    top_p: float = 1.0
-    max_tokens: int | None = None
-    frequency_penalty: float = 0.0
-    presence_penalty: float = 0.0
-
-    @property
-    def has_max_tokens(self) -> bool:
-        """Включено ли ограничение длины ответа."""
-        return self.max_tokens is not None
-
-    @property
-    def max_tokens_or_default(self) -> int:
-        """Значение max_tokens для UI-слайдера (с fallback на дефолт)."""
-        return self.max_tokens if self.max_tokens is not None else SearchLimits.max_tokens_default
-
-    def llm_kwargs(self) -> dict:
-        """Параметры генерации для передачи в OpenAI API."""
-        kwargs: dict = {
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "frequency_penalty": self.frequency_penalty,
-            "presence_penalty": self.presence_penalty,
-        }
-        if self.max_tokens is not None:
-            kwargs["max_tokens"] = self.max_tokens
-        return kwargs
-
-
-@dataclass
-class ChunkingParams:
-    """Параметры чанкинга документов."""
-    max_tokens: int = 500
-    similarity_threshold: float = 0.7
-    embedding_timeout: int = 120
-    code_ratio_threshold: float = 0.3
-    table_ratio_threshold: float = 0.3
-    list_ratio_threshold: float = 0.4
-
-
-@dataclass
-class SpaceLoadParams:
-    """Параметры загрузки пространства Confluence."""
-    api_page_limit: int = 50
-    max_pages: int | None = None
-
-    @property
-    def has_max_pages(self) -> bool:
-        """Включено ли ограничение количества страниц."""
-        return self.max_pages is not None
-
-    @property
-    def max_pages_or_default(self) -> int:
-        """Значение max_pages для UI (с fallback на дефолт)."""
-        return self.max_pages if self.max_pages is not None else SpaceLoadLimits.max_pages_default
-
-
-@dataclass
-class StorageParams:
-    """Параметры сохранения в ChromaDB."""
-    batch_size: int = 32
-
-    @staticmethod
-    def from_selectbox(value: int | None) -> StorageParams:
-        """Создать из значения st.selectbox (может быть None)."""
-        defaults = StorageParams()
-        return StorageParams(batch_size=value if value is not None else defaults.batch_size)
-
-
-DEFAULT_SYSTEM_PROMPT = (
-    "Ты — эксперт по корпоративной базе знаний. "
-    "Отвечай ТОЛЬКО по предоставленному контексту, не ищи ничего в интернете."
-)
-DEFAULT_USER_TEMPLATE = "Контекст:\n{context}\n\nВопрос: {query}\n\nДай чёткий ответ."
-
-
-@dataclass
-class PromptParams:
-    """Шаблоны промптов, управляемые пользователем.
-
-    В ``user_template`` доступны плейсхолдеры:
-    - ``{context}`` — текст из векторной базы
-    - ``{query}`` — вопрос пользователя
-    """
-    system_prompt: str = DEFAULT_SYSTEM_PROMPT
-    user_template: str = DEFAULT_USER_TEMPLATE
-
-    def format_user_message(self, context: str, query: str) -> str:
-        """Подставить контекст и вопрос в шаблон."""
-        return self.user_template.format(context=context, query=query)
-
-
-@dataclass
-class ChatMessage:
-    question: str
-    answer: str
-    thinking: str = ""
-    rag_context: str = ""
-
-
 # ---------------------------------------------------------------------------
 # Фасад состояния сессии — типизированный доступ к st.session_state
 # ---------------------------------------------------------------------------
@@ -274,8 +102,6 @@ class SessionState:
             st.session_state.chat_history = []
             st.session_state.last_prompt_base = ""
             st.session_state.variants = {}
-
-    # -- свойства ------------------------------------------------------------
 
     @property
     def selected_collection(self) -> str:
@@ -308,8 +134,6 @@ class SessionState:
     @property
     def variants(self) -> Dict[str, int]:
         return st.session_state.variants
-
-    # -- вспомогательные методы -----------------------------------------------
 
     def push_message(self, msg: ChatMessage) -> None:
         self.chat_history.append(msg)

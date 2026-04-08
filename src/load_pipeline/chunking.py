@@ -10,7 +10,7 @@ from langchain_core.documents import Document
 
 from config import enc
 from embeddings import LiteLLMEmbeddings
-from ui.state import ChunkingParams
+from models import ChunkingParams
 from utils import (
     cosine_similarity,
     count_matching_lines,

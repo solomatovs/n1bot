@@ -316,7 +316,7 @@ def render_generation_settings(container: DeltaGenerator, key_prefix: str = "sp"
 
         use_max_tokens = st.checkbox(
             "Ограничить длину ответа",
-            value=defaults.has_max_tokens,
+            value=defaults.max_tokens is not None,
             key=f"{p}_use_max_tokens",
         )
         max_tokens: int | None = None
@@ -324,7 +324,8 @@ def render_generation_settings(container: DeltaGenerator, key_prefix: str = "sp"
             max_tokens = st.slider(
                 "Макс. токенов",
                 min_value=lim.max_tokens.min, max_value=lim.max_tokens.max,
-                value=defaults.max_tokens_or_default, step=lim.max_tokens.step,
+                value=defaults.max_tokens if defaults.max_tokens is not None else lim.max_tokens_default,
+                step=lim.max_tokens.step,
                 help="Максимальная длина ответа модели в токенах",
                 key=f"{p}_max_tokens",
             )
@@ -444,7 +445,7 @@ def _render_storage_params(key_prefix: str) -> StorageParams:
         help="Количество документов, сохраняемых за одну операцию. Меньше = надёжнее, больше = быстрее",
         key=f"{key_prefix}_batch_size",
     )
-    return StorageParams.from_selectbox(batch_size)
+    return StorageParams(batch_size=batch_size if batch_size is not None else defaults.batch_size)
 
 
 def render_page_id_settings() -> StorageParams:
@@ -473,14 +474,15 @@ def render_space_settings() -> tuple[SpaceLoadParams, StorageParams]:
         with col2:
             use_max_pages = st.checkbox(
                 "Ограничить количество страниц",
-                value=defaults.has_max_pages,
+                value=defaults.max_pages is not None,
                 key="sp_use_max_pages",
             )
             max_pages: int | None = None
             if use_max_pages:
                 max_pages = st.number_input(
                     "Макс. страниц",
-                    min_value=SpaceLoadLimits.max_pages_min, value=defaults.max_pages_or_default,
+                    min_value=SpaceLoadLimits.max_pages_min,
+                    value=defaults.max_pages if defaults.max_pages is not None else SpaceLoadLimits.max_pages_default,
                     key="sp_max_pages",
                 )
 

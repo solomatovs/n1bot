@@ -11,7 +11,17 @@ try:
 except Exception:
     pass
 
+import os
+
 import streamlit as st
+
+# Загрузить Streamlit secrets в env (для config.secret() без зависимости от st)
+try:
+    for key, value in st.secrets.items():
+        if isinstance(value, str):
+            os.environ.setdefault(key, value)
+except Exception:
+    pass
 
 from bootstrap import bootstrap
 from tabs import chat, data, load, search
