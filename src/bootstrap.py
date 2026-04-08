@@ -81,6 +81,8 @@ def configure_logging(cfg: AppConfig) -> None:
         force=True,
     )
     logging.getLogger("watchdog").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def configure_ssl() -> None:

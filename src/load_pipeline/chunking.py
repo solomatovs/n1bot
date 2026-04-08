@@ -2,28 +2,89 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, Iterator, List, Protocol, Union
 
+import numpy as np
+
 from langchain_core.documents import Document
 
-from config import enc
 from embeddings import LiteLLMEmbeddings
+
+# ---------------------------------------------------------------------------
+# Tiktoken encoder (офлайн-безопасно)
+# ---------------------------------------------------------------------------
+
+try:
+    import tiktoken  # type: ignore
+
+    _enc = tiktoken.get_encoding("cl100k_base")
+except Exception:
+
+    class _ApproxEncoder:
+        def encode(self, s: str) -> list[int]:
+            return [0] * ((len(s.encode("utf-8")) + 3) // 4)
+
+    _enc = _ApproxEncoder()
 from models import ChunkingParams
-from utils import (
-    cosine_similarity,
-    count_matching_lines,
-    is_code_line,
-    is_heading,
-    is_list_item,
-    is_table_line,
-    line_ratio,
-    split_list_items,
-    split_paragraphs,
-)
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Markdown-парсинг и текстовые утилиты
+# ---------------------------------------------------------------------------
+
+_HEADING_PATTERN = re.compile(r"^(#+)\s+(.+)$")
+_LIST_ITEM_PATTERN = re.compile(r"^[\d+\.\-\*\+]\s")
+_LIST_SPLIT_PATTERN = re.compile(r"\n(?=[\d+\.\-\*\+]\s)")
+
+
+def _is_heading(line: str) -> re.Match | None:
+    """Проверить, является ли строка markdown-заголовком."""
+    return _HEADING_PATTERN.match(line)
+
+
+def _is_list_item(line: str) -> bool:
+    return _LIST_ITEM_PATTERN.match(line) is not None
+
+
+def _is_code_line(line: str) -> bool:
+    return line.startswith("    ") or "```" in line
+
+
+def _is_table_line(line: str) -> bool:
+    return "|" in line and len(line.split("|")) > 2
+
+
+def _split_paragraphs(text: str) -> List[str]:
+    """Разделить текст на непустые параграфы по двойному переносу строки."""
+    return [p.strip() for p in text.split("\n\n") if p.strip()]
+
+
+def _split_list_items(text: str) -> List[str]:
+    """Разделить текст на элементы markdown-списка."""
+    return _LIST_SPLIT_PATTERN.split(text)
+
+
+def _count_matching_lines(lines: List[str], predicate) -> int:  # noqa: ANN001
+    return sum(1 for line in lines if predicate(line))
+
+
+def _line_ratio(matching: int, total: int) -> float:
+    return matching / max(1, total)
+
+
+def _cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
+    """Вычислить косинусное сходство между двумя векторами."""
+    a = np.asarray(vec_a)
+    b = np.asarray(vec_b)
+    norm_product = np.linalg.norm(a) * np.linalg.norm(b)
+    if norm_product == 0:
+        return 0.0
+    return float(np.dot(a, b) / norm_product)
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +152,7 @@ class AdvancedChunker:
     def __init__(self, embeddings: LiteLLMEmbeddings, params: ChunkingParams) -> None:
         self._params = params
         self._embedding = embeddings
-        self._tokenizer = enc
+        self._tokenizer = _enc
 
     def split_documents(self, docs: List[Document]) -> Iterator[ChunkerEvent]:
         """Разбить документы на чанки, yielding события."""
@@ -136,7 +197,7 @@ class AdvancedChunker:
             yield from self._chunk_by_paragraphs(text, metadata, section)
 
     def _chunk_text_semantic(self, text: str, metadata: Dict, section: Section) -> Iterator[Document]:
-        paragraphs = split_paragraphs(text)
+        paragraphs = _split_paragraphs(text)
         if not paragraphs:
             return
 
@@ -162,7 +223,7 @@ class AdvancedChunker:
             yield self._create_chunk(current_chunk, metadata, section, ContentType.TEXT)
 
     def _chunk_by_paragraphs(self, text: str, metadata: Dict, section: Section) -> Iterator[Document]:
-        paragraphs = split_paragraphs(text)
+        paragraphs = _split_paragraphs(text)
         current_chunk: List[str] = []
         current_tokens = 0
 
@@ -179,7 +240,7 @@ class AdvancedChunker:
             yield self._create_chunk(current_chunk, metadata, section, ContentType.TEXT)
 
     def _chunk_list(self, list_text: str, metadata: Dict, section: Section) -> Iterator[Document]:
-        items = split_list_items(list_text)
+        items = _split_list_items(list_text)
         current_chunk: List[str] = []
         current_tokens = 0
 
@@ -218,7 +279,7 @@ class AdvancedChunker:
         """Проверить, нужно ли присоединить параграф к текущему чанку."""
         if prev_vec is None:
             return False
-        is_similar = cosine_similarity(current_vec, prev_vec) >= self._params.similarity_threshold
+        is_similar = _cosine_similarity(current_vec, prev_vec) >= self._params.similarity_threshold
         fits_in_budget = (current_tokens + para_tokens) <= self._params.max_tokens
         return is_similar and fits_in_budget
 
@@ -241,7 +302,7 @@ def _split_into_sections(text: str) -> List[Section]:
         line = line.strip()
         if not line:
             continue
-        heading_match = is_heading(line)
+        heading_match = _is_heading(line)
         if heading_match:
             if current_lines:
                 sections.append(Section(
@@ -265,10 +326,10 @@ def _detect_content_type(text: str, params: ChunkingParams) -> ContentType:
     lines = text.split("\n")
     total = len(lines)
 
-    if line_ratio(count_matching_lines(lines, is_code_line), total) > params.code_ratio_threshold:
+    if _line_ratio(_count_matching_lines(lines, _is_code_line), total) > params.code_ratio_threshold:
         return ContentType.CODE
-    if line_ratio(count_matching_lines(lines, is_table_line), total) > params.table_ratio_threshold:
+    if _line_ratio(_count_matching_lines(lines, _is_table_line), total) > params.table_ratio_threshold:
         return ContentType.TABLE
-    if line_ratio(count_matching_lines(lines, is_list_item), total) > params.list_ratio_threshold:
+    if _line_ratio(_count_matching_lines(lines, _is_list_item), total) > params.list_ratio_threshold:
         return ContentType.LIST
     return ContentType.TEXT

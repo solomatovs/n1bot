@@ -6,7 +6,6 @@ from typing import Iterator
 import streamlit as st
 
 from errors import AppError
-from utils import split_comma_list
 from load_pipeline.events import (
     ChunkingDone,
     ChunkProduced,
@@ -58,7 +57,7 @@ def _render_page_tab(services: AppServices) -> None:
     if not st.button("Загрузить и сохранить", key="btn_load_pages"):
         return
 
-    page_ids = split_comma_list(pids_input)
+    page_ids = [x.strip() for x in pids_input.split(",") if x.strip()]
     if not page_ids:
         st.warning("Укажите хотя бы один Page ID.")
         return

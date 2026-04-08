@@ -6,20 +6,7 @@ from typing import Dict, List
 
 import streamlit as st
 
-# Реэкспорт доменных моделей для обратной совместимости импортов из ui.state
-from models import (
-    BATCH_SIZE_OPTIONS as BATCH_SIZE_OPTIONS,
-    DEFAULT_SYSTEM_PROMPT as DEFAULT_SYSTEM_PROMPT,
-    DEFAULT_USER_TEMPLATE as DEFAULT_USER_TEMPLATE,
-    AppConfig as AppConfig,
-    ChatMessage as ChatMessage,
-    ChunkingParams as ChunkingParams,
-    ContentType as ContentType,
-    PromptParams as PromptParams,
-    SearchParams as SearchParams,
-    SpaceLoadParams as SpaceLoadParams,
-    StorageParams as StorageParams,
-)
+from models import AppConfig, ChatMessage
 
 
 # ---------------------------------------------------------------------------
