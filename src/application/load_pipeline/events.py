@@ -22,9 +22,17 @@ class SpaceEnumerated:
 
 @dataclass(frozen=True)
 class PageLoaded:
-    """Страница загружена."""
+    """Страница начала загружаться — документы будут идти следом как DocumentLoaded."""
     page_id: str
-    documents: List[Document]
+    index: int
+    total: int
+
+
+@dataclass(frozen=True)
+class DocumentLoaded:
+    """Один документ загружен со страницы."""
+    page_id: str
+    document: Document
     index: int
     total: int
 
@@ -106,7 +114,7 @@ class StorageDone:
 
 LoadPipelineEvent = Union[
     StageStarted, StageCompleted,
-    SpaceEnumerated, PageLoaded, PageFailed, LoadingDone,
+    SpaceEnumerated, PageLoaded, DocumentLoaded, PageFailed, LoadingDone,
     SectionChunked, ChunkProduced, ChunkingDone,
     StoreBatchDone, StoreBatchFailed, StorageDone,
 ]

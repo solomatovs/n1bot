@@ -51,39 +51,40 @@ def list_collections(vs: VectorStoreService) -> List[str]:
         return []
 
 
+_EMBEDDING_KEYWORDS = ("embed", "e5", "bge", "gte", "instructor")
+
+
 @st.cache_data(ttl=CacheTTL.models, show_spinner=False)
-def _fetch_model_info(model_info_url: str, auth_headers: dict[str, str], ssl_verify: bool) -> List[dict]:
-    """Получить расширенную информацию о моделях через LiteLLM API."""
+def _fetch_models(models_url: str, auth_headers: dict[str, str], ssl_verify: bool) -> List[str]:
+    """Получить список моделей через /v1/models."""
     try:
-        resp = httpx.get(model_info_url, headers=auth_headers, verify=ssl_verify)
+        resp = httpx.get(models_url, headers=auth_headers, verify=ssl_verify)
         resp.raise_for_status()
-        return resp.json().get("data", [])
+        return sorted(m.get("id", "") for m in resp.json().get("data", []) if m.get("id"))
     except (httpx.HTTPError, KeyError, ValueError) as e:
-        log.warning("Failed to fetch model info: %s", e)
+        log.warning("Failed to fetch models: %s", e)
         return []
 
 
-def _get_model_info(cfg: AppConfig) -> List[dict]:
-    """Обёртка над _fetch_model_info — передаёт параметры из AppConfig."""
-    return _fetch_model_info(cfg.litellm_model_info_url, cfg.litellm_auth_headers, cfg.ssl_verify)
+def _get_all_models(cfg: AppConfig) -> List[str]:
+    """Обёртка — передаёт параметры из AppConfig."""
+    return _fetch_models(cfg.litellm_models_url, cfg.litellm_auth_headers, cfg.ssl_verify)
+
+
+def _is_embedding_model(model_id: str) -> bool:
+    """Определить, является ли модель embedding-моделью по имени."""
+    lower = model_id.lower()
+    return any(kw in lower for kw in _EMBEDDING_KEYWORDS)
 
 
 def get_chat_models(cfg: AppConfig) -> List[str]:
-    """Получить список chat-моделей (mode == 'chat')."""
-    return sorted(
-        m.get("model_name", "")
-        for m in _get_model_info(cfg)
-        if m.get("model_info", {}).get("mode") == "chat"
-    )
+    """Получить список chat-моделей."""
+    return [m for m in _get_all_models(cfg) if not _is_embedding_model(m)]
 
 
 def get_embedding_models(cfg: AppConfig) -> List[str]:
-    """Получить список embedding-моделей (mode != 'chat')."""
-    return sorted(
-        m.get("model_name", "")
-        for m in _get_model_info(cfg)
-        if m.get("model_info", {}).get("mode") != "chat"
-    )
+    """Получить список embedding-моделей."""
+    return [m for m in _get_all_models(cfg) if _is_embedding_model(m)]
 
 
 # ---------------------------------------------------------------------------
