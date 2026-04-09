@@ -7,7 +7,7 @@ from typing import Iterator
 
 from openai import APIError as OpenAIAPIError, APITimeoutError
 
-from domain.pipeline.events import StageCompleted, StageStarted
+from domain.pipeline import StageCompleted, StageStarted
 from application.query_pipeline.context import QueryContext
 from application.query_pipeline.events import ChatEvent, QueryVariantsGenerated
 

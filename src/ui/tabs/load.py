@@ -20,7 +20,7 @@ from application.load_pipeline.events import (
     StoreBatchFailed,
 )
 from infrastructure.bootstrap import AppServices
-from adapters.confluence import run_page_pipeline, run_space_pipeline
+from application.loaders import run_page_pipeline, run_space_pipeline
 from ui.components import embedding_model_selector, render_chunking_settings, render_page_id_settings, render_space_settings
 from ui.state import SessionState
 
@@ -87,7 +87,9 @@ def _render_page_tab(services: AppServices) -> None:
 def _render_space_tab(services: AppServices) -> None:
     emb_model = embedding_model_selector(services.cfg, key="sp_emb_model")
     chunking_params = render_chunking_settings(key_prefix="sp_cp")
-    space_params, storage_params = render_space_settings()
+    settings = render_space_settings()
+    space_params = settings.space_params
+    storage_params = settings.storage_params
 
     st.subheader("Загрузить пространство")
     space_key = st.text_input("Space Key", key="spaceKey_stream")

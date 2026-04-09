@@ -2,12 +2,28 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence
-
-from langchain_core.documents import Document
+from typing import Dict, List, Optional, Protocol, Sequence, runtime_checkable
 
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Доменный контракт документа
+# ---------------------------------------------------------------------------
+
+@runtime_checkable
+class DocumentLike(Protocol):
+    """Минимальный контракт документа для domain-логики.
+
+    langchain_core.documents.Document реализует этот Protocol автоматически.
+    """
+
+    @property
+    def page_content(self) -> str: ...
+
+    @property
+    def metadata(self) -> dict: ...
 
 
 # ---------------------------------------------------------------------------
@@ -38,12 +54,12 @@ _HEADING_KEYS = ("Header 1", "Header 2")
 
 
 class DocumentMetadata:
-    """Утилиты для работы с метаданными langchain Document."""
+    """Утилиты для работы с метаданными документов."""
 
     @staticmethod
-    def extract(doc: Document) -> dict:
-        """Извлечь metadata из Document, гарантируя dict."""
-        return dict(getattr(doc, "metadata", None) or {})
+    def extract(doc: DocumentLike) -> dict:
+        """Извлечь metadata из документа."""
+        return dict(doc.metadata)
 
     @staticmethod
     def extract_page_id(metadata: dict) -> str:
@@ -72,11 +88,11 @@ class DocumentMetadata:
 # RRF слияние
 # ---------------------------------------------------------------------------
 
-def _rrf_merge(rank_lists: Sequence[Sequence[Document]], k: int = RETRIEVAL_CONFIG.rrf_k) -> List[Document]:
+def _rrf_merge(rank_lists: Sequence[Sequence[DocumentLike]], k: int = RETRIEVAL_CONFIG.rrf_k) -> List[DocumentLike]:
     scores: Dict[str, float] = {}
-    pick: Dict[str, Document] = {}
+    pick: Dict[str, DocumentLike] = {}
 
-    def doc_key(d: Document) -> str:
+    def doc_key(d: DocumentLike) -> str:
         md = tuple(sorted(DocumentMetadata.extract(d).items()))
         return f"{hash(d.page_content)}::{hash(md)}"
 
@@ -89,12 +105,12 @@ def _rrf_merge(rank_lists: Sequence[Sequence[Document]], k: int = RETRIEVAL_CONF
     return [pick[dk] for dk in ranked_keys]
 
 
-def _group_limit_per_page(docs: Sequence[Document], per_page: int) -> List[Document]:
-    by: Dict[str, List[Document]] = {}
+def _group_limit_per_page(docs: Sequence[DocumentLike], per_page: int) -> List[DocumentLike]:
+    by: Dict[str, List[DocumentLike]] = {}
     for d in docs:
         pid = DocumentMetadata.extract_page_id(DocumentMetadata.extract(d))
         by.setdefault(pid, []).append(d)
-    picked: List[Document] = []
+    picked: List[DocumentLike] = []
     for lst in by.values():
         picked.extend(lst[:per_page])
     return picked
@@ -104,7 +120,7 @@ def _group_limit_per_page(docs: Sequence[Document], per_page: int) -> List[Docum
 # Форматирование источников
 # ---------------------------------------------------------------------------
 
-def build_sources(docs: Sequence[Document]) -> str:
+def build_sources(docs: Sequence[DocumentLike]) -> str:
     """Форматировать список источников для отображения пользователю."""
     lines: List[str] = []
     seen: set = set()
@@ -177,7 +193,7 @@ def _compute_rerank_score(query_type: str, metadata: dict, cfg: RetrievalConfig)
     return score
 
 
-def _rerank_results(docs: Sequence[Document], query_type: str) -> List[Document]:
+def _rerank_results(docs: Sequence[DocumentLike], query_type: str) -> List[DocumentLike]:
     scored_docs = [
         (doc, _compute_rerank_score(query_type, DocumentMetadata.extract(doc), RETRIEVAL_CONFIG))
         for doc in docs
@@ -215,5 +231,3 @@ def _build_search_filter(
     if len(conditions) == 1:
         return conditions[0]
     return {"$and": conditions}
-
-

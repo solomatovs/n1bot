@@ -7,7 +7,7 @@ from typing import Iterator
 import chromadb.errors
 
 from application.query_pipeline.events import ChatEvent
-from domain.pipeline.events import StageCompleted, StageStarted
+from domain.pipeline import StageCompleted, StageStarted
 from application.query_pipeline.context import QueryContext
 from domain.retrieval import _build_search_filter
 

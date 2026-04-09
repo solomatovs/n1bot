@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Union
 
-from domain.pipeline.events import StageCompleted, StageStarted
+from domain.pipeline import StageCompleted, StageStarted
 
 
 @dataclass(frozen=True)

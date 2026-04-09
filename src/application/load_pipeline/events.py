@@ -6,7 +6,7 @@ from typing import List, Union
 
 from langchain_core.documents import Document
 
-from domain.pipeline.events import StageCompleted, StageStarted
+from domain.pipeline import StageCompleted, StageStarted
 
 
 # ---------------------------------------------------------------------------

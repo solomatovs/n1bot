@@ -11,26 +11,26 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Iterator, List, Union
+from typing import Iterator, List, Union
 
-if TYPE_CHECKING:
-    from infrastructure.bootstrap import AppServices
-
-import requests
+import httpx
 from langchain_community.document_loaders import ConfluenceLoader
 from langchain_community.document_loaders.confluence import ContentFormat
 from langchain_core.documents import Document
 
-from domain.loading import PageLoadError, SpaceEnumerationError
 from application.load_pipeline.events import (
     LoadingDone,
-    LoadPipelineEvent,
     PageFailed,
     PageLoaded,
     SpaceEnumerated,
 )
 from domain.config import AppConfig
-from domain.loading import ChunkingParams, SpaceLoadParams, StorageParams
+from domain.loading import (
+    ConfluenceRequestParams,
+    PageLoadError,
+    SpaceEnumerationError,
+    SpaceLoadParams,
+)
 
 log = logging.getLogger(__name__)
 
@@ -53,9 +53,9 @@ class PageResult:
 class PageLoader:
     """Загружает одну страницу Confluence по ID."""
 
-    def __init__(self, cfg: AppConfig) -> None:
-        self._base_url = cfg.confluence_url
-        self._token = cfg.confluence_token
+    def __init__(self, cfg: AppConfig, request_params: ConfluenceRequestParams) -> None:
+        self._cfg = cfg
+        self._request_params = request_params
 
     def load(self, page_id: str) -> PageResult:
         """Загрузить одну страницу.
@@ -65,13 +65,13 @@ class PageLoader:
         """
         try:
             loader = ConfluenceLoader(
-                url=self._base_url,
-                token=self._token,
+                url=self._cfg.confluence_url,
+                token=self._cfg.confluence_token,
                 include_attachments=False,
                 keep_markdown_format=True,
                 content_format=ContentFormat.EXPORT_VIEW,
                 page_ids=[page_id],
-                confluence_kwargs={"verify_ssl": False},
+                confluence_kwargs={"verify_ssl": self._request_params.ssl_verify},
                 limit=1,
             )
             docs = loader.load()
@@ -131,11 +131,12 @@ class SpaceLoader:
         batch_loader: BatchPageLoader,
         cfg: AppConfig,
         params: SpaceLoadParams,
+        request_params: ConfluenceRequestParams,
     ) -> None:
         self._batch_loader = batch_loader
-        self._base_url = cfg.confluence_url
-        self._token = cfg.confluence_token
+        self._cfg = cfg
         self._params = params
+        self._request_params = request_params
 
     def load(self, space_key: str) -> Iterator[Union[PageLoaded, PageFailed, LoadingDone, SpaceEnumerated]]:
         """Yield SpaceEnumerated, затем делегирует BatchPageLoader.
@@ -154,23 +155,22 @@ class SpaceLoader:
     def _enumerate_page_ids(self, space_key: str) -> List[str]:
         try:
             return self._paginate_space(space_key)
-        except (requests.RequestException, KeyError, ValueError) as e:
+        except (httpx.HTTPError, KeyError, ValueError) as e:
             raise SpaceEnumerationError(space_key, e) from e
 
     def _paginate_space(self, space_key: str) -> List[str]:
-        headers = {"Authorization": f"Bearer {self._token}"}
         limit = self._params.api_page_limit
         start = 0
         ids: List[str] = []
 
         while True:
-            params = {"spaceKey": space_key, "type": "page", "limit": limit, "start": start}
-            r = requests.get(
-                f"{self._base_url}/rest/api/content",
-                headers=headers,
-                params=params,
-                verify=False,
-                timeout=20,
+            query = {"spaceKey": space_key, "type": "page", "limit": limit, "start": start}
+            r = httpx.get(
+                self._cfg.confluence_content_url,
+                headers=self._cfg.confluence_auth_headers,
+                params=query,
+                verify=self._request_params.ssl_verify,
+                timeout=self._request_params.timeout,
             )
             r.raise_for_status()
             page_ids = self._extract_page_ids(r.json())
@@ -188,53 +188,3 @@ class SpaceLoader:
         """Извлечь ID страниц из ответа Confluence REST API."""
         results = response_json.get("results") or []
         return [str(item["id"]) for item in results if "id" in item]
-
-
-# ---------------------------------------------------------------------------
-# Точки входа (делегируют load_pipeline)
-# ---------------------------------------------------------------------------
-
-def run_page_pipeline(
-    page_ids: List[str],
-    collection_name: str,
-    services: AppServices,
-    chunking_params: ChunkingParams,
-    storage_params: StorageParams,
-    embedding_model: str,
-) -> Iterator[LoadPipelineEvent]:
-    """Полный пайплайн: загрузка по page IDs -> чанкинг -> сохранение."""
-    from application.load_pipeline.factory import create_page_load_context
-
-    ctx = create_page_load_context(
-        page_ids=page_ids,
-        collection_name=collection_name,
-        chunking_params=chunking_params,
-        storage_params=storage_params,
-        services=services,
-        embedding_model=embedding_model,
-    )
-    yield from services.load_pipeline.run(ctx)
-
-
-def run_space_pipeline(
-    space_key: str,
-    collection_name: str,
-    services: AppServices,
-    space_params: SpaceLoadParams,
-    chunking_params: ChunkingParams,
-    storage_params: StorageParams,
-    embedding_model: str,
-) -> Iterator[LoadPipelineEvent]:
-    """Полный пайплайн: загрузка пространства -> чанкинг -> сохранение."""
-    from application.load_pipeline.factory import create_space_load_context
-
-    ctx = create_space_load_context(
-        space_key=space_key,
-        collection_name=collection_name,
-        space_params=space_params,
-        chunking_params=chunking_params,
-        storage_params=storage_params,
-        services=services,
-        embedding_model=embedding_model,
-    )
-    yield from services.load_pipeline.run(ctx)

@@ -8,7 +8,7 @@ from domain.errors import ValidationError
 from application.load_pipeline.context import LoadContext
 from application.load_pipeline.stages import ChunkStage, LoadPagesStage, StoreStage
 from domain.pipeline import Pipeline
-from domain.loading import ChunkingParams, SpaceLoadParams, StorageParams
+from domain.loading import ChunkingParams, ConfluenceRequestParams, SpaceLoadParams, StorageParams
 
 if TYPE_CHECKING:
     from infrastructure.bootstrap import AppServices
@@ -30,6 +30,7 @@ def create_page_load_context(
     storage_params: StorageParams,
     services: AppServices,
     embedding_model: str,
+    confluence_request_params: ConfluenceRequestParams | None = None,
 ) -> LoadContext:
     """Создать LoadContext для загрузки по page IDs.
 
@@ -52,6 +53,7 @@ def create_page_load_context(
         storage_params=storage_params,
         chunker=chunker,
         vectorstore_service=services.vectorstore_service,
+        confluence_request_params=confluence_request_params or ConfluenceRequestParams(),
         embedding_model=model,
         page_ids=page_ids,
     )
@@ -65,6 +67,7 @@ def create_space_load_context(
     storage_params: StorageParams,
     services: AppServices,
     embedding_model: str,
+    confluence_request_params: ConfluenceRequestParams | None = None,
 ) -> LoadContext:
     """Создать LoadContext для загрузки пространства.
 
@@ -87,6 +90,7 @@ def create_space_load_context(
         storage_params=storage_params,
         chunker=chunker,
         vectorstore_service=services.vectorstore_service,
+        confluence_request_params=confluence_request_params or ConfluenceRequestParams(),
         embedding_model=model,
         space_key=space_key,
         space_params=space_params,

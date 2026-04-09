@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import List, Sequence, TypeVar
 
 import pandas as pd
-import requests
+import httpx
 import streamlit as st
 
 import chromadb
@@ -61,36 +62,36 @@ def list_collections(db_path: str) -> List[str]:
 
 
 @st.cache_data(ttl=CacheTTL.models, show_spinner=False)
-def _fetch_model_info(base_url: str, api_key: str) -> List[dict]:
-    """Получить расширенную информацию о моделях через /v1/model/info."""
+def _fetch_model_info(model_info_url: str, auth_headers: dict[str, str], ssl_verify: bool) -> List[dict]:
+    """Получить расширенную информацию о моделях через LiteLLM API."""
     try:
-        resp = requests.get(
-            f"{base_url}/v1/model/info",
-            headers={"Authorization": f"Bearer {api_key}"},
-        )
+        resp = httpx.get(model_info_url, headers=auth_headers, verify=ssl_verify)
         resp.raise_for_status()
         return resp.json().get("data", [])
-    except (requests.RequestException, KeyError, ValueError) as e:
+    except (httpx.HTTPError, KeyError, ValueError) as e:
         log.warning("Failed to fetch model info: %s", e)
         return []
 
 
+def _get_model_info(cfg: AppConfig) -> List[dict]:
+    """Обёртка над _fetch_model_info — передаёт параметры из AppConfig."""
+    return _fetch_model_info(cfg.litellm_model_info_url, cfg.litellm_auth_headers, cfg.ssl_verify)
+
+
 def get_chat_models(cfg: AppConfig) -> List[str]:
     """Получить список chat-моделей (mode == 'chat')."""
-    data = _fetch_model_info(cfg.litellm_base_url, cfg.litellm_api_key)
     return sorted(
         m.get("model_name", "")
-        for m in data
+        for m in _get_model_info(cfg)
         if m.get("model_info", {}).get("mode") == "chat"
     )
 
 
 def get_embedding_models(cfg: AppConfig) -> List[str]:
     """Получить список embedding-моделей (mode != 'chat')."""
-    data = _fetch_model_info(cfg.litellm_base_url, cfg.litellm_api_key)
     return sorted(
         m.get("model_name", "")
-        for m in data
+        for m in _get_model_info(cfg)
         if m.get("model_info", {}).get("mode") != "chat"
     )
 
@@ -459,7 +460,14 @@ def render_page_id_settings() -> StorageParams:
     return storage_params
 
 
-def render_space_settings() -> tuple[SpaceLoadParams, StorageParams]:
+@dataclass(frozen=True)
+class SpaceSettings:
+    """Результат UI-формы настроек загрузки пространства."""
+    space_params: SpaceLoadParams
+    storage_params: StorageParams
+
+
+def render_space_settings() -> SpaceSettings:
     """Настройки для режима загрузки пространства."""
     defaults = SpaceLoadParams()
 
@@ -494,4 +502,4 @@ def render_space_settings() -> tuple[SpaceLoadParams, StorageParams]:
         storage_params = _render_storage_params("sp")
 
     space_params = SpaceLoadParams(api_page_limit=api_page_limit, max_pages=max_pages)
-    return space_params, storage_params
+    return SpaceSettings(space_params=space_params, storage_params=storage_params)

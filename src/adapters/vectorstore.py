@@ -112,6 +112,8 @@ class VectorStoreService:
                 base_url=self._cfg.litellm_base_url,
                 api_key=self._cfg.litellm_api_key,
                 timeout=effective_timeout,
+                ssl_verify=self._cfg.ssl_verify,
+                auth_headers=self._cfg.litellm_auth_headers,
             )
 
         return self._embedding_cache[model_name]
@@ -124,6 +126,6 @@ class VectorStoreService:
 
     @staticmethod
     def _normalize_document(d: Document) -> Document:
-        md = dict(getattr(d, "metadata", None) or {})
+        md = dict(d.metadata)
         md.setdefault("type", "original")
         return Document(page_content=d.page_content, metadata=md)

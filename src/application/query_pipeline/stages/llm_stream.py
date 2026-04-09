@@ -3,15 +3,31 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
+from enum import Enum
 from typing import Iterator
 
 from openai import APIError as OpenAIAPIError, APITimeoutError
 
 from application.query_pipeline.events import AnswerToken, ChatEvent, GenerationDone, ThinkingToken
-from domain.pipeline.events import StageCompleted, StageStarted
+from domain.pipeline import StageCompleted, StageStarted
 from application.query_pipeline.context import QueryContext
 
 log = logging.getLogger(__name__)
+
+
+class FragmentRole(Enum):
+    """Роль фрагмента в потоке LLM-ответа."""
+    THINKING = "thinking"
+    ANSWER = "answer"
+
+
+@dataclass(frozen=True)
+class ThinkTagFragment:
+    """Фрагмент, извлечённый парсером <think> тегов."""
+    role: FragmentRole
+    text: str
+    in_think: bool
 
 
 class LLMStreamStage:
@@ -19,6 +35,17 @@ class LLMStreamStage:
     @property
     def name(self) -> str:
         return "llm_stream"
+
+    @staticmethod
+    def _extract_reasoning(delta: object) -> str:
+        """Извлечь reasoning_content — нестандартное поле, добавляемое
+        некоторыми моделями (DeepSeek, QwQ) через LiteLLM; отсутствует в OpenAI SDK."""
+        return getattr(delta, "reasoning_content", None) or ""
+
+    @staticmethod
+    def _extract_content(delta: object) -> str:
+        """Извлечь текстовый контент из дельты стриминга."""
+        return getattr(delta, "content", None) or ""
 
     def run(self, ctx: QueryContext) -> Iterator[ChatEvent]:
         yield StageStarted(stage=self.name)
@@ -52,24 +79,27 @@ class LLMStreamStage:
 
         try:
             for chunk in stream:
+                if not chunk.choices:
+                    continue
                 delta = chunk.choices[0].delta
 
-                reasoning = getattr(delta, "reasoning_content", None) or ""
+                reasoning = self._extract_reasoning(delta)
                 if reasoning:
                     yield ThinkingToken(token=reasoning)
 
-                content = getattr(delta, "content", None) or ""
+                content = self._extract_content(delta)
                 if not content:
                     continue
 
-                for role, text, new_in_think in _parse_think_tags(content, in_think):
-                    in_think = new_in_think
-                    if not text:
+                for fragment in _parse_think_tags(content, in_think):
+                    in_think = fragment.in_think
+                    if not fragment.text:
                         continue
-                    if role == "thinking":
-                        yield ThinkingToken(token=text)
-                    else:
-                        yield AnswerToken(token=text)
+                    match fragment.role:
+                        case FragmentRole.THINKING:
+                            yield ThinkingToken(token=fragment.text)
+                        case FragmentRole.ANSWER:
+                            yield AnswerToken(token=fragment.text)
         except APITimeoutError as e:
             elapsed = time.monotonic() - start
             raise ConnectionError(
@@ -81,26 +111,31 @@ class LLMStreamStage:
         yield StageCompleted(stage=self.name, detail="генерация завершена")
 
 
-def _parse_think_tags(token: str, in_think: bool) -> Iterator[tuple[str, str, bool]]:
-    """Разбирает токен на фрагменты (role, text, new_in_think)."""
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+def _parse_think_tags(token: str, in_think: bool) -> Iterator[ThinkTagFragment]:
+    """Разбирает токен на фрагменты с учётом <think>...</think> тегов."""
     buf = token
     while buf:
         if in_think:
-            end = buf.find("</think>")
+            end = buf.find(_THINK_CLOSE)
             if end != -1:
-                yield ("thinking", buf[:end], False)
-                buf = buf[end + len("</think>"):]
+                yield ThinkTagFragment(role=FragmentRole.THINKING, text=buf[:end], in_think=False)
+                buf = buf[end + len(_THINK_CLOSE):]
                 in_think = False
             else:
-                yield ("thinking", buf, True)
+                yield ThinkTagFragment(role=FragmentRole.THINKING, text=buf, in_think=True)
                 buf = ""
         else:
-            start = buf.find("<think>")
+            start = buf.find(_THINK_OPEN)
             if start != -1:
                 if start > 0:
-                    yield ("answer", buf[:start], True)
-                buf = buf[start + len("<think>"):]
+                    yield ThinkTagFragment(role=FragmentRole.ANSWER, text=buf[:start], in_think=True)
+                buf = buf[start + len(_THINK_OPEN):]
                 in_think = True
             else:
-                yield ("answer", buf, False)
+                yield ThinkTagFragment(role=FragmentRole.ANSWER, text=buf, in_think=False)
+                buf = ""
                 buf = ""
