@@ -7,9 +7,9 @@ from infrastructure.bootstrap import AppServices
 from domain.errors import VectorStoreError
 from domain.vectorstore import VectorStoreService
 from ui.components import (
-    fetch_collection_df,
-    get_collection_preview,
-    list_collections,
+    collection_preview,
+    collection_to_dataframe,
+    list_collection_names,
 )
 from ui.state import SessionState
 
@@ -18,7 +18,7 @@ def render(services: AppServices, state: SessionState) -> None:
     st.title("Векторное хранилище")
     vs = services.vectorstore_service
 
-    colls = list_collections(vs)
+    colls = list_collection_names(vs)
     if colls and state.selected_collection not in colls:
         state.selected_collection = colls[0]
 
@@ -38,7 +38,7 @@ def render(services: AppServices, state: SessionState) -> None:
     else:
         st.caption("Превью (сокращено до 200 символов):")
         st.dataframe(
-            get_collection_preview(vs, state.selected_collection),
+            collection_preview(vs, state.selected_collection),
             height=400,
         )
 
@@ -55,7 +55,7 @@ def render(services: AppServices, state: SessionState) -> None:
 
 def _show_full_collection(vs: VectorStoreService, name: str) -> None:
     try:
-        df = fetch_collection_df(vs, name, preview=False)
+        df = collection_to_dataframe(vs, name, preview=False)
         st.success(f"Документов: {len(df)} в «{name}»")
         st.dataframe(df, height=500)
     except VectorStoreError as e:
