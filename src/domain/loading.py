@@ -88,6 +88,14 @@ class ConfluenceContentFormat(Enum):
 
 
 @dataclass(frozen=True)
+class ConfluenceImportParams:
+    """Параметры импорта страниц из Confluence на диск."""
+    timeout: int = 20
+    ssl_verify: bool = False
+    token: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class ConfluenceLoaderParams:
     """Параметры загрузки страниц из Confluence.
 
