@@ -65,6 +65,14 @@ class SpaceLoadLimits:
     max_pages_min: int = 1
 
 
+class ConfluenceLimits:
+    """Границы слайдеров настроек загрузчика Confluence."""
+    timeout = IntSliderRange(5, 120, 5)
+    number_of_retries = IntSliderRange(0, 10, 1)
+    min_retry_seconds = IntSliderRange(1, 30, 1)
+    max_retry_seconds = IntSliderRange(5, 120, 5)
+
+
 class CacheTTL:
     """Время жизни кэша Streamlit (секунды)."""
     collections: int = 60

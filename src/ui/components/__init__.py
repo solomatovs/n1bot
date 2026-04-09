@@ -14,6 +14,7 @@ from ui.components.selectors import (
 from ui.components.settings import (
     SpaceSettings,
     render_chunking_settings,
+    render_confluence_loader_settings,
     render_generation_settings,
     render_multiquery_settings,
     render_page_id_settings,
@@ -33,6 +34,7 @@ __all__ = [
     "model_selector",
     "render_chat_history",
     "render_chunking_settings",
+    "render_confluence_loader_settings",
     "render_generation_settings",
     "render_multiquery_settings",
     "render_page_id_settings",

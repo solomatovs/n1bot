@@ -7,10 +7,25 @@ import streamlit as st
 from streamlit.delta_generator import DeltaGenerator
 
 from domain.chat import PromptParams
-from domain.loading import BATCH_SIZE_OPTIONS, ChunkingParams, SpaceLoadParams, StorageParams
+from domain.loading import (
+    BATCH_SIZE_OPTIONS,
+    ChunkingParams,
+    ConfluenceContentFormat,
+    ConfluenceLoaderParams,
+    SpaceLoadParams,
+    StorageParams,
+)
 from domain.search import SearchParams
 from ui.components.utils import safe_index
-from ui.state import ChunkingLimits, FloatSliderRange, IntSliderRange, PromptLimits, SearchLimits, SpaceLoadLimits
+from ui.state import (
+    ChunkingLimits,
+    ConfluenceLimits,
+    FloatSliderRange,
+    IntSliderRange,
+    PromptLimits,
+    SearchLimits,
+    SpaceLoadLimits,
+)
 
 
 
@@ -194,6 +209,64 @@ def render_chunking_settings(key_prefix: str = "cp") -> ChunkingParams:
 # Настройки загрузки
 # ---------------------------------------------------------------------------
 
+def render_confluence_loader_settings(key_prefix: str = "cf") -> ConfluenceLoaderParams:
+    """Настройки загрузчика Confluence — формат, вложения, retry, транспорт."""
+    defaults = ConfluenceLoaderParams()
+    lim = ConfluenceLimits
+    p = key_prefix
+
+    with st.expander("Настройки Confluence", expanded=False):
+        st.markdown("##### Формат контента")
+        format_labels = [f.label for f in ConfluenceContentFormat]
+        default_idx = safe_index(format_labels, defaults.content_format.label)
+        selected_label = st.selectbox("Формат страницы", format_labels, index=default_idx, key=f"{p}_format")
+        content_format = _label_to_content_format(selected_label or defaults.content_format.label)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            keep_markdown = st.checkbox("Сохранять Markdown", value=defaults.keep_markdown_format, key=f"{p}_md")
+        with col2:
+            keep_newlines = st.checkbox("Сохранять переносы строк", value=defaults.keep_newlines, key=f"{p}_nl")
+
+        st.markdown("##### Дополнительный контент")
+        col3, col4, col5 = st.columns(3)
+        with col3:
+            attachments = st.checkbox("Вложения", value=defaults.include_attachments, key=f"{p}_attach")
+        with col4:
+            comments = st.checkbox("Комментарии", value=defaults.include_comments, key=f"{p}_comments")
+        with col5:
+            labels = st.checkbox("Метки", value=defaults.include_labels, key=f"{p}_labels")
+
+        st.markdown("##### Retry и транспорт")
+        col6, col7, col8 = st.columns(3)
+        with col6:
+            retries = _int_slider("Количество retry", lim.number_of_retries, defaults.number_of_retries, key=f"{p}_retries")
+        with col7:
+            min_retry = _int_slider("Мин. пауза retry (сек)", lim.min_retry_seconds, defaults.min_retry_seconds, key=f"{p}_min_retry")
+        with col8:
+            max_retry = _int_slider("Макс. пауза retry (сек)", lim.max_retry_seconds, defaults.max_retry_seconds, key=f"{p}_max_retry")
+
+        col9, col10 = st.columns(2)
+        with col9:
+            timeout = _int_slider("Таймаут (сек)", lim.timeout, defaults.timeout, key=f"{p}_timeout")
+        with col10:
+            ssl_verify = st.checkbox("Проверять SSL", value=defaults.ssl_verify, key=f"{p}_ssl")
+
+    return ConfluenceLoaderParams(
+        content_format=content_format,
+        keep_markdown_format=keep_markdown,
+        keep_newlines=keep_newlines,
+        include_attachments=attachments,
+        include_comments=comments,
+        include_labels=labels,
+        number_of_retries=retries,
+        min_retry_seconds=min_retry,
+        max_retry_seconds=max_retry,
+        timeout=timeout,
+        ssl_verify=ssl_verify,
+    )
+
+
 @dataclass(frozen=True)
 class SpaceSettings:
     """Результат UI-формы настроек загрузки пространства."""
@@ -334,3 +407,11 @@ def _content_type_multiselect(key: str) -> list[str] | None:
         key=key,
     )
     return ContentType.labels_to_keys(chosen_labels)
+
+
+def _label_to_content_format(label: str) -> ConfluenceContentFormat:
+    """Преобразовать label в ConfluenceContentFormat."""
+    for fmt in ConfluenceContentFormat:
+        if fmt.label == label:
+            return fmt
+    return ConfluenceContentFormat.EXPORT_VIEW
