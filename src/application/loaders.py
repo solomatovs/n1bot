@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Iterator, List
 
 from application.load_pipeline.events import LoadPipelineEvent
-from domain.loading import ChunkingParams, ConfluenceRequestParams, SpaceLoadParams, StorageParams
+from domain.loading import ChunkingParams, ConfluenceLoaderParams, SpaceLoadParams, StorageParams
 
 if TYPE_CHECKING:
     from infrastructure.bootstrap import AppServices
@@ -17,7 +17,7 @@ def run_page_pipeline(
     chunking_params: ChunkingParams,
     storage_params: StorageParams,
     embedding_model: str,
-    confluence_request_params: ConfluenceRequestParams | None = None,
+    confluence_loader_params: ConfluenceLoaderParams | None = None,
 ) -> Iterator[LoadPipelineEvent]:
     """Полный пайплайн: загрузка по page IDs -> чанкинг -> сохранение."""
     from application.load_pipeline.factory import create_page_load_context
@@ -29,7 +29,7 @@ def run_page_pipeline(
         storage_params=storage_params,
         services=services,
         embedding_model=embedding_model,
-        confluence_request_params=confluence_request_params,
+        confluence_loader_params=confluence_loader_params,
     )
     yield from services.load_pipeline.run(ctx)
 
@@ -42,7 +42,7 @@ def run_space_pipeline(
     chunking_params: ChunkingParams,
     storage_params: StorageParams,
     embedding_model: str,
-    confluence_request_params: ConfluenceRequestParams | None = None,
+    confluence_loader_params: ConfluenceLoaderParams | None = None,
 ) -> Iterator[LoadPipelineEvent]:
     """Полный пайплайн: загрузка пространства -> чанкинг -> сохранение."""
     from application.load_pipeline.factory import create_space_load_context
@@ -55,6 +55,6 @@ def run_space_pipeline(
         storage_params=storage_params,
         services=services,
         embedding_model=embedding_model,
-        confluence_request_params=confluence_request_params,
+        confluence_loader_params=confluence_loader_params,
     )
     yield from services.load_pipeline.run(ctx)

@@ -8,7 +8,7 @@ from domain.errors import ValidationError
 from application.load_pipeline.context import LoadContext
 from application.load_pipeline.stages import ChunkStage, LoadPagesStage, StoreStage
 from domain.pipeline import Pipeline
-from domain.loading import ChunkingParams, ConfluenceRequestParams, SpaceLoadParams, StorageParams
+from domain.loading import ChunkingParams, ConfluenceLoaderParams, SpaceLoadParams, StorageParams
 
 if TYPE_CHECKING:
     from infrastructure.bootstrap import AppServices
@@ -30,7 +30,7 @@ def create_page_load_context(
     storage_params: StorageParams,
     services: AppServices,
     embedding_model: str,
-    confluence_request_params: ConfluenceRequestParams | None = None,
+    confluence_loader_params: ConfluenceLoaderParams | None = None,
 ) -> LoadContext:
     """Создать LoadContext для загрузки по page IDs.
 
@@ -42,9 +42,8 @@ def create_page_load_context(
     if not collection_name:
         raise ValidationError("collection_name не может быть пустым")
 
+    chunker = AdvancedChunker(services.embeddings, chunking_params)
     model = embedding_model or services.cfg.embedding_model
-    embedding = services.vectorstore_service.resolve_embedding(model)
-    chunker = AdvancedChunker(embedding, chunking_params)
 
     return LoadContext(
         collection_name=collection_name,
@@ -53,7 +52,7 @@ def create_page_load_context(
         storage_params=storage_params,
         chunker=chunker,
         vectorstore_service=services.vectorstore_service,
-        confluence_request_params=confluence_request_params or ConfluenceRequestParams(),
+        confluence_loader_params=confluence_loader_params or ConfluenceLoaderParams(),
         embedding_model=model,
         page_ids=page_ids,
     )
@@ -67,7 +66,7 @@ def create_space_load_context(
     storage_params: StorageParams,
     services: AppServices,
     embedding_model: str,
-    confluence_request_params: ConfluenceRequestParams | None = None,
+    confluence_loader_params: ConfluenceLoaderParams | None = None,
 ) -> LoadContext:
     """Создать LoadContext для загрузки пространства.
 
@@ -79,9 +78,8 @@ def create_space_load_context(
     if not collection_name:
         raise ValidationError("collection_name не может быть пустым")
 
+    chunker = AdvancedChunker(services.embeddings, chunking_params)
     model = embedding_model or services.cfg.embedding_model
-    embedding = services.vectorstore_service.resolve_embedding(model)
-    chunker = AdvancedChunker(embedding, chunking_params)
 
     return LoadContext(
         collection_name=collection_name,
@@ -90,7 +88,7 @@ def create_space_load_context(
         storage_params=storage_params,
         chunker=chunker,
         vectorstore_service=services.vectorstore_service,
-        confluence_request_params=confluence_request_params or ConfluenceRequestParams(),
+        confluence_loader_params=confluence_loader_params or ConfluenceLoaderParams(),
         embedding_model=model,
         space_key=space_key,
         space_params=space_params,

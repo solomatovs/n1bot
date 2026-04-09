@@ -4,11 +4,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from langchain_core.documents import Document
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
-from domain.retrieval import RetrievalConfig
+from domain.retrieval import DocumentLike, RetrievalConfig
 from domain.chat import PromptParams
 from domain.search import SearchParams
 from domain.vectorstore import VectorStoreService
@@ -41,20 +40,20 @@ class QueryContext:
     query_variants: Optional[List[str]] = None
 
     # --- Заполняется VectorSearchStage ---
-    rank_lists: Optional[List[List[Document]]] = None
+    rank_lists: Optional[List[List[DocumentLike]]] = None
     search_errors: List[str] = field(default_factory=list)
 
     # --- Заполняется RRFMergeStage ---
-    merged_docs: Optional[List[Document]] = None
+    merged_docs: Optional[List[DocumentLike]] = None
 
     # --- Заполняется RerankStage ---
-    reranked_docs: Optional[List[Document]] = None
+    reranked_docs: Optional[List[DocumentLike]] = None
 
     # --- Заполняется GroupByPageStage ---
-    grouped_docs: Optional[List[Document]] = None
+    grouped_docs: Optional[List[DocumentLike]] = None
 
     # --- Заполняется TopNSelectionStage ---
-    selected_docs: Optional[List[Document]] = None
+    selected_docs: Optional[List[DocumentLike]] = None
 
     # --- Заполняется ContextAssemblyStage ---
     context_text: Optional[str] = None

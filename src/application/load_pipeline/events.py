@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Union
+from typing import Union
 
 from langchain_core.documents import Document
 

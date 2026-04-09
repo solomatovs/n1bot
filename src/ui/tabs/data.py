@@ -55,7 +55,7 @@ def render(services: AppServices, state: SessionState) -> None:
 
 def _show_full_collection(vs: VectorStoreService, name: str) -> None:
     try:
-        df = collection_to_dataframe(vs, name, preview=False)
+        df = collection_to_dataframe(vs, name)
         st.success(f"Документов: {len(df)} в «{name}»")
         st.dataframe(df, height=500)
     except VectorStoreError as e:

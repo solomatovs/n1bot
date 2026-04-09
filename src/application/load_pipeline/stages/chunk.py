@@ -15,7 +15,7 @@ from typing import Iterator, Optional, Union
 from langchain_core.documents import Document
 
 from domain.errors import ValidationError
-from application.load_pipeline.chunking import ChunkCreated, ChunkingStrategy, SectionProcessed
+from domain.chunking import ChunkCreated, ChunkingStrategy, SectionProcessed
 from application.load_pipeline.events import (
     ChunkingDone,
     ChunkProduced,
