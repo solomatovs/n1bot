@@ -92,6 +92,15 @@ def _cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
 # AdvancedChunker — реализация ChunkingStrategy
 # ---------------------------------------------------------------------------
 
+class PassthroughChunker:
+    """Пропускает документы без разбиения — каждый документ = один чанк."""
+
+    def split_documents(self, docs: List[Document]) -> Iterator[ChunkerEvent]:
+        for doc in docs:
+            yield SectionProcessed(section_index=1, section_total=1, section_title="(без чанкинга)")
+            yield ChunkCreated(chunk=doc)
+
+
 class AdvancedChunker:
     """Семантический чанкер документов.
 
@@ -113,15 +122,24 @@ class AdvancedChunker:
         metadata = doc.metadata.copy()
         sections = _split_into_sections(text)
         total = len(sections)
+        log.debug("Document has %d sections, %d chars", total, len(text))
 
         for idx, section in enumerate(sections, start=1):
+            log.debug(
+                "Section %d/%d '%s': %d chars, %d tokens",
+                idx, total, section.title, len(section.content),
+                self._count_tokens(section.content),
+            )
             yield SectionProcessed(
                 section_index=idx,
                 section_total=total,
                 section_title=section.title,
             )
+            chunk_count = 0
             for chunk in self._chunk_section(section, metadata):
+                chunk_count += 1
                 yield ChunkCreated(chunk=chunk)
+            log.debug("Section '%s' produced %d chunks", section.title, chunk_count)
 
     def _chunk_section(self, section: Section, metadata: Dict) -> Iterator[Document]:
         content_type = _detect_content_type(section.content, self._params)
@@ -147,6 +165,12 @@ class AdvancedChunker:
         if not paragraphs:
             return
 
+        # Если единственный параграф слишком длинный — фоллбэк на строки
+        if len(paragraphs) == 1 and self._count_tokens(paragraphs[0]) > self._params.max_tokens:
+            paragraphs = [line for line in text.split("\n") if line.strip()]
+
+        log.debug("Semantic chunking: %d paragraphs", len(paragraphs))
+
         vecs = self._embedding.embed_documents(paragraphs)
         current_chunk: List[str] = []
         current_tokens = 0
@@ -170,17 +194,30 @@ class AdvancedChunker:
 
     def _chunk_by_paragraphs(self, text: str, metadata: Dict, section: Section) -> Iterator[Document]:
         paragraphs = _split_paragraphs(text)
+        if not paragraphs:
+            return
+
+        # Если единственный параграф превышает max_tokens — дробим по строкам
+        if len(paragraphs) == 1 and self._count_tokens(paragraphs[0]) > self._params.max_tokens:
+            paragraphs = [line for line in text.split("\n") if line.strip()]
+
+        yield from self._merge_into_chunks(paragraphs, metadata, section)
+
+    def _merge_into_chunks(
+        self, parts: List[str], metadata: Dict, section: Section,
+    ) -> Iterator[Document]:
+        """Объединять части в чанки, не превышая max_tokens."""
         current_chunk: List[str] = []
         current_tokens = 0
 
-        for para in paragraphs:
-            para_tokens = self._count_tokens(para)
-            if current_tokens + para_tokens > self._params.max_tokens and current_chunk:
+        for part in parts:
+            part_tokens = self._count_tokens(part)
+            if current_tokens + part_tokens > self._params.max_tokens and current_chunk:
                 yield self._create_chunk(current_chunk, metadata, section, ChunkContentType.TEXT)
                 current_chunk = []
                 current_tokens = 0
-            current_chunk.append(para)
-            current_tokens += para_tokens
+            current_chunk.append(part)
+            current_tokens += part_tokens
 
         if current_chunk:
             yield self._create_chunk(current_chunk, metadata, section, ChunkContentType.TEXT)

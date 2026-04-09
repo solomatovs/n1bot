@@ -187,18 +187,28 @@ def render_chunking_settings(key_prefix: str = "cp") -> ChunkingParams:
     p = key_prefix
 
     with st.expander("Настройки чанкинга", expanded=False):
+        enabled = st.checkbox(
+            "Включить чанкинг",
+            value=defaults.enabled,
+            help="Выключите, чтобы загружать страницы целиком без разбиения",
+            key=f"{p}_enabled",
+        )
         col1, col2, col3 = st.columns(3)
         with col1:
             max_tokens = _int_slider("Макс. токенов на чанк", lim.max_tokens, defaults.max_tokens,
+                                     disabled=not enabled,
                                      help="Максимальный размер одного чанка в токенах", key=f"{p}_max_tokens")
         with col2:
             similarity = _float_slider("Порог схожести", lim.similarity_threshold, defaults.similarity_threshold,
+                                       disabled=not enabled,
                                        help="Параграфы со схожестью выше порога объединяются в один чанк", key=f"{p}_similarity")
         with col3:
             embedding_timeout = _int_slider("Таймаут embedding (сек)", lim.embedding_timeout, defaults.embedding_timeout,
+                                            disabled=not enabled,
                                             help="Максимальное время ожидания ответа от сервиса эмбеддингов", key=f"{p}_emb_timeout")
 
     return ChunkingParams(
+        enabled=enabled,
         max_tokens=max_tokens,
         similarity_threshold=similarity,
         embedding_timeout=embedding_timeout,

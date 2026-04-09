@@ -27,6 +27,8 @@ pandas = "*"
 markdownify = "*"
 atlassian-python-api = "*"
 pydantic = "*"
+lxml = "*"
+
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"

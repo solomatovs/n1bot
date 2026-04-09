@@ -164,6 +164,9 @@ class ChromaVectorStoreService:
 
     @staticmethod
     def _normalize_document(d: DocumentLike) -> Document:
-        md = dict(d.metadata)
+        md = {
+            k: v for k, v in d.metadata.items()
+            if not (isinstance(v, list) and len(v) == 0)
+        }
         md.setdefault("type", "original")
         return Document(page_content=d.page_content, metadata=md)
