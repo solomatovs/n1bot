@@ -3,15 +3,21 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
-from enum import Enum
-from typing import Dict, Iterator, List, Protocol, Union
+from typing import Dict, Iterator, List
 
 import numpy as np
 
 from langchain_core.documents import Document
 
+from domain.chunking import (
+    ChunkContentType,
+    ChunkCreated,
+    ChunkerEvent,
+    Section,
+    SectionProcessed,
+)
 from domain.embeddings import Embeddings
+from domain.loading import ChunkingParams
 
 # ---------------------------------------------------------------------------
 # Tiktoken encoder (офлайн-безопасно)
@@ -28,7 +34,6 @@ except Exception:
             return [0] * ((len(s.encode("utf-8")) + 3) // 4)
 
     _enc = _ApproxEncoder()
-from domain.loading import ChunkingParams
 
 log = logging.getLogger(__name__)
 
@@ -43,7 +48,6 @@ _LIST_SPLIT_PATTERN = re.compile(r"\n(?=[\d+\.\-\*\+]\s)")
 
 
 def _is_heading(line: str) -> re.Match | None:
-    """Проверить, является ли строка markdown-заголовком."""
     return _HEADING_PATTERN.match(line)
 
 
@@ -60,12 +64,10 @@ def _is_table_line(line: str) -> bool:
 
 
 def _split_paragraphs(text: str) -> List[str]:
-    """Разделить текст на непустые параграфы по двойному переносу строки."""
     return [p.strip() for p in text.split("\n\n") if p.strip()]
 
 
 def _split_list_items(text: str) -> List[str]:
-    """Разделить текст на элементы markdown-списка."""
     return _LIST_SPLIT_PATTERN.split(text)
 
 
@@ -78,7 +80,6 @@ def _line_ratio(matching: int, total: int) -> float:
 
 
 def _cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
-    """Вычислить косинусное сходство между двумя векторами."""
     a = np.asarray(vec_a)
     b = np.asarray(vec_b)
     norm_product = np.linalg.norm(a) * np.linalg.norm(b)
@@ -88,58 +89,7 @@ def _cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Внутренние события чанкера (без doc_index/doc_total/cumulative_chunks)
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class SectionProcessed:
-    """Секция документа обработана чанкером."""
-    section_index: int
-    section_total: int
-    section_title: str
-
-
-@dataclass(frozen=True)
-class ChunkCreated:
-    """Чанк создан чанкером."""
-    chunk: Document
-
-
-ChunkerEvent = Union[SectionProcessed, ChunkCreated]
-
-
-# ---------------------------------------------------------------------------
-# Типы данных
-# ---------------------------------------------------------------------------
-
-class ContentType(Enum):
-    """Тип контента секции документа."""
-    CODE = "code"
-    TABLE = "table"
-    LIST = "list"
-    TEXT = "text"
-
-
-@dataclass(frozen=True)
-class Section:
-    """Секция markdown-документа."""
-    title: str
-    level: int
-    content: str
-
-
-# ---------------------------------------------------------------------------
-# Protocol — точка расширения для будущих стратегий чанкинга
-# ---------------------------------------------------------------------------
-
-class ChunkingStrategy(Protocol):
-    """Стратегия разбиения документов на чанки (генераторная)."""
-
-    def split_documents(self, docs: List[Document]) -> Iterator[ChunkerEvent]: ...
-
-
-# ---------------------------------------------------------------------------
-# MarkdownChunkingStrategy (она же AdvancedChunker)
+# AdvancedChunker — реализация ChunkingStrategy
 # ---------------------------------------------------------------------------
 
 class AdvancedChunker:
@@ -155,11 +105,8 @@ class AdvancedChunker:
         self._tokenizer = _enc
 
     def split_documents(self, docs: List[Document]) -> Iterator[ChunkerEvent]:
-        """Разбить документы на чанки, yielding события."""
         for doc in docs:
             yield from self._process_document(doc)
-
-    # -- приватные методы ------------------------------------------------------
 
     def _process_document(self, doc: Document) -> Iterator[ChunkerEvent]:
         text = doc.page_content
@@ -179,17 +126,16 @@ class AdvancedChunker:
     def _chunk_section(self, section: Section, metadata: Dict) -> Iterator[Document]:
         content_type = _detect_content_type(section.content, self._params)
         match content_type:
-            case ContentType.CODE:
+            case ChunkContentType.CODE:
                 yield self._create_chunk([section.content], metadata, section, content_type)
-            case ContentType.TABLE:
+            case ChunkContentType.TABLE:
                 yield self._create_chunk([section.content], metadata, section, content_type)
-            case ContentType.LIST:
+            case ChunkContentType.LIST:
                 yield from self._chunk_list(section.content, metadata, section)
-            case ContentType.TEXT:
+            case ChunkContentType.TEXT:
                 yield from self._chunk_text(section.content, metadata, section)
 
     def _chunk_text(self, text: str, metadata: Dict, section: Section) -> Iterator[Document]:
-        """Семантический чанкинг текста с фоллбэком на параграфы."""
         try:
             yield from self._chunk_text_semantic(text, metadata, section)
         except (ConnectionError, ValueError, RuntimeError) as e:
@@ -214,13 +160,13 @@ class AdvancedChunker:
                 current_tokens += para_tokens
             else:
                 if current_chunk:
-                    yield self._create_chunk(current_chunk, metadata, section, ContentType.TEXT)
+                    yield self._create_chunk(current_chunk, metadata, section, ChunkContentType.TEXT)
                 current_chunk = [para]
                 current_tokens = para_tokens
                 prev_vec = vec
 
         if current_chunk:
-            yield self._create_chunk(current_chunk, metadata, section, ContentType.TEXT)
+            yield self._create_chunk(current_chunk, metadata, section, ChunkContentType.TEXT)
 
     def _chunk_by_paragraphs(self, text: str, metadata: Dict, section: Section) -> Iterator[Document]:
         paragraphs = _split_paragraphs(text)
@@ -230,14 +176,14 @@ class AdvancedChunker:
         for para in paragraphs:
             para_tokens = self._count_tokens(para)
             if current_tokens + para_tokens > self._params.max_tokens and current_chunk:
-                yield self._create_chunk(current_chunk, metadata, section, ContentType.TEXT)
+                yield self._create_chunk(current_chunk, metadata, section, ChunkContentType.TEXT)
                 current_chunk = []
                 current_tokens = 0
             current_chunk.append(para)
             current_tokens += para_tokens
 
         if current_chunk:
-            yield self._create_chunk(current_chunk, metadata, section, ContentType.TEXT)
+            yield self._create_chunk(current_chunk, metadata, section, ChunkContentType.TEXT)
 
     def _chunk_list(self, list_text: str, metadata: Dict, section: Section) -> Iterator[Document]:
         items = _split_list_items(list_text)
@@ -247,17 +193,17 @@ class AdvancedChunker:
         for item in items:
             item_tokens = self._count_tokens(item)
             if current_tokens + item_tokens > self._params.max_tokens and current_chunk:
-                yield self._create_chunk(current_chunk, metadata, section, ContentType.LIST)
+                yield self._create_chunk(current_chunk, metadata, section, ChunkContentType.LIST)
                 current_chunk = []
                 current_tokens = 0
             current_chunk.append(item)
             current_tokens += item_tokens
 
         if current_chunk:
-            yield self._create_chunk(current_chunk, metadata, section, ContentType.LIST)
+            yield self._create_chunk(current_chunk, metadata, section, ChunkContentType.LIST)
 
     def _create_chunk(
-        self, content_parts: List[str], metadata: Dict, section: Section, chunk_type: ContentType,
+        self, content_parts: List[str], metadata: Dict, section: Section, chunk_type: ChunkContentType,
     ) -> Document:
         content = "\n\n".join(content_parts)
         chunk_metadata = {
@@ -276,7 +222,6 @@ class AdvancedChunker:
         current_tokens: int,
         para_tokens: int,
     ) -> bool:
-        """Проверить, нужно ли присоединить параграф к текущему чанку."""
         if prev_vec is None:
             return False
         is_similar = _cosine_similarity(current_vec, prev_vec) >= self._params.similarity_threshold
@@ -321,15 +266,14 @@ def _split_into_sections(text: str) -> List[Section]:
     return sections
 
 
-def _detect_content_type(text: str, params: ChunkingParams) -> ContentType:
-    """Определить тип контента по доле характерных строк."""
+def _detect_content_type(text: str, params: ChunkingParams) -> ChunkContentType:
     lines = text.split("\n")
     total = len(lines)
 
     if _line_ratio(_count_matching_lines(lines, _is_code_line), total) > params.code_ratio_threshold:
-        return ContentType.CODE
+        return ChunkContentType.CODE
     if _line_ratio(_count_matching_lines(lines, _is_table_line), total) > params.table_ratio_threshold:
-        return ContentType.TABLE
+        return ChunkContentType.TABLE
     if _line_ratio(_count_matching_lines(lines, _is_list_item), total) > params.list_ratio_threshold:
-        return ContentType.LIST
-    return ContentType.TEXT
+        return ChunkContentType.LIST
+    return ChunkContentType.TEXT

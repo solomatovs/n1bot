@@ -27,7 +27,7 @@ from application.load_pipeline.events import (
 )
 from domain.config import AppConfig
 from domain.loading import (
-    ConfluenceRequestParams,
+    ConfluenceLoaderParams,
     PageLoadError,
     SpaceEnumerationError,
     SpaceLoadParams,
@@ -43,9 +43,9 @@ log = logging.getLogger(__name__)
 class PageLoader:
     """Загружает документы одной страницы Confluence — yield по одному."""
 
-    def __init__(self, cfg: AppConfig, request_params: ConfluenceRequestParams) -> None:
+    def __init__(self, cfg: AppConfig, params: ConfluenceLoaderParams) -> None:
         self._cfg = cfg
-        self._request_params = request_params
+        self._params = params
 
     def load(self, page_id: str) -> Iterator[Document]:
         """Yield документы страницы по одному через lazy_load.
@@ -54,14 +54,21 @@ class PageLoader:
             PageLoadError: если страницу не удалось загрузить.
         """
         try:
+            p = self._params
             loader = ConfluenceLoader(
                 url=self._cfg.confluence_url,
                 token=self._cfg.confluence_token,
-                include_attachments=False,
-                keep_markdown_format=True,
-                content_format=ContentFormat.EXPORT_VIEW,
                 page_ids=[page_id],
-                confluence_kwargs={"verify_ssl": self._request_params.ssl_verify},
+                content_format=ContentFormat(p.content_format.value),
+                keep_markdown_format=p.keep_markdown_format,
+                keep_newlines=p.keep_newlines,
+                include_attachments=p.include_attachments,
+                include_comments=p.include_comments,
+                include_labels=p.include_labels,
+                number_of_retries=p.number_of_retries,
+                min_retry_seconds=p.min_retry_seconds,
+                max_retry_seconds=p.max_retry_seconds,
+                confluence_kwargs={"verify_ssl": p.ssl_verify},
                 limit=1,
             )
             yield from loader.lazy_load()
@@ -135,12 +142,12 @@ class SpaceLoader:
         batch_loader: BatchPageLoader,
         cfg: AppConfig,
         params: SpaceLoadParams,
-        request_params: ConfluenceRequestParams,
+        loader_params: ConfluenceLoaderParams,
     ) -> None:
         self._batch_loader = batch_loader
         self._cfg = cfg
         self._params = params
-        self._request_params = request_params
+        self._loader_params = loader_params
 
     def load(self, space_key: str) -> Iterator[Union[PageLoaded, DocumentLoaded, PageFailed, LoadingDone, SpaceEnumerated]]:
         """Yield SpaceEnumerated, затем делегирует BatchPageLoader.
@@ -173,8 +180,8 @@ class SpaceLoader:
                 self._cfg.confluence_content_url,
                 headers=self._cfg.confluence_auth_headers,
                 params=query.to_params(),
-                verify=self._request_params.ssl_verify,
-                timeout=self._request_params.timeout,
+                verify=self._loader_params.ssl_verify,
+                timeout=self._loader_params.timeout,
             )
             r.raise_for_status()
             page_ids = self._extract_page_ids(r.json())

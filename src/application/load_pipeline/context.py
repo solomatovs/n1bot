@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterator, List, Optional, Union
 
-from application.load_pipeline.chunking import ChunkingStrategy
+from domain.chunking import ChunkingStrategy
 from application.load_pipeline.events import (
     DocumentLoaded,
     LoadingDone,
@@ -13,7 +13,7 @@ from application.load_pipeline.events import (
     SpaceEnumerated,
 )
 from domain.config import AppConfig
-from domain.loading import ChunkingParams, ConfluenceRequestParams, SpaceLoadParams, StorageParams
+from domain.loading import ChunkingParams, ConfluenceLoaderParams, SpaceLoadParams, StorageParams
 from domain.vectorstore import VectorStoreService
 
 LoadEvent = Union[SpaceEnumerated, PageLoaded, DocumentLoaded, PageFailed, LoadingDone]
@@ -39,7 +39,7 @@ class LoadContext:
     vectorstore_service: VectorStoreService
 
     # --- Параметры HTTP-запросов к Confluence ---
-    confluence_request_params: ConfluenceRequestParams = field(default_factory=ConfluenceRequestParams)
+    confluence_loader_params: ConfluenceLoaderParams = field(default_factory=ConfluenceLoaderParams)
 
     # --- Embedding модель для этой загрузки ---
     embedding_model: str = ""

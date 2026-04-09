@@ -69,9 +69,46 @@ class ChunkingParams:
     list_ratio_threshold: float = 0.4
 
 
+class ConfluenceContentFormat(Enum):
+    """Формат контента страницы Confluence."""
+    STORAGE = "body.storage", "Storage (XML)"
+    VIEW = "body.view", "View (HTML)"
+    EXPORT_VIEW = "body.export_view", "Export View"
+    EDITOR = "body.editor", "Editor"
+    ANONYMOUS_EXPORT_VIEW = "body.anonymous_export_view", "Anonymous Export View"
+
+    def __init__(self, value: str, label: str) -> None:
+        self._value_ = value
+        self._label = label
+
+    @property
+    def label(self) -> str:
+        return self._label
+
+
 @dataclass(frozen=True)
-class ConfluenceRequestParams:
-    """Параметры HTTP-запросов к Confluence API."""
+class ConfluenceLoaderParams:
+    """Параметры загрузки страниц из Confluence.
+
+    Объединяет настройки контента, вложений и HTTP-транспорта.
+    """
+
+    # --- Формат контента ---
+    content_format: ConfluenceContentFormat = ConfluenceContentFormat.EXPORT_VIEW
+    keep_markdown_format: bool = True
+    keep_newlines: bool = False
+
+    # --- Включение дополнительного контента ---
+    include_attachments: bool = False
+    include_comments: bool = False
+    include_labels: bool = False
+
+    # --- Retry-политика ---
+    number_of_retries: int = 3
+    min_retry_seconds: int = 2
+    max_retry_seconds: int = 10
+
+    # --- HTTP-транспорт ---
     timeout: int = 20
     ssl_verify: bool = False
 

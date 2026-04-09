@@ -116,8 +116,8 @@ class ChromaVectorStoreService:
         try:
             vectorstore = self._get_langchain_vectorstore(collection_name)
             retr = vectorstore.as_retriever(search_kwargs={"k": k, "filter": filters})
-            results = retr.invoke(query)
-            return results if results is not None else []
+            raw = retr.invoke(query) or []
+            return list(raw)
         except (chromadb.errors.ChromaError, RuntimeError) as e:
             raise VectorStoreError(f"Search failed: {e}") from e
 
