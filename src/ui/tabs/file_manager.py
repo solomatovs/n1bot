@@ -2,10 +2,18 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List
+from typing import Iterator, List
 
 import streamlit as st
 
+from adapters.html_converter import HtmlToMarkdownConverter
+from domain.convert import (
+    ConvertDone,
+    ConvertEvent,
+    ConvertFileDone,
+    ConvertFileFailed,
+    ConvertFileStarted,
+)
 from infrastructure.bootstrap import AppServices
 from ui.components.folder_selector import folder_selector
 from ui.state import SessionState
@@ -23,6 +31,7 @@ def render(services: AppServices, state: SessionState) -> None:
     _reset_opened_file_on_folder_change(folder_path.name)
 
     _render_upload(folder_path)
+    _render_convert_button(folder_path)
     _render_file_list(folder_path)
 
 
@@ -56,6 +65,47 @@ def _render_upload(folder_path: Path) -> None:
     st.success(f"Сохранено: {len(uploaded)} файлов")
     st.session_state["fm_upload_key"] = upload_key + 1
     st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Конвертация в Markdown
+# ---------------------------------------------------------------------------
+
+def _render_convert_button(folder_path: Path) -> None:
+    """Кнопка конвертации HTML → Markdown."""
+    if not st.button("Преобразовать в Markdown", key="fm_convert"):
+        return
+
+    converter = HtmlToMarkdownConverter()
+    _consume_convert_events(converter.convert_folder(folder_path))
+
+
+def _consume_convert_events(events: Iterator[ConvertEvent]) -> None:
+    """Обработка событий конвертации с прогресс-баром."""
+    with st.status("Конвертация...", expanded=True) as status:
+        pbar = st.progress(0.0)
+        msg = st.empty()
+
+        for event in events:
+            match event:
+                case ConvertFileStarted(filename=name, index=i, total=total):
+                    pbar.progress(i / total, text=f"{i}/{total} — {name}")
+
+                case ConvertFileDone(source=src, target=tgt, index=i, total=total):
+                    pbar.progress(i / total, text=f"{i}/{total} — {src} → {tgt}")
+
+                case ConvertFileFailed(filename=name, error=err, index=i, total=total):
+                    pbar.progress(i / total, text=f"{i}/{total} — ошибка: {name}")
+                    st.warning(f"Ошибка {name}: {err}")
+
+                case ConvertDone(ok_count=ok, failed_count=bad):
+                    pbar.empty()
+                    if ok == 0 and bad == 0:
+                        status.update(label="Нет файлов для конвертации", state="complete")
+                        msg.info("В папке нет HTML-файлов (.html, .htm).")
+                    else:
+                        status.update(label="Готово", state="complete")
+                        msg.write(f"Конвертация завершена. Успешно: {ok}, ошибок: {bad}.")
 
 
 # ---------------------------------------------------------------------------
