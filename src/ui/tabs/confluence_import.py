@@ -17,6 +17,7 @@ from domain.confluence_import import (
 from domain.loading import ConfluenceImportParams
 from infrastructure.bootstrap import AppServices
 from ui.components import render_space_settings
+from ui.components.folder_selector import folder_selector
 from ui.state import SessionState
 
 
@@ -38,11 +39,11 @@ def render(services: AppServices, state: SessionState) -> None:
 
 def _render_page_tab(services: AppServices) -> None:
     import_params = _render_import_params(key_prefix="imp_pid")
+    base_dir = Path(services.cfg.import_base_dir)
+    output_dir = folder_selector(base_dir, key_prefix="imp_pid")
 
     st.subheader("Импорт страниц")
     pids_input = st.text_input("Page IDs через запятую", key="imp_pIds")
-    default_folder = pids_input.replace(",", "_").strip() if pids_input else ""
-    folder_name = st.text_input("Папка", key="imp_pid_folder", value=default_folder)
 
     if not st.button("Загрузить", key="btn_import_pages"):
         return
@@ -51,11 +52,10 @@ def _render_page_tab(services: AppServices) -> None:
     if not page_ids:
         st.warning("Укажите хотя бы один Page ID.")
         return
-    if not folder_name:
-        st.warning("Укажите имя папки.")
+    if output_dir is None:
+        st.warning("Выберите папку.")
         return
 
-    output_dir = Path(services.cfg.import_base_dir) / folder_name.strip()
     importer = ConfluenceImporter(services.cfg, import_params)
     try:
         _consume_events(importer.import_pages(page_ids, output_dir))
@@ -72,19 +72,22 @@ def _render_page_tab(services: AppServices) -> None:
 def _render_space_tab(services: AppServices) -> None:
     import_params = _render_import_params(key_prefix="imp_sp")
     settings = render_space_settings(key_prefix="imp_sp", show_storage=False)
+    base_dir = Path(services.cfg.import_base_dir)
+    output_dir = folder_selector(base_dir, key_prefix="imp_sp")
 
     st.subheader("Импорт пространства")
     space_key = st.text_input("Space Key", key="imp_spaceKey")
-    folder_name = st.text_input("Папка", key="imp_sp_folder", value=space_key)
 
     if not st.button("Загрузить пространство", key="btn_import_space"):
         return
 
-    if not space_key or not folder_name:
-        st.warning("Укажите Space Key и имя папки.")
+    if not space_key:
+        st.warning("Укажите Space Key.")
+        return
+    if output_dir is None:
+        st.warning("Выберите папку.")
         return
 
-    output_dir = Path(services.cfg.import_base_dir) / folder_name.strip()
     importer = ConfluenceImporter(services.cfg, import_params)
     try:
         _consume_events(
