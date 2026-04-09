@@ -13,7 +13,7 @@ from application.load_pipeline.events import (
 )
 from domain.config import AppConfig
 from domain.loading import ChunkingParams, ConfluenceRequestParams, SpaceLoadParams, StorageParams
-from adapters.vectorstore import VectorStoreService
+from domain.vectorstore import VectorStoreService
 
 LoadEvent = Union[SpaceEnumerated, PageLoaded, PageFailed, LoadingDone]
 

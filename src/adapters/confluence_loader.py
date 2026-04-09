@@ -123,6 +123,18 @@ class BatchPageLoader:
 # SpaceLoader — загрузка пространства (генератор)
 # ---------------------------------------------------------------------------
 
+@dataclass(frozen=True)
+class ContentQuery:
+    """Параметры запроса пагинации контента Confluence REST API."""
+    space_key: str
+    content_type: str = "page"
+    limit: int = 50
+    start: int = 0
+
+    def to_params(self) -> dict[str, str | int]:
+        return {"spaceKey": self.space_key, "type": self.content_type, "limit": self.limit, "start": self.start}
+
+
 class SpaceLoader:
     """Загружает все страницы пространства — yield SpaceEnumerated, затем delegate."""
 
@@ -164,11 +176,11 @@ class SpaceLoader:
         ids: List[str] = []
 
         while True:
-            query = {"spaceKey": space_key, "type": "page", "limit": limit, "start": start}
+            query = ContentQuery(space_key=space_key, limit=limit, start=start)
             r = httpx.get(
                 self._cfg.confluence_content_url,
                 headers=self._cfg.confluence_auth_headers,
-                params=query,
+                params=query.to_params(),
                 verify=self._request_params.ssl_verify,
                 timeout=self._request_params.timeout,
             )

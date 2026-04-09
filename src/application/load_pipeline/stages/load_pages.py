@@ -26,7 +26,7 @@ class LoadPagesStage:
         return "load_pages"
 
     def run(self, ctx: LoadContext) -> Iterator[LoadPagesEvent]:
-        from adapters.confluence import BatchPageLoader, PageLoader, SpaceLoader
+        from adapters.confluence_loader import BatchPageLoader, PageLoader, SpaceLoader
 
         yield StageStarted(stage=self.name)
 

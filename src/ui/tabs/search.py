@@ -27,7 +27,7 @@ def render(services: AppServices, state: SessionState) -> None:
     st.title("Поиск релевантного контекста")
 
     state.selected_collection = collection_selector(
-        services.cfg, key="select_collection_search", current=state.selected_collection,
+        services.vectorstore_service, key="select_collection_search", current=state.selected_collection,
     )
 
     search_params = render_retrieval_settings(st.container(), key_prefix="srch_sp")

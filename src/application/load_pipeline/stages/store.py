@@ -1,4 +1,4 @@
-"""Стадия 3: Сохранение — потребляет чанки, батчит, сбрасывает в ChromaDB.
+"""Стадия 3: Сохранение — потребляет чанки, батчит, сбрасывает в хранилище.
 
 Потребляет ленивый итератор ctx.chunk_results из ChunkStage.
 Per-page streaming: загрузка + чанкинг происходят лениво при итерации.
@@ -10,12 +10,10 @@ import logging
 from dataclasses import dataclass
 from typing import Iterator, Union
 
-import chromadb.errors
-from langchain_chroma import Chroma
 from langchain_core.documents import Document
 
-from domain.errors import ValidationError
-from adapters.vectorstore import VectorStoreService
+from domain.errors import ValidationError, VectorStoreError
+from domain.vectorstore import VectorStoreService
 from application.load_pipeline.context import LoadContext
 from application.load_pipeline.events import (
     StorageDone,
@@ -57,8 +55,7 @@ class StoreStage:
 
         yield StageStarted(stage=self.name)
 
-        ctx.vectorstore_service.verify_embedding_connection()
-        vectorstore = ctx.vectorstore_service.create_vectorstore(
+        ctx.vectorstore_service.create_collection(
             ctx.collection_name, ctx.embedding_model,
         )
 
@@ -80,7 +77,7 @@ class StoreStage:
 
             if len(batch) >= batch_size:
                 flush = _flush_batch(
-                    ctx.vectorstore_service, vectorstore,
+                    ctx.vectorstore_service, ctx.collection_name,
                     batch, batch_idx, total_stored, cumulative_chunks,
                 )
                 yield flush.event
@@ -91,7 +88,7 @@ class StoreStage:
 
         if batch:
             flush = _flush_batch(
-                ctx.vectorstore_service, vectorstore,
+                ctx.vectorstore_service, ctx.collection_name,
                 batch, batch_idx, total_stored, cumulative_chunks,
             )
             yield flush.event
@@ -104,7 +101,7 @@ class StoreStage:
 
 def _flush_batch(
     vs_service: VectorStoreService,
-    vectorstore: Chroma,
+    collection_name: str,
     batch: list[Document],
     batch_idx: int,
     total_stored: int,
@@ -112,7 +109,7 @@ def _flush_batch(
 ) -> BatchFlushResult:
     """Сохранить один батч. Возвращает результат с событием и счётчиками."""
     try:
-        vs_service.store_batch(vectorstore, batch)
+        vs_service.store_batch(collection_name, batch)
         return BatchFlushResult(
             event=StoreBatchDone(
                 batch_index=batch_idx,
@@ -122,7 +119,7 @@ def _flush_batch(
             stored=len(batch),
             failed=0,
         )
-    except chromadb.errors.ChromaError as e:
+    except VectorStoreError as e:
         log.warning("Failed to store batch %d: %s", batch_idx, e)
         return BatchFlushResult(
             event=StoreBatchFailed(

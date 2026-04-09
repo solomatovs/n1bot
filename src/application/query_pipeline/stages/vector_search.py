@@ -4,9 +4,8 @@ from __future__ import annotations
 import logging
 from typing import Iterator
 
-import chromadb.errors
-
 from application.query_pipeline.events import ChatEvent
+from domain.errors import VectorStoreError
 from domain.pipeline import StageCompleted, StageStarted
 from application.query_pipeline.context import QueryContext
 from domain.retrieval import _build_search_filter
@@ -33,15 +32,11 @@ class VectorSearchStage:
         errors: list[str] = []
 
         filters = _build_search_filter(ctx.search_params.content_types, ctx.query_type)
-        vectorstore = ctx.vectorstore_service.get_vectorstore(ctx.collection_name)
         for variant in ctx.query_variants:
             try:
-                retr = vectorstore.as_retriever(search_kwargs={"k": k, "filter": filters})
-                results = retr.invoke(variant)
-                if results is None:
-                    results = []
+                results = ctx.vectorstore_service.search(ctx.collection_name, variant, k, filters)
                 rank_lists.append(results)
-            except (chromadb.errors.ChromaError, RuntimeError) as e:
+            except VectorStoreError as e:
                 log.warning("Search failed for variant '%s': %s", variant, e)
                 errors.append(f"'{variant}': {e}")
                 rank_lists.append([])

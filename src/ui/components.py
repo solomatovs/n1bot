@@ -9,14 +9,13 @@ import pandas as pd
 import httpx
 import streamlit as st
 
-import chromadb
-import chromadb.errors
-from chromadb.config import Settings
 from streamlit.delta_generator import DeltaGenerator
 
 from domain.chat import ChatMessage, PromptParams
 from domain.config import AppConfig
+from domain.errors import VectorStoreError
 from domain.loading import BATCH_SIZE_OPTIONS, ChunkingParams, ContentType, SpaceLoadParams, StorageParams
+from domain.vectorstore import VectorStoreService
 from domain.search import SearchParams
 from ui.state import (
     CacheTTL,
@@ -43,19 +42,10 @@ def _safe_index(items: Sequence[T], value: T, default: int = 0) -> int:
 # Кэшируемые ресурсы
 # ---------------------------------------------------------------------------
 
-@st.cache_resource(show_spinner=False)
-def get_chroma_client(db_path: str):  # -> chromadb.PersistentClient
-    return chromadb.PersistentClient(
-        path=db_path,
-        settings=Settings(anonymized_telemetry=False),
-    )
-
-
-@st.cache_data(ttl=CacheTTL.collections, show_spinner=False)
-def list_collections(db_path: str) -> List[str]:
+def list_collections(vs: VectorStoreService) -> List[str]:
     try:
-        return [c.name for c in get_chroma_client(db_path).list_collections()]
-    except (chromadb.errors.ChromaError, ValueError, OSError) as ex:
+        return [c.name for c in vs.list_collections()]
+    except VectorStoreError as ex:
         log.warning("Failed to list collections: %s", ex)
         st.warning(f"Не удалось получить список коллекций: {ex}")
         return []
@@ -101,25 +91,21 @@ def get_embedding_models(cfg: AppConfig) -> List[str]:
 # ---------------------------------------------------------------------------
 
 def fetch_collection_df(
-    db_path: str,
+    vs: VectorStoreService,
     collection_name: str,
     preview: bool = False,
 ) -> pd.DataFrame:
-    coll = get_chroma_client(db_path).get_collection(collection_name)
-    data = coll.get(include=["documents", "metadatas"])
-    ids = data.get("ids", [])
-    docs = data.get("documents") or []
-    metas = data.get("metadatas") or []
+    data = vs.get_collection_data(collection_name)
+    docs = data.documents
     if preview:
         docs = [d if isinstance(d, str) else str(d) for d in docs]
-    return pd.DataFrame({"id": ids, "text": docs, "metadata": metas})
+    return pd.DataFrame({"id": data.ids, "text": docs, "metadata": data.metadatas})
 
 
-@st.cache_data(ttl=CacheTTL.preview, show_spinner=False)
-def get_collection_preview(db_path: str, collection_name: str) -> pd.DataFrame:
+def get_collection_preview(vs: VectorStoreService, collection_name: str) -> pd.DataFrame:
     try:
-        return fetch_collection_df(db_path, collection_name, preview=True)
-    except (chromadb.errors.ChromaError, ValueError, OSError) as e:
+        return fetch_collection_df(vs, collection_name, preview=True)
+    except VectorStoreError as e:
         log.warning("Failed to load collection data: %s", e)
         st.error(f"Ошибка загрузки данных: {e}")
         return pd.DataFrame({"id": [], "text": [], "metadata": []})
@@ -133,9 +119,9 @@ def get_collection_preview(db_path: str, collection_name: str) -> pd.DataFrame:
 # Селекторы
 # ---------------------------------------------------------------------------
 
-def collection_selector(cfg: AppConfig, *, key: str, current: str) -> str:
+def collection_selector(vs: VectorStoreService, *, key: str, current: str) -> str:
     """Отрисовать селектор коллекции и вернуть выбранное значение."""
-    colls = list_collections(cfg.chroma_db_path)
+    colls = list_collections(vs)
     if not colls:
         st.warning("Нет доступных коллекций.")
         return current

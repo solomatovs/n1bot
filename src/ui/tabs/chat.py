@@ -38,7 +38,7 @@ def render(services: AppServices, state: SessionState) -> None:
     st.title("N1 Hub AI bots")
 
     state.selected_collection = collection_selector(
-        services.cfg, key="select_collection_chat", current=state.selected_collection,
+        services.vectorstore_service, key="select_collection_chat", current=state.selected_collection,
     )
 
     col_model, col_retrieval, col_mq, col_gen, col_prompts = st.columns([3, 1, 1, 1, 1])
