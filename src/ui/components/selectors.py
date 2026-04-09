@@ -23,13 +23,14 @@ def collection_selector(vs: VectorStoreService, *, key: str, current: str) -> st
     return selected if selected is not None else colls[0]
 
 
-def model_selector(cfg: AppConfig) -> str:
+def model_selector(cfg: AppConfig, *, key: str | None = None) -> str:
     """Селектор модели генерации."""
     return _model_selectbox(
         label="Модель генерации",
         models=get_chat_models(cfg),
         default=cfg.default_model,
         empty_warning="Нет доступных моделей генерации.",
+        key=key,
     )
 
 

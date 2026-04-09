@@ -11,9 +11,16 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 
 from domain.config import AppConfig
-from domain.errors import VectorStoreError
+from domain.errors import (
+    CollectionCreateError,
+    CollectionNotFoundError,
+    VectorStoreConnectionError,
+    SearchError,
+    StoreBatchError,
+    VectorStoreError,
+)
 from domain.retrieval import DocumentLike
-from domain.vectorstore import CollectionData, CollectionInfo
+from domain.vectorstore import CollectionData, CollectionInfo, ScoredDocument
 from adapters.litellm_embeddings import LiteLLMEmbeddings
 
 log = logging.getLogger(__name__)
@@ -57,7 +64,7 @@ class ChromaVectorStoreService:
                 for c in collections
             ]
         except (chromadb.errors.ChromaError, ValueError, OSError) as e:
-            raise VectorStoreError(f"Failed to list collections: {e}") from e
+            raise VectorStoreConnectionError(f"Failed to list collections: {e}") from e
 
     def get_collection_data(self, collection_name: str) -> CollectionData:
         """Получить содержимое коллекции."""
@@ -71,8 +78,10 @@ class ChromaVectorStoreService:
                 documents=data.get("documents") or [],
                 metadatas=[dict(m) for m in raw_metadatas],
             )
+        except chromadb.errors.NotFoundError as e:
+            raise CollectionNotFoundError(collection_name) from e
         except (chromadb.errors.ChromaError, ValueError, OSError) as e:
-            raise VectorStoreError(f"Failed to get collection data: {e}") from e
+            raise VectorStoreConnectionError(f"Failed to get collection data: {e}") from e
 
     def get_collection_embedding_model(self, collection_name: str) -> Optional[str]:
         """Получить имя embedding модели для коллекции (None если не задано)."""
@@ -92,12 +101,14 @@ class ChromaVectorStoreService:
                 metadata={EMBEDDING_MODEL_KEY: embedding_model},
             )
         except chromadb.errors.ChromaError as e:
-            raise VectorStoreError(f"Failed to create collection: {e}") from e
+            raise CollectionCreateError(f"Failed to create collection '{collection_name}': {e}") from e
 
     def remove_collection(self, name: str) -> None:
         """Удалить коллекцию."""
         try:
             self._get_client().delete_collection(name)
+        except chromadb.errors.NotFoundError as e:
+            raise CollectionNotFoundError(name) from e
         except chromadb.errors.ChromaError as e:
             raise VectorStoreError(f"Failed to remove collection: {e}") from e
 
@@ -108,8 +119,10 @@ class ChromaVectorStoreService:
             normalized = [self._normalize_document(d) for d in docs]
             vectorstore.add_documents(normalized)
             return len(normalized)
-        except chromadb.errors.ChromaError as e:
-            raise VectorStoreError(f"Failed to store batch: {e}") from e
+        except chromadb.errors.NotFoundError as e:
+            raise CollectionNotFoundError(collection_name) from e
+        except (chromadb.errors.ChromaError, RuntimeError) as e:
+            raise StoreBatchError(f"Failed to store batch: {e}") from e
 
     def search(self, collection_name: str, query: str, k: int, filters: dict) -> List[DocumentLike]:
         """Выполнить векторный поиск по коллекции."""
@@ -118,8 +131,32 @@ class ChromaVectorStoreService:
             retr = vectorstore.as_retriever(search_kwargs={"k": k, "filter": filters})
             raw = retr.invoke(query) or []
             return list(raw)
+        except chromadb.errors.NotFoundError as e:
+            raise CollectionNotFoundError(collection_name) from e
         except (chromadb.errors.ChromaError, RuntimeError) as e:
-            raise VectorStoreError(f"Search failed: {e}") from e
+            raise SearchError(f"Search failed: {e}") from e
+
+    def search_with_scores(self, collection_name: str, query: str, k: int) -> List[ScoredDocument]:
+        """Векторный поиск с оценкой релевантности."""
+        try:
+            vectorstore = self._get_langchain_vectorstore(collection_name)
+            results = vectorstore.similarity_search_with_relevance_scores(query, k=k)
+            return [ScoredDocument(document=doc, score=score) for doc, score in results]
+        except chromadb.errors.NotFoundError as e:
+            raise CollectionNotFoundError(collection_name) from e
+        except (chromadb.errors.ChromaError, RuntimeError) as e:
+            raise SearchError(f"Search with scores failed: {e}") from e
+
+    def collection_doc_count(self, collection_name: str) -> int:
+        """Количество документов в коллекции (0 если не существует)."""
+        try:
+            client = self._get_client()
+            existing = [c.name for c in client.list_collections()]
+            if collection_name not in existing:
+                return 0
+            return client.get_collection(collection_name).count()
+        except (chromadb.errors.ChromaError, ValueError, OSError):
+            return 0
 
     # -- приватные методы ------------------------------------------------------
 

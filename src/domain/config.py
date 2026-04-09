@@ -25,6 +25,11 @@ class AppConfig:
     _embedding_timeout: int = field(default_factory=lambda: int(AppConfig._secret("EMBEDDING_TIMEOUT", "120")))
     _ssl_verify: bool = field(default_factory=lambda: AppConfig._secret("SSL_VERIFY", "false").lower() in ("true", "1", "yes"))
     _import_base_dir: str = field(default_factory=lambda: AppConfig._secret("IMPORT_BASE_DIR", "./import"))
+    _boba_dir_name: str = field(default_factory=lambda: AppConfig._secret("BOBA_DIR_NAME", ".boba"))
+    _context_dir_name: str = field(default_factory=lambda: AppConfig._secret("CONTEXT_DIR_NAME", "context"))
+    _chroma_dir_name: str = field(default_factory=lambda: AppConfig._secret("CHROMA_DIR_NAME", "chroma"))
+    _chat_history_filename: str = field(default_factory=lambda: AppConfig._secret("CHAT_HISTORY_FILENAME", "chat_history.md"))
+    _collection_prefix: str = field(default_factory=lambda: AppConfig._secret("COLLECTION_PREFIX", "doc"))
     _log_level: str = field(default_factory=lambda: AppConfig._secret("LOG_LEVEL", "INFO"))
 
     @staticmethod
@@ -118,3 +123,66 @@ class AppConfig:
     def litellm_auth_headers(self) -> dict[str, str]:
         """HTTP-заголовки авторизации для LiteLLM API."""
         return {"Authorization": f"Bearer {self._litellm_api_key}"}
+
+    # ---------------------------------------------------------------------------
+    # Пути .boba — системная директория агента внутри папки с документами
+    # ---------------------------------------------------------------------------
+
+    @property
+    def boba_dir_name(self) -> str:
+        return self._boba_dir_name
+
+    @property
+    def context_dir_name(self) -> str:
+        return self._context_dir_name
+
+    @property
+    def chroma_dir_name(self) -> str:
+        return self._chroma_dir_name
+
+    @property
+    def chat_history_filename(self) -> str:
+        return self._chat_history_filename
+
+    @property
+    def collection_prefix(self) -> str:
+        return self._collection_prefix
+
+    def boba_path(self, folder: Path) -> Path:
+        """Путь к .boba внутри папки с документами."""
+        return folder / self._boba_dir_name
+
+    def context_path(self, folder: Path) -> Path:
+        """Путь к директории конвертированных markdown-документов."""
+        return self.boba_path(folder) / self._context_dir_name
+
+    def context_file_path(self, folder: Path, filename: str) -> Path:
+        """Путь к конкретному файлу в директории контекста."""
+        return self.context_path(folder) / filename
+
+    def chroma_path(self, folder: Path) -> Path:
+        """Путь к локальному ChromaDB хранилищу."""
+        return self.boba_path(folder) / self._chroma_dir_name
+
+    def chat_history_path(self, folder: Path) -> Path:
+        """Путь к файлу истории чата."""
+        return self.boba_path(folder) / self._chat_history_filename
+
+    def collection_name(self, folder_name: str) -> str:
+        """Имя коллекции ChromaDB для папки с документами."""
+        return _sanitize_collection_name(folder_name, self._collection_prefix)
+
+
+def _sanitize_collection_name(folder_name: str, prefix: str) -> str:
+    """Привести имя папки к допустимому имени коллекции ChromaDB.
+
+    Допустимы: [a-zA-Z0-9._-], 3-512 символов,
+    начинается и заканчивается на [a-zA-Z0-9].
+    """
+    import re
+    name = re.sub(r"[^a-zA-Z0-9._-]", "_", folder_name)
+    name = f"{prefix}.{name}"
+    name = name.strip("._-") or f"{prefix}.default"
+    if len(name) < 3:
+        name = name.ljust(3, "0")
+    return name[:512]
