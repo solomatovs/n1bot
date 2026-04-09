@@ -61,6 +61,7 @@ class ContentType(Enum):
 @dataclass
 class ChunkingParams:
     """Параметры чанкинга документов."""
+    enabled: bool = True
     max_tokens: int = 500
     similarity_threshold: float = 0.7
     embedding_timeout: int = 120

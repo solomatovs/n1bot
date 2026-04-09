@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, List
 
-from application.load_pipeline.chunking import AdvancedChunker
+from application.load_pipeline.chunking import AdvancedChunker, PassthroughChunker
 from domain.errors import ValidationError
 from application.load_pipeline.context import LoadContext
 from application.load_pipeline.stages import ChunkStage, LoadPagesStage, StoreStage
@@ -42,7 +42,7 @@ def create_page_load_context(
     if not collection_name:
         raise ValidationError("collection_name не может быть пустым")
 
-    chunker = AdvancedChunker(services.embeddings, chunking_params)
+    chunker = _create_chunker(chunking_params, services)
     model = embedding_model or services.cfg.embedding_model
 
     return LoadContext(
@@ -78,7 +78,7 @@ def create_space_load_context(
     if not collection_name:
         raise ValidationError("collection_name не может быть пустым")
 
-    chunker = AdvancedChunker(services.embeddings, chunking_params)
+    chunker = _create_chunker(chunking_params, services)
     model = embedding_model or services.cfg.embedding_model
 
     return LoadContext(
@@ -93,3 +93,10 @@ def create_space_load_context(
         space_key=space_key,
         space_params=space_params,
     )
+
+
+def _create_chunker(params: ChunkingParams, services: AppServices):  # noqa: ANN202
+    """Выбрать стратегию чанкинга: семантический или passthrough."""
+    if not params.enabled:
+        return PassthroughChunker()
+    return AdvancedChunker(services.embeddings, params)
