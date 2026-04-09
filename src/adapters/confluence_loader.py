@@ -10,7 +10,6 @@ Pipeline-оркестраторы вынесены в load_pipeline/.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from typing import Iterator, List, Union
 
 import httpx
@@ -26,6 +25,7 @@ from application.load_pipeline.events import (
     SpaceEnumerated,
 )
 from domain.config import AppConfig
+from domain.confluence_import import ConfluenceSpaceQuery, extract_page_ids
 from domain.loading import (
     ConfluenceLoaderParams,
     PageLoadError,
@@ -122,18 +122,6 @@ class BatchPageLoader:
 # SpaceLoader — загрузка пространства (генератор)
 # ---------------------------------------------------------------------------
 
-@dataclass(frozen=True)
-class ContentQuery:
-    """Параметры запроса пагинации контента Confluence REST API."""
-    space_key: str
-    content_type: str = "page"
-    limit: int = 50
-    start: int = 0
-
-    def to_params(self) -> dict[str, str | int]:
-        return {"spaceKey": self.space_key, "type": self.content_type, "limit": self.limit, "start": self.start}
-
-
 class SpaceLoader:
     """Загружает все страницы пространства — yield SpaceEnumerated, затем delegate."""
 
@@ -175,7 +163,7 @@ class SpaceLoader:
         ids: List[str] = []
 
         while True:
-            query = ContentQuery(space_key=space_key, limit=limit, start=start)
+            query = ConfluenceSpaceQuery(space_key=space_key, limit=limit, start=start)
             r = httpx.get(
                 self._cfg.confluence_content_url,
                 headers=self._cfg.confluence_auth_headers,
@@ -184,7 +172,7 @@ class SpaceLoader:
                 timeout=self._loader_params.timeout,
             )
             r.raise_for_status()
-            page_ids = self._extract_page_ids(r.json())
+            page_ids = extract_page_ids(r.json())
             if not page_ids:
                 break
             ids.extend(page_ids)
@@ -193,9 +181,3 @@ class SpaceLoader:
             start += len(page_ids)
 
         return ids
-
-    @staticmethod
-    def _extract_page_ids(response_json: dict) -> List[str]:
-        """Извлечь ID страниц из ответа Confluence REST API."""
-        results = response_json.get("results") or []
-        return [str(item["id"]) for item in results if "id" in item]

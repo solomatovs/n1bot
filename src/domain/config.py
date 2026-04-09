@@ -24,6 +24,7 @@ class AppConfig:
     _llm_timeout: int = field(default_factory=lambda: int(AppConfig._secret("LLM_TIMEOUT", "120")))
     _embedding_timeout: int = field(default_factory=lambda: int(AppConfig._secret("EMBEDDING_TIMEOUT", "120")))
     _ssl_verify: bool = field(default_factory=lambda: AppConfig._secret("SSL_VERIFY", "false").lower() in ("true", "1", "yes"))
+    _import_base_dir: str = field(default_factory=lambda: AppConfig._secret("IMPORT_BASE_DIR", "./import"))
     _log_level: str = field(default_factory=lambda: AppConfig._secret("LOG_LEVEL", "INFO"))
 
     @staticmethod
@@ -48,6 +49,10 @@ class AppConfig:
         """URL REST API для работы с контентом Confluence."""
         return f"{self._confluence_url}/rest/api/content"
 
+    def confluence_page_url(self, page_id: str) -> str:
+        """URL REST API для конкретной страницы Confluence."""
+        return f"{self._confluence_url}/rest/api/content/{page_id}"
+
     @property
     def confluence_token(self) -> str:
         return self._confluence_token
@@ -55,7 +60,12 @@ class AppConfig:
     @property
     def confluence_auth_headers(self) -> dict[str, str]:
         """HTTP-заголовки авторизации для Confluence REST API."""
-        return {"Authorization": f"Bearer {self._confluence_token}"}
+        return self.confluence_bearer_headers(self._confluence_token)
+
+    @staticmethod
+    def confluence_bearer_headers(token: str) -> dict[str, str]:
+        """Сформировать Bearer-заголовки для Confluence."""
+        return {"Authorization": f"Bearer {token}"}
 
     @property
     def default_collection(self) -> str:
@@ -80,6 +90,10 @@ class AppConfig:
     @property
     def ssl_verify(self) -> bool:
         return self._ssl_verify
+
+    @property
+    def import_base_dir(self) -> str:
+        return self._import_base_dir
 
     @property
     def log_level(self) -> str:

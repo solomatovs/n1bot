@@ -290,18 +290,18 @@ def render_page_id_settings() -> StorageParams:
         return _render_storage_params("pid")
 
 
-def render_space_settings() -> SpaceSettings:
+def render_space_settings(key_prefix: str = "sp", show_storage: bool = True) -> SpaceSettings:
     """Настройки для режима загрузки пространства."""
     defaults = SpaceLoadParams()
     lim = SpaceLoadLimits
+    p = key_prefix
 
-    with st.expander("Настройки загрузки", expanded=False):
-        st.markdown("##### Пространство")
+    with st.expander("Настройки пространства", expanded=False):
         col1, col2 = st.columns(2)
         with col1:
             api_page_limit = _int_slider(
                 "Страниц на запрос API", lim.api_page_limit, defaults.api_page_limit,
-                help="Размер страницы при пагинации Confluence REST API", key="sp_api_page_limit",
+                help="Размер страницы при пагинации Confluence REST API", key=f"{p}_api_page_limit",
             )
         with col2:
             max_pages = _optional_int_input(
@@ -310,11 +310,13 @@ def render_space_settings() -> SpaceSettings:
                 default=defaults.max_pages,
                 fallback=lim.max_pages_default,
                 min_value=lim.max_pages_min,
-                key_prefix="sp",
+                key_prefix=p,
             )
 
-        st.divider()
-        storage_params = _render_storage_params("sp")
+        storage_params = StorageParams()
+        if show_storage:
+            st.divider()
+            storage_params = _render_storage_params(p)
 
     space_params = SpaceLoadParams(api_page_limit=api_page_limit, max_pages=max_pages)
     return SpaceSettings(space_params=space_params, storage_params=storage_params)
