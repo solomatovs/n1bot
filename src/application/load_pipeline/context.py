@@ -12,7 +12,7 @@ from application.load_pipeline.events import (
     SpaceEnumerated,
 )
 from domain.config import AppConfig
-from domain.loading import ChunkingParams, SpaceLoadParams, StorageParams
+from domain.loading import ChunkingParams, ConfluenceRequestParams, SpaceLoadParams, StorageParams
 from adapters.vectorstore import VectorStoreService
 
 LoadEvent = Union[SpaceEnumerated, PageLoaded, PageFailed, LoadingDone]
@@ -36,6 +36,9 @@ class LoadContext:
     # --- Инфраструктура (инъекция) ---
     chunker: ChunkingStrategy
     vectorstore_service: VectorStoreService
+
+    # --- Параметры HTTP-запросов к Confluence ---
+    confluence_request_params: ConfluenceRequestParams = field(default_factory=ConfluenceRequestParams)
 
     # --- Embedding модель для этой загрузки ---
     embedding_model: str = ""

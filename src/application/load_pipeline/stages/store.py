@@ -22,7 +22,7 @@ from application.load_pipeline.events import (
     StoreBatchDone,
     StoreBatchFailed,
 )
-from domain.pipeline.events import StageCompleted, StageStarted
+from domain.pipeline import StageCompleted, StageStarted
 
 log = logging.getLogger(__name__)
 

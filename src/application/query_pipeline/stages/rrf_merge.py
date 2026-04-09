@@ -5,7 +5,7 @@ from typing import Iterator
 
 from domain.search import RetrievalError
 from application.query_pipeline.events import ChatEvent
-from domain.pipeline.events import StageCompleted, StageStarted
+from domain.pipeline import StageCompleted, StageStarted
 from application.query_pipeline.context import QueryContext
 from domain.retrieval import _rrf_merge
 

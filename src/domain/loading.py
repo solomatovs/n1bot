@@ -69,6 +69,13 @@ class ChunkingParams:
     list_ratio_threshold: float = 0.4
 
 
+@dataclass(frozen=True)
+class ConfluenceRequestParams:
+    """Параметры HTTP-запросов к Confluence API."""
+    timeout: int = 20
+    ssl_verify: bool = False
+
+
 @dataclass
 class SpaceLoadParams:
     """Параметры загрузки пространства Confluence."""

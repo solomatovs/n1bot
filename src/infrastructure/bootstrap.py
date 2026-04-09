@@ -98,10 +98,10 @@ def configure_ssl() -> None:
 def create_openai_client(cfg: AppConfig) -> OpenAI:
     """Создать OpenAI-клиент из AppConfig."""
     http_client = httpx.Client(
-        verify=False,
+        verify=cfg.ssl_verify,
         timeout=float(cfg.llm_timeout),
         headers={
-            "Authorization": f"Bearer {cfg.litellm_api_key}",
+            **cfg.litellm_auth_headers,
             "Content-Type": "application/json",
         },
     )
@@ -119,4 +119,6 @@ def create_embeddings(cfg: AppConfig) -> LiteLLMEmbeddings:
         base_url=cfg.litellm_base_url,
         api_key=cfg.litellm_api_key,
         timeout=cfg.embedding_timeout,
+        ssl_verify=cfg.ssl_verify,
+        auth_headers=cfg.litellm_auth_headers,
     )

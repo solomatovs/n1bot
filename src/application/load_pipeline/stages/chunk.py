@@ -23,7 +23,7 @@ from application.load_pipeline.events import (
     SectionChunked,
 )
 from application.load_pipeline.context import LoadContext, LoadEvent
-from domain.pipeline.events import StageCompleted, StageStarted
+from domain.pipeline import StageCompleted, StageStarted
 
 ChunkStageEvent = Union[StageStarted, StageCompleted]
 ChunkEvent = Union[SectionChunked, ChunkProduced, ChunkingDone, LoadEvent]

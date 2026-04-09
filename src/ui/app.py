@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # Загрузить Streamlit secrets в os.environ ДО любых импортов domain-кода.
-# AppConfig._secret() читает os.environ — значения должны быть там к моменту создания.
+# AppConfig читает os.environ при создании — значения должны быть там к этому моменту.
 from ui.secrets import load_streamlit_secrets_to_env  # noqa: E402
 
 load_streamlit_secrets_to_env()

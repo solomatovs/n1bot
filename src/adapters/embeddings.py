@@ -18,18 +18,21 @@ class LiteLLMEmbeddings(Embeddings):
         base_url: str,
         api_key: str,
         timeout: int,
+        ssl_verify: bool = False,
+        auth_headers: dict[str, str] | None = None,
     ) -> None:
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
         self.timeout = timeout
+        headers = {
+            **(auth_headers or {"Authorization": f"Bearer {api_key}"}),
+            "Content-Type": "application/json",
+        }
         self.client = httpx.Client(
-            verify=False,
+            verify=ssl_verify,
             timeout=float(timeout),
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
         )
 
     def _embed(self, texts: List[str], prefix: str = "") -> List[List[float]]:

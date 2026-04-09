@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Iterator
 
 from application.query_pipeline.events import ChatEvent, RetrievalDone
-from domain.pipeline.events import StageCompleted, StageStarted
+from domain.pipeline import StageCompleted, StageStarted
 from application.query_pipeline.context import QueryContext
 from domain.retrieval import build_sources
 

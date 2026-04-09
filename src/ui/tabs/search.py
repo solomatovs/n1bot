@@ -8,7 +8,7 @@ import streamlit as st
 from infrastructure.bootstrap import AppServices
 from domain.errors import AppError
 from domain.search import EmptyContextError
-from domain.pipeline.events import StageCompleted, StageStarted
+from domain.pipeline import StageCompleted, StageStarted
 from application.query_pipeline.events import (
     ChatEvent,
     RetrievalDone,
