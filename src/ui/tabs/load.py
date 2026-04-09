@@ -22,7 +22,13 @@ from application.load_pipeline.events import (
 )
 from infrastructure.bootstrap import AppServices
 from application.loaders import run_page_pipeline, run_space_pipeline
-from ui.components import embedding_model_selector, render_chunking_settings, render_page_id_settings, render_space_settings
+from ui.components import (
+    embedding_model_selector,
+    render_chunking_settings,
+    render_confluence_loader_settings,
+    render_page_id_settings,
+    render_space_settings,
+)
 from ui.state import SessionState
 
 
@@ -44,6 +50,7 @@ def render(services: AppServices, state: SessionState) -> None:
 
 def _render_page_tab(services: AppServices) -> None:
     emb_model = embedding_model_selector(services.cfg, key="pid_emb_model")
+    confluence_params = render_confluence_loader_settings(key_prefix="pid_cf")
     chunking_params = render_chunking_settings(key_prefix="pid_cp")
     storage_params = render_page_id_settings()
 
@@ -74,6 +81,7 @@ def _render_page_tab(services: AppServices) -> None:
             chunking_params=chunking_params,
             storage_params=storage_params,
             embedding_model=emb_model,
+            confluence_loader_params=confluence_params,
         )
         _consume_pipeline(pipeline)
         st.cache_data.clear()
@@ -87,6 +95,7 @@ def _render_page_tab(services: AppServices) -> None:
 
 def _render_space_tab(services: AppServices) -> None:
     emb_model = embedding_model_selector(services.cfg, key="sp_emb_model")
+    confluence_params = render_confluence_loader_settings(key_prefix="sp_cf")
     chunking_params = render_chunking_settings(key_prefix="sp_cp")
     settings = render_space_settings()
     space_params = settings.space_params
@@ -112,6 +121,7 @@ def _render_space_tab(services: AppServices) -> None:
             chunking_params=chunking_params,
             storage_params=storage_params,
             embedding_model=emb_model,
+            confluence_loader_params=confluence_params,
         )
         _consume_pipeline(pipeline)
         st.cache_data.clear()
