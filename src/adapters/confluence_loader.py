@@ -1,8 +1,8 @@
 """Иерархия загрузчиков Confluence — генераторный стриминг.
 
 Архитектура (композиция снизу вверх):
-    PageLoader          — загрузка одной страницы
-    BatchPageLoader     — загрузка списка страниц (yield PageLoaded/PageFailed)
+    PageLoader          — ленивая загрузка документов одной страницы
+    BatchPageLoader     — загрузка списка страниц (yield событий на каждый документ)
     SpaceLoader         — загрузка пространства (yield SpaceEnumerated + delegate)
 
 Pipeline-оркестраторы вынесены в load_pipeline/.
@@ -19,6 +19,7 @@ from langchain_community.document_loaders.confluence import ContentFormat
 from langchain_core.documents import Document
 
 from application.load_pipeline.events import (
+    DocumentLoaded,
     LoadingDone,
     PageFailed,
     PageLoaded,
@@ -36,29 +37,18 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Результат загрузки одной страницы (внутренний)
-# ---------------------------------------------------------------------------
-
-@dataclass
-class PageResult:
-    """Результат загрузки одной страницы."""
-    page_id: str
-    documents: List[Document]
-
-
-# ---------------------------------------------------------------------------
-# PageLoader — загрузка одной страницы
+# PageLoader — ленивая загрузка документов одной страницы
 # ---------------------------------------------------------------------------
 
 class PageLoader:
-    """Загружает одну страницу Confluence по ID."""
+    """Загружает документы одной страницы Confluence — yield по одному."""
 
     def __init__(self, cfg: AppConfig, request_params: ConfluenceRequestParams) -> None:
         self._cfg = cfg
         self._request_params = request_params
 
-    def load(self, page_id: str) -> PageResult:
-        """Загрузить одну страницу.
+    def load(self, page_id: str) -> Iterator[Document]:
+        """Yield документы страницы по одному через lazy_load.
 
         Raises:
             PageLoadError: если страницу не удалось загрузить.
@@ -74,8 +64,9 @@ class PageLoader:
                 confluence_kwargs={"verify_ssl": self._request_params.ssl_verify},
                 limit=1,
             )
-            docs = loader.load()
-            return PageResult(page_id=page_id, documents=docs)
+            yield from loader.lazy_load()
+        except PageLoadError:
+            raise
         except Exception as e:
             raise PageLoadError(page_id, e) from e
 
@@ -85,27 +76,28 @@ class PageLoader:
 # ---------------------------------------------------------------------------
 
 class BatchPageLoader:
-    """Загружает несколько страниц, yield событие на каждую."""
+    """Загружает несколько страниц, yield событие на каждый документ."""
 
     def __init__(self, page_loader: PageLoader) -> None:
         self._page_loader = page_loader
 
-    def load(self, page_ids: List[str]) -> Iterator[Union[PageLoaded, PageFailed, LoadingDone]]:
-        """Yield PageLoaded | PageFailed на каждую страницу, затем LoadingDone."""
+    def load(self, page_ids: List[str]) -> Iterator[Union[PageLoaded, DocumentLoaded, PageFailed, LoadingDone]]:
+        """Yield PageLoaded, затем DocumentLoaded на каждый документ, затем LoadingDone."""
         total = len(page_ids)
         ok_count = 0
         failed_count = 0
 
         for idx, pid in enumerate(page_ids, start=1):
             try:
-                result = self._page_loader.load(pid)
+                yield PageLoaded(page_id=pid, index=idx, total=total)
+                for doc in self._page_loader.load(pid):
+                    yield DocumentLoaded(
+                        page_id=pid,
+                        document=doc,
+                        index=idx,
+                        total=total,
+                    )
                 ok_count += 1
-                yield PageLoaded(
-                    page_id=pid,
-                    documents=result.documents,
-                    index=idx,
-                    total=total,
-                )
             except PageLoadError as e:
                 log.warning("Failed to load page %s: %s", pid, e.cause)
                 failed_count += 1
@@ -150,7 +142,7 @@ class SpaceLoader:
         self._params = params
         self._request_params = request_params
 
-    def load(self, space_key: str) -> Iterator[Union[PageLoaded, PageFailed, LoadingDone, SpaceEnumerated]]:
+    def load(self, space_key: str) -> Iterator[Union[PageLoaded, DocumentLoaded, PageFailed, LoadingDone, SpaceEnumerated]]:
         """Yield SpaceEnumerated, затем делегирует BatchPageLoader.
 
         Raises:

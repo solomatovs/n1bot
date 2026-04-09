@@ -96,9 +96,9 @@ class AppConfig:
         return f"{self.litellm_base_url}/v1"
 
     @property
-    def litellm_model_info_url(self) -> str:
-        """URL для получения информации о моделях LiteLLM."""
-        return f"{self.litellm_base_url}/v1/model/info"
+    def litellm_models_url(self) -> str:
+        """URL для получения списка моделей (/v1/models)."""
+        return f"{self.litellm_base_url}/v1/models"
 
     @property
     def litellm_auth_headers(self) -> dict[str, str]:

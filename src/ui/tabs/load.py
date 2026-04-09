@@ -9,6 +9,7 @@ from domain.errors import AppError
 from application.load_pipeline.events import (
     ChunkingDone,
     ChunkProduced,
+    DocumentLoaded,
     LoadingDone,
     LoadPipelineEvent,
     PageFailed,
@@ -130,12 +131,14 @@ def _consume_pipeline(pipeline: Iterator[LoadPipelineEvent]) -> None:
 
         for event in pipeline:
             match event:
-                # -- Загрузка --
                 case SpaceEnumerated(space_key=sk, total=n):
                     msg.write(f"Пространство «{sk}»: найдено {n} страниц")
 
                 case PageLoaded(page_id=pid, index=i, total=t):
-                    pbar.progress(i / t, text=f"{i}/{t} — загружена страница {pid}")
+                    pbar.progress(i / t, text=f"{i}/{t} — загрузка страницы {pid}...")
+
+                case DocumentLoaded(page_id=pid, index=i, total=t):
+                    pbar.progress(i / t, text=f"{i}/{t} — документ загружен ({pid}), чанкинг...")
 
                 case PageFailed(page_id=pid, index=i, total=t):
                     pbar.progress(i / t, text=f"{i}/{t} — ошибка: {pid}")
@@ -146,24 +149,19 @@ def _consume_pipeline(pipeline: Iterator[LoadPipelineEvent]) -> None:
                         status.update(label="Ошибка", state="error")
                         st.error("Не удалось загрузить ни одной страницы.")
                         return
-                    msg.write(f"Загружено: {ok} страниц, ошибок: {bad}")
-                    pbar.progress(0.0, text="Чанкинг...")
 
-                # -- Чанкинг --
                 case SectionChunked(doc_index=di, doc_total=dt, section_index=si, section_total=st_, section_title=title):
                     pbar.progress(
                         di / dt,
-                        text=f"Чанкинг {di}/{dt} — секция {si}/{st_}: {title}",
+                        text=f"{di}/{dt} — секция {si}/{st_}: {title}",
                     )
 
                 case ChunkProduced():
                     pass
 
                 case ChunkingDone(total_chunks=n):
-                    msg.write(f"Получено {n} чанков. Сохраняю в ChromaDB...")
-                    pbar.progress(0.0, text="Сохранение...")
+                    msg.write(f"Всего чанков: {n}")
 
-                # -- Сохранение --
                 case StoreBatchDone(total_stored=stored, total_chunks=total):
                     pbar.progress(
                         stored / max(total, 1),

@@ -6,6 +6,7 @@ from typing import Iterator, List, Optional, Union
 
 from application.load_pipeline.chunking import ChunkingStrategy
 from application.load_pipeline.events import (
+    DocumentLoaded,
     LoadingDone,
     PageFailed,
     PageLoaded,
@@ -15,7 +16,7 @@ from domain.config import AppConfig
 from domain.loading import ChunkingParams, ConfluenceRequestParams, SpaceLoadParams, StorageParams
 from domain.vectorstore import VectorStoreService
 
-LoadEvent = Union[SpaceEnumerated, PageLoaded, PageFailed, LoadingDone]
+LoadEvent = Union[SpaceEnumerated, PageLoaded, DocumentLoaded, PageFailed, LoadingDone]
 
 
 @dataclass
