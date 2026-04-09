@@ -6,7 +6,8 @@ from typing import Iterator, List
 
 import streamlit as st
 
-from adapters.html_converter import HtmlToMarkdownConverter
+from adapters.html_converter import DocumentPreparer
+from domain.config import AppConfig
 from domain.convert import (
     ConvertDone,
     ConvertEvent,
@@ -31,7 +32,7 @@ def render(services: AppServices, state: SessionState) -> None:
     _reset_opened_file_on_folder_change(folder_path.name)
 
     _render_upload(folder_path)
-    _render_convert_button(folder_path)
+    _render_convert_button(folder_path, services.cfg)
     _render_file_list(folder_path)
 
 
@@ -71,13 +72,14 @@ def _render_upload(folder_path: Path) -> None:
 # Конвертация в Markdown
 # ---------------------------------------------------------------------------
 
-def _render_convert_button(folder_path: Path) -> None:
-    """Кнопка конвертации HTML → Markdown."""
-    if not st.button("Преобразовать в Markdown", key="fm_convert"):
+def _render_convert_button(folder_path: Path, cfg: AppConfig) -> None:
+    """Кнопка подготовки документов для индексации."""
+    if not st.button("Индексировать", key="fm_convert"):
         return
 
-    converter = HtmlToMarkdownConverter()
-    _consume_convert_events(converter.convert_folder(folder_path))
+    output_dir = cfg.context_path(folder_path)
+    preparer = DocumentPreparer()
+    _consume_convert_events(preparer.prepare_folder(folder_path, output_dir))
 
 
 def _consume_convert_events(events: Iterator[ConvertEvent]) -> None:
@@ -195,7 +197,10 @@ def _render_file_editor(folder_path: Path, filename: str) -> None:
 # ---------------------------------------------------------------------------
 
 def _list_files(folder_path: Path) -> List[str]:
-    """Список файлов в папке."""
+    """Список файлов в папке (скрытые директории вроде .boba игнорируются)."""
     if not folder_path.is_dir():
         return []
-    return sorted(f.name for f in folder_path.iterdir() if f.is_file())
+    return sorted(
+        f.name for f in folder_path.iterdir()
+        if f.is_file() and not f.name.startswith(".")
+    )
