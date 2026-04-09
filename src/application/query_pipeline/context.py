@@ -11,7 +11,7 @@ from openai.types.chat import ChatCompletionMessageParam
 from domain.retrieval import RetrievalConfig
 from domain.chat import PromptParams
 from domain.search import SearchParams
-from adapters.vectorstore import VectorStoreService
+from domain.vectorstore import VectorStoreService
 
 
 @dataclass

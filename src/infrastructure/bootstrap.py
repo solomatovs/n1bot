@@ -15,10 +15,11 @@ import httpx
 import urllib3
 from openai import OpenAI
 
-from adapters.embeddings import LiteLLMEmbeddings
+from adapters.litellm_embeddings import LiteLLMEmbeddings
 from domain.pipeline import Pipeline
 from domain.config import AppConfig
-from adapters.vectorstore import VectorStoreService
+from adapters.chromadb_vectorstore import ChromaVectorStoreService
+from domain.vectorstore import VectorStoreService
 
 
 @dataclass
@@ -41,7 +42,7 @@ def bootstrap(cfg: AppConfig) -> AppServices:
 
     embeddings = create_embeddings(cfg)
     openai_client = create_openai_client(cfg)
-    vs = VectorStoreService(db_path=cfg.chroma_db_path, default_embedding=embeddings, cfg=cfg)
+    vs = ChromaVectorStoreService(db_path=cfg.chroma_db_path, default_embedding=embeddings, cfg=cfg)
 
     from application.query_pipeline.factory import create_default_query_pipeline, create_search_pipeline
     from application.load_pipeline.factory import create_default_load_pipeline

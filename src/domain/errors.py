@@ -16,7 +16,3 @@ class ValidationError(AppError):
 
 class VectorStoreError(AppError):
     """Ошибка работы с векторным хранилищем."""
-
-
-class EmbeddingConnectionError(VectorStoreError):
-    """Не удалось подключиться к сервису эмбеддингов."""
