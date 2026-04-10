@@ -4,7 +4,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from adapters.chromadb_vectorstore import ChromaVectorStoreService
 from application.doc_pipeline.context import DocPipelineContext
 from application.doc_pipeline.stages import (
     GenerateStage,
@@ -39,22 +38,19 @@ def create_doc_context(
 ) -> DocPipelineContext:
     """Создать контекст для doc-пайплайна."""
     cfg = services.cfg
-    boba_path = cfg.boba_path(folder_path)
-    boba_path.mkdir(exist_ok=True)
+    cfg.boba_path(folder_path).mkdir(exist_ok=True)
 
     chroma_path = str(cfg.chroma_path(folder_path))
-    folder_vectorstore = ChromaVectorStoreService(
-        db_path=chroma_path,
-        default_embedding=services.embeddings,
-        cfg=cfg,
-    )
+    folder_vectorstore = services.create_vectorstore(chroma_path)
 
     return DocPipelineContext(
-        folder_path=folder_path,
         query=query,
         model=model,
         embedding_model=cfg.embedding_model,
-        cfg=cfg,
+        collection_name=cfg.collection_name(folder_path.name),
+        context_path=cfg.context_path(folder_path),
+        context_file_path=lambda filename: cfg.context_file_path(folder_path, filename),
+        manifest_path=cfg.index_manifest_path(folder_path),
         vectorstore_service=folder_vectorstore,
         top_k=top_k,
         context_expand_lines=context_expand_lines,

@@ -6,7 +6,6 @@ from typing import Iterator
 
 import streamlit as st
 
-from adapters.confluence_importer import ConfluenceImporter
 from domain.confluence_import import (
     ImportDone,
     ImportEvent,
@@ -56,7 +55,7 @@ def _render_page_tab(services: AppServices) -> None:
         st.warning("Выберите папку.")
         return
 
-    importer = ConfluenceImporter(services.cfg, import_params)
+    importer = services.create_confluence_importer(import_params)
     try:
         _consume_events(importer.import_pages(page_ids, output_dir))
     except Exception as e:
@@ -88,7 +87,7 @@ def _render_space_tab(services: AppServices) -> None:
         st.warning("Выберите папку.")
         return
 
-    importer = ConfluenceImporter(services.cfg, import_params)
+    importer = services.create_confluence_importer(import_params)
     try:
         _consume_events(
             importer.import_space(space_key, settings.space_params, output_dir),

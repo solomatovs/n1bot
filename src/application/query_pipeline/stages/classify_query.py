@@ -6,7 +6,7 @@ from typing import Iterator
 from application.query_pipeline.events import ChatEvent
 from domain.pipeline import StageCompleted, StageStarted
 from application.query_pipeline.context import QueryContext
-from domain.retrieval import _classify_query_type
+from domain.retrieval import classify_query_type
 
 
 class ClassifyQueryStage:
@@ -17,5 +17,5 @@ class ClassifyQueryStage:
 
     def run(self, ctx: QueryContext) -> Iterator[ChatEvent]:
         yield StageStarted(stage=self.name)
-        ctx.query_type = _classify_query_type(ctx.query)
+        ctx.query_type = classify_query_type(ctx.query)
         yield StageCompleted(stage=self.name, detail=f"type={ctx.query_type}")

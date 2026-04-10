@@ -6,7 +6,7 @@ from typing import Iterator
 from application.query_pipeline.events import ChatEvent
 from domain.pipeline import StageCompleted, StageStarted
 from application.query_pipeline.context import QueryContext
-from domain.retrieval import _group_limit_per_page
+from domain.retrieval import group_limit_per_page
 
 
 class GroupByPageStage:
@@ -20,7 +20,7 @@ class GroupByPageStage:
 
         assert ctx.reranked_docs is not None
 
-        ctx.grouped_docs = _group_limit_per_page(
+        ctx.grouped_docs = group_limit_per_page(
             ctx.reranked_docs, per_page=ctx.search_params.per_page,
         )
 

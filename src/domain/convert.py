@@ -1,8 +1,9 @@
-"""Доменные типы для конвертации файлов — события."""
+"""Доменные типы для подготовки документов — события и протокол."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Union
+from pathlib import Path
+from typing import Iterator, Protocol, Union, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -39,3 +40,12 @@ class ConvertDone:
 
 
 ConvertEvent = Union[ConvertFileStarted, ConvertFileDone, ConvertFileFailed, ConvertDone]
+
+
+@runtime_checkable
+class DocumentPreparerService(Protocol):
+    """Подготовка документов для индексации — конвертация и копирование."""
+
+    def prepare_folder(
+        self, source_dir: Path, output_dir: Path,
+    ) -> Iterator[ConvertEvent]: ...

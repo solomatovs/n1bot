@@ -88,7 +88,7 @@ class DocumentMetadata:
 # RRF слияние
 # ---------------------------------------------------------------------------
 
-def _rrf_merge(rank_lists: Sequence[Sequence[DocumentLike]], k: int = RETRIEVAL_CONFIG.rrf_k) -> List[DocumentLike]:
+def rrf_merge(rank_lists: Sequence[Sequence[DocumentLike]], k: int = RETRIEVAL_CONFIG.rrf_k) -> List[DocumentLike]:
     scores: Dict[str, float] = {}
     pick: Dict[str, DocumentLike] = {}
 
@@ -105,7 +105,7 @@ def _rrf_merge(rank_lists: Sequence[Sequence[DocumentLike]], k: int = RETRIEVAL_
     return [pick[dk] for dk in ranked_keys]
 
 
-def _group_limit_per_page(docs: Sequence[DocumentLike], per_page: int) -> List[DocumentLike]:
+def group_limit_per_page(docs: Sequence[DocumentLike], per_page: int) -> List[DocumentLike]:
     by: Dict[str, List[DocumentLike]] = {}
     for d in docs:
         pid = DocumentMetadata.extract_page_id(DocumentMetadata.extract(d))
@@ -144,7 +144,7 @@ def build_sources(docs: Sequence[DocumentLike]) -> str:
 # Классификация запроса и реранкинг
 # ---------------------------------------------------------------------------
 
-def _classify_query_type(query: str) -> str:
+def classify_query_type(query: str) -> str:
     query_lower = query.lower()
     if any(word in query_lower for word in ["код", "пример", "функция", "метод", "класс"]):
         return "code"
@@ -193,7 +193,7 @@ def _compute_rerank_score(query_type: str, metadata: dict, cfg: RetrievalConfig)
     return score
 
 
-def _rerank_results(docs: Sequence[DocumentLike], query_type: str) -> List[DocumentLike]:
+def rerank_results(docs: Sequence[DocumentLike], query_type: str) -> List[DocumentLike]:
     scored_docs = [
         (doc, _compute_rerank_score(query_type, DocumentMetadata.extract(doc), RETRIEVAL_CONFIG))
         for doc in docs
@@ -217,7 +217,7 @@ def _infer_content_types(query_type: str) -> Optional[List[str]]:
             return None
 
 
-def _build_search_filter(
+def build_search_filter(
     content_types: Optional[List[str]],
     query_type: str,
 ) -> dict:

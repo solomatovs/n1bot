@@ -7,7 +7,7 @@ from domain.search import RetrievalError
 from application.query_pipeline.events import ChatEvent
 from domain.pipeline import StageCompleted, StageStarted
 from application.query_pipeline.context import QueryContext
-from domain.retrieval import _rrf_merge
+from domain.retrieval import rrf_merge
 
 
 class RRFMergeStage:
@@ -24,7 +24,7 @@ class RRFMergeStage:
         if not ctx.search_params.use_multi_query:
             ctx.merged_docs = ctx.rank_lists[0] if ctx.rank_lists else []
         else:
-            ctx.merged_docs = _rrf_merge(ctx.rank_lists, k=ctx.retrieval_config.rrf_k)
+            ctx.merged_docs = rrf_merge(ctx.rank_lists, k=ctx.retrieval_config.rrf_k)
 
         if not ctx.merged_docs and ctx.search_errors:
             raise RetrievalError(
