@@ -25,6 +25,7 @@ from domain.confluence_import import ConfluenceImportService
 from domain.convert import DocumentPreparerService
 from domain.loading import ConfluenceImportParams
 from domain.pipeline import Pipeline
+from domain.chat_renderer import ChatRenderer
 from domain.vectorstore import VectorStoreService
 
 
@@ -43,6 +44,7 @@ class AppServices:
     document_preparer: DocumentPreparerService
     create_confluence_importer: Callable[[ConfluenceImportParams], ConfluenceImportService]
     create_loading_events: Callable  # (LoadContext) -> Iterator[LoadEvent]
+    create_chat_renderer: Callable[..., ChatRenderer] = None  # type: ignore[assignment]
 
 
 def bootstrap(cfg: AppConfig) -> AppServices:
@@ -93,12 +95,31 @@ def bootstrap(cfg: AppConfig) -> AppServices:
         document_preparer=DocumentPreparer(),
         create_confluence_importer=_create_confluence_importer,
         create_loading_events=_create_loading_events,
+        create_chat_renderer=_create_chat_renderer(cfg),
     )
 
 
 # ---------------------------------------------------------------------------
 # Фабрики инфраструктурных клиентов
 # ---------------------------------------------------------------------------
+
+def _create_chat_renderer(cfg: AppConfig) -> Callable[..., ChatRenderer]:
+    """Фабрика рендерера чата — выбор по конфигурации."""
+    from domain.config import ChatRendererType
+
+    renderer_type = cfg.chat_renderer_type
+
+    def factory(**kwargs) -> ChatRenderer:  # noqa: ANN003
+        match renderer_type:
+            case ChatRendererType.SIMPLE:
+                from ui.renderers.simple import SimpleChatRenderer
+                return SimpleChatRenderer()
+            case ChatRendererType.RICH:
+                from ui.renderers.rich import RichChatRenderer
+                return RichChatRenderer(**kwargs)
+
+    return factory
+
 
 LOG_LEVELS: dict[str, int] = {
     "DEBUG": logging.DEBUG,
