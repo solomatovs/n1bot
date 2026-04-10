@@ -13,9 +13,8 @@ from domain.confluence_import import (
     ImportPageSaved,
     ImportSpaceEnumerated,
 )
-from domain.loading import ConfluenceImportParams
+from domain.loading import ConfluenceImportParams, SpaceLoadParams
 from infrastructure.bootstrap import AppServices
-from ui.components import render_space_settings
 from ui.components.folder_selector import folder_selector
 from ui.state import SessionState
 
@@ -70,7 +69,7 @@ def _render_page_tab(services: AppServices) -> None:
 
 def _render_space_tab(services: AppServices) -> None:
     import_params = _render_import_params(key_prefix="imp_sp")
-    settings = render_space_settings(key_prefix="imp_sp", show_storage=False)
+    space_params = _render_space_params(key_prefix="imp_sp")
     base_dir = Path(services.cfg.import_base_dir)
     output_dir = folder_selector(base_dir, key_prefix="imp_sp")
 
@@ -90,7 +89,7 @@ def _render_space_tab(services: AppServices) -> None:
     importer = services.create_confluence_importer(import_params)
     try:
         _consume_events(
-            importer.import_space(space_key, settings.space_params, output_dir),
+            importer.import_space(space_key, space_params, output_dir),
         )
     except Exception as e:
         st.error(f"Ошибка: {e}")
@@ -99,7 +98,7 @@ def _render_space_tab(services: AppServices) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Настройки импорта
+# Настройки
 # ---------------------------------------------------------------------------
 
 def _render_import_params(key_prefix: str) -> ConfluenceImportParams:
@@ -131,6 +130,36 @@ def _render_import_params(key_prefix: str) -> ConfluenceImportParams:
 
     token = token_input.strip() if use_custom_token and token_input else None
     return ConfluenceImportParams(timeout=timeout, ssl_verify=ssl_verify, token=token)
+
+
+def _render_space_params(key_prefix: str) -> SpaceLoadParams:
+    """Настройки пространства."""
+    defaults = SpaceLoadParams()
+    p = key_prefix
+
+    with st.expander("Настройки пространства", expanded=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            api_page_limit = st.slider(
+                "Страниц на запрос API", min_value=1, max_value=200,
+                value=defaults.api_page_limit, step=10,
+                help="Размер страницы при пагинации Confluence REST API",
+                key=f"{p}_api_page_limit",
+            )
+        with col2:
+            use_limit = st.checkbox(
+                "Ограничить количество страниц",
+                value=defaults.max_pages is not None,
+                key=f"{p}_use_max_pages",
+            )
+            max_pages = None
+            if use_limit:
+                max_pages = st.number_input(
+                    "Макс. страниц", min_value=1, value=100,
+                    key=f"{p}_max_pages",
+                )
+
+    return SpaceLoadParams(api_page_limit=api_page_limit, max_pages=max_pages)
 
 
 # ---------------------------------------------------------------------------
