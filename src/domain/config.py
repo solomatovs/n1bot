@@ -169,14 +169,6 @@ class AppConfig:
         """Путь к .boba внутри папки с документами."""
         return folder / self._boba_dir_name
 
-    def context_path(self, folder: Path) -> Path:
-        """Путь к директории конвертированных markdown-документов."""
-        return self.boba_path(folder) / self._context_dir_name
-
-    def context_file_path(self, folder: Path, filename: str) -> Path:
-        """Путь к конкретному файлу в директории контекста."""
-        return self.context_path(folder) / filename
-
     def chroma_path(self, folder: Path) -> Path:
         """Путь к локальному ChromaDB хранилищу."""
         return self.boba_path(folder) / self._chroma_dir_name
