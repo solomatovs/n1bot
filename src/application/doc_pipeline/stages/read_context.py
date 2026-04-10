@@ -10,7 +10,7 @@ from typing import Iterator, List
 
 from application.doc_pipeline.context import DocPipelineContext
 from application.doc_pipeline.events import ContextReady, DocPipelineEvent
-from application.doc_pipeline.markdown_reader import read_fragment
+from application.doc_pipeline.doc_reader import registry
 from domain.doc_search import Fragment, SearchHit
 from domain.pipeline import StageCompleted, StageStarted
 
@@ -37,12 +37,12 @@ class ReadContextStage:
         fragments: List[Fragment] = []
 
         for filename, hits in grouped.items():
-            file_path = ctx.context_file_path(filename)
+            file_path = ctx.source_file_path(filename)
             if not file_path.exists():
                 continue
 
             for hit in hits:
-                fragments.append(read_fragment(file_path, hit, ctx.context_expand_lines))
+                fragments.append(registry.read_fragment(file_path, hit, ctx.context_expand_lines))
 
         ctx.expanded_context = "\n\n---\n\n".join(
             _format_fragment(f) for f in fragments

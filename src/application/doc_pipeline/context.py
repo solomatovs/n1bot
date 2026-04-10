@@ -22,8 +22,8 @@ class DocPipelineContext:
     model: str
     embedding_model: str
     collection_name: str
-    context_path: Path
-    context_file_path: Callable[[str], Path]
+    source_path: Path
+    source_file_path: Callable[[str], Path]
     manifest_path: Path
 
     # --- Инфраструктура ---

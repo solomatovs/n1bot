@@ -30,18 +30,21 @@ services = bootstrap(cfg)
 state = SessionState(cfg)
 
 # ========================= Вкладки
-tab_import, tab_files, tab_doc_chat, tab_data = st.tabs([
-    "Загрузка из Confluence", "Документы", "Чат по документам", "Векторное хранилище",
+tab_import, tab_upload, tab_vector, tab_chat = st.tabs([
+    "Загрузка из Confluence",
+    "Загрузка вручную",
+    "Векторное хранилище",
+    "Чат по документам",
 ])
 
 with tab_import:
     confluence_import.render(services, state)
 
-with tab_files:
+with tab_upload:
     file_manager.render(services, state)
 
-with tab_doc_chat:
-    doc_chat.render(services, state)
-
-with tab_data:
+with tab_vector:
     data.render(services, state)
+
+with tab_chat:
+    doc_chat.render(services, state)

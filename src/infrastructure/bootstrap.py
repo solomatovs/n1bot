@@ -18,11 +18,9 @@ from openai import OpenAI
 
 from adapters.chromadb_vectorstore import ChromaVectorStoreService
 from adapters.confluence_importer import ConfluenceImporter
-from adapters.html_converter import DocumentPreparer
 from adapters.litellm_embeddings import LiteLLMEmbeddings
 from domain.config import AppConfig
 from domain.confluence_import import ConfluenceImportService
-from domain.convert import DocumentPreparerService
 from domain.loading import ConfluenceImportParams
 from domain.chat_renderer import ChatRenderer
 from domain.vectorstore import VectorStoreService
@@ -37,7 +35,6 @@ class AppServices:
     vectorstore_service: VectorStoreService
     embeddings: LiteLLMEmbeddings
     create_vectorstore: Callable[[str], VectorStoreService]
-    document_preparer: DocumentPreparerService
     create_confluence_importer: Callable[[ConfluenceImportParams], ConfluenceImportService]
     create_chat_renderer: Callable[..., ChatRenderer] = None  # type: ignore[assignment]
 
@@ -63,7 +60,6 @@ def bootstrap(cfg: AppConfig) -> AppServices:
         vectorstore_service=vs,
         embeddings=embeddings,
         create_vectorstore=_create_vectorstore,
-        document_preparer=DocumentPreparer(),
         create_confluence_importer=_create_confluence_importer,
         create_chat_renderer=_create_chat_renderer(cfg),
     )

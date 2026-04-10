@@ -61,10 +61,9 @@ def render(services: AppServices, state: SessionState) -> None:
     boba_path = cfg.boba_path(folder_path)
     boba_path.mkdir(exist_ok=True)
 
-    context_path = cfg.context_path(folder_path)
     history_path = cfg.chat_history_path(folder_path)
 
-    renderer = services.create_chat_renderer(context_path=context_path)
+    renderer = services.create_chat_renderer()
     writer = MarkdownBlockWriter(history_path)
 
     # Replay — рендерим всю историю из файла

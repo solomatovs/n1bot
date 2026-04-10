@@ -27,11 +27,6 @@ def create_doc_pipeline(services: AppServices) -> Pipeline:
     ])
 
 
-def create_index_pipeline() -> Pipeline:
-    """Создать pipeline только для индексации (без поиска и генерации)."""
-    return Pipeline([IndexStage()])
-
-
 def create_doc_context(
     folder_path: Path,
     query: str,
@@ -53,8 +48,8 @@ def create_doc_context(
         model=model,
         embedding_model=cfg.embedding_model,
         collection_name=cfg.collection_name(folder_path.name),
-        context_path=cfg.context_path(folder_path),
-        context_file_path=lambda filename: cfg.context_file_path(folder_path, filename),
+        source_path=folder_path,
+        source_file_path=lambda filename: folder_path / filename,
         manifest_path=cfg.index_manifest_path(folder_path),
         vectorstore_service=folder_vectorstore,
         top_k=top_k,

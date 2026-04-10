@@ -1,38 +1,18 @@
-"""Вкладка файлового менеджера — просмотр, редактирование, удаление импортированных файлов.
-
-Любое изменение документов (загрузка, удаление, ручная переиндексация)
-запускает единый процесс: конвертация HTML→Markdown → индексация в векторную базу.
-"""
+"""Вкладка «Загрузка вручную» — загрузка, просмотр, удаление документов."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterator, List
+from typing import List
 
 import streamlit as st
 
-from application.doc_pipeline.context import DocPipelineContext
-from application.doc_pipeline.events import (
-    DocPipelineEvent,
-    FileIndexed,
-    IndexingDone,
-    IndexingSkipped,
-)
-from application.doc_pipeline.factory import create_doc_context, create_index_pipeline
-from domain.convert import (
-    ConvertDone,
-    ConvertEvent,
-    ConvertFileDone,
-    ConvertFileFailed,
-    ConvertFileStarted,
-)
-from domain.pipeline import StageCompleted, StageStarted
 from infrastructure.bootstrap import AppServices
 from ui.components.folder_selector import folder_selector
 from ui.state import SessionState
 
 
 def render(services: AppServices, state: SessionState) -> None:
-    st.title("Импортированные документы")
+    st.title("Загрузка вручную")
 
     base_dir = Path(services.cfg.import_base_dir)
     folder_path = folder_selector(base_dir, key_prefix="fm")
@@ -42,9 +22,8 @@ def render(services: AppServices, state: SessionState) -> None:
 
     _reset_opened_file_on_folder_change(folder_path.name)
 
-    _render_upload(folder_path, services)
-    _render_reindex_button(folder_path, services)
-    _render_file_list(folder_path, services)
+    _render_upload(folder_path)
+    _render_file_list(folder_path)
 
 
 def _reset_opened_file_on_folder_change(current_folder: str) -> None:
@@ -55,86 +34,10 @@ def _reset_opened_file_on_folder_change(current_folder: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Единый процесс: конвертация + индексация
+# Загрузка файлов
 # ---------------------------------------------------------------------------
 
-def _convert_and_index(folder_path: Path, services: AppServices) -> None:
-    """Конвертировать документы и переиндексировать векторную базу."""
-    output_dir = services.cfg.context_path(folder_path)
-
-    # Шаг 1: конвертация HTML → Markdown
-    _consume_convert_events(services.document_preparer.prepare_folder(folder_path, output_dir))
-
-    # Шаг 2: индексация в векторную базу
-    ctx = create_doc_context(
-        folder_path=folder_path,
-        query="",
-        model="",
-        services=services,
-    )
-    pipeline = create_index_pipeline()
-    _consume_index_events(pipeline.run(ctx))
-
-
-def _consume_convert_events(events: Iterator[ConvertEvent]) -> None:
-    with st.status("Конвертация...", expanded=True) as status:
-        pbar = st.progress(0.0)
-        msg = st.empty()
-
-        for event in events:
-            match event:
-                case ConvertFileStarted(filename=name, index=i, total=total):
-                    pbar.progress(i / total, text=f"{i}/{total} — {name}")
-
-                case ConvertFileDone(source=src, target=tgt, index=i, total=total):
-                    pbar.progress(i / total, text=f"{i}/{total} — {src} → {tgt}")
-
-                case ConvertFileFailed(filename=name, error=err, index=i, total=total):
-                    pbar.progress(i / total, text=f"{i}/{total} — ошибка: {name}")
-                    st.warning(f"Ошибка {name}: {err}")
-
-                case ConvertDone(ok_count=ok, failed_count=bad):
-                    pbar.empty()
-                    if ok == 0 and bad == 0:
-                        status.update(label="Нет файлов для конвертации", state="complete")
-                        msg.info("В папке нет HTML-файлов (.html, .htm).")
-                    else:
-                        status.update(label="Конвертация завершена", state="complete")
-                        msg.write(f"Конвертация: успешно {ok}, ошибок: {bad}.")
-
-
-def _consume_index_events(events: Iterator[DocPipelineEvent]) -> None:
-    with st.status("Индексация...", expanded=True) as status:
-        pbar = st.progress(0.0)
-        msg = st.empty()
-
-        for event in events:
-            match event:
-                case StageStarted():
-                    msg.write("Проверка актуальности индекса...")
-
-                case IndexingSkipped(collection=name, doc_count=n):
-                    pbar.empty()
-                    status.update(label="Индекс актуален", state="complete")
-                    msg.write(f"Коллекция «{name}»: {n} чанков, изменений нет.")
-
-                case FileIndexed(filename=name, chunks=c, index=i, total=total):
-                    pbar.progress(i / total, text=f"{i}/{total} — {name} ({c} чанков)")
-
-                case IndexingDone(total_files=f, total_chunks=c):
-                    pbar.empty()
-                    status.update(label="Индексация завершена", state="complete")
-                    msg.write(f"Проиндексировано: {f} файлов, {c} чанков.")
-
-                case StageCompleted():
-                    pass
-
-
-# ---------------------------------------------------------------------------
-# Загрузка файлов → автоматическая конвертация + индексация
-# ---------------------------------------------------------------------------
-
-def _render_upload(folder_path: Path, services: AppServices) -> None:
+def _render_upload(folder_path: Path) -> None:
     upload_key = st.session_state.get("fm_upload_key", 0)
 
     uploaded = st.file_uploader(
@@ -150,26 +53,14 @@ def _render_upload(folder_path: Path, services: AppServices) -> None:
 
     st.success(f"Сохранено: {len(uploaded)} файлов")
     st.session_state["fm_upload_key"] = upload_key + 1
-
-    _convert_and_index(folder_path, services)
-
-
-# ---------------------------------------------------------------------------
-# Ручная переиндексация
-# ---------------------------------------------------------------------------
-
-def _render_reindex_button(folder_path: Path, services: AppServices) -> None:
-    if not st.button("Переиндексировать", key="fm_reindex"):
-        return
-
-    _convert_and_index(folder_path, services)
+    st.rerun()
 
 
 # ---------------------------------------------------------------------------
 # Список файлов
 # ---------------------------------------------------------------------------
 
-def _render_file_list(folder_path: Path, services: AppServices) -> None:
+def _render_file_list(folder_path: Path) -> None:
     files = _list_files(folder_path)
     if not files:
         st.info("Папка пуста.")
@@ -180,18 +71,16 @@ def _render_file_list(folder_path: Path, services: AppServices) -> None:
         _render_file_editor(folder_path, opened_file)
         return
 
-    _render_file_rows(folder_path, files, services)
+    _render_file_rows(folder_path, files)
 
     st.divider()
     if st.button("Удалить все файлы", key="fm_delete_all", type="primary"):
         for filename in files:
             (folder_path / filename).unlink(missing_ok=True)
-        _convert_and_index(folder_path, services)
+        st.rerun()
 
 
-def _render_file_rows(
-    folder_path: Path, files: List[str], services: AppServices,
-) -> None:
+def _render_file_rows(folder_path: Path, files: List[str]) -> None:
     for filename in files:
         file_path = folder_path / filename
         size_kb = file_path.stat().st_size / 1024
@@ -206,7 +95,7 @@ def _render_file_rows(
         with col_delete:
             if st.button("Удалить", key=f"fm_del_{filename}"):
                 file_path.unlink()
-                _convert_and_index(folder_path, services)
+                st.rerun()
 
 
 # ---------------------------------------------------------------------------
