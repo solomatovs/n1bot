@@ -27,6 +27,11 @@ def create_doc_pipeline(services: AppServices) -> Pipeline:
     ])
 
 
+def create_index_pipeline() -> Pipeline:
+    """Создать pipeline только для индексации (без поиска и генерации)."""
+    return Pipeline([IndexStage()])
+
+
 def create_doc_context(
     folder_path: Path,
     query: str,
