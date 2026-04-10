@@ -3,14 +3,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
-
-
-class ChatRendererType(Enum):
-    """Тип рендерера истории чата."""
-    RICH = "rich"
-    SIMPLE = "simple"
 
 
 @dataclass(frozen=True)
@@ -38,7 +31,7 @@ class AppConfig:
     _chat_history_filename: str = field(default_factory=lambda: AppConfig._secret("CHAT_HISTORY_FILENAME", "chat_history.md"))
     _index_manifest_filename: str = field(default_factory=lambda: AppConfig._secret("INDEX_MANIFEST_FILENAME", "index_manifest.json"))
     _collection_prefix: str = field(default_factory=lambda: AppConfig._secret("COLLECTION_PREFIX", "doc"))
-    _chat_renderer_type: str = field(default_factory=lambda: AppConfig._secret("CHAT_RENDERER_TYPE", ChatRendererType.SIMPLE.value))
+    _chat_renderer_type: str = field(default_factory=lambda: AppConfig._secret("CHAT_RENDERER_TYPE", "simple"))
     _log_level: str = field(default_factory=lambda: AppConfig._secret("LOG_LEVEL", "INFO"))
 
     @staticmethod
@@ -156,14 +149,6 @@ class AppConfig:
     @property
     def collection_prefix(self) -> str:
         return self._collection_prefix
-
-    @property
-    def chat_renderer_type(self) -> ChatRendererType:
-        """Тип рендерера чата."""
-        try:
-            return ChatRendererType(self._chat_renderer_type)
-        except ValueError:
-            return ChatRendererType.RICH
 
     def boba_path(self, folder: Path) -> Path:
         """Путь к .boba внутри папки с документами."""

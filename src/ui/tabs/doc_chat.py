@@ -1,11 +1,9 @@
 """Вкладка «Чат по документам» — вопросы по файлам из папки.
 
-Архитектура истории:
-    1. Pipeline events → MarkdownBlockWriter → append в chat_history.md
-    2. HistoryTail читает новые блоки из файла (tail -f)
-    3. Рендерер — единственная точка отображения (replay и live)
-    4. Файл — единственный источник правды
-    5. Добавление нового этапа = новый BlockType + case в _consume_pipeline
+Архитектура:
+    1. Pipeline events → блоки → MarkdownBlockWriter → chat_history.md
+    2. При rerun: MarkdownBlockReader читает файл → renderer отображает
+    3. Файл — единственный источник правды
 """
 from __future__ import annotations
 
@@ -30,21 +28,15 @@ from domain.config import AppConfig
 from domain.doc_chat import (
     BlockType,
     HistoryBlock,
-    HistoryTail,
     MarkdownBlockReader,
     MarkdownBlockWriter,
 )
-from domain.chat_renderer import ChatRenderer
 from domain.doc_search import Fragment, SearchHit
 from domain.pipeline import StageCompleted, StageStarted
 from infrastructure.bootstrap import AppServices
 from ui.components.selectors import model_selector
 from ui.state import SessionState
 
-
-# ---------------------------------------------------------------------------
-# Основной render
-# ---------------------------------------------------------------------------
 
 def render(services: AppServices, state: SessionState) -> None:
     st.title("Чат по документам")
@@ -62,11 +54,10 @@ def render(services: AppServices, state: SessionState) -> None:
     boba_path.mkdir(exist_ok=True)
 
     history_path = cfg.chat_history_path(folder_path)
-
-    renderer = services.create_chat_renderer()
     writer = MarkdownBlockWriter(history_path)
+    renderer = services.create_chat_renderer()
 
-    # Replay — рендерим всю историю из файла
+    # Replay — всё из файла
     exchanges = _load_history(history_path)
     renderer.render_history(exchanges)
 
@@ -74,7 +65,7 @@ def render(services: AppServices, state: SessionState) -> None:
     if not user_prompt:
         return
 
-    # Сразу записать вопрос в файл
+    # Записать вопрос в файл
     writer.write_block(HistoryBlock(BlockType.USER, user_prompt))
 
     with st.chat_message("user"):
@@ -90,29 +81,21 @@ def render(services: AppServices, state: SessionState) -> None:
         )
         _consume_pipeline(pipeline.run(ctx), writer, renderer)
 
-    # Записать разделитель обмена
     writer.write_separator()
     st.rerun()
 
 
 # ---------------------------------------------------------------------------
-# Pipeline consumer — пишет через writer, рендерит через renderer
+# Pipeline consumer — пишет в файл, стримит через renderer
 # ---------------------------------------------------------------------------
 
 def _consume_pipeline(
     events: Iterator[DocPipelineEvent],
     writer: MarkdownBlockWriter,
-    renderer: ChatRenderer,
+    renderer,
 ) -> None:
-    """Обработать события pipeline.
-
-    Полные блоки: writer → tail → рендерер.
-    Стриминг: токены через рендерер → по завершении writer → tail → рендерер.
-    """
-    tail = HistoryTail(writer.path)
     status_ph = st.empty()
 
-    # Аккумуляторы стриминговых токенов
     thinking_tokens: list[str] = []
     thinking_ph: Any = None
     answer_tokens: list[str] = []
@@ -120,7 +103,7 @@ def _consume_pipeline(
 
     for event in events:
         match event:
-            # --- Статусные события (не сохраняются) ---
+            # --- Статусные (не сохраняются в историю) ---
             case StageStarted(stage=name):
                 status_ph.caption(f"⏳ {name}...")
 
@@ -136,63 +119,47 @@ def _consume_pipeline(
             case IndexingDone(total_files=f, total_chunks=c):
                 status_ph.caption(f"Индексация: {f} файлов, {c} чанков")
 
-            # --- Поиск → writer → tail → рендерер ---
+            # --- Поиск → сразу в файл ---
             case SearchDone(hits=hits):
                 if hits:
                     block = HistoryBlock(BlockType.SEARCH, _format_search(hits))
                     writer.write_block(block)
-                    for new_block in tail.read_new():
-                        renderer.render_block(new_block)
+                    renderer.render_block(block)
 
-            # --- Контекст → writer → tail → рендерер ---
+            # --- Контекст → сразу в файл ---
             case ContextReady(fragments=frags):
                 if frags:
                     block = HistoryBlock(BlockType.CONTEXT, _format_context(frags))
                     writer.write_block(block)
-                    for new_block in tail.read_new():
-                        renderer.render_block(new_block)
+                    renderer.render_block(block)
 
-            # --- Стриминг размышлений через рендерер ---
+            # --- Стриминг размышлений ---
             case ThinkingToken(token=tok):
                 if thinking_ph is None:
                     thinking_ph = st.empty()
                 thinking_tokens.append(tok)
-                renderer.render_streaming(
-                    thinking_ph, BlockType.THINKING, "".join(thinking_tokens),
-                )
+                renderer.render_streaming(thinking_ph, "".join(thinking_tokens))
 
-            # --- Стриминг ответа через рендерер ---
+            # --- Стриминг ответа ---
             case AnswerToken(token=tok):
-                # Финализируем thinking при переходе к ответу
                 if thinking_tokens and answer_ph is None:
-                    _finalize_streaming(
-                        thinking_ph, thinking_tokens, BlockType.THINKING,
-                        writer, tail, renderer,
-                    )
+                    _finalize_streaming(thinking_ph, thinking_tokens, BlockType.THINKING, writer)
                     thinking_tokens.clear()
                     thinking_ph = None
 
                 if answer_ph is None:
                     answer_ph = st.empty()
                 answer_tokens.append(tok)
-                renderer.render_streaming(
-                    answer_ph, BlockType.ASSISTANT, "".join(answer_tokens),
-                )
+                renderer.render_streaming(answer_ph, "".join(answer_tokens))
 
             case GenerationDone():
                 status_ph.empty()
 
-    # Финализация оставшихся стриминговых блоков
+    # Финализация: записать в файл
     if thinking_tokens:
-        _finalize_streaming(
-            thinking_ph, thinking_tokens, BlockType.THINKING,
-            writer, tail, renderer,
-        )
+        _finalize_streaming(thinking_ph, thinking_tokens, BlockType.THINKING, writer)
     if answer_tokens:
-        _finalize_streaming(
-            answer_ph, answer_tokens, BlockType.ASSISTANT,
-            writer, tail, renderer,
-        )
+        _finalize_streaming(answer_ph, answer_tokens, BlockType.ASSISTANT, writer)
 
 
 def _finalize_streaming(
@@ -200,43 +167,31 @@ def _finalize_streaming(
     tokens: list[str],
     block_type: BlockType,
     writer: MarkdownBlockWriter,
-    tail: HistoryTail,
-    renderer: ChatRenderer,
 ) -> None:
-    """Завершить стриминговый блок: writer → tail → рендерер."""
     text = "".join(tokens)
     if not text.strip():
         return
-
-    writer.write_block(HistoryBlock(block_type, text))
-
-    new_blocks = tail.read_new()
-    if placeholder is not None and new_blocks:
-        with placeholder.container():
-            for block in new_blocks:
-                renderer.render_block(block)
-    elif placeholder is not None:
-        with placeholder.container():
-            renderer.render_block(HistoryBlock(block_type, text))
+    block = HistoryBlock(block_type, text)
+    writer.write_block(block)
+    if placeholder is not None:
+        placeholder.markdown(text)
 
 
 # ---------------------------------------------------------------------------
-# Загрузка истории (batch через reader)
+# Загрузка истории
 # ---------------------------------------------------------------------------
 
 def _load_history(path: Path):
     if not path.exists():
         return []
-    text = path.read_text(encoding="utf-8")
-    return MarkdownBlockReader().read_exchanges(text)
+    return MarkdownBlockReader().read_exchanges(path.read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------
-# Форматирование блоков — полный контент, идентичный отображению
+# Форматирование блоков
 # ---------------------------------------------------------------------------
 
 def _format_search(hits: list[SearchHit]) -> str:
-    """Форматировать результаты поиска."""
     parts = []
     for hit in hits:
         loc = hit.location
@@ -249,7 +204,6 @@ def _format_search(hits: list[SearchHit]) -> str:
 
 
 def _format_context(fragments: list[Fragment]) -> str:
-    """Форматировать контекст."""
     parts = []
     for frag in fragments:
         loc = frag.hit.location
@@ -275,7 +229,7 @@ def _folder_selector_readonly(cfg: AppConfig) -> Path | None:
         if d.is_dir() and not d.name.startswith(".")
     )
     if not folders:
-        st.warning("Нет доступных папок. Импортируйте документы во вкладке «Документы».")
+        st.warning("Нет доступных папок. Импортируйте документы во вкладке «Загрузка вручную».")
         return None
 
     selected = st.selectbox("Папка с документами", folders, key="dc_folder")

@@ -61,7 +61,7 @@ def bootstrap(cfg: AppConfig) -> AppServices:
         embeddings=embeddings,
         create_vectorstore=_create_vectorstore,
         create_confluence_importer=_create_confluence_importer,
-        create_chat_renderer=_create_chat_renderer(cfg),
+        create_chat_renderer=_create_chat_renderer(),
     )
 
 
@@ -69,20 +69,12 @@ def bootstrap(cfg: AppConfig) -> AppServices:
 # Фабрики инфраструктурных клиентов
 # ---------------------------------------------------------------------------
 
-def _create_chat_renderer(cfg: AppConfig) -> Callable[..., ChatRenderer]:
-    """Фабрика рендерера чата — выбор по конфигурации."""
-    from domain.config import ChatRendererType
+def _create_chat_renderer() -> Callable[..., ChatRenderer]:
+    """Фабрика рендерера чата."""
 
-    renderer_type = cfg.chat_renderer_type
-
-    def factory(**kwargs) -> ChatRenderer:  # noqa: ANN003
-        match renderer_type:
-            case ChatRendererType.SIMPLE:
-                from ui.renderers.simple import SimpleChatRenderer
-                return SimpleChatRenderer()
-            case ChatRendererType.RICH:
-                from ui.renderers.rich import RichChatRenderer
-                return RichChatRenderer(**kwargs)
+    def factory() -> ChatRenderer:
+        from ui.renderers.simple import SimpleChatRenderer
+        return SimpleChatRenderer()
 
     return factory
 
