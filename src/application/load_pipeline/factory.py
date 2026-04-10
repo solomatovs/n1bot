@@ -55,6 +55,7 @@ def create_page_load_context(
         confluence_loader_params=confluence_loader_params or ConfluenceLoaderParams(),
         embedding_model=model,
         page_ids=page_ids,
+        create_loading_events=services.create_loading_events,
     )
 
 
@@ -92,6 +93,7 @@ def create_space_load_context(
         embedding_model=model,
         space_key=space_key,
         space_params=space_params,
+        create_loading_events=services.create_loading_events,
     )
 
 

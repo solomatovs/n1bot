@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterator, List, Optional, Union
+from typing import Callable, Iterator, List, Optional, Union
 
 from domain.chunking import ChunkingStrategy
 from application.load_pipeline.events import (
@@ -48,6 +48,9 @@ class LoadContext:
     page_ids: List[str] = field(default_factory=list)
     space_key: str = ""
     space_params: Optional[SpaceLoadParams] = None
+
+    # --- Фабрика загрузки (инъекция из bootstrap) ---
+    create_loading_events: Optional[Callable[["LoadContext"], Iterator[LoadEvent]]] = None
 
     # --- Заполняется LoadPagesStage (ленивый итератор загрузки) ---
     loading_events: Optional[Iterator[LoadEvent]] = None

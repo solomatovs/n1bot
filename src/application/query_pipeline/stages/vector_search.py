@@ -8,7 +8,7 @@ from application.query_pipeline.events import ChatEvent
 from domain.errors import VectorStoreError
 from domain.pipeline import StageCompleted, StageStarted
 from application.query_pipeline.context import QueryContext
-from domain.retrieval import _build_search_filter
+from domain.retrieval import build_search_filter
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ class VectorSearchStage:
         rank_lists: list[list] = []
         errors: list[str] = []
 
-        filters = _build_search_filter(ctx.search_params.content_types, ctx.query_type)
+        filters = build_search_filter(ctx.search_params.content_types, ctx.query_type)
         for variant in ctx.query_variants:
             try:
                 results = ctx.vectorstore_service.search(ctx.collection_name, variant, k, filters)

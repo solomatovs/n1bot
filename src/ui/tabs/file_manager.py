@@ -6,8 +6,6 @@ from typing import Iterator, List
 
 import streamlit as st
 
-from adapters.html_converter import DocumentPreparer
-from domain.config import AppConfig
 from domain.convert import (
     ConvertDone,
     ConvertEvent,
@@ -32,7 +30,7 @@ def render(services: AppServices, state: SessionState) -> None:
     _reset_opened_file_on_folder_change(folder_path.name)
 
     _render_upload(folder_path)
-    _render_convert_button(folder_path, services.cfg)
+    _render_convert_button(folder_path, services)
     _render_file_list(folder_path)
 
 
@@ -72,14 +70,13 @@ def _render_upload(folder_path: Path) -> None:
 # Конвертация в Markdown
 # ---------------------------------------------------------------------------
 
-def _render_convert_button(folder_path: Path, cfg: AppConfig) -> None:
+def _render_convert_button(folder_path: Path, services: AppServices) -> None:
     """Кнопка подготовки документов для индексации."""
     if not st.button("Индексировать", key="fm_convert"):
         return
 
-    output_dir = cfg.context_path(folder_path)
-    preparer = DocumentPreparer()
-    _consume_convert_events(preparer.prepare_folder(folder_path, output_dir))
+    output_dir = services.cfg.context_path(folder_path)
+    _consume_convert_events(services.document_preparer.prepare_folder(folder_path, output_dir))
 
 
 def _consume_convert_events(events: Iterator[ConvertEvent]) -> None:

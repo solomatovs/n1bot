@@ -40,3 +40,24 @@ class SearchError(VectorStoreError):
 
 class VectorStoreConnectionError(VectorStoreError):
     """Не удалось подключиться к векторному хранилищу."""
+
+
+# ---------------------------------------------------------------------------
+# Индексация
+# ---------------------------------------------------------------------------
+
+class CorruptedIndexError(AppError):
+    """Индексный документ не содержит обязательных метаданных.
+
+    Необходимо выполнить переиндексацию.
+    """
+
+    def __init__(self, missing_fields: list[str], source_file: str = "") -> None:
+        self.missing_fields = missing_fields
+        self.source_file = source_file
+        fields = ", ".join(missing_fields)
+        ctx = f" (документ: {source_file})" if source_file else ""
+        super().__init__(
+            f"Индекс повреждён: отсутствуют поля [{fields}]{ctx}. "
+            f"Удалите папку .boba и выполните переиндексацию."
+        )

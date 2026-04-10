@@ -29,6 +29,7 @@ class AppConfig:
     _context_dir_name: str = field(default_factory=lambda: AppConfig._secret("CONTEXT_DIR_NAME", "context"))
     _chroma_dir_name: str = field(default_factory=lambda: AppConfig._secret("CHROMA_DIR_NAME", "chroma"))
     _chat_history_filename: str = field(default_factory=lambda: AppConfig._secret("CHAT_HISTORY_FILENAME", "chat_history.md"))
+    _index_manifest_filename: str = field(default_factory=lambda: AppConfig._secret("INDEX_MANIFEST_FILENAME", "index_manifest.json"))
     _collection_prefix: str = field(default_factory=lambda: AppConfig._secret("COLLECTION_PREFIX", "doc"))
     _log_level: str = field(default_factory=lambda: AppConfig._secret("LOG_LEVEL", "INFO"))
 
@@ -167,6 +168,10 @@ class AppConfig:
     def chat_history_path(self, folder: Path) -> Path:
         """Путь к файлу истории чата."""
         return self.boba_path(folder) / self._chat_history_filename
+
+    def index_manifest_path(self, folder: Path) -> Path:
+        """Путь к манифесту индексации (хеши файлов)."""
+        return self.boba_path(folder) / self._index_manifest_filename
 
     def collection_name(self, folder_name: str) -> str:
         """Имя коллекции ChromaDB для папки с документами."""

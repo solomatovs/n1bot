@@ -1,14 +1,17 @@
-"""Стадия 3: Чтение расширенного контекста из файлов по найденным позициям."""
+"""Стадия 3: Чтение расширенного контекста из файлов по найденным позициям.
+
+Чтение фрагментов — через markdown_reader (общая логика с индексацией).
+"""
 from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from pathlib import Path
 from typing import Iterator, List
 
 from application.doc_pipeline.context import DocPipelineContext
 from application.doc_pipeline.events import ContextReady, DocPipelineEvent
-from domain.doc_search import SearchHit
+from application.doc_pipeline.markdown_reader import read_fragment
+from domain.doc_search import Fragment, SearchHit
 from domain.pipeline import StageCompleted, StageStarted
 
 log = logging.getLogger(__name__)
@@ -26,45 +29,41 @@ class ReadContextStage:
 
         if not ctx.hits:
             ctx.expanded_context = ""
-            yield ContextReady(context="", sources=[])
+            yield ContextReady(context="", fragments=[])
             yield StageCompleted(stage=self.name, detail="нет результатов поиска")
             return
 
         grouped = _group_by_file(ctx.hits)
-
-        blocks: List[str] = []
-        sources: List[str] = []
+        fragments: List[Fragment] = []
 
         for filename, hits in grouped.items():
             file_path = ctx.context_file_path(filename)
             if not file_path.exists():
                 continue
 
-            ranges = [
-                (
-                    max(1, hit.location.start_line - ctx.context_expand_lines),
-                    hit.location.end_line + ctx.context_expand_lines,
-                )
-                for hit in hits
-            ]
+            for hit in hits:
+                fragments.append(read_fragment(file_path, hit, ctx.context_expand_lines))
 
-            extracted = _extract_line_ranges(file_path, ranges)
-
-            for hit, text in zip(hits, extracted):
-                label = hit.location.label
-                sources.append(label)
-                blocks.append(
-                    f"### Источник: {label}\n"
-                    f"(секция: {hit.location.section_title}, релевантность: {hit.score:.2f})\n\n"
-                    f"{text}"
-                )
-
-        ctx.expanded_context = "\n\n---\n\n".join(blocks)
-        yield ContextReady(context=ctx.expanded_context, sources=sources)
+        ctx.expanded_context = "\n\n---\n\n".join(
+            _format_fragment(f) for f in fragments
+        )
+        yield ContextReady(context=ctx.expanded_context, fragments=fragments)
         yield StageCompleted(
             stage=self.name,
-            detail=f"{len(blocks)} фрагментов из {len(grouped)} файлов",
+            detail=f"{len(fragments)} фрагментов из {len(grouped)} файлов",
         )
+
+
+def _format_fragment(fragment: Fragment) -> str:
+    """Форматировать фрагмент для контекста LLM."""
+    loc = fragment.hit.location
+    return (
+        f"### Источник: {fragment.read_label}\n"
+        f"(секция: {loc.section_title}, "
+        f"чанк: {loc.label}, "
+        f"релевантность: {fragment.hit.score:.2f})\n\n"
+        f"{fragment.text}"
+    )
 
 
 def _group_by_file(hits: List[SearchHit]) -> dict[str, List[SearchHit]]:
@@ -73,25 +72,3 @@ def _group_by_file(hits: List[SearchHit]) -> dict[str, List[SearchHit]]:
     for hit in hits:
         grouped[hit.location.source_file].append(hit)
     return dict(grouped)
-
-
-def _extract_line_ranges(
-    file_path: Path, ranges: list[tuple[int, int]],
-) -> list[str]:
-    """Извлечь несколько диапазонов строк за один проход по файлу.
-
-    Читает файл строка за строкой, собирая только нужные диапазоны.
-    Не загружает весь файл в память.
-    """
-    max_end = max(end for _, end in ranges)
-    collectors: list[list[str]] = [[] for _ in ranges]
-
-    with open(file_path, encoding="utf-8", errors="replace") as fh:
-        for line_num, line in enumerate(fh, start=1):
-            if line_num > max_end:
-                break
-            for i, (start, end) in enumerate(ranges):
-                if start <= line_num <= end:
-                    collectors[i].append(line.rstrip("\n"))
-
-    return ["\n".join(lines) for lines in collectors]

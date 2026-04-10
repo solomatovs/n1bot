@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Union
 
-from domain.doc_search import SearchHit
+from domain.doc_search import Fragment, SearchHit
 from domain.pipeline import StageCompleted, StageStarted
 
 
@@ -53,12 +53,18 @@ class SearchDone:
 class ContextReady:
     """Расширенный контекст собран из файлов."""
     context: str
-    sources: List[str] = field(default_factory=list)
+    fragments: List[Fragment] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
 # Генерация
 # ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ThinkingToken:
+    """Токен размышления (стриминг)."""
+    token: str
+
 
 @dataclass(frozen=True)
 class AnswerToken:
@@ -80,5 +86,5 @@ DocPipelineEvent = Union[
     IndexingSkipped, FileIndexed, IndexingDone,
     SearchDone,
     ContextReady,
-    AnswerToken, GenerationDone,
+    ThinkingToken, AnswerToken, GenerationDone,
 ]

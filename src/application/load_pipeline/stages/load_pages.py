@@ -1,6 +1,6 @@
 """Стадия 1: Подготовка загрузки страниц из Confluence.
 
-Создаёт ленивый итератор загрузки в контексте.
+Создаёт ленивый итератор загрузки в контексте через инжектированную фабрику.
 Сами страницы загружаются лениво через ChunkStage → StoreStage —
 это сохраняет per-page streaming (загрузка → чанкинг → сохранение).
 """
@@ -26,21 +26,11 @@ class LoadPagesStage:
         return "load_pages"
 
     def run(self, ctx: LoadContext) -> Iterator[LoadPagesEvent]:
-        from adapters.confluence_loader import BatchPageLoader, PageLoader, SpaceLoader
-
         yield StageStarted(stage=self.name)
 
-        page_loader = PageLoader(ctx.cfg, ctx.confluence_loader_params)
-        batch_loader = BatchPageLoader(page_loader)
+        if ctx.create_loading_events is None:
+            raise ValidationError("create_loading_events не задан в контексте")
 
-        if ctx.space_key:
-            if ctx.space_params is None:
-                raise ValidationError("space_params обязателен при загрузке пространства")
-            space_loader = SpaceLoader(batch_loader, ctx.cfg, ctx.space_params, ctx.confluence_loader_params)
-            ctx.loading_events = space_loader.load(ctx.space_key)
-        elif ctx.page_ids:
-            ctx.loading_events = batch_loader.load(ctx.page_ids)
-        else:
-            raise ValidationError("Необходимо задать space_key или page_ids")
+        ctx.loading_events = ctx.create_loading_events(ctx)
 
         yield StageCompleted(stage=self.name, detail="итератор загрузки готов")

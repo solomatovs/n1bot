@@ -1,8 +1,11 @@
-"""Доменные типы для работы с Confluence — события, query-параметры."""
+"""Доменные типы для работы с Confluence — события, протокол, query-параметры."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Union
+from pathlib import Path
+from typing import Iterator, List, Protocol, Union, runtime_checkable
+
+from domain.loading import SpaceLoadParams
 
 
 @dataclass(frozen=True)
@@ -40,6 +43,21 @@ class ImportDone:
 
 
 ImportEvent = Union[ImportPageSaved, ImportPageFailed, ImportSpaceEnumerated, ImportDone]
+
+
+@runtime_checkable
+class ConfluenceImportService(Protocol):
+    """Импорт страниц из Confluence на диск."""
+
+    def import_pages(
+        self, page_ids: List[str], output_dir: Path,
+    ) -> Iterator[ImportEvent]: ...
+
+    def import_space(
+        self, space_key: str, space_params: SpaceLoadParams, output_dir: Path,
+    ) -> Iterator[ImportEvent]: ...
+
+    def close(self) -> None: ...
 
 
 # ---------------------------------------------------------------------------
