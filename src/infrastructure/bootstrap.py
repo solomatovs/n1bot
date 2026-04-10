@@ -24,7 +24,6 @@ from domain.config import AppConfig
 from domain.confluence_import import ConfluenceImportService
 from domain.convert import DocumentPreparerService
 from domain.loading import ConfluenceImportParams
-from domain.pipeline import Pipeline
 from domain.chat_renderer import ChatRenderer
 from domain.vectorstore import VectorStoreService
 
@@ -37,13 +36,9 @@ class AppServices:
     openai_client: OpenAI
     vectorstore_service: VectorStoreService
     embeddings: LiteLLMEmbeddings
-    query_pipeline: Pipeline
-    search_pipeline: Pipeline
-    load_pipeline: Pipeline
     create_vectorstore: Callable[[str], VectorStoreService]
     document_preparer: DocumentPreparerService
     create_confluence_importer: Callable[[ConfluenceImportParams], ConfluenceImportService]
-    create_loading_events: Callable  # (LoadContext) -> Iterator[LoadEvent]
     create_chat_renderer: Callable[..., ChatRenderer] = None  # type: ignore[assignment]
 
 
@@ -62,39 +57,14 @@ def bootstrap(cfg: AppConfig) -> AppServices:
     def _create_confluence_importer(params: ConfluenceImportParams) -> ConfluenceImportService:
         return ConfluenceImporter(cfg, params)
 
-    def _create_loading_events(ctx):  # noqa: ANN001, ANN202
-        """Фабрика ленивого итератора загрузки — скрывает адаптеры от pipeline."""
-        from adapters.confluence_loader import BatchPageLoader, PageLoader, SpaceLoader
-        from domain.errors import ValidationError
-
-        page_loader = PageLoader(ctx.cfg, ctx.confluence_loader_params)
-        batch_loader = BatchPageLoader(page_loader)
-
-        if ctx.space_key:
-            if ctx.space_params is None:
-                raise ValidationError("space_params обязателен при загрузке пространства")
-            space_loader = SpaceLoader(batch_loader, ctx.cfg, ctx.space_params, ctx.confluence_loader_params)
-            return space_loader.load(ctx.space_key)
-        elif ctx.page_ids:
-            return batch_loader.load(ctx.page_ids)
-        else:
-            raise ValidationError("Необходимо задать space_key или page_ids")
-
-    from application.query_pipeline.factory import create_default_query_pipeline, create_search_pipeline
-    from application.load_pipeline.factory import create_default_load_pipeline
-
     return AppServices(
         cfg=cfg,
         openai_client=openai_client,
         vectorstore_service=vs,
         embeddings=embeddings,
-        query_pipeline=create_default_query_pipeline(),
-        search_pipeline=create_search_pipeline(),
-        load_pipeline=create_default_load_pipeline(),
         create_vectorstore=_create_vectorstore,
         document_preparer=DocumentPreparer(),
         create_confluence_importer=_create_confluence_importer,
-        create_loading_events=_create_loading_events,
         create_chat_renderer=_create_chat_renderer(cfg),
     )
 
