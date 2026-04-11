@@ -1,5 +1,6 @@
-"""Стадия 4: Генерация ответа LLM на основе найденного контекста.
+"""Стадия: генерация ответа LLM.
 
+Берёт ctx.messages (уже собранные предыдущими стадиями) и стримит ответ.
 Поддерживает thinking-токены (reasoning_content и <think> теги).
 """
 from __future__ import annotations
@@ -21,21 +22,11 @@ from domain.pipeline import StageCompleted, StageStarted
 
 log = logging.getLogger(__name__)
 
-_SYSTEM_PROMPT = (
-    "Ты — эксперт по документации. "
-    "Отвечай ТОЛЬКО на основе предоставленного контекста из документов. "
-    "Если контекст не содержит ответа, скажи об этом прямо. "
-    "Указывай источники (файл и строки), откуда взята информация."
-)
-
-_USER_TEMPLATE = "Контекст из документов:\n{context}\n\nВопрос: {query}\n\nДай чёткий ответ."
-
-_THINK_OPEN = "<think>"
-_THINK_CLOSE = "</think>"
-
 
 class GenerateStage:
-    """Генерирует ответ через LLM, стримя токены и размышления."""
+    """Отправляет ctx.messages в LLM, стримит токены и размышления."""
+
+    _NO_CONTEXT_MESSAGE = "Не удалось найти релевантный контекст в документах."
 
     def __init__(self, openai_client: OpenAI) -> None:
         self._client = openai_client
@@ -48,28 +39,20 @@ class GenerateStage:
         yield StageStarted(stage=self.name)
 
         if not ctx.expanded_context:
-            ctx.answer = "Не удалось найти релевантный контекст в документах."
+            ctx.answer = self._NO_CONTEXT_MESSAGE
             yield AnswerToken(token=ctx.answer)
             yield GenerationDone()
             yield StageCompleted(stage=self.name, detail="нет контекста")
             return
 
-        user_message = _USER_TEMPLATE.format(
-            context=ctx.expanded_context,
-            query=ctx.query,
-        )
-
         stream = self._client.chat.completions.create(
             model=ctx.model,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
+            messages=[m.to_dict() for m in ctx.messages],  # type: ignore[arg-type]
             stream=True,
         )
 
         answer_tokens: list[str] = []
-        in_think = False
+        parser = _ThinkTagParser()
 
         for chunk in stream:
             if not chunk.choices:
@@ -85,8 +68,7 @@ class GenerateStage:
             if not content:
                 continue
 
-            for fragment in _parse_think_tags(content, in_think):
-                in_think = fragment.in_think
+            for fragment in parser.feed(content):
                 if not fragment.text:
                     continue
                 if fragment.role is _FragmentRole.THINKING:
@@ -112,29 +94,37 @@ class _FragmentRole(Enum):
 class _ThinkFragment(NamedTuple):
     role: _FragmentRole
     text: str
-    in_think: bool
 
 
-def _parse_think_tags(token: str, in_think: bool) -> Iterator[_ThinkFragment]:
-    """Разбирает токен на фрагменты с учётом <think>...</think> тегов."""
-    buf = token
-    while buf:
-        if in_think:
-            end = buf.find(_THINK_CLOSE)
-            if end != -1:
-                yield _ThinkFragment(_FragmentRole.THINKING, buf[:end], False)
-                buf = buf[end + len(_THINK_CLOSE):]
-                in_think = False
+class _ThinkTagParser:
+    """Stateful парсер <think>...</think> тегов в потоке токенов."""
+
+    _TAG_OPEN = "<think>"
+    _TAG_CLOSE = "</think>"
+
+    def __init__(self) -> None:
+        self._in_think = False
+
+    def feed(self, token: str) -> Iterator[_ThinkFragment]:
+        """Разобрать токен на фрагменты thinking/answer."""
+        buf = token
+        while buf:
+            if self._in_think:
+                end = buf.find(self._TAG_CLOSE)
+                if end != -1:
+                    yield _ThinkFragment(_FragmentRole.THINKING, buf[:end])
+                    buf = buf[end + len(self._TAG_CLOSE):]
+                    self._in_think = False
+                else:
+                    yield _ThinkFragment(_FragmentRole.THINKING, buf)
+                    buf = ""
             else:
-                yield _ThinkFragment(_FragmentRole.THINKING, buf, True)
-                buf = ""
-        else:
-            start = buf.find(_THINK_OPEN)
-            if start != -1:
-                if start > 0:
-                    yield _ThinkFragment(_FragmentRole.ANSWER, buf[:start], True)
-                buf = buf[start + len(_THINK_OPEN):]
-                in_think = True
-            else:
-                yield _ThinkFragment(_FragmentRole.ANSWER, buf, False)
-                buf = ""
+                start = buf.find(self._TAG_OPEN)
+                if start != -1:
+                    if start > 0:
+                        yield _ThinkFragment(_FragmentRole.ANSWER, buf[:start])
+                    buf = buf[start + len(self._TAG_OPEN):]
+                    self._in_think = True
+                else:
+                    yield _ThinkFragment(_FragmentRole.ANSWER, buf)
+                    buf = ""

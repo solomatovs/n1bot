@@ -7,9 +7,12 @@ from typing import TYPE_CHECKING
 from application.doc_pipeline.context import DocPipelineContext
 from application.doc_pipeline.stages import (
     GenerateStage,
+    HistoryStage,
     IndexStage,
     ReadContextStage,
     SearchStage,
+    SystemPromptStage,
+    UserPromptStage,
 )
 from domain.pipeline import Pipeline
 
@@ -18,11 +21,14 @@ if TYPE_CHECKING:
 
 
 def create_doc_pipeline(services: AppServices) -> Pipeline:
-    """Создать 4-стадийный pipeline для чата по документам."""
+    """Создать 7-стадийный pipeline для чата по документам."""
     return Pipeline([
         IndexStage(),
         SearchStage(),
         ReadContextStage(),
+        SystemPromptStage(),
+        HistoryStage(),
+        UserPromptStage(),
         GenerateStage(services.openai_client),
     ])
 
@@ -33,6 +39,7 @@ def create_doc_context(
     model: str,
     services: AppServices,
     *,
+    history_path: Path | None = None,
     top_k: int = 5,
     context_expand_lines: int = 20,
 ) -> DocPipelineContext:
@@ -52,6 +59,7 @@ def create_doc_context(
         source_file_path=lambda filename: folder_path / filename,
         manifest_path=cfg.index_manifest_path(folder_path),
         vectorstore_service=folder_vectorstore,
+        history_path=history_path,
         top_k=top_k,
         context_expand_lines=context_expand_lines,
     )

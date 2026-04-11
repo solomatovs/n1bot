@@ -28,7 +28,7 @@ class AppConfig:
     _boba_dir_name: str = field(default_factory=lambda: AppConfig._secret("BOBA_DIR_NAME", ".boba"))
     _context_dir_name: str = field(default_factory=lambda: AppConfig._secret("CONTEXT_DIR_NAME", "context"))
     _chroma_dir_name: str = field(default_factory=lambda: AppConfig._secret("CHROMA_DIR_NAME", "chroma"))
-    _chat_history_filename: str = field(default_factory=lambda: AppConfig._secret("CHAT_HISTORY_FILENAME", "chat_history.md"))
+    _chat_history_filename: str = field(default_factory=lambda: AppConfig._secret("CHAT_HISTORY_FILENAME", "chat_history.jsonl"))
     _index_manifest_filename: str = field(default_factory=lambda: AppConfig._secret("INDEX_MANIFEST_FILENAME", "index_manifest.json"))
     _collection_prefix: str = field(default_factory=lambda: AppConfig._secret("COLLECTION_PREFIX", "doc"))
     _chat_renderer_type: str = field(default_factory=lambda: AppConfig._secret("CHAT_RENDERER_TYPE", "simple"))

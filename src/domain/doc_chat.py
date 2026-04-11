@@ -1,363 +1,343 @@
-"""Доменные типы чата по документам — блоки истории и сериализация.
+"""Доменные типы чата по документам — JSONL-хранилище.
 
-Вся история чата — последовательность типизированных блоков.
-Один обмен (вопрос → ответ) = список блоков между разделителями.
-Каждый этап pipeline может добавить свой блок.
+Вся история чата — последовательность типизированных событий в JSONL.
+Один обмен (вопрос → ответ) = группа событий с общим exchange_id.
 
-Взаимодействие с историей — только через Reader / Writer / Tail:
+Каждый этап pipeline дописывает своё событие в файл.
+
+Взаимодействие с историей — через Writer / Reader:
 
     Запись:
-        writer = MarkdownBlockWriter(path)
-        writer.write_block(block)
-        writer.write_separator()
+        writer = JsonlChatWriter(path)
+        eid = writer.new_exchange()
+        writer.write(eid, EventType.USER, "вопрос")
+        writer.write(eid, EventType.ASSISTANT, "ответ")
 
-    Чтение (пакетное):
-        reader = MarkdownBlockReader()
-        exchanges = reader.read_exchanges(text)
-
-    Чтение (инкрементальное, tail -f):
-        tail = HistoryTail(path)
-        new_blocks = tail.read_new()
+    Чтение:
+        reader = JsonlChatReader(path)
+        for event in reader.read():
+            ...
 """
 from __future__ import annotations
 
-import re
+import json
+import logging
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import List, Protocol, Union, runtime_checkable
+from typing import Any, Dict, Iterator
+
+from domain.growbuffer import GrowBuffer
+
+log = logging.getLogger(__name__)
 
 
-class BlockType(Enum):
-    """Тип блока в истории чата.
+# ---------------------------------------------------------------------------
+# Типы событий
+# ---------------------------------------------------------------------------
 
-    value — заголовок в markdown, используется для сериализации/парсинга.
+class EventType(Enum):
+    """Тип события в истории чата.
+
+    value — кортеж (ключ JSONL, UI-метка, сворачиваемость).
     """
-    USER = "User"
-    SEARCH = "Search"
-    CONTEXT = "Context"
-    THINKING = "Thinking"
-    ASSISTANT = "Assistant"
+    USER = ("user", "Вопрос", False)
+    SEARCH = ("search", "Найденные фрагменты", True)
+    CONTEXT = ("context", "Контекст из документов", True)
+    THINKING = ("thinking", "Размышления", True)
+    ASSISTANT = ("assistant", "Ответ", False)
+
+    def __init__(self, key: str, label: str, collapsible: bool) -> None:
+        self._key = key
+        self._label = label
+        self._collapsible = collapsible
+
+    @property
+    def key(self) -> str:
+        """Строковый ключ для JSONL-сериализации."""
+        return self._key
+
+    @property
+    def label(self) -> str:
+        """UI-метка для отображения."""
+        return self._label
+
+    @property
+    def collapsible(self) -> bool:
+        """Сворачивать ли в спойлер."""
+        return self._collapsible
+
+    @classmethod
+    def from_key(cls, key: str) -> EventType:
+        """Найти EventType по строковому ключу JSONL."""
+        if not hasattr(cls, "_by_key"):
+            cls._by_key = {et.key: et for et in cls}
+        return cls._by_key[key]
+
+
+# ---------------------------------------------------------------------------
+# Модели метаданных для каждого типа события
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class SearchHitMeta:
+    """Метаданные одного найденного чанка (для хранения в JSONL)."""
+    source_file: str
+    start_line: int
+    end_line: int
+    score: float
 
 
 @dataclass(frozen=True)
-class HistoryBlock:
-    """Один блок в истории — тип + текстовое содержимое."""
-    block_type: BlockType
+class SearchMeta:
+    """Метаданные события поиска."""
+    hits: list[SearchHitMeta] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ContextMeta:
+    """Метаданные события контекста."""
+    fragment_count: int = 0
+
+
+# ---------------------------------------------------------------------------
+# ChatEvent — чистый dataclass, без логики сериализации
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ChatEvent:
+    """Одно событие в истории — тип + контент + привязка к обмену.
+
+    content — основной текстовый контент события (вопрос, ответ, и т.д.).
+    metadata — структурированные доп. данные (hits, fragment_count).
+    """
+    exchange_id: str
+    event_type: EventType
+    content: str
+    timestamp: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def is_user(self) -> bool:
+        return self.event_type is EventType.USER
+
+    @property
+    def is_assistant(self) -> bool:
+        return self.event_type is EventType.ASSISTANT
+
+
+# ---------------------------------------------------------------------------
+# ChatEventSerializer — прослойка между ChatEvent и JSONL-текстом
+# ---------------------------------------------------------------------------
+
+class ChatEventDeserializeError(Exception):
+    """Ошибка десериализации JSONL-строки в ChatEvent."""
+
+    def __init__(self, line: str, reason: Exception) -> None:
+        self.line = line
+        self.reason = reason
+        super().__init__(f"Cannot deserialize ChatEvent: {reason}")
+
+
+class ChatEventSerializer:
+    """Сериализация/десериализация ChatEvent ↔ JSONL-строка.
+
+    Единственное место, знающее формат JSONL::
+
+        line = ChatEventSerializer.serialize(event)
+        event = ChatEventSerializer.deserialize(line)
+    """
+
+    LINE_SEPARATOR = "\n"
+    LINE_SEPARATOR_BYTES = b"\n"
+
+    class _Field:
+        """Имена полей в JSONL-формате."""
+        EXCHANGE_ID = "exchange_id"
+        TYPE = "type"
+        CONTENT = "content"
+        TIMESTAMP = "ts"
+        METADATA = "meta"
+
+    @classmethod
+    def serialize(cls, event: ChatEvent) -> str:
+        """ChatEvent → JSONL-строка."""
+        F = cls._Field
+        result: Dict[str, Any] = {
+            F.EXCHANGE_ID: event.exchange_id,
+            F.TYPE: event.event_type.key,
+            F.CONTENT: event.content,
+            F.TIMESTAMP: event.timestamp,
+        }
+        if event.metadata:
+            result[F.METADATA] = event.metadata
+        return json.dumps(result, ensure_ascii=False)
+
+    @classmethod
+    def deserialize(cls, line: str) -> ChatEvent:
+        """JSONL-строка → ChatEvent.
+
+        Raises:
+            ChatEventDeserializeError: если строка не может быть разобрана.
+        """
+        try:
+            raw = json.loads(line)
+            F = cls._Field
+            return ChatEvent(
+                exchange_id=raw[F.EXCHANGE_ID],
+                event_type=EventType.from_key(raw[F.TYPE]),
+                content=raw.get(F.CONTENT, ""),
+                timestamp=raw.get(F.TIMESTAMP, ""),
+                metadata=raw.get(F.METADATA, {}),
+            )
+        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+            raise ChatEventDeserializeError(line, exc) from exc
+
+
+# ---------------------------------------------------------------------------
+# LLM Messages — типизированная модель для отправки в API
+# ---------------------------------------------------------------------------
+
+class LLMRole(str, Enum):
+    """Роли в OpenAI-совместимом API."""
+    SYSTEM = "system"
+    USER = "user"
+    ASSISTANT = "assistant"
+
+
+@dataclass(frozen=True)
+class LLMMessage:
+    """Одно сообщение для OpenAI-совместимого API."""
+    role: LLMRole
     content: str
 
-
-@dataclass(frozen=True)
-class DocChatExchange:
-    """Один обмен в чате: вопрос пользователя и все этапы ответа."""
-    blocks: List[HistoryBlock] = field(default_factory=list)
-
-    @property
-    def question(self) -> str:
-        return self._first_content(BlockType.USER)
-
-    @property
-    def answer(self) -> str:
-        return self._first_content(BlockType.ASSISTANT)
-
-    def _first_content(self, bt: BlockType) -> str:
-        for b in self.blocks:
-            if b.block_type == bt:
-                return b.content
-        return ""
-
-
-@runtime_checkable
-class ChatHistory(Protocol):
-    """Протокол хранилища истории чата."""
-
-    def load(self) -> List[DocChatExchange]: ...
-    def append(self, exchange: DocChatExchange) -> None: ...
+    def to_dict(self) -> Dict[str, str]:
+        return {"role": self.role.value, "content": self.content}
 
 
 # ---------------------------------------------------------------------------
-# Константы разметки
+# JSONL Writer
 # ---------------------------------------------------------------------------
 
-_HEADER_PATTERN = re.compile(r"^##\s+(\w+)\s*$")
-_SEPARATOR = "---"
-_DETAILS_OPEN = re.compile(r"^\s*<details(?:\s+open)?>\s*$")
-_DETAILS_SUMMARY = re.compile(r"^\s*<summary>.*</summary>\s*$")
-_DETAILS_CLOSE = re.compile(r"^\s*</details>\s*$")
-
-_HEADER_TO_TYPE = {bt.value: bt for bt in BlockType}
-
-DETAIL_LABELS: dict[BlockType, str] = {
-    BlockType.SEARCH: "🔍 Найденные фрагменты",
-    BlockType.CONTEXT: "📚 Контекст из документов",
-    BlockType.THINKING: "💭 Размышления",
-}
-
-
-# ---------------------------------------------------------------------------
-# Markdown-сериализация (запись)
-# ---------------------------------------------------------------------------
-
-def serialize_block(block: HistoryBlock) -> str:
-    """Сериализовать один блок в markdown (append-friendly).
-
-    User → blockquote, Search/Context/Thinking → <details>.
-    """
-    header = f"## {block.block_type.value}\n"
-    match block.block_type:
-        case BlockType.USER:
-            quoted = "\n".join(
-                f"> {line}" if line.strip() else ">"
-                for line in block.content.splitlines()
-            )
-            return f"{header}{quoted}\n\n"
-        case bt if bt in DETAIL_LABELS:
-            label = DETAIL_LABELS[bt]
-            return (
-                f"{header}"
-                f"<details>\n<summary>{label}</summary>\n\n"
-                f"{block.content}\n\n"
-                f"</details>\n\n"
-            )
-        case _:
-            return f"{header}{block.content}\n\n"
-
-
-def serialize_exchange(exchange: DocChatExchange) -> str:
-    """Сериализовать полный обмен в markdown-блок."""
-    parts = [serialize_block(b) for b in exchange.blocks]
-    return "".join(parts) + "---\n\n"
-
-
-# ---------------------------------------------------------------------------
-# MarkdownBlockReader — потоковый reader (чтение)
-# ---------------------------------------------------------------------------
-
-_Separator = type("_Separator", (), {"__repr__": lambda self: "---"})
-"""Внутренний маркер разделителя обменов."""
-
-_Item = Union[HistoryBlock, _Separator]
-
-
-class MarkdownBlockReader:
-    """Потоковый reader для блоков markdown-истории чата.
-
-    Буферизует входные строки и выдаёт завершённые HistoryBlock.
-
-    Два режима работы:
-        Инкрементальный (для tail):
-            blocks = reader.feed(chunk)   # порция текста → готовые блоки
-            last   = reader.flush()       # финализация остатка буфера
-
-        Пакетный (для загрузки истории):
-            exchanges = reader.read_exchanges(full_text)
-            blocks    = reader.read_blocks(full_text)
-
-    Состояние сохраняется между вызовами feed() — если блок
-    разрезан между двумя порциями, он дочитается при следующем feed().
-    """
-
-    def __init__(self) -> None:
-        self._current_type: BlockType | None = None
-        self._current_lines: list[str] = []
-
-    # -- Инкрементальный API ---------------------------------------------------
-
-    def feed(self, text: str) -> List[HistoryBlock]:
-        """Подать порцию текста, вернуть завершённые блоки.
-
-        Незавершённый блок остаётся в буфере до следующего feed() или flush().
-        Разделители (---) не возвращаются.
-        """
-        items = self._feed_lines(text.splitlines())
-        return [it for it in items if isinstance(it, HistoryBlock)]
-
-    def flush(self) -> HistoryBlock | None:
-        """Финализировать буфер (EOF). Вернуть блок если есть незавершённый."""
-        return self._flush_block()
-
-    # -- Пакетный API ----------------------------------------------------------
-
-    def read_exchanges(self, text: str) -> List[DocChatExchange]:
-        """Прочитать полный текст в список обменов (batch)."""
-        items = self._feed_lines(text.splitlines())
-        last = self._flush_block()
-        if last is not None:
-            items.append(last)
-        return self._group_exchanges(items)
-
-    def read_blocks(self, text: str) -> List[HistoryBlock]:
-        """Прочитать полный текст в плоский список блоков (batch)."""
-        items = self._feed_lines(text.splitlines())
-        last = self._flush_block()
-        if last is not None:
-            items.append(last)
-        return [it for it in items if isinstance(it, HistoryBlock)]
-
-    # -- Внутренняя логика -----------------------------------------------------
-
-    def _feed_lines(self, lines: list[str]) -> list[_Item]:
-        """Обработать строки, вернуть готовые элементы (блоки + разделители)."""
-        items: list[_Item] = []
-        for line in lines:
-            header = _match_header(line)
-            if header is not None:
-                block = self._flush_block()
-                if block is not None:
-                    items.append(block)
-                self._current_type = header
-            elif _is_separator(line):
-                block = self._flush_block()
-                if block is not None:
-                    items.append(block)
-                items.append(_Separator())
-            elif self._current_type is not None:
-                self._current_lines.append(line)
-        return items
-
-    def _flush_block(self) -> HistoryBlock | None:
-        """Собрать текущий буфер в HistoryBlock и сбросить состояние."""
-        if self._current_type is None:
-            return None
-        content = "\n".join(self._current_lines).strip()
-        content = _unwrap_block(self._current_type, content)
-        bt = self._current_type
-        self._current_type = None
-        self._current_lines = []
-        if not content:
-            return None
-        return HistoryBlock(bt, content)
-
-    @staticmethod
-    def _group_exchanges(items: list[_Item]) -> List[DocChatExchange]:
-        """Сгруппировать элементы в обмены по разделителям."""
-        exchanges: list[DocChatExchange] = []
-        current: list[HistoryBlock] = []
-        for item in items:
-            if isinstance(item, _Separator):
-                if current:
-                    exchanges.append(DocChatExchange(blocks=current))
-                    current = []
-            elif isinstance(item, HistoryBlock):
-                current.append(item)
-        if current:
-            exchanges.append(DocChatExchange(blocks=current))
-        return exchanges
-
-
-# ---------------------------------------------------------------------------
-# Convenience-функции (тонкие обёртки над reader)
-# ---------------------------------------------------------------------------
-
-def parse_exchanges(text: str) -> List[DocChatExchange]:
-    """Разобрать markdown-текст в список обменов."""
-    return MarkdownBlockReader().read_exchanges(text)
-
-
-def parse_blocks(text: str) -> List[HistoryBlock]:
-    """Разобрать markdown-фрагмент в плоский список блоков."""
-    return MarkdownBlockReader().read_blocks(text)
-
-
-# ---------------------------------------------------------------------------
-# Вспомогательные функции разметки
-# ---------------------------------------------------------------------------
-
-def _unwrap_block(bt: BlockType, content: str) -> str:
-    """Снять markdown-обёртки (blockquote / <details>) при парсинге."""
-    if bt == BlockType.USER:
-        lines = content.splitlines()
-        stripped = [re.sub(r"^>\s?", "", line) for line in lines]
-        return "\n".join(stripped).strip()
-    if bt in DETAIL_LABELS:
-        lines = content.splitlines()
-        cleaned = [
-            line for line in lines
-            if not (_DETAILS_OPEN.match(line)
-                    or _DETAILS_SUMMARY.match(line)
-                    or _DETAILS_CLOSE.match(line))
-        ]
-        return "\n".join(cleaned).strip()
-    return content
-
-
-def _match_header(line: str) -> BlockType | None:
-    m = _HEADER_PATTERN.match(line.strip())
-    if m is None:
-        return None
-    return _HEADER_TO_TYPE.get(m.group(1))
-
-
-def _is_separator(line: str) -> bool:
-    return line.strip() == _SEPARATOR
-
-
-# ---------------------------------------------------------------------------
-# MarkdownBlockWriter — потоковый writer (запись)
-# ---------------------------------------------------------------------------
-
-class MarkdownBlockWriter:
-    """Append-only writer для блоков markdown-истории чата.
+class JsonlChatWriter:
+    """Append-only writer для событий чата в JSONL.
 
     Единственная точка записи в файл истории::
 
-        writer = MarkdownBlockWriter(path)
-        writer.write_block(block)        # один блок
-        writer.write_separator()         # разделитель обмена (---)
-        writer.write_exchange(exchange)  # полный обмен + разделитель
+        writer = JsonlChatWriter(path)
+        eid = writer.new_exchange()
+        writer.write(eid, EventType.USER, "вопрос")
     """
+
+    _EXCHANGE_ID_LENGTH = 12
 
     def __init__(self, path: Path) -> None:
         self._path = path
+        path.touch(exist_ok=True)
 
     @property
     def path(self) -> Path:
         return self._path
 
-    def write_block(self, block: HistoryBlock) -> None:
-        """Дописать один блок в файл (append)."""
-        with open(self._path, "a", encoding="utf-8") as f:
-            f.write(serialize_block(block))
+    def new_exchange(self) -> str:
+        """Создать новый exchange_id."""
+        return uuid.uuid4().hex[:self._EXCHANGE_ID_LENGTH]
 
-    def write_separator(self) -> None:
-        """Дописать разделитель обмена (---)."""
+    def write_event(self, event: ChatEvent) -> None:
+        """Дописать событие в файл (append)."""
         with open(self._path, "a", encoding="utf-8") as f:
-            f.write("\n---\n\n")
+            f.write(ChatEventSerializer.serialize(event))
+            f.write(ChatEventSerializer.LINE_SEPARATOR)
 
-    def write_exchange(self, exchange: DocChatExchange) -> None:
-        """Записать полный обмен (все блоки + разделитель)."""
-        with open(self._path, "a", encoding="utf-8") as f:
-            f.write(serialize_exchange(exchange))
+    def write(
+        self,
+        exchange_id: str,
+        event_type: EventType,
+        content: str,
+        metadata: Dict[str, Any] | None = None,
+    ) -> None:
+        """Создать и записать событие."""
+        event = ChatEvent(
+            exchange_id=exchange_id,
+            event_type=event_type,
+            content=content,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            metadata=metadata or {},
+        )
+        self.write_event(event)
 
 
 # ---------------------------------------------------------------------------
-# HistoryTail — инкрементальное чтение (tail -f)
+# JSONL Reader
 # ---------------------------------------------------------------------------
 
-class HistoryTail:
-    """Отслеживает новые записи в chat_history.md (аналог tail -f).
+class JsonlChatReader:
+    """Stateful reader для JSONL-истории чата.
 
-    Запоминает байтовую позицию и использует MarkdownBlockReader
-    для буферизации — если блок разрезан между двумя чтениями,
-    он дочитается при следующем read_new()::
+    Владеет fd и GrowBuffer. Держит файл открытым на протяжении lifetime.
+    Файл должен существовать к моменту создания reader
+    (writer гарантирует это через touch).
 
-        tail = HistoryTail(path)
-        new_blocks = tail.read_new()   # только новые завершённые блоки
+    ``read()`` yield'ит события от текущей позиции до конца файла.
+    ``rewind()`` сбрасывает позицию — следующий ``read()`` начнёт сначала.
+    ``close()`` закрывает fd.
+
+    Использование::
+
+        with JsonlChatReader(path) as reader:
+            for event in reader.read():
+                renderer.render_event(event)
+
+            writer.write(...)
+            for event in reader.read():
+                renderer.render_event(event)
+
+            reader.rewind()
+            for event in reader.read():
+                ...
     """
 
     def __init__(self, path: Path) -> None:
         self._path = path
-        self._byte_pos = path.stat().st_size if path.exists() else 0
-        self._reader = MarkdownBlockReader()
+        self._byte_pos = 0
+        self._fd = open(path, "rb")
+        self._buf = GrowBuffer(self._fd)
 
-    def read_new(self) -> List[HistoryBlock]:
-        """Прочитать блоки, появившиеся после последнего чтения."""
-        if not self._path.exists():
-            return []
-        with open(self._path, "rb") as f:
-            f.seek(self._byte_pos)
-            new_bytes = f.read()
-        if not new_bytes:
-            return []
-        self._byte_pos += len(new_bytes)
-        return self._reader.feed(new_bytes.decode("utf-8"))
+    def __enter__(self) -> JsonlChatReader:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Закрыть fd."""
+        self._fd.close()
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def rewind(self) -> None:
+        """Сбросить позицию в начало файла."""
+        self._byte_pos = 0
+
+    def read(self) -> Iterator[ChatEvent]:
+        """Генератор событий от текущей позиции до конца файла.
+
+        Обрабатывает только полные строки (до LINE_SEPARATOR).
+        Неполная последняя строка остаётся — будет дочитана при следующем read().
+        Битые строки логируются и пропускаются.
+        """
+        sep = ChatEventSerializer.LINE_SEPARATOR_BYTES
+        for line_view in self._buf.iter_lines(sep, offset=self._byte_pos):
+            line = bytes(line_view).decode("utf-8")
+            if not line.strip():
+                continue
+            try:
+                yield ChatEventSerializer.deserialize(line)
+            except ChatEventDeserializeError:
+                log.debug("Skipping malformed line in %s: %s", self._path, line.rstrip())
+
+        self._byte_pos += self._buf.consumed
