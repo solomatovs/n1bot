@@ -6,13 +6,10 @@ from typing import TYPE_CHECKING
 
 from application.doc_pipeline.context import DocPipelineContext
 from application.doc_pipeline.stages import (
-    GenerateStage,
+    AgentLoopStage,
     HistoryStage,
-    IndexStage,
-    ReadContextStage,
-    SearchStage,
     SystemPromptStage,
-    UserPromptStage,
+    UserQueryStage,
 )
 from domain.pipeline import Pipeline
 
@@ -21,15 +18,15 @@ if TYPE_CHECKING:
 
 
 def create_doc_pipeline(services: AppServices) -> Pipeline:
-    """Создать 7-стадийный pipeline для чата по документам."""
+    """Создать агентный pipeline для чата по документам.
+
+    SystemPrompt → History → UserQuery → AgentLoop
+    """
     return Pipeline([
-        IndexStage(),
-        SearchStage(),
-        ReadContextStage(),
         SystemPromptStage(),
         HistoryStage(),
-        UserPromptStage(),
-        GenerateStage(services.openai_client),
+        UserQueryStage(),
+        AgentLoopStage(services.openai_client),
     ])
 
 

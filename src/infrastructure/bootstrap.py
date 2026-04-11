@@ -22,7 +22,6 @@ from adapters.litellm_embeddings import LiteLLMEmbeddings
 from domain.config import AppConfig
 from domain.confluence_import import ConfluenceImportService
 from domain.loading import ConfluenceImportParams
-from domain.chat_renderer import ChatRenderer
 from domain.vectorstore import VectorStoreService
 
 
@@ -36,7 +35,6 @@ class AppServices:
     embeddings: LiteLLMEmbeddings
     create_vectorstore: Callable[[str], VectorStoreService]
     create_confluence_importer: Callable[[ConfluenceImportParams], ConfluenceImportService]
-    create_chat_renderer: Callable[..., ChatRenderer] = None  # type: ignore[assignment]
 
 
 def bootstrap(cfg: AppConfig) -> AppServices:
@@ -61,23 +59,12 @@ def bootstrap(cfg: AppConfig) -> AppServices:
         embeddings=embeddings,
         create_vectorstore=_create_vectorstore,
         create_confluence_importer=_create_confluence_importer,
-        create_chat_renderer=_create_chat_renderer(),
     )
 
 
 # ---------------------------------------------------------------------------
 # Фабрики инфраструктурных клиентов
 # ---------------------------------------------------------------------------
-
-def _create_chat_renderer() -> Callable[..., ChatRenderer]:
-    """Фабрика рендерера чата."""
-
-    def factory() -> ChatRenderer:
-        from ui.renderers.simple import SimpleChatRenderer
-        return SimpleChatRenderer()
-
-    return factory
-
 
 LOG_LEVELS: dict[str, int] = {
     "DEBUG": logging.DEBUG,

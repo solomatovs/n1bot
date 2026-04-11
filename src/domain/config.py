@@ -32,7 +32,6 @@ class AppConfig:
     _chat_history_filename: str = field(default_factory=lambda: AppConfig._secret("CHAT_HISTORY_FILENAME", "chat_history.jsonl"))
     _index_manifest_filename: str = field(default_factory=lambda: AppConfig._secret("INDEX_MANIFEST_FILENAME", "index_manifest.json"))
     _collection_prefix: str = field(default_factory=lambda: AppConfig._secret("COLLECTION_PREFIX", "doc"))
-    _chat_renderer_type: str = field(default_factory=lambda: AppConfig._secret("CHAT_RENDERER_TYPE", "simple"))
     _log_level: str = field(default_factory=lambda: AppConfig._secret("LOG_LEVEL", "INFO"))
 
     @staticmethod

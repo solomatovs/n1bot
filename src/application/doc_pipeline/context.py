@@ -37,6 +37,9 @@ class DocPipelineContext:
     # --- История чата (путь к JSONL, читается GenerateStage) ---
     history_path: Path | None = None
 
+    # --- Агентный цикл ---
+    max_agent_iterations: int = 10
+
     # --- Промежуточные результаты (заполняются стадиями) ---
     hits: List[SearchHit] = field(default_factory=list)
     expanded_context: str = ""
