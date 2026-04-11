@@ -28,6 +28,7 @@ class AppConfig:
     _boba_dir_name: str = field(default_factory=lambda: AppConfig._secret("BOBA_DIR_NAME", ".boba"))
     _context_dir_name: str = field(default_factory=lambda: AppConfig._secret("CONTEXT_DIR_NAME", "context"))
     _chroma_dir_name: str = field(default_factory=lambda: AppConfig._secret("CHROMA_DIR_NAME", "chroma"))
+    _chats_dir_name: str = field(default_factory=lambda: AppConfig._secret("CHATS_DIR_NAME", "chats"))
     _chat_history_filename: str = field(default_factory=lambda: AppConfig._secret("CHAT_HISTORY_FILENAME", "chat_history.jsonl"))
     _index_manifest_filename: str = field(default_factory=lambda: AppConfig._secret("INDEX_MANIFEST_FILENAME", "index_manifest.json"))
     _collection_prefix: str = field(default_factory=lambda: AppConfig._secret("COLLECTION_PREFIX", "doc"))
@@ -158,9 +159,13 @@ class AppConfig:
         """Путь к локальному ChromaDB хранилищу."""
         return self.boba_path(folder) / self._chroma_dir_name
 
-    def chat_history_path(self, folder: Path) -> Path:
-        """Путь к файлу истории чата."""
-        return self.boba_path(folder) / self._chat_history_filename
+    def chats_dir(self, folder: Path) -> Path:
+        """Путь к директории чатов."""
+        return self.boba_path(folder) / self._chats_dir_name
+
+    def chat_history_path(self, folder: Path, chat_id: str) -> Path:
+        """Путь к файлу истории конкретного чата."""
+        return self.chats_dir(folder) / f"{chat_id}.jsonl"
 
     def index_manifest_path(self, folder: Path) -> Path:
         """Путь к манифесту индексации (хеши файлов)."""
