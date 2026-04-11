@@ -6,16 +6,14 @@ from pathlib import Path
 from typing import Callable, List
 
 from domain.doc_chat import LLMMessage
-from domain.doc_search import SearchHit
 from domain.vectorstore import VectorStoreService
 
 
 @dataclass
 class DocPipelineContext:
-    """Контекст для pipeline чата по документам.
+    """Контекст для агентного pipeline чата по документам.
 
-    Содержит только данные, необходимые стадиям.
-    Инфраструктурные детали (пути, cfg) остаются в factory.
+    Содержит данные, необходимые стадиям и инструментам.
     """
 
     # --- Входные данные ---
@@ -30,20 +28,11 @@ class DocPipelineContext:
     # --- Инфраструктура ---
     vectorstore_service: VectorStoreService
 
-    # --- Параметры поиска ---
-    top_k: int = 5
-    context_expand_lines: int = 20
-
-    # --- История чата (путь к JSONL, читается GenerateStage) ---
+    # --- История чата ---
     history_path: Path | None = None
 
     # --- Агентный цикл ---
     max_agent_iterations: int = 10
 
-    # --- Промежуточные результаты (заполняются стадиями) ---
-    hits: List[SearchHit] = field(default_factory=list)
-    expanded_context: str = ""
-    answer: str = ""
-
-    # --- LLM messages (обогащается стадиями-обогатителями) ---
+    # --- LLM messages (обогащается стадиями) ---
     messages: List[LLMMessage] = field(default_factory=list)

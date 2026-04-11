@@ -1,16 +1,14 @@
 """Реестр читателей документов — паттерн Strategy.
 
-Единая точка входа для индексации и чтения контекста.
+Единая точка входа для индексации и чтения файлов.
 Формат определяется один раз при регистрации стратегии.
 
-    Использование (стадии pipeline):
+    Использование:
         from application.doc_pipeline.doc_reader import registry
 
         for file_path in registry.iter_files(folder):
             for chunk in registry.iter_chunks(file_path):
                 ...
-
-        fragment = registry.read_fragment(file_path, hit, expand_lines)
 
     Добавление нового формата:
         class PdfReader(DocumentReader):
@@ -20,14 +18,11 @@
 """
 from __future__ import annotations
 
-import io
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Iterator, List
+from typing import Iterator
 
 from langchain_core.documents import Document
-
-from domain.doc_search import Fragment, SearchHit
 
 
 # ---------------------------------------------------------------------------
@@ -50,14 +45,6 @@ class DocumentReader(ABC):
     @abstractmethod
     def iter_chunks(self, file_path: Path) -> Iterator[Document]:
         """Разбить файл на чанки. Каждый Document содержит метаданные с позициями."""
-
-    def read_fragment(self, file_path: Path, hit: SearchHit, expand_lines: int) -> Fragment:
-        """Прочитать фрагмент файла с расширением контекста.
-
-        Базовая реализация — общая для всех текстовых форматов.
-        Переопределяйте если формат требует специфичной логики.
-        """
-        return _read_fragment_text(file_path, hit, expand_lines)
 
 
 # ---------------------------------------------------------------------------
@@ -86,8 +73,6 @@ class DocumentReaderRegistry:
     def supported_extensions(self) -> frozenset[str]:
         return frozenset(self._readers.keys())
 
-    # -- Публичный API (фасад для стадий pipeline) --
-
     def iter_files(self, folder: Path) -> Iterator[Path]:
         """Итерировать поддерживаемые файлы в папке."""
         if not folder.is_dir():
@@ -96,89 +81,9 @@ class DocumentReaderRegistry:
             if f.is_file() and self.supports(f) and not f.name.startswith("."):
                 yield f
 
-    def count_files(self, folder: Path) -> int:
-        """Подсчитать поддерживаемые файлы."""
-        if not folder.is_dir():
-            return 0
-        return sum(
-            1 for f in folder.iterdir()
-            if f.is_file() and self.supports(f) and not f.name.startswith(".")
-        )
-
     def iter_chunks(self, file_path: Path) -> Iterator[Document]:
         """Разбить файл на чанки — делегирует стратегии."""
         yield from self.get(file_path).iter_chunks(file_path)
-
-    def read_fragment(self, file_path: Path, hit: SearchHit, expand_lines: int) -> Fragment:
-        """Прочитать фрагмент — делегирует стратегии."""
-        return self.get(file_path).read_fragment(file_path, hit, expand_lines)
-
-
-# ---------------------------------------------------------------------------
-# Общая логика чтения фрагментов (для всех текстовых форматов)
-# ---------------------------------------------------------------------------
-
-def _read_fragment_text(file_path: Path, hit: SearchHit, expand_lines: int) -> Fragment:
-    """Прочитать фрагмент текстового файла по позициям + расширение на N строк."""
-    loc = hit.location
-
-    with open(file_path, encoding="utf-8", errors="replace") as fh:
-        read_start_offset, read_start_line = _find_start_expanded(
-            fh, loc.start_offset, loc.start_line, expand_lines,
-        )
-
-        fh.seek(read_start_offset)
-        lines: list[str] = []
-
-        past_end_lines = 0
-        while True:
-            line = fh.readline()
-            if not line:
-                break
-            lines.append(line.rstrip("\n").rstrip("\r"))
-            if fh.tell() >= loc.end_offset:
-                past_end_lines += 1
-                if past_end_lines > expand_lines:
-                    break
-
-        read_end_offset = fh.tell()
-        read_end_line = read_start_line + len(lines) - 1
-
-    return Fragment(
-        text="\n".join(lines).strip(),
-        hit=hit,
-        read_start_line=read_start_line,
-        read_end_line=read_end_line,
-        read_start_offset=read_start_offset,
-        read_end_offset=read_end_offset,
-    )
-
-
-def _find_start_expanded(
-    fh: io.TextIOWrapper, start_offset: int, start_line: int, expand_lines: int,
-) -> tuple[int, int]:
-    """Найти позицию на expand_lines строк раньше start_offset."""
-    if start_offset == 0 or expand_lines == 0:
-        return start_offset, start_line
-
-    fh.seek(0)
-    line_positions: list[tuple[int, int]] = [(0, 1)]
-    line_num = 1
-
-    while True:
-        pos_before = fh.tell()
-        if pos_before >= start_offset:
-            break
-        line = fh.readline()
-        if not line:
-            break
-        line_num += 1
-        next_pos = fh.tell()
-        if next_pos <= start_offset:
-            line_positions.append((next_pos, line_num))
-
-    target_idx = max(0, len(line_positions) - expand_lines)
-    return line_positions[target_idx]
 
 
 # ---------------------------------------------------------------------------
