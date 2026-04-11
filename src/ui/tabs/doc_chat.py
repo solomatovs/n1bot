@@ -1,18 +1,19 @@
-"""Вкладка «Чат по документам» — вопросы по файлам из папки.
+"""Вкладка «Чат по документам».
+
+Layout:
+    Sidebar: выбор папки, список чатов, кнопка «Новый чат», выбор модели
+    Main:    история чата + chat_input (pinned to bottom)
 
 Архитектура (CQRS через файл):
-    Write side: pipeline events → writer → chat_history.jsonl
-    Read side:  chat_history.jsonl → reader/tail → renderer
-
-    UI никогда не получает данные от writer напрямую.
-    Файл — единственное узкое горлышко между записью и отображением.
-
-    Стриминг (thinking/answer) — эфемерный превью через render_streaming.
-    После st.rerun() всё перерисовывается из файла.
+    Write: pipeline events → writer → {chat_id}.jsonl
+    Read:  {chat_id}.jsonl → reader → render_event
+    Файл — единственный источник правды.
 """
 from __future__ import annotations
 
+import uuid
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -46,41 +47,47 @@ from ui.components.selectors import model_selector
 from ui.state import SessionState
 
 
+# ---------------------------------------------------------------------------
+# Точка входа
+# ---------------------------------------------------------------------------
+
 def render(services: AppServices, state: SessionState) -> None:
-    st.title("Чат по документам")
-
     cfg = services.cfg
-    folder_path = _folder_selector_readonly(cfg)
+
+    # --- Sidebar: папка, чаты, модель ---
+    folder_path = _sidebar_folder(cfg)
     if folder_path is None:
+        st.info("Выберите папку с документами в боковой панели.")
         return
-
-    _reset_on_folder_change(folder_path.name)
-
-    active_model = model_selector(cfg, key="dc_model")
 
     boba_path = cfg.boba_path(folder_path)
     boba_path.mkdir(exist_ok=True)
 
-    history_path = cfg.chat_history_path(folder_path)
+    chats_dir = cfg.chats_dir(folder_path)
+    chats_dir.mkdir(exist_ok=True)
+
+    chat_id = _sidebar_chats(chats_dir)
+    active_model = _sidebar_model(cfg)
+
+    # --- Main: чат ---
+    history_path = cfg.chat_history_path(folder_path, chat_id)
     writer = JsonlChatWriter(history_path)
-    renderer = services.create_chat_renderer()
 
     with JsonlChatReader(history_path) as reader:
-        # Replay: рендерим всю историю из файла (reader запоминает позицию)
+        # Replay всей истории
         for event in reader.read():
-            renderer.render_event(event)
+            _render_event(event)
 
-        user_prompt = st.chat_input("Введите ваш вопрос…", key="dc_chat_input")
+        # Chat input (pinned to bottom)
+        user_prompt = st.chat_input("Введите ваш вопрос…")
         if not user_prompt:
             return
 
-        # Write side: записать вопрос в файл
+        # Write → file → read → render
         exchange_id = writer.new_exchange()
         writer.write(exchange_id, EventType.USER, user_prompt)
-
-        # Read side: прочитать новое из файла → отрендерить
         for event in reader.read():
-            renderer.render_event(event)
+            _render_event(event)
 
         # Pipeline
         pipeline = create_doc_pipeline(services)
@@ -91,10 +98,116 @@ def render(services: AppServices, state: SessionState) -> None:
             services=services,
             history_path=history_path,
         )
-        _consume_pipeline(pipeline.run(ctx), writer, reader, exchange_id, renderer)
+        _consume_pipeline(pipeline.run(ctx), writer, reader, exchange_id)
 
-    # Rerun → всё перерисуется из файла
     st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Sidebar
+# ---------------------------------------------------------------------------
+
+def _sidebar_folder(cfg: AppConfig) -> Path | None:
+    """Выбор папки с документами."""
+    base_dir = Path(cfg.import_base_dir)
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    folders = sorted(
+        d.name for d in base_dir.iterdir()
+        if d.is_dir() and not d.name.startswith(".")
+    )
+    if not folders:
+        with st.sidebar:
+            st.warning("Нет папок. Импортируйте документы.")
+        return None
+
+    with st.sidebar:
+        selected = st.selectbox("Папка с документами", folders, key="dc_folder")
+
+    if not selected:
+        return None
+    return base_dir / selected
+
+
+def _sidebar_chats(chats_dir: Path) -> str:
+    """Список чатов + кнопка «Новый чат». Возвращает chat_id."""
+    chat_files = sorted(chats_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    chat_ids = [f.stem for f in chat_files]
+
+    with st.sidebar:
+        st.divider()
+
+        if st.button("Новый чат", use_container_width=True, key="dc_new_chat"):
+            new_id = _new_chat_id()
+            st.session_state["dc_chat_id"] = new_id
+            st.rerun()
+
+        if not chat_ids:
+            chat_id = _new_chat_id()
+            st.session_state["dc_chat_id"] = chat_id
+            return chat_id
+
+        # Текущий выбранный чат
+        current = st.session_state.get("dc_chat_id", chat_ids[0])
+        if current not in chat_ids:
+            chat_ids.insert(0, current)
+
+        selected_idx = chat_ids.index(current) if current in chat_ids else 0
+        selected = st.selectbox(
+            "Чат",
+            chat_ids,
+            index=selected_idx,
+            format_func=lambda cid: _chat_label(chats_dir, cid),
+            key="dc_chat_select",
+        )
+        st.session_state["dc_chat_id"] = selected
+        return selected
+
+
+def _sidebar_model(cfg: AppConfig) -> str:
+    """Выбор модели."""
+    with st.sidebar:
+        st.divider()
+        return model_selector(cfg, key="dc_model")
+
+
+def _new_chat_id() -> str:
+    """Сгенерировать ID нового чата (timestamp + short uuid)."""
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    short = uuid.uuid4().hex[:6]
+    return f"{ts}_{short}"
+
+
+def _chat_label(chats_dir: Path, chat_id: str) -> str:
+    """Человекочитаемая метка чата для selectbox."""
+    path = chats_dir / f"{chat_id}.jsonl"
+    if not path.exists() or path.stat().st_size == 0:
+        return f"{chat_id} (новый)"
+
+    # Берём первое user-сообщение как превью
+    with JsonlChatReader(path) as reader:
+        for event in reader.read():
+            if event.is_user:
+                preview = event.content[:50]
+                if len(event.content) > 50:
+                    preview += "…"
+                return preview
+    return chat_id
+
+
+# ---------------------------------------------------------------------------
+# Рендеринг событий
+# ---------------------------------------------------------------------------
+
+def _render_event(event) -> None:
+    """Отрисовать одно событие чата."""
+    role = "user" if event.is_user else "assistant"
+    with st.chat_message(role):
+        if event.event_type.collapsible:
+            with st.expander(event.event_type.label):
+                st.markdown(event.content)
+        else:
+            st.markdown(event.content)
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +219,6 @@ def _consume_pipeline(
     writer: JsonlChatWriter,
     reader: JsonlChatReader,
     exchange_id: str,
-    renderer,
 ) -> None:
     status_ph = st.empty()
 
@@ -118,7 +230,7 @@ def _consume_pipeline(
 
     for event in events:
         match event:
-            # --- Статусные (не сохраняются в историю) ---
+            # --- Статусные ---
             case StageStarted(stage=name):
                 status_ph.caption(f"⏳ {name}...")
 
@@ -134,7 +246,7 @@ def _consume_pipeline(
             case IndexingDone(total_files=f, total_chunks=c):
                 status_ph.caption(f"Индексация: {f} файлов, {c} чанков")
 
-            # --- Поиск: write → file → tail → render ---
+            # --- Поиск: write → file → read → render ---
             case SearchDone(hits=hits):
                 if hits:
                     meta = SearchMeta(hits=[
@@ -152,9 +264,9 @@ def _consume_pipeline(
                         metadata=asdict(meta),
                     )
                     for chat_event in reader.read():
-                        renderer.render_event(chat_event)
+                        _render_event(chat_event)
 
-            # --- Контекст: write → file → tail → render ---
+            # --- Контекст: write → file → read → render ---
             case ContextReady(fragments=frags):
                 if frags:
                     meta = ContextMeta(fragment_count=len(frags))
@@ -164,7 +276,7 @@ def _consume_pipeline(
                         metadata=asdict(meta),
                     )
                     for chat_event in reader.read():
-                        renderer.render_event(chat_event)
+                        _render_event(chat_event)
 
             # --- Стриминг размышлений (эфемерный превью) ---
             case ThinkingToken(token=tok):
@@ -172,12 +284,12 @@ def _consume_pipeline(
                     thinking_expander = st.expander(EventType.THINKING.label, expanded=True)
                     thinking_ph = thinking_expander.empty()
                 thinking_tokens.append(tok)
-                renderer.render_streaming(thinking_ph, "".join(thinking_tokens))
+                if thinking_ph is not None and "".join(thinking_tokens).strip():
+                    thinking_ph.markdown("".join(thinking_tokens) + "▌")
 
             # --- Стриминг ответа (эфемерный превью) ---
             case AnswerToken(token=tok):
                 if thinking_tokens and answer_ph is None:
-                    # Финализация thinking: записать в файл
                     text = "".join(thinking_tokens)
                     if text.strip():
                         writer.write(exchange_id, EventType.THINKING, text)
@@ -188,12 +300,14 @@ def _consume_pipeline(
                 if answer_ph is None:
                     answer_ph = st.empty()
                 answer_tokens.append(tok)
-                renderer.render_streaming(answer_ph, "".join(answer_tokens))
+                text = "".join(answer_tokens)
+                if text.strip():
+                    answer_ph.markdown(text + "▌")
 
             case GenerationDone():
                 status_ph.empty()
 
-    # Финализация: только запись в файл (рендер после st.rerun)
+    # Финализация: запись в файл (рендер после st.rerun)
     if thinking_tokens:
         text = "".join(thinking_tokens)
         if text.strip():
@@ -203,7 +317,7 @@ def _consume_pipeline(
 
 
 # ---------------------------------------------------------------------------
-# Форматирование блоков
+# Форматирование
 # ---------------------------------------------------------------------------
 
 def _format_search(hits: list[SearchHit]) -> str:
@@ -229,32 +343,3 @@ def _format_context(fragments: list[Fragment]) -> str:
             f"```\n{frag.text}\n```"
         )
     return "\n\n".join(parts)
-
-
-# ---------------------------------------------------------------------------
-# Выбор папки
-# ---------------------------------------------------------------------------
-
-def _folder_selector_readonly(cfg: AppConfig) -> Path | None:
-    base_dir = Path(cfg.import_base_dir)
-    base_dir.mkdir(parents=True, exist_ok=True)
-
-    folders = sorted(
-        d.name for d in base_dir.iterdir()
-        if d.is_dir() and not d.name.startswith(".")
-    )
-    if not folders:
-        st.warning("Нет доступных папок. Импортируйте документы во вкладке «Загрузка вручную».")
-        return None
-
-    selected = st.selectbox("Папка с документами", folders, key="dc_folder")
-    if not selected:
-        return None
-
-    return base_dir / selected
-
-
-def _reset_on_folder_change(current_folder: str) -> None:
-    prev = st.session_state.get("dc_prev_folder")
-    if prev != current_folder:
-        st.session_state["dc_prev_folder"] = current_folder
