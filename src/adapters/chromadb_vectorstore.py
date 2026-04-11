@@ -19,8 +19,8 @@ from domain.errors import (
     StoreBatchError,
     VectorStoreError,
 )
-from domain.retrieval import DocumentLike
-from domain.vectorstore import CollectionData, CollectionInfo, ScoredDocument
+from domain.search.vectorstore import DocumentLike
+from domain.search.vectorstore import CollectionData, CollectionInfo, ScoredDocument
 from adapters.litellm_embeddings import LiteLLMEmbeddings
 
 log = logging.getLogger(__name__)

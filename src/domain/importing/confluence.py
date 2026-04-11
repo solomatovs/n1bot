@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, List, Protocol, Union, runtime_checkable
 
-from domain.loading import SpaceLoadParams
+from domain.importing.loading import SpaceLoadParams
 
 
 @dataclass(frozen=True)

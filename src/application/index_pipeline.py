@@ -22,8 +22,8 @@ from typing import Iterator, List, Union
 
 from langchain_core.documents import Document
 
-from application.doc_pipeline.doc_reader import registry
-from domain.vectorstore import VectorStoreService
+from application.readers.registry import registry
+from domain.search.vectorstore import VectorStoreService
 
 log = logging.getLogger(__name__)
 

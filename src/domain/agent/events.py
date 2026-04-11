@@ -4,8 +4,24 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Union
 
-from domain.doc_search import Fragment, SearchHit
-from domain.pipeline import StageCompleted, StageStarted
+from domain.search.types import Fragment, SearchHit
+
+
+# ---------------------------------------------------------------------------
+# Общие события
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class StageStarted:
+    """Этап начал выполнение."""
+    stage: str
+
+
+@dataclass(frozen=True)
+class StageCompleted:
+    """Этап завершил выполнение."""
+    stage: str
+    detail: str
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +94,7 @@ class GenerationDone:
 
 
 # ---------------------------------------------------------------------------
-# Tool calls (агентный режим)
+# Tool calls
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)

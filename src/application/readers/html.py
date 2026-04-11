@@ -11,7 +11,7 @@ from typing import Iterator, List
 
 from langchain_core.documents import Document
 
-from application.doc_pipeline.doc_reader import DocumentReader, build_chunk
+from application.readers.registry import DocumentReader, build_chunk
 
 _HEADING_OPEN = re.compile(r"<h([1-6])[\s>]", re.IGNORECASE)
 _TAG_STRIP = re.compile(r"<[^>]+>")

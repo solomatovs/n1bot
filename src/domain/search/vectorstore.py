@@ -4,7 +4,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Protocol, Sequence, runtime_checkable
 
-from domain.retrieval import DocumentLike
+
+@runtime_checkable
+class DocumentLike(Protocol):
+    """Минимальный контракт документа для domain-логики.
+
+    langchain_core.documents.Document реализует этот Protocol автоматически.
+    """
+
+    @property
+    def page_content(self) -> str: ...
+
+    @property
+    def metadata(self) -> dict: ...
 
 
 @dataclass(frozen=True)

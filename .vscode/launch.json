@@ -19,38 +19,5 @@
             "jinja": true,
             "env": { "LOG_LEVEL": "DEBUG" }
         },
-        {
-            "name": "Test: Streaming Pipeline (загрузка)",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/tests/test_streaming_pipeline.py",
-            "args": [
-                "--space", "PAAS",
-                "--max-pages", "3",
-                "--batch-size", "8",
-                "--embedding-model", "e5-large"
-            ],
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/docker",
-            "envFile": "${workspaceFolder}/docker/env/.env.debug",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "jinja": true
-        },
-        {
-            "name": "Test: Chat Streaming (RAG + LLM)",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/tests/test_chat_streaming.py",
-            "args": [
-                "--collection", "PAAS",
-                "--query", "что такое ADQM?",
-                "--model", "qwen3-0.6b"
-            ],
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/docker",
-            "envFile": "${workspaceFolder}/docker/env/.env.debug",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "jinja": true
-        }
     ]
 }

@@ -6,14 +6,14 @@ from typing import Iterator
 
 import streamlit as st
 
-from domain.confluence_import import (
+from domain.importing.confluence import (
     ImportDone,
     ImportEvent,
     ImportPageFailed,
     ImportPageSaved,
     ImportSpaceEnumerated,
 )
-from domain.loading import ConfluenceImportParams, SpaceLoadParams
+from domain.importing.loading import ConfluenceImportParams, SpaceLoadParams
 from infrastructure.bootstrap import AppServices
 from ui.components.folder_selector import folder_selector
 from ui.state import SessionState
