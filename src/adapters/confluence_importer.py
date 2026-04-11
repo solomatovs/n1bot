@@ -12,7 +12,7 @@ from typing import Iterator, List
 import httpx
 
 from domain.config import AppConfig
-from domain.confluence_import import (
+from domain.importing.confluence import (
     ConfluencePageQuery,
     ConfluenceSpaceQuery,
     ImportDone,
@@ -24,7 +24,7 @@ from domain.confluence_import import (
     extract_page_ids,
     extract_page_title,
 )
-from domain.loading import ConfluenceImportParams, SpaceLoadParams
+from domain.importing.loading import ConfluenceImportParams, SpaceLoadParams
 
 log = logging.getLogger(__name__)
 

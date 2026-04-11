@@ -19,7 +19,7 @@ from typing import Any, Iterator
 
 import streamlit as st
 
-from application.doc_pipeline.events import (
+from domain.agent.events import (
     AnswerToken,
     ContextReady,
     DocPipelineEvent,
@@ -28,13 +28,14 @@ from application.doc_pipeline.events import (
     IndexingDone,
     IndexingSkipped,
     SearchDone,
+    StageCompleted,
+    StageStarted,
     ThinkingToken,
     ToolCallStarted,
     ToolResultReady,
 )
-from application.doc_pipeline.factory import create_doc_context, create_doc_pipeline
 from domain.config import AppConfig
-from domain.doc_chat import (
+from domain.chat.history import (
     ContextMeta,
     EventType,
     JsonlChatReader,
@@ -42,8 +43,7 @@ from domain.doc_chat import (
     SearchHitMeta,
     SearchMeta,
 )
-from domain.doc_search import Fragment, SearchHit
-from domain.pipeline import StageCompleted, StageStarted
+from domain.search.types import Fragment, SearchHit
 from infrastructure.bootstrap import AppServices
 from ui.components.selectors import model_selector
 from ui.state import SessionState
@@ -91,16 +91,9 @@ def render(services: AppServices, state: SessionState) -> None:
         for event in reader.read():
             _render_event(event)
 
-        # Pipeline
-        pipeline = create_doc_pipeline(services)
-        ctx = create_doc_context(
-            folder_path=folder_path,
-            query=user_prompt,
-            model=active_model,
-            services=services,
-            history_path=history_path,
-        )
-        _consume_pipeline(pipeline.run(ctx), writer, reader, exchange_id)
+        # Agent loop
+        agent = services.create_agent(folder_path, history_path=history_path)
+        _consume_pipeline(agent.run(user_prompt, active_model), writer, reader, exchange_id)
 
     st.rerun()
 

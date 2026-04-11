@@ -4,7 +4,7 @@
 Формат определяется один раз при регистрации стратегии.
 
     Использование:
-        from application.doc_pipeline.doc_reader import registry
+        from application.readers.registry import registry
 
         for file_path in registry.iter_files(folder):
             for chunk in registry.iter_chunks(file_path):
@@ -121,8 +121,8 @@ def build_chunk(
 
 def _create_default_registry() -> DocumentReaderRegistry:
     """Создать реестр с зарегистрированными стратегиями."""
-    from application.doc_pipeline.html_reader import HtmlReader
-    from application.doc_pipeline.markdown_reader import MarkdownReader
+    from application.readers.html import HtmlReader
+    from application.readers.markdown import MarkdownReader
 
     reg = DocumentReaderRegistry()
     reg.register(MarkdownReader())
