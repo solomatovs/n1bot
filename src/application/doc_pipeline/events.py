@@ -78,6 +78,25 @@ class GenerationDone:
 
 
 # ---------------------------------------------------------------------------
+# Tool calls (агентный режим)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ToolCallStarted:
+    """LLM вызывает инструмент."""
+    tool_call_id: str
+    tool_name: str
+    arguments: str
+
+@dataclass(frozen=True)
+class ToolResultReady:
+    """Инструмент вернул результат."""
+    tool_call_id: str
+    tool_name: str
+    content: str
+
+
+# ---------------------------------------------------------------------------
 # Объединённый тип
 # ---------------------------------------------------------------------------
 
@@ -87,4 +106,5 @@ DocPipelineEvent = Union[
     SearchDone,
     ContextReady,
     ThinkingToken, AnswerToken, GenerationDone,
+    ToolCallStarted, ToolResultReady,
 ]

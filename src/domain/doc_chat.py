@@ -48,6 +48,8 @@ class EventType(Enum):
     CONTEXT = ("context", "Контекст из документов", True)
     THINKING = ("thinking", "Размышления", True)
     ASSISTANT = ("assistant", "Ответ", False)
+    TOOL_CALL = ("tool_call", "Вызов инструмента", True)
+    TOOL_RESULT = ("tool_result", "Результат инструмента", True)
 
     def __init__(self, key: str, label: str, collapsible: bool) -> None:
         self._key = key
@@ -205,16 +207,30 @@ class LLMRole(str, Enum):
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
+    TOOL = "tool"
 
 
 @dataclass(frozen=True)
 class LLMMessage:
-    """Одно сообщение для OpenAI-совместимого API."""
-    role: LLMRole
-    content: str
+    """Одно сообщение для OpenAI-совместимого API.
 
-    def to_dict(self) -> Dict[str, str]:
-        return {"role": self.role.value, "content": self.content}
+    Поддерживает стандартные сообщения (role + content),
+    assistant-сообщения с tool_calls и tool-результаты.
+    """
+    role: LLMRole
+    content: str = ""
+    tool_calls: list[dict] | None = None
+    tool_call_id: str | None = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {"role": self.role.value}
+        if self.content:
+            d["content"] = self.content
+        if self.tool_calls is not None:
+            d["tool_calls"] = self.tool_calls
+        if self.tool_call_id is not None:
+            d["tool_call_id"] = self.tool_call_id
+        return d
 
 
 # ---------------------------------------------------------------------------

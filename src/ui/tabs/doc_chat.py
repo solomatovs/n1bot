@@ -29,6 +29,8 @@ from application.doc_pipeline.events import (
     IndexingSkipped,
     SearchDone,
     ThinkingToken,
+    ToolCallStarted,
+    ToolResultReady,
 )
 from application.doc_pipeline.factory import create_doc_context, create_doc_pipeline
 from domain.config import AppConfig
@@ -277,6 +279,33 @@ def _consume_pipeline(
                     )
                     for chat_event in reader.read():
                         _render_event(chat_event)
+
+            # --- Tool calls (агентный режим) ---
+            case ToolCallStarted(tool_call_id=tc_id, tool_name=name, arguments=args):
+                with st.chat_message("assistant"):
+                    with st.expander(f"🔧 {name}", expanded=False):
+                        st.code(args, language="json")
+                writer.write(
+                    exchange_id, EventType.TOOL_CALL,
+                    f"{name}({args})",
+                    metadata={
+                        "tool_call_id": tc_id,
+                        "tool_name": name,
+                        "arguments": args,
+                        "tool_calls": [{
+                            "id": tc_id,
+                            "type": "function",
+                            "function": {"name": name, "arguments": args},
+                        }],
+                    },
+                )
+
+            case ToolResultReady(tool_call_id=tc_id, tool_name=name, content=result):
+                writer.write(
+                    exchange_id, EventType.TOOL_RESULT,
+                    result,
+                    metadata={"tool_call_id": tc_id, "tool_name": name},
+                )
 
             # --- Стриминг размышлений (эфемерный превью) ---
             case ThinkingToken(token=tok):
