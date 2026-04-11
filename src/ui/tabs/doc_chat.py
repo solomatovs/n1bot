@@ -1,12 +1,18 @@
 """Вкладка «Чат по документам» — вопросы по файлам из папки.
 
-Архитектура:
-    1. Pipeline events → блоки → MarkdownBlockWriter → chat_history.md
-    2. При rerun: MarkdownBlockReader читает файл → renderer отображает
-    3. Файл — единственный источник правды
+Архитектура (CQRS через файл):
+    Write side: pipeline events → writer → chat_history.jsonl
+    Read side:  chat_history.jsonl → reader/tail → renderer
+
+    UI никогда не получает данные от writer напрямую.
+    Файл — единственное узкое горлышко между записью и отображением.
+
+    Стриминг (thinking/answer) — эфемерный превью через render_streaming.
+    После st.rerun() всё перерисовывается из файла.
 """
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -26,10 +32,12 @@ from application.doc_pipeline.events import (
 from application.doc_pipeline.factory import create_doc_context, create_doc_pipeline
 from domain.config import AppConfig
 from domain.doc_chat import (
-    BlockType,
-    HistoryBlock,
-    MarkdownBlockReader,
-    MarkdownBlockWriter,
+    ContextMeta,
+    EventType,
+    JsonlChatReader,
+    JsonlChatWriter,
+    SearchHitMeta,
+    SearchMeta,
 )
 from domain.doc_search import Fragment, SearchHit
 from domain.pipeline import StageCompleted, StageStarted
@@ -54,49 +62,56 @@ def render(services: AppServices, state: SessionState) -> None:
     boba_path.mkdir(exist_ok=True)
 
     history_path = cfg.chat_history_path(folder_path)
-    writer = MarkdownBlockWriter(history_path)
+    writer = JsonlChatWriter(history_path)
     renderer = services.create_chat_renderer()
 
-    # Replay — всё из файла
-    exchanges = _load_history(history_path)
-    renderer.render_history(exchanges)
+    with JsonlChatReader(history_path) as reader:
+        # Replay: рендерим всю историю из файла (reader запоминает позицию)
+        for event in reader.read():
+            renderer.render_event(event)
 
-    user_prompt = st.chat_input("Введите ваш вопрос…", key="dc_chat_input")
-    if not user_prompt:
-        return
+        user_prompt = st.chat_input("Введите ваш вопрос…", key="dc_chat_input")
+        if not user_prompt:
+            return
 
-    # Записать вопрос в файл
-    writer.write_block(HistoryBlock(BlockType.USER, user_prompt))
+        # Write side: записать вопрос в файл
+        exchange_id = writer.new_exchange()
+        writer.write(exchange_id, EventType.USER, user_prompt)
 
-    with st.chat_message("user"):
-        st.markdown(user_prompt)
+        # Read side: прочитать новое из файла → отрендерить
+        for event in reader.read():
+            renderer.render_event(event)
 
-    with st.chat_message("assistant"):
+        # Pipeline
         pipeline = create_doc_pipeline(services)
         ctx = create_doc_context(
             folder_path=folder_path,
             query=user_prompt,
             model=active_model,
             services=services,
+            history_path=history_path,
         )
-        _consume_pipeline(pipeline.run(ctx), writer, renderer)
+        _consume_pipeline(pipeline.run(ctx), writer, reader, exchange_id, renderer)
 
-    writer.write_separator()
+    # Rerun → всё перерисуется из файла
     st.rerun()
 
 
 # ---------------------------------------------------------------------------
-# Pipeline consumer — пишет в файл, стримит через renderer
+# Pipeline consumer
 # ---------------------------------------------------------------------------
 
 def _consume_pipeline(
     events: Iterator[DocPipelineEvent],
-    writer: MarkdownBlockWriter,
+    writer: JsonlChatWriter,
+    reader: JsonlChatReader,
+    exchange_id: str,
     renderer,
 ) -> None:
     status_ph = st.empty()
 
     thinking_tokens: list[str] = []
+    thinking_expander: Any = None
     thinking_ph: Any = None
     answer_tokens: list[str] = []
     answer_ph: Any = None
@@ -119,33 +134,56 @@ def _consume_pipeline(
             case IndexingDone(total_files=f, total_chunks=c):
                 status_ph.caption(f"Индексация: {f} файлов, {c} чанков")
 
-            # --- Поиск → сразу в файл ---
+            # --- Поиск: write → file → tail → render ---
             case SearchDone(hits=hits):
                 if hits:
-                    block = HistoryBlock(BlockType.SEARCH, _format_search(hits))
-                    writer.write_block(block)
-                    renderer.render_block(block)
+                    meta = SearchMeta(hits=[
+                        SearchHitMeta(
+                            source_file=h.location.source_file,
+                            start_line=h.location.start_line,
+                            end_line=h.location.end_line,
+                            score=h.score,
+                        )
+                        for h in hits
+                    ])
+                    writer.write(
+                        exchange_id, EventType.SEARCH,
+                        _format_search(hits),
+                        metadata=asdict(meta),
+                    )
+                    for chat_event in reader.read():
+                        renderer.render_event(chat_event)
 
-            # --- Контекст → сразу в файл ---
+            # --- Контекст: write → file → tail → render ---
             case ContextReady(fragments=frags):
                 if frags:
-                    block = HistoryBlock(BlockType.CONTEXT, _format_context(frags))
-                    writer.write_block(block)
-                    renderer.render_block(block)
+                    meta = ContextMeta(fragment_count=len(frags))
+                    writer.write(
+                        exchange_id, EventType.CONTEXT,
+                        _format_context(frags),
+                        metadata=asdict(meta),
+                    )
+                    for chat_event in reader.read():
+                        renderer.render_event(chat_event)
 
-            # --- Стриминг размышлений ---
+            # --- Стриминг размышлений (эфемерный превью) ---
             case ThinkingToken(token=tok):
-                if thinking_ph is None:
-                    thinking_ph = st.empty()
+                if thinking_expander is None:
+                    thinking_expander = st.expander(EventType.THINKING.label, expanded=True)
+                    thinking_ph = thinking_expander.empty()
                 thinking_tokens.append(tok)
                 renderer.render_streaming(thinking_ph, "".join(thinking_tokens))
 
-            # --- Стриминг ответа ---
+            # --- Стриминг ответа (эфемерный превью) ---
             case AnswerToken(token=tok):
                 if thinking_tokens and answer_ph is None:
-                    _finalize_streaming(thinking_ph, thinking_tokens, BlockType.THINKING, writer)
+                    # Финализация thinking: записать в файл
+                    text = "".join(thinking_tokens)
+                    if text.strip():
+                        writer.write(exchange_id, EventType.THINKING, text)
                     thinking_tokens.clear()
                     thinking_ph = None
+                    thinking_expander = None
 
                 if answer_ph is None:
                     answer_ph = st.empty()
@@ -155,36 +193,13 @@ def _consume_pipeline(
             case GenerationDone():
                 status_ph.empty()
 
-    # Финализация: записать в файл
+    # Финализация: только запись в файл (рендер после st.rerun)
     if thinking_tokens:
-        _finalize_streaming(thinking_ph, thinking_tokens, BlockType.THINKING, writer)
+        text = "".join(thinking_tokens)
+        if text.strip():
+            writer.write(exchange_id, EventType.THINKING, text)
     if answer_tokens:
-        _finalize_streaming(answer_ph, answer_tokens, BlockType.ASSISTANT, writer)
-
-
-def _finalize_streaming(
-    placeholder: Any,
-    tokens: list[str],
-    block_type: BlockType,
-    writer: MarkdownBlockWriter,
-) -> None:
-    text = "".join(tokens)
-    if not text.strip():
-        return
-    block = HistoryBlock(block_type, text)
-    writer.write_block(block)
-    if placeholder is not None:
-        placeholder.markdown(text)
-
-
-# ---------------------------------------------------------------------------
-# Загрузка истории
-# ---------------------------------------------------------------------------
-
-def _load_history(path: Path):
-    if not path.exists():
-        return []
-    return MarkdownBlockReader().read_exchanges(path.read_text(encoding="utf-8"))
+        writer.write(exchange_id, EventType.ASSISTANT, "".join(answer_tokens))
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +213,7 @@ def _format_search(hits: list[SearchHit]) -> str:
         parts.append(
             f"**{loc.source_file}:{loc.start_line}-{loc.end_line}** "
             f"(секция: {loc.section_title}, score: {hit.score:.2f})\n\n"
-            f"```\n{hit.content[:300]}\n```"
+            f"```\n{hit.content}\n```"
         )
     return "\n\n".join(parts)
 
@@ -211,7 +226,7 @@ def _format_context(fragments: list[Fragment]) -> str:
             f"**{loc.source_file}:{frag.read_start_line}-{frag.read_end_line}** "
             f"(чанк: {loc.start_line}-{loc.end_line}, "
             f"секция: {loc.section_title}, score: {frag.hit.score:.2f})\n\n"
-            f"```\n{frag.text[:500]}\n```"
+            f"```\n{frag.text}\n```"
         )
     return "\n\n".join(parts)
 

@@ -1,34 +1,33 @@
-"""Простой рендерер — отображает историю чата как есть."""
+"""Простой рендерер — отображает историю чата как есть.
+
+Каждое событие рендерится по типу:
+    USER → chat_message("user")
+    collapsible (search/context/thinking) → chat_message("assistant") + expander
+    ASSISTANT → chat_message("assistant")
+"""
 from __future__ import annotations
 
-from typing import Any, List
+from typing import Any
 
 import streamlit as st
 
-from domain.doc_chat import BlockType, DocChatExchange, HistoryBlock
+from domain.doc_chat import ChatEvent
 
 
 class SimpleChatRenderer:
-    """Рендер: chat-пузыри, контент как есть через st.markdown()."""
+    """Рендер: плоский поток событий, каждое форматируется по типу."""
 
-    def render_history(self, exchanges: List[DocChatExchange]) -> None:
-        for exchange in exchanges:
-            user_blocks = [b for b in exchange.blocks if b.block_type == BlockType.USER]
-            other_blocks = [b for b in exchange.blocks if b.block_type != BlockType.USER]
-
-            if user_blocks:
-                with st.chat_message("user"):
-                    for block in user_blocks:
-                        st.markdown(block.content)
-
-            if other_blocks:
-                with st.chat_message("assistant"):
-                    for block in other_blocks:
-                        st.markdown(block.content)
-
-    def render_block(self, block: HistoryBlock) -> None:
-        st.markdown(block.content)
+    def render_event(self, event: ChatEvent) -> None:
+        """Отрисовать одно событие с нужным chat-пузырём и форматированием."""
+        role = "user" if event.is_user else "assistant"
+        with st.chat_message(role):
+            if event.event_type.collapsible:
+                with st.expander(event.event_type.label):
+                    st.markdown(event.content)
+            else:
+                st.markdown(event.content)
 
     def render_streaming(self, placeholder: Any, text: str) -> None:
+        """Обновить placeholder стримящимся текстом."""
         if text.strip():
             placeholder.markdown(text + "▌")
