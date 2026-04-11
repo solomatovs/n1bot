@@ -125,18 +125,16 @@ class AgentLoopStage:
                 continue
 
             # Текстовый ответ — финал
-            ctx.answer = "".join(answer_tokens)
+            answer = "".join(answer_tokens)
             yield GenerationDone()
             yield StageCompleted(
                 stage=self.name,
-                detail=f"{len(ctx.answer)} символов, {iteration} итераций",
+                detail=f"{len(answer)} символов, {iteration} итераций",
             )
             return
 
         # Лимит итераций
-        if not ctx.answer:
-            ctx.answer = "Достигнут лимит итераций агента. Попробуйте переформулировать вопрос."
-            yield AnswerToken(token=ctx.answer)
+        yield AnswerToken(token="Достигнут лимит итераций агента. Попробуйте переформулировать вопрос.")
         yield GenerationDone()
         yield StageCompleted(stage=self.name, detail=f"лимит {max_iter} итераций")
 

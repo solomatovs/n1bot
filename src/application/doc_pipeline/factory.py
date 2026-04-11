@@ -37,8 +37,6 @@ def create_doc_context(
     services: AppServices,
     *,
     history_path: Path | None = None,
-    top_k: int = 5,
-    context_expand_lines: int = 20,
 ) -> DocPipelineContext:
     """Создать контекст для doc-пайплайна."""
     cfg = services.cfg
@@ -57,6 +55,4 @@ def create_doc_context(
         manifest_path=cfg.index_manifest_path(folder_path),
         vectorstore_service=folder_vectorstore,
         history_path=history_path,
-        top_k=top_k,
-        context_expand_lines=context_expand_lines,
     )

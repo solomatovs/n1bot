@@ -152,7 +152,6 @@ class SearchDocumentsTool(Tool):
                 score=scored.score,
             ))
 
-        ctx.hits = hits
         yield SearchDone(hits=hits)
 
         if not hits:
