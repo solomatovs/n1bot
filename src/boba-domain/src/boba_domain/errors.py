@@ -58,12 +58,20 @@ class ThreadStoreError(AppError):
     """Базовая ошибка работы с хранилищем thread'ов."""
 
 
-
 class ThreadNotFoundError(ThreadStoreError):
-    """Thread не найден по ID."""
+    """Thread не найден по ID.
 
-    def __init__(self, thread_id: str) -> None:
+    read_errors — ошибки чтения thread.json, накопленные при сканировании.
+    Если непусто, thread мог быть найден, но не прочитан.
+    """
+
+    def __init__(
+        self,
+        thread_id: str,
+        read_errors: list[ThreadReadError] | None = None,
+    ) -> None:
         self.thread_id = thread_id
+        self.read_errors: list[ThreadReadError] = read_errors or []
         super().__init__(f"Thread not found: {thread_id}")
 
 

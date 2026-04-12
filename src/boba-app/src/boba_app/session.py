@@ -3,6 +3,7 @@
 Создаёт рабочую структуру директорий, генерирует chat_id,
 возвращает готовый FolderContext для DI scope.
 """
+
 from __future__ import annotations
 
 import uuid

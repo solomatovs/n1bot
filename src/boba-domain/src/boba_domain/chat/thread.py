@@ -6,6 +6,7 @@ StepFeedback — оценка шага пользователем.
 ThreadMetadata — типизированные метаданные thread'а.
 StepType — тип шага.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -83,9 +84,19 @@ class ChatThread:
 
     id: str  # UUID thread'а (совпадает с Chainlit thread_id)
     created_at: str  # ISO timestamp создания
-    name: str | None = None  # отображаемое имя в sidebar
+    name: str  # отображаемое имя в sidebar (обязательное)
     user_id: str = "default"  # внутренний ID пользователя
     user_identifier: str = "default"  # логин / идентификатор пользователя
     metadata: ThreadMetadata = field(default_factory=ThreadMetadata)
     steps: list[ChatStep] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
+
+    _AUTO_NAME_PREFIX = "workspace-"
+
+    def has_auto_name(self) -> bool:
+        """Имя назначено автоматически (workspace-N) и ещё не переименовано."""
+        return self.name.startswith(self._AUTO_NAME_PREFIX)
+
+    def matches_search(self, query: str) -> bool:
+        """Имя thread'а содержит поисковый запрос (регистронезависимо)."""
+        return query.lower() in self.name.lower()

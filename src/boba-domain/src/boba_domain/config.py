@@ -15,7 +15,6 @@ from typing import Any
 
 from boba_domain import toml_config
 
-
 # Lazy-загрузка секции [app] — один раз при создании первого AppConfig
 _app_toml: dict[str, Any] | None = None
 
@@ -32,7 +31,9 @@ class AppConfig:
     """Единственный источник конфигурации приложения."""
 
     _litellm_url: str = field(
-        default_factory=lambda: toml_config.resolve("LITELLM_URL", _get_app_toml(), "litellm_url")
+        default_factory=lambda: toml_config.resolve(
+            "LITELLM_URL", _get_app_toml(), "litellm_url"
+        )
     )
     _litellm_api_key: str = field(
         default_factory=lambda: toml_config.resolve(
@@ -66,7 +67,9 @@ class AppConfig:
     )
     _embedding_timeout: int = field(
         default_factory=lambda: int(
-            toml_config.resolve("EMBEDDING_TIMEOUT", _get_app_toml(), "embedding_timeout", "120")
+            toml_config.resolve(
+                "EMBEDDING_TIMEOUT", _get_app_toml(), "embedding_timeout", "120"
+            )
         )
     )
     _ssl_verify: bool = field(
@@ -227,19 +230,9 @@ class AppConfig:
         """Путь к единственному chat_history.jsonl workspace'а."""
         return self.boba_path(folder) / self._chat_history_filename
 
-    def folder_path(self, folder_name: str) -> Path:
+    def workspace_path(self, folder_name: str) -> Path:
         """Полный путь к папке workspace'а."""
         return Path(self._import_base_dir) / folder_name
-
-    def iter_workspaces(self) -> list[Path]:
-        """Все папки-workspace'ы в import_base_dir (не начинающиеся с точки)."""
-        base = Path(self._import_base_dir)
-        if not base.is_dir():
-            return []
-        return sorted(
-            d for d in base.iterdir()
-            if d.is_dir() and not d.name.startswith(".")
-        )
 
     def index_manifest_path(self, folder: Path) -> Path:
         return self.boba_path(folder) / self._index_manifest_filename

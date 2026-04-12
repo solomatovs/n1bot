@@ -2,8 +2,9 @@
 
 StepInput — типизированный входной шаг от Chainlit (валидация на границе).
 ChainlitConverter — конвертация ThreadDict ↔ ChatThread, StepInput → ChatStep.
-ChainlitDataLayerAdapter — реализация BaseDataLayer, делегирующая JsonThreadStore.
+ChainlitDataLayerAdapter — реализация BaseDataLayer, делегирующая ChatThreadStore.
 """
+
 from __future__ import annotations
 
 import logging
@@ -23,7 +24,7 @@ from chainlit.types import (
 )
 from chainlit.user import PersistedUser, User
 
-from boba_adapters.json_thread_store import JsonThreadStore
+from boba_domain.core.thread_store import ChatThreadStore
 from boba_domain.chat.thread import (
     ChatStep,
     ChatThread,
@@ -33,7 +34,6 @@ from boba_domain.chat.thread import (
 )
 from boba_domain.errors import (
     ThreadNotFoundError,
-    ThreadReadError,
     ThreadStoreError,
     ThreadWriteError,
     ValidationError,
@@ -56,6 +56,17 @@ async def _emit_error(text: str) -> None:
         await cl.context.emitter.emit("toast", {"message": text, "level": "error"})
     except Exception:
         pass
+
+
+async def _log_not_found(method: str, err: ThreadNotFoundError) -> None:
+    """Логировать ThreadNotFoundError вместе с накопленными read_errors."""
+    log.warning("%s: %s", method, err)
+    for read_err in err.read_errors:
+        log.error("%s: read error during scan: %s", method, read_err)
+    if err.read_errors:
+        await _emit_error(f"{err} (+ {len(err.read_errors)} read errors)")
+    else:
+        await _emit_error(str(err))
 
 
 # ------------------------------------------------------------------
@@ -229,14 +240,14 @@ class ChainlitConverter:
 
 
 # ------------------------------------------------------------------
-# Adapter: BaseDataLayer → JsonThreadStore
+# Adapter: BaseDataLayer → ChatThreadStore
 # ------------------------------------------------------------------
 
 
 class ChainlitDataLayerAdapter(BaseDataLayer):
-    """Chainlit DataLayer, делегирующий хранение в JsonThreadStore."""
+    """Chainlit DataLayer, делегирующий хранение в ChatThreadStore."""
 
-    def __init__(self, store: JsonThreadStore) -> None:
+    def __init__(self, store: ChatThreadStore) -> None:
         self._store = store
 
     # -- User (нет auth — default user) --
@@ -260,57 +271,35 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
     async def get_thread(self, thread_id: str) -> Optional[ThreadDict]:
         try:
             thread = self._store.get_thread(thread_id)
-        except ThreadReadError as e:
-            log.error("get_thread: %s", e)
-            await _emit_error(str(e))
-            return None
-        if thread is None:
-            log.warning("get_thread: thread not found: %s", thread_id)
-            await _emit_error(f"Thread not found: {thread_id}")
+        except ThreadNotFoundError as e:
+            await _log_not_found("get_thread", e)
             return None
         return ChainlitConverter.to_thread_dict(thread)
 
     async def get_thread_author(self, thread_id: str) -> str:
         try:
             thread = self._store.get_thread(thread_id)
-        except ThreadReadError as e:
-            log.error("get_thread_author: %s", e)
-            await _emit_error(str(e))
-            return "default"
-        if thread is None:
-            log.warning("get_thread_author: thread not found: %s", thread_id)
-            await _emit_error(f"Thread author not found: {thread_id}")
+        except ThreadNotFoundError as e:
+            await _log_not_found("get_thread_author", e)
             return "default"
         return thread.user_identifier
 
     async def list_threads(
         self, pagination: Pagination, filters: ThreadFilter
     ) -> PaginatedResponse[ThreadDict]:
-        offset = int(pagination.cursor) if pagination.cursor else 0
+        offset = int(pagination.cursor or 0)
+        limit = pagination.first
 
-        try:
-            page = self._store.list_threads(
-                limit=pagination.first,
-                offset=offset,
-                search=filters.search,
-            )
-        except ThreadReadError as e:
-            log.error("list_threads: %s", e)
-            await _emit_error(str(e))
-            return PaginatedResponse(
-                pageInfo=PageInfo(
-                    hasNextPage=False, startCursor="0", endCursor="0",
-                ),
-                data=[],
-            )
+        all_threads = list(self._store.iter_threads(search=filters.search))
+        page = all_threads[offset : offset + limit]
 
         return PaginatedResponse(
             pageInfo=PageInfo(
-                hasNextPage=page.has_next,
+                hasNextPage=offset + limit < len(all_threads),
                 startCursor=str(offset),
-                endCursor=str(offset + len(page.threads)),
+                endCursor=str(offset + len(page)),
             ),
-            data=[ChainlitConverter.to_thread_dict(t) for t in page.threads],
+            data=[ChainlitConverter.to_thread_dict(t) for t in page],
         )
 
     async def update_thread(
@@ -323,19 +312,15 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
     ) -> None:
         try:
             thread = self._store.get_thread(thread_id)
-        except ThreadReadError as e:
-            log.error("update_thread: %s", e)
-            await _emit_error(str(e))
-            return
-
-        if thread is None:
+        except ThreadNotFoundError:
+            # Thread ещё не существует — создаём новый.
             meta = ChainlitConverter.metadata_from_dict(metadata or {})
             if not meta.folder:
                 return
             thread = ChatThread(
                 id=thread_id,
                 created_at=datetime.now(timezone.utc).isoformat(),
-                name=name,
+                name=name or thread_id[:12],
                 user_id=user_id or "default",
                 user_identifier="default",
                 metadata=meta,
@@ -348,7 +333,7 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
                 await _emit_error(str(e))
             return
 
-        effective_name = name if name is not None else thread.name
+        effective_name = name or thread.name
 
         updated_meta = thread.metadata
         if metadata is not None:
@@ -389,7 +374,7 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
         step_input = StepInput.parse(step_dict)
         step = ChainlitConverter.from_step_input(step_input)
         try:
-            self._store.add_step(step_input.thread_id, step)
+            self._store.add_step(step)
         except ThreadNotFoundError as e:
             log.error("create_step: %s", e)
             await _emit_error(str(e))
@@ -402,7 +387,7 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
         step_input = StepInput.parse(step_dict)
         step = ChainlitConverter.from_step_input(step_input)
         try:
-            self._store.update_step(step_input.thread_id, step)
+            self._store.update_step(step)
         except ThreadNotFoundError as e:
             log.error("update_step: %s", e)
             await _emit_error(str(e))
@@ -412,7 +397,7 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
 
     async def delete_step(self, step_id: str) -> None:
         try:
-            for thread in self._store.list_threads(limit=10000).threads:
+            for thread in self._store.iter_threads():
                 for step in thread.steps:
                     if step.id == step_id:
                         self._store.delete_step(thread.id, step_id)
@@ -428,7 +413,7 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
 
         try:
             if feedback.forId:
-                for thread in self._store.list_threads(limit=10000).threads:
+                for thread in self._store.iter_threads():
                     for step in thread.steps:
                         if step.id == feedback.forId:
                             self._store.set_feedback(thread.id, step.id, domain_fb)
@@ -441,7 +426,7 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
 
     async def delete_feedback(self, feedback_id: str) -> bool:
         try:
-            for thread in self._store.list_threads(limit=10000).threads:
+            for thread in self._store.iter_threads():
                 for step in thread.steps:
                     if step.feedback and step.feedback.id == feedback_id:
                         self._store.set_feedback(thread.id, step.id, None)
