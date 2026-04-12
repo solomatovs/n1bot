@@ -31,8 +31,8 @@ def create_container() -> Container:
         cfg = container.get(AppConfig)
 
         # REQUEST-scoped (per folder):
-        ctx = FolderContext(folder_path=path, history_path=history)
-        with container(context={FolderContext: ctx}) as scope:
+        ctx = WorkspaceContext(folder_path=path)
+        with container(context={WorkspaceContext: ctx}) as scope:
             agent = scope.get(AgentLoop)
             vs = scope.get(VectorStoreService)
     """

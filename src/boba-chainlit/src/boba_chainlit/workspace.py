@@ -8,8 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 import chainlit as cl
@@ -18,6 +17,7 @@ from chainlit.types import ThreadDict
 from boba_domain.chat.thread import ThreadMetadata
 from boba_domain.config import AppConfig
 from boba_domain.core.thread_store import ChatThreadStore
+from boba_domain.errors import ThreadNotFoundError
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +33,38 @@ class ThreadMetadataError(Exception):
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(f"Invalid thread metadata: {reason}")
+
+
+class NoAuthenticatedUserError(Exception):
+    """В Chainlit-сессии нет авторизованного пользователя."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "No authenticated user in Chainlit session. "
+            "Убедитесь что @cl.header_auth_callback зарегистрирован."
+        )
+
+
+class DataLayerNotInitializedError(Exception):
+    """Chainlit data layer не инициализирован."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Chainlit data layer is None. "
+            "Убедитесь что @cl.data_layer зарегистрирован."
+        )
+
+
+class SessionNotInitializedError(Exception):
+    """SessionState ещё не создан в текущей Chainlit-сессии."""
+
+    def __init__(self, missing_fields: list[str]) -> None:
+        self.missing_fields = missing_fields
+        fields = ", ".join(missing_fields)
+        super().__init__(
+            f"SessionState not initialized: missing fields [{fields}]. "
+            "on_chat_start или on_chat_resume должен быть вызван до обращения к сессии."
+        )
 
 
 class WorkspaceError(Enum):
@@ -60,12 +92,21 @@ WorkspaceOutcome = WorkspaceResult | WorkspaceFailure
 # Session state
 # ------------------------------------------------------------------
 
+_DEFAULT_MAX_TOKENS = 8192
+
 
 @dataclass
 class SessionState:
     folder: str
     display_name: str
     model: str
+    user_id: str
+    max_tokens: int
+    tags: list[str] = field(default_factory=list)
+
+    def to_thread_metadata(self) -> dict:
+        """Метаданные для сохранения в thread.json через data layer."""
+        return {"folder": self.folder, "model": self.model}
 
 
 @dataclass(frozen=True)
@@ -73,26 +114,40 @@ class ParsedChatSettings:
     """Типизированные настройки чата из Chainlit ChatSettings widget."""
 
     model: str
+    max_tokens: int = _DEFAULT_MAX_TOKENS
 
     @classmethod
     def from_raw(cls, raw: dict, default_model: str) -> ParsedChatSettings:
-        return cls(model=raw.get("model") or default_model)
+        return cls(
+            model=raw.get("model") or default_model,
+            max_tokens=int(raw.get("max_tokens") or _DEFAULT_MAX_TOKENS),
+        )
 
 
-def get_session_state() -> SessionState | None:
-    """Typed state из Chainlit session. None если не инициализирован."""
-    folder = cl.user_session.get("folder")
-    display_name = cl.user_session.get("display_name")
-    model = cl.user_session.get("model")
-    if folder is None or display_name is None or model is None:
-        return None
-    return SessionState(folder=folder, display_name=display_name, model=model)
+def get_current_user_id() -> str:
+    """Идентификатор текущего пользователя из Chainlit-сессии."""
+    user = cl.context.session.user
+    if user is None:
+        raise NoAuthenticatedUserError()
+    
+    return user.identifier
+
+
+_SESSION_STATE_KEY = "session_state"
+
+
+def get_session_state() -> SessionState:
+    """Получить SessionState из Chainlit session. Бросает SessionNotInitializedError."""
+    state = cl.user_session.get(_SESSION_STATE_KEY)
+    if not isinstance(state, SessionState):
+        raise SessionNotInitializedError(["SessionState"])
+    
+    return state
 
 
 def set_session_state(state: SessionState) -> None:
-    cl.user_session.set("folder", state.folder)
-    cl.user_session.set("display_name", state.display_name)
-    cl.user_session.set("model", state.model)
+    """Сохранить SessionState в Chainlit session."""
+    cl.user_session.set(_SESSION_STATE_KEY, state)
 
 
 # ------------------------------------------------------------------
@@ -142,25 +197,26 @@ def parse_thread_metadata(thread: ThreadDict) -> ThreadMetadata:
 # Workspace service
 # ------------------------------------------------------------------
 
-
-_DEFAULT_NAME_PREFIX = "workspace"
-
-
 class WorkspaceService:
     """Операции над workspace. Папка на диске = UUID, имя = metadata."""
 
     def __init__(self, cfg: AppConfig, store: ChatThreadStore) -> None:
         self._cfg = cfg
         self._store = store
+        self._DEFAULT_NAME_PREFIX = "workspace"
 
-    def create(self, display_name: str | None = None) -> WorkspaceResult:
-        """Создать workspace с UUID-папкой. Автоимя если display_name не задан."""
-        folder_id = uuid.uuid4().hex
+    def ensure(self, thread_id: str) -> WorkspaceResult:
+        """Вернуть существующий workspace или создать новый. Идемпотентно."""
+        try:
+            thread = self._store.get_thread(thread_id)
+            return WorkspaceResult(folder=thread.metadata.folder, display_name=thread.name)
+        except ThreadNotFoundError:
+            return self._create(thread_id)
+
+    def _create(self, folder_id: str) -> WorkspaceResult:
+        """Создать новый workspace на диске."""
         self._cfg.workspace_path(folder_id).mkdir(parents=True, exist_ok=True)
-
-        if not display_name:
-            display_name = self._next_display_name()
-
+        display_name = self._gen_next_display_name()
         return WorkspaceResult(folder=folder_id, display_name=display_name)
 
     def validate_display_name(self, name: str) -> WorkspaceOutcome:
@@ -170,10 +226,7 @@ class WorkspaceService:
             return WorkspaceFailure(WorkspaceError.INVALID_NAME)
         return WorkspaceResult(folder="", display_name=name)
 
-    def _next_display_name(self) -> str:
-        """Сгенерировать автоимя workspace-1, workspace-2, ..."""
-        existing_names = {t.name for t in self._store.iter_threads()}
-        n = 1
-        while f"{_DEFAULT_NAME_PREFIX}-{n}" in existing_names:
-            n += 1
-        return f"{_DEFAULT_NAME_PREFIX}-{n}"
+    def _gen_next_display_name(self) -> str:
+        """Сгенерировать автоимя workspace-N (N = количество чатов + 1)."""
+        count = sum(1 for _ in self._store.iter_threads())
+        return f"{self._DEFAULT_NAME_PREFIX}-{count + 1}"

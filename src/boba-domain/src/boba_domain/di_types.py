@@ -18,11 +18,10 @@ EmbeddingModel = NewType("EmbeddingModel", str)
 
 
 @dataclass(frozen=True)
-class FolderContext:
+class WorkspaceContext:
     """Runtime-параметры для REQUEST scope.
 
     Передаётся при входе в scope — определяет рабочую папку.
     """
 
     folder_path: Path
-    history_path: Path | None = None

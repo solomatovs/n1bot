@@ -39,7 +39,7 @@ from boba_domain.core.llm_service import LLMCompletionService
 from boba_domain.core.tools import Tool, ToolRegistry
 from boba_domain.config import AppConfig
 from boba_domain.importing.confluence import ConfluenceImportFactory
-from boba_domain.di_types import CollectionName, EmbeddingModel, FolderContext
+from boba_domain.di_types import CollectionName, EmbeddingModel, WorkspaceContext
 from boba_domain.core.vectorstore import VectorStoreService
 from boba_domain.workspace import Workspace
 
@@ -49,20 +49,20 @@ class AgentProvider(Provider):
 
     scope = Scope.REQUEST
 
-    folder_ctx = from_context(provides=FolderContext, scope=Scope.REQUEST)
+    folder_ctx = from_context(provides=WorkspaceContext, scope=Scope.REQUEST)
 
     @provide
-    def workspace(self, cfg: AppConfig, ctx: FolderContext) -> Workspace:
+    def workspace(self, cfg: AppConfig, ctx: WorkspaceContext) -> Workspace:
         return Workspace(
             folder_path=ctx.folder_path,
             boba_path=cfg.boba_path(ctx.folder_path),
             manifest_path=cfg.index_manifest_path(ctx.folder_path),
-            history_path=ctx.history_path,
+            history_path=cfg.workspace_history_path(ctx.folder_path),
         )
 
     @provide
     def vectorstore(
-        self, cfg: AppConfig, emb: LiteLLMEmbeddings, ctx: FolderContext
+        self, cfg: AppConfig, emb: LiteLLMEmbeddings, ctx: WorkspaceContext
     ) -> VectorStoreService:
         chroma_path = str(cfg.chroma_path(ctx.folder_path))
         return ChromaVectorStoreService(
@@ -70,20 +70,16 @@ class AgentProvider(Provider):
         )
 
     @provide
-    def collection_name(self, cfg: AppConfig, ctx: FolderContext) -> CollectionName:
+    def collection_name(self, cfg: AppConfig, ctx: WorkspaceContext) -> CollectionName:
         return CollectionName(cfg.collection_name(ctx.folder_path.name))
 
     @provide
-    def chat_writer(self, ctx: FolderContext) -> ChatWriter:
-        if ctx.history_path is None:
-            raise ValueError("history_path is required for ChatWriter")
-        return JsonlChatWriter(ctx.history_path)
+    def chat_writer(self, cfg: AppConfig, ctx: WorkspaceContext) -> ChatWriter:
+        return JsonlChatWriter(cfg.workspace_history_path(ctx.folder_path))
 
     @provide
-    def chat_reader(self, ctx: FolderContext) -> ChatReader:
-        if ctx.history_path is None:
-            raise ValueError("history_path is required for ChatReader")
-        return JsonlChatReader(ctx.history_path)
+    def chat_reader(self, cfg: AppConfig, ctx: WorkspaceContext) -> ChatReader:
+        return JsonlChatReader(cfg.workspace_history_path(ctx.folder_path))
 
 
 class ToolsProvider(Provider):

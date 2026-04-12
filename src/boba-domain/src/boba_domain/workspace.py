@@ -17,7 +17,7 @@ class Workspace:
     folder_path: Path
     boba_path: Path
     manifest_path: Path
-    history_path: Path | None = None
+    history_path: Path
 
     def source_file_path(self, filename: str) -> Path:
         """Полный путь к файлу в папке."""

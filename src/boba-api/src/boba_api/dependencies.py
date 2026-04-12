@@ -8,7 +8,7 @@ from typing import Iterator
 from dishka import Container
 from fastapi import Depends, Request
 
-from boba_domain.di_types import FolderContext
+from boba_domain.di_types import WorkspaceContext
 
 
 def get_container(request: Request) -> Container:
@@ -18,9 +18,8 @@ def get_container(request: Request) -> Container:
 def get_scope(
     folder_path: Path,
     container: Container = Depends(get_container),
-    history_path: Path | None = None,
 ) -> Iterator[Container]:
     """REQUEST scope для конкретной папки."""
-    ctx = FolderContext(folder_path=folder_path, history_path=history_path)
-    with container(context={FolderContext: ctx}) as scope:
+    ctx = WorkspaceContext(folder_path=folder_path)
+    with container(context={WorkspaceContext: ctx}) as scope:
         yield scope

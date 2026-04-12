@@ -13,6 +13,7 @@ class AgentRequest:
 
     query: str
     model: str
+    max_tokens: int
 
 
 @dataclass(frozen=True)
