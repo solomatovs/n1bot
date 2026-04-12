@@ -1,7 +1,7 @@
 """Tool: индексация документов для последующего поиска."""
 from __future__ import annotations
 
-from typing import Any, Dict, Iterator
+from typing import Iterator
 
 from boba_domain.workspace import Workspace
 from boba_domain.di_types import CollectionName, EmbeddingModel

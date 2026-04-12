@@ -53,17 +53,17 @@ class ConfluenceImportService(Protocol):
         self, page_ids: List[str], output_dir: Path,
     ) -> Iterator[ImportEvent]: ...
 
-
-class ConfluenceImportFactory(Protocol):
-    """Фабрика для создания ConfluenceImportService с runtime-параметрами."""
-
-    def __call__(self, params: ConfluenceImportParams) -> ConfluenceImportService: ...
-
     def import_space(
         self, space_key: str, space_params: SpaceLoadParams, output_dir: Path,
     ) -> Iterator[ImportEvent]: ...
 
     def close(self) -> None: ...
+
+
+class ConfluenceImportFactory(Protocol):
+    """Фабрика для создания ConfluenceImportService с runtime-параметрами."""
+
+    def __call__(self, params: ConfluenceImportParams) -> ConfluenceImportService: ...
 
 
 # ---------------------------------------------------------------------------

@@ -82,6 +82,6 @@ def _configure_ssl() -> None:
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     warnings.filterwarnings("ignore", message="Unverified HTTPS request")
     try:
-        ssl._create_default_https_context = ssl._create_unverified_context  # type: ignore[assignment]
+        setattr(ssl, "_create_default_https_context", ssl._create_unverified_context)
     except AttributeError:
         pass
