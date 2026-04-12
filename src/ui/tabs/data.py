@@ -16,11 +16,13 @@ from application.index_pipeline import (
     IndexingDone,
     IndexingSkipped,
     ManifestChecked,
-    create_index_context,
     run_indexing,
 )
 from domain.errors import VectorStoreError
-from infrastructure.bootstrap import AppServices
+from dishka import Container
+from domain.config import AppConfig
+from domain.di_types import CollectionName, EmbeddingModel, FolderContext
+from domain.core.vectorstore import VectorStoreService
 from ui.components.collections import (
     collection_preview,
     collection_to_dataframe,
@@ -29,10 +31,10 @@ from ui.components.collections import (
 from ui.state import SessionState
 
 
-def render(services: AppServices, state: SessionState) -> None:
+def render(container: Container, state: SessionState) -> None:
     st.title("Векторное хранилище")
 
-    cfg = services.cfg
+    cfg = container.get(AppConfig)
     base_dir = Path(cfg.import_base_dir)
     base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -49,32 +51,47 @@ def render(services: AppServices, state: SessionState) -> None:
         return
 
     folder_path = base_dir / selected
-    chroma_path = str(cfg.chroma_path(folder_path))
     collection_name = cfg.collection_name(selected)
-    vs = services.create_vectorstore(chroma_path)
 
-    # Кнопка индексации — всегда доступна
-    _render_index_button(folder_path, services)
+    with container(context={FolderContext: FolderContext(folder_path=folder_path)}) as scope:
+        vs = scope.get(VectorStoreService)
 
-    # Просмотр коллекции — если существует
-    colls = list_collection_names(vs)
-    if not colls or collection_name not in [c for c in colls]:
-        st.info(f"В папке «{selected}» нет векторной базы. Нажмите «Индексировать».")
-        return
+        # Кнопка индексации — всегда доступна
+        _render_index_button(folder_path, scope)
 
-    _render_collection(vs, collection_name)
+        # Просмотр коллекции — если существует
+        colls = list_collection_names(vs)
+        if not colls or collection_name not in [c for c in colls]:
+            st.info(f"В папке «{selected}» нет векторной базы. Нажмите «Индексировать».")
+            return
+
+        _render_collection(vs, collection_name)
 
 
 # ---------------------------------------------------------------------------
 # Индексация
 # ---------------------------------------------------------------------------
 
-def _render_index_button(folder_path: Path, services: AppServices) -> None:
+def _render_index_button(folder_path: Path, scope: Container) -> None:
     if not st.button("Индексировать", key="vs_reindex"):
         return
 
-    ctx = create_index_context(folder_path, services)
-    _consume_index_events(run_indexing(ctx))
+    vs = scope.get(VectorStoreService)
+    cfg = scope.get(AppConfig)
+    coll = scope.get(CollectionName)
+    emb = scope.get(EmbeddingModel)
+    from application.index_pipeline import IndexContext
+    from application.readers.registry import DocumentReaderRegistry
+    rr = scope.get(DocumentReaderRegistry)
+    idx_ctx = IndexContext(
+        source_path=folder_path,
+        manifest_path=cfg.index_manifest_path(folder_path),
+        collection_name=coll,
+        embedding_model=emb,
+        vectorstore_service=vs,
+        reader_registry=rr,
+    )
+    _consume_index_events(run_indexing(idx_ctx))
 
 
 def _consume_index_events(events: Iterator[IndexEvent]) -> None:

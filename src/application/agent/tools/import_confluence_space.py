@@ -2,14 +2,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator
+from typing import Iterator
 
-from adapters.confluence_importer import ConfluenceImporter
 from domain.agent.events import DocPipelineEvent
-from domain.agent.tools import Tool, ToolOutput, ToolResult
-from domain.importing.confluence import ImportDone, ImportPageFailed, ImportPageSaved, ImportSpaceEnumerated
+from domain.core.tools import Tool, ToolOutput, ToolResult
+from domain.importing.confluence import (
+    ConfluenceImportFactory,
+    ImportDone,
+    ImportPageFailed,
+    ImportPageSaved,
+    ImportSpaceEnumerated,
+)
 from domain.importing.loading import ConfluenceImportParams, SpaceLoadParams
-from domain.config import AppConfig
 from domain.workspace import Workspace
 
 DocToolOutput = ToolOutput[DocPipelineEvent]
@@ -28,9 +32,9 @@ class ImportSpaceParams:
 class ImportConfluenceSpaceTool(Tool[DocPipelineEvent, ImportSpaceParams]):
     """Загрузка целого пространства из Confluence."""
 
-    def __init__(self, ws: Workspace, cfg: AppConfig) -> None:
+    def __init__(self, ws: Workspace, import_factory: ConfluenceImportFactory) -> None:
         self._ws = ws
-        self._cfg = cfg
+        self._import_factory = import_factory
 
     @property
     def name(self) -> str:
@@ -57,7 +61,7 @@ class ImportConfluenceSpaceTool(Tool[DocPipelineEvent, ImportSpaceParams]):
             api_page_limit=params.api_page_limit,
             max_pages=params.max_pages,
         )
-        importer = ConfluenceImporter(self._cfg, import_params)
+        importer = self._import_factory(import_params)
 
         ok = 0
         failed = 0

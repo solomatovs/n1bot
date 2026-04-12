@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, Iterator
 
 from domain.workspace import Workspace
+from domain.di_types import CollectionName, EmbeddingModel
 from domain.agent.events import (
     DocPipelineEvent,
     FileIndexed,
@@ -19,8 +20,9 @@ from application.index_pipeline import (
     IndexingDone as IdxDone,
     IndexingSkipped as IdxSkipped,
 )
-from domain.agent.tools import EmptyParams, Tool, ToolEvent, ToolOutput, ToolResult
-from domain.search.vectorstore import VectorStoreService
+from application.readers.registry import DocumentReaderRegistry
+from domain.core.tools import EmptyParams, Tool, ToolEvent, ToolOutput, ToolResult
+from domain.core.vectorstore import VectorStoreService
 
 DocToolOutput = ToolOutput[DocPipelineEvent]
 
@@ -28,11 +30,19 @@ DocToolOutput = ToolOutput[DocPipelineEvent]
 class IndexDocumentsTool(Tool[DocPipelineEvent, EmptyParams]):
     """Индексация документов для последующего поиска."""
 
-    def __init__(self, ws: Workspace, vs: VectorStoreService, collection_name: str, embedding_model: str) -> None:
+    def __init__(
+        self,
+        ws: Workspace,
+        vs: VectorStoreService,
+        collection_name: CollectionName,
+        embedding_model: EmbeddingModel,
+        reader_registry: DocumentReaderRegistry,
+    ) -> None:
         self._ws = ws
         self._vs = vs
         self._collection_name = collection_name
         self._embedding_model = embedding_model
+        self._reader_registry = reader_registry
 
     @property
     def name(self) -> str:
@@ -58,6 +68,7 @@ class IndexDocumentsTool(Tool[DocPipelineEvent, EmptyParams]):
             collection_name=self._collection_name,
             embedding_model=self._embedding_model,
             vectorstore_service=self._vs,
+            reader_registry=self._reader_registry,
         )
 
         total_files = 0

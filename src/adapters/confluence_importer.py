@@ -20,9 +20,6 @@ from domain.importing.confluence import (
     ImportPageFailed,
     ImportPageSaved,
     ImportSpaceEnumerated,
-    extract_export_view_html,
-    extract_page_ids,
-    extract_page_title,
 )
 from domain.importing.loading import ConfluenceImportParams, SpaceLoadParams
 
@@ -44,7 +41,6 @@ class ConfluenceImporter:
 
     @staticmethod
     def _resolve_auth_headers(cfg: AppConfig, params: ConfluenceImportParams) -> dict[str, str]:
-        """Сформировать заголовки авторизации — пользовательский token или из конфига."""
         if params.token:
             return AppConfig.confluence_bearer_headers(params.token)
         return cfg.confluence_auth_headers
@@ -64,7 +60,7 @@ class ConfluenceImporter:
                 ok += 1
                 yield ImportPageSaved(
                     page_id=page_id, title=title,
-                    file_path=str(_page_file_path(output_dir, page_id)),
+                    file_path=str(self._page_file_path(output_dir, page_id)),
                     index=idx, total=total,
                 )
             except Exception as e:
@@ -91,15 +87,10 @@ class ConfluenceImporter:
     def close(self) -> None:
         self._client.close()
 
-    # -- приватные методы ------------------------------------------------------
+    # -- приватные методы --
 
     def _fetch_and_save(self, page_id: str, output_dir: Path) -> str:
-        """Скачать страницу и записать HTML на диск. Возвращает title.
-
-        Confluence REST API возвращает JSON с HTML внутри —
-        streaming невозможен, JSON парсится целиком.
-        HTML записывается на диск сразу после извлечения.
-        """
+        """Скачать страницу и записать HTML на диск. Возвращает title."""
         url = self._cfg.confluence_page_url(page_id)
         query = ConfluencePageQuery()
 
@@ -107,9 +98,9 @@ class ConfluenceImporter:
         resp.raise_for_status()
         data = resp.json()
 
-        title = extract_page_title(data, fallback=page_id)
-        html_value = extract_export_view_html(data)
-        file_path = _page_file_path(output_dir, page_id)
+        title = self._extract_page_title(data, fallback=page_id)
+        html_value = self._extract_export_view_html(data)
+        file_path = self._page_file_path(output_dir, page_id)
 
         with open(file_path, "wb") as f:
             f.write(html_value.encode("utf-8"))
@@ -126,7 +117,7 @@ class ConfluenceImporter:
             query = ConfluenceSpaceQuery(space_key=space_key, limit=limit, start=start)
             resp = self._client.get(self._cfg.confluence_content_url, params=query.to_params())
             resp.raise_for_status()
-            batch = extract_page_ids(resp.json())
+            batch = self._extract_page_ids(resp.json())
             if not batch:
                 break
             ids.extend(batch)
@@ -136,7 +127,19 @@ class ConfluenceImporter:
 
         return ids
 
+    @staticmethod
+    def _page_file_path(output_dir: Path, page_id: str) -> Path:
+        return output_dir / f"{page_id}.html"
 
-def _page_file_path(output_dir: Path, page_id: str) -> Path:
-    """Путь к файлу импортированной страницы."""
-    return output_dir / f"{page_id}.html"
+    @staticmethod
+    def _extract_page_ids(response_json: dict) -> List[str]:
+        results = response_json.get("results") or []
+        return [str(item["id"]) for item in results if "id" in item]
+
+    @staticmethod
+    def _extract_page_title(page_json: dict, fallback: str = "") -> str:
+        return page_json.get("title", fallback)
+
+    @staticmethod
+    def _extract_export_view_html(page_json: dict) -> str:
+        return page_json["body"]["export_view"]["value"]

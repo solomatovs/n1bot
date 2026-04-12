@@ -4,9 +4,10 @@ from __future__ import annotations
 from typing import Any, Dict, Iterator
 
 from domain.agent.events import DocPipelineEvent
-from domain.agent.tools import EmptyParams, Tool, ToolOutput, ToolResult
-from domain.search.vectorstore import VectorStoreService
+from domain.core.tools import EmptyParams, Tool, ToolOutput, ToolResult
+from domain.core.vectorstore import VectorStoreService
 from domain.workspace import Workspace
+from domain.di_types import CollectionName
 
 DocToolOutput = ToolOutput[DocPipelineEvent]
 
@@ -14,7 +15,7 @@ DocToolOutput = ToolOutput[DocPipelineEvent]
 class DeleteCollectionTool(Tool[DocPipelineEvent, EmptyParams]):
     """Удаление векторной коллекции для переиндексации."""
 
-    def __init__(self, ws: Workspace, vs: VectorStoreService, collection_name: str) -> None:
+    def __init__(self, ws: Workspace, vs: VectorStoreService, collection_name: CollectionName) -> None:
         self._ws = ws
         self._vs = vs
         self._collection_name = collection_name

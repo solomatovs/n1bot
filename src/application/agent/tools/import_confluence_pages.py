@@ -2,14 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List
+from typing import Iterator
 
-from adapters.confluence_importer import ConfluenceImporter
 from domain.agent.events import DocPipelineEvent
-from domain.agent.tools import Tool, ToolEvent, ToolOutput, ToolResult
-from domain.importing.confluence import ImportDone, ImportPageFailed, ImportPageSaved
+from domain.core.tools import Tool, ToolOutput, ToolResult
+from domain.importing.confluence import ConfluenceImportFactory, ImportDone, ImportPageFailed, ImportPageSaved
 from domain.importing.loading import ConfluenceImportParams
-from domain.config import AppConfig
 from domain.workspace import Workspace
 
 DocToolOutput = ToolOutput[DocPipelineEvent]
@@ -26,9 +24,9 @@ class ImportPagesParams:
 class ImportConfluencePagesTool(Tool[DocPipelineEvent, ImportPagesParams]):
     """Загрузка страниц из Confluence по ID."""
 
-    def __init__(self, ws: Workspace, cfg: AppConfig) -> None:
+    def __init__(self, ws: Workspace, import_factory: ConfluenceImportFactory) -> None:
         self._ws = ws
-        self._cfg = cfg
+        self._import_factory = import_factory
 
     @property
     def name(self) -> str:
@@ -56,15 +54,15 @@ class ImportConfluencePagesTool(Tool[DocPipelineEvent, ImportPagesParams]):
             timeout=params.timeout,
             ssl_verify=params.ssl_verify,
         )
-        importer = ConfluenceImporter(self._cfg, import_params)
+        importer = self._import_factory(import_params)
 
         ok = 0
         failed = 0
         for event in importer.import_pages(page_ids, self._ws.folder_path):
             match event:
-                case ImportPageSaved(page_id=pid, title=title):
+                case ImportPageSaved():
                     ok += 1
-                case ImportPageFailed(page_id=pid, error=err):
+                case ImportPageFailed():
                     failed += 1
                 case ImportDone():
                     pass

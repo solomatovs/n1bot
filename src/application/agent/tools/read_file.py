@@ -7,7 +7,7 @@ from typing import Iterator
 from domain.workspace import Workspace
 from domain.agent.events import ContextReady, DocPipelineEvent
 from domain.search.types import ChunkLocation, Fragment, SearchHit
-from domain.agent.tools import Tool, ToolEvent, ToolOutput, ToolResult
+from domain.core.tools import Tool, ToolEvent, ToolOutput, ToolResult
 
 DocToolOutput = ToolOutput[DocPipelineEvent]
 

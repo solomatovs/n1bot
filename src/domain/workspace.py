@@ -13,6 +13,7 @@ from pathlib import Path
 class Workspace:
     """Рабочая папка с документами."""
     folder_path: Path
+    boba_path: Path
     manifest_path: Path
     history_path: Path | None = None
 

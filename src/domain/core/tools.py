@@ -177,6 +177,11 @@ class ToolRegistry(Generic[TEvent]):
             self._tools[tool.name] = tool
 
     @property
+    def tools(self) -> Sequence[Tool[TEvent, Any]]:
+        """Все зарегистрированные инструменты."""
+        return list(self._tools.values())
+
+    @property
     def definitions(self) -> List[Dict[str, Any]]:
         """OpenAI-совместимые определения всех инструментов."""
         return [t.definition for t in self._tools.values()]

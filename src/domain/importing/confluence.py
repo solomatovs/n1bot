@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, List, Protocol, Union, runtime_checkable
 
-from domain.importing.loading import SpaceLoadParams
+from domain.importing.loading import ConfluenceImportParams, SpaceLoadParams
 
 
 @dataclass(frozen=True)
@@ -53,6 +53,12 @@ class ConfluenceImportService(Protocol):
         self, page_ids: List[str], output_dir: Path,
     ) -> Iterator[ImportEvent]: ...
 
+
+class ConfluenceImportFactory(Protocol):
+    """Фабрика для создания ConfluenceImportService с runtime-параметрами."""
+
+    def __call__(self, params: ConfluenceImportParams) -> ConfluenceImportService: ...
+
     def import_space(
         self, space_key: str, space_params: SpaceLoadParams, output_dir: Path,
     ) -> Iterator[ImportEvent]: ...
@@ -88,19 +94,3 @@ class ConfluenceSpaceQuery:
             "limit": self.limit,
             "start": self.start,
         }
-
-
-def extract_page_ids(response_json: dict) -> List[str]:
-    """Извлечь page_id из ответа Confluence REST API."""
-    results = response_json.get("results") or []
-    return [str(item["id"]) for item in results if "id" in item]
-
-
-def extract_page_title(page_json: dict, fallback: str = "") -> str:
-    """Извлечь title страницы из ответа Confluence REST API."""
-    return page_json.get("title", fallback)
-
-
-def extract_export_view_html(page_json: dict) -> str:
-    """Извлечь HTML-контент (export_view) из ответа Confluence REST API."""
-    return page_json["body"]["export_view"]["value"]

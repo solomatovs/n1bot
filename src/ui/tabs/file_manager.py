@@ -6,15 +6,17 @@ from typing import List
 
 import streamlit as st
 
-from infrastructure.bootstrap import AppServices
+from dishka import Container
+from domain.config import AppConfig
 from ui.components.folder_selector import folder_selector
 from ui.state import SessionState
 
 
-def render(services: AppServices, state: SessionState) -> None:
+def render(container: Container, state: SessionState) -> None:
     st.title("Загрузка вручную")
 
-    base_dir = Path(services.cfg.import_base_dir)
+    cfg = container.get(AppConfig)
+    base_dir = Path(cfg.import_base_dir)
     folder_path = folder_selector(base_dir, key_prefix="fm")
 
     if folder_path is None:

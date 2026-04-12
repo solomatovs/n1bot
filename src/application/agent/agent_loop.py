@@ -1,79 +1,67 @@
-"""AgentLoop — главный компонент агента.
+"""AgentLoop — чистый оркестратор агентного цикла.
 
-Создаётся один раз через bootstrap. Содержит все зависимости.
-При каждом вызове run() сам собирает workspace, registry, context window.
-
-UI:
-    agent = services.create_agent(folder_path, history_path)
-    for event in agent.run(query, model):
-        handle(event)
+Подготовка контекста через Pipeline (цепочка PipelineStage),
+затем цикл LLM → tools → repeat.
 """
 from __future__ import annotations
 
 import logging
-from typing import Iterator, Sequence
+from typing import Iterator
 
 from openai import OpenAI
 
+from adapters.openai_adapter import to_openai_messages, to_openai_tools
 from application.agent.llm_client import LLMStreamConsumer
-from application.agent.system_prompt import build_system_prompt
 from application.agent.tool_executor import ToolCallExecutor
+from domain.agent.context_filler import ContextRequest
 from domain.agent.context_window import ContextWindow
 from domain.agent.events import (
     AnswerToken,
     DocPipelineEvent,
     GenerationDone,
     StageCompleted,
-    StageStarted,
 )
-from domain.agent.tools import Tool, ToolRegistry
-from domain.workspace import Workspace
+from domain.core.pipeline import Pipeline
 
 log = logging.getLogger(__name__)
 
+ContextPipeline = Pipeline[ContextRequest, DocPipelineEvent]
+
 
 class AgentLoop:
-    """Агент — самодостаточный компонент.
-
-    Содержит workspace, registry, openai_client.
-    run(query, model) — единственный публичный метод.
-    """
+    """Агентный цикл: Pipeline fillers → (LLM → tools)* → ответ."""
 
     def __init__(
         self,
         openai_client: OpenAI,
-        workspace: Workspace,
-        tools: Sequence[Tool],
+        context_pipeline: ContextPipeline,
+        tool_executor: ToolCallExecutor,
         *,
         max_iterations: int = 10,
     ) -> None:
         self._client = openai_client
-        self._workspace = workspace
-        self._registry: ToolRegistry = ToolRegistry(tools)
-        self._system_prompt = build_system_prompt(self._registry)
+        self._context_pipeline = context_pipeline
+        self._executor = tool_executor
         self._max_iterations = max_iterations
 
     def run(self, query: str, model: str) -> Iterator[DocPipelineEvent]:
-        """Запустить агентный цикл для запроса.
-
-        Сам создаёт context window, наполняет system prompt + query,
-        крутит цикл LLM → tools → repeat.
-        """
-        yield StageStarted(stage="agent_loop")
-
+        """Запустить агентный цикл."""
+        # 1. Подготовка context window через Pipeline
         window = ContextWindow()
-        window.add_system(self._system_prompt)
-        window.add_user(query)
+        yield from self._context_pipeline.run(ContextRequest(window=window, query=query))
 
-        executor = ToolCallExecutor(self._registry)
-
+        # 2. Цикл: LLM → tools → repeat
         for iteration in range(1, self._max_iterations + 1):
             log.debug("Agent iteration %d/%d", iteration, self._max_iterations)
 
+            # Конвертация domain → OpenAI API (через адаптер, streaming)
+            messages = list(to_openai_messages(iter(window.messages)))
+            tools = list(to_openai_tools(iter(window.tool_definitions)))
+
             stream = self._client.chat.completions.create(
                 model=model,
-                messages=window.to_messages(),  # type: ignore[arg-type]
-                tools=self._registry.definitions,  # type: ignore[arg-type]
+                messages=messages,
+                tools=tools,
                 stream=True,
             )
 
@@ -81,7 +69,7 @@ class AgentLoop:
             yield from consumer.consume(stream)
 
             if consumer.has_tool_calls:
-                yield from executor.execute(consumer.tool_calls, window)
+                yield from self._executor.execute(consumer.tool_calls, window)
                 continue
 
             yield GenerationDone()

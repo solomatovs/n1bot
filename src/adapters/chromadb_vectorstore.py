@@ -19,13 +19,11 @@ from domain.errors import (
     StoreBatchError,
     VectorStoreError,
 )
-from domain.search.vectorstore import DocumentLike
-from domain.search.vectorstore import CollectionData, CollectionInfo, ScoredDocument
+from domain.core.vectorstore import DocumentLike
+from domain.core.vectorstore import CollectionData, CollectionInfo, ScoredDocument
 from adapters.litellm_embeddings import LiteLLMEmbeddings
 
 log = logging.getLogger(__name__)
-
-EMBEDDING_MODEL_KEY = "embedding_model"
 
 
 class ChromaVectorStoreService:
@@ -35,13 +33,14 @@ class ChromaVectorStoreService:
     - При создании коллекции записывает имя модели в metadata
     - При чтении — подбирает нужную модель из кэша
     """
-
+    
     def __init__(
         self,
         db_path: str,
         default_embedding: LiteLLMEmbeddings,
         cfg: AppConfig,
     ) -> None:
+        self.EMBEDDING_MODEL_KEY = "embedding_model"
         self._db_path = db_path
         self._cfg = cfg
         self._default_embedding = default_embedding
@@ -98,7 +97,7 @@ class ChromaVectorStoreService:
             client = self._get_client()
             client.get_or_create_collection(
                 collection_name,
-                metadata={EMBEDDING_MODEL_KEY: embedding_model},
+                metadata={self.EMBEDDING_MODEL_KEY: embedding_model},
             )
         except chromadb.errors.ChromaError as e:
             raise CollectionCreateError(f"Failed to create collection '{collection_name}': {e}") from e
@@ -187,17 +186,16 @@ class ChromaVectorStoreService:
         embedding = self.resolve_embedding(model_name)
         return Chroma(client=client, collection_name=collection_name, embedding_function=embedding)
 
-    def _get_client(self):  # noqa: ANN202
+    def _get_client(self):
         return chromadb.PersistentClient(
             path=self._db_path,
             settings=Settings(anonymized_telemetry=False),
         )
 
-    @staticmethod
-    def _read_embedding_model(collection: chromadb.Collection) -> Optional[str]:
+    def _read_embedding_model(self, collection: chromadb.Collection) -> Optional[str]:
         """Прочитать имя embedding модели из metadata коллекции."""
         metadata = collection.metadata or {}
-        return metadata.get(EMBEDDING_MODEL_KEY)
+        return metadata.get(self.EMBEDDING_MODEL_KEY)
 
     @staticmethod
     def _normalize_document(d: DocumentLike) -> Document:
