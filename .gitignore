@@ -4,3 +4,7 @@ __pycache__
 *.pyo
 *.pyd
 chroma_debug_db
+# Chainlit runtime artifacts
+.chainlit/translations/
+.files/
+chainlit.md

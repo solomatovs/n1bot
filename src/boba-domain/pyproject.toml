@@ -1,0 +1,13 @@
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "boba-domain"
+version = "0.1.0"
+description = "N1Bot domain — protocols, ABCs, value objects, events"
+authors = ["Sergei Solomatov"]
+packages = [{ include = "boba_domain", from = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.11"

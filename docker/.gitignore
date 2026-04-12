@@ -1,7 +1,8 @@
-.streamlit/secrets.toml
-.env.debug
-.env.testing
-chroma_app_db
+secrets/
+config/config.toml
+config/config.debug.toml
+config/.chainlit/translations/
+config/.files/
 python-src
 glibc-src
 gcc-src
