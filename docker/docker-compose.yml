@@ -6,7 +6,6 @@ services:
     container_name: n1bot
     volumes:
       - ./chroma_app_db:/app/chroma_app_db
-      - ./.streamlit:/app/.streamlit:ro
     env_file:
       - env/.env.testing
     restart: always
