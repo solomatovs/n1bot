@@ -9,7 +9,7 @@ from boba_domain.agent.events import DocPipelineEvent, SearchDone
 from boba_domain.core.vectorstore import VectorStoreService
 from boba_domain.workspace import Workspace
 from boba_domain.di_types import CollectionName
-from boba_app.agent.tools._helpers import MAX_RESULT_CHARS, parse_location
+from boba_app.agent.tools._helpers import parse_location
 from boba_domain.search.types import SearchHit
 from boba_domain.core.tools import Tool, ToolEvent, ToolOutput, ToolResult
 from boba_domain.search.types import ChunkLocation
@@ -31,7 +31,6 @@ class SearchParams:
 class SearchDocumentsTool(Tool[DocPipelineEvent, SearchParams]):
     """Векторный поиск по проиндексированным документам."""
 
-    MAX_RESULT_CHARS = 4000
     _REQUIRED_META_FIELDS = (
         "source_file",
         "start_line",
@@ -83,7 +82,13 @@ class SearchDocumentsTool(Tool[DocPipelineEvent, SearchParams]):
         yield ToolEvent(SearchDone(hits=hits))
 
         if not hits:
-            yield ToolResult(content="Ничего не найдено по запросу.")
+            yield ToolResult(
+                content=(
+                    "Ничего не найдено по запросу. "
+                    "Не вызывай search_documents повторно с тем же запросом. "
+                    "Попробуй другой запрос или сообщи пользователю, что информация не найдена."
+                )
+            )
             return
 
         parts = (
@@ -92,7 +97,7 @@ class SearchDocumentsTool(Tool[DocPipelineEvent, SearchParams]):
             for i, h in enumerate(hits, 1)
         )
         text = "\n\n---\n\n".join(parts)
-        yield ToolResult(content=text[:MAX_RESULT_CHARS])
+        yield ToolResult(content=text)
 
     @classmethod
     def parse_location(cls, meta: dict) -> ChunkLocation:

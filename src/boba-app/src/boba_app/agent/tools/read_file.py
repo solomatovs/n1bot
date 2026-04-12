@@ -33,8 +33,6 @@ class ReadFileParams:
 class ReadFileTool(Tool[DocPipelineEvent, ReadFileParams]):
     """Чтение содержимого документа (целиком или диапазон строк)."""
 
-    MAX_RESULT_CHARS = 4000
-
     def __init__(self, ws: Workspace) -> None:
         self._ws = ws
 
@@ -79,8 +77,6 @@ class ReadFileTool(Tool[DocPipelineEvent, ReadFileParams]):
         else:
             text = file_path.read_text(encoding="utf-8", errors="replace")
             label = params.filename
-
-        text = text[: self.MAX_RESULT_CHARS]
 
         fragment = Fragment(
             text=text,
