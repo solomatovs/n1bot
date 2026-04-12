@@ -13,22 +13,22 @@ from queue import Queue
 from threading import Thread
 
 import chainlit as cl
-from chainlit.chat_context import chat_context
 from chainlit.types import ThreadDict
 
 from boba_adapters.litellm_models import fetch_chat_models
 from boba_app.agent.agent_loop import AgentLoop
 from boba_app.session import ChatSession
-from boba_chainlit.data_layer import ChainlitConverter, ChainlitDataLayerAdapter
+from boba_chainlit.data_layer import ChainlitDataLayerAdapter
 from boba_chainlit.workspace import (
+    DataLayerNotInitializedError,
     ParsedChatSettings,
+    SessionNotInitializedError,
     SessionState,
-    ThreadMetadataError,
     WorkspaceError,
     WorkspaceFailure,
     WorkspaceService,
+    get_current_user_id,
     get_session_state,
-    parse_thread_metadata,
     send_error,
     set_session_state,
 )
@@ -42,7 +42,7 @@ from boba_domain.agent.events import (
 )
 from boba_domain.config import AppConfig
 from boba_domain.core.thread_store import ChatThreadStore
-from boba_domain.di_types import FolderContext
+from boba_domain.di_types import WorkspaceContext
 from boba_infra.container import create_container
 
 log = logging.getLogger(__name__)
@@ -54,11 +54,6 @@ agent_cfg = AgentConfig.from_env()
 workspace_svc = WorkspaceService(cfg, thread_store)
 
 _SENTINEL = object()
-
-# Отслеживание первого запуска для каждого пользователя.
-# При первом подключении после старта сервера — резьюм последнего чата.
-# При последующих (кнопка "New Chat") — создание нового workspace.
-_initial_load_done: set[str] = set()
 
 
 def _model_widget():
@@ -76,28 +71,38 @@ def _model_widget():
     return cl.input_widget.TextInput(id="model", label="Модель", initial=default)
 
 
+def _max_tokens_widget():
+    return cl.input_widget.NumberInput(
+        id="max_tokens",
+        label="Контекстное окно (токены)",
+        initial=8192,
+    )
+
+
 def _settings_widgets() -> list[cl.input_widget.InputWidget]:
-    return [_model_widget()]
+    return [_model_widget(), _max_tokens_widget()]
 
 
 def _get_dl():
-    from chainlit.data import get_data_layer as _dl
+    """Data layer. Всегда доступен — зарегистрирован через @cl.data_layer."""
+    from chainlit.data import get_data_layer
 
-    return _dl()
+    dl = get_data_layer()
+    if dl is None:
+        raise DataLayerNotInitializedError()
+    
+    return dl
 
 
 async def _save_thread_metadata(state: SessionState) -> None:
     """Сохранить state в thread metadata через data layer."""
-    if not state.folder:
-        return
-    data_layer = _get_dl()
-    thread_id = cl.context.session.thread_id
-    if data_layer and thread_id:
-        await data_layer.update_thread(
-            thread_id,
-            name=state.display_name,
-            metadata={"folder": state.folder, "model": state.model},
-        )
+    await _get_dl().update_thread(
+        thread_id=cl.context.session.thread_id,
+        name=state.display_name,
+        user_id=state.user_id,
+        metadata=state.to_thread_metadata(),
+        tags=state.tags,
+    )
 
 
 # ------------------------------------------------------------------
@@ -107,6 +112,7 @@ async def _save_thread_metadata(state: SessionState) -> None:
 
 @cl.header_auth_callback
 async def header_auth(_headers) -> cl.User:
+    """Авторизация. Вызывается Chainlit при каждом WebSocket-подключении."""
     return cl.User(identifier="default", metadata={"role": "user"})
 
 
@@ -125,94 +131,65 @@ def get_data_layer():
 # ------------------------------------------------------------------
 
 
-@cl.on_chat_start
-async def on_chat_start():
-    user_id = (
-        cl.context.session.user.identifier if cl.context.session.user else "default"
-    )
-    is_initial = user_id not in _initial_load_done
-    _initial_load_done.add(user_id)
+async def _init_session() -> None:
+    """Общая логика инициализации сессии (новый чат и resume).
+
+    1. Ensure workspace (создать если не существует)
+    2. Отправить ChatSettings виджеты
+    3. Заполнить SessionState
+    4. Сохранить metadata
+    """
+    thread_id = cl.context.session.thread_id
+    result = workspace_svc.ensure(thread_id)
+    ChatSession.create(cfg, thread_id)
 
     raw_settings = await cl.ChatSettings(_settings_widgets()).send()
     chat_settings = ParsedChatSettings.from_raw(raw_settings, agent_cfg.default_model)
-
-    # При первом подключении проверяем существующие чаты.
-    # Если есть — резьюмим последний, иначе создаём новый.
-    if is_initial:
-        latest = next(thread_store.iter_threads(), None)
-        if latest is not None:
-            await _resume_latest(latest, chat_settings.model)
-            return
-
-    # Новый workspace — первый запуск без чатов или кнопка "New Chat".
-    result = workspace_svc.create()
-    thread_id = cl.context.session.thread_id
-    ChatSession.create(cfg, result.folder, chat_id=thread_id)
 
     state = SessionState(
         folder=result.folder,
         display_name=result.display_name,
         model=chat_settings.model,
+        user_id=get_current_user_id(),
+        max_tokens=chat_settings.max_tokens,
     )
     set_session_state(state)
     await _save_thread_metadata(state)
 
 
-async def _resume_latest(thread, model: str) -> None:
-    """Восстановить последний чат в текущей сессии."""
-    session = cl.context.session
-    session.thread_id = thread.id
-    session.has_first_interaction = True
-
-    state = SessionState(
-        folder=thread.metadata.folder,
-        display_name=thread.name,
-        model=thread.metadata.model or model,
-    )
-    set_session_state(state)
-
-    thread_dict = ChainlitConverter.to_thread_dict(thread)
-
-    await cl.context.emitter.emit(
-        "first_interaction",
-        {"interaction": "resume", "thread_id": thread.id},
-    )
-
-    for step in thread_dict.get("steps", []):
-        if "message" in step.get("type", ""):
-            chat_context.add(cl.Message.from_dict(step))
-
-    await cl.context.emitter.resume_thread(thread_dict)
+@cl.on_chat_start
+async def on_chat_start():
+    """Новый чат. Вызывается Chainlit при:
+    — первом визите (нет thread_id от frontend)
+    — нажатии кнопки "New Chat"
+    — восстановлении WebSocket-сессии (в пределах session_timeout),
+      если пользователь ещё не отправлял сообщений
+    """
+    await _init_session()
 
 
 @cl.on_chat_resume
-async def on_chat_resume(thread: ThreadDict):
-    try:
-        metadata = parse_thread_metadata(thread)
-    except ThreadMetadataError as e:
-        log.error("on_chat_resume: %s", e)
-        await send_error(WorkspaceFailure(WorkspaceError.CORRUPT_METADATA, str(e)))
-        return
-
-    state = SessionState(
-        folder=metadata.folder,
-        display_name=thread.get("name") or metadata.folder,
-        model=metadata.model or agent_cfg.default_model,
-    )
-    set_session_state(state)
-
-    await cl.ChatSettings(_settings_widgets()).send()
+async def on_chat_resume(_thread: ThreadDict):
+    """Возврат к существующему чату. Вызывается Chainlit когда
+    frontend передаёт thread_id (клик по чату в sidebar).
+    Chainlit загружает thread из data layer и передаёт сюда.
+    """
+    await _init_session()
 
 
 @cl.on_settings_update
 async def on_settings_update(settings: dict):
-    state = get_session_state()
-    if state is None:
+    """Пользователь изменил настройки чата (напр. сменил модель)."""
+    try:
+        state = get_session_state()
+    except SessionNotInitializedError as e:
+        log.error("on_settings_update: %s", e)
         await send_error(WorkspaceFailure(WorkspaceError.NOT_FOUND))
         return
 
     chat_settings = ParsedChatSettings.from_raw(settings, state.model)
     state.model = chat_settings.model
+    state.max_tokens = chat_settings.max_tokens
 
     set_session_state(state)
     await _save_thread_metadata(state)
@@ -225,25 +202,34 @@ async def on_settings_update(settings: dict):
 
 @cl.on_message
 async def on_message(message: cl.Message):
-    state = get_session_state()
-    if state is None or not state.folder:
+    """Пользователь отправил сообщение. Вызывается Chainlit
+    при каждом сообщении в активном чате (новом или возобновлённом).
+    """
+    try:
+        state = get_session_state()
+    except SessionNotInitializedError as e:
+        log.error("on_message: %s", e)
         await send_error(WorkspaceFailure(WorkspaceError.NOT_FOUND))
         return
 
     thread_id = cl.context.session.thread_id
-    session = ChatSession.create(cfg, state.folder, chat_id=thread_id)
+    session = ChatSession.create(cfg, thread_id)
 
     q: Queue = Queue()
 
     def _run_agent():
         try:
-            with container(context={FolderContext: session.folder_context}) as scope:
+            with container(
+                context={WorkspaceContext: session.workspace_context}
+            ) as scope:
                 agent = scope.get(AgentLoop)
                 from boba_domain.agent.config import AgentRequest
 
-                for event in agent.run(
-                    AgentRequest(query=message.content, model=state.model)
-                ):
+                for event in agent.run(AgentRequest(
+                    query=message.content,
+                    model=state.model,
+                    max_tokens=state.max_tokens,
+                )):
                     q.put(event)
         except Exception as e:
             q.put(e)

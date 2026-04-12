@@ -14,16 +14,16 @@ from boba_app.session import ChatSession
 from boba_domain.agent.config import AgentRequest
 from boba_domain.agent.events import DocPipelineEvent, DocPipelineEventSerializer
 from boba_domain.config import AppConfig
-from boba_domain.di_types import FolderContext
+from boba_domain.di_types import WorkspaceContext
 
 router = APIRouter(tags=["chat"])
 
 
 class ChatRequest(BaseModel):
-    folder: str
+    chat_id: str  # thread_id = folder name
     message: str
     model: str
-    chat_id: str | None = None
+    max_tokens: int
 
 
 @router.post("/chat")
@@ -38,12 +38,14 @@ def chat(body: ChatRequest, request: Request) -> StreamingResponse:
     container = request.app.state.container
     cfg = container.get(AppConfig)
 
-    session = ChatSession.create(cfg, body.folder, body.chat_id)
+    session = ChatSession.create(cfg, body.chat_id)
 
     def generate() -> Iterator[str]:
-        with container(context={FolderContext: session.folder_context}) as scope:
+        with container(context={WorkspaceContext: session.workspace_context}) as scope:
             agent = scope.get(AgentLoop)
-            for event in agent.run(AgentRequest(query=body.message, model=body.model)):
+            for event in agent.run(AgentRequest(
+                query=body.message, model=body.model, max_tokens=body.max_tokens,
+            )):
                 yield f"data: {event_to_sse(event)}\n\n"
         yield "data: [DONE]\n\n"
 
