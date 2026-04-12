@@ -1,4 +1,5 @@
 """Tool: удаление векторной коллекции."""
+
 from __future__ import annotations
 
 from typing import Iterator
@@ -15,7 +16,9 @@ DocToolOutput = ToolOutput[DocPipelineEvent]
 class DeleteCollectionTool(Tool[DocPipelineEvent, EmptyParams]):
     """Удаление векторной коллекции для переиндексации."""
 
-    def __init__(self, ws: Workspace, vs: VectorStoreService, collection_name: CollectionName) -> None:
+    def __init__(
+        self, ws: Workspace, vs: VectorStoreService, collection_name: CollectionName
+    ) -> None:
         self._ws = ws
         self._vs = vs
         self._collection_name = collection_name

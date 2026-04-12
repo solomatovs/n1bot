@@ -2,6 +2,7 @@
 
 PipelineStage: берёт query из ContextRequest, добавляет в window.
 """
+
 from __future__ import annotations
 
 from typing import Iterator

@@ -5,6 +5,7 @@ Append-only коллекция LLMMessage с автоматическим compac
 
 Чистый domain-тип. Конвертация в API-формат — через адаптер снаружи.
 """
+
 from __future__ import annotations
 
 import logging
@@ -44,9 +45,13 @@ class ContextWindow:
         self._messages.append(LLMMessage(role=LLMRole.ASSISTANT, tool_calls=tool_calls))
 
     def add_tool_result(self, tool_call_id: str, content: str) -> None:
-        self._messages.append(LLMMessage(
-            role=LLMRole.TOOL, content=content, tool_call_id=tool_call_id,
-        ))
+        self._messages.append(
+            LLMMessage(
+                role=LLMRole.TOOL,
+                content=content,
+                tool_call_id=tool_call_id,
+            )
+        )
         self._maybe_compact()
 
     def set_tool_definitions(self, definitions: List[Dict[str, Any]]) -> None:
@@ -91,11 +96,17 @@ class ContextWindow:
                 continue
             if len(msg.content) <= min_size:
                 continue
-            compacted = msg.content[:self._COMPACT_KEEP_CHARS] + self._COMPACT_SUFFIX
+            compacted = msg.content[: self._COMPACT_KEEP_CHARS] + self._COMPACT_SUFFIX
             self._messages[i] = LLMMessage(
-                role=msg.role, content=compacted, tool_call_id=msg.tool_call_id,
+                role=msg.role,
+                content=compacted,
+                tool_call_id=msg.tool_call_id,
             )
-            log.debug("Compacted tool result %s: %d → %d chars",
-                      msg.tool_call_id, len(msg.content), len(compacted))
+            log.debug(
+                "Compacted tool result %s: %d → %d chars",
+                msg.tool_call_id,
+                len(msg.content),
+                len(compacted),
+            )
             return True
         return False

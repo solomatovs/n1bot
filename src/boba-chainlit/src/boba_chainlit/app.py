@@ -1,4 +1,5 @@
 """Boba Chainlit UI — точка входа."""
+
 from __future__ import annotations
 
 import asyncio
@@ -55,20 +56,25 @@ async def on_chat_start():
     base_dir.mkdir(parents=True, exist_ok=True)
 
     folders = sorted(
-        d.name for d in base_dir.iterdir()
-        if d.is_dir() and not d.name.startswith(".")
+        d.name for d in base_dir.iterdir() if d.is_dir() and not d.name.startswith(".")
     )
     if not folders:
-        await cl.Message(content="Нет папок с документами. Импортируйте документы.").send()
+        await cl.Message(
+            content="Нет папок с документами. Импортируйте документы."
+        ).send()
         return
 
-    settings = await cl.ChatSettings([
-        cl.input_widget.Select(
-            id="folder", label="Папка с документами",
-            values=folders, initial_value=folders[0],
-        ),
-        _model_selector(),
-    ]).send()
+    settings = await cl.ChatSettings(
+        [
+            cl.input_widget.Select(
+                id="folder",
+                label="Папка с документами",
+                values=folders,
+                initial_value=folders[0],
+            ),
+            _model_selector(),
+        ]
+    ).send()
 
     cl.user_session.set("folder", settings["folder"])
     cl.user_session.set("model", settings["model"])

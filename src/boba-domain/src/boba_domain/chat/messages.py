@@ -1,4 +1,5 @@
 """LLM Messages — доменная модель сообщений."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from typing import Any
 
 class LLMRole(str, Enum):
     """Роли сообщений."""
+
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
@@ -20,6 +22,7 @@ class LLMMessage:
 
     Чистый domain-тип. Конвертация в API-формат — в адаптере.
     """
+
     role: LLMRole
     content: str = ""
     tool_calls: list[dict[str, Any]] | None = None

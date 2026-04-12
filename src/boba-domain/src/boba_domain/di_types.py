@@ -3,6 +3,7 @@
 NewType'ы для примитивных зависимостей, которые dishka
 не может различить по базовому типу (str, int).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -22,5 +23,6 @@ class FolderContext:
 
     Передаётся при входе в scope — определяет рабочую папку.
     """
+
     folder_path: Path
     history_path: Path | None = None

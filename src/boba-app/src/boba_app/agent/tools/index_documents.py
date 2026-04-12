@@ -1,4 +1,5 @@
 """Tool: индексация документов для последующего поиска."""
+
 from __future__ import annotations
 
 from typing import Iterator
@@ -78,7 +79,9 @@ class IndexDocumentsTool(Tool[DocPipelineEvent, EmptyParams]):
             match event:
                 case IdxSkipped(collection=c, doc_count=n):
                     yield ToolEvent(IndexingSkipped(collection=c, doc_count=n))
-                    yield ToolResult(content=f"Индекс актуален ({n} чанков), переиндексация не нужна.")
+                    yield ToolResult(
+                        content=f"Индекс актуален ({n} чанков), переиндексация не нужна."
+                    )
                     return
 
                 case IdxFileCompleted(filename=f, chunks=c, index=i, total=t):
@@ -91,4 +94,6 @@ class IndexDocumentsTool(Tool[DocPipelineEvent, EmptyParams]):
                     total_chunks = c
                     yield ToolEvent(IndexingDone(total_files=f, total_chunks=c))
 
-        yield ToolResult(content=f"Индексация завершена: {total_files} файлов, {total_chunks} чанков.")
+        yield ToolResult(
+            content=f"Индексация завершена: {total_files} файлов, {total_chunks} чанков."
+        )

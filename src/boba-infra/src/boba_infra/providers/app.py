@@ -1,4 +1,5 @@
 """AppProvider — singleton-сервисы приложения (Scope.APP)."""
+
 from __future__ import annotations
 
 import ssl
@@ -18,12 +19,16 @@ from boba_app.readers.registry import DocumentReaderRegistry
 from boba_domain.config import AppConfig
 from boba_domain.core.llm_service import LLMCompletionService
 from boba_domain.di_types import EmbeddingModel
-from boba_domain.importing.confluence import ConfluenceImportFactory, ConfluenceImportService
+from boba_domain.importing.confluence import (
+    ConfluenceImportFactory,
+    ConfluenceImportService,
+)
 from boba_domain.importing.loading import ConfluenceImportParams
 
 
 class AppProvider(Provider):
     """Singleton-сервисы: конфигурация, LLM-клиент, эмбеддинги."""
+
     scope = Scope.APP
 
     @provide
@@ -63,6 +68,7 @@ class AppProvider(Provider):
     def confluence_import_factory(self, cfg: AppConfig) -> ConfluenceImportFactory:
         def factory(params: ConfluenceImportParams) -> ConfluenceImportService:
             return ConfluenceImporter(cfg, params)
+
         return factory
 
     @provide

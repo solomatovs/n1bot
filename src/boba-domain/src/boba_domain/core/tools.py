@@ -32,6 +32,7 @@ Streaming-модель: Tool.execute() yield'ит ToolOutput[TEvent].
             case ToolEvent(event=e):   handle(e)
             case ToolResult(content=c): text = c
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -41,10 +42,10 @@ from typing import Any, Dict, Generic, Iterator, List, Sequence, TypeVar
 
 from boba_domain.errors import AppError
 
-
 # ---------------------------------------------------------------------------
 # Ошибки
 # ---------------------------------------------------------------------------
+
 
 class ToolError(AppError):
     """Базовая ошибка инструмента."""
@@ -80,12 +81,14 @@ class ToolOutput(Generic[TEvent]):
 
     Sealed-иерархия: ToolEvent | ToolResult.
     """
+
     __slots__ = ()
 
 
 @dataclass(frozen=True)
 class ToolEvent(ToolOutput[TEvent]):
     """Промежуточное событие для UI (обёртка над pipeline-событием)."""
+
     event: TEvent
 
 
@@ -95,12 +98,14 @@ class ToolResult(ToolOutput):
 
     Должен быть последним yield из Tool.execute().
     """
+
     content: str
 
 
 # ---------------------------------------------------------------------------
 # Пустые параметры (для tools без аргументов)
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class EmptyParams:
@@ -110,6 +115,7 @@ class EmptyParams:
 # ---------------------------------------------------------------------------
 # Tool ABC
 # ---------------------------------------------------------------------------
+
 
 class Tool(ABC, Generic[TEvent, TParams]):
     """Базовый класс инструмента агента.
@@ -162,6 +168,7 @@ class Tool(ABC, Generic[TEvent, TParams]):
 # ToolRegistry
 # ---------------------------------------------------------------------------
 
+
 class ToolRegistry(Generic[TEvent]):
     """Реестр инструментов — dispatch по имени.
 
@@ -190,7 +197,9 @@ class ToolRegistry(Generic[TEvent]):
     def tool_names(self) -> List[str]:
         return list(self._tools.keys())
 
-    def execute(self, name: str, raw_args: Dict[str, Any]) -> Iterator[ToolOutput[TEvent]]:
+    def execute(
+        self, name: str, raw_args: Dict[str, Any]
+    ) -> Iterator[ToolOutput[TEvent]]:
         """Выполнить инструмент по имени.
 
         raw_args — сырые аргументы из JSON (от LLM).
@@ -215,6 +224,7 @@ class ToolRegistry(Generic[TEvent]):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _build_params(params_type: type, kwargs: Dict[str, Any]) -> Any:
     """Сконструировать типизированный params из сырого dict.

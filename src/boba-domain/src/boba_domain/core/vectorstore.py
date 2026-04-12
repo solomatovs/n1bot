@@ -1,4 +1,5 @@
 """Контракт сервиса векторного хранилища — Protocol для domain/application логики."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ class DocumentLike(Protocol):
 @dataclass(frozen=True)
 class CollectionInfo:
     """Информация о коллекции в векторном хранилище."""
+
     name: str
     embedding_model: Optional[str] = None
 
@@ -29,6 +31,7 @@ class CollectionInfo:
 @dataclass(frozen=True)
 class CollectionData:
     """Содержимое коллекции — идентификаторы, тексты, метаданные."""
+
     ids: List[str]
     documents: List[str]
     metadatas: List[dict]
@@ -37,6 +40,7 @@ class CollectionData:
 @dataclass(frozen=True)
 class ScoredDocument:
     """Документ с оценкой релевантности."""
+
     document: DocumentLike
     score: float
 
@@ -55,10 +59,16 @@ class VectorStoreService(Protocol):
 
     def remove_collection(self, name: str) -> None: ...
 
-    def store_batch(self, collection_name: str, docs: Sequence[DocumentLike]) -> int: ...
+    def store_batch(
+        self, collection_name: str, docs: Sequence[DocumentLike]
+    ) -> int: ...
 
-    def search(self, collection_name: str, query: str, k: int, filters: dict) -> List[DocumentLike]: ...
+    def search(
+        self, collection_name: str, query: str, k: int, filters: dict
+    ) -> List[DocumentLike]: ...
 
-    def search_with_scores(self, collection_name: str, query: str, k: int) -> List[ScoredDocument]: ...
+    def search_with_scores(
+        self, collection_name: str, query: str, k: int
+    ) -> List[ScoredDocument]: ...
 
     def collection_doc_count(self, collection_name: str) -> int: ...

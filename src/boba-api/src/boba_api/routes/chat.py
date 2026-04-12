@@ -1,4 +1,5 @@
 """Chat endpoint — SSE streaming ответа агента."""
+
 from __future__ import annotations
 
 import json
@@ -69,9 +70,15 @@ def _event_to_sse(event: DocPipelineEvent) -> str | None:
         case ThinkingToken(token=tok):
             return json.dumps({"type": "thinking", "token": tok}, ensure_ascii=False)
         case ToolCallStarted(tool_name=name, arguments=args):
-            return json.dumps({"type": "tool_call", "name": name, "arguments": args}, ensure_ascii=False)
+            return json.dumps(
+                {"type": "tool_call", "name": name, "arguments": args},
+                ensure_ascii=False,
+            )
         case ToolResultReady(tool_name=name, content=content):
-            return json.dumps({"type": "tool_result", "name": name, "content": content}, ensure_ascii=False)
+            return json.dumps(
+                {"type": "tool_result", "name": name, "content": content},
+                ensure_ascii=False,
+            )
         case GenerationDone():
             return json.dumps({"type": "done"})
         case _:

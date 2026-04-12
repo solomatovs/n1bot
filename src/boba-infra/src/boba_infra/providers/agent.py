@@ -1,4 +1,5 @@
 """AgentProvider + ToolsProvider — per-folder сервисы (Scope.REQUEST)."""
+
 from __future__ import annotations
 
 from typing import Sequence
@@ -12,7 +13,10 @@ from boba_domain.core.storage import ChatReader, ChatWriter
 from boba_adapters.litellm_embeddings import LiteLLMEmbeddings
 from boba_app.agent.agent_loop import AgentLoop
 from boba_domain.agent.config import AgentConfig
-from boba_app.agent.completion_middleware import CompletionMiddleware, ContentToolCallParser
+from boba_app.agent.completion_middleware import (
+    CompletionMiddleware,
+    ContentToolCallParser,
+)
 from boba_app.agent.system_prompt import SystemPromptFiller
 from boba_app.agent.tool_executor import ToolCallExecutor
 from boba_app.agent.tools_loader import ToolsFiller
@@ -42,6 +46,7 @@ from boba_domain.workspace import Workspace
 
 class AgentProvider(Provider):
     """Per-folder сервисы: workspace, vectorstore, collection_name."""
+
     scope = Scope.REQUEST
 
     folder_ctx = from_context(provides=FolderContext, scope=Scope.REQUEST)
@@ -58,9 +63,13 @@ class AgentProvider(Provider):
         )
 
     @provide
-    def vectorstore(self, cfg: AppConfig, emb: LiteLLMEmbeddings, ctx: FolderContext) -> VectorStoreService:
+    def vectorstore(
+        self, cfg: AppConfig, emb: LiteLLMEmbeddings, ctx: FolderContext
+    ) -> VectorStoreService:
         chroma_path = str(cfg.chroma_path(ctx.folder_path))
-        return ChromaVectorStoreService(db_path=chroma_path, default_embedding=emb, cfg=cfg)
+        return ChromaVectorStoreService(
+            db_path=chroma_path, default_embedding=emb, cfg=cfg
+        )
 
     @provide
     def collection_name(self, cfg: AppConfig, ctx: FolderContext) -> CollectionName:
@@ -81,14 +90,24 @@ class AgentProvider(Provider):
 
 class ToolsProvider(Provider):
     """Per-folder tools и AgentLoop."""
+
     scope = Scope.REQUEST
 
     @provide
-    def index_tool(self, ws: Workspace, vs: VectorStoreService, coll: CollectionName, emb: EmbeddingModel, rr: DocumentReaderRegistry) -> IndexDocumentsTool:
+    def index_tool(
+        self,
+        ws: Workspace,
+        vs: VectorStoreService,
+        coll: CollectionName,
+        emb: EmbeddingModel,
+        rr: DocumentReaderRegistry,
+    ) -> IndexDocumentsTool:
         return IndexDocumentsTool(ws, vs, coll, emb, rr)
 
     @provide
-    def search_tool(self, ws: Workspace, vs: VectorStoreService, coll: CollectionName) -> SearchDocumentsTool:
+    def search_tool(
+        self, ws: Workspace, vs: VectorStoreService, coll: CollectionName
+    ) -> SearchDocumentsTool:
         return SearchDocumentsTool(ws, vs, coll)
 
     @provide
@@ -96,7 +115,9 @@ class ToolsProvider(Provider):
         return ReadFileTool(ws)
 
     @provide
-    def list_files_tool(self, ws: Workspace, rr: DocumentReaderRegistry) -> ListFilesTool:
+    def list_files_tool(
+        self, ws: Workspace, rr: DocumentReaderRegistry
+    ) -> ListFilesTool:
         return ListFilesTool(ws, rr)
 
     @provide
@@ -112,19 +133,27 @@ class ToolsProvider(Provider):
         return EditFileTool(ws)
 
     @provide
-    def delete_collection_tool(self, ws: Workspace, vs: VectorStoreService, coll: CollectionName) -> DeleteCollectionTool:
+    def delete_collection_tool(
+        self, ws: Workspace, vs: VectorStoreService, coll: CollectionName
+    ) -> DeleteCollectionTool:
         return DeleteCollectionTool(ws, vs, coll)
 
     @provide
-    def get_collection_info_tool(self, ws: Workspace, vs: VectorStoreService, coll: CollectionName) -> GetCollectionInfoTool:
+    def get_collection_info_tool(
+        self, ws: Workspace, vs: VectorStoreService, coll: CollectionName
+    ) -> GetCollectionInfoTool:
         return GetCollectionInfoTool(ws, vs, coll)
 
     @provide
-    def import_pages_tool(self, ws: Workspace, factory: ConfluenceImportFactory) -> ImportConfluencePagesTool:
+    def import_pages_tool(
+        self, ws: Workspace, factory: ConfluenceImportFactory
+    ) -> ImportConfluencePagesTool:
         return ImportConfluencePagesTool(ws, factory)
 
     @provide
-    def import_space_tool(self, ws: Workspace, factory: ConfluenceImportFactory) -> ImportConfluenceSpaceTool:
+    def import_space_tool(
+        self, ws: Workspace, factory: ConfluenceImportFactory
+    ) -> ImportConfluenceSpaceTool:
         return ImportConfluenceSpaceTool(ws, factory)
 
     @provide
@@ -149,12 +178,16 @@ class ToolsProvider(Provider):
         return ToolRegistry(tools)
 
     @provide
-    def context_pipeline(self, ws: Workspace, registry: ToolRegistry) -> ContextPipeline:
-        return ContextPipeline([
-            SystemPromptFiller(ws),
-            UserPromptFiller(),
-            ToolsFiller(registry),
-        ])
+    def context_pipeline(
+        self, ws: Workspace, registry: ToolRegistry
+    ) -> ContextPipeline:
+        return ContextPipeline(
+            [
+                SystemPromptFiller(ws),
+                UserPromptFiller(),
+                ToolsFiller(registry),
+            ]
+        )
 
     @provide
     def tool_executor(self, registry: ToolRegistry) -> ToolCallExecutor:
@@ -162,9 +195,11 @@ class ToolsProvider(Provider):
 
     @provide
     def completion_middleware(self) -> CompletionMiddleware:
-        return CompletionMiddleware([
-            ContentToolCallParser(),
-        ])
+        return CompletionMiddleware(
+            [
+                ContentToolCallParser(),
+            ]
+        )
 
     @provide
     def agent_config(self) -> AgentConfig:

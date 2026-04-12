@@ -3,6 +3,7 @@
 Chainlit читает CHAINLIT_HOST/PORT/ROOT_PATH из env при первом импорте.
 Вызовите init() ДО любых импортов из chainlit.
 """
+
 import os
 
 from boba_chainlit.config import ChainlitConfig

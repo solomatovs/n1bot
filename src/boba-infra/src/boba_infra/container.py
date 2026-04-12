@@ -1,4 +1,5 @@
 """DI-контейнер приложения."""
+
 from __future__ import annotations
 
 import logging
@@ -9,7 +10,6 @@ from dishka import make_container, Container
 from boba_domain.config import AppConfig
 from boba_infra.providers.app import AppProvider
 from boba_infra.providers.agent import AgentProvider, ToolsProvider
-
 
 _LOG_LEVELS: dict[str, int] = {
     "DEBUG": logging.DEBUG,

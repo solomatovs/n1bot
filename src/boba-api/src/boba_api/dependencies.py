@@ -1,4 +1,5 @@
 """FastAPI dependencies — доступ к DI-контейнеру."""
+
 from __future__ import annotations
 
 from pathlib import Path

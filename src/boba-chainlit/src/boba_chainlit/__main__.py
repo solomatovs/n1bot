@@ -1,4 +1,5 @@
 """python -m boba_chainlit — запуск из config.toml."""
+
 from pathlib import Path
 
 from boba_chainlit._bootstrap import init

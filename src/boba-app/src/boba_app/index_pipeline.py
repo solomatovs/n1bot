@@ -11,6 +11,7 @@
             case FileStarted(...): ...
             case IndexingDone(...): ...
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -32,9 +33,11 @@ log = logging.getLogger(__name__)
 # Контекст индексации (shared state между стадиями)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class IndexContext:
     """Входные данные + промежуточные результаты индексации."""
+
     # --- Входные ---
     source_path: Path
     manifest_path: Path
@@ -54,19 +57,23 @@ class IndexContext:
 # События
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class ManifestChecked:
     files_changed: bool
     file_count: int
+
 
 @dataclass(frozen=True)
 class IndexingSkipped:
     collection: str
     doc_count: int
 
+
 @dataclass(frozen=True)
 class CollectionPrepared:
     collection: str
+
 
 @dataclass(frozen=True)
 class FileStarted:
@@ -74,16 +81,19 @@ class FileStarted:
     index: int
     total: int
 
+
 @dataclass(frozen=True)
 class ChunkCreated:
     filename: str
     section_title: str
     chunk_index: int
 
+
 @dataclass(frozen=True)
 class BatchStored:
     batch_size: int
     total_stored: int
+
 
 @dataclass(frozen=True)
 class FileCompleted:
@@ -92,14 +102,21 @@ class FileCompleted:
     index: int
     total: int
 
+
 @dataclass(frozen=True)
 class IndexingDone:
     total_files: int
     total_chunks: int
 
+
 IndexEvent = Union[
-    ManifestChecked, IndexingSkipped, CollectionPrepared,
-    FileStarted, ChunkCreated, BatchStored, FileCompleted,
+    ManifestChecked,
+    IndexingSkipped,
+    CollectionPrepared,
+    FileStarted,
+    ChunkCreated,
+    BatchStored,
+    FileCompleted,
     IndexingDone,
 ]
 
@@ -107,6 +124,7 @@ IndexEvent = Union[
 # ---------------------------------------------------------------------------
 # Стадия 1: проверка манифеста
 # ---------------------------------------------------------------------------
+
 
 class ManifestCheckStage(PipelineStage[IndexContext, IndexEvent]):
     """Вычислить manifest, сравнить с сохранённым. Если не изменился — skip."""
@@ -118,20 +136,30 @@ class ManifestCheckStage(PipelineStage[IndexContext, IndexEvent]):
         return "manifest_check"
 
     def run(self, ctx: IndexContext) -> Iterator[IndexEvent]:
-        ctx.current_manifest = self._compute_manifest(ctx.source_path, ctx.reader_registry)
+        ctx.current_manifest = self._compute_manifest(
+            ctx.source_path, ctx.reader_registry
+        )
         stored = self._load_manifest(ctx.manifest_path)
         changed = ctx.current_manifest != stored
 
-        yield ManifestChecked(files_changed=changed, file_count=len(ctx.current_manifest))
+        yield ManifestChecked(
+            files_changed=changed, file_count=len(ctx.current_manifest)
+        )
 
         if not changed:
-            doc_count = ctx.vectorstore_service.collection_doc_count(ctx.collection_name)
+            doc_count = ctx.vectorstore_service.collection_doc_count(
+                ctx.collection_name
+            )
             if doc_count > 0:
                 ctx.skipped = True
-                yield IndexingSkipped(collection=ctx.collection_name, doc_count=doc_count)
+                yield IndexingSkipped(
+                    collection=ctx.collection_name, doc_count=doc_count
+                )
 
     @classmethod
-    def _compute_manifest(cls, folder: Path, reader_registry: DocumentReaderRegistry) -> dict[str, str]:
+    def _compute_manifest(
+        cls, folder: Path, reader_registry: DocumentReaderRegistry
+    ) -> dict[str, str]:
         manifest: dict[str, str] = {}
         for f in reader_registry.iter_files(folder):
             manifest[f.name] = cls._file_hash(f)
@@ -161,9 +189,11 @@ class ManifestCheckStage(PipelineStage[IndexContext, IndexEvent]):
         except (json.JSONDecodeError, OSError):
             return {}
 
+
 # ---------------------------------------------------------------------------
 # Стадия 2: подготовка коллекции
 # ---------------------------------------------------------------------------
+
 
 class CollectionPrepStage(PipelineStage[IndexContext, IndexEvent]):
     """Пересоздать коллекцию. Пропускается если skipped."""
@@ -188,8 +218,10 @@ class CollectionPrepStage(PipelineStage[IndexContext, IndexEvent]):
 # Стадия 3: индексация файлов
 # ---------------------------------------------------------------------------
 
+
 class FileIndexStage(PipelineStage[IndexContext, IndexEvent]):
     """Потоковая индексация: файл → чанки → батчи → vectorstore."""
+
     _STORE_BATCH_SIZE = 32
 
     @property
@@ -213,7 +245,9 @@ class FileIndexStage(PipelineStage[IndexContext, IndexEvent]):
             ctx.total_files += 1
             file_chunks = 0
 
-            yield FileStarted(filename=file_path.name, index=ctx.total_files, total=file_count)
+            yield FileStarted(
+                filename=file_path.name, index=ctx.total_files, total=file_count
+            )
 
             for chunk in ctx.reader_registry.iter_chunks(file_path):
                 batch.append(chunk)
@@ -253,6 +287,7 @@ class FileIndexStage(PipelineStage[IndexContext, IndexEvent]):
 # Стадия 4: сохранение манифеста
 # ---------------------------------------------------------------------------
 
+
 class ManifestSaveStage(PipelineStage[IndexContext, IndexEvent]):
     """Сохранить манифест на диск. Пропускается если skipped."""
 
@@ -277,12 +312,14 @@ class ManifestSaveStage(PipelineStage[IndexContext, IndexEvent]):
 # Pipeline — оркестратор
 # ---------------------------------------------------------------------------
 
+
 def run_indexing(ctx: IndexContext) -> Iterator[IndexEvent]:
     """Запустить индексацию. Интерфейс не изменился — обратная совместимость."""
-    yield from Pipeline([
-        ManifestCheckStage(),
-        CollectionPrepStage(),
-        FileIndexStage(),
-        ManifestSaveStage(),
-    ]).run(ctx)
-
+    yield from Pipeline(
+        [
+            ManifestCheckStage(),
+            CollectionPrepStage(),
+            FileIndexStage(),
+            ManifestSaveStage(),
+        ]
+    ).run(ctx)

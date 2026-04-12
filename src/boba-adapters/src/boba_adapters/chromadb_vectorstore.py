@@ -1,4 +1,5 @@
 """Реализация VectorStoreService на основе ChromaDB."""
+
 from __future__ import annotations
 
 import logging
@@ -33,7 +34,7 @@ class ChromaVectorStoreService:
     - При создании коллекции записывает имя модели в metadata
     - При чтении — подбирает нужную модель из кэша
     """
-    
+
     def __init__(
         self,
         db_path: str,
@@ -80,7 +81,9 @@ class ChromaVectorStoreService:
         except chromadb.errors.NotFoundError as e:
             raise CollectionNotFoundError(collection_name) from e
         except (chromadb.errors.ChromaError, ValueError, OSError) as e:
-            raise VectorStoreConnectionError(f"Failed to get collection data: {e}") from e
+            raise VectorStoreConnectionError(
+                f"Failed to get collection data: {e}"
+            ) from e
 
     def get_collection_embedding_model(self, collection_name: str) -> Optional[str]:
         """Получить имя embedding модели для коллекции (None если не задано)."""
@@ -100,7 +103,9 @@ class ChromaVectorStoreService:
                 metadata={self.EMBEDDING_MODEL_KEY: embedding_model},
             )
         except chromadb.errors.ChromaError as e:
-            raise CollectionCreateError(f"Failed to create collection '{collection_name}': {e}") from e
+            raise CollectionCreateError(
+                f"Failed to create collection '{collection_name}': {e}"
+            ) from e
 
     def remove_collection(self, name: str) -> None:
         """Удалить коллекцию."""
@@ -123,7 +128,9 @@ class ChromaVectorStoreService:
         except (chromadb.errors.ChromaError, RuntimeError) as e:
             raise StoreBatchError(f"Failed to store batch: {e}") from e
 
-    def search(self, collection_name: str, query: str, k: int, filters: dict) -> List[DocumentLike]:
+    def search(
+        self, collection_name: str, query: str, k: int, filters: dict
+    ) -> List[DocumentLike]:
         """Выполнить векторный поиск по коллекции."""
         try:
             vectorstore = self._get_langchain_vectorstore(collection_name)
@@ -135,7 +142,9 @@ class ChromaVectorStoreService:
         except (chromadb.errors.ChromaError, RuntimeError) as e:
             raise SearchError(f"Search failed: {e}") from e
 
-    def search_with_scores(self, collection_name: str, query: str, k: int) -> List[ScoredDocument]:
+    def search_with_scores(
+        self, collection_name: str, query: str, k: int
+    ) -> List[ScoredDocument]:
         """Векторный поиск с оценкой релевантности."""
         try:
             vectorstore = self._get_langchain_vectorstore(collection_name)
@@ -159,7 +168,9 @@ class ChromaVectorStoreService:
 
     # -- приватные методы ------------------------------------------------------
 
-    def resolve_embedding(self, model_name: Optional[str], timeout: Optional[int] = None) -> LiteLLMEmbeddings:
+    def resolve_embedding(
+        self, model_name: Optional[str], timeout: Optional[int] = None
+    ) -> LiteLLMEmbeddings:
         """Получить embedding по имени модели (из кэша или создать новый)."""
         if not model_name:
             return self._default_embedding
@@ -184,7 +195,9 @@ class ChromaVectorStoreService:
         collection = client.get_collection(collection_name)
         model_name = self._read_embedding_model(collection)
         embedding = self.resolve_embedding(model_name)
-        return Chroma(client=client, collection_name=collection_name, embedding_function=embedding)
+        return Chroma(
+            client=client, collection_name=collection_name, embedding_function=embedding
+        )
 
     def _get_client(self):
         return chromadb.PersistentClient(
@@ -200,7 +213,8 @@ class ChromaVectorStoreService:
     @staticmethod
     def _normalize_document(d: DocumentLike) -> Document:
         md = {
-            k: v for k, v in d.metadata.items()
+            k: v
+            for k, v in d.metadata.items()
             if not (isinstance(v, list) and len(v) == 0)
         }
         md.setdefault("type", "original")

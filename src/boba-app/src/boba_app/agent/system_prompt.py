@@ -3,6 +3,7 @@
 PipelineStage: читает system_prompt.md из .boba/, добавляет в window.
 Создаёт файл по умолчанию если не существует.
 """
+
 from __future__ import annotations
 
 from typing import Iterator

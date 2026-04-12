@@ -3,6 +3,7 @@
 Разбиение по заголовкам (<h1>–<h6>). Каждая секция — чанк.
 page_content = чистый текст (для embedding), метаданные = позиции в оригинальном HTML.
 """
+
 from __future__ import annotations
 
 import re
@@ -49,9 +50,13 @@ class HtmlReader(DocumentReader):
                 if heading_match:
                     if section_lines:
                         chunk = _build_html_chunk(
-                            file_path.name, section_title, section_lines,
-                            section_start_line, line_number - 1,
-                            section_start_offset, line_offset,
+                            file_path.name,
+                            section_title,
+                            section_lines,
+                            section_start_line,
+                            line_number - 1,
+                            section_start_offset,
+                            line_offset,
                         )
                         if chunk is not None:
                             yield chunk
@@ -71,9 +76,13 @@ class HtmlReader(DocumentReader):
 
         if section_lines:
             chunk = _build_html_chunk(
-                file_path.name, section_title, section_lines,
-                section_start_line, line_number,
-                section_start_offset, end_offset,
+                file_path.name,
+                section_title,
+                section_lines,
+                section_start_line,
+                line_number,
+                section_start_offset,
+                end_offset,
             )
             if chunk is not None:
                 yield chunk
@@ -82,6 +91,7 @@ class HtmlReader(DocumentReader):
 # ---------------------------------------------------------------------------
 # Приватные хелперы
 # ---------------------------------------------------------------------------
+
 
 def _build_html_chunk(
     filename: str,
@@ -96,8 +106,13 @@ def _build_html_chunk(
     html_content = "\n".join(lines)
     text = _html_to_text(html_content)
     return build_chunk(
-        filename, section_title, text,
-        start_line, end_line, start_offset, end_offset,
+        filename,
+        section_title,
+        text,
+        start_line,
+        end_line,
+        start_offset,
+        end_offset,
     )
 
 

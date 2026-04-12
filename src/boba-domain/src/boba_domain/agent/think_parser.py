@@ -3,6 +3,7 @@
 Используется при стриминге ответа LLM для разделения
 размышлений (DeepSeek, QwQ) и финального ответа.
 """
+
 from __future__ import annotations
 
 from enum import Enum
@@ -46,7 +47,7 @@ class ThinkTagParser(StreamTransformer[str, ThinkFragment]):
                 end = buf.find(self._TAG_CLOSE)
                 if end != -1:
                     yield ThinkFragment(FragmentRole.THINKING, buf[:end])
-                    buf = buf[end + len(self._TAG_CLOSE):]
+                    buf = buf[end + len(self._TAG_CLOSE) :]
                     self._in_think = False
                 else:
                     yield ThinkFragment(FragmentRole.THINKING, buf)
@@ -56,7 +57,7 @@ class ThinkTagParser(StreamTransformer[str, ThinkFragment]):
                 if start != -1:
                     if start > 0:
                         yield ThinkFragment(FragmentRole.ANSWER, buf[:start])
-                    buf = buf[start + len(self._TAG_OPEN):]
+                    buf = buf[start + len(self._TAG_OPEN) :]
                     self._in_think = True
                 else:
                     yield ThinkFragment(FragmentRole.ANSWER, buf)

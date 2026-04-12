@@ -1,4 +1,5 @@
 """Доменные типы для поиска по документам из папки."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,6 +8,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class ChunkLocation:
     """Местоположение чанка в исходном файле."""
+
     source_file: str
     start_line: int
     end_line: int
@@ -22,6 +24,7 @@ class ChunkLocation:
 @dataclass(frozen=True)
 class SearchHit:
     """Результат поиска — чанк с его расположением и оценкой."""
+
     content: str
     location: ChunkLocation
     score: float = 0.0
@@ -30,6 +33,7 @@ class SearchHit:
 @dataclass(frozen=True)
 class Fragment:
     """Прочитанный фрагмент файла — текст + границы чанка и прочитанного диапазона."""
+
     text: str
     hit: SearchHit
     read_start_line: int
@@ -40,5 +44,3 @@ class Fragment:
     @property
     def read_label(self) -> str:
         return f"{self.hit.location.source_file}:{self.read_start_line}-{self.read_end_line}"
-
-

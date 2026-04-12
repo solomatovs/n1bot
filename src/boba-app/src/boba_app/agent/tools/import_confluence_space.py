@@ -1,4 +1,5 @@
 """Tool: загрузка целого пространства из Confluence."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -22,11 +23,23 @@ DocToolOutput = ToolOutput[DocPipelineEvent]
 @dataclass(frozen=True)
 class ImportSpaceParams:
     """Параметры загрузки пространства из Confluence."""
-    space_key: str = field(metadata={"description": "Ключ пространства Confluence (например 'MYSPACE')"})
-    api_page_limit: int = field(default=50, metadata={"description": "Количество страниц за один запрос (1-200)"})
-    max_pages: int | None = field(default=None, metadata={"description": "Максимум страниц для загрузки"})
-    timeout: int = field(default=20, metadata={"description": "Таймаут запроса в секундах"})
-    ssl_verify: bool = field(default=False, metadata={"description": "Проверять SSL сертификаты"})
+
+    space_key: str = field(
+        metadata={"description": "Ключ пространства Confluence (например 'MYSPACE')"}
+    )
+    api_page_limit: int = field(
+        default=50,
+        metadata={"description": "Количество страниц за один запрос (1-200)"},
+    )
+    max_pages: int | None = field(
+        default=None, metadata={"description": "Максимум страниц для загрузки"}
+    )
+    timeout: int = field(
+        default=20, metadata={"description": "Таймаут запроса в секундах"}
+    )
+    ssl_verify: bool = field(
+        default=False, metadata={"description": "Проверять SSL сертификаты"}
+    )
 
 
 class ImportConfluenceSpaceTool(Tool[DocPipelineEvent, ImportSpaceParams]):
@@ -66,7 +79,9 @@ class ImportConfluenceSpaceTool(Tool[DocPipelineEvent, ImportSpaceParams]):
         ok = 0
         failed = 0
         total = 0
-        for event in importer.import_space(params.space_key, space_params, self._ws.folder_path):
+        for event in importer.import_space(
+            params.space_key, space_params, self._ws.folder_path
+        ):
             match event:
                 case ImportSpaceEnumerated(total=t):
                     total = t

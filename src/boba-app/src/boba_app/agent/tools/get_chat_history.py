@@ -1,4 +1,5 @@
 """Tool: получение истории предыдущих сообщений чата."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -15,7 +16,11 @@ DocToolOutput = ToolOutput[DocPipelineEvent]
 @dataclass(frozen=True)
 class ChatHistoryParams:
     """Параметры получения истории чата."""
-    last_n: int = field(default=10, metadata={"description": "Количество последних сообщений (по умолчанию 10)"})
+
+    last_n: int = field(
+        default=10,
+        metadata={"description": "Количество последних сообщений (по умолчанию 10)"},
+    )
 
 
 class GetChatHistoryTool(Tool[DocPipelineEvent, ChatHistoryParams]):
@@ -59,7 +64,7 @@ class GetChatHistoryTool(Tool[DocPipelineEvent, ChatHistoryParams]):
             yield ToolResult(content="История чата пуста.")
             return
 
-        tail = messages[-params.last_n:]
+        tail = messages[-params.last_n :]
         yield ToolResult(
             content=f"История чата (последние {len(tail)} из {len(messages)}):\n\n"
             + "\n\n".join(tail),

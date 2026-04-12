@@ -1,4 +1,5 @@
 """Tool: векторный поиск по проиндексированным документам."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -20,13 +21,16 @@ DocToolOutput = ToolOutput[DocPipelineEvent]
 @dataclass(frozen=True)
 class SearchParams:
     """Параметры поиска по документам."""
+
     query: str = field(metadata={"description": "Поисковый запрос"})
-    top_k: int = field(default=5, metadata={"description": "Количество результатов (по умолчанию 5)"})
+    top_k: int = field(
+        default=5, metadata={"description": "Количество результатов (по умолчанию 5)"}
+    )
 
 
 class SearchDocumentsTool(Tool[DocPipelineEvent, SearchParams]):
     """Векторный поиск по проиндексированным документам."""
-    
+
     MAX_RESULT_CHARS = 4000
     _REQUIRED_META_FIELDS = (
         "source_file",
@@ -36,7 +40,9 @@ class SearchDocumentsTool(Tool[DocPipelineEvent, SearchParams]):
         "end_offset",
     )
 
-    def __init__(self, ws: Workspace, vs: VectorStoreService, collection_name: CollectionName) -> None:
+    def __init__(
+        self, ws: Workspace, vs: VectorStoreService, collection_name: CollectionName
+    ) -> None:
         self._ws = ws
         self._vs = vs
         self._collection_name = collection_name
@@ -59,16 +65,20 @@ class SearchDocumentsTool(Tool[DocPipelineEvent, SearchParams]):
 
     def execute(self, params: SearchParams) -> Iterator[DocToolOutput]:
         results = self._vs.search_with_scores(
-            self._collection_name, params.query, params.top_k,
+            self._collection_name,
+            params.query,
+            params.top_k,
         )
 
         hits: list[SearchHit] = []
         for scored in results:
-            hits.append(SearchHit(
-                content=scored.document.page_content,
-                location=parse_location(scored.document.metadata),
-                score=scored.score,
-            ))
+            hits.append(
+                SearchHit(
+                    content=scored.document.page_content,
+                    location=parse_location(scored.document.metadata),
+                    score=scored.score,
+                )
+            )
 
         yield ToolEvent(SearchDone(hits=hits))
 

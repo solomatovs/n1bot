@@ -2,6 +2,7 @@
 
 Граница между domain (LLMMessage) и infrastructure (openai SDK types).
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, Iterator
@@ -22,7 +23,9 @@ from openai.types.chat.chat_completion_message_function_tool_call_param import (
 from boba_domain.chat.messages import LLMMessage, LLMRole
 
 
-def _convert_tool_call(tc: Dict[str, Any]) -> ChatCompletionMessageFunctionToolCallParam:
+def _convert_tool_call(
+    tc: Dict[str, Any],
+) -> ChatCompletionMessageFunctionToolCallParam:
     """dict tool_call → типизированный TypedDict."""
     func = tc.get("function", {})
     return ChatCompletionMessageFunctionToolCallParam(
@@ -66,13 +69,17 @@ def to_openai_message(msg: LLMMessage) -> ChatCompletionMessageParam:
             )
 
 
-def to_openai_messages(messages: Iterator[LLMMessage]) -> Iterator[ChatCompletionMessageParam]:
+def to_openai_messages(
+    messages: Iterator[LLMMessage],
+) -> Iterator[ChatCompletionMessageParam]:
     """Iterator[LLMMessage] → Iterator[ChatCompletionMessageParam]."""
     for msg in messages:
         yield to_openai_message(msg)
 
 
-def to_openai_tools(definitions: Iterator[Dict[str, Any]]) -> Iterator[ChatCompletionToolParam]:
+def to_openai_tools(
+    definitions: Iterator[Dict[str, Any]],
+) -> Iterator[ChatCompletionToolParam]:
     """Iterator[tool definition dict] → Iterator[ChatCompletionToolParam]."""
     for d in definitions:
         yield ChatCompletionToolParam(type=d["type"], function=d["function"])
