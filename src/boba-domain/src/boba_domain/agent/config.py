@@ -30,9 +30,13 @@ class AgentConfig:
         toml = toml_config.load_section("agent")
         return AgentConfig(
             max_iterations=int(
-                toml_config.resolve("AGENT_MAX_ITERATIONS", toml, "max_iterations", "10")
+                toml_config.resolve(
+                    "AGENT_MAX_ITERATIONS", toml, "max_iterations", "10"
+                )
             ),
-            default_model=toml_config.resolve("AGENT_DEFAULT_MODEL", toml, "default_model", ""),
+            default_model=toml_config.resolve(
+                "AGENT_DEFAULT_MODEL", toml, "default_model", ""
+            ),
             limit_message=toml_config.resolve(
                 "AGENT_LIMIT_MESSAGE",
                 toml,

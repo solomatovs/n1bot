@@ -182,15 +182,33 @@ class DocPipelineEventSerializer:
             case StageCompleted(stage=stage, detail=detail):
                 return {"type": T.STAGE_COMPLETED, "stage": stage, "detail": detail}
             case IndexingSkipped(collection=coll, doc_count=count):
-                return {"type": T.INDEXING_SKIPPED, "collection": coll, "doc_count": count}
+                return {
+                    "type": T.INDEXING_SKIPPED,
+                    "collection": coll,
+                    "doc_count": count,
+                }
             case FileIndexed(filename=name, chunks=chunks, index=idx, total=total):
-                return {"type": T.FILE_INDEXED, "filename": name, "chunks": chunks, "index": idx, "total": total}
+                return {
+                    "type": T.FILE_INDEXED,
+                    "filename": name,
+                    "chunks": chunks,
+                    "index": idx,
+                    "total": total,
+                }
             case IndexingDone(total_files=files, total_chunks=chunks):
-                return {"type": T.INDEXING_DONE, "total_files": files, "total_chunks": chunks}
+                return {
+                    "type": T.INDEXING_DONE,
+                    "total_files": files,
+                    "total_chunks": chunks,
+                }
             case SearchDone(hits=hits):
                 return {"type": T.SEARCH_DONE, "hits_count": len(hits)}
             case ContextReady(context=ctx, fragments=frags):
-                return {"type": T.CONTEXT_READY, "length": len(ctx), "fragments_count": len(frags)}
+                return {
+                    "type": T.CONTEXT_READY,
+                    "length": len(ctx),
+                    "fragments_count": len(frags),
+                }
             case ThinkingToken(token=tok):
                 return {"type": T.THINKING, "token": tok}
             case AnswerToken(token=tok):
@@ -198,6 +216,19 @@ class DocPipelineEventSerializer:
             case GenerationDone():
                 return {"type": T.DONE}
             case ToolCallStarted(tool_call_id=tid, tool_name=name, arguments=args):
-                return {"type": T.TOOL_CALL, "tool_call_id": tid, "name": name, "arguments": args}
-            case ToolResultReady(tool_call_id=tid, tool_name=name, content=content, is_error=err):
-                return {"type": T.TOOL_RESULT, "tool_call_id": tid, "name": name, "content": content, "is_error": err}
+                return {
+                    "type": T.TOOL_CALL,
+                    "tool_call_id": tid,
+                    "name": name,
+                    "arguments": args,
+                }
+            case ToolResultReady(
+                tool_call_id=tid, tool_name=name, content=content, is_error=err
+            ):
+                return {
+                    "type": T.TOOL_RESULT,
+                    "tool_call_id": tid,
+                    "name": name,
+                    "content": content,
+                    "is_error": err,
+                }

@@ -11,6 +11,7 @@ from dishka import Provider, Scope, provide
 from openai import OpenAI
 
 from boba_adapters.confluence_importer import ConfluenceImporter
+from boba_adapters.json_thread_store import JsonThreadStore
 from boba_adapters.litellm_embeddings import LiteLLMEmbeddings
 from boba_adapters.openai_llm import OpenAICompletionService
 from boba_app.readers.html import HtmlReader
@@ -18,6 +19,7 @@ from boba_app.readers.markdown import MarkdownReader
 from boba_app.readers.registry import DocumentReaderRegistry
 from boba_domain.config import AppConfig
 from boba_domain.core.llm_service import LLMCompletionService
+from boba_domain.core.thread_store import ChatThreadStore
 from boba_domain.di_types import EmbeddingModel
 from boba_domain.importing.confluence import (
     ConfluenceImportFactory,
@@ -70,6 +72,10 @@ class AppProvider(Provider):
             return ConfluenceImporter(cfg, params)
 
         return factory
+
+    @provide
+    def thread_store(self, cfg: AppConfig) -> ChatThreadStore:
+        return JsonThreadStore(cfg)
 
     @provide
     def embeddings(self, cfg: AppConfig) -> LiteLLMEmbeddings:

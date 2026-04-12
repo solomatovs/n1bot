@@ -3,6 +3,7 @@
 Workspace на диске идентифицируется UUID. Отображаемое имя — свойство в thread metadata.
 Переименование = обновление metadata, без файловых операций.
 """
+
 from __future__ import annotations
 
 import json
@@ -14,7 +15,9 @@ from enum import Enum
 import chainlit as cl
 from chainlit.types import ThreadDict
 
+from boba_domain.chat.thread import ThreadMetadata
 from boba_domain.config import AppConfig
+from boba_domain.core.thread_store import ChatThreadStore
 
 log = logging.getLogger(__name__)
 
@@ -22,6 +25,14 @@ log = logging.getLogger(__name__)
 # ------------------------------------------------------------------
 # Typed errors
 # ------------------------------------------------------------------
+
+
+class ThreadMetadataError(Exception):
+    """Метаданные thread'а из Chainlit отсутствуют или повреждены."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(f"Invalid thread metadata: {reason}")
 
 
 class WorkspaceError(Enum):
@@ -55,6 +66,17 @@ class SessionState:
     folder: str
     display_name: str
     model: str
+
+
+@dataclass(frozen=True)
+class ParsedChatSettings:
+    """Типизированные настройки чата из Chainlit ChatSettings widget."""
+
+    model: str
+
+    @classmethod
+    def from_raw(cls, raw: dict, default_model: str) -> ParsedChatSettings:
+        return cls(model=raw.get("model") or default_model)
 
 
 def get_session_state() -> SessionState | None:
@@ -91,22 +113,29 @@ async def send_error(failure: WorkspaceFailure) -> None:
 # ------------------------------------------------------------------
 
 
-def parse_thread_metadata(thread: ThreadDict) -> dict | None:
-    """Парсинг metadata из ThreadDict. None при невалидных данных."""
+def parse_thread_metadata(thread: ThreadDict) -> ThreadMetadata:
+    """Парсинг metadata из ThreadDict. Бросает ThreadMetadataError."""
     raw = thread.get("metadata")
+    
     if raw is None:
-        return None
+        raise ThreadMetadataError("metadata отсутствует")
+    
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
         except json.JSONDecodeError:
-            log.warning("Failed to parse thread metadata as JSON: %s", raw[:100])
-            return None
+            raise ThreadMetadataError(f"невалидный JSON: {raw[:100]}")
+    
     if not isinstance(raw, dict):
-        return None
+        raise ThreadMetadataError(f"ожидался dict, получен {type(raw).__name__}")
+    
     if "folder" not in raw:
-        return None
-    return raw
+        raise ThreadMetadataError("отсутствует обязательное поле 'folder'")
+    
+    return ThreadMetadata(
+        folder=raw["folder"],
+        model=raw.get("model", ""),
+    )
 
 
 # ------------------------------------------------------------------
@@ -120,13 +149,14 @@ _DEFAULT_NAME_PREFIX = "workspace"
 class WorkspaceService:
     """Операции над workspace. Папка на диске = UUID, имя = metadata."""
 
-    def __init__(self, cfg: AppConfig) -> None:
+    def __init__(self, cfg: AppConfig, store: ChatThreadStore) -> None:
         self._cfg = cfg
+        self._store = store
 
     def create(self, display_name: str | None = None) -> WorkspaceResult:
         """Создать workspace с UUID-папкой. Автоимя если display_name не задан."""
         folder_id = uuid.uuid4().hex
-        self._cfg.folder_path(folder_id).mkdir(parents=True, exist_ok=True)
+        self._cfg.workspace_path(folder_id).mkdir(parents=True, exist_ok=True)
 
         if not display_name:
             display_name = self._next_display_name()
@@ -142,13 +172,7 @@ class WorkspaceService:
 
     def _next_display_name(self) -> str:
         """Сгенерировать автоимя workspace-1, workspace-2, ..."""
-        # Собираем существующие display names из thread.json файлов
-        from boba_adapters.json_thread_store import JsonThreadStore
-
-        store = JsonThreadStore(self._cfg)
-        existing_names = {
-            t.name for t in store.list_threads(limit=10000).threads if t.name
-        }
+        existing_names = {t.name for t in self._store.iter_threads()}
         n = 1
         while f"{_DEFAULT_NAME_PREFIX}-{n}" in existing_names:
             n += 1

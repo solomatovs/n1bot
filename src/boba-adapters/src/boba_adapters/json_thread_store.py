@@ -3,6 +3,7 @@
 Каждый workspace (папка в import_base_dir) хранит ровно один thread.
 Все пути резолвятся через AppConfig.
 """
+
 from __future__ import annotations
 
 import json
@@ -19,7 +20,7 @@ from boba_domain.chat.thread import (
     ThreadMetadata,
 )
 from boba_domain.config import AppConfig
-from boba_domain.core.thread_store import ThreadPage
+from collections.abc import Iterator
 from boba_domain.errors import (
     ThreadDeleteError,
     ThreadNotFoundError,
@@ -37,77 +38,106 @@ class JsonThreadStore:
     def __init__(self, cfg: AppConfig) -> None:
         self._cfg = cfg
 
+    def _iter_workspace_dirs(self) -> Iterator[Path]:
+        """Все папки-workspace'ы (не начинающиеся с точки)."""
+        base = Path(self._cfg.import_base_dir)
+        if not base.is_dir():
+            return
+        for d in base.iterdir():
+            if d.is_dir() and not d.name.startswith("."):
+                yield d
+
     # ------------------------------------------------------------------
     # Thread CRUD
     # ------------------------------------------------------------------
 
-    def get_thread(self, thread_id: str) -> ChatThread | None:
-        for folder_dir in self._cfg.iter_workspaces():
+    def get_thread(self, thread_id: str) -> ChatThread:
+        """Найти thread по ID. Бросает ThreadNotFoundError."""
+        read_errors: list[ThreadReadError] = []
+        for folder_dir in self._iter_workspace_dirs():
             path = self._cfg.thread_path(folder_dir)
-            thread = self._read(path)
-            if thread is not None and thread.id == thread_id:
+            try:
+                thread = self._read(path)
+            except ThreadReadError as e:
+                read_errors.append(e)
+                continue
+            if thread.id == thread_id:
                 return thread
-        return None
 
-    def get_thread_by_folder(self, folder_name: str) -> ChatThread | None:
-        path = self._cfg.thread_path(self._cfg.folder_path(folder_name))
+        raise ThreadNotFoundError(thread_id, read_errors=read_errors)
+
+    def get_thread_by_folder(self, folder_name: str) -> ChatThread:
+        """Прочитать thread по имени папки. Бросает ThreadReadError."""
+        workspace_path = self._cfg.workspace_path(folder_name)
+        path = self._cfg.thread_path(workspace_path)
         return self._read(path)
 
-    def list_threads(
+    def iter_threads(
         self,
-        limit: int,
-        offset: int = 0,
         search: str | None = None,
-    ) -> ThreadPage:
+    ) -> Iterator[ChatThread]:
+        """Итерация по всем thread'ам, от новых к старым (по created_at)."""
         threads: list[ChatThread] = []
-        for folder_dir in self._cfg.iter_workspaces():
-            thread = self._read(self._cfg.thread_path(folder_dir))
-            if thread is None:
+        for folder_dir in self._iter_workspace_dirs():
+            try:
+                thread = self._read(self._cfg.thread_path(folder_dir))
+            except ThreadReadError as e:
+                log.error("iter_threads: %s", e)
                 continue
-            if search and search.lower() not in (thread.name or "").lower():
+
+            if search and not thread.matches_search(search):
                 continue
+
             threads.append(thread)
 
         threads.sort(key=lambda t: t.created_at, reverse=True)
-        page = threads[offset : offset + limit]
-        return ThreadPage(threads=page, has_next=offset + limit < len(threads))
+        yield from threads
 
     def save_thread(self, thread: ChatThread) -> None:
         if not thread.metadata.folder:
             raise ValidationError("thread.metadata.folder is required")
-        path = self._cfg.thread_path(self._cfg.folder_path(thread.metadata.folder))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._write(path, thread)
+
+        workspace = self._cfg.thread_path(self._cfg.workspace_path(thread.metadata.folder))
+        workspace.parent.mkdir(parents=True, exist_ok=True)
+        self._write(workspace, thread)
 
     def delete_thread(self, thread_id: str) -> None:
-        for folder_dir in self._cfg.iter_workspaces():
+        read_errors: list[ThreadReadError] = []
+        for folder_dir in self._iter_workspace_dirs():
             path = self._cfg.thread_path(folder_dir)
-            thread = self._read(path)
-            if thread is not None and thread.id == thread_id:
+            try:
+                thread = self._read(path)
+            except ThreadReadError as e:
+                read_errors.append(e)
+                continue
+            if thread.id == thread_id:
                 try:
                     shutil.rmtree(folder_dir)
                 except OSError as e:
                     raise ThreadDeleteError(thread_id, e) from e
                 return
-        raise ThreadNotFoundError(thread_id)
+        raise ThreadNotFoundError(thread_id, read_errors=read_errors)
 
-    def add_step(self, thread_id: str, step: ChatStep) -> None:
-        thread = self.get_thread(thread_id)
-        if thread is None:
-            raise ThreadNotFoundError(thread_id)
+    def _get_current_or_new_chat_name(self, step: ChatStep) -> str:
+        default_name = "New chat"
+        
+        if step.step_type is not StepType.USER_MESSAGE or not step.output:
+            return default_name
 
+        return step.output[:50] or default_name
+
+    def add_step(self, step: ChatStep) -> None:
+        thread = self.get_thread(step.thread_id)
         steps = [*thread.steps, step]
-        name = thread.name
-        if not name and step.step_type is StepType.USER_MESSAGE and step.output:
-            name = step.output[:50]
 
-        self._save_updated(thread, steps, name=name)
+        if thread.has_auto_name():
+            name = self._get_current_or_new_chat_name(step)
+            self._save_updated(thread, steps, name=name)
+        else:
+            self._save_updated(thread, steps)
 
-    def update_step(self, thread_id: str, step: ChatStep) -> None:
-        thread = self.get_thread(thread_id)
-        if thread is None:
-            raise ThreadNotFoundError(thread_id)
-
+    def update_step(self, step: ChatStep) -> None:
+        thread = self.get_thread(step.thread_id)
         steps = list(thread.steps)
         for i, s in enumerate(steps):
             if s.id == step.id:
@@ -115,14 +145,10 @@ class JsonThreadStore:
                 break
         else:
             steps.append(step)
-
         self._save_updated(thread, steps)
 
     def delete_step(self, thread_id: str, step_id: str) -> None:
         thread = self.get_thread(thread_id)
-        if thread is None:
-            raise ThreadNotFoundError(thread_id)
-
         steps = [s for s in thread.steps if s.id != step_id]
         if len(steps) < len(thread.steps):
             self._save_updated(thread, steps)
@@ -135,9 +161,6 @@ class JsonThreadStore:
         self, thread_id: str, step_id: str, feedback: StepFeedback | None
     ) -> None:
         thread = self.get_thread(thread_id)
-        if thread is None:
-            raise ThreadNotFoundError(thread_id)
-
         steps = list(thread.steps)
         for i, s in enumerate(steps):
             if s.id == step_id:
@@ -159,9 +182,11 @@ class JsonThreadStore:
 
     def get_favorite_steps(self, user_id: str) -> list[ChatStep]:
         favorites: list[ChatStep] = []
-        for folder_dir in self._cfg.iter_workspaces():
-            thread = self._read(self._cfg.thread_path(folder_dir))
-            if thread is None:
+        for folder_dir in self._iter_workspace_dirs():
+            try:
+                thread = self._read(self._cfg.thread_path(folder_dir))
+            except ThreadReadError as e:
+                log.error("get_favorite_steps: %s", e)
                 continue
             favorites.extend(s for s in thread.steps if s.is_favorite)
         return favorites
@@ -174,22 +199,25 @@ class JsonThreadStore:
         self,
         thread: ChatThread,
         steps: list[ChatStep],
-        name: str | None = None,
+        name: str = "",
     ) -> None:
-        self.save_thread(ChatThread(
-            id=thread.id,
-            created_at=thread.created_at,
-            name=name if name is not None else thread.name,
-            user_id=thread.user_id,
-            user_identifier=thread.user_identifier,
-            metadata=thread.metadata,
-            steps=steps,
-            tags=thread.tags,
-        ))
+        self.save_thread(
+            ChatThread(
+                id=thread.id,
+                created_at=thread.created_at,
+                name=name or thread.name,
+                user_id=thread.user_id,
+                user_identifier=thread.user_identifier,
+                metadata=thread.metadata,
+                steps=steps,
+                tags=thread.tags,
+            )
+        )
 
-    def _read(self, path: Path) -> ChatThread | None:
+    def _read(self, path: Path) -> ChatThread:
+        """Прочитать thread.json. Бросает ThreadReadError при любой ошибке."""
         if not path.is_file():
-            return None
+            raise ThreadReadError(str(path), FileNotFoundError(f"{path} not found"))
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             return _deserialize_thread(raw)
@@ -250,7 +278,7 @@ def _deserialize_thread(raw: dict) -> ChatThread:
     return ChatThread(
         id=raw["id"],
         created_at=raw.get("createdAt", ""),
-        name=raw.get("name"),
+        name=raw.get("name") or raw["id"][:12],
         user_id=raw.get("userId", "default"),
         user_identifier=raw.get("userIdentifier", "default"),
         metadata=ThreadMetadata(

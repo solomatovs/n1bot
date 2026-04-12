@@ -4,9 +4,11 @@ Workspace = Chat. Каждый workspace хранит один чат.
 "New Chat" → авто-создание workspace. Sidebar → навигация.
 ChatSettings (sidebar) → переименование + модель.
 """
+
 from __future__ import annotations
 
 import asyncio
+import logging
 from queue import Queue
 from threading import Thread
 
@@ -14,13 +16,14 @@ import chainlit as cl
 from chainlit.chat_context import chat_context
 from chainlit.types import ThreadDict
 
-from boba_adapters.json_thread_store import JsonThreadStore
 from boba_adapters.litellm_models import fetch_chat_models
 from boba_app.agent.agent_loop import AgentLoop
 from boba_app.session import ChatSession
 from boba_chainlit.data_layer import ChainlitConverter, ChainlitDataLayerAdapter
 from boba_chainlit.workspace import (
+    ParsedChatSettings,
     SessionState,
+    ThreadMetadataError,
     WorkspaceError,
     WorkspaceFailure,
     WorkspaceService,
@@ -38,13 +41,17 @@ from boba_domain.agent.events import (
     ToolResultReady,
 )
 from boba_domain.config import AppConfig
+from boba_domain.core.thread_store import ChatThreadStore
 from boba_domain.di_types import FolderContext
 from boba_infra.container import create_container
 
+log = logging.getLogger(__name__)
+
 container = create_container()
 cfg = container.get(AppConfig)
+thread_store = container.get(ChatThreadStore)
 agent_cfg = AgentConfig.from_env()
-workspace_svc = WorkspaceService(cfg)
+workspace_svc = WorkspaceService(cfg, thread_store)
 
 _SENTINEL = object()
 
@@ -75,6 +82,7 @@ def _settings_widgets() -> list[cl.input_widget.InputWidget]:
 
 def _get_dl():
     from chainlit.data import get_data_layer as _dl
+
     return _dl()
 
 
@@ -109,7 +117,7 @@ async def header_auth(_headers) -> cl.User:
 
 @cl.data_layer
 def get_data_layer():
-    return ChainlitDataLayerAdapter(JsonThreadStore(cfg))
+    return ChainlitDataLayerAdapter(thread_store)
 
 
 # ------------------------------------------------------------------
@@ -120,23 +128,20 @@ def get_data_layer():
 @cl.on_chat_start
 async def on_chat_start():
     user_id = (
-        cl.context.session.user.identifier
-        if cl.context.session.user
-        else "default"
+        cl.context.session.user.identifier if cl.context.session.user else "default"
     )
     is_initial = user_id not in _initial_load_done
     _initial_load_done.add(user_id)
 
-    settings = await cl.ChatSettings(_settings_widgets()).send()
-    model = settings.get("model") or agent_cfg.default_model
+    raw_settings = await cl.ChatSettings(_settings_widgets()).send()
+    chat_settings = ParsedChatSettings.from_raw(raw_settings, agent_cfg.default_model)
 
     # При первом подключении проверяем существующие чаты.
     # Если есть — резьюмим последний, иначе создаём новый.
     if is_initial:
-        store = JsonThreadStore(cfg)
-        page = store.list_threads(limit=1)
-        if page.threads:
-            await _resume_latest(page.threads[0], model)
+        latest = next(thread_store.iter_threads(), None)
+        if latest is not None:
+            await _resume_latest(latest, chat_settings.model)
             return
 
     # Новый workspace — первый запуск без чатов или кнопка "New Chat".
@@ -147,7 +152,7 @@ async def on_chat_start():
     state = SessionState(
         folder=result.folder,
         display_name=result.display_name,
-        model=model,
+        model=chat_settings.model,
     )
     set_session_state(state)
     await _save_thread_metadata(state)
@@ -161,7 +166,7 @@ async def _resume_latest(thread, model: str) -> None:
 
     state = SessionState(
         folder=thread.metadata.folder,
-        display_name=thread.name or thread.metadata.folder,
+        display_name=thread.name,
         model=thread.metadata.model or model,
     )
     set_session_state(state)
@@ -182,15 +187,17 @@ async def _resume_latest(thread, model: str) -> None:
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
-    metadata = parse_thread_metadata(thread)
-    if metadata is None:
-        await send_error(WorkspaceFailure(WorkspaceError.CORRUPT_METADATA))
+    try:
+        metadata = parse_thread_metadata(thread)
+    except ThreadMetadataError as e:
+        log.error("on_chat_resume: %s", e)
+        await send_error(WorkspaceFailure(WorkspaceError.CORRUPT_METADATA, str(e)))
         return
 
     state = SessionState(
-        folder=metadata["folder"],
-        display_name=thread.get("name") or metadata["folder"],
-        model=metadata.get("model", agent_cfg.default_model),
+        folder=metadata.folder,
+        display_name=thread.get("name") or metadata.folder,
+        model=metadata.model or agent_cfg.default_model,
     )
     set_session_state(state)
 
@@ -204,9 +211,8 @@ async def on_settings_update(settings: dict):
         await send_error(WorkspaceFailure(WorkspaceError.NOT_FOUND))
         return
 
-    model = settings.get("model")
-    if model:
-        state.model = model
+    chat_settings = ParsedChatSettings.from_raw(settings, state.model)
+    state.model = chat_settings.model
 
     set_session_state(state)
     await _save_thread_metadata(state)
@@ -234,7 +240,10 @@ async def on_message(message: cl.Message):
             with container(context={FolderContext: session.folder_context}) as scope:
                 agent = scope.get(AgentLoop)
                 from boba_domain.agent.config import AgentRequest
-                for event in agent.run(AgentRequest(query=message.content, model=state.model)):
+
+                for event in agent.run(
+                    AgentRequest(query=message.content, model=state.model)
+                ):
                     q.put(event)
         except Exception as e:
             q.put(e)
