@@ -6,7 +6,7 @@ from typing import Iterator, List
 from application.agent.llm_client import ToolCallData
 from domain.agent.context_window import ContextWindow
 from domain.agent.events import DocPipelineEvent, ToolCallStarted, ToolResultReady
-from domain.agent.tools import ToolEvent, ToolExecutionError, ToolNotFoundError, ToolRegistry, ToolResult
+from domain.core.tools import ToolEvent, ToolExecutionError, ToolNotFoundError, ToolRegistry, ToolResult
 
 
 class ToolCallExecutor:

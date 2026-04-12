@@ -1,20 +1,14 @@
 """Реестр читателей документов — паттерн Strategy.
 
-Единая точка входа для индексации и чтения файлов.
-Формат определяется один раз при регистрации стратегии.
-
-    Использование:
-        from application.readers.registry import registry
-
-        for file_path in registry.iter_files(folder):
-            for chunk in registry.iter_chunks(file_path):
-                ...
+DocumentReaderRegistry создаётся через DI (AppProvider).
+Readers регистрируются при создании контейнера.
 
     Добавление нового формата:
         class PdfReader(DocumentReader):
             extensions = frozenset({".pdf"})
             ...
-        registry.register(PdfReader())
+        # В AppProvider.reader_registry():
+        reg.register(PdfReader())
 """
 from __future__ import annotations
 
@@ -113,21 +107,3 @@ def build_chunk(
             "section_title": section_title,
         },
     )
-
-
-# ---------------------------------------------------------------------------
-# Глобальный реестр — конфигурируется при импорте
-# ---------------------------------------------------------------------------
-
-def _create_default_registry() -> DocumentReaderRegistry:
-    """Создать реестр с зарегистрированными стратегиями."""
-    from application.readers.html import HtmlReader
-    from application.readers.markdown import MarkdownReader
-
-    reg = DocumentReaderRegistry()
-    reg.register(MarkdownReader())
-    reg.register(HtmlReader())
-    return reg
-
-
-registry = _create_default_registry()

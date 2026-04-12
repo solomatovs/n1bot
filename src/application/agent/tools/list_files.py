@@ -1,12 +1,12 @@
 """Tool: список доступных документов в папке."""
 from __future__ import annotations
 
-from typing import Any, Dict, Iterator
+from typing import Iterator
 
-from domain.workspace import Workspace
-from application.readers.registry import registry as doc_reader_registry
+from application.readers.registry import DocumentReaderRegistry
 from domain.agent.events import DocPipelineEvent
-from domain.agent.tools import EmptyParams, Tool, ToolOutput, ToolResult
+from domain.core.tools import EmptyParams, Tool, ToolOutput, ToolResult
+from domain.workspace import Workspace
 
 DocToolOutput = ToolOutput[DocPipelineEvent]
 
@@ -14,8 +14,9 @@ DocToolOutput = ToolOutput[DocPipelineEvent]
 class ListFilesTool(Tool[DocPipelineEvent, EmptyParams]):
     """Список доступных документов в папке."""
 
-    def __init__(self, ws: Workspace) -> None:
+    def __init__(self, ws: Workspace, reader_registry: DocumentReaderRegistry) -> None:
         self._ws = ws
+        self._reader_registry = reader_registry
 
     @property
     def name(self) -> str:
@@ -34,7 +35,7 @@ class ListFilesTool(Tool[DocPipelineEvent, EmptyParams]):
 
     def execute(self, params: EmptyParams) -> Iterator[DocToolOutput]:
         lines = []
-        for f in doc_reader_registry.iter_files(self._ws.source_path):
+        for f in self._reader_registry.iter_files(self._ws.folder_path):
             lines.append(f"- {f.name}")
 
         if not lines:

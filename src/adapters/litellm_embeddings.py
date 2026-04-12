@@ -76,5 +76,4 @@ class LiteLLMEmbeddings(Embeddings):
         return [item["embedding"] for item in response_json["data"]]
 
     def __del__(self) -> None:
-        if hasattr(self, "client"):
-            self.client.close()
+        self.client.close()

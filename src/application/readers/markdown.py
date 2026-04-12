@@ -12,11 +12,13 @@ from langchain_core.documents import Document
 
 from application.readers.registry import DocumentReader, build_chunk
 
-_HEADING_PATTERN = re.compile(r"^(#+)\s+(.+)$")
+
 
 
 class MarkdownReader(DocumentReader):
     """Стратегия: Markdown (.md, .txt)."""
+    
+    _HEADING_PATTERN = re.compile(r"^(#+)\s+(.+)$")
 
     @property
     def extensions(self) -> frozenset[str]:
@@ -38,7 +40,7 @@ class MarkdownReader(DocumentReader):
                     break
                 line_number += 1
                 line = line.rstrip("\n").rstrip("\r")
-                heading_match = _HEADING_PATTERN.match(line.strip())
+                heading_match = self._HEADING_PATTERN.match(line.strip())
 
                 if heading_match:
                     if section_lines:

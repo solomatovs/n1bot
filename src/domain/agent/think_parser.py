@@ -8,6 +8,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import Iterator, NamedTuple
 
+from domain.core.streaming import StreamTransformer
+
 
 class FragmentRole(Enum):
     THINKING = "thinking"
@@ -19,13 +21,21 @@ class ThinkFragment(NamedTuple):
     text: str
 
 
-class ThinkTagParser:
-    """Stateful парсер <think>...</think> тегов в потоке токенов."""
+class ThinkTagParser(StreamTransformer[str, ThinkFragment]):
+    """Stateful парсер <think>...</think> тегов в потоке токенов.
+
+    StreamTransformer[str, ThinkFragment]:
+        feed(token) → Iterator[ThinkFragment]
+        reset() → сброс состояния
+    """
 
     _TAG_OPEN = "<think>"
     _TAG_CLOSE = "</think>"
 
     def __init__(self) -> None:
+        self._in_think = False
+
+    def reset(self) -> None:
         self._in_think = False
 
     def feed(self, token: str) -> Iterator[ThinkFragment]:

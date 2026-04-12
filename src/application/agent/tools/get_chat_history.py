@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator
+from typing import Iterator
 
-from domain.workspace import Workspace
 from domain.agent.events import DocPipelineEvent
-from domain.chat.history import EventType, JsonlChatReader
-from domain.agent.tools import Tool, ToolOutput, ToolResult
+from domain.chat.events import EventType
+from domain.core.storage import ChatReader
+from domain.core.tools import Tool, ToolOutput, ToolResult
 
 DocToolOutput = ToolOutput[DocPipelineEvent]
 
@@ -21,8 +21,8 @@ class ChatHistoryParams:
 class GetChatHistoryTool(Tool[DocPipelineEvent, ChatHistoryParams]):
     """Получение истории предыдущих сообщений чата."""
 
-    def __init__(self, ws: Workspace) -> None:
-        self._ws = ws
+    def __init__(self, reader: ChatReader) -> None:
+        self._reader = reader
 
     @property
     def name(self) -> str:
@@ -41,23 +41,19 @@ class GetChatHistoryTool(Tool[DocPipelineEvent, ChatHistoryParams]):
         return ChatHistoryParams
 
     def execute(self, params: ChatHistoryParams) -> Iterator[DocToolOutput]:
-        if self._ws.history_path is None or not self._ws.history_path.exists():
-            yield ToolResult(content="История чата пуста.")
-            return
-
         messages: list[str] = []
-        with JsonlChatReader(self._ws.history_path) as reader:
-            for event in reader.read():
-                if event.event_type is EventType.USER:
-                    messages.append(f"[user] {event.content}")
-                elif event.event_type is EventType.ASSISTANT:
-                    messages.append(f"[assistant] {event.content}")
-                elif event.event_type is EventType.TOOL_CALL:
-                    tool_name = event.metadata.get("tool_name", "?")
-                    messages.append(f"[tool_call] {tool_name}({event.content})")
-                elif event.event_type is EventType.TOOL_RESULT:
-                    tool_name = event.metadata.get("tool_name", "?")
-                    messages.append(f"[tool_result:{tool_name}] {event.content[:500]}")
+        self._reader.rewind()
+        for event in self._reader.read():
+            if event.event_type is EventType.USER:
+                messages.append(f"[user] {event.content}")
+            elif event.event_type is EventType.ASSISTANT:
+                messages.append(f"[assistant] {event.content}")
+            elif event.event_type is EventType.TOOL_CALL:
+                tool_name = event.metadata.get("tool_name", "?")
+                messages.append(f"[tool_call] {tool_name}({event.content})")
+            elif event.event_type is EventType.TOOL_RESULT:
+                tool_name = event.metadata.get("tool_name", "?")
+                messages.append(f"[tool_result:{tool_name}] {event.content[:500]}")
 
         if not messages:
             yield ToolResult(content="История чата пуста.")

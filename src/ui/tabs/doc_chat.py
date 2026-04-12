@@ -35,16 +35,18 @@ from domain.agent.events import (
     ToolResultReady,
 )
 from domain.config import AppConfig
-from domain.chat.history import (
+from adapters.jsonl_chat import JsonlChatReader
+from domain.core.storage import ChatReader, ChatWriter
+from domain.chat.events import (
     ContextMeta,
     EventType,
-    JsonlChatReader,
-    JsonlChatWriter,
     SearchHitMeta,
     SearchMeta,
 )
+from domain.di_types import FolderContext
 from domain.search.types import Fragment, SearchHit
-from infrastructure.bootstrap import AppServices
+from dishka import Container
+from application.agent.agent_loop import AgentLoop
 from ui.components.selectors import model_selector
 from ui.state import SessionState
 
@@ -53,8 +55,8 @@ from ui.state import SessionState
 # Точка входа
 # ---------------------------------------------------------------------------
 
-def render(services: AppServices, state: SessionState) -> None:
-    cfg = services.cfg
+def render(container: Container, state: SessionState) -> None:
+    cfg = container.get(AppConfig)
 
     # --- Sidebar: папка, чаты, модель ---
     folder_path = _sidebar_folder(cfg)
@@ -73,9 +75,12 @@ def render(services: AppServices, state: SessionState) -> None:
 
     # --- Main: чат ---
     history_path = cfg.chat_history_path(folder_path, chat_id)
-    writer = JsonlChatWriter(history_path)
+    ctx = FolderContext(folder_path=folder_path, history_path=history_path)
 
-    with JsonlChatReader(history_path) as reader:
+    with container(context={FolderContext: ctx}) as scope:
+        writer = scope.get(ChatWriter)
+        reader = scope.get(ChatReader)
+
         # Replay всей истории
         for event in reader.read():
             _render_event(event)
@@ -92,7 +97,7 @@ def render(services: AppServices, state: SessionState) -> None:
             _render_event(event)
 
         # Agent loop
-        agent = services.create_agent(folder_path, history_path=history_path)
+        agent = scope.get(AgentLoop)
         _consume_pipeline(agent.run(user_prompt, active_model), writer, reader, exchange_id)
 
     st.rerun()

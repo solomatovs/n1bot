@@ -14,30 +14,33 @@ from domain.importing.confluence import (
     ImportSpaceEnumerated,
 )
 from domain.importing.loading import ConfluenceImportParams, SpaceLoadParams
-from infrastructure.bootstrap import AppServices
+from dishka import Container
+from domain.config import AppConfig
+from domain.importing.confluence import ConfluenceImportFactory
 from ui.components.folder_selector import folder_selector
 from ui.state import SessionState
 
 
-def render(services: AppServices, state: SessionState) -> None:
+def render(container: Container, state: SessionState) -> None:
     st.title("Загрузка из Confluence")
 
     tab_space, tab_pages = st.tabs(["По Space Key", "По Page IDs"])
 
     with tab_space:
-        _render_space_tab(services)
+        _render_space_tab(container)
 
     with tab_pages:
-        _render_page_tab(services)
+        _render_page_tab(container)
 
 
 # ---------------------------------------------------------------------------
 # По Page IDs
 # ---------------------------------------------------------------------------
 
-def _render_page_tab(services: AppServices) -> None:
+def _render_page_tab(container: Container) -> None:
     import_params = _render_import_params(key_prefix="imp_pid")
-    base_dir = Path(services.cfg.import_base_dir)
+    cfg = container.get(AppConfig)
+    base_dir = Path(cfg.import_base_dir)
     output_dir = folder_selector(base_dir, key_prefix="imp_pid")
 
     st.subheader("Импорт страниц")
@@ -54,7 +57,7 @@ def _render_page_tab(services: AppServices) -> None:
         st.warning("Выберите папку.")
         return
 
-    importer = services.create_confluence_importer(import_params)
+    importer = container.get(ConfluenceImportFactory)(import_params)
     try:
         _consume_events(importer.import_pages(page_ids, output_dir))
     except Exception as e:
@@ -67,10 +70,11 @@ def _render_page_tab(services: AppServices) -> None:
 # По Space Key
 # ---------------------------------------------------------------------------
 
-def _render_space_tab(services: AppServices) -> None:
+def _render_space_tab(container: Container) -> None:
     import_params = _render_import_params(key_prefix="imp_sp")
     space_params = _render_space_params(key_prefix="imp_sp")
-    base_dir = Path(services.cfg.import_base_dir)
+    cfg = container.get(AppConfig)
+    base_dir = Path(cfg.import_base_dir)
     output_dir = folder_selector(base_dir, key_prefix="imp_sp")
 
     st.subheader("Импорт пространства")
@@ -86,7 +90,7 @@ def _render_space_tab(services: AppServices) -> None:
         st.warning("Выберите папку.")
         return
 
-    importer = services.create_confluence_importer(import_params)
+    importer = container.get(ConfluenceImportFactory)(import_params)
     try:
         _consume_events(
             importer.import_space(space_key, space_params, output_dir),

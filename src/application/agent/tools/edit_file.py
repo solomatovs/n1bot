@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator
 
 from domain.agent.events import DocPipelineEvent
-from domain.agent.tools import Tool, ToolOutput, ToolResult
+from domain.core.tools import Tool, ToolOutput, ToolResult
 from domain.workspace import Workspace
 
 DocToolOutput = ToolOutput[DocPipelineEvent]

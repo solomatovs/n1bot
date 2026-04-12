@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from domain.errors import VectorStoreError
-from domain.search.vectorstore import VectorStoreService
+from domain.core.vectorstore import VectorStoreService
 
 log = logging.getLogger(__name__)
 
