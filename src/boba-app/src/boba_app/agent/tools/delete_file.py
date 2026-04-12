@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator
+from typing import Iterator
 
 from boba_domain.agent.events import DocPipelineEvent
 from boba_domain.core.tools import Tool, ToolOutput, ToolResult

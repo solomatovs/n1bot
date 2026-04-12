@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from dishka import Container
 from fastapi import FastAPI
 
 from boba_api.config import ApiConfig

@@ -1,7 +1,7 @@
 """Tool: удаление векторной коллекции."""
 from __future__ import annotations
 
-from typing import Any, Dict, Iterator
+from typing import Iterator
 
 from boba_domain.agent.events import DocPipelineEvent
 from boba_domain.core.tools import EmptyParams, Tool, ToolOutput, ToolResult
