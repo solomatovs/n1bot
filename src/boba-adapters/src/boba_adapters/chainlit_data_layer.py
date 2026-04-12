@@ -1,15 +1,13 @@
-"""Файловый DataLayer для Chainlit — персистенция threads в JSON-файлах.
+"""Chainlit DataLayer адаптер — мост между Chainlit types и ChatThreadStore.
 
-Каждый thread хранится как {thread_id}.json в {folder}/.boba/chats/.
+ChainlitConverter — конвертация ThreadDict ↔ ChatThread, StepDict ↔ ChatStep.
+ChainlitDataLayerAdapter — реализация BaseDataLayer, делегирующая JsonThreadStore.
 """
 from __future__ import annotations
 
-import json
-import logging
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
+from typing import Dict, List, Optional, cast
 
 from chainlit.data.base import BaseDataLayer
 from chainlit.types import (
@@ -22,26 +20,128 @@ from chainlit.types import (
 )
 from chainlit.user import PersistedUser, User
 
-log = logging.getLogger(__name__)
+from boba_adapters.json_thread_store import JsonThreadStore
+from boba_domain.chat.thread import (
+    ChatStep,
+    ChatThread,
+    StepFeedback,
+    StepType,
+    ThreadMetadata,
+)
 
 
-class FileDataLayer(BaseDataLayer):
-    """Файловое хранилище threads для Chainlit.
+# ------------------------------------------------------------------
+# Converter: Chainlit types ↔ Domain types
+# ------------------------------------------------------------------
 
-    Структура:
-        {base_dir}/{folder}/.boba/chats/{thread_id}.json
-    """
 
-    def __init__(
-        self, base_dir: Path, boba_dir_name: str = ".boba", chats_dir_name: str = "chats"
-    ) -> None:
-        self._base_dir = base_dir
-        self._boba = boba_dir_name
-        self._chats = chats_dir_name
+class ChainlitConverter:
+    """Конвертация между Chainlit TypedDict'ами и доменными dataclass'ами."""
 
-    # ------------------------------------------------------------------
-    # User (заглушки — нет auth)
-    # ------------------------------------------------------------------
+    @staticmethod
+    def to_thread_dict(thread: ChatThread) -> ThreadDict:
+        result: ThreadDict = {
+            "id": thread.id,
+            "createdAt": thread.created_at,
+            "name": thread.name,
+            "userId": thread.user_id,
+            "userIdentifier": thread.user_identifier,
+            "metadata": {
+                "folder": thread.metadata.folder,
+                "model": thread.metadata.model,
+            },
+            "tags": thread.tags,
+            "steps": cast(
+                list,
+                [ChainlitConverter.to_step_dict(s) for s in thread.steps],
+            ),
+            "elements": [],
+        }
+        return result
+
+    @staticmethod
+    def to_step_dict(step: ChatStep) -> dict:
+        result: dict = {
+            "id": step.id,
+            "threadId": step.thread_id,
+            "type": step.step_type.value,
+            "output": step.output,
+            "input": step.input,
+            "createdAt": step.created_at,
+            "name": step.name,
+            "parentId": step.parent_id,
+        }
+        if step.feedback is not None:
+            result["feedback"] = {
+                "id": step.feedback.id,
+                "value": step.feedback.value,
+                "comment": step.feedback.comment,
+                "strategy": step.feedback.strategy,
+            }
+        if step.is_favorite:
+            result["metadata"] = {"favorite": True}
+        return result
+
+    @staticmethod
+    def from_step_dict(raw: dict) -> ChatStep:
+        feedback_raw = raw.get("feedback")
+        feedback = None
+        if isinstance(feedback_raw, dict) and "id" in feedback_raw:
+            feedback = StepFeedback(
+                id=feedback_raw["id"],
+                value=feedback_raw.get("value", 0),
+                comment=feedback_raw.get("comment", ""),
+                strategy=feedback_raw.get("strategy", "user"),
+            )
+
+        meta = raw.get("metadata") or {}
+        is_favorite = meta.get("favorite", False) if isinstance(meta, dict) else False
+
+        return ChatStep(
+            id=raw.get("id", ""),
+            thread_id=raw.get("threadId", ""),
+            step_type=_parse_step_type(raw.get("type", "")),
+            output=raw.get("output", ""),
+            input=raw.get("input", ""),
+            created_at=raw.get("createdAt", ""),
+            name=raw.get("name", ""),
+            parent_id=raw.get("parentId"),
+            feedback=feedback,
+            is_favorite=is_favorite,
+        )
+
+    @staticmethod
+    def feedback_from_chainlit(feedback: Feedback) -> StepFeedback:
+        return StepFeedback(
+            id=feedback.id or str(uuid.uuid4()),
+            value=feedback.value,
+            comment=feedback.comment or "",
+        )
+
+    @staticmethod
+    def metadata_from_dict(raw: dict) -> ThreadMetadata:
+        if isinstance(raw, str):
+            import json
+
+            raw = json.loads(raw)
+        return ThreadMetadata(
+            folder=raw.get("folder", ""),
+            model=raw.get("model", ""),
+        )
+
+
+# ------------------------------------------------------------------
+# Adapter: BaseDataLayer → JsonThreadStore
+# ------------------------------------------------------------------
+
+
+class ChainlitDataLayerAdapter(BaseDataLayer):
+    """Chainlit DataLayer, делегирующий хранение в JsonThreadStore."""
+
+    def __init__(self, store: JsonThreadStore) -> None:
+        self._store = store
+
+    # -- User (нет auth — default user) --
 
     async def get_user(self, identifier: str) -> Optional[PersistedUser]:
         return PersistedUser(
@@ -57,63 +157,36 @@ class FileDataLayer(BaseDataLayer):
             createdAt=datetime.now(timezone.utc).isoformat(),
         )
 
-    # ------------------------------------------------------------------
-    # Threads
-    # ------------------------------------------------------------------
+    # -- Threads --
 
     async def get_thread(self, thread_id: str) -> Optional[ThreadDict]:
-        for path in self._find_thread_files(thread_id):
-            return self._read_thread(path)
-        return None
+        thread = self._store.get_thread(thread_id)
+        if thread is None:
+            return None
+        return ChainlitConverter.to_thread_dict(thread)
 
     async def get_thread_author(self, thread_id: str) -> str:
-        thread = await self.get_thread(thread_id)
-        if thread:
-            return thread.get("userIdentifier", "default") or "default"
-        return "default"
+        thread = self._store.get_thread(thread_id)
+        return thread.user_identifier if thread else "default"
 
     async def list_threads(
         self, pagination: Pagination, filters: ThreadFilter
     ) -> PaginatedResponse[ThreadDict]:
-        all_threads: list[ThreadDict] = []
+        offset = int(pagination.cursor) if pagination.cursor else 0
 
-        for folder_dir in self._iter_folders():
-            chats_dir = folder_dir / self._boba / self._chats
-            if not chats_dir.is_dir():
-                continue
-            for path in chats_dir.glob("*.json"):
-                thread = self._read_thread(path)
-                if thread:
-                    all_threads.append(thread)
-
-        # Фильтр по search
-        if filters.search:
-            q = filters.search.lower()
-            all_threads = [
-                t for t in all_threads if q in (t.get("name") or "").lower()
-            ]
-
-        # Сортировка по дате (новые первые)
-        all_threads.sort(key=lambda t: t.get("createdAt", ""), reverse=True)
-
-        # Pagination (cursor = индекс)
-        start = 0
-        if pagination.cursor:
-            try:
-                start = int(pagination.cursor)
-            except ValueError:
-                start = 0
-
-        page = all_threads[start : start + pagination.first]
-        has_next = start + pagination.first < len(all_threads)
+        page = self._store.list_threads(
+            limit=pagination.first,
+            offset=offset,
+            search=filters.search,
+        )
 
         return PaginatedResponse(
             pageInfo=PageInfo(
-                hasNextPage=has_next,
-                startCursor=str(start),
-                endCursor=str(start + len(page)),
+                hasNextPage=page.has_next,
+                startCursor=str(offset),
+                endCursor=str(offset + len(page.threads)),
             ),
-            data=page,
+            data=[ChainlitConverter.to_thread_dict(t) for t in page.threads],
         )
 
     async def update_thread(
@@ -124,122 +197,110 @@ class FileDataLayer(BaseDataLayer):
         metadata: Optional[Dict] = None,
         tags: Optional[List[str]] = None,
     ) -> None:
-        for path in self._find_thread_files(thread_id):
-            data = self._read_thread(path)
-            if not data:
-                return
-            thread: Any = data
-            if name is not None:
-                thread["name"] = name
-            if user_id is not None:
-                thread["userId"] = user_id
-            if metadata is not None:
-                existing = thread.get("metadata") or {}
-                if isinstance(existing, str):
-                    try:
-                        existing = json.loads(existing)
-                    except json.JSONDecodeError:
-                        existing = {}
-                existing.update(metadata)
-                thread["metadata"] = existing
-            if tags is not None:
-                thread["tags"] = tags
-            self._write_thread(path, thread)
+        thread = self._store.get_thread(thread_id)
+
+        if thread is None:
+            meta = ChainlitConverter.metadata_from_dict(metadata or {})
+            thread = ChatThread(
+                id=thread_id,
+                created_at=datetime.now(timezone.utc).isoformat(),
+                name=name,
+                user_id=user_id or "default",
+                user_identifier="default",
+                metadata=meta,
+                tags=tags or [],
+            )
+            self._store.save_thread(thread)
             return
 
-        # Thread не существует — создаём (Chainlit вызывает update_thread до create_step)
-        if metadata and "folder" in metadata:
-            folder = metadata["folder"]
-            chats_dir = self._base_dir / folder / self._boba / self._chats
-            chats_dir.mkdir(parents=True, exist_ok=True)
-            path = chats_dir / f"{thread_id}.json"
-            new_thread: Any = {
-                "id": thread_id,
-                "createdAt": datetime.now(timezone.utc).isoformat(),
-                "name": name,
-                "userId": user_id,
-                "userIdentifier": "default",
-                "metadata": metadata,
-                "tags": tags,
-                "steps": [],
-            }
-            self._write_thread(path, cast(ThreadDict, new_thread))
+        updated_meta = thread.metadata
+        if metadata:
+            merged = ChainlitConverter.metadata_from_dict(metadata)
+            updated_meta = ThreadMetadata(
+                folder=merged.folder or thread.metadata.folder,
+                model=merged.model or thread.metadata.model,
+            )
+
+        updated = ChatThread(
+            id=thread.id,
+            created_at=thread.created_at,
+            name=name if name is not None else thread.name,
+            user_id=user_id if user_id is not None else thread.user_id,
+            user_identifier=thread.user_identifier,
+            metadata=updated_meta,
+            steps=thread.steps,
+            tags=tags if tags is not None else thread.tags,
+        )
+        self._store.save_thread(updated)
 
     async def delete_thread(self, thread_id: str) -> None:
-        for path in self._find_thread_files(thread_id):
-            path.unlink(missing_ok=True)
+        self._store.delete_thread(thread_id)
 
-    # ------------------------------------------------------------------
-    # Steps (messages)
-    # ------------------------------------------------------------------
+    # -- Steps --
 
-    async def create_step(self, step_dict: Any) -> None:
+    async def create_step(self, step_dict: dict) -> None:
         thread_id = step_dict.get("threadId", "")
         if not thread_id:
             return
-        for path in self._find_thread_files(thread_id):
-            data: Any = self._read_thread(path)
-            if not data:
-                return
-            steps: list[Any] = data.get("steps") or []
-            steps.append(step_dict)
-            data["steps"] = steps
+        step = ChainlitConverter.from_step_dict(step_dict)
+        self._store.add_step(thread_id, step)
 
-            if not data.get("name") and step_dict.get("type") == "user_message":
-                output = step_dict.get("output", "")
-                data["name"] = output[:50] if output else None
-
-            self._write_thread(path, data)
-            return
-
-    async def update_step(self, step_dict: Any) -> None:
+    async def update_step(self, step_dict: dict) -> None:
         thread_id = step_dict.get("threadId", "")
-        step_id = step_dict.get("id", "")
-        if not thread_id or not step_id:
+        if not thread_id:
             return
-        for path in self._find_thread_files(thread_id):
-            data: Any = self._read_thread(path)
-            if not data:
-                return
-            steps: list[Any] = data.get("steps") or []
-            for i, s in enumerate(steps):
-                if s.get("id") == step_id:
-                    steps[i] = step_dict
-                    break
-            else:
-                steps.append(step_dict)
-            data["steps"] = steps
-            self._write_thread(path, data)
-            return
+        step = ChainlitConverter.from_step_dict(step_dict)
+        self._store.update_step(thread_id, step)
 
     async def delete_step(self, step_id: str) -> None:
+        # step_id без thread_id — ищем во всех threads
+        for thread in self._store.list_threads(limit=10000).threads:
+            for step in thread.steps:
+                if step.id == step_id:
+                    self._store.delete_step(thread.id, step_id)
+                    return
+
+    # -- Feedback --
+
+    async def upsert_feedback(self, feedback: Feedback) -> str:
+        domain_fb = ChainlitConverter.feedback_from_chainlit(feedback)
+
+        if feedback.forId:
+            # Ищем step по forId
+            for thread in self._store.list_threads(limit=10000).threads:
+                for step in thread.steps:
+                    if step.id == feedback.forId:
+                        self._store.set_feedback(thread.id, step.id, domain_fb)
+                        return domain_fb.id
+
+        return domain_fb.id
+
+    async def delete_feedback(self, feedback_id: str) -> bool:
+        for thread in self._store.list_threads(limit=10000).threads:
+            for step in thread.steps:
+                if step.feedback and step.feedback.id == feedback_id:
+                    self._store.set_feedback(thread.id, step.id, None)
+                    return True
+        return False
+
+    async def get_favorite_steps(self, user_id: str) -> list:
+        steps = self._store.get_favorite_steps(user_id)
+        return [ChainlitConverter.to_step_dict(s) for s in steps]
+
+    # -- Elements (заглушки — нет файл-аплоада) --
+
+    async def create_element(self, _element: object) -> None:
         pass
 
-    # ------------------------------------------------------------------
-    # Elements, Feedback (заглушки)
-    # ------------------------------------------------------------------
-
-    async def create_element(self, element: "object") -> None:
-        pass
-
-    async def get_element(
-        self, thread_id: str, element_id: str
-    ) -> Optional["dict"]:
+    async def get_element(self, _thread_id: str, _element_id: str) -> Optional[dict]:
         return None
 
     async def delete_element(
-        self, element_id: str, thread_id: Optional[str] = None
+        self, _element_id: str, _thread_id: Optional[str] = None
     ) -> None:
         pass
 
-    async def upsert_feedback(self, feedback: Feedback) -> str:
-        return feedback.id or str(uuid.uuid4())
-
-    async def delete_feedback(self, feedback_id: str) -> bool:
-        return True
-
-    async def get_favorite_steps(self, user_id: str) -> list:
-        return []
+    # -- Misc --
 
     async def build_debug_url(self) -> str:
         return ""
@@ -247,40 +308,14 @@ class FileDataLayer(BaseDataLayer):
     async def close(self) -> None:
         pass
 
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
 
-    def _iter_folders(self):
-        """Итерировать папки документов в base_dir."""
-        if not self._base_dir.is_dir():
-            return
-        for d in self._base_dir.iterdir():
-            if d.is_dir() and not d.name.startswith("."):
-                yield d
+# ------------------------------------------------------------------
+# Helper
+# ------------------------------------------------------------------
 
-    def _find_thread_files(self, thread_id: str):
-        """Найти JSON-файл thread по ID во всех folders."""
-        for folder_dir in self._iter_folders():
-            path = folder_dir / self._boba / self._chats / f"{thread_id}.json"
-            if path.is_file():
-                yield path
 
-    def _read_thread(self, path: Path) -> Optional[ThreadDict]:
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            data.setdefault("steps", [])
-            data.setdefault("elements", [])
-            return data
-        except (json.JSONDecodeError, OSError) as e:
-            log.warning("Failed to read thread %s: %s", path, e)
-            return None
-
-    def _write_thread(self, path: Path, thread: ThreadDict) -> None:
-        try:
-            path.write_text(
-                json.dumps(thread, ensure_ascii=False, indent=2, default=str),
-                encoding="utf-8",
-            )
-        except OSError as e:
-            log.warning("Failed to write thread %s: %s", path, e)
+def _parse_step_type(value: str) -> StepType:
+    try:
+        return StepType(value)
+    except ValueError:
+        return StepType.RUN
