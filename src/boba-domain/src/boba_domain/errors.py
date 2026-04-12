@@ -49,6 +49,37 @@ class VectorStoreConnectionError(VectorStoreError):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Хранилище thread'ов
+# ---------------------------------------------------------------------------
+
+
+class ThreadStoreError(AppError):
+    """Базовая ошибка работы с хранилищем thread'ов."""
+
+
+class ThreadNotFoundError(ThreadStoreError):
+    """Thread не найден."""
+
+    def __init__(self, thread_id: str) -> None:
+        self.thread_id = thread_id
+        super().__init__(f"Thread not found: {thread_id}")
+
+
+class ThreadDeleteError(ThreadStoreError):
+    """Не удалось удалить workspace."""
+
+    def __init__(self, thread_id: str, reason: Exception) -> None:
+        self.thread_id = thread_id
+        self.reason = reason
+        super().__init__(f"Failed to delete workspace for thread {thread_id}: {reason}")
+
+
+# ---------------------------------------------------------------------------
+# Индексация
+# ---------------------------------------------------------------------------
+
+
 class CorruptedIndexError(AppError):
     """Индексный документ не содержит обязательных метаданных.
 
