@@ -8,6 +8,14 @@ from boba_domain import toml_config
 
 
 @dataclass(frozen=True)
+class AgentRequest:
+    """Входные данные для AgentLoop.run()."""
+
+    query: str
+    model: str
+
+
+@dataclass(frozen=True)
 class AgentConfig:
     """Настройки AgentLoop."""
 

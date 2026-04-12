@@ -5,6 +5,7 @@ ChainlitDataLayerAdapter — реализация BaseDataLayer, делегир�
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, cast
@@ -19,6 +20,8 @@ from chainlit.types import (
     ThreadFilter,
 )
 from chainlit.user import PersistedUser, User
+
+log = logging.getLogger(__name__)
 
 from boba_adapters.json_thread_store import JsonThreadStore
 from boba_domain.chat.thread import (
@@ -201,6 +204,11 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
 
         if thread is None:
             meta = ChainlitConverter.metadata_from_dict(metadata or {})
+            if not meta.folder:
+                # Workspace not created yet — skip. Chainlit's internal
+                # flush_thread_queues calls update_thread without folder
+                # metadata before our on_message creates the workspace.
+                return
             thread = ChatThread(
                 id=thread_id,
                 created_at=datetime.now(timezone.utc).isoformat(),
@@ -213,21 +221,16 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
             self._store.save_thread(thread)
             return
 
+        # Folder (UUID) не меняется. name = display name, свободно обновляется.
+        effective_name = name if name is not None else thread.name
+
         updated_meta = thread.metadata
-        if metadata:
+        if metadata is not None:
             merged = ChainlitConverter.metadata_from_dict(metadata)
             updated_meta = ThreadMetadata(
                 folder=merged.folder or thread.metadata.folder,
                 model=merged.model or thread.metadata.model,
             )
-
-        # Chainlit автоименует thread текстом первого сообщения (emitter.py).
-        # Если workspace уже имеет имя и metadata не передан — это авто-rename,
-        # игнорируем его, сохраняя имя workspace.
-        if thread.metadata.folder and metadata is None:
-            effective_name = thread.name
-        else:
-            effective_name = name if name is not None else thread.name
 
         updated = ChatThread(
             id=thread.id,
@@ -242,7 +245,13 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
         self._store.save_thread(updated)
 
     async def delete_thread(self, thread_id: str) -> None:
-        self._store.delete_thread(thread_id)
+        from boba_domain.errors import ThreadStoreError
+
+        try:
+            self._store.delete_thread(thread_id)
+        except ThreadStoreError as e:
+            log.error("delete_thread failed: %s", e)
+            raise
 
     # -- Steps --
 

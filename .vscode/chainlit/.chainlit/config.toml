@@ -108,7 +108,7 @@ name = "Assistant"
 default_sidebar_state = "open"  # Options: "open", "closed", "hidden"
 
 # Chat settings display location: "message_composer" (default) or "sidebar" (header)
-chat_settings_location = "sidebar"
+# chat_settings_location = "message_composer"
 
 # Default state of chat settings sidebar when location is "sidebar"
 # default_chat_settings_open = false

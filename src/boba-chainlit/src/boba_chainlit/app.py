@@ -7,18 +7,27 @@ ChatSettings (sidebar) → переименование + модель.
 from __future__ import annotations
 
 import asyncio
-import re
 from queue import Queue
 from threading import Thread
 
 import chainlit as cl
 from chainlit.types import ThreadDict
 
-from boba_chainlit.data_layer import ChainlitDataLayerAdapter
 from boba_adapters.json_thread_store import JsonThreadStore
 from boba_adapters.litellm_models import fetch_chat_models
 from boba_app.agent.agent_loop import AgentLoop
 from boba_app.session import ChatSession
+from boba_chainlit.data_layer import ChainlitDataLayerAdapter
+from boba_chainlit.workspace import (
+    SessionState,
+    WorkspaceError,
+    WorkspaceFailure,
+    WorkspaceService,
+    get_session_state,
+    parse_thread_metadata,
+    send_error,
+    set_session_state,
+)
 from boba_domain.agent.config import AgentConfig
 from boba_domain.agent.events import (
     AnswerToken,
@@ -34,26 +43,9 @@ from boba_infra.container import create_container
 container = create_container()
 cfg = container.get(AppConfig)
 agent_cfg = AgentConfig.from_env()
+workspace_svc = WorkspaceService(cfg)
 
 _SENTINEL = object()
-_VALID_NAME_RE = re.compile(r"^[a-zA-Zа-яА-ЯёЁ0-9][a-zA-Zа-яА-ЯёЁ0-9 _\-\.]*$")
-
-
-def _make_store() -> JsonThreadStore:
-    return JsonThreadStore(cfg)
-
-
-def _get_dl():
-    from chainlit.data import get_data_layer as _dl
-    return _dl()
-
-
-def _next_workspace_name() -> str:
-    existing = {d.name for d in cfg.iter_workspaces()}
-    n = 1
-    while f"workspace-{n}" in existing:
-        n += 1
-    return f"workspace-{n}"
 
 
 def _model_widget():
@@ -71,19 +63,31 @@ def _model_widget():
     return cl.input_widget.TextInput(id="model", label="Модель", initial=default)
 
 
-def _settings_widgets(folder_name: str):
-    return [
-        cl.input_widget.TextInput(
-            id="workspace_name",
-            label="Имя пространства",
-            initial=folder_name,
-        ),
-        _model_widget(),
-    ]
+def _settings_widgets() -> list[cl.input_widget.InputWidget]:
+    return [_model_widget()]
+
+
+def _get_dl():
+    from chainlit.data import get_data_layer as _dl
+    return _dl()
+
+
+async def _save_thread_metadata(state: SessionState) -> None:
+    """Сохранить state в thread metadata через data layer."""
+    if not state.folder:
+        return
+    data_layer = _get_dl()
+    thread_id = cl.context.session.thread_id
+    if data_layer and thread_id:
+        await data_layer.update_thread(
+            thread_id,
+            name=state.display_name,
+            metadata={"folder": state.folder, "model": state.model},
+        )
 
 
 # ------------------------------------------------------------------
-# Auth — без логина, но Chainlit требует user для sidebar (list_threads)
+# Auth
 # ------------------------------------------------------------------
 
 
@@ -99,7 +103,7 @@ async def header_auth(_headers) -> cl.User:
 
 @cl.data_layer
 def get_data_layer():
-    return ChainlitDataLayerAdapter(_make_store())
+    return ChainlitDataLayerAdapter(JsonThreadStore(cfg))
 
 
 # ------------------------------------------------------------------
@@ -109,70 +113,73 @@ def get_data_layer():
 
 @cl.on_chat_start
 async def on_chat_start():
-    folder_name = _next_workspace_name()
+    # Workspace создаётся лениво при первом сообщении (_ensure_workspace).
+    # Здесь только инициализируем настройки сессии.
+    state = SessionState(
+        folder="",
+        display_name="",
+        model=agent_cfg.default_model,
+    )
+    set_session_state(state)
+
+    settings = await cl.ChatSettings(_settings_widgets()).send()
+    model = settings.get("model")
+    if model:
+        state = SessionState(folder="", display_name="", model=model)
+        set_session_state(state)
+
+
+async def _ensure_workspace() -> SessionState:
+    """Создать workspace при первом сообщении, если ещё не создан."""
+    state = get_session_state()
+    if state is not None and state.folder:
+        return state
+
+    result = workspace_svc.create()
     thread_id = cl.context.session.thread_id
-    ChatSession.create(cfg, folder_name, chat_id=thread_id)
-    cl.user_session.set("folder", folder_name)
+    ChatSession.create(cfg, result.folder, chat_id=thread_id)
 
-    settings = await cl.ChatSettings(_settings_widgets(folder_name)).send()
-    model = settings.get("model", agent_cfg.default_model)
-    cl.user_session.set("model", model)
-
-    data_layer = _get_dl()
-    if data_layer and thread_id:
-        await data_layer.update_thread(
-            thread_id,
-            name=folder_name,
-            metadata={"folder": folder_name, "model": model},
-        )
+    model = state.model if state else agent_cfg.default_model
+    new_state = SessionState(
+        folder=result.folder,
+        display_name=result.display_name,
+        model=model,
+    )
+    set_session_state(new_state)
+    await _save_thread_metadata(new_state)
+    return new_state
 
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
-    metadata = thread.get("metadata") or {}
-    if isinstance(metadata, str):
-        import json
-        metadata = json.loads(metadata)
+    metadata = parse_thread_metadata(thread)
+    if metadata is None:
+        await send_error(WorkspaceFailure(WorkspaceError.CORRUPT_METADATA))
+        return
 
-    folder = metadata.get("folder", "")
-    model = metadata.get("model", agent_cfg.default_model)
-    cl.user_session.set("folder", folder)
-    cl.user_session.set("model", model)
+    state = SessionState(
+        folder=metadata["folder"],
+        display_name=thread.get("name") or metadata["folder"],
+        model=metadata.get("model", agent_cfg.default_model),
+    )
+    set_session_state(state)
 
-    await cl.ChatSettings(_settings_widgets(folder)).send()
+    await cl.ChatSettings(_settings_widgets()).send()
 
 
 @cl.on_settings_update
 async def on_settings_update(settings: dict):
-    model = settings.get("model", agent_cfg.default_model)
-    cl.user_session.set("model", model)
+    state = get_session_state()
+    if state is None:
+        await send_error(WorkspaceFailure(WorkspaceError.NOT_FOUND))
+        return
 
-    old_folder = cl.user_session.get("folder") or ""
-    new_folder = (settings.get("workspace_name") or "").strip()
+    model = settings.get("model")
+    if model:
+        state.model = model
 
-    # Переименование workspace
-    if new_folder and new_folder != old_folder:
-        if not _VALID_NAME_RE.match(new_folder):
-            await cl.Message(content=f"Недопустимое имя: **{new_folder}**").send()
-        elif cfg.folder_path(new_folder).exists():
-            await cl.Message(
-                content=f"Пространство **{new_folder}** уже существует."
-            ).send()
-        else:
-            old_path = cfg.folder_path(old_folder)
-            if old_path.is_dir():
-                old_path.rename(cfg.folder_path(new_folder))
-                cl.user_session.set("folder", new_folder)
-
-    folder = cl.user_session.get("folder") or ""
-    thread_id = cl.context.session.thread_id
-    data_layer = _get_dl()
-    if data_layer and thread_id:
-        await data_layer.update_thread(
-            thread_id,
-            name=folder,
-            metadata={"folder": folder, "model": model},
-        )
+    set_session_state(state)
+    await _save_thread_metadata(state)
 
 
 # ------------------------------------------------------------------
@@ -182,17 +189,10 @@ async def on_settings_update(settings: dict):
 
 @cl.on_message
 async def on_message(message: cl.Message):
-    folder_name = cl.user_session.get("folder")
-    model = cl.user_session.get("model") or None
-
-    if not folder_name:
-        await cl.Message(
-            content="Рабочее пространство не выбрано. Создайте новый чат."
-        ).send()
-        return
+    state = await _ensure_workspace()
 
     thread_id = cl.context.session.thread_id
-    session = ChatSession.create(cfg, folder_name, chat_id=thread_id)
+    session = ChatSession.create(cfg, state.folder, chat_id=thread_id)
 
     q: Queue = Queue()
 
@@ -200,7 +200,8 @@ async def on_message(message: cl.Message):
         try:
             with container(context={FolderContext: session.folder_context}) as scope:
                 agent = scope.get(AgentLoop)
-                for event in agent.run(message.content, model):
+                from boba_domain.agent.config import AgentRequest
+                for event in agent.run(AgentRequest(query=message.content, model=state.model)):
                     q.put(event)
         except Exception as e:
             q.put(e)
@@ -220,7 +221,7 @@ async def on_message(message: cl.Message):
         if event is _SENTINEL:
             break
         if isinstance(event, Exception):
-            await cl.Message(content=f"Ошибка: {event}").send()
+            await cl.Message(content=f"Ошибка агента: {type(event).__name__}").send()
             break
 
         match event:

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from dataclasses import asdict
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from boba_domain.chat.thread import (
 )
 from boba_domain.config import AppConfig
 from boba_domain.core.thread_store import ThreadPage
+from boba_domain.errors import ThreadDeleteError, ThreadNotFoundError
 
 log = logging.getLogger(__name__)
 
@@ -76,8 +78,12 @@ class JsonThreadStore:
             path = self._cfg.thread_path(folder_dir)
             thread = self._read(path)
             if thread is not None and thread.id == thread_id:
-                path.unlink(missing_ok=True)
+                try:
+                    shutil.rmtree(folder_dir)
+                except OSError as e:
+                    raise ThreadDeleteError(thread_id, e) from e
                 return
+        raise ThreadNotFoundError(thread_id)
 
     # ------------------------------------------------------------------
     # Step CRUD

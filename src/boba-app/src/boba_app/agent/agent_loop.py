@@ -12,7 +12,7 @@ from typing import Iterator
 from boba_app.agent.completion_middleware import CompletionMiddleware
 from boba_app.agent.llm_client import LLMStreamConsumer
 from boba_app.agent.tool_executor import ToolCallExecutor
-from boba_domain.agent.config import AgentConfig
+from boba_domain.agent.config import AgentConfig, AgentRequest
 from boba_domain.agent.context_filler import ContextRequest
 from boba_domain.agent.context_window import ContextWindow
 from boba_domain.agent.events import (
@@ -46,13 +46,11 @@ class AgentLoop:
         self._context_pipeline = context_pipeline
         self._executor = tool_executor
 
-    def run(self, query: str, model: str | None = None) -> Iterator[DocPipelineEvent]:
+    def run(self, request: AgentRequest) -> Iterator[DocPipelineEvent]:
         """Запустить агентный цикл."""
-        active_model = model or self._config.default_model
-
         window = ContextWindow()
         yield from self._context_pipeline.run(
-            ContextRequest(window=window, query=query)
+            ContextRequest(window=window, query=request.query)
         )
 
         for iteration in range(1, self._config.max_iterations + 1):
@@ -61,7 +59,7 @@ class AgentLoop:
             raw_deltas = self._llm.stream_completion(
                 messages=window.messages,
                 tool_definitions=window.tool_definitions,
-                model=active_model,
+                model=request.model,
             )
             deltas = self._middleware.process(raw_deltas)
 
