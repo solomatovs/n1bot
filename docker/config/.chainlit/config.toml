@@ -101,7 +101,7 @@ default_theme = "light"
 
 # Force a specific language for all users (e.g., "en-US", "he-IL", "fr-FR")
 # If not set, the browser's language will be used
-language = "ru-RU"
+language = "en-US"
 
 layout = "wide"  # Options: "standard" (sidebar on the left, like ChatGPT), "wide" (sidebar at the top, takes full width), "minimal" (no sidebar, only header with thread title and buttons)
 

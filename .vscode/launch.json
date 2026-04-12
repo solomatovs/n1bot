@@ -25,12 +25,13 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/docker",
             "python": "${workspaceFolder}/.venv/bin/python",
+            "autoStartBrowser": false,
             "jinja": true,
             "env": {
                 "BOBA_CONFIG": "./config/config.debug.toml",
                 "LITELLM_API_KEY_FILE": "./secrets/litellm_api_key",
                 "CONFLUENCE_TOKEN_FILE": "./secrets/confluence_token",
-                "CHAINLIT_APP_ROOT": "./config",
+                "CHAINLIT_APP_ROOT": "./chainlit",
                 "PYTHONPATH": "${workspaceFolder}/src/boba-domain/src:${workspaceFolder}/src/boba-app/src:${workspaceFolder}/src/boba-adapters/src:${workspaceFolder}/src/boba-infra/src:${workspaceFolder}/src/boba-api/src:${workspaceFolder}/src/boba-chainlit/src"
             }
         }

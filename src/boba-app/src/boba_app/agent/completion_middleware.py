@@ -28,6 +28,7 @@ class CompletionMiddleware:
 
     def process(self, stream: Iterator[CompletionDelta]) -> Iterator[CompletionDelta]:
         for transformer in self._transformers:
+            transformer.reset()
             stream = _apply(transformer, stream)
         yield from stream
 

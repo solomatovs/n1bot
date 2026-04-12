@@ -2,16 +2,16 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import uuid
 from pathlib import Path
-from queue import Queue, Empty
+from queue import Queue
 from threading import Thread
 
-import httpx
 import chainlit as cl
 
+from boba_adapters.litellm_models import fetch_chat_models
 from boba_app.agent.agent_loop import AgentLoop
+from boba_domain.agent.config import AgentConfig
 from boba_domain.agent.events import (
     AnswerToken,
     GenerationDone,
@@ -19,39 +19,38 @@ from boba_domain.agent.events import (
     ToolCallStarted,
     ToolResultReady,
 )
-from boba_domain.agent.config import AgentConfig
 from boba_domain.config import AppConfig
 from boba_domain.di_types import FolderContext
 from boba_infra.container import create_container
-
-log = logging.getLogger(__name__)
 
 container = create_container()
 cfg = container.get(AppConfig)
 agent_cfg = AgentConfig.from_env()
 
-
-def _fetch_models() -> list[str]:
-    """Получить список доступных моделей из LiteLLM."""
-    try:
-        r = httpx.get(
-            cfg.litellm_models_url,
-            headers=cfg.litellm_auth_headers,
-            verify=cfg.ssl_verify,
-            timeout=10,
-        )
-        r.raise_for_status()
-        return sorted(m["id"] for m in r.json().get("data", []))
-    except Exception as e:
-        log.warning("Не удалось получить список моделей: %s", e)
-        return []
-
 _SENTINEL = object()
+
+
+def _model_selector() -> cl.input_widget.Select | cl.input_widget.TextInput:
+    """Виджет выбора модели: Select если LiteLLM доступен, иначе TextInput."""
+    models = fetch_chat_models(cfg)
+    default = agent_cfg.default_model
+
+    if not models:
+        return cl.input_widget.TextInput(id="model", label="Модель", initial=default)
+
+    if default and default not in models:
+        models.insert(0, default)
+
+    return cl.input_widget.Select(
+        id="model",
+        label="Модель",
+        values=models,
+        initial_value=default if default in models else models[0],
+    )
 
 
 @cl.on_chat_start
 async def on_chat_start():
-    """Инициализация сессии — выбор папки."""
     base_dir = Path(cfg.import_base_dir)
     base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -59,39 +58,17 @@ async def on_chat_start():
         d.name for d in base_dir.iterdir()
         if d.is_dir() and not d.name.startswith(".")
     )
-
     if not folders:
         await cl.Message(content="Нет папок с документами. Импортируйте документы.").send()
         return
 
-    models = _fetch_models()
-    default_model = agent_cfg.default_model
-    if default_model and default_model not in models:
-        models.insert(0, default_model)
-
-    widgets = [
+    settings = await cl.ChatSettings([
         cl.input_widget.Select(
-            id="folder",
-            label="Папка с документами",
-            values=folders,
-            initial_value=folders[0],
+            id="folder", label="Папка с документами",
+            values=folders, initial_value=folders[0],
         ),
-    ]
-    if models:
-        widgets.append(cl.input_widget.Select(
-            id="model",
-            label="Модель",
-            values=models,
-            initial_value=default_model if default_model in models else models[0],
-        ))
-    else:
-        widgets.append(cl.input_widget.TextInput(
-            id="model",
-            label="Модель",
-            initial=default_model,
-        ))
-
-    settings = await cl.ChatSettings(widgets).send()
+        _model_selector(),
+    ]).send()
 
     cl.user_session.set("folder", settings["folder"])
     cl.user_session.set("model", settings["model"])
@@ -105,9 +82,8 @@ async def on_settings_update(settings: dict):
 
 @cl.on_message
 async def on_message(message: cl.Message):
-    """Обработка сообщения пользователя — стриминг через Queue."""
     folder_name = cl.user_session.get("folder")
-    model = cl.user_session.get("model") or None  # None → AgentLoop возьмёт default
+    model = cl.user_session.get("model") or None
 
     if not folder_name:
         await cl.Message(content="Выберите папку в настройках.").send()
@@ -124,7 +100,6 @@ async def on_message(message: cl.Message):
 
     ctx = FolderContext(folder_path=folder_path, history_path=history_path)
 
-    # Queue для стриминга событий из sync-потока в async event loop
     q: Queue = Queue()
 
     def _run_agent():
@@ -141,16 +116,12 @@ async def on_message(message: cl.Message):
     thread = Thread(target=_run_agent, daemon=True)
     thread.start()
 
-    # Рендерим события по мере поступления
     msg = cl.Message(content="")
-    thinking_content: list[str] = []
+    thinking: list[str] = []
     answer_started = False
 
     while True:
-        try:
-            event = await asyncio.to_thread(q.get, timeout=0.1)
-        except Empty:
-            continue
+        event = await asyncio.to_thread(q.get)
 
         if event is _SENTINEL:
             break
@@ -160,13 +131,13 @@ async def on_message(message: cl.Message):
 
         match event:
             case ThinkingToken(token=tok):
-                thinking_content.append(tok)
+                thinking.append(tok)
 
             case AnswerToken(token=tok):
                 if not answer_started:
-                    if thinking_content:
+                    if thinking:
                         async with cl.Step(name="Размышления") as step:
-                            step.output = "".join(thinking_content)
+                            step.output = "".join(thinking)
                     answer_started = True
                 msg.content += tok
                 await msg.send()
@@ -180,8 +151,8 @@ async def on_message(message: cl.Message):
                     step.output = content[:500]
 
             case GenerationDone():
-                if not answer_started and thinking_content:
-                    msg.content = "".join(thinking_content)
+                if not answer_started and thinking:
+                    msg.content = "".join(thinking)
                     await msg.send()
 
     if not msg.content:

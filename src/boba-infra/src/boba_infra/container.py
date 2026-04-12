@@ -57,3 +57,4 @@ def _configure_logging(cfg: AppConfig) -> None:
     logging.getLogger("watchdog").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("engineio.server").setLevel(logging.CRITICAL)
