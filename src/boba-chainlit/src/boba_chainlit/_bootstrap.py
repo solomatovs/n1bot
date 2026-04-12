@@ -1,6 +1,6 @@
 """Прокидывание [chainlit] секции из config.toml в env vars.
 
-Chainlit читает CHAINLIT_HOST/PORT/ROOT_PATH из env при первом импорте.
+Chainlit читает CHAINLIT_HOST/PORT/ROOT_PATH/AUTH_SECRET из env при первом импорте.
 Вызовите init() ДО любых импортов из chainlit.
 """
 
@@ -14,3 +14,5 @@ def init() -> None:
     os.environ.setdefault("CHAINLIT_HOST", cfg.host)
     os.environ.setdefault("CHAINLIT_PORT", str(cfg.port))
     os.environ.setdefault("CHAINLIT_ROOT_PATH", cfg.root_path)
+    if cfg.auth_secret:
+        os.environ.setdefault("CHAINLIT_AUTH_SECRET", cfg.auth_secret)

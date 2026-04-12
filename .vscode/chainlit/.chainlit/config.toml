@@ -39,7 +39,7 @@ user_message_autoscroll = true
 assistant_message_autoscroll = true
 
 # Automatically tag threads with the current chat profile (if a chat profile is used)
-auto_tag_thread = true
+auto_tag_thread = false
 
 # Allow users to edit their own messages
 edit_message = true
@@ -105,10 +105,10 @@ name = "Assistant"
 
 # layout = "wide"
 
-# default_sidebar_state = "open"  # Options: "open", "closed", "hidden"
+default_sidebar_state = "open"  # Options: "open", "closed", "hidden"
 
 # Chat settings display location: "message_composer" (default) or "sidebar" (header)
-# chat_settings_location = "message_composer"
+chat_settings_location = "sidebar"
 
 # Default state of chat settings sidebar when location is "sidebar"
 # default_chat_settings_open = false

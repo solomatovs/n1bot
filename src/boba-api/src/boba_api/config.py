@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from boba_domain.config import _load_toml_section, _resolve
+from boba_domain import toml_config
 
 
 @dataclass(frozen=True)
@@ -21,11 +21,11 @@ class ApiConfig:
 
     @staticmethod
     def from_env() -> ApiConfig:
-        toml = _load_toml_section("api")
+        toml = toml_config.load_section("api")
         return ApiConfig(
-            root_path=_resolve("API_ROOT_PATH", toml, "root_path", ""),
-            host=_resolve("API_HOST", toml, "host", "0.0.0.0"),
-            port=int(_resolve("API_PORT", toml, "port", "8000")),
-            reload=_resolve("API_RELOAD", toml, "reload", "false").lower()
+            root_path=toml_config.resolve("API_ROOT_PATH", toml, "root_path", ""),
+            host=toml_config.resolve("API_HOST", toml, "host", "0.0.0.0"),
+            port=int(toml_config.resolve("API_PORT", toml, "port", "8000")),
+            reload=toml_config.resolve("API_RELOAD", toml, "reload", "false").lower()
             in ("true", "1", "yes"),
         )

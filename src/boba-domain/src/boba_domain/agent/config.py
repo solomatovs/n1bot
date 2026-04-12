@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from boba_domain.config import _load_toml_section, _resolve
+from boba_domain import toml_config
 
 
 @dataclass(frozen=True)
@@ -19,13 +19,13 @@ class AgentConfig:
 
     @staticmethod
     def from_env() -> AgentConfig:
-        toml = _load_toml_section("agent")
+        toml = toml_config.load_section("agent")
         return AgentConfig(
             max_iterations=int(
-                _resolve("AGENT_MAX_ITERATIONS", toml, "max_iterations", "10")
+                toml_config.resolve("AGENT_MAX_ITERATIONS", toml, "max_iterations", "10")
             ),
-            default_model=_resolve("AGENT_DEFAULT_MODEL", toml, "default_model", ""),
-            limit_message=_resolve(
+            default_model=toml_config.resolve("AGENT_DEFAULT_MODEL", toml, "default_model", ""),
+            limit_message=toml_config.resolve(
                 "AGENT_LIMIT_MESSAGE",
                 toml,
                 "limit_message",

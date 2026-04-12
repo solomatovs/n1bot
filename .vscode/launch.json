@@ -32,6 +32,7 @@
                 "LITELLM_API_KEY_FILE": "./secrets/litellm_api_key",
                 "CONFLUENCE_TOKEN_FILE": "./secrets/confluence_token",
                 "CHAINLIT_APP_ROOT": "./chainlit",
+                "CHAINLIT_AUTH_SECRET_FILE": "./secrets/chainlit_auth_secret",
                 "PYTHONPATH": "${workspaceFolder}/src/boba-domain/src:${workspaceFolder}/src/boba-app/src:${workspaceFolder}/src/boba-adapters/src:${workspaceFolder}/src/boba-infra/src:${workspaceFolder}/src/boba-api/src:${workspaceFolder}/src/boba-chainlit/src"
             }
         }

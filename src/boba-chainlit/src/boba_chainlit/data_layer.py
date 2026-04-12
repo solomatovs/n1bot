@@ -221,10 +221,18 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
                 model=merged.model or thread.metadata.model,
             )
 
+        # Chainlit автоименует thread текстом первого сообщения (emitter.py).
+        # Если workspace уже имеет имя и metadata не передан — это авто-rename,
+        # игнорируем его, сохраняя имя workspace.
+        if thread.metadata.folder and metadata is None:
+            effective_name = thread.name
+        else:
+            effective_name = name if name is not None else thread.name
+
         updated = ChatThread(
             id=thread.id,
             created_at=thread.created_at,
-            name=name if name is not None else thread.name,
+            name=effective_name,
             user_id=user_id if user_id is not None else thread.user_id,
             user_identifier=thread.user_identifier,
             metadata=updated_meta,
@@ -253,7 +261,6 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
         self._store.update_step(thread_id, step)
 
     async def delete_step(self, step_id: str) -> None:
-        # step_id без thread_id — ищем во всех threads
         for thread in self._store.list_threads(limit=10000).threads:
             for step in thread.steps:
                 if step.id == step_id:
@@ -266,7 +273,6 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
         domain_fb = ChainlitConverter.feedback_from_chainlit(feedback)
 
         if feedback.forId:
-            # Ищем step по forId
             for thread in self._store.list_threads(limit=10000).threads:
                 for step in thread.steps:
                     if step.id == feedback.forId:
@@ -287,7 +293,7 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
         steps = self._store.get_favorite_steps(user_id)
         return [ChainlitConverter.to_step_dict(s) for s in steps]
 
-    # -- Elements (заглушки — нет файл-аплоада) --
+    # -- Elements (заглушки) --
 
     async def create_element(self, _element: object) -> None:
         pass
