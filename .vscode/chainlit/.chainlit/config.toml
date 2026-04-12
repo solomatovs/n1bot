@@ -95,15 +95,15 @@ reaction_on_message_received = false
 
 [UI]
 # Name of the assistant.
-name = "Boba"
+name = "Assistant"
 
-default_theme = "light"
+# default_theme = "dark"
 
 # Force a specific language for all users (e.g., "en-US", "he-IL", "fr-FR")
 # If not set, the browser's language will be used
-language = "en-US"
+# language = "en-US"
 
-layout = "wide"  # Options: "standard" (sidebar on the left, like ChatGPT), "wide" (sidebar at the top, takes full width), "minimal" (no sidebar, only header with thread title and buttons)
+# layout = "wide"
 
 # default_sidebar_state = "open"  # Options: "open", "closed", "hidden"
 

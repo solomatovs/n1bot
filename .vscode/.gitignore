@@ -1,0 +1,6 @@
+secrets/
+config/config.toml
+config/config.toml
+chainlit/.chainlit/translations/
+chainlit/.files/
+import
