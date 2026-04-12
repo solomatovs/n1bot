@@ -44,10 +44,16 @@ class GetCollectionInfoTool(Tool[DocPipelineEvent, EmptyParams]):
         count = self._vs.collection_doc_count(name)
         model = self._vs.get_collection_embedding_model(name)
 
-        yield ToolResult(
-            content=(
-                f"Коллекция: {name}\n"
-                f"Документов (чанков): {count}\n"
-                f"Модель эмбеддингов: {model or 'не задана'}"
-            ),
+        info = (
+            f"Коллекция: {name}\n"
+            f"Документов (чанков): {count}\n"
+            f"Модель эмбеддингов: {model or 'не задана'}"
         )
+
+        if count == 0:
+            info += (
+                "\n\nВНИМАНИЕ: коллекция пуста, документы не проиндексированы. "
+                "Вызови index_documents для индексации, затем search_documents для поиска."
+            )
+
+        yield ToolResult(content=info)

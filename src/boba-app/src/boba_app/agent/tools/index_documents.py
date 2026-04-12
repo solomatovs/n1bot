@@ -94,6 +94,13 @@ class IndexDocumentsTool(Tool[DocPipelineEvent, EmptyParams]):
                     total_chunks = c
                     yield ToolEvent(IndexingDone(total_files=f, total_chunks=c))
 
-        yield ToolResult(
-            content=f"Индексация завершена: {total_files} файлов, {total_chunks} чанков."
-        )
+        result = f"Индексация завершена: {total_files} файлов, {total_chunks} чанков."
+
+        if total_chunks == 0:
+            result += (
+                "\nВНИМАНИЕ: документы не найдены или папка пуста. "
+                "Повторный вызов index_documents не поможет. "
+                "Ответь пользователю, что документы для поиска отсутствуют."
+            )
+
+        yield ToolResult(content=result)

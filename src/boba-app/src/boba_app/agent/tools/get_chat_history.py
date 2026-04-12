@@ -58,7 +58,7 @@ class GetChatHistoryTool(Tool[DocPipelineEvent, ChatHistoryParams]):
                 messages.append(f"[tool_call] {tool_name}({event.content})")
             elif event.event_type is EventType.TOOL_RESULT:
                 tool_name = event.metadata.get("tool_name", "?")
-                messages.append(f"[tool_result:{tool_name}] {event.content[:500]}")
+                messages.append(f"[tool_result:{tool_name}] {event.content}")
 
         if not messages:
             yield ToolResult(content="История чата пуста.")

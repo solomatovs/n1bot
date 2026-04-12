@@ -11,13 +11,14 @@ from queue import Queue
 from threading import Thread
 
 import chainlit as cl
+from chainlit.chat_context import chat_context
 from chainlit.types import ThreadDict
 
 from boba_adapters.json_thread_store import JsonThreadStore
 from boba_adapters.litellm_models import fetch_chat_models
 from boba_app.agent.agent_loop import AgentLoop
 from boba_app.session import ChatSession
-from boba_chainlit.data_layer import ChainlitDataLayerAdapter
+from boba_chainlit.data_layer import ChainlitConverter, ChainlitDataLayerAdapter
 from boba_chainlit.workspace import (
     SessionState,
     WorkspaceError,
@@ -46,6 +47,11 @@ agent_cfg = AgentConfig.from_env()
 workspace_svc = WorkspaceService(cfg)
 
 _SENTINEL = object()
+
+# Отслеживание первого запуска для каждого пользователя.
+# При первом подключении после старта сервера — резьюм последнего чата.
+# При последующих (кнопка "New Chat") — создание нового workspace.
+_initial_load_done: set[str] = set()
 
 
 def _model_widget():
@@ -113,41 +119,65 @@ def get_data_layer():
 
 @cl.on_chat_start
 async def on_chat_start():
-    # Workspace создаётся лениво при первом сообщении (_ensure_workspace).
-    # Здесь только инициализируем настройки сессии.
-    state = SessionState(
-        folder="",
-        display_name="",
-        model=agent_cfg.default_model,
+    user_id = (
+        cl.context.session.user.identifier
+        if cl.context.session.user
+        else "default"
     )
-    set_session_state(state)
+    is_initial = user_id not in _initial_load_done
+    _initial_load_done.add(user_id)
 
     settings = await cl.ChatSettings(_settings_widgets()).send()
-    model = settings.get("model")
-    if model:
-        state = SessionState(folder="", display_name="", model=model)
-        set_session_state(state)
+    model = settings.get("model") or agent_cfg.default_model
 
+    # При первом подключении проверяем существующие чаты.
+    # Если есть — резьюмим последний, иначе создаём новый.
+    if is_initial:
+        store = JsonThreadStore(cfg)
+        page = store.list_threads(limit=1)
+        if page.threads:
+            await _resume_latest(page.threads[0], model)
+            return
 
-async def _ensure_workspace() -> SessionState:
-    """Создать workspace при первом сообщении, если ещё не создан."""
-    state = get_session_state()
-    if state is not None and state.folder:
-        return state
-
+    # Новый workspace — первый запуск без чатов или кнопка "New Chat".
     result = workspace_svc.create()
     thread_id = cl.context.session.thread_id
     ChatSession.create(cfg, result.folder, chat_id=thread_id)
 
-    model = state.model if state else agent_cfg.default_model
-    new_state = SessionState(
+    state = SessionState(
         folder=result.folder,
         display_name=result.display_name,
         model=model,
     )
-    set_session_state(new_state)
-    await _save_thread_metadata(new_state)
-    return new_state
+    set_session_state(state)
+    await _save_thread_metadata(state)
+
+
+async def _resume_latest(thread, model: str) -> None:
+    """Восстановить последний чат в текущей сессии."""
+    session = cl.context.session
+    session.thread_id = thread.id
+    session.has_first_interaction = True
+
+    state = SessionState(
+        folder=thread.metadata.folder,
+        display_name=thread.name or thread.metadata.folder,
+        model=thread.metadata.model or model,
+    )
+    set_session_state(state)
+
+    thread_dict = ChainlitConverter.to_thread_dict(thread)
+
+    await cl.context.emitter.emit(
+        "first_interaction",
+        {"interaction": "resume", "thread_id": thread.id},
+    )
+
+    for step in thread_dict.get("steps", []):
+        if "message" in step.get("type", ""):
+            chat_context.add(cl.Message.from_dict(step))
+
+    await cl.context.emitter.resume_thread(thread_dict)
 
 
 @cl.on_chat_resume
@@ -189,7 +219,10 @@ async def on_settings_update(settings: dict):
 
 @cl.on_message
 async def on_message(message: cl.Message):
-    state = await _ensure_workspace()
+    state = get_session_state()
+    if state is None or not state.folder:
+        await send_error(WorkspaceFailure(WorkspaceError.NOT_FOUND))
+        return
 
     thread_id = cl.context.session.thread_id
     session = ChatSession.create(cfg, state.folder, chat_id=thread_id)
@@ -241,8 +274,9 @@ async def on_message(message: cl.Message):
                 async with cl.Step(name=f"🔧 {name}") as step:
                     step.input = args
 
-            case ToolResultReady(tool_name=name, content=content):
-                async with cl.Step(name=f"✓ {name}") as step:
+            case ToolResultReady(tool_name=name, content=content, is_error=err):
+                icon = "✗" if err else "✓"
+                async with cl.Step(name=f"{icon} {name}") as step:
                     step.output = content[:500]
 
             case GenerationDone():

@@ -128,6 +128,7 @@ class ToolResultReady:
     tool_call_id: str
     tool_name: str
     content: str
+    is_error: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -198,5 +199,5 @@ class DocPipelineEventSerializer:
                 return {"type": T.DONE}
             case ToolCallStarted(tool_call_id=tid, tool_name=name, arguments=args):
                 return {"type": T.TOOL_CALL, "tool_call_id": tid, "name": name, "arguments": args}
-            case ToolResultReady(tool_call_id=tid, tool_name=name, content=content):
-                return {"type": T.TOOL_RESULT, "tool_call_id": tid, "name": name, "content": content}
+            case ToolResultReady(tool_call_id=tid, tool_name=name, content=content, is_error=err):
+                return {"type": T.TOOL_RESULT, "tool_call_id": tid, "name": name, "content": content, "is_error": err}

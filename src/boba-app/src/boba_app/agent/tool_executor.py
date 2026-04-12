@@ -38,6 +38,7 @@ class ToolCallExecutor:
             )
 
             result_text = ""
+            is_error = False
             try:
                 for output in self._registry.execute(tc.name, tc.parse_arguments()):
                     match output:
@@ -45,13 +46,23 @@ class ToolCallExecutor:
                             yield e
                         case ToolResult(content=c):
                             result_text = c
-            except (ToolNotFoundError, ToolExecutionError) as exc:
-                result_text = str(exc)
+            except ToolNotFoundError:
+                is_error = True
+                available = ", ".join(self._registry.tool_names)
+                result_text = (
+                    f"Ошибка: инструмент '{tc.name}' не найден. "
+                    f"Доступные инструменты: {available}. "
+                    f"Вызывай инструмент по точному имени из списка выше."
+                )
+            except ToolExecutionError as exc:
+                is_error = True
+                result_text = f"Ошибка выполнения инструмента '{tc.name}': {exc}"
 
             yield ToolResultReady(
                 tool_call_id=tc.id,
                 tool_name=tc.name,
-                content=result_text[:2000],
+                content=result_text,
+                is_error=is_error,
             )
 
             window.add_tool_result(tc.id, result_text)
