@@ -1,4 +1,5 @@
 """Инструменты агентного режима."""
+
 from boba_app.agent.tools.delete_collection import DeleteCollectionTool
 from boba_app.agent.tools.delete_file import DeleteFileTool
 from boba_app.agent.tools.edit_file import EditFileTool

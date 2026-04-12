@@ -1,4 +1,5 @@
 """Tool: редактирование/создание файла в рабочей папке."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ DocToolOutput = ToolOutput[DocPipelineEvent]
 @dataclass(frozen=True)
 class EditFileParams:
     """Параметры записи файла."""
+
     filename: str = field(metadata={"description": "Имя файла"})
     content: str = field(metadata={"description": "Новое содержимое файла"})
 
@@ -46,4 +48,6 @@ class EditFileTool(Tool[DocPipelineEvent, EditFileParams]):
         file_path.write_text(params.content, encoding="utf-8")
 
         action = "обновлён" if existed else "создан"
-        yield ToolResult(content=f"Файл {action}: {params.filename} ({len(params.content)} символов)")
+        yield ToolResult(
+            content=f"Файл {action}: {params.filename} ({len(params.content)} символов)"
+        )

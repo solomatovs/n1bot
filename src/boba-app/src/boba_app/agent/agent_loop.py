@@ -3,6 +3,7 @@
 Подготовка контекста через Pipeline (цепочка PipelineStage),
 затем цикл LLM → tools → repeat.
 """
+
 from __future__ import annotations
 
 import logging
@@ -50,7 +51,9 @@ class AgentLoop:
         active_model = model or self._config.default_model
 
         window = ContextWindow()
-        yield from self._context_pipeline.run(ContextRequest(window=window, query=query))
+        yield from self._context_pipeline.run(
+            ContextRequest(window=window, query=query)
+        )
 
         for iteration in range(1, self._config.max_iterations + 1):
             log.debug("Agent iteration %d/%d", iteration, self._config.max_iterations)
@@ -78,4 +81,6 @@ class AgentLoop:
 
         yield AnswerToken(token=self._config.limit_message)
         yield GenerationDone()
-        yield StageCompleted(stage="agent_loop", detail=f"лимит {self._config.max_iterations} итераций")
+        yield StageCompleted(
+            stage="agent_loop", detail=f"лимит {self._config.max_iterations} итераций"
+        )

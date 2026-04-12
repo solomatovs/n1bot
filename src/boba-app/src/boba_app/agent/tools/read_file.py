@@ -1,4 +1,5 @@
 """Tool: чтение содержимого документа."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -15,9 +16,18 @@ DocToolOutput = ToolOutput[DocPipelineEvent]
 @dataclass(frozen=True)
 class ReadFileParams:
     """Параметры чтения файла."""
-    filename: str = field(metadata={"description": "Имя файла (из результатов search_documents или list_files)"})
-    start_line: int | None = field(default=None, metadata={"description": "Начальная строка (нумерация с 1)"})
-    end_line: int | None = field(default=None, metadata={"description": "Конечная строка"})
+
+    filename: str = field(
+        metadata={
+            "description": "Имя файла (из результатов search_documents или list_files)"
+        }
+    )
+    start_line: int | None = field(
+        default=None, metadata={"description": "Начальная строка (нумерация с 1)"}
+    )
+    end_line: int | None = field(
+        default=None, metadata={"description": "Конечная строка"}
+    )
 
 
 class ReadFileTool(Tool[DocPipelineEvent, ReadFileParams]):
@@ -70,7 +80,7 @@ class ReadFileTool(Tool[DocPipelineEvent, ReadFileParams]):
             text = file_path.read_text(encoding="utf-8", errors="replace")
             label = params.filename
 
-        text = text[:self.MAX_RESULT_CHARS]
+        text = text[: self.MAX_RESULT_CHARS]
 
         fragment = Fragment(
             text=text,

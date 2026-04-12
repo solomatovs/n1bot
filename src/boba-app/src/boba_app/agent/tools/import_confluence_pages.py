@@ -1,4 +1,5 @@
 """Tool: загрузка страниц из Confluence по ID."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -6,7 +7,12 @@ from typing import Iterator
 
 from boba_domain.agent.events import DocPipelineEvent
 from boba_domain.core.tools import Tool, ToolOutput, ToolResult
-from boba_domain.importing.confluence import ConfluenceImportFactory, ImportDone, ImportPageFailed, ImportPageSaved
+from boba_domain.importing.confluence import (
+    ConfluenceImportFactory,
+    ImportDone,
+    ImportPageFailed,
+    ImportPageSaved,
+)
 from boba_domain.importing.loading import ConfluenceImportParams
 from boba_domain.workspace import Workspace
 
@@ -16,9 +22,16 @@ DocToolOutput = ToolOutput[DocPipelineEvent]
 @dataclass(frozen=True)
 class ImportPagesParams:
     """Параметры загрузки страниц из Confluence."""
-    page_ids: str = field(metadata={"description": "ID страниц через запятую (например '12345,67890')"})
-    timeout: int = field(default=20, metadata={"description": "Таймаут запроса в секундах"})
-    ssl_verify: bool = field(default=False, metadata={"description": "Проверять SSL сертификаты"})
+
+    page_ids: str = field(
+        metadata={"description": "ID страниц через запятую (например '12345,67890')"}
+    )
+    timeout: int = field(
+        default=20, metadata={"description": "Таймаут запроса в секундах"}
+    )
+    ssl_verify: bool = field(
+        default=False, metadata={"description": "Проверять SSL сертификаты"}
+    )
 
 
 class ImportConfluencePagesTool(Tool[DocPipelineEvent, ImportPagesParams]):

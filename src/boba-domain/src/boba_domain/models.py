@@ -1,4 +1,5 @@
 """Доменная логика классификации моделей."""
+
 from __future__ import annotations
 
 from typing import List

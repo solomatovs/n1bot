@@ -6,6 +6,7 @@
     3. TOML-файл (секция [app]) — путь задаётся через BOBA_CONFIG
     4. Значение по умолчанию
 """
+
 from __future__ import annotations
 
 import os
@@ -28,6 +29,7 @@ def _load_toml_section(section: str) -> dict[str, Any]:
         return {}
     try:
         import tomli
+
         with open(path, "rb") as f:
             data = tomli.load(f)
         return data.get(section, {})
@@ -35,7 +37,9 @@ def _load_toml_section(section: str) -> dict[str, Any]:
         return {}
 
 
-def _resolve(key: str, toml_data: dict[str, Any], toml_key: str, default: str = "") -> str:
+def _resolve(
+    key: str, toml_data: dict[str, Any], toml_key: str, default: str = ""
+) -> str:
     """Получить значение конфигурации.
 
     Приоритет:
@@ -73,24 +77,101 @@ def _get_app_toml() -> dict[str, Any]:
 class AppConfig:
     """Единственный источник конфигурации приложения."""
 
-    _litellm_url: str = field(default_factory=lambda: _resolve("LITELLM_URL", _get_app_toml(), "litellm_url"))
-    _litellm_api_key: str = field(default_factory=lambda: _resolve("LITELLM_API_KEY", _get_app_toml(), "litellm_api_key"))
-    _confluence_url: str = field(default_factory=lambda: _resolve("CONFLUENCE_URL", _get_app_toml(), "confluence_url"))
-    _confluence_token: str = field(default_factory=lambda: _resolve("CONFLUENCE_TOKEN", _get_app_toml(), "confluence_token"))
-    _default_collection: str = field(default_factory=lambda: _resolve("DEFAULT_COLLECTION", _get_app_toml(), "default_collection"))
-    _embedding_model: str = field(default_factory=lambda: _resolve("EMBEDDING_MODEL", _get_app_toml(), "embedding_model"))
-    _llm_timeout: int = field(default_factory=lambda: int(_resolve("LLM_TIMEOUT", _get_app_toml(), "llm_timeout", "120")))
-    _embedding_timeout: int = field(default_factory=lambda: int(_resolve("EMBEDDING_TIMEOUT", _get_app_toml(), "embedding_timeout", "120")))
-    _ssl_verify: bool = field(default_factory=lambda: _resolve("SSL_VERIFY", _get_app_toml(), "ssl_verify", "false").lower() in ("true", "1", "yes"))
-    _import_base_dir: str = field(default_factory=lambda: _resolve("IMPORT_BASE_DIR", _get_app_toml(), "import_base_dir", "./import"))
-    _boba_dir_name: str = field(default_factory=lambda: _resolve("BOBA_DIR_NAME", _get_app_toml(), "boba_dir_name", ".boba"))
-    _context_dir_name: str = field(default_factory=lambda: _resolve("CONTEXT_DIR_NAME", _get_app_toml(), "context_dir_name", "context"))
-    _chroma_dir_name: str = field(default_factory=lambda: _resolve("CHROMA_DIR_NAME", _get_app_toml(), "chroma_dir_name", "chroma"))
-    _chats_dir_name: str = field(default_factory=lambda: _resolve("CHATS_DIR_NAME", _get_app_toml(), "chats_dir_name", "chats"))
-    _chat_history_filename: str = field(default_factory=lambda: _resolve("CHAT_HISTORY_FILENAME", _get_app_toml(), "chat_history_filename", "chat_history.jsonl"))
-    _index_manifest_filename: str = field(default_factory=lambda: _resolve("INDEX_MANIFEST_FILENAME", _get_app_toml(), "index_manifest_filename", "index_manifest.json"))
-    _collection_prefix: str = field(default_factory=lambda: _resolve("COLLECTION_PREFIX", _get_app_toml(), "collection_prefix", "doc"))
-    _log_level: str = field(default_factory=lambda: _resolve("LOG_LEVEL", _get_app_toml(), "log_level", "INFO"))
+    _litellm_url: str = field(
+        default_factory=lambda: _resolve("LITELLM_URL", _get_app_toml(), "litellm_url")
+    )
+    _litellm_api_key: str = field(
+        default_factory=lambda: _resolve(
+            "LITELLM_API_KEY", _get_app_toml(), "litellm_api_key"
+        )
+    )
+    _confluence_url: str = field(
+        default_factory=lambda: _resolve(
+            "CONFLUENCE_URL", _get_app_toml(), "confluence_url"
+        )
+    )
+    _confluence_token: str = field(
+        default_factory=lambda: _resolve(
+            "CONFLUENCE_TOKEN", _get_app_toml(), "confluence_token"
+        )
+    )
+    _default_collection: str = field(
+        default_factory=lambda: _resolve(
+            "DEFAULT_COLLECTION", _get_app_toml(), "default_collection"
+        )
+    )
+    _embedding_model: str = field(
+        default_factory=lambda: _resolve(
+            "EMBEDDING_MODEL", _get_app_toml(), "embedding_model"
+        )
+    )
+    _llm_timeout: int = field(
+        default_factory=lambda: int(
+            _resolve("LLM_TIMEOUT", _get_app_toml(), "llm_timeout", "120")
+        )
+    )
+    _embedding_timeout: int = field(
+        default_factory=lambda: int(
+            _resolve("EMBEDDING_TIMEOUT", _get_app_toml(), "embedding_timeout", "120")
+        )
+    )
+    _ssl_verify: bool = field(
+        default_factory=lambda: _resolve(
+            "SSL_VERIFY", _get_app_toml(), "ssl_verify", "false"
+        ).lower()
+        in ("true", "1", "yes")
+    )
+    _import_base_dir: str = field(
+        default_factory=lambda: _resolve(
+            "IMPORT_BASE_DIR", _get_app_toml(), "import_base_dir", "./import"
+        )
+    )
+    _boba_dir_name: str = field(
+        default_factory=lambda: _resolve(
+            "BOBA_DIR_NAME", _get_app_toml(), "boba_dir_name", ".boba"
+        )
+    )
+    _context_dir_name: str = field(
+        default_factory=lambda: _resolve(
+            "CONTEXT_DIR_NAME", _get_app_toml(), "context_dir_name", "context"
+        )
+    )
+    _chroma_dir_name: str = field(
+        default_factory=lambda: _resolve(
+            "CHROMA_DIR_NAME", _get_app_toml(), "chroma_dir_name", "chroma"
+        )
+    )
+    _chats_dir_name: str = field(
+        default_factory=lambda: _resolve(
+            "CHATS_DIR_NAME", _get_app_toml(), "chats_dir_name", "chats"
+        )
+    )
+    _chat_history_filename: str = field(
+        default_factory=lambda: _resolve(
+            "CHAT_HISTORY_FILENAME",
+            _get_app_toml(),
+            "chat_history_filename",
+            "chat_history.jsonl",
+        )
+    )
+    _index_manifest_filename: str = field(
+        default_factory=lambda: _resolve(
+            "INDEX_MANIFEST_FILENAME",
+            _get_app_toml(),
+            "index_manifest_filename",
+            "index_manifest.json",
+        )
+    )
+    _collection_prefix: str = field(
+        default_factory=lambda: _resolve(
+            "COLLECTION_PREFIX", _get_app_toml(), "collection_prefix", "doc"
+        )
+    )
+    _log_level: str = field(
+        default_factory=lambda: _resolve(
+            "LOG_LEVEL", _get_app_toml(), "log_level", "INFO"
+        )
+    )
 
     @property
     def litellm_api_key(self) -> str:
@@ -204,6 +285,7 @@ class AppConfig:
 
 def _sanitize_collection_name(folder_name: str, prefix: str) -> str:
     import re
+
     name = re.sub(r"[^a-zA-Z0-9._-]", "_", folder_name)
     name = f"{prefix}.{name}"
     name = name.strip("._-") or f"{prefix}.default"

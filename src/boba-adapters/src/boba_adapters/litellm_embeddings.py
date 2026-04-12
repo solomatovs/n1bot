@@ -1,4 +1,5 @@
 """Эмбеддинги через liteLLM (OpenAI-совместимый API)."""
+
 from __future__ import annotations
 
 import time
@@ -6,7 +7,6 @@ from typing import List
 
 import httpx
 from langchain.embeddings.base import Embeddings
-
 
 
 class LiteLLMEmbeddings(Embeddings):

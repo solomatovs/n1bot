@@ -2,6 +2,7 @@
 
 PipelineStage: загружает definitions из registry в window.
 """
+
 from __future__ import annotations
 
 from typing import Iterator

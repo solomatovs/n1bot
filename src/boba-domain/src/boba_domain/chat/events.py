@@ -2,6 +2,7 @@
 
 Чистые value objects и enum'ы. Без I/O, без файловой системы.
 """
+
 from __future__ import annotations
 
 import json
@@ -17,11 +18,13 @@ log = logging.getLogger(__name__)
 # Типы событий
 # ---------------------------------------------------------------------------
 
+
 class EventType(Enum):
     """Тип события в истории чата.
 
     value — кортеж (ключ JSONL, UI-метка, сворачиваемость).
     """
+
     USER = ("user", "Вопрос", False)
     SEARCH = ("search", "Найденные фрагменты", True)
     CONTEXT = ("context", "Контекст из документов", True)
@@ -58,9 +61,11 @@ class EventType(Enum):
 # ChatEvent
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class ChatEvent:
     """Одно событие в истории — тип + контент + привязка к обмену."""
+
     exchange_id: str
     event_type: EventType
     content: str
@@ -79,6 +84,7 @@ class ChatEvent:
 # ---------------------------------------------------------------------------
 # Метаданные
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class SearchHitMeta:
@@ -101,6 +107,7 @@ class ContextMeta:
 # ---------------------------------------------------------------------------
 # Сериализация
 # ---------------------------------------------------------------------------
+
 
 class ChatEventDeserializeError(Exception):
     def __init__(self, line: str, reason: Exception) -> None:

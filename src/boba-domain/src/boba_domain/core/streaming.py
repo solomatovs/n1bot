@@ -5,6 +5,7 @@ StreamConsumer    — потребление потока целиком (ABC).
 
 Наследники получают проверку pylance при определении класса.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

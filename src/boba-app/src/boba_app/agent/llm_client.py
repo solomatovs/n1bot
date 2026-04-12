@@ -7,6 +7,7 @@
 
 LLMStreamConsumer прогоняет каждый delta через все три (fan-out).
 """
+
 from __future__ import annotations
 
 import json
@@ -18,14 +19,15 @@ from boba_domain.agent.think_parser import ThinkTagParser
 from boba_domain.core.llm_service import CompletionDelta
 from boba_domain.core.streaming import StreamTransformer
 
-
 # ---------------------------------------------------------------------------
 # ToolCallData
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ToolCallData:
     """Один tool call от LLM."""
+
     id: str = ""
     name: str = ""
     arguments: str = ""
@@ -49,6 +51,7 @@ class ToolCallData:
 # ---------------------------------------------------------------------------
 # StreamTransformer[CompletionDelta, DocPipelineEvent] — три реализации
 # ---------------------------------------------------------------------------
+
 
 class ToolCallAccumulator(StreamTransformer[CompletionDelta, DocPipelineEvent]):
     """Накапливает tool_calls из delta. Не yield'ит events.
@@ -137,9 +140,11 @@ DeltaHandler = StreamTransformer[CompletionDelta, DocPipelineEvent]
 # LLMStreamConsumer — fan-out через StreamTransformers
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class LLMStreamConsumer:
     """StreamConsumer: прогоняет каждый delta через набор handlers."""
+
     tool_calls: List[ToolCallData] = field(default_factory=list)
     answer: str = ""
 

@@ -2,6 +2,7 @@
 
 Разбиение по заголовкам (# / ## / ###). Каждая секция — чанк.
 """
+
 from __future__ import annotations
 
 import re
@@ -13,11 +14,9 @@ from langchain_core.documents import Document
 from boba_app.readers.registry import DocumentReader, build_chunk
 
 
-
-
 class MarkdownReader(DocumentReader):
     """Стратегия: Markdown (.md, .txt)."""
-    
+
     _HEADING_PATTERN = re.compile(r"^(#+)\s+(.+)$")
 
     @property
@@ -45,10 +44,13 @@ class MarkdownReader(DocumentReader):
                 if heading_match:
                     if section_lines:
                         chunk = build_chunk(
-                            file_path.name, section_title,
+                            file_path.name,
+                            section_title,
                             "\n".join(section_lines),
-                            section_start_line, line_number - 1,
-                            section_start_offset, line_offset,
+                            section_start_line,
+                            line_number - 1,
+                            section_start_offset,
+                            line_offset,
                         )
                         if chunk is not None:
                             yield chunk
@@ -69,10 +71,13 @@ class MarkdownReader(DocumentReader):
 
         if section_lines:
             chunk = build_chunk(
-                file_path.name, section_title,
+                file_path.name,
+                section_title,
                 "\n".join(section_lines),
-                section_start_line, line_number,
-                section_start_offset, end_offset,
+                section_start_line,
+                line_number,
+                section_start_offset,
+                end_offset,
             )
             if chunk is not None:
                 yield chunk

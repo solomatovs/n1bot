@@ -1,4 +1,5 @@
 """Контракт сервиса эмбеддингов — Protocol для domain-логики."""
+
 from __future__ import annotations
 
 from typing import List, Protocol, runtime_checkable

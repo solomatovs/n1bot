@@ -1,4 +1,5 @@
 """Получение списка доступных моделей из LiteLLM."""
+
 from __future__ import annotations
 
 import logging

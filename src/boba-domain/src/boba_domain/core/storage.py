@@ -5,6 +5,7 @@ ChatReader — streaming чтение событий, context manager.
 
 Реализации: JsonlChatWriter, JsonlChatReader (JSONL файлы).
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

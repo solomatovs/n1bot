@@ -1,4 +1,5 @@
 """python -m boba_api — запуск из конфига."""
+
 import uvicorn
 from boba_api.config import ApiConfig
 

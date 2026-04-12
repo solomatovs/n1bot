@@ -1,4 +1,5 @@
 """Tool: удаление файла из рабочей папки."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ DocToolOutput = ToolOutput[DocPipelineEvent]
 @dataclass(frozen=True)
 class DeleteFileParams:
     """Параметры удаления файла."""
+
     filename: str = field(metadata={"description": "Имя файла для удаления"})
 
 

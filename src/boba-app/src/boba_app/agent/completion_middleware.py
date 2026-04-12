@@ -3,6 +3,7 @@
 CompletionMiddleware — цепочка трансформеров между LLM и LLMStreamConsumer.
 ContentToolCallParser — буферизует content, парсит JSON tool calls (Ollama fallback).
 """
+
 from __future__ import annotations
 
 import json
@@ -57,7 +58,7 @@ class ContentToolCallParser(DeltaTransformer):
     def __init__(self) -> None:
         self._buffer: List[CompletionDelta] = []
         self._buffering = True  # начинаем с буферизации до первого content-token
-        self._decided = False   # решение принято?
+        self._decided = False  # решение принято?
 
     def feed(self, delta: CompletionDelta) -> Iterator[CompletionDelta]:
         # Native tool call — flush и пробросить
@@ -103,7 +104,11 @@ class ContentToolCallParser(DeltaTransformer):
                 tool_call_index=0,
                 tool_call_id=f"call_{tool_call['name']}",
                 tool_call_name=tool_call["name"],
-                tool_call_arguments=json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args),
+                tool_call_arguments=(
+                    json.dumps(args, ensure_ascii=False)
+                    if isinstance(args, dict)
+                    else str(args)
+                ),
             )
         else:
             yield from self._buffer

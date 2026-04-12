@@ -1,4 +1,5 @@
 """Загрузка — параметры импорта из Confluence."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,10 +7,10 @@ from typing import Optional
 
 from boba_domain.errors import AppError
 
-
 # ---------------------------------------------------------------------------
 # Ошибки загрузки
 # ---------------------------------------------------------------------------
+
 
 class PageLoadError(AppError):
     """Не удалось загрузить страницу из Confluence."""
@@ -33,9 +34,11 @@ class SpaceEnumerationError(AppError):
 # Параметры
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class ConfluenceImportParams:
     """Параметры импорта страниц из Confluence на диск."""
+
     timeout: int = 20
     ssl_verify: bool = False
     token: Optional[str] = None
@@ -44,5 +47,6 @@ class ConfluenceImportParams:
 @dataclass
 class SpaceLoadParams:
     """Параметры загрузки пространства Confluence."""
+
     api_page_limit: int = 50
     max_pages: Optional[int] = None

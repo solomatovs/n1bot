@@ -1,4 +1,5 @@
 """Выполнение tool calls через ToolRegistry."""
+
 from __future__ import annotations
 
 from typing import Iterator, List
@@ -6,7 +7,13 @@ from typing import Iterator, List
 from boba_app.agent.llm_client import ToolCallData
 from boba_domain.agent.context_window import ContextWindow
 from boba_domain.agent.events import DocPipelineEvent, ToolCallStarted, ToolResultReady
-from boba_domain.core.tools import ToolEvent, ToolExecutionError, ToolNotFoundError, ToolRegistry, ToolResult
+from boba_domain.core.tools import (
+    ToolEvent,
+    ToolExecutionError,
+    ToolNotFoundError,
+    ToolRegistry,
+    ToolResult,
+)
 
 
 class ToolCallExecutor:

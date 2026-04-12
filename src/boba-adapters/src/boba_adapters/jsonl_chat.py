@@ -2,6 +2,7 @@
 
 Инфраструктурный адаптер: файловая система + JSONL формат.
 """
+
 from __future__ import annotations
 
 import logging
@@ -11,7 +12,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterator
 
 from boba_adapters.growbuffer import GrowBuffer
-from boba_domain.chat.events import ChatEvent, ChatEventDeserializeError, ChatEventSerializer, EventType
+from boba_domain.chat.events import (
+    ChatEvent,
+    ChatEventDeserializeError,
+    ChatEventSerializer,
+    EventType,
+)
 from boba_domain.core.storage import ChatReader, ChatWriter
 
 log = logging.getLogger(__name__)
@@ -31,7 +37,7 @@ class JsonlChatWriter(ChatWriter[ChatEvent]):
         return self._path
 
     def new_exchange(self) -> str:
-        return uuid.uuid4().hex[:self._EXCHANGE_ID_LENGTH]
+        return uuid.uuid4().hex[: self._EXCHANGE_ID_LENGTH]
 
     def write_event(self, event: ChatEvent) -> None:
         with open(self._path, "a", encoding="utf-8") as f:
@@ -90,6 +96,8 @@ class JsonlChatReader(ChatReader[ChatEvent]):
             try:
                 yield ChatEventSerializer.deserialize(line)
             except ChatEventDeserializeError:
-                log.debug("Skipping malformed line in %s: %s", self._path, line.rstrip())
+                log.debug(
+                    "Skipping malformed line in %s: %s", self._path, line.rstrip()
+                )
 
         self._byte_pos += self._buf.consumed

@@ -8,6 +8,7 @@
             process(line)
         next_offset = buf.consumed
 """
+
 from __future__ import annotations
 
 from io import BufferedReader
@@ -54,7 +55,7 @@ class GrowBuffer:
             self._consumed = 0
             return
 
-        data = bytes(memoryview(self._buf)[:self._size])
+        data = bytes(memoryview(self._buf)[: self._size])
         last_sep = data.rfind(separator)
         if last_sep == -1:
             self._consumed = 0
@@ -78,7 +79,7 @@ class GrowBuffer:
         while True:
             if self._size == len(self._buf):
                 self._grow()
-            n = self._fd.readinto(memoryview(self._buf)[self._size:])
+            n = self._fd.readinto(memoryview(self._buf)[self._size :])
             if not n:
                 break
             self._size += n
@@ -86,5 +87,5 @@ class GrowBuffer:
     def _grow(self) -> None:
         """Удвоить ёмкость буфера."""
         new_buf = bytearray(len(self._buf) * 2)
-        new_buf[:self._size] = self._buf[:self._size]
+        new_buf[: self._size] = self._buf[: self._size]
         self._buf = new_buf

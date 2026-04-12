@@ -1,4 +1,5 @@
 """Shared helpers for agent tools."""
+
 from __future__ import annotations
 
 from boba_domain.search.types import ChunkLocation
@@ -6,7 +7,13 @@ from boba_domain.errors import CorruptedIndexError
 
 MAX_RESULT_CHARS = 4000
 
-_REQUIRED_META_FIELDS = ("source_file", "start_line", "end_line", "start_offset", "end_offset")
+_REQUIRED_META_FIELDS = (
+    "source_file",
+    "start_line",
+    "end_line",
+    "start_offset",
+    "end_offset",
+)
 
 
 def parse_location(meta: dict) -> ChunkLocation:

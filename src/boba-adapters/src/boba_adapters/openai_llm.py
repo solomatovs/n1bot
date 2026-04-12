@@ -2,6 +2,7 @@
 
 Оборачивает openai.OpenAI SDK, конвертирует ChoiceDelta → CompletionDelta.
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, Iterator, Sequence

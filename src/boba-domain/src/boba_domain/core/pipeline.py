@@ -3,6 +3,7 @@
 PipelineStage — ABC для стадий. Наследники получают проверку pylance.
 Pipeline — оркестратор, yield'ит события из стадий по цепочке.
 """
+
 from __future__ import annotations
 
 import logging

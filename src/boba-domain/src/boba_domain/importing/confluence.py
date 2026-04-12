@@ -1,4 +1,5 @@
 """Доменные типы для работы с Confluence — события, протокол, query-параметры."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from boba_domain.importing.loading import ConfluenceImportParams, SpaceLoadParam
 @dataclass(frozen=True)
 class ImportPageSaved:
     """Страница импортирована на диск."""
+
     page_id: str
     title: str
     file_path: str
@@ -21,6 +23,7 @@ class ImportPageSaved:
 @dataclass(frozen=True)
 class ImportPageFailed:
     """Не удалось импортировать страницу."""
+
     page_id: str
     error: str
     index: int
@@ -30,6 +33,7 @@ class ImportPageFailed:
 @dataclass(frozen=True)
 class ImportSpaceEnumerated:
     """Получен список страниц пространства для импорта."""
+
     space_key: str
     total: int
 
@@ -37,12 +41,15 @@ class ImportSpaceEnumerated:
 @dataclass(frozen=True)
 class ImportDone:
     """Импорт завершён."""
+
     ok_count: int
     failed_count: int
     output_dir: str
 
 
-ImportEvent = Union[ImportPageSaved, ImportPageFailed, ImportSpaceEnumerated, ImportDone]
+ImportEvent = Union[
+    ImportPageSaved, ImportPageFailed, ImportSpaceEnumerated, ImportDone
+]
 
 
 @runtime_checkable
@@ -50,11 +57,16 @@ class ConfluenceImportService(Protocol):
     """Импорт страниц из Confluence на диск."""
 
     def import_pages(
-        self, page_ids: List[str], output_dir: Path,
+        self,
+        page_ids: List[str],
+        output_dir: Path,
     ) -> Iterator[ImportEvent]: ...
 
     def import_space(
-        self, space_key: str, space_params: SpaceLoadParams, output_dir: Path,
+        self,
+        space_key: str,
+        space_params: SpaceLoadParams,
+        output_dir: Path,
     ) -> Iterator[ImportEvent]: ...
 
     def close(self) -> None: ...
@@ -70,9 +82,11 @@ class ConfluenceImportFactory(Protocol):
 # Общие типы для Confluence REST API
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class ConfluencePageQuery:
     """Параметры запроса одной страницы Confluence."""
+
     expand: str = "body.export_view"
 
     def to_params(self) -> dict[str, str]:
@@ -82,6 +96,7 @@ class ConfluencePageQuery:
 @dataclass(frozen=True)
 class ConfluenceSpaceQuery:
     """Параметры запроса пагинации страниц пространства Confluence."""
+
     space_key: str
     content_type: str = "page"
     limit: int = 50

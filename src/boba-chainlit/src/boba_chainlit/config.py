@@ -2,6 +2,7 @@
 
 Читает секцию [chainlit] из BOBA_CONFIG, fallback на env vars.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from boba_domain.config import _load_toml_section, _resolve
 @dataclass(frozen=True)
 class ChainlitConfig:
     """Настройки Chainlit сервера."""
+
     root_path: str = ""
     host: str = "0.0.0.0"
     port: int = 8080

@@ -1,4 +1,5 @@
 """Tool: список доступных документов в папке."""
+
 from __future__ import annotations
 
 from typing import Iterator
