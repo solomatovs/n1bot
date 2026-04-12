@@ -31,10 +31,9 @@ class ChatSession:
         folder_path = Path(cfg.import_base_dir) / folder_name
         folder_path.mkdir(parents=True, exist_ok=True)
         cfg.boba_path(folder_path).mkdir(parents=True, exist_ok=True)
-        cfg.chats_dir(folder_path).mkdir(parents=True, exist_ok=True)
 
         resolved_id = chat_id or uuid.uuid4().hex[:12]
-        history_path = cfg.chat_history_path(folder_path, resolved_id)
+        history_path = cfg.workspace_history_path(folder_path)
         history_path.touch(exist_ok=True)
 
         return ChatSession(

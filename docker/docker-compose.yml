@@ -3,6 +3,8 @@ secrets:
     file: secrets/litellm_api_key
   confluence_token:
     file: secrets/confluence_token
+  chainlit_auth_secret:
+    file: secrets/chainlit_auth_secret
 
 services:
   boba-api:
@@ -45,9 +47,11 @@ services:
       LITELLM_API_KEY_FILE: /run/secrets/litellm_api_key
       CONFLUENCE_TOKEN_FILE: /run/secrets/confluence_token
       CHAINLIT_APP_ROOT: /app/chainlit
+      CHAINLIT_AUTH_SECRET_FILE: /run/secrets/chainlit_auth_secret
     secrets:
       - litellm_api_key
       - confluence_token
+      - chainlit_auth_secret
     restart: always
     networks:
       - default

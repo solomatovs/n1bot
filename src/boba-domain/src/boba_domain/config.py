@@ -9,57 +9,11 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-
-def _load_toml_section(section: str) -> dict[str, Any]:
-    """Загрузить секцию из TOML-файла конфигурации.
-
-    Путь к файлу задаётся через BOBA_CONFIG.
-    Если файл не найден — возвращает пустой dict (все значения из defaults).
-    """
-    config_path = os.environ.get("BOBA_CONFIG", "")
-    if not config_path:
-        return {}
-    path = Path(config_path)
-    if not path.is_file():
-        return {}
-    try:
-        import tomli
-
-        with open(path, "rb") as f:
-            data = tomli.load(f)
-        return data.get(section, {})
-    except Exception:
-        return {}
-
-
-def _resolve(
-    key: str, toml_data: dict[str, Any], toml_key: str, default: str = ""
-) -> str:
-    """Получить значение конфигурации.
-
-    Приоритет:
-    1. <KEY>_FILE — путь к файлу с секретом
-    2. <KEY> — env var
-    3. TOML [app].<toml_key>
-    4. default
-    """
-    file_path = os.environ.get(f"{key}_FILE")
-    if file_path:
-        p = Path(file_path)
-        if p.is_file():
-            return p.read_text(encoding="utf-8").strip()
-    env_val = os.environ.get(key)
-    if env_val is not None:
-        return env_val
-    toml_val = toml_data.get(toml_key)
-    if toml_val is not None:
-        return str(toml_val)
-    return default
+from boba_domain import toml_config
 
 
 # Lazy-загрузка секции [app] — один раз при создании первого AppConfig
@@ -69,7 +23,7 @@ _app_toml: dict[str, Any] | None = None
 def _get_app_toml() -> dict[str, Any]:
     global _app_toml
     if _app_toml is None:
-        _app_toml = _load_toml_section("app")
+        _app_toml = toml_config.load_section("app")
     return _app_toml
 
 
@@ -78,76 +32,71 @@ class AppConfig:
     """Единственный источник конфигурации приложения."""
 
     _litellm_url: str = field(
-        default_factory=lambda: _resolve("LITELLM_URL", _get_app_toml(), "litellm_url")
+        default_factory=lambda: toml_config.resolve("LITELLM_URL", _get_app_toml(), "litellm_url")
     )
     _litellm_api_key: str = field(
-        default_factory=lambda: _resolve(
+        default_factory=lambda: toml_config.resolve(
             "LITELLM_API_KEY", _get_app_toml(), "litellm_api_key"
         )
     )
     _confluence_url: str = field(
-        default_factory=lambda: _resolve(
+        default_factory=lambda: toml_config.resolve(
             "CONFLUENCE_URL", _get_app_toml(), "confluence_url"
         )
     )
     _confluence_token: str = field(
-        default_factory=lambda: _resolve(
+        default_factory=lambda: toml_config.resolve(
             "CONFLUENCE_TOKEN", _get_app_toml(), "confluence_token"
         )
     )
     _default_collection: str = field(
-        default_factory=lambda: _resolve(
+        default_factory=lambda: toml_config.resolve(
             "DEFAULT_COLLECTION", _get_app_toml(), "default_collection"
         )
     )
     _embedding_model: str = field(
-        default_factory=lambda: _resolve(
+        default_factory=lambda: toml_config.resolve(
             "EMBEDDING_MODEL", _get_app_toml(), "embedding_model"
         )
     )
     _llm_timeout: int = field(
         default_factory=lambda: int(
-            _resolve("LLM_TIMEOUT", _get_app_toml(), "llm_timeout", "120")
+            toml_config.resolve("LLM_TIMEOUT", _get_app_toml(), "llm_timeout", "120")
         )
     )
     _embedding_timeout: int = field(
         default_factory=lambda: int(
-            _resolve("EMBEDDING_TIMEOUT", _get_app_toml(), "embedding_timeout", "120")
+            toml_config.resolve("EMBEDDING_TIMEOUT", _get_app_toml(), "embedding_timeout", "120")
         )
     )
     _ssl_verify: bool = field(
-        default_factory=lambda: _resolve(
+        default_factory=lambda: toml_config.resolve(
             "SSL_VERIFY", _get_app_toml(), "ssl_verify", "false"
         ).lower()
         in ("true", "1", "yes")
     )
     _import_base_dir: str = field(
-        default_factory=lambda: _resolve(
+        default_factory=lambda: toml_config.resolve(
             "IMPORT_BASE_DIR", _get_app_toml(), "import_base_dir", "./import"
         )
     )
     _boba_dir_name: str = field(
-        default_factory=lambda: _resolve(
+        default_factory=lambda: toml_config.resolve(
             "BOBA_DIR_NAME", _get_app_toml(), "boba_dir_name", ".boba"
         )
     )
     _context_dir_name: str = field(
-        default_factory=lambda: _resolve(
+        default_factory=lambda: toml_config.resolve(
             "CONTEXT_DIR_NAME", _get_app_toml(), "context_dir_name", "context"
         )
     )
     _chroma_dir_name: str = field(
-        default_factory=lambda: _resolve(
+        default_factory=lambda: toml_config.resolve(
             "CHROMA_DIR_NAME", _get_app_toml(), "chroma_dir_name", "chroma"
         )
     )
-    _chats_dir_name: str = field(
-        default_factory=lambda: _resolve(
-            "CHATS_DIR_NAME", _get_app_toml(), "chats_dir_name", "chats"
-        )
-    )
     _chat_history_filename: str = field(
-        default_factory=lambda: _resolve(
+        default_factory=lambda: toml_config.resolve(
             "CHAT_HISTORY_FILENAME",
             _get_app_toml(),
             "chat_history_filename",
@@ -155,7 +104,7 @@ class AppConfig:
         )
     )
     _index_manifest_filename: str = field(
-        default_factory=lambda: _resolve(
+        default_factory=lambda: toml_config.resolve(
             "INDEX_MANIFEST_FILENAME",
             _get_app_toml(),
             "index_manifest_filename",
@@ -163,12 +112,12 @@ class AppConfig:
         )
     )
     _collection_prefix: str = field(
-        default_factory=lambda: _resolve(
+        default_factory=lambda: toml_config.resolve(
             "COLLECTION_PREFIX", _get_app_toml(), "collection_prefix", "doc"
         )
     )
     _log_level: str = field(
-        default_factory=lambda: _resolve(
+        default_factory=lambda: toml_config.resolve(
             "LOG_LEVEL", _get_app_toml(), "log_level", "INFO"
         )
     )
@@ -270,11 +219,27 @@ class AppConfig:
     def chroma_path(self, folder: Path) -> Path:
         return self.boba_path(folder) / self._chroma_dir_name
 
-    def chats_dir(self, folder: Path) -> Path:
-        return self.boba_path(folder) / self._chats_dir_name
+    def thread_path(self, folder: Path) -> Path:
+        """Путь к единственному thread.json workspace'а."""
+        return self.boba_path(folder) / "thread.json"
 
-    def chat_history_path(self, folder: Path, chat_id: str) -> Path:
-        return self.chats_dir(folder) / f"{chat_id}.jsonl"
+    def workspace_history_path(self, folder: Path) -> Path:
+        """Путь к единственному chat_history.jsonl workspace'а."""
+        return self.boba_path(folder) / self._chat_history_filename
+
+    def folder_path(self, folder_name: str) -> Path:
+        """Полный путь к папке workspace'а."""
+        return Path(self._import_base_dir) / folder_name
+
+    def iter_workspaces(self) -> list[Path]:
+        """Все папки-workspace'ы в import_base_dir (не начинающиеся с точки)."""
+        base = Path(self._import_base_dir)
+        if not base.is_dir():
+            return []
+        return sorted(
+            d for d in base.iterdir()
+            if d.is_dir() and not d.name.startswith(".")
+        )
 
     def index_manifest_path(self, folder: Path) -> Path:
         return self.boba_path(folder) / self._index_manifest_filename

@@ -1,7 +1,7 @@
-"""Файловое хранилище thread'ов — JSON файлы в .boba/chats/.
+"""Файловое хранилище thread'ов — один thread.json на workspace.
 
-Каждый thread — отдельный {thread_id}.json.
-Структура: {base_dir}/{folder}/.boba/chats/{thread_id}.json
+Каждый workspace (папка в import_base_dir) хранит ровно один thread.
+Все пути резолвятся через AppConfig.
 """
 from __future__ import annotations
 
@@ -17,32 +17,32 @@ from boba_domain.chat.thread import (
     StepType,
     ThreadMetadata,
 )
+from boba_domain.config import AppConfig
 from boba_domain.core.thread_store import ThreadPage
 
 log = logging.getLogger(__name__)
 
 
 class JsonThreadStore:
-    """ChatThreadStore реализация на JSON-файлах."""
+    """Один thread.json на workspace. Все пути через AppConfig."""
 
-    def __init__(
-        self,
-        base_dir: Path,
-        boba_dir_name: str = ".boba",
-        chats_dir_name: str = "chats",
-    ) -> None:
-        self._base_dir = base_dir
-        self._boba = boba_dir_name
-        self._chats = chats_dir_name
+    def __init__(self, cfg: AppConfig) -> None:
+        self._cfg = cfg
 
     # ------------------------------------------------------------------
     # Thread CRUD
     # ------------------------------------------------------------------
 
     def get_thread(self, thread_id: str) -> ChatThread | None:
-        path = self._find_thread_path(thread_id)
-        if path is None:
-            return None
+        for folder_dir in self._cfg.iter_workspaces():
+            path = self._cfg.thread_path(folder_dir)
+            thread = self._read(path)
+            if thread is not None and thread.id == thread_id:
+                return thread
+        return None
+
+    def get_thread_by_folder(self, folder_name: str) -> ChatThread | None:
+        path = self._cfg.thread_path(self._cfg.folder_path(folder_name))
         return self._read(path)
 
     def list_threads(
@@ -51,67 +51,73 @@ class JsonThreadStore:
         offset: int = 0,
         search: str | None = None,
     ) -> ThreadPage:
-        threads = self._collect_all_threads(search)
-        threads.sort(key=lambda t: t.created_at, reverse=True)
+        threads: list[ChatThread] = []
+        for folder_dir in self._cfg.iter_workspaces():
+            thread = self._read(self._cfg.thread_path(folder_dir))
+            if thread is None:
+                continue
+            if search and search.lower() not in (thread.name or "").lower():
+                continue
+            threads.append(thread)
 
+        threads.sort(key=lambda t: t.created_at, reverse=True)
         page = threads[offset : offset + limit]
-        has_next = offset + limit < len(threads)
-        return ThreadPage(threads=page, has_next=has_next)
+        return ThreadPage(threads=page, has_next=offset + limit < len(threads))
 
     def save_thread(self, thread: ChatThread) -> None:
-        path = self._ensure_thread_path(thread)
+        if not thread.metadata.folder:
+            raise ValueError("thread.metadata.folder is required")
+        path = self._cfg.thread_path(self._cfg.folder_path(thread.metadata.folder))
+        path.parent.mkdir(parents=True, exist_ok=True)
         self._write(path, thread)
 
     def delete_thread(self, thread_id: str) -> None:
-        path = self._find_thread_path(thread_id)
-        if path is not None:
-            path.unlink(missing_ok=True)
+        for folder_dir in self._cfg.iter_workspaces():
+            path = self._cfg.thread_path(folder_dir)
+            thread = self._read(path)
+            if thread is not None and thread.id == thread_id:
+                path.unlink(missing_ok=True)
+                return
 
     # ------------------------------------------------------------------
     # Step CRUD
     # ------------------------------------------------------------------
 
     def add_step(self, thread_id: str, step: ChatStep) -> None:
-        thread = self._load_or_none(thread_id)
+        thread = self.get_thread(thread_id)
         if thread is None:
             return
 
-        updated_steps = list(thread.steps)
-        updated_steps.append(step)
-
+        steps = [*thread.steps, step]
         name = thread.name
         if not name and step.step_type is StepType.USER_MESSAGE and step.output:
             name = step.output[:50]
 
-        self._save_with_steps(thread, updated_steps, name=name)
+        self._save_updated(thread, steps, name=name)
 
     def update_step(self, thread_id: str, step: ChatStep) -> None:
-        thread = self._load_or_none(thread_id)
+        thread = self.get_thread(thread_id)
         if thread is None:
             return
 
-        updated_steps = list(thread.steps)
-        replaced = False
-        for i, s in enumerate(updated_steps):
+        steps = list(thread.steps)
+        for i, s in enumerate(steps):
             if s.id == step.id:
-                updated_steps[i] = step
-                replaced = True
+                steps[i] = step
                 break
-        if not replaced:
-            updated_steps.append(step)
+        else:
+            steps.append(step)
 
-        self._save_with_steps(thread, updated_steps)
+        self._save_updated(thread, steps)
 
     def delete_step(self, thread_id: str, step_id: str) -> None:
-        thread = self._load_or_none(thread_id)
+        thread = self.get_thread(thread_id)
         if thread is None:
             return
 
-        updated_steps = [s for s in thread.steps if s.id != step_id]
-        if len(updated_steps) == len(thread.steps):
-            return
-
-        self._save_with_steps(thread, updated_steps)
+        steps = [s for s in thread.steps if s.id != step_id]
+        if len(steps) < len(thread.steps):
+            self._save_updated(thread, steps)
 
     # ------------------------------------------------------------------
     # Feedback
@@ -120,14 +126,14 @@ class JsonThreadStore:
     def set_feedback(
         self, thread_id: str, step_id: str, feedback: StepFeedback | None
     ) -> None:
-        thread = self._load_or_none(thread_id)
+        thread = self.get_thread(thread_id)
         if thread is None:
             return
 
-        updated_steps = list(thread.steps)
-        for i, s in enumerate(updated_steps):
+        steps = list(thread.steps)
+        for i, s in enumerate(steps):
             if s.id == step_id:
-                updated_steps[i] = ChatStep(
+                steps[i] = ChatStep(
                     id=s.id,
                     thread_id=s.thread_id,
                     step_type=s.step_type,
@@ -141,33 +147,28 @@ class JsonThreadStore:
                 )
                 break
 
-        self._save_with_steps(thread, updated_steps)
+        self._save_updated(thread, steps)
 
     def get_favorite_steps(self, user_id: str) -> list[ChatStep]:
         favorites: list[ChatStep] = []
-        for thread in self._collect_all_threads():
-            for step in thread.steps:
-                if step.is_favorite:
-                    favorites.append(step)
+        for folder_dir in self._cfg.iter_workspaces():
+            thread = self._read(self._cfg.thread_path(folder_dir))
+            if thread is None:
+                continue
+            favorites.extend(s for s in thread.steps if s.is_favorite)
         return favorites
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Internal
     # ------------------------------------------------------------------
 
-    def _load_or_none(self, thread_id: str) -> ChatThread | None:
-        path = self._find_thread_path(thread_id)
-        if path is None:
-            return None
-        return self._read(path)
-
-    def _save_with_steps(
+    def _save_updated(
         self,
         thread: ChatThread,
         steps: list[ChatStep],
         name: str | None = None,
     ) -> None:
-        updated = ChatThread(
+        self.save_thread(ChatThread(
             id=thread.id,
             created_at=thread.created_at,
             name=name if name is not None else thread.name,
@@ -176,49 +177,11 @@ class JsonThreadStore:
             metadata=thread.metadata,
             steps=steps,
             tags=thread.tags,
-        )
-        self.save_thread(updated)
-
-    def _collect_all_threads(self, search: str | None = None) -> list[ChatThread]:
-        threads: list[ChatThread] = []
-        for folder_dir in self._iter_folders():
-            chats_dir = folder_dir / self._boba / self._chats
-            if not chats_dir.is_dir():
-                continue
-            for path in chats_dir.glob("*.json"):
-                thread = self._read(path)
-                if thread is None:
-                    continue
-                if search and search.lower() not in (thread.name or "").lower():
-                    continue
-                threads.append(thread)
-        return threads
-
-    # ------------------------------------------------------------------
-    # File I/O
-    # ------------------------------------------------------------------
-
-    def _iter_folders(self):
-        if not self._base_dir.is_dir():
-            return
-        for d in self._base_dir.iterdir():
-            if d.is_dir() and not d.name.startswith("."):
-                yield d
-
-    def _find_thread_path(self, thread_id: str) -> Path | None:
-        for folder_dir in self._iter_folders():
-            path = folder_dir / self._boba / self._chats / f"{thread_id}.json"
-            if path.is_file():
-                return path
-        return None
-
-    def _ensure_thread_path(self, thread: ChatThread) -> Path:
-        folder = thread.metadata.folder or "_default"
-        chats_dir = self._base_dir / folder / self._boba / self._chats
-        chats_dir.mkdir(parents=True, exist_ok=True)
-        return chats_dir / f"{thread.id}.json"
+        ))
 
     def _read(self, path: Path) -> ChatThread | None:
+        if not path.is_file():
+            return None
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             return _deserialize_thread(raw)
@@ -238,7 +201,7 @@ class JsonThreadStore:
 
 
 # ------------------------------------------------------------------
-# Serialization (module-level, stateless)
+# Serialization
 # ------------------------------------------------------------------
 
 
