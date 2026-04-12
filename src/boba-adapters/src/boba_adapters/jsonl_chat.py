@@ -30,7 +30,6 @@ class JsonlChatWriter(ChatWriter[ChatEvent]):
 
     def __init__(self, path: Path) -> None:
         self._path = path
-        path.touch(exist_ok=True)
 
     @property
     def path(self) -> Path:

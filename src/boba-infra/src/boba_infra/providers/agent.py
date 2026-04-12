@@ -53,11 +53,9 @@ class AgentProvider(Provider):
 
     @provide
     def workspace(self, cfg: AppConfig, ctx: FolderContext) -> Workspace:
-        boba = cfg.boba_path(ctx.folder_path)
-        boba.mkdir(exist_ok=True)
         return Workspace(
             folder_path=ctx.folder_path,
-            boba_path=boba,
+            boba_path=cfg.boba_path(ctx.folder_path),
             manifest_path=cfg.index_manifest_path(ctx.folder_path),
             history_path=ctx.history_path,
         )
