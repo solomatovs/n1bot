@@ -1,14 +1,16 @@
 """Chainlit DataLayer адаптер — мост между Chainlit types и ChatThreadStore.
 
-ChainlitConverter — конвертация ThreadDict ↔ ChatThread, StepDict ↔ ChatStep.
+StepInput — типизированный входной шаг от Chainlit (валидация на границе).
+ChainlitConverter — конвертация ThreadDict ↔ ChatThread, StepInput → ChatStep.
 ChainlitDataLayerAdapter — реализация BaseDataLayer, делегирующая JsonThreadStore.
 """
 from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, cast
 
 from chainlit.data.base import BaseDataLayer
 from chainlit.types import (
@@ -21,8 +23,6 @@ from chainlit.types import (
 )
 from chainlit.user import PersistedUser, User
 
-log = logging.getLogger(__name__)
-
 from boba_adapters.json_thread_store import JsonThreadStore
 from boba_domain.chat.thread import (
     ChatStep,
@@ -31,6 +31,102 @@ from boba_domain.chat.thread import (
     StepType,
     ThreadMetadata,
 )
+from boba_domain.errors import (
+    ThreadNotFoundError,
+    ThreadReadError,
+    ThreadStoreError,
+    ThreadWriteError,
+    ValidationError,
+)
+
+log = logging.getLogger(__name__)
+
+_STEP_REQUIRED_FIELDS = ("id", "threadId", "type")
+
+
+async def _emit_error(text: str) -> None:
+    """Отправить ошибку в браузер через Chainlit toast.
+
+    Если нет активного контекста (вызов вне WebSocket-сессии) — пропускаем.
+    В логи пишет вызывающий код, здесь только UI.
+    """
+    try:
+        import chainlit as cl
+
+        await cl.context.emitter.emit("toast", {"message": text, "level": "error"})
+    except Exception:
+        pass
+
+
+# ------------------------------------------------------------------
+# StepInput — типизированный входной шаг от Chainlit
+# ------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class StepInput:
+    """Входной шаг от Chainlit после валидации.
+
+    Поля соответствуют Chainlit StepDict, но приведены к snake_case
+    и гарантированно заполнены для обязательных полей.
+    """
+
+    id: str
+    thread_id: str
+    type: str
+    name: str
+    parent_id: str | None
+    input: str
+    output: str
+    created_at: str
+    start: str | None
+    end: str | None
+    streaming: bool
+    is_error: bool
+    metadata: dict[str, Any]
+    tags: list[str] | None
+    language: str | None
+    generation: dict[str, Any] | None
+    show_input: str | None
+    default_open: bool
+    auto_collapse: bool
+    feedback: dict[str, Any] | None
+
+    @classmethod
+    def parse(cls, raw: dict) -> StepInput:
+        """Парсинг и валидация step_dict от Chainlit.
+
+        Raises:
+            ValidationError: если отсутствует хотя бы одно обязательное поле.
+        """
+        missing = [f for f in _STEP_REQUIRED_FIELDS if not raw.get(f)]
+        if missing:
+            raise ValidationError(
+                f"Step missing required fields {missing}: "
+                f"id={raw.get('id', '?')}, name={raw.get('name', '?')}"
+            )
+        return cls(
+            id=raw["id"],
+            thread_id=raw["threadId"],
+            type=raw["type"],
+            name=raw.get("name", ""),
+            parent_id=raw.get("parentId"),
+            input=raw.get("input", ""),
+            output=raw.get("output", ""),
+            created_at=raw.get("createdAt", ""),
+            start=raw.get("start"),
+            end=raw.get("end"),
+            streaming=raw.get("streaming", False),
+            is_error=raw.get("isError", False),
+            metadata=raw.get("metadata") or {},
+            tags=raw.get("tags"),
+            language=raw.get("language"),
+            generation=raw.get("generation"),
+            show_input=raw.get("showInput"),
+            default_open=raw.get("defaultOpen", False),
+            auto_collapse=raw.get("autoCollapse", False),
+            feedback=raw.get("feedback"),
+        )
 
 
 # ------------------------------------------------------------------
@@ -86,29 +182,28 @@ class ChainlitConverter:
         return result
 
     @staticmethod
-    def from_step_dict(raw: dict) -> ChatStep:
-        feedback_raw = raw.get("feedback")
+    def from_step_input(step: StepInput) -> ChatStep:
+        """Конвертация валидированного StepInput → доменный ChatStep."""
         feedback = None
-        if isinstance(feedback_raw, dict) and "id" in feedback_raw:
+        if isinstance(step.feedback, dict) and "id" in step.feedback:
             feedback = StepFeedback(
-                id=feedback_raw["id"],
-                value=feedback_raw.get("value", 0),
-                comment=feedback_raw.get("comment", ""),
-                strategy=feedback_raw.get("strategy", "user"),
+                id=step.feedback["id"],
+                value=step.feedback.get("value", 0),
+                comment=step.feedback.get("comment", ""),
+                strategy=step.feedback.get("strategy", "user"),
             )
 
-        meta = raw.get("metadata") or {}
-        is_favorite = meta.get("favorite", False) if isinstance(meta, dict) else False
+        is_favorite = step.metadata.get("favorite", False)
 
         return ChatStep(
-            id=raw.get("id", ""),
-            thread_id=raw.get("threadId", ""),
-            step_type=_parse_step_type(raw.get("type", "")),
-            output=raw.get("output", ""),
-            input=raw.get("input", ""),
-            created_at=raw.get("createdAt", ""),
-            name=raw.get("name", ""),
-            parent_id=raw.get("parentId"),
+            id=step.id,
+            thread_id=step.thread_id,
+            step_type=_parse_step_type(step.type),
+            output=step.output,
+            input=step.input,
+            created_at=step.created_at,
+            name=step.name,
+            parent_id=step.parent_id,
             feedback=feedback,
             is_favorite=is_favorite,
         )
@@ -163,25 +258,51 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
     # -- Threads --
 
     async def get_thread(self, thread_id: str) -> Optional[ThreadDict]:
-        thread = self._store.get_thread(thread_id)
+        try:
+            thread = self._store.get_thread(thread_id)
+        except ThreadReadError as e:
+            log.error("get_thread: %s", e)
+            await _emit_error(str(e))
+            return None
         if thread is None:
+            log.warning("get_thread: thread not found: %s", thread_id)
+            await _emit_error(f"Thread not found: {thread_id}")
             return None
         return ChainlitConverter.to_thread_dict(thread)
 
     async def get_thread_author(self, thread_id: str) -> str:
-        thread = self._store.get_thread(thread_id)
-        return thread.user_identifier if thread else "default"
+        try:
+            thread = self._store.get_thread(thread_id)
+        except ThreadReadError as e:
+            log.error("get_thread_author: %s", e)
+            await _emit_error(str(e))
+            return "default"
+        if thread is None:
+            log.warning("get_thread_author: thread not found: %s", thread_id)
+            await _emit_error(f"Thread author not found: {thread_id}")
+            return "default"
+        return thread.user_identifier
 
     async def list_threads(
         self, pagination: Pagination, filters: ThreadFilter
     ) -> PaginatedResponse[ThreadDict]:
         offset = int(pagination.cursor) if pagination.cursor else 0
 
-        page = self._store.list_threads(
-            limit=pagination.first,
-            offset=offset,
-            search=filters.search,
-        )
+        try:
+            page = self._store.list_threads(
+                limit=pagination.first,
+                offset=offset,
+                search=filters.search,
+            )
+        except ThreadReadError as e:
+            log.error("list_threads: %s", e)
+            await _emit_error(str(e))
+            return PaginatedResponse(
+                pageInfo=PageInfo(
+                    hasNextPage=False, startCursor="0", endCursor="0",
+                ),
+                data=[],
+            )
 
         return PaginatedResponse(
             pageInfo=PageInfo(
@@ -200,14 +321,16 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
         metadata: Optional[Dict] = None,
         tags: Optional[List[str]] = None,
     ) -> None:
-        thread = self._store.get_thread(thread_id)
+        try:
+            thread = self._store.get_thread(thread_id)
+        except ThreadReadError as e:
+            log.error("update_thread: %s", e)
+            await _emit_error(str(e))
+            return
 
         if thread is None:
             meta = ChainlitConverter.metadata_from_dict(metadata or {})
             if not meta.folder:
-                # Workspace not created yet — skip. Chainlit's internal
-                # flush_thread_queues calls update_thread without folder
-                # metadata before our on_message creates the workspace.
                 return
             thread = ChatThread(
                 id=thread_id,
@@ -218,10 +341,13 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
                 metadata=meta,
                 tags=tags or [],
             )
-            self._store.save_thread(thread)
+            try:
+                self._store.save_thread(thread)
+            except ThreadWriteError as e:
+                log.error("update_thread (create): %s", e)
+                await _emit_error(str(e))
             return
 
-        # Folder (UUID) не меняется. name = display name, свободно обновляется.
         effective_name = name if name is not None else thread.name
 
         updated_meta = thread.metadata
@@ -242,64 +368,96 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
             steps=thread.steps,
             tags=tags if tags is not None else thread.tags,
         )
-        self._store.save_thread(updated)
+        try:
+            self._store.save_thread(updated)
+        except ThreadWriteError as e:
+            log.error("update_thread (save): %s", e)
+            await _emit_error(str(e))
 
     async def delete_thread(self, thread_id: str) -> None:
-        from boba_domain.errors import ThreadStoreError
-
         try:
             self._store.delete_thread(thread_id)
         except ThreadStoreError as e:
-            log.error("delete_thread failed: %s", e)
+            log.error("delete_thread: %s", e)
+            await _emit_error(str(e))
             raise
 
     # -- Steps --
 
     async def create_step(self, step_dict: dict) -> None:
-        thread_id = step_dict.get("threadId", "")
-        if not thread_id:
-            return
-        step = ChainlitConverter.from_step_dict(step_dict)
-        self._store.add_step(thread_id, step)
+        """Сохранить новый шаг чата. Вызывается Chainlit при каждом событии."""
+        step_input = StepInput.parse(step_dict)
+        step = ChainlitConverter.from_step_input(step_input)
+        try:
+            self._store.add_step(step_input.thread_id, step)
+        except ThreadNotFoundError as e:
+            log.error("create_step: %s", e)
+            await _emit_error(str(e))
+        except ThreadWriteError as e:
+            log.error("create_step: %s", e)
+            await _emit_error(str(e))
 
     async def update_step(self, step_dict: dict) -> None:
-        thread_id = step_dict.get("threadId", "")
-        if not thread_id:
-            return
-        step = ChainlitConverter.from_step_dict(step_dict)
-        self._store.update_step(thread_id, step)
+        """Обновить существующий шаг чата."""
+        step_input = StepInput.parse(step_dict)
+        step = ChainlitConverter.from_step_input(step_input)
+        try:
+            self._store.update_step(step_input.thread_id, step)
+        except ThreadNotFoundError as e:
+            log.error("update_step: %s", e)
+            await _emit_error(str(e))
+        except ThreadWriteError as e:
+            log.error("update_step: %s", e)
+            await _emit_error(str(e))
 
     async def delete_step(self, step_id: str) -> None:
-        for thread in self._store.list_threads(limit=10000).threads:
-            for step in thread.steps:
-                if step.id == step_id:
-                    self._store.delete_step(thread.id, step_id)
-                    return
+        try:
+            for thread in self._store.list_threads(limit=10000).threads:
+                for step in thread.steps:
+                    if step.id == step_id:
+                        self._store.delete_step(thread.id, step_id)
+                        return
+        except ThreadStoreError as e:
+            log.error("delete_step: %s", e)
+            await _emit_error(str(e))
 
     # -- Feedback --
 
     async def upsert_feedback(self, feedback: Feedback) -> str:
         domain_fb = ChainlitConverter.feedback_from_chainlit(feedback)
 
-        if feedback.forId:
-            for thread in self._store.list_threads(limit=10000).threads:
-                for step in thread.steps:
-                    if step.id == feedback.forId:
-                        self._store.set_feedback(thread.id, step.id, domain_fb)
-                        return domain_fb.id
+        try:
+            if feedback.forId:
+                for thread in self._store.list_threads(limit=10000).threads:
+                    for step in thread.steps:
+                        if step.id == feedback.forId:
+                            self._store.set_feedback(thread.id, step.id, domain_fb)
+                            return domain_fb.id
+        except ThreadStoreError as e:
+            log.error("upsert_feedback: %s", e)
+            await _emit_error(str(e))
 
         return domain_fb.id
 
     async def delete_feedback(self, feedback_id: str) -> bool:
-        for thread in self._store.list_threads(limit=10000).threads:
-            for step in thread.steps:
-                if step.feedback and step.feedback.id == feedback_id:
-                    self._store.set_feedback(thread.id, step.id, None)
-                    return True
+        try:
+            for thread in self._store.list_threads(limit=10000).threads:
+                for step in thread.steps:
+                    if step.feedback and step.feedback.id == feedback_id:
+                        self._store.set_feedback(thread.id, step.id, None)
+                        return True
+        except ThreadStoreError as e:
+            log.error("delete_feedback: %s", e)
+            await _emit_error(str(e))
         return False
 
     async def get_favorite_steps(self, user_id: str) -> list:
-        steps = self._store.get_favorite_steps(user_id)
+        try:
+            steps = self._store.get_favorite_steps(user_id)
+        except ThreadStoreError as e:
+            log.error("get_favorite_steps: %s", e)
+            await _emit_error(str(e))
+            return []
         return [ChainlitConverter.to_step_dict(s) for s in steps]
 
     # -- Elements (заглушки) --

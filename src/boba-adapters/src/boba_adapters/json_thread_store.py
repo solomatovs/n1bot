@@ -20,7 +20,13 @@ from boba_domain.chat.thread import (
 )
 from boba_domain.config import AppConfig
 from boba_domain.core.thread_store import ThreadPage
-from boba_domain.errors import ThreadDeleteError, ThreadNotFoundError
+from boba_domain.errors import (
+    ThreadDeleteError,
+    ThreadNotFoundError,
+    ThreadReadError,
+    ThreadWriteError,
+    ValidationError,
+)
 
 log = logging.getLogger(__name__)
 
@@ -68,7 +74,7 @@ class JsonThreadStore:
 
     def save_thread(self, thread: ChatThread) -> None:
         if not thread.metadata.folder:
-            raise ValueError("thread.metadata.folder is required")
+            raise ValidationError("thread.metadata.folder is required")
         path = self._cfg.thread_path(self._cfg.folder_path(thread.metadata.folder))
         path.parent.mkdir(parents=True, exist_ok=True)
         self._write(path, thread)
@@ -85,14 +91,10 @@ class JsonThreadStore:
                 return
         raise ThreadNotFoundError(thread_id)
 
-    # ------------------------------------------------------------------
-    # Step CRUD
-    # ------------------------------------------------------------------
-
     def add_step(self, thread_id: str, step: ChatStep) -> None:
         thread = self.get_thread(thread_id)
         if thread is None:
-            return
+            raise ThreadNotFoundError(thread_id)
 
         steps = [*thread.steps, step]
         name = thread.name
@@ -104,7 +106,7 @@ class JsonThreadStore:
     def update_step(self, thread_id: str, step: ChatStep) -> None:
         thread = self.get_thread(thread_id)
         if thread is None:
-            return
+            raise ThreadNotFoundError(thread_id)
 
         steps = list(thread.steps)
         for i, s in enumerate(steps):
@@ -119,7 +121,7 @@ class JsonThreadStore:
     def delete_step(self, thread_id: str, step_id: str) -> None:
         thread = self.get_thread(thread_id)
         if thread is None:
-            return
+            raise ThreadNotFoundError(thread_id)
 
         steps = [s for s in thread.steps if s.id != step_id]
         if len(steps) < len(thread.steps):
@@ -134,7 +136,7 @@ class JsonThreadStore:
     ) -> None:
         thread = self.get_thread(thread_id)
         if thread is None:
-            return
+            raise ThreadNotFoundError(thread_id)
 
         steps = list(thread.steps)
         for i, s in enumerate(steps):
@@ -192,8 +194,7 @@ class JsonThreadStore:
             raw = json.loads(path.read_text(encoding="utf-8"))
             return _deserialize_thread(raw)
         except (json.JSONDecodeError, OSError, KeyError) as e:
-            log.warning("Failed to read thread %s: %s", path, e)
-            return None
+            raise ThreadReadError(str(path), e) from e
 
     def _write(self, path: Path, thread: ChatThread) -> None:
         try:
@@ -203,7 +204,7 @@ class JsonThreadStore:
                 encoding="utf-8",
             )
         except OSError as e:
-            log.warning("Failed to write thread %s: %s", path, e)
+            raise ThreadWriteError(str(path), e) from e
 
 
 # ------------------------------------------------------------------

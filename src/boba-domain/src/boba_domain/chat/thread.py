@@ -13,7 +13,13 @@ from enum import Enum
 
 
 class StepType(Enum):
-    """Тип шага в thread'е."""
+    """Тип шага в thread'е.
+
+    USER_MESSAGE      — сообщение пользователя.
+    ASSISTANT_MESSAGE  — ответ ассистента.
+    TOOL              — вызов инструмента (tool call / tool result).
+    RUN               — системный шаг (напр. on_chat_start, on_settings_update).
+    """
 
     USER_MESSAGE = "user_message"
     ASSISTANT_MESSAGE = "assistant_message"
@@ -23,17 +29,25 @@ class StepType(Enum):
 
 @dataclass(frozen=True)
 class StepFeedback:
-    """Оценка шага пользователем (thumbs up/down)."""
+    """Реакция пользователя на ответ ассистента (кнопки 👍/👎 в UI).
 
-    id: str
-    value: int  # 0 = negative, 1 = positive
-    comment: str = ""
-    strategy: str = "user"
+    Пользователь нажимает 👍 → value=1, 👎 → value=0.
+    Если пользователь не оценивал шаг, feedback остаётся None в ChatStep.
+    """
+
+    id: str  # UUID этой оценки
+    value: int  # 1 = 👍 положительная, 0 = 👎 отрицательная
+    comment: str = ""  # текстовый комментарий к оценке (если UI запрашивает)
+    strategy: str = "user"  # источник оценки: "user" = человек
 
 
 @dataclass(frozen=True)
 class ThreadMetadata:
-    """Метаданные thread'а — привязка к папке и модели."""
+    """Метаданные thread'а — привязка к workspace и модели.
+
+    folder — UUID-имя папки workspace'а на диске.
+    model  — идентификатор LLM, выбранной для этого чата.
+    """
 
     folder: str = ""
     model: str = ""
@@ -41,29 +55,37 @@ class ThreadMetadata:
 
 @dataclass(frozen=True)
 class ChatStep:
-    """Один шаг внутри thread'а."""
+    """Один шаг внутри thread'а.
 
-    id: str
-    thread_id: str
-    step_type: StepType
-    output: str = ""
-    input: str = ""
-    created_at: str = ""
-    name: str = ""
-    parent_id: str | None = None
-    feedback: StepFeedback | None = None
-    is_favorite: bool = False
+    Каждое событие в переписке — это шаг: сообщение пользователя,
+    ответ ассистента, вызов инструмента, системный запуск.
+    """
+
+    id: str  # UUID шага
+    thread_id: str  # UUID чата, к которому привязан шаг
+    step_type: StepType  # тип шага
+    output: str = ""  # текст ответа / результат tool
+    input: str = ""  # текст вопроса / аргументы tool
+    created_at: str = ""  # ISO timestamp создания
+    name: str = ""  # имя (ассистент, tool name, callback name)
+    parent_id: str | None = None  # UUID родителя для вложенных шагов
+    feedback: StepFeedback | None = None  # оценка пользователем (если есть)
+    is_favorite: bool = False  # помечен ли как избранный
 
 
 @dataclass(frozen=True)
 class ChatThread:
-    """Один thread чата со всеми шагами."""
+    """Один thread чата со всеми шагами.
 
-    id: str
-    created_at: str
-    name: str | None = None
-    user_id: str = "default"
-    user_identifier: str = "default"
+    Thread = один чат = один workspace. Связь с workspace
+    хранится в metadata.folder. Все шаги чата — в steps.
+    """
+
+    id: str  # UUID thread'а (совпадает с Chainlit thread_id)
+    created_at: str  # ISO timestamp создания
+    name: str | None = None  # отображаемое имя в sidebar
+    user_id: str = "default"  # внутренний ID пользователя
+    user_identifier: str = "default"  # логин / идентификатор пользователя
     metadata: ThreadMetadata = field(default_factory=ThreadMetadata)
     steps: list[ChatStep] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)

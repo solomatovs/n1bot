@@ -58,12 +58,31 @@ class ThreadStoreError(AppError):
     """Базовая ошибка работы с хранилищем thread'ов."""
 
 
+
 class ThreadNotFoundError(ThreadStoreError):
-    """Thread не найден."""
+    """Thread не найден по ID."""
 
     def __init__(self, thread_id: str) -> None:
         self.thread_id = thread_id
         super().__init__(f"Thread not found: {thread_id}")
+
+
+class ThreadReadError(ThreadStoreError):
+    """Не удалось прочитать thread.json (битый JSON, ошибка IO)."""
+
+    def __init__(self, path: str, reason: Exception) -> None:
+        self.path = path
+        self.reason = reason
+        super().__init__(f"Failed to read thread {path}: {reason}")
+
+
+class ThreadWriteError(ThreadStoreError):
+    """Не удалось записать thread.json."""
+
+    def __init__(self, path: str, reason: Exception) -> None:
+        self.path = path
+        self.reason = reason
+        super().__init__(f"Failed to write thread {path}: {reason}")
 
 
 class ThreadDeleteError(ThreadStoreError):
