@@ -1,0 +1,19 @@
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "boba-infra"
+version = "0.1.0"
+description = "N1Bot infrastructure — DI container, composition root"
+authors = ["Sergei Solomatov"]
+packages = [{ include = "boba_infra", from = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+boba-domain = { path = "../boba-domain", develop = true }
+boba-app = { path = "../boba-app", develop = true }
+boba-adapters = { path = "../boba-adapters", develop = true }
+dishka = "*"
+openai = "*"
+httpx = "*"

@@ -3,44 +3,48 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
-name = "n1bot"
+name = "boba"
 version = "0.1.0"
-description = "N1 Hub RAG — Confluence knowledge base"
+description = "Boba — RAG agent for Confluence knowledge base"
 authors = ["Sergei Solomatov"]
-packages = [{ include = "**/*.py", from = "src" }]
+packages = [{ include = "boba", from = "src" }]
 
 [tool.poetry.dependencies]
 python = "^3.11"
-chromadb = "*"
-langchain = "*"
-langchain-community = "*"
-langchain-openai = "*"
-langchain-core = "*"
-langchain-chroma = "*"
-langchain-ollama = "*"
-httpx = "*"
-numpy = "*"
-openai = "*"
-tiktoken = "*"
-pandas = "*"
-markdownify = "*"
-atlassian-python-api = "*"
-pydantic = "*"
-lxml = "*"
-
+boba-domain = { path = "src/boba-domain", develop = true }
+boba-app = { path = "src/boba-app", develop = true }
+boba-adapters = { path = "src/boba-adapters", develop = true }
+boba-infra = { path = "src/boba-infra", develop = true }
+boba-api = { path = "src/boba-api", develop = true }
+boba-chainlit = { path = "src/boba-chainlit", develop = true }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"
 ruff = "*"
 pyright = "*"
+black = "*"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = [
+    "src/boba-domain/src",
+    "src/boba-app/src",
+    "src/boba-adapters/src",
+    "src/boba-infra/src",
+    "src/boba-api/src",
+    "src/boba-chainlit/src",
+]
 
 [tool.pyright]
 include = ["src", "tests"]
-extraPaths = ["src", "tests"]
+extraPaths = [
+    "src/boba-domain/src",
+    "src/boba-app/src",
+    "src/boba-adapters/src",
+    "src/boba-infra/src",
+    "src/boba-api/src",
+    "src/boba-chainlit/src",
+]
 venvPath = "."
 venv = ".venv"
 pythonVersion = "3.11"

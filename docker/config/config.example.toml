@@ -1,0 +1,36 @@
+# ============================================================
+# Boba — шаблон конфигурации
+#
+# Скопируйте в config.toml и заполните значения:
+#   cp config.example.toml config.toml
+#
+# Секреты хранятся отдельно в ../secrets/:
+#   echo "your-api-key" > ../secrets/litellm_api_key
+#   echo "your-token" > ../secrets/confluence_token
+# ============================================================
+
+[app]
+litellm_url = "http://litellm:4000"
+confluence_url = "http://confl:8090"
+default_collection = "testing"
+embedding_model = "e5-large-instruct"
+llm_timeout = 600
+embedding_timeout = 120
+ssl_verify = false
+import_base_dir = "./import"
+log_level = "INFO"
+
+[agent]
+max_iterations = 10
+default_model = "qwen3-0.6b"
+# limit_message = "Достигнут лимит итераций агента."
+
+[api]
+root_path = "/boba"
+host = "0.0.0.0"
+port = 8000
+
+[chainlit]
+root_path = "/boba"
+host = "0.0.0.0"
+port = 8080

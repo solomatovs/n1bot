@@ -1,96 +1,71 @@
-# N1Bot Docker
+# Boba Docker
 
-Multi-stage сборка на базе Astra Linux CE 2.12 с glibc 2.28, GCC 8, Python 3.11.
+Astra Linux CE 2.12 + glibc 2.28 + Python 3.11. Два сервиса: FastAPI (API) + Chainlit (UI).
 
-## Стейджи Dockerfile
-
-| Stage | Target | Описание |
-|---|---|---|
-| **builder** | `builder` | Компиляция glibc 2.28 + GCC 8 + Python 3.11 из исходников (~30 мин) |
-| **base** | `base` | Чистый runtime-образ с новым стеком (без pip-пакетов) |
-| **deps** | `deps` | Установка Python-зависимостей из `pyproject.toml` |
-| **wheels-export** | `wheels-export` | Экспорт wheels на хост для офлайн-сборки |
-| **runtime** | (default) | Финальный образ с приложением |
-
-## Команды сборки
-
-Все команды выполняются из директории `docker/`.
-
-### Полная сборка приложения
+## Быстрый старт
 
 ```bash
-cd docker && docker compose build
+cd docker
+cp config/config.example.toml config/config.toml
+mkdir -p secrets
+echo "your-litellm-key" > secrets/litellm_api_key
+echo "your-confluence-token" > secrets/confluence_token
+docker compose build
+docker compose up -d
 ```
 
-### Собрать базовый образ отдельно
+## Пересборка base-образа (только при первой установке)
+
+Требует исходники в `glibc-src/`, `gcc-src/`, `python-src/` (~130 МБ).
 
 ```bash
-docker build --target=base -t n1bot-base -f docker/Dockerfile .
+# скачать исходники
+mkdir -p glibc-src gcc-src python-src
+curl -L -o glibc-src/glibc-2.28.tar.xz      https://ftp.wayne.edu/gnu/glibc/glibc-2.28.tar.xz
+curl -L -o gcc-src/gcc-8.5.0.tar.xz         https://ftp.wayne.edu/gnu/gcc/gcc-8.5.0/gcc-8.5.0.tar.xz
+curl -L -o gcc-src/gmp-6.1.2.tar.xz         https://ftp.wayne.edu/gnu/gmp/gmp-6.1.2.tar.xz
+curl -L -o gcc-src/mpfr-4.0.2.tar.xz        https://ftp.wayne.edu/gnu/mpfr/mpfr-4.0.2.tar.xz
+curl -L -o gcc-src/mpc-1.1.0.tar.gz         https://ftp.wayne.edu/gnu/mpc/mpc-1.1.0.tar.gz
+curl -L -o python-src/Python-3.11.12.tar.xz https://www.python.org/ftp/python/3.11.12/Python-3.11.12.tar.xz
+
+# собрать и затегировать (~30 мин)
+docker build -f Dockerfile.base -t boba-base ..
 ```
 
-Полезно для кеширования: после первой сборки glibc/gcc/python этот образ
-можно тегнуть и больше не пересобирать.
+После этого `docker compose build` использует `boba-base:latest`.
 
-### Экспорт wheels на хост
-
-Собирает wheels и копирует их в `docker/wheels/` для офлайн-установки:
-
-```bash
-docker build \
-    --target=wheels-export \
-    --output=type=local,dest=./docker/wheels \
-    -f docker/Dockerfile .
-```
-
-## Зависимости
-
-Python-зависимости описаны в `pyproject.toml` в корне проекта.
-Dockerfile автоматически генерирует `requirements.txt` из `pyproject.toml`
-и устанавливает пакеты через `pip install --only-binary=:all:`.
-
-## Исходники для builder
-
-Stage `builder` требует тарболлы в следующих директориях:
+## Структура
 
 ```
 docker/
-  glibc-src/glibc-2.28.tar.xz
-  gcc-src/gcc-8.5.0.tar.xz
-  gcc-src/gmp-6.1.2.tar.xz
-  gcc-src/mpfr-4.0.2.tar.xz
-  gcc-src/mpc-1.1.0.tar.gz
-  python-src/Python-3.11.12.tar.xz
+├── config/
+│   ├── config.toml            # [app] + [api] + [chainlit] — всё приложение
+│   ├── config.debug.toml      # то же для launch.json
+│   ├── config.example.toml    # шаблон (в git)
+│   └── .chainlit/config.toml  # UI/features Chainlit
+├── secrets/                   # Docker secrets (не в git)
+├── wheels/                    # Python wheels для offline-сборки
+├── import/                    # данные — папки с документами
+├── Dockerfile                 # runtime (на основе boba-base)
+├── Dockerfile.base            # полная сборка из astra_linux_ce
+└── docker-compose.yml
 ```
 
-Эти файлы нужны только для первой сборки. После `docker build --target=base`
-результат кешируется в Docker layer cache.
+## Сервисы
 
-### Скачивание исходников
+| Сервис | Порт | Назначение |
+|--------|------|------------|
+| `boba-api` | 8000 | FastAPI — `/boba/api/chat`, `/boba/health` |
+| `boba-chainlit` | 8080 | Chainlit UI — `/boba/` |
+
+Доступ через nginx: `https://loshara.com/boba/`
+
+## Команды
 
 ```bash
-cd docker && mkdir -p glibc-src gcc-src python-src && \
-curl -L -o glibc-src/glibc-2.28.tar.xz      https://ftp.wayne.edu/gnu/glibc/glibc-2.28.tar.xz && \
-curl -L -o gcc-src/gcc-8.5.0.tar.xz         https://ftp.wayne.edu/gnu/gcc/gcc-8.5.0/gcc-8.5.0.tar.xz && \
-curl -L -o gcc-src/gmp-6.1.2.tar.xz         https://ftp.wayne.edu/gnu/gmp/gmp-6.1.2.tar.xz && \
-curl -L -o gcc-src/mpfr-4.0.2.tar.xz        https://ftp.wayne.edu/gnu/mpfr/mpfr-4.0.2.tar.xz && \
-curl -L -o gcc-src/mpc-1.1.0.tar.gz         https://ftp.wayne.edu/gnu/mpc/mpc-1.1.0.tar.gz && \
-curl -L -o python-src/Python-3.11.12.tar.xz https://www.python.org/ftp/python/3.11.12/Python-3.11.12.tar.xz
-```
-
-Суммарный размер ~130 МБ. После первой успешной сборки base-образа
-файлы можно удалить — Docker layer cache сохранит результат.
-
-## Структура приложения
-
-```
-pyproject.toml       - Python-зависимости (Poetry)
-src/
-  app.py             - Streamlit UI (точка входа)
-  config.py          - SSL, secrets, tiktoken
-  embeddings.py      - LiteLLMEmbeddings, E5OllamaEmbeddings
-  chunking.py        - AdvancedChunker, split_into_chunks_semantic
-  vectorstore.py     - ChromaDB: get/store/remove
-  retrieval.py       - retrieve_docs, rrf_merge, reranking
-  rag.py             - get_openai, prepare_rag_context, generate_answer
-  confluence.py      - Confluence ingest
+cd docker
+docker compose build          # собрать образы
+docker compose up -d          # запустить
+docker compose logs -f        # логи
+docker compose down           # остановить
 ```
