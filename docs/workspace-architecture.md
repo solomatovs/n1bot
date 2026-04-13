@@ -92,39 +92,69 @@ class WorkspaceRegistry(ABC):
 
 @dataclass(frozen=True)
 class LLMMessage:
-    """Базовый класс сообщения. Содержит текстовое тело диалогового сообщения."""
-    content: str = ""
+    """Базовый класс сообщения в диалоге. Не содержит content —
+    каждый дочерний класс определяет его самостоятельно."""
+    pass
 
 @dataclass(frozen=True)
 class SystemMessage(LLMMessage):
     """Роль 'system'. Системный промпт: инструкции и контекст для модели,
     невидимые пользователю. Задаёт поведение, ограничения и роль ассистента."""
-    pass
+    content: str
 
 @dataclass(frozen=True)
 class DeveloperMessage(LLMMessage):
     """Роль 'developer'. Инструкции разработчика приложения для reasoning-моделей
     (OpenAI o1/o3/o4). Модель доверяет developer-сообщениям больше, чем user.
     Для провайдеров без этой роли адаптер сериализует как system."""
-    pass
+    content: str
 
 @dataclass(frozen=True)
 class UserMessage(LLMMessage):
     """Роль 'user'. Сообщение от пользователя (вопрос, команда, ввод)."""
-    pass
+    content: str
 
 @dataclass(frozen=True)
 class AssistantMessage(LLMMessage):
-    """Роль 'assistant'. Ответ модели. Помимо текста может содержать
-    tool_calls — список запросов на вызов инструментов."""
-    tool_calls: list[ToolCall] = field(default_factory=list)
+    """Роль 'assistant'. Текстовый ответ модели."""
+    content: str
+
+@dataclass(frozen=True)
+class AssistantToolMessage(LLMMessage):
+    """Роль 'assistant'. Ответ модели с вызовами инструментов.
+    content опционален — модель может сопроводить tool call'ы текстом."""
+    tool_calls: list[ToolCall]
 
 @dataclass(frozen=True)
 class ToolMessage(LLMMessage):
     """Роль 'tool'. Результат выполнения инструмента.
     tool_call_id связывает результат с конкретным ToolCall.id,
     чтобы модель знала, на какой именно вызов пришёл ответ."""
+    content: str = ""
     tool_call_id: str = ""
+
+
+# --- Thinking (extended thinking, Claude API) ---
+
+@dataclass(frozen=True)
+class ThinkingMessage(LLMMessage):
+    """Внутренние рассуждения модели (type: 'thinking').
+    Видимы клиенту, могут отображаться пользователю."""
+    content: str
+
+@dataclass(frozen=True)
+class RedactedThinkingMessage(LLMMessage):
+    """Скрытые рассуждения модели (type: 'redacted_thinking').
+    data — opaque payload, передаётся обратно в API для multi-turn continuity."""
+    data: str
+
+
+# --- Server tools (Claude API) ---
+# Серверные инструменты выполняются на стороне Anthropic.
+# Клиент получает вызов и результат в одном ответе, не участвует в выполнении.
+# Используют те же AssistantToolMessage/ToolMessage, что и клиентские tools.
+# Адаптер парсит server_tool_use в ToolCall, *_tool_result в ToolMessage.
+# Серверные ToolParams определены в секции Tools.
 ```
 
 ### ToolCall
@@ -541,6 +571,40 @@ class WriteParams(ToolParams):
 class BashParams(ToolParams):
     command: str
     timeout: int = 120000
+
+
+# --- Серверные инструменты (Claude API) ---
+# Используют те же ToolParams/ToolCall/AssistantToolMessage/ToolMessage.
+# Адаптер Claude парсит server_tool_use → ToolCall, *_tool_result → ToolMessage.
+
+@dataclass(frozen=True)
+class WebSearchParams(ToolParams):
+    """Серверный веб-поиск."""
+    query: str
+
+@dataclass(frozen=True)
+class WebFetchParams(ToolParams):
+    """Серверная загрузка веб-страницы."""
+    url: str
+
+@dataclass(frozen=True)
+class CodeExecutionParams(ToolParams):
+    """Серверное выполнение Python-кода."""
+    code: str
+
+@dataclass(frozen=True)
+class BashExecutionParams(ToolParams):
+    """Серверное выполнение bash-команды."""
+    command: str
+
+@dataclass(frozen=True)
+class TextEditorParams(ToolParams):
+    """Серверное редактирование файла."""
+    command: str       # "create", "str_replace" и др.
+    path: str
+    file_text: str = ""
+    old_str: str = ""
+    new_str: str = ""
 
 
 # --- Типизированная схема параметров ---
