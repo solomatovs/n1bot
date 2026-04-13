@@ -139,6 +139,7 @@ _SESSION_STATE_KEY = "session_state"
 def get_session_state() -> SessionState:
     """Получить SessionState из Chainlit session. Бросает SessionNotInitializedError."""
     state = cl.user_session.get(_SESSION_STATE_KEY)
+    
     if not isinstance(state, SessionState):
         raise SessionNotInitializedError(["SessionState"])
     
@@ -213,11 +214,11 @@ class WorkspaceService:
         except ThreadNotFoundError:
             return self._create(thread_id)
 
-    def _create(self, folder_id: str) -> WorkspaceResult:
+    def _create(self, thread_id: str) -> WorkspaceResult:
         """Создать новый workspace на диске."""
-        self._cfg.workspace_path(folder_id).mkdir(parents=True, exist_ok=True)
+        self._cfg.workspace_path(thread_id).mkdir(parents=True, exist_ok=True)
         display_name = self._gen_next_display_name()
-        return WorkspaceResult(folder=folder_id, display_name=display_name)
+        return WorkspaceResult(folder=thread_id, display_name=display_name)
 
     def validate_display_name(self, name: str) -> WorkspaceOutcome:
         """Валидация отображаемого имени. Нет файловых ограничений — только пустота."""

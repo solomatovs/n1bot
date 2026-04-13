@@ -40,6 +40,7 @@ from boba_domain.agent.events import (
     ToolCallStarted,
     ToolResultReady,
 )
+from boba_domain.agent.config import AgentRequest
 from boba_domain.config import AppConfig
 from boba_domain.core.thread_store import ChatThreadStore
 from boba_domain.di_types import WorkspaceContext
@@ -57,6 +58,7 @@ _SENTINEL = object()
 
 
 def _model_widget():
+    """Виджет выбора модели. Если есть список моделей — Select, иначе TextInput."""
     models = fetch_chat_models(cfg)
     default = agent_cfg.default_model
     if models:
@@ -72,6 +74,7 @@ def _model_widget():
 
 
 def _max_tokens_widget():
+    """Виджет для настройки max tokens."""
     return cl.input_widget.NumberInput(
         id="max_tokens",
         label="Контекстное окно (токены)",
@@ -80,7 +83,11 @@ def _max_tokens_widget():
 
 
 def _settings_widgets() -> list[cl.input_widget.InputWidget]:
-    return [_model_widget(), _max_tokens_widget()]
+    """Виджеты для настроек чата, отправляемые при инициализации и обновлении настроек."""
+    return [
+        _model_widget(),
+        _max_tokens_widget(),
+    ]
 
 
 def _get_dl():
@@ -212,8 +219,7 @@ async def on_message(message: cl.Message):
         await send_error(WorkspaceFailure(WorkspaceError.NOT_FOUND))
         return
 
-    thread_id = cl.context.session.thread_id
-    session = ChatSession.create(cfg, thread_id)
+    session = ChatSession.create(cfg, cl.context.session.thread_id)
 
     q: Queue = Queue()
 
@@ -223,7 +229,7 @@ async def on_message(message: cl.Message):
                 context={WorkspaceContext: session.workspace_context}
             ) as scope:
                 agent = scope.get(AgentLoop)
-                from boba_domain.agent.config import AgentRequest
+                
 
                 for event in agent.run(AgentRequest(
                     query=message.content,
