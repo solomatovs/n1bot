@@ -148,16 +148,112 @@ class SystemPromptBlock:
     content: str       # текст блока
 ```
 
-#### ToolDefinition
+#### Модели инструментов (Tools)
 
 ```python
+# ---------------------------------------------------------------------------
+# Параметры инструмента — каждый tool определяет свой dataclass
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ToolParams:
+    """Базовый класс параметров. Каждый инструмент наследует свой."""
+    pass
+
+# Примеры:
+@dataclass(frozen=True)
+class ReadParams(ToolParams):
+    file_path: str
+    offset: int | None = None
+    limit: int | None = None
+
+@dataclass(frozen=True)
+class SearchParams(ToolParams):
+    query: str
+    top_k: int = 5
+
+@dataclass(frozen=True)
+class BashParams(ToolParams):
+    command: str
+    timeout: int = 120000
+
+
+# ---------------------------------------------------------------------------
+# Схема параметров — типизированная, вместо dict
+# ---------------------------------------------------------------------------
+
+class JsonType(Enum):
+    STRING = "string"
+    INTEGER = "integer"
+    NUMBER = "number"
+    BOOLEAN = "boolean"
+
+@dataclass(frozen=True)
+class ParamSchema:
+    """Описание одного параметра для LLM."""
+    name: str
+    type: JsonType
+    description: str
+    required: bool = True
+    default: Any = None
+
+@dataclass(frozen=True)
+class ToolInputSchema:
+    """Полная схема параметров инструмента."""
+    params: list[ParamSchema]
+
+
+# ---------------------------------------------------------------------------
+# Определение инструмента — что видит LLM
+# ---------------------------------------------------------------------------
+
 @dataclass(frozen=True)
 class ToolDefinition:
-    """Структурированное описание инструмента для LLM.
+    """Полное определение инструмента для передачи в API.
     НЕ текст — передаётся в параметр tools API."""
-    name: str                      # "search_documents", "read_file"
+    name: str                      # "read_file", "bash"
     description: str               # что видит LLM
-    input_schema: dict[str, Any]   # JSON Schema параметров
+    input_schema: ToolInputSchema  # типизированная схема параметров
+
+
+# ---------------------------------------------------------------------------
+# Результат выполнения
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ToolResult:
+    """Результат выполнения инструмента."""
+    content: str
+    is_error: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Tool — абстрактный инструмент
+# ---------------------------------------------------------------------------
+
+TParams = TypeVar("TParams", bound=ToolParams)
+
+class Tool(ABC, Generic[TParams]):
+    """Один инструмент: определение + выполнение."""
+
+    @property
+    @abstractmethod
+    def definition(self) -> ToolDefinition: ...
+
+    @property
+    @abstractmethod
+    def params_type(self) -> type[TParams]: ...
+
+    @abstractmethod
+    async def execute(self, params: TParams) -> ToolResult: ...
+
+    async def enter(self) -> None:
+        """Инициализация. По умолчанию no-op."""
+        pass
+
+    async def close(self) -> None:
+        """Освобождение ресурсов. По умолчанию no-op."""
+        pass
 ```
 
 #### UserPromptTemplate
@@ -180,7 +276,7 @@ class UserPromptTemplate:
 | Модель | Параметр API | Формат |
 |---|---|---|
 | `SystemPromptBlock` | `system` / `messages[role=system]` | текст (конкатенация блоков) |
-| `ToolDefinition` | `tools` | JSON Schema |
+| `ToolDefinition` | `tools` | `ToolInputSchema` (типизированная схема) |
 | `UserPromptTemplate` | `messages[role=user]` | обёртка вокруг user message |
 
 ### ChatConfig
@@ -349,6 +445,14 @@ class SystemPromptProvider(ABC):
 
     @abstractmethod
     async def build(self) -> SystemPromptBlock: ...
+
+    async def enter(self) -> None:
+        """Инициализация провайдера. По умолчанию no-op."""
+        pass
+
+    async def close(self) -> None:
+        """Освобождение ресурсов. По умолчанию no-op."""
+        pass
 ```
 
 #### Конкретные реализации провайдеров
@@ -376,13 +480,16 @@ class StaticPromptProvider(SystemPromptProvider):
 
 class FilePromptProvider(SystemPromptProvider):
     """Читает блок из файла на диске (BOBA.md, MEMORY.md и т.д.).
+    Держит ref count на workspace — защищает от удаления пока провайдер активен.
     Если файла нет — возвращает default_prompt или пустой блок."""
 
     def __init__(self, id: ProviderId, priority: int,
+                 workspace: WorkspaceId,
                  folder: Path, file_name: str,
                  default_prompt: str = "") -> None:
         self._id = id
         self._priority = priority
+        self._workspace = workspace
         self._folder = folder
         self._file_name = file_name
         self._default_prompt = default_prompt
@@ -398,6 +505,12 @@ class FilePromptProvider(SystemPromptProvider):
     @property
     def path(self) -> Path:
         return self._folder / self._file_name
+
+    async def enter(self) -> None:
+        await self._workspace.acquire()
+
+    async def close(self) -> None:
+        await self._workspace.release()
 
     async def build(self) -> SystemPromptBlock:
         if self.path.exists():
@@ -566,12 +679,12 @@ class CallbackPromptProvider(SystemPromptProvider):
 
 ```python
 class SystemPromptResult:
-    """Результат сборки system prompt. Можно отрендерить в str или итерировать по блокам."""
+    """Результат сборки system prompt."""
 
     def __init__(self, blocks: Iterator[SystemPromptBlock]) -> None:
         self._blocks = blocks
 
-    def __str__(self) -> str:
+    def build(self) -> str:
         """Конкатенация всех непустых блоков через двойной перенос строки."""
         return "\n\n".join(b.content for b in self._blocks if b.content)
 
@@ -583,47 +696,49 @@ class SystemPromptResult:
 #### SystemPromptService
 
 ```python
-class SystemPromptService(WorkspaceAwareService, ABC):
-    """Реестр провайдеров + сборка итогового system prompt."""
+class SystemPromptService:
+    """Реестр провайдеров + сборка итогового system prompt.
+    Не привязан к workspace напрямую — workspace-зависимость
+    определяется конкретными провайдерами через их enter()/close()."""
 
-    def register(provider: SystemPromptProvider) -> None
-        """Зарегистрировать провайдер блока."""
+    async def register(provider: SystemPromptProvider) -> None
+        """Зарегистрировать провайдер и вызвать provider.enter()."""
 
-    def unregister(id: ProviderId) -> None
-        """Убрать провайдер по идентификатору."""
+    async def unregister(id: ProviderId) -> None
+        """Вызвать provider.close() и убрать провайдер."""
 
     def providers() -> Iterator[SystemPromptProvider]
         """Все зарегистрированные провайдеры (отсортированы по priority)."""
 
     async def build() -> SystemPromptResult
         """Собрать system prompt из всех провайдеров (по priority).
-        Результат: str(result) для API, iter(result) для отладки."""
+        Результат: result.build() для API, iter(result) для отладки."""
+
+    async def close() -> None
+        """Вызвать close() у всех зарегистрированных провайдеров."""
 ```
 
 #### Bootstrapping
 
 ```python
-sps = SystemPromptService(workspace)
-await sps.enter()
+sps = SystemPromptService()
 
-# Статика — id и priority передаются в конструктор
-sps.register(StaticPromptProvider(ProviderId("identity"),   priority=0,  content=IDENTITY_TEXT))
-sps.register(StaticPromptProvider(ProviderId("security"),   priority=10, content=SECURITY_TEXT))
-sps.register(StaticPromptProvider(ProviderId("tool_rules"), priority=20, content=TOOL_RULES_TEXT))
-sps.register(StaticPromptProvider(ProviderId("task_guide"), priority=30, content=TASK_GUIDE_TEXT))
-sps.register(StaticPromptProvider(ProviderId("git_guide"),  priority=40, content=GIT_GUIDE_TEXT))
-sps.register(StaticPromptProvider(ProviderId("tone"),       priority=50, content=TONE_TEXT))
+# Статика — enter() no-op
+await sps.register(StaticPromptProvider(ProviderId("identity"),   0,  IDENTITY_TEXT))
+await sps.register(StaticPromptProvider(ProviderId("security"),   10, SECURITY_TEXT))
+await sps.register(StaticPromptProvider(ProviderId("tool_rules"), 20, TOOL_RULES_TEXT))
+await sps.register(StaticPromptProvider(ProviderId("task_guide"), 30, TASK_GUIDE_TEXT))
+await sps.register(StaticPromptProvider(ProviderId("git_guide"),  40, GIT_GUIDE_TEXT))
+await sps.register(StaticPromptProvider(ProviderId("tone"),       50, TONE_TEXT))
 
-# Runtime — id и priority зашиты в класс через super().__init__(self.ID, priority=N)
-sps.register(EnvironmentPromptProvider())
-sps.register(IDEPromptProvider(ide_type="vscode"))
-sps.register(GitPromptProvider())
+# Runtime — enter() no-op
+await sps.register(EnvironmentPromptProvider())
+await sps.register(IDEPromptProvider(ide_type="vscode"))
+await sps.register(GitPromptProvider())
 
-# Файлы — id и priority передаются в конструктор
-sps.register(FilePromptProvider(ProviderId("boba_md"), priority=90,
-                                folder=ws_path, file_name="BOBA.md"))
-sps.register(FilePromptProvider(ProviderId("memory"),  priority=100,
-                                folder=memory_path, file_name="MEMORY.md"))
+# Файлы — enter() вызывает workspace.acquire()
+await sps.register(FilePromptProvider(ProviderId("boba_md"), 90,  workspace, ws_path,     "BOBA.md"))
+await sps.register(FilePromptProvider(ProviderId("memory"),  100, workspace, memory_path, "MEMORY.md"))
 
 # Динамические реестры — id и priority зашиты в класс
 sps.register(SkillsPromptProvider(skill_registry))
@@ -632,9 +747,7 @@ sps.register(DeferredToolsPromptProvider(deferred_tools))
 # Сборка — вызывается при каждом запросе к LLM
 result = await sps.build()
 
-str(result)                              # → полный system prompt для API
-result.get(GitPromptProvider.ID)         # → блок по ProviderId из класса
-result.get(EnvironmentPromptProvider.ID) # → блок environment
+result.build()                           # → полный system prompt для API
 for block in result:                     # → итерация для отладки
     ...
 
@@ -646,26 +759,30 @@ sps.unregister(GitPromptProvider.ID)     # убрать по ProviderId
 
 ### 6. ToolsService
 
-Управление определениями инструментов. Не наследует PromptService — `ToolDefinition` передаётся в отдельный параметр API (`tools`), а не как текст сообщения.
+Реестр инструментов + диспетчеризация выполнения. Не привязан к workspace напрямую — workspace-зависимость определяется конкретными `Tool`'ами через их `enter()`/`close()`.
 
 ```python
-class ToolsService(WorkspaceAwareService, ABC):
-    """CRUD + формирование списка definitions для параметра tools API."""
+class ToolsService:
+    """Реестр инструментов: регистрация, определения для API, выполнение."""
 
-    def register(tool: ToolDefinition) -> None
-        """Зарегистрировать инструмент."""
+    async def register(tool: Tool) -> None
+        """Зарегистрировать инструмент, вызвать tool.enter()."""
 
-    def unregister(name: str) -> None
-        """Убрать инструмент по имени."""
+    async def unregister(name: str) -> None
+        """Вызвать tool.close() и убрать инструмент."""
 
-    def list() -> Iterator[ToolDefinition]
+    def list() -> Iterator[Tool]
         """Все зарегистрированные инструменты."""
 
-    def get(name: str) -> ToolDefinition
-        """Получить определение по имени."""
+    def get_definitions() -> Iterator[ToolDefinition]
+        """Определения всех инструментов для передачи в параметр tools API."""
 
-    def get_definitions() -> list[ToolDefinition]
-        """Все определения для передачи в параметр tools API."""
+    async def execute(name: str, raw_args: dict[str, Any]) -> ToolResult
+        """Найти tool по имени, сконструировать типизированные params
+        из raw JSON (через tool.params_type), выполнить tool.execute()."""
+
+    async def close() -> None
+        """Вызвать close() у всех зарегистрированных инструментов."""
 ```
 
 ---
@@ -749,40 +866,40 @@ class WorkspaceServicesProvider(Provider):
 
     @provide
     async def system_prompt_service(self, ws: WorkspaceId) -> AsyncIterator[SystemPromptService]:
-        svc = SystemPromptService(ws)
-        await svc.enter()
+        svc = SystemPromptService()
 
-        # Bootstrapping — регистрация провайдеров
-        svc.register(StaticPromptProvider(ProviderId("identity"),   priority=0,  content=IDENTITY_TEXT))
-        svc.register(StaticPromptProvider(ProviderId("security"),   priority=10, content=SECURITY_TEXT))
-        svc.register(StaticPromptProvider(ProviderId("tool_rules"), priority=20, content=TOOL_RULES_TEXT))
-        svc.register(StaticPromptProvider(ProviderId("task_guide"), priority=30, content=TASK_GUIDE_TEXT))
-        svc.register(StaticPromptProvider(ProviderId("git_guide"),  priority=40, content=GIT_GUIDE_TEXT))
-        svc.register(StaticPromptProvider(ProviderId("tone"),       priority=50, content=TONE_TEXT))
-        svc.register(EnvironmentPromptProvider())
-        svc.register(IDEPromptProvider(ide_type="vscode"))
-        svc.register(GitPromptProvider())
-        svc.register(FilePromptProvider(ProviderId("boba_md"), priority=90,
-                                        folder=ws_path, file_name="BOBA.md"))
-        svc.register(FilePromptProvider(ProviderId("memory"),  priority=100,
-                                        folder=memory_path, file_name="MEMORY.md"))
+        # Bootstrapping — register() вызывает provider.enter()
+        await svc.register(StaticPromptProvider(ProviderId("identity"),   0,  IDENTITY_TEXT))
+        await svc.register(StaticPromptProvider(ProviderId("security"),   10, SECURITY_TEXT))
+        await svc.register(StaticPromptProvider(ProviderId("tool_rules"), 20, TOOL_RULES_TEXT))
+        await svc.register(StaticPromptProvider(ProviderId("task_guide"), 30, TASK_GUIDE_TEXT))
+        await svc.register(StaticPromptProvider(ProviderId("git_guide"),  40, GIT_GUIDE_TEXT))
+        await svc.register(StaticPromptProvider(ProviderId("tone"),       50, TONE_TEXT))
+        await svc.register(EnvironmentPromptProvider())
+        await svc.register(IDEPromptProvider(ide_type="vscode"))
+        await svc.register(GitPromptProvider())
+        await svc.register(FilePromptProvider(ProviderId("boba_md"), 90,  ws, ws_path,     "BOBA.md"))
+        await svc.register(FilePromptProvider(ProviderId("memory"),  100, ws, memory_path, "MEMORY.md"))
 
         yield svc
-        await svc.close()
+        await svc.close()  # вызывает close() у всех провайдеров
 
     @provide
     async def tools_service(self, ws: WorkspaceId) -> AsyncIterator[ToolsService]:
-        svc = ToolsService(ws)
-        await svc.enter()
+        svc = ToolsService()
+
+        # Bootstrapping — register() вызывает tool.enter()
+        # await svc.register(ReadFileTool(...))
+        # await svc.register(SearchDocumentsTool(...))
+        # ...
+
         yield svc
-        await svc.close()
+        await svc.close()  # вызывает close() у всех tools
 
     @provide
     async def user_prompt_service(self, ws: WorkspaceId) -> AsyncIterator[UserPromptService]:
-        svc = UserPromptService(ws)
-        await svc.enter()
+        svc = UserPromptService()
         yield svc
-        await svc.close()
 ```
 
 **Ключевые свойства:**
@@ -818,19 +935,25 @@ async with container(context={WorkspaceId: workspace}) as scope:
     ├── ups     = await scope.get(UserPromptService)
     │
     │  # Сборка контекста
-    ├── system_prompt = await sps.build()           → str
-    ├── tool_defs     = tools.get_definitions()     → list[ToolDefinition]
-    ├── messages      = history.get_messages()      → Iterator[LLMMessage]
+    ├── sys_result    = await sps.build()                → SystemPromptResult
+    ├── tool_defs     = tools.get_definitions()          → Iterator[ToolDefinition]
+    ├── messages      = history.get_messages()           → Iterator[LLMMessage]
     ├── enriched_msg  = ups.enrich_message(user_message) → str
-    ├── chat_config   = config.get_config()         → ChatConfig
+    ├── chat_config   = config.get_config()              → ChatConfig
     │
     ▼
   LLM Call:
-    system=system_prompt,
+    system=sys_result.build(),
     tools=tool_defs,
     messages=[...messages, UserMessage(content=enriched_msg)],
     model=chat_config.model,
     max_tokens=chat_config.max_tokens,
+    │
+    ▼
+  # LLM может вернуть tool_calls → выполнение через tools.execute()
+  for tool_call in assistant_response.tool_calls:
+      result = await tools.execute(tool_call.name, tool_call.arguments)
+      # result: ToolResult(content=..., is_error=...)
     │
     ▼
   history.add_message(UserMessage(content=enriched_msg))
@@ -918,9 +1041,12 @@ async with container(context={WorkspaceId: workspace}) as scope:
 │  │                                  ├── SkillsProvider       │
 │  │                                  └── DeferredToolsProvider│
 │  │                                                           │
-│  ├── ToolsService              ◄── ToolDefinition            │
-│  │    get_definitions()             (name + description      │
-│  │    → list[ToolDefinition]         + input_schema)         │
+│  ├── ToolsService              ◄── Tool[TParams]             │
+│  │    get_definitions()             ├── ToolDefinition       │
+│  │    execute(name, args)           │    (name + description │
+│  │    → ToolResult                  │     + ToolInputSchema) │
+│  │                                  ├── ToolParams (иерархия)│
+│  │                                  └── ToolResult           │
 │  │                                                           │
 │  └── UserPromptService         ◄── UserPromptTemplate        │
 │       enrich_message(text)          (template + position)    │
@@ -947,12 +1073,13 @@ async with container(context={WorkspaceId: workspace}) as scope:
 - [ ] Определить интерфейс `WorkspaceRegistry`
 - [ ] Определить `WorkspaceAwareService` (базовый enter/close)
 - [ ] Определить модели: `LLMMessage` (иерархия), `ToolCall`, `ChatConfig`
-- [ ] Определить модели промптов: `SystemPromptBlock`, `ToolDefinition`, `UserPromptTemplate`
+- [ ] Определить модели промптов: `SystemPromptBlock`, `UserPromptTemplate`
+- [ ] Определить модели инструментов: `ToolParams`, `ParamSchema`, `ToolInputSchema`, `ToolDefinition`, `ToolResult`, `Tool`
 - [ ] Определить интерфейс `ChatHistoryService`
 - [ ] Определить интерфейс `ChatConfigService`
 - [ ] Определить `SystemPromptProvider` (abstract) и конкретные реализации
 - [ ] Определить `SystemPromptService` (реестр провайдеров + сборка)
-- [ ] Определить `ToolsService`
+- [ ] Определить `ToolsService` (реестр + диспетчеризация)
 - [ ] Определить `UserPromptService`
 - [ ] Настроить dishka-провайдеры (APP + REQUEST scope с yield + bootstrapping)
 - [ ] Реализовать Fs-имплементации
