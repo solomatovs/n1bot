@@ -32,8 +32,9 @@ from boba_domain.chat.thread import (
     StepType,
     ThreadMetadata,
 )
+from boba_chainlit.workspace import SessionRegistry, ThreadId
 from boba_domain.errors import (
-    ThreadNotFoundError,
+    ThreadReadError,
     ThreadStoreError,
     ThreadWriteError,
     ValidationError,
@@ -57,16 +58,6 @@ async def _emit_error(text: str) -> None:
     except Exception:
         pass
 
-
-async def _log_not_found(method: str, err: ThreadNotFoundError) -> None:
-    """Логировать ThreadNotFoundError вместе с накопленными read_errors."""
-    log.warning("%s: %s", method, err)
-    for read_err in err.read_errors:
-        log.error("%s: read error during scan: %s", method, read_err)
-    if err.read_errors:
-        await _emit_error(f"{err} (+ {len(err.read_errors)} read errors)")
-    else:
-        await _emit_error(str(err))
 
 
 # ------------------------------------------------------------------
@@ -245,10 +236,16 @@ class ChainlitConverter:
 
 
 class ChainlitDataLayerAdapter(BaseDataLayer):
-    """Chainlit DataLayer, делегирующий хранение в ChatThreadStore."""
+    """Chainlit DataLayer, делегирующий хранение в ChatThreadStore.
 
-    def __init__(self, store: ChatThreadStore) -> None:
+    SessionRegistry нужен для трансляции Chainlit thread_id → folder
+    в step-операциях (Chainlit передаёт свой session thread_id).
+    Thread-операции работают с folder напрямую (ChatThread.id = folder).
+    """
+
+    def __init__(self, store: ChatThreadStore, registry: SessionRegistry) -> None:
         self._store = store
+        self._registry = registry
 
     # -- User (нет auth — default user) --
 
@@ -270,17 +267,17 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
 
     async def get_thread(self, thread_id: str) -> Optional[ThreadDict]:
         try:
-            thread = self._store.get_thread(thread_id)
-        except ThreadNotFoundError as e:
-            await _log_not_found("get_thread", e)
+            thread = self._store.get_thread_by_folder(thread_id)
+        except ThreadReadError as e:
+            log.warning("get_thread: %s", e)
             return None
         return ChainlitConverter.to_thread_dict(thread)
 
     async def get_thread_author(self, thread_id: str) -> str:
         try:
-            thread = self._store.get_thread(thread_id)
-        except ThreadNotFoundError as e:
-            await _log_not_found("get_thread_author", e)
+            thread = self._store.get_thread_by_folder(thread_id)
+        except ThreadReadError as e:
+            log.warning("get_thread_author: %s", e)
             return "default"
         return thread.user_identifier
 
@@ -310,17 +307,19 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
         metadata: Optional[Dict] = None,
         tags: Optional[List[str]] = None,
     ) -> None:
+        # thread_id = folder (ChatThread.id = folder)
+        folder = thread_id
         try:
-            thread = self._store.get_thread(thread_id)
-        except ThreadNotFoundError:
+            thread = self._store.get_thread_by_folder(folder)
+        except ThreadReadError:
             # Thread ещё не существует — создаём новый.
             meta = ChainlitConverter.metadata_from_dict(metadata or {})
             if not meta.folder:
-                return
+                meta = ThreadMetadata(folder=folder, model=meta.model)
             thread = ChatThread(
-                id=thread_id,
+                id=folder,
                 created_at=datetime.now(timezone.utc).isoformat(),
-                name=name or thread_id[:12],
+                name=name or folder[:12],
                 user_id=user_id or "default",
                 user_identifier="default",
                 metadata=meta,
@@ -360,6 +359,7 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
             await _emit_error(str(e))
 
     async def delete_thread(self, thread_id: str) -> None:
+        # thread_id = folder
         try:
             self._store.delete_thread(thread_id)
         except ThreadStoreError as e:
@@ -369,13 +369,24 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
 
     # -- Steps --
 
+    def _resolve_folder(self, chainlit_thread_id: str) -> str | None:
+        """Транслировать Chainlit thread_id → folder через registry."""
+        folder = self._registry.get_folder(ThreadId(chainlit_thread_id))
+        if folder is None:
+            log.warning("_resolve_folder: no binding for thread_id=%s", chainlit_thread_id)
+            return None
+        return folder.value
+
     async def create_step(self, step_dict: dict) -> None:
         """Сохранить новый шаг чата. Вызывается Chainlit при каждом событии."""
         step_input = StepInput.parse(step_dict)
+        folder = self._resolve_folder(step_input.thread_id)
+        if folder is None:
+            return
         step = ChainlitConverter.from_step_input(step_input)
         try:
-            self._store.add_step(step)
-        except ThreadNotFoundError as e:
+            self._store.add_step(folder, step)
+        except ThreadReadError as e:
             log.error("create_step: %s", e)
             await _emit_error(str(e))
         except ThreadWriteError as e:
@@ -385,10 +396,13 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
     async def update_step(self, step_dict: dict) -> None:
         """Обновить существующий шаг чата."""
         step_input = StepInput.parse(step_dict)
+        folder = self._resolve_folder(step_input.thread_id)
+        if folder is None:
+            return
         step = ChainlitConverter.from_step_input(step_input)
         try:
-            self._store.update_step(step)
-        except ThreadNotFoundError as e:
+            self._store.update_step(folder, step)
+        except ThreadReadError as e:
             log.error("update_step: %s", e)
             await _emit_error(str(e))
         except ThreadWriteError as e:
@@ -400,7 +414,7 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
             for thread in self._store.iter_threads():
                 for step in thread.steps:
                     if step.id == step_id:
-                        self._store.delete_step(thread.id, step_id)
+                        self._store.delete_step(thread.metadata.folder, step_id)
                         return
         except ThreadStoreError as e:
             log.error("delete_step: %s", e)
@@ -416,7 +430,9 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
                 for thread in self._store.iter_threads():
                     for step in thread.steps:
                         if step.id == feedback.forId:
-                            self._store.set_feedback(thread.id, step.id, domain_fb)
+                            self._store.set_feedback(
+                                thread.metadata.folder, step.id, domain_fb
+                            )
                             return domain_fb.id
         except ThreadStoreError as e:
             log.error("upsert_feedback: %s", e)
@@ -429,7 +445,9 @@ class ChainlitDataLayerAdapter(BaseDataLayer):
             for thread in self._store.iter_threads():
                 for step in thread.steps:
                     if step.feedback and step.feedback.id == feedback_id:
-                        self._store.set_feedback(thread.id, step.id, None)
+                        self._store.set_feedback(
+                            thread.metadata.folder, step.id, None
+                        )
                         return True
         except ThreadStoreError as e:
             log.error("delete_feedback: %s", e)

@@ -1,13 +1,15 @@
-"""Workspace operations — типизированные результаты, валидация.
+"""Workspace operations — типизированные результаты, валидация, session registry.
 
-Workspace на диске идентифицируется UUID. Отображаемое имя — свойство в thread metadata.
-Переименование = обновление metadata, без файловых операций.
+Workspace на диске идентифицируется UUID (FolderId).
+ThreadId — идентификатор Chainlit-сессии, не протекает в domain.
+SessionRegistry — in-memory маппинг ThreadId → FolderId.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -17,9 +19,26 @@ from chainlit.types import ThreadDict
 from boba_domain.chat.thread import ThreadMetadata
 from boba_domain.config import AppConfig
 from boba_domain.core.thread_store import ChatThreadStore
-from boba_domain.errors import ThreadNotFoundError
 
 log = logging.getLogger(__name__)
+
+
+# ------------------------------------------------------------------
+# Typed identifiers
+# ------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ThreadId:
+    """Идентификатор Chainlit-сессии. Не протекает в domain."""
+
+    value: str
+
+
+@dataclass(frozen=True)
+class FolderId:
+    """Идентификатор workspace на диске (UUID-имя папки)."""
+
+    value: str
 
 
 # ------------------------------------------------------------------
@@ -79,25 +98,29 @@ class WorkspaceFailure:
     detail: str = ""
 
 
+_DEFAULT_MODEL = ""
+_DEFAULT_MAX_TOKENS = 8192
+
+
 @dataclass(frozen=True)
-class WorkspaceResult:
-    folder: str
+class WorkspaceSettings:
+    folder: FolderId
     display_name: str
+    model: str = _DEFAULT_MODEL
+    max_tokens: int = _DEFAULT_MAX_TOKENS
 
 
-WorkspaceOutcome = WorkspaceResult | WorkspaceFailure
+WorkspaceOutcome = WorkspaceSettings | WorkspaceFailure
 
 
 # ------------------------------------------------------------------
 # Session state
 # ------------------------------------------------------------------
 
-_DEFAULT_MAX_TOKENS = 8192
-
 
 @dataclass
 class SessionState:
-    folder: str
+    folder: FolderId
     display_name: str
     model: str
     user_id: str
@@ -106,7 +129,7 @@ class SessionState:
 
     def to_thread_metadata(self) -> dict:
         """Метаданные для сохранения в thread.json через data layer."""
-        return {"folder": self.folder, "model": self.model}
+        return {"folder": self.folder.value, "model": self.model}
 
 
 @dataclass(frozen=True)
@@ -195,37 +218,92 @@ def parse_thread_metadata(thread: ThreadDict) -> ThreadMetadata:
 
 
 # ------------------------------------------------------------------
+# Session registry
+# ------------------------------------------------------------------
+
+
+class SessionRegistry:
+    """In-memory маппинг ThreadId → FolderId.
+
+    Живёт только в памяти Chainlit-процесса.
+    ThreadId — деталь Chainlit-транспорта, не протекает в domain.
+    """
+
+    def __init__(self) -> None:
+        self._sessions: dict[ThreadId, FolderId] = {}
+
+    def bind(self, thread_id: ThreadId, folder: FolderId) -> None:
+        """Привязать Chainlit thread к workspace."""
+        self._sessions[thread_id] = folder
+
+    def get_folder(self, thread_id: ThreadId) -> FolderId | None:
+        """Найти folder по thread_id. O(1)."""
+        return self._sessions.get(thread_id)
+
+    def unbind(self, thread_id: ThreadId) -> None:
+        """Удалить привязку."""
+        self._sessions.pop(thread_id, None)
+
+
+# ------------------------------------------------------------------
 # Workspace service
 # ------------------------------------------------------------------
 
+
 class WorkspaceService:
-    """Операции над workspace. Папка на диске = UUID, имя = metadata."""
+    """Операции над workspace. Folder на диске = UUID."""
+
+    _DEFAULT_NAME_PREFIX = "workspace"
 
     def __init__(self, cfg: AppConfig, store: ChatThreadStore) -> None:
         self._cfg = cfg
         self._store = store
-        self._DEFAULT_NAME_PREFIX = "workspace"
 
-    def ensure(self, thread_id: str) -> WorkspaceResult:
-        """Вернуть существующий workspace или создать новый. Идемпотентно."""
-        try:
-            thread = self._store.get_thread(thread_id)
-            return WorkspaceResult(folder=thread.metadata.folder, display_name=thread.name)
-        except ThreadNotFoundError:
-            return self._create(thread_id)
+    def ensure_or_first(self) -> WorkspaceSettings:
+        """Вернуть первый существующий workspace или создать новый.
 
-    def _create(self, thread_id: str) -> WorkspaceResult:
-        """Создать новый workspace на диске."""
-        self._cfg.workspace_path(thread_id).mkdir(parents=True, exist_ok=True)
+        Единственная точка создания workspace на диске.
+        """
+        first = next(self._store.iter_threads(), None)
+        if first is not None:
+            folder = FolderId(first.metadata.folder)
+            self._ensure_dirs(folder)
+            return WorkspaceSettings(
+                folder=folder,
+                display_name=first.name,
+                model=first.metadata.model,
+            )
+        return self._create()
+
+    def get(self, folder: FolderId) -> WorkspaceSettings:
+        """Получить настройки существующего workspace по folder."""
+        thread = self._store.get_thread_by_folder(folder.value)
+        return WorkspaceSettings(
+            folder=folder,
+            display_name=thread.name,
+            model=thread.metadata.model,
+        )
+
+    def _create(self) -> WorkspaceSettings:
+        """Создать новый workspace с UUID-именем."""
+        folder = FolderId(str(uuid.uuid4()))
+        self._ensure_dirs(folder)
         display_name = self._gen_next_display_name()
-        return WorkspaceResult(folder=thread_id, display_name=display_name)
+        return WorkspaceSettings(folder=folder, display_name=display_name)
+
+    def _ensure_dirs(self, folder: FolderId) -> None:
+        """Создать структуру workspace на диске (идемпотентно)."""
+        workspace_path = self._cfg.workspace_path(folder.value)
+        workspace_path.mkdir(parents=True, exist_ok=True)
+        self._cfg.boba_path(workspace_path).mkdir(parents=True, exist_ok=True)
+        self._cfg.workspace_history_path(workspace_path).touch(exist_ok=True)
 
     def validate_display_name(self, name: str) -> WorkspaceOutcome:
         """Валидация отображаемого имени. Нет файловых ограничений — только пустота."""
         name = name.strip()
         if not name:
             return WorkspaceFailure(WorkspaceError.INVALID_NAME)
-        return WorkspaceResult(folder="", display_name=name)
+        return WorkspaceSettings(folder=FolderId(""), display_name=name)
 
     def _gen_next_display_name(self) -> str:
         """Сгенерировать автоимя workspace-N (N = количество чатов + 1)."""

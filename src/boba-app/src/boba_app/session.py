@@ -1,7 +1,6 @@
-"""ChatSession — единая точка инициализации сессии чата.
+"""ChatSession — контекст сессии чата для DI scope.
 
-Создаёт рабочую структуру директорий,
-возвращает готовый FolderContext для DI scope.
+Не создаёт директории — за это отвечает WorkspaceService.
 """
 
 from __future__ import annotations
@@ -16,18 +15,18 @@ from boba_domain.di_types import WorkspaceContext
 class ChatSession:
     """Инициализированная сессия чата."""
 
-    id: str  # thread_id = folder name
+    folder: str
     workspace_context: WorkspaceContext
 
     @staticmethod
-    def create(cfg: AppConfig, id: str) -> ChatSession:
-        """Создать сессию. chat_id = thread_id = имя папки workspace."""
-        workspace_path = cfg.workspace_path(id)
-        workspace_path.mkdir(parents=True, exist_ok=True)
-        cfg.boba_path(workspace_path).mkdir(parents=True, exist_ok=True)
-        cfg.workspace_history_path(workspace_path).touch(exist_ok=True)
+    def from_folder(cfg: AppConfig, folder: str) -> ChatSession:
+        """Построить контекст сессии из folder ID.
 
+        Предполагает, что workspace уже подготовлен WorkspaceService.
+        """
         return ChatSession(
-            id=id,
-            workspace_context=WorkspaceContext(folder_path=workspace_path),
+            folder=folder,
+            workspace_context=WorkspaceContext(
+                folder_path=cfg.workspace_path(folder),
+            ),
         )

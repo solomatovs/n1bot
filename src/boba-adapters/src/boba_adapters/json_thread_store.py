@@ -51,21 +51,6 @@ class JsonThreadStore:
     # Thread CRUD
     # ------------------------------------------------------------------
 
-    def get_thread(self, thread_id: str) -> ChatThread:
-        """Найти thread по ID. Бросает ThreadNotFoundError."""
-        read_errors: list[ThreadReadError] = []
-        for folder_dir in self._iter_workspace_dirs():
-            path = self._cfg.thread_path(folder_dir)
-            try:
-                thread = self._read(path)
-            except ThreadReadError as e:
-                read_errors.append(e)
-                continue
-            if thread.id == thread_id:
-                return thread
-
-        raise ThreadNotFoundError(thread_id, read_errors=read_errors)
-
     def get_thread_by_folder(self, folder_name: str) -> ChatThread:
         """Прочитать thread по имени папки. Бросает ThreadReadError."""
         workspace_path = self._cfg.workspace_path(folder_name)
@@ -101,33 +86,25 @@ class JsonThreadStore:
         workspace.parent.mkdir(parents=True, exist_ok=True)
         self._write(workspace, thread)
 
-    def delete_thread(self, thread_id: str) -> None:
-        read_errors: list[ThreadReadError] = []
-        for folder_dir in self._iter_workspace_dirs():
-            path = self._cfg.thread_path(folder_dir)
-            try:
-                thread = self._read(path)
-            except ThreadReadError as e:
-                read_errors.append(e)
-                continue
-            if thread.id == thread_id:
-                try:
-                    shutil.rmtree(folder_dir)
-                except OSError as e:
-                    raise ThreadDeleteError(thread_id, e) from e
-                return
-        raise ThreadNotFoundError(thread_id, read_errors=read_errors)
+    def delete_thread(self, folder_name: str) -> None:
+        folder_dir = self._cfg.workspace_path(folder_name)
+        if not folder_dir.is_dir():
+            raise ThreadNotFoundError(folder_name)
+        try:
+            shutil.rmtree(folder_dir)
+        except OSError as e:
+            raise ThreadDeleteError(folder_name, e) from e
 
     def _get_current_or_new_chat_name(self, step: ChatStep) -> str:
         default_name = "New chat"
-        
+
         if step.step_type is not StepType.USER_MESSAGE or not step.output:
             return default_name
 
         return step.output[:50] or default_name
 
-    def add_step(self, step: ChatStep) -> None:
-        thread = self.get_thread(step.thread_id)
+    def add_step(self, folder_name: str, step: ChatStep) -> None:
+        thread = self.get_thread_by_folder(folder_name)
         steps = [*thread.steps, step]
 
         if thread.has_auto_name():
@@ -136,8 +113,8 @@ class JsonThreadStore:
         else:
             self._save_updated(thread, steps)
 
-    def update_step(self, step: ChatStep) -> None:
-        thread = self.get_thread(step.thread_id)
+    def update_step(self, folder_name: str, step: ChatStep) -> None:
+        thread = self.get_thread_by_folder(folder_name)
         steps = list(thread.steps)
         for i, s in enumerate(steps):
             if s.id == step.id:
@@ -147,8 +124,8 @@ class JsonThreadStore:
             steps.append(step)
         self._save_updated(thread, steps)
 
-    def delete_step(self, thread_id: str, step_id: str) -> None:
-        thread = self.get_thread(thread_id)
+    def delete_step(self, folder_name: str, step_id: str) -> None:
+        thread = self.get_thread_by_folder(folder_name)
         steps = [s for s in thread.steps if s.id != step_id]
         if len(steps) < len(thread.steps):
             self._save_updated(thread, steps)
@@ -158,9 +135,9 @@ class JsonThreadStore:
     # ------------------------------------------------------------------
 
     def set_feedback(
-        self, thread_id: str, step_id: str, feedback: StepFeedback | None
+        self, folder_name: str, step_id: str, feedback: StepFeedback | None
     ) -> None:
-        thread = self.get_thread(thread_id)
+        thread = self.get_thread_by_folder(folder_name)
         steps = list(thread.steps)
         for i, s in enumerate(steps):
             if s.id == step_id:
