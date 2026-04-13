@@ -23,7 +23,9 @@ from boba_chainlit.workspace import (
     DataLayerNotInitializedError,
     ParsedChatSettings,
     SessionNotInitializedError,
+    SessionRegistry,
     SessionState,
+    ThreadId,
     WorkspaceError,
     WorkspaceFailure,
     WorkspaceService,
@@ -53,40 +55,40 @@ cfg = container.get(AppConfig)
 thread_store = container.get(ChatThreadStore)
 agent_cfg = AgentConfig.from_env()
 workspace_svc = WorkspaceService(cfg, thread_store)
+session_registry = SessionRegistry()
 
 _SENTINEL = object()
 
 
-def _model_widget():
+def _model_widget(initial: str):
     """Виджет выбора модели. Если есть список моделей — Select, иначе TextInput."""
     models = fetch_chat_models(cfg)
-    default = agent_cfg.default_model
     if models:
-        if default and default not in models:
-            models.insert(0, default)
+        if initial and initial not in models:
+            models.insert(0, initial)
         return cl.input_widget.Select(
             id="model",
             label="Модель",
             values=models,
-            initial_value=default if default in models else models[0],
+            initial_value=initial if initial in models else models[0],
         )
-    return cl.input_widget.TextInput(id="model", label="Модель", initial=default)
+    return cl.input_widget.TextInput(id="model", label="Модель", initial=initial)
 
 
-def _max_tokens_widget():
+def _max_tokens_widget(initial: int):
     """Виджет для настройки max tokens."""
     return cl.input_widget.NumberInput(
         id="max_tokens",
         label="Контекстное окно (токены)",
-        initial=8192,
+        initial=initial,
     )
 
 
-def _settings_widgets() -> list[cl.input_widget.InputWidget]:
-    """Виджеты для настроек чата, отправляемые при инициализации и обновлении настроек."""
+def _settings_widgets(model: str, max_tokens: int) -> list[cl.input_widget.InputWidget]:
+    """Виджеты для настроек чата, инициализированные из WorkspaceSettings."""
     return [
-        _model_widget(),
-        _max_tokens_widget(),
+        _model_widget(initial=model),
+        _max_tokens_widget(initial=max_tokens),
     ]
 
 
@@ -104,7 +106,7 @@ def _get_dl():
 async def _save_thread_metadata(state: SessionState) -> None:
     """Сохранить state в thread metadata через data layer."""
     await _get_dl().update_thread(
-        thread_id=cl.context.session.thread_id,
+        thread_id=state.folder.value,
         name=state.display_name,
         user_id=state.user_id,
         metadata=state.to_thread_metadata(),
@@ -130,7 +132,7 @@ async def header_auth(_headers) -> cl.User:
 
 @cl.data_layer
 def get_data_layer():
-    return ChainlitDataLayerAdapter(thread_store)
+    return ChainlitDataLayerAdapter(thread_store, session_registry)
 
 
 # ------------------------------------------------------------------
@@ -141,21 +143,25 @@ def get_data_layer():
 async def _init_session() -> None:
     """Общая логика инициализации сессии (новый чат и resume).
 
-    1. Ensure workspace (создать если не существует)
-    2. Отправить ChatSettings виджеты
-    3. Заполнить SessionState
-    4. Сохранить metadata
+    1. Ensure workspace — единственная точка создания и чтения настроек
+    2. Привязать thread_id → folder в registry
+    3. Отправить ChatSettings виджеты (инициализированные из workspace)
+    4. Заполнить SessionState
+    5. Сохранить metadata
     """
-    thread_id = cl.context.session.thread_id
-    result = workspace_svc.ensure(thread_id)
-    ChatSession.create(cfg, thread_id)
+    thread_id = ThreadId(cl.context.session.thread_id)
+    ws = workspace_svc.ensure_or_first()
+    session_registry.bind(thread_id, ws.folder)
 
-    raw_settings = await cl.ChatSettings(_settings_widgets()).send()
-    chat_settings = ParsedChatSettings.from_raw(raw_settings, agent_cfg.default_model)
+    model = ws.model or agent_cfg.default_model
+    raw_settings = await cl.ChatSettings(
+        _settings_widgets(model=model, max_tokens=ws.max_tokens)
+    ).send()
+    chat_settings = ParsedChatSettings.from_raw(raw_settings, model)
 
     state = SessionState(
-        folder=result.folder,
-        display_name=result.display_name,
+        folder=ws.folder,
+        display_name=ws.display_name,
         model=chat_settings.model,
         user_id=get_current_user_id(),
         max_tokens=chat_settings.max_tokens,
@@ -219,7 +225,7 @@ async def on_message(message: cl.Message):
         await send_error(WorkspaceFailure(WorkspaceError.NOT_FOUND))
         return
 
-    session = ChatSession.create(cfg, cl.context.session.thread_id)
+    session = ChatSession.from_folder(cfg, state.folder.value)
 
     q: Queue = Queue()
 

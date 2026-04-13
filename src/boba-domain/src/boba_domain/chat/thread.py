@@ -63,7 +63,7 @@ class ChatStep:
     """
 
     id: str  # UUID шага
-    thread_id: str  # UUID чата, к которому привязан шаг
+    thread_id: str  # folder name workspace'а, к которому привязан шаг
     step_type: StepType  # тип шага
     output: str = ""  # текст ответа / результат tool
     input: str = ""  # текст вопроса / аргументы tool
@@ -82,7 +82,7 @@ class ChatThread:
     хранится в metadata.folder. Все шаги чата — в steps.
     """
 
-    id: str  # UUID thread'а (совпадает с Chainlit thread_id)
+    id: str  # folder name workspace'а на диске
     created_at: str  # ISO timestamp создания
     name: str  # отображаемое имя в sidebar (обязательное)
     user_id: str = "default"  # внутренний ID пользователя

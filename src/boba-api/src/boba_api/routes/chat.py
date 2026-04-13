@@ -20,7 +20,7 @@ router = APIRouter(tags=["chat"])
 
 
 class ChatRequest(BaseModel):
-    chat_id: str  # thread_id = folder name
+    folder: str  # workspace folder ID
     message: str
     model: str
     max_tokens: int
@@ -38,7 +38,7 @@ def chat(body: ChatRequest, request: Request) -> StreamingResponse:
     container = request.app.state.container
     cfg = container.get(AppConfig)
 
-    session = ChatSession.create(cfg, body.chat_id)
+    session = ChatSession.from_folder(cfg, body.folder)
 
     def generate() -> Iterator[str]:
         with container(context={WorkspaceContext: session.workspace_context}) as scope:
