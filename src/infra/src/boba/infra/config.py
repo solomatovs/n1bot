@@ -26,6 +26,9 @@ class ConfigLoader:
 
     def load(self) -> AppConfig:
         return AppConfig(
+            workspace_base_dir=self._resolve(
+                "WORKSPACE_BASE_DIR", "workspace_base_dir", "./workspaces"
+            ),
             ssl_verify=self._resolve("SSL_VERIFY", "ssl_verify", "false").lower()
             in ("true", "1", "yes"),
             log_level=self._resolve("LOG_LEVEL", "log_level", "INFO"),
