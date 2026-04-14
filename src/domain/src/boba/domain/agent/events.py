@@ -15,7 +15,6 @@ class StageCompleted:
     detail: str
 
 
-# Генерация (стриминг)
 @dataclass(frozen=True)
 class ThinkingToken:
     token: str

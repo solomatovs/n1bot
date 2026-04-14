@@ -6,8 +6,7 @@ from pathlib import Path
 from threading import Lock
 from uuid import UUID, uuid4
 
-from boba.adapters.fs_workspace_service import FsWorkspaceService
-from boba.domain.core.workspace import WorkspaceId, WorkspaceManager, WorkspaceService
+from boba.domain.core.workspace import WorkspaceId, WorkspaceService, WorkspaceManager
 
 
 class FsWorkspaceManager(WorkspaceManager):
@@ -35,7 +34,7 @@ class FsWorkspaceManager(WorkspaceManager):
                 path = self._get_dir(workspace_id)
                 if not path.is_dir():
                     raise FileNotFoundError(f"workspace dir not found: {path}")
-                
+
                 self._services[workspace_id] = FsWorkspaceService(
                     WorkspaceId(workspace_id), path
                 )
@@ -47,7 +46,7 @@ class FsWorkspaceManager(WorkspaceManager):
 
     def _gen_uuid(self) -> UUID:
         return uuid4()
-    
+
     def _get_dir(self, workspace_id: UUID) -> Path:
         return self._base_dir / str(workspace_id)
 
@@ -58,3 +57,15 @@ class FsWorkspaceManager(WorkspaceManager):
                     UUID(child.name)
                 except ValueError:
                     continue
+
+
+class FsWorkspaceService(WorkspaceService):
+    """Работает с файлами внутри директории workspace'а."""
+
+    def __init__(self, workspace_id: WorkspaceId, root: Path) -> None:
+        self._workspace_id = workspace_id
+        self._root = root
+
+    @property
+    def workspace_id(self) -> WorkspaceId:
+        return self._workspace_id

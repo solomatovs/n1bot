@@ -6,13 +6,5 @@
     },
     "black-formatter.path": [
         "${workspaceFolder}/.venv/bin/black"
-    ],
-    "python.analysis.extraPaths": [
-        "src/domain/src",
-        "src/app/src",
-        "src/adapters/src",
-        "src/infra/src",
-        "src/api/src",
-        "src/chainlit/src"
     ]
 }

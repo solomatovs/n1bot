@@ -107,5 +107,6 @@ class Loop(StreamSource[TContext, TEvent]):
         while True:
             for event in self._source.produce(ctx):
                 yield event
+                
                 if self.should_stop(ctx, event):
                     return
