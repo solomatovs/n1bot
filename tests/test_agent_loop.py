@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from boba.domain.agent.events import AnswerToken, ThinkingToken
+from boba.domain.agent.events import (
+    AnswerToken,
+    GenerationDone,
+    GenerationStarted,
+    RefusalToken,
+    ThinkingToken,
+    ToolCallArgumentDelta,
+    ToolCallBegin,
+)
 from boba.domain.agent.loop import AgentLoop
 from boba.domain.agent.models import AgentRequest
 from boba.infra.config import ConfigLoader
@@ -20,10 +28,20 @@ def test_agent_loop_hello() -> None:
         print("\n--- AgentLoop events ---")
         for event in loop.run(agent_request):
             match event:
+                case GenerationStarted():
+                    print("\n[generation started]")
                 case ThinkingToken(token=t):
-                    print(f"[thinking] {t}", end="", flush=True)
+                    print(t, end="", flush=True)
                 case AnswerToken(token=t):
                     print(t, end="", flush=True)
+                case RefusalToken(token=t):
+                    print(f"[refusal] {t}", end="", flush=True)
+                case ToolCallBegin(index=i, tool_call_id=id, tool_name=name):
+                    print(f"\n[tool call #{i}] {name} (id={id})")
+                case ToolCallArgumentDelta(index=i, arguments=args):
+                    print(f"  args: {args}", end="", flush=True)
+                case GenerationDone(finish_reason=reason):
+                    print(f"\n[generation done] reason={reason}")
                 case _:
                     print(f"\n[{type(event).__name__}] {event}")
 

@@ -42,4 +42,6 @@ class AgentLoop(Loop[AgentContext, AgentEvent]):
         if ctx.iteration >= ctx.config.max_iterations:
             return True
 
-        return False
+        # tool_calls → продолжаем (ToolExecutionStage выполнит и цикл повторится)
+        # stop, length → останавливаемся
+        return event.finish_reason != "tool_calls"

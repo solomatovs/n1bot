@@ -1,6 +1,40 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Iterator
+
+
+# ── LLM models ──
+
+
+@dataclass(frozen=True)
+class LLMToolCall:
+    """Готовый tool call (для LLMMessage)."""
+
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
+class LLMMessage:
+    """Одно сообщение в истории диалога."""
+
+    role: str
+    content: str
+    tool_call_id: str | None = None
+    tool_calls: list[LLMToolCall] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class LLMRequest:
+    """Запрос к LLM."""
+
+    model: str
+    messages: Iterator[LLMMessage]
+
+
+# ── Agent models ──
 
 
 @dataclass(frozen=True)
