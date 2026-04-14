@@ -130,8 +130,8 @@ class ToolMessage(LLMMessage):
     """Роль 'tool'. Результат выполнения инструмента.
     tool_call_id связывает результат с конкретным ToolCall.id,
     чтобы модель знала, на какой именно вызов пришёл ответ."""
-    content: str = ""
-    tool_call_id: str = ""
+    content: str
+    tool_call_id: str
 
 
 # --- Thinking (extended thinking, Claude API) ---
@@ -174,10 +174,58 @@ class ToolCall(Generic[TParams]):
 
 **Пояснение `tool_call_id`:** LLM может вызвать несколько tools параллельно. `ToolMessage.tool_call_id` связывает результат с конкретным `ToolCall.id`.
 
-### MessageId
+### Хранение сообщений
 
-- UUID, назначается `ChatHistoryService.add_message()`.
-- `LLMMessage` не содержит `MessageId` — это идентификатор хранения.
+`LLMMessage` — чистая доменная модель (содержимое). Метаданные хранения —
+в обёртке `StoredMessage`. Метаданные API-ответа — в `LLMResponseMeta`.
+
+#### MessageId
+
+UUID, назначается при сохранении. `LLMMessage` не содержит `MessageId`.
+
+#### StoredMessage
+
+```python
+@dataclass
+class StoredMessage:
+    """Сообщение + метаданные хранения."""
+    id: MessageId                       # уникальный id записи
+    message: LLMMessage                 # доменная модель (содержимое)
+    timestamp: datetime                 # когда создано
+    turn_id: str                        # группировка блоков одного логического действия
+                                        # (API-ответ: thinking+text+tool_use;
+                                        #  API-запрос: user message + tool_result'ы)
+    parent_id: MessageId | None = None  # ссылка на предыдущую запись (цепочка)
+```
+
+#### LLMResponseMeta
+
+```python
+@dataclass(frozen=True)
+class TokenUsage:
+    """Статистика токенов одного API-вызова."""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+
+@dataclass(frozen=True)
+class LLMResponseMeta:
+    """Метаданные одного API-ответа. Один на turn_id.
+    Не является частью LLMMessage — это свойство ответа целиком."""
+    request_id: str                     # requestId от API
+    model: str                          # какая модель ответила
+    stop_reason: str                    # "tool_use" | "end_turn"
+    usage: TokenUsage                   # статистика токенов
+```
+
+**Где что живёт:**
+
+| Данные | Где | Почему |
+|---|---|---|
+| content, tool_calls, tool_call_id | `LLMMessage` | Содержимое — нужно для API |
+| id, timestamp, parent_id, turn_id | `StoredMessage` | Метаданные хранения — не нужны для API |
+| model, stop_reason, usage | `LLMResponseMeta` | Свойство ответа целиком, не отдельного сообщения |
 
 ### ChatConfig
 
@@ -194,9 +242,12 @@ class ChatConfig:
 
 ```python
 class ChatHistoryService(WorkspaceAwareService, ABC):
-    def add_message(message: LLMMessage) -> MessageId
-    def get_messages() -> Iterator[LLMMessage]
-    def get_message(message_id: MessageId) -> LLMMessage
+    def add_message(message: LLMMessage, turn_id: str,
+                    parent_id: MessageId | None = None) -> StoredMessage
+    def get_messages() -> Iterator[StoredMessage]
+    def get_message(message_id: MessageId) -> StoredMessage
+    def get_turn(turn_id: str) -> list[StoredMessage]
+        """Все сообщения одного turn'а."""
     def update_message(message_id: MessageId, message: LLMMessage) -> None
     def delete_message(message_id: MessageId) -> None
     def clear() -> None
@@ -852,6 +903,399 @@ class UserPromptService:
 | `SystemPromptBlock` | `system` / `messages[role=system]` | текст (конкатенация блоков) |
 | `ToolDefinition` | `tools` | `ToolInputSchema` (типизированная схема) |
 | `UserPromptTemplate` | `messages[role=user]` | обёртка вокруг user message |
+
+---
+
+## 6. LLM Adapter
+
+Прослойка между доменными моделями и API провайдеров.
+Абстрактный интерфейс + конкретная реализация для OpenAI-совместимого API (LiteLLM).
+
+### Стриминговая модель
+
+Всё построено на итераторах — данные обрабатываются сообщение за сообщением,
+ничего не накапливается в памяти целиком.
+
+```python
+@dataclass(frozen=True)
+class CompletionDelta:
+    """Один чанк стриминг-ответа LLM. Приходит от API по мере генерации."""
+    content: str | None = None
+    reasoning_content: str | None = None
+    tool_call_index: int | None = None
+    tool_call_id: str | None = None
+    tool_call_name: str | None = None
+    tool_call_arguments: str | None = None
+    finish_reason: str | None = None    # "stop", "tool_calls" — только в последнем чанке
+    request_id: str | None = None       # id API-запроса
+    model: str | None = None            # модель
+```
+
+### Абстрактный интерфейс
+
+```python
+TApiMessage = TypeVar("TApiMessage")  # формат сообщения провайдера
+
+class MessageConverter(ABC, Generic[TApiMessage]):
+    """Конвертирует сообщения между доменными моделями и форматом API провайдера.
+    Оба направления. Работает с Iterator — не загружает все сообщения в память."""
+
+    @abstractmethod
+    def serialize(self, messages: Iterator[LLMMessage]) -> Iterator[TApiMessage]:
+        """domain → API. Может склеивать соседние сообщения
+        (AssistantMessage + AssistantToolMessage → одно API-сообщение)."""
+        ...
+
+    @abstractmethod
+    def deserialize(self, messages: Iterator[TApiMessage]) -> Iterator[LLMMessage]:
+        """API → domain. Может разбивать одно API-сообщение
+        на несколько доменных (assistant с content + tool_calls → два объекта)."""
+        ...
+
+
+class LLMCompletionService(ABC, Generic[TApiMessage]):
+    """Стриминговый LLM completion. Возвращает Iterator[CompletionDelta].
+    Потребитель итерирует дельты по мере поступления от API."""
+
+    @abstractmethod
+    def stream_completion(
+        self,
+        messages: Iterator[TApiMessage],
+        tools: Iterator[ToolDefinition],
+        model: str,
+    ) -> Iterator[CompletionDelta]: ...
+
+
+class DeltaAssembler(ABC):
+    """Собирает поток CompletionDelta в поток готовых LLMMessage.
+    Отдаёт каждое сообщение как только оно полностью собрано,
+    не дожидаясь конца всего ответа."""
+
+    @abstractmethod
+    def assemble(self, deltas: Iterator[CompletionDelta]) -> Iterator[LLMMessage]: ...
+
+    @abstractmethod
+    def get_meta(self) -> LLMResponseMeta:
+        """Метаданные ответа. Доступны после завершения итерации."""
+        ...
+```
+
+### Поток данных
+
+```
+          converter.serialize      stream_completion          assemble
+Iterator     ────────────►   Iterator      ────────────►  Iterator    ────────►  Iterator
+[LLMMessage]                 [TApiMessage]                 [CompletionDelta]      [LLMMessage]
+
+          converter.deserialize
+Iterator     ◄────────────   Iterator
+[LLMMessage]                 [TApiMessage]
+
+Доменные                     API-формат                    Чанки от API           Готовые доменные
+сообщения                    провайдера                    (по мере генерации)    сообщения
+(история)                                                                        (по мере сборки)
+```
+
+Ничего не копится — каждый шаг отдаёт данные по мере готовности.
+
+### Модели API (OpenAI-совместимый формат)
+
+```python
+@dataclass(frozen=True)
+class ApiFunctionCall:
+    """Вложенный объект function внутри tool_call."""
+    name: str
+    arguments: str   # JSON-строка
+
+@dataclass(frozen=True)
+class ApiToolCall:
+    """Tool call в формате OpenAI API."""
+    id: str
+    type: str        # "function"
+    function: ApiFunctionCall
+
+@dataclass(frozen=True)
+class ApiMessage:
+    """Сообщение в формате OpenAI API."""
+    role: str                                  # "system", "developer", "user", "assistant", "tool"
+    content: str | None = None
+    tool_calls: list[ApiToolCall] | None = None # только для assistant
+    tool_call_id: str | None = None             # только для tool
+```
+
+### OpenAIMessageConverter
+
+```python
+class OpenAIMessageConverter(MessageConverter[ApiMessage]):
+    """Конвертирует между доменными моделями и форматом OpenAI API."""
+
+    def __init__(self, tools_service: ToolsService) -> None:
+        self._tools = tools_service
+
+    def serialize(self, messages: Iterator[LLMMessage]) -> Iterator[ApiMessage]:
+        pending_assistant: AssistantMessage | None = None
+
+        for msg in messages:
+            if pending_assistant is not None:
+                if isinstance(msg, AssistantToolMessage):
+                    # Склейка: content + tool_calls в одно API-сообщение
+                    yield ApiMessage(
+                        role="assistant",
+                        content=pending_assistant.content,
+                        tool_calls=[self._to_api_tool_call(tc)
+                                    for tc in msg.tool_calls],
+                    )
+                    pending_assistant = None
+                    continue
+                else:
+                    yield self._to_api_message(pending_assistant)
+                    pending_assistant = None
+
+            if isinstance(msg, AssistantMessage):
+                pending_assistant = msg
+            else:
+                yield self._to_api_message(msg)
+
+        if pending_assistant is not None:
+            yield self._to_api_message(pending_assistant)
+
+    def _to_api_message(self, message: LLMMessage) -> ApiMessage:
+        """Конвертация одного доменного сообщения (без склейки)."""
+        match message:
+            case SystemMessage(content=c):
+                return ApiMessage(role="system", content=c)
+            case DeveloperMessage(content=c):
+                return ApiMessage(role="developer", content=c)
+            case UserMessage(content=c):
+                return ApiMessage(role="user", content=c)
+            case AssistantMessage(content=c):
+                return ApiMessage(role="assistant", content=c)
+            case AssistantToolMessage(tool_calls=calls):
+                return ApiMessage(
+                    role="assistant",
+                    tool_calls=[self._to_api_tool_call(tc) for tc in calls],
+                )
+            case ToolMessage(content=c, tool_call_id=tid):
+                return ApiMessage(role="tool", content=c, tool_call_id=tid)
+
+    def _to_api_tool_call(self, tc: ToolCall) -> ApiToolCall:
+        return ApiToolCall(
+            id=tc.id,
+            type="function",
+            function=ApiFunctionCall(
+                name=tc.tool_id.name,
+                arguments=json.dumps(asdict(tc.arguments)),
+            ),
+        )
+
+    # --- API → domain ---
+
+    def deserialize(self, messages: Iterator[ApiMessage]) -> Iterator[LLMMessage]:
+        for api_msg in messages:
+            match api_msg.role:
+                case "system":
+                    yield SystemMessage(content=api_msg.content or "")
+                case "developer":
+                    yield DeveloperMessage(content=api_msg.content or "")
+                case "user":
+                    yield UserMessage(content=api_msg.content or "")
+                case "tool":
+                    yield ToolMessage(
+                        content=api_msg.content or "",
+                        tool_call_id=api_msg.tool_call_id or "",
+                    )
+                case "assistant":
+                    yield from self._deserialize_assistant(api_msg)
+
+    def _deserialize_assistant(self, api_msg: ApiMessage) -> Iterator[LLMMessage]:
+        if api_msg.content:
+            yield AssistantMessage(content=api_msg.content)
+        if api_msg.tool_calls:
+            tool_calls = [self._from_api_tool_call(tc) for tc in api_msg.tool_calls]
+            yield AssistantToolMessage(tool_calls=tool_calls)
+
+    def _from_api_tool_call(self, api_tc: ApiToolCall) -> ToolCall:
+        tool_id = ToolId(api_tc.function.name)
+        raw_args = json.loads(api_tc.function.arguments)
+        tool = self._tools.get(tool_id)
+        params = tool.params_type(**raw_args)
+        return ToolCall(id=api_tc.id, tool_id=tool_id, arguments=params)
+```
+
+### OpenAICompletionService
+
+```python
+class OpenAICompletionService(LLMCompletionService[ApiMessage]):
+    """Стриминг через OpenAI-совместимый API."""
+
+    def __init__(self, client: OpenAI) -> None:
+        self._client = client
+
+    def stream_completion(
+        self,
+        messages: Iterator[ApiMessage],
+        tools: Iterator[ToolDefinition],
+        model: str,
+    ) -> Iterator[CompletionDelta]:
+        stream = self._client.chat.completions.create(
+            model=model,
+            messages=list(messages),
+            tools=list(tools),
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            delta = choice.delta
+
+            if delta.content:
+                yield CompletionDelta(content=delta.content)
+
+            reasoning = getattr(delta, "reasoning_content", None)
+            if reasoning:
+                yield CompletionDelta(reasoning_content=reasoning)
+
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    func = tc.function
+                    yield CompletionDelta(
+                        tool_call_index=tc.index,
+                        tool_call_id=tc.id or None,
+                        tool_call_name=func.name if func else None,
+                        tool_call_arguments=func.arguments if func else None,
+                    )
+
+            if choice.finish_reason:
+                yield CompletionDelta(
+                    finish_reason=choice.finish_reason,
+                    request_id=chunk.id,
+                    model=chunk.model,
+                )
+```
+
+### OpenAIDeltaAssembler
+
+```python
+class OpenAIDeltaAssembler(DeltaAssembler):
+    """Собирает поток CompletionDelta в поток LLMMessage.
+    Yield'ит каждое сообщение как только оно готово."""
+
+    def __init__(self, tools_service: ToolsService) -> None:
+        self._tools = tools_service
+        self._meta: LLMResponseMeta | None = None
+
+    def assemble(self, deltas: Iterator[CompletionDelta]) -> Iterator[LLMMessage]:
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        # tool_calls: {index → (id, name, [argument_chunks])}
+        tool_calls: dict[int, tuple[str, str, list[str]]] = {}
+        finish_reason: str | None = None
+        request_id: str = ""
+        model: str = ""
+
+        for delta in deltas:
+            if delta.content:
+                content_parts.append(delta.content)
+
+            if delta.reasoning_content:
+                reasoning_parts.append(delta.reasoning_content)
+
+            if delta.tool_call_index is not None:
+                idx = delta.tool_call_index
+                if idx not in tool_calls:
+                    tool_calls[idx] = (delta.tool_call_id or "", delta.tool_call_name or "", [])
+                if delta.tool_call_arguments:
+                    tool_calls[idx][2].append(delta.tool_call_arguments)
+
+            if delta.finish_reason:
+                finish_reason = delta.finish_reason
+            if delta.request_id:
+                request_id = delta.request_id
+            if delta.model:
+                model = delta.model
+
+        # --- Yield готовых сообщений ---
+
+        if reasoning_parts:
+            yield ThinkingMessage(content="".join(reasoning_parts))
+
+        if content_parts:
+            yield AssistantMessage(content="".join(content_parts))
+
+        if tool_calls:
+            calls = []
+            for idx in sorted(tool_calls):
+                tc_id, tc_name, arg_chunks = tool_calls[idx]
+                raw_args = json.loads("".join(arg_chunks))
+                tool = self._tools.get(ToolId(tc_name))
+                params = tool.params_type(**raw_args)
+                calls.append(ToolCall(id=tc_id, tool_id=ToolId(tc_name), arguments=params))
+            yield AssistantToolMessage(tool_calls=calls)
+
+        self._meta = LLMResponseMeta(
+            request_id=request_id,
+            model=model,
+            stop_reason=finish_reason or "",
+            usage=TokenUsage(),  # usage приходит отдельно, можно расширить
+        )
+
+    def get_meta(self) -> LLMResponseMeta:
+        if self._meta is None:
+            raise RuntimeError("assemble() not consumed yet")
+        return self._meta
+```
+
+### Пример использования
+
+```python
+# --- DI создаёт конкретные реализации, код работает через абстракции ---
+converter: MessageConverter = OpenAIMessageConverter(tools_service)
+completion: LLMCompletionService = OpenAICompletionService(client)
+assembler: DeltaAssembler = OpenAIDeltaAssembler(tools_service)
+
+# --- Agent loop ---
+
+while True:
+    # 1. Сериализация: Iterator[LLMMessage] → Iterator[ApiMessage]
+    api_messages = converter.serialize(history.get_messages())
+
+    # 2. Стриминг: Iterator[ApiMessage] → Iterator[CompletionDelta]
+    deltas = completion.stream_completion(api_messages, tools, model)
+
+    # 3. Сборка: Iterator[CompletionDelta] → Iterator[LLMMessage]
+    turn_id = uuid4().hex
+    for msg in assembler.assemble(deltas):
+        # Каждое сообщение сохраняется сразу, не копится
+        history.add_message(msg, turn_id=turn_id, parent_id=last_id)
+
+    # 4. Проверка: продолжать или выйти
+    meta = assembler.get_meta()
+    if meta.stop_reason in ("stop", "end_turn"):
+        break
+
+    # 5. Выполнение tools → ToolMessage → следующая итерация цикла
+    for msg in history.get_turn(turn_id):
+        if isinstance(msg.message, AssistantToolMessage):
+            for tc in msg.message.tool_calls:
+                result = await tools_service.execute(tc.tool_id, tc.arguments)
+                history.add_message(
+                    ToolMessage(content=result.content, tool_call_id=tc.id),
+                    turn_id=turn_id, parent_id=last_id,
+                )
+```
+
+### ToolsService: новый метод get()
+
+```python
+class ToolsService:
+    # ... существующие методы ...
+
+    def get(self, id: ToolId) -> Tool:
+        """Найти инструмент по ToolId. Raises ToolNotFoundError."""
+```
 
 ---
 
