@@ -12,7 +12,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     container_name: boba-api
-    command: ["python3", "-m", "boba_api"]
+    command: ["python3", "-m", "boba.api"]
     volumes:
       - ./import:/app/import
       - ./config/config.toml:/app/config.toml:ro
@@ -37,7 +37,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     container_name: boba-chainlit
-    command: ["python3", "-m", "boba_chainlit"]
+    command: ["python3", "-m", "boba.chainlit"]
     volumes:
       - ./import:/app/import
       - ./config/config.toml:/app/config.toml:ro

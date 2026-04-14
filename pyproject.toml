@@ -7,16 +7,16 @@ name = "boba"
 version = "0.1.0"
 description = "Boba — RAG agent for Confluence knowledge base"
 authors = ["Sergei Solomatov"]
-packages = [{ include = "boba", from = "src" }]
+package-mode = false
 
 [tool.poetry.dependencies]
 python = "^3.11"
-boba-domain = { path = "src/boba-domain", develop = true }
-boba-app = { path = "src/boba-app", develop = true }
-boba-adapters = { path = "src/boba-adapters", develop = true }
-boba-infra = { path = "src/boba-infra", develop = true }
-boba-api = { path = "src/boba-api", develop = true }
-boba-chainlit = { path = "src/boba-chainlit", develop = true }
+boba-domain = { path = "src/domain", develop = true }
+boba-app = { path = "src/app", develop = true }
+boba-adapters = { path = "src/adapters", develop = true }
+boba-infra = { path = "src/infra", develop = true }
+boba-api = { path = "src/api", develop = true }
+boba-chainlit = { path = "src/chainlit", develop = true }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"
@@ -27,23 +27,23 @@ black = "*"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [
-    "src/boba-domain/src",
-    "src/boba-app/src",
-    "src/boba-adapters/src",
-    "src/boba-infra/src",
-    "src/boba-api/src",
-    "src/boba-chainlit/src",
+    "src/domain/src",
+    "src/app/src",
+    "src/adapters/src",
+    "src/infra/src",
+    "src/api/src",
+    "src/chainlit/src",
 ]
 
 [tool.pyright]
 include = ["src", "tests"]
 extraPaths = [
-    "src/boba-domain/src",
-    "src/boba-app/src",
-    "src/boba-adapters/src",
-    "src/boba-infra/src",
-    "src/boba-api/src",
-    "src/boba-chainlit/src",
+    "src/domain/src",
+    "src/app/src",
+    "src/adapters/src",
+    "src/infra/src",
+    "src/api/src",
+    "src/chainlit/src",
 ]
 venvPath = "."
 venv = ".venv"

@@ -7,13 +7,14 @@ name = "boba-infra"
 version = "0.1.0"
 description = "Boba infrastructure — DI container, composition root"
 authors = ["Sergei Solomatov"]
-packages = [{ include = "boba_infra", from = "src" }]
+packages = [{ include = "boba/infra", from = "src" }]
 
 [tool.poetry.dependencies]
 python = "^3.11"
-boba-domain = { path = "../boba-domain", develop = true }
-boba-app = { path = "../boba-app", develop = true }
-boba-adapters = { path = "../boba-adapters", develop = true }
+boba-domain = { path = "../domain", develop = true }
+boba-app = { path = "../app", develop = true }
+boba-adapters = { path = "../adapters", develop = true }
 dishka = "*"
 openai = "*"
 httpx = "*"
+tomli = "*"

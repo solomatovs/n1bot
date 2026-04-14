@@ -7,11 +7,11 @@ name = "boba-adapters"
 version = "0.1.0"
 description = "Boba adapters — concrete implementations of domain protocols"
 authors = ["Sergei Solomatov"]
-packages = [{ include = "boba_adapters", from = "src" }]
+packages = [{ include = "boba/adapters", from = "src" }]
 
 [tool.poetry.dependencies]
 python = "^3.11"
-boba-domain = { path = "../boba-domain", develop = true }
+boba-domain = { path = "../domain", develop = true }
 openai = "*"
 chromadb = "*"
 langchain = "*"

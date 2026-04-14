@@ -2,29 +2,10 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Boba Chainlit",
+            "name": "Boba App",
             "type": "debugpy",
             "request": "launch",
-            "module": "boba_chainlit",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/.vscode",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "autoStartBrowser": false,
-            "jinja": true,
-            "env": {
-                "BOBA_CONFIG": "./config/config.toml",
-                "LITELLM_API_KEY_FILE": "./secrets/litellm_api_key",
-                "CONFLUENCE_TOKEN_FILE": "./secrets/confluence_token",
-                "CHAINLIT_APP_ROOT": "./chainlit",
-                "CHAINLIT_AUTH_SECRET_FILE": "./secrets/chainlit_auth_secret",
-                "PYTHONPATH": "${workspaceFolder}/src/boba-domain/src:${workspaceFolder}/src/boba-app/src:${workspaceFolder}/src/boba-adapters/src:${workspaceFolder}/src/boba-infra/src:${workspaceFolder}/src/boba-api/src:${workspaceFolder}/src/boba-chainlit/src"
-            }
-        },
-        {
-            "name": "Boba API",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba_api",
+            "module": "boba.app",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/.vscode",
             "python": "${workspaceFolder}/.venv/bin/python",
@@ -33,8 +14,43 @@
                 "BOBA_CONFIG": "./config/config.toml",
                 "LITELLM_API_KEY_FILE": "./secrets/litellm_api_key",
                 "CONFLUENCE_TOKEN_FILE": "./secrets/confluence_token",
-                "PYTHONPATH": "${workspaceFolder}/src/boba-domain/src:${workspaceFolder}/src/boba-app/src:${workspaceFolder}/src/boba-adapters/src:${workspaceFolder}/src/boba-infra/src:${workspaceFolder}/src/boba-api/src:${workspaceFolder}/src/boba-chainlit/src"
+                "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src:${workspaceFolder}/src/api/src:${workspaceFolder}/src/chainlit/src"
             }
         }
+        // {
+        //     "name": "Boba Chainlit",
+        //     "type": "debugpy",
+        //     "request": "launch",
+        //     "module": "boba.chainlit",
+        //     "console": "integratedTerminal",
+        //     "cwd": "${workspaceFolder}/.vscode",
+        //     "python": "${workspaceFolder}/.venv/bin/python",
+        //     "autoStartBrowser": false,
+        //     "jinja": true,
+        //     "env": {
+        //         "BOBA_CONFIG": "./config/config.toml",
+        //         "LITELLM_API_KEY_FILE": "./secrets/litellm_api_key",
+        //         "CONFLUENCE_TOKEN_FILE": "./secrets/confluence_token",
+        //         "CHAINLIT_APP_ROOT": "./chainlit",
+        //         "CHAINLIT_AUTH_SECRET_FILE": "./secrets/chainlit_auth_secret",
+        //         "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src:${workspaceFolder}/src/api/src:${workspaceFolder}/src/chainlit/src"
+        //     }
+        // },
+        // {
+        //     "name": "Boba API",
+        //     "type": "debugpy",
+        //     "request": "launch",
+        //     "module": "boba.api",
+        //     "console": "integratedTerminal",
+        //     "cwd": "${workspaceFolder}/.vscode",
+        //     "python": "${workspaceFolder}/.venv/bin/python",
+        //     "jinja": true,
+        //     "env": {
+        //         "BOBA_CONFIG": "./config/config.toml",
+        //         "LITELLM_API_KEY_FILE": "./secrets/litellm_api_key",
+        //         "CONFLUENCE_TOKEN_FILE": "./secrets/confluence_token",
+        //         "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src:${workspaceFolder}/src/api/src:${workspaceFolder}/src/chainlit/src"
+        //     }
+        // }
     ]
 }
