@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+import tomli
+
 from boba.domain.config import AppConfig
 
 
@@ -55,8 +57,6 @@ class ConfigLoader:
         if not path.is_file():
             return {}
         try:
-            import tomli
-
             with open(path, "rb") as f:
                 data = tomli.load(f)
             return data.get(section, {})
