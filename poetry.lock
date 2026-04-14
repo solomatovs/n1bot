@@ -504,7 +504,7 @@ uvloop = ["uvloop (>=0.15.2) ; sys_platform != \"win32\"", "winloop (>=0.5.0) ; 
 [[package]]
 name = "boba-adapters"
 version = "0.1.0"
-description = "N1Bot adapters — concrete implementations of domain protocols"
+description = "Boba adapters — concrete implementations of domain protocols"
 optional = false
 python-versions = "^3.11"
 groups = ["main"]
@@ -536,7 +536,7 @@ url = "src/boba-adapters"
 [[package]]
 name = "boba-api"
 version = "0.1.0"
-description = "N1Bot FastAPI server"
+description = "Boba FastAPI server"
 optional = false
 python-versions = "^3.11"
 groups = ["main"]
@@ -555,7 +555,7 @@ url = "src/boba-api"
 [[package]]
 name = "boba-app"
 version = "0.1.0"
-description = "N1Bot application — use cases, tools, pipelines"
+description = "Boba application — use cases, tools, pipelines"
 optional = false
 python-versions = "^3.11"
 groups = ["main"]
@@ -573,7 +573,7 @@ url = "src/boba-app"
 [[package]]
 name = "boba-chainlit"
 version = "0.1.0"
-description = "N1Bot Chainlit UI"
+description = "Boba Chainlit UI"
 optional = false
 python-versions = "^3.11"
 groups = ["main"]
@@ -591,7 +591,7 @@ url = "src/boba-chainlit"
 [[package]]
 name = "boba-domain"
 version = "0.1.0"
-description = "N1Bot domain — protocols, ABCs, value objects, events"
+description = "Boba domain — protocols, ABCs, value objects, events"
 optional = false
 python-versions = "^3.11"
 groups = ["main"]
@@ -605,7 +605,7 @@ url = "src/boba-domain"
 [[package]]
 name = "boba-infra"
 version = "0.1.0"
-description = "N1Bot infrastructure — DI container, composition root"
+description = "Boba infrastructure — DI container, composition root"
 optional = false
 python-versions = "^3.11"
 groups = ["main"]

@@ -5,7 +5,7 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry]
 name = "boba-app"
 version = "0.1.0"
-description = "N1Bot application — use cases, tools, pipelines"
+description = "Boba application — use cases, tools, pipelines"
 authors = ["Sergei Solomatov"]
 packages = [{ include = "boba_app", from = "src" }]
 

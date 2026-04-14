@@ -5,7 +5,7 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry]
 name = "boba-infra"
 version = "0.1.0"
-description = "N1Bot infrastructure — DI container, composition root"
+description = "Boba infrastructure — DI container, composition root"
 authors = ["Sergei Solomatov"]
 packages = [{ include = "boba_infra", from = "src" }]
 
