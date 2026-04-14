@@ -5,7 +5,7 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry]
 name = "boba-api"
 version = "0.1.0"
-description = "N1Bot FastAPI server"
+description = "Boba FastAPI server"
 authors = ["Sergei Solomatov"]
 packages = [{ include = "boba_api", from = "src" }]
 
