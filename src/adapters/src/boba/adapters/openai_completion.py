@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Iterator
 
 from openai import OpenAI
@@ -15,14 +16,57 @@ from openai.types.chat import (
 )
 
 from boba.domain.config import LLMConfig
-from boba.domain.llm.llm import (
-    LLMCompletionService,
-    LLMDelta,
-    LLMMessage,
-    LLMRequest,
-)
+from boba.domain.llm.llm import LLMCompletionService, LLMDelta, LLMMessage, LLMRequest
+
 
 logger = logging.getLogger(__name__)
+
+
+class LoggingLLMMiddleware(LLMCompletionService):
+    """Логирует запрос, количество чанков и время генерации."""
+
+    def __init__(self, next: LLMCompletionService) -> None:
+        self._next = next
+
+    def name(self) -> str:
+        return "LoggingLLM"
+
+    def produce(self, ctx: LLMRequest) -> Iterator[LLMDelta]:
+        logger.info("LLM request: model=%s", ctx.model)
+        start = time.monotonic()
+        chunks = 0
+
+        for delta in self._next.produce(ctx):
+            chunks += 1
+            yield delta
+
+        elapsed = time.monotonic() - start
+        logger.info("LLM done: %d chunks in %.2fs", chunks, elapsed)
+
+
+class StupedRetryLLMMiddleware(LLMCompletionService):
+    """Повторяет запрос при ошибке до max_retries раз."""
+
+    def __init__(self, next: LLMCompletionService, max_retries: int = 3) -> None:
+        self._next = next
+        self._max_retries = max_retries
+
+    def name(self) -> str:
+        return "RetryLLM"
+
+    def produce(self, ctx: LLMRequest) -> Iterator[LLMDelta]:
+        for attempt in range(self._max_retries):
+            try:
+                yield from self._next.produce(ctx)
+                return
+            except Exception:
+                if attempt == self._max_retries - 1:
+                    raise
+                logger.warning(
+                    "LLM attempt %d/%d failed, retrying",
+                    attempt + 1,
+                    self._max_retries,
+                )
 
 
 class OpenAICompletionService(LLMCompletionService):
@@ -35,7 +79,10 @@ class OpenAICompletionService(LLMCompletionService):
     def __init__(self, config: LLMConfig) -> None:
         self._client = OpenAI(base_url=config.base_url, api_key=config.api_key)
 
-    def stream(self, ctx: LLMRequest) -> Iterator[LLMDelta]:
+    def name(self) -> str:
+        return "OpenAICompletion"
+
+    def produce(self, ctx: LLMRequest) -> Iterator[LLMDelta]:
         response = self._client.chat.completions.create(
             model=ctx.model,
             messages=map(self._to_openai_message, ctx.messages),

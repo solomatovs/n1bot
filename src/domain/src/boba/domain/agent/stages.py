@@ -78,7 +78,7 @@ class GenerateStage(StreamSource[AgentContext, AgentEvent]):
             messages=self._message_service.message_iter(),
         )
 
-        for delta in self._llm.stream(request):
+        for delta in self._llm.produce(request):
             if delta.thinking:
                 yield ThinkingToken(token=delta.thinking)
             if delta.content:

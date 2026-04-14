@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Iterator
-from abc import ABC, abstractmethod
+
+from boba.domain.core.stream import StreamSource
 
 
 @dataclass(frozen=True)
@@ -45,11 +46,9 @@ class LLMRequest:
     messages: Iterator[LLMMessage]
 
 
-class LLMCompletionService(ABC):
+class LLMCompletionService(StreamSource[LLMRequest, LLMDelta]):
     """
-    Сервис для получения ответов от LLM
+    Базовый класс для любого LLM-источника — адаптер или middleware.
+    Адаптер реализует produce() напрямую.
+    Middleware принимает next в __init__ и делегирует ему.
     """
-    
-    @abstractmethod
-    def stream(self, ctx: LLMRequest) -> Iterator[LLMDelta]:
-        ...

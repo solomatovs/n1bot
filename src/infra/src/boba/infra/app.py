@@ -13,6 +13,10 @@ from boba.adapters.openai_completion import OpenAICompletionService
 from boba.domain.agent.loop import AgentLoop
 from boba.domain.agent.models import AgentConfig
 from boba.domain.config import AppConfig
+from boba.adapters.openai_completion import (
+    LoggingLLMMiddleware,
+    StupedRetryLLMMiddleware,
+)
 from boba.domain.core.messages import MessageService
 from boba.domain.core.workspace import WorkspaceManager, WorkspaceService
 from boba.domain.llm.llm import LLMCompletionService
@@ -36,8 +40,11 @@ class AppProvider(Provider):
         return FsWorkspaceManager(Path(config.workspace_base_dir))
 
     @provide
-    def llm_completion_service(self, config: AppConfig) -> LLMCompletionService:
-        return OpenAICompletionService(config.llm)
+    def llm_source(self, config: AppConfig) -> LLMCompletionService:
+        llm: LLMCompletionService = OpenAICompletionService(config.llm)
+        llm = StupedRetryLLMMiddleware(llm, max_retries=3)
+        llm = LoggingLLMMiddleware(llm)
+        return llm
 
     @provide
     def agent_config(self, config: AppConfig) -> AgentConfig:
