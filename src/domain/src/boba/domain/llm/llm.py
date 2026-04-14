@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Iterator
+from abc import ABC, abstractmethod
 
 
 @dataclass(frozen=True)
@@ -27,10 +27,12 @@ class LLMDelta:
 
 @dataclass(frozen=True)
 class LLMMessage:
-    """Одно сообщение в истории диалога."""
+    """
+    Одно сообщение в истории диалога
+    """
 
-    role: str  # "system" | "user" | "assistant" | "tool"
-    content: str = ""
+    role: str
+    content: str
     tool_call_id: str | None = None
     tool_calls: list[LLMToolCall] = field(default_factory=list)
 
@@ -40,13 +42,14 @@ class LLMRequest:
     """Запрос к LLM."""
 
     model: str
-    messages: list[LLMMessage]
-    tools: list[dict] | None = None
-    max_tokens: int = 4096
+    messages: Iterator[LLMMessage]
 
 
-class LLMClient(ABC):
-    """Порт: стриминговый вызов LLM."""
-
+class LLMCompletionService(ABC):
+    """
+    Сервис для получения ответов от LLM
+    """
+    
     @abstractmethod
-    def stream(self, request: LLMRequest) -> Iterator[LLMDelta]: ...
+    def stream(self, ctx: LLMRequest) -> Iterator[LLMDelta]:
+        ...
