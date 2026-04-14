@@ -55,32 +55,3 @@ AgentEvent = Union[
     ToolCallStarted,
     ToolResultReady,
 ]
-
-
-@dataclass(frozen=True)
-class AgentRequest:
-    """Входные данные для AgentLoop.run()."""
-
-    query: str
-    model: str
-    max_tokens: int
-
-
-@dataclass(frozen=True)
-class AgentConfig:
-    """Настройки AgentLoop."""
-
-    max_iterations: int
-    default_model: str
-    limit_message: str
-
-
-@dataclass
-class AgentContext:
-    """
-    Контекст, передаваемый через Pipeline и AgentLoop.
-    Мутабельный — стадии и цикл дополняют его.
-    """
-
-    request: AgentRequest
-    config: AgentConfig

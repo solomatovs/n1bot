@@ -1,20 +1,20 @@
 {
   "include": [
-    "src/boba-domain/src",
-    "src/boba-app/src",
-    "src/boba-adapters/src",
-    "src/boba-infra/src",
-    "src/boba-api/src",
-    "src/boba-chainlit/src",
+    "src/domain/src",
+    "src/app/src",
+    "src/adapters/src",
+    "src/infra/src",
+    "src/api/src",
+    "src/chainlit/src",
     "tests"
   ],
   "extraPaths": [
-    "src/boba-domain/src",
-    "src/boba-app/src",
-    "src/boba-adapters/src",
-    "src/boba-infra/src",
-    "src/boba-api/src",
-    "src/boba-chainlit/src"
+    "src/domain/src",
+    "src/app/src",
+    "src/adapters/src",
+    "src/infra/src",
+    "src/api/src",
+    "src/chainlit/src"
   ],
   "venvPath": ".",
   "venv": ".venv",
