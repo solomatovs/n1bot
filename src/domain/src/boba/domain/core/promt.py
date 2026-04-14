@@ -44,13 +44,8 @@ class SystemPromptProvider(ABC):
     def priority(self) -> int: ...
 
     @abstractmethod
-    async def build(self) -> SystemPromptBlock: ...
+    def build(self) -> SystemPromptBlock: ...
 
-    async def enter(self) -> None:
-        pass
-
-    async def close(self) -> None:
-        pass
 
 
 class SystemPromptResult:
@@ -70,20 +65,16 @@ class SystemPromptResult:
 class SystemPromptService:
     """Сервис для управления системными промптами от разных провайдеров."""
 
-    async def register(self, provider: SystemPromptProvider) -> None:
+    def register(self, provider: SystemPromptProvider) -> None:
         """Зарегистрировать провайдер, вызвать provider.enter()."""
         ...
 
-    async def unregister(self, id: SystemPromptId) -> None:
+    def unregister(self, id: SystemPromptId) -> None:
         """Вызвать provider.close() и убрать провайдер."""
         ...
 
     def providers(self) -> Iterator[SystemPromptProvider]: ...
 
-    async def build(self) -> SystemPromptResult:
+    def build(self) -> SystemPromptResult:
         """Собрать system prompt из всех провайдеров (по priority)."""
-        ...
-
-    async def close(self) -> None:
-        """Вызвать close() у всех провайдеров."""
         ...

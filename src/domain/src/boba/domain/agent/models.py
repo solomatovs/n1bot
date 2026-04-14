@@ -1,46 +1,37 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from boba.domain.core.stream import StreamSource
+from dataclasses import dataclass, field
+
+from boba.domain.agent.llm import LLMMessage, LLMToolCall
 
 
 @dataclass(frozen=True)
 class AgentRequest:
-    """Входные данные для AgentLoop.run()"""
+    """Входные данные для AgentLoop."""
 
     query: str
     model: str
-    max_tokens: int
+    max_tokens: int = 4096
 
 
 @dataclass(frozen=True)
 class AgentConfig:
-    """Настройки AgentLoop"""
+    """Настройки AgentLoop."""
 
-    max_iterations: int
-    default_model: str
-    limit_message: str
+    max_iterations: int = 20
+    default_model: str = "gpt-4o"
+    limit_message: str = "Достигнут лимит итераций агента."
 
 
 @dataclass
 class AgentContext:
     """
-    Контекст, передаваемый через Pipeline и AgentLoop.
-    Мутабельный — стадии и цикл дополняют его
+    Мутабельный контекст, передаваемый через стадии Pipeline.
+    Стадии читают и дополняют его на каждой итерации цикла.
     """
 
     request: AgentRequest
     config: AgentConfig
-
-
-class AgentLoop(StreamSource[AgentContext, AgentEvent]):
-    """ """
-
-    def __init__(
-        self,
-        config: AgentConfig,
-    ) -> None:
-        self._config = config
-        self
-
-    def run(self, ctx: AgentContext) -> Iterator[AgentEvent]: ...
+    messages: list[LLMMessage] = field(default_factory=list)
+    pending_tool_calls: list[LLMToolCall] = field(default_factory=list)
+    iteration: int = 0

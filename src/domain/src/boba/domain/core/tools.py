@@ -86,23 +86,17 @@ class Tool(ABC, Generic[TParams]):
     def params_type(self) -> type[TParams]: ...
 
     @abstractmethod
-    async def execute(self, params: TParams) -> ToolResult: ...
-
-    async def enter(self) -> None:
-        pass
-
-    async def close(self) -> None:
-        pass
+    def execute(self, params: TParams) -> ToolResult: ...
 
 
 class ToolsService:
     """Сервис для управления инструментами: регистрация, получение определений, выполнение."""
 
-    async def register(self, tool: Tool) -> None:
+    def register(self, tool: Tool) -> None:
         """Зарегистрировать инструмент, вызвать tool.enter()."""
         ...
 
-    async def unregister(self, id: ToolId) -> None:
+    def unregister(self, id: ToolId) -> None:
         """Вызвать tool.close() и убрать инструмент."""
         ...
 
@@ -110,10 +104,6 @@ class ToolsService:
         """Определения для параметра tools API."""
         ...
 
-    async def execute(self, id: ToolId, raw_args: dict[str, Any]) -> ToolResult:
+    def execute(self, id: ToolId, raw_args: dict[str, Any]) -> ToolResult:
         """Найти tool, сконструировать params из raw JSON, выполнить."""
-        ...
-
-    async def close(self) -> None:
-        """Вызвать close() у всех инструментов."""
         ...

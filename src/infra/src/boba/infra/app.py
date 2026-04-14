@@ -1,14 +1,15 @@
-"""Dishka-провайдеры приложения (Scope.APP)."""
+"""Dishka-провайдеры приложения."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import UUID
 
-from dishka import Provider, Scope, provide
+from dishka import Provider, Scope, from_context, provide
 
-from boba.adapters.fs_workspace import FsWorkspaceRegistry
+from boba.adapters.fs_workspace import FsWorkspaceManager
 from boba.domain.config import AppConfig
-from boba.domain.core.workspace import WorkspaceRegistry
+from boba.domain.core.workspace import WorkspaceManager, WorkspaceService
 
 
 class AppProvider(Provider):
@@ -24,13 +25,22 @@ class AppProvider(Provider):
     def config(self) -> AppConfig:
         return self._config
 
+    @provide
+    def workspace_manager(self, config: AppConfig) -> WorkspaceManager:
+        return FsWorkspaceManager(Path(config.workspace_base_dir))
 
-class WorkspaceProvider(Provider):
-    """Singleton: реестр workspace'ов."""
 
-    scope = Scope.APP
+class RequestProvider(Provider):
+    """Per-request: workspace service."""
+
+    scope = Scope.REQUEST
+
+    workspace_id = from_context(provides=UUID | None, scope=Scope.REQUEST)
 
     @provide
-    def registry(self, config: AppConfig) -> WorkspaceRegistry:
-        base_dir = Path(config.workspace_base_dir)
-        return FsWorkspaceRegistry(base_dir)
+    def workspace_service(
+        self,
+        workspace_id: UUID | None,
+        manager: WorkspaceManager,
+    ) -> WorkspaceService:
+        return manager.get_or_create(workspace_id)

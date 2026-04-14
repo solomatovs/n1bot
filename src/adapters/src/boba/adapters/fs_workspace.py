@@ -1,62 +1,60 @@
-"""Реализация WorkspaceRegistry через файловую систему."""
+"""Файловая реализация WorkspaceManager."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Lock
 from uuid import UUID, uuid4
 
-from boba.domain.core.workspace import (
-    WorkspaceBusyError,
-    WorkspaceId,
-    WorkspaceNotFoundError,
-    WorkspaceRegistry,
-)
+from boba.adapters.fs_workspace_service import FsWorkspaceService
+from boba.domain.core.workspace import WorkspaceId, WorkspaceManager, WorkspaceService
 
 
-class FsWorkspaceRegistry(WorkspaceRegistry):
-    """Каждый workspace — папка с UUID-именем внутри base_dir."""
+class FsWorkspaceManager(WorkspaceManager):
+    """Управляет workspace'ами на файловой системе.
+
+    - Каждый workspace — папка с UUID-именем внутри base_dir
+    - Кеширует WorkspaceService: один UUID → один экземпляр
+    - При старте подхватывает уже существующие папки
+    """
 
     def __init__(self, base_dir: Path) -> None:
         self._base_dir = base_dir
-        self._workspaces: dict[UUID, WorkspaceId] = {}
+        self._lock = Lock()
+        self._services: dict[UUID, FsWorkspaceService] = {}
         self._base_dir.mkdir(parents=True, exist_ok=True)
         self._scan_existing()
 
-    def create(self) -> WorkspaceId:
-        uid = uuid4()
-        (self._base_dir / str(uid)).mkdir()
-        ws = WorkspaceId(uid)
-        self._workspaces[uid] = ws
-        return ws
+    def get_or_create(self, workspace_id: UUID | None = None) -> WorkspaceService:
+        if workspace_id is None:
+            workspace_id = self._gen_uuid()
+            self._create_dir(workspace_id)
 
-    def get(self, id: UUID) -> WorkspaceId:
-        ws = self._workspaces.get(id)
-        if ws is None:
-            raise WorkspaceNotFoundError(id)
-        return ws
+        with self._lock:
+            if workspace_id not in self._services:
+                path = self._get_dir(workspace_id)
+                if not path.is_dir():
+                    raise FileNotFoundError(f"workspace dir not found: {path}")
+                
+                self._services[workspace_id] = FsWorkspaceService(
+                    WorkspaceId(workspace_id), path
+                )
+            return self._services[workspace_id]
 
-    async def delete(self, workspace: WorkspaceId) -> None:
-        if workspace.active:
-            raise WorkspaceBusyError(workspace.id)
+    def _create_dir(self, workspace_id: UUID) -> UUID:
+        self._get_dir(workspace_id).mkdir()
+        return workspace_id
 
-        path = self._base_dir / str(workspace.id)
-        if path.exists():
-            _rmtree(path)
-
-        self._workspaces.pop(workspace.id, None)
+    def _gen_uuid(self) -> UUID:
+        return uuid4()
+    
+    def _get_dir(self, workspace_id: UUID) -> Path:
+        return self._base_dir / str(workspace_id)
 
     def _scan_existing(self) -> None:
         for child in self._base_dir.iterdir():
             if child.is_dir():
                 try:
-                    uid = UUID(child.name)
+                    UUID(child.name)
                 except ValueError:
                     continue
-                self._workspaces[uid] = WorkspaceId(uid)
-
-
-def _rmtree(path: Path) -> None:
-    """Рекурсивное удаление директории."""
-    import shutil
-
-    shutil.rmtree(path)
