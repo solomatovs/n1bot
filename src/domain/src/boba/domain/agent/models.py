@@ -34,9 +34,7 @@ class AgentContext:
 
 
 class AgentLoop(StreamSource[AgentContext, AgentEvent]):
-    """
-    
-    """
+    """ """
 
     def __init__(
         self,
@@ -45,5 +43,4 @@ class AgentLoop(StreamSource[AgentContext, AgentEvent]):
         self._config = config
         self
 
-    def run(self, ctx: AgentContext) -> Iterator[AgentEvent]:
-        ...
+    def run(self, ctx: AgentContext) -> Iterator[AgentEvent]: ...

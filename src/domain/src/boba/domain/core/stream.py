@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import  Iterator, Generic, TypeVar, Callable
-
+from typing import Iterator, Generic, TypeVar, Callable
 
 TContext = TypeVar("TContext")
 TEvent = TypeVar("TEvent")
+
 
 class StreamSource(ABC, Generic[TContext, TEvent]):
     """
@@ -39,6 +39,7 @@ class StreamSink(ABC, Generic[TContext, TEvent]):
 
 TEventIn = TypeVar("TEventIn")
 TEventOut = TypeVar("TEventOut")
+
 
 class EventTransformer(ABC, Generic[TEventIn, TEventOut]):
     """
@@ -90,6 +91,7 @@ class Loop(StreamSource[TContext, TEvent]):
     """
     Оркестратор, который запускает Pipeline в цикле, пока не будет сигнала остановиться
     """
+
     def __init__(
         self,
         source: StreamSource[TContext, TEvent],
