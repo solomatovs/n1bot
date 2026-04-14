@@ -4,3 +4,4 @@ config/config.toml
 chainlit/.chainlit/translations/
 chainlit/.files/
 import
+workspaces

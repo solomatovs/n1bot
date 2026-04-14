@@ -8,3 +8,4 @@ chroma_debug_db
 .chainlit/translations/
 .files/
 chainlit.md
+workspaces
