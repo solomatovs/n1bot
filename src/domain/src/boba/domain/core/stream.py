@@ -58,7 +58,7 @@ class ActiveConverter(ABC, Generic[TEventIn, TEventOut]):
     """
 
     @abstractmethod
-    def convert(self, item: Iterator[TEventIn]) -> Iterator[TEventOut]: ...
+    def convert(self, items: Iterator[TEventIn]) -> Iterator[TEventOut]: ...
 
 
 class StreamMiddleware(StreamSource[TContext, TEvent]):
