@@ -18,7 +18,7 @@ from openai.types.chat import (
 
 from boba.domain.config import LLMConfig
 from boba.domain.llm.llm import LLMCompletionService, LLMDelta, LLMRequest
-from boba.domain.core.stream import ActiveConverter
+from boba.domain.core.stream import ActiveConverter, PassiveConverter
 from boba.domain.llm.llm import LLMMessage
 
 logger = logging.getLogger(__name__)
@@ -71,49 +71,56 @@ class StupedRetryLLMMiddleware(LLMCompletionService):
                 )
 
 
-class OpenAIMessageConverter(ActiveConverter[LLMMessage, ChatCompletionMessageParam]):
-    """Конвертирует поток LLMMessage в поток ChatCompletionMessageParam."""
-
-    def convert(self, items: Iterator[LLMMessage]) -> Iterator[ChatCompletionMessageParam]:
-        for msg in items:
-            yield self._convert_one(msg)
-
-    @staticmethod
-    def _convert_one(msg: LLMMessage) -> ChatCompletionMessageParam:
-        match msg.role:
+class OpenAIMessagePassiveConverter(
+    PassiveConverter[LLMMessage, ChatCompletionMessageParam]
+):
+    def convert(self, item: LLMMessage) -> ChatCompletionMessageParam:
+        match item.role:
             case "system":
                 return ChatCompletionSystemMessageParam(
                     role="system",
-                    content=msg.content,
+                    content=item.content,
                 )
             case "user":
                 return ChatCompletionUserMessageParam(
                     role="user",
-                    content=msg.content,
+                    content=item.content,
                 )
             case "assistant":
                 param = ChatCompletionAssistantMessageParam(
                     role="assistant",
-                    content=msg.content,
+                    content=item.content,
                 )
-                if msg.tool_calls:
+                if item.tool_calls:
                     param["tool_calls"] = [
                         {
                             "id": tc.id,
                             "type": "function",
                             "function": {"name": tc.name, "arguments": tc.arguments},
                         }
-                        for tc in msg.tool_calls
+                        for tc in item.tool_calls
                     ]
                 return param
             case "tool":
                 return ChatCompletionToolMessageParam(
                     role="tool",
-                    content=msg.content,
-                    tool_call_id=msg.tool_call_id or "",
+                    content=item.content,
+                    tool_call_id=item.tool_call_id or "",
                 )
             case _:
-                raise ValueError(f"Unknown message role: {msg.role}")
+                raise ValueError(f"Unknown message role: {item.role}")
+
+
+class OpenAIMessageConverter(ActiveConverter[LLMMessage, ChatCompletionMessageParam]):
+    """Конвертирует поток LLMMessage в поток ChatCompletionMessageParam."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._inner = OpenAIMessagePassiveConverter()
+
+    def convert(self, items: Iterator[LLMMessage]) -> Iterator[ChatCompletionMessageParam]:
+        for msg in items:
+            yield self._inner.convert(msg)
 
 
 class OpenAICompletionService(LLMCompletionService):
