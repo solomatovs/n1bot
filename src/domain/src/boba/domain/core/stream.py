@@ -41,14 +41,24 @@ TEventIn = TypeVar("TEventIn")
 TEventOut = TypeVar("TEventOut")
 
 
-class EventTransformer(ABC, Generic[TEventIn, TEventOut]):
+class PassiveConverter(ABC, Generic[TEventIn, TEventOut]):
     """
     Трансфопрмация потока событий.
-        transform() принимает 1 событие, возвращает 1 событие. Без внутреннего состояния.
+        convert() принимает 1 событие, возвращает 1 событие
     """
 
     @abstractmethod
-    def transform(self, item: TEventIn) -> TEventOut: ...
+    def convert(self, item: TEventIn) -> TEventOut: ...
+
+
+class ActiveConverter(ABC, Generic[TEventIn, TEventOut]):
+    """
+    Трансфопрмация потока событий.
+        convert() принимает 0..N событий, возвращает 0..N событий
+    """
+
+    @abstractmethod
+    def convert(self, item: Iterator[TEventIn]) -> Iterator[TEventOut]: ...
 
 
 class StreamMiddleware(StreamSource[TContext, TEvent]):
@@ -107,6 +117,6 @@ class Loop(StreamSource[TContext, TEvent]):
         while True:
             for event in self._source.produce(ctx):
                 yield event
-                
+
                 if self.should_stop(ctx, event):
                     return
