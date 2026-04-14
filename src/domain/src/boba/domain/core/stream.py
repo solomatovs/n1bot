@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Iterator, Generic, TypeVar, Callable
+from typing import Iterator, Generic, TypeVar
 
 TContext = TypeVar("TContext")
 TEvent = TypeVar("TEvent")
@@ -89,26 +89,23 @@ class Pipeline(StreamSource[TContext, TEvent]):
 
 class Loop(StreamSource[TContext, TEvent]):
     """
-    Оркестратор, который запускает Pipeline в цикле, пока не будет сигнала остановиться
+    Оркестратор, который запускает source в цикле, пока should_stop не вернёт True.
+    Для кастомной логики остановки — наследоваться и переопределить should_stop.
     """
 
-    def __init__(
-        self,
-        source: StreamSource[TContext, TEvent],
-        stop: Callable[[TEvent], bool],
-    ) -> None:
+    def __init__(self, source: StreamSource[TContext, TEvent]) -> None:
         self._source = source
-        self._stop = stop
 
     def name(self) -> str:
         return "Loop(" + self._source.name() + ")"
 
+    def should_stop(self, ctx: TContext, event: TEvent) -> bool:
+        """Переопределить в наследнике. По умолчанию — никогда не останавливается."""
+        return False
+
     def produce(self, ctx: TContext) -> Iterator[TEvent]:
         while True:
             for event in self._source.produce(ctx):
-                # возвращаем все события по мере их появления, не накапливая
                 yield event
-
-                # проверяем после каждой стадии, нужно ли остановиться
-                if self._stop(event):
+                if self.should_stop(ctx, event):
                     return
