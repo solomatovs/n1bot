@@ -17,9 +17,19 @@ from openai.types.chat import (
 )
 
 from boba.domain.config import LLMConfig
-from boba.domain.llm.llm import LLMCompletionService, LLMDelta, LLMRequest
+from boba.domain.agent.llm import LLMCompletionService
+from boba.domain.agent.models import LLMMessage, LLMRequest
+from boba.domain.agent.events import (
+    AgentEvent,
+    AnswerToken,
+    GenerationDone,
+    GenerationStarted,
+    RefusalToken,
+    ThinkingToken,
+    ToolCallArgumentDelta,
+    ToolCallBegin,
+)
 from boba.domain.core.stream import ActiveConverter, PassiveConverter
-from boba.domain.llm.llm import LLMMessage
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +43,14 @@ class LoggingLLMMiddleware(LLMCompletionService):
     def name(self) -> str:
         return "LoggingLLM"
 
-    def produce(self, ctx: LLMRequest) -> Iterator[LLMDelta]:
+    def produce(self, ctx: LLMRequest) -> Iterator[AgentEvent]:
         logger.info("LLM request: model=%s", ctx.model)
         start = time.monotonic()
         chunks = 0
 
-        for delta in self._next.produce(ctx):
+        for event in self._next.produce(ctx):
             chunks += 1
-            yield delta
+            yield event
 
         elapsed = time.monotonic() - start
         logger.info("LLM done: %d chunks in %.2fs", chunks, elapsed)
@@ -56,7 +66,7 @@ class StupedRetryLLMMiddleware(LLMCompletionService):
     def name(self) -> str:
         return "RetryLLM"
 
-    def produce(self, ctx: LLMRequest) -> Iterator[LLMDelta]:
+    def produce(self, ctx: LLMRequest) -> Iterator[AgentEvent]:
         for attempt in range(self._max_retries):
             try:
                 yield from self._next.produce(ctx)
@@ -128,6 +138,8 @@ class OpenAICompletionService(LLMCompletionService):
     Реализация LLMCompletionService через OpenAI-совместимый API.
     Работает с любым провайдером, поддерживающим OpenAI Chat Completions:
     OpenAI, Ollama, LM Studio, vLLM и т.д.
+
+    Yield-ит AgentEvent напрямую (delta converter встроен).
     """
 
     def __init__(self, config: LLMConfig) -> None:
@@ -137,14 +149,56 @@ class OpenAICompletionService(LLMCompletionService):
     def name(self) -> str:
         return "OpenAICompletion"
 
-    def produce(self, ctx: LLMRequest) -> Iterator[LLMDelta]:
+    def produce(self, ctx: LLMRequest) -> Iterator[AgentEvent]:
         response = self._client.chat.completions.create(
             model=ctx.model,
             messages=self._converter.convert(ctx.messages),
             stream=True,
         )
 
-        for chunk in response:
-            delta = chunk.choices[0].delta
+        started = False
+        seen_tool_calls: set[int] = set()
 
-            yield LLMDelta(thinking=None, content=delta.content)
+        for chunk in response:
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            delta = choice.delta
+
+            # Первый chunk с role — генерация началась
+            if delta.role and not started:
+                started = True
+                yield GenerationStarted()
+
+            # thinking/reasoning из model_extra (DeepSeek, Qwen)
+            extra = delta.model_extra or {}
+            thinking = extra.get("reasoning_content") or extra.get("thinking")
+
+            if thinking:
+                yield ThinkingToken(token=thinking)
+
+            if delta.content:
+                yield AnswerToken(token=delta.content)
+
+            if delta.refusal:
+                yield RefusalToken(token=delta.refusal)
+
+            # Tool call deltas
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    if tc.index not in seen_tool_calls and tc.id and tc.function and tc.function.name:
+                        seen_tool_calls.add(tc.index)
+                        yield ToolCallBegin(
+                            index=tc.index,
+                            tool_call_id=tc.id,
+                            tool_name=tc.function.name,
+                        )
+                    if tc.function and tc.function.arguments:
+                        yield ToolCallArgumentDelta(
+                            index=tc.index,
+                            arguments=tc.function.arguments,
+                        )
+
+            # Finish reason
+            if choice.finish_reason:
+                yield GenerationDone(finish_reason=choice.finish_reason)

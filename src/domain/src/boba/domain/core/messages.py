@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Iterator
 
-from boba.domain.llm.llm import LLMMessage
+from boba.domain.agent.models import LLMMessage
 
 
 class MessageService(ABC):

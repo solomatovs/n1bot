@@ -29,7 +29,7 @@ from boba.domain.agent.models import AgentContext
 from boba.domain.agent.stages import GenerateStage, SystemMessageStage, UserMessageStage
 from boba.domain.core.stream import Pipeline
 from boba.domain.core.workspace import WorkspaceManager, WorkspaceService
-from boba.domain.llm.llm import LLMCompletionService
+from boba.domain.agent.llm import LLMCompletionService
 
 
 class AppProvider(Provider):

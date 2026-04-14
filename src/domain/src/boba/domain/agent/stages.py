@@ -7,14 +7,11 @@ from typing import Iterator
 
 from boba.domain.agent.events import (
     AgentEvent,
-    AnswerToken,
-    GenerationDone,
     StageCompleted,
     StageStarted,
-    ThinkingToken,
 )
-from boba.domain.agent.models import AgentContext
-from boba.domain.llm.llm import LLMCompletionService, LLMMessage, LLMRequest
+from boba.domain.agent.llm import LLMCompletionService
+from boba.domain.agent.models import AgentContext, LLMMessage, LLMRequest
 from boba.domain.core.messages import MessageService
 from boba.domain.core.promt import SystemPromptService, UserPromptService
 from boba.domain.core.stream import StreamSource
@@ -118,14 +115,6 @@ class GenerateStage(StreamSource[AgentContext, AgentEvent]):
             messages=self._message_service.message_iter(),
         )
 
-        for delta in self._llm.produce(request):
-            if delta.thinking:
-                yield ThinkingToken(token=delta.thinking)
-            if delta.content:
-                yield AnswerToken(token=delta.content)
+        yield from self._llm.produce(request)
 
-        yield GenerationDone()
-        yield StageCompleted(
-            stage=self.name(),
-            detail="tokens=1",
-        )
+        yield StageCompleted(stage=self.name(), detail="generation done")

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Iterator
-from boba.domain.llm.llm import LLMMessage
+from boba.domain.agent.models import LLMMessage
 from boba.domain.core.messages import MessageService
 
 
