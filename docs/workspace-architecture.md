@@ -253,19 +253,6 @@ class ChatHistoryService(WorkspaceAwareService, ABC):
     def clear() -> None
 ```
 
-### ChatConfigService
-
-Гранулярный доступ по отдельным параметрам.
-
-```python
-class ChatConfigService(WorkspaceAwareService, ABC):
-    def get_config() -> ChatConfig
-    def get(key: str) -> Any
-    def set(key: str, value: Any) -> None
-    def delete(key: str) -> None
-    def reset() -> None
-```
-
 ---
 
 ## 3. System Prompt
@@ -282,10 +269,10 @@ class SystemPromptBlock:
     content: str
 ```
 
-### ProviderId
+### SystemPromptId
 
 ```python
-class ProviderId:
+class SystemPromptId:
     """Идентификатор провайдера."""
     def __init__(self, name: str) -> None:
         self._name = name
@@ -295,13 +282,13 @@ class ProviderId:
         return self._name
 
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, ProviderId) and self._name == other._name
+        return isinstance(other, SystemPromptId) and self._name == other._name
 
     def __hash__(self) -> int:
         return hash(self._name)
 
     def __repr__(self) -> str:
-        return f"ProviderId({self._name!r})"
+        return f"SystemPromptId({self._name!r})"
 ```
 
 ### SystemPromptProvider (abstract)
@@ -310,7 +297,7 @@ class ProviderId:
 class SystemPromptProvider(ABC):
     @property
     @abstractmethod
-    def id(self) -> ProviderId: ...
+    def id(self) -> SystemPromptId: ...
 
     @property
     @abstractmethod
@@ -328,198 +315,9 @@ class SystemPromptProvider(ABC):
 
 ### Конкретные реализации провайдеров
 
-```python
-class StaticPromptProvider(SystemPromptProvider):
-    """Фиксированный текст, зашитый в код."""
-
-    def __init__(self, id: ProviderId, priority: int, content: str) -> None:
-        self._id = id
-        self._priority = priority
-        self._content = content
-
-    @property
-    def id(self) -> ProviderId:
-        return self._id
-
-    @property
-    def priority(self) -> int:
-        return self._priority
-
-    async def build(self) -> SystemPromptBlock:
-        return SystemPromptBlock(name=self.id.name, content=self._content)
-
-
-class FilePromptProvider(SystemPromptProvider):
-    """Читает блок из файла на диске.
-    Держит ref count на workspace — защищает от удаления."""
-
-    def __init__(self, id: ProviderId, priority: int,
-                 workspace: WorkspaceId,
-                 folder: Path, file_name: str,
-                 default_prompt: str = "") -> None:
-        self._id = id
-        self._priority = priority
-        self._workspace = workspace
-        self._folder = folder
-        self._file_name = file_name
-        self._default_prompt = default_prompt
-
-    @property
-    def id(self) -> ProviderId:
-        return self._id
-
-    @property
-    def priority(self) -> int:
-        return self._priority
-
-    @property
-    def path(self) -> Path:
-        return self._folder / self._file_name
-
-    async def enter(self) -> None:
-        await self._workspace.acquire()
-
-    async def close(self) -> None:
-        await self._workspace.release()
-
-    async def build(self) -> SystemPromptBlock:
-        if self.path.exists():
-            content = self.path.read_text()
-        else:
-            content = self._default_prompt
-        return SystemPromptBlock(name=self.id.name, content=content)
-
-
-class EnvironmentPromptProvider(SystemPromptProvider):
-    """Информация о среде выполнения."""
-
-    def __init__(self) -> None:
-        self._id = ProviderId("environment")
-        self._priority = 60
-
-    @property
-    def id(self) -> ProviderId:
-        return self._id
-
-    @property
-    def priority(self) -> int:
-        return self._priority
-
-    async def build(self) -> SystemPromptBlock:
-        lines = [
-            f"Platform: {platform.system()}",
-            f"Shell: {os.environ.get('SHELL', 'unknown')}",
-            f"OS Version: {platform.release()}",
-            f"Current date: {date.today().isoformat()}",
-        ]
-        return SystemPromptBlock(name=self.id.name, content="\n".join(lines))
-
-
-class GitPromptProvider(SystemPromptProvider):
-    """Текущее состояние git."""
-
-    def __init__(self) -> None:
-        self._id = ProviderId("git_status")
-        self._priority = 80
-
-    @property
-    def id(self) -> ProviderId:
-        return self._id
-
-    @property
-    def priority(self) -> int:
-        return self._priority
-
-    async def build(self) -> SystemPromptBlock:
-        branch = await run("git branch --show-current")
-        status = await run("git status --short")
-        log = await run("git log --oneline -5")
-        content = (
-            f"Current branch: {branch}\n\n"
-            f"Status:\n{status}\n\n"
-            f"Recent commits:\n{log}"
-        )
-        return SystemPromptBlock(name=self.id.name, content=content)
-
-
-class IDEPromptProvider(SystemPromptProvider):
-    """Инструкции, специфичные для IDE."""
-
-    def __init__(self, ide_type: str) -> None:
-        self._id = ProviderId("ide")
-        self._priority = 70
-        self._ide_type = ide_type
-
-    @property
-    def id(self) -> ProviderId:
-        return self._id
-
-    @property
-    def priority(self) -> int:
-        return self._priority
-
-
-class SkillsPromptProvider(SystemPromptProvider):
-    """Описание доступных skills (slash-commands)."""
-
-    def __init__(self, skill_registry: SkillRegistry) -> None:
-        self._id = ProviderId("skills")
-        self._priority = 110
-        self._skill_registry = skill_registry
-
-    @property
-    def id(self) -> ProviderId:
-        return self._id
-
-    @property
-    def priority(self) -> int:
-        return self._priority
-
-    async def build(self) -> SystemPromptBlock:
-        lines = ["Available skills:"]
-        for skill in self._skill_registry:
-            lines.append(f"- {skill.name}: {skill.description}")
-        return SystemPromptBlock(name=self.id.name, content="\n".join(lines))
-
-
-class CallbackPromptProvider(SystemPromptProvider):
-    """Произвольная логика через callback."""
-
-    def __init__(self, id: ProviderId, priority: int,
-                 callback: Callable[[], Awaitable[str]]) -> None:
-        self._id = id
-        self._priority = priority
-        self._callback = callback
-
-    @property
-    def id(self) -> ProviderId:
-        return self._id
-
-    @property
-    def priority(self) -> int:
-        return self._priority
-
-    async def build(self) -> SystemPromptBlock:
-        content = await self._callback()
-        return SystemPromptBlock(name=self.id.name, content=content)
-```
-
-### Таблица провайдеров (порядок сборки)
-
-| Priority | Provider | Источник | Когда меняется |
-|---|---|---|---|
-| 0 | `StaticPromptProvider("identity")` | код | при обновлении версии |
-| 10 | `StaticPromptProvider("security")` | код | при обновлении версии |
-| 20 | `StaticPromptProvider("tool_rules")` | код | при обновлении версии |
-| 30 | `StaticPromptProvider("task_guide")` | код | при обновлении версии |
-| 40 | `StaticPromptProvider("git_guide")` | код | при обновлении версии |
-| 50 | `StaticPromptProvider("tone")` | код | при обновлении версии |
-| 60 | `EnvironmentPromptProvider` | OS, runtime | при каждом `build()` |
-| 70 | `IDEPromptProvider` | тип IDE | при старте сессии |
-| 80 | `GitPromptProvider` | git CLI | при каждом `build()` |
-| 90 | `FilePromptProvider("boba_md")` | `BOBA.md` | при изменении файла |
-| 100 | `FilePromptProvider("memory")` | `MEMORY.md` | при изменении файла |
-| 110 | `SkillsPromptProvider` | реестр skills | при регистрации |
+Вынесены в [system-prompt-providers.md](system-prompt-providers.md):
+`StaticPromptProvider`, `FilePromptProvider`, `EnvironmentPromptProvider`,
+`GitPromptProvider`, `IDEPromptProvider`, `SkillsPromptProvider`, `CallbackPromptProvider`.
 
 ### SystemPromptResult
 
@@ -545,7 +343,7 @@ class SystemPromptService:
     async def register(provider: SystemPromptProvider) -> None
         """Зарегистрировать провайдер, вызвать provider.enter()."""
 
-    async def unregister(id: ProviderId) -> None
+    async def unregister(id: SystemPromptId) -> None
         """Вызвать provider.close() и убрать провайдер."""
 
     def providers() -> Iterator[SystemPromptProvider]
@@ -593,69 +391,7 @@ class ToolParams:
     """Базовый класс. Каждый инструмент наследует свой."""
     pass
 
-# Примеры:
-@dataclass(frozen=True)
-class ReadParams(ToolParams):
-    """Чтение по строкам."""
-    file_path: str
-    offset: int | None = None   # номер строки (0-based)
-    limit: int | None = None    # количество строк
-
-@dataclass(frozen=True)
-class ReadBytesParams(ToolParams):
-    """Чтение по байтам."""
-    file_path: str
-    offset: int | None = None   # байтовое смещение
-    limit: int | None = None    # количество байт
-
-@dataclass(frozen=True)
-class SearchParams(ToolParams):
-    query: str
-    top_k: int = 5
-
-@dataclass(frozen=True)
-class WriteParams(ToolParams):
-    file_path: str
-    content: str
-
-@dataclass(frozen=True)
-class BashParams(ToolParams):
-    command: str
-    timeout: int = 120000
-
-
-# --- Серверные инструменты (Claude API) ---
-# Используют те же ToolParams/ToolCall/AssistantToolMessage/ToolMessage.
-# Адаптер Claude парсит server_tool_use → ToolCall, *_tool_result → ToolMessage.
-
-@dataclass(frozen=True)
-class WebSearchParams(ToolParams):
-    """Серверный веб-поиск."""
-    query: str
-
-@dataclass(frozen=True)
-class WebFetchParams(ToolParams):
-    """Серверная загрузка веб-страницы."""
-    url: str
-
-@dataclass(frozen=True)
-class CodeExecutionParams(ToolParams):
-    """Серверное выполнение Python-кода."""
-    code: str
-
-@dataclass(frozen=True)
-class BashExecutionParams(ToolParams):
-    """Серверное выполнение bash-команды."""
-    command: str
-
-@dataclass(frozen=True)
-class TextEditorParams(ToolParams):
-    """Серверное редактирование файла."""
-    command: str       # "create", "str_replace" и др.
-    path: str
-    file_text: str = ""
-    old_str: str = ""
-    new_str: str = ""
+# Конкретные ToolParams вынесены в tools-implementations.md
 
 
 # --- Типизированная схема параметров ---
@@ -725,122 +461,9 @@ class Tool(ABC, Generic[TParams]):
 
 ### Конкретные реализации
 
-```python
-class ReadTool(Tool[ReadParams]):
-    """Построчное чтение файла. offset/limit — в строках."""
-
-    @property
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
-            id=ToolId("read"),
-            description="Read a file by lines.",
-            input_schema=ToolInputSchema(params=[
-                ParamSchema(name="file_path", type=JsonType.STRING,
-                            description="Absolute path to the file."),
-                ParamSchema(name="offset", type=JsonType.INTEGER,
-                            description="Line number to start from (0-based).",
-                            required=False, default=None),
-                ParamSchema(name="limit", type=JsonType.INTEGER,
-                            description="Number of lines to read.",
-                            required=False, default=None),
-            ]),
-        )
-
-    @property
-    def params_type(self) -> type[ReadParams]:
-        return ReadParams
-
-    async def execute(self, params: ReadParams) -> ToolResult:
-        path = Path(params.file_path)
-        if not path.exists():
-            return ToolResult(content=f"File not found: {path}", is_error=True)
-
-        start = params.offset or 0
-        limit = params.limit
-
-        result_lines: list[str] = []
-        with open(path, "r") as f:
-            for _ in range(start):
-                if f.readline() == "":
-                    break
-
-            line_no = start
-            while True:
-                line = f.readline()
-                if line == "":
-                    break
-                line_no += 1
-                result_lines.append(f"{line_no}\t{line}")
-                if limit is not None and len(result_lines) >= limit:
-                    break
-
-        return ToolResult(content="".join(result_lines))
-
-
-class ReadBytesTool(Tool[ReadBytesParams]):
-    """Чтение файла по байтовому смещению. offset/limit — в байтах.
-    Использует seek() — мгновенный переход без сканирования."""
-
-    @property
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
-            id=ToolId("read_bytes"),
-            description="Read a file by byte offset.",
-            input_schema=ToolInputSchema(params=[
-                ParamSchema(name="file_path", type=JsonType.STRING,
-                            description="Absolute path to the file."),
-                ParamSchema(name="offset", type=JsonType.INTEGER,
-                            description="Byte offset to start from.",
-                            required=False, default=None),
-                ParamSchema(name="limit", type=JsonType.INTEGER,
-                            description="Number of bytes to read.",
-                            required=False, default=None),
-            ]),
-        )
-
-    @property
-    def params_type(self) -> type[ReadBytesParams]:
-        return ReadBytesParams
-
-    async def execute(self, params: ReadBytesParams) -> ToolResult:
-        path = Path(params.file_path)
-        if not path.exists():
-            return ToolResult(content=f"File not found: {path}", is_error=True)
-
-        with open(path, "r") as f:
-            if params.offset:
-                f.seek(params.offset)
-            chunk = f.read(params.limit) if params.limit else f.read()
-
-        return ToolResult(content=chunk)
-
-
-class WriteTool(Tool[WriteParams]):
-    """Создаёт или полностью перезаписывает файл."""
-
-    @property
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
-            id=ToolId("write"),
-            description="Create or overwrite a file.",
-            input_schema=ToolInputSchema(params=[
-                ParamSchema(name="file_path", type=JsonType.STRING,
-                            description="Absolute path to the file."),
-                ParamSchema(name="content", type=JsonType.STRING,
-                            description="Content to write."),
-            ]),
-        )
-
-    @property
-    def params_type(self) -> type[WriteParams]:
-        return WriteParams
-
-    async def execute(self, params: WriteParams) -> ToolResult:
-        path = Path(params.file_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(params.content)
-        return ToolResult(content=f"Written {len(params.content)} bytes to {path}")
-```
+Вынесены в [tools-implementations.md](tools-implementations.md):
+конкретные `ToolParams` (ReadParams, WriteParams, BashParams, серверные)
+и `Tool` реализации (ReadTool, ReadBytesTool, WriteTool).
 
 ### ToolsService
 
@@ -936,20 +559,14 @@ class CompletionDelta:
 ```python
 TApiMessage = TypeVar("TApiMessage")  # формат сообщения провайдера
 
-class MessageConverter(ABC, Generic[TApiMessage]):
-    """Конвертирует сообщения между доменными моделями и форматом API провайдера.
-    Оба направления. Работает с Iterator — не загружает все сообщения в память."""
+class MessageSerializer(ABC, Generic[TApiMessage]):
+    """Сериализует доменные модели в формат API провайдера.
+    Работает с Iterator — не загружает все сообщения в память."""
 
     @abstractmethod
     def serialize(self, messages: Iterator[LLMMessage]) -> Iterator[TApiMessage]:
         """domain → API. Может склеивать соседние сообщения
         (AssistantMessage + AssistantToolMessage → одно API-сообщение)."""
-        ...
-
-    @abstractmethod
-    def deserialize(self, messages: Iterator[TApiMessage]) -> Iterator[LLMMessage]:
-        """API → domain. Может разбивать одно API-сообщение
-        на несколько доменных (assistant с content + tool_calls → два объекта)."""
         ...
 
 
@@ -983,13 +600,9 @@ class DeltaAssembler(ABC):
 ### Поток данных
 
 ```
-          converter.serialize      stream_completion          assemble
+         serializer.serialize     stream_completion          assemble
 Iterator     ────────────►   Iterator      ────────────►  Iterator    ────────►  Iterator
 [LLMMessage]                 [TApiMessage]                 [CompletionDelta]      [LLMMessage]
-
-          converter.deserialize
-Iterator     ◄────────────   Iterator
-[LLMMessage]                 [TApiMessage]
 
 Доменные                     API-формат                    Чанки от API           Готовые доменные
 сообщения                    провайдера                    (по мере генерации)    сообщения
@@ -998,304 +611,381 @@ Iterator     ◄────────────   Iterator
 
 Ничего не копится — каждый шаг отдаёт данные по мере готовности.
 
-### Модели API (OpenAI-совместимый формат)
+### Конкретные реализации
+
+Вынесены в [openai-adapter.md](openai-adapter.md):
+API модели (ApiMessage, ApiToolCall, ApiFunctionCall),
+OpenAIMessageSerializer, OpenAICompletionService, OpenAIDeltaAssembler,
+пример agent loop.
+
+---
+
+## 7. Pipeline & Streaming
+
+Базовые абстракции для потоковой обработки и композиции стадий.
+
+### PipelineStage
 
 ```python
-@dataclass(frozen=True)
-class ApiFunctionCall:
-    """Вложенный объект function внутри tool_call."""
-    name: str
-    arguments: str   # JSON-строка
+TContext = TypeVar("TContext")
+TEvent = TypeVar("TEvent")
 
-@dataclass(frozen=True)
-class ApiToolCall:
-    """Tool call в формате OpenAI API."""
-    id: str
-    type: str        # "function"
-    function: ApiFunctionCall
+class PipelineStage(ABC, Generic[TContext, TEvent]):
+    """Одна стадия пайплайна.
+    Читает данные из ctx, записывает результаты,
+    yield'ит события для наблюдаемости."""
 
-@dataclass(frozen=True)
-class ApiMessage:
-    """Сообщение в формате OpenAI API."""
-    role: str                                  # "system", "developer", "user", "assistant", "tool"
-    content: str | None = None
-    tool_calls: list[ApiToolCall] | None = None # только для assistant
-    tool_call_id: str | None = None             # только для tool
+    @property
+    @abstractmethod
+    def name(self) -> str: ...
+
+    @abstractmethod
+    def run(self, ctx: TContext) -> Iterator[TEvent]: ...
 ```
 
-### OpenAIMessageConverter
+### Pipeline
 
 ```python
-class OpenAIMessageConverter(MessageConverter[ApiMessage]):
-    """Конвертирует между доменными моделями и форматом OpenAI API."""
+class Pipeline(Generic[TContext, TEvent]):
+    """Выполняет последовательность стадий PipelineStage.
+    Оркестратор — генератор, ничего не накапливает."""
 
-    def __init__(self, tools_service: ToolsService) -> None:
-        self._tools = tools_service
+    def __init__(self, stages: list[PipelineStage[TContext, TEvent]]) -> None:
+        self._stages = list(stages)
 
-    def serialize(self, messages: Iterator[LLMMessage]) -> Iterator[ApiMessage]:
-        pending_assistant: AssistantMessage | None = None
+    @property
+    def stage_names(self) -> list[str]:
+        return [s.name for s in self._stages]
 
-        for msg in messages:
-            if pending_assistant is not None:
-                if isinstance(msg, AssistantToolMessage):
-                    # Склейка: content + tool_calls в одно API-сообщение
-                    yield ApiMessage(
-                        role="assistant",
-                        content=pending_assistant.content,
-                        tool_calls=[self._to_api_tool_call(tc)
-                                    for tc in msg.tool_calls],
-                    )
-                    pending_assistant = None
-                    continue
-                else:
-                    yield self._to_api_message(pending_assistant)
-                    pending_assistant = None
+    def run(self, ctx: TContext) -> Iterator[TEvent]:
+        """Выполнить все стадии, yield'я события по мере появления."""
+        for stage in self._stages:
+            yield from stage.run(ctx)
+```
 
-            if isinstance(msg, AssistantMessage):
-                pending_assistant = msg
-            else:
-                yield self._to_api_message(msg)
+### StreamTransformer
 
-        if pending_assistant is not None:
-            yield self._to_api_message(pending_assistant)
+```python
+class StreamTransformer(ABC, Generic[TIn, TOut]):
+    """Stateful поэлементная трансформация потока.
+    feed() принимает один элемент, yield'ит ноль или более результатов."""
 
-    def _to_api_message(self, message: LLMMessage) -> ApiMessage:
-        """Конвертация одного доменного сообщения (без склейки)."""
-        match message:
-            case SystemMessage(content=c):
-                return ApiMessage(role="system", content=c)
-            case DeveloperMessage(content=c):
-                return ApiMessage(role="developer", content=c)
-            case UserMessage(content=c):
-                return ApiMessage(role="user", content=c)
-            case AssistantMessage(content=c):
-                return ApiMessage(role="assistant", content=c)
-            case AssistantToolMessage(tool_calls=calls):
-                return ApiMessage(
-                    role="assistant",
-                    tool_calls=[self._to_api_tool_call(tc) for tc in calls],
-                )
-            case ToolMessage(content=c, tool_call_id=tid):
-                return ApiMessage(role="tool", content=c, tool_call_id=tid)
+    @abstractmethod
+    def feed(self, item: TIn) -> Iterator[TOut]: ...
 
-    def _to_api_tool_call(self, tc: ToolCall) -> ApiToolCall:
-        return ApiToolCall(
-            id=tc.id,
-            type="function",
-            function=ApiFunctionCall(
-                name=tc.tool_id.name,
-                arguments=json.dumps(asdict(tc.arguments)),
-            ),
+    def flush(self) -> Iterator[TOut]:
+        """Финализация — yield остатков буфера."""
+        yield from ()
+
+    @abstractmethod
+    def reset(self) -> None: ...
+```
+
+### StreamConsumer
+
+```python
+class StreamConsumer(ABC, Generic[TStream, TEvent]):
+    """Потребитель потока — yield'ит события, накапливает результат.
+    После завершения consume() результат доступен через атрибуты."""
+
+    @abstractmethod
+    def consume(self, stream: TStream) -> Iterator[TEvent]: ...
+```
+
+---
+
+## 8. AgentLoop
+
+Оркестратор агентного цикла: подготовка контекста через Pipeline,
+затем цикл LLM → tools → repeat. Всё на Iterator'ах.
+Интегрирует модули: ChatHistoryService, SystemPromptService, UserPromptService,
+MessageSerializer, LLMCompletionService, DeltaAssembler, ToolsService.
+
+### AgentRequest / AgentConfig
+
+```python
+@dataclass(frozen=True)
+class AgentRequest:
+    """Входные данные для AgentLoop.run()."""
+    query: str
+    model: str
+    max_tokens: int
+
+@dataclass(frozen=True)
+class AgentConfig:
+    """Настройки AgentLoop."""
+    max_iterations: int = 10
+    default_model: str = ""
+    limit_message: str = "Достигнут лимит итераций агента."
+```
+
+### AgentContext
+
+```python
+@dataclass
+class AgentContext:
+    """Контекст, передаваемый через Pipeline и AgentLoop.
+    Мутабельный — стадии и цикл дополняют его."""
+    request: AgentRequest
+    history: ChatHistoryService
+    tools: ToolsService
+    turn_id: str                          # текущий turn
+    last_message_id: MessageId | None = None
+```
+
+### События (AgentEvent)
+
+```python
+# Общие
+@dataclass(frozen=True)
+class StageStarted:
+    stage: str
+
+@dataclass(frozen=True)
+class StageCompleted:
+    stage: str
+    detail: str
+
+# Генерация (стриминг)
+@dataclass(frozen=True)
+class ThinkingToken:
+    token: str
+
+@dataclass(frozen=True)
+class AnswerToken:
+    token: str
+
+@dataclass(frozen=True)
+class GenerationDone:
+    pass
+
+# Tool calls
+@dataclass(frozen=True)
+class ToolCallStarted:
+    tool_call_id: str
+    tool_name: str
+    arguments: str
+
+@dataclass(frozen=True)
+class ToolResultReady:
+    tool_call_id: str
+    tool_name: str
+    content: str
+    is_error: bool = False
+
+AgentEvent = Union[
+    StageStarted, StageCompleted,
+    ThinkingToken, AnswerToken, GenerationDone,
+    ToolCallStarted, ToolResultReady,
+]
+```
+
+### Context Pipeline — стадии подготовки
+
+Стадии работают с нашими сервисами через `AgentContext`.
+
+```python
+ContextPipeline = Pipeline[AgentContext, AgentEvent]
+
+
+class SystemPromptStage(PipelineStage[AgentContext, AgentEvent]):
+    """Собирает system prompt через SystemPromptService
+    и сохраняет SystemMessage в историю."""
+
+    def __init__(self, system_prompt_service: SystemPromptService) -> None:
+        self._sps = system_prompt_service
+
+    @property
+    def name(self) -> str:
+        return "system_prompt"
+
+    def run(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+        yield StageStarted(stage=self.name)
+        result = self._sps.build()
+        content = result.build()
+        stored = ctx.history.add_message(
+            SystemMessage(content=content),
+            turn_id=ctx.turn_id, parent_id=ctx.last_message_id,
         )
+        ctx.last_message_id = stored.id
+        yield StageCompleted(stage=self.name, detail=f"{len(content)} chars")
 
-    # --- API → domain ---
 
-    def deserialize(self, messages: Iterator[ApiMessage]) -> Iterator[LLMMessage]:
-        for api_msg in messages:
-            match api_msg.role:
-                case "system":
-                    yield SystemMessage(content=api_msg.content or "")
-                case "developer":
-                    yield DeveloperMessage(content=api_msg.content or "")
-                case "user":
-                    yield UserMessage(content=api_msg.content or "")
-                case "tool":
-                    yield ToolMessage(
-                        content=api_msg.content or "",
-                        tool_call_id=api_msg.tool_call_id or "",
-                    )
-                case "assistant":
-                    yield from self._deserialize_assistant(api_msg)
+class UserPromptStage(PipelineStage[AgentContext, AgentEvent]):
+    """Обогащает запрос пользователя через UserPromptService
+    и сохраняет UserMessage в историю."""
 
-    def _deserialize_assistant(self, api_msg: ApiMessage) -> Iterator[LLMMessage]:
-        if api_msg.content:
-            yield AssistantMessage(content=api_msg.content)
-        if api_msg.tool_calls:
-            tool_calls = [self._from_api_tool_call(tc) for tc in api_msg.tool_calls]
-            yield AssistantToolMessage(tool_calls=tool_calls)
+    def __init__(self, user_prompt_service: UserPromptService) -> None:
+        self._ups = user_prompt_service
 
-    def _from_api_tool_call(self, api_tc: ApiToolCall) -> ToolCall:
-        tool_id = ToolId(api_tc.function.name)
-        raw_args = json.loads(api_tc.function.arguments)
-        tool = self._tools.get(tool_id)
-        params = tool.params_type(**raw_args)
-        return ToolCall(id=api_tc.id, tool_id=tool_id, arguments=params)
+    @property
+    def name(self) -> str:
+        return "user_prompt"
+
+    def run(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+        yield StageStarted(stage=self.name)
+        enriched = self._ups.enrich_message(ctx.request.query)
+        stored = ctx.history.add_message(
+            UserMessage(content=enriched),
+            turn_id=ctx.turn_id, parent_id=ctx.last_message_id,
+        )
+        ctx.last_message_id = stored.id
+        yield StageCompleted(stage=self.name, detail="query enriched")
 ```
 
-### OpenAICompletionService
+### AgentLoop
 
 ```python
-class OpenAICompletionService(LLMCompletionService[ApiMessage]):
-    """Стриминг через OpenAI-совместимый API."""
+class AgentLoop:
+    """Агентный цикл: ContextPipeline → (LLM → tools)* → ответ.
+    Все результаты сохраняются в ChatHistoryService."""
 
-    def __init__(self, client: OpenAI) -> None:
-        self._client = client
-
-    def stream_completion(
+    def __init__(
         self,
-        messages: Iterator[ApiMessage],
-        tools: Iterator[ToolDefinition],
-        model: str,
-    ) -> Iterator[CompletionDelta]:
-        stream = self._client.chat.completions.create(
-            model=model,
-            messages=list(messages),
-            tools=list(tools),
-            stream=True,
-            stream_options={"include_usage": True},
-        )
+        config: AgentConfig,
+        serializer: MessageSerializer,
+        llm: LLMCompletionService,
+        assembler: DeltaAssembler,
+        context_pipeline: ContextPipeline,
+        tools: ToolsService,
+    ) -> None:
+        self._config = config
+        self._serializer = serializer
+        self._llm = llm
+        self._assembler = assembler
+        self._pipeline = context_pipeline
+        self._tools = tools
 
-        for chunk in stream:
-            if not chunk.choices:
-                continue
-            choice = chunk.choices[0]
-            delta = choice.delta
+    def run(self, request: AgentRequest, ctx: AgentContext) -> Iterator[AgentEvent]:
+        # 1. Подготовка контекста через Pipeline
+        yield from self._pipeline.run(ctx)
 
-            if delta.content:
-                yield CompletionDelta(content=delta.content)
+        # 2. Агентный цикл
+        for iteration in range(1, self._config.max_iterations + 1):
+            turn_id = uuid4().hex
 
-            reasoning = getattr(delta, "reasoning_content", None)
-            if reasoning:
-                yield CompletionDelta(reasoning_content=reasoning)
+            # Сериализация истории → API формат
+            api_messages = self._serializer.serialize(
+                msg.message for msg in ctx.history.get_messages()
+            )
 
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    func = tc.function
-                    yield CompletionDelta(
-                        tool_call_index=tc.index,
-                        tool_call_id=tc.id or None,
-                        tool_call_name=func.name if func else None,
-                        tool_call_arguments=func.arguments if func else None,
-                    )
+            # Стриминг LLM
+            deltas = self._llm.stream_completion(
+                api_messages, self._tools.get_definitions(), request.model,
+            )
 
-            if choice.finish_reason:
-                yield CompletionDelta(
-                    finish_reason=choice.finish_reason,
-                    request_id=chunk.id,
-                    model=chunk.model,
+            # Сборка дельт → доменные сообщения + yield событий
+            for msg in self._assembler.assemble(deltas):
+                stored = ctx.history.add_message(
+                    msg, turn_id=turn_id, parent_id=ctx.last_message_id,
                 )
-```
+                ctx.last_message_id = stored.id
 
-### OpenAIDeltaAssembler
+                # Yield события в зависимости от типа сообщения
+                match msg:
+                    case AssistantMessage(content=c):
+                        yield AnswerToken(token=c)
+                    case ThinkingMessage(content=c):
+                        yield ThinkingToken(token=c)
 
-```python
-class OpenAIDeltaAssembler(DeltaAssembler):
-    """Собирает поток CompletionDelta в поток LLMMessage.
-    Yield'ит каждое сообщение как только оно готово."""
+            meta = self._assembler.get_meta()
 
-    def __init__(self, tools_service: ToolsService) -> None:
-        self._tools = tools_service
-        self._meta: LLMResponseMeta | None = None
-
-    def assemble(self, deltas: Iterator[CompletionDelta]) -> Iterator[LLMMessage]:
-        content_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        # tool_calls: {index → (id, name, [argument_chunks])}
-        tool_calls: dict[int, tuple[str, str, list[str]]] = {}
-        finish_reason: str | None = None
-        request_id: str = ""
-        model: str = ""
-
-        for delta in deltas:
-            if delta.content:
-                content_parts.append(delta.content)
-
-            if delta.reasoning_content:
-                reasoning_parts.append(delta.reasoning_content)
-
-            if delta.tool_call_index is not None:
-                idx = delta.tool_call_index
-                if idx not in tool_calls:
-                    tool_calls[idx] = (delta.tool_call_id or "", delta.tool_call_name or "", [])
-                if delta.tool_call_arguments:
-                    tool_calls[idx][2].append(delta.tool_call_arguments)
-
-            if delta.finish_reason:
-                finish_reason = delta.finish_reason
-            if delta.request_id:
-                request_id = delta.request_id
-            if delta.model:
-                model = delta.model
-
-        # --- Yield готовых сообщений ---
-
-        if reasoning_parts:
-            yield ThinkingMessage(content="".join(reasoning_parts))
-
-        if content_parts:
-            yield AssistantMessage(content="".join(content_parts))
-
-        if tool_calls:
-            calls = []
-            for idx in sorted(tool_calls):
-                tc_id, tc_name, arg_chunks = tool_calls[idx]
-                raw_args = json.loads("".join(arg_chunks))
-                tool = self._tools.get(ToolId(tc_name))
-                params = tool.params_type(**raw_args)
-                calls.append(ToolCall(id=tc_id, tool_id=ToolId(tc_name), arguments=params))
-            yield AssistantToolMessage(tool_calls=calls)
-
-        self._meta = LLMResponseMeta(
-            request_id=request_id,
-            model=model,
-            stop_reason=finish_reason or "",
-            usage=TokenUsage(),  # usage приходит отдельно, можно расширить
-        )
-
-    def get_meta(self) -> LLMResponseMeta:
-        if self._meta is None:
-            raise RuntimeError("assemble() not consumed yet")
-        return self._meta
-```
-
-### Пример использования
-
-```python
-# --- DI создаёт конкретные реализации, код работает через абстракции ---
-converter: MessageConverter = OpenAIMessageConverter(tools_service)
-completion: LLMCompletionService = OpenAICompletionService(client)
-assembler: DeltaAssembler = OpenAIDeltaAssembler(tools_service)
-
-# --- Agent loop ---
-
-while True:
-    # 1. Сериализация: Iterator[LLMMessage] → Iterator[ApiMessage]
-    api_messages = converter.serialize(history.get_messages())
-
-    # 2. Стриминг: Iterator[ApiMessage] → Iterator[CompletionDelta]
-    deltas = completion.stream_completion(api_messages, tools, model)
-
-    # 3. Сборка: Iterator[CompletionDelta] → Iterator[LLMMessage]
-    turn_id = uuid4().hex
-    for msg in assembler.assemble(deltas):
-        # Каждое сообщение сохраняется сразу, не копится
-        history.add_message(msg, turn_id=turn_id, parent_id=last_id)
-
-    # 4. Проверка: продолжать или выйти
-    meta = assembler.get_meta()
-    if meta.stop_reason in ("stop", "end_turn"):
-        break
-
-    # 5. Выполнение tools → ToolMessage → следующая итерация цикла
-    for msg in history.get_turn(turn_id):
-        if isinstance(msg.message, AssistantToolMessage):
-            for tc in msg.message.tool_calls:
-                result = await tools_service.execute(tc.tool_id, tc.arguments)
-                history.add_message(
-                    ToolMessage(content=result.content, tool_call_id=tc.id),
-                    turn_id=turn_id, parent_id=last_id,
+            # Проверка: tool calls или конец
+            if meta.stop_reason in ("stop", "end_turn"):
+                yield GenerationDone()
+                yield StageCompleted(
+                    stage="agent_loop",
+                    detail=f"{iteration} итераций",
                 )
+                return
+
+            # Выполнение инструментов
+            for stored_msg in ctx.history.get_turn(turn_id):
+                if isinstance(stored_msg.message, AssistantToolMessage):
+                    for tc in stored_msg.message.tool_calls:
+                        yield ToolCallStarted(
+                            tool_call_id=tc.id,
+                            tool_name=tc.tool_id.name,
+                            arguments=str(tc.arguments),
+                        )
+                        result = self._tools.execute(tc.tool_id, tc.arguments)
+                        tool_msg = ToolMessage(
+                            content=result.content, tool_call_id=tc.id,
+                        )
+                        stored = ctx.history.add_message(
+                            tool_msg, turn_id=turn_id,
+                            parent_id=ctx.last_message_id,
+                        )
+                        ctx.last_message_id = stored.id
+                        yield ToolResultReady(
+                            tool_call_id=tc.id,
+                            tool_name=tc.tool_id.name,
+                            content=result.content,
+                            is_error=result.is_error,
+                        )
+
+        # Лимит итераций
+        yield AnswerToken(token=self._config.limit_message)
+        yield GenerationDone()
+        yield StageCompleted(
+            stage="agent_loop",
+            detail=f"лимит {self._config.max_iterations} итераций",
+        )
 ```
 
-### ToolsService: новый метод get()
+### Поток выполнения
 
-```python
-class ToolsService:
-    # ... существующие методы ...
-
-    def get(self, id: ToolId) -> Tool:
-        """Найти инструмент по ToolId. Raises ToolNotFoundError."""
 ```
+AgentLoop.run(request, ctx)
+    │
+    ▼
+1. Context Pipeline (стадии работают с сервисами):
+    SystemPromptStage   → SystemPromptService.build()
+                          → history.add_message(SystemMessage)
+    UserPromptStage     → UserPromptService.enrich_message()
+                          → history.add_message(UserMessage)
+    (расширяемо: SearchStage, IndexStage, ...)
+    │
+    ▼
+2. Agent Loop (до max_iterations):
+    ┌───────────────────────────────────────────────────────┐
+    │  serializer.serialize(history.get_messages())         │
+    │       ↓ Iterator[TApiMessage]                         │
+    │  llm.stream_completion(api_messages, tools, model)    │
+    │       ↓ Iterator[CompletionDelta]                     │
+    │  assembler.assemble(deltas)                           │
+    │       ↓ Iterator[LLMMessage]                          │
+    │       → history.add_message(msg, turn_id)             │
+    │       → yield AnswerToken / ThinkingToken              │
+    │                                                       │
+    │  meta = assembler.get_meta()                          │
+    │                                                       │
+    │  if stop → yield GenerationDone → return              │
+    │  if tool_calls:                                       │
+    │       tools.execute(tool_call)                        │
+    │       → history.add_message(ToolMessage, turn_id)     │
+    │       → yield ToolCallStarted, ToolResultReady        │
+    │       → continue loop                                 │
+    └───────────────────────────────────────────────────────┘
+    │
+    ▼
+3. Все события yield'ятся наружу как Iterator[AgentEvent]
+   (SSE стрим к клиенту)
+```
+
+### Какой сервис когда работает
+
+| Шаг | Сервис | Что делает |
+|---|---|---|
+| Pipeline: system_prompt | `SystemPromptService` | Собирает промпт из провайдеров |
+| Pipeline: user_prompt | `UserPromptService` | Обогащает запрос пользователя |
+| Pipeline: * | `ChatHistoryService` | Сохраняет SystemMessage, UserMessage |
+| Loop: сериализация | `MessageSerializer` | domain → API формат |
+| Loop: стриминг | `LLMCompletionService` | API → дельты |
+| Loop: сборка | `DeltaAssembler` | Дельты → доменные сообщения |
+| Loop: сохранение | `ChatHistoryService` | Сохраняет AssistantMessage, AssistantToolMessage |
+| Loop: tools | `ToolsService` | Выполняет инструменты |
+| Loop: tool result | `ChatHistoryService` | Сохраняет ToolMessage |
 
 ---
 
@@ -1346,17 +1036,17 @@ class WorkspaceServicesProvider(Provider):
     async def system_prompt_service(self, ws: WorkspaceId) -> AsyncIterator[SystemPromptService]:
         svc = SystemPromptService()
 
-        await svc.register(StaticPromptProvider(ProviderId("identity"),   0,  IDENTITY_TEXT))
-        await svc.register(StaticPromptProvider(ProviderId("security"),   10, SECURITY_TEXT))
-        await svc.register(StaticPromptProvider(ProviderId("tool_rules"), 20, TOOL_RULES_TEXT))
-        await svc.register(StaticPromptProvider(ProviderId("task_guide"), 30, TASK_GUIDE_TEXT))
-        await svc.register(StaticPromptProvider(ProviderId("git_guide"),  40, GIT_GUIDE_TEXT))
-        await svc.register(StaticPromptProvider(ProviderId("tone"),       50, TONE_TEXT))
+        await svc.register(StaticPromptProvider(SystemPromptId("identity"),   0,  IDENTITY_TEXT))
+        await svc.register(StaticPromptProvider(SystemPromptId("security"),   10, SECURITY_TEXT))
+        await svc.register(StaticPromptProvider(SystemPromptId("tool_rules"), 20, TOOL_RULES_TEXT))
+        await svc.register(StaticPromptProvider(SystemPromptId("task_guide"), 30, TASK_GUIDE_TEXT))
+        await svc.register(StaticPromptProvider(SystemPromptId("git_guide"),  40, GIT_GUIDE_TEXT))
+        await svc.register(StaticPromptProvider(SystemPromptId("tone"),       50, TONE_TEXT))
         await svc.register(EnvironmentPromptProvider())
         await svc.register(IDEPromptProvider(ide_type="vscode"))
         await svc.register(GitPromptProvider())
-        await svc.register(FilePromptProvider(ProviderId("boba_md"), 90,  ws, ws_path,     "BOBA.md"))
-        await svc.register(FilePromptProvider(ProviderId("memory"),  100, ws, memory_path, "MEMORY.md"))
+        await svc.register(FilePromptProvider(SystemPromptId("boba_md"), 90,  ws, ws_path,     "BOBA.md"))
+        await svc.register(FilePromptProvider(SystemPromptId("memory"),  100, ws, memory_path, "MEMORY.md"))
 
         yield svc
         await svc.close()
@@ -1460,8 +1150,6 @@ await registry.delete(workspace)
 │  │                                  ├── UserMessage          │
 │  │                                  ├── AssistantMessage     │
 │  │                                  └── ToolMessage          │
-│  │                                                           │
-│  ├── ChatConfigService         ◄── ChatConfig                │
 │  │                                                           │
 │  ├── SystemPromptService       ◄── SystemPromptProvider's    │
 │  │    build() → SystemPromptResult   ├── Static              │
