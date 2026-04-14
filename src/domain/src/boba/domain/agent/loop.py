@@ -6,31 +6,22 @@ from typing import Iterator
 
 from boba.domain.agent.events import AgentEvent, GenerationDone
 from boba.domain.agent.models import AgentConfig, AgentContext, AgentRequest
-from boba.domain.agent.stages import GenerateStage
-from boba.domain.llm.llm import LLMCompletionService
-from boba.domain.core.messages import MessageService
 from boba.domain.core.stream import Loop, Pipeline
 
 
 class AgentLoop(Loop[AgentContext, AgentEvent]):
     """
     Оркестратор агента.
+    Pipeline передаётся снаружи — состав и порядок стадий определяется в DI.
     """
 
     def __init__(
         self,
         config: AgentConfig,
-        message_service: MessageService,
-        llm: LLMCompletionService,
+        pipeline: Pipeline[AgentContext, AgentEvent],
     ) -> None:
         self._config = config
-        self._message_service = message_service
-        
-        super().__init__(
-            source=Pipeline([
-                GenerateStage(llm, message_service),
-            ]),
-        )
+        super().__init__(source=pipeline)
 
     def name(self) -> str:
         return "AgentLoop"
@@ -46,11 +37,9 @@ class AgentLoop(Loop[AgentContext, AgentEvent]):
 
     def should_stop(self, ctx: AgentContext, event: AgentEvent) -> bool:
         if not isinstance(event, GenerationDone):
-            """Останавливаемся только по итогам генерации"""
             return False
 
         if ctx.iteration >= ctx.config.max_iterations:
-            """Остановиться, если достигнут лимит итераций."""
             return True
 
         return False

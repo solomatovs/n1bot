@@ -34,36 +34,53 @@ class ConfigLoader:
     def load(self) -> AppConfig:
         return AppConfig(
             workspace_base_dir=self._resolve(
-                "WORKSPACE_BASE_DIR", "workspace_base_dir", "./workspaces",
+                "WORKSPACE_BASE_DIR",
+                "workspace_base_dir",
+                "./workspaces",
                 section=self._app,
             ),
             ssl_verify=self._resolve(
-                "SSL_VERIFY", "ssl_verify", "false",
+                "SSL_VERIFY",
+                "ssl_verify",
+                "false",
                 section=self._app,
-            ).lower() in ("true", "1", "yes"),
+            ).lower()
+            in ("true", "1", "yes"),
             log_level=self._resolve(
-                "LOG_LEVEL", "log_level", "INFO",
+                "LOG_LEVEL",
+                "log_level",
+                "INFO",
                 section=self._app,
             ),
             llm=LLMConfig(
                 base_url=self._resolve(
-                    "LLM_BASE_URL", "base_url", "http://localhost:11434/v1",
+                    "LLM_BASE_URL",
+                    "base_url",
+                    "http://localhost:11434/v1",
                     section=self._llm,
                 ),
                 api_key=self._resolve(
-                    "LITELLM_API_KEY", "api_key", "ollama",
+                    "LITELLM_API_KEY",
+                    "api_key",
+                    "ollama",
                     section=self._llm,
                 ),
                 model=self._resolve(
-                    "LLM_MODEL", "model", "qwen3:8b",
+                    "LLM_MODEL",
+                    "model",
+                    "qwen3:8b",
                     section=self._llm,
                 ),
             ),
             agent=AgentConfig(
-                max_iterations=int(self._resolve(
-                    "AGENT_MAX_ITERATIONS", "max_iterations", "20",
-                    section=self._agent,
-                )),
+                max_iterations=int(
+                    self._resolve(
+                        "AGENT_MAX_ITERATIONS",
+                        "max_iterations",
+                        "20",
+                        section=self._agent,
+                    )
+                ),
             ),
         )
 

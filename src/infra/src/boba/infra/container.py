@@ -20,6 +20,8 @@ def create_container(config: AppConfig) -> Container:
 
 
 @contextmanager
-def request_scope(container: Container, ws_id: UUID | None = None) -> Iterator[Container]:
+def request_scope(
+    container: Container, ws_id: UUID | None = None
+) -> Iterator[Container]:
     with container({UUID | None: ws_id}) as request:
         yield request

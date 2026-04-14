@@ -7,6 +7,7 @@ import time
 from typing import Iterator
 
 from openai import OpenAI
+
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
     ChatCompletionMessageParam,
@@ -16,8 +17,9 @@ from openai.types.chat import (
 )
 
 from boba.domain.config import LLMConfig
-from boba.domain.llm.llm import LLMCompletionService, LLMDelta, LLMMessage, LLMRequest
-
+from boba.domain.llm.llm import LLMCompletionService, LLMDelta, LLMRequest
+from boba.domain.core.stream import ActiveConverter
+from boba.domain.llm.llm import LLMMessage
 
 logger = logging.getLogger(__name__)
 
@@ -69,46 +71,30 @@ class StupedRetryLLMMiddleware(LLMCompletionService):
                 )
 
 
-class OpenAICompletionService(LLMCompletionService):
-    """
-    Реализация LLMCompletionService через OpenAI-совместимый API.
-    Работает с любым провайдером, поддерживающим OpenAI Chat Completions:
-    OpenAI, Ollama, LM Studio, vLLM и т.д.
-    """
+class OpenAIMessageConverter(ActiveConverter[LLMMessage, ChatCompletionMessageParam]):
+    """Конвертирует поток LLMMessage в поток ChatCompletionMessageParam."""
 
-    def __init__(self, config: LLMConfig) -> None:
-        self._client = OpenAI(base_url=config.base_url, api_key=config.api_key)
-
-    def name(self) -> str:
-        return "OpenAICompletion"
-
-    def produce(self, ctx: LLMRequest) -> Iterator[LLMDelta]:
-        response = self._client.chat.completions.create(
-            model=ctx.model,
-            messages=map(self._to_openai_message, ctx.messages),
-            stream=True,
-        )
-
-        for chunk in response:
-            delta = chunk.choices[0].delta
-
-            yield LLMDelta(thinking=None, content=delta.content)
+    def convert(self, items: Iterator[LLMMessage]) -> Iterator[ChatCompletionMessageParam]:
+        for msg in items:
+            yield self._convert_one(msg)
 
     @staticmethod
-    def _to_openai_message(msg: LLMMessage) -> ChatCompletionMessageParam:
-        """Конвертирует LLMMessage в формат OpenAI API."""
+    def _convert_one(msg: LLMMessage) -> ChatCompletionMessageParam:
         match msg.role:
             case "system":
                 return ChatCompletionSystemMessageParam(
-                    role="system", content=msg.content,
+                    role="system",
+                    content=msg.content,
                 )
             case "user":
                 return ChatCompletionUserMessageParam(
-                    role="user", content=msg.content,
+                    role="user",
+                    content=msg.content,
                 )
             case "assistant":
                 param = ChatCompletionAssistantMessageParam(
-                    role="assistant", content=msg.content,
+                    role="assistant",
+                    content=msg.content,
                 )
                 if msg.tool_calls:
                     param["tool_calls"] = [
@@ -128,3 +114,30 @@ class OpenAICompletionService(LLMCompletionService):
                 )
             case _:
                 raise ValueError(f"Unknown message role: {msg.role}")
+
+
+class OpenAICompletionService(LLMCompletionService):
+    """
+    Реализация LLMCompletionService через OpenAI-совместимый API.
+    Работает с любым провайдером, поддерживающим OpenAI Chat Completions:
+    OpenAI, Ollama, LM Studio, vLLM и т.д.
+    """
+
+    def __init__(self, config: LLMConfig) -> None:
+        self._client = OpenAI(base_url=config.base_url, api_key=config.api_key)
+        self._converter = OpenAIMessageConverter()
+
+    def name(self) -> str:
+        return "OpenAICompletion"
+
+    def produce(self, ctx: LLMRequest) -> Iterator[LLMDelta]:
+        response = self._client.chat.completions.create(
+            model=ctx.model,
+            messages=self._converter.convert(ctx.messages),
+            stream=True,
+        )
+
+        for chunk in response:
+            delta = chunk.choices[0].delta
+
+            yield LLMDelta(thinking=None, content=delta.content)

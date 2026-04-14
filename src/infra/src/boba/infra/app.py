@@ -18,6 +18,16 @@ from boba.adapters.openai_completion import (
     StupedRetryLLMMiddleware,
 )
 from boba.domain.core.messages import MessageService
+from boba.domain.core.promt import PromptId, SystemPromptService, UserPromptService
+from boba.adapters.prompt_providers import (
+    EnvironmentPromptProvider,
+    GitPromptProvider,
+    StaticPromptProvider,
+)
+from boba.domain.agent.events import AgentEvent
+from boba.domain.agent.models import AgentContext
+from boba.domain.agent.stages import GenerateStage, SystemMessageStage, UserMessageStage
+from boba.domain.core.stream import Pipeline
 from boba.domain.core.workspace import WorkspaceManager, WorkspaceService
 from boba.domain.llm.llm import LLMCompletionService
 
@@ -50,6 +60,24 @@ class AppProvider(Provider):
     def agent_config(self, config: AppConfig) -> AgentConfig:
         return config.agent
 
+    @provide
+    def system_prompt_service(self) -> SystemPromptService:
+        svc = SystemPromptService()
+        svc.register(
+            StaticPromptProvider(
+                PromptId("identity"),
+                priority=0,
+                content="Ты — ассистент Boba. Отвечай кратко и по делу.",
+            )
+        )
+        svc.register(EnvironmentPromptProvider())
+        svc.register(GitPromptProvider())
+        return svc
+
+    @provide
+    def user_prompt_service(self) -> UserPromptService:
+        return UserPromptService()
+
 
 class RequestProvider(Provider):
     """Per-request: workspace service, message service."""
@@ -71,14 +99,28 @@ class RequestProvider(Provider):
         return InMemoryMessageService()
 
     @provide
+    def agent_pipeline(
+        self,
+        system_prompt_service: SystemPromptService,
+        user_prompt_service: UserPromptService,
+        message_service: MessageService,
+        llm: LLMCompletionService,
+    ) -> Pipeline[AgentContext, AgentEvent]:
+        return Pipeline(
+            [
+                SystemMessageStage(system_prompt_service, message_service),
+                UserMessageStage(user_prompt_service, message_service),
+                GenerateStage(llm, message_service),
+            ]
+        )
+
+    @provide
     def agent_loop(
         self,
         agent_config: AgentConfig,
-        message_service: MessageService,
-        llm: LLMCompletionService,
+        pipeline: Pipeline[AgentContext, AgentEvent],
     ) -> AgentLoop:
         return AgentLoop(
             config=agent_config,
-            message_service=message_service,
-            llm=llm,
+            pipeline=pipeline,
         )

@@ -1,17 +1,17 @@
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
-from typing import Iterator
+from typing import Iterator, Iterable
 
 
 @dataclass(frozen=True)
-class SystemPromptBlock:
-    """Один собранный блок системного промпта."""
+class PromptBlock:
+    """Один собранный блок промпта."""
 
     name: str
     content: str
 
 
-class SystemPromptId:
+class PromptId:
     """Идентификатор провайдера."""
 
     def __init__(self, name: str) -> None:
@@ -22,59 +22,71 @@ class SystemPromptId:
         return self._name
 
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, SystemPromptId) and self._name == other._name
+        return isinstance(other, PromptId) and self._name == other._name
 
     def __hash__(self) -> int:
         return hash(self._name)
 
     def __repr__(self) -> str:
-        return f"SystemPromptId({self._name!r})"
+        return f"PromptId({self._name!r})"
 
 
-class SystemPromptProvider(ABC):
+class PromptProvider(ABC):
     """
-    Провайдер системного промпта.
-    Поставляет один или несколько блоков, которые будут конкатенированы в итоговый системный промпт.
+    Провайдер промпта.
+    Поставляет блок, который будет конкатенирован с другими в итоговый промпт.
     """
 
     @abstractmethod
-    def id(self) -> SystemPromptId: ...
+    def id(self) -> PromptId: ...
 
     @abstractmethod
     def priority(self) -> int: ...
 
     @abstractmethod
-    def build(self) -> SystemPromptBlock: ...
+    def build(self) -> PromptBlock: ...
 
 
+class PromptResult:
+    """Результат сборки промпта из одного или нескольких провайдеров."""
 
-class SystemPromptResult:
-    """Результат сборки системного промпта из одного или нескольких провайдеров."""
-
-    def __init__(self, blocks: Iterator[SystemPromptBlock]) -> None:
+    def __init__(self, blocks: Iterable[PromptBlock]) -> None:
         self._blocks = blocks
 
     def build(self) -> str:
         """Конкатенация всех непустых блоков."""
         return "\n\n".join(b.content for b in self._blocks if b.content)
 
-    def __iter__(self) -> Iterator[SystemPromptBlock]:
+    def __iter__(self) -> Iterator[PromptBlock]:
         return iter(self._blocks)
 
 
-class SystemPromptService:
-    """Сервис для управления системными промптами от разных провайдеров."""
+class PromptService:
+    """Сервис для управления промптами от разных провайдеров."""
 
-    def register(self, provider: SystemPromptProvider) -> None:
-        """Зарегистрировать провайдер, вызвать provider.enter()."""
-        ...
+    def __init__(self) -> None:
+        self._providers: dict[PromptId, PromptProvider] = {}
 
-    def unregister(self, id: SystemPromptId) -> None:
-        """Вызвать provider.close() и убрать провайдер."""
-        ...
+    def register(self, provider: PromptProvider) -> None:
+        """Зарегистрировать провайдер."""
+        self._providers[provider.id()] = provider
 
-    def providers(self) -> Iterator[SystemPromptProvider]: ...
+    def unregister(self, id: PromptId) -> None:
+        """Убрать провайдер."""
+        self._providers.pop(id, None)
 
-    def build(self) -> SystemPromptResult:
-        """Собрать system prompt из всех провайдеров (по priority)."""
-        ...
+    def providers(self) -> Iterator[PromptProvider]:
+        return iter(self._providers.values())
+
+    def build(self) -> PromptResult:
+        """Собрать промпт из всех провайдеров (по priority)."""
+        sorted_providers = sorted(self._providers.values(), key=lambda p: p.priority())
+        return PromptResult(p.build() for p in sorted_providers)
+
+
+class SystemPromptService(PromptService):
+    """Сервис для сборки system prompt."""
+
+
+class UserPromptService(PromptService):
+    """Сервис для сборки user prompt (контекст: IDE selection, template и т.д.)."""

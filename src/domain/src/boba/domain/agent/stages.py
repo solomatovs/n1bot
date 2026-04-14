@@ -16,16 +16,16 @@ from boba.domain.agent.events import (
 from boba.domain.agent.models import AgentContext
 from boba.domain.llm.llm import LLMCompletionService, LLMMessage, LLMRequest
 from boba.domain.core.messages import MessageService
-from boba.domain.core.promt import SystemPromptService
+from boba.domain.core.promt import SystemPromptService, UserPromptService
 from boba.domain.core.stream import StreamSource
 
 logger = logging.getLogger(__name__)
 
 
-class BuildMessagesStage(StreamSource[AgentContext, AgentEvent]):
+class SystemMessageStage(StreamSource[AgentContext, AgentEvent]):
     """
-    Первая стадия: на первой итерации формирует system + user message
-    через MessageService. На последующих — пропускает.
+    Добавляет system message на первой итерации.
+    На последующих — пропускает.
     """
 
     def __init__(
@@ -37,7 +37,7 @@ class BuildMessagesStage(StreamSource[AgentContext, AgentEvent]):
         self._message_service = message_service
 
     def name(self) -> str:
-        return "BuildMessages"
+        return "SystemMessage"
 
     def produce(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         if self._message_service.last() is not None:
@@ -45,11 +45,51 @@ class BuildMessagesStage(StreamSource[AgentContext, AgentEvent]):
 
         yield StageStarted(stage=self.name())
 
-        system_prompt = self._prompt_service.build().build()
-        self._message_service.add(LLMMessage(role="system", content=system_prompt))
-        self._message_service.add(LLMMessage(role="user", content=ctx.request.query))
+        system_prompt = self._prompt_service.build()
 
-        yield StageCompleted(stage=self.name(), detail="messages initialized")
+        self._message_service.add(
+            LLMMessage(
+                role="system",
+                content=system_prompt.build(),
+            )
+        )
+
+        yield StageCompleted(stage=self.name(), detail="system prompt added")
+
+
+class UserMessageStage(StreamSource[AgentContext, AgentEvent]):
+    """
+    Собирает user message через PromptService (user_prompt_service)
+    и добавляет в MessageService. Выполняется один раз — на первой итерации.
+    """
+
+    def __init__(
+        self,
+        user_prompt_service: UserPromptService,
+        message_service: MessageService,
+    ) -> None:
+        self._user_prompt_service = user_prompt_service
+        self._message_service = message_service
+
+    def name(self) -> str:
+        return "UserMessage"
+
+    def produce(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+        if ctx.iteration > 0:
+            return
+
+        yield StageStarted(stage=self.name())
+
+        # Контекст от провайдеров (IDE selection, template и т.д.)
+        context = self._user_prompt_service.build().build()
+
+        # Собираем: контекст (если есть) + запрос пользователя
+        parts = [p for p in (context, ctx.request.query) if p]
+        content = "\n\n".join(parts)
+
+        self._message_service.add(LLMMessage(role="user", content=content))
+
+        yield StageCompleted(stage=self.name(), detail="user message added")
 
 
 class GenerateStage(StreamSource[AgentContext, AgentEvent]):
