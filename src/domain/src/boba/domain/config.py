@@ -8,5 +8,6 @@ from dataclasses import dataclass
 class AppConfig:
     """Единственный источник конфигурации приложения."""
 
+    workspace_base_dir: str = "./workspaces"
     ssl_verify: bool = False
     log_level: str = "INFO"

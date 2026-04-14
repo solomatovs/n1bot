@@ -55,13 +55,17 @@ class WorkspaceAwareService(ABC):
 class WorkspaceBusyError(Exception):
     """Ошибка при попытке удалить workspace, который всё ещё используется."""
 
-    workspace_id: WorkspaceId
+    def __init__(self, workspace_id: UUID) -> None:
+        super().__init__(f"workspace {workspace_id} is busy")
+        self.workspace_id = workspace_id
 
 
 class WorkspaceNotFoundError(Exception):
     """Ошибка при попытке получить несуществующий workspace."""
 
-    workspace_id: WorkspaceId
+    def __init__(self, workspace_id: UUID) -> None:
+        super().__init__(f"workspace {workspace_id} not found")
+        self.workspace_id = workspace_id
 
 
 class WorkspaceRegistry(ABC):
