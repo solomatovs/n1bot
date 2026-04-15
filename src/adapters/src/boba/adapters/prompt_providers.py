@@ -8,6 +8,7 @@ import subprocess
 from datetime import date
 from pathlib import Path
 
+from boba.domain.agent.models import AgentContext
 from boba.domain.core.promt import (
     PromptBlock,
     PromptId,
@@ -15,7 +16,7 @@ from boba.domain.core.promt import (
 )
 
 
-class StaticPromptProvider(PromptProvider):
+class StaticPromptProvider(PromptProvider[None]):
     """Фиксированный текст, зашитый в код."""
 
     def __init__(self, id: PromptId, priority: int, content: str) -> None:
@@ -29,11 +30,11 @@ class StaticPromptProvider(PromptProvider):
     def priority(self) -> int:
         return self._priority
 
-    def build(self) -> PromptBlock:
+    def build(self, ctx: None) -> PromptBlock:
         return PromptBlock(name=self._id.name, content=self._content)
 
 
-class FilePromptProvider(PromptProvider):
+class FilePromptProvider(PromptProvider[None]):
     """Читает блок из файла на диске."""
 
     def __init__(
@@ -54,7 +55,7 @@ class FilePromptProvider(PromptProvider):
     def priority(self) -> int:
         return self._priority
 
-    def build(self) -> PromptBlock:
+    def build(self, ctx: None) -> PromptBlock:
         if self._path.exists():
             content = self._path.read_text(encoding="utf-8")
         else:
@@ -62,7 +63,7 @@ class FilePromptProvider(PromptProvider):
         return PromptBlock(name=self._id.name, content=content)
 
 
-class EnvironmentPromptProvider(PromptProvider):
+class EnvironmentPromptProvider(PromptProvider[None]):
     """Информация о среде выполнения."""
 
     def __init__(self) -> None:
@@ -74,7 +75,7 @@ class EnvironmentPromptProvider(PromptProvider):
     def priority(self) -> int:
         return 60
 
-    def build(self) -> PromptBlock:
+    def build(self, ctx: None) -> PromptBlock:
         lines = [
             f"Platform: {platform.system()}",
             f"Shell: {os.environ.get('SHELL', 'unknown')}",
@@ -84,7 +85,7 @@ class EnvironmentPromptProvider(PromptProvider):
         return PromptBlock(name=self._id.name, content="\n".join(lines))
 
 
-class GitPromptProvider(PromptProvider):
+class GitPromptProvider(PromptProvider[None]):
     """Текущее состояние git."""
 
     def __init__(self) -> None:
@@ -96,7 +97,7 @@ class GitPromptProvider(PromptProvider):
     def priority(self) -> int:
         return 80
 
-    def build(self) -> PromptBlock:
+    def build(self, ctx: None) -> PromptBlock:
         branch = self._run("git branch --show-current")
         status = self._run("git status --short")
         log = self._run("git log --oneline -5")
@@ -121,12 +122,11 @@ class GitPromptProvider(PromptProvider):
             return "(unavailable)"
 
 
-class UserQueryProvider(PromptProvider):
-    """Сырой запрос пользователя. Всегда присутствует."""
+class UserQueryProvider(PromptProvider[AgentContext]):
+    """Запрос пользователя из AgentContext."""
 
-    def __init__(self, query: str) -> None:
+    def __init__(self) -> None:
         self._id = PromptId("user_query")
-        self._query = query
 
     def id(self) -> PromptId:
         return self._id
@@ -134,11 +134,11 @@ class UserQueryProvider(PromptProvider):
     def priority(self) -> int:
         return 50
 
-    def build(self) -> PromptBlock:
-        return PromptBlock(name=self._id.name, content=self._query)
+    def build(self, ctx: AgentContext) -> PromptBlock:
+        return PromptBlock(name=self._id.name, content=ctx.request.query)
 
 
-class IDESelectionProvider(PromptProvider):
+class IDESelectionProvider(PromptProvider[AgentContext]):
     """Контекст выделенных строк из IDE."""
 
     def __init__(self, file_path: str, selection: str) -> None:
@@ -152,21 +152,20 @@ class IDESelectionProvider(PromptProvider):
     def priority(self) -> int:
         return 30
 
-    def build(self) -> PromptBlock:
+    def build(self, ctx: AgentContext) -> PromptBlock:
         content = (
             f"Selected code from {self._file_path}:\n" f"```\n{self._selection}\n```"
         )
         return PromptBlock(name=self._id.name, content=content)
 
 
-class TemplateProvider(PromptProvider):
+class TemplateProvider(PromptProvider[AgentContext]):
     """Оборачивает запрос в шаблон с инструкциями."""
 
-    def __init__(self, id: PromptId, priority: int, template: str, query: str) -> None:
+    def __init__(self, id: PromptId, priority: int, template: str) -> None:
         self._id = id
         self._priority = priority
         self._template = template
-        self._query = query
 
     def id(self) -> PromptId:
         return self._id
@@ -174,6 +173,6 @@ class TemplateProvider(PromptProvider):
     def priority(self) -> int:
         return self._priority
 
-    def build(self) -> PromptBlock:
-        content = self._template.format(query=self._query)
+    def build(self, ctx: AgentContext) -> PromptBlock:
+        content = self._template.format(query=ctx.request.query)
         return PromptBlock(name=self._id.name, content=content)

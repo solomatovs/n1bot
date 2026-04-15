@@ -1,14 +1,15 @@
-"""LLM completion service — базовый класс для источников LLM-ответов."""
+"""LLM completion service — базовый класс для всех слоёв agent middleware."""
 
 from __future__ import annotations
 
 from boba.domain.agent.events import AgentEvent
-from boba.domain.agent.models import LLMRequest
+from boba.domain.agent.models import AgentContext
 from boba.domain.core.stream import StreamSource
 
 
-class LLMCompletionService(StreamSource[LLMRequest, AgentEvent]):
+class LLMMiddleware(StreamSource[AgentContext, AgentEvent]):
     """
-    Базовый класс для любого LLM-источника — адаптер или middleware.
-    Produce() возвращает поток AgentEvent напрямую.
+    Базовый класс для любого слоя в middleware-цепочке агента.
+    Terminal (адаптер) реализует produce() напрямую.
+    Middleware принимает next в __init__ и делегирует ему.
     """

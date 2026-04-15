@@ -1,4 +1,4 @@
-"""OpenAI-совместимая реализация LLMCompletionService."""
+"""OpenAI-совместимая реализация LLM — terminal и middleware."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import time
 from typing import Iterator
 
 from openai import OpenAI
-
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
     ChatCompletionMessageParam,
@@ -17,56 +16,61 @@ from openai.types.chat import (
 )
 
 from boba.domain.config import LLMConfig
-from boba.domain.agent.llm import LLMCompletionService
-from boba.domain.agent.models import LLMMessage, LLMRequest
+from boba.domain.agent.llm import LLMMiddleware
+from boba.domain.agent.models import AgentContext, LLMMessage
 from boba.domain.agent.events import (
     AgentEvent,
+    AnswerStarted,
     AnswerToken,
     GenerationDone,
     GenerationStarted,
     RefusalToken,
+    ThinkingStarted,
     ThinkingToken,
     ToolCallArgumentDelta,
     ToolCallBegin,
 )
-from boba.domain.core.stream import ActiveConverter, PassiveConverter
+from boba.domain.core.messages import MessageService
+from boba.domain.core.stream import PassiveConverter, StatefulActiveConverter
+
+from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 logger = logging.getLogger(__name__)
 
 
-class LoggingLLMMiddleware(LLMCompletionService):
-    """Логирует запрос, количество чанков и время генерации."""
+class LoggingLLMMiddleware(LLMMiddleware):
+    """Логирует запрос, количество событий и время генерации."""
 
-    def __init__(self, next: LLMCompletionService) -> None:
+    def __init__(self, next: LLMMiddleware) -> None:
         self._next = next
 
     def name(self) -> str:
         return "LoggingLLM"
 
-    def produce(self, ctx: LLMRequest) -> Iterator[AgentEvent]:
-        logger.info("LLM request: model=%s", ctx.model)
+    def produce(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+        logger.info("LLM request: model=%s", ctx.request.model)
         start = time.monotonic()
-        chunks = 0
+        count = 0
 
         for event in self._next.produce(ctx):
-            chunks += 1
+            count += 1
             yield event
 
         elapsed = time.monotonic() - start
-        logger.info("LLM done: %d chunks in %.2fs", chunks, elapsed)
+        logger.info("LLM done: %d events in %.2fs", count, elapsed)
 
 
-class StupedRetryLLMMiddleware(LLMCompletionService):
+class StupidRetryLLMMiddleware(LLMMiddleware):
     """Повторяет запрос при ошибке до max_retries раз."""
 
-    def __init__(self, next: LLMCompletionService, max_retries: int = 3) -> None:
+    def __init__(self, next: LLMMiddleware, max_retries: int = 3) -> None:
         self._next = next
         self._max_retries = max_retries
 
     def name(self) -> str:
         return "RetryLLM"
 
-    def produce(self, ctx: LLMRequest) -> Iterator[AgentEvent]:
+    def produce(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         for attempt in range(self._max_retries):
             try:
                 yield from self._next.produce(ctx)
@@ -81,9 +85,11 @@ class StupedRetryLLMMiddleware(LLMCompletionService):
                 )
 
 
-class OpenAIMessagePassiveConverter(
+class ToOpenAIOneMessageConverter(
     PassiveConverter[LLMMessage, ChatCompletionMessageParam]
 ):
+    """Конвертирует LLMMessage в формат OpenAI API."""
+
     def convert(self, item: LLMMessage) -> ChatCompletionMessageParam:
         match item.role:
             case "system":
@@ -121,73 +127,84 @@ class OpenAIMessagePassiveConverter(
                 raise ValueError(f"Unknown message role: {item.role}")
 
 
-class OpenAIMessageConverter(ActiveConverter[LLMMessage, ChatCompletionMessageParam]):
-    """Конвертирует поток LLMMessage в поток ChatCompletionMessageParam."""
+class ToOpenAIMessageConverter(
+    StatefulActiveConverter[LLMMessage, ChatCompletionMessageParam]
+):
+    """Конвертирует LLMMessage в формат OpenAI API."""
+
+    def __init__(self):
+        self._converter = ToOpenAIOneMessageConverter()
+
+    def reset(self) -> None:
+        pass
+
+    def convert(
+        self, items: Iterator[LLMMessage]
+    ) -> Iterator[ChatCompletionMessageParam]:
+        for item in items:
+            yield self._converter.convert(item)
+
+
+class FromOpenAIChunkConverter(
+    StatefulActiveConverter[ChatCompletionChunk, AgentEvent]
+):
+    """
+    Конвертирует поток OpenAI chunks в поток AgentEvent.
+    С состоянием: отслеживает started и seen tool call indices.
+    Вызвать reset() перед повторным использованием.
+    """
 
     def __init__(self) -> None:
-        super().__init__()
-        self._inner = OpenAIMessagePassiveConverter()
+        self._started = False
+        self._thinking_started = False
+        self._answer_started = False
+        self._seen_tool_calls: set[int] = set()
 
-    def convert(self, items: Iterator[LLMMessage]) -> Iterator[ChatCompletionMessageParam]:
-        for msg in items:
-            yield self._inner.convert(msg)
+    def reset(self) -> None:
+        self._started = False
+        self._thinking_started = False
+        self._answer_started = False
+        self._seen_tool_calls.clear()
 
+    def convert(self, items: Iterator[ChatCompletionChunk]) -> Iterator[AgentEvent]:
 
-class OpenAICompletionService(LLMCompletionService):
-    """
-    Реализация LLMCompletionService через OpenAI-совместимый API.
-    Работает с любым провайдером, поддерживающим OpenAI Chat Completions:
-    OpenAI, Ollama, LM Studio, vLLM и т.д.
-
-    Yield-ит AgentEvent напрямую (delta converter встроен).
-    """
-
-    def __init__(self, config: LLMConfig) -> None:
-        self._client = OpenAI(base_url=config.base_url, api_key=config.api_key)
-        self._converter = OpenAIMessageConverter()
-
-    def name(self) -> str:
-        return "OpenAICompletion"
-
-    def produce(self, ctx: LLMRequest) -> Iterator[AgentEvent]:
-        response = self._client.chat.completions.create(
-            model=ctx.model,
-            messages=self._converter.convert(ctx.messages),
-            stream=True,
-        )
-
-        started = False
-        seen_tool_calls: set[int] = set()
-
-        for chunk in response:
+        for chunk in items:
             if not chunk.choices:
                 continue
             choice = chunk.choices[0]
             delta = choice.delta
 
-            # Первый chunk с role — генерация началась
-            if delta.role and not started:
-                started = True
+            if delta.role and not self._started:
+                self._started = True
                 yield GenerationStarted()
 
-            # thinking/reasoning из model_extra (DeepSeek, Qwen)
             extra = delta.model_extra or {}
             thinking = extra.get("reasoning_content") or extra.get("thinking")
 
             if thinking:
+                if not self._thinking_started:
+                    self._thinking_started = True
+                    yield ThinkingStarted()
                 yield ThinkingToken(token=thinking)
 
             if delta.content:
+                if not self._answer_started:
+                    self._answer_started = True
+                    yield AnswerStarted()
                 yield AnswerToken(token=delta.content)
 
             if delta.refusal:
                 yield RefusalToken(token=delta.refusal)
 
-            # Tool call deltas
             if delta.tool_calls:
                 for tc in delta.tool_calls:
-                    if tc.index not in seen_tool_calls and tc.id and tc.function and tc.function.name:
-                        seen_tool_calls.add(tc.index)
+                    if (
+                        tc.index not in self._seen_tool_calls
+                        and tc.id
+                        and tc.function
+                        and tc.function.name
+                    ):
+                        self._seen_tool_calls.add(tc.index)
                         yield ToolCallBegin(
                             index=tc.index,
                             tool_call_id=tc.id,
@@ -199,6 +216,32 @@ class OpenAICompletionService(LLMCompletionService):
                             arguments=tc.function.arguments,
                         )
 
-            # Finish reason
             if choice.finish_reason:
                 yield GenerationDone(finish_reason=choice.finish_reason)
+
+
+class OpenAIMiddleware(LLMMiddleware):
+    """
+    Terminal — вызывает OpenAI-совместимый API.
+    Сам берёт messages из MessageService, строит запрос и стримит AgentEvent.
+    """
+
+    def __init__(self, config: LLMConfig, message_service: MessageService) -> None:
+        self._client = OpenAI(base_url=config.base_url, api_key=config.api_key)
+        self._message_service = message_service
+        self._to_converter = ToOpenAIMessageConverter()
+        self._from_converter = FromOpenAIChunkConverter()
+
+    def name(self) -> str:
+        return "OpenAICompletion"
+
+    def produce(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+        msg = self._message_service.message_iter()
+
+        response = self._client.chat.completions.create(
+            model=ctx.request.model,
+            messages=self._to_converter.convert(msg),
+            stream=True,
+        )
+
+        yield from self._from_converter.convert(response)

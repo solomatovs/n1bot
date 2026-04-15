@@ -43,22 +43,44 @@ TEventOut = TypeVar("TEventOut")
 
 class PassiveConverter(ABC, Generic[TEventIn, TEventOut]):
     """
-    Трансфопрмация потока событий.
-        convert() принимает 1 событие, возвращает 1 событие
+    Трансфопрмация событий без состояния.
+        convert() принимает 1 событие, возвращает 1 событие.
     """
 
     @abstractmethod
     def convert(self, item: TEventIn) -> TEventOut: ...
 
 
+class StatefulPassiveConverter(PassiveConverter[TEventIn, TEventOut]):
+    """
+    Трансформация событий с состоянием.
+        convert() принимает 1 событие, возвращает 1 событие.
+        reset() сбрасывает внутреннее состояние для повторного использования.
+    """
+
+    @abstractmethod
+    def reset(self) -> None: ...
+
+
 class ActiveConverter(ABC, Generic[TEventIn, TEventOut]):
     """
-    Трансфопрмация потока событий.
-        convert() принимает 0..N событий, возвращает 0..N событий
+    Трансфопрмация потока событий без состояния.
+        convert() принимает 0..N событий, возвращает 0..N событий.
     """
 
     @abstractmethod
     def convert(self, items: Iterator[TEventIn]) -> Iterator[TEventOut]: ...
+
+
+class StatefulActiveConverter(ActiveConverter[TEventIn, TEventOut]):
+    """
+    Трансформация потока событий с состоянием.
+        convert() принимает 0..N событий, возвращает 0..N событий.
+        reset() сбрасывает внутреннее состояние для повторного использования.
+    """
+
+    @abstractmethod
+    def reset(self) -> None: ...
 
 
 class StreamMiddleware(StreamSource[TContext, TEvent]):
