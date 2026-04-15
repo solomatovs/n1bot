@@ -27,7 +27,7 @@ class PathValidator(Validator[str], ABC):
     """Валидатор ключей (путей) workspace'а. Бросает PermissionError при нарушении."""
 
 
-class FileStorage(ABC):
+class WorkspaceService(ABC):
     """
     Текстовое файловое хранилище workspace'а. Ключи — плоские пути с '/' как разделитель.
     """
@@ -78,7 +78,19 @@ class FileStorage(ABC):
 
 
 class WorkspaceManager(ABC):
-    """Выдаёт WorkspaceService: по UUID — существующий, без UUID — новый."""
+    """Управляет жизненным циклом workspace'ов."""
 
     @abstractmethod
-    def get_or_create(self, workspace_id: UUID | None = None) -> FileStorage: ...
+    def create(self) -> WorkspaceService:
+        """Создать новый workspace."""
+        ...
+
+    @abstractmethod
+    def get(self, workspace_id: WorkspaceId) -> WorkspaceService:
+        """Получить существующий workspace. Бросает FileNotFoundError, если не найден."""
+        ...
+
+    @abstractmethod
+    def delete(self, workspace_id: WorkspaceId) -> None:
+        """Удалить workspace и все его данные."""
+        ...

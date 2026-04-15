@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from datetime import datetime
 from io import BufferedIOBase, TextIOBase
 from pathlib import Path
@@ -10,12 +11,12 @@ from typing import Iterator
 from uuid import UUID, uuid4
 
 from boba.domain.core.patterns import Specification
-from boba.domain.core.file_storage import (
+from boba.domain.core.workspace import (
     FileMeta,
     PathValidator,
     WorkspaceId,
     WorkspaceManager,
-    FileStorage,
+    WorkspaceService,
 )
 
 
@@ -33,8 +34,8 @@ class FsPathValidator(PathValidator):
         return str(resolved)
 
 
-class FsFileStorage(FileStorage):
-    """Файловая реализация FileStorage поверх локальной FS."""
+class FsWorkspaceService(WorkspaceService):
+    """Файловая реализация WorkspaceService поверх локальной FS."""
 
     def __init__(self, workspace_id: WorkspaceId, root: Path) -> None:
         self._workspace_id = workspace_id
@@ -89,6 +90,7 @@ class FsFileStorage(FileStorage):
     def meta(self, key: str) -> FileMeta:
         resolved = self._resolve(key)
         stat = resolved.stat()
+        
         return FileMeta(
             path=str(resolved.relative_to(self._root)),
             size=stat.st_size,
@@ -110,24 +112,44 @@ class FsWorkspaceManager(WorkspaceManager):
     def __init__(self, base_dir: Path) -> None:
         self._base_dir = base_dir
         self._lock = Lock()
-        self._storages: dict[UUID, FsFileStorage] = {}
+        self._storages: dict[UUID, FsWorkspaceService] = {}
         self._base_dir.mkdir(parents=True, exist_ok=True)
         self._scan_existing()
 
-    def get_or_create(self, workspace_id: UUID | None = None) -> FileStorage:
-        if workspace_id is None:
-            workspace_id = uuid4()
-            self._make_dir(workspace_id)
+    def create(self) -> WorkspaceService:
+        ws_id = uuid4()
+        self._make_dir(ws_id)
 
+        storage = FsWorkspaceService(WorkspaceId(ws_id), self._workspace_dir(ws_id))
         with self._lock:
-            if workspace_id not in self._storages:
-                path = self._workspace_dir(workspace_id)
-                if not path.is_dir():
-                    raise FileNotFoundError(f"workspace dir not found: {path}")
-                self._storages[workspace_id] = FsFileStorage(
-                    WorkspaceId(workspace_id), path
-                )
-            return self._storages[workspace_id]
+            self._storages[ws_id] = storage
+        
+        return storage
+
+    def get(self, workspace_id: WorkspaceId) -> WorkspaceService:
+        uid = workspace_id.name
+        with self._lock:
+            if uid in self._storages:
+                return self._storages[uid]
+
+            path = self._workspace_dir(uid)
+            if not path.is_dir():
+                raise FileNotFoundError(f"workspace dir not found: {path}")
+
+            self._storages[uid] = FsWorkspaceService(workspace_id, path)
+            
+            return self._storages[uid]
+
+    def delete(self, workspace_id: WorkspaceId) -> None:
+        uid = workspace_id.name
+        with self._lock:
+            self._storages.pop(uid, None)
+
+            path = self._workspace_dir(uid)
+            if not path.is_dir():
+                raise FileNotFoundError(f"workspace dir not found: {path}")
+
+            shutil.rmtree(path)
 
     def _make_dir(self, workspace_id: UUID) -> None:
         self._workspace_dir(workspace_id).mkdir()
@@ -137,8 +159,10 @@ class FsWorkspaceManager(WorkspaceManager):
 
     def _scan_existing(self) -> None:
         for child in self._base_dir.iterdir():
-            if child.is_dir():
-                try:
-                    UUID(child.name)
-                except ValueError:
-                    continue
+            if not child.is_dir():
+                continue
+
+            try:
+                UUID(child.name)
+            except ValueError:
+                continue

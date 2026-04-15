@@ -5,10 +5,13 @@ from __future__ import annotations
 import logging
 from typing import Iterator
 
+from uuid import uuid4
+
 from boba.domain.agent.events import (
     AgentEvent,
     StageCompleted,
     StageStarted,
+    UserQueryReceived,
 )
 from boba.domain.agent.llm import LLMMiddleware
 from boba.domain.agent.models import AgentContext, LLMMessage
@@ -73,6 +76,11 @@ class UserMessageMiddleware(LLMMiddleware):
     def produce(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         if ctx.iteration == 1:
             yield StageStarted(stage=self.name())
+
+            yield UserQueryReceived(
+                query=ctx.request.query,
+                request_id=str(uuid4()),
+            )
 
             content = self._user_prompt_service.build(ctx).to_string()
 

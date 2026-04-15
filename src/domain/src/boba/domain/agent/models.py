@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from boba.domain.core.workspace import WorkspaceId
+
 
 @dataclass(frozen=True)
 class LLMToolCall:
-    """Готовый tool call (для LLMMessage)."""
+    """
+    Готовый tool call (для LLMMessage)
+    """
 
     id: str
     name: str
@@ -14,7 +18,9 @@ class LLMToolCall:
 
 @dataclass(frozen=True)
 class LLMMessage:
-    """Одно сообщение в истории диалога."""
+    """
+    Одно сообщение в истории диалога
+    """
 
     role: str
     content: str
@@ -24,16 +30,21 @@ class LLMMessage:
 
 @dataclass(frozen=True)
 class AgentRequest:
-    """Входные данные для AgentLoop."""
+    """
+    Входные данные для AgentLoop
+    """
 
     query: str
     model: str
+    workspace_id: WorkspaceId
     max_tokens: int = 4096
 
 
 @dataclass(frozen=True)
 class AgentConfig:
-    """Настройки AgentLoop."""
+    """
+    Настройки AgentLoop
+    """
 
     max_iterations: int = 20
     limit_message: str = "Достигнут лимит итераций агента."
@@ -44,8 +55,6 @@ class AgentContext:
     """
     Мутабельный контекст, передаваемый через стадии Pipeline.
     Стадии читают и дополняют его на каждой итерации цикла.
-
-    Messages живут в MessageService, tool_calls — промежуточный результат GenerateStage.
     """
 
     request: AgentRequest

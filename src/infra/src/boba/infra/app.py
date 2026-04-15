@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from uuid import UUID
 
 from dishka import Provider, Scope, from_context, provide
 
@@ -31,7 +30,11 @@ from boba.domain.agent.stages import (
 from boba.domain.config import AppConfig
 from boba.domain.core.messages import MessageService
 from boba.domain.core.promt import PromptId, SystemPromptService, UserPromptService
-from boba.domain.core.file_storage import WorkspaceManager, FileStorage
+from boba.domain.core.workspace import (
+    WorkspaceId,
+    WorkspaceManager,
+    WorkspaceService,
+)
 
 
 class AppProvider(Provider):
@@ -81,15 +84,17 @@ class RequestProvider(Provider):
 
     scope = Scope.REQUEST
 
-    workspace_id = from_context(provides=UUID | None, scope=Scope.REQUEST)
+    workspace_id = from_context(provides=WorkspaceId | None, scope=Scope.REQUEST)
 
     @provide
     def workspace_service(
         self,
-        workspace_id: UUID | None,
+        workspace_id: WorkspaceId | None,
         manager: WorkspaceManager,
-    ) -> FileStorage:
-        return manager.get_or_create(workspace_id)
+    ) -> WorkspaceService:
+        if workspace_id is None:
+            return manager.create()
+        return manager.get(workspace_id)
 
     @provide
     def message_service(self) -> MessageService:
