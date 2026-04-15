@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from boba.app.logging import configure_logging
-from boba.domain.core.workspace import FileStorage
+from boba.domain.core.file_storage import FileStorage
 from boba.infra.config import ConfigLoader
 from boba.infra.container import create_container, request_scope
 

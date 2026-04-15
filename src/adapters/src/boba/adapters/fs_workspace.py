@@ -10,7 +10,7 @@ from typing import Iterator
 from uuid import UUID, uuid4
 
 from boba.domain.core.patterns import Specification
-from boba.domain.core.workspace import (
+from boba.domain.core.file_storage import (
     FileMeta,
     PathValidator,
     WorkspaceId,
@@ -29,7 +29,7 @@ class FsPathValidator(PathValidator):
         resolved = (self._root / path).resolve()
         if not resolved.is_relative_to(self._root):
             raise PermissionError(f"Path escapes workspace: {path}")
-        
+
         return str(resolved)
 
 
@@ -44,6 +44,9 @@ class FsFileStorage(FileStorage):
     @property
     def workspace_id(self) -> WorkspaceId:
         return self._workspace_id
+
+    def mkdir(self, path: str) -> None:
+        self._resolve(path).mkdir(parents=True, exist_ok=True)
 
     def open_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
         return open(self._resolve(path), "r", encoding=encoding)
