@@ -7,10 +7,7 @@ from boba.domain.agent.events import (
     AnswerStarted,
     AnswerToken,
     GenerationDone,
-    GenerationStarted,
     RefusalToken,
-    StageCompleted,
-    StageStarted,
     ThinkingStarted,
     ThinkingToken,
     ToolCallArgumentDelta,
@@ -20,8 +17,17 @@ from boba.domain.agent.events import (
 )
 from boba.domain.core.patterns import StreamSink
 
+# ANSI
+_DIM = "\033[2m"
+_BOLD = "\033[1m"
+_CYAN = "\033[36m"
+_YELLOW = "\033[33m"
+_RED = "\033[31m"
+_GREEN = "\033[32m"
+_RESET = "\033[0m"
 
-class ConsoleSink(StreamSink[None, AgentEvent]):
+
+class ConsoleSink(StreamSink[AgentEvent]):
     """Выводит поток AgentEvent в консоль."""
 
     def name(self) -> str:
@@ -29,32 +35,34 @@ class ConsoleSink(StreamSink[None, AgentEvent]):
 
     def handle(self, event: AgentEvent) -> None:
         match event:
-            case UserQueryReceived(query=q, request_id=rid):
-                print(f"\n[user query] ({rid}) {q}")
-            case StageStarted(stage=s):
-                print(f"\n[{s}]", end="", flush=True)
-            case StageCompleted(stage=s, detail=d):
-                print(f" → {d}", flush=True)
-            case GenerationStarted():
-                print("\n[generation started]")
+            case UserQueryReceived(query=q):
+                print(f"\n{_BOLD}{_CYAN}> {q}{_RESET}\n")
+
             case ThinkingStarted():
-                print("\n[thinking] ", end="")
+                print(f"{_DIM}--- thinking ---{_RESET}")
             case ThinkingToken(token=t):
-                print(t, end="", flush=True)
+                print(f"{_DIM}{t}{_RESET}", end="", flush=True)
+
             case AnswerStarted():
-                print("\n[answer] ", end="")
+                print(f"\n{_DIM}--- answer ---{_RESET}")
             case AnswerToken(token=t):
                 print(t, end="", flush=True)
+
             case RefusalToken(token=t):
-                print(f"\n[refusal] {t}", end="", flush=True)
-            case ToolCallBegin(index=i, tool_call_id=id, tool_name=name):
-                print(f"\n[tool call #{i}] {name} (id={id})")
-            case ToolCallArgumentDelta(index=i, arguments=args):
-                print(args, end="", flush=True)
-            case ToolResultReady(tool_name=name, content=c, is_error=err):
-                status = "error" if err else "ok"
-                print(f"\n[tool result] {name} ({status}): {c}")
-            case GenerationDone(finish_reason=reason):
-                print(f"\n[generation done] reason={reason}")
+                print(f"{_RED}{t}{_RESET}", end="", flush=True)
+
+            case ToolCallBegin(tool_name=fn):
+                print(f"\n{_YELLOW}[tool] {fn}{_RESET}")
+            case ToolCallArgumentDelta(arguments=args):
+                print(f"{_DIM}{args}{_RESET}", end="", flush=True)
+            case ToolResultReady(tool_name=fn, content=c, is_error=err):
+                color = _RED if err else _GREEN
+                label = "error" if err else "result"
+                preview = c[:200] + ("..." if len(c) > 200 else "")
+                print(f"\n{color}[{label}] {fn}: {preview}{_RESET}")
+
+            case GenerationDone():
+                print()
+
             case _:
-                print(f"\n[{type(event).__name__}] {event}")
+                pass

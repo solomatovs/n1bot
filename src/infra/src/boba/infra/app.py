@@ -6,8 +6,10 @@ from pathlib import Path
 
 from dishka import Provider, Scope, from_context, provide
 
-from boba.adapters.dict_event_serializer import AgentEventDecoder, AgentEventEncoder
+from boba.adapters.console_sink import ConsoleSink
+from boba.adapters.jsonl_history import AgentEventDecoder, AgentEventEncoder
 from boba.adapters.fs_workspace import FsWorkspaceManager
+from boba.adapters.history_sink import HistorySink
 from boba.adapters.in_memory_messages import InMemoryMessageService
 from boba.adapters.jsonl_history import JsonLinesHistoryService
 from boba.adapters.openai_completion import (
@@ -24,8 +26,9 @@ from boba.adapters.prompt_providers import (
 from boba.domain.agent.llm import LLMMiddleware
 from boba.domain.agent.loop import AgentLoop
 from boba.domain.agent.models import AgentConfig
+from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.serialization import EventSerializer
-from boba.domain.core.patterns import Serializer
+from boba.domain.core.patterns import CompositeSink, Serializer, StreamSink
 from boba.domain.agent.stages import (
     IterationCounterMiddleware,
     SystemMessageMiddleware,
@@ -135,6 +138,13 @@ class RequestProvider(Provider):
         chain = SystemMessageMiddleware(chain, system_prompt_service, message_service)
         chain = IterationCounterMiddleware(chain)
         return chain
+
+    @provide
+    def agent_sink(self, history: HistoryService) -> StreamSink[AgentEvent]:
+        return CompositeSink([
+            ConsoleSink(),
+            HistorySink(history),
+        ])
 
     @provide
     def agent_loop(

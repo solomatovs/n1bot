@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from uuid import UUID
 
+from boba.domain.core.patterns import Id
 from boba.domain.core.workspace import WorkspaceId
+
+
+class RequestId(Id[UUID]):
+    """Идентификатор запроса пользователя."""
 
 
 @dataclass(frozen=True)
@@ -37,7 +43,7 @@ class AgentRequest:
     query: str
     model: str
     workspace_id: WorkspaceId
-    max_tokens: int = 4096
+    request_id: RequestId
 
 
 @dataclass(frozen=True)

@@ -5,8 +5,6 @@ from __future__ import annotations
 import logging
 from typing import Iterator
 
-from uuid import uuid4
-
 from boba.domain.agent.events import (
     AgentEvent,
     StageCompleted,
@@ -42,14 +40,21 @@ class SystemMessageMiddleware(LLMMiddleware):
 
     def produce(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         if self._message_service.last() is None:
-            yield StageStarted(stage=self.name())
+            yield StageStarted(
+                request_id=ctx.request.request_id,
+                stage=self.name(),
+            )
 
             system_prompt = self._prompt_service.build(None)
             self._message_service.add(
                 LLMMessage(role="system", content=system_prompt.to_string()),
             )
 
-            yield StageCompleted(stage=self.name(), detail="system prompt added")
+            yield StageCompleted(
+                request_id=ctx.request.request_id,
+                stage=self.name(),
+                detail="system prompt added",
+            )
 
         yield from self._next.produce(ctx)
 
@@ -75,18 +80,22 @@ class UserMessageMiddleware(LLMMiddleware):
 
     def produce(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         if ctx.iteration == 1:
-            yield StageStarted(stage=self.name())
+            yield StageStarted(request_id=ctx.request.request_id, stage=self.name())
 
             yield UserQueryReceived(
+                request_id=ctx.request.request_id,
                 query=ctx.request.query,
-                request_id=str(uuid4()),
             )
 
             content = self._user_prompt_service.build(ctx).to_string()
 
             self._message_service.add(LLMMessage(role="user", content=content))
 
-            yield StageCompleted(stage=self.name(), detail="user message added")
+            yield StageCompleted(
+                request_id=ctx.request.request_id,
+                stage=self.name(),
+                detail="user message added",
+            )
 
         yield from self._next.produce(ctx)
 

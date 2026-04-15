@@ -188,7 +188,7 @@ class StreamSource(ABC, Generic[TContext, TEvent]):
     def produce(self, ctx: TContext) -> Iterator[TEvent]: ...
 
 
-class StreamSink(ABC, Generic[TContext, TEvent]):
+class StreamSink(ABC, Generic[TEvent]):
     """
     Потребитель событий.
         handle() обрабатывает одно событие.
@@ -210,10 +210,10 @@ class StreamSink(ABC, Generic[TContext, TEvent]):
             self.handle(event)
 
 
-class CompositeSink(StreamSink[TContext, TEvent]):
+class CompositeSink(StreamSink[TEvent]):
     """Fan-out: раздаёт каждое событие всем вложенным sink'ам."""
 
-    def __init__(self, sinks: list[StreamSink[TContext, TEvent]]) -> None:
+    def __init__(self, sinks: list[StreamSink[TEvent]]) -> None:
         self._sinks = list(sinks)
 
     def name(self) -> str:
