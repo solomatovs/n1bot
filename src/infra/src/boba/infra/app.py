@@ -31,7 +31,7 @@ from boba.domain.agent.stages import (
 from boba.domain.config import AppConfig
 from boba.domain.core.messages import MessageService
 from boba.domain.core.promt import PromptId, SystemPromptService, UserPromptService
-from boba.domain.core.workspace import WorkspaceManager, WorkspaceService
+from boba.domain.core.workspace import WorkspaceManager, FileStorage
 
 
 class AppProvider(Provider):
@@ -88,7 +88,7 @@ class RequestProvider(Provider):
         self,
         workspace_id: UUID | None,
         manager: WorkspaceManager,
-    ) -> WorkspaceService:
+    ) -> FileStorage:
         return manager.get_or_create(workspace_id)
 
     @provide
