@@ -7,6 +7,7 @@ import sys
 from boba.adapters.console_sink import ConsoleSink
 from boba.domain.agent.loop import AgentLoop
 from boba.domain.agent.models import AgentRequest
+from boba.domain.core.workspace import WorkspaceManager
 from boba.infra.config import ConfigLoader
 from boba.infra.container import create_container, request_scope
 
@@ -17,17 +18,24 @@ def test_agent_loop_hello() -> None:
     container = create_container(config)
     sink = ConsoleSink()
 
-    with request_scope(container) as req:
-        loop = req.get(AgentLoop)
+    manager = container.get(WorkspaceManager)
+    storage = manager.create()
 
-        events = loop.run(
-            AgentRequest(
-                query=query,
-                model=config.llm.model
+    try:
+        with request_scope(container, storage.workspace_id) as req:
+            loop = req.get(AgentLoop)
+
+            events = loop.run(
+                AgentRequest(
+                    query=query,
+                    model=config.llm.model,
+                    workspace_id=storage.workspace_id,
+                )
             )
-        )
 
-        sink.consume(events)
+            sink.consume(events)
+    finally:
+        manager.delete(storage.workspace_id)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,14 @@ from typing import Union
 
 
 @dataclass(frozen=True)
+class UserQueryReceived:
+    """Запрос пользователя принят."""
+
+    query: str
+    request_id: str
+
+
+@dataclass(frozen=True)
 class StageStarted:
     stage: str
 
@@ -84,6 +92,7 @@ class ToolResultReady:
 
 
 AgentEvent = Union[
+    UserQueryReceived,
     StageStarted,
     StageCompleted,
     GenerationStarted,
