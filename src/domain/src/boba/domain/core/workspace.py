@@ -67,13 +67,23 @@ class WorkspaceService(ABC):
         ...
 
     @abstractmethod
-    def open_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
+    def read_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
         """Открыть файл для чтения текста. Бросает FileNotFoundError, если файл не существует."""
         ...
 
     @abstractmethod
-    def open_binary(self, path: str) -> BufferedIOBase:
+    def read_binary(self, path: str) -> BufferedIOBase:
         """Открыть файл для чтения бинарных данных. Бросает FileNotFoundError, если файл не существует."""
+        ...
+
+    @abstractmethod
+    def write_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
+        """Открыть/создать файл для записи (перезапись). Создаёт родительские директории."""
+        ...
+
+    @abstractmethod
+    def append_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
+        """Открыть/создать файл для дозаписи. Создаёт родительские директории."""
         ...
 
 

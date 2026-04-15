@@ -6,8 +6,10 @@ from pathlib import Path
 
 from dishka import Provider, Scope, from_context, provide
 
+from boba.adapters.dict_event_serializer import AgentEventDecoder, AgentEventEncoder
 from boba.adapters.fs_workspace import FsWorkspaceManager
 from boba.adapters.in_memory_messages import InMemoryMessageService
+from boba.adapters.jsonl_history import JsonLinesHistoryService
 from boba.adapters.openai_completion import (
     LoggingLLMMiddleware,
     OpenAIMiddleware,
@@ -22,12 +24,15 @@ from boba.adapters.prompt_providers import (
 from boba.domain.agent.llm import LLMMiddleware
 from boba.domain.agent.loop import AgentLoop
 from boba.domain.agent.models import AgentConfig
+from boba.domain.agent.serialization import EventSerializer
+from boba.domain.core.patterns import Serializer
 from boba.domain.agent.stages import (
     IterationCounterMiddleware,
     SystemMessageMiddleware,
     UserMessageMiddleware,
 )
 from boba.domain.config import AppConfig
+from boba.domain.core.history import HistoryService
 from boba.domain.core.messages import MessageService
 from boba.domain.core.promt import PromptId, SystemPromptService, UserPromptService
 from boba.domain.core.workspace import (
@@ -78,6 +83,10 @@ class AppProvider(Provider):
         svc.register(UserQueryProvider())
         return svc
 
+    @provide
+    def event_serializer(self) -> EventSerializer:
+        return Serializer(AgentEventEncoder(), AgentEventDecoder())
+
 
 class RequestProvider(Provider):
     """Per-request сервисы."""
@@ -99,6 +108,14 @@ class RequestProvider(Provider):
     @provide
     def message_service(self) -> MessageService:
         return InMemoryMessageService()
+
+    @provide
+    def history_service(
+        self,
+        workspace: WorkspaceService,
+        serializer: EventSerializer,
+    ) -> HistoryService:
+        return JsonLinesHistoryService(workspace, serializer)
 
     @provide
     def llm_chain(

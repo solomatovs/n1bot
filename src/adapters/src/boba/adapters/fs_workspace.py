@@ -49,11 +49,21 @@ class FsWorkspaceService(WorkspaceService):
     def mkdir(self, path: str) -> None:
         self._resolve(path).mkdir(parents=True, exist_ok=True)
 
-    def open_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
+    def read_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
         return open(self._resolve(path), "r", encoding=encoding)
 
-    def open_binary(self, path: str) -> BufferedIOBase:
+    def read_binary(self, path: str) -> BufferedIOBase:
         return open(self._resolve(path), "rb")
+
+    def write_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
+        resolved = self._resolve(path)
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        return open(resolved, "w", encoding=encoding)
+
+    def append_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
+        resolved = self._resolve(path)
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        return open(resolved, "a", encoding=encoding)
 
     def exists(self, key: str) -> bool:
         return self._resolve(key).exists()
@@ -90,7 +100,7 @@ class FsWorkspaceService(WorkspaceService):
     def meta(self, key: str) -> FileMeta:
         resolved = self._resolve(key)
         stat = resolved.stat()
-        
+
         return FileMeta(
             path=str(resolved.relative_to(self._root)),
             size=stat.st_size,
@@ -123,7 +133,7 @@ class FsWorkspaceManager(WorkspaceManager):
         storage = FsWorkspaceService(WorkspaceId(ws_id), self._workspace_dir(ws_id))
         with self._lock:
             self._storages[ws_id] = storage
-        
+
         return storage
 
     def get(self, workspace_id: WorkspaceId) -> WorkspaceService:
@@ -137,7 +147,7 @@ class FsWorkspaceManager(WorkspaceManager):
                 raise FileNotFoundError(f"workspace dir not found: {path}")
 
             self._storages[uid] = FsWorkspaceService(workspace_id, path)
-            
+
             return self._storages[uid]
 
     def delete(self, workspace_id: WorkspaceId) -> None:
