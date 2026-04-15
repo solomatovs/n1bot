@@ -17,7 +17,7 @@ from openai.types.chat import (
 
 from boba.domain.config import LLMConfig
 from boba.domain.agent.llm import LLMMiddleware
-from boba.domain.agent.models import AgentContext, LLMMessage
+from boba.domain.agent.models import AgentContext, LLMMessage, RequestId
 from boba.domain.agent.events import (
     AgentEvent,
     AnswerStarted,
@@ -128,8 +128,11 @@ class ToOpenAIOneMessageConverter(Converter[LLMMessage, ChatCompletionMessagePar
 class ToOpenAIMessageConverter(StreamConverter[LLMMessage, ChatCompletionMessageParam]):
     """Конвертирует LLMMessage в формат OpenAI API."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._converter = ToOpenAIOneMessageConverter()
+
+    def set_request_id(self, request_id: RequestId) -> None:
+        self._request_id = request_id
 
     def convert(
         self, stream: Iterator[LLMMessage]
@@ -145,7 +148,8 @@ class FromOpenAIChunkConverter(StreamConverter[ChatCompletionChunk, AgentEvent])
     Вызвать reset() перед повторным использованием.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, request_id: RequestId) -> None:
+        self._request_id = request_id
         self._started = False
         self._thinking_started = False
         self._answer_started = False
@@ -156,9 +160,11 @@ class FromOpenAIChunkConverter(StreamConverter[ChatCompletionChunk, AgentEvent])
         self._thinking_started = False
         self._answer_started = False
         self._seen_tool_calls.clear()
+    
+    def set_request_id(self, request_id: RequestId) -> None:
+        self._request_id = request_id
 
     def convert(self, stream: Iterator[ChatCompletionChunk]) -> Iterator[AgentEvent]:
-
         for chunk in stream:
             if not chunk.choices:
                 continue
@@ -167,7 +173,9 @@ class FromOpenAIChunkConverter(StreamConverter[ChatCompletionChunk, AgentEvent])
 
             if delta.role and not self._started:
                 self._started = True
-                yield GenerationStarted()
+                yield GenerationStarted(
+                    request_id=self._request_id,
+                )
 
             extra = delta.model_extra or {}
             thinking = extra.get("reasoning_content") or extra.get("thinking")
@@ -175,17 +183,30 @@ class FromOpenAIChunkConverter(StreamConverter[ChatCompletionChunk, AgentEvent])
             if thinking:
                 if not self._thinking_started:
                     self._thinking_started = True
-                    yield ThinkingStarted()
-                yield ThinkingToken(token=thinking)
+                    yield ThinkingStarted(
+                        request_id=self._request_id,
+                    )
+                yield ThinkingToken(
+                    request_id=self._request_id,
+                    token=thinking,
+                )
 
             if delta.content:
                 if not self._answer_started:
                     self._answer_started = True
-                    yield AnswerStarted()
-                yield AnswerToken(token=delta.content)
+                    yield AnswerStarted(
+                        request_id=self._request_id,
+                    )
+                yield AnswerToken(
+                    request_id=self._request_id,
+                    token=delta.content
+                )
 
             if delta.refusal:
-                yield RefusalToken(token=delta.refusal)
+                yield RefusalToken(
+                    request_id=self._request_id,
+                    token=delta.refusal
+                )
 
             if delta.tool_calls:
                 for tc in delta.tool_calls:
@@ -197,18 +218,23 @@ class FromOpenAIChunkConverter(StreamConverter[ChatCompletionChunk, AgentEvent])
                     ):
                         self._seen_tool_calls.add(tc.index)
                         yield ToolCallBegin(
+                            request_id=self._request_id,
                             index=tc.index,
                             tool_call_id=tc.id,
                             tool_name=tc.function.name,
                         )
                     if tc.function and tc.function.arguments:
                         yield ToolCallArgumentDelta(
+                            request_id=self._request_id,
                             index=tc.index,
                             arguments=tc.function.arguments,
                         )
 
             if choice.finish_reason:
-                yield GenerationDone(finish_reason=choice.finish_reason)
+                yield GenerationDone(
+                    request_id=self._request_id,
+                    finish_reason=choice.finish_reason,
+                )
 
 
 class OpenAIMiddleware(LLMMiddleware):
@@ -221,7 +247,6 @@ class OpenAIMiddleware(LLMMiddleware):
         self._client = OpenAI(base_url=config.base_url, api_key=config.api_key)
         self._message_service = message_service
         self._to_converter = ToOpenAIMessageConverter()
-        self._from_converter = FromOpenAIChunkConverter()
 
     def name(self) -> str:
         return "OpenAICompletion"
@@ -235,4 +260,4 @@ class OpenAIMiddleware(LLMMiddleware):
             stream=True,
         )
 
-        yield from self._from_converter.convert(response)
+        yield from FromOpenAIChunkConverter(ctx.request.request_id).convert(response)
