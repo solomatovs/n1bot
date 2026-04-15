@@ -31,7 +31,7 @@ from boba.domain.agent.events import (
     ToolCallBegin,
 )
 from boba.domain.core.messages import MessageService
-from boba.domain.core.patterns import ActiveConverter, PassiveConverter
+from boba.domain.core.patterns import Converter, StreamConverter
 
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
@@ -85,65 +85,60 @@ class StupidRetryLLMMiddleware(LLMMiddleware):
                 )
 
 
-class ToOpenAIOneMessageConverter(
-    PassiveConverter[LLMMessage, ChatCompletionMessageParam]
-):
+class ToOpenAIOneMessageConverter(Converter[LLMMessage, ChatCompletionMessageParam]):
     """Конвертирует LLMMessage в формат OpenAI API."""
 
-    def convert(self, item: LLMMessage) -> ChatCompletionMessageParam:
-        match item.role:
+    def convert(self, value: LLMMessage) -> ChatCompletionMessageParam:
+        match value.role:
             case "system":
                 return ChatCompletionSystemMessageParam(
                     role="system",
-                    content=item.content,
+                    content=value.content,
                 )
             case "user":
                 return ChatCompletionUserMessageParam(
                     role="user",
-                    content=item.content,
+                    content=value.content,
                 )
             case "assistant":
                 param = ChatCompletionAssistantMessageParam(
                     role="assistant",
-                    content=item.content,
+                    content=value.content,
                 )
-                if item.tool_calls:
+                if value.tool_calls:
                     param["tool_calls"] = [
                         {
                             "id": tc.id,
                             "type": "function",
                             "function": {"name": tc.name, "arguments": tc.arguments},
                         }
-                        for tc in item.tool_calls
+                        for tc in value.tool_calls
                     ]
                 return param
             case "tool":
                 return ChatCompletionToolMessageParam(
                     role="tool",
-                    content=item.content,
-                    tool_call_id=item.tool_call_id or "",
+                    content=value.content,
+                    tool_call_id=value.tool_call_id or "",
                 )
             case _:
-                raise ValueError(f"Unknown message role: {item.role}")
+                raise ValueError(f"Unknown message role: {value.role}")
 
 
-class ToOpenAIMessageConverter(ActiveConverter[LLMMessage, ChatCompletionMessageParam]):
+class ToOpenAIMessageConverter(StreamConverter[LLMMessage, ChatCompletionMessageParam]):
     """Конвертирует LLMMessage в формат OpenAI API."""
 
     def __init__(self):
         self._converter = ToOpenAIOneMessageConverter()
 
-    def reset(self) -> None:
-        pass
-
     def convert(
-        self, items: Iterator[LLMMessage]
+        self, stream: Iterator[LLMMessage]
     ) -> Iterator[ChatCompletionMessageParam]:
-        for item in items:
+        for item in stream:
             yield self._converter.convert(item)
 
 
-class FromOpenAIChunkConverter(ActiveConverter[ChatCompletionChunk, AgentEvent]):
+class FromOpenAIChunkConverter(StreamConverter[ChatCompletionChunk, AgentEvent]):
     """
     Конвертирует поток OpenAI chunks в поток AgentEvent.
     С состоянием: отслеживает started и seen tool call indices.
@@ -162,9 +157,9 @@ class FromOpenAIChunkConverter(ActiveConverter[ChatCompletionChunk, AgentEvent])
         self._answer_started = False
         self._seen_tool_calls.clear()
 
-    def convert(self, items: Iterator[ChatCompletionChunk]) -> Iterator[AgentEvent]:
+    def convert(self, stream: Iterator[ChatCompletionChunk]) -> Iterator[AgentEvent]:
 
-        for chunk in items:
+        for chunk in stream:
             if not chunk.choices:
                 continue
             choice = chunk.choices[0]

@@ -210,37 +210,66 @@ class StreamSink(ABC, Generic[TContext, TEvent]):
             self.handle(event)
 
 
+class CompositeSink(StreamSink[TContext, TEvent]):
+    """Fan-out: раздаёт каждое событие всем вложенным sink'ам."""
 
-TEventIn = TypeVar("TEventIn")
-TEventOut = TypeVar("TEventOut")
+    def __init__(self, sinks: list[StreamSink[TContext, TEvent]]) -> None:
+        self._sinks = list(sinks)
 
-
-class PassiveConverter(ABC, Generic[TEventIn, TEventOut]):
-    """
-    Трансформация событий 1:1.
-        convert() принимает 1 событие, возвращает 1 событие.
-        reset() сбрасывает состояние. По умолчанию — ничего не делает.
-    """
+    def name(self) -> str:
+        return "CompositeSink(" + ", ".join(s.name() for s in self._sinks) + ")"
 
     def reset(self) -> None:
-        pass
+        for sink in self._sinks:
+            sink.reset()
+
+    def handle(self, event: TEvent) -> None:
+        for sink in self._sinks:
+            sink.handle(event)
+
+
+TIn = TypeVar("TIn")
+TOut = TypeVar("TOut")
+
+
+class Converter(ABC, Generic[TIn, TOut]):
+    """
+    Однонаправленная конвертация 1:1. A → B.
+    """
 
     @abstractmethod
-    def convert(self, item: TEventIn) -> TEventOut: ...
+    def convert(self, value: TIn) -> TOut: ...
 
 
-class ActiveConverter(ABC, Generic[TEventIn, TEventOut]):
+class Serializer(Generic[TIn, TOut]):
     """
-    Трансформация потока событий N:M.
-        convert() принимает 0..N событий, возвращает 0..M событий.
-        reset() сбрасывает состояние. По умолчанию — ничего не делает.
+    Двусторонняя конвертация = композиция двух Converter.
+        serialize() — прямое направление (encoder).
+        deserialize() — обратное направление (decoder).
     """
 
-    def reset(self) -> None:
-        pass
+    def __init__(
+        self,
+        encoder: Converter[TIn, TOut],
+        decoder: Converter[TOut, TIn],
+    ) -> None:
+        self.encoder = encoder
+        self.decoder = decoder
+
+    def serialize(self, obj: TIn) -> TOut:
+        return self.encoder.convert(obj)
+
+    def deserialize(self, raw: TOut) -> TIn:
+        return self.decoder.convert(raw)
+
+
+class StreamConverter(ABC, Generic[TIn, TOut]):
+    """
+    Потоковая конвертация N:M. Iterator[A] → Iterator[B].
+    """
 
     @abstractmethod
-    def convert(self, items: Iterator[TEventIn]) -> Iterator[TEventOut]: ...
+    def convert(self, stream: Iterator[TIn]) -> Iterator[TOut]: ...
 
 
 class StreamMiddleware(StreamSource[TContext, TEvent]):
