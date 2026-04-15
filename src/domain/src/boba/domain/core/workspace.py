@@ -7,25 +7,11 @@ from typing import Iterator
 from uuid import UUID
 from abc import ABC, abstractmethod
 
+from boba.domain.core.patterns import Id
 
-class WorkspaceId:
+
+class WorkspaceId(Id[UUID]):
     """Идентификатор workspace'а — value object."""
-
-    def __init__(self, name: UUID) -> None:
-        self._name = name
-
-    @property
-    def name(self) -> UUID:
-        return self._name
-
-    def __eq__(self, other: object) -> bool:
-        return isinstance(other, WorkspaceId) and self._name == other._name
-
-    def __hash__(self) -> int:
-        return hash(self._name)
-
-    def __repr__(self) -> str:
-        return f"WorkspaceId({self._name!r})"
 
 
 @dataclass(frozen=True)
@@ -54,7 +40,9 @@ class WorkspaceService(ABC):
     def workspace_id(self) -> WorkspaceId: ...
 
     @abstractmethod
-    def open_text(self, path: str, mode: str = "r", encoding: str = "utf-8") -> TextIOBase:
+    def open_text(
+        self, path: str, mode: str = "r", encoding: str = "utf-8"
+    ) -> TextIOBase:
         """Открывает текстовый файл."""
         ...
 

@@ -1,9 +1,103 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Iterator, Generic, TypeVar
+from typing import Generic, TypeVar, Iterator
+
+TName = TypeVar("TName")
+
+
+class Id(Generic[TName]):
+    """Базовый value object для идентификаторов."""
+
+    def __init__(self, name: TName) -> None:
+        self._name = name
+
+    @property
+    def name(self) -> TName:
+        return self._name
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, self.__class__) and self._name == other._name
+
+    def __hash__(self) -> int:
+        return hash(self._name)
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}({self._name!r})"
+
 
 TContext = TypeVar("TContext")
+TId = TypeVar("TId", bound=Id)
+TState = TypeVar("TState")
+
+
+class Provider(ABC, Generic[TId, TContext, TState]):
+    """
+    Именованный поставщик с приоритетом.
+    Дополняет состояние сборки: видит результат предыдущих провайдеров.
+    """
+
+    @abstractmethod
+    def id(self) -> TId: ...
+
+    @abstractmethod
+    def priority(self) -> int: ...
+
+    @abstractmethod
+    def apply(self, ctx: TContext, state: TState) -> TState: ...
+
+
+TResult = TypeVar("TResult")
+
+
+class Builder(ABC, Generic[TContext, TResult]):
+    """
+    Классический Builder.
+    Определяет процесс сборки объекта из контекста.
+    """
+
+    @abstractmethod
+    def build(self, ctx: TContext) -> TResult: ...
+
+
+class CompositeBuilder(
+    Builder[TContext, TResult], Generic[TId, TContext, TState, TResult]
+):
+    """
+    Реестр провайдеров + fold + финализация.
+    Провайдеры применяются последовательно (по priority),
+    каждый видит и дополняет состояние предыдущих.
+    """
+
+    def __init__(self) -> None:
+        self._providers: dict[TId, Provider[TId, TContext, TState]] = {}
+
+    def register(self, provider: Provider[TId, TContext, TState]) -> None:
+        self._providers[provider.id()] = provider
+
+    def unregister(self, id: TId) -> None:
+        self._providers.pop(id, None)
+
+    def providers(self) -> Iterator[Provider[TId, TContext, TState]]:
+        return iter(self._providers.values())
+
+    @abstractmethod
+    def initial(self, ctx: TContext) -> TState:
+        """Начальное состояние сборки."""
+        ...
+
+    @abstractmethod
+    def finalize(self, state: TState) -> TResult:
+        """Превратить накопленное состояние в результат."""
+        ...
+
+    def build(self, ctx: TContext) -> TResult:
+        state = self.initial(ctx)
+        for p in sorted(self._providers.values(), key=lambda p: p.priority()):
+            state = p.apply(ctx, state)
+        return self.finalize(state)
+
+
 TEvent = TypeVar("TEvent")
 
 

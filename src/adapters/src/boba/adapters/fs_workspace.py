@@ -93,7 +93,9 @@ class FsWorkspaceService(WorkspaceService):
     def workspace_id(self) -> WorkspaceId:
         return self._workspace_id
 
-    def open_text(self, path: str, mode: str = "r", encoding: str = "utf-8") -> TextIOBase:
+    def open_text(
+        self, path: str, mode: str = "r", encoding: str = "utf-8"
+    ) -> TextIOBase:
         resolved = self._resolve(path)
         if "w" in mode or "a" in mode:
             resolved.parent.mkdir(parents=True, exist_ok=True)

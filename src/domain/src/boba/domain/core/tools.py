@@ -3,25 +3,11 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any, TypeVar, Generic, Iterator
 
+from boba.domain.core.patterns import Id
 
-class ToolId:
+
+class ToolId(Id[str]):
     """Идентификатор инструмента."""
-
-    def __init__(self, name: str) -> None:
-        self._name = name
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    def __eq__(self, other: object) -> bool:
-        return isinstance(other, ToolId) and self._name == other._name
-
-    def __hash__(self) -> int:
-        return hash(self._name)
-
-    def __repr__(self) -> str:
-        return f"ToolId({self._name!r})"
 
 
 @dataclass(frozen=True)
