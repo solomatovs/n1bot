@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.models import AgentContext
-from boba.domain.core.stream import StreamSource
+from boba.domain.core.patterns import StreamSource
 
 
 class LLMMiddleware(StreamSource[AgentContext, AgentEvent]):

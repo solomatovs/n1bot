@@ -7,7 +7,7 @@ from typing import Iterator
 from boba.domain.agent.events import AgentEvent, GenerationDone
 from boba.domain.agent.llm import LLMMiddleware
 from boba.domain.agent.models import AgentConfig, AgentContext, AgentRequest
-from boba.domain.core.stream import Loop
+from boba.domain.core.patterns import Loop
 
 
 class AgentLoop(Loop[AgentContext, AgentEvent]):

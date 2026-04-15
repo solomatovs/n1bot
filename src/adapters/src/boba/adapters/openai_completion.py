@@ -31,7 +31,7 @@ from boba.domain.agent.events import (
     ToolCallBegin,
 )
 from boba.domain.core.messages import MessageService
-from boba.domain.core.stream import ActiveConverter, PassiveConverter
+from boba.domain.core.patterns import ActiveConverter, PassiveConverter
 
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
@@ -127,9 +127,7 @@ class ToOpenAIOneMessageConverter(
                 raise ValueError(f"Unknown message role: {item.role}")
 
 
-class ToOpenAIMessageConverter(
-    ActiveConverter[LLMMessage, ChatCompletionMessageParam]
-):
+class ToOpenAIMessageConverter(ActiveConverter[LLMMessage, ChatCompletionMessageParam]):
     """Конвертирует LLMMessage в формат OpenAI API."""
 
     def __init__(self):
@@ -145,9 +143,7 @@ class ToOpenAIMessageConverter(
             yield self._converter.convert(item)
 
 
-class FromOpenAIChunkConverter(
-    ActiveConverter[ChatCompletionChunk, AgentEvent]
-):
+class FromOpenAIChunkConverter(ActiveConverter[ChatCompletionChunk, AgentEvent]):
     """
     Конвертирует поток OpenAI chunks в поток AgentEvent.
     С состоянием: отслеживает started и seen tool call indices.

@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from abc import ABC, abstractmethod
 from typing import Iterator, Iterable, Generic, TypeVar
 
+from boba.domain.core.patterns import Id
+
 TPromptContext = TypeVar("TPromptContext")
 
 
@@ -13,24 +15,8 @@ class PromptBlock:
     content: str
 
 
-class PromptId:
+class PromptId(Id[str]):
     """Идентификатор провайдера."""
-
-    def __init__(self, name: str) -> None:
-        self._name = name
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    def __eq__(self, other: object) -> bool:
-        return isinstance(other, PromptId) and self._name == other._name
-
-    def __hash__(self) -> int:
-        return hash(self._name)
-
-    def __repr__(self) -> str:
-        return f"PromptId({self._name!r})"
 
 
 class PromptProvider(ABC, Generic[TPromptContext]):

@@ -19,7 +19,7 @@ from boba.domain.agent.events import (
     ToolCallBegin,
     ToolResultReady,
 )
-from boba.domain.core.stream import StreamSink
+from boba.domain.core.patterns import StreamSink
 
 
 class ConsoleSink(StreamSink[None, AgentEvent]):
