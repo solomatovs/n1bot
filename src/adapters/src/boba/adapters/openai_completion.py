@@ -31,7 +31,7 @@ from boba.domain.agent.events import (
     ToolCallBegin,
 )
 from boba.domain.core.messages import MessageService
-from boba.domain.core.stream import PassiveConverter, StatefulActiveConverter
+from boba.domain.core.stream import ActiveConverter, PassiveConverter
 
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
@@ -128,7 +128,7 @@ class ToOpenAIOneMessageConverter(
 
 
 class ToOpenAIMessageConverter(
-    StatefulActiveConverter[LLMMessage, ChatCompletionMessageParam]
+    ActiveConverter[LLMMessage, ChatCompletionMessageParam]
 ):
     """Конвертирует LLMMessage в формат OpenAI API."""
 
@@ -146,7 +146,7 @@ class ToOpenAIMessageConverter(
 
 
 class FromOpenAIChunkConverter(
-    StatefulActiveConverter[ChatCompletionChunk, AgentEvent]
+    ActiveConverter[ChatCompletionChunk, AgentEvent]
 ):
     """
     Конвертирует поток OpenAI chunks в поток AgentEvent.

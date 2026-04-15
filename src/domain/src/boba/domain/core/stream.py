@@ -9,14 +9,16 @@ TEvent = TypeVar("TEvent")
 
 class StreamSource(ABC, Generic[TContext, TEvent]):
     """
-    Источник событий
+    Источник событий.
         produce() принимает контекст, возвращает итератор событий.
+        reset() сбрасывает состояние. По умолчанию — ничего не делает.
     """
 
     @abstractmethod
-    def name(self) -> str:
-        """Имя стадии для логирования и событий."""
-        ...
+    def name(self) -> str: ...
+
+    def reset(self) -> None:
+        pass
 
     @abstractmethod
     def produce(self, ctx: TContext) -> Iterator[TEvent]: ...
@@ -24,14 +26,16 @@ class StreamSource(ABC, Generic[TContext, TEvent]):
 
 class StreamSink(ABC, Generic[TContext, TEvent]):
     """
-    Потребитель событий
+    Потребитель событий.
         consume() принимает итератор событий, возвращает None.
+        reset() сбрасывает состояние. По умолчанию — ничего не делает.
     """
 
     @abstractmethod
-    def name(self) -> str:
-        """Имя стадии для логирования и событий."""
-        ...
+    def name(self) -> str: ...
+
+    def reset(self) -> None:
+        pass
 
     @abstractmethod
     def consume(self, stream: Iterator[TEvent]) -> None: ...
@@ -43,44 +47,30 @@ TEventOut = TypeVar("TEventOut")
 
 class PassiveConverter(ABC, Generic[TEventIn, TEventOut]):
     """
-    Трансфопрмация событий без состояния.
+    Трансформация событий 1:1.
         convert() принимает 1 событие, возвращает 1 событие.
+        reset() сбрасывает состояние. По умолчанию — ничего не делает.
     """
+
+    def reset(self) -> None:
+        pass
 
     @abstractmethod
     def convert(self, item: TEventIn) -> TEventOut: ...
 
 
-class StatefulPassiveConverter(PassiveConverter[TEventIn, TEventOut]):
-    """
-    Трансформация событий с состоянием.
-        convert() принимает 1 событие, возвращает 1 событие.
-        reset() сбрасывает внутреннее состояние для повторного использования.
-    """
-
-    @abstractmethod
-    def reset(self) -> None: ...
-
-
 class ActiveConverter(ABC, Generic[TEventIn, TEventOut]):
     """
-    Трансфопрмация потока событий без состояния.
-        convert() принимает 0..N событий, возвращает 0..N событий.
+    Трансформация потока событий N:M.
+        convert() принимает 0..N событий, возвращает 0..M событий.
+        reset() сбрасывает состояние. По умолчанию — ничего не делает.
     """
+
+    def reset(self) -> None:
+        pass
 
     @abstractmethod
     def convert(self, items: Iterator[TEventIn]) -> Iterator[TEventOut]: ...
-
-
-class StatefulActiveConverter(ActiveConverter[TEventIn, TEventOut]):
-    """
-    Трансформация потока событий с состоянием.
-        convert() принимает 0..N событий, возвращает 0..N событий.
-        reset() сбрасывает внутреннее состояние для повторного использования.
-    """
-
-    @abstractmethod
-    def reset(self) -> None: ...
 
 
 class StreamMiddleware(StreamSource[TContext, TEvent]):
