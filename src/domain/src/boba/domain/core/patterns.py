@@ -168,39 +168,6 @@ class CompositeBuilder(
         return self.finalize(state)
 
 
-TKey = TypeVar("TKey")
-TMeta = TypeVar("TMeta")
-
-
-class Storage(ABC, Generic[TKey, TMeta]):
-    """
-    Абстрактное хранилище с ключами и метаданными.
-    """
-
-    @abstractmethod
-    def exists(self, key: TKey) -> bool: ...
-
-    @abstractmethod
-    def delete(self, key: TKey) -> None: ...
-
-    @abstractmethod
-    def ls(
-        self, path: TKey | None = None, spec: Specification[TKey] | None = None
-    ) -> Iterator[TKey]:
-        """Список элементов в указанном пути (без вложенности)."""
-        ...
-
-    @abstractmethod
-    def tree(
-        self, path: TKey | None = None, spec: Specification[TKey] | None = None
-    ) -> Iterator[TKey]:
-        """Рекурсивный обход всех элементов начиная с указанного пути."""
-        ...
-
-    @abstractmethod
-    def meta(self, key: TKey) -> TMeta: ...
-
-
 TEvent = TypeVar("TEvent")
 
 

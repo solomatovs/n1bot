@@ -31,7 +31,7 @@ from boba.domain.agent.stages import (
 from boba.domain.config import AppConfig
 from boba.domain.core.messages import MessageService
 from boba.domain.core.promt import PromptId, SystemPromptService, UserPromptService
-from boba.domain.core.workspace import WorkspaceManager, FileStorage
+from boba.domain.core.file_storage import WorkspaceManager, FileStorage
 
 
 class AppProvider(Provider):
