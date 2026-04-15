@@ -1,10 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterator
-
-
-# ── LLM models ──
 
 
 @dataclass(frozen=True)
@@ -24,17 +20,6 @@ class LLMMessage:
     content: str
     tool_call_id: str | None = None
     tool_calls: list[LLMToolCall] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class LLMRequest:
-    """Запрос к LLM."""
-
-    model: str
-    messages: Iterator[LLMMessage]
-
-
-# ── Agent models ──
 
 
 @dataclass(frozen=True)

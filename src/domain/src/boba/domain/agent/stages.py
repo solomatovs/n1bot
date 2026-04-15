@@ -1,4 +1,4 @@
-"""Стадии AgentLoop — каждая является StreamSource[AgentContext, AgentEvent]."""
+"""Middleware-слои AgentLoop."""
 
 from __future__ import annotations
 
@@ -10,26 +10,27 @@ from boba.domain.agent.events import (
     StageCompleted,
     StageStarted,
 )
-from boba.domain.agent.llm import LLMCompletionService
-from boba.domain.agent.models import AgentContext, LLMMessage, LLMRequest
+from boba.domain.agent.llm import LLMMiddleware
+from boba.domain.agent.models import AgentContext, LLMMessage
 from boba.domain.core.messages import MessageService
 from boba.domain.core.promt import SystemPromptService, UserPromptService
-from boba.domain.core.stream import StreamSource
 
 logger = logging.getLogger(__name__)
 
 
-class SystemMessageStage(StreamSource[AgentContext, AgentEvent]):
+class SystemMessageMiddleware(LLMMiddleware):
     """
-    Добавляет system message на первой итерации.
-    На последующих — пропускает.
+    Добавляет system message на первой итерации,
+    затем делегирует следующему слою.
     """
 
     def __init__(
         self,
+        next: LLMMiddleware,
         prompt_service: SystemPromptService,
         message_service: MessageService,
     ) -> None:
+        self._next = next
         self._prompt_service = prompt_service
         self._message_service = message_service
 
@@ -37,34 +38,32 @@ class SystemMessageStage(StreamSource[AgentContext, AgentEvent]):
         return "SystemMessage"
 
     def produce(self, ctx: AgentContext) -> Iterator[AgentEvent]:
-        if self._message_service.last() is not None:
-            return
+        if self._message_service.last() is None:
+            yield StageStarted(stage=self.name())
 
-        yield StageStarted(stage=self.name())
-
-        system_prompt = self._prompt_service.build()
-
-        self._message_service.add(
-            LLMMessage(
-                role="system",
-                content=system_prompt.build(),
+            system_prompt = self._prompt_service.build(None)
+            self._message_service.add(
+                LLMMessage(role="system", content=system_prompt.to_string()),
             )
-        )
 
-        yield StageCompleted(stage=self.name(), detail="system prompt added")
+            yield StageCompleted(stage=self.name(), detail="system prompt added")
+
+        yield from self._next.produce(ctx)
 
 
-class UserMessageStage(StreamSource[AgentContext, AgentEvent]):
+class UserMessageMiddleware(LLMMiddleware):
     """
-    Собирает user message через PromptService (user_prompt_service)
-    и добавляет в MessageService. Выполняется один раз — на первой итерации.
+    Добавляет user message на первой итерации,
+    затем делегирует следующему слою.
     """
 
     def __init__(
         self,
+        next: LLMMiddleware,
         user_prompt_service: UserPromptService,
         message_service: MessageService,
     ) -> None:
+        self._next = next
         self._user_prompt_service = user_prompt_service
         self._message_service = message_service
 
@@ -72,49 +71,30 @@ class UserMessageStage(StreamSource[AgentContext, AgentEvent]):
         return "UserMessage"
 
     def produce(self, ctx: AgentContext) -> Iterator[AgentEvent]:
-        if ctx.iteration > 0:
-            return
+        if ctx.iteration == 1:
+            yield StageStarted(stage=self.name())
 
-        yield StageStarted(stage=self.name())
+            content = self._user_prompt_service.build(ctx).to_string()
 
-        # Контекст от провайдеров (IDE selection, template и т.д.)
-        context = self._user_prompt_service.build().build()
+            self._message_service.add(LLMMessage(role="user", content=content))
 
-        # Собираем: контекст (если есть) + запрос пользователя
-        parts = [p for p in (context, ctx.request.query) if p]
-        content = "\n\n".join(parts)
+            yield StageCompleted(stage=self.name(), detail="user message added")
 
-        self._message_service.add(LLMMessage(role="user", content=content))
-
-        yield StageCompleted(stage=self.name(), detail="user message added")
+        yield from self._next.produce(ctx)
 
 
-class GenerateStage(StreamSource[AgentContext, AgentEvent]):
+class IterationCounterMiddleware(LLMMiddleware):
     """
-    Вызывает LLM (стриминг). Стримит ThinkingToken/AnswerToken.
-    По завершении добавляет assistant message через MessageService.
+    Подсчет кол-ва итераций цикла агента.
+    Увеличивает счетчик в контексте и делегирует следующему слою.
     """
 
-    def __init__(
-        self,
-        llm: LLMCompletionService,
-        message_service: MessageService,
-    ) -> None:
-        self._llm = llm
-        self._message_service = message_service
+    def __init__(self, next: LLMMiddleware) -> None:
+        self._next = next
 
     def name(self) -> str:
-        return "Generate"
+        return "Counter"
 
     def produce(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         ctx.iteration += 1
-        yield StageStarted(stage=self.name())
-
-        request = LLMRequest(
-            model=ctx.request.model,
-            messages=self._message_service.message_iter(),
-        )
-
-        yield from self._llm.produce(request)
-
-        yield StageCompleted(stage=self.name(), detail="generation done")
+        yield from self._next.produce(ctx)

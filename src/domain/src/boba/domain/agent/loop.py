@@ -5,23 +5,24 @@ from __future__ import annotations
 from typing import Iterator
 
 from boba.domain.agent.events import AgentEvent, GenerationDone
+from boba.domain.agent.llm import LLMMiddleware
 from boba.domain.agent.models import AgentConfig, AgentContext, AgentRequest
-from boba.domain.core.stream import Loop, Pipeline
+from boba.domain.core.stream import Loop
 
 
 class AgentLoop(Loop[AgentContext, AgentEvent]):
     """
     Оркестратор агента.
-    Pipeline передаётся снаружи — состав и порядок стадий определяется в DI.
+    Middleware-цепочка передаётся снаружи — состав и порядок слоёв определяется в DI.
     """
 
     def __init__(
         self,
         config: AgentConfig,
-        pipeline: Pipeline[AgentContext, AgentEvent],
+        chain: LLMMiddleware,
     ) -> None:
         self._config = config
-        super().__init__(source=pipeline)
+        super().__init__(source=chain)
 
     def name(self) -> str:
         return "AgentLoop"
@@ -42,6 +43,4 @@ class AgentLoop(Loop[AgentContext, AgentEvent]):
         if ctx.iteration >= ctx.config.max_iterations:
             return True
 
-        # tool_calls → продолжаем (ToolExecutionStage выполнит и цикл повторится)
-        # stop, length → останавливаемся
         return event.finish_reason != "tool_calls"

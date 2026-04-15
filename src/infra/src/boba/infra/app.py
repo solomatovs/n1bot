@@ -9,27 +9,29 @@ from dishka import Provider, Scope, from_context, provide
 
 from boba.adapters.fs_workspace import FsWorkspaceManager
 from boba.adapters.in_memory_messages import InMemoryMessageService
-from boba.adapters.openai_completion import OpenAICompletionService
-from boba.domain.agent.loop import AgentLoop
-from boba.domain.agent.models import AgentConfig
-from boba.domain.config import AppConfig
 from boba.adapters.openai_completion import (
     LoggingLLMMiddleware,
-    StupedRetryLLMMiddleware,
+    OpenAIMiddleware,
+    StupidRetryLLMMiddleware,
 )
-from boba.domain.core.messages import MessageService
-from boba.domain.core.promt import PromptId, SystemPromptService, UserPromptService
 from boba.adapters.prompt_providers import (
     EnvironmentPromptProvider,
     GitPromptProvider,
     StaticPromptProvider,
+    UserQueryProvider,
 )
-from boba.domain.agent.events import AgentEvent
-from boba.domain.agent.models import AgentContext
-from boba.domain.agent.stages import GenerateStage, SystemMessageStage, UserMessageStage
-from boba.domain.core.stream import Pipeline
+from boba.domain.agent.llm import LLMMiddleware
+from boba.domain.agent.loop import AgentLoop
+from boba.domain.agent.models import AgentConfig
+from boba.domain.agent.stages import (
+    IterationCounterMiddleware,
+    SystemMessageMiddleware,
+    UserMessageMiddleware,
+)
+from boba.domain.config import AppConfig
+from boba.domain.core.messages import MessageService
+from boba.domain.core.promt import PromptId, SystemPromptService, UserPromptService
 from boba.domain.core.workspace import WorkspaceManager, WorkspaceService
-from boba.domain.agent.llm import LLMCompletionService
 
 
 class AppProvider(Provider):
@@ -48,13 +50,6 @@ class AppProvider(Provider):
     @provide
     def workspace_manager(self, config: AppConfig) -> WorkspaceManager:
         return FsWorkspaceManager(Path(config.workspace_base_dir))
-
-    @provide
-    def llm_source(self, config: AppConfig) -> LLMCompletionService:
-        llm: LLMCompletionService = OpenAICompletionService(config.llm)
-        llm = StupedRetryLLMMiddleware(llm, max_retries=3)
-        llm = LoggingLLMMiddleware(llm)
-        return llm
 
     @provide
     def agent_config(self, config: AppConfig) -> AgentConfig:
@@ -76,11 +71,13 @@ class AppProvider(Provider):
 
     @provide
     def user_prompt_service(self) -> UserPromptService:
-        return UserPromptService()
+        svc = UserPromptService()
+        svc.register(UserQueryProvider())
+        return svc
 
 
 class RequestProvider(Provider):
-    """Per-request: workspace service, message service."""
+    """Per-request сервисы."""
 
     scope = Scope.REQUEST
 
@@ -99,28 +96,31 @@ class RequestProvider(Provider):
         return InMemoryMessageService()
 
     @provide
-    def agent_pipeline(
+    def llm_chain(
         self,
+        config: AppConfig,
         system_prompt_service: SystemPromptService,
         user_prompt_service: UserPromptService,
         message_service: MessageService,
-        llm: LLMCompletionService,
-    ) -> Pipeline[AgentContext, AgentEvent]:
-        return Pipeline(
-            [
-                SystemMessageStage(system_prompt_service, message_service),
-                UserMessageStage(user_prompt_service, message_service),
-                GenerateStage(llm, message_service),
-            ]
-        )
+    ) -> LLMMiddleware:
+        # Terminal — actual LLM call
+        chain: LLMMiddleware = OpenAIMiddleware(config.llm, message_service)
+        # LLM middleware
+        chain = StupidRetryLLMMiddleware(chain, max_retries=3)
+        chain = LoggingLLMMiddleware(chain)
+        # Agent middleware
+        chain = UserMessageMiddleware(chain, user_prompt_service, message_service)
+        chain = SystemMessageMiddleware(chain, system_prompt_service, message_service)
+        chain = IterationCounterMiddleware(chain)
+        return chain
 
     @provide
     def agent_loop(
         self,
         agent_config: AgentConfig,
-        pipeline: Pipeline[AgentContext, AgentEvent],
+        chain: LLMMiddleware,
     ) -> AgentLoop:
         return AgentLoop(
             config=agent_config,
-            pipeline=pipeline,
+            chain=chain,
         )
