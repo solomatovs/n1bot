@@ -191,7 +191,8 @@ class StreamSource(ABC, Generic[TContext, TEvent]):
 class StreamSink(ABC, Generic[TContext, TEvent]):
     """
     Потребитель событий.
-        consume() принимает итератор событий, возвращает None.
+        handle() обрабатывает одно событие.
+        consume() итерирует поток, вызывая handle() для каждого события.
         reset() сбрасывает состояние. По умолчанию — ничего не делает.
     """
 
@@ -202,7 +203,12 @@ class StreamSink(ABC, Generic[TContext, TEvent]):
         pass
 
     @abstractmethod
-    def consume(self, stream: Iterator[TEvent]) -> None: ...
+    def handle(self, event: TEvent) -> None: ...
+
+    def consume(self, stream: Iterator[TEvent]) -> None:
+        for event in stream:
+            self.handle(event)
+
 
 
 TEventIn = TypeVar("TEventIn")
