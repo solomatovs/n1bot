@@ -7,7 +7,7 @@ from typing import Iterator
 from uuid import UUID
 from abc import ABC, abstractmethod
 
-from boba.domain.core.patterns import Id
+from boba.domain.core.patterns import Id, Validator
 
 
 class WorkspaceId(Id[UUID]):
@@ -23,13 +23,8 @@ class FileMeta:
     modified: datetime
 
 
-class PathValidator(ABC):
-    """Валидатор ключей (путей) workspace'а."""
-
-    @abstractmethod
-    def validate(self, path: str) -> str:
-        """Валидирует и нормализует путь. Бросает PermissionError при нарушении."""
-        ...
+class PathValidator(Validator[str], ABC):
+    """Валидатор ключей (путей) workspace'а. Бросает PermissionError при нарушении."""
 
 
 class WorkspaceService(ABC):
