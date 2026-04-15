@@ -26,6 +26,68 @@ class Id(Generic[TName]):
         return f"{self.__class__.__name__}({self._name!r})"
 
 
+TValue = TypeVar("TValue")
+
+
+class Validator(ABC, Generic[TValue]):
+    """
+    Валидатор + нормализатор.
+    Принимает значение, возвращает нормализованное.
+    Бросает исключение, если значение невалидно.
+    """
+
+    @abstractmethod
+    def validate(self, value: TValue) -> TValue: ...
+
+
+TCandidate = TypeVar("TCandidate")
+
+
+class Specification(ABC, Generic[TCandidate]):
+    """
+    Бизнес-правило как объект.
+    Проверяет, удовлетворяет ли кандидат условию.
+    """
+
+    @abstractmethod
+    def is_satisfied_by(self, candidate: TCandidate) -> bool: ...
+
+    def and_(self, other: Specification[TCandidate]) -> Specification[TCandidate]:
+        return _AndSpec(self, other)
+
+    def or_(self, other: Specification[TCandidate]) -> Specification[TCandidate]:
+        return _OrSpec(self, other)
+
+    def not_(self) -> Specification[TCandidate]:
+        return _NotSpec(self)
+
+
+class _AndSpec(Specification[TCandidate]):
+    def __init__(self, left: Specification[TCandidate], right: Specification[TCandidate]) -> None:
+        self._left = left
+        self._right = right
+
+    def is_satisfied_by(self, candidate: TCandidate) -> bool:
+        return self._left.is_satisfied_by(candidate) and self._right.is_satisfied_by(candidate)
+
+
+class _OrSpec(Specification[TCandidate]):
+    def __init__(self, left: Specification[TCandidate], right: Specification[TCandidate]) -> None:
+        self._left = left
+        self._right = right
+
+    def is_satisfied_by(self, candidate: TCandidate) -> bool:
+        return self._left.is_satisfied_by(candidate) or self._right.is_satisfied_by(candidate)
+
+
+class _NotSpec(Specification[TCandidate]):
+    def __init__(self, spec: Specification[TCandidate]) -> None:
+        self._spec = spec
+
+    def is_satisfied_by(self, candidate: TCandidate) -> bool:
+        return not self._spec.is_satisfied_by(candidate)
+
+
 TContext = TypeVar("TContext")
 TId = TypeVar("TId", bound=Id)
 TState = TypeVar("TState")
