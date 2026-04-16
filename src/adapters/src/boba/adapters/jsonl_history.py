@@ -96,7 +96,10 @@ class AgentEventDecoder(Converter[str, AgentEvent]):
         if cls is None:
             raise ValueError(f"Unknown event type: {event_type}")
         if "request_id" in event_data and isinstance(event_data["request_id"], str):
-            event_data = {**event_data, "request_id": RequestId(UUID(event_data["request_id"]))}
+            event_data = {
+                **event_data,
+                "request_id": RequestId(UUID(event_data["request_id"])),
+            }
         return cls(**event_data)
 
 
@@ -152,10 +155,10 @@ class JsonLinesHistoryService(HistoryService):
             return
 
         with self._workspace.read_text(self.HISTORY_FILE) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    yield self._from_dict(json.loads(line))
+            for raw_line in f:
+                stripped = raw_line.strip()
+                if stripped:
+                    yield self._from_dict(json.loads(stripped))
 
     def entries_by_request(self, request_id: RequestId) -> Iterator[HistoryEntry]:
         for entry in self.entries():

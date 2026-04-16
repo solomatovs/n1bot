@@ -30,7 +30,7 @@ class StaticPromptProvider(PromptProvider[None]):
     def priority(self) -> int:
         return self._priority
 
-    def build(self, ctx: None) -> PromptBlock:
+    def block(self, ctx: None) -> PromptBlock:
         return PromptBlock(name=self._id.name, content=self._content)
 
 
@@ -55,7 +55,7 @@ class FilePromptProvider(PromptProvider[None]):
     def priority(self) -> int:
         return self._priority
 
-    def build(self, ctx: None) -> PromptBlock:
+    def block(self, ctx: None) -> PromptBlock:
         if self._path.exists():
             content = self._path.read_text(encoding="utf-8")
         else:
@@ -75,7 +75,7 @@ class EnvironmentPromptProvider(PromptProvider[None]):
     def priority(self) -> int:
         return 60
 
-    def build(self, ctx: None) -> PromptBlock:
+    def block(self, ctx: None) -> PromptBlock:
         lines = [
             f"Platform: {platform.system()}",
             f"Shell: {os.environ.get('SHELL', 'unknown')}",
@@ -97,7 +97,7 @@ class GitPromptProvider(PromptProvider[None]):
     def priority(self) -> int:
         return 80
 
-    def build(self, ctx: None) -> PromptBlock:
+    def block(self, ctx: None) -> PromptBlock:
         branch = self._git("branch", "--show-current")
         status = self._git("status", "--short")
         log = self._git("log", "--oneline", "-5")
@@ -136,7 +136,7 @@ class UserQueryProvider(PromptProvider[AgentContext]):
     def priority(self) -> int:
         return 50
 
-    def build(self, ctx: AgentContext) -> PromptBlock:
+    def block(self, ctx: AgentContext) -> PromptBlock:
         return PromptBlock(name=self._id.name, content=ctx.request.query)
 
 
@@ -154,7 +154,7 @@ class IDESelectionProvider(PromptProvider[AgentContext]):
     def priority(self) -> int:
         return 30
 
-    def build(self, ctx: AgentContext) -> PromptBlock:
+    def block(self, ctx: AgentContext) -> PromptBlock:
         content = (
             f"Selected code from {self._file_path}:\n" f"```\n{self._selection}\n```"
         )
@@ -175,6 +175,6 @@ class TemplateProvider(PromptProvider[AgentContext]):
     def priority(self) -> int:
         return self._priority
 
-    def build(self, ctx: AgentContext) -> PromptBlock:
+    def block(self, ctx: AgentContext) -> PromptBlock:
         content = self._template.format(query=ctx.request.query)
         return PromptBlock(name=self._id.name, content=content)

@@ -7,19 +7,46 @@ from collections.abc import Iterator
 
 from boba.domain.agent.events import (
     AgentEvent,
+    GenerationDone,
     StageCompleted,
     StageStarted,
     UserQueryReceived,
 )
-from boba.domain.agent.loop import AgentMiddleware
-from boba.domain.agent.models import AgentContext, LLMMessage
+from boba.domain.agent.models import AgentConfig, AgentContext, AgentRequest, LLMMessage
 from boba.domain.core.messages import MessageService
+from boba.domain.core.patterns import Loop, Specification, Stream
 from boba.domain.core.promt import SystemPromptService, UserPromptService
 
 logger = logging.getLogger(__name__)
 
 
-class SystemMessageMiddleware(AgentMiddleware):
+class Agent:
+    def __init__(
+        self,
+        source: Loop[AgentContext, None, AgentEvent],
+        sink: Stream[AgentContext, AgentEvent, None],
+    ) -> None:
+        self._source = source
+        self._sink = sink
+
+    def name(self) -> str:
+        return "AgentLoop"
+
+    def run(self, config: AgentConfig, request: AgentRequest):
+        """
+        Запускает цикл обработки запроса агентом.
+        """
+        ctx = AgentContext(
+            request=request,
+            config=config,
+        )
+
+        for event in self._source.stream(ctx, None):
+            for _ in self._sink.stream(ctx, event):
+                pass
+
+
+class SystemMessageMiddleware(Stream[AgentContext, None, AgentEvent]):
     """
     Добавляет system message на первой итерации,
     затем делегирует следующему слою.
@@ -27,7 +54,7 @@ class SystemMessageMiddleware(AgentMiddleware):
 
     def __init__(
         self,
-        inner: AgentMiddleware,
+        inner: Stream[AgentContext, None, AgentEvent],
         prompt_service: SystemPromptService,
         message_service: MessageService,
     ) -> None:
@@ -38,7 +65,7 @@ class SystemMessageMiddleware(AgentMiddleware):
     def name(self) -> str:
         return "SystemMessage"
 
-    def produce(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+    def stream(self, ctx: AgentContext, stream: None) -> Iterator[AgentEvent]:
         if self._message_service.last() is None:
             yield StageStarted(
                 request_id=ctx.request.request_id,
@@ -56,10 +83,10 @@ class SystemMessageMiddleware(AgentMiddleware):
                 detail="system prompt added",
             )
 
-        yield from self._inner.produce(ctx)
+        yield from self._inner.stream(ctx, stream)
 
 
-class UserMessageMiddleware(AgentMiddleware):
+class UserMessageMiddleware(Stream[AgentContext, None, AgentEvent]):
     """
     Добавляет user message на первой итерации,
     затем делегирует следующему слою.
@@ -67,7 +94,7 @@ class UserMessageMiddleware(AgentMiddleware):
 
     def __init__(
         self,
-        inner: AgentMiddleware,
+        inner: Stream[AgentContext, None, AgentEvent],
         user_prompt_service: UserPromptService,
         message_service: MessageService,
     ) -> None:
@@ -78,7 +105,7 @@ class UserMessageMiddleware(AgentMiddleware):
     def name(self) -> str:
         return "UserMessage"
 
-    def produce(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+    def stream(self, ctx: AgentContext, stream: None) -> Iterator[AgentEvent]:
         if ctx.iteration == 1:
             yield StageStarted(request_id=ctx.request.request_id, stage=self.name())
 
@@ -97,21 +124,47 @@ class UserMessageMiddleware(AgentMiddleware):
                 detail="user message added",
             )
 
-        yield from self._inner.produce(ctx)
+        yield from self._inner.stream(ctx, stream)
 
 
-class IterationCounterMiddleware(AgentMiddleware):
+class IterationCounterMiddleware(Stream[AgentContext, None, AgentEvent]):
     """
     Подсчет кол-ва итераций цикла агента.
     Увеличивает счетчик в контексте и делегирует следующему слою.
     """
 
-    def __init__(self, inner: AgentMiddleware) -> None:
+    def __init__(self, inner: Stream[AgentContext, None, AgentEvent]) -> None:
         self._inner = inner
 
     def name(self) -> str:
         return "Counter"
 
-    def produce(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+    def stream(self, ctx: AgentContext, stream: None) -> Iterator[AgentEvent]:
         ctx.iteration += 1
-        yield from self._inner.produce(ctx)
+        yield from self._inner.stream(ctx, stream)
+
+
+class StopOnFinished(Specification[tuple[AgentContext, AgentEvent]]):
+    """Останавливает если генерация завершена и не tool_calls."""
+
+    def is_satisfied_by(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
+        _ctx, event = candidate
+
+        if isinstance(event, GenerationDone):
+            return event.finish_reason != "tool_calls"
+
+        return False
+
+
+class StopOnMaxIterations(Specification[tuple[AgentContext, AgentEvent]]):
+    """
+    Останавливает если превышен лимит итераций
+    """
+
+    def is_satisfied_by(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
+        ctx, event = candidate
+
+        if isinstance(event, GenerationDone):
+            return ctx.iteration >= ctx.config.max_iterations
+
+        return False

@@ -1,9 +1,9 @@
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import TypeVar
 
-from boba.domain.core.patterns import Id
+from boba.domain.core.patterns import CompositeBuilder, Id, Provider
 
 TPromptContext = TypeVar("TPromptContext")
 
@@ -20,27 +20,25 @@ class PromptId(Id[str]):
     """Идентификатор провайдера."""
 
 
-class PromptProvider(ABC, Generic[TPromptContext]):
+class PromptProvider(Provider[PromptId, TPromptContext, list[PromptBlock]]):
     """
     Провайдер промпта.
     Поставляет блок, который будет конкатенирован с другими в итоговый промпт.
     """
 
     @abstractmethod
-    def id(self) -> PromptId: ...
+    def block(self, ctx: TPromptContext) -> PromptBlock: ...
 
-    @abstractmethod
-    def priority(self) -> int: ...
-
-    @abstractmethod
-    def build(self, ctx: TPromptContext) -> PromptBlock: ...
+    def apply(self, ctx: TPromptContext, state: list[PromptBlock]) -> list[PromptBlock]:
+        state.append(self.block(ctx))
+        return state
 
 
 class PromptResult:
     """Результат сборки промпта из одного или нескольких провайдеров."""
 
     def __init__(self, blocks: Iterable[PromptBlock]) -> None:
-        self._blocks = blocks
+        self._blocks = list(blocks)
 
     def to_string(self) -> str:
         """Конкатенация всех непустых блоков."""
@@ -50,27 +48,16 @@ class PromptResult:
         return iter(self._blocks)
 
 
-class PromptService(Generic[TPromptContext]):
+class PromptService(
+    CompositeBuilder[PromptId, TPromptContext, list[PromptBlock], PromptResult],
+):
     """Сервис для управления промптами от разных провайдеров."""
 
-    def __init__(self) -> None:
-        self._providers: dict[PromptId, PromptProvider[TPromptContext]] = {}
+    def initial(self, ctx: TPromptContext) -> list[PromptBlock]:
+        return []
 
-    def register(self, provider: PromptProvider[TPromptContext]) -> None:
-        """Зарегистрировать провайдер."""
-        self._providers[provider.id()] = provider
-
-    def unregister(self, id: PromptId) -> None:
-        """Убрать провайдер."""
-        self._providers.pop(id, None)
-
-    def providers(self) -> Iterator[PromptProvider[TPromptContext]]:
-        return iter(self._providers.values())
-
-    def build(self, ctx: TPromptContext) -> PromptResult:
-        """Собрать промпт из всех провайдеров (по priority)."""
-        sorted_providers = sorted(self._providers.values(), key=lambda p: p.priority())
-        return PromptResult(p.build(ctx) for p in sorted_providers)
+    def finalize(self, state: list[PromptBlock]) -> PromptResult:
+        return PromptResult(state)
 
 
 class SystemPromptService(PromptService[None]):

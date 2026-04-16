@@ -27,22 +27,20 @@ from boba.adapters.prompt_providers import (
     UserQueryProvider,
 )
 from boba.domain.agent.events import AgentEvent, EventSerializer
-from boba.domain.agent.loop import (
-    AgentLoop,
-    AgentMiddleware,
+from boba.domain.agent.meat import (
+    Agent,
+    AgentContext,
+    IterationCounterMiddleware,
     StopOnFinished,
     StopOnMaxIterations,
-)
-from boba.domain.agent.models import AgentConfig
-from boba.domain.agent.stages import (
-    IterationCounterMiddleware,
     SystemMessageMiddleware,
     UserMessageMiddleware,
 )
+from boba.domain.agent.models import AgentConfig
 from boba.domain.config import AppConfig
 from boba.domain.core.history import HistoryService
 from boba.domain.core.messages import MessageService
-from boba.domain.core.patterns import CompositeSink, Serializer, StreamSink
+from boba.domain.core.patterns import Loop, Pipeline, Serializer, Stream
 from boba.domain.core.promt import PromptId, SystemPromptService, UserPromptService
 from boba.domain.core.workspace import (
     WorkspaceId,
@@ -127,27 +125,30 @@ class RequestProvider(Provider):
         return JsonLinesHistoryService(workspace, serializer)
 
     @provide
-    def llm_chain(
+    def agent_chain(
         self,
         config: AppConfig,
         system_prompt_service: SystemPromptService,
         user_prompt_service: UserPromptService,
         message_service: MessageService,
-    ) -> AgentMiddleware:
-        # Terminal — actual LLM call
-        chain: AgentMiddleware = OpenAIMiddleware(config.llm, message_service)
-        # LLM middleware
+    ) -> Loop[AgentContext, None, AgentEvent]:
+        chain = OpenAIMiddleware(config.llm, message_service)
         chain = StupidRetryLLMMiddleware(chain, max_retries=3)
         chain = LoggingLLMMiddleware(chain)
-        # Agent middleware
         chain = UserMessageMiddleware(chain, user_prompt_service, message_service)
         chain = SystemMessageMiddleware(chain, system_prompt_service, message_service)
         chain = IterationCounterMiddleware(chain)
-        return chain
+
+        stop = StopOnFinished().or_(StopOnMaxIterations())
+
+        return Loop(chain, stop)
 
     @provide
-    def agent_sink(self, history: HistoryService) -> StreamSink[AgentEvent]:
-        return CompositeSink(
+    def agent_sink(
+        self,
+        history: HistoryService,
+    ) -> Stream[AgentContext, AgentEvent, None]:
+        return Pipeline(
             [
                 ConsoleSink(),
                 HistorySink(history),
@@ -155,14 +156,12 @@ class RequestProvider(Provider):
         )
 
     @provide
-    def agent_loop(
+    def agent(
         self,
-        agent_config: AgentConfig,
-        chain: AgentMiddleware,
-    ) -> AgentLoop:
-        stop = StopOnFinished().or_(StopOnMaxIterations())
-        return AgentLoop(
-            config=agent_config,
-            chain=chain,
-            stop=stop,
+        source: Loop[AgentContext, None, AgentEvent],
+        sink: Stream[AgentContext, AgentEvent, None],
+    ) -> Agent:
+        return Agent(
+            source,
+            sink,
         )

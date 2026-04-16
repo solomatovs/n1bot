@@ -10,17 +10,16 @@ from pathlib import Path
 from threading import Lock
 from uuid import UUID, uuid4
 
-from boba.domain.core.patterns import Specification
+from boba.domain.core.patterns import Specification, Validator
 from boba.domain.core.workspace import (
     FileMeta,
-    PathValidator,
     WorkspaceId,
     WorkspaceManager,
     WorkspaceService,
 )
 
 
-class FsPathValidator(PathValidator):
+class FsPathValidator(Validator[str]):
     """Проверяет что путь не выходит за пределы root."""
 
     def __init__(self, root: Path) -> None:

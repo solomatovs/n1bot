@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from boba.domain.agent.models import AgentConfig
 
@@ -23,5 +23,5 @@ class AppConfig:
     workspace_base_dir: str = "./workspaces"
     ssl_verify: bool = False
     log_level: str = "INFO"
-    llm: LLMConfig = LLMConfig()
-    agent: AgentConfig = AgentConfig()
+    llm: LLMConfig = field(default_factory=LLMConfig)
+    agent: AgentConfig = field(default_factory=AgentConfig)
