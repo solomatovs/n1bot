@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.models import RequestId
@@ -16,6 +16,9 @@ from boba.domain.core.patterns import Id
 class EntryId(Id[UUID]):
     """Идентификатор записи в журнале."""
 
+    @staticmethod
+    def new():
+        return EntryId(uuid4())
 
 @dataclass(frozen=True)
 class HistoryEntry:
