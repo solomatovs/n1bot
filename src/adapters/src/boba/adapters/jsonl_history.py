@@ -6,7 +6,7 @@ import json
 from collections.abc import Iterator
 from dataclasses import asdict
 from datetime import UTC, datetime
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from boba.domain.agent.events import (
     AgentEvent,
@@ -122,7 +122,7 @@ class JsonLinesHistoryService(HistoryService):
     def append(self, event: AgentEvent) -> HistoryEntry:
         event_json = self._serializer.serialize(event)
 
-        entry_id = EntryId(uuid4())
+        entry_id = EntryId.new()
         now = datetime.now(UTC)
 
         entry = HistoryEntry(
