@@ -308,26 +308,61 @@ class Pipeline(StreamSource[TContext, TEvent]):
             yield from stage.produce(ctx)
 
 
-class Loop(StreamSource[TContext, TEvent]):
+class StopCondition(ABC, Generic[TContext, TEvent]):
     """
-    Оркестратор, который запускает source в цикле, пока should_stop не вернёт True.
-    Для кастомной логики остановки — наследоваться и переопределить should_stop.
+    Условие остановки цикла.
+        should_stop() проверяет, нужно ли остановить цикл.
+        Композиция: or_(), and_().
     """
 
-    def __init__(self, source: StreamSource[TContext, TEvent]) -> None:
+    @abstractmethod
+    def should_stop(self, ctx: TContext, event: TEvent) -> bool: ...
+
+    def or_(self, other: StopCondition[TContext, TEvent]) -> StopCondition[TContext, TEvent]:
+        return _OrStop(self, other)
+
+    def and_(self, other: StopCondition[TContext, TEvent]) -> StopCondition[TContext, TEvent]:
+        return _AndStop(self, other)
+
+
+class _OrStop(StopCondition[TContext, TEvent]):
+    def __init__(self, left: StopCondition[TContext, TEvent], right: StopCondition[TContext, TEvent]) -> None:
+        self._left = left
+        self._right = right
+
+    def should_stop(self, ctx: TContext, event: TEvent) -> bool:
+        return self._left.should_stop(ctx, event) or self._right.should_stop(ctx, event)
+
+
+class _AndStop(StopCondition[TContext, TEvent]):
+    def __init__(self, left: StopCondition[TContext, TEvent], right: StopCondition[TContext, TEvent]) -> None:
+        self._left = left
+        self._right = right
+
+    def should_stop(self, ctx: TContext, event: TEvent) -> bool:
+        return self._left.should_stop(ctx, event) and self._right.should_stop(ctx, event)
+
+
+class Loop(StreamSource[TContext, TEvent]):
+    """
+    Оркестратор, который запускает source в цикле, пока stop condition не сработает.
+    """
+
+    def __init__(
+        self,
+        source: StreamSource[TContext, TEvent],
+        stop: StopCondition[TContext, TEvent],
+    ) -> None:
         self._source = source
+        self._stop = stop
 
     def name(self) -> str:
         return "Loop(" + self._source.name() + ")"
-
-    def should_stop(self, ctx: TContext, event: TEvent) -> bool:
-        """Переопределить в наследнике. По умолчанию — никогда не останавливается."""
-        return False
 
     def produce(self, ctx: TContext) -> Iterator[TEvent]:
         while True:
             for event in self._source.produce(ctx):
                 yield event
 
-                if self.should_stop(ctx, event):
+                if self._stop.should_stop(ctx, event):
                     return
