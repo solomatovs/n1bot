@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from collections.abc import Iterator
 from datetime import datetime
 from io import BufferedIOBase, TextIOBase
 from pathlib import Path
 from threading import Lock
-from uuid import UUID, uuid4
 
 from boba.domain.core.patterns import Specification, Validator
 from boba.domain.core.workspace import (
@@ -48,6 +48,46 @@ class FsWorkspaceService(WorkspaceService):
     def mkdir(self, path: str) -> None:
         self._resolve(path).mkdir(parents=True, exist_ok=True)
 
+    def _ensure_created(self, path):
+        resolved = self._resolve(path)
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        return resolved
+
+    def read_lines(
+        self, path: str, *, reverse: bool = False, encoding: str = "utf-8"
+    ) -> Iterator[str]:
+        resolved = self._resolve(path)
+        if not reverse:
+            with open(resolved, encoding=encoding) as f:
+                for line in f:
+                    yield line.rstrip("\n")
+            return
+
+        with open(resolved, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            remaining = f.tell()
+            if remaining == 0:
+                return
+
+            buf = b""
+            chunk_size = 8192
+            while remaining > 0:
+                read_size = min(chunk_size, remaining)
+                remaining -= read_size
+                f.seek(remaining)
+                buf = f.read(read_size) + buf
+
+                while b"\n" in buf:
+                    buf, _, line = buf.rpartition(b"\n")
+                    decoded = line.decode(encoding)
+                    if decoded:
+                        yield decoded
+
+            if buf:
+                decoded = buf.decode(encoding)
+                if decoded:
+                    yield decoded
+
     def read_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
         return open(self._resolve(path), encoding=encoding)
 
@@ -55,13 +95,11 @@ class FsWorkspaceService(WorkspaceService):
         return open(self._resolve(path), "rb")
 
     def write_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
-        resolved = self._resolve(path)
-        resolved.parent.mkdir(parents=True, exist_ok=True)
+        resolved = self._ensure_created(path)
         return open(resolved, "w", encoding=encoding)
 
     def append_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
-        resolved = self._resolve(path)
-        resolved.parent.mkdir(parents=True, exist_ok=True)
+        resolved = self._ensure_created(path)
         return open(resolved, "a", encoding=encoding)
 
     def exists(self, key: str) -> bool:
@@ -73,7 +111,7 @@ class FsWorkspaceService(WorkspaceService):
     def _iter_files(
         self, path: str | None, spec: Specification[str] | None, recursive: bool
     ) -> Iterator[str]:
-        base = self._resolve(path) if path else self._root
+        base = self._ensure_created(path)
 
         if base.is_file():
             rel = str(base.relative_to(self._root))
@@ -115,63 +153,47 @@ class FsWorkspaceManager(WorkspaceManager):
 
     - Каждый workspace — папка с UUID-именем внутри base_dir
     - Кеширует FileStorage: один UUID → один экземпляр
-    - При старте подхватывает уже существующие папки
+    - Существующие папки подхватываются лениво при первом обращении
     """
 
     def __init__(self, base_dir: Path) -> None:
         self._base_dir = base_dir
         self._lock = Lock()
-        self._storages: dict[UUID, FsWorkspaceService] = {}
+        self._storages: dict[WorkspaceId, FsWorkspaceService] = {}
         self._base_dir.mkdir(parents=True, exist_ok=True)
-        self._scan_existing()
 
     def create(self) -> WorkspaceService:
-        ws_id = uuid4()
-        self._make_dir(ws_id)
+        ws_id = WorkspaceId.new()
+        self._workspace_dir(ws_id).mkdir(parents=True, exist_ok=True)
 
-        storage = FsWorkspaceService(WorkspaceId(ws_id), self._workspace_dir(ws_id))
+        storage = FsWorkspaceService(ws_id, self._workspace_dir(ws_id))
         with self._lock:
             self._storages[ws_id] = storage
 
         return storage
 
     def get(self, workspace_id: WorkspaceId) -> WorkspaceService:
-        uid = workspace_id.name
         with self._lock:
-            if uid in self._storages:
-                return self._storages[uid]
+            if workspace_id in self._storages:
+                return self._storages[workspace_id]
 
-            path = self._workspace_dir(uid)
+            path = self._workspace_dir(workspace_id)
             if not path.is_dir():
                 raise FileNotFoundError(f"workspace dir not found: {path}")
 
-            self._storages[uid] = FsWorkspaceService(workspace_id, path)
-
-            return self._storages[uid]
+            storage = FsWorkspaceService(workspace_id, path)
+            self._storages[workspace_id] = storage
+            return storage
 
     def delete(self, workspace_id: WorkspaceId) -> None:
-        uid = workspace_id.name
         with self._lock:
-            self._storages.pop(uid, None)
+            self._storages.pop(workspace_id, None)
 
-            path = self._workspace_dir(uid)
+            path = self._workspace_dir(workspace_id)
             if not path.is_dir():
                 raise FileNotFoundError(f"workspace dir not found: {path}")
 
             shutil.rmtree(path)
 
-    def _make_dir(self, workspace_id: UUID) -> None:
-        self._workspace_dir(workspace_id).mkdir()
-
-    def _workspace_dir(self, workspace_id: UUID) -> Path:
-        return self._base_dir / str(workspace_id)
-
-    def _scan_existing(self) -> None:
-        for child in self._base_dir.iterdir():
-            if not child.is_dir():
-                continue
-
-            try:
-                UUID(child.name)
-            except ValueError:
-                continue
+    def _workspace_dir(self, workspace_id: WorkspaceId) -> Path:
+        return self._base_dir / str(workspace_id.name)

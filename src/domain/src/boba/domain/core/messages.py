@@ -10,8 +10,7 @@ from boba.domain.agent.models import LLMMessage
 
 class MessageService(ABC):
     """
-    Абстрактный сервис управления историей сообщений.
-    Единственный способ добавлять/читать/удалять messages в рамках сессии.
+    Абстрактный сервис управления историей сообщений для модели
     """
 
     @abstractmethod

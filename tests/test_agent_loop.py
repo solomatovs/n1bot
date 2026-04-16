@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sys
-from uuid import uuid4
 
 from boba.domain.agent.meat import Agent
 from boba.domain.agent.models import AgentRequest, RequestId
@@ -27,7 +26,7 @@ def test_agent_loop_hello() -> None:
                 query=query,
                 model=config.llm.model,
                 workspace_id=storage.workspace_id,
-                request_id=RequestId(uuid4()),
+                request_id=RequestId.new(),
             )
 
             agent.run(config.agent, request)

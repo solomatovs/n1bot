@@ -5,12 +5,11 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from io import BufferedIOBase, TextIOBase
-from uuid import UUID
 
-from boba.domain.core.patterns import Id, Specification
+from boba.domain.core.patterns import Specification, UuId
 
 
-class WorkspaceId(Id[UUID]):
+class WorkspaceId(UuId):
     """Идентификатор workspace'а — value object."""
 
 
@@ -21,7 +20,6 @@ class FileMeta:
     path: str
     size: int
     modified: datetime
-
 
 
 class WorkspaceService(ABC):
@@ -61,6 +59,17 @@ class WorkspaceService(ABC):
     @abstractmethod
     def mkdir(self, path: str) -> None:
         """Создать директорию. Создаёт промежуточные директории при необходимости."""
+        ...
+
+    @abstractmethod
+    def read_lines(
+        self, path: str, *, reverse: bool = False, encoding: str = "utf-8"
+    ) -> Iterator[str]:
+        """
+        Построчное чтение файла.
+        reverse=True — строки от последней к первой, без загрузки всего файла в память.
+        Бросает FileNotFoundError, если файл не существует.
+        """
         ...
 
     @abstractmethod

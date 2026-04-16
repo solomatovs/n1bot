@@ -10,11 +10,7 @@ from boba.adapters.console_sink import ConsoleSink
 from boba.adapters.fs_workspace import FsWorkspaceManager
 from boba.adapters.history_sink import HistorySink
 from boba.adapters.in_memory_messages import InMemoryMessageService
-from boba.adapters.jsonl_history import (
-    AgentEventDecoder,
-    AgentEventEncoder,
-    JsonLinesHistoryService,
-)
+from boba.adapters.jsonl_history import JsonLinesHistoryService
 from boba.adapters.openai_completion import (
     LoggingLLMMiddleware,
     OpenAIMiddleware,
@@ -26,7 +22,7 @@ from boba.adapters.prompt_providers import (
     StaticPromptProvider,
     UserQueryProvider,
 )
-from boba.domain.agent.events import AgentEvent, EventSerializer
+from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.meat import (
     Agent,
     AgentContext,
@@ -40,7 +36,7 @@ from boba.domain.agent.models import AgentConfig
 from boba.domain.config import AppConfig
 from boba.domain.core.history import HistoryService
 from boba.domain.core.messages import MessageService
-from boba.domain.core.patterns import Loop, Pipeline, Serializer, Stream
+from boba.domain.core.patterns import Loop, Pipeline, Stream
 from boba.domain.core.promt import PromptId, SystemPromptService, UserPromptService
 from boba.domain.core.workspace import (
     WorkspaceId,
@@ -90,11 +86,6 @@ class AppProvider(Provider):
         svc.register(UserQueryProvider())
         return svc
 
-    @provide
-    def event_serializer(self) -> EventSerializer:
-        return Serializer(AgentEventEncoder(), AgentEventDecoder())
-
-
 class RequestProvider(Provider):
     """Per-request сервисы."""
 
@@ -120,9 +111,8 @@ class RequestProvider(Provider):
     def history_service(
         self,
         workspace: WorkspaceService,
-        serializer: EventSerializer,
     ) -> HistoryService:
-        return JsonLinesHistoryService(workspace, serializer)
+        return JsonLinesHistoryService(workspace)
 
     @provide
     def agent_chain(

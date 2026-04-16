@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from typing import Generic, TypeVar
+from typing import Generic, Self, TypeVar
+from uuid import UUID, uuid4
 
 TName = TypeVar("TName")
 
@@ -26,6 +27,17 @@ class Id(Generic[TName]):
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self._name!r})"
 
+
+class UuId(Id[UUID]):
+    """Базовый UUID-идентификатор."""
+
+    @classmethod
+    def new(cls) -> Self:
+        return cls(uuid4())
+
+    @classmethod
+    def from_uuid(cls, _id: UUID) -> Self:
+        return cls(_id)
 
 TCtx = TypeVar("TCtx")
 TIn = TypeVar("TIn")
