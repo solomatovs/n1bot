@@ -12,32 +12,10 @@ class RequestId(Id[UUID]):
 
 
 @dataclass(frozen=True)
-class LLMToolCall:
-    """
-    Готовый tool call (для LLMMessage)
-    """
-
-    id: str
-    name: str
-    arguments: str
-
-
-@dataclass(frozen=True)
-class LLMMessage:
-    """
-    Одно сообщение в истории диалога
-    """
-
-    role: str
-    content: str
-    tool_call_id: str | None = None
-    tool_calls: list[LLMToolCall] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
 class AgentRequest:
     """
     Входные данные для AgentLoop
+    Не меняются в процессе выполнения цикла, в отличие от AgentContext
     """
 
     query: str
@@ -66,3 +44,22 @@ class AgentContext:
     request: AgentRequest
     config: AgentConfig
     iteration: int = 0
+
+
+@dataclass(frozen=True)
+class LLMToolCall:
+    """Готовый tool call."""
+
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
+class LLMMessage:
+    """Одно сообщение в истории диалога."""
+
+    role: str
+    content: str
+    tool_call_id: str | None = None
+    tool_calls: list[LLMToolCall] = field(default_factory=list)

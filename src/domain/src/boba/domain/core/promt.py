@@ -1,6 +1,7 @@
-from dataclasses import dataclass
 from abc import ABC, abstractmethod
-from typing import Iterator, Iterable, Generic, TypeVar
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
+from typing import Generic, TypeVar
 
 from boba.domain.core.patterns import Id
 

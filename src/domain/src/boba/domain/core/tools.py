@@ -1,7 +1,8 @@
-from dataclasses import dataclass
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, TypeVar, Generic, Iterator
+from typing import Any, Generic, TypeVar
 
 from boba.domain.core.patterns import Id
 
@@ -14,7 +15,6 @@ class ToolId(Id[str]):
 class ToolParams:
     """Параметры инструмента"""
 
-    pass
 
 
 @dataclass(frozen=True)
@@ -75,21 +75,26 @@ class Tool(ABC, Generic[TParams]):
     def execute(self, params: TParams) -> ToolResult: ...
 
 
-class ToolsService:
-    """Сервис для управления инструментами: регистрация, получение определений, выполнение."""
+class ToolsService(ABC):
+    """Сервис для управления инструментами:
+    - регистрация
+    - получение определений
+    - выполнение."""
 
+    @abstractmethod
     def register(self, tool: Tool) -> None:
         """Зарегистрировать инструмент, вызвать tool.enter()."""
-        ...
 
-    def unregister(self, id: ToolId) -> None:
+    @abstractmethod
+    def unregister(self, tool_id: ToolId) -> None:
         """Вызвать tool.close() и убрать инструмент."""
-        ...
 
+    @abstractmethod
     def get_definitions(self) -> Iterator[ToolDefinition]:
         """Определения для параметра tools API."""
-        ...
 
-    def execute(self, id: ToolId, raw_args: dict[str, Any]) -> ToolResult:
+    @abstractmethod
+    def execute(
+        self, tool_id: ToolId, raw_args: dict[str, Any]
+    ) -> ToolResult:
         """Найти tool, сконструировать params из raw JSON, выполнить."""
-        ...

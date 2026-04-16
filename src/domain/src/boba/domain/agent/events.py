@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Union
+
 from boba.domain.agent.models import RequestId
+from boba.domain.core.patterns import Converter, Serializer
 
 
 @dataclass(frozen=True)
 class BaseEvent:
     """Базовый класс для всех событий агента."""
+
     request_id: RequestId
 
 
 @dataclass(frozen=True)
 class UserQueryReceived(BaseEvent):
     """Запрос пользователя принят."""
+
     query: str
 
 
@@ -126,22 +129,28 @@ class RefusalComplete(BaseEvent):
     content: str
 
 
-AgentEvent = Union[
-    UserQueryReceived,
-    StageStarted,
-    StageCompleted,
-    GenerationStarted,
-    ThinkingStarted,
-    ThinkingToken,
-    ThinkingComplete,
-    AnswerStarted,
-    AnswerToken,
-    AnswerComplete,
-    RefusalToken,
-    RefusalComplete,
-    GenerationDone,
-    ToolCallBegin,
-    ToolCallArgumentDelta,
-    ToolCallComplete,
-    ToolResultReady,
-]
+AgentEvent = (
+    UserQueryReceived
+    | StageStarted
+    | StageCompleted
+    | GenerationStarted
+    | ThinkingStarted
+    | ThinkingToken
+    | ThinkingComplete
+    | AnswerStarted
+    | AnswerToken
+    | AnswerComplete
+    | RefusalToken
+    | RefusalComplete
+    | GenerationDone
+    | ToolCallBegin
+    | ToolCallArgumentDelta
+    | ToolCallComplete
+    | ToolResultReady
+)
+
+
+# Типы сериализации AgentEvent
+EventEncoder = Converter[AgentEvent, str]
+EventDecoder = Converter[str, AgentEvent]
+EventSerializer = Serializer[AgentEvent, str]

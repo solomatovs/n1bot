@@ -19,8 +19,8 @@ from boba.domain.core.promt import (
 class StaticPromptProvider(PromptProvider[None]):
     """Фиксированный текст, зашитый в код."""
 
-    def __init__(self, id: PromptId, priority: int, content: str) -> None:
-        self._id = id
+    def __init__(self, prompt_id: PromptId, priority: int, content: str) -> None:
+        self._id = prompt_id
         self._priority = priority
         self._content = content
 
@@ -39,12 +39,12 @@ class FilePromptProvider(PromptProvider[None]):
 
     def __init__(
         self,
-        id: PromptId,
+        prompt_id: PromptId,
         priority: int,
         path: Path,
         default_prompt: str = "",
     ) -> None:
-        self._id = id
+        self._id = prompt_id
         self._priority = priority
         self._path = path
         self._default_prompt = default_prompt
@@ -98,9 +98,9 @@ class GitPromptProvider(PromptProvider[None]):
         return 80
 
     def build(self, ctx: None) -> PromptBlock:
-        branch = self._run("git branch --show-current")
-        status = self._run("git status --short")
-        log = self._run("git log --oneline -5")
+        branch = self._git("branch", "--show-current")
+        status = self._git("status", "--short")
+        log = self._git("log", "--oneline", "-5")
         content = (
             f"Current branch: {branch}\n\n"
             f"Status:\n{status}\n\n"
@@ -109,12 +109,14 @@ class GitPromptProvider(PromptProvider[None]):
         return PromptBlock(name=self._id.name, content=content)
 
     @staticmethod
-    def _run(cmd: str) -> str:
+    def _git(*args: str) -> str:
         try:
             result = subprocess.run(
-                cmd.split(),
+                args=args,
+                executable="git",
                 capture_output=True,
                 text=True,
+                check=False,
                 timeout=5,
             )
             return result.stdout.strip()
@@ -162,8 +164,8 @@ class IDESelectionProvider(PromptProvider[AgentContext]):
 class TemplateProvider(PromptProvider[AgentContext]):
     """Оборачивает запрос в шаблон с инструкциями."""
 
-    def __init__(self, id: PromptId, priority: int, template: str) -> None:
-        self._id = id
+    def __init__(self, prompt_id: PromptId, priority: int, template: str) -> None:
+        self._id = prompt_id
         self._priority = priority
         self._template = template
 

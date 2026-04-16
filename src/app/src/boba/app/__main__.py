@@ -6,7 +6,6 @@ import logging
 
 from boba.infra.config import ConfigLoader
 
-
 logger = logging.getLogger(__name__)
 
 

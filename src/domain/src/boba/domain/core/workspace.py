@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from io import BufferedIOBase, TextIOBase
 from uuid import UUID
-from abc import ABC, abstractmethod
-from typing import Iterator
 
-from boba.domain.core.patterns import Id, Validator, Specification
+from boba.domain.core.patterns import Id, Specification, Validator
 
 
 class WorkspaceId(Id[UUID]):

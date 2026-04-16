@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import asdict
-from datetime import datetime, timezone
-from typing import Iterator
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from boba.domain.agent.events import (
@@ -13,6 +13,7 @@ from boba.domain.agent.events import (
     AnswerComplete,
     AnswerStarted,
     AnswerToken,
+    EventSerializer,
     GenerationDone,
     GenerationStarted,
     RefusalComplete,
@@ -29,7 +30,6 @@ from boba.domain.agent.events import (
     UserQueryReceived,
 )
 from boba.domain.agent.models import RequestId
-from boba.domain.agent.serialization import EventSerializer
 from boba.domain.core.history import (
     EntryId,
     HistoryEntry,
@@ -37,7 +37,6 @@ from boba.domain.core.history import (
 )
 from boba.domain.core.patterns import Converter
 from boba.domain.core.workspace import WorkspaceService
-
 
 _EVENT_TYPES: dict[str, type] = {
     cls.__name__: cls
@@ -121,7 +120,7 @@ class JsonLinesHistoryService(HistoryService):
         event_json = self._serializer.serialize(event)
 
         entry_id = EntryId(uuid4())
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         entry = HistoryEntry(
             id=entry_id,
