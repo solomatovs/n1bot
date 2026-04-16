@@ -7,7 +7,7 @@ from datetime import datetime
 from io import BufferedIOBase, TextIOBase
 from uuid import UUID
 
-from boba.domain.core.patterns import Id, Specification, Validator
+from boba.domain.core.patterns import Id, Specification
 
 
 class WorkspaceId(Id[UUID]):
@@ -23,13 +23,10 @@ class FileMeta:
     modified: datetime
 
 
-class PathValidator(Validator[str], ABC):
-    """Валидатор ключей (путей) workspace'а. Бросает PermissionError при нарушении."""
-
 
 class WorkspaceService(ABC):
     """
-    Текстовое файловое хранилище workspace'а. Ключи — плоские пути с '/' как разделитель.
+    Текстовое файловое хранилище workspace'а. Ключи — плоские пути с '/' как разделитель
     """
 
     @property
@@ -68,22 +65,30 @@ class WorkspaceService(ABC):
 
     @abstractmethod
     def read_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
-        """Открыть файл для чтения текста. Бросает FileNotFoundError, если файл не существует."""
+        """
+        Открыть файл для чтения текста.
+        Бросает FileNotFoundError, если файл не существует."""
         ...
 
     @abstractmethod
     def read_binary(self, path: str) -> BufferedIOBase:
-        """Открыть файл для чтения бинарных данных. Бросает FileNotFoundError, если файл не существует."""
+        """
+        Открыть файл для чтения бинарных данных.
+        Бросает FileNotFoundError, если файл не существует."""
         ...
 
     @abstractmethod
     def write_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
-        """Открыть/создать файл для записи (перезапись). Создаёт родительские директории."""
+        """
+        Открыть/создать файл для записи (перезапись).
+        Создаёт родительские директории."""
         ...
 
     @abstractmethod
     def append_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
-        """Открыть/создать файл для дозаписи. Создаёт родительские директории."""
+        """
+        Открыть/создать файл для дозаписи.
+        Создаёт родительские директории."""
         ...
 
 
@@ -97,7 +102,9 @@ class WorkspaceManager(ABC):
 
     @abstractmethod
     def get(self, workspace_id: WorkspaceId) -> WorkspaceService:
-        """Получить существующий workspace. Бросает FileNotFoundError, если не найден."""
+        """
+        Получить существующий workspace.
+        Бросает FileNotFoundError, если не найден."""
         ...
 
     @abstractmethod

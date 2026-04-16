@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Iterator
+from collections.abc import Iterable
 
 from openai import OpenAI
 from openai.types.chat import (
@@ -14,10 +14,11 @@ from openai.types.chat import (
     ChatCompletionToolMessageParam,
     ChatCompletionUserMessageParam,
 )
+from openai.types.chat.chat_completion_chunk import (
+    ChatCompletionChunk,
+    Choice,
+)
 
-from boba.domain.config import LLMConfig
-from boba.domain.agent.llm import LLMMiddleware
-from boba.domain.agent.models import AgentContext, LLMMessage, RequestId
 from boba.domain.agent.events import (
     AgentEvent,
     AnswerStarted,
@@ -30,29 +31,40 @@ from boba.domain.agent.events import (
     ToolCallArgumentDelta,
     ToolCallBegin,
 )
+from boba.domain.agent.models import (
+    AgentContext,
+    LLMMessage,
+    RequestId,
+)
+from boba.domain.config import LLMConfig
 from boba.domain.core.messages import MessageService
-from boba.domain.core.patterns import Converter, StreamConverter
-
-from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
+from boba.domain.core.patterns import (
+    Converter,
+    Pipeline,
+    Stream,
+    StreamConverter,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class LoggingLLMMiddleware(LLMMiddleware):
+class LoggingLLMMiddleware(Stream[AgentContext, None, AgentEvent]):
     """Логирует запрос, количество событий и время генерации."""
 
-    def __init__(self, next: LLMMiddleware) -> None:
-        self._next = next
+    def __init__(self, inner: Stream[AgentContext, None, AgentEvent]) -> None:
+        self._inner = inner
 
     def name(self) -> str:
         return "LoggingLLM"
 
-    def produce(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+    def stream(
+        self, ctx: AgentContext, stream: None
+    ) -> Iterable[AgentEvent]:
         logger.info("LLM request: model=%s", ctx.request.model)
         start = time.monotonic()
         count = 0
 
-        for event in self._next.produce(ctx):
+        for event in self._inner.stream(ctx, stream):
             count += 1
             yield event
 
@@ -60,29 +72,92 @@ class LoggingLLMMiddleware(LLMMiddleware):
         logger.info("LLM done: %d events in %.2fs", count, elapsed)
 
 
-class StupidRetryLLMMiddleware(LLMMiddleware):
+class StupidRetryLLMMiddleware(Stream[AgentContext, None, AgentEvent]):
     """Повторяет запрос при ошибке до max_retries раз."""
 
-    def __init__(self, next: LLMMiddleware, max_retries: int = 3) -> None:
-        self._next = next
+    def __init__(
+        self, inner: Stream[AgentContext, None, AgentEvent], max_retries: int = 3
+    ) -> None:
+        self._inner = inner
         self._max_retries = max_retries
 
     def name(self) -> str:
         return "RetryLLM"
 
-    def produce(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+    def stream(
+        self, ctx: AgentContext, stream: None
+    ) -> Iterable[AgentEvent]:
         for attempt in range(self._max_retries):
             try:
-                yield from self._next.produce(ctx)
+                yield from self._inner.stream(ctx, stream)
                 return
-            except Exception:
+            except Exception as e:
                 if attempt == self._max_retries - 1:
                     raise
                 logger.warning(
-                    "LLM attempt %d/%d failed, retrying",
+                    "LLM attempt %d/%d failed, retrying: %s",
                     attempt + 1,
                     self._max_retries,
+                    e,
                 )
+
+
+class FromOpenAIChunkConverter(Stream[AgentContext, ChatCompletionChunk, AgentEvent]):
+    """
+    Конвертирует поток OpenAI chunks в поток AgentEvent.
+    Делегирует обработку подключаемым StreamSource-ам через Pipeline.
+    """
+
+    def __init__(self, request_id: RequestId) -> None:
+        self._pipeline = Pipeline[AgentContext, Iterable[Choice], AgentEvent](
+            [
+                RoleSource(request_id),
+                ThinkingSource(request_id),
+                AnswerSource(request_id),
+                RefusalSource(request_id),
+                ToolCallSource(request_id),
+                FinishSource(request_id),
+            ]
+        )
+
+    def name(self) -> str:
+        return "FromOpenAIChunkConverter ({})".format(", ".join(self._pipeline.name()))
+
+    def stream(
+        self, ctx: AgentContext, stream: Iterable[ChatCompletionChunk]
+    ) -> Iterable[AgentEvent]:
+        for chunk in stream:
+            yield from self._pipeline.stream(ctx, chunk.choices)
+
+
+class OpenAIMiddleware(Stream[AgentContext, None, AgentEvent]):
+    """
+    Terminal — вызывает OpenAI-совместимый API.
+    Сам берёт messages из MessageService, строит запрос и стримит AgentEvent.
+    """
+
+    def __init__(self, config: LLMConfig, message_service: MessageService) -> None:
+        self._client = OpenAI(base_url=config.base_url, api_key=config.api_key)
+        self._message_service = message_service
+        self._to_converter = ToOpenAIMessageConverter()
+
+    def name(self) -> str:
+        return "OpenAICompletion"
+
+    def stream(
+        self, ctx: AgentContext, stream: None
+    ) -> Iterable[AgentEvent]:
+        msg = self._message_service.message_iter()
+
+        response = self._client.chat.completions.create(
+            model=ctx.request.model,
+            messages=self._to_converter.convert(msg),
+            stream=True,
+        )
+
+        yield from FromOpenAIChunkConverter(ctx.request.request_id).stream(
+            ctx, response
+        )
 
 
 class ToOpenAIOneMessageConverter(Converter[LLMMessage, ChatCompletionMessageParam]):
@@ -135,129 +210,164 @@ class ToOpenAIMessageConverter(StreamConverter[LLMMessage, ChatCompletionMessage
         self._request_id = request_id
 
     def convert(
-        self, stream: Iterator[LLMMessage]
-    ) -> Iterator[ChatCompletionMessageParam]:
+        self, stream: Iterable[LLMMessage]
+    ) -> Iterable[ChatCompletionMessageParam]:
         for item in stream:
             yield self._converter.convert(item)
 
 
-class FromOpenAIChunkConverter(StreamConverter[ChatCompletionChunk, AgentEvent]):
-    """
-    Конвертирует поток OpenAI chunks в поток AgentEvent.
-    С состоянием: отслеживает started и seen tool call indices.
-    Вызвать reset() перед повторным использованием.
-    """
+class RoleSource(Stream[AgentContext, Iterable[Choice], AgentEvent]):
+    """Порождает GenerationStarted при первом появлении роли."""
 
     def __init__(self, request_id: RequestId) -> None:
         self._request_id = request_id
         self._started = False
-        self._thinking_started = False
-        self._answer_started = False
-        self._seen_tool_calls: set[int] = set()
+
+    def name(self) -> str:
+        return "Role"
 
     def reset(self) -> None:
         self._started = False
-        self._thinking_started = False
-        self._answer_started = False
-        self._seen_tool_calls.clear()
-    
-    def set_request_id(self, request_id: RequestId) -> None:
+
+    def stream(
+        self, ctx: AgentContext, stream: Iterable[Choice]
+    ) -> Iterable[AgentEvent]:
+        if not self._started:
+            for choice in stream:
+                if choice.delta.role and not self._started:
+                    self._started = True
+                    yield GenerationStarted(request_id=self._request_id)
+
+
+class ThinkingSource(Stream[AgentContext, Iterable[Choice], AgentEvent]):
+    """Порождает ThinkingStarted/ThinkingToken из reasoning_content."""
+
+    def __init__(self, request_id: RequestId) -> None:
         self._request_id = request_id
+        self._started = False
 
-    def convert(self, stream: Iterator[ChatCompletionChunk]) -> Iterator[AgentEvent]:
-        for chunk in stream:
-            if not chunk.choices:
-                continue
-            choice = chunk.choices[0]
-            delta = choice.delta
+    def name(self) -> str:
+        return "Thinking"
 
-            if delta.role and not self._started:
-                self._started = True
-                yield GenerationStarted(
-                    request_id=self._request_id,
-                )
+    def reset(self) -> None:
+        self._started = False
 
-            extra = delta.model_extra or {}
+    def stream(
+        self, ctx: AgentContext, stream: Iterable[Choice]
+    ) -> Iterable[AgentEvent]:
+        for choice in stream:
+            extra = choice.delta.model_extra or {}
             thinking = extra.get("reasoning_content") or extra.get("thinking")
 
             if thinking:
-                if not self._thinking_started:
-                    self._thinking_started = True
-                    yield ThinkingStarted(
-                        request_id=self._request_id,
-                    )
-                yield ThinkingToken(
-                    request_id=self._request_id,
-                    token=thinking,
-                )
+                if not self._started:
+                    self._started = True
+                    yield ThinkingStarted(request_id=self._request_id)
 
-            if delta.content:
-                if not self._answer_started:
-                    self._answer_started = True
-                    yield AnswerStarted(
-                        request_id=self._request_id,
-                    )
+                yield ThinkingToken(request_id=self._request_id, token=thinking)
+
+
+class AnswerSource(Stream[AgentContext, Iterable[Choice], AgentEvent]):
+    """Порождает AnswerStarted/AnswerToken из content."""
+
+    def __init__(self, request_id: RequestId) -> None:
+        self._request_id = request_id
+        self._started = False
+
+    def name(self) -> str:
+        return "Answer"
+
+    def reset(self) -> None:
+        self._started = False
+
+    def stream(
+        self, ctx: AgentContext, stream: Iterable[Choice]
+    ) -> Iterable[AgentEvent]:
+        for choice in stream:
+            if choice.delta.content:
+                if not self._started:
+                    self._started = True
+                    yield AnswerStarted(request_id=self._request_id)
                 yield AnswerToken(
-                    request_id=self._request_id,
-                    token=delta.content
+                    request_id=self._request_id, token=choice.delta.content
                 )
 
-            if delta.refusal:
+
+class RefusalSource(Stream[AgentContext, Iterable[Choice], AgentEvent]):
+    """Порождает RefusalToken из refusal."""
+
+    def __init__(self, request_id: RequestId) -> None:
+        self._request_id = request_id
+
+    def name(self) -> str:
+        return "Refusal"
+
+    def stream(
+        self, ctx: AgentContext, stream: Iterable[Choice]
+    ) -> Iterable[AgentEvent]:
+        for choice in stream:
+            if choice.delta.refusal:
                 yield RefusalToken(
-                    request_id=self._request_id,
-                    token=delta.refusal
+                    request_id=self._request_id, token=choice.delta.refusal
                 )
 
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    if (
-                        tc.index not in self._seen_tool_calls
-                        and tc.id
-                        and tc.function
-                        and tc.function.name
-                    ):
-                        self._seen_tool_calls.add(tc.index)
-                        yield ToolCallBegin(
-                            request_id=self._request_id,
-                            index=tc.index,
-                            tool_call_id=tc.id,
-                            tool_name=tc.function.name,
-                        )
-                    if tc.function and tc.function.arguments:
-                        yield ToolCallArgumentDelta(
-                            request_id=self._request_id,
-                            index=tc.index,
-                            arguments=tc.function.arguments,
-                        )
 
+class ToolCallSource(Stream[AgentContext, Iterable[Choice], AgentEvent]):
+    """Порождает ToolCallBegin/ToolCallArgumentDelta из tool_calls."""
+
+    def __init__(self, request_id: RequestId) -> None:
+        self._request_id = request_id
+        self._seen: set[int] = set()
+
+    def name(self) -> str:
+        return "ToolCall"
+
+    def reset(self) -> None:
+        self._seen.clear()
+
+    def stream(
+        self, ctx: AgentContext, stream: Iterable[Choice]
+    ) -> Iterable[AgentEvent]:
+        for choice in stream:
+            if not choice.delta.tool_calls:
+                continue
+            for tc in choice.delta.tool_calls:
+                if (
+                    tc.index not in self._seen
+                    and tc.id
+                    and tc.function
+                    and tc.function.name
+                ):
+                    self._seen.add(tc.index)
+                    yield ToolCallBegin(
+                        request_id=self._request_id,
+                        index=tc.index,
+                        tool_call_id=tc.id,
+                        tool_name=tc.function.name,
+                    )
+            if tc.function and tc.function.arguments:
+                yield ToolCallArgumentDelta(
+                    request_id=self._request_id,
+                    index=tc.index,
+                    arguments=tc.function.arguments,
+                )
+
+
+class FinishSource(Stream[AgentContext, Iterable[Choice], AgentEvent]):
+    """Порождает GenerationDone при finish_reason."""
+
+    def __init__(self, request_id: RequestId) -> None:
+        self._request_id = request_id
+
+    def name(self) -> str:
+        return "Finish"
+
+    def stream(
+        self, ctx: AgentContext, stream: Iterable[Choice]
+    ) -> Iterable[AgentEvent]:
+        for choice in stream:
             if choice.finish_reason:
                 yield GenerationDone(
                     request_id=self._request_id,
                     finish_reason=choice.finish_reason,
                 )
-
-
-class OpenAIMiddleware(LLMMiddleware):
-    """
-    Terminal — вызывает OpenAI-совместимый API.
-    Сам берёт messages из MessageService, строит запрос и стримит AgentEvent.
-    """
-
-    def __init__(self, config: LLMConfig, message_service: MessageService) -> None:
-        self._client = OpenAI(base_url=config.base_url, api_key=config.api_key)
-        self._message_service = message_service
-        self._to_converter = ToOpenAIMessageConverter()
-
-    def name(self) -> str:
-        return "OpenAICompletion"
-
-    def produce(self, ctx: AgentContext) -> Iterator[AgentEvent]:
-        msg = self._message_service.message_iter()
-
-        response = self._client.chat.completions.create(
-            model=ctx.request.model,
-            messages=self._to_converter.convert(msg),
-            stream=True,
-        )
-
-        yield from FromOpenAIChunkConverter(ctx.request.request_id).convert(response)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from boba.domain.agent.events import (
     AgentEvent,
     AnswerStarted,
@@ -13,56 +15,57 @@ from boba.domain.agent.events import (
     ToolCallArgumentDelta,
     ToolCallBegin,
     ToolResultReady,
-    UserQueryReceived,
 )
-from boba.domain.core.patterns import StreamSink
-
-# ANSI
-_DIM = "\033[2m"
-_BOLD = "\033[1m"
-_CYAN = "\033[36m"
-_YELLOW = "\033[33m"
-_RED = "\033[31m"
-_GREEN = "\033[32m"
-_RESET = "\033[0m"
+from boba.domain.agent.meat import AgentContext
+from boba.domain.core.patterns import Stream
 
 
-class ConsoleSink(StreamSink[AgentEvent]):
+class ConsoleSink(Stream[AgentContext, AgentEvent, None]):
     """Выводит поток AgentEvent в консоль."""
+
+    def __init__(self) -> None:
+        self._DIM = "\033[2m"
+        self._BOLD = "\033[1m"
+        self._CYAN = "\033[36m"
+        self._YELLOW = "\033[33m"
+        self._RED = "\033[31m"
+        self._GREEN = "\033[32m"
+        self._RESET = "\033[0m"
+        self._PREVIEW = 200
 
     def name(self) -> str:
         return "Console"
 
-    def handle(self, event: AgentEvent) -> None:
-        match event:
-            case UserQueryReceived(query=q):
-                print(f"\n{_BOLD}{_CYAN}> {q}{_RESET}\n")
+    def stream(self, ctx: AgentContext, stream: AgentEvent) -> Iterable[None]:
+        yield self.handle(stream)
 
+    def handle(self, event: AgentEvent):
+        match event:
             case ThinkingStarted():
-                print(f"{_DIM}--- thinking ---{_RESET}")
+                print(f"{self._DIM}--- thinking ---{self._RESET}")  # noqa: T201
             case ThinkingToken(token=t):
-                print(f"{_DIM}{t}{_RESET}", end="", flush=True)
+                print(f"{self._DIM}{t}{self._RESET}", end="", flush=True)  # noqa: T201
 
             case AnswerStarted():
-                print(f"\n{_DIM}--- answer ---{_RESET}")
+                print(f"\n{self._DIM}--- answer ---{self._RESET}")  # noqa: T201
             case AnswerToken(token=t):
-                print(t, end="", flush=True)
+                print(t, end="", flush=True)  # noqa: T201
 
             case RefusalToken(token=t):
-                print(f"{_RED}{t}{_RESET}", end="", flush=True)
+                print(f"{self._RED}{t}{self._RESET}", end="", flush=True)  # noqa: T201
 
             case ToolCallBegin(tool_name=fn):
-                print(f"\n{_YELLOW}[tool] {fn}{_RESET}")
+                print(f"\n{self._YELLOW}[tool] {fn}{self._RESET}")  # noqa: T201
             case ToolCallArgumentDelta(arguments=args):
-                print(f"{_DIM}{args}{_RESET}", end="", flush=True)
+                print(f"{self._DIM}{args}{self._RESET}", end="", flush=True)  # noqa: T201
             case ToolResultReady(tool_name=fn, content=c, is_error=err):
-                color = _RED if err else _GREEN
+                color = self._RED if err else self._GREEN
                 label = "error" if err else "result"
-                preview = c[:200] + ("..." if len(c) > 200 else "")
-                print(f"\n{color}[{label}] {fn}: {preview}{_RESET}")
+                preview = c[: self._PREVIEW] + ("..." if len(c) > self._PREVIEW else "")
+                print(f"\n{color}[{label}] {fn}: {preview}{self._RESET}")  # noqa: T201
 
             case GenerationDone():
-                print()
+                print()  # noqa: T201
 
             case _:
                 pass

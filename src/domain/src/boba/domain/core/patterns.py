@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Iterable
 from typing import Generic, TypeVar
 
 TName = TypeVar("TName")
@@ -27,7 +27,32 @@ class Id(Generic[TName]):
         return f"{self.__class__.__name__}({self._name!r})"
 
 
+TCtx = TypeVar("TCtx")
+TIn = TypeVar("TIn")
+TId = TypeVar("TId", bound=Id)
+TState = TypeVar("TState")
+TOut = TypeVar("TOut")
 TValue = TypeVar("TValue")
+
+
+class StateLess(ABC):
+    """
+    Признак того, что объект не имеет внутреннего состояния
+    не зависит от порядка вызовов
+    """
+
+    @abstractmethod
+    def name(self) -> str: ...
+
+
+class StateFull(StateLess):
+    """
+    Признак того, что объект имеет внутреннее состояние
+    зависит от порядка вызовов
+    """
+
+    def reset(self) -> None:
+        pass
 
 
 class Validator(ABC, Generic[TValue]):
@@ -41,68 +66,32 @@ class Validator(ABC, Generic[TValue]):
     def validate(self, value: TValue) -> TValue: ...
 
 
-TCandidate = TypeVar("TCandidate")
-
-
-class Specification(ABC, Generic[TCandidate]):
+class Converter(ABC, Generic[TIn, TOut]):
     """
-    Бизнес-правило как объект.
-    Проверяет, удовлетворяет ли кандидат условию.
+    Однонаправленная конвертация 1:1. A → B.
     """
 
     @abstractmethod
-    def is_satisfied_by(self, candidate: TCandidate) -> bool: ...
-
-    def and_(self, other: Specification[TCandidate]) -> Specification[TCandidate]:
-        return _AndSpec(self, other)
-
-    def or_(self, other: Specification[TCandidate]) -> Specification[TCandidate]:
-        return _OrSpec(self, other)
-
-    def not_(self) -> Specification[TCandidate]:
-        return _NotSpec(self)
+    def convert(self, value: TIn) -> TOut: ...
 
 
-class _AndSpec(Specification[TCandidate]):
-    def __init__(
-        self, left: Specification[TCandidate], right: Specification[TCandidate]
-    ) -> None:
-        self._left = left
-        self._right = right
+class StreamConverter(ABC, Generic[TIn, TOut]):
+    """
+    Потоковая конвертация N:M. Iterable[A] → Iterable[B].
+    """
 
-    def is_satisfied_by(self, candidate: TCandidate) -> bool:
-        return self._left.is_satisfied_by(candidate) and self._right.is_satisfied_by(
-            candidate
-        )
+    @abstractmethod
+    def convert(self, stream: Iterable[TIn]) -> Iterable[TOut]: ...
 
 
-class _OrSpec(Specification[TCandidate]):
-    def __init__(
-        self, left: Specification[TCandidate], right: Specification[TCandidate]
-    ) -> None:
-        self._left = left
-        self._right = right
+class Stream(StateFull, Generic[TCtx, TIn, TOut]):
+    """ """
 
-    def is_satisfied_by(self, candidate: TCandidate) -> bool:
-        return self._left.is_satisfied_by(candidate) or self._right.is_satisfied_by(
-            candidate
-        )
+    @abstractmethod
+    def stream(self, ctx: TCtx, stream: TIn) -> Iterable[TOut]: ...
 
 
-class _NotSpec(Specification[TCandidate]):
-    def __init__(self, spec: Specification[TCandidate]) -> None:
-        self._spec = spec
-
-    def is_satisfied_by(self, candidate: TCandidate) -> bool:
-        return not self._spec.is_satisfied_by(candidate)
-
-
-TContext = TypeVar("TContext")
-TId = TypeVar("TId", bound=Id)
-TState = TypeVar("TState")
-
-
-class Provider(ABC, Generic[TId, TContext, TState]):
+class Provider(ABC, Generic[TId, TCtx, TState]):
     """
     Именованный поставщик с приоритетом.
     Дополняет состояние сборки: видит результат предыдущих провайдеров.
@@ -115,25 +104,20 @@ class Provider(ABC, Generic[TId, TContext, TState]):
     def priority(self) -> int: ...
 
     @abstractmethod
-    def apply(self, ctx: TContext, state: TState) -> TState: ...
+    def apply(self, ctx: TCtx, state: TState) -> TState: ...
 
 
-TResult = TypeVar("TResult")
-
-
-class Builder(ABC, Generic[TContext, TResult]):
+class Builder(ABC, Generic[TCtx, TOut]):
     """
     Классический Builder.
     Определяет процесс сборки объекта из контекста.
     """
 
     @abstractmethod
-    def build(self, ctx: TContext) -> TResult: ...
+    def build(self, ctx: TCtx) -> TOut: ...
 
 
-class CompositeBuilder(
-    Builder[TContext, TResult], Generic[TId, TContext, TState, TResult]
-):
+class CompositeBuilder(Builder[TCtx, TOut], Generic[TId, TCtx, TState, TOut]):
     """
     Реестр провайдеров + fold + финализация.
     Провайдеры применяются последовательно (по priority),
@@ -141,105 +125,32 @@ class CompositeBuilder(
     """
 
     def __init__(self) -> None:
-        self._providers: dict[TId, Provider[TId, TContext, TState]] = {}
+        self._providers: dict[TId, Provider[TId, TCtx, TState]] = {}
 
-    def register(self, provider: Provider[TId, TContext, TState]) -> None:
+    def register(self, provider: Provider[TId, TCtx, TState]) -> None:
         self._providers[provider.id()] = provider
 
-    def unregister(self, id: TId) -> None:
-        self._providers.pop(id, None)
+    def unregister(self, provider_id: TId) -> None:
+        self._providers.pop(provider_id, None)
 
-    def providers(self) -> Iterator[Provider[TId, TContext, TState]]:
+    def providers(self) -> Iterable[Provider[TId, TCtx, TState]]:
         return iter(self._providers.values())
 
     @abstractmethod
-    def initial(self, ctx: TContext) -> TState:
+    def initial(self, ctx: TCtx) -> TState:
         """Начальное состояние сборки."""
         ...
 
     @abstractmethod
-    def finalize(self, state: TState) -> TResult:
+    def finalize(self, state: TState) -> TOut:
         """Превратить накопленное состояние в результат."""
         ...
 
-    def build(self, ctx: TContext) -> TResult:
+    def build(self, ctx: TCtx) -> TOut:
         state = self.initial(ctx)
         for p in sorted(self._providers.values(), key=lambda p: p.priority()):
             state = p.apply(ctx, state)
         return self.finalize(state)
-
-
-TEvent = TypeVar("TEvent")
-
-
-class StreamSource(ABC, Generic[TContext, TEvent]):
-    """
-    Источник событий.
-        produce() принимает контекст, возвращает итератор событий.
-        reset() сбрасывает состояние. По умолчанию — ничего не делает.
-    """
-
-    @abstractmethod
-    def name(self) -> str: ...
-
-    def reset(self) -> None:
-        pass
-
-    @abstractmethod
-    def produce(self, ctx: TContext) -> Iterator[TEvent]: ...
-
-
-class StreamSink(ABC, Generic[TEvent]):
-    """
-    Потребитель событий.
-        handle() обрабатывает одно событие.
-        consume() итерирует поток, вызывая handle() для каждого события.
-        reset() сбрасывает состояние. По умолчанию — ничего не делает.
-    """
-
-    @abstractmethod
-    def name(self) -> str: ...
-
-    def reset(self) -> None:
-        pass
-
-    @abstractmethod
-    def handle(self, event: TEvent) -> None: ...
-
-    def consume(self, stream: Iterator[TEvent]) -> None:
-        for event in stream:
-            self.handle(event)
-
-
-class CompositeSink(StreamSink[TEvent]):
-    """Fan-out: раздаёт каждое событие всем вложенным sink'ам."""
-
-    def __init__(self, sinks: list[StreamSink[TEvent]]) -> None:
-        self._sinks = list(sinks)
-
-    def name(self) -> str:
-        return "CompositeSink(" + ", ".join(s.name() for s in self._sinks) + ")"
-
-    def reset(self) -> None:
-        for sink in self._sinks:
-            sink.reset()
-
-    def handle(self, event: TEvent) -> None:
-        for sink in self._sinks:
-            sink.handle(event)
-
-
-TIn = TypeVar("TIn")
-TOut = TypeVar("TOut")
-
-
-class Converter(ABC, Generic[TIn, TOut]):
-    """
-    Однонаправленная конвертация 1:1. A → B.
-    """
-
-    @abstractmethod
-    def convert(self, value: TIn) -> TOut: ...
 
 
 class Serializer(Generic[TIn, TOut]):
@@ -264,95 +175,99 @@ class Serializer(Generic[TIn, TOut]):
         return self.decoder.convert(raw)
 
 
-class StreamConverter(ABC, Generic[TIn, TOut]):
+class Pipeline(Stream[TCtx, TIn, TOut]):
     """
-    Потоковая конвертация N:M. Iterator[A] → Iterator[B].
-    """
-
-    @abstractmethod
-    def convert(self, stream: Iterator[TIn]) -> Iterator[TOut]: ...
-
-
-class StreamMiddleware(StreamSource[TContext, TEvent]):
-    """
-    Звено цепочки. Оборачивает следующее звено, может трансформировать события по пути.
-    Может пропустить, трансформировать, или оборвать цепочку
+    Композиция последовательно выполняющихся StreamSource (в порядке добавления).
+    Каждый источник видит контекст и генерирует свои события, которые идут в общий поток
     """
 
-    def __init__(self, next: StreamSource[TContext, TEvent]) -> None:
-        self._next = next
-
-    @abstractmethod
-    def produce(self, ctx: TContext) -> Iterator[TEvent]:
-        """Получить события от следующего звена, трансформировать/фильтровать по пути, вернуть результат."""
-        ...
-
-
-class Pipeline(StreamSource[TContext, TEvent]):
-    """
-    Оркестратор, который выполняет несколько стадий подряд.
-    Каждая стадия получает тот же контекст, yield-ит события.
-    """
-
-    def __init__(self, stages: list[StreamSource[TContext, TEvent]]) -> None:
+    def __init__(self, stages: list[Stream[TCtx, TIn, TOut]]) -> None:
         self._stages = list(stages)
 
-    def name(self) -> str:
-        return "Pipeline(" + " -> ".join(self.stage_names()) + ")"
+    def append(self, stage: Stream[TCtx, TIn, TOut]):
+        self._stages.append(stage)
+        return self
 
     def stage_names(self) -> list[str]:
         return [s.name() for s in self._stages]
 
-    def produce(self, ctx: TContext) -> Iterator[TEvent]:
-        """Выполнить все стадии, yield-я события по мере их появления."""
+    def name(self) -> str:
+        return "Pipeline(" + " -> ".join(self.stage_names()) + ")"
+
+    def reset(self) -> None:
         for stage in self._stages:
-            yield from stage.produce(ctx)
+            stage.reset()
+
+    def stream(self, ctx: TCtx, stream: TIn) -> Iterable[TOut]:
+        """Выполнить все стадии, yield-я события по мере их появления."""
+
+        for stage in self._stages:
+            yield from stage.stream(ctx, stream)
 
 
-class StopCondition(ABC, Generic[TContext, TEvent]):
+class Specification(ABC, Generic[TValue]):
     """
-    Условие остановки цикла.
-        should_stop() проверяет, нужно ли остановить цикл.
-        Композиция: or_(), and_().
+    Бизнес-правило как объект.
+    Проверяет, удовлетворяет ли кандидат условию.
     """
 
     @abstractmethod
-    def should_stop(self, ctx: TContext, event: TEvent) -> bool: ...
+    def is_satisfied_by(self, candidate: TValue) -> bool: ...
 
-    def or_(self, other: StopCondition[TContext, TEvent]) -> StopCondition[TContext, TEvent]:
-        return _OrStop(self, other)
+    def and_(self, other: Specification[TValue]) -> Specification[TValue]:
+        return _AndSpec(self, other)
 
-    def and_(self, other: StopCondition[TContext, TEvent]) -> StopCondition[TContext, TEvent]:
-        return _AndStop(self, other)
+    def or_(self, other: Specification[TValue]) -> Specification[TValue]:
+        return _OrSpec(self, other)
+
+    def not_(self) -> Specification[TValue]:
+        return _NotSpec(self)
 
 
-class _OrStop(StopCondition[TContext, TEvent]):
-    def __init__(self, left: StopCondition[TContext, TEvent], right: StopCondition[TContext, TEvent]) -> None:
+class _AndSpec(Specification[TValue]):
+    def __init__(
+        self, left: Specification[TValue], right: Specification[TValue]
+    ) -> None:
         self._left = left
         self._right = right
 
-    def should_stop(self, ctx: TContext, event: TEvent) -> bool:
-        return self._left.should_stop(ctx, event) or self._right.should_stop(ctx, event)
+    def is_satisfied_by(self, candidate: TValue) -> bool:
+        return self._left.is_satisfied_by(candidate) and self._right.is_satisfied_by(
+            candidate
+        )
 
 
-class _AndStop(StopCondition[TContext, TEvent]):
-    def __init__(self, left: StopCondition[TContext, TEvent], right: StopCondition[TContext, TEvent]) -> None:
+class _OrSpec(Specification[TValue]):
+    def __init__(
+        self, left: Specification[TValue], right: Specification[TValue]
+    ) -> None:
         self._left = left
         self._right = right
 
-    def should_stop(self, ctx: TContext, event: TEvent) -> bool:
-        return self._left.should_stop(ctx, event) and self._right.should_stop(ctx, event)
+    def is_satisfied_by(self, candidate: TValue) -> bool:
+        return self._left.is_satisfied_by(candidate) or self._right.is_satisfied_by(
+            candidate
+        )
 
 
-class Loop(StreamSource[TContext, TEvent]):
+class _NotSpec(Specification[TValue]):
+    def __init__(self, spec: Specification[TValue]) -> None:
+        self._spec = spec
+
+    def is_satisfied_by(self, candidate: TValue) -> bool:
+        return not self._spec.is_satisfied_by(candidate)
+
+
+class Loop(Stream[TCtx, TIn, TOut]):
     """
-    Оркестратор, который запускает source в цикле, пока stop condition не сработает.
+    Композиция StreamSource + StopCondition
+    Вызывает источник, итерирует его события, пока не сработает условие остановки
     """
 
     def __init__(
         self,
-        source: StreamSource[TContext, TEvent],
-        stop: StopCondition[TContext, TEvent],
+        source: Stream[TCtx, TIn, TOut],
+        stop: Specification[tuple[TCtx, TOut]],
     ) -> None:
         self._source = source
         self._stop = stop
@@ -360,10 +275,10 @@ class Loop(StreamSource[TContext, TEvent]):
     def name(self) -> str:
         return "Loop(" + self._source.name() + ")"
 
-    def produce(self, ctx: TContext) -> Iterator[TEvent]:
+    def stream(self, ctx: TCtx, stream: TIn) -> Iterable[TOut]:
         while True:
-            for event in self._source.produce(ctx):
+            for event in self._source.stream(ctx, stream):
                 yield event
 
-                if self._stop.should_stop(ctx, event):
+                if self._stop.is_satisfied_by((ctx, event)):
                     return
