@@ -22,7 +22,6 @@ boba-chainlit = { path = "src/chainlit", develop = true }
 pytest = "*"
 ruff = "*"
 pyright = "*"
-black = "*"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -53,3 +52,41 @@ reportMissingImports = true
 reportMissingTypeStubs = false
 reportUnusedImport = true
 reportUnusedVariable = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+    "F",      # pyflakes — неиспользуемые импорты, undefined names, redefined unused
+    "E",      # pycodestyle errors — стилистические ошибки (пробелы, отступы)
+    "W",      # pycodestyle warnings — стилистические предупреждения
+    "I",      # isort — сортировка и группировка импортов
+    "B",      # flake8-bugbear — частые баги и антипаттерны
+    "UP",     # pyupgrade — автоматическая модернизация синтаксиса до 3.11+
+    "SIM",    # flake8-simplify — упрощение конструкций (if/else, with, etc.)
+    "C90",    # mccabe — предупреждение о слишком сложных функциях
+    "N",      # pep8-naming — проверка именования (CamelCase для классов, snake_case для функций)
+    "S",      # flake8-bandit — проверки безопасности (hardcoded passwords, SQL injection, etc.)
+    "A",      # flake8-builtins — shadowing встроенных имён (list, type, id, etc.)
+    "C4",     # flake8-comprehensions — упрощение list/dict/set comprehensions
+    "T20",    # flake8-print — находит забытые print() в коде
+    "PT",     # flake8-pytest-style — best practices для pytest
+    "RET",    # flake8-return — упрощение return statements
+    "PIE",    # flake8-pie — разные мелкие улучшения
+    "PL",     # pylint — код-стайл, рефакторинг, подозрительные конструкции
+    "RUF",    # ruff-specific — правила самого ruff (неявные Optional, mutable defaults, etc.)
+]
+ignore = [
+    "RUF001",  # ambiguous unicode in string — ложные срабатывания на кириллице
+    "RUF002",  # ambiguous unicode in docstring — ложные срабатывания на кириллице
+    "RUF003",  # ambiguous unicode in comment — ложные срабатывания на кириллице
+    "RET504",  # unnecessary assign before return — мешает при построении цепочек
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.isort]
+known-first-party = ["boba"]

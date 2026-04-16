@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
-from dishka import make_container, Container
+from dishka import Container, make_container
 
 from boba.domain.config import AppConfig
 from boba.domain.core.workspace import WorkspaceId

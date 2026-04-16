@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Iterator
+from collections.abc import Iterator
 
 from boba.domain.agent.events import (
     AgentEvent,
@@ -11,7 +11,7 @@ from boba.domain.agent.events import (
     StageStarted,
     UserQueryReceived,
 )
-from boba.domain.agent.llm import LLMMiddleware
+from boba.domain.agent.loop import AgentMiddleware
 from boba.domain.agent.models import AgentContext, LLMMessage
 from boba.domain.core.messages import MessageService
 from boba.domain.core.promt import SystemPromptService, UserPromptService
@@ -19,7 +19,7 @@ from boba.domain.core.promt import SystemPromptService, UserPromptService
 logger = logging.getLogger(__name__)
 
 
-class SystemMessageMiddleware(LLMMiddleware):
+class SystemMessageMiddleware(AgentMiddleware):
     """
     Добавляет system message на первой итерации,
     затем делегирует следующему слою.
@@ -27,11 +27,11 @@ class SystemMessageMiddleware(LLMMiddleware):
 
     def __init__(
         self,
-        next: LLMMiddleware,
+        inner: AgentMiddleware,
         prompt_service: SystemPromptService,
         message_service: MessageService,
     ) -> None:
-        self._next = next
+        self._inner = inner
         self._prompt_service = prompt_service
         self._message_service = message_service
 
@@ -56,10 +56,10 @@ class SystemMessageMiddleware(LLMMiddleware):
                 detail="system prompt added",
             )
 
-        yield from self._next.produce(ctx)
+        yield from self._inner.produce(ctx)
 
 
-class UserMessageMiddleware(LLMMiddleware):
+class UserMessageMiddleware(AgentMiddleware):
     """
     Добавляет user message на первой итерации,
     затем делегирует следующему слою.
@@ -67,11 +67,11 @@ class UserMessageMiddleware(LLMMiddleware):
 
     def __init__(
         self,
-        next: LLMMiddleware,
+        inner: AgentMiddleware,
         user_prompt_service: UserPromptService,
         message_service: MessageService,
     ) -> None:
-        self._next = next
+        self._inner = inner
         self._user_prompt_service = user_prompt_service
         self._message_service = message_service
 
@@ -97,21 +97,21 @@ class UserMessageMiddleware(LLMMiddleware):
                 detail="user message added",
             )
 
-        yield from self._next.produce(ctx)
+        yield from self._inner.produce(ctx)
 
 
-class IterationCounterMiddleware(LLMMiddleware):
+class IterationCounterMiddleware(AgentMiddleware):
     """
     Подсчет кол-ва итераций цикла агента.
     Увеличивает счетчик в контексте и делегирует следующему слою.
     """
 
-    def __init__(self, next: LLMMiddleware) -> None:
-        self._next = next
+    def __init__(self, inner: AgentMiddleware) -> None:
+        self._inner = inner
 
     def name(self) -> str:
         return "Counter"
 
     def produce(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         ctx.iteration += 1
-        yield from self._next.produce(ctx)
+        yield from self._inner.produce(ctx)

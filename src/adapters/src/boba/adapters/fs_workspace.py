@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import shutil
+from collections.abc import Iterator
 from datetime import datetime
 from io import BufferedIOBase, TextIOBase
 from pathlib import Path
 from threading import Lock
-from typing import Iterator
 from uuid import UUID, uuid4
 
 from boba.domain.core.patterns import Specification
@@ -50,7 +50,7 @@ class FsWorkspaceService(WorkspaceService):
         self._resolve(path).mkdir(parents=True, exist_ok=True)
 
     def read_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
-        return open(self._resolve(path), "r", encoding=encoding)
+        return open(self._resolve(path), encoding=encoding)
 
     def read_binary(self, path: str) -> BufferedIOBase:
         return open(self._resolve(path), "rb")

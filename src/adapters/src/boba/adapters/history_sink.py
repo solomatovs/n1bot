@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from boba.domain.agent.models import RequestId
 from boba.domain.agent.events import (
     AgentEvent,
     AnswerComplete,
@@ -20,6 +19,7 @@ from boba.domain.agent.events import (
     ToolCallBegin,
     ToolCallComplete,
 )
+from boba.domain.agent.models import RequestId
 from boba.domain.core.history import HistoryService
 from boba.domain.core.patterns import StreamSink
 

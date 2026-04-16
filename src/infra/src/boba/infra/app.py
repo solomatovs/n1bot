@@ -7,11 +7,14 @@ from pathlib import Path
 from dishka import Provider, Scope, from_context, provide
 
 from boba.adapters.console_sink import ConsoleSink
-from boba.adapters.jsonl_history import AgentEventDecoder, AgentEventEncoder
 from boba.adapters.fs_workspace import FsWorkspaceManager
 from boba.adapters.history_sink import HistorySink
 from boba.adapters.in_memory_messages import InMemoryMessageService
-from boba.adapters.jsonl_history import JsonLinesHistoryService
+from boba.adapters.jsonl_history import (
+    AgentEventDecoder,
+    AgentEventEncoder,
+    JsonLinesHistoryService,
+)
 from boba.adapters.openai_completion import (
     LoggingLLMMiddleware,
     OpenAIMiddleware,
@@ -23,13 +26,14 @@ from boba.adapters.prompt_providers import (
     StaticPromptProvider,
     UserQueryProvider,
 )
-from boba.domain.agent.llm import LLMMiddleware
-from boba.domain.agent.loop import AgentLoop
+from boba.domain.agent.events import AgentEvent, EventSerializer
+from boba.domain.agent.loop import (
+    AgentLoop,
+    AgentMiddleware,
+    StopOnFinished,
+    StopOnMaxIterations,
+)
 from boba.domain.agent.models import AgentConfig
-from boba.domain.agent.stop_conditions import StopOnFinished, StopOnMaxIterations
-from boba.domain.agent.events import AgentEvent
-from boba.domain.agent.serialization import EventSerializer
-from boba.domain.core.patterns import CompositeSink, Serializer, StreamSink
 from boba.domain.agent.stages import (
     IterationCounterMiddleware,
     SystemMessageMiddleware,
@@ -38,6 +42,7 @@ from boba.domain.agent.stages import (
 from boba.domain.config import AppConfig
 from boba.domain.core.history import HistoryService
 from boba.domain.core.messages import MessageService
+from boba.domain.core.patterns import CompositeSink, Serializer, StreamSink
 from boba.domain.core.promt import PromptId, SystemPromptService, UserPromptService
 from boba.domain.core.workspace import (
     WorkspaceId,
@@ -128,9 +133,9 @@ class RequestProvider(Provider):
         system_prompt_service: SystemPromptService,
         user_prompt_service: UserPromptService,
         message_service: MessageService,
-    ) -> LLMMiddleware:
+    ) -> AgentMiddleware:
         # Terminal — actual LLM call
-        chain: LLMMiddleware = OpenAIMiddleware(config.llm, message_service)
+        chain: AgentMiddleware = OpenAIMiddleware(config.llm, message_service)
         # LLM middleware
         chain = StupidRetryLLMMiddleware(chain, max_retries=3)
         chain = LoggingLLMMiddleware(chain)
@@ -142,16 +147,18 @@ class RequestProvider(Provider):
 
     @provide
     def agent_sink(self, history: HistoryService) -> StreamSink[AgentEvent]:
-        return CompositeSink([
-            ConsoleSink(),
-            HistorySink(history),
-        ])
+        return CompositeSink(
+            [
+                ConsoleSink(),
+                HistorySink(history),
+            ]
+        )
 
     @provide
     def agent_loop(
         self,
         agent_config: AgentConfig,
-        chain: LLMMiddleware,
+        chain: AgentMiddleware,
     ) -> AgentLoop:
         stop = StopOnFinished().or_(StopOnMaxIterations())
         return AgentLoop(
