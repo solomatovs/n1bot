@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from uuid import UUID
 
-from boba.domain.core.patterns import Id
+from boba.domain.core.patterns import UuId
 from boba.domain.core.workspace import WorkspaceId
 
 
-class RequestId(Id[UUID]):
+class RequestId(UuId):
     """Идентификатор запроса пользователя."""
 
 

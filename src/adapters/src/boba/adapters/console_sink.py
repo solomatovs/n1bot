@@ -3,18 +3,27 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import assert_never
 
 from boba.domain.agent.events import (
     AgentEvent,
+    AnswerComplete,
     AnswerStarted,
     AnswerToken,
     GenerationDone,
+    GenerationStarted,
+    RefusalComplete,
     RefusalToken,
+    StageCompleted,
+    StageStarted,
+    ThinkingComplete,
     ThinkingStarted,
     ThinkingToken,
     ToolCallArgumentDelta,
     ToolCallBegin,
+    ToolCallComplete,
     ToolResultReady,
+    UserQueryReceived,
 )
 from boba.domain.agent.meat import AgentContext
 from boba.domain.core.patterns import Stream
@@ -39,7 +48,7 @@ class ConsoleSink(Stream[AgentContext, AgentEvent, None]):
     def stream(self, ctx: AgentContext, stream: AgentEvent) -> Iterable[None]:
         yield self.handle(stream)
 
-    def handle(self, event: AgentEvent):
+    def handle(self, event: AgentEvent):  # noqa: C901
         match event:
             case ThinkingStarted():
                 print(f"{self._DIM}--- thinking ---{self._RESET}")  # noqa: T201
@@ -67,5 +76,17 @@ class ConsoleSink(Stream[AgentContext, AgentEvent, None]):
             case GenerationDone():
                 print()  # noqa: T201
 
-            case _:
+            case (
+                UserQueryReceived()
+                | StageStarted()
+                | StageCompleted()
+                | GenerationStarted()
+                | ThinkingComplete()
+                | AnswerComplete()
+                | RefusalComplete()
+                | ToolCallComplete()
+            ):
                 pass
+
+            case _ as unreachable:
+                assert_never(unreachable)
