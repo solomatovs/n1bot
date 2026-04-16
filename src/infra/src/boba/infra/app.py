@@ -26,6 +26,7 @@ from boba.adapters.prompt_providers import (
 from boba.domain.agent.llm import LLMMiddleware
 from boba.domain.agent.loop import AgentLoop
 from boba.domain.agent.models import AgentConfig
+from boba.domain.agent.stop_conditions import StopOnFinished, StopOnMaxIterations
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.serialization import EventSerializer
 from boba.domain.core.patterns import CompositeSink, Serializer, StreamSink
@@ -152,7 +153,9 @@ class RequestProvider(Provider):
         agent_config: AgentConfig,
         chain: LLMMiddleware,
     ) -> AgentLoop:
+        stop = StopOnFinished().or_(StopOnMaxIterations())
         return AgentLoop(
             config=agent_config,
             chain=chain,
+            stop=stop,
         )
