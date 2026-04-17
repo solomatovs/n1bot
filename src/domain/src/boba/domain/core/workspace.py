@@ -22,6 +22,64 @@ class FileMeta:
     modified: datetime
 
 
+class WorkspaceError(Exception):
+    """Базовая ошибка ``WorkspaceService``.
+
+    Абстрактна, не привязана к конкретной реализации хранилища. Хранит
+    контекст ресурса (``path``). Исходное исключение (если было оборачивание)
+    доступно через ``__cause__`` — ``raise WorkspaceError(...) from err``.
+    """
+
+    def __init__(self, message: str, *, path: str | None = None) -> None:
+        super().__init__(message)
+        self.path = path
+
+
+class WorkspaceNotFoundError(WorkspaceError):
+    """Ресурс внутри workspace не найден.
+
+    Абстрактная замена ``FileNotFoundError`` для бэкендов, не основанных на
+    файловой системе. Сохраняет путь ресурса.
+    """
+
+    def __init__(self, path: str) -> None:
+        super().__init__(f"resource not found: {path!r}", path=path)
+
+
+class WorkspacePermissionError(WorkspaceError):
+    """Нет прав на операцию с ресурсом.
+
+    Покрывает как системный ``PermissionError``, так и нарушение границ
+    workspace'а (выход за пределы root). Сохраняет путь ресурса и причину.
+    """
+
+    def __init__(self, path: str, reason: str | None = None) -> None:
+        msg = f"permission denied: {path!r}"
+        if reason:
+            msg += f" ({reason})"
+        super().__init__(msg, path=path)
+        self.reason = reason
+
+
+class WorkspaceDecodingError(WorkspaceError):
+    """Невозможно декодировать содержимое ресурса в строку.
+
+    Сохраняет контекст: путь ресурса, запрошенная кодировка, позиция
+    ошибочного байта. Исходный ``UnicodeDecodeError`` — через ``__cause__``.
+    """
+
+    def __init__(
+        self, path: str, encoding: str, cause: UnicodeDecodeError
+    ) -> None:
+        super().__init__(
+            f"cannot decode {path!r} as {encoding!r}: {cause.reason} "
+            f"at byte {cause.start}",
+            path=path,
+        )
+        self.encoding = encoding
+        self.position = cause.start
+
+
 class WorkspaceService(ABC):
     """
     Текстовое файловое хранилище workspace'а. Ключи — плоские пути с '/' как разделитель
@@ -35,30 +93,59 @@ class WorkspaceService(ABC):
     def exists(self, path: str) -> bool: ...
 
     @abstractmethod
-    def delete(self, path: str) -> None: ...
+    def delete(self, path: str) -> None:
+        """Удалить ресурс.
+
+        Raises:
+            WorkspaceNotFoundError: если ресурс не найден.
+            WorkspacePermissionError: если нет прав / путь вне workspace.
+            WorkspaceError: при прочих ошибках удаления.
+        """
+        ...
 
     @abstractmethod
     def ls(
         self, path: str | None = None, spec: Specification[str] | None = None
     ) -> Iterator[str]:
-        """Список элементов в указанном пути (без вложенности)."""
+        """Список элементов в указанном пути (без вложенности).
+
+        Raises:
+            WorkspacePermissionError: если нет прав / путь вне workspace.
+            WorkspaceError: при прочих ошибках обхода.
+        """
         ...
 
     @abstractmethod
     def tree(
         self, path: str | None = None, spec: Specification[str] | None = None
     ) -> Iterator[str]:
-        """Рекурсивный обход всех элементов начиная с указанного пути."""
+        """Рекурсивный обход всех элементов начиная с указанного пути.
+
+        Raises:
+            WorkspacePermissionError: если нет прав / путь вне workspace.
+            WorkspaceError: при прочих ошибках обхода.
+        """
         ...
 
     @abstractmethod
     def meta(self, path: str) -> FileMeta:
-        """Метаданные файла."""
+        """Метаданные ресурса.
+
+        Raises:
+            WorkspaceNotFoundError: если ресурс не найден.
+            WorkspacePermissionError: если нет прав / путь вне workspace.
+            WorkspaceError: при прочих ошибках.
+        """
         ...
 
     @abstractmethod
     def mkdir(self, path: str) -> None:
-        """Создать директорию. Создаёт промежуточные директории при необходимости."""
+        """Создать директорию. Создаёт промежуточные директории при необходимости.
+
+        Raises:
+            WorkspacePermissionError: если нет прав / путь вне workspace.
+            WorkspaceError: при прочих ошибках.
+        """
         ...
 
     @abstractmethod
@@ -68,36 +155,61 @@ class WorkspaceService(ABC):
         """
         Построчное чтение файла.
         reverse=True — строки от последней к первой, без загрузки всего файла в память.
-        Бросает FileNotFoundError, если файл не существует.
+
+        Raises:
+            WorkspaceNotFoundError: если ресурс не найден.
+            WorkspacePermissionError: если нет прав / путь вне workspace.
+            WorkspaceDecodingError: если содержимое не декодируется в указанной
+                кодировке.
+            WorkspaceError: при прочих ошибках чтения ресурса; исходное
+                низкоуровневое исключение — в ``__cause__``.
         """
         ...
 
     @abstractmethod
     def read_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
+        """Открыть ресурс для чтения текста.
+
+        Raises:
+            WorkspaceNotFoundError: если ресурс не найден.
+            WorkspacePermissionError: если нет прав / путь вне workspace.
+            WorkspaceError: при прочих ошибках открытия.
         """
-        Открыть файл для чтения текста.
-        Бросает FileNotFoundError, если файл не существует."""
         ...
 
     @abstractmethod
     def read_binary(self, path: str) -> BufferedIOBase:
+        """Открыть ресурс для чтения бинарных данных.
+
+        Raises:
+            WorkspaceNotFoundError: если ресурс не найден.
+            WorkspacePermissionError: если нет прав / путь вне workspace.
+            WorkspaceError: при прочих ошибках открытия.
         """
-        Открыть файл для чтения бинарных данных.
-        Бросает FileNotFoundError, если файл не существует."""
         ...
 
     @abstractmethod
     def write_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
+        """Открыть/создать ресурс для записи (перезапись).
+
+        Создаёт родительские директории.
+
+        Raises:
+            WorkspacePermissionError: если нет прав / путь вне workspace.
+            WorkspaceError: при прочих ошибках открытия/создания.
         """
-        Открыть/создать файл для записи (перезапись).
-        Создаёт родительские директории."""
         ...
 
     @abstractmethod
     def append_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
+        """Открыть/создать ресурс для дозаписи.
+
+        Создаёт родительские директории.
+
+        Raises:
+            WorkspacePermissionError: если нет прав / путь вне workspace.
+            WorkspaceError: при прочих ошибках открытия/создания.
         """
-        Открыть/создать файл для дозаписи.
-        Создаёт родительские директории."""
         ...
 
 
