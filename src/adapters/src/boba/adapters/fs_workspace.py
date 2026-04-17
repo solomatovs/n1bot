@@ -40,6 +40,149 @@ class FsPathValidator(Validator[str]):
         return str(resolved)
 
 
+@contextmanager
+def _map_raw_io_errors(path: str) -> Iterator[None]:
+    """Маппер — используется IO-обёртками без ссылки на сервис."""
+    try:
+        yield
+    except WorkspaceError:
+        raise
+    except FileNotFoundError as e:
+        raise WorkspaceNotFoundError(path) from e
+    except PermissionError as e:
+        raise WorkspacePermissionError(path, reason=str(e)) from e
+    except OSError as e:
+        raise WorkspaceError(f"I/O error on {path!r}: {e}", path=path) from e
+
+
+class _ErrorMappedTextIO(TextIOBase):
+    """Обёртка над ``TextIOBase``, транслирующая ``OSError`` → ``WorkspaceError``.
+
+    Покрывает все I/O-вызовы (write, read, close, flush, seek, tell и т.п.):
+    любая низкоуровневая ошибка диска, прав и т.п. наружу выходит
+    единственно в форме ``WorkspaceError`` (и потомков).
+    """
+
+    def __init__(self, inner: TextIOBase, path: str) -> None:
+        super().__init__()
+        self._inner = inner
+        self._path = path
+
+    def write(self, s: str, /) -> int:
+        with _map_raw_io_errors(self._path):
+            return self._inner.write(s)
+
+    def writelines(self, lines: Iterator[str], /) -> None:  # type: ignore[override]
+        with _map_raw_io_errors(self._path):
+            self._inner.writelines(lines)
+
+    def read(self, size: int | None = -1, /) -> str:
+        with _map_raw_io_errors(self._path):
+            return self._inner.read(size if size is not None else -1)
+
+    def readline(self, size: int | None = -1, /) -> str:  # type: ignore[override]
+        with _map_raw_io_errors(self._path):
+            return self._inner.readline(size if size is not None else -1)
+
+    def flush(self) -> None:
+        with _map_raw_io_errors(self._path):
+            self._inner.flush()
+
+    def close(self) -> None:
+        with _map_raw_io_errors(self._path):
+            self._inner.close()
+
+    def seek(self, offset: int, whence: int = 0, /) -> int:
+        with _map_raw_io_errors(self._path):
+            return self._inner.seek(offset, whence)
+
+    def tell(self) -> int:
+        with _map_raw_io_errors(self._path):
+            return self._inner.tell()
+
+    def truncate(self, size: int | None = None, /) -> int:
+        with _map_raw_io_errors(self._path):
+            return self._inner.truncate(size)
+
+    def __iter__(self) -> _ErrorMappedTextIO:
+        return self
+
+    def __next__(self) -> str:
+        with _map_raw_io_errors(self._path):
+            return next(self._inner)
+
+    @property
+    def closed(self) -> bool:
+        return self._inner.closed
+
+    def readable(self) -> bool:
+        return self._inner.readable()
+
+    def writable(self) -> bool:
+        return self._inner.writable()
+
+    def seekable(self) -> bool:
+        return self._inner.seekable()
+
+
+class _ErrorMappedBinaryIO(BufferedIOBase):
+    """Обёртка над ``BufferedIOBase`` — ``OSError`` → ``WorkspaceError``."""
+
+    def __init__(self, inner: BufferedIOBase, path: str) -> None:
+        super().__init__()
+        self._inner = inner
+        self._path = path
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        with _map_raw_io_errors(self._path):
+            return self._inner.read(size if size is not None else -1)
+
+    def read1(self, size: int = -1, /) -> bytes:
+        with _map_raw_io_errors(self._path):
+            return self._inner.read1(size)
+
+    def readinto(self, buf: memoryview, /) -> int | None:  # type: ignore[override]
+        with _map_raw_io_errors(self._path):
+            return self._inner.readinto(buf)
+
+    def write(self, buf: bytes | bytearray | memoryview, /) -> int:  # type: ignore[override]
+        with _map_raw_io_errors(self._path):
+            return self._inner.write(buf)
+
+    def flush(self) -> None:
+        with _map_raw_io_errors(self._path):
+            self._inner.flush()
+
+    def close(self) -> None:
+        with _map_raw_io_errors(self._path):
+            self._inner.close()
+
+    def seek(self, offset: int, whence: int = 0, /) -> int:
+        with _map_raw_io_errors(self._path):
+            return self._inner.seek(offset, whence)
+
+    def tell(self) -> int:
+        with _map_raw_io_errors(self._path):
+            return self._inner.tell()
+
+    def truncate(self, size: int | None = None, /) -> int:
+        with _map_raw_io_errors(self._path):
+            return self._inner.truncate(size)
+
+    @property
+    def closed(self) -> bool:
+        return self._inner.closed
+
+    def readable(self) -> bool:
+        return self._inner.readable()
+
+    def writable(self) -> bool:
+        return self._inner.writable()
+
+    def seekable(self) -> bool:
+        return self._inner.seekable()
+
+
 class FsWorkspaceService(WorkspaceService):
     """
     """
@@ -57,18 +200,8 @@ class FsWorkspaceService(WorkspaceService):
     @contextmanager
     def _map_errors(self, path: str) -> Iterator[None]:
         """Мапит низкоуровневые исключения в иерархию WorkspaceError."""
-        try:
+        with _map_raw_io_errors(path):
             yield
-        except WorkspaceError:
-            raise
-        except FileNotFoundError as e:
-            raise WorkspaceNotFoundError(path) from e
-        except PermissionError as e:
-            raise WorkspacePermissionError(path, reason=str(e)) from e
-        except OSError as e:
-            raise WorkspaceError(
-                f"I/O error on {path!r}: {e}", path=path
-            ) from e
 
     def mkdir(self, path: str) -> None:
         with self._map_errors(path):
@@ -133,21 +266,33 @@ class FsWorkspaceService(WorkspaceService):
 
     def read_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
         with self._map_errors(path):
-            return open(self._resolve(path), encoding=encoding)
+            return _ErrorMappedTextIO(
+                open(self._resolve(path), encoding=encoding),  # type: ignore[arg-type]
+                path,
+            )
 
     def read_binary(self, path: str) -> BufferedIOBase:
         with self._map_errors(path):
-            return open(self._resolve(path), "rb")
+            return _ErrorMappedBinaryIO(
+                open(self._resolve(path), "rb"),  # type: ignore[arg-type]
+                path,
+            )
 
     def write_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
         with self._map_errors(path):
             resolved = self._ensure_created(path)
-            return open(resolved, "w", encoding=encoding)
+            return _ErrorMappedTextIO(
+                open(resolved, "w", encoding=encoding),  # type: ignore[arg-type]
+                path,
+            )
 
     def append_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
         with self._map_errors(path):
             resolved = self._ensure_created(path)
-            return open(resolved, "a", encoding=encoding)
+            return _ErrorMappedTextIO(
+                open(resolved, "a", encoding=encoding),  # type: ignore[arg-type]
+                path,
+            )
 
     def exists(self, key: str) -> bool:
         with self._map_errors(key):
