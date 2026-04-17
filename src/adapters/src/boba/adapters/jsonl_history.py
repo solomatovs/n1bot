@@ -3,31 +3,13 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
+from dataclasses import MISSING, fields
 from datetime import UTC, datetime
-from typing import assert_never, cast, get_args
+from types import MappingProxyType
+from typing import Any, ClassVar, cast, get_args
 
-from boba.domain.agent.events import (
-    AgentEvent,
-    AgentEventName,
-    AnswerComplete,
-    AnswerStarted,
-    AnswerToken,
-    GenerationDone,
-    GenerationStarted,
-    RefusalComplete,
-    RefusalToken,
-    StageCompleted,
-    StageStarted,
-    ThinkingComplete,
-    ThinkingStarted,
-    ThinkingToken,
-    ToolCallArgumentDelta,
-    ToolCallBegin,
-    ToolCallComplete,
-    ToolResultReady,
-    UserQueryReceived,
-)
+from boba.domain.agent.events import AgentEvent, AgentEventName, BaseEvent
 from boba.domain.agent.models import RequestId
 from boba.domain.core.history import (
     EntryId,
@@ -41,6 +23,7 @@ from boba.domain.core.patterns import (
     ConverterError,
     ConverterInputError,
     ConverterOutputError,
+    UuId,
 )
 from boba.domain.core.workspace import WorkspaceError, WorkspaceService
 
@@ -69,84 +52,22 @@ class HistoryEntryEncoder(Converter[HistoryEntry, str]):
             ensure_ascii=False,
         )
 
-    def _encode_event(  # noqa: C901, PLR0911, PLR0912
-        self, event: AgentEvent
-    ) -> dict[str, object]:
-        match event:
-            case UserQueryReceived(request_id=rid, query=q):
-                return {"request_id": rid.to_wire(), "query": q}
-            case StageStarted(request_id=rid, stage=s):
-                return {"request_id": rid.to_wire(), "stage": s}
-            case StageCompleted(request_id=rid, stage=s, detail=d):
-                return {"request_id": rid.to_wire(), "stage": s, "detail": d}
-            case GenerationStarted(request_id=rid):
-                return {"request_id": rid.to_wire()}
-            case ThinkingStarted(request_id=rid):
-                return {"request_id": rid.to_wire()}
-            case ThinkingToken(request_id=rid, token=t):
-                return {"request_id": rid.to_wire(), "token": t}
-            case ThinkingComplete(request_id=rid, content=c):
-                return {"request_id": rid.to_wire(), "content": c}
-            case AnswerStarted(request_id=rid):
-                return {"request_id": rid.to_wire()}
-            case AnswerToken(request_id=rid, token=t):
-                return {"request_id": rid.to_wire(), "token": t}
-            case AnswerComplete(request_id=rid, content=c):
-                return {"request_id": rid.to_wire(), "content": c}
-            case RefusalToken(request_id=rid, token=t):
-                return {"request_id": rid.to_wire(), "token": t}
-            case RefusalComplete(request_id=rid, content=c):
-                return {"request_id": rid.to_wire(), "content": c}
-            case GenerationDone(request_id=rid, finish_reason=fr):
-                return {"request_id": rid.to_wire(), "finish_reason": fr}
-            case ToolCallBegin(
-                request_id=rid,
-                index=idx,
-                tool_call_id=tid,
-                tool_name=tn,
-            ):
-                return {
-                    "request_id": rid.to_wire(),
-                    "index": idx,
-                    "tool_call_id": tid,
-                    "tool_name": tn,
-                }
-            case ToolCallArgumentDelta(request_id=rid, index=idx, arguments=a):
-                return {
-                    "request_id": rid.to_wire(),
-                    "index": idx,
-                    "arguments": a,
-                }
-            case ToolCallComplete(
-                request_id=rid, tool_call_id=tid, tool_name=tn, arguments=a
-            ):
-                return {
-                    "request_id": rid.to_wire(),
-                    "tool_call_id": tid,
-                    "tool_name": tn,
-                    "arguments": a,
-                }
-            case ToolResultReady(
-                request_id=rid,
-                tool_call_id=tid,
-                tool_name=tn,
-                content=c,
-                is_error=e,
-            ):
-                return {
-                    "request_id": rid.to_wire(),
-                    "tool_call_id": tid,
-                    "tool_name": tn,
-                    "content": c,
-                    "is_error": e,
-                }
-            case _ as unreachable:
-                assert_never(unreachable)
+    def _encode_event(self, event: AgentEvent) -> dict[str, object]:
+        out: dict[str, object] = {}
+        for f in fields(event):
+            val = getattr(event, f.name)
+            if isinstance(val, UuId):
+                val = val.to_wire()
+            out[f.name] = val
+        return out
 
 
 class HistoryEntryDecoder(Converter[str, HistoryEntry]):
     """JSON line → HistoryEntry."""
 
+    _EVENT_CLASSES: ClassVar[Mapping[str, type[BaseEvent]]] = MappingProxyType(
+        {cls.name(): cls for cls in get_args(AgentEvent)}
+    )
     _KNOWN_EVENT_NAMES: frozenset[str] = frozenset(get_args(AgentEventName))
 
     def convert(self, value: str) -> HistoryEntry:
@@ -173,6 +94,7 @@ class HistoryEntryDecoder(Converter[str, HistoryEntry]):
         event_type_raw = raw["event_type"]
         if event_type_raw not in self._KNOWN_EVENT_NAMES:
             raise ConverterInputError(f"unknown event_type: {event_type_raw!r}")
+
         event_type = cast(AgentEventName, event_type_raw)
 
         event = self._decode_event(event_type, raw["event"])
@@ -187,73 +109,20 @@ class HistoryEntryDecoder(Converter[str, HistoryEntry]):
             event=event,
         )
 
-    def _decode_event(  # noqa: C901, PLR0911, PLR0912
+    def _decode_event(
         self, event_type: AgentEventName, data: dict[str, object]
     ) -> AgentEvent:
-        rid = RequestId.from_wire(str(data["request_id"]))
-        match event_type:
-            case "UserQueryReceived":
-                return UserQueryReceived(request_id=rid, query=str(data["query"]))
-            case "StageStarted":
-                return StageStarted(request_id=rid, stage=str(data["stage"]))
-            case "StageCompleted":
-                return StageCompleted(
-                    request_id=rid,
-                    stage=str(data["stage"]),
-                    detail=str(data["detail"]),
-                )
-            case "GenerationStarted":
-                return GenerationStarted(request_id=rid)
-            case "ThinkingStarted":
-                return ThinkingStarted(request_id=rid)
-            case "ThinkingToken":
-                return ThinkingToken(request_id=rid, token=str(data["token"]))
-            case "ThinkingComplete":
-                return ThinkingComplete(request_id=rid, content=str(data["content"]))
-            case "AnswerStarted":
-                return AnswerStarted(request_id=rid)
-            case "AnswerToken":
-                return AnswerToken(request_id=rid, token=str(data["token"]))
-            case "AnswerComplete":
-                return AnswerComplete(request_id=rid, content=str(data["content"]))
-            case "RefusalToken":
-                return RefusalToken(request_id=rid, token=str(data["token"]))
-            case "RefusalComplete":
-                return RefusalComplete(request_id=rid, content=str(data["content"]))
-            case "GenerationDone":
-                return GenerationDone(
-                    request_id=rid, finish_reason=str(data["finish_reason"])
-                )
-            case "ToolCallBegin":
-                return ToolCallBegin(
-                    request_id=rid,
-                    index=int(data["index"]),  # type: ignore[arg-type]
-                    tool_call_id=str(data["tool_call_id"]),
-                    tool_name=str(data["tool_name"]),
-                )
-            case "ToolCallArgumentDelta":
-                return ToolCallArgumentDelta(
-                    request_id=rid,
-                    index=int(data["index"]),  # type: ignore[arg-type]
-                    arguments=str(data["arguments"]),
-                )
-            case "ToolCallComplete":
-                return ToolCallComplete(
-                    request_id=rid,
-                    tool_call_id=str(data["tool_call_id"]),
-                    tool_name=str(data["tool_name"]),
-                    arguments=str(data["arguments"]),
-                )
-            case "ToolResultReady":
-                return ToolResultReady(
-                    request_id=rid,
-                    tool_call_id=str(data["tool_call_id"]),
-                    tool_name=str(data["tool_name"]),
-                    content=str(data["content"]),
-                    is_error=bool(data["is_error"]),
-                )
-            case _ as unreachable:
-                assert_never(unreachable)
+        cls = self._EVENT_CLASSES[event_type]
+        for f in fields(cls):
+            if (
+                f.default is MISSING
+                and f.default_factory is MISSING
+                and f.name not in data
+            ):
+                raise KeyError(f.name)
+        kwargs: dict[str, Any] = dict(data)
+        kwargs["request_id"] = RequestId.from_wire(str(data["request_id"]))
+        return cast(AgentEvent, cls(**kwargs))
 
 
 class JsonLinesHistoryService(HistoryService):
@@ -328,9 +197,7 @@ class JsonLinesHistoryService(HistoryService):
                 JSON-строка в журнале.
         """
         try:
-            for line in self._workspace.read_lines(
-                self._history_file, reverse=reverse
-            ):
+            for line in self._workspace.read_lines(self._history_file, reverse=reverse):
                 stripped = line.strip()
                 if not stripped:
                     continue
