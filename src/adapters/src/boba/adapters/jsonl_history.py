@@ -152,14 +152,20 @@ class HistoryEntryDecoder(Converter[str, HistoryEntry]):
     def convert(self, value: str) -> HistoryEntry:
         try:
             return self._convert(value)
+        except ConverterInputError as e:
+            raise ConverterInputError(f"{e} | input={value!r}") from e.__cause__
         except ConverterError:
             raise
         except json.JSONDecodeError as e:
-            raise ConverterInputError(f"malformed JSON: {e.msg}") from e
+            raise ConverterInputError(
+                f"malformed JSON: {e.msg} | input={value!r}"
+            ) from e
         except KeyError as e:
-            raise ConverterInputError(f"missing required field: {e.args[0]!r}") from e
+            raise ConverterInputError(
+                f"missing required field: {e.args[0]!r} | input={value!r}"
+            ) from e
         except (ValueError, TypeError) as e:
-            raise ConverterInputError(str(e)) from e
+            raise ConverterInputError(f"{e} | input={value!r}") from e
 
     def _convert(self, value: str) -> HistoryEntry:
         raw = json.loads(value)
@@ -315,7 +321,11 @@ class JsonLinesHistoryService(HistoryService):
 
         reverse=True — от последней записи к первой (быстрое чтение «хвоста»
         истории чата, не загружая весь файл в память линейно).
-        Незавершённые и повреждённые JSON-строки пропускаются.
+        Пустые строки пропускаются.
+
+        Raises:
+            HistoryReadError: ошибка доступа к хранилищу либо битая/усечённая
+                JSON-строка в журнале.
         """
         try:
             for line in self._workspace.read_lines(
@@ -326,7 +336,9 @@ class JsonLinesHistoryService(HistoryService):
                     continue
                 try:
                     yield self._decoder.convert(stripped)
-                except ConverterError:
-                    continue
+                except ConverterError as exc:
+                    raise HistoryReadError(
+                        exc, ctx=f"path={self._history_file}: {stripped}"
+                    ) from exc
         except WorkspaceError as exc:
             raise HistoryReadError(exc, ctx=f"path={self._history_file}") from exc
