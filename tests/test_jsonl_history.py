@@ -20,7 +20,6 @@ from boba.domain.agent.events import (
     AnswerComplete,
     AnswerStarted,
     AnswerToken,
-    BaseEvent,
     GenerationDone,
     GenerationStarted,
     RefusalComplete,
@@ -263,7 +262,7 @@ class TestPartialAndMalformedLines:
 # ---------------------------------------------------------------------------
 
 
-EventFactory = Callable[[RequestId], BaseEvent]
+EventFactory = Callable[[RequestId], AgentEvent]
 
 _EVENT_FACTORIES: list[tuple[str, EventFactory]] = [
     (
