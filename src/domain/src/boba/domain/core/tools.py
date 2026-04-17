@@ -2,13 +2,20 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Self, TypeVar
 
 from boba.domain.core.patterns import Id
 
 
 class ToolId(Id[str]):
     """Идентификатор инструмента."""
+
+    def to_wire(self) -> str:
+        return self._name
+
+    @classmethod
+    def from_wire(cls, value: str) -> Self:
+        return cls(value)
 
 
 @dataclass(frozen=True)
