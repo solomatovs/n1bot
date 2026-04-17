@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import platform
 import subprocess
+from collections.abc import Iterable, Iterator
 from datetime import date
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from boba.domain.core.promt import (
     PromptId,
     PromptProvider,
 )
+from boba.domain.core.workspace import WorkspaceService
 
 
 class StaticPromptProvider(PromptProvider[None]):
@@ -30,8 +32,8 @@ class StaticPromptProvider(PromptProvider[None]):
     def priority(self) -> int:
         return self._priority
 
-    def block(self, ctx: None) -> PromptBlock:
-        return PromptBlock(name=self._id.name, content=self._content)
+    def blocks(self, ctx: None) -> Iterable[PromptBlock]:
+        yield PromptBlock(name=self._id.name, content=self._content)
 
 
 class FilePromptProvider(PromptProvider[None]):
@@ -55,12 +57,48 @@ class FilePromptProvider(PromptProvider[None]):
     def priority(self) -> int:
         return self._priority
 
-    def block(self, ctx: None) -> PromptBlock:
+    def blocks(self, ctx: None) -> Iterable[PromptBlock]:
         if self._path.exists():
             content = self._path.read_text(encoding="utf-8")
         else:
             content = self._default_prompt
-        return PromptBlock(name=self._id.name, content=content)
+
+        yield PromptBlock(name=self._id.name, content=content)
+
+
+class WorkspaceSystemPromptProvider(PromptProvider[None]):
+    """Собирает системный промт из файлов внутри директории workspace'а.
+
+    Каждый непустой файл отдаётся отдельным ``PromptBlock``. Файлы читаются
+    в лексикографическом порядке имён. Директория по умолчанию —
+    ``prompts/system``. Отсутствующая директория или пустой набор файлов →
+    пустой итератор.
+    """
+
+    def __init__(
+        self,
+        prompt_id: PromptId,
+        priority: int,
+        workspace: WorkspaceService,
+        directory: str,
+    ) -> None:
+        self._id = prompt_id
+        self._priority = priority
+        self._workspace = workspace
+        self._directory = directory
+
+    def id(self) -> PromptId:
+        return self._id
+
+    def priority(self) -> int:
+        return self._priority
+
+    def blocks(self, ctx: None) -> Iterator[PromptBlock]:
+        for path in sorted(self._workspace.ls(self._directory)):
+            with self._workspace.read_text(path) as f:
+                content = f.read().strip()
+            if content:
+                yield PromptBlock(name=path, content=content)
 
 
 class EnvironmentPromptProvider(PromptProvider[None]):
@@ -75,14 +113,15 @@ class EnvironmentPromptProvider(PromptProvider[None]):
     def priority(self) -> int:
         return 60
 
-    def block(self, ctx: None) -> PromptBlock:
+    def blocks(self, ctx: None) -> Iterable[PromptBlock]:
         lines = [
             f"Platform: {platform.system()}",
             f"Shell: {os.environ.get('SHELL', 'unknown')}",
             f"OS Version: {platform.release()}",
             f"Current date: {date.today().isoformat()}",
         ]
-        return PromptBlock(name=self._id.name, content="\n".join(lines))
+
+        yield PromptBlock(name=self._id.name, content="\n".join(lines))
 
 
 class GitPromptProvider(PromptProvider[None]):
@@ -97,7 +136,7 @@ class GitPromptProvider(PromptProvider[None]):
     def priority(self) -> int:
         return 80
 
-    def block(self, ctx: None) -> PromptBlock:
+    def blocks(self, ctx: None) -> Iterable[PromptBlock]:
         branch = self._git("branch", "--show-current")
         status = self._git("status", "--short")
         log = self._git("log", "--oneline", "-5")
@@ -106,7 +145,8 @@ class GitPromptProvider(PromptProvider[None]):
             f"Status:\n{status}\n\n"
             f"Recent commits:\n{log}"
         )
-        return PromptBlock(name=self._id.name, content=content)
+
+        yield PromptBlock(name=self._id.name, content=content)
 
     @staticmethod
     def _git(*args: str) -> str:
@@ -136,8 +176,8 @@ class UserQueryProvider(PromptProvider[AgentContext]):
     def priority(self) -> int:
         return 50
 
-    def block(self, ctx: AgentContext) -> PromptBlock:
-        return PromptBlock(name=self._id.name, content=ctx.request.query)
+    def blocks(self, ctx: AgentContext) -> Iterable[PromptBlock]:
+        yield PromptBlock(name=self._id.name, content=ctx.request.query)
 
 
 class IDESelectionProvider(PromptProvider[AgentContext]):
@@ -154,11 +194,12 @@ class IDESelectionProvider(PromptProvider[AgentContext]):
     def priority(self) -> int:
         return 30
 
-    def block(self, ctx: AgentContext) -> PromptBlock:
+    def blocks(self, ctx: AgentContext) -> Iterable[PromptBlock]:
         content = (
             f"Selected code from {self._file_path}:\n" f"```\n{self._selection}\n```"
         )
-        return PromptBlock(name=self._id.name, content=content)
+
+        yield PromptBlock(name=self._id.name, content=content)
 
 
 class TemplateProvider(PromptProvider[AgentContext]):
@@ -175,6 +216,7 @@ class TemplateProvider(PromptProvider[AgentContext]):
     def priority(self) -> int:
         return self._priority
 
-    def block(self, ctx: AgentContext) -> PromptBlock:
+    def blocks(self, ctx: AgentContext) -> Iterable[PromptBlock]:
         content = self._template.format(query=ctx.request.query)
-        return PromptBlock(name=self._id.name, content=content)
+
+        yield PromptBlock(name=self._id.name, content=content)

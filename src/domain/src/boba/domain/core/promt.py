@@ -30,14 +30,15 @@ class PromptId(Id[str]):
 class PromptProvider(Provider[PromptId, TPromptContext, list[PromptBlock]]):
     """
     Провайдер промпта.
-    Поставляет блок, который будет конкатенирован с другими в итоговый промпт.
+    Поставляет ноль или более блоков, которые будут конкатенированы
+    с другими в итоговый промпт.
     """
 
     @abstractmethod
-    def block(self, ctx: TPromptContext) -> PromptBlock: ...
+    def blocks(self, ctx: TPromptContext) -> Iterable[PromptBlock]: ...
 
     def apply(self, ctx: TPromptContext, state: list[PromptBlock]) -> list[PromptBlock]:
-        state.append(self.block(ctx))
+        state.extend(self.blocks(ctx))
         return state
 
 
