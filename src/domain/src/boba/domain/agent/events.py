@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Literal, TypeAlias
 
 from boba.domain.agent.models import RequestId
 from boba.domain.core.patterns import Converter, Serializer
@@ -18,8 +19,9 @@ class BaseEvent(ABC):
     def name(cls) -> str:
         """Стабильное имя типа события для сериализации.
 
-        Каждый подкласс возвращает свою строку. Отвязывает wire-формат от
-        имени класса: переименование класса не ломает существующие логи.
+        Каждый подкласс **должен** возвращать свою ``Literal["..."]``-строку
+        (не просто ``str``): это позволяет статическому анализатору проверять
+        исчерпывающее покрытие match-case в декодерах.
         """
         ...
 
@@ -31,7 +33,7 @@ class UserQueryReceived(BaseEvent):
     query: str
 
     @classmethod
-    def name(cls) -> str:
+    def name(cls) -> Literal["UserQueryReceived"]:
         return "UserQueryReceived"
 
 
@@ -40,7 +42,7 @@ class StageStarted(BaseEvent):
     stage: str
 
     @classmethod
-    def name(cls) -> str:
+    def name(cls) -> Literal["StageStarted"]:
         return "StageStarted"
 
 
@@ -50,7 +52,7 @@ class StageCompleted(BaseEvent):
     detail: str
 
     @classmethod
-    def name(cls) -> str:
+    def name(cls) -> Literal["StageCompleted"]:
         return "StageCompleted"
 
 
@@ -59,7 +61,7 @@ class GenerationStarted(BaseEvent):
     """Первый chunk от LLM — генерация началась."""
 
     @classmethod
-    def name(cls) -> str:
+    def name(cls) -> Literal["GenerationStarted"]:
         return "GenerationStarted"
 
 
@@ -68,7 +70,7 @@ class ThinkingStarted(BaseEvent):
     """Модель начала thinking/reasoning."""
 
     @classmethod
-    def name(cls) -> str:
+    def name(cls) -> Literal["ThinkingStarted"]:
         return "ThinkingStarted"
 
 
@@ -79,7 +81,7 @@ class ThinkingToken(BaseEvent):
     token: str
 
     @classmethod
-    def name(cls) -> str:
+    def name(cls) -> Literal["ThinkingToken"]:
         return "ThinkingToken"
 
 
@@ -88,7 +90,7 @@ class AnswerStarted(BaseEvent):
     """Модель начала генерировать ответ."""
 
     @classmethod
-    def name(cls) -> str:
+    def name(cls) -> Literal["AnswerStarted"]:
         return "AnswerStarted"
 
 
@@ -99,7 +101,7 @@ class AnswerToken(BaseEvent):
     token: str
 
     @classmethod
-    def name(cls) -> str:
+    def name(cls) -> Literal["AnswerToken"]:
         return "AnswerToken"
 
 
@@ -110,7 +112,7 @@ class RefusalToken(BaseEvent):
     token: str
 
     @classmethod
-    def name(cls) -> str:
+    def name(cls) -> Literal["RefusalToken"]:
         return "RefusalToken"
 
 
@@ -121,7 +123,7 @@ class GenerationDone(BaseEvent):
     finish_reason: str = "stop"  # "stop", "tool_calls", "length"
 
     @classmethod
-    def name(cls) -> str:
+    def name(cls) -> Literal["GenerationDone"]:
         return "GenerationDone"
 
 
@@ -134,7 +136,7 @@ class ToolCallBegin(BaseEvent):
     tool_name: str
 
     @classmethod
-    def name(cls) -> str:
+    def name(cls) -> Literal["ToolCallBegin"]:
         return "ToolCallBegin"
 
 
@@ -146,7 +148,7 @@ class ToolCallArgumentDelta(BaseEvent):
     arguments: str
 
     @classmethod
-    def name(cls) -> str:
+    def name(cls) -> Literal["ToolCallArgumentDelta"]:
         return "ToolCallArgumentDelta"
 
 
@@ -159,7 +161,7 @@ class ToolCallComplete(BaseEvent):
     arguments: str
 
     @classmethod
-    def name(cls) -> str:
+    def name(cls) -> Literal["ToolCallComplete"]:
         return "ToolCallComplete"
 
 
@@ -171,7 +173,7 @@ class ToolResultReady(BaseEvent):
     is_error: bool = False
 
     @classmethod
-    def name(cls) -> str:
+    def name(cls) -> Literal["ToolResultReady"]:
         return "ToolResultReady"
 
 
@@ -182,7 +184,7 @@ class ThinkingComplete(BaseEvent):
     content: str
 
     @classmethod
-    def name(cls) -> str:
+    def name(cls) -> Literal["ThinkingComplete"]:
         return "ThinkingComplete"
 
 
@@ -193,7 +195,7 @@ class AnswerComplete(BaseEvent):
     content: str
 
     @classmethod
-    def name(cls) -> str:
+    def name(cls) -> Literal["AnswerComplete"]:
         return "AnswerComplete"
 
 
@@ -204,7 +206,7 @@ class RefusalComplete(BaseEvent):
     content: str
 
     @classmethod
-    def name(cls) -> str:
+    def name(cls) -> Literal["RefusalComplete"]:
         return "RefusalComplete"
 
 
@@ -229,7 +231,43 @@ AgentEvent = (
 )
 
 
+# Literal-union всех wire-имён событий. Должен содержать ровно те же строки,
+# что возвращают ``name()`` подклассов ``BaseEvent``. Синхронность проверяет
+# статически функция ``_verify_event_names_exhaustive`` ниже.
+AgentEventName: TypeAlias = Literal[
+    "UserQueryReceived",
+    "StageStarted",
+    "StageCompleted",
+    "GenerationStarted",
+    "ThinkingStarted",
+    "ThinkingToken",
+    "ThinkingComplete",
+    "AnswerStarted",
+    "AnswerToken",
+    "AnswerComplete",
+    "RefusalToken",
+    "RefusalComplete",
+    "GenerationDone",
+    "ToolCallBegin",
+    "ToolCallArgumentDelta",
+    "ToolCallComplete",
+    "ToolResultReady",
+]
+
+
+def _verify_event_names_exhaustive(e: AgentEvent) -> AgentEventName:
+    """Compile-time гарантия: union ``AgentEvent.name()`` == ``EventName``.
+
+    Не вызывается в runtime. pyright проверит, что возвращаемое значение
+    ``e.name()`` (union всех Literal-типов) присваивается в ``EventName``.
+
+    При добавлении нового ``AgentEvent`` и забытом имени в ``EventName``
+    pyright сообщит: Literal["NewEvent"] is not assignable to EventName.
+    """
+    return e.name()
+
+
 # Типы сериализации AgentEvent
-EventEncoder = Converter[AgentEvent, str]
-EventDecoder = Converter[str, AgentEvent]
-EventSerializer = Serializer[AgentEvent, str]
+AgentEventEncoder = Converter[AgentEvent, str]
+AgentEventDecoder = Converter[str, AgentEvent]
+AgentEventSerializer = Serializer[AgentEvent, str]

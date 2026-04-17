@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
-from typing import assert_never
+from typing import assert_never, cast, get_args
 
 from boba.domain.agent.events import (
     AgentEvent,
+    AgentEventName,
     AnswerComplete,
     AnswerStarted,
     AnswerToken,
@@ -34,14 +35,27 @@ from boba.domain.core.history import (
     HistoryService,
     HistoryWriteError,
 )
-from boba.domain.core.patterns import Converter
-from boba.domain.core.workspace import WorkspaceService
+from boba.domain.core.patterns import (
+    Converter,
+    ConverterError,
+    ConverterInputError,
+    ConverterOutputError,
+)
+from boba.domain.core.workspace import WorkspaceError, WorkspaceService
 
 
 class HistoryEntryEncoder(Converter[HistoryEntry, str]):
     """HistoryEntry → JSON line."""
 
     def convert(self, entry: HistoryEntry) -> str:
+        try:
+            return self._convert(entry)
+        except ConverterError:
+            raise
+        except (TypeError, ValueError) as e:
+            raise ConverterOutputError(f"failed to encode HistoryEntry: {e}") from e
+
+    def _convert(self, entry: HistoryEntry) -> str:
         return json.dumps(
             {
                 "id": entry.id.to_wire(),
@@ -132,9 +146,29 @@ class HistoryEntryEncoder(Converter[HistoryEntry, str]):
 class HistoryEntryDecoder(Converter[str, HistoryEntry]):
     """JSON line → HistoryEntry."""
 
+    _KNOWN_EVENT_NAMES: frozenset[str] = frozenset(get_args(AgentEventName))
+
     def convert(self, value: str) -> HistoryEntry:
+        try:
+            return self._convert(value)
+        except ConverterError:
+            raise
+        except json.JSONDecodeError as e:
+            raise ConverterInputError(f"malformed JSON: {e.msg}") from e
+        except KeyError as e:
+            raise ConverterInputError(f"missing required field: {e.args[0]!r}") from e
+        except (ValueError, TypeError) as e:
+            raise ConverterInputError(str(e)) from e
+
+    def _convert(self, value: str) -> HistoryEntry:
         raw = json.loads(value)
-        event = self._decode_event(raw["event_type"], raw["event"])
+
+        event_type_raw = raw["event_type"]
+        if event_type_raw not in self._KNOWN_EVENT_NAMES:
+            raise ConverterInputError(f"unknown event_type: {event_type_raw!r}")
+        event_type = cast(AgentEventName, event_type_raw)
+
+        event = self._decode_event(event_type, raw["event"])
 
         return HistoryEntry(
             id=EntryId.from_wire(raw["id"]),
@@ -147,7 +181,7 @@ class HistoryEntryDecoder(Converter[str, HistoryEntry]):
         )
 
     def _decode_event(  # noqa: C901, PLR0911, PLR0912
-        self, event_type: str, data: dict[str, object]
+        self, event_type: AgentEventName, data: dict[str, object]
     ) -> AgentEvent:
         rid = RequestId.from_wire(str(data["request_id"]))
         match event_type:
@@ -229,12 +263,12 @@ class JsonLinesHistoryService(HistoryService):
         self._recover_last_id()
 
     def _ensure_file(self) -> None:
-        if self._workspace.exists(self._history_file):
-            return
         try:
+            if self._workspace.exists(self._history_file):
+                return
             with self._workspace.write_text(self._history_file):
                 pass
-        except OSError as exc:
+        except WorkspaceError as exc:
             raise HistoryWriteError(exc, ctx=f"path={self._history_file}") from exc
 
     def _recover_last_id(self) -> None:
@@ -244,7 +278,7 @@ class JsonLinesHistoryService(HistoryService):
                 continue
             try:
                 self._last_id = self._decoder.convert(stripped).id
-            except (json.JSONDecodeError, KeyError, ValueError):
+            except ConverterInputError:
                 continue
             return
 
@@ -263,7 +297,7 @@ class JsonLinesHistoryService(HistoryService):
             with self._workspace.append_text(self._history_file) as f:
                 f.write(line)
                 f.write("\n")
-        except OSError as exc:
+        except WorkspaceError as exc:
             raise HistoryWriteError(exc, ctx=f"path={self._history_file}") from exc
 
         self._last_id = entry.id
@@ -282,5 +316,5 @@ class JsonLinesHistoryService(HistoryService):
                 continue
             try:
                 yield self._decoder.convert(stripped)
-            except (json.JSONDecodeError, KeyError, ValueError):
+            except ConverterInputError:
                 continue

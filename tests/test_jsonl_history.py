@@ -2,18 +2,43 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from boba.adapters.fs_workspace import FsWorkspaceService
-from boba.adapters.jsonl_history import JsonLinesHistoryService
+from boba.adapters.jsonl_history import (
+    HistoryEntryDecoder,
+    HistoryEntryEncoder,
+    JsonLinesHistoryService,
+)
 from boba.domain.agent.events import (
+    AgentEvent,
     AnswerComplete,
+    AnswerStarted,
     AnswerToken,
+    BaseEvent,
+    GenerationDone,
+    GenerationStarted,
+    RefusalComplete,
+    RefusalToken,
+    StageCompleted,
+    StageStarted,
+    ThinkingComplete,
+    ThinkingStarted,
+    ThinkingToken,
+    ToolCallArgumentDelta,
+    ToolCallBegin,
+    ToolCallComplete,
+    ToolResultReady,
     UserQueryReceived,
 )
 from boba.domain.agent.models import RequestId
+from boba.domain.core.history import EntryId, HistoryEntry
+from boba.domain.core.patterns import ConverterInputError
 from boba.domain.core.workspace import WorkspaceId
 
 HISTORY_FILE = "history.jsonl"
@@ -47,9 +72,7 @@ class TestAppendAndEntries:
         assert isinstance(entry.event, UserQueryReceived)
         assert entry.event.query == "hi"
 
-    def test_parent_id_chain(
-        self, ws: FsWorkspaceService, rid: RequestId
-    ) -> None:
+    def test_parent_id_chain(self, ws: FsWorkspaceService, rid: RequestId) -> None:
         svc = JsonLinesHistoryService(ws)
         e1 = svc.append(UserQueryReceived(request_id=rid, query="q"))
         e2 = svc.append(AnswerComplete(request_id=rid, content="a"))
@@ -92,9 +115,7 @@ class TestReverseReading:
 
         assert [e.id for e in read] == [e3.id, e2.id, e1.id]
 
-    def test_entries_reverse_on_empty_file(
-        self, ws: FsWorkspaceService
-    ) -> None:
+    def test_entries_reverse_on_empty_file(self, ws: FsWorkspaceService) -> None:
         svc = JsonLinesHistoryService(ws)
         assert list(svc.entries(reverse=True)) == []
 
@@ -208,9 +229,7 @@ class TestPartialAndMalformedLines:
         read = list(svc.entries())
         assert [e.id for e in read] == [e1.id, e2.id]
 
-    def test_blank_lines_skipped(
-        self, ws: FsWorkspaceService, rid: RequestId
-    ) -> None:
+    def test_blank_lines_skipped(self, ws: FsWorkspaceService, rid: RequestId) -> None:
         svc = JsonLinesHistoryService(ws)
         e1 = svc.append(UserQueryReceived(request_id=rid, query="q"))
         _append_raw(ws, "\n\n")
@@ -218,3 +237,270 @@ class TestPartialAndMalformedLines:
 
         read = list(svc.entries())
         assert [e.id for e in read] == [e1.id, e2.id]
+
+
+# ---------------------------------------------------------------------------
+# Converter tests: HistoryEntryEncoder / HistoryEntryDecoder без workspace.
+# ---------------------------------------------------------------------------
+
+
+EventFactory = Callable[[RequestId], BaseEvent]
+
+_EVENT_FACTORIES: list[tuple[str, EventFactory]] = [
+    (
+        "UserQueryReceived",
+        lambda rid: UserQueryReceived(request_id=rid, query="привет мир"),
+    ),
+    (
+        "StageStarted",
+        lambda rid: StageStarted(request_id=rid, stage="init"),
+    ),
+    (
+        "StageCompleted",
+        lambda rid: StageCompleted(request_id=rid, stage="init", detail="done"),
+    ),
+    ("GenerationStarted", lambda rid: GenerationStarted(request_id=rid)),
+    ("ThinkingStarted", lambda rid: ThinkingStarted(request_id=rid)),
+    (
+        "ThinkingToken",
+        lambda rid: ThinkingToken(request_id=rid, token="hmm "),
+    ),
+    (
+        "ThinkingComplete",
+        lambda rid: ThinkingComplete(request_id=rid, content="full thought"),
+    ),
+    ("AnswerStarted", lambda rid: AnswerStarted(request_id=rid)),
+    (
+        "AnswerToken",
+        lambda rid: AnswerToken(request_id=rid, token="hello "),
+    ),
+    (
+        "AnswerComplete",
+        lambda rid: AnswerComplete(request_id=rid, content="full answer"),
+    ),
+    (
+        "RefusalToken",
+        lambda rid: RefusalToken(request_id=rid, token="no "),
+    ),
+    (
+        "RefusalComplete",
+        lambda rid: RefusalComplete(request_id=rid, content="cannot"),
+    ),
+    (
+        "GenerationDone",
+        lambda rid: GenerationDone(request_id=rid, finish_reason="stop"),
+    ),
+    (
+        "ToolCallBegin",
+        lambda rid: ToolCallBegin(
+            request_id=rid, index=0, tool_call_id="tc1", tool_name="search"
+        ),
+    ),
+    (
+        "ToolCallArgumentDelta",
+        lambda rid: ToolCallArgumentDelta(request_id=rid, index=0, arguments='{"q":'),
+    ),
+    (
+        "ToolCallComplete",
+        lambda rid: ToolCallComplete(
+            request_id=rid,
+            tool_call_id="tc1",
+            tool_name="search",
+            arguments='{"q":"x"}',
+        ),
+    ),
+    (
+        "ToolResultReady_ok",
+        lambda rid: ToolResultReady(
+            request_id=rid,
+            tool_call_id="tc1",
+            tool_name="search",
+            content="result",
+            is_error=False,
+        ),
+    ),
+    (
+        "ToolResultReady_err",
+        lambda rid: ToolResultReady(
+            request_id=rid,
+            tool_call_id="tc1",
+            tool_name="search",
+            content="boom",
+            is_error=True,
+        ),
+    ),
+]
+
+
+def _make_entry(
+    event: AgentEvent,
+    rid: RequestId,
+    *,
+    parent: EntryId | None = None,
+) -> HistoryEntry:
+    return HistoryEntry(
+        id=EntryId.new(),
+        parent_id=parent,
+        request_id=rid,
+        timestamp=datetime(2025, 1, 2, 3, 4, 5, tzinfo=UTC),
+        event=event,
+    )
+
+
+class TestConverterRoundTrip:
+    """encoder.convert → decoder.convert восстанавливает исходный HistoryEntry."""
+
+    @pytest.mark.parametrize(
+        ("label", "factory"),
+        _EVENT_FACTORIES,
+        ids=[label for label, _ in _EVENT_FACTORIES],
+    )
+    def test_roundtrip(self, rid: RequestId, label: str, factory: EventFactory) -> None:
+        del label
+        event = factory(rid)
+        entry = _make_entry(event, rid, parent=EntryId.new())
+
+        line = HistoryEntryEncoder().convert(entry)
+        restored = HistoryEntryDecoder().convert(line)
+
+        assert restored == entry
+
+    def test_roundtrip_without_parent(self, rid: RequestId) -> None:
+        entry = _make_entry(
+            UserQueryReceived(request_id=rid, query="hi"), rid, parent=None
+        )
+
+        line = HistoryEntryEncoder().convert(entry)
+        restored = HistoryEntryDecoder().convert(line)
+
+        assert restored == entry
+        assert restored.parent_id is None
+
+
+class TestEncoderShape:
+    """Проверяем форму JSON на выходе кодера."""
+
+    def test_top_level_keys(self, rid: RequestId) -> None:
+        entry = _make_entry(UserQueryReceived(request_id=rid, query="hi"), rid)
+        parsed = json.loads(HistoryEntryEncoder().convert(entry))
+
+        assert set(parsed.keys()) == {
+            "id",
+            "parent_id",
+            "request_id",
+            "timestamp",
+            "event_type",
+            "event",
+        }
+
+    def test_event_type_is_class_name(self, rid: RequestId) -> None:
+        entry = _make_entry(AnswerComplete(request_id=rid, content="x"), rid)
+        parsed = json.loads(HistoryEntryEncoder().convert(entry))
+        assert parsed["event_type"] == "AnswerComplete"
+
+    def test_event_is_flat_dict(self, rid: RequestId) -> None:
+        entry = _make_entry(
+            ToolCallBegin(request_id=rid, index=0, tool_call_id="tc", tool_name="fn"),
+            rid,
+        )
+        parsed = json.loads(HistoryEntryEncoder().convert(entry))
+
+        assert isinstance(parsed["event"], dict)
+        assert set(parsed["event"].keys()) == {
+            "request_id",
+            "index",
+            "tool_call_id",
+            "tool_name",
+        }
+        assert "event_data" not in parsed
+        assert "event_data" not in parsed["event"]
+
+    def test_parent_id_null_when_none(self, rid: RequestId) -> None:
+        entry = _make_entry(
+            UserQueryReceived(request_id=rid, query="hi"), rid, parent=None
+        )
+        parsed = json.loads(HistoryEntryEncoder().convert(entry))
+        assert parsed["parent_id"] is None
+
+    def test_ids_are_uuid_strings(self, rid: RequestId) -> None:
+        entry = _make_entry(
+            UserQueryReceived(request_id=rid, query="hi"),
+            rid,
+            parent=EntryId.new(),
+        )
+        parsed = json.loads(HistoryEntryEncoder().convert(entry))
+
+        assert parsed["id"] == str(entry.id.name)
+        assert parsed["parent_id"] == str(entry.parent_id.name)  # type: ignore[union-attr]
+        assert parsed["request_id"] == str(rid.name)
+        assert parsed["event"]["request_id"] == str(rid.name)
+
+    def test_timestamp_is_iso(self, rid: RequestId) -> None:
+        entry = _make_entry(UserQueryReceived(request_id=rid, query="hi"), rid)
+        parsed = json.loads(HistoryEntryEncoder().convert(entry))
+        assert parsed["timestamp"] == "2025-01-02T03:04:05+00:00"
+
+    def test_unicode_preserved(self, rid: RequestId) -> None:
+        entry = _make_entry(
+            UserQueryReceived(request_id=rid, query="кириллица 🎉"), rid
+        )
+        line = HistoryEntryEncoder().convert(entry)
+        # ensure_ascii=False → символы НЕ экранируются в \uXXXX
+        assert "кириллица" in line
+        assert "🎉" in line
+
+
+class TestDecoderErrors:
+    """Проверяем ошибки, которые должен возвращать декодер."""
+
+    @staticmethod
+    def _valid_base_line(rid: RequestId) -> dict[str, object]:
+        entry = _make_entry(UserQueryReceived(request_id=rid, query="hi"), rid)
+        return json.loads(HistoryEntryEncoder().convert(entry))
+
+    def test_unknown_event_type_raises(self, rid: RequestId) -> None:
+        payload = self._valid_base_line(rid)
+        payload["event_type"] = "BogusEvent"
+        line = json.dumps(payload)
+
+        with pytest.raises(ConverterInputError, match="unknown event_type"):
+            HistoryEntryDecoder().convert(line)
+
+    def test_missing_top_level_field_raises(self, rid: RequestId) -> None:
+        payload = self._valid_base_line(rid)
+        del payload["request_id"]
+        line = json.dumps(payload)
+
+        with pytest.raises(ConverterInputError, match="missing required field"):
+            HistoryEntryDecoder().convert(line)
+
+    def test_missing_event_payload_field_raises(self, rid: RequestId) -> None:
+        payload = self._valid_base_line(rid)
+        # UserQueryReceived требует поле "query"
+        payload["event"] = {"request_id": str(rid.name)}
+        line = json.dumps(payload)
+
+        with pytest.raises(ConverterInputError, match="missing required field"):
+            HistoryEntryDecoder().convert(line)
+
+    def test_malformed_json_raises(self) -> None:
+        with pytest.raises(ConverterInputError, match="malformed JSON"):
+            HistoryEntryDecoder().convert('{"broken')
+
+    def test_invalid_uuid_in_id_raises(self, rid: RequestId) -> None:
+        payload = self._valid_base_line(rid)
+        payload["id"] = "not-a-uuid"
+        line = json.dumps(payload)
+
+        with pytest.raises(ConverterInputError, match="badly formed"):
+            HistoryEntryDecoder().convert(line)
+
+    def test_raw_exception_preserved_as_cause(self, rid: RequestId) -> None:
+        payload = self._valid_base_line(rid)
+        del payload["request_id"]
+        line = json.dumps(payload)
+
+        with pytest.raises(ConverterInputError) as exc_info:
+            HistoryEntryDecoder().convert(line)
+
+        assert isinstance(exc_info.value.__cause__, KeyError)

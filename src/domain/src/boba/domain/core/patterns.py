@@ -96,13 +96,51 @@ class Validator(ABC, Generic[TValue]):
     def validate(self, value: TValue) -> TValue: ...
 
 
-class Converter(ABC, Generic[TIn, TOut]):
+class ConverterError(Exception):
+    """Базовая ошибка ``Converter.convert``.
+
+    Реализации ``Converter`` ОБЯЗАНЫ оборачивать любые внутренние исключения
+    в потомков этого класса. Голые ``ValueError``/``KeyError``/``TypeError``
+    и т.п. наружу утекать не должны — потребитель ловит только
+    ``ConverterError``.
     """
-    Однонаправленная конвертация 1:1. A → B.
+
+
+class ConverterInputError(ConverterError):
+    """Вход не соответствует ожидаемому формату или семантике.
+
+    Покрывает: битый синтаксис, отсутствующие/лишние поля, недопустимые
+    значения, неизвестные варианты перечислений и т.п. Обычно «проблема
+    данных», которую можно залогировать и пропустить.
+    """
+
+
+class ConverterOutputError(ConverterError):
+    """Не удалось построить выход из корректного входа.
+
+    Обычно указывает на баг в реализации конвертера (неожиданное поведение
+    библиотеки сериализации, неподдерживаемый тип в структуре и т.п.).
+    """
+
+
+class Converter(ABC, Generic[TIn, TOut]):
+    """Однонаправленная конвертация 1:1. A → B.
+
+    Контракт ошибок: ``convert`` бросает только потомков ``ConverterError``.
+    ``ConverterInputError`` — если проблема в данных входа;
+    ``ConverterOutputError`` — если проблема в построении выхода.
+    Исходное низкоуровневое исключение доступно через ``__cause__``.
     """
 
     @abstractmethod
-    def convert(self, value: TIn) -> TOut: ...
+    def convert(self, value: TIn) -> TOut:
+        """Выполнить конвертацию.
+
+        Raises:
+            ConverterInputError: вход не соответствует контракту.
+            ConverterOutputError: невозможно сформировать выход.
+        """
+        ...
 
 
 class StreamConverter(ABC, Generic[TIn, TOut]):
