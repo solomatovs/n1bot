@@ -96,4 +96,6 @@ known-first-party = ["boba"]
     "S101",    # assert — ожидаемо в pytest
     "PLR2004", # magic values — допустимы в assert тестов
     "SLF001",  # доступ к _private — допустим при тестировании внутренностей
+    "S105",    # hardcoded password — false positive на domain-поля вроде AnswerToken.token
+    "S106",    # hardcoded password — same reason
 ]
