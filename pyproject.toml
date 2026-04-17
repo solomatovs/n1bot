@@ -90,3 +90,10 @@ max-complexity = 10
 
 [tool.ruff.lint.isort]
 known-first-party = ["boba"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "S101",    # assert — ожидаемо в pytest
+    "PLR2004", # magic values — допустимы в assert тестов
+    "SLF001",  # доступ к _private — допустим при тестировании внутренностей
+]
