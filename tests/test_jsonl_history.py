@@ -37,7 +37,7 @@ from boba.domain.agent.events import (
     UserQueryReceived,
 )
 from boba.domain.agent.models import RequestId
-from boba.domain.core.history import EntryId, HistoryEntry
+from boba.domain.core.history import EntryId, HistoryEntry, HistoryReadError
 from boba.domain.core.patterns import ConverterInputError
 from boba.domain.core.workspace import WorkspaceId
 
@@ -150,29 +150,29 @@ class TestRecoveryLastId:
 
 
 class TestPartialAndMalformedLines:
-    def test_partial_tail_skipped_in_entries_forward(
+    def test_partial_tail_raises_in_entries_forward(
         self, ws: FsWorkspaceService, rid: RequestId
     ) -> None:
         svc = JsonLinesHistoryService(ws)
-        e1 = svc.append(UserQueryReceived(request_id=rid, query="q"))
-        e2 = svc.append(AnswerComplete(request_id=rid, content="a"))
+        _ = svc.append(UserQueryReceived(request_id=rid, query="q"))
+        _ = svc.append(AnswerComplete(request_id=rid, content="a"))
 
         _append_raw(ws, '{"id": "abc", "parent_id": null, "request_')
 
-        read = list(svc.entries())
-        assert [e.id for e in read] == [e1.id, e2.id]
+        with pytest.raises(HistoryReadError):
+            list(svc.entries())
 
-    def test_partial_tail_skipped_in_entries_reverse(
+    def test_partial_tail_raises_in_entries_reverse(
         self, ws: FsWorkspaceService, rid: RequestId
     ) -> None:
         svc = JsonLinesHistoryService(ws)
-        e1 = svc.append(UserQueryReceived(request_id=rid, query="q"))
-        e2 = svc.append(AnswerComplete(request_id=rid, content="a"))
+        _ = svc.append(UserQueryReceived(request_id=rid, query="q"))
+        _ = svc.append(AnswerComplete(request_id=rid, content="a"))
 
         _append_raw(ws, '{"partially written')
 
-        read = list(svc.entries(reverse=True))
-        assert [e.id for e in read] == [e2.id, e1.id]
+        with pytest.raises(HistoryReadError):
+            list(svc.entries(reverse=True))
 
     def test_recovery_ignores_partial_tail(
         self, ws: FsWorkspaceService, rid: RequestId
@@ -188,33 +188,33 @@ class TestPartialAndMalformedLines:
 
         assert e3.parent_id == e2.id
 
-    def test_malformed_middle_line_skipped_forward(
+    def test_malformed_middle_line_raises_forward(
         self, ws: FsWorkspaceService, rid: RequestId
     ) -> None:
         svc = JsonLinesHistoryService(ws)
-        e1 = svc.append(UserQueryReceived(request_id=rid, query="q"))
+        _ = svc.append(UserQueryReceived(request_id=rid, query="q"))
         _append_raw(ws, "not a json line at all\n")
-        e2 = svc.append(AnswerComplete(request_id=rid, content="a"))
+        _ = svc.append(AnswerComplete(request_id=rid, content="a"))
 
-        read = list(svc.entries())
-        assert [e.id for e in read] == [e1.id, e2.id]
+        with pytest.raises(HistoryReadError):
+            list(svc.entries())
 
-    def test_malformed_middle_line_skipped_reverse(
+    def test_malformed_middle_line_raises_reverse(
         self, ws: FsWorkspaceService, rid: RequestId
     ) -> None:
         svc = JsonLinesHistoryService(ws)
-        e1 = svc.append(UserQueryReceived(request_id=rid, query="q"))
+        _ = svc.append(UserQueryReceived(request_id=rid, query="q"))
         _append_raw(ws, "garbage\n")
-        e2 = svc.append(AnswerComplete(request_id=rid, content="a"))
+        _ = svc.append(AnswerComplete(request_id=rid, content="a"))
 
-        read = list(svc.entries(reverse=True))
-        assert [e.id for e in read] == [e2.id, e1.id]
+        with pytest.raises(HistoryReadError):
+            list(svc.entries(reverse=True))
 
-    def test_unknown_event_type_skipped(
+    def test_unknown_event_type_raises(
         self, ws: FsWorkspaceService, rid: RequestId
     ) -> None:
         svc = JsonLinesHistoryService(ws)
-        e1 = svc.append(UserQueryReceived(request_id=rid, query="q"))
+        _ = svc.append(UserQueryReceived(request_id=rid, query="q"))
         _append_raw(
             ws,
             '{"id": "00000000-0000-0000-0000-000000000001", '
@@ -224,10 +224,10 @@ class TestPartialAndMalformedLines:
             '"event_type": "DefinitelyNotAnEvent", '
             '"event": {}}\n',
         )
-        e2 = svc.append(AnswerComplete(request_id=rid, content="a"))
+        _ = svc.append(AnswerComplete(request_id=rid, content="a"))
 
-        read = list(svc.entries())
-        assert [e.id for e in read] == [e1.id, e2.id]
+        with pytest.raises(HistoryReadError):
+            list(svc.entries())
 
     def test_blank_lines_skipped(self, ws: FsWorkspaceService, rid: RequestId) -> None:
         svc = JsonLinesHistoryService(ws)
@@ -237,6 +237,25 @@ class TestPartialAndMalformedLines:
 
         read = list(svc.entries())
         assert [e.id for e in read] == [e1.id, e2.id]
+
+    def test_truncated_malformed_middle_line_raises(
+        self, ws: FsWorkspaceService, rid: RequestId
+    ) -> None:
+        svc = JsonLinesHistoryService(ws)
+        _ = svc.append(UserQueryReceived(request_id=rid, query="q"))
+        _append_raw(
+            ws,
+            '{"id": "00000000-0000-0000-0000-000000000001", '
+            '"parent_id": null, "request_id": "00000000-0000-0000-\n',
+        )
+        _ = svc.append(AnswerComplete(request_id=rid, content="a"))
+
+        with pytest.raises(HistoryReadError) as exc_info:
+            list(svc.entries())
+        assert isinstance(exc_info.value.__cause__, ConverterInputError)
+
+        with pytest.raises(HistoryReadError):
+            list(svc.entries(reverse=True))
 
 
 # ---------------------------------------------------------------------------
