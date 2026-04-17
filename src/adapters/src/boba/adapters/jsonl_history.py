@@ -32,6 +32,7 @@ from boba.domain.agent.models import RequestId
 from boba.domain.core.history import (
     EntryId,
     HistoryEntry,
+    HistoryReadError,
     HistoryService,
     HistoryWriteError,
 )
@@ -272,15 +273,18 @@ class JsonLinesHistoryService(HistoryService):
             raise HistoryWriteError(exc, ctx=f"path={self._history_file}") from exc
 
     def _recover_last_id(self) -> None:
-        for line in self._workspace.read_lines(self._history_file, reverse=True):
-            stripped = line.strip()
-            if not stripped:
-                continue
-            try:
-                self._last_id = self._decoder.convert(stripped).id
-            except ConverterInputError:
-                continue
-            return
+        try:
+            for line in self._workspace.read_lines(self._history_file, reverse=True):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    self._last_id = self._decoder.convert(stripped).id
+                except ConverterError:
+                    continue
+                return
+        except WorkspaceError as exc:
+            raise HistoryReadError(exc, ctx=f"path={self._history_file}") from exc
 
     def append(self, event: AgentEvent) -> HistoryEntry:
         entry = HistoryEntry(
@@ -291,7 +295,10 @@ class JsonLinesHistoryService(HistoryService):
             event=event,
         )
 
-        line = self._encoder.convert(entry)
+        try:
+            line = self._encoder.convert(entry)
+        except ConverterError as exc:
+            raise HistoryWriteError(exc, ctx=f"path={self._history_file}") from exc
 
         try:
             with self._workspace.append_text(self._history_file) as f:
@@ -310,11 +317,16 @@ class JsonLinesHistoryService(HistoryService):
         истории чата, не загружая весь файл в память линейно).
         Незавершённые и повреждённые JSON-строки пропускаются.
         """
-        for line in self._workspace.read_lines(self._history_file, reverse=reverse):
-            stripped = line.strip()
-            if not stripped:
-                continue
-            try:
-                yield self._decoder.convert(stripped)
-            except ConverterInputError:
-                continue
+        try:
+            for line in self._workspace.read_lines(
+                self._history_file, reverse=reverse
+            ):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    yield self._decoder.convert(stripped)
+                except ConverterError:
+                    continue
+        except WorkspaceError as exc:
+            raise HistoryReadError(exc, ctx=f"path={self._history_file}") from exc

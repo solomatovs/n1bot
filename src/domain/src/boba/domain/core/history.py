@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -11,16 +12,39 @@ from boba.domain.agent.models import RequestId
 from boba.domain.core.patterns import UuId
 
 
-class HistoryWriteError(Exception):
-    """Не удалось создать или записать файл истории."""
+class HistoryError(Exception):
+    """Базовая ошибка ``HistoryService``.
+
+    Контракт ошибок: публичные методы ``HistoryService`` ОБЯЗАНЫ оборачивать
+    любые внутренние исключения (ошибки хранилища, сериализации и т.п.) в
+    потомков этого класса. Исходное исключение доступно через ``__cause__``.
+    """
 
     def __init__(self, reason: Exception, ctx: str = "") -> None:
         self.reason = reason
         self.ctx = ctx
-        msg = f"Cannot write history: {reason}"
+        prefix = self._prefix()
+        msg = f"{prefix}: {reason}"
         if ctx:
-            msg = f"Cannot write history ({ctx}): {reason}"
+            msg = f"{prefix} ({ctx}): {reason}"
         super().__init__(msg)
+
+    def _prefix(self) -> str:
+        return "History error"
+
+
+class HistoryWriteError(HistoryError):
+    """Не удалось создать или записать файл истории."""
+
+    def _prefix(self) -> str:
+        return "Cannot write history"
+
+
+class HistoryReadError(HistoryError):
+    """Не удалось прочитать журнал истории."""
+
+    def _prefix(self) -> str:
+        return "Cannot read history"
 
 
 class EntryId(UuId):
@@ -46,12 +70,30 @@ class HistoryService(ABC):
 
     request_id отслеживается автоматически по UserQueryReceived.
     parent_id (цепочка) отслеживается автоматически по последней записи.
+
+    Контракт ошибок: реализации ОБЯЗАНЫ наружу бросать только потомков
+    ``HistoryError`` (``HistoryWriteError`` / ``HistoryReadError``).
+    Внутренние исключения (ошибки хранилища, сериализации и т.п.)
+    должны быть обёрнуты; исходное — через ``__cause__``.
     """
 
     @abstractmethod
     def append(self, event: AgentEvent) -> HistoryEntry:
         """
         Добавить событие в журнал.
-        Возвращает созданную запись
+        Возвращает созданную запись.
+
+        Raises:
+            HistoryWriteError: не удалось записать событие.
+        """
+        ...
+
+    @abstractmethod
+    def entries(self, *, reverse: bool = False) -> Iterator[HistoryEntry]:
+        """
+        Итерация по журналу. Повреждённые/незавершённые записи пропускаются.
+
+        Raises:
+            HistoryReadError: не удалось прочитать журнал.
         """
         ...
