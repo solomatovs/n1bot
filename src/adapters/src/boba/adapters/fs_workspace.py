@@ -212,6 +212,18 @@ class FsWorkspaceService(WorkspaceService):
         resolved.parent.mkdir(parents=True, exist_ok=True)
         return resolved
 
+    def _open_for_write(
+        self, resolved: Path, mode: str, encoding: str | None = None
+    ) -> TextIOBase:
+        """Открыть файл для записи; если parent-директории нет — создать её
+        и повторить ровно один раз. На happy-path никаких лишних syscalls.
+        """
+        try:
+            return open(resolved, mode, encoding=encoding)  # type: ignore[return-value]
+        except FileNotFoundError:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            return open(resolved, mode, encoding=encoding)  # type: ignore[return-value]
+
     def read_lines(
         self, path: str, *, reverse: bool = False, encoding: str = "utf-8"
     ) -> Iterator[str]:
@@ -280,17 +292,15 @@ class FsWorkspaceService(WorkspaceService):
 
     def write_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
         with self._map_errors(path):
-            resolved = self._ensure_created(path)
             return _ErrorMappedTextIO(
-                open(resolved, "w", encoding=encoding),  # type: ignore[arg-type]
+                self._open_for_write(self._resolve(path), "w", encoding=encoding),
                 path,
             )
 
     def append_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
         with self._map_errors(path):
-            resolved = self._ensure_created(path)
             return _ErrorMappedTextIO(
-                open(resolved, "a", encoding=encoding),  # type: ignore[arg-type]
+                self._open_for_write(self._resolve(path), "a", encoding=encoding),
                 path,
             )
 
