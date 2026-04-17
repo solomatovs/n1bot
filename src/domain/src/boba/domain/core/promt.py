@@ -1,7 +1,7 @@
 from abc import abstractmethod
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import Self, TypeVar
 
 from boba.domain.core.patterns import CompositeBuilder, Id, Provider
 
@@ -18,6 +18,13 @@ class PromptBlock:
 
 class PromptId(Id[str]):
     """Идентификатор провайдера."""
+
+    def to_wire(self) -> str:
+        return self._name
+
+    @classmethod
+    def from_wire(cls, value: str) -> Self:
+        return cls(value)
 
 
 class PromptProvider(Provider[PromptId, TPromptContext, list[PromptBlock]]):
