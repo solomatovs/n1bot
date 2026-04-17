@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 TName = TypeVar("TName")
 
 
-class Id(Generic[TName]):
+class Id(ABC, Generic[TName]):
     """Базовый value object для идентификаторов."""
 
     def __init__(self, name: TName) -> None:
@@ -27,6 +27,17 @@ class Id(Generic[TName]):
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self._name!r})"
 
+    @abstractmethod
+    def to_wire(self) -> str:
+        """Сериализовать Id в строковое представление (JSON-safe)."""
+        ...
+
+    @classmethod
+    @abstractmethod
+    def from_wire(cls, value: str) -> Self:
+        """Восстановить Id из строкового представления."""
+        ...
+
 
 class UuId(Id[UUID]):
     """Базовый UUID-идентификатор."""
@@ -38,6 +49,13 @@ class UuId(Id[UUID]):
     @classmethod
     def from_uuid(cls, _id: UUID) -> Self:
         return cls(_id)
+
+    def to_wire(self) -> str:
+        return str(self._name)
+
+    @classmethod
+    def from_wire(cls, value: str) -> Self:
+        return cls(UUID(value))
 
 TCtx = TypeVar("TCtx")
 TIn = TypeVar("TIn")
