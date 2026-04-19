@@ -34,8 +34,9 @@ from boba.adapters.tool_providers import StaticToolSource
 from boba.adapters.tools import (
     DeleteFileTool,
     EditFileTool,
-    ListFilesTool,
+    LsTool,
     ReadFileTool,
+    TreeTool,
 )
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.llm_request_factory import LLMRequestFactory
@@ -46,12 +47,12 @@ from boba.domain.agent.meat import (
     ErrorToEventMiddleware,
     HistoryReplayMiddleware,
     IterationCounterMiddleware,
-    JsonContentToolCallMiddleware,
     PersistenceErrorToEventMiddleware,
     PromptErrorToEventMiddleware,
     StopOnAnyFailure,
     StopOnFinished,
     StopOnMaxIterations,
+    StrictJsonContentToolCallMiddleware,
     SystemPromptMiddleware,
     ToolExecutionMiddleware,
     ToolsDefinitionMiddleware,
@@ -172,7 +173,8 @@ class RequestProvider(Provider):
                     ReadFileTool(workspace),
                     EditFileTool(workspace),
                     DeleteFileTool(workspace),
-                    ListFilesTool(workspace),
+                    LsTool(workspace),
+                    TreeTool(workspace),
                 ],
             )
         )
@@ -258,7 +260,7 @@ class RequestProvider(Provider):
         builder.use(
             lambda inner: AssistantMessagePersistenceMiddleware(inner, message_service)
         )
-        builder.use(JsonContentToolCallMiddleware)
+        builder.use(StrictJsonContentToolCallMiddleware)
 
         chain = builder.terminal(
             OpenAIMiddleware(config.llm, llm_request_factory, raw_observer)

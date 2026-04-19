@@ -7,6 +7,7 @@ from typing import assert_never
 from boba.domain.agent.events import (
     AgentEvent,
     AnswerComplete,
+    AnswerDiscarded,
     AnswerStarted,
     AnswerToken,
     GenerationDone,
@@ -47,7 +48,7 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
     def name(self) -> str:
         return "Console"
 
-    def handle(self, ctx: AgentContext, event: AgentEvent) -> None:  # noqa: C901
+    def handle(self, ctx: AgentContext, event: AgentEvent) -> None:  # noqa: C901, PLR0912
         match event:
             case ThinkingStarted():
                 print(f"{self._DIM}--- thinking ---{self._RESET}")  # noqa: T201
@@ -58,6 +59,11 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
                 print(f"\n{self._DIM}--- answer ---{self._RESET}")  # noqa: T201
             case AnswerToken(token=t):
                 print(t, end="", flush=True)  # noqa: T201
+            case AnswerDiscarded():
+                print(  # noqa: T201
+                    f"\n{self._DIM}--- (answer reinterpreted as tool call) ---"
+                    f"{self._RESET}"
+                )
 
             case RefusalToken(token=t):
                 print(f"{self._RED}{t}{self._RESET}", end="", flush=True)  # noqa: T201
