@@ -43,12 +43,11 @@ from boba.domain.agent.llm_request_factory import LLMRequestFactory
 from boba.domain.agent.meat import (
     Agent,
     AgentContext,
+    AgentErrorRouter,
+    AgentErrorRouterMiddleware,
     AssistantMessagePersistenceMiddleware,
-    ErrorToEventMiddleware,
     HistoryReplayMiddleware,
     IterationCounterMiddleware,
-    PersistenceErrorToEventMiddleware,
-    PromptErrorToEventMiddleware,
     StopOnAnyFailure,
     StopOnFinished,
     StopOnMaxIterations,
@@ -227,7 +226,13 @@ class RequestProvider(Provider):
         )
 
     @provide
-    def agent_chain(
+    def agent_error_router(
+        self, message_service: MessageService
+    ) -> AgentErrorRouter:
+        return AgentErrorRouter(message_service)
+
+    @provide
+    def agent_chain(  # noqa: PLR0913
         self,
         config: AppConfig,
         prompt_providers: list[PromptProvider],
@@ -236,26 +241,27 @@ class RequestProvider(Provider):
         history_service: HistoryService,
         llm_request_factory: LLMRequestFactory,
         raw_observer: RawLLMObserver,
+        error_router: AgentErrorRouter,
     ) -> StreamSourceLoop[AgentContext, AgentEvent]:
         builder = StreamSourceChainBuilder[AgentContext, AgentEvent]()
         builder.use(IterationCounterMiddleware)
-        builder.use(PersistenceErrorToEventMiddleware)
+        builder.use(lambda inner: AgentErrorRouterMiddleware(inner, error_router))
         builder.use(
             lambda inner: HistoryReplayMiddleware(
                 inner, history_service, message_service
             )
         )
-        builder.use(PromptErrorToEventMiddleware)
         builder.use(lambda inner: SystemPromptMiddleware(inner, prompt_providers))
         builder.use(
             lambda inner: UserPromptMiddleware(inner, prompt_providers, message_service)
         )
         builder.use(lambda inner: ToolsDefinitionMiddleware(inner, tools_service))
         builder.use(
-            lambda inner: ToolExecutionMiddleware(inner, tools_service, message_service)
+            lambda inner: ToolExecutionMiddleware(
+                inner, tools_service, message_service, error_router
+            )
         )
         builder.use(LoggingLLMMiddleware)
-        builder.use(ErrorToEventMiddleware)
         builder.use(lambda inner: StupidRetryLLMMiddleware(inner, max_retries=3))
         builder.use(
             lambda inner: AssistantMessagePersistenceMiddleware(inner, message_service)

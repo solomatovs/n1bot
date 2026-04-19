@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Generic, Self, TypeVar
 
+from boba.domain.agent.errors import Retryable, TerminalError
 from boba.domain.core.patterns import (
     FoldFactory,
     Id,
@@ -13,7 +14,7 @@ from boba.domain.core.patterns import (
 TCtx = TypeVar("TCtx")
 
 
-class PromptError(Exception):
+class PromptError(TerminalError):
     """Базовая ошибка сборки промпта.
 
     Адаптеры-провайдеры промптов (чтение файлов, workspace, git) оборачивают
@@ -27,7 +28,7 @@ class PromptError(Exception):
         self.provider = provider
 
 
-class RetryablePromptError(PromptError):
+class RetryablePromptError(PromptError, Retryable):
     """Временная проблема провайдера (транзиентная I/O-ошибка, локфайл)."""
 
 
