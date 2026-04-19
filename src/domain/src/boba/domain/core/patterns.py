@@ -239,14 +239,32 @@ class FactoryMethod(ABC, Generic[TOut]):
     def build(self) -> TOut: ...
 
 
-class ContextBinder(ABC, Generic[TCtx]):
+class ContextFactoryMethod(ABC, Generic[TCtx, TOut]):
     """
-    def bind_context(self, ctx: TCtx): ...
+    Factory, которому для сборки нужен контекст вызова.
+
+    Отличается от :class:`FactoryMethod` ровно одним: :meth:`build`
+    принимает ``ctx: TCtx``. Ответ может меняться от вызова к вызову
+    даже при одинаково сконфигурированной фабрике, потому что зависит
+    от состояния, известного только в момент запроса.
+
+        [ build(ctx) ] ──▶ out
+
+    Когда использовать:
+    - итоговый объект — проекция текущего состояния/запроса, а не
+      статическая сборка (например, snapshot для одного LLM-вызова,
+      per-request конфиг, запрос к внешнему API по параметрам ctx);
+    - фабрика сама не держит изменяющиеся данные — они приходят снаружи
+      через ``ctx``; это делает её stateless по отношению к бизнес-контексту.
+
+    Когда НЕ использовать:
+    - если для сборки не нужен внешний контекст — см. :class:`FactoryMethod`;
+    - если сборка распадается на независимые стадии — см.
+      :class:`FoldFactory` (статический) или будущий ``ContextFoldFactory``.
     """
 
     @abstractmethod
-    def bind_context(self, ctx: TCtx):
-        ...
+    def build(self, ctx: TCtx) -> TOut: ...
 
 
 class PrioritySource(ABC, Generic[TId, TState]):
@@ -716,6 +734,82 @@ class StreamLoop(Stream[TCtx, TIn, TOut]):
 
                 if self._stop_if.check((ctx, event)):
                     return
+
+
+class StreamChainBuilder(Generic[TCtx, TIn, TOut]):
+    """
+    Билдер onion-цепочки :class:`Stream`-middleware поверх обязательного
+    терминала, по образцу web-фреймворков (ASP.NET Core ``UseX().Run()``,
+    Rack ``Rack::Builder``).
+
+    Две стадии API:
+
+    - :meth:`use` регистрирует middleware-factory. Factory получает текущий
+      inner ``Stream`` и возвращает новый ``Stream``, который его
+      оборачивает. Порядок регистрации = порядок выполнения на «пути
+      запроса»: первое ``use()`` — самый внешний слой, ближайший ко
+      входу. Последнее — ближайшее к терминалу.
+
+    - :meth:`terminal` принимает терминальный ``Stream`` (тот, что не
+      делегирует дальше) и собирает финальную цепочку, оборачивая
+      терминал факториями в обратном порядке регистрации. Терминал —
+      **обязательный** аргумент: забыть его нельзя, без него нет цепочки.
+
+    Схема сборки::
+
+                 use(m₁) ─┐         ┌── самый внешний ──┐
+                 use(m₂) ─┤         │                   │
+                 use(m₃) ─┤         ▼                   │
+                    ...   │    ┌─────────┐              │
+                 use(mₙ) ─┘    │   m₁    │ ──▶ вход     │
+                               └────┬────┘              │
+                                    │                   │
+                               ┌────▼────┐              │
+                               │   m₂    │              │
+                               └────┬────┘              │
+                                    ▼                   │
+                                   ...                  │
+                               ┌────┬────┐              │
+                               │   mₙ    │              │
+                               └────┬────┘              │
+                                    ▼                   │
+                               ┌─────────┐ ◀── самый внутренний
+                 terminal() ──▶│ terminal│
+                               └─────────┘
+
+    Применимость: любые onion-composable :class:`Stream`. Агентские
+    middleware — лишь один из случаев. Для «sequential fan-out» (все
+    стадии видят один вход) — см. :class:`StreamPipeline`; это другой
+    паттерн.
+    """
+
+    def __init__(self) -> None:
+        self._factories: list[
+            Callable[[Stream[TCtx, TIn, TOut]], Stream[TCtx, TIn, TOut]]
+        ] = []
+
+    def use(
+        self,
+        factory: Callable[[Stream[TCtx, TIn, TOut]], Stream[TCtx, TIn, TOut]],
+    ) -> Self:
+        """Зарегистрировать middleware-factory.
+
+        Factory — это любая callable, которая принимает ``inner: Stream``
+        и возвращает обёрнутый ``Stream``. Это может быть конструктор
+        middleware-класса (``SomeMiddleware``) или лямбда с захваченными
+        зависимостями (``lambda inner: SomeMiddleware(inner, dep1, dep2)``).
+        """
+        self._factories.append(factory)
+        return self
+
+    def terminal(self, terminal: Stream[TCtx, TIn, TOut]) -> Stream[TCtx, TIn, TOut]:
+        """Собрать цепочку, обернув ``terminal`` зарегистрированными
+        middleware в обратном порядке. Возвращает внешний ``Stream``,
+        готовый к использованию."""
+        chain = terminal
+        for factory in reversed(self._factories):
+            chain = factory(chain)
+        return chain
 
 
 class ExecutorPipeline(Executor[TCtx, TIn, TOut]):

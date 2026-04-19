@@ -6,7 +6,7 @@ from pathlib import Path
 
 from dishka import Provider, Scope, from_context, provide
 
-from boba.adapters.aggregating_context import AggregatingContextService
+from boba.adapters.aggregating_llm_request_factory import AggregatingLLMRequestFactory
 from boba.adapters.console_sink import ConsoleSink
 from boba.adapters.fs_workspace import FsWorkspaceManager
 from boba.adapters.history_sink import HistorySink
@@ -24,23 +24,29 @@ from boba.adapters.prompt_providers import (
     StaticPromptProvider,
     UserQueryProvider,
 )
-from boba.domain.agent.context import ContextService
 from boba.domain.agent.events import AgentEvent
+from boba.domain.agent.llm_request_factory import LLMRequestFactory
 from boba.domain.agent.meat import (
     Agent,
     AgentContext,
     IterationCounterMiddleware,
     StopOnFinished,
     StopOnMaxIterations,
-    SystemMessageMiddleware,
+    SystemPromptMiddleware,
     ToolExecutionMiddleware,
-    UserMessageMiddleware,
+    ToolsDefinitionMiddleware,
+    UserPromptMiddleware,
 )
 from boba.domain.agent.models import AgentConfig
 from boba.domain.config import AppConfig
 from boba.domain.core.history import HistoryService
 from boba.domain.core.messages import MessageService
-from boba.domain.core.patterns import Stream, StreamLoop, StreamPipeline
+from boba.domain.core.patterns import (
+    Stream,
+    StreamChainBuilder,
+    StreamLoop,
+    StreamPipeline,
+)
 from boba.domain.core.promt import PromptId, PromptKind
 from boba.domain.core.tools import (
     ToolFactory,
@@ -73,20 +79,6 @@ class AppProvider(Provider):
     @provide
     def agent_config(self, config: AppConfig) -> AgentConfig:
         return config.agent
-
-    # @provide
-    # def system_prompt_service(self) -> SystemPromptService:
-    #     svc = SystemPromptService()
-    #     svc.register(
-    #         StaticPromptProvider(
-    #             PromptId("identity"),
-    #             priority=0,
-    #             content="Ты — ассистент Boba. Отвечай кратко и по делу.",
-    #         )
-    #     )
-    #     svc.register(EnvironmentPromptProvider())
-    #     svc.register(GitPromptProvider())
-    #     return svc
 
     @provide
     def prompt_providers(self) -> list[PromptProvider]:
@@ -154,12 +146,11 @@ class RequestProvider(Provider):
         return InMemoryMessageService()
 
     @provide
-    def context_service(
+    def llm_request_factory(
         self,
         message_service: MessageService,
-        tools_service: ToolsService,
-    ) -> ContextService:
-        return AggregatingContextService(message_service, tools_service)
+    ) -> LLMRequestFactory:
+        return AggregatingLLMRequestFactory(message_service)
 
     @provide
     def history_service(
@@ -175,15 +166,20 @@ class RequestProvider(Provider):
         prompt_providers: list[PromptProvider],
         message_service: MessageService,
         tools_service: ToolsService,
-        context_service: ContextService,
+        llm_request_factory: LLMRequestFactory,
     ) -> StreamLoop[AgentContext, None, AgentEvent]:
-        chain = OpenAIMiddleware(config.llm, context_service)
-        chain = StupidRetryLLMMiddleware(chain, max_retries=3)
-        chain = LoggingLLMMiddleware(chain)
-        chain = ToolExecutionMiddleware(chain, tools_service, message_service)
-        chain = UserMessageMiddleware(chain, prompt_providers, message_service)
-        chain = SystemMessageMiddleware(chain, prompt_providers, message_service)
-        chain = IterationCounterMiddleware(chain)
+        builder = StreamChainBuilder[AgentContext, None, AgentEvent]()
+        builder.use(IterationCounterMiddleware)
+        builder.use(lambda inner: SystemPromptMiddleware(inner, prompt_providers))
+        builder.use(lambda inner: UserPromptMiddleware(inner, prompt_providers))
+        builder.use(lambda inner: ToolsDefinitionMiddleware(inner, tools_service))
+        builder.use(
+            lambda inner: ToolExecutionMiddleware(inner, tools_service, message_service)
+        )
+        builder.use(LoggingLLMMiddleware)
+        builder.use(lambda inner: StupidRetryLLMMiddleware(inner, max_retries=3))
+
+        chain = builder.terminal(OpenAIMiddleware(config.llm, llm_request_factory))
 
         stop = StopOnFinished().or_(StopOnMaxIterations())
 
