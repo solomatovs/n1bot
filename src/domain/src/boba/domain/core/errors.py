@@ -1,8 +1,8 @@
 """Базовая routing-таксономия доменных ошибок.
 
-Живёт в ``core``, потому что используется и core-сервисами
-(:mod:`boba.domain.core.promt`), и agent-слоем
-(:mod:`boba.domain.agent.errors`, :mod:`boba.domain.agent.history`). Конкретные агентские подклассы (LLM-иерархия,
+Живёт в ``core``, потому что используется agent-слоем
+(:mod:`boba.domain.agent.errors`, :mod:`boba.domain.agent.history`,
+:mod:`boba.domain.agent.prompt`). Конкретные агентские подклассы (LLM-иерархия,
 :class:`~boba.domain.agent.errors.ToolFeedbackError`) — в
 :mod:`boba.domain.agent.errors`.
 
@@ -21,7 +21,7 @@
     ├── UserFeedbackError         user видит, LLM не видит
     │   ├── TerminalError            + цикл стоп
     │   │   │   (конкретные: LLMError, PromptError, HistoryError —
-    │   │   │    см. agent.errors / core.promt / core.history)
+    │   │   │    см. agent.errors / agent.prompt / agent.history)
     │   │
     │   └── UserNoticeError          цикл идёт, нотис с severity
     │
@@ -79,7 +79,7 @@ class TerminalError(UserFeedbackError):
     Плюс :class:`~boba.domain.agent.meat.StopOnAnyFailure` останавливает цикл.
 
     Конкретные подклассы (:class:`~boba.domain.agent.errors.LLMError`,
-    :class:`~boba.domain.core.promt.PromptError`,
+    :class:`~boba.domain.agent.prompt.PromptError`,
     :class:`~boba.domain.core.history.HistoryError`) определяют, какое
     именно ``*Failed``-событие будет эмитнуто — роутер делает match-case
     по конкретному типу.

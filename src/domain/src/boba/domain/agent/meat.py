@@ -51,6 +51,12 @@ from boba.domain.agent.models import (
     LLMToolCall,
     RequestId,
 )
+from boba.domain.agent.prompt import (
+    PromptError,
+    PromptFactory,
+    PromptKind,
+    PromptProvider,
+)
 from boba.domain.core.errors import (
     LLMFeedbackError,
     Retryable,
@@ -63,12 +69,6 @@ from boba.domain.core.patterns import (
     StreamSink,
     StreamSource,
     StreamSourceLoop,
-)
-from boba.domain.core.promt import (
-    PromptError,
-    PromptFactory,
-    PromptKind,
-    PromptProvider,
 )
 from boba.domain.core.tools import (
     ToolCall,
