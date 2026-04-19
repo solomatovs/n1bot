@@ -1,10 +1,14 @@
-"""Конфигурация приложения"""
+"""Конфигурация приложения.
+
+:class:`AppConfig` — кросс-слойные настройки приложения + :class:`LLMConfig`.
+:class:`~boba.domain.agent.models.AgentConfig` живёт в agent-слое и
+загружается :class:`~boba.infra.config.ConfigLoader`-ом отдельно —
+чтобы корневой ``AppConfig`` не тянул зависимость на ``agent/``.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-
-from boba.domain.agent.models import AgentConfig
 
 
 @dataclass(frozen=True)
@@ -18,10 +22,13 @@ class LLMConfig:
 
 @dataclass(frozen=True)
 class AppConfig:
-    """Единственный источник конфигурации приложения."""
+    """Кросс-слойные настройки приложения.
+
+    :class:`~boba.domain.agent.models.AgentConfig` **не** агрегируется сюда —
+    он загружается инфраструктурой отдельно и инжектится в DI независимо.
+    """
 
     workspace_base_dir: str = "./workspaces"
     ssl_verify: bool = False
     log_level: str = "INFO"
     llm: LLMConfig = field(default_factory=LLMConfig)
-    agent: AgentConfig = field(default_factory=AgentConfig)

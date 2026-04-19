@@ -7,14 +7,17 @@ from contextlib import contextmanager
 
 from dishka import Container, make_container
 
+from boba.domain.agent.models import AgentConfig
 from boba.domain.config import AppConfig
 from boba.domain.core.workspace import WorkspaceId
 from boba.infra.app import AppProvider, RequestProvider
 
 
-def create_container(config: AppConfig) -> Container:
+def create_container(
+    app_config: AppConfig, agent_config: AgentConfig
+) -> Container:
     return make_container(  # pyright: ignore[reportArgumentType]
-        AppProvider(config),
+        AppProvider(app_config, agent_config),
         RequestProvider(),
     )
 

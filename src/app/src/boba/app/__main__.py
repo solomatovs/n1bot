@@ -10,7 +10,9 @@ logger = logging.getLogger(__name__)
 
 
 def main() -> None:
-    _ = ConfigLoader().load()
+    loader = ConfigLoader()
+    _ = loader.load_app()
+    _ = loader.load_agent()
 
 if __name__ == "__main__":
     main()

@@ -31,7 +31,8 @@ class ConfigLoader:
         self._llm = self._subsection("llm")
         self._agent = self._subsection("agent")
 
-    def load(self) -> AppConfig:
+    def load_app(self) -> AppConfig:
+        """Кросс-слойные настройки приложения + :class:`LLMConfig`."""
         return AppConfig(
             workspace_base_dir=self._resolve(
                 "WORKSPACE_BASE_DIR",
@@ -72,15 +73,19 @@ class ConfigLoader:
                     section=self._llm,
                 ),
             ),
-            agent=AgentConfig(
-                max_iterations=int(
-                    self._resolve(
-                        "AGENT_MAX_ITERATIONS",
-                        "max_iterations",
-                        "20",
-                        section=self._agent,
-                    )
-                ),
+        )
+
+    def load_agent(self) -> AgentConfig:
+        """Настройки agent-loop'а. Отдельный метод — :class:`AppConfig`
+        не тянет зависимость на agent-слой."""
+        return AgentConfig(
+            max_iterations=int(
+                self._resolve(
+                    "AGENT_MAX_ITERATIONS",
+                    "max_iterations",
+                    "20",
+                    section=self._agent,
+                )
             ),
         )
 
