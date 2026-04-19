@@ -24,6 +24,7 @@ from boba.adapters.prompt_providers import (
     StaticPromptProvider,
     UserQueryProvider,
 )
+from boba.adapters.raw_llm_observer import FileRawLLMObserver, RawLLMObserver
 from boba.adapters.tool_providers import StaticToolSource
 from boba.adapters.tools import (
     DeleteFileTool,
@@ -181,6 +182,14 @@ class RequestProvider(Provider):
         return JsonLinesHistoryService(workspace)
 
     @provide
+    def raw_llm_observer(self, workspace: WorkspaceService) -> RawLLMObserver:
+        """Пишет сырые kwargs и ChatCompletionChunk-и в
+        ``raw_messages.md`` внутри workspace. Per-request — файл
+        соответствует конкретному агентскому запуску.
+        """
+        return FileRawLLMObserver(workspace)
+
+    @provide
     def agent_chain(
         self,
         config: AppConfig,
@@ -189,6 +198,7 @@ class RequestProvider(Provider):
         tools_service: ToolsService,
         history_service: HistoryService,
         llm_request_factory: LLMRequestFactory,
+        raw_observer: RawLLMObserver,
     ) -> StreamSourceLoop[AgentContext, AgentEvent]:
         builder = StreamSourceChainBuilder[AgentContext, AgentEvent]()
         builder.use(IterationCounterMiddleware)
@@ -215,7 +225,9 @@ class RequestProvider(Provider):
         )
         builder.use(JsonContentToolCallMiddleware)
 
-        chain = builder.terminal(OpenAIMiddleware(config.llm, llm_request_factory))
+        chain = builder.terminal(
+            OpenAIMiddleware(config.llm, llm_request_factory, raw_observer)
+        )
 
         stop = StopOnFinished().or_(StopOnMaxIterations()).or_(StopOnAnyFailure())
 
