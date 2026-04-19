@@ -18,7 +18,7 @@ from boba.domain.agent.events import (
 from boba.domain.agent.models import AgentConfig, AgentContext, AgentRequest, LLMMessage
 from boba.domain.core.messages import MessageService
 from boba.domain.core.patterns import Specification, Stream, StreamLoop
-from boba.domain.core.promt import PromptFactory, PromptProvider
+from boba.domain.core.promt import PromptFactory, PromptKind, PromptProvider
 from boba.domain.core.tools import (
     ToolCall,
     ToolId,
@@ -84,7 +84,10 @@ class SystemMessageMiddleware(Stream[AgentContext, None, AgentEvent]):
             system_prompt = PromptFactory(ctx, self._prompt_providers).build()
 
             self._message_service.add(
-                LLMMessage(role="system", content=system_prompt.to_string()),
+                LLMMessage(
+                    role="system",
+                    content=system_prompt.to_string(PromptKind.SYSTEM),
+                ),
             )
 
             yield StageCompleted(
@@ -124,7 +127,11 @@ class UserMessageMiddleware(Stream[AgentContext, None, AgentEvent]):
                 query=ctx.request.query,
             )
 
-            content = PromptFactory(ctx, self._prompt_providers).build().to_string()
+            content = (
+                PromptFactory(ctx, self._prompt_providers)
+                .build()
+                .to_string(PromptKind.USER)
+            )
 
             self._message_service.add(LLMMessage(role="user", content=content))
 

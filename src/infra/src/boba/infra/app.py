@@ -39,7 +39,7 @@ from boba.domain.config import AppConfig
 from boba.domain.core.history import HistoryService
 from boba.domain.core.messages import MessageService
 from boba.domain.core.patterns import Stream, StreamLoop, StreamPipeline
-from boba.domain.core.promt import PromptId
+from boba.domain.core.promt import PromptId, PromptKind
 from boba.domain.core.tools import (
     ToolFactory,
     ToolsService,
@@ -93,6 +93,7 @@ class AppProvider(Provider):
                 PromptId("identity"),
                 priority=0,
                 content="Ты — ассистент Boba. Отвечай кратко и по делу.",
+                kind=PromptKind.SYSTEM,
             ),
             EnvironmentPromptProvider(),
             GitPromptProvider(),
