@@ -1247,14 +1247,16 @@ class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]
         :class:`ToolCallArgumentDelta` + :class:`GenerationDone` с
         ``finish_reason="tool_calls"``.
       * Парсер бросил :class:`LLMToolCallFormatError` — сперва
-        эмитим :class:`GenerationDone` с ``finish_reason="stop"``
+        эмитим :class:`GenerationDone` с ``finish_reason="tool_calls"``
         (чтобы :class:`AssistantMessagePersistenceMiddleware` успел
-        коммитнуть raw content как assistant-сообщение — LLM увидит
-        свой собственный сбой при следующей итерации), **без**
+        коммитнуть raw content как assistant-сообщение и
+        :class:`StopOnFinished` не оборвала цикл: семантика «LLM
+        пыталась сделать tool call, но сбойно — продолжаем»), **без**
         :class:`AnswerDiscarded`, после чего исключение летит в
         :class:`AgentErrorRouter`, который добавляет отдельное
         ``role="user"``-сообщение с критикой и эмитит
-        :class:`ToolCallFormatFailed`. Цикл не прерывается.
+        :class:`ToolCallFormatFailed`. Цикл не прерывается, LLM
+        увидит свой предыдущий вывод + критику на следующей итерации.
 
     Сама middleware про JSON-синтаксис, whitelist полей и типы ничего
     не знает — только про стриминг событий и границу режимов. Парсер
@@ -1344,16 +1346,18 @@ class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]
         :class:`GenerationDone` с ``finish_reason="tool_calls"``.
 
         Сбой парсера (:class:`LLMToolCallFormatError`): эмитим
-        :class:`GenerationDone` с ``finish_reason="stop"`` (без
+        :class:`GenerationDone` с ``finish_reason="tool_calls"`` (без
         ``AnswerDiscarded`` — raw content должен остаться в буфере
         персистенса, чтобы коммитнуться как assistant-сообщение и LLM
-        увидела свой предыдущий вывод на следующей итерации), после
-        чего пробрасываем исключение наверх в :class:`AgentErrorRouter`.
+        увидела свой предыдущий вывод на следующей итерации; а
+        ``tool_calls`` не даёт :class:`StopOnFinished` оборвать цикл —
+        семантика «LLM хотела tool call»), после чего пробрасываем
+        исключение наверх в :class:`AgentErrorRouter`.
         """
         try:
             parsed = self._parser.convert(raw)
         except LLMToolCallFormatError:
-            yield GenerationDone(request_id=rid, finish_reason="stop")
+            yield GenerationDone(request_id=rid, finish_reason="tool_calls")
             raise
         yield AnswerDiscarded(request_id=rid)
         yield ToolCallBegin(
