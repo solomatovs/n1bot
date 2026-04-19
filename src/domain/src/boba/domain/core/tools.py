@@ -172,17 +172,13 @@ class ToolIdCollisionError(Exception):
 
 
 class ToolSource(
-    PrioritySource[ToolSourceId, None, ToolStore],
+    PrioritySource[ToolSourceId, ToolStore],
 ):
     @abstractmethod
-    def tools(self, ctx: None) -> Iterable[Tool[Any]]: ...
+    def tools(self) -> Iterable[Tool[Any]]: ...
 
-    def apply(
-        self,
-        ctx: None,
-        state: ToolStore,
-    ) -> ToolStore:
-        for tool in self.tools(ctx):
+    def apply(self, state: ToolStore) -> ToolStore:
+        for tool in self.tools():
             tool_id = tool.tool_id()
             existing = state.get(tool_id)
 
@@ -201,12 +197,11 @@ class ToolSource(
 class ToolFactory(
     FoldFactory[
         ToolSourceId,
-        None,
         ToolStore,
         ToolCatalog,
     ],
 ):
-    def initial(self, ctx: None) -> ToolStore:
+    def initial(self) -> ToolStore:
         return ToolStore()
 
     def finalize(self, state: ToolStore) -> ToolCatalog:
@@ -256,7 +251,7 @@ class ToolsService(Executor[None, ToolCall, ToolResult]):
 
     def rebuild_catalog(self) -> None:
         """Пересобрать каталог и dispatcher под ним."""
-        self._catalog = self._factory.build(None)
+        self._catalog = self._factory.build()
         self._dispatcher = self._build_dispatcher(self._catalog)
 
     def tools(self) -> Iterable[Tool[Any]]:

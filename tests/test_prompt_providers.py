@@ -29,7 +29,7 @@ class TestWorkspaceSystemPromptProvider:
             workspace=ws,
             directory=self.location,
         )
-        assert list(provider.blocks(None)) == []
+        assert list(provider.blocks()) == []
 
     def test_reads_files_in_lexicographic_order(self, ws: FsWorkspaceService) -> None:
         ws.mkdir("prompts/system")
@@ -44,7 +44,7 @@ class TestWorkspaceSystemPromptProvider:
             workspace=ws,
             directory=self.location,
         )
-        blocks = list(provider.blocks(None))
+        blocks = list(provider.blocks())
 
         assert [b.content for b in blocks] == ["Intro block", "Rules block"]
         assert [b.name for b in blocks] == [
@@ -67,7 +67,7 @@ class TestWorkspaceSystemPromptProvider:
             workspace=ws,
             directory=self.location,
         )
-        blocks = list(provider.blocks(None))
+        blocks = list(provider.blocks())
 
         assert [b.content for b in blocks] == ["A", "C"]
 
@@ -82,7 +82,7 @@ class TestWorkspaceSystemPromptProvider:
             workspace=ws,
             directory="custom",
         )
-        blocks = list(provider.blocks(None))
+        blocks = list(provider.blocks())
 
         assert [b.content for b in blocks] == ["hello"]
 
