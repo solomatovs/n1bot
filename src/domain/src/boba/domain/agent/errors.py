@@ -29,8 +29,7 @@
     │   │   │   └── PermanentLLMError
     │   │   │       ├── LLMAuthError
     │   │   │       ├── LLMInvalidRequestError
-    │   │   │       ├── LLMContextLengthError
-    │   │   │       └── LLMResponseFormatError
+    │   │   │       └── LLMContextLengthError
     │   │   │
     │   │   ├── PromptError         [agent.prompt]     → PromptFailed
     │   │   │   ├── RetryablePromptError (+ Retryable)
@@ -45,8 +44,11 @@
     │
     ├── LLMFeedbackError            LLM видит через MessageService
     │   │
-    │   └── ToolFeedbackError       [agent.errors]   → role="tool" +
-    │                                                  ToolExecutionFailed
+    │   ├── ToolFeedbackError       [agent.errors]   → role="tool" +
+    │   │                                              ToolExecutionFailed
+    │   │
+    │   └── LLMToolCallFormatError  [agent.errors]   → role="user" +
+    │                                                  ToolCallFormatFailed
     │
     └── Retryable                      миксин, ортогонально всему
 
@@ -66,6 +68,7 @@
 │ Промпт не собрался               │ PromptError (agent.prompt)     │
 │ Журнал недоступен                │ HistoryError (core.history)    │
 │ Tool упал (LLM должна увидеть)   │ ToolFeedbackError              │
+│ LLM сломала формат tool call     │ LLMToolCallFormatError         │
 │ Нотис пользователю               │ UserNoticeError (core.errors)  │
 │ Добавить авто-повтор             │ + миксин Retryable             │
 └──────────────────────────────────┴────────────────────────────────┘
@@ -232,10 +235,6 @@ class LLMContextLengthError(PermanentLLMError):
     """Суммарная длина сообщений превысила окно модели."""
 
 
-class LLMResponseFormatError(PermanentLLMError):
-    """Ответ провайдера не удалось распарсить в ожидаемую структуру."""
-
-
 class ToolFeedbackError(LLMFeedbackError):
     """Ошибка выполнения конкретного tool'а.
 
@@ -262,3 +261,31 @@ class ToolFeedbackError(LLMFeedbackError):
         self.tool_name = tool_name
         self.error_kind = error_kind
         self.message = message
+
+
+class LLMToolCallFormatError(LLMFeedbackError):
+    """LLM нарушила формат content-as-JSON tool call'а.
+
+    Роутер пишет ``LLMMessage`` с ``role="user"``, ``content=<message>``
+    в :class:`MessageService` и эмитит :class:`ToolCallFormatFailed`.
+    Цикл не прерывается — LLM на следующей итерации увидит критику своего
+    предыдущего вывода и сможет переформулировать tool call.
+
+    Поднимается парсером content-as-JSON
+    (:class:`~boba.domain.agent.meat.StrictJsonToolCallParser`), когда
+    LLM эмитит JSON-объект с неверной структурой (невалидный JSON,
+    не-объект на корне, отсутствующие/посторонние поля, неверные типы).
+
+    ``message`` уже включает цитату сырого content'а и описание, что
+    именно не так — LLM получает самодостаточный фидбек.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        raw_content: str,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.raw_content = raw_content

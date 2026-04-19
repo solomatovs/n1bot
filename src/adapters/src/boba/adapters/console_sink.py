@@ -25,6 +25,7 @@ from boba.domain.agent.events import (
     ToolCallArgumentDelta,
     ToolCallBegin,
     ToolCallComplete,
+    ToolCallFormatFailed,
     ToolExecutionFailed,
     ToolResultReady,
     UserNoticeReady,
@@ -85,6 +86,14 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
                 )
                 print(  # noqa: T201
                     f"\n{self._RED}[tool error: {kind}] {fn}: {preview}{self._RESET}"
+                )
+            case ToolCallFormatFailed(error_kind=kind, message=msg):
+                preview = msg[: self._PREVIEW] + (
+                    "..." if len(msg) > self._PREVIEW else ""
+                )
+                print(  # noqa: T201
+                    f"\n{self._RED}[tool call format error: {kind}] "
+                    f"{preview}{self._RESET}"
                 )
             case UserNoticeReady(message=msg, severity=sev):
                 color = {

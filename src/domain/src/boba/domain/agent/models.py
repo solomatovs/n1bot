@@ -32,7 +32,7 @@ class AgentConfig:
     """
 
     max_iterations: int = 20
-    limit_message: str = "Достигнут лимит итераций агента."
+    max_consecutive_tool_calls: int = 3
 
 
 @dataclass(frozen=True)

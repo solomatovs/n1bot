@@ -49,6 +49,7 @@ from boba.domain.agent.meat import (
     AssistantMessagePersistenceMiddleware,
     HistoryReplayMiddleware,
     IterationCounterMiddleware,
+    RepeatedToolCallGuardMiddleware,
     StopOnAnyFailure,
     StopOnFinished,
     StopOnMaxIterations,
@@ -236,6 +237,7 @@ class RequestProvider(Provider):
     def agent_chain(  # noqa: PLR0913
         self,
         config: AppConfig,
+        agent_config: AgentConfig,
         prompt_providers: list[PromptProvider],
         message_service: MessageService,
         tools_service: ToolsService,
@@ -260,6 +262,13 @@ class RequestProvider(Provider):
         builder.use(
             lambda inner: ToolExecutionMiddleware(
                 inner, tools_service, message_service, error_router
+            )
+        )
+        builder.use(
+            lambda inner: RepeatedToolCallGuardMiddleware(
+                inner,
+                error_router,
+                agent_config.max_consecutive_tool_calls,
             )
         )
         builder.use(LoggingLLMMiddleware)
