@@ -599,32 +599,41 @@ class JsonHeaderParser(Converter[str, JsonToolCallHeader | None]):
 
 
 class JsonDepthScanner:
-    """Потоковый сканер одного JSON-значения (объект/массив).
+    """Трекер глубины JSON-структуры от начала скана.
 
-    Хранит состояние между вызовами :meth:`consume`, отслеживает глубину
-    ``{`` / ``[`` и корректно игнорирует разделители внутри строк (с учётом
-    экранирования). Значение считается полностью потреблённым, когда глубина
-    возвращается к 0 после хотя бы одного открывающего символа.
+    Хранит состояние между вызовами :meth:`consume`, учитывает строки и
+    экранирование — ``{`` / ``}`` / ``[`` / ``]`` внутри строк не влияют
+    на глубину. В отличие от парсера значений, это именно счётчик: не
+    «стартует» / «заканчивает», а непрерывно отслеживает текущий depth.
 
-    Каждый :meth:`consume` возвращает префикс, относящийся к текущему
-    значению — хвост за закрывающим символом отбрасывается. После завершения
-    дальнейшие вызовы возвращают ``("", True)``.
+    Метод :meth:`consume` умеет «остановиться» когда depth упал до заданного
+    ``target_depth`` — полезно для поэтапной обработки: сначала сжать
+    значение ``arguments`` до уровня внешней обёртки, затем дочитать обёртку
+    до 0, затем всё что после — это уже пост-обёрточный текст.
     """
 
     def __init__(self) -> None:
         self._depth = 0
         self._in_str = False
         self._escape = False
-        self._started = False
-        self._ended = False
 
     @property
-    def ended(self) -> bool:
-        return self._ended
+    def depth(self) -> int:
+        return self._depth
 
-    def consume(self, text: str) -> tuple[str, bool]:  # noqa: C901
-        if self._ended:
-            return "", True
+    def consume(
+        self, text: str, target_depth: int | None = None
+    ) -> tuple[str, str]:
+        """Обрабатывает ``text``, обновляя глубину.
+
+        Если ``target_depth`` задан, останавливается на символе, который
+        опустил глубину до ``target_depth`` (включительно). Возвращает
+        ``(consumed, remaining)``: ``consumed`` включает этот закрывающий
+        символ, ``remaining`` — хвост после него.
+
+        Если ``target_depth=None``, потребляет весь ``text`` и возвращает
+        ``(text, "")``.
+        """
         for i, ch in enumerate(text):
             if self._in_str:
                 if self._escape:
@@ -639,20 +648,19 @@ class JsonDepthScanner:
                 continue
             if ch in "{[":
                 self._depth += 1
-                self._started = True
                 continue
             if ch in "}]":
                 self._depth -= 1
-                if self._started and self._depth <= 0:
-                    self._ended = True
-                    return text[: i + 1], True
-        return text, False
+                if target_depth is not None and self._depth <= target_depth:
+                    return text[: i + 1], text[i + 1 :]
+        return text, ""
 
 
 class _ParserState(Enum):
     UNDECIDED = auto()
     PARSE_HEADER = auto()
     STREAM_ARGS = auto()
+    CONSUME_WRAPPER = auto()
     TAIL = auto()
     PASSTHROUGH = auto()
 
@@ -704,6 +712,7 @@ class JsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
         pending_started: AnswerStarted | None = None
         header_buffer = ""
         scanner = JsonDepthScanner()
+        outer_depth = 0
         tail_answer_started = False
 
         for event in self._inner.stream(ctx):
@@ -722,15 +731,26 @@ class JsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
                     )
                     state = _ParserState.PASSTHROUGH
 
-                case (_ParserState.STREAM_ARGS, AnswerToken(token=t)):
-                    consumed, ended = scanner.consume(t)
-                    if consumed:
+                case (
+                    _ParserState.STREAM_ARGS | _ParserState.CONSUME_WRAPPER,
+                    AnswerToken(token=t),
+                ):
+                    state, args_out, tail_out = self._advance(
+                        t, state, scanner, outer_depth
+                    )
+                    if args_out:
                         yield ToolCallArgumentDelta(
-                            request_id=rid, index=0, arguments=consumed
+                            request_id=rid, index=0, arguments=args_out
                         )
-                    if ended:
-                        state = _ParserState.TAIL
-                case (_ParserState.STREAM_ARGS, GenerationDone()):
+                    if tail_out:
+                        if not tail_answer_started:
+                            tail_answer_started = True
+                            yield AnswerStarted(request_id=rid)
+                        yield AnswerToken(request_id=rid, token=tail_out)
+                case (
+                    _ParserState.STREAM_ARGS | _ParserState.CONSUME_WRAPPER,
+                    GenerationDone(),
+                ):
                     yield GenerationDone(
                         request_id=rid, finish_reason="tool_calls"
                     )
@@ -741,15 +761,30 @@ class JsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
                     header = self._parser.convert(header_buffer)
                     if header is not None:
                         pending_started = None
-                        yield from self._emit_tool_call(
-                            rid, header, header_buffer, scanner
+                        yield ToolCallBegin(
+                            request_id=rid,
+                            index=0,
+                            tool_call_id=f"call_{header.name}",
+                            tool_name=header.name,
+                        )
+                        scanner.consume(header_buffer[: header.args_start_idx])
+                        outer_depth = scanner.depth
+                        state = _ParserState.STREAM_ARGS
+                        state, args_out, tail_out = self._advance(
+                            header_buffer[header.args_start_idx :],
+                            state,
+                            scanner,
+                            outer_depth,
                         )
                         header_buffer = ""
-                        state = (
-                            _ParserState.TAIL
-                            if scanner.ended
-                            else _ParserState.STREAM_ARGS
-                        )
+                        if args_out:
+                            yield ToolCallArgumentDelta(
+                                request_id=rid, index=0, arguments=args_out
+                            )
+                        if tail_out:
+                            tail_answer_started = True
+                            yield AnswerStarted(request_id=rid)
+                            yield AnswerToken(request_id=rid, token=tail_out)
                 case (_ParserState.PARSE_HEADER, GenerationDone()):
                     yield from self._flush_header_as_text(
                         rid, pending_started, header_buffer
@@ -777,15 +812,30 @@ class JsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
                     header = self._parser.convert(header_buffer)
                     if header is not None:
                         pending_started = None
-                        yield from self._emit_tool_call(
-                            rid, header, header_buffer, scanner
+                        yield ToolCallBegin(
+                            request_id=rid,
+                            index=0,
+                            tool_call_id=f"call_{header.name}",
+                            tool_name=header.name,
+                        )
+                        scanner.consume(header_buffer[: header.args_start_idx])
+                        outer_depth = scanner.depth
+                        state = _ParserState.STREAM_ARGS
+                        state, args_out, tail_out = self._advance(
+                            header_buffer[header.args_start_idx :],
+                            state,
+                            scanner,
+                            outer_depth,
                         )
                         header_buffer = ""
-                        state = (
-                            _ParserState.TAIL
-                            if scanner.ended
-                            else _ParserState.STREAM_ARGS
-                        )
+                        if args_out:
+                            yield ToolCallArgumentDelta(
+                                request_id=rid, index=0, arguments=args_out
+                            )
+                        if tail_out:
+                            tail_answer_started = True
+                            yield AnswerStarted(request_id=rid)
+                            yield AnswerToken(request_id=rid, token=tail_out)
                 case (_ParserState.UNDECIDED, AnswerToken()):
                     if pending_started is not None:
                         yield pending_started
@@ -807,24 +857,38 @@ class JsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
                     yield event
 
     @staticmethod
-    def _emit_tool_call(
-        rid: RequestId,
-        header: JsonToolCallHeader,
-        accumulated: str,
+    def _advance(
+        text: str,
+        state: _ParserState,
         scanner: JsonDepthScanner,
-    ) -> Iterator[AgentEvent]:
-        yield ToolCallBegin(
-            request_id=rid,
-            index=0,
-            tool_call_id=f"call_{header.name}",
-            tool_name=header.name,
-        )
-        prefix_args = accumulated[header.args_start_idx :]
-        consumed, _ended = scanner.consume(prefix_args)
-        if consumed:
-            yield ToolCallArgumentDelta(
-                request_id=rid, index=0, arguments=consumed
+        outer_depth: int,
+    ) -> tuple[_ParserState, str, str]:
+        """Каскадом прогоняет ``text`` через состояния
+        ``STREAM_ARGS → CONSUME_WRAPPER → TAIL``, возвращает новое состояние и
+        куски, которые нужно эмитить: ``args_out`` (в ``arguments``) и
+        ``tail_out`` (в ``AnswerToken`` после закрытия обёртки).
+        """
+        args_out = ""
+        tail_out = ""
+        remaining = text
+
+        if state == _ParserState.STREAM_ARGS and remaining:
+            consumed, remaining = scanner.consume(
+                remaining, target_depth=outer_depth
             )
+            args_out += consumed
+            if scanner.depth <= outer_depth:
+                state = _ParserState.CONSUME_WRAPPER
+
+        if state == _ParserState.CONSUME_WRAPPER and remaining:
+            _discarded, remaining = scanner.consume(remaining, target_depth=0)
+            if scanner.depth <= 0:
+                state = _ParserState.TAIL
+
+        if state == _ParserState.TAIL and remaining:
+            tail_out = remaining
+
+        return state, args_out, tail_out
 
     @staticmethod
     def _flush_header_as_text(
