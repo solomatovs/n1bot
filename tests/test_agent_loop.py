@@ -13,8 +13,10 @@ from boba.infra.container import create_container, request_scope
 
 def test_agent_loop_hello() -> None:
     query = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "привет"
-    config = ConfigLoader().load()
-    container = create_container(config)
+    loader = ConfigLoader()
+    app_config = loader.load_app()
+    agent_config = loader.load_agent()
+    container = create_container(app_config, agent_config)
 
     manager = container.get(WorkspaceManager)
     storage = manager.create()
@@ -24,12 +26,12 @@ def test_agent_loop_hello() -> None:
             agent = req.get(Agent)
             request = AgentRequest(
                 query=query,
-                model=config.llm.model,
+                model=app_config.llm.model,
                 workspace_id=storage.workspace_id,
                 request_id=RequestId.new(),
             )
 
-            agent.run(config.agent, request)
+            agent.run(agent_config, request)
     except Exception as e:
         print(f"Error during agent loop: {e}")  # noqa: T201
         raise

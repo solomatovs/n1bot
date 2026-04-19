@@ -85,21 +85,22 @@ class AppProvider(Provider):
 
     scope = Scope.APP
 
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(self, app_config: AppConfig, agent_config: AgentConfig) -> None:
         super().__init__()
-        self._config = config
+        self._app_config = app_config
+        self._agent_config = agent_config
 
     @provide
     def config(self) -> AppConfig:
-        return self._config
+        return self._app_config
 
     @provide
     def workspace_manager(self, config: AppConfig) -> WorkspaceManager:
         return FsWorkspaceManager(Path(config.workspace_base_dir))
 
     @provide
-    def agent_config(self, config: AppConfig) -> AgentConfig:
-        return config.agent
+    def agent_config(self) -> AgentConfig:
+        return self._agent_config
 
     @provide
     def prompt_providers(self) -> list[PromptProvider]:
