@@ -7,6 +7,8 @@ import time
 from collections.abc import Iterable
 from typing import Any
 
+import httpx
+import openai
 from openai import OpenAI
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
@@ -21,6 +23,17 @@ from openai.types.chat.chat_completion_chunk import (
     Choice,
 )
 
+from boba.domain.agent.errors import (
+    LLMAuthError,
+    LLMConnectionError,
+    LLMContextLengthError,
+    LLMError,
+    LLMInvalidRequestError,
+    LLMProviderInternalError,
+    LLMRateLimitError,
+    LLMTimeoutError,
+    RetryableLLMError,
+)
 from boba.domain.agent.events import (
     AgentEvent,
     AnswerStarted,
@@ -76,7 +89,12 @@ class LoggingLLMMiddleware(StreamSource[AgentContext, AgentEvent]):
 
 
 class StupidRetryLLMMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Повторяет запрос при ошибке до max_retries раз."""
+    """Повторяет запрос при :class:`RetryableLLMError` до ``max_retries`` раз.
+
+    :class:`PermanentLLMError` проходит насквозь сразу — повторять auth/400
+    бессмысленно. Прочие исключения (не ``LLMError``) не ловятся: они должны
+    уже быть классифицированы в адаптере, иначе это баг — падаем громко.
+    """
 
     def __init__(
         self, inner: StreamSource[AgentContext, AgentEvent], max_retries: int = 3
@@ -92,13 +110,14 @@ class StupidRetryLLMMiddleware(StreamSource[AgentContext, AgentEvent]):
             try:
                 yield from self._inner.stream(ctx)
                 return
-            except Exception as e:
+            except RetryableLLMError as e:
                 if attempt == self._max_retries - 1:
                     raise
                 logger.warning(
-                    "LLM attempt %d/%d failed, retrying: %s",
+                    "LLM attempt %d/%d failed, retrying: %s: %s",
                     attempt + 1,
                     self._max_retries,
+                    type(e).__name__,
                     e,
                 )
 
@@ -157,11 +176,64 @@ class OpenAIMiddleware(StreamSource[AgentContext, AgentEvent]):
         llm_request = self._llm_request_factory.build(ctx)
         kwargs = self._to_request_converter.convert(llm_request)
 
-        response = self._client.chat.completions.create(**kwargs)
+        try:
+            response = self._client.chat.completions.create(**kwargs)
+            yield from FromOpenAIChunkConverter(ctx.request.request_id).stream(
+                ctx, response
+            )
+        except LLMError:
+            raise
+        except (openai.APIError, httpx.HTTPError) as e:
+            raise _classify_openai_error(e) from e
 
-        yield from FromOpenAIChunkConverter(ctx.request.request_id).stream(
-            ctx, response
-        )
+
+def _classify_openai_error(exc: Exception) -> LLMError:
+    """Мапит сырые ``openai.*`` / ``httpx.*`` исключения в доменные типы.
+
+    Проверки идут от конкретных подклассов к базовым — ``APITimeoutError``
+    наследует ``APIConnectionError``, ``RateLimitError``/``BadRequestError``
+    наследуют ``APIStatusError`` и т.д.
+    """
+    if isinstance(exc, openai.APITimeoutError):
+        return LLMTimeoutError(str(exc))
+    if isinstance(exc, openai.APIConnectionError):
+        return LLMConnectionError(str(exc))
+    if isinstance(exc, openai.RateLimitError):
+        return LLMRateLimitError(str(exc), status_code=exc.status_code)
+    if isinstance(exc, (openai.AuthenticationError, openai.PermissionDeniedError)):
+        return LLMAuthError(str(exc), status_code=exc.status_code)
+    if isinstance(exc, openai.BadRequestError):
+        if _is_context_length_error(exc):
+            return LLMContextLengthError(str(exc), status_code=exc.status_code)
+        return LLMInvalidRequestError(str(exc), status_code=exc.status_code)
+    if isinstance(exc, openai.NotFoundError):
+        return LLMInvalidRequestError(str(exc), status_code=exc.status_code)
+    if isinstance(exc, openai.InternalServerError):
+        return LLMProviderInternalError(str(exc), status_code=exc.status_code)
+    if isinstance(exc, openai.APIStatusError):
+        sc = exc.status_code
+        if sc and 500 <= sc < 600:
+            return LLMProviderInternalError(str(exc), status_code=sc)
+        if sc == 429:
+            return LLMRateLimitError(str(exc), status_code=sc)
+        return LLMInvalidRequestError(str(exc), status_code=sc)
+    if isinstance(exc, httpx.TimeoutException):
+        return LLMTimeoutError(str(exc))
+    if isinstance(exc, httpx.HTTPError):
+        return LLMConnectionError(str(exc))
+    return LLMProviderInternalError(f"{type(exc).__name__}: {exc}")
+
+
+def _is_context_length_error(exc: openai.BadRequestError) -> bool:
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        if body.get("code") == "context_length_exceeded":
+            return True
+        err = body.get("error")
+        if isinstance(err, dict) and err.get("code") == "context_length_exceeded":
+            return True
+    msg = str(exc).lower()
+    return "context length" in msg or "maximum context" in msg
 
 
 class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):

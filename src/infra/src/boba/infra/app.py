@@ -30,9 +30,11 @@ from boba.domain.agent.meat import (
     Agent,
     AgentContext,
     AssistantMessagePersistenceMiddleware,
+    ErrorToEventMiddleware,
     HistoryReplayMiddleware,
     IterationCounterMiddleware,
     StopOnFinished,
+    StopOnGenerationFailed,
     StopOnMaxIterations,
     SystemPromptMiddleware,
     ToolExecutionMiddleware,
@@ -187,6 +189,7 @@ class RequestProvider(Provider):
             lambda inner: ToolExecutionMiddleware(inner, tools_service, message_service)
         )
         builder.use(LoggingLLMMiddleware)
+        builder.use(ErrorToEventMiddleware)
         builder.use(lambda inner: StupidRetryLLMMiddleware(inner, max_retries=3))
         builder.use(
             lambda inner: AssistantMessagePersistenceMiddleware(inner, message_service)
@@ -194,7 +197,11 @@ class RequestProvider(Provider):
 
         chain = builder.terminal(OpenAIMiddleware(config.llm, llm_request_factory))
 
-        stop = StopOnFinished().or_(StopOnMaxIterations())
+        stop = (
+            StopOnFinished()
+            .or_(StopOnMaxIterations())
+            .or_(StopOnGenerationFailed())
+        )
 
         return StreamSourceLoop(chain, stop)
 

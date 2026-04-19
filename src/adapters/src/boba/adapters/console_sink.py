@@ -10,6 +10,7 @@ from boba.domain.agent.events import (
     AnswerStarted,
     AnswerToken,
     GenerationDone,
+    GenerationFailed,
     GenerationStarted,
     RefusalComplete,
     RefusalToken,
@@ -71,6 +72,16 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
 
             case GenerationDone():
                 print()  # noqa: T201
+
+            case GenerationFailed(
+                error_kind=kind, message=msg, retryable=retryable, status_code=sc
+            ):
+                status = f" [status={sc}]" if sc is not None else ""
+                tag = "retryable" if retryable else "permanent"
+                print(  # noqa: T201
+                    f"\n{self._RED}[llm error: {kind} ({tag}){status}] "
+                    f"{msg}{self._RESET}"
+                )
 
             case (
                 UserQueryReceived()

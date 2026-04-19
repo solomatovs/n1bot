@@ -7,11 +7,13 @@ import logging
 from collections import defaultdict
 from collections.abc import Iterator
 
+from boba.domain.agent.errors import LLMError, RetryableLLMError
 from boba.domain.agent.events import (
     AgentEvent,
     AnswerComplete,
     AnswerToken,
     GenerationDone,
+    GenerationFailed,
     GenerationStarted,
     RefusalComplete,
     RefusalToken,
@@ -464,6 +466,35 @@ class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
         yield from self._inner.stream(ctx)
 
 
+class ErrorToEventMiddleware(StreamSource[AgentContext, AgentEvent]):
+    """Ловит :class:`LLMError` из внутреннего стрима и преобразует в
+    терминальное :class:`GenerationFailed`-событие.
+
+    Ставится **снаружи** :class:`StupidRetryLLMMiddleware`: retry уже
+    отработал и либо исчерпал попытки (``RetryableLLMError``), либо сразу
+    пробросил ``PermanentLLMError``. Выше по стеку исключений ``LLMError``
+    уже не будет — клиенты подписываются только на поток событий.
+    """
+
+    def __init__(self, inner: StreamSource[AgentContext, AgentEvent]) -> None:
+        self._inner = inner
+
+    def name(self) -> str:
+        return "ErrorToEvent"
+
+    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+        try:
+            yield from self._inner.stream(ctx)
+        except LLMError as e:
+            yield GenerationFailed(
+                request_id=ctx.request.request_id,
+                error_kind=type(e).__name__,
+                message=str(e),
+                retryable=isinstance(e, RetryableLLMError),
+                status_code=e.status_code,
+            )
+
+
 class StopOnFinished(Specification[tuple[AgentContext, AgentEvent]]):
     """Останавливает если генерация завершена и не tool_calls."""
 
@@ -474,6 +505,14 @@ class StopOnFinished(Specification[tuple[AgentContext, AgentEvent]]):
             return event.finish_reason != "tool_calls"
 
         return False
+
+
+class StopOnGenerationFailed(Specification[tuple[AgentContext, AgentEvent]]):
+    """Останавливает цикл агента при терминальной ошибке LLM."""
+
+    def check(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
+        _ctx, event = candidate
+        return isinstance(event, GenerationFailed)
 
 
 class StopOnMaxIterations(Specification[tuple[AgentContext, AgentEvent]]):

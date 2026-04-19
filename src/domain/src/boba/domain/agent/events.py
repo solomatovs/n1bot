@@ -128,6 +128,20 @@ class GenerationDone(BaseEvent):
 
 
 @dataclass(frozen=True)
+class GenerationFailed(BaseEvent):
+    """Терминальный отказ: адаптер/retry не смогли получить ответ LLM."""
+
+    error_kind: str
+    message: str
+    retryable: bool
+    status_code: int | None = None
+
+    @classmethod
+    def name(cls) -> Literal["GenerationFailed"]:
+        return "GenerationFailed"
+
+
+@dataclass(frozen=True)
 class ToolCallBegin(BaseEvent):
     """Начало tool call — пришёл id и имя функции."""
 
@@ -224,6 +238,7 @@ AgentEvent = (
     | RefusalToken
     | RefusalComplete
     | GenerationDone
+    | GenerationFailed
     | ToolCallBegin
     | ToolCallArgumentDelta
     | ToolCallComplete
@@ -248,6 +263,7 @@ AgentEventName: TypeAlias = Literal[
     "RefusalToken",
     "RefusalComplete",
     "GenerationDone",
+    "GenerationFailed",
     "ToolCallBegin",
     "ToolCallArgumentDelta",
     "ToolCallComplete",
