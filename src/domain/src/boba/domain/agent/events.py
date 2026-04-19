@@ -170,6 +170,20 @@ class PersistenceFailed(BaseEvent):
 
 
 @dataclass(frozen=True)
+class MaxIterationsReached(BaseEvent):
+    """Терминальный отказ: агентский цикл исчерпал лимит итераций."""
+
+    error_kind: str
+    message: str
+    limit: int
+    iteration: int
+
+    @classmethod
+    def name(cls) -> Literal["MaxIterationsReached"]:
+        return "MaxIterationsReached"
+
+
+@dataclass(frozen=True)
 class ToolCallBegin(BaseEvent):
     """Начало tool call — пришёл id и имя функции."""
 
@@ -357,6 +371,7 @@ AgentEvent = (
     | GenerationFailed
     | PromptFailed
     | PersistenceFailed
+    | MaxIterationsReached
     | ToolCallBegin
     | ToolCallArgumentDelta
     | ToolCallComplete
@@ -388,6 +403,7 @@ AgentEventName: TypeAlias = Literal[
     "GenerationFailed",
     "PromptFailed",
     "PersistenceFailed",
+    "MaxIterationsReached",
     "ToolCallBegin",
     "ToolCallArgumentDelta",
     "ToolCallComplete",

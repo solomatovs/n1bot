@@ -52,7 +52,6 @@ from boba.domain.agent.meat import (
     RepeatedToolCallGuardMiddleware,
     StopOnAnyFailure,
     StopOnFinished,
-    StopOnMaxIterations,
     StrictJsonContentToolCallMiddleware,
     SystemPromptMiddleware,
     ToolExecutionMiddleware,
@@ -272,7 +271,7 @@ class RequestProvider(Provider):
             OpenAIMiddleware(config.llm, llm_request_factory, raw_observer)
         )
 
-        stop = StopOnFinished().or_(StopOnMaxIterations()).or_(StopOnAnyFailure())
+        stop = StopOnFinished().or_(StopOnAnyFailure())
 
         return StreamSourceLoop(chain, stop)
 

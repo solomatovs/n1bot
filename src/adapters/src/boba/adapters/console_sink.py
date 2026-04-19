@@ -13,6 +13,7 @@ from boba.domain.agent.events import (
     GenerationDone,
     GenerationFailed,
     GenerationStarted,
+    MaxIterationsReached,
     PersistenceFailed,
     PromptFailed,
     RefusalComplete,
@@ -133,6 +134,14 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
                 print(  # noqa: T201
                     f"\n{self._RED}[persistence error: {kind} ({tag})] "
                     f"{msg}{self._RESET}"
+                )
+
+            case MaxIterationsReached(
+                error_kind=kind, message=msg, limit=limit, iteration=it
+            ):
+                print(  # noqa: T201
+                    f"\n{self._RED}[max iterations: {kind}] "
+                    f"iteration={it} limit={limit}: {msg}{self._RESET}"
                 )
 
             case (

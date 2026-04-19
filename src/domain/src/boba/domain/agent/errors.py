@@ -36,9 +36,11 @@
     │   │   │   └── PermanentPromptError
     │   │   │       └── PromptProviderError
     │   │   │
-    │   │   └── HistoryError        [agent.history]   → PersistenceFailed
-    │   │       ├── HistoryWriteError
-    │   │       └── HistoryReadError
+    │   │   ├── HistoryError        [agent.history]   → PersistenceFailed
+    │   │   │   ├── HistoryWriteError
+    │   │   │   └── HistoryReadError
+    │   │   │
+    │   │   └── MaxIterationsExceededError [agent.errors] → MaxIterationsReached
     │   │
     │   └── UserNoticeError            цикл идёт     → UserNoticeReady
     │
@@ -70,6 +72,7 @@
 │ Tool упал (LLM должна увидеть)   │ ToolFeedbackError              │
 │ LLM сломала формат tool call     │ LLMToolCallFormatError         │
 │ Нотис пользователю               │ UserNoticeError (core.errors)  │
+│ Исчерпан лимит итераций цикла    │ MaxIterationsExceededError     │
 │ Добавить авто-повтор             │ + миксин Retryable             │
 └──────────────────────────────────┴────────────────────────────────┘
 
@@ -233,6 +236,22 @@ class LLMInvalidRequestError(PermanentLLMError):
 
 class LLMContextLengthError(PermanentLLMError):
     """Суммарная длина сообщений превысила окно модели."""
+
+
+class MaxIterationsExceededError(TerminalError):
+    """Агентский цикл исчерпал лимит итераций без финального ответа.
+
+    Поднимается :class:`~boba.domain.agent.meat.IterationCounterMiddleware`,
+    когда ``ctx.iteration`` превысил ``ctx.config.max_iterations``. Роутер
+    конвертирует в :class:`~boba.domain.agent.events.MaxIterationsReached`,
+    а :class:`~boba.domain.agent.meat.StopOnAnyFailure` ловит событие и
+    останавливает цикл.
+    """
+
+    def __init__(self, message: str, *, limit: int, iteration: int) -> None:
+        super().__init__(message)
+        self.limit = limit
+        self.iteration = iteration
 
 
 class ToolFeedbackError(LLMFeedbackError):

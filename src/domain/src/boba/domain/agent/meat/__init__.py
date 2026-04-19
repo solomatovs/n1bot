@@ -39,7 +39,6 @@ from .loop_control import (
     IterationCounterMiddleware,
     StopOnAnyFailure,
     StopOnFinished,
-    StopOnMaxIterations,
 )
 from .prompt import SystemPromptMiddleware, UserPromptMiddleware
 from .tools import (
@@ -64,7 +63,6 @@ __all__ = [
     "RepeatedToolCallGuardMiddleware",
     "StopOnAnyFailure",
     "StopOnFinished",
-    "StopOnMaxIterations",
     "StrictJsonContentToolCallMiddleware",
     "StrictJsonToolCallParser",
     "SystemPromptMiddleware",
