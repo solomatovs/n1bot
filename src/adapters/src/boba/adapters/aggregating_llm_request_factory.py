@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from boba.domain.agent.llm_request_factory import LLMRequestFactory
+from boba.domain.agent.messages import MessageService
 from boba.domain.agent.models import AgentContext, LLMMessage, LLMRequest
-from boba.domain.core.messages import MessageService
 
 
 class AggregatingLLMRequestFactory(LLMRequestFactory):

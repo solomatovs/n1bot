@@ -5,7 +5,7 @@
 ``TerminalError``, ``UserFeedbackError``, ``LLMFeedbackError``,
 ``Retryable``, ``UserNoticeError``) живут в
 :mod:`boba.domain.core.errors` — их используют и core-сервисы
-(``core.promt``, ``core.history``), и agent-слой.
+(``core.promt``, ``agent.history``), и agent-слой.
 
 
 ════════════════════════════════════════════════════════════════════
@@ -37,7 +37,7 @@
     │   │   │   └── PermanentPromptError
     │   │   │       └── PromptProviderError
     │   │   │
-    │   │   └── HistoryError        [core.history]   → PersistenceFailed
+    │   │   └── HistoryError        [agent.history]   → PersistenceFailed
     │   │       ├── HistoryWriteError
     │   │       └── HistoryReadError
     │   │
@@ -86,7 +86,7 @@
     except OSError as e:
         raise PromptProviderError(f"cannot read: {e}", provider="git") from e
 
-    from boba.domain.core.history import HistoryWriteError
+    from boba.domain.agent.history import HistoryWriteError
     try:
         storage.write(entry)
     except OSError as e:

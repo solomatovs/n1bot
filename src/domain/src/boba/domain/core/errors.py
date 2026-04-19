@@ -1,8 +1,8 @@
 """Базовая routing-таксономия доменных ошибок.
 
 Живёт в ``core``, потому что используется и core-сервисами
-(:mod:`boba.domain.core.promt`, :mod:`boba.domain.core.history`), и
-agent-слоем. Конкретные агентские подклассы (LLM-иерархия,
+(:mod:`boba.domain.core.promt`), и agent-слоем
+(:mod:`boba.domain.agent.errors`, :mod:`boba.domain.agent.history`). Конкретные агентские подклассы (LLM-иерархия,
 :class:`~boba.domain.agent.errors.ToolFeedbackError`) — в
 :mod:`boba.domain.agent.errors`.
 

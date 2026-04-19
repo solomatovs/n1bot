@@ -39,6 +39,7 @@ from boba.adapters.tools import (
     TreeTool,
 )
 from boba.domain.agent.events import AgentEvent
+from boba.domain.agent.history import HistoryService
 from boba.domain.agent.llm_request_factory import LLMRequestFactory
 from boba.domain.agent.meat import (
     Agent,
@@ -57,10 +58,9 @@ from boba.domain.agent.meat import (
     ToolsDefinitionMiddleware,
     UserPromptMiddleware,
 )
+from boba.domain.agent.messages import MessageService
 from boba.domain.agent.models import AgentConfig
 from boba.domain.config import AppConfig
-from boba.domain.core.history import HistoryService
-from boba.domain.core.messages import MessageService
 from boba.domain.core.patterns import (
     StreamSink,
     StreamSinkPipeline,

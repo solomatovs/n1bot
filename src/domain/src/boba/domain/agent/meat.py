@@ -16,12 +16,6 @@ from boba.domain.agent.errors import (
     LLMResponseFormatError,
     ToolFeedbackError,
 )
-from boba.domain.core.errors import (
-    LLMFeedbackError,
-    Retryable,
-    RoutableError,
-    UserNoticeError,
-)
 from boba.domain.agent.events import (
     AgentEvent,
     AnswerComplete,
@@ -47,6 +41,8 @@ from boba.domain.agent.events import (
     UserNoticeReady,
     UserQueryReceived,
 )
+from boba.domain.agent.history import HistoryError, HistoryService
+from boba.domain.agent.messages import MessageService
 from boba.domain.agent.models import (
     AgentConfig,
     AgentContext,
@@ -55,8 +51,12 @@ from boba.domain.agent.models import (
     LLMToolCall,
     RequestId,
 )
-from boba.domain.core.history import HistoryError, HistoryService
-from boba.domain.core.messages import MessageService
+from boba.domain.core.errors import (
+    LLMFeedbackError,
+    Retryable,
+    RoutableError,
+    UserNoticeError,
+)
 from boba.domain.core.patterns import (
     Converter,
     Specification,
