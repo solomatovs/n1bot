@@ -30,6 +30,7 @@ from boba.domain.agent.meat import (
     StopOnFinished,
     StopOnMaxIterations,
     SystemMessageMiddleware,
+    ToolExecutionMiddleware,
     UserMessageMiddleware,
 )
 from boba.domain.agent.models import AgentConfig
@@ -160,6 +161,7 @@ class RequestProvider(Provider):
         chain = OpenAIMiddleware(config.llm, message_service, tools_service)
         chain = StupidRetryLLMMiddleware(chain, max_retries=3)
         chain = LoggingLLMMiddleware(chain)
+        chain = ToolExecutionMiddleware(chain, tools_service, message_service)
         chain = UserMessageMiddleware(chain, user_prompt_service, message_service)
         chain = SystemMessageMiddleware(chain, system_prompt_service, message_service)
         chain = IterationCounterMiddleware(chain)
