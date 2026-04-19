@@ -24,6 +24,13 @@ from boba.adapters.prompt_providers import (
     StaticPromptProvider,
     UserQueryProvider,
 )
+from boba.adapters.tool_providers import StaticToolSource
+from boba.adapters.tools import (
+    DeleteFileTool,
+    EditFileTool,
+    ListFilesTool,
+    ReadFileTool,
+)
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.llm_request_factory import LLMRequestFactory
 from boba.domain.agent.meat import (
@@ -56,6 +63,7 @@ from boba.domain.core.patterns import (
 from boba.domain.core.promt import PromptId, PromptKind
 from boba.domain.core.tools import (
     ToolFactory,
+    ToolSourceId,
     ToolsService,
 )
 from boba.domain.core.workspace import (
@@ -100,35 +108,6 @@ class AppProvider(Provider):
             UserQueryProvider(),
         ]
 
-    @provide
-    def tool_factory(self) -> ToolFactory:
-        """Агрегатор источников инструментов.
-
-        Сюда регистрируются ``ToolSource``-ы (builtin-пачка, MCP-клиент,
-        plugin-директория). При ``build()`` отдаёт плоский список Tool.
-        Пока пусто — источники добавятся при появлении первых инструментов.
-        """
-        return ToolFactory()
-
-    @provide
-    def tools_service(self, factory: ToolFactory) -> ToolsService:
-        """Сервис инструментов поверх :class:`ToolFactory`.
-
-        Собирает каталог из текущих источников фабрики один раз при
-        wiring'е через :meth:`ToolsService.rebuild_catalog`. Если позже
-        источники меняются в рантайме (подключился MCP, загрузился плагин)
-        — нужно вызвать ``rebuild_catalog()`` повторно; сам DI-провайдер
-        этого не делает.
-
-        Маршрутизация ``ToolCall → Tool`` — через внутренний
-        :class:`ExecutorDispatcher` сервиса. Если понадобится что-то
-        поверх (retry, conditional routing) — оборачивай сервис снаружи
-        как обычный ``Executor[None, ToolCall, ToolResult]``.
-        """
-        service = ToolsService(factory)
-        service.rebuild_catalog()
-        return service
-
 
 class RequestProvider(Provider):
     """Per-request сервисы."""
@@ -146,6 +125,41 @@ class RequestProvider(Provider):
         if workspace_id is None:
             return manager.create()
         return manager.get(workspace_id)
+
+    @provide
+    def tool_factory(self, workspace: WorkspaceService) -> ToolFactory:
+        """Агрегатор источников инструментов, собираемый на запрос.
+
+        Per-request, потому что workspace-bound tools получают текущий
+        :class:`WorkspaceService` через конструктор — ``Tool.execute`` не
+        принимает ctx. Плагины/MCP-источники подключать сюда же рядом с
+        builtin-пачкой.
+        """
+        factory = ToolFactory()
+        factory.register(
+            StaticToolSource(
+                source_id=ToolSourceId("builtin.files"),
+                priority=10,
+                tools=[
+                    ReadFileTool(workspace),
+                    EditFileTool(workspace),
+                    DeleteFileTool(workspace),
+                    ListFilesTool(workspace),
+                ],
+            )
+        )
+        return factory
+
+    @provide
+    def tools_service(self, factory: ToolFactory) -> ToolsService:
+        """Сервис инструментов поверх :class:`ToolFactory`.
+
+        Per-request вслед за фабрикой. Маршрутизация ``ToolCall → Tool``
+        через :class:`ExecutorDispatcher` внутри сервиса.
+        """
+        service = ToolsService(factory)
+        service.rebuild_catalog()
+        return service
 
     @provide
     def message_service(self) -> MessageService:
