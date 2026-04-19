@@ -40,6 +40,7 @@ from boba.domain.agent.meat import (
     ErrorToEventMiddleware,
     HistoryReplayMiddleware,
     IterationCounterMiddleware,
+    JsonContentToolCallMiddleware,
     PersistenceErrorToEventMiddleware,
     PromptErrorToEventMiddleware,
     StopOnAnyFailure,
@@ -212,6 +213,7 @@ class RequestProvider(Provider):
         builder.use(
             lambda inner: AssistantMessagePersistenceMiddleware(inner, message_service)
         )
+        builder.use(JsonContentToolCallMiddleware)
 
         chain = builder.terminal(OpenAIMiddleware(config.llm, llm_request_factory))
 

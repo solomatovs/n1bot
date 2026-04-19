@@ -11,6 +11,7 @@ from boba.domain.agent.errors import LLMError, RetryableLLMError
 from boba.domain.agent.events import (
     AgentEvent,
     AnswerComplete,
+    AnswerStarted,
     AnswerToken,
     GenerationDone,
     GenerationFailed,
@@ -554,6 +555,129 @@ class PersistenceErrorToEventMiddleware(StreamSource[AgentContext, AgentEvent]):
                 message=str(e),
                 retryable=False,
             )
+
+
+class JsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
+    """Эвристика: маленькие модели (Qwen3:8b/Ollama и т.п.) часто
+    «галлюцинируют» tool call как JSON-текст в ``content`` вместо
+    структурированного поля ``tool_calls``. Этот middleware буферизует
+    первые ``AnswerToken``-ы, и если собранный текст парсится как
+    ``{"name": ..., "arguments": ...}``, переписывает их в
+    :class:`ToolCallBegin` + :class:`ToolCallArgumentDelta` и подменяет
+    ``finish_reason`` на ``"tool_calls"`` — чтобы цикл агента
+    не остановился раньше времени и `ToolExecutionMiddleware` исполнил тул.
+
+    Эвристика срабатывает только если **первый** ``AnswerToken`` начинается
+    с ``{`` после strip — в обычном текстовом ответе ничего не буферизуется.
+    Если в стриме появился настоящий ``ToolCallBegin``, буфер сбрасывается
+    как обычный текст (модель и тул-вызов одновременно — редко, но допустимо).
+
+    Ставится **innermost** — внутри :class:`AssistantMessagePersistenceMiddleware`,
+    чтобы тот аккумулировал уже переписанные события и эмитил
+    :class:`ToolCallComplete` для downstream-а.
+    """
+
+    def __init__(self, inner: StreamSource[AgentContext, AgentEvent]) -> None:
+        self._inner = inner
+
+    def name(self) -> str:
+        return "JsonContentToolCall"
+
+    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:  # noqa: C901, PLR0912
+        buffer: list[AgentEvent] = []
+        state: str = "undecided"  # "undecided" | "buffering" | "passthrough"
+
+        for event in self._inner.stream(ctx):
+            if state == "passthrough":
+                yield event
+                continue
+
+            if isinstance(event, AnswerStarted):
+                buffer.append(event)
+                continue
+
+            if isinstance(event, AnswerToken):
+                if state == "undecided":
+                    if event.token.lstrip().startswith("{"):
+                        state = "buffering"
+                        buffer.append(event)
+                    else:
+                        state = "passthrough"
+                        yield from buffer
+                        buffer.clear()
+                        yield event
+                else:  # buffering
+                    buffer.append(event)
+                continue
+
+            if isinstance(event, ToolCallBegin):
+                yield from buffer
+                buffer.clear()
+                state = "passthrough"
+                yield event
+                continue
+
+            if isinstance(event, GenerationDone):
+                if state == "buffering":
+                    yield from self._flush(buffer, event, ctx)
+                else:
+                    yield from buffer
+                    yield event
+                buffer.clear()
+                state = "passthrough"
+                continue
+
+            yield event
+
+        if buffer:
+            yield from buffer
+
+    @staticmethod
+    def _flush(
+        buffer: list[AgentEvent], done: GenerationDone, ctx: AgentContext
+    ) -> Iterator[AgentEvent]:
+        text = "".join(e.token for e in buffer if isinstance(e, AnswerToken))
+        parsed = JsonContentToolCallMiddleware._try_parse(text)
+
+        if parsed is None:
+            yield from buffer
+            yield done
+            return
+
+        rid = ctx.request.request_id
+        name = parsed["name"]
+        args = parsed["arguments"]
+        args_json = (
+            json.dumps(args, ensure_ascii=False)
+            if isinstance(args, dict)
+            else str(args)
+        )
+        logger.info("JsonContentToolCall: parsed tool=%s from content", name)
+        yield ToolCallBegin(
+            request_id=rid,
+            index=0,
+            tool_call_id=f"call_{name}",
+            tool_name=name,
+        )
+        yield ToolCallArgumentDelta(
+            request_id=rid,
+            index=0,
+            arguments=args_json,
+        )
+        yield GenerationDone(request_id=rid, finish_reason="tool_calls")
+
+    @staticmethod
+    def _try_parse(text: str) -> dict | None:
+        text = text.strip()
+        if not text.startswith("{"):
+            return None
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(data, dict) and "name" in data and "arguments" in data:
+            return data
+        return None
 
 
 class StopOnFinished(Specification[tuple[AgentContext, AgentEvent]]):
