@@ -26,7 +26,8 @@
     │   └── UserNoticeError          цикл идёт, нотис с severity
     │
     ├── LLMFeedbackError          LLM видит через MessageService
-    │       (конкретные: ToolFeedbackError — в agent.errors)
+    │       (конкретные: ToolFeedbackError, LLMToolCallFormatError —
+    │        в agent.errors)
     │
     └── Retryable                 маркер-миксин, ортогональный
 

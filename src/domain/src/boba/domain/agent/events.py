@@ -262,6 +262,28 @@ class ToolExecutionFailed(BaseEvent):
 
 
 @dataclass(frozen=True)
+class ToolCallFormatFailed(BaseEvent):
+    """LLM нарушила формат content-as-JSON tool call'а.
+
+    Не терминальное событие: цикл агента продолжается. Роутер уже
+    записал ``message`` в ``MessageService`` как ``LLMMessage(role="user")``,
+    чтобы LLM на следующей итерации увидела критику своего предыдущего
+    вывода и смогла переформулировать tool call.
+
+    Tool call не состоялся (разбор провалился до определения ``name``/
+    ``tool_call_id``), поэтому поля идентификации вызова отсутствуют —
+    в отличие от :class:`ToolExecutionFailed`.
+    """
+
+    error_kind: str
+    message: str
+
+    @classmethod
+    def name(cls) -> Literal["ToolCallFormatFailed"]:
+        return "ToolCallFormatFailed"
+
+
+@dataclass(frozen=True)
 class ThinkingComplete(BaseEvent):
     """Агрегированный thinking: весь текст рассуждений."""
 
@@ -340,6 +362,7 @@ AgentEvent = (
     | ToolCallComplete
     | ToolResultReady
     | ToolExecutionFailed
+    | ToolCallFormatFailed
     | UserNoticeReady
 )
 
@@ -370,6 +393,7 @@ AgentEventName: TypeAlias = Literal[
     "ToolCallComplete",
     "ToolResultReady",
     "ToolExecutionFailed",
+    "ToolCallFormatFailed",
     "UserNoticeReady",
 ]
 

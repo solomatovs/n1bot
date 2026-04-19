@@ -13,7 +13,7 @@ from typing import ClassVar
 
 from boba.domain.agent.errors import (
     LLMError,
-    LLMResponseFormatError,
+    LLMToolCallFormatError,
     ToolFeedbackError,
 )
 from boba.domain.agent.events import (
@@ -36,6 +36,7 @@ from boba.domain.agent.events import (
     ToolCallArgumentDelta,
     ToolCallBegin,
     ToolCallComplete,
+    ToolCallFormatFailed,
     ToolExecutionFailed,
     ToolResultReady,
     UserNoticeReady,
@@ -316,7 +317,10 @@ class HistoryReplayMiddleware(StreamSource[AgentContext, AgentEvent]):
     - ``ToolResultReady`` → ``LLMMessage(role="tool", content, tool_call_id)``;
     - ``ToolExecutionFailed`` → ``LLMMessage(role="tool", message, tool_call_id)``
       (LLM должна увидеть ошибку tool'а при реплее так же, как увидела
-      бы её при live-исполнении).
+      бы её при live-исполнении);
+    - ``ToolCallFormatFailed`` → ``LLMMessage(role="user", content=message)``
+      (LLM должна увидеть критику формата tool call'а при реплее так же,
+      как увидела бы её при live-исполнении).
 
     Остальные события (токены, ``Stage*``, ``*Started``) игнорируются —
     они уже агрегированы в ``*Complete``.
@@ -374,6 +378,10 @@ class HistoryReplayMiddleware(StreamSource[AgentContext, AgentEvent]):
                 case ToolExecutionFailed(tool_call_id=tid, message=m):
                     self._message_service.add(
                         LLMMessage(role="tool", content=m, tool_call_id=tid)
+                    )
+                case ToolCallFormatFailed(message=m):
+                    self._message_service.add(
+                        LLMMessage(role="user", content=m)
                     )
                 case _:
                     pass
@@ -498,6 +506,85 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
         )
 
 
+class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
+    """Защита от лупа: подавляет ``(N+1)``-й идентичный
+    :class:`ToolCallComplete` подряд и маршрутизирует его как
+    :class:`ToolFeedbackError`.
+
+    На следующей итерации LLM увидит текст ошибки в ``role="tool"``
+    сообщении (роутер пишет сам через :class:`MessageService`) и должен
+    сменить тактику — либо позвать инструмент с другими аргументами,
+    либо ответить пользователю обычным текстом.
+
+    Сидит **внутри** :class:`ToolExecutionMiddleware`. Подавлённый
+    ``ToolCallComplete`` не долетает до батча выполнения — реальный
+    tool не дёргается. Запись ``LLMMessage(role="tool")`` и эмит
+    :class:`ToolExecutionFailed` делегированы
+    :class:`AgentErrorRouter.route` — той же машинерии, что использует
+    сам :class:`ToolExecutionMiddleware` для штатных
+    :class:`ToolFeedbackError`.
+
+    Сравнение «идентичный» — exact match по ``(tool_name, arguments)``,
+    где ``arguments`` это сырая JSON-строка из события (так же, как её
+    видит downstream). JSON-нормализация (порядок ключей, пробелы) пока
+    не делается — простота важнее.
+
+    Состояние (последний вызов + счётчик подряд) живёт на инстансе
+    middleware. ``agent_chain`` собирается per-request (scope=REQUEST),
+    инстанс — fresh на каждый запрос, отдельный сброс не нужен.
+    """
+
+    def __init__(
+        self,
+        inner: StreamSource[AgentContext, AgentEvent],
+        error_router: AgentErrorRouter,
+        max_consecutive: int,
+    ) -> None:
+        self._inner = inner
+        self._router = error_router
+        self._max_consecutive = max_consecutive
+        self._last: tuple[str, str] | None = None
+        self._count = 0
+
+    def name(self) -> str:
+        return "RepeatedToolCallGuard"
+
+    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+        for event in self._inner.stream(ctx):
+            if not isinstance(event, ToolCallComplete):
+                yield event
+                continue
+
+            key = (event.tool_name, event.arguments)
+            if self._last == key:
+                self._count += 1
+            else:
+                self._last = key
+                self._count = 1
+
+            if self._count > self._max_consecutive:
+                yield from self._router.route(
+                    ctx,
+                    ToolFeedbackError(
+                        tool_call_id=event.tool_call_id,
+                        tool_name=event.tool_name,
+                        error_kind="RepeatedToolCallError",
+                        message=(
+                            f"Обнаружен луп: {self._count}-й подряд "
+                            f"идентичный вызов '{event.tool_name}' с "
+                            f"arguments={event.arguments}. Результат уже "
+                            f"есть в предыдущих role='tool' сообщениях. "
+                            f"Либо вызови инструмент с другими аргументами, "
+                            f"либо сформулируй ответ пользователю обычным "
+                            f"текстом."
+                        ),
+                    ),
+                )
+                continue
+
+            yield event
+
+
 class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
     """
     Подсчет кол-ва итераций цикла агента.
@@ -541,6 +628,9 @@ class AgentErrorRouter:
     - :class:`ToolFeedbackError` → запись ``LLMMessage(role="tool",
       tool_call_id=..., content=...)`` в :class:`MessageService` +
       :class:`ToolExecutionFailed`. Не терминально.
+    - :class:`LLMToolCallFormatError` → запись ``LLMMessage(role="user",
+      content=...)`` в :class:`MessageService` +
+      :class:`ToolCallFormatFailed`. Не терминально.
     - :class:`UserNoticeError` → :class:`UserNoticeReady`. Не терминально.
     - Непокрытый подкласс → :class:`TypeError` (баг: забыли добавить
       ветку).
@@ -591,6 +681,18 @@ class AgentErrorRouter:
                     tool_call_id=err.tool_call_id,
                     tool_name=err.tool_name,
                     error_kind=err.error_kind,
+                    message=err.message,
+                )
+            case LLMToolCallFormatError():
+                self._message_service.add(
+                    LLMMessage(
+                        role="user",
+                        content=err.message,
+                    ),
+                )
+                yield ToolCallFormatFailed(
+                    request_id=rid,
+                    error_kind=kind,
                     message=err.message,
                 )
             case UserNoticeError():
@@ -1043,9 +1145,11 @@ class StrictJsonToolCallParser(Converter[str, ParsedJsonToolCall]):
     - Корневой JSON — объект с **ровно** двумя полями ``name``, ``arguments``.
     - ``name`` — непустая строка.
     - ``arguments`` — объект или массив.
-    - Любое отклонение → :class:`LLMResponseFormatError` с описанием,
+    - Любое отклонение → :class:`LLMToolCallFormatError` с описанием,
       что именно не так (невалидный JSON, не-объект на корне,
-      отсутствующие/посторонние поля, неверные типы).
+      отсутствующие/посторонние поля, неверные типы). Ошибка не
+      терминальна: роутер отдаст её обратно LLM отдельным сообщением,
+      LLM переформулирует tool call на следующей итерации.
 
     Посторонние поля запрещены явно: содержательные ответы пользователю
     нельзя протаскивать внутри tool call — это должен быть чистый сигнал
@@ -1060,52 +1164,58 @@ class StrictJsonToolCallParser(Converter[str, ParsedJsonToolCall]):
         try:
             data = json.loads(value)
         except json.JSONDecodeError as e:
-            raise LLMResponseFormatError(
+            raise LLMToolCallFormatError(
                 f"Ответ модели начался с '{{', значит обязан быть "
                 f"корректным JSON tool call, но JSON невалиден: "
-                f"{e.msg} (позиция {e.pos}). Полученный content: {value!r}"
+                f"{e.msg} (позиция {e.pos}). Полученный content: {value!r}",
+                raw_content=value,
             ) from e
 
         if not isinstance(data, dict):
-            raise LLMResponseFormatError(
+            raise LLMToolCallFormatError(
                 f"Ожидался JSON-объект tool call вида "
                 f"{{'name': str, 'arguments': object}}, получено значение "
-                f"типа {type(data).__name__}: {value!r}"
+                f"типа {type(data).__name__}: {value!r}",
+                raw_content=value,
             )
 
         missing = sorted(self._ALLOWED - data.keys())
         if missing:
-            raise LLMResponseFormatError(
+            raise LLMToolCallFormatError(
                 f"В JSON tool call отсутствуют обязательные поля: "
                 f"{missing}. Ожидался формат "
                 f"{{'name': str, 'arguments': object}}. "
-                f"Полученный content: {value!r}"
+                f"Полученный content: {value!r}",
+                raw_content=value,
             )
 
         extra = sorted(data.keys() - self._ALLOWED)
         if extra:
-            raise LLMResponseFormatError(
+            raise LLMToolCallFormatError(
                 f"В JSON tool call присутствуют посторонние поля: "
                 f"{extra}. Допустимы только {sorted(self._ALLOWED)}. "
                 f"Любые дополнительные поля (например 'content', 'response', "
                 f"'type', 'id', 'thought') запрещены — текст для пользователя "
                 f"нельзя передавать внутри tool call. "
-                f"Полученный content: {value!r}"
+                f"Полученный content: {value!r}",
+                raw_content=value,
             )
 
         name = data["name"]
         if not isinstance(name, str) or not name.strip():
-            raise LLMResponseFormatError(
+            raise LLMToolCallFormatError(
                 f"Поле 'name' должно быть непустой строкой, получено "
-                f"{type(name).__name__}={name!r}. Полученный content: {value!r}"
+                f"{type(name).__name__}={name!r}. Полученный content: {value!r}",
+                raw_content=value,
             )
 
         arguments = data["arguments"]
         if not isinstance(arguments, (dict, list)):
-            raise LLMResponseFormatError(
+            raise LLMToolCallFormatError(
                 f"Поле 'arguments' (tool '{name}') должно быть объектом или "
                 f"массивом, получено {type(arguments).__name__}={arguments!r}. "
-                f"Полученный content: {value!r}"
+                f"Полученный content: {value!r}",
+                raw_content=value,
             )
 
         return ParsedJsonToolCall(
@@ -1133,12 +1243,18 @@ class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]
       ParsedJsonToolCall]``). Парсер сам отвечает за формат JSON,
       допустимые поля, типы и сообщения об ошибках:
 
-      * Успех → :class:`ToolCallBegin` + :class:`ToolCallArgumentDelta`
-        + :class:`GenerationDone` с ``finish_reason="tool_calls"``.
-      * Парсер бросил :class:`LLMResponseFormatError` — исключение
-        прокидывается наружу (через retry-слой до
-        :class:`ErrorToEventMiddleware`, который конвертирует его в
-        терминальное :class:`GenerationFailed`).
+      * Успех → :class:`AnswerDiscarded` + :class:`ToolCallBegin` +
+        :class:`ToolCallArgumentDelta` + :class:`GenerationDone` с
+        ``finish_reason="tool_calls"``.
+      * Парсер бросил :class:`LLMToolCallFormatError` — сперва
+        эмитим :class:`GenerationDone` с ``finish_reason="stop"``
+        (чтобы :class:`AssistantMessagePersistenceMiddleware` успел
+        коммитнуть raw content как assistant-сообщение — LLM увидит
+        свой собственный сбой при следующей итерации), **без**
+        :class:`AnswerDiscarded`, после чего исключение летит в
+        :class:`AgentErrorRouter`, который добавляет отдельное
+        ``role="user"``-сообщение с критикой и эмитит
+        :class:`ToolCallFormatFailed`. Цикл не прерывается.
 
     Сама middleware про JSON-синтаксис, whitelist полей и типы ничего
     не знает — только про стриминг событий и границу режимов. Парсер
@@ -1184,9 +1300,6 @@ class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]
                         yield event
                     case GenerationDone():
                         yield from self._finalize_tool_call(rid, buffer)
-                        yield GenerationDone(
-                            request_id=rid, finish_reason="tool_calls"
-                        )
                         mode = "passthrough"
                         buffer = ""
                     case _:
@@ -1224,11 +1337,25 @@ class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]
 
     def _finalize_tool_call(self, rid: RequestId, raw: str) -> Iterator[AgentEvent]:
         """Завершающий этап: буфер уже проэмичен как ``AnswerToken``-ы.
-        Сигналим downstream-ам отбросить накопленный content и передаём
-        буфер парсеру; его исключение летит наружу через ``yield from``.
+
+        Успех: эмитим :class:`AnswerDiscarded` (downstream-ы выкидывают
+        накопленный content, вместо него пойдут ``ToolCall*``),
+        :class:`ToolCallBegin` + :class:`ToolCallArgumentDelta`,
+        :class:`GenerationDone` с ``finish_reason="tool_calls"``.
+
+        Сбой парсера (:class:`LLMToolCallFormatError`): эмитим
+        :class:`GenerationDone` с ``finish_reason="stop"`` (без
+        ``AnswerDiscarded`` — raw content должен остаться в буфере
+        персистенса, чтобы коммитнуться как assistant-сообщение и LLM
+        увидела свой предыдущий вывод на следующей итерации), после
+        чего пробрасываем исключение наверх в :class:`AgentErrorRouter`.
         """
+        try:
+            parsed = self._parser.convert(raw)
+        except LLMToolCallFormatError:
+            yield GenerationDone(request_id=rid, finish_reason="stop")
+            raise
         yield AnswerDiscarded(request_id=rid)
-        parsed = self._parser.convert(raw)
         yield ToolCallBegin(
             request_id=rid,
             index=0,
@@ -1240,6 +1367,7 @@ class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]
             index=0,
             arguments=parsed.arguments,
         )
+        yield GenerationDone(request_id=rid, finish_reason="tool_calls")
 
 
 class StopOnFinished(Specification[tuple[AgentContext, AgentEvent]]):
