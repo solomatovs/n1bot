@@ -27,6 +27,7 @@ from boba.domain.agent.events import (
     ToolCallComplete,
     ToolExecutionFailed,
     ToolResultReady,
+    UserNoticeReady,
     UserQueryReceived,
 )
 from boba.domain.agent.meat import AgentContext
@@ -85,6 +86,13 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
                 print(  # noqa: T201
                     f"\n{self._RED}[tool error: {kind}] {fn}: {preview}{self._RESET}"
                 )
+            case UserNoticeReady(message=msg, severity=sev):
+                color = {
+                    "info": self._CYAN,
+                    "warning": self._YELLOW,
+                    "error": self._RED,
+                }[sev]
+                print(f"\n{color}[{sev}] {msg}{self._RESET}")  # noqa: T201
 
             case GenerationDone():
                 print()  # noqa: T201

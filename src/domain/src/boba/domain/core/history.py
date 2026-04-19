@@ -7,12 +7,13 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 
+from boba.domain.agent.errors import TerminalError
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.models import RequestId
 from boba.domain.core.patterns import UuId
 
 
-class HistoryError(Exception):
+class HistoryError(TerminalError):
     """Базовая ошибка ``HistoryService``.
 
     Контракт ошибок: публичные методы ``HistoryService`` ОБЯЗАНЫ оборачивать

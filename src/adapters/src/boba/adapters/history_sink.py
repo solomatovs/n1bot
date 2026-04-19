@@ -28,6 +28,7 @@ from boba.domain.agent.events import (
     ToolCallComplete,
     ToolExecutionFailed,
     ToolResultReady,
+    UserNoticeReady,
     UserQueryReceived,
 )
 from boba.domain.agent.models import AgentContext, RequestId
@@ -95,7 +96,7 @@ class HistorySink(StreamSink[AgentContext, AgentEvent]):
                 self._answer_buf.pop(request_id, None)
                 self._history.append(event)
 
-            case ToolExecutionFailed():
+            case ToolExecutionFailed() | UserNoticeReady():
                 self._history.append(event)
 
             case (

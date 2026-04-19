@@ -6,15 +6,19 @@ import json
 import logging
 import re
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import ClassVar
 
 from boba.domain.agent.errors import (
+    AgentError,
     LLMError,
+    LLMFeedbackError,
     LLMResponseFormatError,
-    RetryableLLMError,
+    Retryable,
+    ToolFeedbackError,
+    UserNoticeError,
 )
 from boba.domain.agent.events import (
     AgentEvent,
@@ -38,6 +42,7 @@ from boba.domain.agent.events import (
     ToolCallComplete,
     ToolExecutionFailed,
     ToolResultReady,
+    UserNoticeReady,
     UserQueryReceived,
 )
 from boba.domain.agent.models import (
@@ -62,7 +67,6 @@ from boba.domain.core.promt import (
     PromptFactory,
     PromptKind,
     PromptProvider,
-    RetryablePromptError,
 )
 from boba.domain.core.tools import (
     ToolCall,
@@ -407,18 +411,20 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
     После того как внутренний стрим (LLM) заканчивает итерацию, собирает все
     ``ToolCallComplete`` события и по каждому:
 
-    1. Парсит JSON ``arguments``. Битый JSON → :class:`ToolExecutionError`
-       с понятным сообщением — ошибка уйдёт LLM как tool-message, и та
-       сможет её починить.
-    2. Вызывает :meth:`ToolsService.execute`. Сервис бросает
-       :class:`ToolExecutionError` на неизвестный tool или на падение
-       реализации — исключение ловится тут же.
+    1. Парсит JSON ``arguments``. Битый JSON → :class:`ToolFeedbackError`
+       (LLM увидит ошибку и сможет починить).
+    2. Вызывает :meth:`ToolsService.execute`. Сервис бросает «сырую»
+       :class:`ToolExecutionError` (без знания про tool_call_id) — тут
+       обогащается идентификатором вызова и пробрасывается как
+       :class:`ToolFeedbackError`.
     3. Успех → ``LLMMessage(role="tool", tool_call_id=..., content=...)`` +
        :class:`ToolResultReady`.
-    4. Ошибка → ``LLMMessage(role="tool", content=<error>, ...)`` (чтобы LLM
-       увидела её на следующей итерации) + :class:`ToolExecutionFailed`
-       для sink'ов. Цикл не падает — ошибка tool'а это не терминальное
-       событие, а сигнал LLM.
+
+    Batch-семантика делегирована :meth:`AgentErrorRouter.run_batch`:
+    успешные события стримятся сразу, :class:`LLMFeedbackError` из
+    любой подзадачи копится и маршрутизируется в конце — так одна
+    упавшая подзадача не обрывает остальные. Терминальные ошибки
+    пропускаются наверх во внешний :class:`AgentErrorRouterMiddleware`.
 
     Если LLM не запросила тулов — middleware просто проксирует события
     inner без побочных эффектов.
@@ -429,10 +435,12 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
         inner: StreamSource[AgentContext, AgentEvent],
         tools_service: ToolsService,
         message_service: MessageService,
+        error_router: AgentErrorRouter,
     ) -> None:
         self._inner = inner
         self._tools_service = tools_service
         self._message_service = message_service
+        self._error_router = error_router
 
     def name(self) -> str:
         return "ToolExecution"
@@ -445,8 +453,9 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
             if isinstance(event, ToolCallComplete):
                 pending.append(event)
 
-        for tc in pending:
-            yield from self._run_tool(tc)
+        yield from self._error_router.run_batch(
+            ctx, (self._run_tool(tc) for tc in pending)
+        )
 
     def _run_tool(self, tc: ToolCallComplete) -> Iterator[AgentEvent]:
         try:
@@ -457,15 +466,19 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
             )
             result = self._tools_service.execute(None, call)
         except json.JSONDecodeError as e:
-            yield from self._emit_failure(
-                tc, error_kind=type(e).__name__, message=f"invalid JSON arguments: {e}"
-            )
-            return
+            raise ToolFeedbackError(
+                tool_call_id=tc.tool_call_id,
+                tool_name=tc.tool_name,
+                error_kind=type(e).__name__,
+                message=f"invalid JSON arguments: {e}",
+            ) from e
         except ToolExecutionError as e:
-            yield from self._emit_failure(
-                tc, error_kind=type(e).__name__, message=e.message
-            )
-            return
+            raise ToolFeedbackError(
+                tool_call_id=tc.tool_call_id,
+                tool_name=tc.tool_name,
+                error_kind=type(e).__name__,
+                message=e.message,
+            ) from e
 
         self._message_service.add(
             LLMMessage(
@@ -480,24 +493,6 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
             tool_call_id=tc.tool_call_id,
             tool_name=tc.tool_name,
             content=result.content,
-        )
-
-    def _emit_failure(
-        self, tc: ToolCallComplete, *, error_kind: str, message: str
-    ) -> Iterator[AgentEvent]:
-        self._message_service.add(
-            LLMMessage(
-                role="tool",
-                content=message,
-                tool_call_id=tc.tool_call_id,
-            ),
-        )
-        yield ToolExecutionFailed(
-            request_id=tc.request_id,
-            tool_call_id=tc.tool_call_id,
-            tool_name=tc.tool_name,
-            error_kind=error_kind,
-            message=message,
         )
 
 
@@ -518,88 +513,167 @@ class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
         yield from self._inner.stream(ctx)
 
 
-class ErrorToEventMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Ловит :class:`LLMError` из внутреннего стрима и преобразует в
-    терминальное :class:`GenerationFailed`-событие.
+class AgentErrorRouter:
+    """Централизованная маршрутизация :class:`AgentError` в события и
+    побочные эффекты.
 
-    Ставится **снаружи** :class:`StupidRetryLLMMiddleware`: retry уже
-    отработал и либо исчерпал попытки (``RetryableLLMError``), либо сразу
-    пробросил ``PermanentLLMError``. Выше по стеку исключений ``LLMError``
-    уже не будет — клиенты подписываются только на поток событий.
+    Единая точка знания «какой тип ошибки → какое событие + какой сайд-
+    эффект». Middleware, поймавший :class:`AgentError`, делегирует сюда.
+
+    Две API-точки для клиентов:
+
+    - :meth:`route` — разобрать одну ошибку (вызывается верхнеуровневым
+      :class:`AgentErrorRouterMiddleware` из top-level try/except).
+    - :meth:`run_batch` — прогнать серию подзадач-генераторов с
+      автоматическим сбором :class:`LLMFeedbackError` и маршрутизацией
+      в конце. Batch-middleware (напр. :class:`ToolExecutionMiddleware`)
+      **не пишет** свой try/except — просто передают генераторы сюда.
+
+    Маршруты (match-case):
+
+    - :class:`LLMError` → :class:`GenerationFailed` (``status_code``,
+      ``retryable`` по маркеру :class:`Retryable`). Терминально.
+    - :class:`PromptError` → :class:`PromptFailed` (``provider``).
+      Терминально.
+    - :class:`HistoryError` → :class:`PersistenceFailed`. Терминально.
+    - :class:`ToolFeedbackError` → запись ``LLMMessage(role="tool",
+      tool_call_id=..., content=...)`` в :class:`MessageService` +
+      :class:`ToolExecutionFailed`. Не терминально.
+    - :class:`UserNoticeError` → :class:`UserNoticeReady`. Не терминально.
+    - Непокрытый подкласс → :class:`TypeError` (баг: забыли добавить
+      ветку).
     """
 
-    def __init__(self, inner: StreamSource[AgentContext, AgentEvent]) -> None:
+    def __init__(self, message_service: MessageService) -> None:
+        self._message_service = message_service
+
+    def route(self, ctx: AgentContext, err: AgentError) -> Iterator[AgentEvent]:
+        rid = ctx.request.request_id
+        retryable = isinstance(err, Retryable)
+        kind = type(err).__name__
+        msg = str(err)
+        match err:
+            case LLMError():
+                yield GenerationFailed(
+                    request_id=rid,
+                    error_kind=kind,
+                    message=msg,
+                    retryable=retryable,
+                    status_code=err.status_code,
+                )
+            case PromptError():
+                yield PromptFailed(
+                    request_id=rid,
+                    error_kind=kind,
+                    message=msg,
+                    retryable=retryable,
+                    provider=err.provider,
+                )
+            case HistoryError():
+                yield PersistenceFailed(
+                    request_id=rid,
+                    error_kind=kind,
+                    message=msg,
+                    retryable=retryable,
+                )
+            case ToolFeedbackError():
+                self._message_service.add(
+                    LLMMessage(
+                        role="tool",
+                        content=err.message,
+                        tool_call_id=err.tool_call_id,
+                    ),
+                )
+                yield ToolExecutionFailed(
+                    request_id=rid,
+                    tool_call_id=err.tool_call_id,
+                    tool_name=err.tool_name,
+                    error_kind=err.error_kind,
+                    message=err.message,
+                )
+            case UserNoticeError():
+                yield UserNoticeReady(
+                    request_id=rid,
+                    message=err.message,
+                    severity=err.severity,
+                )
+            case _:
+                raise TypeError(
+                    f"AgentErrorRouter: unmapped AgentError subclass "
+                    f"{kind!r}. Добавь ветку в route или унаследуй новый тип "
+                    f"от одного из известных семейств."
+                ) from err
+
+    def run_batch(
+        self,
+        ctx: AgentContext,
+        tasks: Iterable[Iterator[AgentEvent]],
+    ) -> Iterator[AgentEvent]:
+        """Прогоняет серию подзадач-генераторов с batch-семантикой для
+        :class:`LLMFeedbackError`.
+
+        События успешных подзадач стримятся сразу (``yield from``).
+        Ошибка уровня :class:`LLMFeedbackError` из любой подзадачи
+        **не обрывает** остальные: ловится, копится, маршрутизируется
+        после завершения всей серии (в порядке возникновения).
+
+        :class:`TerminalError` (и любое не-``LLMFeedbackError``
+        ``AgentError``) — пропускаем наверх немедленно: при сбое LLM /
+        persistence дальше работать смысла нет, batch прерывается.
+
+        API задуман так, чтобы middleware-автор не писал свой
+        ``try/except`` и не думал про batch — просто передаёт
+        генераторы подзадач::
+
+            yield from self._error_router.run_batch(
+                ctx, (self._run_task(item) for item in items)
+            )
+        """
+        deferred: list[LLMFeedbackError] = []
+        for task in tasks:
+            try:
+                yield from task
+            except LLMFeedbackError as e:
+                deferred.append(e)
+        for err in deferred:
+            yield from self.route(ctx, err)
+
+
+class AgentErrorRouterMiddleware(StreamSource[AgentContext, AgentEvent]):
+    """Верхнеуровневый try/except над всем source-chain'ом.
+
+    Ставится **самым внешним** слоем (поверх retry, промптов, history,
+    tool-execution). Любой middleware глубже может ``raise`` подкласс
+    :class:`AgentError`, не зная, что будет дальше — средний слой
+    прокидывает, этот ловит и делегирует :class:`AgentErrorRouter`.
+
+    Замечание про batch-middleware: они ловят :class:`LLMFeedbackError`
+    **сами** (per-iteration) и вызывают :meth:`AgentErrorRouter.route`
+    напрямую — чтобы одна упавшая подзадача не оборвала остальные.
+    Досюда из батч-middleware долетают только терминальные ошибки.
+
+    Всё, что не наследует :class:`AgentError` (``KeyError``, ``TypeError``
+    и т.п.), проходит насквозь и крашит процесс — баги не маскируем.
+    :class:`Retryable`-подклассы сюда доезжают только после исчерпания
+    попыток во внутреннем retry-слое.
+    """
+
+    def __init__(
+        self,
+        inner: StreamSource[AgentContext, AgentEvent],
+        router: AgentErrorRouter,
+    ) -> None:
         self._inner = inner
+        self._router = router
 
     def name(self) -> str:
-        return "ErrorToEvent"
+        return "AgentErrorRouter"
 
     def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         try:
             yield from self._inner.stream(ctx)
-        except LLMError as e:
-            yield GenerationFailed(
-                request_id=ctx.request.request_id,
-                error_kind=type(e).__name__,
-                message=str(e),
-                retryable=isinstance(e, RetryableLLMError),
-                status_code=e.status_code,
-            )
-
-
-class PromptErrorToEventMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Ловит :class:`PromptError` из провайдеров промптов и превращает в
-    терминальное :class:`PromptFailed`-событие.
-
-    Ставится **снаружи** :class:`SystemPromptMiddleware` /
-    :class:`UserPromptMiddleware`. Узкий тип (``PromptError``) — программные
-    баги провайдеров (``KeyError``, ``AttributeError``) проходят насквозь и
-    ломают цикл.
-    """
-
-    def __init__(self, inner: StreamSource[AgentContext, AgentEvent]) -> None:
-        self._inner = inner
-
-    def name(self) -> str:
-        return "PromptErrorToEvent"
-
-    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
-        try:
-            yield from self._inner.stream(ctx)
-        except PromptError as e:
-            yield PromptFailed(
-                request_id=ctx.request.request_id,
-                error_kind=type(e).__name__,
-                message=str(e),
-                retryable=isinstance(e, RetryablePromptError),
-                provider=e.provider,
-            )
-
-
-class PersistenceErrorToEventMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Ловит :class:`HistoryError` из :class:`HistoryService` и превращает в
-    терминальное :class:`PersistenceFailed`-событие.
-
-    Покрывает чтение журнала (``HistoryReplayMiddleware``). Запись журнала в
-    ``HistorySink`` идёт вне source-чейна и этим middleware не ловится.
-    """
-
-    def __init__(self, inner: StreamSource[AgentContext, AgentEvent]) -> None:
-        self._inner = inner
-
-    def name(self) -> str:
-        return "PersistenceErrorToEvent"
-
-    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
-        try:
-            yield from self._inner.stream(ctx)
-        except HistoryError as e:
-            yield PersistenceFailed(
-                request_id=ctx.request.request_id,
-                error_kind=type(e).__name__,
-                message=str(e),
-                retryable=False,
-            )
+        except AgentError as e:
+            yield from self._router.route(ctx, e)
 
 
 @dataclass(frozen=True)

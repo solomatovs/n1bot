@@ -33,7 +33,7 @@ from boba.domain.agent.errors import (
     LLMProviderInternalError,
     LLMRateLimitError,
     LLMTimeoutError,
-    RetryableLLMError,
+    Retryable,
 )
 from boba.domain.agent.events import (
     AgentEvent,
@@ -93,11 +93,13 @@ class LoggingLLMMiddleware(StreamSource[AgentContext, AgentEvent]):
 
 
 class StupidRetryLLMMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Повторяет запрос при :class:`RetryableLLMError` до ``max_retries`` раз.
+    """Повторяет запрос при любой ошибке с маркером :class:`Retryable`
+    до ``max_retries`` раз.
 
-    :class:`PermanentLLMError` проходит насквозь сразу — повторять auth/400
-    бессмысленно. Прочие исключения (не ``LLMError``) не ловятся: они должны
-    уже быть классифицированы в адаптере, иначе это баг — падаем громко.
+    Ловит по **маркеру**, не по конкретному типу — это позволяет добавлять
+    новые повторяемые ошибки (``RetryablePromptError``, …) без правки
+    retry-слоя. Не-``Retryable`` исключения (``PermanentLLMError``,
+    программные баги) проходят насквозь сразу.
     """
 
     def __init__(
@@ -114,7 +116,7 @@ class StupidRetryLLMMiddleware(StreamSource[AgentContext, AgentEvent]):
             try:
                 yield from self._inner.stream(ctx)
                 return
-            except RetryableLLMError as e:
+            except Retryable as e:
                 if attempt == self._max_retries - 1:
                     raise
                 logger.warning(

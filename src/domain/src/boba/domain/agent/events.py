@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
+from boba.domain.agent.errors import UserNoticeSeverity
 from boba.domain.agent.models import RequestId
 from boba.domain.core.patterns import Converter, Serializer
 
@@ -223,6 +224,23 @@ class ToolResultReady(BaseEvent):
 
 
 @dataclass(frozen=True)
+class UserNoticeReady(BaseEvent):
+    """Нотис для пользователя (не для LLM).
+
+    Эмитится роутером из :class:`UserNoticeError`. Sink'и UI отрисуют
+    сообщение по ``severity`` (info / warning / error). Не терминальное —
+    цикл агента продолжается. В :class:`MessageService` не попадает.
+    """
+
+    message: str
+    severity: UserNoticeSeverity
+
+    @classmethod
+    def name(cls) -> Literal["UserNoticeReady"]:
+        return "UserNoticeReady"
+
+
+@dataclass(frozen=True)
 class ToolExecutionFailed(BaseEvent):
     """Ошибка выполнения tool.
 
@@ -322,6 +340,7 @@ AgentEvent = (
     | ToolCallComplete
     | ToolResultReady
     | ToolExecutionFailed
+    | UserNoticeReady
 )
 
 
@@ -351,6 +370,7 @@ AgentEventName: TypeAlias = Literal[
     "ToolCallComplete",
     "ToolResultReady",
     "ToolExecutionFailed",
+    "UserNoticeReady",
 ]
 
 
