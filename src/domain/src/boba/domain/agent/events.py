@@ -241,6 +241,29 @@ class AnswerComplete(BaseEvent):
 
 
 @dataclass(frozen=True)
+class AnswerDiscarded(BaseEvent):
+    """Ранее отправленные ``AnswerToken``-ы для этого ``request_id``
+    следует отбросить: аккумулированный ``content`` не должен попасть
+    ни в итоговое ``AnswerComplete``, ни в ``LLMMessage.content``.
+
+    Эмитится, когда middleware решает переинтерпретировать уже
+    проэмиченный текстовый поток как tool call: токены ушли наружу
+    ради отзывчивости UI, но в долговременном состоянии (сообщение в
+    истории, журнал) текстовой ветки быть не должно — её заменяют
+    ``ToolCallBegin`` / ``ToolCallArgumentDelta`` / ``ToolCallComplete``.
+
+    Потребители (``AssistantMessagePersistenceMiddleware``, ``HistorySink``)
+    очищают свои answer-буферы для данного ``request_id``; sink'и UI
+    могут использовать событие как сигнал «стереть/перезаписать то, что
+    только что вывели».
+    """
+
+    @classmethod
+    def name(cls) -> Literal["AnswerDiscarded"]:
+        return "AnswerDiscarded"
+
+
+@dataclass(frozen=True)
 class RefusalComplete(BaseEvent):
     """Агрегированный отказ: весь текст отказа."""
 
@@ -262,6 +285,7 @@ AgentEvent = (
     | AnswerStarted
     | AnswerToken
     | AnswerComplete
+    | AnswerDiscarded
     | RefusalToken
     | RefusalComplete
     | GenerationDone
@@ -289,6 +313,7 @@ AgentEventName: TypeAlias = Literal[
     "AnswerStarted",
     "AnswerToken",
     "AnswerComplete",
+    "AnswerDiscarded",
     "RefusalToken",
     "RefusalComplete",
     "GenerationDone",

@@ -8,6 +8,7 @@ from typing import assert_never
 from boba.domain.agent.events import (
     AgentEvent,
     AnswerComplete,
+    AnswerDiscarded,
     AnswerStarted,
     AnswerToken,
     GenerationDone,
@@ -89,6 +90,9 @@ class HistorySink(StreamSink[AgentContext, AgentEvent]):
                 self._flush_thinking(request_id)
             case ThinkingStarted(request_id):
                 self._flush_answer(request_id)
+            case AnswerDiscarded(request_id):
+                self._answer_buf.pop(request_id, None)
+                self._history.append(event)
 
             case (
                 UserQueryReceived()

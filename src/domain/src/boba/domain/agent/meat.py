@@ -9,11 +9,17 @@ from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum, auto
+from typing import ClassVar
 
-from boba.domain.agent.errors import LLMError, RetryableLLMError
+from boba.domain.agent.errors import (
+    LLMError,
+    LLMResponseFormatError,
+    RetryableLLMError,
+)
 from boba.domain.agent.events import (
     AgentEvent,
     AnswerComplete,
+    AnswerDiscarded,
     AnswerStarted,
     AnswerToken,
     GenerationDone,
@@ -215,7 +221,7 @@ class AssistantMessagePersistenceMiddleware(StreamSource[AgentContext, AgentEven
     def name(self) -> str:
         return "AssistantPersistence"
 
-    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:  # noqa: C901
         for event in self._inner.stream(ctx):
             match event:
                 case GenerationStarted(request_id=rid):
@@ -226,6 +232,9 @@ class AssistantMessagePersistenceMiddleware(StreamSource[AgentContext, AgentEven
                     yield event
                 case AnswerToken(request_id=rid, token=t):
                     self._answer[rid].append(t)
+                    yield event
+                case AnswerDiscarded(request_id=rid):
+                    self._answer[rid].clear()
                     yield event
                 case RefusalToken(request_id=rid, token=t):
                     self._refusal[rid].append(t)
@@ -900,6 +909,229 @@ class JsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
             yield pending_started
         if header_buffer:
             yield AnswerToken(request_id=rid, token=header_buffer)
+
+
+@dataclass(frozen=True)
+class ParsedJsonToolCall:
+    """Распарсенный content-as-JSON tool call.
+
+    ``arguments`` — уже JSON-строка корневого объекта аргументов, готовая
+    к эмиту в :class:`ToolCallArgumentDelta` (ровно в том виде, в каком её
+    ждёт :class:`ToolExecutionMiddleware._run_tool`, вызывая ``json.loads``
+    на входе). Строка, а не ``dict``, потому что контракт событийной
+    модели — стримовое накопление чанков аргументов, и точечное введение
+    ``dict`` только для content-as-JSON ломало бы однородность.
+    """
+
+    name: str
+    arguments: str
+
+
+class StrictJsonToolCallParser(Converter[str, ParsedJsonToolCall]):
+    """Строгий парсер content-as-JSON в ``(name, arguments)``.
+
+    Контракт:
+
+    - Корневой JSON — объект с **ровно** двумя полями ``name``, ``arguments``.
+    - ``name`` — непустая строка.
+    - ``arguments`` — объект или массив.
+    - Любое отклонение → :class:`LLMResponseFormatError` с описанием,
+      что именно не так (невалидный JSON, не-объект на корне,
+      отсутствующие/посторонние поля, неверные типы).
+
+    Посторонние поля запрещены явно: содержательные ответы пользователю
+    нельзя протаскивать внутри tool call — это должен быть чистый сигнал
+    диспетчеру, а текст уходит отдельным сообщением.
+
+    Чистая функция от строки — тестируется в изоляции без моков стрима.
+    """
+
+    _ALLOWED: ClassVar[frozenset[str]] = frozenset({"name", "arguments"})
+
+    def convert(self, value: str) -> ParsedJsonToolCall:
+        try:
+            data = json.loads(value)
+        except json.JSONDecodeError as e:
+            raise LLMResponseFormatError(
+                f"Ответ модели начался с '{{', значит обязан быть "
+                f"корректным JSON tool call, но JSON невалиден: "
+                f"{e.msg} (позиция {e.pos}). Полученный content: {value!r}"
+            ) from e
+
+        if not isinstance(data, dict):
+            raise LLMResponseFormatError(
+                f"Ожидался JSON-объект tool call вида "
+                f"{{'name': str, 'arguments': object}}, получено значение "
+                f"типа {type(data).__name__}: {value!r}"
+            )
+
+        missing = sorted(self._ALLOWED - data.keys())
+        if missing:
+            raise LLMResponseFormatError(
+                f"В JSON tool call отсутствуют обязательные поля: "
+                f"{missing}. Ожидался формат "
+                f"{{'name': str, 'arguments': object}}. "
+                f"Полученный content: {value!r}"
+            )
+
+        extra = sorted(data.keys() - self._ALLOWED)
+        if extra:
+            raise LLMResponseFormatError(
+                f"В JSON tool call присутствуют посторонние поля: "
+                f"{extra}. Допустимы только {sorted(self._ALLOWED)}. "
+                f"Любые дополнительные поля (например 'content', 'response', "
+                f"'type', 'id', 'thought') запрещены — текст для пользователя "
+                f"нельзя передавать внутри tool call. "
+                f"Полученный content: {value!r}"
+            )
+
+        name = data["name"]
+        if not isinstance(name, str) or not name.strip():
+            raise LLMResponseFormatError(
+                f"Поле 'name' должно быть непустой строкой, получено "
+                f"{type(name).__name__}={name!r}. Полученный content: {value!r}"
+            )
+
+        arguments = data["arguments"]
+        if not isinstance(arguments, (dict, list)):
+            raise LLMResponseFormatError(
+                f"Поле 'arguments' (tool '{name}') должно быть объектом или "
+                f"массивом, получено {type(arguments).__name__}={arguments!r}. "
+                f"Полученный content: {value!r}"
+            )
+
+        return ParsedJsonToolCall(
+            name=name,
+            arguments=json.dumps(arguments, ensure_ascii=False),
+        )
+
+
+class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
+    """Обнаруживает content-as-JSON tool call и оркеструет события.
+
+    Если первый непустой ``AnswerToken`` начинается с ``{`` — весь
+    дальнейший ``content`` трактуется как tool call и отдаётся парсеру:
+    никакого смешения текста и JSON, ничего кроме корректного вызова
+    инструмента.
+
+    Для отзывчивости UI ``AnswerToken``-ы во время буферизации
+    **проксируются наружу** — пользователь видит, что модель печатает.
+    Параллельно middleware копит их в буфер. На :class:`GenerationDone`:
+
+    - Эмитит :class:`AnswerDiscarded` — сигнал downstream-ам
+      (``persistence``, ``history``, sink'и UI) отбросить накопленный
+      content: в долговременной истории JSON-текста быть не должно.
+    - Отдаёт буфер инъектированному парсеру (``Converter[str,
+      ParsedJsonToolCall]``). Парсер сам отвечает за формат JSON,
+      допустимые поля, типы и сообщения об ошибках:
+
+      * Успех → :class:`ToolCallBegin` + :class:`ToolCallArgumentDelta`
+        + :class:`GenerationDone` с ``finish_reason="tool_calls"``.
+      * Парсер бросил :class:`LLMResponseFormatError` — исключение
+        прокидывается наружу (через retry-слой до
+        :class:`ErrorToEventMiddleware`, который конвертирует его в
+        терминальное :class:`GenerationFailed`).
+
+    Сама middleware про JSON-синтаксис, whitelist полей и типы ничего
+    не знает — только про стриминг событий и границу режимов. Парсер
+    заменяется через конструктор (например, мягкий вариант для моделей,
+    которые добавляют thinking-поля).
+
+    Если первый ``AnswerToken`` не начинается с ``{`` — поток идёт
+    passthrough. Если раньше него приходит настоящий
+    :class:`ToolCallBegin` от провайдера — тоже passthrough.
+
+    Ставится innermost — внутри
+    :class:`AssistantMessagePersistenceMiddleware`.
+    """
+
+    def __init__(
+        self,
+        inner: StreamSource[AgentContext, AgentEvent],
+        parser: Converter[str, ParsedJsonToolCall] | None = None,
+    ) -> None:
+        self._inner = inner
+        self._parser = parser if parser is not None else StrictJsonToolCallParser()
+
+    def name(self) -> str:
+        return "StrictJsonContentToolCall"
+
+    def stream(  # noqa: C901, PLR0912
+        self, ctx: AgentContext
+    ) -> Iterator[AgentEvent]:
+        rid = ctx.request.request_id
+        mode = "undecided"
+        pending_started: AnswerStarted | None = None
+        buffer = ""
+
+        for event in self._inner.stream(ctx):
+            if mode == "passthrough":
+                yield event
+                continue
+
+            if mode == "buffering":
+                match event:
+                    case AnswerToken(token=t):
+                        buffer += t
+                        yield event
+                    case GenerationDone():
+                        yield from self._finalize_tool_call(rid, buffer)
+                        yield GenerationDone(
+                            request_id=rid, finish_reason="tool_calls"
+                        )
+                        mode = "passthrough"
+                        buffer = ""
+                    case _:
+                        yield event
+                continue
+
+            match event:
+                case AnswerStarted():
+                    pending_started = event
+                case AnswerToken(token=t) if t.lstrip().startswith("{"):
+                    if pending_started is not None:
+                        yield pending_started
+                        pending_started = None
+                    yield event
+                    buffer = t
+                    mode = "buffering"
+                case AnswerToken():
+                    if pending_started is not None:
+                        yield pending_started
+                        pending_started = None
+                    mode = "passthrough"
+                    yield event
+                case ToolCallBegin():
+                    pending_started = None
+                    mode = "passthrough"
+                    yield event
+                case GenerationDone():
+                    if pending_started is not None:
+                        yield pending_started
+                        pending_started = None
+                    yield event
+                    mode = "passthrough"
+                case _:
+                    yield event
+
+    def _finalize_tool_call(self, rid: RequestId, raw: str) -> Iterator[AgentEvent]:
+        """Завершающий этап: буфер уже проэмичен как ``AnswerToken``-ы.
+        Сигналим downstream-ам отбросить накопленный content и передаём
+        буфер парсеру; его исключение летит наружу через ``yield from``.
+        """
+        yield AnswerDiscarded(request_id=rid)
+        parsed = self._parser.convert(raw)
+        yield ToolCallBegin(
+            request_id=rid,
+            index=0,
+            tool_call_id=f"call_{parsed.name}",
+            tool_name=parsed.name,
+        )
+        yield ToolCallArgumentDelta(
+            request_id=rid,
+            index=0,
+            arguments=parsed.arguments,
+        )
 
 
 class StopOnFinished(Specification[tuple[AgentContext, AgentEvent]]):
