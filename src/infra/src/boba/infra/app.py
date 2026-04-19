@@ -24,7 +24,12 @@ from boba.adapters.prompt_providers import (
     StaticPromptProvider,
     UserQueryProvider,
 )
-from boba.adapters.raw_llm_observer import FileRawLLMObserver, RawLLMObserver
+from boba.adapters.raw_llm_observer import (
+    CompositeRawLLMObserver,
+    FileContentObserver,
+    FileRawLLMObserver,
+    RawLLMObserver,
+)
 from boba.adapters.tool_providers import StaticToolSource
 from boba.adapters.tools import (
     DeleteFileTool,
@@ -183,11 +188,20 @@ class RequestProvider(Provider):
 
     @provide
     def raw_llm_observer(self, workspace: WorkspaceService) -> RawLLMObserver:
-        """Пишет сырые kwargs и ChatCompletionChunk-и в
-        ``raw_messages.md`` внутри workspace. Per-request — файл
-        соответствует конкретному агентскому запуску.
+        """Комбинированный наблюдатель, пишет два файла внутри workspace:
+
+        - ``raw_messages.md`` — полный JSON-дамп kwargs и каждого
+          ChatCompletionChunk (для дебаг-разбора протокола);
+        - ``raw_content.md`` — читаемый текстовый стрим: заголовок
+          Request (kwargs JSON) и Response с склеенным ``delta.content``
+          (чтобы быстро видеть, что модель реально сказала).
         """
-        return FileRawLLMObserver(workspace)
+        return CompositeRawLLMObserver(
+            [
+                FileRawLLMObserver(workspace),
+                FileContentObserver(workspace),
+            ]
+        )
 
     @provide
     def agent_chain(
