@@ -13,6 +13,7 @@ def main() -> None:
     loader = ConfigLoader()
     _ = loader.load_app()
     _ = loader.load_agent()
+    _ = loader.load_llm_defaults()
 
 if __name__ == "__main__":
     main()

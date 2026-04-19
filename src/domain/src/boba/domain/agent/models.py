@@ -64,6 +64,22 @@ class SamplingParams:
     max_tokens: int | None = None
     seed: int | None = None
     stop: list[str] | None = None
+    frequency_penalty: float | None = None
+    presence_penalty: float | None = None
+
+
+@dataclass(frozen=True)
+class LLMRequestDefaults:
+    """Дефолтные параметры LLM-запроса, применяемые
+    :class:`SamplingMiddleware` на каждой итерации. Живут в agent-слое
+    (аналогично :class:`AgentConfig`), загружаются
+    :class:`~boba.infra.config.ConfigLoader` отдельно от
+    :class:`~boba.domain.config.LLMConfig` — чтобы транспортный
+    :class:`LLMConfig` не тянул семантику запроса.
+    """
+
+    sampling: SamplingParams = field(default_factory=SamplingParams)
+    parallel_tool_calls: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -83,6 +99,7 @@ class LLMRequest:
     sampling: SamplingParams = field(default_factory=SamplingParams)
     tool_choice: str | None = None
     response_format: dict[str, Any] | None = None
+    parallel_tool_calls: bool | None = None
 
 
 @dataclass
@@ -113,6 +130,7 @@ class LLMRequestBuilder:
     sampling: SamplingParams = field(default_factory=SamplingParams)
     tool_choice: str | None = None
     response_format: dict[str, Any] | None = None
+    parallel_tool_calls: bool | None = None
 
 
 @dataclass

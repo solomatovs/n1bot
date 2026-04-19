@@ -16,7 +16,8 @@ def test_agent_loop_hello() -> None:
     loader = ConfigLoader()
     app_config = loader.load_app()
     agent_config = loader.load_agent()
-    container = create_container(app_config, agent_config)
+    llm_defaults = loader.load_llm_defaults()
+    container = create_container(app_config, agent_config, llm_defaults)
 
     manager = container.get(WorkspaceManager)
     storage = manager.create()

@@ -53,6 +53,7 @@ from boba.domain.agent.models import (
     LLMMessage,
     LLMRequest,
     RequestId,
+    SamplingParams,
 )
 from boba.domain.config import LLMConfig
 from boba.domain.core.errors import Retryable
@@ -366,20 +367,26 @@ class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
             kwargs["tool_choice"] = value.tool_choice
         if value.response_format is not None:
             kwargs["response_format"] = value.response_format
+        if value.parallel_tool_calls is not None:
+            kwargs["parallel_tool_calls"] = value.parallel_tool_calls
 
-        s = value.sampling
-        if s.temperature is not None:
-            kwargs["temperature"] = s.temperature
-        if s.top_p is not None:
-            kwargs["top_p"] = s.top_p
-        if s.max_tokens is not None:
-            kwargs["max_tokens"] = s.max_tokens
-        if s.seed is not None:
-            kwargs["seed"] = s.seed
-        if s.stop is not None:
-            kwargs["stop"] = s.stop
-
+        self._apply_sampling(kwargs, value.sampling)
         return kwargs
+
+    @staticmethod
+    def _apply_sampling(kwargs: dict[str, Any], s: SamplingParams) -> None:
+        fields: dict[str, Any] = {
+            "temperature": s.temperature,
+            "top_p": s.top_p,
+            "max_tokens": s.max_tokens,
+            "seed": s.seed,
+            "stop": s.stop,
+            "frequency_penalty": s.frequency_penalty,
+            "presence_penalty": s.presence_penalty,
+        }
+        for key, val in fields.items():
+            if val is not None:
+                kwargs[key] = val
 
 
 class ToOpenAIToolConverter(Converter[Tool[Any], ChatCompletionToolParam]):

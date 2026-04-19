@@ -41,6 +41,7 @@ from .loop_control import (
     StopOnFinished,
 )
 from .prompt import SystemPromptMiddleware, UserPromptMiddleware
+from .sampling import SamplingMiddleware
 from .tools import (
     RepeatedFormatFailureGuardMiddleware,
     RepeatedToolCallGuardMiddleware,
@@ -63,6 +64,7 @@ __all__ = [
     "ParsedJsonToolCall",
     "RepeatedFormatFailureGuardMiddleware",
     "RepeatedToolCallGuardMiddleware",
+    "SamplingMiddleware",
     "StopOnAnyFailure",
     "StopOnFinished",
     "StrictJsonContentToolCallMiddleware",

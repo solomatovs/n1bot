@@ -51,6 +51,7 @@ from boba.domain.agent.meat import (
     IterationCounterMiddleware,
     RepeatedFormatFailureGuardMiddleware,
     RepeatedToolCallGuardMiddleware,
+    SamplingMiddleware,
     StopOnAnyFailure,
     StopOnFinished,
     StrictJsonContentToolCallMiddleware,
@@ -60,7 +61,7 @@ from boba.domain.agent.meat import (
     UserPromptMiddleware,
 )
 from boba.domain.agent.messages import MessageService
-from boba.domain.agent.models import AgentConfig
+from boba.domain.agent.models import AgentConfig, LLMRequestDefaults
 from boba.domain.agent.prompt import PromptId, PromptKind
 from boba.domain.config import AppConfig
 from boba.domain.core.patterns import (
@@ -86,10 +87,16 @@ class AppProvider(Provider):
 
     scope = Scope.APP
 
-    def __init__(self, app_config: AppConfig, agent_config: AgentConfig) -> None:
+    def __init__(
+        self,
+        app_config: AppConfig,
+        agent_config: AgentConfig,
+        llm_defaults: LLMRequestDefaults,
+    ) -> None:
         super().__init__()
         self._app_config = app_config
         self._agent_config = agent_config
+        self._llm_defaults = llm_defaults
 
     @provide
     def config(self) -> AppConfig:
@@ -102,6 +109,10 @@ class AppProvider(Provider):
     @provide
     def agent_config(self) -> AgentConfig:
         return self._agent_config
+
+    @provide
+    def llm_defaults(self) -> LLMRequestDefaults:
+        return self._llm_defaults
 
     @provide
     def prompt_providers(self) -> list[PromptProvider]:
@@ -244,6 +255,7 @@ class RequestProvider(Provider):
         self,
         config: AppConfig,
         agent_config: AgentConfig,
+        llm_defaults: LLMRequestDefaults,
         prompt_providers: list[PromptProvider],
         message_service: MessageService,
         tools_service: ToolsService,
@@ -272,6 +284,7 @@ class RequestProvider(Provider):
             lambda inner: UserPromptMiddleware(inner, prompt_providers, message_service)
         )
         builder.use(lambda inner: ToolsDefinitionMiddleware(inner, tools_service))
+        builder.use(lambda inner: SamplingMiddleware(inner, llm_defaults))
         builder.use(
             lambda inner: ToolExecutionMiddleware(
                 inner, tools_service, message_service, error_router

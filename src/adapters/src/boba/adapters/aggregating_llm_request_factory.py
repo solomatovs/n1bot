@@ -45,4 +45,5 @@ class AggregatingLLMRequestFactory(LLMRequestFactory):
             sampling=b.sampling,
             tool_choice=b.tool_choice,
             response_format=b.response_format,
+            parallel_tool_calls=b.parallel_tool_calls,
         )
