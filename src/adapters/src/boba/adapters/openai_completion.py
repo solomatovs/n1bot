@@ -21,6 +21,7 @@ from openai.types.chat.chat_completion_chunk import (
     Choice,
 )
 
+from boba.domain.agent.context import ContextService
 from boba.domain.agent.events import (
     AgentEvent,
     AnswerStarted,
@@ -36,17 +37,17 @@ from boba.domain.agent.events import (
 from boba.domain.agent.models import (
     AgentContext,
     LLMMessage,
+    LLMRequest,
     RequestId,
 )
 from boba.domain.config import LLMConfig
-from boba.domain.core.messages import MessageService
 from boba.domain.core.patterns import (
     Converter,
     Stream,
     StreamConverter,
     StreamPipeline,
 )
-from boba.domain.core.tools import Tool, ToolsService
+from boba.domain.core.tools import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -132,44 +133,72 @@ class FromOpenAIChunkConverter(Stream[AgentContext, ChatCompletionChunk, AgentEv
 class OpenAIMiddleware(Stream[AgentContext, None, AgentEvent]):
     """
     Terminal — вызывает OpenAI-совместимый API.
-    Сам берёт messages из MessageService, строит запрос и стримит AgentEvent.
+    Получает готовый :class:`LLMRequest` от :class:`ContextService`,
+    мапит его в kwargs провайдера через :class:`ToOpenAIRequestConverter`
+    и стримит :class:`AgentEvent`.
     """
 
     def __init__(
         self,
         config: LLMConfig,
-        message_service: MessageService,
-        tools_service: ToolsService,
+        context_service: ContextService,
     ) -> None:
         self._client = OpenAI(base_url=config.base_url, api_key=config.api_key)
-        self._message_service = message_service
-        self._tools_service = tools_service
-        self._to_converter = ToOpenAIMessageConverter()
-        self._to_tool_converter = ToOpenAIToolConverter()
+        self._context_service = context_service
+        self._to_request_converter = ToOpenAIRequestConverter()
 
     def name(self) -> str:
         return "OpenAICompletion"
 
     def stream(self, ctx: AgentContext, stream: None) -> Iterable[AgentEvent]:
-        msg = self._message_service.message_iter()
-        tools = [
-            self._to_tool_converter.convert(t)
-            for t in self._tools_service.tools()
-        ]
-
-        kwargs: dict = {
-            "model": ctx.request.model,
-            "messages": self._to_converter.convert(msg),
-            "stream": True,
-        }
-        if tools:
-            kwargs["tools"] = tools
+        llm_request = self._context_service.build_for_llm(ctx)
+        kwargs = self._to_request_converter.convert(llm_request)
 
         response = self._client.chat.completions.create(**kwargs)
 
         yield from FromOpenAIChunkConverter(ctx.request.request_id).stream(
             ctx, response
         )
+
+
+class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
+    """Мапит :class:`LLMRequest` в kwargs для
+    ``client.chat.completions.create``.
+    """
+
+    def __init__(self) -> None:
+        self._to_message_converter = ToOpenAIMessageConverter()
+        self._to_tool_converter = ToOpenAIToolConverter()
+
+    def convert(self, value: LLMRequest) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "model": value.model,
+            "messages": list(self._to_message_converter.convert(value.messages)),
+            "stream": True,
+        }
+
+        if value.tools:
+            kwargs["tools"] = [
+                self._to_tool_converter.convert(t) for t in value.tools
+            ]
+        if value.tool_choice is not None:
+            kwargs["tool_choice"] = value.tool_choice
+        if value.response_format is not None:
+            kwargs["response_format"] = value.response_format
+
+        s = value.sampling
+        if s.temperature is not None:
+            kwargs["temperature"] = s.temperature
+        if s.top_p is not None:
+            kwargs["top_p"] = s.top_p
+        if s.max_tokens is not None:
+            kwargs["max_tokens"] = s.max_tokens
+        if s.seed is not None:
+            kwargs["seed"] = s.seed
+        if s.stop is not None:
+            kwargs["stop"] = s.stop
+
+        return kwargs
 
 
 class ToOpenAIToolConverter(Converter[Tool[Any], ChatCompletionToolParam]):
