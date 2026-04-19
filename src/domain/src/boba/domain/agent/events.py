@@ -142,6 +142,33 @@ class GenerationFailed(BaseEvent):
 
 
 @dataclass(frozen=True)
+class PromptFailed(BaseEvent):
+    """Терминальный отказ: PromptFactory/провайдер не смогли собрать промпт."""
+
+    error_kind: str
+    message: str
+    retryable: bool
+    provider: str | None = None
+
+    @classmethod
+    def name(cls) -> Literal["PromptFailed"]:
+        return "PromptFailed"
+
+
+@dataclass(frozen=True)
+class PersistenceFailed(BaseEvent):
+    """Терминальный отказ: не удалось прочитать/записать журнал/хранилище."""
+
+    error_kind: str
+    message: str
+    retryable: bool
+
+    @classmethod
+    def name(cls) -> Literal["PersistenceFailed"]:
+        return "PersistenceFailed"
+
+
+@dataclass(frozen=True)
 class ToolCallBegin(BaseEvent):
     """Начало tool call — пришёл id и имя функции."""
 
@@ -239,6 +266,8 @@ AgentEvent = (
     | RefusalComplete
     | GenerationDone
     | GenerationFailed
+    | PromptFailed
+    | PersistenceFailed
     | ToolCallBegin
     | ToolCallArgumentDelta
     | ToolCallComplete
@@ -264,6 +293,8 @@ AgentEventName: TypeAlias = Literal[
     "RefusalComplete",
     "GenerationDone",
     "GenerationFailed",
+    "PromptFailed",
+    "PersistenceFailed",
     "ToolCallBegin",
     "ToolCallArgumentDelta",
     "ToolCallComplete",

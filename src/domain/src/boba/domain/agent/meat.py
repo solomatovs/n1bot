@@ -15,6 +15,8 @@ from boba.domain.agent.events import (
     GenerationDone,
     GenerationFailed,
     GenerationStarted,
+    PersistenceFailed,
+    PromptFailed,
     RefusalComplete,
     RefusalToken,
     StageCompleted,
@@ -35,7 +37,7 @@ from boba.domain.agent.models import (
     LLMToolCall,
     RequestId,
 )
-from boba.domain.core.history import HistoryService
+from boba.domain.core.history import HistoryError, HistoryService
 from boba.domain.core.messages import MessageService
 from boba.domain.core.patterns import (
     Specification,
@@ -43,7 +45,13 @@ from boba.domain.core.patterns import (
     StreamSource,
     StreamSourceLoop,
 )
-from boba.domain.core.promt import PromptFactory, PromptKind, PromptProvider
+from boba.domain.core.promt import (
+    PromptError,
+    PromptFactory,
+    PromptKind,
+    PromptProvider,
+    RetryablePromptError,
+)
 from boba.domain.core.tools import (
     ToolCall,
     ToolId,
@@ -195,9 +203,9 @@ class AssistantMessagePersistenceMiddleware(StreamSource[AgentContext, AgentEven
         self._thinking: dict[RequestId, list[str]] = defaultdict(list)
         self._answer: dict[RequestId, list[str]] = defaultdict(list)
         self._refusal: dict[RequestId, list[str]] = defaultdict(list)
-        self._tool_calls: dict[
-            RequestId, dict[int, tuple[str, str, list[str]]]
-        ] = defaultdict(dict)
+        self._tool_calls: dict[RequestId, dict[int, tuple[str, str, list[str]]]] = (
+            defaultdict(dict)
+        )
 
     def name(self) -> str:
         return "AssistantPersistence"
@@ -323,9 +331,7 @@ class HistoryReplayMiddleware(StreamSource[AgentContext, AgentEvent]):
                 case AnswerComplete(content=c):
                     answer[rid] = c
                 case ToolCallComplete(tool_call_id=tid, tool_name=fn, arguments=a):
-                    tool_calls[rid].append(
-                        LLMToolCall(id=tid, name=fn, arguments=a)
-                    )
+                    tool_calls[rid].append(LLMToolCall(id=tid, name=fn, arguments=a))
                 case GenerationDone():
                     content = answer.pop(rid, "")
                     calls = tool_calls.pop(rid, [])
@@ -495,6 +501,61 @@ class ErrorToEventMiddleware(StreamSource[AgentContext, AgentEvent]):
             )
 
 
+class PromptErrorToEventMiddleware(StreamSource[AgentContext, AgentEvent]):
+    """Ловит :class:`PromptError` из провайдеров промптов и превращает в
+    терминальное :class:`PromptFailed`-событие.
+
+    Ставится **снаружи** :class:`SystemPromptMiddleware` /
+    :class:`UserPromptMiddleware`. Узкий тип (``PromptError``) — программные
+    баги провайдеров (``KeyError``, ``AttributeError``) проходят насквозь и
+    ломают цикл.
+    """
+
+    def __init__(self, inner: StreamSource[AgentContext, AgentEvent]) -> None:
+        self._inner = inner
+
+    def name(self) -> str:
+        return "PromptErrorToEvent"
+
+    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+        try:
+            yield from self._inner.stream(ctx)
+        except PromptError as e:
+            yield PromptFailed(
+                request_id=ctx.request.request_id,
+                error_kind=type(e).__name__,
+                message=str(e),
+                retryable=isinstance(e, RetryablePromptError),
+                provider=e.provider,
+            )
+
+
+class PersistenceErrorToEventMiddleware(StreamSource[AgentContext, AgentEvent]):
+    """Ловит :class:`HistoryError` из :class:`HistoryService` и превращает в
+    терминальное :class:`PersistenceFailed`-событие.
+
+    Покрывает чтение журнала (``HistoryReplayMiddleware``). Запись журнала в
+    ``HistorySink`` идёт вне source-чейна и этим middleware не ловится.
+    """
+
+    def __init__(self, inner: StreamSource[AgentContext, AgentEvent]) -> None:
+        self._inner = inner
+
+    def name(self) -> str:
+        return "PersistenceErrorToEvent"
+
+    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+        try:
+            yield from self._inner.stream(ctx)
+        except HistoryError as e:
+            yield PersistenceFailed(
+                request_id=ctx.request.request_id,
+                error_kind=type(e).__name__,
+                message=str(e),
+                retryable=False,
+            )
+
+
 class StopOnFinished(Specification[tuple[AgentContext, AgentEvent]]):
     """Останавливает если генерация завершена и не tool_calls."""
 
@@ -507,12 +568,17 @@ class StopOnFinished(Specification[tuple[AgentContext, AgentEvent]]):
         return False
 
 
-class StopOnGenerationFailed(Specification[tuple[AgentContext, AgentEvent]]):
-    """Останавливает цикл агента при терминальной ошибке LLM."""
+class StopOnAnyFailure(Specification[tuple[AgentContext, AgentEvent]]):
+    """Останавливает цикл при любом терминальном failed-событии.
+
+    Покрывает :class:`GenerationFailed`, :class:`PromptFailed`,
+    :class:`PersistenceFailed` — узкие *ToEvent middleware уже сконвертировали
+    соответствующие исключения.
+    """
 
     def check(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
         _ctx, event = candidate
-        return isinstance(event, GenerationFailed)
+        return isinstance(event, (GenerationFailed, PromptFailed, PersistenceFailed))
 
 
 class StopOnMaxIterations(Specification[tuple[AgentContext, AgentEvent]]):
