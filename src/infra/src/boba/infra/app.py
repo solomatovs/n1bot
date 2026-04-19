@@ -44,10 +44,10 @@ from boba.domain.config import AppConfig
 from boba.domain.core.history import HistoryService
 from boba.domain.core.messages import MessageService
 from boba.domain.core.patterns import (
-    Stream,
-    StreamChainBuilder,
-    StreamLoop,
-    StreamPipeline,
+    StreamSink,
+    StreamSinkPipeline,
+    StreamSourceChainBuilder,
+    StreamSourceLoop,
 )
 from boba.domain.core.promt import PromptId, PromptKind
 from boba.domain.core.tools import (
@@ -170,8 +170,8 @@ class RequestProvider(Provider):
         tools_service: ToolsService,
         history_service: HistoryService,
         llm_request_factory: LLMRequestFactory,
-    ) -> StreamLoop[AgentContext, None, AgentEvent]:
-        builder = StreamChainBuilder[AgentContext, None, AgentEvent]()
+    ) -> StreamSourceLoop[AgentContext, AgentEvent]:
+        builder = StreamSourceChainBuilder[AgentContext, AgentEvent]()
         builder.use(IterationCounterMiddleware)
         builder.use(
             lambda inner: HistoryReplayMiddleware(
@@ -196,14 +196,14 @@ class RequestProvider(Provider):
 
         stop = StopOnFinished().or_(StopOnMaxIterations())
 
-        return StreamLoop(chain, stop)
+        return StreamSourceLoop(chain, stop)
 
     @provide
     def agent_sink(
         self,
         history: HistoryService,
-    ) -> Stream[AgentContext, AgentEvent, None]:
-        return StreamPipeline(
+    ) -> StreamSink[AgentContext, AgentEvent]:
+        return StreamSinkPipeline(
             [
                 ConsoleSink(),
                 HistorySink(history),
@@ -213,8 +213,8 @@ class RequestProvider(Provider):
     @provide
     def agent(
         self,
-        source: StreamLoop[AgentContext, None, AgentEvent],
-        sink: Stream[AgentContext, AgentEvent, None],
+        source: StreamSourceLoop[AgentContext, AgentEvent],
+        sink: StreamSink[AgentContext, AgentEvent],
     ) -> Agent:
         return Agent(
             source,

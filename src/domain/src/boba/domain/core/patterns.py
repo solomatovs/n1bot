@@ -156,11 +156,146 @@ class StreamConverter(ABC, Generic[TIn, TOut]):
     def convert(self, stream: Iterable[TIn]) -> Iterable[TOut]: ...
 
 
-class Stream(StateFull, Generic[TCtx, TIn, TOut]):
-    """ """
+class StreamSource(StateFull, Generic[TCtx, TOut]):
+    """
+    Источник потока событий.
+
+    Генерирует ``Iterable[TOut]``, опираясь только на ``ctx`` и
+    зависимости, внедрённые в конструктор. Входного потока у источника
+    нет; если он нужен — это уже :class:`StreamTransformer`.
+
+    Схема::
+
+                         ctx
+                          │
+                          ▼
+                  ┌──────────────┐
+                  │    source    │ ──▶ Iterable[TOut]
+                  └──────────────┘
+
+    Контракт:
+    - :meth:`stream` возвращает генератор — события выдаются лениво,
+      по мере готовности; побочные эффекты допустимы (подготовить
+      ``ctx.llm_builder``, отправить запрос, открыть файл);
+    - ``StateFull`` — реализация может копить состояние между
+      итерациями (флаг «replay уже выполнен», счётчики);
+      :meth:`reset` возвращает состояние к начальному.
+
+    Когда использовать:
+    - middleware в агентской цепочке: стадия читает/мутирует ``ctx``,
+      эмитит собственные события и делегирует inner'у. Onion-композиция
+      собирается через :class:`StreamSourceChainBuilder`;
+    - терминальный поставщик событий (LLM-клиент, подписка на очередь,
+      обход файлов);
+    - несколько независимых источников на одном ``ctx``, чьи события
+      нужно слить — :class:`StreamSourcePipeline`;
+    - циклический запуск до условия остановки —
+      :class:`StreamSourceLoop`.
+
+    Когда НЕ использовать:
+    - если на вход приходит реальный поток данных, который нужно
+      преобразовать — см. :class:`StreamTransformer`;
+    - если стадия только потребляет события и совершает побочный
+      эффект без возврата — см. :class:`StreamSink`.
+    """
 
     @abstractmethod
-    def stream(self, ctx: TCtx, stream: TIn) -> Iterable[TOut]: ...
+    def stream(self, ctx: TCtx) -> Iterable[TOut]: ...
+
+
+class StreamSink(StateFull, Generic[TCtx, TIn]):
+    """
+    Терминальный потребитель событий.
+
+    Обрабатывает одно событие за вызов и совершает побочные эффекты.
+    Выходного потока нет — это край pipeline'а, дальше делегировать
+    нечему.
+
+    Схема::
+
+                     ctx, event
+                          │
+                          ▼
+                  ┌──────────────┐
+                  │     sink     │ ──▶ (side effects)
+                  └──────────────┘
+
+    Типовая точка вызова::
+
+        for event in source.stream(ctx):
+            sink.handle(ctx, event)
+
+    Контракт:
+    - :meth:`handle` синхронно обрабатывает одно событие и ничего не
+      возвращает; реализация может копить состояние между вызовами
+      (буферы для агрегирования стриминговых токенов в «завершённые»
+      сообщения, счётчики, дебаунсеры);
+    - ``StateFull`` — :meth:`reset` очищает накопленные буферы.
+
+    Когда использовать:
+    - вывод в консоль/UI, запись в журнал, отправка наружу
+      (webhook, message bus);
+    - агрегация стриминга в «завершённые» сущности (пример —
+      HistorySink: токены → ``*Complete`` в журнал);
+    - fan-out одного события на несколько потребителей сразу
+      (консоль + журнал + телеметрия) — :class:`StreamSinkPipeline`.
+
+    Когда НЕ использовать:
+    - если стадия должна что-то вернуть обратно в поток — это уже
+      обёртка источника, см. :class:`StreamSource` (через inner
+      в onion-цепочке);
+    - если есть вход-поток и выход-поток — :class:`StreamTransformer`.
+    """
+
+    @abstractmethod
+    def handle(self, ctx: TCtx, event: TIn) -> None: ...
+
+
+class StreamTransformer(StateFull, Generic[TCtx, TIn, TOut]):
+    """
+    Потоковое преобразование с контекстом.
+
+    Принимает ``Iterable[TIn]`` и выдаёт ``Iterable[TOut]`` в
+    присутствии ``ctx``. Это «обычная» ETL-стадия: декодер формата,
+    фильтр, разбиение по ключу, генерация событий из дельт, и т.п.
+
+    Схема::
+
+                  ctx, Iterable[TIn]
+                          │
+                          ▼
+                  ┌──────────────┐
+                  │  transformer │ ──▶ Iterable[TOut]
+                  └──────────────┘
+
+    Отличия от соседних паттернов:
+    - от :class:`StreamConverter` — знает про ``ctx`` (request_id,
+      workspace, config). Если ``ctx`` не нужен — берите
+      ``StreamConverter``: он легче и явно заявляет отсутствие
+      зависимости от контекста;
+    - от :class:`StreamSource` — у трансформера есть значимый входной
+      поток. Если вход всегда ``None`` — это источник;
+    - от :class:`StreamSink` — возвращает выходной поток, а не только
+      совершает побочный эффект.
+
+    Контракт:
+    - :meth:`stream` — лениво; если стадия внутри делает
+      ``for item in stream`` и отдаёт одну-в-одну, стоит подумать,
+      не :class:`Converter` ли это вообще;
+    - ``StateFull`` — допустимо состояние между элементами входа
+      (буфер для склейки дельт, флаги «первое появление»);
+      :meth:`reset` сбрасывает его.
+
+    Когда использовать:
+    - ленивый декодер/кодек (OpenAI chunks → AgentEvent);
+    - стадия, агрегирующая/разворачивающая поток и производящая
+      производные события;
+    - fan-out нескольких трансформеров на один вход с одним ``ctx`` —
+      :class:`StreamTransformerPipeline`.
+    """
+
+    @abstractmethod
+    def stream(self, ctx: TCtx, stream: Iterable[TIn]) -> Iterable[TOut]: ...
 
 
 class Definition(ABC, Generic[TValue]):
@@ -597,62 +732,80 @@ class IsInstance(ExceptionSpecification):
         return isinstance(candidate, self._types)
 
 
-class StreamPipeline(Stream[TCtx, TIn, TOut]):
+class StreamSourcePipeline(StreamSource[TCtx, TOut]):
     """
-    Последовательная композиция :class:`Stream`-ов в единый поток событий.
+    Sequential fan-out композиция :class:`StreamSource`-ов в единый поток.
 
-    Стадии выполняются строго в порядке добавления. Каждая стадия получает
-    общий ``ctx`` и один и тот же входной ``stream``; события всех стадий
-    сливаются в выходной поток по мере их появления (lazy, без буферизации).
+    Стадии выполняются строго в порядке регистрации. Каждая стадия
+    получает общий ``ctx``; события всех стадий сливаются в выходной
+    поток по мере появления (lazy, без буферизации). Стадии независимы
+    друг от друга — предыдущая не видит и не влияет на следующую
+    (в отличие от onion-цепочки из :class:`StreamSourceChainBuilder`).
 
     Схема::
 
-             ctx, stream
-                 │
-          ┌──────┴──────┐
-          ▼             │
-        ┌────────┐      │
-        │ stage₁ │──▶ events₁ ─┐
-        └────────┘             │
-          ▼                    │
-        ┌────────┐             ├──▶ общий поток событий
-        │ stage₂ │──▶ events₂ ─┤
-        └────────┘             │
-          ▼                    │
-          ...                  │
-        ┌────────┐             │
-        │ stageₙ │──▶ eventsₙ ─┘
-        └────────┘
+                         ctx
+                          │
+                  ┌───────┴───────┐
+                  ▼               │
+              ┌────────┐          │
+              │ src₁   │─▶ events₁ ┐
+              └────────┘           │
+                                   │
+              ┌────────┐           ├──▶ общий поток TOut
+              │ src₂   │─▶ events₂ ┤
+              └────────┘           │
+                                   │
+                ...                │
+              ┌────────┐           │
+              │ srcₙ   │─▶ eventsₙ ┘
+              └────────┘
 
     Обработка ошибок задаётся спецификацией ``continue_if_error``:
     - если не задана, исключение в любой стадии прерывает весь pipeline;
-    - если задана, она используется как context manager над выполнением
-      стадии: исключение проверяется через ``continue_if_error.check``,
-      и при истинном предикате стадия пропускается, pipeline продолжает
-      со следующей. Иначе исключение пробрасывается с исходным traceback.
+    - если задана, используется как context manager над стадией:
+      исключение проверяется через ``continue_if_error.check``; при
+      истинном предикате стадия пропускается, pipeline продолжает
+      со следующей. Иначе исключение пробрасывается с исходным
+      traceback.
 
     Примеры ``continue_if_error``:
     - ``IsInstance(TimeoutError, ConnectionError)`` — по типам (аналог
       ``except (TimeoutError, ConnectionError)``);
-    - ``IsInstance(HTTPError).and_(IsTransientHTTPError())`` — по типу и
-      дополнительному предикату над атрибутами исключения.
+    - ``IsInstance(HTTPError).and_(IsTransientHTTPError())`` — по типу
+      и дополнительному предикату над атрибутами исключения.
 
-    ``BaseException`` (``KeyboardInterrupt``, ``SystemExit``) никогда не
-    перехватывается независимо от ``continue_if_error``.
+    ``BaseException`` (``KeyboardInterrupt``, ``SystemExit``) никогда
+    не перехватывается независимо от ``continue_if_error``.
 
-    :meth:`reset` сбрасывает состояние всех stateful-стадий; :meth:`name`
-    возвращает читабельное имя вида ``Pipeline(a -> b -> c)``.
+    Когда использовать:
+    - несколько независимых источников событий нужно слить в один
+      поток на общем ``ctx`` (например, разные поставщики уведомлений);
+    - стадии не должны оборачивать друг друга — у каждой свой
+      самостоятельный жизненный цикл.
+
+    Когда НЕ использовать:
+    - стадии должны оборачивать следующую (middleware-цепочка) —
+      :class:`StreamSourceChainBuilder`;
+    - первая успешная стадия должна останавливать остальные
+      (fallback) — этот паттерн в Stream-семье не реализован,
+      ближайший аналог — :class:`ExecutorPipeline` на уровне
+      Executor.
+
+    :meth:`reset` сбрасывает состояние всех stateful-стадий;
+    :meth:`name` возвращает читабельное имя вида
+    ``SourcePipeline(a -> b -> c)``.
     """
 
     def __init__(
         self,
-        stages: MutableSequence[Stream[TCtx, TIn, TOut]],
+        stages: MutableSequence[StreamSource[TCtx, TOut]],
         continue_if_error: ExceptionSpecification | None = None,
     ) -> None:
         self._stages = stages
         self._continue_if_error = continue_if_error
 
-    def append(self, stage: Stream[TCtx, TIn, TOut]):
+    def append(self, stage: StreamSource[TCtx, TOut]):
         self._stages.append(stage)
         return self
 
@@ -661,15 +814,196 @@ class StreamPipeline(Stream[TCtx, TIn, TOut]):
             yield s.name()
 
     def name(self) -> str:
-        return "Pipeline({})".format(" -> ".join(self.stage_names()))
+        return "SourcePipeline({})".format(" -> ".join(self.stage_names()))
 
     def reset(self) -> None:
         for stage in self._stages:
             stage.reset()
 
-    def stream(self, ctx: TCtx, stream: TIn) -> Iterable[TOut]:
-        """Выполнить все стадии, yield-я события по мере их появления."""
+    def stream(self, ctx: TCtx) -> Iterable[TOut]:
+        if self._continue_if_error is None:
+            for stage in self._stages:
+                yield from stage.stream(ctx)
+            return
 
+        for stage in self._stages:
+            with self._continue_if_error:
+                yield from stage.stream(ctx)
+
+
+class StreamSinkPipeline(StreamSink[TCtx, TIn]):
+    """
+    Broadcast-композиция :class:`StreamSink`-ов над одним событием.
+
+    Каждый sink получает одно и то же событие в порядке регистрации.
+    Это «тройник»: одно событие разводится по нескольким независимым
+    потребителям (консоль + журнал + телеметрия) без необходимости
+    их знать друг о друге.
+
+    Схема::
+
+                      ctx, event
+                           │
+                  ┌────────┼────────┐
+                  ▼        ▼        ▼
+              ┌───────┐┌───────┐┌───────┐
+              │ sink₁ ││ sink₂ ││ sinkₙ │
+              └───┬───┘└───┬───┘└───┬───┘
+                  ▼        ▼        ▼
+               side fx  side fx  side fx
+
+    Вызовы строго последовательны в порядке регистрации (не
+    параллельно): для пайплайна агентских sink'ов этого достаточно и
+    сохраняет предсказуемый порядок побочных эффектов (консольный
+    вывод появляется до записи в журнал).
+
+    Обработка ошибок задаётся спецификацией ``continue_if_error``:
+    - если не задана, исключение в любом sink'е прерывает обработку
+      события, оставшиеся sink'и его не получат;
+    - если задана, используется как context manager над каждым
+      sink'ом: подходящие исключения подавляются, pipeline продолжает
+      со следующим. Иначе исключение пробрасывается.
+
+    ``BaseException`` никогда не перехватывается.
+
+    Когда использовать:
+    - одно событие нужно доставить в несколько независимых каналов;
+    - каналы не должны знать друг о друге и не имеют общего состояния.
+
+    Когда НЕ использовать:
+    - sink'и должны вложенно оборачивать друг друга (например,
+      метрики вокруг журналирования) — это onion-паттерн, но в
+      Stream-семье реализован только на уровне источников
+      (:class:`StreamSourceChainBuilder`); в sink-кейсе соберите
+      middleware вручную.
+
+    :meth:`reset` сбрасывает состояние всех stateful-стадий (в том
+    числе буферы агрегации токенов); :meth:`name` — ``SinkPipeline(
+    a -> b -> c)``.
+    """
+
+    def __init__(
+        self,
+        stages: MutableSequence[StreamSink[TCtx, TIn]],
+        continue_if_error: ExceptionSpecification | None = None,
+    ) -> None:
+        self._stages = stages
+        self._continue_if_error = continue_if_error
+
+    def append(self, stage: StreamSink[TCtx, TIn]):
+        self._stages.append(stage)
+        return self
+
+    def stage_names(self) -> Iterable[str]:
+        for s in self._stages:
+            yield s.name()
+
+    def name(self) -> str:
+        return "SinkPipeline({})".format(" -> ".join(self.stage_names()))
+
+    def reset(self) -> None:
+        for stage in self._stages:
+            stage.reset()
+
+    def handle(self, ctx: TCtx, event: TIn) -> None:
+        if self._continue_if_error is None:
+            for stage in self._stages:
+                stage.handle(ctx, event)
+            return
+
+        for stage in self._stages:
+            with self._continue_if_error:
+                stage.handle(ctx, event)
+
+
+class StreamTransformerPipeline(StreamTransformer[TCtx, TIn, TOut]):
+    """
+    Sequential fan-out композиция :class:`StreamTransformer`-ов над
+    одним входным потоком.
+
+    Каждая стадия получает общий ``ctx`` и один и тот же входной
+    ``stream``; события стадий сливаются в выходной поток по мере
+    появления. Стадии выполняются в порядке регистрации и независимы
+    друг от друга.
+
+    Типовой кейс — один входной поток дельт декодируется несколькими
+    специализированными извлекателями (``RoleSource`` + ``AnswerSource``
+    + ``ToolCallSource``), каждый из которых смотрит на «свою» часть
+    события.
+
+    Схема::
+
+                  ctx, Iterable[TIn]
+                         │
+                  ┌──────┴──────┐
+                  ▼             │
+              ┌────────┐        │
+              │ xform₁ │──▶ events₁ ┐
+              └────────┘            │
+                                    │
+              ┌────────┐            ├──▶ общий поток TOut
+              │ xform₂ │──▶ events₂ ┤
+              └────────┘            │
+                                    │
+                ...                 │
+              ┌────────┐            │
+              │ xformₙ │──▶ eventsₙ ┘
+              └────────┘
+
+    **Важно**: входной ``stream`` должен быть re-iterable (list,
+    tuple, pydantic-поле). Pipeline НЕ материализует поток и передаёт
+    один и тот же объект каждой стадии — если передать generator,
+    вторая стадия увидит пустую последовательность. Это осознанный
+    выбор: материализация в list «съела» бы ленивость там, где она не
+    нужна, а дубликат через ``itertools.tee`` потребовал бы решений о
+    размере буфера и семантике отмены. Ответственность — на
+    вызывающем коде.
+
+    Обработка ошибок устроена так же, как в
+    :class:`StreamSourcePipeline`: ``continue_if_error`` как context
+    manager над стадией, ``BaseException`` никогда не перехватывается.
+
+    Когда использовать:
+    - один входной поток нужно разложить на несколько производных
+      потоков, которые затем слить обратно;
+    - стадии-декодеры независимы и смотрят на разные аспекты
+      входного элемента.
+
+    Когда НЕ использовать:
+    - стадии выстраиваются в pipeline «выход одной → вход следующей»
+      (это обычная функциональная композиция, соберите её вручную
+      через вложенные ``stream()``);
+    - нужен fallback (первая успешная выигрывает) — этого в
+      Stream-семье нет.
+
+    :meth:`reset` сбрасывает состояние всех stateful-стадий;
+    :meth:`name` — ``TransformerPipeline(a -> b -> c)``.
+    """
+
+    def __init__(
+        self,
+        stages: MutableSequence[StreamTransformer[TCtx, TIn, TOut]],
+        continue_if_error: ExceptionSpecification | None = None,
+    ) -> None:
+        self._stages = stages
+        self._continue_if_error = continue_if_error
+
+    def append(self, stage: StreamTransformer[TCtx, TIn, TOut]):
+        self._stages.append(stage)
+        return self
+
+    def stage_names(self) -> Iterable[str]:
+        for s in self._stages:
+            yield s.name()
+
+    def name(self) -> str:
+        return "TransformerPipeline({})".format(" -> ".join(self.stage_names()))
+
+    def reset(self) -> None:
+        for stage in self._stages:
+            stage.reset()
+
+    def stream(self, ctx: TCtx, stream: Iterable[TIn]) -> Iterable[TOut]:
         if self._continue_if_error is None:
             for stage in self._stages:
                 yield from stage.stream(ctx, stream)
@@ -680,45 +1014,69 @@ class StreamPipeline(Stream[TCtx, TIn, TOut]):
                 yield from stage.stream(ctx, stream)
 
 
-class StreamLoop(Stream[TCtx, TIn, TOut]):
+class StreamSourceLoop(StreamSource[TCtx, TOut]):
     """
-    Циклический запуск :class:`Stream`-источника до срабатывания условия.
+    Циклический запуск :class:`StreamSource` до срабатывания условия
+    остановки.
 
-    Оборачивает один источник и крутит его в бесконечном цикле: после того
-    как источник исчерпал свой поток, он вызывается снова — и так до тех
-    пор, пока очередное событие не удовлетворит спецификации остановки
-    ``stop``. Проверка выполняется после каждого yield'а, поэтому
-    «финальное» событие гарантированно попадает в выходной поток.
+    Оборачивает один источник и крутит его в бесконечном цикле: когда
+    источник исчерпал свой поток, он вызывается снова на том же
+    ``ctx`` — и так до тех пор, пока очередное событие не удовлетворит
+    спецификации остановки ``stop_if``. Проверка выполняется после
+    каждого yield'а, поэтому «финальное» событие гарантированно
+    попадает в выходной поток — снаружи видно, на чём цикл
+    остановился.
+
+    Типовой кейс — агентский цикл: источник представляет одну
+    итерацию «запрос в LLM + обработка tool_calls»; ``stop_if``
+    срабатывает, когда LLM выдала финальный ответ (без tool_calls)
+    или исчерпан лимит итераций.
 
     Схема::
 
-                 ctx, stream
-                      │
-                      ▼
-               ┌──────────────┐
-         ┌───▶ │    source    │ ──▶ event ───▶ yield ────▶ наружу
-         │     └──────────────┘                   │
-         │            ▲                           │
-         │            │                           |
-         │            │                           ▼
-         │            │          нет      ┌───────────────┐
-         │            └──────────────── ◀ │ stop if event │
-         │     источник иссяк —           └───────┬───────┘
-         │     запускаем снова                    │ да
-         └───────────────────────────             ▼
-                                                STOP
+                        ctx
+                         │
+                         ▼
+                  ┌──────────────┐
+            ┌──▶  │    source    │ ──▶ event ──▶ yield ──▶ наружу
+            │     └──────┬───────┘                 │
+            │            │                         │
+            │   иссяк    │                         ▼
+            │            │                ┌────────────────┐
+            │            │         нет    │ stop_if.check  │
+            └────────────┴──────────────  │  ((ctx, evt))  │
+                                          └────────┬───────┘
+                                                   │ да
+                                                   ▼
+                                                 STOP
 
-    Важно:
-    - ``stop`` получает пару ``(ctx, event)`` и должен быть чистой
+    Контракт:
+    - ``stop_if`` получает пару ``(ctx, event)`` и должен быть чистой
       проверкой без побочных эффектов;
-    - если источник всегда пуст, а условие никогда не срабатывает, цикл
-      крутится вхолостую — ответственность за достижимость остановки
-      лежит на вызывающем коде.
+    - проверка выполняется ПОСЛЕ ``yield``, так что «стоп-событие»
+      всегда доставляется наружу (вызывающий видит, что его привело
+      к остановке);
+    - если источник всегда пуст, а условие никогда не срабатывает,
+      цикл крутится вхолостую — ответственность за достижимость
+      остановки лежит на вызывающем коде (обычно достаточно
+      добавить ``StopOnMaxIterations``-подобную спецификацию в
+      композицию через :meth:`Specification.or_`).
+
+    Когда использовать:
+    - агентский цикл «пока не получим финальный ответ»;
+    - повторные попытки/опросы внешнего ресурса до появления
+      нужного состояния.
+
+    Когда НЕ использовать:
+    - однократный проход по источнику — используйте источник как есть,
+      Loop здесь избыточен;
+    - stop-условие зависит не от события, а от внешнего таймера —
+      нужна другая семантика.
     """
 
     def __init__(
         self,
-        source: Stream[TCtx, TIn, TOut],
+        source: StreamSource[TCtx, TOut],
         stop_if: Specification[tuple[TCtx, TOut]],
     ) -> None:
         self._source = source
@@ -727,84 +1085,110 @@ class StreamLoop(Stream[TCtx, TIn, TOut]):
     def name(self) -> str:
         return "Loop(" + self._source.name() + ")"
 
-    def stream(self, ctx: TCtx, stream: TIn) -> Iterable[TOut]:
+    def stream(self, ctx: TCtx) -> Iterable[TOut]:
         while True:
-            for event in self._source.stream(ctx, stream):
+            for event in self._source.stream(ctx):
                 yield event
 
                 if self._stop_if.check((ctx, event)):
                     return
 
 
-class StreamChainBuilder(Generic[TCtx, TIn, TOut]):
+class StreamSourceChainBuilder(Generic[TCtx, TOut]):
     """
-    Билдер onion-цепочки :class:`Stream`-middleware поверх обязательного
-    терминала, по образцу web-фреймворков (ASP.NET Core ``UseX().Run()``,
-    Rack ``Rack::Builder``).
+    Билдер onion-цепочки :class:`StreamSource`-middleware поверх
+    обязательного терминала, по образцу web-фреймворков (ASP.NET Core
+    ``UseX().Run()``, Rack ``Rack::Builder``).
 
     Две стадии API:
 
-    - :meth:`use` регистрирует middleware-factory. Factory получает текущий
-      inner ``Stream`` и возвращает новый ``Stream``, который его
-      оборачивает. Порядок регистрации = порядок выполнения на «пути
-      запроса»: первое ``use()`` — самый внешний слой, ближайший ко
-      входу. Последнее — ближайшее к терминалу.
+    - :meth:`use` регистрирует middleware-factory. Factory получает
+      текущий inner ``StreamSource`` и возвращает новый
+      ``StreamSource``, который его оборачивает. Порядок регистрации =
+      порядок выполнения на «пути запроса»: первое ``use()`` — самый
+      внешний слой, ближайший ко входу. Последнее — ближайшее к
+      терминалу.
 
-    - :meth:`terminal` принимает терминальный ``Stream`` (тот, что не
-      делегирует дальше) и собирает финальную цепочку, оборачивая
-      терминал факториями в обратном порядке регистрации. Терминал —
-      **обязательный** аргумент: забыть его нельзя, без него нет цепочки.
+    - :meth:`terminal` принимает терминальный ``StreamSource`` (тот,
+      что не делегирует дальше) и собирает финальную цепочку,
+      оборачивая терминал факториями в обратном порядке регистрации.
+      Терминал — **обязательный** аргумент: забыть его нельзя, без
+      него нет цепочки.
 
     Схема сборки::
 
-                 use(m₁) ─┐         ┌── самый внешний ──┐
-                 use(m₂) ─┤         │                   │
-                 use(m₃) ─┤         ▼                   │
-                    ...   │    ┌─────────┐              │
-                 use(mₙ) ─┘    │   m₁    │ ──▶ вход     │
-                               └────┬────┘              │
-                                    │                   │
-                               ┌────▼────┐              │
-                               │   m₂    │              │
-                               └────┬────┘              │
-                                    ▼                   │
-                                   ...                  │
-                               ┌────┬────┐              │
-                               │   mₙ    │              │
-                               └────┬────┘              │
-                                    ▼                   │
+                 use(m₁) ─┐        ┌── самый внешний ──┐
+                 use(m₂) ─┤        │                   │
+                 use(m₃) ─┤        ▼                   │
+                    ...   │    ┌─────────┐             │
+                 use(mₙ) ─┘    │   m₁    │ ──▶ вход    │
+                               └────┬────┘             │
+                                    │                  │
+                               ┌────▼────┐             │
+                               │   m₂    │             │
+                               └────┬────┘             │
+                                    ▼                  │
+                                   ...                 │
+                               ┌─────────┐             │
+                               │   mₙ    │             │
+                               └────┬────┘             │
+                                    ▼                  │
                                ┌─────────┐ ◀── самый внутренний
-                 terminal() ──▶│ terminal│
+                 terminal() ──▶│terminal │
                                └─────────┘
 
-    Применимость: любые onion-composable :class:`Stream`. Агентские
-    middleware — лишь один из случаев. Для «sequential fan-out» (все
-    стадии видят один вход) — см. :class:`StreamPipeline`; это другой
-    паттерн.
+    Поведение:
+    - каждая middleware решает сама, что делать с inner: вызвать
+      ``inner.stream(ctx)`` и пересылать события (прозрачная обёртка),
+      отфильтровать/обогатить события, пропустить inner целиком
+      (short-circuit), обернуть вызов в try/except (retry), замерить
+      время и т.п.;
+    - ``ctx`` общий по всей цепочке — middleware'ы согласовываются
+      через мутации ``ctx`` (``ctx.llm_builder.system_prompt`` и
+      т.п.), а не через события.
+
+    Применимость: любые onion-composable :class:`StreamSource`.
+    Агентские middleware — лишь один из случаев; тот же паттерн
+    уместен для HTTP-клиентов, таск-раннеров, пайплайнов обработки
+    сообщений.
+
+    Когда использовать:
+    - каждая стадия должна иметь возможность обернуть или заменить
+      поведение следующей;
+    - нужен явный «терминал», который не делегирует никуда — и
+      middleware, оборачивающие его.
+
+    Когда НЕ использовать:
+    - стадии независимы и их события нужно просто слить —
+      :class:`StreamSourcePipeline` (sequential fan-out);
+    - «первый успешный выигрывает» (fallback) — см.
+      :class:`ExecutorPipeline` на уровне Executor.
     """
 
     def __init__(self) -> None:
         self._factories: list[
-            Callable[[Stream[TCtx, TIn, TOut]], Stream[TCtx, TIn, TOut]]
+            Callable[[StreamSource[TCtx, TOut]], StreamSource[TCtx, TOut]]
         ] = []
 
     def use(
         self,
-        factory: Callable[[Stream[TCtx, TIn, TOut]], Stream[TCtx, TIn, TOut]],
+        factory: Callable[[StreamSource[TCtx, TOut]], StreamSource[TCtx, TOut]],
     ) -> Self:
         """Зарегистрировать middleware-factory.
 
-        Factory — это любая callable, которая принимает ``inner: Stream``
-        и возвращает обёрнутый ``Stream``. Это может быть конструктор
+        Factory — любая callable, принимающая ``inner: StreamSource`` и
+        возвращающая обёрнутый ``StreamSource``. Это может быть конструктор
         middleware-класса (``SomeMiddleware``) или лямбда с захваченными
         зависимостями (``lambda inner: SomeMiddleware(inner, dep1, dep2)``).
         """
         self._factories.append(factory)
         return self
 
-    def terminal(self, terminal: Stream[TCtx, TIn, TOut]) -> Stream[TCtx, TIn, TOut]:
+    def terminal(
+        self, terminal: StreamSource[TCtx, TOut]
+    ) -> StreamSource[TCtx, TOut]:
         """Собрать цепочку, обернув ``terminal`` зарегистрированными
-        middleware в обратном порядке. Возвращает внешний ``Stream``,
+        middleware в обратном порядке. Возвращает внешний ``StreamSource``,
         готовый к использованию."""
         chain = terminal
         for factory in reversed(self._factories):

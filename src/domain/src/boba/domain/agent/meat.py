@@ -35,7 +35,12 @@ from boba.domain.agent.models import (
 )
 from boba.domain.core.history import HistoryService
 from boba.domain.core.messages import MessageService
-from boba.domain.core.patterns import Specification, Stream, StreamLoop
+from boba.domain.core.patterns import (
+    Specification,
+    StreamSink,
+    StreamSource,
+    StreamSourceLoop,
+)
 from boba.domain.core.promt import PromptFactory, PromptKind, PromptProvider
 from boba.domain.core.tools import (
     ToolCall,
@@ -50,8 +55,8 @@ logger = logging.getLogger(__name__)
 class Agent:
     def __init__(
         self,
-        source: StreamLoop[AgentContext, None, AgentEvent],
-        sink: Stream[AgentContext, AgentEvent, None],
+        source: StreamSourceLoop[AgentContext, AgentEvent],
+        sink: StreamSink[AgentContext, AgentEvent],
     ) -> None:
         self._source = source
         self._sink = sink
@@ -68,12 +73,11 @@ class Agent:
             config=config,
         )
 
-        for event in self._source.stream(ctx, None):
-            for _ in self._sink.stream(ctx, event):
-                pass
+        for event in self._source.stream(ctx):
+            self._sink.handle(ctx, event)
 
 
-class SystemPromptMiddleware(Stream[AgentContext, None, AgentEvent]):
+class SystemPromptMiddleware(StreamSource[AgentContext, AgentEvent]):
     """Строит system-prompt через :class:`PromptFactory` (срез
     ``PromptKind.SYSTEM``) и кладёт его в ``ctx.llm_builder.system_prompt``.
     :class:`LLMRequestFactory` читает этот слот при сборке :class:`LLMRequest`.
@@ -82,7 +86,7 @@ class SystemPromptMiddleware(Stream[AgentContext, None, AgentEvent]):
 
     def __init__(
         self,
-        inner: Stream[AgentContext, None, AgentEvent],
+        inner: StreamSource[AgentContext, AgentEvent],
         prompt_providers: list[PromptProvider],
     ) -> None:
         self._inner = inner
@@ -91,7 +95,7 @@ class SystemPromptMiddleware(Stream[AgentContext, None, AgentEvent]):
     def name(self) -> str:
         return "SystemPrompt"
 
-    def stream(self, ctx: AgentContext, stream: None) -> Iterator[AgentEvent]:
+    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         content = (
             PromptFactory(ctx, self._prompt_providers)
             .build()
@@ -100,10 +104,10 @@ class SystemPromptMiddleware(Stream[AgentContext, None, AgentEvent]):
         if content:
             ctx.llm_builder.system_prompt = content
 
-        yield from self._inner.stream(ctx, stream)
+        yield from self._inner.stream(ctx)
 
 
-class UserPromptMiddleware(Stream[AgentContext, None, AgentEvent]):
+class UserPromptMiddleware(StreamSource[AgentContext, AgentEvent]):
     """На первой итерации строит user-prompt через :class:`PromptFactory`
     (срез ``PromptKind.USER``) и добавляет его как
     :class:`LLMMessage` с ``role="user"`` в :class:`MessageService`.
@@ -118,7 +122,7 @@ class UserPromptMiddleware(Stream[AgentContext, None, AgentEvent]):
 
     def __init__(
         self,
-        inner: Stream[AgentContext, None, AgentEvent],
+        inner: StreamSource[AgentContext, AgentEvent],
         prompt_providers: list[PromptProvider],
         message_service: MessageService,
     ) -> None:
@@ -129,7 +133,7 @@ class UserPromptMiddleware(Stream[AgentContext, None, AgentEvent]):
     def name(self) -> str:
         return "UserPrompt"
 
-    def stream(self, ctx: AgentContext, stream: None) -> Iterator[AgentEvent]:
+    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         if ctx.iteration == 1:
             yield StageStarted(request_id=ctx.request.request_id, stage=self.name())
             yield UserQueryReceived(
@@ -151,10 +155,10 @@ class UserPromptMiddleware(Stream[AgentContext, None, AgentEvent]):
                 detail="user prompt added",
             )
 
-        yield from self._inner.stream(ctx, stream)
+        yield from self._inner.stream(ctx)
 
 
-class AssistantMessagePersistenceMiddleware(Stream[AgentContext, None, AgentEvent]):
+class AssistantMessagePersistenceMiddleware(StreamSource[AgentContext, AgentEvent]):
     """Агрегирует стриминговые события LLM в assistant-сообщение и
     коммитит его в :class:`MessageService`.
 
@@ -181,7 +185,7 @@ class AssistantMessagePersistenceMiddleware(Stream[AgentContext, None, AgentEven
 
     def __init__(
         self,
-        inner: Stream[AgentContext, None, AgentEvent],
+        inner: StreamSource[AgentContext, AgentEvent],
         message_service: MessageService,
     ) -> None:
         self._inner = inner
@@ -196,8 +200,8 @@ class AssistantMessagePersistenceMiddleware(Stream[AgentContext, None, AgentEven
     def name(self) -> str:
         return "AssistantPersistence"
 
-    def stream(self, ctx: AgentContext, stream: None) -> Iterator[AgentEvent]:
-        for event in self._inner.stream(ctx, stream):
+    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+        for event in self._inner.stream(ctx):
             match event:
                 case GenerationStarted(request_id=rid):
                     self._reset(rid)
@@ -267,7 +271,7 @@ class AssistantMessagePersistenceMiddleware(Stream[AgentContext, None, AgentEven
             )
 
 
-class HistoryReplayMiddleware(Stream[AgentContext, None, AgentEvent]):
+class HistoryReplayMiddleware(StreamSource[AgentContext, AgentEvent]):
     """На первом заходе в стрим реконструирует диалог из
     :class:`HistoryService` и вливает :class:`LLMMessage`-и в
     :class:`MessageService`. На повторных заходах — no-op.
@@ -286,7 +290,7 @@ class HistoryReplayMiddleware(Stream[AgentContext, None, AgentEvent]):
 
     def __init__(
         self,
-        inner: Stream[AgentContext, None, AgentEvent],
+        inner: StreamSource[AgentContext, AgentEvent],
         history: HistoryService,
         message_service: MessageService,
     ) -> None:
@@ -298,11 +302,11 @@ class HistoryReplayMiddleware(Stream[AgentContext, None, AgentEvent]):
     def name(self) -> str:
         return "HistoryReplay"
 
-    def stream(self, ctx: AgentContext, stream: None) -> Iterator[AgentEvent]:
+    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         if not self._replayed:
             self._replayed = True
             self._replay()
-        yield from self._inner.stream(ctx, stream)
+        yield from self._inner.stream(ctx)
 
     def _replay(self) -> None:
         answer: dict[RequestId, str] = {}
@@ -339,7 +343,7 @@ class HistoryReplayMiddleware(Stream[AgentContext, None, AgentEvent]):
                     pass
 
 
-class ToolsDefinitionMiddleware(Stream[AgentContext, None, AgentEvent]):
+class ToolsDefinitionMiddleware(StreamSource[AgentContext, AgentEvent]):
     """Кладёт текущий снимок каталога :class:`ToolsService` в
     ``ctx.llm_builder.tools``. :class:`LLMRequestFactory` читает этот слот
     при сборке :class:`LLMRequest` и мапит в ``kwargs["tools"]`` провайдера.
@@ -352,7 +356,7 @@ class ToolsDefinitionMiddleware(Stream[AgentContext, None, AgentEvent]):
 
     def __init__(
         self,
-        inner: Stream[AgentContext, None, AgentEvent],
+        inner: StreamSource[AgentContext, AgentEvent],
         tools_service: ToolsService,
     ) -> None:
         self._inner = inner
@@ -361,12 +365,12 @@ class ToolsDefinitionMiddleware(Stream[AgentContext, None, AgentEvent]):
     def name(self) -> str:
         return "ToolsDefinition"
 
-    def stream(self, ctx: AgentContext, stream: None) -> Iterator[AgentEvent]:
+    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         ctx.llm_builder.tools = list(self._tools_service.tools())
-        yield from self._inner.stream(ctx, stream)
+        yield from self._inner.stream(ctx)
 
 
-class ToolExecutionMiddleware(Stream[AgentContext, None, AgentEvent]):
+class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
     """
     Выполняет tool calls, полученные от LLM.
 
@@ -389,7 +393,7 @@ class ToolExecutionMiddleware(Stream[AgentContext, None, AgentEvent]):
 
     def __init__(
         self,
-        inner: Stream[AgentContext, None, AgentEvent],
+        inner: StreamSource[AgentContext, AgentEvent],
         tools_service: ToolsService,
         message_service: MessageService,
     ) -> None:
@@ -400,10 +404,10 @@ class ToolExecutionMiddleware(Stream[AgentContext, None, AgentEvent]):
     def name(self) -> str:
         return "ToolExecution"
 
-    def stream(self, ctx: AgentContext, stream: None) -> Iterator[AgentEvent]:
+    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         pending: list[ToolCallComplete] = []
 
-        for event in self._inner.stream(ctx, stream):
+        for event in self._inner.stream(ctx):
             yield event
             if isinstance(event, ToolCallComplete):
                 pending.append(event)
@@ -443,21 +447,21 @@ class ToolExecutionMiddleware(Stream[AgentContext, None, AgentEvent]):
         )
 
 
-class IterationCounterMiddleware(Stream[AgentContext, None, AgentEvent]):
+class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
     """
     Подсчет кол-ва итераций цикла агента.
     Увеличивает счетчик в контексте и делегирует следующему слою.
     """
 
-    def __init__(self, inner: Stream[AgentContext, None, AgentEvent]) -> None:
+    def __init__(self, inner: StreamSource[AgentContext, AgentEvent]) -> None:
         self._inner = inner
 
     def name(self) -> str:
         return "Counter"
 
-    def stream(self, ctx: AgentContext, stream: None) -> Iterator[AgentEvent]:
+    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         ctx.iteration += 1
-        yield from self._inner.stream(ctx, stream)
+        yield from self._inner.stream(ctx)
 
 
 class StopOnFinished(Specification[tuple[AgentContext, AgentEvent]]):
