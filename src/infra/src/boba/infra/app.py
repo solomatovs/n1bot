@@ -6,6 +6,7 @@ from pathlib import Path
 
 from dishka import Provider, Scope, from_context, provide
 
+from boba.adapters.aggregating_context import AggregatingContextService
 from boba.adapters.console_sink import ConsoleSink
 from boba.adapters.fs_workspace import FsWorkspaceManager
 from boba.adapters.history_sink import HistorySink
@@ -23,6 +24,7 @@ from boba.adapters.prompt_providers import (
     StaticPromptProvider,
     UserQueryProvider,
 )
+from boba.domain.agent.context import ContextService
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.meat import (
     Agent,
@@ -152,6 +154,14 @@ class RequestProvider(Provider):
         return InMemoryMessageService()
 
     @provide
+    def context_service(
+        self,
+        message_service: MessageService,
+        tools_service: ToolsService,
+    ) -> ContextService:
+        return AggregatingContextService(message_service, tools_service)
+
+    @provide
     def history_service(
         self,
         workspace: WorkspaceService,
@@ -165,8 +175,9 @@ class RequestProvider(Provider):
         prompt_providers: list[PromptProvider],
         message_service: MessageService,
         tools_service: ToolsService,
+        context_service: ContextService,
     ) -> StreamLoop[AgentContext, None, AgentEvent]:
-        chain = OpenAIMiddleware(config.llm, message_service, tools_service)
+        chain = OpenAIMiddleware(config.llm, context_service)
         chain = StupidRetryLLMMiddleware(chain, max_retries=3)
         chain = LoggingLLMMiddleware(chain)
         chain = ToolExecutionMiddleware(chain, tools_service, message_service)

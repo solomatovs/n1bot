@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from boba.domain.core.patterns import UuId
+from boba.domain.core.tools import Tool
 from boba.domain.core.workspace import WorkspaceId
 
 
@@ -62,3 +64,33 @@ class LLMMessage:
     content: str
     tool_call_id: str | None = None
     tool_calls: list[LLMToolCall] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SamplingParams:
+    """Параметры семплирования LLM."""
+
+    temperature: float | None = None
+    top_p: float | None = None
+    max_tokens: int | None = None
+    seed: int | None = None
+    stop: list[str] | None = None
+
+
+@dataclass(frozen=True)
+class LLMRequest:
+    """Готовый к отправке снимок одной итерации LLM-вызова.
+
+    Агрегирует всё, что нужно чтобы собрать запрос для OpenAI-совместимого
+    API: messages, tools, model, sampling params. Собирается
+    :class:`ContextService`-ом на каждой итерации цикла. Адаптер конкретного
+    провайдера мапит ``LLMRequest`` в свою форму в один проход через
+    ``Converter``.
+    """
+
+    model: str
+    messages: list[LLMMessage]
+    tools: list[Tool[Any]] = field(default_factory=list)
+    sampling: SamplingParams = field(default_factory=SamplingParams)
+    tool_choice: str | None = None
+    response_format: dict[str, Any] | None = None
