@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -56,6 +57,8 @@ from boba.domain.agent.models import (
 from boba.domain.config import LLMConfig
 from boba.domain.core.patterns import (
     Converter,
+    ExceptionSpecification,
+    IsInstance,
     StreamConverter,
     StreamSource,
     StreamTransformer,
@@ -168,6 +171,7 @@ class OpenAIMiddleware(StreamSource[AgentContext, AgentEvent]):
         self._client = OpenAI(base_url=config.base_url, api_key=config.api_key)
         self._llm_request_factory = llm_request_factory
         self._to_request_converter = ToOpenAIRequestConverter()
+        self._error_converter = OpenAIErrorConverter()
 
     def name(self) -> str:
         return "OpenAICompletion"
@@ -184,56 +188,143 @@ class OpenAIMiddleware(StreamSource[AgentContext, AgentEvent]):
         except LLMError:
             raise
         except (openai.APIError, httpx.HTTPError) as e:
-            raise _classify_openai_error(e) from e
+            raise self._error_converter.convert(e) from e
 
 
-def _classify_openai_error(exc: Exception) -> LLMError:
-    """Мапит сырые ``openai.*`` / ``httpx.*`` исключения в доменные типы.
-
-    Проверки идут от конкретных подклассов к базовым — ``APITimeoutError``
-    наследует ``APIConnectionError``, ``RateLimitError``/``BadRequestError``
-    наследуют ``APIStatusError`` и т.д.
+class IsContextLengthError(ExceptionSpecification):
+    """Матчит ``openai.BadRequestError`` с маркером ``context_length_exceeded``
+    в теле ответа либо в текстовом сообщении (для OpenAI-совместимых бэкендов,
+    которые не всегда возвращают структурированный ``code``).
     """
-    if isinstance(exc, openai.APITimeoutError):
-        return LLMTimeoutError(str(exc))
-    if isinstance(exc, openai.APIConnectionError):
-        return LLMConnectionError(str(exc))
-    if isinstance(exc, openai.RateLimitError):
-        return LLMRateLimitError(str(exc), status_code=exc.status_code)
-    if isinstance(exc, (openai.AuthenticationError, openai.PermissionDeniedError)):
-        return LLMAuthError(str(exc), status_code=exc.status_code)
-    if isinstance(exc, openai.BadRequestError):
-        if _is_context_length_error(exc):
-            return LLMContextLengthError(str(exc), status_code=exc.status_code)
-        return LLMInvalidRequestError(str(exc), status_code=exc.status_code)
-    if isinstance(exc, openai.NotFoundError):
-        return LLMInvalidRequestError(str(exc), status_code=exc.status_code)
-    if isinstance(exc, openai.InternalServerError):
-        return LLMProviderInternalError(str(exc), status_code=exc.status_code)
-    if isinstance(exc, openai.APIStatusError):
-        sc = exc.status_code
-        if sc and 500 <= sc < 600:
-            return LLMProviderInternalError(str(exc), status_code=sc)
-        if sc == 429:
-            return LLMRateLimitError(str(exc), status_code=sc)
-        return LLMInvalidRequestError(str(exc), status_code=sc)
-    if isinstance(exc, httpx.TimeoutException):
-        return LLMTimeoutError(str(exc))
-    if isinstance(exc, httpx.HTTPError):
-        return LLMConnectionError(str(exc))
-    return LLMProviderInternalError(f"{type(exc).__name__}: {exc}")
+
+    def check(self, candidate: Exception) -> bool:
+        if not isinstance(candidate, openai.BadRequestError):
+            return False
+        body = getattr(candidate, "body", None)
+        if isinstance(body, dict):
+            if body.get("code") == "context_length_exceeded":
+                return True
+            err = body.get("error")
+            if isinstance(err, dict) and err.get("code") == "context_length_exceeded":
+                return True
+        msg = str(candidate).lower()
+        return "context length" in msg or "maximum context" in msg
 
 
-def _is_context_length_error(exc: openai.BadRequestError) -> bool:
-    body = getattr(exc, "body", None)
-    if isinstance(body, dict):
-        if body.get("code") == "context_length_exceeded":
-            return True
-        err = body.get("error")
-        if isinstance(err, dict) and err.get("code") == "context_length_exceeded":
-            return True
-    msg = str(exc).lower()
-    return "context length" in msg or "maximum context" in msg
+class IsServerError(ExceptionSpecification):
+    """Матчит ``openai.APIStatusError`` с 5xx-статусом."""
+    _HTTP_SERVER_ERROR_MIN = 500
+    _HTTP_SERVER_ERROR_MAX = 600
+
+    def check(self, candidate: Exception) -> bool:
+        if not isinstance(candidate, openai.APIStatusError):
+            return False
+        sc = candidate.status_code
+        return sc is not None and self._HTTP_SERVER_ERROR_MIN <= sc < self._HTTP_SERVER_ERROR_MAX
+
+
+class IsStatusCode(ExceptionSpecification):
+    """Матчит ``openai.APIStatusError`` с конкретным HTTP-статусом."""
+
+    def __init__(self, code: int) -> None:
+        self._code = code
+
+    def check(self, candidate: Exception) -> bool:
+        return (
+            isinstance(candidate, openai.APIStatusError)
+            and candidate.status_code == self._code
+        )
+
+
+@dataclass(frozen=True)
+class ErrorRule:
+    """Правило классификации: предикат + строитель доменной ошибки."""
+
+    match: ExceptionSpecification
+    build: Callable[[Exception], LLMError]
+
+
+class OpenAIErrorConverter(Converter[Exception, LLMError]):
+    """Классифицирует сырые ``openai``/``httpx`` исключения в доменные
+    :class:`LLMError` по списку правил.
+
+    Правила применяются в порядке регистрации; первое совпадение — победитель.
+    Если ни одно не сработало — fallback в :class:`LLMProviderInternalError`.
+    Без аргумента используется стандартный набор правил
+    (см. :meth:`default_rules`).
+    """
+
+    _HTTP_TOO_MANY_REQUESTS = 429
+
+    def __init__(self, rules: list[ErrorRule] | None = None) -> None:
+        self._rules = rules if rules is not None else self.default_rules()
+
+    def convert(self, value: Exception) -> LLMError:
+        for rule in self._rules:
+            if rule.match.check(value):
+                return rule.build(value)
+        return LLMProviderInternalError(f"{type(value).__name__}: {value}")
+
+    @staticmethod
+    def status_code(exc: Exception) -> int | None:
+        """HTTP-код из ``openai.APIStatusError`` либо ``None``."""
+        return exc.status_code if isinstance(exc, openai.APIStatusError) else None
+
+    @classmethod
+    def default_rules(cls) -> list[ErrorRule]:
+        """Стандартный набор правил для OpenAI-совместимых провайдеров.
+
+        Порядок важен: подклассы должны идти раньше родителей
+        (``APITimeoutError`` → ``APIConnectionError``; спец-случай
+        ``context_length_exceeded`` → общий ``BadRequestError``).
+        """
+        sc = cls.status_code
+        return [
+            ErrorRule(
+                IsInstance(openai.APITimeoutError),
+                lambda e: LLMTimeoutError(str(e)),
+            ),
+            ErrorRule(
+                IsInstance(openai.APIConnectionError),
+                lambda e: LLMConnectionError(str(e)),
+            ),
+            ErrorRule(
+                IsInstance(openai.RateLimitError),
+                lambda e: LLMRateLimitError(str(e), status_code=sc(e)),
+            ),
+            ErrorRule(
+                IsInstance(openai.AuthenticationError, openai.PermissionDeniedError),
+                lambda e: LLMAuthError(str(e), status_code=sc(e)),
+            ),
+            ErrorRule(
+                IsInstance(openai.BadRequestError).and_(IsContextLengthError()),
+                lambda e: LLMContextLengthError(str(e), status_code=sc(e)),
+            ),
+            ErrorRule(
+                IsInstance(openai.BadRequestError, openai.NotFoundError),
+                lambda e: LLMInvalidRequestError(str(e), status_code=sc(e)),
+            ),
+            ErrorRule(
+                IsInstance(openai.InternalServerError).or_(IsServerError()),
+                lambda e: LLMProviderInternalError(str(e), status_code=sc(e)),
+            ),
+            ErrorRule(
+                IsStatusCode(cls._HTTP_TOO_MANY_REQUESTS),
+                lambda e: LLMRateLimitError(str(e), status_code=sc(e)),
+            ),
+            ErrorRule(
+                IsInstance(openai.APIStatusError),
+                lambda e: LLMInvalidRequestError(str(e), status_code=sc(e)),
+            ),
+            ErrorRule(
+                IsInstance(httpx.TimeoutException),
+                lambda e: LLMTimeoutError(str(e)),
+            ),
+            ErrorRule(
+                IsInstance(httpx.HTTPError),
+                lambda e: LLMConnectionError(str(e)),
+            ),
+        ]
 
 
 class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
