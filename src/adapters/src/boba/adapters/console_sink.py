@@ -12,6 +12,8 @@ from boba.domain.agent.events import (
     GenerationDone,
     GenerationFailed,
     GenerationStarted,
+    PersistenceFailed,
+    PromptFailed,
     RefusalComplete,
     RefusalToken,
     StageCompleted,
@@ -80,6 +82,25 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
                 tag = "retryable" if retryable else "permanent"
                 print(  # noqa: T201
                     f"\n{self._RED}[llm error: {kind} ({tag}){status}] "
+                    f"{msg}{self._RESET}"
+                )
+
+            case PromptFailed(
+                error_kind=kind, message=msg, retryable=retryable, provider=prov
+            ):
+                tag = "retryable" if retryable else "permanent"
+                src = f" [provider={prov}]" if prov else ""
+                print(  # noqa: T201
+                    f"\n{self._RED}[prompt error: {kind} ({tag}){src}] "
+                    f"{msg}{self._RESET}"
+                )
+
+            case PersistenceFailed(
+                error_kind=kind, message=msg, retryable=retryable
+            ):
+                tag = "retryable" if retryable else "permanent"
+                print(  # noqa: T201
+                    f"\n{self._RED}[persistence error: {kind} ({tag})] "
                     f"{msg}{self._RESET}"
                 )
 

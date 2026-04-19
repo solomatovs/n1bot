@@ -13,6 +13,8 @@ from boba.domain.agent.events import (
     GenerationDone,
     GenerationFailed,
     GenerationStarted,
+    PersistenceFailed,
+    PromptFailed,
     RefusalComplete,
     RefusalToken,
     StageCompleted,
@@ -72,6 +74,12 @@ class HistorySink(StreamSink[AgentContext, AgentEvent]):
                 self._flush_tool_calls(request_id)
                 self._history.append(event)
             case GenerationFailed(request_id):
+                self._flush_thinking(request_id)
+                self._flush_answer(request_id)
+                self._flush_refusal(request_id)
+                self._flush_tool_calls(request_id)
+                self._history.append(event)
+            case PromptFailed(request_id) | PersistenceFailed(request_id):
                 self._flush_thinking(request_id)
                 self._flush_answer(request_id)
                 self._flush_refusal(request_id)

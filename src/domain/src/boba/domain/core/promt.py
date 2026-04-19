@@ -13,6 +13,32 @@ from boba.domain.core.patterns import (
 TCtx = TypeVar("TCtx")
 
 
+class PromptError(Exception):
+    """Базовая ошибка сборки промпта.
+
+    Адаптеры-провайдеры промптов (чтение файлов, workspace, git) оборачивают
+    свои I/O-исключения в потомков этого класса. Ошибки логики/валидации
+    (неверный тип, битая регистрация провайдера) — это баги и должны падать
+    напрямую, без конвертации в :class:`PromptError`.
+    """
+
+    def __init__(self, message: str, *, provider: str | None = None) -> None:
+        super().__init__(message)
+        self.provider = provider
+
+
+class RetryablePromptError(PromptError):
+    """Временная проблема провайдера (транзиентная I/O-ошибка, локфайл)."""
+
+
+class PermanentPromptError(PromptError):
+    """Провайдер не может вернуть блок: нет файла/прав, сломанная конфигурация."""
+
+
+class PromptProviderError(PermanentPromptError):
+    """Провайдер промпта упал на чтении своего источника."""
+
+
 class PromptKind(Enum):
     """Тип собираемого промпта."""
 
@@ -107,3 +133,16 @@ class PromptFactory(FoldFactory[PromptId, PromtState[TCtx], PromptResult]):
 
     def finalize(self, state: PromtState) -> PromptResult:
         return PromptResult(state.blocks)
+
+    def build(self) -> PromptResult:
+        state = self.initial()
+        for p in sorted(self.providers(), key=lambda p: p.priority()):
+            try:
+                state = p.apply(state)
+            except PromptError:
+                raise
+            except OSError as e:
+                raise PromptProviderError(
+                    f"{type(e).__name__}: {e}", provider=p.id().to_wire()
+                ) from e
+        return self.finalize(state)

@@ -33,8 +33,10 @@ from boba.domain.agent.meat import (
     ErrorToEventMiddleware,
     HistoryReplayMiddleware,
     IterationCounterMiddleware,
+    PersistenceErrorToEventMiddleware,
+    PromptErrorToEventMiddleware,
+    StopOnAnyFailure,
     StopOnFinished,
-    StopOnGenerationFailed,
     StopOnMaxIterations,
     SystemPromptMiddleware,
     ToolExecutionMiddleware,
@@ -175,11 +177,13 @@ class RequestProvider(Provider):
     ) -> StreamSourceLoop[AgentContext, AgentEvent]:
         builder = StreamSourceChainBuilder[AgentContext, AgentEvent]()
         builder.use(IterationCounterMiddleware)
+        builder.use(PersistenceErrorToEventMiddleware)
         builder.use(
             lambda inner: HistoryReplayMiddleware(
                 inner, history_service, message_service
             )
         )
+        builder.use(PromptErrorToEventMiddleware)
         builder.use(lambda inner: SystemPromptMiddleware(inner, prompt_providers))
         builder.use(
             lambda inner: UserPromptMiddleware(inner, prompt_providers, message_service)
@@ -197,11 +201,7 @@ class RequestProvider(Provider):
 
         chain = builder.terminal(OpenAIMiddleware(config.llm, llm_request_factory))
 
-        stop = (
-            StopOnFinished()
-            .or_(StopOnMaxIterations())
-            .or_(StopOnGenerationFailed())
-        )
+        stop = StopOnFinished().or_(StopOnMaxIterations()).or_(StopOnAnyFailure())
 
         return StreamSourceLoop(chain, stop)
 
