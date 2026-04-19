@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections import defaultdict
 from collections.abc import Iterator
 
@@ -560,22 +561,33 @@ class PersistenceErrorToEventMiddleware(StreamSource[AgentContext, AgentEvent]):
 class JsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
     """Эвристика: маленькие модели (Qwen3:8b/Ollama и т.п.) часто
     «галлюцинируют» tool call как JSON-текст в ``content`` вместо
-    структурированного поля ``tool_calls``. Этот middleware буферизует
-    первые ``AnswerToken``-ы, и если собранный текст парсится как
-    ``{"name": ..., "arguments": ...}``, переписывает их в
-    :class:`ToolCallBegin` + :class:`ToolCallArgumentDelta` и подменяет
-    ``finish_reason`` на ``"tool_calls"`` — чтобы цикл агента
-    не остановился раньше времени и `ToolExecutionMiddleware` исполнил тул.
+    структурированного поля ``tool_calls``. Этот middleware смотрит на
+    **первый** непустой ``AnswerToken``: если он начинается с ``{`` —
+    стримит текст в режиме парсера ``{"name": ..., "arguments": {...}}``,
+    эмитит :class:`ToolCallBegin` как только извлёк ``name``, дальше
+    отдаёт содержимое ``arguments`` как :class:`ToolCallArgumentDelta` по
+    мере прихода чанков, подменяет ``finish_reason`` на ``"tool_calls"``.
 
-    Эвристика срабатывает только если **первый** ``AnswerToken`` начинается
-    с ``{`` после strip — в обычном текстовом ответе ничего не буферизуется.
-    Если в стриме появился настоящий ``ToolCallBegin``, буфер сбрасывается
-    как обычный текст (модель и тул-вызов одновременно — редко, но допустимо).
+    Работает потоково — не накапливает полный ответ, `ToolCallBegin`
+    уходит наружу как только доступно имя (обычно после 20–50 байт).
+    Если JSON не распарсится (нет ключей ``name``/``arguments``, невалидный
+    синтаксис) — буфер отдаётся как обычный ``AnswerToken`` без изменений.
+    Если параллельно пришёл настоящий :class:`ToolCallBegin` — буфер
+    сбрасывается как текст, дальше passthrough.
 
     Ставится **innermost** — внутри :class:`AssistantMessagePersistenceMiddleware`,
     чтобы тот аккумулировал уже переписанные события и эмитил
     :class:`ToolCallComplete` для downstream-а.
     """
+
+    _NAME_RX = re.compile(r'"name"\s*:\s*"((?:[^"\\]|\\.)*)"')
+    _ARGS_RX = re.compile(r'"arguments"\s*:\s*')
+
+    _UNDECIDED = "undecided"
+    _PARSE_HEADER = "parse_header"
+    _STREAM_ARGS = "stream_args"
+    _TAIL = "tail"
+    _PASSTHROUGH = "passthrough"
 
     def __init__(self, inner: StreamSource[AgentContext, AgentEvent]) -> None:
         self._inner = inner
@@ -583,101 +595,211 @@ class JsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
     def name(self) -> str:
         return "JsonContentToolCall"
 
-    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:  # noqa: C901, PLR0912
-        buffer: list[AgentEvent] = []
-        state: str = "undecided"  # "undecided" | "buffering" | "passthrough"
+    def stream(
+        self, ctx: AgentContext
+    ) -> Iterator[AgentEvent]:
+        rid = ctx.request.request_id
+        state = self._UNDECIDED
+        pending_started: AnswerStarted | None = None
+        header_buffer = ""
+        depth = 0
 
         for event in self._inner.stream(ctx):
-            if state == "passthrough":
+            if state == self._PASSTHROUGH:
                 yield event
                 continue
 
-            if isinstance(event, AnswerStarted):
-                buffer.append(event)
-                continue
-
-            if isinstance(event, AnswerToken):
-                if state == "undecided":
-                    if event.token.lstrip().startswith("{"):
-                        state = "buffering"
-                        buffer.append(event)
-                    else:
-                        state = "passthrough"
-                        yield from buffer
-                        buffer.clear()
-                        yield event
-                else:  # buffering
-                    buffer.append(event)
-                continue
-
-            if isinstance(event, ToolCallBegin):
-                yield from buffer
-                buffer.clear()
-                state = "passthrough"
+            if state == self._TAIL:
+                if isinstance(event, AnswerToken):
+                    continue
+                if isinstance(event, GenerationDone):
+                    yield GenerationDone(
+                        request_id=rid, finish_reason="tool_calls"
+                    )
+                    state = self._PASSTHROUGH
+                    continue
                 yield event
                 continue
 
-            if isinstance(event, GenerationDone):
-                if state == "buffering":
-                    yield from self._flush(buffer, event, ctx)
-                else:
-                    yield from buffer
+            if state == self._STREAM_ARGS:
+                if isinstance(event, AnswerToken):
+                    consumed, depth, ended = self._scan_args_delta(
+                        event.token, depth
+                    )
+                    if consumed:
+                        yield ToolCallArgumentDelta(
+                            request_id=rid, index=0, arguments=consumed
+                        )
+                    if ended:
+                        state = self._TAIL
+                    continue
+                if isinstance(event, GenerationDone):
+                    yield GenerationDone(
+                        request_id=rid, finish_reason="tool_calls"
+                    )
+                    state = self._PASSTHROUGH
+                    continue
+                yield event
+                continue
+
+            if state == self._PARSE_HEADER:
+                if isinstance(event, AnswerToken):
+                    header_buffer += event.token
+                    parsed = self._try_parse_header(header_buffer)
+                    if parsed is None:
+                        continue
+                    tool_name, args_idx = parsed
+                    pending_started = None
+                    yield ToolCallBegin(
+                        request_id=rid,
+                        index=0,
+                        tool_call_id=f"call_{tool_name}",
+                        tool_name=tool_name,
+                    )
+                    prefix_args = header_buffer[args_idx:]
+                    header_buffer = ""
+                    consumed, depth, ended = self._scan_args_delta(
+                        prefix_args, 0
+                    )
+                    if consumed:
+                        yield ToolCallArgumentDelta(
+                            request_id=rid, index=0, arguments=consumed
+                        )
+                    state = self._TAIL if ended else self._STREAM_ARGS
+                    continue
+                if isinstance(event, GenerationDone):
+                    if pending_started is not None:
+                        yield pending_started
+                        pending_started = None
+                    if header_buffer:
+                        yield AnswerToken(request_id=rid, token=header_buffer)
+                        header_buffer = ""
                     yield event
-                buffer.clear()
-                state = "passthrough"
+                    state = self._PASSTHROUGH
+                    continue
+                if isinstance(event, ToolCallBegin):
+                    if pending_started is not None:
+                        yield pending_started
+                        pending_started = None
+                    if header_buffer:
+                        yield AnswerToken(request_id=rid, token=header_buffer)
+                        header_buffer = ""
+                    state = self._PASSTHROUGH
+                    yield event
+                    continue
+                yield event
                 continue
 
+            # UNDECIDED
+            if isinstance(event, AnswerStarted):
+                pending_started = event
+                continue
+            if isinstance(event, AnswerToken):
+                if event.token.lstrip().startswith("{"):
+                    state = self._PARSE_HEADER
+                    header_buffer = event.token
+                    parsed = self._try_parse_header(header_buffer)
+                    if parsed is not None:
+                        tool_name, args_idx = parsed
+                        pending_started = None
+                        yield ToolCallBegin(
+                            request_id=rid,
+                            index=0,
+                            tool_call_id=f"call_{tool_name}",
+                            tool_name=tool_name,
+                        )
+                        prefix_args = header_buffer[args_idx:]
+                        header_buffer = ""
+                        consumed, depth, ended = self._scan_args_delta(
+                            prefix_args, 0
+                        )
+                        if consumed:
+                            yield ToolCallArgumentDelta(
+                                request_id=rid, index=0, arguments=consumed
+                            )
+                        state = self._TAIL if ended else self._STREAM_ARGS
+                else:
+                    if pending_started is not None:
+                        yield pending_started
+                        pending_started = None
+                    state = self._PASSTHROUGH
+                    yield event
+                continue
+            if isinstance(event, ToolCallBegin):
+                pending_started = None
+                state = self._PASSTHROUGH
+                yield event
+                continue
+            if isinstance(event, GenerationDone):
+                if pending_started is not None:
+                    yield pending_started
+                    pending_started = None
+                yield event
+                state = self._PASSTHROUGH
+                continue
             yield event
 
-        if buffer:
-            yield from buffer
+    @classmethod
+    def _try_parse_header(cls, text: str) -> tuple[str, int] | None:
+        """Ищет ``"name": "..."`` и начало значения ``"arguments":``.
+
+        Возвращает ``(name, args_start_idx)`` — индекс первого символа
+        значения arguments (ожидается ``{`` или ``[``). ``None`` — пока
+        не хватает текста или структура не подходит.
+        """
+        stripped = text.lstrip()
+        if not stripped.startswith("{"):
+            return None
+        mname = cls._NAME_RX.search(text)
+        if not mname:
+            return None
+        margs = cls._ARGS_RX.search(text, mname.end())
+        if not margs:
+            return None
+        i = margs.end()
+        while i < len(text) and text[i] in " \t\n\r":
+            i += 1
+        if i >= len(text):
+            return None
+        if text[i] not in "{[":
+            return None
+        return (mname.group(1), i)
 
     @staticmethod
-    def _flush(
-        buffer: list[AgentEvent], done: GenerationDone, ctx: AgentContext
-    ) -> Iterator[AgentEvent]:
-        text = "".join(e.token for e in buffer if isinstance(e, AnswerToken))
-        parsed = JsonContentToolCallMiddleware._try_parse(text)
+    def _scan_args_delta(
+        text: str, start_depth: int
+    ) -> tuple[str, int, bool]:
+        """Сканирует текст, отслеживая глубину JSON-структуры.
 
-        if parsed is None:
-            yield from buffer
-            yield done
-            return
-
-        rid = ctx.request.request_id
-        name = parsed["name"]
-        args = parsed["arguments"]
-        args_json = (
-            json.dumps(args, ensure_ascii=False)
-            if isinstance(args, dict)
-            else str(args)
-        )
-        logger.info("JsonContentToolCall: parsed tool=%s from content", name)
-        yield ToolCallBegin(
-            request_id=rid,
-            index=0,
-            tool_call_id=f"call_{name}",
-            tool_name=name,
-        )
-        yield ToolCallArgumentDelta(
-            request_id=rid,
-            index=0,
-            arguments=args_json,
-        )
-        yield GenerationDone(request_id=rid, finish_reason="tool_calls")
-
-    @staticmethod
-    def _try_parse(text: str) -> dict | None:
-        text = text.strip()
-        if not text.startswith("{"):
-            return None
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            return None
-        if isinstance(data, dict) and "name" in data and "arguments" in data:
-            return data
-        return None
+        Учитывает строки и экранирование — ``}`` внутри строки не
+        декрементит глубину. Останавливается когда depth достигает 0
+        (конец значения ``arguments``). Возвращает
+        ``(consumed, new_depth, ended)`` — consumed включает закрывающий
+        символ; хвост за ним отбрасывается.
+        """
+        depth = start_depth
+        in_str = False
+        escape = False
+        for i, ch in enumerate(text):
+            if in_str:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+                continue
+            if ch in "{[":
+                depth += 1
+                continue
+            if ch in "}]":
+                depth -= 1
+                if depth <= 0:
+                    return text[: i + 1], 0, True
+        return text, depth, False
 
 
 class StopOnFinished(Specification[tuple[AgentContext, AgentEvent]]):
