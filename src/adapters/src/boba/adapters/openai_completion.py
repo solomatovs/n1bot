@@ -47,6 +47,7 @@ from boba.domain.agent.events import (
     ToolCallArgumentDelta,
     ToolCallBegin,
 )
+from boba.adapters.raw_llm_observer import RawLLMObserver
 from boba.domain.agent.llm_request_factory import LLMRequestFactory
 from boba.domain.agent.models import (
     AgentContext,
@@ -167,9 +168,11 @@ class OpenAIMiddleware(StreamSource[AgentContext, AgentEvent]):
         self,
         config: LLMConfig,
         llm_request_factory: LLMRequestFactory,
+        observer: RawLLMObserver,
     ) -> None:
         self._client = OpenAI(base_url=config.base_url, api_key=config.api_key)
         self._llm_request_factory = llm_request_factory
+        self._observer = observer
         self._to_request_converter = ToOpenAIRequestConverter()
         self._error_converter = OpenAIErrorConverter()
 
@@ -181,14 +184,22 @@ class OpenAIMiddleware(StreamSource[AgentContext, AgentEvent]):
         kwargs = self._to_request_converter.convert(llm_request)
 
         try:
+            self._observer.on_request(kwargs)
             response = self._client.chat.completions.create(**kwargs)
             yield from FromOpenAIChunkConverter(ctx.request.request_id).stream(
-                ctx, response
+                ctx, self._log_chunks(response)
             )
         except LLMError:
             raise
         except (openai.APIError, httpx.HTTPError) as e:
             raise self._error_converter.convert(e) from e
+
+    def _log_chunks(
+        self, chunks: Iterable[ChatCompletionChunk]
+    ) -> Iterable[ChatCompletionChunk]:
+        for chunk in chunks:
+            self._observer.on_response_chunk(chunk)
+            yield chunk
 
 
 class IsContextLengthError(ExceptionSpecification):
