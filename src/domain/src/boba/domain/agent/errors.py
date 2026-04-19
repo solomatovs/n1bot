@@ -40,7 +40,9 @@
     │   │   │   ├── HistoryWriteError
     │   │   │   └── HistoryReadError
     │   │   │
-    │   │   └── MaxIterationsExceededError [agent.errors] → MaxIterationsReached
+    │   │   ├── MaxIterationsExceededError [agent.errors] → MaxIterationsReached
+    │   │   │
+    │   │   └── RepeatedFormatFailureError [agent.errors] → RepeatedFormatFailure
     │   │
     │   └── UserNoticeError            цикл идёт     → UserNoticeReady
     │
@@ -73,6 +75,7 @@
 │ LLM сломала формат tool call     │ LLMToolCallFormatError         │
 │ Нотис пользователю               │ UserNoticeError (core.errors)  │
 │ Исчерпан лимит итераций цикла    │ MaxIterationsExceededError     │
+│ Модель залипла на сбое формата   │ RepeatedFormatFailureError     │
 │ Добавить авто-повтор             │ + миксин Retryable             │
 └──────────────────────────────────┴────────────────────────────────┘
 
@@ -252,6 +255,24 @@ class MaxIterationsExceededError(TerminalError):
         super().__init__(message)
         self.limit = limit
         self.iteration = iteration
+
+
+class RepeatedFormatFailureError(TerminalError):
+    """Модель N раз подряд вывела неверный формат tool call.
+
+    Поднимается :class:`~boba.domain.agent.meat.RepeatedFormatFailureGuardMiddleware`
+    после накопления ``limit`` подряд :class:`~boba.domain.agent.events.ToolCallFormatFailed`
+    без успешного `ToolResultReady`. Роутер конвертирует в
+    :class:`~boba.domain.agent.events.RepeatedFormatFailure`;
+    :class:`~boba.domain.agent.meat.StopOnAnyFailure` ловит событие и
+    останавливает цикл — от дальнейших «объяснений» формата модель всё
+    равно не выходит из залипания.
+    """
+
+    def __init__(self, message: str, *, count: int, limit: int) -> None:
+        super().__init__(message)
+        self.count = count
+        self.limit = limit
 
 
 class ToolFeedbackError(LLMFeedbackError):

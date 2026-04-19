@@ -9,6 +9,7 @@ from boba.domain.agent.errors import (
     LLMError,
     LLMToolCallFormatError,
     MaxIterationsExceededError,
+    RepeatedFormatFailureError,
     ToolFeedbackError,
 )
 from boba.domain.agent.events import (
@@ -17,6 +18,7 @@ from boba.domain.agent.events import (
     MaxIterationsReached,
     PersistenceFailed,
     PromptFailed,
+    RepeatedFormatFailure,
     ToolCallFormatFailed,
     ToolExecutionFailed,
     UserNoticeReady,
@@ -58,6 +60,8 @@ class AgentErrorRouter:
       Терминально.
     - :class:`HistoryError` → :class:`PersistenceFailed`. Терминально.
     - :class:`MaxIterationsExceededError` → :class:`MaxIterationsReached`.
+      Терминально.
+    - :class:`RepeatedFormatFailureError` → :class:`RepeatedFormatFailure`.
       Терминально.
     - :class:`ToolFeedbackError` → запись ``LLMMessage(role="tool",
       tool_call_id=..., content=...)`` в :class:`MessageService` +
@@ -109,6 +113,14 @@ class AgentErrorRouter:
                     message=msg,
                     limit=err.limit,
                     iteration=err.iteration,
+                )
+            case RepeatedFormatFailureError():
+                yield RepeatedFormatFailure(
+                    request_id=rid,
+                    error_kind=kind,
+                    message=msg,
+                    count=err.count,
+                    limit=err.limit,
                 )
             case ToolFeedbackError():
                 self._message_service.add(

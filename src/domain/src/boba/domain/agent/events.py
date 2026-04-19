@@ -184,6 +184,25 @@ class MaxIterationsReached(BaseEvent):
 
 
 @dataclass(frozen=True)
+class RepeatedFormatFailure(BaseEvent):
+    """Терминальный отказ: модель залипла на неверном формате tool call.
+
+    Эмитится :class:`~boba.domain.agent.meat.RepeatedFormatFailureGuardMiddleware`
+    через :class:`AgentErrorRouter` после ``limit`` подряд
+    :class:`ToolCallFormatFailed` без успешного `ToolResultReady` между.
+    """
+
+    error_kind: str
+    message: str
+    count: int
+    limit: int
+
+    @classmethod
+    def name(cls) -> Literal["RepeatedFormatFailure"]:
+        return "RepeatedFormatFailure"
+
+
+@dataclass(frozen=True)
 class ToolCallBegin(BaseEvent):
     """Начало tool call — пришёл id и имя функции."""
 
@@ -372,6 +391,7 @@ AgentEvent = (
     | PromptFailed
     | PersistenceFailed
     | MaxIterationsReached
+    | RepeatedFormatFailure
     | ToolCallBegin
     | ToolCallArgumentDelta
     | ToolCallComplete
@@ -404,6 +424,7 @@ AgentEventName: TypeAlias = Literal[
     "PromptFailed",
     "PersistenceFailed",
     "MaxIterationsReached",
+    "RepeatedFormatFailure",
     "ToolCallBegin",
     "ToolCallArgumentDelta",
     "ToolCallComplete",

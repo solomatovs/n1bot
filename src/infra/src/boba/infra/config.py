@@ -87,6 +87,22 @@ class ConfigLoader:
                     section=self._agent,
                 )
             ),
+            max_consecutive_tool_calls=int(
+                self._resolve(
+                    "AGENT_MAX_CONSECUTIVE_TOOL_CALLS",
+                    "max_consecutive_tool_calls",
+                    "3",
+                    section=self._agent,
+                )
+            ),
+            max_consecutive_format_failures=int(
+                self._resolve(
+                    "AGENT_MAX_CONSECUTIVE_FORMAT_FAILURES",
+                    "max_consecutive_format_failures",
+                    "3",
+                    section=self._agent,
+                )
+            ),
         )
 
     def _resolve(

@@ -13,6 +13,7 @@ from boba.domain.agent.events import (
     MaxIterationsReached,
     PersistenceFailed,
     PromptFailed,
+    RepeatedFormatFailure,
 )
 from boba.domain.agent.models import AgentContext
 from boba.domain.core.patterns import Specification, StreamSource
@@ -64,13 +65,20 @@ class StopOnAnyFailure(Specification[tuple[AgentContext, AgentEvent]]):
     """Останавливает цикл при любом терминальном failed-событии.
 
     Покрывает :class:`GenerationFailed`, :class:`PromptFailed`,
-    :class:`PersistenceFailed`, :class:`MaxIterationsReached` — узкие
-    *ToEvent middleware уже сконвертировали соответствующие исключения.
+    :class:`PersistenceFailed`, :class:`MaxIterationsReached`,
+    :class:`RepeatedFormatFailure` — узкие *ToEvent middleware уже
+    сконвертировали соответствующие исключения.
     """
 
     def check(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
         _ctx, event = candidate
         return isinstance(
             event,
-            (GenerationFailed, PromptFailed, PersistenceFailed, MaxIterationsReached),
+            (
+                GenerationFailed,
+                PromptFailed,
+                PersistenceFailed,
+                MaxIterationsReached,
+                RepeatedFormatFailure,
+            ),
         )

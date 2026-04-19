@@ -6,10 +6,11 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 
-from boba.domain.agent.errors import ToolFeedbackError
+from boba.domain.agent.errors import RepeatedFormatFailureError, ToolFeedbackError
 from boba.domain.agent.events import (
     AgentEvent,
     ToolCallComplete,
+    ToolCallFormatFailed,
     ToolResultReady,
 )
 from boba.domain.agent.messages import MessageService
@@ -216,3 +217,73 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
                 continue
 
             yield event
+
+
+class RepeatedFormatFailureGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
+    """Защита от залипания модели на неверном формате tool call.
+
+    Следит за событиями :class:`ToolCallFormatFailed`, приходящими из
+    нижележащего :class:`AgentErrorRouterMiddleware` (роутер эмитит их при
+    поимке :class:`LLMToolCallFormatError`). При ``max_consecutive + 1``
+    подряд без успешного :class:`ToolResultReady` между — поднимает
+    :class:`RepeatedFormatFailureError` через :meth:`AgentErrorRouter.route`,
+    что превращается в терминальное событие :class:`RepeatedFormatFailure`
+    и останавливает цикл через :class:`StopOnAnyFailure`.
+
+    Зачем отдельный guard (а не только ``StopOnMaxIterations``-подобная
+    спецификация): маленькие модели (qwen3-0.6b и т.п.) умеют залипать на
+    выводе `{...}` в content с первой же итерации и до исчерпания лимита.
+    Дополнительные итерации с одной и той же ошибкой формата в истории не
+    помогают — модель видит свой паттерн и продолжает его воспроизводить.
+    Лучше короткий fail-fast, чем 20 итераций холостого хода.
+
+    Счётчик:
+    - `ToolCallFormatFailed` → count++
+    - `ToolResultReady`       → count=0 (успешный вызов инструмента
+      сбрасывает подозрение в залипании)
+    - другие события — без изменений
+
+    Сидит **снаружи** :class:`AgentErrorRouterMiddleware` (чтобы видеть его
+    выход — :class:`ToolCallFormatFailed`). Использует тот же
+    :class:`AgentErrorRouter` для эмита терминального события — подход
+    симметричен :class:`RepeatedToolCallGuardMiddleware`.
+
+    Состояние — на инстансе. ``agent_chain`` собирается per-request (scope
+    REQUEST), инстанс свежий на каждый запрос — сброс не нужен.
+    """
+
+    def __init__(
+        self,
+        inner: StreamSource[AgentContext, AgentEvent],
+        error_router: AgentErrorRouter,
+        max_consecutive: int,
+    ) -> None:
+        self._inner = inner
+        self._router = error_router
+        self._max_consecutive = max_consecutive
+        self._count = 0
+
+    def name(self) -> str:
+        return "RepeatedFormatFailureGuard"
+
+    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+        for event in self._inner.stream(ctx):
+            yield event
+
+            if isinstance(event, ToolCallFormatFailed):
+                self._count += 1
+                if self._count > self._max_consecutive:
+                    yield from self._router.route(
+                        ctx,
+                        RepeatedFormatFailureError(
+                            f"Модель {self._count} раз подряд вывела неверный "
+                            f"формат tool call (лимит {self._max_consecutive}). "
+                            f"Дальнейшие объяснения формата не помогают — "
+                            f"цикл остановлен.",
+                            count=self._count,
+                            limit=self._max_consecutive,
+                        ),
+                    )
+                    return
+            elif isinstance(event, ToolResultReady):
+                self._count = 0

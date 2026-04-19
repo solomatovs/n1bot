@@ -42,6 +42,7 @@ from .loop_control import (
 )
 from .prompt import SystemPromptMiddleware, UserPromptMiddleware
 from .tools import (
+    RepeatedFormatFailureGuardMiddleware,
     RepeatedToolCallGuardMiddleware,
     ToolExecutionMiddleware,
     ToolsDefinitionMiddleware,
@@ -60,6 +61,7 @@ __all__ = [
     "JsonHeaderParser",
     "JsonToolCallHeader",
     "ParsedJsonToolCall",
+    "RepeatedFormatFailureGuardMiddleware",
     "RepeatedToolCallGuardMiddleware",
     "StopOnAnyFailure",
     "StopOnFinished",
