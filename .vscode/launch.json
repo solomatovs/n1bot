@@ -22,7 +22,7 @@
             "request": "launch",
             "module": "pytest",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
+            "cwd": "${workspaceFolder}/.vscode",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "args": ["-v", "${file}"],
