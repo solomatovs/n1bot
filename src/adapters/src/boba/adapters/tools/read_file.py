@@ -11,6 +11,7 @@ from boba.domain.core.tools import (
     ParamSchema,
     Tool,
     ToolDefinition,
+    ToolExecutionError,
     ToolId,
     ToolInputSchema,
     ToolResult,
@@ -92,12 +93,14 @@ class ReadFileTool(Tool[ReadFileArgs]):
         try:
             with self._workspace.read_text(args.filename) as f:
                 text = f.read()
-        except WorkspaceNotFoundError:
-            return ToolResult(
-                content=f"Файл не найден: {args.filename}", is_error=True
-            )
+        except WorkspaceNotFoundError as e:
+            raise ToolExecutionError(
+                tool_id=self._ID, message=f"Файл не найден: {args.filename}"
+            ) from e
         except WorkspaceError as e:
-            return ToolResult(content=f"Ошибка чтения: {e}", is_error=True)
+            raise ToolExecutionError(
+                tool_id=self._ID, message=f"Ошибка чтения: {e}"
+            ) from e
 
         if args.start_line is not None or args.end_line is not None:
             lines = text.splitlines()

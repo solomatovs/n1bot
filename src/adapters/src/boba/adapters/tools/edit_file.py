@@ -11,6 +11,7 @@ from boba.domain.core.tools import (
     ParamSchema,
     Tool,
     ToolDefinition,
+    ToolExecutionError,
     ToolId,
     ToolInputSchema,
     ToolResult,
@@ -79,7 +80,9 @@ class EditFileTool(Tool[EditFileArgs]):
             with self._workspace.write_text(args.filename) as f:
                 f.write(args.content)
         except WorkspaceError as e:
-            return ToolResult(content=f"Ошибка записи: {e}", is_error=True)
+            raise ToolExecutionError(
+                tool_id=self._ID, message=f"Ошибка записи: {e}"
+            ) from e
 
         action = "обновлён" if existed else "создан"
         return ToolResult(

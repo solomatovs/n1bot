@@ -25,6 +25,7 @@ from boba.domain.agent.events import (
     ToolCallArgumentDelta,
     ToolCallBegin,
     ToolCallComplete,
+    ToolExecutionFailed,
     ToolResultReady,
     UserQueryReceived,
 )
@@ -72,11 +73,18 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
                 print(f"\n{self._YELLOW}[tool] {fn}{self._RESET}")  # noqa: T201
             case ToolCallArgumentDelta(arguments=args):
                 print(f"{self._DIM}{args}{self._RESET}", end="", flush=True)  # noqa: T201
-            case ToolResultReady(tool_name=fn, content=c, is_error=err):
-                color = self._RED if err else self._GREEN
-                label = "error" if err else "result"
+            case ToolResultReady(tool_name=fn, content=c):
                 preview = c[: self._PREVIEW] + ("..." if len(c) > self._PREVIEW else "")
-                print(f"\n{color}[{label}] {fn}: {preview}{self._RESET}")  # noqa: T201
+                print(f"\n{self._GREEN}[result] {fn}: {preview}{self._RESET}")  # noqa: T201
+            case ToolExecutionFailed(
+                tool_name=fn, error_kind=kind, message=msg
+            ):
+                preview = msg[: self._PREVIEW] + (
+                    "..." if len(msg) > self._PREVIEW else ""
+                )
+                print(  # noqa: T201
+                    f"\n{self._RED}[tool error: {kind}] {fn}: {preview}{self._RESET}"
+                )
 
             case GenerationDone():
                 print()  # noqa: T201

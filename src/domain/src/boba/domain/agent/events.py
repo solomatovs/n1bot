@@ -208,14 +208,39 @@ class ToolCallComplete(BaseEvent):
 
 @dataclass(frozen=True)
 class ToolResultReady(BaseEvent):
+    """Результат успешного выполнения tool.
+
+    Ошибки сюда не попадают — для них есть :class:`ToolExecutionFailed`.
+    """
+
     tool_call_id: str
     tool_name: str
     content: str
-    is_error: bool = False
 
     @classmethod
     def name(cls) -> Literal["ToolResultReady"]:
         return "ToolResultReady"
+
+
+@dataclass(frozen=True)
+class ToolExecutionFailed(BaseEvent):
+    """Ошибка выполнения tool.
+
+    Не терминальное событие: цикл агента продолжается. Middleware уже
+    записал ``message`` в ``MessageService`` как ``LLMMessage(role="tool")``,
+    чтобы LLM на следующей итерации увидела ошибку и могла её починить.
+    Событие нужно sink'ам (UI/журнал), чтобы отрисовать/залогировать факт
+    ошибки отдельно от успешного результата.
+    """
+
+    tool_call_id: str
+    tool_name: str
+    error_kind: str
+    message: str
+
+    @classmethod
+    def name(cls) -> Literal["ToolExecutionFailed"]:
+        return "ToolExecutionFailed"
 
 
 @dataclass(frozen=True)
@@ -296,6 +321,7 @@ AgentEvent = (
     | ToolCallArgumentDelta
     | ToolCallComplete
     | ToolResultReady
+    | ToolExecutionFailed
 )
 
 
@@ -324,6 +350,7 @@ AgentEventName: TypeAlias = Literal[
     "ToolCallArgumentDelta",
     "ToolCallComplete",
     "ToolResultReady",
+    "ToolExecutionFailed",
 ]
 
 

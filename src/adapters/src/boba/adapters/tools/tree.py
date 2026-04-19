@@ -12,6 +12,7 @@ from boba.domain.core.tools import (
     ParamSchema,
     Tool,
     ToolDefinition,
+    ToolExecutionError,
     ToolId,
     ToolInputSchema,
     ToolResult,
@@ -72,9 +73,9 @@ class TreeTool(Tool[TreeArgs]):
 
     def execute(self, ctx: None, args: TreeArgs) -> ToolResult:
         if args.limit is not None and args.limit < 0:
-            return ToolResult(
-                content=f"limit должен быть >= 0, получено {args.limit}",
-                is_error=True,
+            raise ToolExecutionError(
+                tool_id=self._ID,
+                message=f"limit должен быть >= 0, получено {args.limit}",
             )
 
         try:
@@ -85,7 +86,9 @@ class TreeTool(Tool[TreeArgs]):
                 else list(islice(iterator, args.limit))
             )
         except WorkspaceError as e:
-            return ToolResult(content=f"Ошибка обхода workspace: {e}", is_error=True)
+            raise ToolExecutionError(
+                tool_id=self._ID, message=f"Ошибка обхода workspace: {e}"
+            ) from e
 
         if not items:
             return ToolResult(content="Workspace пуст.")

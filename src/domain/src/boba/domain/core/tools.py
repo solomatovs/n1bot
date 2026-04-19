@@ -97,10 +97,31 @@ class ToolCall:
 
 @dataclass(frozen=True)
 class ToolResult:
-    """Результат выполнения инструмента, уходит в messages с ролью TOOL."""
+    """Результат успешного выполнения инструмента, уходит в messages с ролью TOOL.
+
+    Ошибки не представляются отдельным флагом — они бросаются как
+    :class:`ToolExecutionError` и обрабатываются выше по стеку (middleware
+    пишет ошибку в ``LLMMessage`` и эмитит ``ToolExecutionFailed``).
+    """
 
     content: str
-    is_error: bool = False
+
+
+class ToolExecutionError(Exception):
+    """Ошибка выполнения инструмента.
+
+    Бросается из :meth:`ToolsService.execute` / :meth:`Tool.execute` вместо
+    возврата ``ToolResult`` с флагом. Middleware ловит исключение, пишет
+    сообщение ``role="tool"`` обратно в диалог (чтобы LLM на следующей
+    итерации увидела ошибку и могла её починить) и эмитит событие
+    ``ToolExecutionFailed`` для sink'ов. ``tool_call_id`` здесь не хранится —
+    сервис его не знает; его добавляет вызывающий middleware в событие.
+    """
+
+    def __init__(self, tool_id: ToolId, message: str) -> None:
+        super().__init__(message)
+        self.tool_id = tool_id
+        self.message = message
 
 
 class Tool(
@@ -265,15 +286,17 @@ class ToolsService(Executor[None, ToolCall, ToolResult]):
     def execute(self, ctx: None, call: ToolCall) -> ToolResult:
         try:
             return self._dispatcher.execute(ctx, call)
-        except ExecutorRouteError:
-            return self._unknown_tool(call.tool_id)
+        except ExecutorRouteError as e:
+            raise self._unknown_tool(call.tool_id) from e
+        except ToolExecutionError:
+            raise
         except Exception as e:
-            return ToolResult(
-                content=f"{type(e).__name__}: {e}",
-                is_error=True,
-            )
+            raise ToolExecutionError(
+                tool_id=call.tool_id,
+                message=f"{type(e).__name__}: {e}",
+            ) from e
 
-    def _unknown_tool(self, tool_id: ToolId) -> ToolResult:
+    def _unknown_tool(self, tool_id: ToolId) -> ToolExecutionError:
         available = [t.tool_id().to_wire() for t in self._catalog.tools()]
         if not available:
             msg = f"tool {tool_id.to_wire()!r} not found; no tools are registered"
@@ -282,4 +305,4 @@ class ToolsService(Executor[None, ToolCall, ToolResult]):
                 f"tool {tool_id.to_wire()!r} not found. "
                 f"available: {', '.join(repr(a) for a in available)}"
             )
-        return ToolResult(content=msg, is_error=True)
+        return ToolExecutionError(tool_id=tool_id, message=msg)
