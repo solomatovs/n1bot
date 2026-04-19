@@ -112,6 +112,27 @@ class AppProvider(Provider):
             ),
             EnvironmentPromptProvider(),
             GitPromptProvider(),
+            StaticPromptProvider(
+                PromptId("output_format"),
+                priority=90,
+                content=(
+                    "Правила вывода:\n"
+                    "- Для вызова инструмента используй механизм tool_calls API "
+                    "(поле tool_calls ответа). Никогда не пиши вызов инструмента "
+                    "как JSON-текст внутри обычного ответа.\n"
+                    "- Для ответа пользователю пиши обычный текст на русском без "
+                    "JSON, без полей \"name\"/\"arguments\"/\"response\"/\"content\", "
+                    "без Markdown-обёрток с json.\n"
+                    "- Получив результат инструмента (role=tool), не вызывай тот же "
+                    "инструмент повторно с теми же аргументами — сразу сформулируй "
+                    "текстовый ответ пользователю.\n"
+                    "- Если для ответа достаточно имеющейся информации — не вызывай "
+                    "инструменты.\n\n"
+                    "Пример правильного ответа пользователю: Файлы: a.md, b.md.\n"
+                    "Пример неправильного: {\"response\": \"Файлы: a.md, b.md\"}"
+                ),
+                kind=PromptKind.SYSTEM,
+            ),
             UserQueryProvider(),
         ]
 
