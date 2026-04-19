@@ -37,7 +37,7 @@ from boba.domain.agent.events import (
     UserQueryReceived,
 )
 from boba.domain.agent.models import RequestId
-from boba.domain.core.history import EntryId, HistoryEntry, HistoryReadError
+from boba.domain.agent.history import EntryId, HistoryEntry, HistoryReadError
 from boba.domain.core.patterns import ConverterInputError
 from boba.domain.core.workspace import WorkspaceId
 

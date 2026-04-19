@@ -10,14 +10,14 @@ from types import MappingProxyType
 from typing import Any, ClassVar, cast, get_args
 
 from boba.domain.agent.events import AgentEvent, AgentEventName, BaseEvent
-from boba.domain.agent.models import RequestId
-from boba.domain.core.history import (
+from boba.domain.agent.history import (
     EntryId,
     HistoryEntry,
     HistoryReadError,
     HistoryService,
     HistoryWriteError,
 )
+from boba.domain.agent.models import RequestId
 from boba.domain.core.patterns import (
     Converter,
     ConverterError,

@@ -31,8 +31,8 @@ from boba.domain.agent.events import (
     UserNoticeReady,
     UserQueryReceived,
 )
+from boba.domain.agent.history import HistoryService
 from boba.domain.agent.models import AgentContext, RequestId
-from boba.domain.core.history import HistoryService
 from boba.domain.core.patterns import StreamSink
 
 
