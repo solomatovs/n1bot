@@ -43,30 +43,31 @@ from boba.domain.agent.models import (
 from boba.domain.config import LLMConfig
 from boba.domain.core.patterns import (
     Converter,
-    Stream,
     StreamConverter,
-    StreamPipeline,
+    StreamSource,
+    StreamTransformer,
+    StreamTransformerPipeline,
 )
 from boba.domain.core.tools import Tool
 
 logger = logging.getLogger(__name__)
 
 
-class LoggingLLMMiddleware(Stream[AgentContext, None, AgentEvent]):
+class LoggingLLMMiddleware(StreamSource[AgentContext, AgentEvent]):
     """Логирует запрос, количество событий и время генерации."""
 
-    def __init__(self, inner: Stream[AgentContext, None, AgentEvent]) -> None:
+    def __init__(self, inner: StreamSource[AgentContext, AgentEvent]) -> None:
         self._inner = inner
 
     def name(self) -> str:
         return "LoggingLLM"
 
-    def stream(self, ctx: AgentContext, stream: None) -> Iterable[AgentEvent]:
+    def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
         logger.info("LLM request: model=%s", ctx.request.model)
         start = time.monotonic()
         count = 0
 
-        for event in self._inner.stream(ctx, stream):
+        for event in self._inner.stream(ctx):
             count += 1
             yield event
 
@@ -74,11 +75,11 @@ class LoggingLLMMiddleware(Stream[AgentContext, None, AgentEvent]):
         logger.info("LLM done: %d events in %.2fs", count, elapsed)
 
 
-class StupidRetryLLMMiddleware(Stream[AgentContext, None, AgentEvent]):
+class StupidRetryLLMMiddleware(StreamSource[AgentContext, AgentEvent]):
     """Повторяет запрос при ошибке до max_retries раз."""
 
     def __init__(
-        self, inner: Stream[AgentContext, None, AgentEvent], max_retries: int = 3
+        self, inner: StreamSource[AgentContext, AgentEvent], max_retries: int = 3
     ) -> None:
         self._inner = inner
         self._max_retries = max_retries
@@ -86,10 +87,10 @@ class StupidRetryLLMMiddleware(Stream[AgentContext, None, AgentEvent]):
     def name(self) -> str:
         return "RetryLLM"
 
-    def stream(self, ctx: AgentContext, stream: None) -> Iterable[AgentEvent]:
+    def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
         for attempt in range(self._max_retries):
             try:
-                yield from self._inner.stream(ctx, stream)
+                yield from self._inner.stream(ctx)
                 return
             except Exception as e:
                 if attempt == self._max_retries - 1:
@@ -102,14 +103,16 @@ class StupidRetryLLMMiddleware(Stream[AgentContext, None, AgentEvent]):
                 )
 
 
-class FromOpenAIChunkConverter(Stream[AgentContext, ChatCompletionChunk, AgentEvent]):
+class FromOpenAIChunkConverter(
+    StreamTransformer[AgentContext, ChatCompletionChunk, AgentEvent]
+):
     """
     Конвертирует поток OpenAI chunks в поток AgentEvent.
-    Делегирует обработку подключаемым StreamSource-ам через Pipeline.
+    Делегирует обработку подключаемым StreamTransformer-ам через pipeline.
     """
 
     def __init__(self, request_id: RequestId) -> None:
-        self._pipeline = StreamPipeline[AgentContext, Iterable[Choice], AgentEvent](
+        self._pipeline = StreamTransformerPipeline[AgentContext, Choice, AgentEvent](
             [
                 RoleSource(request_id),
                 ThinkingSource(request_id),
@@ -121,7 +124,7 @@ class FromOpenAIChunkConverter(Stream[AgentContext, ChatCompletionChunk, AgentEv
         )
 
     def name(self) -> str:
-        return "FromOpenAIChunkConverter ({})".format(", ".join(self._pipeline.name()))
+        return f"FromOpenAIChunkConverter({self._pipeline.name()})"
 
     def stream(
         self, ctx: AgentContext, stream: Iterable[ChatCompletionChunk]
@@ -130,7 +133,7 @@ class FromOpenAIChunkConverter(Stream[AgentContext, ChatCompletionChunk, AgentEv
             yield from self._pipeline.stream(ctx, chunk.choices)
 
 
-class OpenAIMiddleware(Stream[AgentContext, None, AgentEvent]):
+class OpenAIMiddleware(StreamSource[AgentContext, AgentEvent]):
     """
     Terminal — вызывает OpenAI-совместимый API.
     Получает готовый :class:`LLMRequest` от :class:`LLMRequestFactory`,
@@ -150,7 +153,7 @@ class OpenAIMiddleware(Stream[AgentContext, None, AgentEvent]):
     def name(self) -> str:
         return "OpenAICompletion"
 
-    def stream(self, ctx: AgentContext, stream: None) -> Iterable[AgentEvent]:
+    def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
         llm_request = self._llm_request_factory.build(ctx)
         kwargs = self._to_request_converter.convert(llm_request)
 
@@ -286,7 +289,7 @@ class ToOpenAIMessageConverter(StreamConverter[LLMMessage, ChatCompletionMessage
             yield self._converter.convert(item)
 
 
-class RoleSource(Stream[AgentContext, Iterable[Choice], AgentEvent]):
+class RoleSource(StreamTransformer[AgentContext, Choice, AgentEvent]):
     """Порождает GenerationStarted при первом появлении роли."""
 
     def __init__(self, request_id: RequestId) -> None:
@@ -309,7 +312,7 @@ class RoleSource(Stream[AgentContext, Iterable[Choice], AgentEvent]):
                     yield GenerationStarted(request_id=self._request_id)
 
 
-class ThinkingSource(Stream[AgentContext, Iterable[Choice], AgentEvent]):
+class ThinkingSource(StreamTransformer[AgentContext, Choice, AgentEvent]):
     """Порождает ThinkingStarted/ThinkingToken из reasoning_content."""
 
     def __init__(self, request_id: RequestId) -> None:
@@ -337,7 +340,7 @@ class ThinkingSource(Stream[AgentContext, Iterable[Choice], AgentEvent]):
                 yield ThinkingToken(request_id=self._request_id, token=thinking)
 
 
-class AnswerSource(Stream[AgentContext, Iterable[Choice], AgentEvent]):
+class AnswerSource(StreamTransformer[AgentContext, Choice, AgentEvent]):
     """Порождает AnswerStarted/AnswerToken из content."""
 
     def __init__(self, request_id: RequestId) -> None:
@@ -363,7 +366,7 @@ class AnswerSource(Stream[AgentContext, Iterable[Choice], AgentEvent]):
                 )
 
 
-class RefusalSource(Stream[AgentContext, Iterable[Choice], AgentEvent]):
+class RefusalSource(StreamTransformer[AgentContext, Choice, AgentEvent]):
     """Порождает RefusalToken из refusal."""
 
     def __init__(self, request_id: RequestId) -> None:
@@ -382,7 +385,7 @@ class RefusalSource(Stream[AgentContext, Iterable[Choice], AgentEvent]):
                 )
 
 
-class ToolCallSource(Stream[AgentContext, Iterable[Choice], AgentEvent]):
+class ToolCallSource(StreamTransformer[AgentContext, Choice, AgentEvent]):
     """Порождает ToolCallBegin/ToolCallArgumentDelta из tool_calls."""
 
     def __init__(self, request_id: RequestId) -> None:
@@ -423,7 +426,7 @@ class ToolCallSource(Stream[AgentContext, Iterable[Choice], AgentEvent]):
                     )
 
 
-class FinishSource(Stream[AgentContext, Iterable[Choice], AgentEvent]):
+class FinishSource(StreamTransformer[AgentContext, Choice, AgentEvent]):
     """Порождает GenerationDone при finish_reason."""
 
     def __init__(self, request_id: RequestId) -> None:

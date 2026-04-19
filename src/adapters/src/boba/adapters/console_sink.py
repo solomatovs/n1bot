@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from typing import assert_never
 
 from boba.domain.agent.events import (
@@ -26,10 +25,10 @@ from boba.domain.agent.events import (
     UserQueryReceived,
 )
 from boba.domain.agent.meat import AgentContext
-from boba.domain.core.patterns import Stream
+from boba.domain.core.patterns import StreamSink
 
 
-class ConsoleSink(Stream[AgentContext, AgentEvent, None]):
+class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
     """Выводит поток AgentEvent в консоль."""
 
     def __init__(self) -> None:
@@ -45,10 +44,7 @@ class ConsoleSink(Stream[AgentContext, AgentEvent, None]):
     def name(self) -> str:
         return "Console"
 
-    def stream(self, ctx: AgentContext, stream: AgentEvent) -> Iterable[None]:
-        yield self.handle(stream)
-
-    def handle(self, event: AgentEvent):  # noqa: C901
+    def handle(self, ctx: AgentContext, event: AgentEvent) -> None:  # noqa: C901
         match event:
             case ThinkingStarted():
                 print(f"{self._DIM}--- thinking ---{self._RESET}")  # noqa: T201

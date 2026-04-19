@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable
 from typing import assert_never
 
 from boba.domain.agent.events import (
@@ -28,10 +27,10 @@ from boba.domain.agent.events import (
 )
 from boba.domain.agent.models import AgentContext, RequestId
 from boba.domain.core.history import HistoryService
-from boba.domain.core.patterns import Stream
+from boba.domain.core.patterns import StreamSink
 
 
-class HistorySink(Stream[AgentContext, AgentEvent, None]):
+class HistorySink(StreamSink[AgentContext, AgentEvent]):
     """Записывает события в журнал истории, агрегируя стриминговые токены."""
 
     def __init__(self, history: HistoryService) -> None:
@@ -46,10 +45,7 @@ class HistorySink(Stream[AgentContext, AgentEvent, None]):
     def name(self) -> str:
         return "History"
 
-    def stream(self, ctx: AgentContext, stream: AgentEvent) -> Iterable[None]:
-        yield self.handle(stream)
-
-    def handle(self, event: AgentEvent):  # noqa: C901
+    def handle(self, ctx: AgentContext, event: AgentEvent) -> None:  # noqa: C901
         match event:
             case ThinkingToken(request_id, token=t):
                 self._thinking_buf[request_id].append(t)
