@@ -36,6 +36,7 @@ from boba.domain.agent.events import (
     ToolCallArgumentDelta,
     ToolCallBegin,
     ToolCallComplete,
+    ToolExecutionFailed,
     ToolResultReady,
     UserQueryReceived,
 )
@@ -65,8 +66,8 @@ from boba.domain.core.promt import (
 )
 from boba.domain.core.tools import (
     ToolCall,
+    ToolExecutionError,
     ToolId,
-    ToolResult,
     ToolsService,
 )
 
@@ -306,7 +307,10 @@ class HistoryReplayMiddleware(StreamSource[AgentContext, AgentEvent]):
     - ``AnswerComplete`` + ``ToolCallComplete`` между ними и
       ``GenerationDone`` → ``LLMMessage(role="assistant", content, tool_calls)``
       (один assistant-message на один ``GenerationDone``);
-    - ``ToolResultReady`` → ``LLMMessage(role="tool", content, tool_call_id)``.
+    - ``ToolResultReady`` → ``LLMMessage(role="tool", content, tool_call_id)``;
+    - ``ToolExecutionFailed`` → ``LLMMessage(role="tool", message, tool_call_id)``
+      (LLM должна увидеть ошибку tool'а при реплее так же, как увидела
+      бы её при live-исполнении).
 
     Остальные события (токены, ``Stage*``, ``*Started``) игнорируются —
     они уже агрегированы в ``*Complete``.
@@ -361,6 +365,10 @@ class HistoryReplayMiddleware(StreamSource[AgentContext, AgentEvent]):
                     self._message_service.add(
                         LLMMessage(role="tool", content=c, tool_call_id=tid)
                     )
+                case ToolExecutionFailed(tool_call_id=tid, message=m):
+                    self._message_service.add(
+                        LLMMessage(role="tool", content=m, tool_call_id=tid)
+                    )
                 case _:
                     pass
 
@@ -399,15 +407,18 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
     После того как внутренний стрим (LLM) заканчивает итерацию, собирает все
     ``ToolCallComplete`` события и по каждому:
 
-    1. Парсит JSON ``arguments``. Битый JSON → ``ToolResult(is_error=True)``
-       с понятным сообщением (LLM получит его обратно и сможет починить).
-    2. Вызывает :meth:`ToolsService.execute`. Любые ошибки выполнения сам
-       сервис завернёт в ``ToolResult(is_error=True)`` — исключения наружу
-       не летят.
-    3. Пишет ``LLMMessage(role="tool", tool_call_id=..., content=...)`` в
-       :class:`MessageService` — на следующей итерации LLM увидит результат.
-    4. Эмитит ``ToolResultReady`` в стрим событий — sink'ы его отрисуют/
-       залогируют.
+    1. Парсит JSON ``arguments``. Битый JSON → :class:`ToolExecutionError`
+       с понятным сообщением — ошибка уйдёт LLM как tool-message, и та
+       сможет её починить.
+    2. Вызывает :meth:`ToolsService.execute`. Сервис бросает
+       :class:`ToolExecutionError` на неизвестный tool или на падение
+       реализации — исключение ловится тут же.
+    3. Успех → ``LLMMessage(role="tool", tool_call_id=..., content=...)`` +
+       :class:`ToolResultReady`.
+    4. Ошибка → ``LLMMessage(role="tool", content=<error>, ...)`` (чтобы LLM
+       увидела её на следующей итерации) + :class:`ToolExecutionFailed`
+       для sink'ов. Цикл не падает — ошибка tool'а это не терминальное
+       событие, а сигнал LLM.
 
     Если LLM не запросила тулов — middleware просто проксирует события
     inner без побочных эффектов.
@@ -440,17 +451,21 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
     def _run_tool(self, tc: ToolCallComplete) -> Iterator[AgentEvent]:
         try:
             arguments = json.loads(tc.arguments)
-        except json.JSONDecodeError as e:
-            result = ToolResult(
-                content=f"invalid JSON arguments: {e}",
-                is_error=True,
-            )
-        else:
             call = ToolCall(
                 tool_id=ToolId(tc.tool_name),
                 arguments=arguments,
             )
             result = self._tools_service.execute(None, call)
+        except json.JSONDecodeError as e:
+            yield from self._emit_failure(
+                tc, error_kind=type(e).__name__, message=f"invalid JSON arguments: {e}"
+            )
+            return
+        except ToolExecutionError as e:
+            yield from self._emit_failure(
+                tc, error_kind=type(e).__name__, message=e.message
+            )
+            return
 
         self._message_service.add(
             LLMMessage(
@@ -465,7 +480,24 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
             tool_call_id=tc.tool_call_id,
             tool_name=tc.tool_name,
             content=result.content,
-            is_error=result.is_error,
+        )
+
+    def _emit_failure(
+        self, tc: ToolCallComplete, *, error_kind: str, message: str
+    ) -> Iterator[AgentEvent]:
+        self._message_service.add(
+            LLMMessage(
+                role="tool",
+                content=message,
+                tool_call_id=tc.tool_call_id,
+            ),
+        )
+        yield ToolExecutionFailed(
+            request_id=tc.request_id,
+            tool_call_id=tc.tool_call_id,
+            tool_name=tc.tool_name,
+            error_kind=error_kind,
+            message=message,
         )
 
 

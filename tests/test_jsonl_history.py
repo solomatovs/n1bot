@@ -32,6 +32,7 @@ from boba.domain.agent.events import (
     ToolCallArgumentDelta,
     ToolCallBegin,
     ToolCallComplete,
+    ToolExecutionFailed,
     ToolResultReady,
     UserQueryReceived,
 )
@@ -328,23 +329,22 @@ _EVENT_FACTORIES: list[tuple[str, EventFactory]] = [
         ),
     ),
     (
-        "ToolResultReady_ok",
+        "ToolResultReady",
         lambda rid: ToolResultReady(
             request_id=rid,
             tool_call_id="tc1",
             tool_name="search",
             content="result",
-            is_error=False,
         ),
     ),
     (
-        "ToolResultReady_err",
-        lambda rid: ToolResultReady(
+        "ToolExecutionFailed",
+        lambda rid: ToolExecutionFailed(
             request_id=rid,
             tool_call_id="tc1",
             tool_name="search",
-            content="boom",
-            is_error=True,
+            error_kind="ToolExecutionError",
+            message="boom",
         ),
     ),
 ]

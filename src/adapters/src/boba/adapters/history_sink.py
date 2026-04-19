@@ -26,6 +26,7 @@ from boba.domain.agent.events import (
     ToolCallArgumentDelta,
     ToolCallBegin,
     ToolCallComplete,
+    ToolExecutionFailed,
     ToolResultReady,
     UserQueryReceived,
 )
@@ -92,6 +93,9 @@ class HistorySink(StreamSink[AgentContext, AgentEvent]):
                 self._flush_answer(request_id)
             case AnswerDiscarded(request_id):
                 self._answer_buf.pop(request_id, None)
+                self._history.append(event)
+
+            case ToolExecutionFailed():
                 self._history.append(event)
 
             case (

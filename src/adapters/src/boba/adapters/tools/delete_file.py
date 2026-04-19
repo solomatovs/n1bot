@@ -11,6 +11,7 @@ from boba.domain.core.tools import (
     ParamSchema,
     Tool,
     ToolDefinition,
+    ToolExecutionError,
     ToolId,
     ToolInputSchema,
     ToolResult,
@@ -68,10 +69,12 @@ class DeleteFileTool(Tool[DeleteFileArgs]):
     def execute(self, ctx: None, args: DeleteFileArgs) -> ToolResult:
         try:
             self._workspace.delete(args.filename)
-        except WorkspaceNotFoundError:
-            return ToolResult(
-                content=f"Файл не найден: {args.filename}", is_error=True
-            )
+        except WorkspaceNotFoundError as e:
+            raise ToolExecutionError(
+                tool_id=self._ID, message=f"Файл не найден: {args.filename}"
+            ) from e
         except WorkspaceError as e:
-            return ToolResult(content=f"Ошибка удаления: {e}", is_error=True)
+            raise ToolExecutionError(
+                tool_id=self._ID, message=f"Ошибка удаления: {e}"
+            ) from e
         return ToolResult(content=f"Файл удалён: {args.filename}")
