@@ -16,6 +16,7 @@ from boba.domain.agent.events import (
     MaxIterationsReached,
     PersistenceFailed,
     PromptFailed,
+    RepeatedFormatFailure,
     RefusalComplete,
     RefusalToken,
     StageCompleted,
@@ -142,6 +143,14 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
                 print(  # noqa: T201
                     f"\n{self._RED}[max iterations: {kind}] "
                     f"iteration={it} limit={limit}: {msg}{self._RESET}"
+                )
+
+            case RepeatedFormatFailure(
+                error_kind=kind, message=msg, count=count, limit=limit
+            ):
+                print(  # noqa: T201
+                    f"\n{self._RED}[repeated format failure: {kind}] "
+                    f"count={count} limit={limit}: {msg}{self._RESET}"
                 )
 
             case (

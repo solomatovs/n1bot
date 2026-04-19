@@ -49,6 +49,7 @@ from boba.domain.agent.meat import (
     AssistantMessagePersistenceMiddleware,
     HistoryReplayMiddleware,
     IterationCounterMiddleware,
+    RepeatedFormatFailureGuardMiddleware,
     RepeatedToolCallGuardMiddleware,
     StopOnAnyFailure,
     StopOnFinished,
@@ -117,10 +118,26 @@ class AppProvider(Provider):
                 PromptId("output_format"),
                 priority=90,
                 content=(
-                    "Правила вывода:\n"
-                    "- Для вызова инструмента используй механизм tool_calls API\n"
-                    "- Для ответа пользователю пиши обычный текст на русском. "
-                    "Запрещено использовать JSON.\n"
+                    "Формат ответа.\n"
+                    "\n"
+                    "У тебя два режима вывода — выбирай ровно один на "
+                    "каждый ответ:\n"
+                    "\n"
+                    "1. Вызов инструмента. Заполняй поле tool_calls в "
+                    "ответе API. Поле content оставляй пустым. НЕ пиши "
+                    "вызов инструмента как JSON внутри content — это "
+                    "ошибка, инструмент не будет выполнен.\n"
+                    "\n"
+                    "2. Ответ пользователю. Пиши связный прозаический "
+                    "текст на русском языке. Без фигурных скобок, без "
+                    "ключей в кавычках, без JSON-объектов. "
+                    "Просто человеческая речь.\n"
+                    "\n"
+                    "Пример правильного ответа пользователю:\n"
+                    "  В workspace три файла: raw_content.md, "
+                    "history.jsonl, raw_messages.md. Первый хранит "
+                    "читаемый стрим ответов модели, второй — журнал "
+                    "событий, третий — сырой дамп запросов и чанков.\n"
                 ),
                 kind=PromptKind.SYSTEM,
             ),
@@ -237,6 +254,13 @@ class RequestProvider(Provider):
     ) -> StreamSourceLoop[AgentContext, AgentEvent]:
         builder = StreamSourceChainBuilder[AgentContext, AgentEvent]()
         builder.use(IterationCounterMiddleware)
+        builder.use(
+            lambda inner: RepeatedFormatFailureGuardMiddleware(
+                inner,
+                error_router,
+                agent_config.max_consecutive_format_failures,
+            )
+        )
         builder.use(lambda inner: AgentErrorRouterMiddleware(inner, error_router))
         builder.use(
             lambda inner: HistoryReplayMiddleware(

@@ -33,6 +33,7 @@ class AgentConfig:
 
     max_iterations: int = 20
     max_consecutive_tool_calls: int = 3
+    max_consecutive_format_failures: int = 3
 
 
 @dataclass(frozen=True)
