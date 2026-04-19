@@ -1,3 +1,17 @@
+"""Generic tool/dispatch framework.
+
+Абстракция callable-инструментов с типизированными аргументами и
+результатом; реестр источников, каталог, диспетчер вызовов. Модуль
+**не завязан на LLM**: :class:`Tool` — это ``Executor[None, TArgs, ToolResult]``,
+а вся LLM-специфика (tool_call_id, ``role="tool"`` сообщения, событие
+``ToolExecutionFailed``) живёт в agent-слое, который этим фреймворком
+пользуется.
+
+В проекте потребитель ровно один — agent loop для LLM tool calling — но
+сам модуль любой другой caller (CQRS-шина, RPC-диспетчер, …) мог бы
+использовать без правок.
+"""
+
 from __future__ import annotations
 
 from abc import abstractmethod
@@ -51,7 +65,7 @@ class JsonType(Enum):
 
 @dataclass(frozen=True)
 class ParamSchema:
-    """Описание одного параметра инструмента для LLM."""
+    """Описание одного параметра инструмента."""
 
     name: str
     type: JsonType
@@ -70,11 +84,11 @@ class ToolInputSchema:
 @dataclass(frozen=True)
 class ToolDefinition:
     """
-    Описание инструмента для LLM: текст и схема параметров.
+    Описание инструмента для потребителя: текст и схема параметров.
 
     ``id`` намеренно не хранится — он живёт на самом :class:`Tool`
-    (:meth:`Tool.tool_id`) и считается источником правды. LLM-facing
-    запись собирается на границе сервиса из пары
+    (:meth:`Tool.tool_id`) и считается источником правды. Запись, видимая
+    потребителю, собирается на границе сервиса из пары
     ``(tool.tool_id(), tool.definition())``.
     """
 
@@ -85,10 +99,11 @@ class ToolDefinition:
 @dataclass(frozen=True)
 class ToolCall:
     """
-    Запрос на вызов инструмента от LLM.
+    Запрос на вызов инструмента.
 
     ``tool_id`` — к какому инструменту;
-    ``arguments`` — сырой dict, каким его сериализовала LLM.
+    ``arguments`` — сырой dict, каким его сформировал caller (в случае
+    LLM это то, что модель сериализовала в JSON).
     """
 
     tool_id: ToolId
@@ -97,11 +112,12 @@ class ToolCall:
 
 @dataclass(frozen=True)
 class ToolResult:
-    """Результат успешного выполнения инструмента, уходит в messages с ролью TOOL.
+    """Результат успешного выполнения инструмента.
 
     Ошибки не представляются отдельным флагом — они бросаются как
-    :class:`ToolExecutionError` и обрабатываются выше по стеку (middleware
-    пишет ошибку в ``LLMMessage`` и эмитит ``ToolExecutionFailed``).
+    :class:`ToolExecutionError` и обрабатываются caller-ом (в agent-слое
+    middleware превращает их в tool-сообщение для LLM + наблюдательное
+    событие).
     """
 
     content: str
@@ -111,11 +127,9 @@ class ToolExecutionError(Exception):
     """Ошибка выполнения инструмента.
 
     Бросается из :meth:`ToolsService.execute` / :meth:`Tool.execute` вместо
-    возврата ``ToolResult`` с флагом. Middleware ловит исключение, пишет
-    сообщение ``role="tool"`` обратно в диалог (чтобы LLM на следующей
-    итерации увидела ошибку и могла её починить) и эмитит событие
-    ``ToolExecutionFailed`` для sink'ов. ``tool_call_id`` здесь не хранится —
-    сервис его не знает; его добавляет вызывающий middleware в событие.
+    возврата флагового результата. Обработка — на стороне caller-а: agent
+    ловит, обогащает ``tool_call_id``-ом (который сервис не знает) и
+    превращает в feedback-сообщение для LLM.
     """
 
     def __init__(self, tool_id: ToolId, message: str) -> None:
@@ -137,7 +151,7 @@ class Tool(
 
     @abstractmethod
     def args_converter(self) -> Converter[dict[str, Any], TArgs]:
-        """Конвертер сырых аргументов LLM в ``TArgs``."""
+        """Конвертер сырых аргументов caller-а (напр. JSON от LLM) в ``TArgs``."""
         ...
 
 
@@ -171,7 +185,7 @@ class ToolCatalog:
         return iter(self._items.values())
 
     def definitions(self) -> Iterable[ToolDefinition]:
-        """Описания всех инструментов — для передачи в LLM."""
+        """Описания всех инструментов — для передачи потребителю."""
         return (tool.definition() for tool in self._items.values())
 
 
@@ -280,7 +294,7 @@ class ToolsService(Executor[None, ToolCall, ToolResult]):
         return self._catalog.tools()
 
     def definitions(self) -> Iterable[ToolDefinition]:
-        """Описания всех собранных инструментов — для передачи в LLM."""
+        """Описания всех собранных инструментов — для передачи потребителю."""
         return self._catalog.definitions()
 
     def execute(self, ctx: None, call: ToolCall) -> ToolResult:
