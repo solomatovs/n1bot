@@ -8,11 +8,13 @@ from collections.abc import Iterable, Iterator
 from boba.domain.agent.errors import (
     LLMError,
     LLMToolCallFormatError,
+    MaxIterationsExceededError,
     ToolFeedbackError,
 )
 from boba.domain.agent.events import (
     AgentEvent,
     GenerationFailed,
+    MaxIterationsReached,
     PersistenceFailed,
     PromptFailed,
     ToolCallFormatFailed,
@@ -55,6 +57,8 @@ class AgentErrorRouter:
     - :class:`PromptError` → :class:`PromptFailed` (``provider``).
       Терминально.
     - :class:`HistoryError` → :class:`PersistenceFailed`. Терминально.
+    - :class:`MaxIterationsExceededError` → :class:`MaxIterationsReached`.
+      Терминально.
     - :class:`ToolFeedbackError` → запись ``LLMMessage(role="tool",
       tool_call_id=..., content=...)`` в :class:`MessageService` +
       :class:`ToolExecutionFailed`. Не терминально.
@@ -97,6 +101,14 @@ class AgentErrorRouter:
                     error_kind=kind,
                     message=msg,
                     retryable=retryable,
+                )
+            case MaxIterationsExceededError():
+                yield MaxIterationsReached(
+                    request_id=rid,
+                    error_kind=kind,
+                    message=msg,
+                    limit=err.limit,
+                    iteration=err.iteration,
                 )
             case ToolFeedbackError():
                 self._message_service.add(
