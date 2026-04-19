@@ -1,3 +1,16 @@
+"""Сборка LLM-промптов из провайдеров (fold-factory по :class:`PromptKind`).
+
+Provider'ы (``core-errors``-based) поставляют блоки определённого типа
+(``SYSTEM`` / ``USER`` / ``TOOLS_DEFINITION``); :class:`PromptFactory`
+агрегирует их по приоритету в :class:`PromptResult`. Middleware
+``SystemPromptMiddleware`` / ``UserPromptMiddleware`` в ``meat.py``
+используют результат для сборки :class:`LLMRequest`.
+
+Параметр ``TCtx`` — тип контекста, прокидываемого провайдерам. В проекте
+это :class:`~boba.domain.agent.models.AgentContext`, но сам модуль
+работает с любым типом через generics.
+"""
+
 from abc import abstractmethod
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -56,7 +69,7 @@ class PromptBlock:
     content: str
 
 
-class PromtState(Generic[TCtx]):
+class PromptState(Generic[TCtx]):
     def __init__(self, ctx: TCtx) -> None:
         self.ctx = ctx
         self.blocks: dict[PromptKind, list[PromptBlock]] = {}
@@ -65,7 +78,7 @@ class PromtState(Generic[TCtx]):
         self.blocks.setdefault(kind, []).append(block)
 
 
-TPromtState = TypeVar("TPromtState", bound=PromtState)
+TPromptState = TypeVar("TPromptState", bound=PromptState)
 
 
 class PromptId(Id[str]):
@@ -99,7 +112,7 @@ class PromptResult:
         )
 
 
-class PromptProvider(PrioritySource[PromptId, PromtState]):
+class PromptProvider(PrioritySource[PromptId, PromptState]):
     """
     Провайдер промпта без внешнего контекста.
     Поставляет ноль или более блоков одного типа (:meth:`kind`), которые
@@ -110,16 +123,16 @@ class PromptProvider(PrioritySource[PromptId, PromtState]):
     def kind(self) -> PromptKind: ...
 
     @abstractmethod
-    def blocks(self, state: PromtState) -> Iterable[PromptBlock]: ...
+    def blocks(self, state: PromptState) -> Iterable[PromptBlock]: ...
 
-    def apply(self, state: PromtState) -> PromtState:
+    def apply(self, state: PromptState) -> PromptState:
         kind = self.kind()
         for block in self.blocks(state):
             state.add(kind, block)
         return state
 
 
-class PromptFactory(FoldFactory[PromptId, PromtState[TCtx], PromptResult]):
+class PromptFactory(FoldFactory[PromptId, PromptState[TCtx], PromptResult]):
     """Сервис для сборки промптов. Тип контекста определяется при использовании."""
 
     def __init__(self, ctx: TCtx, providers: Iterable[PromptProvider]):
@@ -129,10 +142,10 @@ class PromptFactory(FoldFactory[PromptId, PromtState[TCtx], PromptResult]):
         for p in providers:
             self.register(p)
 
-    def initial(self) -> PromtState:
-        return PromtState(self._ctx)
+    def initial(self) -> PromptState:
+        return PromptState(self._ctx)
 
-    def finalize(self, state: PromtState) -> PromptResult:
+    def finalize(self, state: PromptState) -> PromptResult:
         return PromptResult(state.blocks)
 
     def build(self) -> PromptResult:

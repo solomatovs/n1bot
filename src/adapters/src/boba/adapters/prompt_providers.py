@@ -10,12 +10,12 @@ from datetime import date
 from pathlib import Path
 
 from boba.domain.agent.meat import AgentContext
-from boba.domain.core.promt import (
+from boba.domain.agent.prompt import (
     PromptBlock,
     PromptId,
     PromptKind,
     PromptProvider,
-    PromtState,
+    PromptState,
 )
 from boba.domain.core.workspace import WorkspaceService
 
@@ -44,7 +44,7 @@ class StaticPromptProvider(PromptProvider):
     def kind(self) -> PromptKind:
         return self._kind
 
-    def blocks(self, state: PromtState[AgentContext]) -> Iterable[PromptBlock]:
+    def blocks(self, state: PromptState[AgentContext]) -> Iterable[PromptBlock]:
         yield PromptBlock(name=self._id.name, content=self._content)
 
 
@@ -74,7 +74,7 @@ class FilePromptProvider(PromptProvider):
     def kind(self) -> PromptKind:
         return self._kind
 
-    def blocks(self, state: PromtState[AgentContext]) -> Iterable[PromptBlock]:
+    def blocks(self, state: PromptState[AgentContext]) -> Iterable[PromptBlock]:
         if self._path.exists():
             content = self._path.read_text(encoding="utf-8")
         else:
@@ -113,7 +113,7 @@ class WorkspaceSystemPromptProvider(PromptProvider):
     def kind(self) -> PromptKind:
         return PromptKind.SYSTEM
 
-    def blocks(self, state: PromtState[AgentContext]) -> Iterator[PromptBlock]:
+    def blocks(self, state: PromptState[AgentContext]) -> Iterator[PromptBlock]:
         for path in sorted(self._workspace.ls(self._directory)):
             with self._workspace.read_text(path) as f:
                 content = f.read().strip()
@@ -136,7 +136,7 @@ class EnvironmentPromptProvider(PromptProvider):
     def kind(self) -> PromptKind:
         return PromptKind.SYSTEM
 
-    def blocks(self, state: PromtState[AgentContext]) -> Iterable[PromptBlock]:
+    def blocks(self, state: PromptState[AgentContext]) -> Iterable[PromptBlock]:
         lines = [
             f"Platform: {platform.system()}",
             f"Shell: {os.environ.get('SHELL', 'unknown')}",
@@ -162,7 +162,7 @@ class GitPromptProvider(PromptProvider):
     def kind(self) -> PromptKind:
         return PromptKind.SYSTEM
 
-    def blocks(self, state: PromtState[AgentContext]) -> Iterable[PromptBlock]:
+    def blocks(self, state: PromptState[AgentContext]) -> Iterable[PromptBlock]:
         branch = self._git("branch", "--show-current")
         status = self._git("status", "--short")
         log = self._git("log", "--oneline", "-5")
@@ -203,7 +203,7 @@ class UserQueryProvider(PromptProvider):
     def kind(self) -> PromptKind:
         return PromptKind.USER
 
-    def blocks(self, state: PromtState[AgentContext]) -> Iterable[PromptBlock]:
+    def blocks(self, state: PromptState[AgentContext]) -> Iterable[PromptBlock]:
         yield PromptBlock(name=self._id.name, content=state.ctx.request.query)
 
 
@@ -224,7 +224,7 @@ class IDESelectionProvider(PromptProvider):
     def kind(self) -> PromptKind:
         return PromptKind.USER
 
-    def blocks(self, state: PromtState[AgentContext]) -> Iterable[PromptBlock]:
+    def blocks(self, state: PromptState[AgentContext]) -> Iterable[PromptBlock]:
         content = f"Selected code from {self._file_path}:\n```\n{self._selection}\n```"
 
         yield PromptBlock(name=self._id.name, content=content)
@@ -254,7 +254,7 @@ class TemplateProvider(PromptProvider):
     def kind(self) -> PromptKind:
         return self._kind
 
-    def blocks(self, state: PromtState[AgentContext]) -> Iterable[PromptBlock]:
+    def blocks(self, state: PromptState[AgentContext]) -> Iterable[PromptBlock]:
         content = self._template.format(query=state.ctx.request.query)
 
         yield PromptBlock(name=self._id.name, content=content)

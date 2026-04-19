@@ -60,6 +60,7 @@ from boba.domain.agent.meat import (
 )
 from boba.domain.agent.messages import MessageService
 from boba.domain.agent.models import AgentConfig
+from boba.domain.agent.prompt import PromptId, PromptKind
 from boba.domain.config import AppConfig
 from boba.domain.core.patterns import (
     StreamSink,
@@ -67,7 +68,6 @@ from boba.domain.core.patterns import (
     StreamSourceChainBuilder,
     StreamSourceLoop,
 )
-from boba.domain.core.promt import PromptId, PromptKind
 from boba.domain.core.tools import (
     ToolFactory,
     ToolSourceId,

@@ -5,7 +5,7 @@
 ``TerminalError``, ``UserFeedbackError``, ``LLMFeedbackError``,
 ``Retryable``, ``UserNoticeError``) живут в
 :mod:`boba.domain.core.errors` — их используют и core-сервисы
-(``core.promt``, ``agent.history``), и agent-слой.
+(``agent.prompt``, ``agent.history``), и agent-слой.
 
 
 ════════════════════════════════════════════════════════════════════
@@ -32,7 +32,7 @@
     │   │   │       ├── LLMContextLengthError
     │   │   │       └── LLMResponseFormatError
     │   │   │
-    │   │   ├── PromptError         [core.promt]     → PromptFailed
+    │   │   ├── PromptError         [agent.prompt]     → PromptFailed
     │   │   │   ├── RetryablePromptError (+ Retryable)
     │   │   │   └── PermanentPromptError
     │   │   │       └── PromptProviderError
@@ -63,7 +63,7 @@
 │ Сценарий                         │ Что бросать                    │
 ├──────────────────────────────────┼────────────────────────────────┤
 │ LLM упала/недоступна             │ LLMError / подкласс            │
-│ Промпт не собрался               │ PromptError (core.promt)       │
+│ Промпт не собрался               │ PromptError (agent.prompt)     │
 │ Журнал недоступен                │ HistoryError (core.history)    │
 │ Tool упал (LLM должна увидеть)   │ ToolFeedbackError              │
 │ Нотис пользователю               │ UserNoticeError (core.errors)  │
@@ -80,7 +80,7 @@
     from boba.domain.agent.errors import LLMContextLengthError
     raise LLMContextLengthError("context window exceeded", status_code=400)
 
-    from boba.domain.core.promt import PromptProviderError
+    from boba.domain.agent.prompt import PromptProviderError
     try:
         data = read_source(...)
     except OSError as e:
@@ -115,7 +115,7 @@
 **Сделать ошибку повторяемой** — миксин ``Retryable``::
 
     from boba.domain.core.errors import Retryable
-    from boba.domain.core.promt import PromptError
+    from boba.domain.agent.prompt import PromptError
 
     class PromptLockFileError(PromptError, Retryable):
         '''Файл временно залочен — повторим.'''
