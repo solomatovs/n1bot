@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Mapping, MutableSequence, Sequence
 from types import TracebackType
-from typing import Any, Generic, Self, TypeVar
+from typing import Generic, Self, TypeVar
 from uuid import UUID, uuid4
 
 TName = TypeVar("TName")
@@ -239,29 +239,14 @@ class FactoryMethod(ABC, Generic[TOut]):
     def build(self) -> TOut: ...
 
 
-class ContextFactoryMethod(ABC, Generic[TCtx, TOut]):
+class ContextBinder(ABC, Generic[TCtx]):
     """
-    Factory, которому для сборки нужен контекст, известный только в
-    момент вызова.
-
-    Каноничный :class:`FactoryMethod` не принимает аргументов: всё, что
-    нужно для сборки, уже зашито в экземпляр. Когда часть данных приходит
-    динамически (текущий запрос, сессия, юзер), заворачиваем её в
-    контекст и делаем сборку двухшаговой:
-
-        ctx ──▶ [ ctx(ctx) ] ──▶ FactoryMethod ──▶ [ build ] ──▶ out
-
-    То есть :meth:`ctx` «связывает» контекст со всеми внутренними
-    зависимостями и возвращает обычный :class:`FactoryMethod`, у которого
-    уже можно звать :meth:`FactoryMethod.build` без аргументов.
-
-    Использование:
-
-        service.ctx(request_ctx).build()
+    def bind_context(self, ctx: TCtx): ...
     """
 
     @abstractmethod
-    def ctx(self, ctx: TCtx) -> FactoryMethod[TOut]: ...
+    def bind_context(self, ctx: TCtx):
+        ...
 
 
 class PrioritySource(ABC, Generic[TId, TState]):
@@ -292,27 +277,6 @@ class PrioritySource(ABC, Generic[TId, TState]):
 
     @abstractmethod
     def apply(self, state: TState) -> TState: ...
-
-
-class ContextPrioritySource(ABC, Generic[TId, TCtx, TState]):
-    """
-    Ctx-aware аналог :class:`PrioritySource` для
-    :class:`ContextFoldFactory`.
-
-    Симметрично паре :class:`FactoryMethod` / :class:`ContextFactoryMethod`:
-    сам по себе работать не умеет, единственный способ получить рабочий
-    reducer — :meth:`ctx`, который возвращает обычный
-    :class:`PrioritySource`, привязанный к переданному контексту.
-    """
-
-    @abstractmethod
-    def id(self) -> TId: ...
-
-    @abstractmethod
-    def priority(self) -> int: ...
-
-    @abstractmethod
-    def ctx(self, ctx: TCtx) -> PrioritySource[TId, TState]: ...
 
 
 class FoldFactory(
@@ -399,71 +363,6 @@ class FoldFactory(
             state = p.apply(state)
 
         return self.finalize(state)
-
-
-class ContextFoldFactory(
-    ContextFactoryMethod[TCtx, TOut],
-    Generic[TId, TCtx, TState, TOut],
-):
-    """
-    :class:`ContextFactoryMethod`, собирающий результат через fold
-    :class:`ContextPrioritySource`-ов.
-
-    Отличия от :class:`FoldFactory`:
-    - reducer'ы — это :class:`ContextPrioritySource`: их ``apply``
-      принимает ``(ctx, state)``;
-    - :meth:`initial` зависит от ``ctx``;
-    - сам фабричный объект не сбирает ничего до тех пор, пока не вызвали
-      :meth:`ctx`. ``ctx(ctx)`` возвращает обычный
-      :class:`FactoryMethod`, у которого уже можно звать ``build()``.
-
-    Использование:
-
-        service.ctx(request_ctx).build()
-    """
-
-    def __init__(self) -> None:
-        self._reducers: dict[TId, ContextPrioritySource[TId, TCtx, TState]] = {}
-
-    def register(self, reducer: ContextPrioritySource[TId, TCtx, TState]) -> None:
-        self._reducers[reducer.id()] = reducer
-
-    def unregister(self, key: TId) -> None:
-        self._reducers.pop(key, None)
-
-    def providers(self) -> Iterable[ContextPrioritySource[TId, TCtx, TState]]:
-        return iter(self._reducers.values())
-
-    @abstractmethod
-    def initial(self, ctx: TCtx) -> TState:
-        """Начальное состояние сборки."""
-        ...
-
-    @abstractmethod
-    def finalize(self, state: TState) -> TOut:
-        """Превратить накопленное состояние в результат."""
-        ...
-
-    def ctx(self, ctx: TCtx) -> FactoryMethod[TOut]:
-        return _BoundFoldFactory(self, ctx)
-
-
-class _BoundFoldFactory(FactoryMethod[TOut]):
-    def __init__(
-        self,
-        source: ContextFoldFactory[Any, Any, Any, TOut],
-        ctx: Any,
-    ) -> None:
-        self._source = source
-        self._ctx = ctx
-
-    def build(self) -> TOut:
-        src = self._source
-        ctx = self._ctx
-        state = src.initial(ctx)
-        for p in sorted(src.providers(), key=lambda p: p.priority()):
-            state = p.ctx(ctx).apply(state)
-        return src.finalize(state)
 
 
 class DispatcherKeyError(KeyError):

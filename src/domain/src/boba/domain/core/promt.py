@@ -1,17 +1,15 @@
 from abc import abstractmethod
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from typing import Any, Self, TypeVar
+from typing import Generic, Self, TypeVar
 
 from boba.domain.core.patterns import (
-    ContextFoldFactory,
-    ContextPrioritySource,
     FoldFactory,
     Id,
     PrioritySource,
 )
 
-TPromptContext = TypeVar("TPromptContext")
+TCtx = TypeVar("TCtx")
 
 
 @dataclass(frozen=True)
@@ -20,6 +18,15 @@ class PromptBlock:
 
     name: str
     content: str
+
+
+class PromtState(Generic[TCtx]):
+    def __init__(self, ctx: TCtx) -> None:
+        self.ctx = ctx
+        self.blocks = []
+
+
+TPromtState = TypeVar("TPromtState", bound=PromtState)
 
 
 class PromptId(Id[str]):
@@ -33,7 +40,7 @@ class PromptId(Id[str]):
         return cls(value)
 
 
-class PromptResult:
+class PromptResult(PromptBlock):
     """Результат сборки промпта из одного или нескольких провайдеров."""
 
     def __init__(self, blocks: Iterable[PromptBlock]) -> None:
@@ -47,7 +54,7 @@ class PromptResult:
         return iter(self._blocks)
 
 
-class PromptProvider(PrioritySource[PromptId, list[PromptBlock]]):
+class PromptProvider(PrioritySource[PromptId, PromtState]):
     """
     Провайдер промпта без внешнего контекста.
     Поставляет ноль или более блоков, которые будут конкатенированы
@@ -55,66 +62,24 @@ class PromptProvider(PrioritySource[PromptId, list[PromptBlock]]):
     """
 
     @abstractmethod
-    def blocks(self) -> Iterable[PromptBlock]: ...
+    def blocks(self, state: PromtState) -> Iterable[PromptBlock]: ...
 
-    def apply(self, state: list[PromptBlock]) -> list[PromptBlock]:
-        state.extend(self.blocks())
+    def apply(self, state: PromtState) -> PromtState:
+        state.blocks.extend(self.blocks(state))
         return state
 
 
-class ContextPromptProvider(
-    ContextPrioritySource[PromptId, TPromptContext, list[PromptBlock]],
-):
-    """
-    Провайдер промпта, которому нужен контекст запроса
-    (например, текст пользователя, выделение в IDE).
-    """
-
-    @abstractmethod
-    def blocks(self, ctx: TPromptContext) -> Iterable[PromptBlock]: ...
-
-    def ctx(self, ctx: TPromptContext) -> PromptProvider:
-        return _BoundPromptProvider(self, ctx)
-
-
-class _BoundPromptProvider(PromptProvider):
-    def __init__(
-        self,
-        source: "ContextPromptProvider[Any]",
-        ctx: Any,
-    ) -> None:
-        self._source = source
-        self._ctx = ctx
-
-    def id(self) -> PromptId:
-        return self._source.id()
-
-    def priority(self) -> int:
-        return self._source.priority()
-
-    def blocks(self) -> Iterable[PromptBlock]:
-        return self._source.blocks(self._ctx)
-
-
-class SystemPromptService(
-    FoldFactory[PromptId, list[PromptBlock], PromptResult],
-):
-    """Сервис для сборки system prompt. Провайдеры не требуют контекста."""
-
-    def initial(self) -> list[PromptBlock]:
-        return []
-
-    def finalize(self, state: list[PromptBlock]) -> PromptResult:
-        return PromptResult(state)
-
-
-class UserPromptService(
-    ContextFoldFactory[PromptId, TPromptContext, list[PromptBlock], PromptResult],
-):
+class PromptFactory(FoldFactory[PromptId, PromtState[TCtx], PromptResult]):
     """Сервис для сборки user prompt. Тип контекста определяется при использовании."""
 
-    def initial(self, ctx: TPromptContext) -> list[PromptBlock]:
-        return []
+    def __init__(self, ctx: TCtx, providers: Iterable[PromptProvider]):
+        self._ctx = ctx
 
-    def finalize(self, state: list[PromptBlock]) -> PromptResult:
-        return PromptResult(state)
+        for p in providers:
+            self.register(p)
+
+    def initial(self) -> PromtState:
+        return PromtState(self._ctx)
+
+    def finalize(self, state: PromtState) -> PromptResult:
+        return PromptResult(state.blocks)
