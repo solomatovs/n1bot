@@ -24,6 +24,7 @@ from openai.types.chat.chat_completion_chunk import (
     Choice,
 )
 
+from boba.adapters.raw_llm_observer import RawLLMObserver
 from boba.domain.agent.errors import (
     LLMAuthError,
     LLMConnectionError,
@@ -33,7 +34,6 @@ from boba.domain.agent.errors import (
     LLMProviderInternalError,
     LLMRateLimitError,
     LLMTimeoutError,
-    Retryable,
 )
 from boba.domain.agent.events import (
     AgentEvent,
@@ -47,7 +47,6 @@ from boba.domain.agent.events import (
     ToolCallArgumentDelta,
     ToolCallBegin,
 )
-from boba.adapters.raw_llm_observer import RawLLMObserver
 from boba.domain.agent.llm_request_factory import LLMRequestFactory
 from boba.domain.agent.models import (
     AgentContext,
@@ -56,6 +55,7 @@ from boba.domain.agent.models import (
     RequestId,
 )
 from boba.domain.config import LLMConfig
+from boba.domain.core.errors import Retryable
 from boba.domain.core.patterns import (
     Converter,
     ExceptionSpecification,
@@ -226,6 +226,7 @@ class IsContextLengthError(ExceptionSpecification):
 
 class IsServerError(ExceptionSpecification):
     """Матчит ``openai.APIStatusError`` с 5xx-статусом."""
+
     _HTTP_SERVER_ERROR_MIN = 500
     _HTTP_SERVER_ERROR_MAX = 600
 
@@ -233,7 +234,10 @@ class IsServerError(ExceptionSpecification):
         if not isinstance(candidate, openai.APIStatusError):
             return False
         sc = candidate.status_code
-        return sc is not None and self._HTTP_SERVER_ERROR_MIN <= sc < self._HTTP_SERVER_ERROR_MAX
+        return (
+            sc is not None
+            and self._HTTP_SERVER_ERROR_MIN <= sc < self._HTTP_SERVER_ERROR_MAX
+        )
 
 
 class IsStatusCode(ExceptionSpecification):

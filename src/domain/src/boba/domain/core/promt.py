@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Generic, Self, TypeVar
 
-from boba.domain.agent.errors import Retryable, TerminalError
+from boba.domain.core.errors import Retryable, TerminalError
 from boba.domain.core.patterns import (
     FoldFactory,
     Id,

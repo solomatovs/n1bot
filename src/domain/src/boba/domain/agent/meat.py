@@ -12,12 +12,14 @@ from enum import Enum, auto
 from typing import ClassVar
 
 from boba.domain.agent.errors import (
-    AgentError,
     LLMError,
-    LLMFeedbackError,
     LLMResponseFormatError,
-    Retryable,
     ToolFeedbackError,
+)
+from boba.domain.core.errors import (
+    LLMFeedbackError,
+    Retryable,
+    RoutableError,
     UserNoticeError,
 )
 from boba.domain.agent.events import (
@@ -514,11 +516,11 @@ class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
 
 
 class AgentErrorRouter:
-    """Централизованная маршрутизация :class:`AgentError` в события и
+    """Централизованная маршрутизация :class:`RoutableError` в события и
     побочные эффекты.
 
     Единая точка знания «какой тип ошибки → какое событие + какой сайд-
-    эффект». Middleware, поймавший :class:`AgentError`, делегирует сюда.
+    эффект». Middleware, поймавший :class:`RoutableError`, делегирует сюда.
 
     Две API-точки для клиентов:
 
@@ -547,7 +549,7 @@ class AgentErrorRouter:
     def __init__(self, message_service: MessageService) -> None:
         self._message_service = message_service
 
-    def route(self, ctx: AgentContext, err: AgentError) -> Iterator[AgentEvent]:
+    def route(self, ctx: AgentContext, err: RoutableError) -> Iterator[AgentEvent]:
         rid = ctx.request.request_id
         retryable = isinstance(err, Retryable)
         kind = type(err).__name__
@@ -599,7 +601,7 @@ class AgentErrorRouter:
                 )
             case _:
                 raise TypeError(
-                    f"AgentErrorRouter: unmapped AgentError subclass "
+                    f"AgentErrorRouter: unmapped RoutableError subclass "
                     f"{kind!r}. Добавь ветку в route или унаследуй новый тип "
                     f"от одного из известных семейств."
                 ) from err
@@ -644,7 +646,7 @@ class AgentErrorRouterMiddleware(StreamSource[AgentContext, AgentEvent]):
 
     Ставится **самым внешним** слоем (поверх retry, промптов, history,
     tool-execution). Любой middleware глубже может ``raise`` подкласс
-    :class:`AgentError`, не зная, что будет дальше — средний слой
+    :class:`RoutableError`, не зная, что будет дальше — средний слой
     прокидывает, этот ловит и делегирует :class:`AgentErrorRouter`.
 
     Замечание про batch-middleware: они ловят :class:`LLMFeedbackError`
@@ -652,7 +654,7 @@ class AgentErrorRouterMiddleware(StreamSource[AgentContext, AgentEvent]):
     напрямую — чтобы одна упавшая подзадача не оборвала остальные.
     Досюда из батч-middleware долетают только терминальные ошибки.
 
-    Всё, что не наследует :class:`AgentError` (``KeyError``, ``TypeError``
+    Всё, что не наследует :class:`RoutableError` (``KeyError``, ``TypeError``
     и т.п.), проходит насквозь и крашит процесс — баги не маскируем.
     :class:`Retryable`-подклассы сюда доезжают только после исчерпания
     попыток во внутреннем retry-слое.
@@ -672,7 +674,7 @@ class AgentErrorRouterMiddleware(StreamSource[AgentContext, AgentEvent]):
     def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         try:
             yield from self._inner.stream(ctx)
-        except AgentError as e:
+        except RoutableError as e:
             yield from self._router.route(ctx, e)
 
 
