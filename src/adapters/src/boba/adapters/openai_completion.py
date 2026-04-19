@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Iterable
+from typing import Any
 
 from openai import OpenAI
 from openai.types.chat import (
@@ -12,6 +13,7 @@ from openai.types.chat import (
     ChatCompletionMessageParam,
     ChatCompletionSystemMessageParam,
     ChatCompletionToolMessageParam,
+    ChatCompletionToolParam,
     ChatCompletionUserMessageParam,
 )
 from openai.types.chat.chat_completion_chunk import (
@@ -40,10 +42,11 @@ from boba.domain.config import LLMConfig
 from boba.domain.core.messages import MessageService
 from boba.domain.core.patterns import (
     Converter,
-    Pipeline,
     Stream,
     StreamConverter,
+    StreamPipeline,
 )
+from boba.domain.core.tools import Tool, ToolsService
 
 logger = logging.getLogger(__name__)
 
@@ -57,9 +60,7 @@ class LoggingLLMMiddleware(Stream[AgentContext, None, AgentEvent]):
     def name(self) -> str:
         return "LoggingLLM"
 
-    def stream(
-        self, ctx: AgentContext, stream: None
-    ) -> Iterable[AgentEvent]:
+    def stream(self, ctx: AgentContext, stream: None) -> Iterable[AgentEvent]:
         logger.info("LLM request: model=%s", ctx.request.model)
         start = time.monotonic()
         count = 0
@@ -84,9 +85,7 @@ class StupidRetryLLMMiddleware(Stream[AgentContext, None, AgentEvent]):
     def name(self) -> str:
         return "RetryLLM"
 
-    def stream(
-        self, ctx: AgentContext, stream: None
-    ) -> Iterable[AgentEvent]:
+    def stream(self, ctx: AgentContext, stream: None) -> Iterable[AgentEvent]:
         for attempt in range(self._max_retries):
             try:
                 yield from self._inner.stream(ctx, stream)
@@ -109,7 +108,7 @@ class FromOpenAIChunkConverter(Stream[AgentContext, ChatCompletionChunk, AgentEv
     """
 
     def __init__(self, request_id: RequestId) -> None:
-        self._pipeline = Pipeline[AgentContext, Iterable[Choice], AgentEvent](
+        self._pipeline = StreamPipeline[AgentContext, Iterable[Choice], AgentEvent](
             [
                 RoleSource(request_id),
                 ThinkingSource(request_id),
@@ -136,28 +135,72 @@ class OpenAIMiddleware(Stream[AgentContext, None, AgentEvent]):
     Сам берёт messages из MessageService, строит запрос и стримит AgentEvent.
     """
 
-    def __init__(self, config: LLMConfig, message_service: MessageService) -> None:
+    def __init__(
+        self,
+        config: LLMConfig,
+        message_service: MessageService,
+        tools_service: ToolsService,
+    ) -> None:
         self._client = OpenAI(base_url=config.base_url, api_key=config.api_key)
         self._message_service = message_service
+        self._tools_service = tools_service
         self._to_converter = ToOpenAIMessageConverter()
+        self._to_tool_converter = ToOpenAIToolConverter()
 
     def name(self) -> str:
         return "OpenAICompletion"
 
-    def stream(
-        self, ctx: AgentContext, stream: None
-    ) -> Iterable[AgentEvent]:
+    def stream(self, ctx: AgentContext, stream: None) -> Iterable[AgentEvent]:
         msg = self._message_service.message_iter()
+        tools = [
+            self._to_tool_converter.convert(t)
+            for t in self._tools_service.tools()
+        ]
 
-        response = self._client.chat.completions.create(
-            model=ctx.request.model,
-            messages=self._to_converter.convert(msg),
-            stream=True,
-        )
+        kwargs: dict = {
+            "model": ctx.request.model,
+            "messages": self._to_converter.convert(msg),
+            "stream": True,
+        }
+        if tools:
+            kwargs["tools"] = tools
+
+        response = self._client.chat.completions.create(**kwargs)
 
         yield from FromOpenAIChunkConverter(ctx.request.request_id).stream(
             ctx, response
         )
+
+
+class ToOpenAIToolConverter(Converter[Tool[Any], ChatCompletionToolParam]):
+    """Конвертирует Tool в формат OpenAI tools API."""
+
+    def convert(self, value: Tool[Any]) -> ChatCompletionToolParam:
+        definition = value.definition()
+
+        properties: dict[str, dict[str, str]] = {}
+        required: list[str] = []
+
+        for p in definition.input_schema.params:
+            properties[p.name] = {
+                "type": p.type.value,
+                "description": p.description,
+            }
+            if p.required:
+                required.append(p.name)
+
+        return {
+            "type": "function",
+            "function": {
+                "name": value.tool_id().to_wire(),
+                "description": definition.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                },
+            },
+        }
 
 
 class ToOpenAIOneMessageConverter(Converter[LLMMessage, ChatCompletionMessageParam]):
@@ -345,12 +388,12 @@ class ToolCallSource(Stream[AgentContext, Iterable[Choice], AgentEvent]):
                         tool_call_id=tc.id,
                         tool_name=tc.function.name,
                     )
-            if tc.function and tc.function.arguments:
-                yield ToolCallArgumentDelta(
-                    request_id=self._request_id,
-                    index=tc.index,
-                    arguments=tc.function.arguments,
-                )
+                if tc.function and tc.function.arguments:
+                    yield ToolCallArgumentDelta(
+                        request_id=self._request_id,
+                        index=tc.index,
+                        arguments=tc.function.arguments,
+                    )
 
 
 class FinishSource(Stream[AgentContext, Iterable[Choice], AgentEvent]):

@@ -3,7 +3,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Self, TypeVar
 
-from boba.domain.core.patterns import CompositeBuilder, Id, Provider
+from boba.domain.core.patterns import FoldFactory, Id, PrioritySource
 
 TPromptContext = TypeVar("TPromptContext")
 
@@ -27,7 +27,7 @@ class PromptId(Id[str]):
         return cls(value)
 
 
-class PromptProvider(Provider[PromptId, TPromptContext, list[PromptBlock]]):
+class PromptProvider(PrioritySource[PromptId, TPromptContext, list[PromptBlock]]):
     """
     Провайдер промпта.
     Поставляет ноль или более блоков, которые будут конкатенированы
@@ -57,7 +57,7 @@ class PromptResult:
 
 
 class PromptService(
-    CompositeBuilder[PromptId, TPromptContext, list[PromptBlock], PromptResult],
+    FoldFactory[PromptId, TPromptContext, list[PromptBlock], PromptResult],
 ):
     """Сервис для управления промптами от разных провайдеров."""
 

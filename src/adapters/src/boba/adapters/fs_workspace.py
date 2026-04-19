@@ -239,9 +239,7 @@ class FsWorkspaceService(WorkspaceService):
                 try:
                     yield from stream
                 except BufferError as e:
-                    raise WorkspaceError(
-                        f"cannot read {path!r}: {e}", path=path
-                    ) from e
+                    raise WorkspaceError(f"cannot read {path!r}: {e}", path=path) from e
 
     def _decode(self, raw: bytes, path: str, encoding: str) -> str:
         try:
@@ -321,13 +319,13 @@ class FsWorkspaceService(WorkspaceService):
 
             if base.is_file():
                 rel = str(base.relative_to(self._root))
-                if spec is None or spec.is_satisfied_by(rel):
+                if spec is None or spec.check(rel):
                     yield rel
             elif base.is_dir():
                 for p in base.rglob("*") if recursive else base.iterdir():
                     if p.is_file():
                         rel = str(p.relative_to(self._root))
-                        if spec is None or spec.is_satisfied_by(rel):
+                        if spec is None or spec.check(rel):
                             yield rel
 
     def ls(
