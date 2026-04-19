@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Mapping, MutableSequence, Sequence
 from types import TracebackType
-from typing import Generic, Self, TypeVar
+from typing import Any, Generic, Self, TypeVar
 from uuid import UUID, uuid4
 
 TName = TypeVar("TName")
@@ -215,14 +215,14 @@ class ChainNoHandlersError(ChainError):
     """
 
 
-class FactoryMethod(ABC, Generic[TCtx, TOut]):
+class FactoryMethod(ABC, Generic[TOut]):
     """
     Классический Factory: одношаговая сборка объекта.
 
     Инкапсулирует сложную логику конфигурирования внутри одного класса и
     отделяет создание объекта от его определения.
 
-        ctx ──▶ [ build ] ──▶ out
+        [ build ] ──▶ out
 
     Когда использовать:
     - логика сборки нетривиальна, но выполняется «за один проход»
@@ -231,30 +231,57 @@ class FactoryMethod(ABC, Generic[TCtx, TOut]):
     Когда НЕ использовать:
     - если сборка распадается на независимые стадии, которые удобно
       регистрировать/снимать по отдельности — см. :class:`FoldFactory`.
+    - если для сборки нужен внешний контекст, известный только в момент
+      вызова — см. :class:`ContextFactoryMethod`.
     """
 
     @abstractmethod
-    def build(self, ctx: TCtx) -> TOut: ...
+    def build(self) -> TOut: ...
 
 
-class PrioritySource(ABC, Generic[TId, TCtx, TState]):
+class ContextFactoryMethod(ABC, Generic[TCtx, TOut]):
+    """
+    Factory, которому для сборки нужен контекст, известный только в
+    момент вызова.
+
+    Каноничный :class:`FactoryMethod` не принимает аргументов: всё, что
+    нужно для сборки, уже зашито в экземпляр. Когда часть данных приходит
+    динамически (текущий запрос, сессия, юзер), заворачиваем её в
+    контекст и делаем сборку двухшаговой:
+
+        ctx ──▶ [ ctx(ctx) ] ──▶ FactoryMethod ──▶ [ build ] ──▶ out
+
+    То есть :meth:`ctx` «связывает» контекст со всеми внутренними
+    зависимостями и возвращает обычный :class:`FactoryMethod`, у которого
+    уже можно звать :meth:`FactoryMethod.build` без аргументов.
+
+    Использование:
+
+        service.ctx(request_ctx).build()
+    """
+
+    @abstractmethod
+    def ctx(self, ctx: TCtx) -> FactoryMethod[TOut]: ...
+
+
+class PrioritySource(ABC, Generic[TId, TState]):
     """
     Одна стадия сборки для :class:`FoldFactory`.
 
     Reducer — это чистое преобразование состояния:
 
-        state_n ──[ apply(ctx, state) ]──▶ state_{n+1}
+        state_n ──[ apply(state) ]──▶ state_{n+1}
 
     Каждый reducer:
     - имеет уникальный :meth:`id` — по нему его можно зарегистрировать
       или снять с регистрации в фабрике;
     - имеет :meth:`priority` — определяет порядок применения
       (меньше число — раньше выполнение);
-    - в :meth:`apply` получает контекст и текущее состояние и возвращает
-      новое состояние; сам контекст изменять не должен.
+    - в :meth:`apply` получает текущее состояние и возвращает новое.
 
     Логика одного reducer'а должна быть изолированной: он не знает
-    ни о других стадиях, ни о финальном результате сборки.
+    ни о других стадиях, ни о финальном результате сборки. Для стадий,
+    которым нужен внешний контекст — см. :class:`ContextPrioritySource`.
     """
 
     @abstractmethod
@@ -264,26 +291,45 @@ class PrioritySource(ABC, Generic[TId, TCtx, TState]):
     def priority(self) -> int: ...
 
     @abstractmethod
-    def apply(self, ctx: TCtx, state: TState) -> TState: ...
+    def apply(self, state: TState) -> TState: ...
+
+
+class ContextPrioritySource(ABC, Generic[TId, TCtx, TState]):
+    """
+    Ctx-aware аналог :class:`PrioritySource` для
+    :class:`ContextFoldFactory`.
+
+    Симметрично паре :class:`FactoryMethod` / :class:`ContextFactoryMethod`:
+    сам по себе работать не умеет, единственный способ получить рабочий
+    reducer — :meth:`ctx`, который возвращает обычный
+    :class:`PrioritySource`, привязанный к переданному контексту.
+    """
+
+    @abstractmethod
+    def id(self) -> TId: ...
+
+    @abstractmethod
+    def priority(self) -> int: ...
+
+    @abstractmethod
+    def ctx(self, ctx: TCtx) -> PrioritySource[TId, TState]: ...
 
 
 class FoldFactory(
-    FactoryMethod[TCtx, TOut],
-    Generic[TId, TCtx, TState, TOut],
+    FactoryMethod[TOut],
+    Generic[TId, TState, TOut],
 ):
     """
-    это FactoryMethod собирающий объект через последовательность стадий (fold).
+    :class:`FactoryMethod`, собирающий объект через последовательность
+    стадий (fold).
 
     В отличие от обычного :class:`FactoryMethod`, здесь сборка разбита на
-    независимые :class:`PriorityReducer`-ы, которые регистрируются отдельно
-    и применяются в порядке приоритета. Это удобно, когда набор стадий
-    зависит от конфигурации, плагинов или окружения.
+    независимые :class:`PrioritySource`-ы, которые регистрируются
+    отдельно и применяются в порядке приоритета. Это удобно, когда набор
+    стадий зависит от конфигурации, плагинов или окружения.
 
-    Схема работы ``build(ctx)``::
+    Схема работы ``build()``::
 
-                             ctx
-                              │
-                              ▼
                       ┌──────────────┐
                       │   initial    │  начальное состояние
                       └──────┬───────┘
@@ -310,7 +356,7 @@ class FoldFactory(
                             out
 
     Контракт наследника:
-    - :meth:`initial`  — построить начальное состояние из контекста;
+    - :meth:`initial`  — построить начальное состояние;
     - :meth:`finalize` — превратить накопленное состояние в результат;
     - стадии подключаются извне через :meth:`register` /
       :meth:`unregister`.
@@ -319,18 +365,73 @@ class FoldFactory(
     - стадии применяются строго по возрастанию ``priority()``;
     - повторный :meth:`register` с тем же ``id()`` заменяет предыдущий
       reducer — это официальный способ переопределить стадию.
+
+    Для сборки, зависящей от внешнего контекста —
+    см. :class:`ContextFoldFactory`.
     """
 
     def __init__(self) -> None:
-        self._reducers: dict[TId, PrioritySource[TId, TCtx, TState]] = {}
+        self._reducers: dict[TId, PrioritySource[TId, TState]] = {}
 
-    def register(self, reducer: PrioritySource[TId, TCtx, TState]) -> None:
+    def register(self, reducer: PrioritySource[TId, TState]) -> None:
         self._reducers[reducer.id()] = reducer
 
     def unregister(self, key: TId) -> None:
         self._reducers.pop(key, None)
 
-    def providers(self) -> Iterable[PrioritySource[TId, TCtx, TState]]:
+    def providers(self) -> Iterable[PrioritySource[TId, TState]]:
+        return iter(self._reducers.values())
+
+    @abstractmethod
+    def initial(self) -> TState:
+        """Начальное состояние сборки."""
+        ...
+
+    @abstractmethod
+    def finalize(self, state: TState) -> TOut:
+        """Превратить накопленное состояние в результат."""
+        ...
+
+    def build(self) -> TOut:
+        state = self.initial()
+
+        for p in sorted(self._reducers.values(), key=lambda p: p.priority()):
+            state = p.apply(state)
+
+        return self.finalize(state)
+
+
+class ContextFoldFactory(
+    ContextFactoryMethod[TCtx, TOut],
+    Generic[TId, TCtx, TState, TOut],
+):
+    """
+    :class:`ContextFactoryMethod`, собирающий результат через fold
+    :class:`ContextPrioritySource`-ов.
+
+    Отличия от :class:`FoldFactory`:
+    - reducer'ы — это :class:`ContextPrioritySource`: их ``apply``
+      принимает ``(ctx, state)``;
+    - :meth:`initial` зависит от ``ctx``;
+    - сам фабричный объект не сбирает ничего до тех пор, пока не вызвали
+      :meth:`ctx`. ``ctx(ctx)`` возвращает обычный
+      :class:`FactoryMethod`, у которого уже можно звать ``build()``.
+
+    Использование:
+
+        service.ctx(request_ctx).build()
+    """
+
+    def __init__(self) -> None:
+        self._reducers: dict[TId, ContextPrioritySource[TId, TCtx, TState]] = {}
+
+    def register(self, reducer: ContextPrioritySource[TId, TCtx, TState]) -> None:
+        self._reducers[reducer.id()] = reducer
+
+    def unregister(self, key: TId) -> None:
+        self._reducers.pop(key, None)
+
+    def providers(self) -> Iterable[ContextPrioritySource[TId, TCtx, TState]]:
         return iter(self._reducers.values())
 
     @abstractmethod
@@ -343,16 +444,26 @@ class FoldFactory(
         """Превратить накопленное состояние в результат."""
         ...
 
-    def build(self, ctx: TCtx) -> TOut:
-        # готовим начальное состояние
-        state = self.initial(ctx)
+    def ctx(self, ctx: TCtx) -> FactoryMethod[TOut]:
+        return _BoundFoldFactory(self, ctx)
 
-        # изменяем состояние через применение отдельных провайдеров
-        for p in sorted(self._reducers.values(), key=lambda p: p.priority()):
-            state = p.apply(ctx, state)
 
-        # возвращаем окончательный результат
-        return self.finalize(state)
+class _BoundFoldFactory(FactoryMethod[TOut]):
+    def __init__(
+        self,
+        source: ContextFoldFactory[Any, Any, Any, TOut],
+        ctx: Any,
+    ) -> None:
+        self._source = source
+        self._ctx = ctx
+
+    def build(self) -> TOut:
+        src = self._source
+        ctx = self._ctx
+        state = src.initial(ctx)
+        for p in sorted(src.providers(), key=lambda p: p.priority()):
+            state = p.ctx(ctx).apply(state)
+        return src.finalize(state)
 
 
 class DispatcherKeyError(KeyError):

@@ -81,7 +81,7 @@ class SystemMessageMiddleware(Stream[AgentContext, None, AgentEvent]):
                 stage=self.name(),
             )
 
-            system_prompt = self._prompt_service.build(None)
+            system_prompt = self._prompt_service.build()
             self._message_service.add(
                 LLMMessage(role="system", content=system_prompt.to_string()),
             )
@@ -123,7 +123,7 @@ class UserMessageMiddleware(Stream[AgentContext, None, AgentEvent]):
                 query=ctx.request.query,
             )
 
-            content = self._user_prompt_service.build(ctx).to_string()
+            content = self._user_prompt_service.ctx(ctx).build().to_string()
 
             self._message_service.add(LLMMessage(role="user", content=content))
 
