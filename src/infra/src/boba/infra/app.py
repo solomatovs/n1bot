@@ -36,8 +36,12 @@ from boba.domain.agent.models import AgentConfig
 from boba.domain.config import AppConfig
 from boba.domain.core.history import HistoryService
 from boba.domain.core.messages import MessageService
-from boba.domain.core.patterns import Loop, Pipeline, Stream
+from boba.domain.core.patterns import Stream, StreamLoop, StreamPipeline
 from boba.domain.core.promt import PromptId, SystemPromptService, UserPromptService
+from boba.domain.core.tools import (
+    ToolFactory,
+    ToolsService,
+)
 from boba.domain.core.workspace import (
     WorkspaceId,
     WorkspaceManager,
@@ -86,6 +90,36 @@ class AppProvider(Provider):
         svc.register(UserQueryProvider())
         return svc
 
+    @provide
+    def tool_factory(self) -> ToolFactory:
+        """Агрегатор источников инструментов.
+
+        Сюда регистрируются ``ToolSource``-ы (builtin-пачка, MCP-клиент,
+        plugin-директория). При ``build(None)`` отдаёт плоский список Tool.
+        Пока пусто — источники добавятся при появлении первых инструментов.
+        """
+        return ToolFactory()
+
+    @provide
+    def tools_service(self, factory: ToolFactory) -> ToolsService:
+        """Сервис инструментов поверх :class:`ToolFactory`.
+
+        Собирает каталог из текущих источников фабрики один раз при
+        wiring'е через :meth:`ToolsService.rebuild_catalog`. Если позже
+        источники меняются в рантайме (подключился MCP, загрузился плагин)
+        — нужно вызвать ``rebuild_catalog()`` повторно; сам DI-провайдер
+        этого не делает.
+
+        Маршрутизация ``ToolCall → Tool`` — через внутренний
+        :class:`ExecutorDispatcher` сервиса. Если понадобится что-то
+        поверх (retry, conditional routing) — оборачивай сервис снаружи
+        как обычный ``Executor[None, ToolCall, ToolResult]``.
+        """
+        service = ToolsService(factory)
+        service.rebuild_catalog()
+        return service
+
+
 class RequestProvider(Provider):
     """Per-request сервисы."""
 
@@ -121,8 +155,9 @@ class RequestProvider(Provider):
         system_prompt_service: SystemPromptService,
         user_prompt_service: UserPromptService,
         message_service: MessageService,
-    ) -> Loop[AgentContext, None, AgentEvent]:
-        chain = OpenAIMiddleware(config.llm, message_service)
+        tools_service: ToolsService,
+    ) -> StreamLoop[AgentContext, None, AgentEvent]:
+        chain = OpenAIMiddleware(config.llm, message_service, tools_service)
         chain = StupidRetryLLMMiddleware(chain, max_retries=3)
         chain = LoggingLLMMiddleware(chain)
         chain = UserMessageMiddleware(chain, user_prompt_service, message_service)
@@ -131,14 +166,14 @@ class RequestProvider(Provider):
 
         stop = StopOnFinished().or_(StopOnMaxIterations())
 
-        return Loop(chain, stop)
+        return StreamLoop(chain, stop)
 
     @provide
     def agent_sink(
         self,
         history: HistoryService,
     ) -> Stream[AgentContext, AgentEvent, None]:
-        return Pipeline(
+        return StreamPipeline(
             [
                 ConsoleSink(),
                 HistorySink(history),
@@ -148,7 +183,7 @@ class RequestProvider(Provider):
     @provide
     def agent(
         self,
-        source: Loop[AgentContext, None, AgentEvent],
+        source: StreamLoop[AgentContext, None, AgentEvent],
         sink: Stream[AgentContext, AgentEvent, None],
     ) -> Agent:
         return Agent(

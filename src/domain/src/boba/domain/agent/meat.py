@@ -14,7 +14,7 @@ from boba.domain.agent.events import (
 )
 from boba.domain.agent.models import AgentConfig, AgentContext, AgentRequest, LLMMessage
 from boba.domain.core.messages import MessageService
-from boba.domain.core.patterns import Loop, Specification, Stream
+from boba.domain.core.patterns import Specification, Stream, StreamLoop
 from boba.domain.core.promt import SystemPromptService, UserPromptService
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class Agent:
     def __init__(
         self,
-        source: Loop[AgentContext, None, AgentEvent],
+        source: StreamLoop[AgentContext, None, AgentEvent],
         sink: Stream[AgentContext, AgentEvent, None],
     ) -> None:
         self._source = source
@@ -147,7 +147,7 @@ class IterationCounterMiddleware(Stream[AgentContext, None, AgentEvent]):
 class StopOnFinished(Specification[tuple[AgentContext, AgentEvent]]):
     """Останавливает если генерация завершена и не tool_calls."""
 
-    def is_satisfied_by(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
+    def check(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
         _ctx, event = candidate
 
         if isinstance(event, GenerationDone):
@@ -161,7 +161,7 @@ class StopOnMaxIterations(Specification[tuple[AgentContext, AgentEvent]]):
     Останавливает если превышен лимит итераций
     """
 
-    def is_satisfied_by(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
+    def check(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
         ctx, event = candidate
 
         if isinstance(event, GenerationDone):

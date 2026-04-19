@@ -36,6 +36,12 @@ pythonpath = [
 
 [tool.pyright]
 include = ["src", "tests"]
+exclude = [
+    "src-back",
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.*",
+]
 extraPaths = [
     "src/domain/src",
     "src/app/src",
