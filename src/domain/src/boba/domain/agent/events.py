@@ -4,8 +4,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
-from boba.domain.agent.errors import UserNoticeSeverity
 from boba.domain.agent.models import RequestId
+from boba.domain.core.errors import UserNoticeSeverity
 from boba.domain.core.patterns import Converter, Serializer
 
 
