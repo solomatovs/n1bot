@@ -34,7 +34,8 @@ def test_agent_loop_hello() -> None:
         print(f"Error during agent loop: {e}")  # noqa: T201
         raise
     finally:
-        manager.delete(storage.workspace_id)
+        pass
+        # manager.delete(storage.workspace_id)
 
 
 if __name__ == "__main__":
