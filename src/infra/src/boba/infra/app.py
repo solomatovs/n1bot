@@ -19,6 +19,7 @@ from boba.adapters.openai_completion import (
 from boba.adapters.prompt_providers import (
     EnvironmentPromptProvider,
     GitPromptProvider,
+    PromptProvider,
     StaticPromptProvider,
     UserQueryProvider,
 )
@@ -38,7 +39,7 @@ from boba.domain.config import AppConfig
 from boba.domain.core.history import HistoryService
 from boba.domain.core.messages import MessageService
 from boba.domain.core.patterns import Stream, StreamLoop, StreamPipeline
-from boba.domain.core.promt import PromptId, SystemPromptService, UserPromptService
+from boba.domain.core.promt import PromptId
 from boba.domain.core.tools import (
     ToolFactory,
     ToolsService,
@@ -71,25 +72,32 @@ class AppProvider(Provider):
     def agent_config(self, config: AppConfig) -> AgentConfig:
         return config.agent
 
+    # @provide
+    # def system_prompt_service(self) -> SystemPromptService:
+    #     svc = SystemPromptService()
+    #     svc.register(
+    #         StaticPromptProvider(
+    #             PromptId("identity"),
+    #             priority=0,
+    #             content="Ты — ассистент Boba. Отвечай кратко и по делу.",
+    #         )
+    #     )
+    #     svc.register(EnvironmentPromptProvider())
+    #     svc.register(GitPromptProvider())
+    #     return svc
+
     @provide
-    def system_prompt_service(self) -> SystemPromptService:
-        svc = SystemPromptService()
-        svc.register(
+    def prompt_providers(self) -> list[PromptProvider]:
+        return [
             StaticPromptProvider(
                 PromptId("identity"),
                 priority=0,
                 content="Ты — ассистент Boba. Отвечай кратко и по делу.",
-            )
-        )
-        svc.register(EnvironmentPromptProvider())
-        svc.register(GitPromptProvider())
-        return svc
-
-    @provide
-    def user_prompt_service(self) -> UserPromptService:
-        svc = UserPromptService()
-        svc.register(UserQueryProvider())
-        return svc
+            ),
+            EnvironmentPromptProvider(),
+            GitPromptProvider(),
+            UserQueryProvider(),
+        ]
 
     @provide
     def tool_factory(self) -> ToolFactory:
@@ -153,8 +161,7 @@ class RequestProvider(Provider):
     def agent_chain(
         self,
         config: AppConfig,
-        system_prompt_service: SystemPromptService,
-        user_prompt_service: UserPromptService,
+        prompt_providers: list[PromptProvider],
         message_service: MessageService,
         tools_service: ToolsService,
     ) -> StreamLoop[AgentContext, None, AgentEvent]:
@@ -162,8 +169,8 @@ class RequestProvider(Provider):
         chain = StupidRetryLLMMiddleware(chain, max_retries=3)
         chain = LoggingLLMMiddleware(chain)
         chain = ToolExecutionMiddleware(chain, tools_service, message_service)
-        chain = UserMessageMiddleware(chain, user_prompt_service, message_service)
-        chain = SystemMessageMiddleware(chain, system_prompt_service, message_service)
+        chain = UserMessageMiddleware(chain, prompt_providers, message_service)
+        chain = SystemMessageMiddleware(chain, prompt_providers, message_service)
         chain = IterationCounterMiddleware(chain)
 
         stop = StopOnFinished().or_(StopOnMaxIterations())

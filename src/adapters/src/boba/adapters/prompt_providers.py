@@ -9,12 +9,12 @@ from collections.abc import Iterable, Iterator
 from datetime import date
 from pathlib import Path
 
-from boba.domain.agent.models import AgentContext
+from boba.domain.agent.meat import AgentContext
 from boba.domain.core.promt import (
-    ContextPromptProvider,
     PromptBlock,
     PromptId,
     PromptProvider,
+    PromtState,
 )
 from boba.domain.core.workspace import WorkspaceService
 
@@ -33,7 +33,7 @@ class StaticPromptProvider(PromptProvider):
     def priority(self) -> int:
         return self._priority
 
-    def blocks(self) -> Iterable[PromptBlock]:
+    def blocks(self, state: PromtState[AgentContext]) -> Iterable[PromptBlock]:
         yield PromptBlock(name=self._id.name, content=self._content)
 
 
@@ -58,7 +58,7 @@ class FilePromptProvider(PromptProvider):
     def priority(self) -> int:
         return self._priority
 
-    def blocks(self) -> Iterable[PromptBlock]:
+    def blocks(self, state: PromtState[AgentContext]) -> Iterable[PromptBlock]:
         if self._path.exists():
             content = self._path.read_text(encoding="utf-8")
         else:
@@ -94,7 +94,7 @@ class WorkspaceSystemPromptProvider(PromptProvider):
     def priority(self) -> int:
         return self._priority
 
-    def blocks(self) -> Iterator[PromptBlock]:
+    def blocks(self, state: PromtState[AgentContext]) -> Iterator[PromptBlock]:
         for path in sorted(self._workspace.ls(self._directory)):
             with self._workspace.read_text(path) as f:
                 content = f.read().strip()
@@ -114,7 +114,7 @@ class EnvironmentPromptProvider(PromptProvider):
     def priority(self) -> int:
         return 60
 
-    def blocks(self) -> Iterable[PromptBlock]:
+    def blocks(self, state: PromtState[AgentContext]) -> Iterable[PromptBlock]:
         lines = [
             f"Platform: {platform.system()}",
             f"Shell: {os.environ.get('SHELL', 'unknown')}",
@@ -137,14 +137,12 @@ class GitPromptProvider(PromptProvider):
     def priority(self) -> int:
         return 80
 
-    def blocks(self) -> Iterable[PromptBlock]:
+    def blocks(self, state: PromtState[AgentContext]) -> Iterable[PromptBlock]:
         branch = self._git("branch", "--show-current")
         status = self._git("status", "--short")
         log = self._git("log", "--oneline", "-5")
         content = (
-            f"Current branch: {branch}\n\n"
-            f"Status:\n{status}\n\n"
-            f"Recent commits:\n{log}"
+            f"Current branch: {branch}\n\nStatus:\n{status}\n\nRecent commits:\n{log}"
         )
 
         yield PromptBlock(name=self._id.name, content=content)
@@ -165,7 +163,7 @@ class GitPromptProvider(PromptProvider):
             return "(unavailable)"
 
 
-class UserQueryProvider(ContextPromptProvider[AgentContext]):
+class UserQueryProvider(PromptProvider):
     """Запрос пользователя из AgentContext."""
 
     def __init__(self) -> None:
@@ -177,11 +175,11 @@ class UserQueryProvider(ContextPromptProvider[AgentContext]):
     def priority(self) -> int:
         return 50
 
-    def blocks(self, ctx: AgentContext) -> Iterable[PromptBlock]:
-        yield PromptBlock(name=self._id.name, content=ctx.request.query)
+    def blocks(self, state: PromtState[AgentContext]) -> Iterable[PromptBlock]:
+        yield PromptBlock(name=self._id.name, content=state.ctx.request.query)
 
 
-class IDESelectionProvider(ContextPromptProvider[AgentContext]):
+class IDESelectionProvider(PromptProvider):
     """Контекст выделенных строк из IDE."""
 
     def __init__(self, file_path: str, selection: str) -> None:
@@ -195,15 +193,13 @@ class IDESelectionProvider(ContextPromptProvider[AgentContext]):
     def priority(self) -> int:
         return 30
 
-    def blocks(self, ctx: AgentContext) -> Iterable[PromptBlock]:
-        content = (
-            f"Selected code from {self._file_path}:\n" f"```\n{self._selection}\n```"
-        )
+    def blocks(self, state: PromtState[AgentContext]) -> Iterable[PromptBlock]:
+        content = f"Selected code from {self._file_path}:\n```\n{self._selection}\n```"
 
         yield PromptBlock(name=self._id.name, content=content)
 
 
-class TemplateProvider(ContextPromptProvider[AgentContext]):
+class TemplateProvider(PromptProvider):
     """Оборачивает запрос в шаблон с инструкциями."""
 
     def __init__(self, prompt_id: PromptId, priority: int, template: str) -> None:
@@ -217,7 +213,7 @@ class TemplateProvider(ContextPromptProvider[AgentContext]):
     def priority(self) -> int:
         return self._priority
 
-    def blocks(self, ctx: AgentContext) -> Iterable[PromptBlock]:
-        content = self._template.format(query=ctx.request.query)
+    def blocks(self, state: PromtState[AgentContext]) -> Iterable[PromptBlock]:
+        content = self._template.format(query=state.ctx.request.query)
 
         yield PromptBlock(name=self._id.name, content=content)
