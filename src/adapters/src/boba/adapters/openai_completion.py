@@ -21,7 +21,6 @@ from openai.types.chat.chat_completion_chunk import (
     Choice,
 )
 
-from boba.domain.agent.context import ContextService
 from boba.domain.agent.events import (
     AgentEvent,
     AnswerStarted,
@@ -34,6 +33,7 @@ from boba.domain.agent.events import (
     ToolCallArgumentDelta,
     ToolCallBegin,
 )
+from boba.domain.agent.llm_request_factory import LLMRequestFactory
 from boba.domain.agent.models import (
     AgentContext,
     LLMMessage,
@@ -133,7 +133,7 @@ class FromOpenAIChunkConverter(Stream[AgentContext, ChatCompletionChunk, AgentEv
 class OpenAIMiddleware(Stream[AgentContext, None, AgentEvent]):
     """
     Terminal — вызывает OpenAI-совместимый API.
-    Получает готовый :class:`LLMRequest` от :class:`ContextService`,
+    Получает готовый :class:`LLMRequest` от :class:`LLMRequestFactory`,
     мапит его в kwargs провайдера через :class:`ToOpenAIRequestConverter`
     и стримит :class:`AgentEvent`.
     """
@@ -141,17 +141,17 @@ class OpenAIMiddleware(Stream[AgentContext, None, AgentEvent]):
     def __init__(
         self,
         config: LLMConfig,
-        context_service: ContextService,
+        llm_request_factory: LLMRequestFactory,
     ) -> None:
         self._client = OpenAI(base_url=config.base_url, api_key=config.api_key)
-        self._context_service = context_service
+        self._llm_request_factory = llm_request_factory
         self._to_request_converter = ToOpenAIRequestConverter()
 
     def name(self) -> str:
         return "OpenAICompletion"
 
     def stream(self, ctx: AgentContext, stream: None) -> Iterable[AgentEvent]:
-        llm_request = self._context_service.build_for_llm(ctx)
+        llm_request = self._llm_request_factory.build(ctx)
         kwargs = self._to_request_converter.convert(llm_request)
 
         response = self._client.chat.completions.create(**kwargs)
@@ -178,9 +178,7 @@ class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
         }
 
         if value.tools:
-            kwargs["tools"] = [
-                self._to_tool_converter.convert(t) for t in value.tools
-            ]
+            kwargs["tools"] = [self._to_tool_converter.convert(t) for t in value.tools]
         if value.tool_choice is not None:
             kwargs["tool_choice"] = value.tool_choice
         if value.response_format is not None:

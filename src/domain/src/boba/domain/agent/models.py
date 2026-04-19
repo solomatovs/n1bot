@@ -35,18 +35,6 @@ class AgentConfig:
     limit_message: str = "Достигнут лимит итераций агента."
 
 
-@dataclass
-class AgentContext:
-    """
-    Мутабельный контекст, передаваемый через стадии Pipeline.
-    Стадии читают и дополняют его на каждой итерации цикла.
-    """
-
-    request: AgentRequest
-    config: AgentConfig
-    iteration: int = 0
-
-
 @dataclass(frozen=True)
 class LLMToolCall:
     """Готовый tool call."""
@@ -83,7 +71,7 @@ class LLMRequest:
 
     Агрегирует всё, что нужно чтобы собрать запрос для OpenAI-совместимого
     API: messages, tools, model, sampling params. Собирается
-    :class:`ContextService`-ом на каждой итерации цикла. Адаптер конкретного
+    :class:`LLMRequestFactory` на каждой итерации цикла. Адаптер конкретного
     провайдера мапит ``LLMRequest`` в свою форму в один проход через
     ``Converter``.
     """
@@ -94,3 +82,40 @@ class LLMRequest:
     sampling: SamplingParams = field(default_factory=SamplingParams)
     tool_choice: str | None = None
     response_format: dict[str, Any] | None = None
+
+
+@dataclass
+class LLMRequestBuilder:
+    """Мутабельный накопитель для :class:`LLMRequest`.
+
+    Middleware-стадии заполняют свои слоты (``system_prompt`` —
+    :class:`SystemPromptMiddleware`, ``user_prompt`` —
+    :class:`UserPromptMiddleware`, ``tools`` —
+    :class:`ToolsDefinitionMiddleware`, sampling/tool_choice/response_format —
+    соответствующие стадии когда появятся). :class:`LLMRequestFactory` читает
+    заполненные слоты и финализирует в immutable :class:`LLMRequest`.
+
+    Слот, оставленный в дефолте (``None``, пустой список или пустой
+    :class:`SamplingParams`), в итоговый запрос не попадает —
+    отключение middleware через DI автоматически убирает соответствующую часть.
+    """
+
+    system_prompt: str | None = None
+    user_prompt: str | None = None
+    tools: list[Tool[Any]] = field(default_factory=list)
+    sampling: SamplingParams = field(default_factory=SamplingParams)
+    tool_choice: str | None = None
+    response_format: dict[str, Any] | None = None
+
+
+@dataclass
+class AgentContext:
+    """
+    Мутабельный контекст, передаваемый через стадии Pipeline.
+    Стадии читают и дополняют его на каждой итерации цикла.
+    """
+
+    request: AgentRequest
+    config: AgentConfig
+    iteration: int = 0
+    llm_builder: LLMRequestBuilder = field(default_factory=LLMRequestBuilder)

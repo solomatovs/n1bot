@@ -55,92 +55,107 @@ class Agent:
                 pass
 
 
-class SystemMessageMiddleware(Stream[AgentContext, None, AgentEvent]):
-    """
-    Добавляет system message на первой итерации,
-    затем делегирует следующему слою.
+class SystemPromptMiddleware(Stream[AgentContext, None, AgentEvent]):
+    """Строит system-prompt через :class:`PromptFactory` (срез
+    ``PromptKind.SYSTEM``) и кладёт его в ``ctx.llm_builder.system_prompt``.
+    :class:`LLMRequestFactory` читает этот слот при сборке :class:`LLMRequest`.
+    Отключение middleware через DI убирает system-prompt из запроса.
     """
 
     def __init__(
         self,
         inner: Stream[AgentContext, None, AgentEvent],
         prompt_providers: list[PromptProvider],
-        message_service: MessageService,
     ) -> None:
         self._inner = inner
         self._prompt_providers = prompt_providers
-        self._message_service = message_service
 
     def name(self) -> str:
-        return "SystemMessage"
+        return "SystemPrompt"
 
     def stream(self, ctx: AgentContext, stream: None) -> Iterator[AgentEvent]:
-        if self._message_service.last() is None:
-            yield StageStarted(
-                request_id=ctx.request.request_id,
-                stage=self.name(),
-            )
-
-            system_prompt = PromptFactory(ctx, self._prompt_providers).build()
-
-            self._message_service.add(
-                LLMMessage(
-                    role="system",
-                    content=system_prompt.to_string(PromptKind.SYSTEM),
-                ),
-            )
-
-            yield StageCompleted(
-                request_id=ctx.request.request_id,
-                stage=self.name(),
-                detail="system prompt added",
-            )
+        content = (
+            PromptFactory(ctx, self._prompt_providers)
+            .build()
+            .to_string(PromptKind.SYSTEM)
+        )
+        if content:
+            ctx.llm_builder.system_prompt = content
 
         yield from self._inner.stream(ctx, stream)
 
 
-class UserMessageMiddleware(Stream[AgentContext, None, AgentEvent]):
-    """
-    Добавляет user message на первой итерации,
-    затем делегирует следующему слою.
+class UserPromptMiddleware(Stream[AgentContext, None, AgentEvent]):
+    """Строит user-prompt через :class:`PromptFactory` (срез
+    ``PromptKind.USER``) и кладёт его в ``ctx.llm_builder.user_prompt``.
+    На первой итерации эмитит :class:`UserQueryReceived` для sink'ов.
+
+    User-prompt не хранится в :class:`MessageService` — он пересобирается
+    каждую итерацию из идемпотентных provider'ов. :class:`LLMRequestFactory`
+    читает слот и prepend'ит его перед снимком диалога.
     """
 
     def __init__(
         self,
         inner: Stream[AgentContext, None, AgentEvent],
         prompt_providers: list[PromptProvider],
-        message_service: MessageService,
     ) -> None:
         self._inner = inner
         self._prompt_providers = prompt_providers
-        self._message_service = message_service
 
     def name(self) -> str:
-        return "UserMessage"
+        return "UserPrompt"
 
     def stream(self, ctx: AgentContext, stream: None) -> Iterator[AgentEvent]:
         if ctx.iteration == 1:
             yield StageStarted(request_id=ctx.request.request_id, stage=self.name())
-
             yield UserQueryReceived(
                 request_id=ctx.request.request_id,
                 query=ctx.request.query,
             )
 
-            content = (
-                PromptFactory(ctx, self._prompt_providers)
-                .build()
-                .to_string(PromptKind.USER)
-            )
+        content = (
+            PromptFactory(ctx, self._prompt_providers)
+            .build()
+            .to_string(PromptKind.USER)
+        )
+        if content:
+            ctx.llm_builder.user_prompt = content
 
-            self._message_service.add(LLMMessage(role="user", content=content))
-
+        if ctx.iteration == 1:
             yield StageCompleted(
                 request_id=ctx.request.request_id,
                 stage=self.name(),
-                detail="user message added",
+                detail="user prompt built",
             )
 
+        yield from self._inner.stream(ctx, stream)
+
+
+class ToolsDefinitionMiddleware(Stream[AgentContext, None, AgentEvent]):
+    """Кладёт текущий снимок каталога :class:`ToolsService` в
+    ``ctx.llm_builder.tools``. :class:`LLMRequestFactory` читает этот слот
+    при сборке :class:`LLMRequest` и мапит в ``kwargs["tools"]`` провайдера.
+
+    Отключение middleware через DI — запрос уходит без tools, LLM не видит
+    инструментов и не вызывает их. Плагины могут зарегистрировать свою
+    реализацию (фильтрация по ролям, лимит по количеству, динамический
+    ``tool_choice``) без правки фабрики.
+    """
+
+    def __init__(
+        self,
+        inner: Stream[AgentContext, None, AgentEvent],
+        tools_service: ToolsService,
+    ) -> None:
+        self._inner = inner
+        self._tools_service = tools_service
+
+    def name(self) -> str:
+        return "ToolsDefinition"
+
+    def stream(self, ctx: AgentContext, stream: None) -> Iterator[AgentEvent]:
+        ctx.llm_builder.tools = list(self._tools_service.tools())
         yield from self._inner.stream(ctx, stream)
 
 
