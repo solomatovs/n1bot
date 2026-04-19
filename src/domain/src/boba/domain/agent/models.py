@@ -88,20 +88,26 @@ class LLMRequest:
 class LLMRequestBuilder:
     """Мутабельный накопитель для :class:`LLMRequest`.
 
-    Middleware-стадии заполняют свои слоты (``system_prompt`` —
-    :class:`SystemPromptMiddleware`, ``user_prompt`` —
-    :class:`UserPromptMiddleware`, ``tools`` —
-    :class:`ToolsDefinitionMiddleware`, sampling/tool_choice/response_format —
-    соответствующие стадии когда появятся). :class:`LLMRequestFactory` читает
-    заполненные слоты и финализирует в immutable :class:`LLMRequest`.
+    Middleware-стадии заполняют слоты, пересчитываемые **на каждой
+    итерации** (system-prompt, tools, sampling…). Слоты с семантикой
+    «часть диалога» (user/assistant/tool-сообщения) здесь не живут —
+    они идут через :class:`MessageService`, потому что добавляются ровно
+    один раз и далее только читаются.
 
-    Слот, оставленный в дефолте (``None``, пустой список или пустой
-    :class:`SamplingParams`), в итоговый запрос не попадает —
-    отключение middleware через DI автоматически убирает соответствующую часть.
+    Участники:
+    - ``system_prompt`` — :class:`SystemPromptMiddleware`;
+    - ``tools`` — :class:`ToolsDefinitionMiddleware`;
+    - ``sampling``/``tool_choice``/``response_format`` — стадии,
+      когда появятся.
+
+    :class:`LLMRequestFactory` читает слоты и финализирует в immutable
+    :class:`LLMRequest`. Слот в дефолте (``None``, пустой список или
+    пустой :class:`SamplingParams`) в итоговый запрос не попадает —
+    отключение middleware через DI автоматически убирает соответствующую
+    часть.
     """
 
     system_prompt: str | None = None
-    user_prompt: str | None = None
     tools: list[Tool[Any]] = field(default_factory=list)
     sampling: SamplingParams = field(default_factory=SamplingParams)
     tool_choice: str | None = None

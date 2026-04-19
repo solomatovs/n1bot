@@ -13,11 +13,14 @@ class AggregatingLLMRequestFactory(LLMRequestFactory):
     Источники:
 
     - ``ctx.llm_builder.system_prompt`` — :class:`SystemPromptMiddleware`;
-    - ``ctx.llm_builder.user_prompt`` — :class:`UserPromptMiddleware`;
     - ``ctx.llm_builder.tools`` — :class:`ToolsDefinitionMiddleware`;
     - ``ctx.llm_builder.sampling/tool_choice/response_format`` —
       соответствующие middleware (когда появятся);
-    - :class:`MessageService` — динамический диалог (assistant/tool).
+    - :class:`MessageService` — диалог (user/assistant/tool): первые user
+      сообщения кладут :class:`HistoryReplayMiddleware` (из истории) и
+      :class:`UserPromptMiddleware` (текущий запрос на итерации 1),
+      assistant — :class:`AssistantMessagePersistenceMiddleware`,
+      tool — :class:`ToolExecutionMiddleware`.
 
     Сама фабрика ничего не строит — только читает слоты и склеивает
     финальный immutable :class:`LLMRequest`. Отключение любого middleware
@@ -33,8 +36,6 @@ class AggregatingLLMRequestFactory(LLMRequestFactory):
 
         if b.system_prompt:
             messages.append(LLMMessage(role="system", content=b.system_prompt))
-        if b.user_prompt:
-            messages.append(LLMMessage(role="user", content=b.user_prompt))
         messages.extend(self._message_service.message_iter())
 
         return LLMRequest(
