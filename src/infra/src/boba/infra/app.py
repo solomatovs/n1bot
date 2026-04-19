@@ -29,6 +29,8 @@ from boba.domain.agent.llm_request_factory import LLMRequestFactory
 from boba.domain.agent.meat import (
     Agent,
     AgentContext,
+    AssistantMessagePersistenceMiddleware,
+    HistoryReplayMiddleware,
     IterationCounterMiddleware,
     StopOnFinished,
     StopOnMaxIterations,
@@ -166,18 +168,29 @@ class RequestProvider(Provider):
         prompt_providers: list[PromptProvider],
         message_service: MessageService,
         tools_service: ToolsService,
+        history_service: HistoryService,
         llm_request_factory: LLMRequestFactory,
     ) -> StreamLoop[AgentContext, None, AgentEvent]:
         builder = StreamChainBuilder[AgentContext, None, AgentEvent]()
         builder.use(IterationCounterMiddleware)
+        builder.use(
+            lambda inner: HistoryReplayMiddleware(
+                inner, history_service, message_service
+            )
+        )
         builder.use(lambda inner: SystemPromptMiddleware(inner, prompt_providers))
-        builder.use(lambda inner: UserPromptMiddleware(inner, prompt_providers))
+        builder.use(
+            lambda inner: UserPromptMiddleware(inner, prompt_providers, message_service)
+        )
         builder.use(lambda inner: ToolsDefinitionMiddleware(inner, tools_service))
         builder.use(
             lambda inner: ToolExecutionMiddleware(inner, tools_service, message_service)
         )
         builder.use(LoggingLLMMiddleware)
         builder.use(lambda inner: StupidRetryLLMMiddleware(inner, max_retries=3))
+        builder.use(
+            lambda inner: AssistantMessagePersistenceMiddleware(inner, message_service)
+        )
 
         chain = builder.terminal(OpenAIMiddleware(config.llm, llm_request_factory))
 
