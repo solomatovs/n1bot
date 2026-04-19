@@ -704,14 +704,18 @@ class JsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
         pending_started: AnswerStarted | None = None
         header_buffer = ""
         scanner = JsonDepthScanner()
+        tail_answer_started = False
 
         for event in self._inner.stream(ctx):
             match (state, event):
                 case (_ParserState.PASSTHROUGH, _):
                     yield event
 
-                case (_ParserState.TAIL, AnswerToken()):
-                    pass
+                case (_ParserState.TAIL, AnswerToken(token=t)):
+                    if not tail_answer_started:
+                        tail_answer_started = True
+                        yield AnswerStarted(request_id=rid)
+                    yield AnswerToken(request_id=rid, token=t)
                 case (_ParserState.TAIL, GenerationDone()):
                     yield GenerationDone(
                         request_id=rid, finish_reason="tool_calls"
