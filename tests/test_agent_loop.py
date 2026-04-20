@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import sys
 
+import pytest
+
 from boba.domain.agent.meat import Agent
 from boba.domain.agent.models import AgentRequest, RequestId
 from boba.domain.core.workspace import ProjectWorkspaceRegistry, WorkspaceId
 from boba.infra.config import ConfigLoader
 from boba.infra.container import create_container, request_scope
 from boba.infra.logging import configure_logging
+
+pytestmark = pytest.mark.integration
 
 FIXED_WORKSPACE_ID = WorkspaceId.from_wire("00000000-0000-0000-0000-000000000001")
 

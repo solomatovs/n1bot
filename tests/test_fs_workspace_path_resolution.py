@@ -411,9 +411,12 @@ class TestCatStreamingRange:
                 return super().__next__()
 
         fake = CountingIO("1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
-        text, last = CatTool._read_range(fake, start=2, end=3)
+        text, last, overflow = CatTool._read_range(
+            fake, start=2, end=3, max_lines=1000,
+        )
         assert text == "2\n3"
         assert last == 3
+        assert overflow is False
         assert fake.lines_consumed == 4  # прочитали 1,2,3, затем 4 → break
 
     def test_full_read_without_range(
@@ -424,7 +427,47 @@ class TestCatStreamingRange:
         (workspace_root / "a.txt").write_text("hello\nworld\n")
         tool = CatTool(service)
         result = tool.execute(None, CatArgs("a.txt", "utf-8", None, None))
-        assert result.content == "### a.txt\n\nhello\nworld\n"
+        assert result.content == "### a.txt\n\nhello\nworld"
+
+    def test_full_read_exceeding_limit_raises_typed_error(
+        self, service: FsProjectWorkspaceShell, workspace_root: Path
+    ) -> None:
+        from boba.adapters.tools import cat as cat_mod
+        from boba.adapters.tools.cat import CatArgs, CatTool
+        from boba.domain.core.tools import ToolOutputTooLargeError
+
+        monkey_limit = 3
+        orig = cat_mod._MAX_LINES
+        cat_mod._MAX_LINES = monkey_limit
+        try:
+            (workspace_root / "big.txt").write_text("1\n2\n3\n4\n5\n")
+            tool = CatTool(service)
+            with pytest.raises(ToolOutputTooLargeError) as exc:
+                tool.execute(None, CatArgs("big.txt", "utf-8", None, None))
+            assert exc.value.limit == monkey_limit
+            assert exc.value.unit == "строк"
+            assert "start_line=4" in exc.value.hint
+        finally:
+            cat_mod._MAX_LINES = orig
+
+    def test_ranged_read_exceeding_limit_raises_typed_error(
+        self, service: FsProjectWorkspaceShell, workspace_root: Path
+    ) -> None:
+        from boba.adapters.tools import cat as cat_mod
+        from boba.adapters.tools.cat import CatArgs, CatTool
+        from boba.domain.core.tools import ToolOutputTooLargeError
+
+        orig = cat_mod._MAX_LINES
+        cat_mod._MAX_LINES = 2
+        try:
+            (workspace_root / "big.txt").write_text("1\n2\n3\n4\n5\n6\n")
+            tool = CatTool(service)
+            with pytest.raises(ToolOutputTooLargeError) as exc:
+                tool.execute(None, CatArgs("big.txt", "utf-8", 1, 5))
+            assert "start_line=3" in exc.value.hint
+            assert "1-5" in exc.value.hint
+        finally:
+            cat_mod._MAX_LINES = orig
 
 
 class TestStat:

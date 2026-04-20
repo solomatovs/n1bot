@@ -40,6 +40,36 @@ class InvalidToolArgumentError(ToolExecutionError):
         self.reason = reason
 
 
+class ToolOutputTooLargeError(ToolExecutionError):
+    """Tool отказался выдавать слишком большой результат.
+
+    Бросается tool'ом, когда объём ответа превышает встроенный лимит
+    (обязательный, не конфигурируемый LLM). LLM получает отдельный
+    ``error_kind`` и должна сузить запрос: использовать пагинацию
+    (``start_line``/``end_line``, ``offset``/``limit`` и т.п.) или
+    переключиться на более прицельный инструмент (``grep``, ``stat``).
+
+    Полный файл целиком читать нельзя — это антипаттерн, именно ради
+    пресечения которого и существует этот класс.
+    """
+
+    def __init__(
+        self,
+        tool_id: ToolId,
+        *,
+        limit: int,
+        unit: str,
+        hint: str,
+    ) -> None:
+        super().__init__(
+            tool_id,
+            f"результат превышает лимит {limit} {unit}. {hint}",
+        )
+        self.limit = limit
+        self.unit = unit
+        self.hint = hint
+
+
 class InvalidSchemaInvariantError(ToolExecutionError):
     """Cross-field инвариант схемы нарушен.
 

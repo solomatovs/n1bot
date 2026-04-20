@@ -10,6 +10,7 @@ from boba.domain.core.tools.errors import (
     InvalidToolArgumentError,
     ToolExecutionError,
     ToolIdCollisionError,
+    ToolOutputTooLargeError,
 )
 from boba.domain.core.tools.registry import (
     ToolCatalog,
@@ -87,6 +88,7 @@ __all__ = [
     "ToolId",
     "ToolIdCollisionError",
     "ToolInputSchema",
+    "ToolOutputTooLargeError",
     "ToolResult",
     "ToolSource",
     "ToolSourceId",

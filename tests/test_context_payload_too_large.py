@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+import pytest
 from conftest import OutcomeClassifier
 
 from boba.domain.core.workspace import WorkspaceId
 from boba.infra import AgentHarness
+
+pytestmark = pytest.mark.integration
 
 _WORKSPACE_ID = WorkspaceId.from_wire("00000000-0000-0000-0000-000000000003")
 _PHRASE = "ААА БББ ВВВ "
