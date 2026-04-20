@@ -1,11 +1,8 @@
-"""Строгий вариант: буферизует весь ``content`` до конца генерации,
-затем разбирает его как tool call с жёстким whitelist полей.
-
-В отличие от потокового :mod:`.streaming`, не даёт LLM смешивать текст
-и JSON — если ответ начался с ``{``, значит это обязан быть чистый tool
-call без посторонних полей. Нарушения формата едут через
-:class:`AgentErrorRouter` обратно в LLM отдельным ``role="user"``
-сообщением с критикой.
+"""Перехват tool call, пришедшего JSON-текстом в поле, отличное от
+``tool_calls``. Покрывает два канала (``content`` и ``reasoning_content``)
+одним алгоритмом: первый токен с префиксом ``{`` → буферизация → парсинг
+на ``GenerationDone``. Нарушения формата уходят в LLM критикой через
+:class:`AgentErrorRouter`.
 """
 
 from __future__ import annotations
@@ -13,6 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass
+from enum import Enum
 from typing import ClassVar
 
 from boba.domain.agent.errors import LLMToolCallFormatError
@@ -23,6 +21,8 @@ from boba.domain.agent.events import (
     AnswerToken,
     FinishReason,
     GenerationDone,
+    ThinkingStarted,
+    ThinkingToken,
     ToolCallArgumentDelta,
     ToolCallBegin,
 )
@@ -32,39 +32,16 @@ from boba.domain.core.patterns import Converter, StreamSource
 
 @dataclass(frozen=True)
 class ParsedJsonToolCall:
-    """Распарсенный content-as-JSON tool call.
-
-    ``arguments`` — уже JSON-строка корневого объекта аргументов, готовая
-    к эмиту в :class:`ToolCallArgumentDelta` (ровно в том виде, в каком её
-    ждёт :class:`ToolExecutionMiddleware._run_tool`, вызывая ``json.loads``
-    на входе). Строка, а не ``dict``, потому что контракт событийной
-    модели — стримовое накопление чанков аргументов, и точечное введение
-    ``dict`` только для content-as-JSON ломало бы однородность.
-    """
-
     name: str
+    # Строка, а не dict: контракт события ``ToolCallArgumentDelta`` —
+    # стримовое накопление чанков, dict только здесь ломал бы однородность.
     arguments: str
 
 
 class StrictJsonToolCallParser(Converter[str, ParsedJsonToolCall]):
-    """Строгий парсер content-as-JSON в ``(name, arguments)``.
-
-    Контракт:
-
-    - Корневой JSON — объект с **ровно** двумя полями ``name``, ``arguments``.
-    - ``name`` — непустая строка.
-    - ``arguments`` — объект или массив.
-    - Любое отклонение → :class:`LLMToolCallFormatError` с описанием,
-      что именно не так (невалидный JSON, не-объект на корне,
-      отсутствующие/посторонние поля, неверные типы). Ошибка не
-      терминальна: роутер отдаст её обратно LLM отдельным сообщением,
-      LLM переформулирует tool call на следующей итерации.
-
-    Посторонние поля запрещены явно: содержательные ответы пользователю
-    нельзя протаскивать внутри tool call — это должен быть чистый сигнал
-    диспетчеру, а текст уходит отдельным сообщением.
-
-    Чистая функция от строки — тестируется в изоляции без моков стрима.
+    """Корневой JSON-объект с ровно двумя полями ``name`` (непустая строка)
+    и ``arguments`` (объект/массив). Любое отклонение —
+    :class:`LLMToolCallFormatError`.
     """
 
     _ALLOWED: ClassVar[frozenset[str]] = frozenset({"name", "arguments"})
@@ -133,136 +110,158 @@ class StrictJsonToolCallParser(Converter[str, ParsedJsonToolCall]):
         )
 
 
+class ChannelMode(Enum):
+    UNDECIDED = "undecided"
+    BUFFERING = "buffering"
+    PASSTHROUGH = "passthrough"
+
+    def is_undecided(self) -> bool:
+        return self is ChannelMode.UNDECIDED
+
+    def is_buffering(self) -> bool:
+        return self is ChannelMode.BUFFERING
+
+    def is_passthrough(self) -> bool:
+        return self is ChannelMode.PASSTHROUGH
+
+_StartedEvent = AnswerStarted | ThinkingStarted
+_TokenEvent = AnswerToken | ThinkingToken
+
+
+@dataclass
+class _ChannelState:
+    token_cls: type[_TokenEvent]
+    started_cls: type[_StartedEvent]
+    # content персистится как assistant-message и требует discard при
+    # переинтерпретации; thinking в assistant-message не попадает.
+    emit_discard: bool
+    mode: ChannelMode = ChannelMode.UNDECIDED
+    pending_started: _StartedEvent | None = None
+    buffer: str = ""
+
+    def owns(self, event: AgentEvent) -> bool:
+        return isinstance(event, (self.token_cls, self.started_cls))
+
+    def reset(self) -> None:
+        self.mode = ChannelMode.UNDECIDED
+        self.pending_started = None
+        self.buffer = ""
+
+
 class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Обнаруживает content-as-JSON tool call и оркеструет события.
+    """Срабатывает на ``AnswerToken``/``ThinkingToken`` с префиксом ``{``:
+    буферизует канал до ``GenerationDone``, парсит как tool call, переписывает
+    поток на ``ToolCall*``-события. Native ``ToolCallBegin`` отменяет оба
+    канала. При одновременном buffering-е приоритет у content.
 
-    Если первый непустой ``AnswerToken`` начинается с ``{`` — весь
-    дальнейший ``content`` трактуется как tool call и отдаётся парсеру:
-    никакого смешения текста и JSON, ничего кроме корректного вызова
-    инструмента.
-
-    Для отзывчивости UI ``AnswerToken``-ы во время буферизации
-    **проксируются наружу** — пользователь видит, что модель печатает.
-    Параллельно middleware копит их в буфер. На :class:`GenerationDone`:
-
-    - Эмитит :class:`AnswerDiscarded` — сигнал downstream-ам
-      (``persistence``, ``history``, sink'и UI) отбросить накопленный
-      content: в долговременной истории JSON-текста быть не должно.
-    - Отдаёт буфер инъектированному парсеру (``Converter[str,
-      ParsedJsonToolCall]``). Парсер сам отвечает за формат JSON,
-      допустимые поля, типы и сообщения об ошибках:
-
-      * Успех → :class:`AnswerDiscarded` + :class:`ToolCallBegin` +
-        :class:`ToolCallArgumentDelta` + :class:`GenerationDone` с
-        ``finish_reason="tool_calls"``.
-      * Парсер бросил :class:`LLMToolCallFormatError` — сперва
-        эмитим :class:`GenerationDone` с ``finish_reason="tool_calls"``
-        (чтобы :class:`AssistantMessagePersistenceMiddleware` успел
-        коммитнуть raw content как assistant-сообщение и
-        :class:`StopOnFinished` не оборвала цикл: семантика «LLM
-        пыталась сделать tool call, но сбойно — продолжаем»), **без**
-        :class:`AnswerDiscarded`, после чего исключение летит в
-        :class:`AgentErrorRouter`, который добавляет отдельное
-        ``role="user"``-сообщение с критикой и эмитит
-        :class:`ToolCallFormatFailed`. Цикл не прерывается, LLM
-        увидит свой предыдущий вывод + критику на следующей итерации.
-
-    Сама middleware про JSON-синтаксис, whitelist полей и типы ничего
-    не знает — только про стриминг событий и границу режимов. Парсер
-    заменяется через конструктор (например, мягкий вариант для моделей,
-    которые добавляют thinking-поля).
-
-    Если первый ``AnswerToken`` не начинается с ``{`` — поток идёт
-    passthrough. Если раньше него приходит настоящий
-    :class:`ToolCallBegin` от провайдера — тоже passthrough.
-
-    Ставится innermost — внутри
-    :class:`AssistantMessagePersistenceMiddleware`.
+    Ставится innermost — внутри :class:`AssistantMessagePersistenceMiddleware`.
     """
 
     def __init__(
         self,
         inner: StreamSource[AgentContext, AgentEvent],
-        parser: Converter[str, ParsedJsonToolCall] | None = None,
     ) -> None:
         self._inner = inner
-        self._parser = parser if parser is not None else StrictJsonToolCallParser()
+        self._parser = StrictJsonToolCallParser()
 
     def name(self) -> str:
         return "StrictJsonContentToolCall"
 
-    def stream(  # noqa: C901, PLR0912
-        self, ctx: AgentContext
-    ) -> Iterator[AgentEvent]:
+    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         rid = ctx.request.request_id
-        mode = "undecided"
-        pending_started: AnswerStarted | None = None
-        buffer = ""
+        content = _ChannelState(
+            token_cls=AnswerToken,
+            started_cls=AnswerStarted,
+            emit_discard=True,
+        )
+        reasoning = _ChannelState(
+            token_cls=ThinkingToken,
+            started_cls=ThinkingStarted,
+            emit_discard=False,
+        )
+        channels = (content, reasoning)
 
         for event in self._inner.stream(ctx):
-            if mode == "passthrough":
+            if isinstance(event, ToolCallBegin):
+                for ch in channels:
+                    ch.pending_started = None
+                    if ch.mode.is_undecided():
+                        ch.mode = ChannelMode.PASSTHROUGH
                 yield event
                 continue
 
-            if mode == "buffering":
-                match event:
-                    case AnswerToken(token=t):
-                        buffer += t
-                        yield event
-                    case GenerationDone():
-                        yield from self._finalize_tool_call(rid, buffer)
-                        mode = "passthrough"
-                        buffer = ""
-                    case _:
-                        yield event
+            if isinstance(event, GenerationDone):
+                yield from self._on_generation_done(rid, event, channels)
+                for ch in channels:
+                    ch.reset()
                 continue
 
-            match event:
-                case AnswerStarted():
-                    pending_started = event
-                case AnswerToken(token=t) if t.lstrip().startswith("{"):
-                    if pending_started is not None:
-                        yield pending_started
-                        pending_started = None
-                    yield event
-                    buffer = t
-                    mode = "buffering"
-                case AnswerToken():
-                    if pending_started is not None:
-                        yield pending_started
-                        pending_started = None
-                    mode = "passthrough"
-                    yield event
-                case ToolCallBegin():
-                    pending_started = None
-                    mode = "passthrough"
-                    yield event
-                case GenerationDone():
-                    if pending_started is not None:
-                        yield pending_started
-                        pending_started = None
-                    yield event
-                    mode = "passthrough"
-                case _:
-                    yield event
+            handled = False
+            for ch in channels:
+                if ch.owns(event):
+                    yield from self._process_channel(ch, event)
+                    handled = True
+                    break
+            if not handled:
+                yield event
 
-    def _finalize_tool_call(self, rid: RequestId, raw: str) -> Iterator[AgentEvent]:
-        """Завершающий этап: буфер уже проэмичен как ``AnswerToken``-ы.
+    def _process_channel(
+        self, ch: _ChannelState, event: AgentEvent
+    ) -> Iterator[AgentEvent]:
+        if ch.mode.is_passthrough():
+            yield event
+            return
+        if ch.mode.is_buffering():
+            if isinstance(event, ch.token_cls):
+                ch.buffer += event.token
+            yield event
+            return
+        yield from self._decide(ch, event)
 
-        Успех: эмитим :class:`AnswerDiscarded` (downstream-ы выкидывают
-        накопленный content, вместо него пойдут ``ToolCall*``),
-        :class:`ToolCallBegin` + :class:`ToolCallArgumentDelta`,
-        :class:`GenerationDone` с ``finish_reason="tool_calls"``.
+    def _decide(
+        self, ch: _ChannelState, event: AgentEvent
+    ) -> Iterator[AgentEvent]:
+        if isinstance(event, ch.started_cls):
+            ch.pending_started = event
+            return
+        if isinstance(event, ch.token_cls):
+            if ch.pending_started is not None:
+                yield ch.pending_started
+                ch.pending_started = None
+            yield event
+            if event.token.lstrip().startswith("{"):
+                ch.buffer = event.token
+                ch.mode = ChannelMode.BUFFERING
+            else:
+                ch.mode = ChannelMode.PASSTHROUGH
+            return
+        yield event
 
-        Сбой парсера (:class:`LLMToolCallFormatError`): эмитим
-        :class:`GenerationDone` с ``finish_reason="tool_calls"`` (без
-        ``AnswerDiscarded`` — raw content должен остаться в буфере
-        персистенса, чтобы коммитнуться как assistant-сообщение и LLM
-        увидела свой предыдущий вывод на следующей итерации; а
-        ``tool_calls`` не даёт :class:`StopOnFinished` оборвать цикл —
-        семантика «LLM хотела tool call»), после чего пробрасываем
-        исключение наверх в :class:`AgentErrorRouter`.
-        """
+    def _on_generation_done(
+        self,
+        rid: RequestId,
+        event: GenerationDone,
+        channels: tuple[_ChannelState, ...],
+    ) -> Iterator[AgentEvent]:
+        for ch in channels:
+            if ch.pending_started is not None:
+                yield ch.pending_started
+                ch.pending_started = None
+
+        for ch in channels:
+            if ch.mode.is_buffering():
+                yield from self._finalize(rid, ch.buffer, ch.emit_discard)
+                return
+
+        yield event
+
+    def _finalize(
+        self, rid: RequestId, raw: str, emit_discard: bool
+    ) -> Iterator[AgentEvent]:
+        # При сбое парсинга эмитим GenerationDone(tool_calls) до raise:
+        # AssistantMessagePersistenceMiddleware успеет коммитнуть raw буфер,
+        # а tool_calls не даёт StopOnFinished оборвать цикл — LLM на
+        # следующей итерации увидит свой вывод и критику роутера.
         try:
             parsed = self._parser.convert(raw)
         except LLMToolCallFormatError:
@@ -270,7 +269,8 @@ class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]
                 request_id=rid, finish_reason=FinishReason.TOOL_CALLS
             )
             raise
-        yield AnswerDiscarded(request_id=rid)
+        if emit_discard:
+            yield AnswerDiscarded(request_id=rid)
         yield ToolCallBegin(
             request_id=rid,
             index=0,
