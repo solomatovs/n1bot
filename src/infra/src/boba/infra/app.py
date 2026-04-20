@@ -273,19 +273,29 @@ class RequestProvider(Provider):
         Per-request, потому что file-tools получают per-request резолвер
         workspace'ов (сервисы в нём per-request). Плагины/MCP-источники
         подключать сюда же рядом с builtin-пачкой.
+
+        На каждый разрешённый :class:`WorkspaceKind` регистрируется
+        отдельный инстанс каждого tool'а — workspace кодируется в имени
+        tool'а (``{kind}__{base}``), а не в параметрах.
         """
+        tools = []
+        for kind in sorted(allowed.kinds, key=lambda k: k.name):
+            tools.extend(
+                [
+                    ReadFileTool(resolver, kind),
+                    EditFileTool(resolver, kind),
+                    DeleteFileTool(resolver, kind),
+                    LsTool(resolver, kind),
+                    TreeTool(resolver, kind),
+                ]
+            )
+
         factory = ToolFactory()
         factory.register(
             StaticToolSource(
                 source_id=ToolSourceId("builtin.files"),
                 priority=10,
-                tools=[
-                    ReadFileTool(resolver, allowed),
-                    EditFileTool(resolver, allowed),
-                    DeleteFileTool(resolver, allowed),
-                    LsTool(resolver, allowed),
-                    TreeTool(resolver, allowed),
-                ],
+                tools=tools,
             )
         )
         return factory

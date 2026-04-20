@@ -17,7 +17,6 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any, Generic, Self, TypeVar
 
 from boba.domain.core.patterns import (
@@ -27,6 +26,13 @@ from boba.domain.core.patterns import (
     FoldFactory,
     Id,
     PrioritySource,
+    Validator,
+)
+from boba.domain.core.validation import (
+    MISSING,
+    ParamValidationError,
+    ParamWireSchema,
+    SchemaContributor,
 )
 
 TArgs = TypeVar("TArgs")
@@ -54,23 +60,21 @@ class ToolSourceId(Id[str]):
         return cls(value)
 
 
-class JsonType(Enum):
-    STRING = "string"
-    INTEGER = "integer"
-    NUMBER = "number"
-    BOOLEAN = "boolean"
-
-
 @dataclass(frozen=True)
 class ParamSchema:
-    """Описание одного параметра инструмента."""
+    """Описание одного параметра инструмента.
+
+    Все три поля обязательны — сознательно строгая схема: автор tool'а
+    обязан явно задать имя, человекочитаемое описание и валидатор
+    (даже :class:`Pass` для no-op случая). Тип, ``required``,
+    ``default``, ``enum`` и прочие schema-аспекты выводятся из
+    ``validator`` через :class:`SchemaContributor` — единый источник
+    правды для runtime-валидации и wire-схемы.
+    """
 
     name: str
-    type: JsonType
     description: str
-    required: bool = True
-    default: Any = None
-    enum: tuple[str, ...] | None = None
+    validator: Validator[Any]
 
 
 @dataclass(frozen=True)
@@ -78,6 +82,20 @@ class ToolInputSchema:
     """Схема входных параметров инструмента."""
 
     params: list[ParamSchema]
+
+
+def build_param_wire_schema(param: ParamSchema) -> ParamWireSchema:
+    """Собрать wire-описание параметра, обходя валидатор.
+
+    Стартует с ``description`` (всегда есть) и даёт валидатору
+    дозаполнить ``type``/``enum``/``default``/``required`` через
+    :meth:`SchemaContributor.contribute`. Если валидатор не реализует
+    contributor-протокол — вернёт минимум: только описание.
+    """
+    schema = ParamWireSchema(property={"description": param.description})
+    if isinstance(param.validator, SchemaContributor):
+        param.validator.contribute(schema)
+    return schema
 
 
 @dataclass(frozen=True)
@@ -137,11 +155,83 @@ class ToolExecutionError(Exception):
         self.message = message
 
 
+class InvalidToolArgumentError(ToolExecutionError):
+    """Аргументы tool'а не прошли валидацию по :class:`ToolInputSchema`.
+
+    Бросается :class:`SchemaArgsValidator` при отсутствии обязательного
+    параметра, нарушении типа, выходе за enum, незнакомом ключе и т.п.
+    Хранит имя проблемного параметра в ``param`` — middleware превращает
+    в :class:`ToolFeedbackError`, и LLM на следующей итерации видит
+    конкретику и может попробовать снова.
+
+    Имя параметра «прицеплено» через префикс в сообщении —
+    унаследованный ``message`` остаётся читабельным и для логов, и для
+    LLM-feedback'а без отдельного форматирования.
+    """
+
+    def __init__(self, tool_id: ToolId, param: str, reason: str) -> None:
+        super().__init__(tool_id, f"параметр {param!r}: {reason}")
+        self.param = param
+        self.reason = reason
+
+
+class SchemaArgsValidator(Validator[dict[str, Any]]):
+    """Валидирует сырой dict аргументов против :class:`ToolInputSchema`.
+
+    Контракт:
+    - для каждого param в схеме: достаёт ключ из value (или
+      :data:`MISSING`), прогоняет через ``param.validator``;
+      :class:`ParamValidationError` оборачивает в
+      :class:`InvalidToolArgumentError` с именем параметра и tool_id;
+    - если после валидации значение не :data:`MISSING` — кладёт в
+      результат; иначе пропускает (опциональный параметр без default'а);
+    - незнакомые ключи отвергает с
+      :class:`InvalidToolArgumentError` — strict-режим, чтобы ловить
+      галлюцинации модели и опечатки.
+    """
+
+    def __init__(self, schema: ToolInputSchema, tool_id: ToolId) -> None:
+        self._schema = schema
+        self._tool_id = tool_id
+        self._known: frozenset[str] = frozenset(p.name for p in schema.params)
+
+    def validate(self, value: dict[str, Any]) -> dict[str, Any]:
+        unknown = sorted(set(value.keys()) - self._known)
+        if unknown:
+            raise InvalidToolArgumentError(
+                self._tool_id,
+                unknown[0],
+                f"неизвестный параметр (известные: {sorted(self._known)})",
+            )
+
+        result: dict[str, Any] = {}
+        for param in self._schema.params:
+            raw = value.get(param.name, MISSING)
+            try:
+                validated = param.validator.validate(raw)
+            except ParamValidationError as e:
+                raise InvalidToolArgumentError(
+                    self._tool_id, param.name, str(e)
+                ) from e
+            if validated is not MISSING:
+                result[param.name] = validated
+        return result
+
+
 class Tool(
     Executor[None, TArgs, ToolResult],
     Definition[ToolDefinition],
     Generic[TArgs],
 ):
+    """Базовый класс tool'а.
+
+    Шаблонный метод :meth:`args_converter` собирает pipeline:
+    :class:`SchemaArgsValidator` (валидация по схеме) →
+    :meth:`typed_args_converter` (маппинг провалидированного dict в
+    типизированный TArgs). Перекрывать :meth:`args_converter` нельзя —
+    валидация по схеме обязательна для всех tool'ов.
+    """
+
     @abstractmethod
     def tool_id(self) -> ToolId: ...
 
@@ -149,9 +239,52 @@ class Tool(
     def tool_source_id(self) -> ToolSourceId: ...
 
     @abstractmethod
-    def args_converter(self) -> Converter[dict[str, Any], TArgs]:
-        """Конвертер сырых аргументов caller-а (напр. JSON от LLM) в ``TArgs``."""
+    def typed_args_converter(self) -> Converter[dict[str, Any], TArgs]:
+        """Маппер провалидированного dict в типизированный TArgs.
+
+        На вход приходит dict, уже прошедший
+        :class:`SchemaArgsValidator`: только известные ключи, типы
+        соответствуют схеме, default'ы применены. Реализация просто
+        собирает dataclass из готовых полей — без проверок и
+        приведения типов.
+        """
         ...
+
+    def args_converter(self) -> Converter[dict[str, Any], TArgs]:
+        """Pipeline: валидация по схеме → маппинг в TArgs.
+
+        Метод финален de facto — переопределять не нужно: логика
+        полностью выводится из :meth:`definition` и
+        :meth:`typed_args_converter`.
+        """
+        return _ToolArgsPipeline(
+            SchemaArgsValidator(self.definition().input_schema, self.tool_id()),
+            self.typed_args_converter(),
+        )
+
+
+class _ToolArgsPipeline(Converter[dict[str, Any], TArgs], Generic[TArgs]):
+    """Pipeline валидации + маппинга для :meth:`Tool.args_converter`.
+
+    :class:`InvalidToolArgumentError` (`ToolExecutionError`-потомок)
+    пропускается наружу — caller (agent middleware) ловит его в
+    `except ToolExecutionError` и оборачивает в `ToolFeedbackError`
+    для LLM. Контракт `Converter` про `ConverterError` нарушается
+    осознанно: для tool args домен-специфичная иерархия
+    `ToolExecutionError` — единый канал ошибок.
+    """
+
+    def __init__(
+        self,
+        validator: SchemaArgsValidator,
+        typed: Converter[dict[str, Any], TArgs],
+    ) -> None:
+        self._validator = validator
+        self._typed = typed
+
+    def convert(self, value: dict[str, Any]) -> TArgs:
+        validated = self._validator.validate(value)
+        return self._typed.convert(validated)
 
 
 class ToolStore:

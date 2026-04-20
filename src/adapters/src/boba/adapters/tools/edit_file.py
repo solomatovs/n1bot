@@ -5,14 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from boba.adapters.tools._workspace_arg import (
-    WORKSPACE_PARAM_NAME,
-    parse_workspace_arg,
-    workspace_param_schema,
-)
+from boba.adapters.tools._workspace_arg import workspace_tool_id
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
-    JsonType,
     ParamSchema,
     Tool,
     ToolDefinition,
@@ -22,98 +17,135 @@ from boba.domain.core.tools import (
     ToolResult,
     ToolSourceId,
 )
+from boba.domain.core.validation import (
+    ChainValidator,
+    Default,
+    IsString,
+    NonEmpty,
+    OneOf,
+    Required,
+)
 from boba.domain.core.workspace import (
-    USER_WORKSPACE_KIND,
-    AllowedWorkspacesSpec,
     WorkspaceError,
     WorkspaceKind,
     WorkspaceResolver,
 )
+
+WRITE_MODE = "write"
+APPEND_MODE = "append"
 
 
 @dataclass(frozen=True)
 class EditFileArgs:
     filename: str
     content: str
-    workspace: WorkspaceKind = USER_WORKSPACE_KIND
+    mode: str
+    encoding: str
 
 
 class EditFileArgsConverter(Converter[dict[str, Any], EditFileArgs]):
-    def __init__(self, allowed: AllowedWorkspacesSpec, tool_id: ToolId) -> None:
-        self._allowed = allowed
-        self._tool_id = tool_id
+    """Маппит провалидированный dict в :class:`EditFileArgs`."""
 
     def convert(self, value: dict[str, Any]) -> EditFileArgs:
         return EditFileArgs(
-            filename=str(value["filename"]),
-            content=str(value["content"]),
-            workspace=parse_workspace_arg(
-                value.get(WORKSPACE_PARAM_NAME), self._allowed, self._tool_id
-            ),
+            filename=value["filename"],
+            content=value["content"],
+            mode=value["mode"],
+            encoding=value["encoding"],
         )
 
 
 class EditFileTool(Tool[EditFileArgs]):
-    """Запись/обновление файла в workspace (перезапись целиком)."""
+    """Запись/обновление файла в workspace."""
 
-    _ID = ToolId("edit_file")
+    _BASE_NAME = "edit_file"
     _SOURCE = ToolSourceId("builtin.files")
 
     def __init__(
         self,
         resolver: WorkspaceResolver,
-        allowed: AllowedWorkspacesSpec,
+        workspace: WorkspaceKind,
     ) -> None:
         self._resolver = resolver
-        self._allowed = allowed
+        self._workspace = workspace
+        self._id = workspace_tool_id(workspace, self._BASE_NAME)
 
     def tool_id(self) -> ToolId:
-        return self._ID
+        return self._id
 
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
 
-    def args_converter(self) -> Converter[dict[str, Any], EditFileArgs]:
-        return EditFileArgsConverter(self._allowed, self._ID)
+    def typed_args_converter(self) -> Converter[dict[str, Any], EditFileArgs]:
+        return EditFileArgsConverter()
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                "Записать или перезаписать файл в workspace целиком. "
-                "Создаёт файл, если его не было; иначе полностью заменяет содержимое."
+                f"Записать в файл workspace '{self._workspace.name}'. "
+                "В режиме 'write' перезаписывает целиком, в 'append' — "
+                "дозаписывает в конец. Создаёт файл, если его не было."
             ),
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
                         name="filename",
-                        type=JsonType.STRING,
-                        description="Путь к файлу внутри workspace",
+                        description="Путь к файлу внутри workspace.",
+                        validator=ChainValidator(Required(), IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="content",
-                        type=JsonType.STRING,
-                        description="Новое полное содержимое файла",
+                        description=(
+                            "Содержимое для записи. В режиме 'write' — "
+                            "полное новое содержимое; в 'append' — данные, "
+                            "дописываемые в конец."
+                        ),
+                        validator=ChainValidator(Required(), IsString()),
                     ),
-                    workspace_param_schema(self._allowed),
+                    ParamSchema(
+                        name="mode",
+                        description=(
+                            "Режим записи: 'write' — перезапись целиком, "
+                            "'append' — дозапись в конец. По умолчанию — 'write'."
+                        ),
+                        validator=ChainValidator(
+                            Default(WRITE_MODE),
+                            IsString(),
+                            OneOf(WRITE_MODE, APPEND_MODE),
+                        ),
+                    ),
+                    ParamSchema(
+                        name="encoding",
+                        description="Кодировка файла. По умолчанию — utf-8.",
+                        validator=ChainValidator(
+                            Default("utf-8"), IsString(), NonEmpty()
+                        ),
+                    ),
                 ]
             ),
         )
 
     def execute(self, ctx: None, args: EditFileArgs) -> ToolResult:
-        workspace = self._resolver.resolve(args.workspace)
+        workspace = self._resolver.resolve(self._workspace)
         existed = workspace.exists(args.filename)
+        opener = (
+            workspace.append_text if args.mode == APPEND_MODE else workspace.write_text
+        )
         try:
-            with workspace.write_text(args.filename) as f:
+            with opener(args.filename, args.encoding) as f:
                 f.write(args.content)
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Ошибка записи: {e}"
+                tool_id=self._id, message=f"Ошибка записи: {e}"
             ) from e
 
-        action = "обновлён" if existed else "создан"
+        if args.mode == APPEND_MODE:
+            action = "дозаписан" if existed else "создан (append)"
+        else:
+            action = "обновлён" if existed else "создан"
         return ToolResult(
             content=(
-                f"Файл {action}: {args.workspace.name}:{args.filename} "
+                f"Файл {action}: {self._workspace.name}:{args.filename} "
                 f"({len(args.content)} символов)"
             )
         )

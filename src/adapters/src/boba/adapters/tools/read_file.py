@@ -5,14 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from boba.adapters.tools._workspace_arg import (
-    WORKSPACE_PARAM_NAME,
-    parse_workspace_arg,
-    workspace_param_schema,
-)
+from boba.adapters.tools._workspace_arg import workspace_tool_id
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
-    JsonType,
     ParamSchema,
     Tool,
     ToolDefinition,
@@ -22,9 +17,16 @@ from boba.domain.core.tools import (
     ToolResult,
     ToolSourceId,
 )
+from boba.domain.core.validation import (
+    ChainValidator,
+    Default,
+    IsInt,
+    IsString,
+    MinValue,
+    NonEmpty,
+    Required,
+)
 from boba.domain.core.workspace import (
-    USER_WORKSPACE_KIND,
-    AllowedWorkspacesSpec,
     WorkspaceError,
     WorkspaceKind,
     WorkspaceNotFoundError,
@@ -35,94 +37,93 @@ from boba.domain.core.workspace import (
 @dataclass(frozen=True)
 class ReadFileArgs:
     filename: str
-    workspace: WorkspaceKind = USER_WORKSPACE_KIND
+    encoding: str
     start_line: int | None = None
     end_line: int | None = None
 
 
 class ReadFileArgsConverter(Converter[dict[str, Any], ReadFileArgs]):
-    def __init__(self, allowed: AllowedWorkspacesSpec, tool_id: ToolId) -> None:
-        self._allowed = allowed
-        self._tool_id = tool_id
+    """Маппит провалидированный dict в :class:`ReadFileArgs`."""
 
     def convert(self, value: dict[str, Any]) -> ReadFileArgs:
-        sl = value.get("start_line")
-        el = value.get("end_line")
         return ReadFileArgs(
-            filename=str(value["filename"]),
-            workspace=parse_workspace_arg(
-                value.get(WORKSPACE_PARAM_NAME), self._allowed, self._tool_id
-            ),
-            start_line=int(sl) if sl is not None else None,
-            end_line=int(el) if el is not None else None,
+            filename=value["filename"],
+            encoding=value["encoding"],
+            start_line=value.get("start_line"),
+            end_line=value.get("end_line"),
         )
 
 
 class ReadFileTool(Tool[ReadFileArgs]):
     """Чтение содержимого файла (целиком или диапазон строк 1-based)."""
 
-    _ID = ToolId("read_file")
+    _BASE_NAME = "read_file"
     _SOURCE = ToolSourceId("builtin.files")
 
     def __init__(
         self,
         resolver: WorkspaceResolver,
-        allowed: AllowedWorkspacesSpec,
+        workspace: WorkspaceKind,
     ) -> None:
         self._resolver = resolver
-        self._allowed = allowed
+        self._workspace = workspace
+        self._id = workspace_tool_id(workspace, self._BASE_NAME)
 
     def tool_id(self) -> ToolId:
-        return self._ID
+        return self._id
 
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
 
-    def args_converter(self) -> Converter[dict[str, Any], ReadFileArgs]:
-        return ReadFileArgsConverter(self._allowed, self._ID)
+    def typed_args_converter(self) -> Converter[dict[str, Any], ReadFileArgs]:
+        return ReadFileArgsConverter()
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                "Прочитать содержимое файла из workspace. "
+                f"Прочитать содержимое файла из workspace '{self._workspace.name}'. "
                 "Опционально — диапазон строк (1-based, включительно)."
             ),
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
                         name="filename",
-                        type=JsonType.STRING,
-                        description="Путь к файлу внутри workspace",
+                        description="Путь к файлу внутри workspace.",
+                        validator=ChainValidator(Required(), IsString(), NonEmpty()),
                     ),
-                    workspace_param_schema(self._allowed),
+                    ParamSchema(
+                        name="encoding",
+                        description="Кодировка файла. По умолчанию — utf-8.",
+                        validator=ChainValidator(
+                            Default("utf-8"), IsString(), NonEmpty()
+                        ),
+                    ),
                     ParamSchema(
                         name="start_line",
-                        type=JsonType.INTEGER,
-                        description="Начальная строка (с 1)",
-                        required=False,
+                        description="Начальная строка диапазона (с 1, включительно).",
+                        validator=ChainValidator(IsInt(), MinValue(1)),
                     ),
                     ParamSchema(
                         name="end_line",
-                        type=JsonType.INTEGER,
-                        description="Конечная строка (включительно)",
-                        required=False,
+                        description="Конечная строка диапазона (включительно).",
+                        validator=ChainValidator(IsInt(), MinValue(1)),
                     ),
                 ]
             ),
         )
 
     def execute(self, ctx: None, args: ReadFileArgs) -> ToolResult:
-        workspace = self._resolver.resolve(args.workspace)
+        workspace = self._resolver.resolve(self._workspace)
         try:
-            with workspace.read_text(args.filename) as f:
+            with workspace.read_text(args.filename, args.encoding) as f:
                 text = f.read()
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Файл не найден: {args.filename}"
+                tool_id=self._id, message=f"Файл не найден: {args.filename}"
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Ошибка чтения: {e}"
+                tool_id=self._id, message=f"Ошибка чтения: {e}"
             ) from e
 
         if args.start_line is not None or args.end_line is not None:
@@ -134,4 +135,4 @@ class ReadFileTool(Tool[ReadFileArgs]):
         else:
             label = args.filename
 
-        return ToolResult(content=f"### {args.workspace.name}:{label}\n\n{text}")
+        return ToolResult(content=f"### {self._workspace.name}:{label}\n\n{text}")

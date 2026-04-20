@@ -72,7 +72,7 @@ from boba.domain.core.patterns import (
     StreamTransformer,
     StreamTransformerPipeline,
 )
-from boba.domain.core.tools import Tool
+from boba.domain.core.tools import Tool, build_param_wire_schema
 
 logger = logging.getLogger(__name__)
 
@@ -389,7 +389,14 @@ class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
 
 
 class ToOpenAIToolConverter(Converter[Tool[Any], ChatCompletionToolParam]):
-    """Конвертирует Tool в формат OpenAI tools API."""
+    """Конвертирует Tool в формат OpenAI tools API.
+
+    Описание каждого параметра собирается через
+    :func:`build_param_wire_schema` — обходит валидатор
+    (:class:`SchemaContributor`) и заполняет ``type``/``enum``/``default``/
+    флаг required. Дрейфа со схемой валидации быть не может: оба
+    канала читают из одного :class:`Validator`.
+    """
 
     def convert(self, value: Tool[Any]) -> ChatCompletionToolParam:
         definition = value.definition()
@@ -398,16 +405,9 @@ class ToOpenAIToolConverter(Converter[Tool[Any], ChatCompletionToolParam]):
         required: list[str] = []
 
         for p in definition.input_schema.params:
-            prop: dict[str, Any] = {
-                "type": p.type.value,
-                "description": p.description,
-            }
-            if p.enum is not None:
-                prop["enum"] = list(p.enum)
-            if p.default is not None:
-                prop["default"] = p.default
-            properties[p.name] = prop
-            if p.required:
+            wire = build_param_wire_schema(p)
+            properties[p.name] = wire.property
+            if wire.required:
                 required.append(p.name)
 
         return {

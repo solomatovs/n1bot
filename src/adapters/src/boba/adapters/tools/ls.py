@@ -6,14 +6,9 @@ from dataclasses import dataclass
 from itertools import islice
 from typing import Any
 
-from boba.adapters.tools._workspace_arg import (
-    WORKSPACE_PARAM_NAME,
-    parse_workspace_arg,
-    workspace_param_schema,
-)
+from boba.adapters.tools._workspace_arg import workspace_tool_id
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
-    JsonType,
     ParamSchema,
     Tool,
     ToolDefinition,
@@ -23,9 +18,14 @@ from boba.domain.core.tools import (
     ToolResult,
     ToolSourceId,
 )
+from boba.domain.core.validation import (
+    ChainValidator,
+    IsInt,
+    IsString,
+    MinValue,
+    NonEmpty,
+)
 from boba.domain.core.workspace import (
-    USER_WORKSPACE_KIND,
-    AllowedWorkspacesSpec,
     WorkspaceError,
     WorkspaceKind,
     WorkspaceResolver,
@@ -34,81 +34,80 @@ from boba.domain.core.workspace import (
 
 @dataclass(frozen=True)
 class LsArgs:
-    workspace: WorkspaceKind = USER_WORKSPACE_KIND
+    path: str | None = None
     limit: int | None = None
 
 
 class LsArgsConverter(Converter[dict[str, Any], LsArgs]):
-    def __init__(self, allowed: AllowedWorkspacesSpec, tool_id: ToolId) -> None:
-        self._allowed = allowed
-        self._tool_id = tool_id
+    """Маппит провалидированный dict в :class:`LsArgs`.
+
+    Все проверки (тип, длина, min) уже сделаны
+    :class:`SchemaArgsValidator` — здесь только сборка dataclass.
+    """
 
     def convert(self, value: dict[str, Any]) -> LsArgs:
-        limit = value.get("limit")
         return LsArgs(
-            workspace=parse_workspace_arg(
-                value.get(WORKSPACE_PARAM_NAME), self._allowed, self._tool_id
-            ),
-            limit=int(limit) if limit is not None else None,
+            path=value.get("path"),
+            limit=value.get("limit"),
         )
 
 
 class LsTool(Tool[LsArgs]):
     """Плоский список элементов workspace (без рекурсии)."""
 
-    _ID = ToolId("ls")
+    _BASE_NAME = "ls"
     _SOURCE = ToolSourceId("builtin.files")
 
     def __init__(
         self,
         resolver: WorkspaceResolver,
-        allowed: AllowedWorkspacesSpec,
+        workspace: WorkspaceKind,
     ) -> None:
         self._resolver = resolver
-        self._allowed = allowed
+        self._workspace = workspace
+        self._id = workspace_tool_id(workspace, self._BASE_NAME)
 
     def tool_id(self) -> ToolId:
-        return self._ID
+        return self._id
 
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
 
-    def args_converter(self) -> Converter[dict[str, Any], LsArgs]:
-        return LsArgsConverter(self._allowed, self._ID)
+    def typed_args_converter(self) -> Converter[dict[str, Any], LsArgs]:
+        return LsArgsConverter()
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                "Показать элементы workspace на верхнем уровне (без рекурсии, "
-                "без фильтрации). Порядок — как возвращает ФС, сортировка "
-                "не применяется."
+                f"Список файлов workspace '{self._workspace.name}' — "
+                "только первый уровень вложенности."
             ),
             input_schema=ToolInputSchema(
                 params=[
-                    workspace_param_schema(self._allowed),
+                    ParamSchema(
+                        name="path",
+                        description=(
+                            "Путь внутри workspace, с которого начинать "
+                            "листинг. По умолчанию — корень workspace."
+                        ),
+                        validator=ChainValidator(IsString(), NonEmpty()),
+                    ),
                     ParamSchema(
                         name="limit",
-                        type=JsonType.INTEGER,
                         description=(
                             "Опциональный лимит количества элементов "
                             "в ответе. Без него возвращается всё."
                         ),
-                        required=False,
+                        validator=ChainValidator(IsInt(), MinValue(0)),
                     ),
                 ]
             ),
         )
 
     def execute(self, ctx: None, args: LsArgs) -> ToolResult:
-        if args.limit is not None and args.limit < 0:
-            raise ToolExecutionError(
-                tool_id=self._ID,
-                message=f"limit должен быть >= 0, получено {args.limit}",
-            )
-
-        workspace = self._resolver.resolve(args.workspace)
+        workspace = self._resolver.resolve(self._workspace)
         try:
-            iterator = workspace.ls()
+            iterator = workspace.ls(args.path)
             items = (
                 list(iterator)
                 if args.limit is None
@@ -116,15 +115,17 @@ class LsTool(Tool[LsArgs]):
             )
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Ошибка обхода workspace: {e}"
+                tool_id=self._id, message=f"Ошибка обхода workspace: {e}"
             ) from e
 
-        if not items:
-            return ToolResult(
-                content=f"Workspace {args.workspace.name} пуст."
-            )
+        location = self._workspace.name
+        if args.path:
+            location += f":{args.path}"
 
-        header = f"Элементы {args.workspace.name} ({len(items)}"
+        if not items:
+            return ToolResult(content=f"{location} пуст.")
+
+        header = f"Элементы {location} ({len(items)}"
         if args.limit is not None:
             header += f", лимит={args.limit}"
         header += "):"
