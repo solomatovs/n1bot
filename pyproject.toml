@@ -39,6 +39,7 @@ markers = [
 [tool.pyright]
 include = ["src", "tests"]
 exclude = [
+    ".venv",
     "src-back",
     "**/node_modules",
     "**/__pycache__",
