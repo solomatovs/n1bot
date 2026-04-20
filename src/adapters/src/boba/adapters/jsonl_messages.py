@@ -20,7 +20,7 @@ from boba.domain.agent.messages import (
     MessageStoreWriteError,
 )
 from boba.domain.agent.models import LLMMessage, LLMToolCall
-from boba.domain.core.workspace import SystemWorkspaceService, WorkspaceError
+from boba.domain.core.workspace import HistoryWorkspaceShell, WorkspaceError
 
 
 class JsonLinesMessageService(MessageService):
@@ -30,7 +30,7 @@ class JsonLinesMessageService(MessageService):
 
     def __init__(
         self,
-        workspace: SystemWorkspaceService,
+        workspace: HistoryWorkspaceShell,
         filename: str = _DEFAULT_FILENAME,
     ) -> None:
         self._workspace = workspace

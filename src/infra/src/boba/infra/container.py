@@ -30,9 +30,9 @@ def request_scope(
 ) -> Iterator[Container]:
     """Открыть per-request scope.
 
-    ``ws_id`` обязателен и задаёт сессию: все три менеджера
-    (user/system/tmp) разделяют один и тот же id через
-    ``manager.get_or_create(ws_id)``. Сгенерировать новый id заранее —
+    ``ws_id`` обязателен и задаёт сессию: все три реестра
+    (project/history/scratch) разделяют один и тот же id через
+    ``registry.get_or_create(ws_id)``. Сгенерировать новый id заранее —
     ``WorkspaceId.new()``.
     """
     with container({WorkspaceId: ws_id}) as request:

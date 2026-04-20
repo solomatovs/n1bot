@@ -1,6 +1,6 @@
 """Публичный API adapters-слоя.
 
-Реэкспортирует фасадные адаптеры: sink'и, сервисы workspace/messages,
+Реэкспортирует фасадные адаптеры: sink'и, workspace/messages реализации,
 OpenAI-совместимый клиент LLM, провайдеры промптов и инструментов.
 Внутренние классы конкретных файлов (``IsServerError``, ``RoleSource``,
 ``ThinkingSource`` и т.п. из :mod:`.openai_completion`) здесь не
@@ -11,21 +11,20 @@ OpenAI-совместимый клиент LLM, провайдеры промп�
 
     from boba.adapters import OpenAIMiddleware, StupidRetryLLMMiddleware
     from boba.adapters import JsonLinesMessageService, ConsoleSink
-    from boba.adapters import FsWorkspaceManager, FsWorkspaceService
+    from boba.adapters import FsWorkspaceRegistry, FsWorkspaceShell
 """
 
 from boba.adapters.aggregating_llm_request_factory import AggregatingLLMRequestFactory
 from boba.adapters.console_sink import ConsoleSink
 from boba.adapters.fs_workspace import (
-    FsPathValidator,
-    FsSystemWorkspaceManager,
-    FsSystemWorkspaceService,
-    FsTmpWorkspaceManager,
-    FsTmpWorkspaceService,
-    FsUserWorkspaceManager,
-    FsUserWorkspaceService,
-    FsWorkspaceManager,
-    FsWorkspaceService,
+    FsHistoryWorkspaceRegistry,
+    FsHistoryWorkspaceShell,
+    FsProjectWorkspaceRegistry,
+    FsProjectWorkspaceShell,
+    FsScratchWorkspaceRegistry,
+    FsScratchWorkspaceShell,
+    FsWorkspaceRegistry,
+    FsWorkspaceShell,
 )
 from boba.adapters.in_memory_messages import InMemoryMessageService
 from boba.adapters.jsonl_messages import JsonLinesMessageService
@@ -68,15 +67,14 @@ __all__ = [
     "FilePromptProvider",
     "FileRawLLMObserver",
     "FromOpenAIChunkConverter",
-    "FsPathValidator",
-    "FsSystemWorkspaceManager",
-    "FsSystemWorkspaceService",
-    "FsTmpWorkspaceManager",
-    "FsTmpWorkspaceService",
-    "FsUserWorkspaceManager",
-    "FsUserWorkspaceService",
-    "FsWorkspaceManager",
-    "FsWorkspaceService",
+    "FsHistoryWorkspaceRegistry",
+    "FsHistoryWorkspaceShell",
+    "FsProjectWorkspaceRegistry",
+    "FsProjectWorkspaceShell",
+    "FsScratchWorkspaceRegistry",
+    "FsScratchWorkspaceShell",
+    "FsWorkspaceRegistry",
+    "FsWorkspaceShell",
     "GitPromptProvider",
     "IDESelectionProvider",
     "InMemoryMessageService",

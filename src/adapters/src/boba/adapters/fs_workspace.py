@@ -1,4 +1,4 @@
-"""Файловая реализация FileStorage."""
+"""Файловая реализация :class:`WorkspaceShell` и :class:`WorkspaceRegistry`."""
 
 from __future__ import annotations
 
@@ -18,32 +18,32 @@ from threading import Lock
 from typing import Generic, TypeVar
 
 from boba.adapters.growbuffer import GrowBuffer
-from boba.domain.core.patterns import Specification, Validator
+from boba.domain.core.patterns import Specification
 from boba.domain.core.workspace import (
-    FileMeta,
+    EntryMeta,
     GrepMatch,
-    SystemWorkspaceManager,
-    SystemWorkspaceService,
-    TmpWorkspaceManager,
-    TmpWorkspaceService,
-    UserWorkspaceManager,
-    UserWorkspaceService,
+    HistoryWorkspaceRegistry,
+    HistoryWorkspaceShell,
+    ProjectWorkspaceRegistry,
+    ProjectWorkspaceShell,
+    ScratchWorkspaceRegistry,
+    ScratchWorkspaceShell,
     WorkspaceDecodingError,
     WorkspaceError,
     WorkspaceId,
-    WorkspaceManager,
     WorkspaceNotFoundError,
     WorkspacePermissionError,
-    WorkspaceService,
+    WorkspaceRegistry,
+    WorkspaceShell,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def _clamp_to_workspace(
+def _contain_within_root(
     path: str, cwd_parts: tuple[str, ...] = (),
 ) -> str:
-    """Нормализует ввод к пути внутри workspace.
+    """Нормализует ввод к пути внутри workspace (containment ``..``).
 
     Абсолютный путь (с ведущим ``/``) разрешается от корня workspace —
     ``cwd_parts`` игнорируется. Относительный — от ``cwd_parts``. ``.``
@@ -65,8 +65,8 @@ def _clamp_to_workspace(
 
 
 @dataclass(frozen=True)
-class _ResolvedPath:
-    """Результат нормализации пользовательского пути.
+class WorkspacePath:
+    """Три формы одного пути, обработанного :meth:`FsWorkspaceShell._resolve`.
 
     * ``source`` — исходный ввод как есть (для логов и диагностики).
     * ``relative`` — путь относительно корня workspace, безопасно
@@ -79,32 +79,9 @@ class _ResolvedPath:
     absolute: Path
 
 
-class FsPathValidator(Validator[str]):
-    """Приводит пользовательский путь к физическому внутри ``root``.
-
-    Workspace — корневая директория: абсолютный ``/foo`` и относительный
-    ``foo`` одинаково ведут в ``root/foo``. ``..`` не выводит выше
-    ``root`` — лишние компоненты отбрасываются.
-
-    ``validate`` возвращает абсолютный путь строкой (legacy API). Для
-    структурного представления (source/relative/absolute) сервис
-    использует ``FsWorkspaceService._resolve`` напрямую.
-    """
-
-    def __init__(self, root: Path) -> None:
-        self._root = root.resolve()
-
-    def validate(self, path: str) -> str:
-        safe = _clamp_to_workspace(path)
-        resolved = (self._root / safe).resolve()
-        if not resolved.is_relative_to(self._root):
-            raise PermissionError(f"Path escapes workspace via symlink: {path}")
-        return str(resolved)
-
-
 @contextmanager
-def _map_raw_io_errors(resolved: _ResolvedPath) -> Iterator[None]:
-    """Маппер — используется IO-обёртками без ссылки на сервис.
+def _translate_os_errors(resolved: WorkspacePath) -> Iterator[None]:
+    """Переводит низкоуровневые ``OSError`` в иерархию ``WorkspaceError``.
 
     В публичные ошибки кладётся ``resolved.relative`` (не раскрывает
     реальный путь), а в debug-лог уходят source + absolute для
@@ -136,62 +113,62 @@ def _map_raw_io_errors(resolved: _ResolvedPath) -> Iterator[None]:
         ) from e
 
 
-class _ErrorMappedTextIO(TextIOBase):
-    """Обёртка над ``TextIOBase``, транслирующая ``OSError`` → ``WorkspaceError``.
+class _WorkspaceTextStream(TextIOBase):
+    """Текстовый stream внутри workspace.
 
     Покрывает все I/O-вызовы (write, read, close, flush, seek, tell и т.п.):
-    любая низкоуровневая ошибка диска, прав и т.п. наружу выходит
-    единственно в форме ``WorkspaceError`` (и потомков). Привязана к
-    ``_ResolvedPath``, чтобы отдавать пользователю относительный путь,
-    а в логи — source + абсолютный.
+    любая низкоуровневая ошибка диска/прав наружу выходит единственно в
+    форме ``WorkspaceError`` (и потомков). Привязан к ``WorkspacePath``,
+    чтобы отдавать пользователю относительный путь, а в логи — source +
+    абсолютный.
     """
 
-    def __init__(self, inner: TextIOBase, resolved: _ResolvedPath) -> None:
+    def __init__(self, inner: TextIOBase, resolved: WorkspacePath) -> None:
         super().__init__()
         self._inner = inner
         self._resolved = resolved
 
     def write(self, s: str, /) -> int:
-        with _map_raw_io_errors(self._resolved):
+        with _translate_os_errors(self._resolved):
             return self._inner.write(s)
 
     def writelines(self, lines: Iterator[str], /) -> None:  # type: ignore[override]
-        with _map_raw_io_errors(self._resolved):
+        with _translate_os_errors(self._resolved):
             self._inner.writelines(lines)
 
     def read(self, size: int | None = -1, /) -> str:
-        with _map_raw_io_errors(self._resolved):
+        with _translate_os_errors(self._resolved):
             return self._inner.read(size if size is not None else -1)
 
     def readline(self, size: int | None = -1, /) -> str:  # type: ignore[override]
-        with _map_raw_io_errors(self._resolved):
+        with _translate_os_errors(self._resolved):
             return self._inner.readline(size if size is not None else -1)
 
     def flush(self) -> None:
-        with _map_raw_io_errors(self._resolved):
+        with _translate_os_errors(self._resolved):
             self._inner.flush()
 
     def close(self) -> None:
-        with _map_raw_io_errors(self._resolved):
+        with _translate_os_errors(self._resolved):
             self._inner.close()
 
     def seek(self, offset: int, whence: int = 0, /) -> int:
-        with _map_raw_io_errors(self._resolved):
+        with _translate_os_errors(self._resolved):
             return self._inner.seek(offset, whence)
 
     def tell(self) -> int:
-        with _map_raw_io_errors(self._resolved):
+        with _translate_os_errors(self._resolved):
             return self._inner.tell()
 
     def truncate(self, size: int | None = None, /) -> int:
-        with _map_raw_io_errors(self._resolved):
+        with _translate_os_errors(self._resolved):
             return self._inner.truncate(size)
 
-    def __iter__(self) -> _ErrorMappedTextIO:
+    def __iter__(self) -> _WorkspaceTextStream:
         return self
 
     def __next__(self) -> str:
-        with _map_raw_io_errors(self._resolved):
+        with _translate_os_errors(self._resolved):
             return next(self._inner)
 
     @property
@@ -208,48 +185,48 @@ class _ErrorMappedTextIO(TextIOBase):
         return self._inner.seekable()
 
 
-class _ErrorMappedBinaryIO(BufferedIOBase):
-    """Обёртка над ``BufferedIOBase`` — ``OSError`` → ``WorkspaceError``."""
+class _WorkspaceBinaryStream(BufferedIOBase):
+    """Бинарный stream внутри workspace — ``OSError`` → ``WorkspaceError``."""
 
-    def __init__(self, inner: BufferedIOBase, resolved: _ResolvedPath) -> None:
+    def __init__(self, inner: BufferedIOBase, resolved: WorkspacePath) -> None:
         super().__init__()
         self._inner = inner
         self._resolved = resolved
 
     def read(self, size: int | None = -1, /) -> bytes:
-        with _map_raw_io_errors(self._resolved):
+        with _translate_os_errors(self._resolved):
             return self._inner.read(size if size is not None else -1)
 
     def read1(self, size: int = -1, /) -> bytes:
-        with _map_raw_io_errors(self._resolved):
+        with _translate_os_errors(self._resolved):
             return self._inner.read1(size)
 
     def readinto(self, buf: memoryview, /) -> int | None:  # type: ignore[override]
-        with _map_raw_io_errors(self._resolved):
+        with _translate_os_errors(self._resolved):
             return self._inner.readinto(buf)
 
     def write(self, buf: bytes | bytearray | memoryview, /) -> int:  # type: ignore[override]
-        with _map_raw_io_errors(self._resolved):
+        with _translate_os_errors(self._resolved):
             return self._inner.write(buf)
 
     def flush(self) -> None:
-        with _map_raw_io_errors(self._resolved):
+        with _translate_os_errors(self._resolved):
             self._inner.flush()
 
     def close(self) -> None:
-        with _map_raw_io_errors(self._resolved):
+        with _translate_os_errors(self._resolved):
             self._inner.close()
 
     def seek(self, offset: int, whence: int = 0, /) -> int:
-        with _map_raw_io_errors(self._resolved):
+        with _translate_os_errors(self._resolved):
             return self._inner.seek(offset, whence)
 
     def tell(self) -> int:
-        with _map_raw_io_errors(self._resolved):
+        with _translate_os_errors(self._resolved):
             return self._inner.tell()
 
     def truncate(self, size: int | None = None, /) -> int:
-        with _map_raw_io_errors(self._resolved):
+        with _translate_os_errors(self._resolved):
             return self._inner.truncate(size)
 
     @property
@@ -266,10 +243,10 @@ class _ErrorMappedBinaryIO(BufferedIOBase):
         return self._inner.seekable()
 
 
-class FsWorkspaceService(WorkspaceService):
-    """Файловый workspace с фиксированным корнем ``root``.
+class FsWorkspaceShell(WorkspaceShell):
+    """Файловый shell с фиксированным корнем ``root``.
 
-    Все пути нормализуются через :meth:`_resolve` в ``_ResolvedPath``,
+    Все пути нормализуются через :meth:`_resolve` в :class:`WorkspacePath`,
     где хранится и исходный ввод (для логов), и путь относительно
     workspace (для ошибок пользователю), и физический путь на диске
     (для I/O и диагностики).
@@ -306,9 +283,9 @@ class FsWorkspaceService(WorkspaceService):
         self._cwd_parts = tuple(p for p in resolved.relative.split("/") if p)
 
     @contextmanager
-    def _map_errors(self, resolved: _ResolvedPath) -> Iterator[None]:
+    def _map_errors(self, resolved: WorkspacePath) -> Iterator[None]:
         """Мапит низкоуровневые исключения в иерархию WorkspaceError."""
-        with _map_raw_io_errors(resolved):
+        with _translate_os_errors(resolved):
             yield
 
     def mkdir(self, path: str) -> None:
@@ -322,7 +299,7 @@ class FsWorkspaceService(WorkspaceService):
             resolved.absolute.parent.mkdir(parents=True, exist_ok=True)
             resolved.absolute.touch(exist_ok=True)
 
-    def _ensure_created(self, resolved: _ResolvedPath) -> Path:
+    def _ensure_created(self, resolved: WorkspacePath) -> Path:
         resolved.absolute.parent.mkdir(parents=True, exist_ok=True)
         return resolved.absolute
 
@@ -393,7 +370,7 @@ class FsWorkspaceService(WorkspaceService):
     def read_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
         resolved = self._resolve(path)
         with self._map_errors(resolved):
-            return _ErrorMappedTextIO(
+            return _WorkspaceTextStream(
                 open(resolved.absolute, encoding=encoding),  # type: ignore[arg-type]
                 resolved,
             )
@@ -401,7 +378,7 @@ class FsWorkspaceService(WorkspaceService):
     def read_binary(self, path: str) -> BufferedIOBase:
         resolved = self._resolve(path)
         with self._map_errors(resolved):
-            return _ErrorMappedBinaryIO(
+            return _WorkspaceBinaryStream(
                 open(resolved.absolute, "rb"),  # type: ignore[arg-type]
                 resolved,
             )
@@ -409,7 +386,7 @@ class FsWorkspaceService(WorkspaceService):
     def write_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
         resolved = self._resolve(path)
         with self._map_errors(resolved):
-            return _ErrorMappedTextIO(
+            return _WorkspaceTextStream(
                 self._open_for_write(resolved.absolute, "w", encoding=encoding),
                 resolved,
             )
@@ -417,7 +394,7 @@ class FsWorkspaceService(WorkspaceService):
     def append_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
         resolved = self._resolve(path)
         with self._map_errors(resolved):
-            return _ErrorMappedTextIO(
+            return _WorkspaceTextStream(
                 self._open_for_write(resolved.absolute, "a", encoding=encoding),
                 resolved,
             )
@@ -466,7 +443,7 @@ class FsWorkspaceService(WorkspaceService):
     def _grep_iter(  # noqa: PLR0913
         self,
         compiled: re.Pattern[str],
-        start: _ResolvedPath,
+        start: WorkspacePath,
         *,
         recursive: bool,
         include: str | None,
@@ -692,7 +669,7 @@ class FsWorkspaceService(WorkspaceService):
     ) -> Iterator[str]:
         return self._iter_files(path, spec, recursive=True)
 
-    def meta(self, key: str) -> FileMeta:
+    def meta(self, key: str) -> EntryMeta:
         resolved = self._resolve(key)
         with self._map_errors(resolved):
             st = resolved.absolute.stat()
@@ -703,14 +680,14 @@ class FsWorkspaceService(WorkspaceService):
             else:
                 kind = "other"
 
-            return FileMeta(
+            return EntryMeta(
                 path=resolved.relative,
                 size=st.st_size,
                 modified=datetime.fromtimestamp(st.st_mtime, tz=None),
                 kind=kind,
             )
 
-    def _resolve(self, source: str) -> _ResolvedPath:
+    def _resolve(self, source: str) -> WorkspacePath:
         """Единая точка сборки физического пути.
 
         Абсолютный ``source`` (с ведущим ``/``) резолвится от корня
@@ -719,7 +696,7 @@ class FsWorkspaceService(WorkspaceService):
         symlink не увёл наружу. В debug-лог пишет source → absolute для
         диагностики.
         """
-        relative = _clamp_to_workspace(source, self._cwd_parts)
+        relative = _contain_within_root(source, self._cwd_parts)
         absolute = (self._root / relative).resolve()
         if not absolute.is_relative_to(self._root):
             logger.debug(
@@ -733,32 +710,32 @@ class FsWorkspaceService(WorkspaceService):
             "fs workspace resolved: id=%s source=%r relative=%r absolute=%s",
             self._workspace_id, source, relative, absolute,
         )
-        return _ResolvedPath(source=source, relative=relative, absolute=absolute)
+        return WorkspacePath(source=source, relative=relative, absolute=absolute)
 
 
-TWs = TypeVar("TWs", bound=FsWorkspaceService)
+TWs = TypeVar("TWs", bound=FsWorkspaceShell)
 
 
-class FsWorkspaceManager(WorkspaceManager, Generic[TWs]):
-    """Обобщённая файловая реализация менеджера.
+class FsWorkspaceRegistry(WorkspaceRegistry, Generic[TWs]):
+    """Обобщённая файловая реализация реестра.
 
-    Параметризуется классом сервиса ``service_cls`` и ``subdir`` — именем
-    подкаталога внутри workspace-id директории. Маркерные менеджеры
-    (:class:`FsUserWorkspaceManager` и т.п.) — тонкие подклассы,
+    Параметризуется классом shell'а ``shell_cls`` и ``subdir`` — именем
+    подкаталога внутри workspace-id директории. Маркерные реестры
+    (:class:`FsProjectWorkspaceRegistry` и т.п.) — тонкие подклассы,
     фиксирующие эти параметры; больше в них логики не должно быть.
     """
 
     def __init__(
         self,
         base_dir: Path,
-        service_cls: type[TWs],
+        shell_cls: type[TWs],
         subdir: str,
     ) -> None:
         self._base_dir = base_dir
-        self._service_cls = service_cls
+        self._shell_cls = shell_cls
         self._subdir = subdir
         self._lock = Lock()
-        self._storages: dict[WorkspaceId, TWs] = {}
+        self._shells: dict[WorkspaceId, TWs] = {}
         self._base_dir.mkdir(parents=True, exist_ok=True)
 
     def create(self) -> TWs:
@@ -768,7 +745,7 @@ class FsWorkspaceManager(WorkspaceManager, Generic[TWs]):
 
     def get(self, workspace_id: WorkspaceId) -> TWs:
         with self._lock:
-            cached = self._storages.get(workspace_id)
+            cached = self._shells.get(workspace_id)
             if cached is not None:
                 return cached
 
@@ -776,13 +753,13 @@ class FsWorkspaceManager(WorkspaceManager, Generic[TWs]):
             if not path.is_dir():
                 raise WorkspaceNotFoundError(str(path))
 
-            storage = self._service_cls(workspace_id, path)
-            self._storages[workspace_id] = storage
-            return storage
+            shell = self._shell_cls(workspace_id, path)
+            self._shells[workspace_id] = shell
+            return shell
 
     def get_or_create(self, workspace_id: WorkspaceId) -> TWs:
         with self._lock:
-            cached = self._storages.get(workspace_id)
+            cached = self._shells.get(workspace_id)
             if cached is not None:
                 return cached
             return self._instantiate(workspace_id)
@@ -792,47 +769,47 @@ class FsWorkspaceManager(WorkspaceManager, Generic[TWs]):
             path = self._workspace_dir(workspace_id)
             if path.is_dir():
                 shutil.rmtree(path)
-            self._storages.pop(workspace_id, None)
+            self._shells.pop(workspace_id, None)
 
     def _instantiate(self, workspace_id: WorkspaceId) -> TWs:
         path = self._workspace_dir(workspace_id)
         path.mkdir(parents=True, exist_ok=True)
-        storage = self._service_cls(workspace_id, path)
-        self._storages[workspace_id] = storage
-        return storage
+        shell = self._shell_cls(workspace_id, path)
+        self._shells[workspace_id] = shell
+        return shell
 
     def _workspace_dir(self, workspace_id: WorkspaceId) -> Path:
         return self._base_dir / str(workspace_id.name) / self._subdir
 
 
-class FsUserWorkspaceService(FsWorkspaceService, UserWorkspaceService):
-    """Файловый :class:`UserWorkspaceService`."""
+class FsProjectWorkspaceShell(FsWorkspaceShell, ProjectWorkspaceShell):
+    """Файловый :class:`ProjectWorkspaceShell`."""
 
 
-class FsSystemWorkspaceService(FsWorkspaceService, SystemWorkspaceService):
-    """Файловый :class:`SystemWorkspaceService`."""
+class FsHistoryWorkspaceShell(FsWorkspaceShell, HistoryWorkspaceShell):
+    """Файловый :class:`HistoryWorkspaceShell`."""
 
 
-class FsTmpWorkspaceService(FsWorkspaceService, TmpWorkspaceService):
-    """Файловый :class:`TmpWorkspaceService`."""
+class FsScratchWorkspaceShell(FsWorkspaceShell, ScratchWorkspaceShell):
+    """Файловый :class:`ScratchWorkspaceShell`."""
 
 
-class FsUserWorkspaceManager(
-    FsWorkspaceManager[FsUserWorkspaceService], UserWorkspaceManager
+class FsProjectWorkspaceRegistry(
+    FsWorkspaceRegistry[FsProjectWorkspaceShell], ProjectWorkspaceRegistry
 ):
     def __init__(self, base_dir: Path, subdir: str) -> None:
-        super().__init__(base_dir, FsUserWorkspaceService, subdir)
+        super().__init__(base_dir, FsProjectWorkspaceShell, subdir)
 
 
-class FsSystemWorkspaceManager(
-    FsWorkspaceManager[FsSystemWorkspaceService], SystemWorkspaceManager
+class FsHistoryWorkspaceRegistry(
+    FsWorkspaceRegistry[FsHistoryWorkspaceShell], HistoryWorkspaceRegistry
 ):
     def __init__(self, base_dir: Path, subdir: str) -> None:
-        super().__init__(base_dir, FsSystemWorkspaceService, subdir)
+        super().__init__(base_dir, FsHistoryWorkspaceShell, subdir)
 
 
-class FsTmpWorkspaceManager(
-    FsWorkspaceManager[FsTmpWorkspaceService], TmpWorkspaceManager
+class FsScratchWorkspaceRegistry(
+    FsWorkspaceRegistry[FsScratchWorkspaceShell], ScratchWorkspaceRegistry
 ):
     def __init__(self, base_dir: Path, subdir: str) -> None:
-        super().__init__(base_dir, FsTmpWorkspaceService, subdir)
+        super().__init__(base_dir, FsScratchWorkspaceShell, subdir)

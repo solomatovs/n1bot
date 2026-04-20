@@ -24,7 +24,7 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
-    UserWorkspaceService,
+    ProjectWorkspaceShell,
     WorkspaceError,
     WorkspaceNotFoundError,
 )
@@ -47,7 +47,7 @@ class RmTool(Tool[RmArgs]):
     _ID = ToolId("rm")
     _SOURCE = ToolSourceId("builtin.files")
 
-    def __init__(self, workspace: UserWorkspaceService) -> None:
+    def __init__(self, workspace: ProjectWorkspaceShell) -> None:
         self._workspace = workspace
 
     def tool_id(self) -> ToolId:

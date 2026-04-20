@@ -30,7 +30,7 @@ from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.meat import Agent
 from boba.domain.agent.models import AgentContext, AgentRequest, RequestId
 from boba.domain.core.patterns import StreamSink, StreamSinkPipeline, StreamSourceLoop
-from boba.domain.core.workspace import UserWorkspaceManager, WorkspaceId
+from boba.domain.core.workspace import ProjectWorkspaceRegistry, WorkspaceId
 from boba.infra.config import ConfigLoader
 from boba.infra.container import create_container, request_scope
 from boba.infra.logging import configure_logging, log_context
@@ -74,16 +74,16 @@ class AgentHarness:
         )
 
     def ask(self, workspace_id: WorkspaceId, query: str) -> list[AgentEvent]:
-        manager = self._container.get(UserWorkspaceManager)
-        storage = manager.get_or_create(workspace_id)
+        registry = self._container.get(ProjectWorkspaceRegistry)
+        shell = registry.get_or_create(workspace_id)
         request_id = RequestId.new()
 
         with (
             log_context(
                 request_id=request_id.to_wire(),
-                workspace_id=storage.workspace_id.to_wire(),
+                workspace_id=shell.workspace_id.to_wire(),
             ),
-            request_scope(self._container, storage.workspace_id) as req,
+            request_scope(self._container, shell.workspace_id) as req,
         ):
             source = req.get(StreamSourceLoop[AgentContext, AgentEvent])
             real_sink = req.get(StreamSink[AgentContext, AgentEvent])
@@ -94,7 +94,7 @@ class AgentHarness:
             request = AgentRequest(
                 query=query,
                 model=self._app_config.llm.model,
-                workspace_id=storage.workspace_id,
+                workspace_id=shell.workspace_id,
                 request_id=request_id,
             )
             agent.run(self._agent_config, request)

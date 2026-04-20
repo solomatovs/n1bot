@@ -9,9 +9,9 @@ from dishka import Provider, Scope, from_context, provide
 from boba.adapters.aggregating_llm_request_factory import AggregatingLLMRequestFactory
 from boba.adapters.console_sink import ConsoleSink
 from boba.adapters.fs_workspace import (
-    FsSystemWorkspaceManager,
-    FsTmpWorkspaceManager,
-    FsUserWorkspaceManager,
+    FsHistoryWorkspaceRegistry,
+    FsProjectWorkspaceRegistry,
+    FsScratchWorkspaceRegistry,
 )
 from boba.adapters.jsonl_messages import JsonLinesMessageService
 from boba.adapters.openai_completion import (
@@ -86,12 +86,12 @@ from boba.domain.core.tools import (
     ToolsService,
 )
 from boba.domain.core.workspace import (
-    SystemWorkspaceManager,
-    SystemWorkspaceService,
-    TmpWorkspaceManager,
-    TmpWorkspaceService,
-    UserWorkspaceManager,
-    UserWorkspaceService,
+    HistoryWorkspaceRegistry,
+    HistoryWorkspaceShell,
+    ProjectWorkspaceRegistry,
+    ProjectWorkspaceShell,
+    ScratchWorkspaceRegistry,
+    ScratchWorkspaceShell,
     WorkspaceId,
 )
 
@@ -117,22 +117,28 @@ class AppProvider(Provider):
         return self._app_config
 
     @provide
-    def user_workspace_manager(self, config: AppConfig) -> UserWorkspaceManager:
-        return FsUserWorkspaceManager(
+    def project_workspace_registry(
+        self, config: AppConfig
+    ) -> ProjectWorkspaceRegistry:
+        return FsProjectWorkspaceRegistry(
             config.workspaces.root(),
             config.workspaces.user_subdir,
         )
 
     @provide
-    def system_workspace_manager(self, config: AppConfig) -> SystemWorkspaceManager:
-        return FsSystemWorkspaceManager(
+    def history_workspace_registry(
+        self, config: AppConfig
+    ) -> HistoryWorkspaceRegistry:
+        return FsHistoryWorkspaceRegistry(
             config.workspaces.root(),
             config.workspaces.system_subdir,
         )
 
     @provide
-    def tmp_workspace_manager(self, config: AppConfig) -> TmpWorkspaceManager:
-        return FsTmpWorkspaceManager(
+    def scratch_workspace_registry(
+        self, config: AppConfig
+    ) -> ScratchWorkspaceRegistry:
+        return FsScratchWorkspaceRegistry(
             config.workspaces.root(),
             config.workspaces.tmp_subdir,
         )
@@ -195,75 +201,75 @@ class RequestProvider(Provider):
     workspace_id = from_context(provides=WorkspaceId, scope=Scope.REQUEST)
 
     @provide
-    def user_workspace(
+    def project_workspace(
         self,
         workspace_id: WorkspaceId,
-        manager: UserWorkspaceManager,
-    ) -> UserWorkspaceService:
-        svc = manager.get_or_create(workspace_id)
-        assert isinstance(svc, UserWorkspaceService)
-        return svc
+        registry: ProjectWorkspaceRegistry,
+    ) -> ProjectWorkspaceShell:
+        shell = registry.get_or_create(workspace_id)
+        assert isinstance(shell, ProjectWorkspaceShell)
+        return shell
 
     @provide
-    def system_workspace(
+    def history_workspace(
         self,
         workspace_id: WorkspaceId,
-        manager: SystemWorkspaceManager,
-    ) -> SystemWorkspaceService:
-        svc = manager.get_or_create(workspace_id)
-        assert isinstance(svc, SystemWorkspaceService)
-        return svc
+        registry: HistoryWorkspaceRegistry,
+    ) -> HistoryWorkspaceShell:
+        shell = registry.get_or_create(workspace_id)
+        assert isinstance(shell, HistoryWorkspaceShell)
+        return shell
 
     @provide
-    def tmp_workspace(
+    def scratch_workspace(
         self,
         workspace_id: WorkspaceId,
-        manager: TmpWorkspaceManager,
-    ) -> Iterator[TmpWorkspaceService]:
-        """Tmp workspace с чисткой на выходе из scope.
+        registry: ScratchWorkspaceRegistry,
+    ) -> Iterator[ScratchWorkspaceShell]:
+        """Scratch workspace с чисткой на выходе из scope.
 
         Generator-паттерн dishka: всё, что между ``yield`` и ``finally``,
         выполнится при закрытии request scope — даже если внутри упадёт
-        исключение. Ошибка cleanup'а пробрасывается наружу: потеря tmp-
-        директории — сигнал, который пользователь должен увидеть.
+        исключение. Ошибка cleanup'а пробрасывается наружу: потеря
+        scratch-директории — сигнал, который пользователь должен увидеть.
         """
-        svc = manager.get_or_create(workspace_id)
-        assert isinstance(svc, TmpWorkspaceService)
+        shell = registry.get_or_create(workspace_id)
+        assert isinstance(shell, ScratchWorkspaceShell)
         try:
-            yield svc
+            yield shell
         finally:
-            manager.delete(workspace_id)
+            registry.delete(workspace_id)
 
     @provide
     def tool_factory(
         self,
-        user_workspace: UserWorkspaceService,
+        project_workspace: ProjectWorkspaceShell,
     ) -> ToolFactory:
         """Агрегатор источников инструментов, собираемый на запрос.
 
-        Per-request, потому что file-tools получают per-request сервис
+        Per-request, потому что file-tools получают per-request shell
         workspace'а. Плагины/MCP-источники подключать сюда же рядом с
         builtin-пачкой.
 
-        Builtin file-tools ходят только в :class:`UserWorkspaceService` —
-        системный/tmp пользователю писать нельзя.
+        Builtin file-tools ходят только в :class:`ProjectWorkspaceShell` —
+        history/scratch пользователю писать нельзя.
         """
         tools = [
-            PwdTool(user_workspace),
-            CdTool(user_workspace),
-            MkdirTool(user_workspace),
-            TouchTool(user_workspace),
-            CatTool(user_workspace),
-            WriteTool(user_workspace),
-            AppendTool(user_workspace),
-            EditTool(user_workspace),
-            RmTool(user_workspace),
-            MvTool(user_workspace),
-            CpTool(user_workspace),
-            LsTool(user_workspace),
-            TreeTool(user_workspace),
-            StatTool(user_workspace),
-            GrepTool(user_workspace),
+            PwdTool(project_workspace),
+            CdTool(project_workspace),
+            MkdirTool(project_workspace),
+            TouchTool(project_workspace),
+            CatTool(project_workspace),
+            WriteTool(project_workspace),
+            AppendTool(project_workspace),
+            EditTool(project_workspace),
+            RmTool(project_workspace),
+            MvTool(project_workspace),
+            CpTool(project_workspace),
+            LsTool(project_workspace),
+            TreeTool(project_workspace),
+            StatTool(project_workspace),
+            GrepTool(project_workspace),
         ]
 
         factory = ToolFactory()
@@ -290,11 +296,11 @@ class RequestProvider(Provider):
     @provide
     def message_service(
         self,
-        workspace: SystemWorkspaceService,
+        workspace: HistoryWorkspaceShell,
     ) -> MessageService:
         """Persistent-реализация сервиса сообщений.
 
-        При создании инстанса читает ``messages.jsonl`` из system-workspace
+        При создании инстанса читает ``messages.jsonl`` из history-workspace
         и наполняет in-memory список — восстановление диалога между
         запусками живёт здесь, а не в отдельном replay-middleware. На
         ``add`` одновременно дописывает строку JSON в файл и пушит в список.
@@ -309,7 +315,7 @@ class RequestProvider(Provider):
         return AggregatingLLMRequestFactory(message_service)
 
     @provide
-    def raw_llm_observer(self, workspace: SystemWorkspaceService) -> RawLLMObserver:
+    def raw_llm_observer(self, workspace: HistoryWorkspaceShell) -> RawLLMObserver:
         """Комбинированный наблюдатель, пишет два файла внутри workspace и
         логирует сводку в консоль:
 

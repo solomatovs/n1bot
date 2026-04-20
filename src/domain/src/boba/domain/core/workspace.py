@@ -15,7 +15,7 @@ class WorkspaceId(UuId):
 
 @dataclass(frozen=True)
 class GrepMatch:
-    """Одно совпадение при поиске через :meth:`WorkspaceService.grep`.
+    """Одно совпадение при поиске через :meth:`WorkspaceShell.grep`.
 
     ``path`` — относительный путь файла от корня workspace. ``line`` — 1-based
     номер строки с совпадением, ``content`` — сама строка (без trailing
@@ -30,8 +30,8 @@ class GrepMatch:
 
 
 @dataclass(frozen=True)
-class FileMeta:
-    """Метаданные ресурса workspace.
+class EntryMeta:
+    """Метаданные элемента внутри workspace (файл или директория).
 
     ``path`` — относительный путь от корня workspace (безопасно показывать
     пользователю). ``kind`` — ``"file"`` / ``"directory"`` / ``"other"``.
@@ -44,7 +44,7 @@ class FileMeta:
 
 
 class WorkspaceError(Exception):
-    """Базовая ошибка ``WorkspaceService``.
+    """Базовая ошибка ``WorkspaceShell``.
 
     Абстрактна, не привязана к конкретной реализации хранилища. Хранит
     контекст ресурса (``path``) в виде, безопасном для показа пользователю —
@@ -91,20 +91,22 @@ class WorkspaceDecodingError(WorkspaceError):
         self.position = cause.start
 
 
-class WorkspaceService(ABC):
-    """Единственный сервис работы с файлами workspace'а.
+class WorkspaceShell(ABC):
+    """Shell-сессия над изолированным workspace'ом.
 
-    Все пути, переданные извне, нормализуются относительно корня
-    workspace: абсолютный ``/foo`` и относительный ``foo`` одинаково
-    адресуют ``root/foo``; ``..`` не выводит выше корня. Ошибки и
-    логирование дают пользователю путь относительно workspace, а не
-    реальный путь на диске.
+    Hold'ит состояние сессии (``cwd``) и предоставляет shell-подобный API
+    над ограниченной директорией: ``cd``, ``ls``, ``mkdir``, ``touch``,
+    ``cp``, ``mv``, ``rm``, ``grep``, чтение/запись файлов, find-and-replace
+    правки. Все пути нормализуются относительно корня workspace: абсолютный
+    ``/foo`` и относительный ``foo`` одинаково адресуют ``root/foo``; ``..``
+    не выводит выше корня. Ошибки и логирование дают пользователю путь
+    относительно workspace, а не реальный путь на диске.
 
-    Один сервис владеет одной директорией. Все остальные компоненты
+    Один shell владеет одной директорией. Все остальные компоненты
     должны делить один экземпляр — в будущем сюда попадёт локирование/
     конкурентный доступ, которое требует единого владельца ресурса.
     Дискриминация «какой workspace» делается в DI через маркерные
-    подклассы (:class:`UserWorkspaceService` и т.п.), а не runtime-
+    подклассы (:class:`ProjectWorkspaceShell` и т.п.), а не runtime-
     полем.
     """
 
@@ -118,7 +120,7 @@ class WorkspaceService(ABC):
         """Текущая директория относительно корня workspace.
 
         Формат: ``/`` для корня, ``/docs/api`` для вложенной. Все методы
-        сервиса разрешают относительные пути от ``cwd``; абсолютные (с
+        shell'а разрешают относительные пути от ``cwd``; абсолютные (с
         ведущим ``/``) — от корня workspace.
         """
         ...
@@ -233,7 +235,7 @@ class WorkspaceService(ABC):
         ...
 
     @abstractmethod
-    def meta(self, path: str) -> FileMeta:
+    def meta(self, path: str) -> EntryMeta:
         """Метаданные ресурса.
 
         Raises:
@@ -380,23 +382,23 @@ class WorkspaceService(ABC):
         ...
 
 
-class WorkspaceManager(ABC):
-    """Управляет жизненным циклом workspace'ов одного namespace.
+class WorkspaceRegistry(ABC):
+    """Реестр workspace'ов одного namespace.
 
-    Менеджер фиксирует ровно один namespace: реализация знает свою
-    директорию, а сервис-ключ в DI — маркерный подкласс (например,
-    :class:`UserWorkspaceManager`). Разделять namespace'ы через параметр
+    Реестр фиксирует ровно один namespace: реализация знает свою
+    директорию, а ключ в DI — маркерный подкласс (например,
+    :class:`ProjectWorkspaceRegistry`). Разделять namespace'ы через параметр
     метода намеренно не стали — иначе пришлось бы тянуть дискриминатор
     в сигнатуры tools и сервисов.
     """
 
     @abstractmethod
-    def create(self) -> WorkspaceService:
+    def create(self) -> WorkspaceShell:
         """Создать новый workspace с автосгенерированным ``WorkspaceId``."""
         ...
 
     @abstractmethod
-    def get(self, workspace_id: WorkspaceId) -> WorkspaceService:
+    def get(self, workspace_id: WorkspaceId) -> WorkspaceShell:
         """Получить существующий workspace.
 
         Raises:
@@ -405,11 +407,11 @@ class WorkspaceManager(ABC):
         ...
 
     @abstractmethod
-    def get_or_create(self, workspace_id: WorkspaceId) -> WorkspaceService:
+    def get_or_create(self, workspace_id: WorkspaceId) -> WorkspaceShell:
         """Вернуть существующий workspace или создать новый по заданному id.
 
         Используется для разделения одного :class:`WorkspaceId` между
-        несколькими менеджерами разных namespace'ов — каждый создаёт
+        несколькими реестрами разных namespace'ов — каждый создаёт
         свой namespace под тем же id при первом обращении.
         """
         ...
@@ -420,25 +422,25 @@ class WorkspaceManager(ABC):
         ...
 
 
-class UserWorkspaceService(WorkspaceService):
-    """DI-маркер: пользовательский workspace, доступный tools."""
+class ProjectWorkspaceShell(WorkspaceShell):
+    """DI-маркер: workspace проекта — код/документы пользователя, доступен tools."""
 
 
-class SystemWorkspaceService(WorkspaceService):
+class HistoryWorkspaceShell(WorkspaceShell):
     """DI-маркер: системный workspace — history, debug-артефакты."""
 
 
-class TmpWorkspaceService(WorkspaceService):
-    """DI-маркер: временный workspace, чистится на выходе из request scope."""
+class ScratchWorkspaceShell(WorkspaceShell):
+    """DI-маркер: эфемерный workspace, чистится на выходе из request scope."""
 
 
-class UserWorkspaceManager(WorkspaceManager):
-    """DI-маркер менеджера :class:`UserWorkspaceService`."""
+class ProjectWorkspaceRegistry(WorkspaceRegistry):
+    """DI-маркер реестра :class:`ProjectWorkspaceShell`."""
 
 
-class SystemWorkspaceManager(WorkspaceManager):
-    """DI-маркер менеджера :class:`SystemWorkspaceService`."""
+class HistoryWorkspaceRegistry(WorkspaceRegistry):
+    """DI-маркер реестра :class:`HistoryWorkspaceShell`."""
 
 
-class TmpWorkspaceManager(WorkspaceManager):
-    """DI-маркер менеджера :class:`TmpWorkspaceService`."""
+class ScratchWorkspaceRegistry(WorkspaceRegistry):
+    """DI-маркер реестра :class:`ScratchWorkspaceShell`."""
