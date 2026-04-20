@@ -34,11 +34,12 @@ from boba.adapters.raw_llm_observer import (
 )
 from boba.adapters.tool_providers import StaticToolSource
 from boba.adapters.tools import (
+    AppendTool,
     CatTool,
     CdTool,
     CpTool,
-    EditFileTool,
     EditTool,
+    GrepTool,
     LsTool,
     MkdirTool,
     MvTool,
@@ -47,6 +48,7 @@ from boba.adapters.tools import (
     StatTool,
     TouchTool,
     TreeTool,
+    WriteTool,
 )
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.llm_request_factory import LLMRequestFactory
@@ -252,7 +254,8 @@ class RequestProvider(Provider):
             MkdirTool(user_workspace),
             TouchTool(user_workspace),
             CatTool(user_workspace),
-            EditFileTool(user_workspace),
+            WriteTool(user_workspace),
+            AppendTool(user_workspace),
             EditTool(user_workspace),
             RmTool(user_workspace),
             MvTool(user_workspace),
@@ -260,6 +263,7 @@ class RequestProvider(Provider):
             LsTool(user_workspace),
             TreeTool(user_workspace),
             StatTool(user_workspace),
+            GrepTool(user_workspace),
         ]
 
         factory = ToolFactory()
