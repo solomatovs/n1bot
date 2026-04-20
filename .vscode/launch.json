@@ -17,6 +17,21 @@
             }
         },
         {
+            "name": "Test Context Overflow",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tests/test_context_overflow.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/.vscode",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "args": [],
+            "env": {
+                "BOBA_CONFIG": "./config/config.toml",
+                "LITELLM_API_KEY_FILE": "./secrets/litellm_api_key",
+                "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src:${workspaceFolder}/src/api/src:${workspaceFolder}/src/chainlit/src"
+            }
+        },
+        {
             "name": "Pytest: current file",
             "type": "debugpy",
             "request": "launch",
