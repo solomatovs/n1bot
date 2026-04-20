@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -62,6 +61,8 @@ from boba.domain.core.patterns import (
     Converter,
     ExceptionSpecification,
     IsInstance,
+    RuleBasedConverter,
+    Specification,
     StreamConverter,
     StreamSource,
     StreamTransformer,
@@ -315,34 +316,25 @@ class IsStatusCode(ExceptionSpecification):
         )
 
 
-@dataclass(frozen=True)
-class ErrorRule:
-    """Правило классификации: предикат + строитель доменной ошибки."""
-
-    match: ExceptionSpecification
-    build: Callable[[Exception], LLMError]
-
-
-class OpenAIErrorConverter(Converter[Exception, LLMError]):
+class OpenAIErrorConverter(RuleBasedConverter[Exception, LLMError]):
     """Классифицирует сырые ``openai``/``httpx`` исключения в доменные
-    :class:`LLMError` по списку правил.
+    :class:`LLMError` через :class:`RuleBasedConverter`.
 
-    Правила применяются в порядке регистрации; первое совпадение — победитель.
-    Если ни одно не сработало — fallback в :class:`LLMProviderInternalError`.
-    Без аргумента используется стандартный набор правил
-    (см. :meth:`default_rules`).
+    Правила применяются в порядке регистрации; первое совпадение —
+    победитель. Если ни одно не сработало — fallback в
+    :class:`LLMProviderInternalError`. Без аргумента используется
+    стандартный набор правил (см. :meth:`default_rules`).
     """
 
     _HTTP_TOO_MANY_REQUESTS = 429
 
-    def __init__(self, rules: list[ErrorRule] | None = None) -> None:
-        self._rules = rules if rules is not None else self.default_rules()
-
-    def convert(self, value: Exception) -> LLMError:
-        for rule in self._rules:
-            if rule.match.check(value):
-                return rule.build(value)
-        return LLMProviderInternalError(f"{type(value).__name__}: {value}")
+    def __init__(
+        self,
+    ) -> None:
+        super().__init__(
+            rules=self.default_rules(),
+            fallback=lambda e: LLMProviderInternalError(f"{type(e).__name__}: {e}"),
+        )
 
     @staticmethod
     def status_code(exc: Exception) -> int | None:
@@ -350,7 +342,9 @@ class OpenAIErrorConverter(Converter[Exception, LLMError]):
         return exc.status_code if isinstance(exc, openai.APIStatusError) else None
 
     @classmethod
-    def default_rules(cls) -> list[ErrorRule]:
+    def default_rules(
+        cls,
+    ) -> list[tuple[Specification[Exception], Callable[[Exception], LLMError]]]:
         """Стандартный набор правил для OpenAI-совместимых провайдеров.
 
         Порядок важен: подклассы должны идти раньше родителей
@@ -359,47 +353,47 @@ class OpenAIErrorConverter(Converter[Exception, LLMError]):
         """
         sc = cls.status_code
         return [
-            ErrorRule(
+            (
                 IsInstance(openai.APITimeoutError),
                 lambda e: LLMTimeoutError(str(e)),
             ),
-            ErrorRule(
+            (
                 IsInstance(openai.APIConnectionError),
                 lambda e: LLMConnectionError(str(e)),
             ),
-            ErrorRule(
+            (
                 IsInstance(openai.RateLimitError),
                 lambda e: LLMRateLimitError(str(e), status_code=sc(e)),
             ),
-            ErrorRule(
+            (
                 IsInstance(openai.AuthenticationError, openai.PermissionDeniedError),
                 lambda e: LLMAuthError(str(e), status_code=sc(e)),
             ),
-            ErrorRule(
+            (
                 IsInstance(openai.BadRequestError).and_(IsContextLengthError()),
                 lambda e: LLMContextLengthError(str(e), status_code=sc(e)),
             ),
-            ErrorRule(
+            (
                 IsInstance(openai.BadRequestError, openai.NotFoundError),
                 lambda e: LLMInvalidRequestError(str(e), status_code=sc(e)),
             ),
-            ErrorRule(
+            (
                 IsInstance(openai.InternalServerError).or_(IsServerError()),
                 lambda e: LLMProviderInternalError(str(e), status_code=sc(e)),
             ),
-            ErrorRule(
+            (
                 IsStatusCode(cls._HTTP_TOO_MANY_REQUESTS),
                 lambda e: LLMRateLimitError(str(e), status_code=sc(e)),
             ),
-            ErrorRule(
+            (
                 IsInstance(openai.APIStatusError),
                 lambda e: LLMInvalidRequestError(str(e), status_code=sc(e)),
             ),
-            ErrorRule(
+            (
                 IsInstance(httpx.TimeoutException),
                 lambda e: LLMTimeoutError(str(e)),
             ),
-            ErrorRule(
+            (
                 IsInstance(httpx.HTTPError),
                 lambda e: LLMConnectionError(str(e)),
             ),

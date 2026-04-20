@@ -1384,3 +1384,86 @@ class ExecutorDispatcher(Executor[TCtx, TIn, TOut]):
         if handler is None:
             raise ExecutorRouteError(f"no route for key: {key!r}")
         return handler.execute(ctx, req)
+
+
+class RuleBasedConverter(Converter[TIn, TOut], Generic[TIn, TOut]):
+    """
+    :class:`Converter` по списку правил ``(Specification, builder)``.
+    Первое правило, у которого предикат сработал, строит результат
+    через ``builder``; если ни одно не подошло — отрабатывает ``fallback``.
+
+    ``builder`` — любой ``Callable[[TIn], TOut]``: lambda, метод
+    существующего :class:`Converter` (``my_conv.convert``), свободная
+    функция. Так же, как :class:`ExecutorDispatcher` принимает
+    ``key_fn: Callable``, а не требует оборачивать в класс.
+
+    Схема::
+
+                         value
+                           │
+                           ▼
+                    ┌─────────────┐  да    ┌──────────────┐
+                    │ spec₁.check │ ─────▶ │ builder₁     │──▶ out
+                    └──────┬──────┘        └──────────────┘
+                           │ нет
+                           ▼
+                    ┌─────────────┐  да    ┌──────────────┐
+                    │ spec₂.check │ ─────▶ │ builder₂     │──▶ out
+                    └──────┬──────┘        └──────────────┘
+                           │ нет
+                           ▼
+                          ...
+                           │
+                           ▼
+                    ┌─────────────┐
+                    │  fallback   │──▶ out
+                    └─────────────┘
+
+    Отличия от соседей:
+
+    - :class:`ExecutorDispatcher` маршрутизирует по **вычисленному ключу**
+      (``key_fn`` + словарь маршрутов) — годится, когда принадлежность
+      однозначна и извлекается как значение. Здесь же каждое правило —
+      произвольный предикат, допускающий составные условия
+      (``IsInstance(BadRequestError).and_(IsContextLengthError())``) и
+      пересечения с явным приоритетом по порядку.
+    - :class:`ExecutorPipeline` — fallback-цепочка **по исключениям**:
+      пробует executors по очереди и переключается на следующего только
+      если текущий упал с ошибкой, удовлетворяющей ``fallback_on``. Здесь
+      ни один builder не пытается «выполниться и упасть» — выбор делается
+      до построения, по предикатам.
+    - :class:`ExecutorConditional` — бинарная if/else-развилка с одним
+      предикатом. Когда развилок ≥ 3 и/или порядок важен, удобнее один
+      ``RuleBasedConverter`` со списком правил, чем вложенные
+      ``ExecutorConditional``.
+
+    Контракт:
+
+    - порядок ``rules`` = приоритет: более специфичные правила должны
+      идти раньше более общих (подклассы раньше родителей и т.п.);
+    - правила не обязаны покрывать всё пространство входов — для того и
+      ``fallback``; если fallback бросает — это явная ошибка.
+
+    Типовые применения:
+
+    - классификация «сырых» исключений адаптера в доменные
+      (``openai.BadRequestError`` + ``context_length_exceeded`` →
+      ``LLMContextLengthError``);
+    - нормализация `finish_reason` разных провайдеров в единый enum;
+    - валидация входных параметров tool'ов (правило → сообщение об
+      ошибке).
+    """
+
+    def __init__(
+        self,
+        rules: Sequence[tuple[Specification[TIn], Callable[[TIn], TOut]]],
+        fallback: Callable[[TIn], TOut],
+    ) -> None:
+        self._rules = list(rules)
+        self._fallback = fallback
+
+    def convert(self, value: TIn) -> TOut:
+        for spec, builder in self._rules:
+            if spec.check(value):
+                return builder(value)
+        return self._fallback(value)
