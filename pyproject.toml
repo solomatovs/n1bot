@@ -29,6 +29,12 @@ pythonpath = [
     "src/adapters/src",
     "src/infra/src",
 ]
+# По умолчанию прогон — только быстрые unit-тесты. Интеграционные тесты
+# (реальный LLM, многомегабайтные payload'ы) идут вручную: `pytest -m integration`.
+addopts = ["-m", "not integration", "--strict-markers"]
+markers = [
+    "integration: требует реального LLM-прокси и большой сети/памяти; manual-only",
+]
 
 [tool.pyright]
 include = ["src", "tests"]
