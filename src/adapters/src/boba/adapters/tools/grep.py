@@ -28,7 +28,7 @@ from boba.domain.core.tools import (
 )
 from boba.domain.core.workspace import (
     GrepMatch,
-    UserWorkspaceService,
+    ProjectWorkspaceShell,
     WorkspaceError,
     WorkspaceNotFoundError,
 )
@@ -66,7 +66,7 @@ class GrepTool(Tool[GrepArgs]):
     _ID = ToolId("grep")
     _SOURCE = ToolSourceId("builtin.files")
 
-    def __init__(self, workspace: UserWorkspaceService) -> None:
+    def __init__(self, workspace: ProjectWorkspaceShell) -> None:
         self._workspace = workspace
 
     def tool_id(self) -> ToolId:

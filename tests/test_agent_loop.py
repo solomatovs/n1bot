@@ -6,7 +6,7 @@ import sys
 
 from boba.domain.agent.meat import Agent
 from boba.domain.agent.models import AgentRequest, RequestId
-from boba.domain.core.workspace import UserWorkspaceManager, WorkspaceId
+from boba.domain.core.workspace import ProjectWorkspaceRegistry, WorkspaceId
 from boba.infra.config import ConfigLoader
 from boba.infra.container import create_container, request_scope
 from boba.infra.logging import configure_logging
@@ -22,7 +22,7 @@ def test_agent_loop_hello(query: str) -> None:
     llm_defaults = loader.load_llm_defaults()
     container = create_container(app_config, agent_config, llm_defaults)
 
-    manager = container.get(UserWorkspaceManager)
+    manager = container.get(ProjectWorkspaceRegistry)
     storage = manager.get_or_create(FIXED_WORKSPACE_ID)
 
     with request_scope(container, storage.workspace_id) as req:

@@ -23,7 +23,7 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
-    UserWorkspaceService,
+    ProjectWorkspaceShell,
     WorkspaceError,
 )
 
@@ -50,7 +50,7 @@ class AppendTool(Tool[AppendArgs]):
     _ID = ToolId("append")
     _SOURCE = ToolSourceId("builtin.files")
 
-    def __init__(self, workspace: UserWorkspaceService) -> None:
+    def __init__(self, workspace: ProjectWorkspaceShell) -> None:
         self._workspace = workspace
 
     def tool_id(self) -> ToolId:

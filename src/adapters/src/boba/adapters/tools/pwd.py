@@ -15,7 +15,7 @@ from boba.domain.core.tools import (
     ToolResult,
     ToolSourceId,
 )
-from boba.domain.core.workspace import UserWorkspaceService
+from boba.domain.core.workspace import ProjectWorkspaceShell
 
 
 @dataclass(frozen=True)
@@ -34,7 +34,7 @@ class PwdTool(Tool[PwdArgs]):
     _ID = ToolId("pwd")
     _SOURCE = ToolSourceId("builtin.files")
 
-    def __init__(self, workspace: UserWorkspaceService) -> None:
+    def __init__(self, workspace: ProjectWorkspaceShell) -> None:
         self._workspace = workspace
 
     def tool_id(self) -> ToolId:

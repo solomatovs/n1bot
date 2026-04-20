@@ -24,7 +24,7 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
-    UserWorkspaceService,
+    ProjectWorkspaceShell,
     WorkspaceError,
     WorkspaceNotFoundError,
 )
@@ -56,7 +56,7 @@ class EditTool(Tool[EditArgs]):
     _ID = ToolId("edit")
     _SOURCE = ToolSourceId("builtin.files")
 
-    def __init__(self, workspace: UserWorkspaceService) -> None:
+    def __init__(self, workspace: ProjectWorkspaceShell) -> None:
         self._workspace = workspace
 
     def tool_id(self) -> ToolId:
@@ -71,7 +71,7 @@ class EditTool(Tool[EditArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                "Поточечно изменить файл: заменить подстроку old_string на "
+                "Точечно изменить файл: заменить подстроку old_string на "
                 "new_string. По умолчанию old_string должна встречаться в "
                 "файле ровно один раз — иначе возвращается ошибка и нужно "
                 "расширить контекст для уникальности. С replace_all=true "
