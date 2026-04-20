@@ -10,7 +10,7 @@ messages, OpenAI-совместимый клиент LLM, провайдеры �
 Импорты короткой формой::
 
     from boba.adapters import OpenAIMiddleware, StupidRetryLLMMiddleware
-    from boba.adapters import JsonLinesHistoryService, ConsoleSink, HistorySink
+    from boba.adapters import JsonLinesHistoryService, ConsoleSink
     from boba.adapters import FsWorkspaceManager, FsWorkspaceService
 """
 
@@ -27,7 +27,6 @@ from boba.adapters.fs_workspace import (
     FsWorkspaceManager,
     FsWorkspaceService,
 )
-from boba.adapters.history_sink import HistorySink
 from boba.adapters.in_memory_messages import InMemoryMessageService
 from boba.adapters.jsonl_history import (
     HistoryEntryDecoder,
@@ -85,7 +84,6 @@ __all__ = [
     "GitPromptProvider",
     "HistoryEntryDecoder",
     "HistoryEntryEncoder",
-    "HistorySink",
     "IDESelectionProvider",
     "InMemoryMessageService",
     "JsonLinesHistoryService",

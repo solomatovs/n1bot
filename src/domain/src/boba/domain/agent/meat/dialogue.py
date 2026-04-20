@@ -1,30 +1,49 @@
-"""Middleware синхронизации состояния диалога с :class:`MessageService`.
+"""Middleware синхронизации состояния диалога с :class:`MessageService` и
+журналом истории.
 
-Два слоя с одной ответственностью — держать в актуальном состоянии
-историю сообщений для LLM:
+Три слоя с одной ответственностью — поддерживать источники правды о
+диалоге в согласованном состоянии:
 
 - :class:`AssistantMessagePersistenceMiddleware` — live-режим: агрегирует
-  стриминговые события текущей итерации в assistant-сообщение и коммитит.
+  стриминговые события текущей итерации в assistant-сообщение и коммитит
+  в :class:`MessageService`.
 - :class:`HistoryReplayMiddleware` — холодный старт: реконструирует диалог
   из :class:`HistoryService` и заливает в :class:`MessageService` перед
   первой итерацией.
+- :class:`HistoryPersistMiddleware` — пишущий конец пары с
+  :class:`HistoryReplayMiddleware`: наблюдает события стрима и дописывает
+  их в журнал. Живёт в source-цепочке, а не в sink-пайплайне: журнал —
+  несущая часть контракта возобновления диалога, а не опциональный
+  наблюдатель. Убрав HistoryReplay+HistoryPersist пару целиком, получаем
+  stateless-агента без сессий; убрав только одно из звеньев — скрытую
+  поломку.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterator
+from typing import assert_never
 
 from boba.domain.agent.events import (
     AgentEvent,
     AnswerComplete,
     AnswerDiscarded,
+    AnswerStarted,
     AnswerToken,
     GenerationDone,
+    GenerationFailed,
     GenerationStarted,
+    MaxIterationsReached,
+    PersistenceFailed,
+    PromptFailed,
     RefusalComplete,
     RefusalToken,
+    RepeatedFormatFailure,
+    StageCompleted,
+    StageStarted,
     ThinkingComplete,
+    ThinkingStarted,
     ThinkingToken,
     ToolCallArgumentDelta,
     ToolCallBegin,
@@ -32,6 +51,7 @@ from boba.domain.agent.events import (
     ToolCallFormatFailed,
     ToolExecutionFailed,
     ToolResultReady,
+    UserNoticeReady,
     UserQueryReceived,
 )
 from boba.domain.agent.history import HistoryService
@@ -59,10 +79,10 @@ class AssistantMessagePersistenceMiddleware(StreamSource[AgentContext, AgentEven
 
     Попутно эмитит агрегированные ``*Complete`` события **в стрим** —
     это делает их доступными downstream middleware'ам (например,
-    :class:`ToolExecutionMiddleware` ждёт ``ToolCallComplete``) и
-    sink'ам. Без этого middleware в стриме живут только токены, а
-    ``*Complete`` рождаются отдельно лишь внутри
-    :class:`HistorySink` для журнала.
+    :class:`ToolExecutionMiddleware` ждёт ``ToolCallComplete``,
+    :class:`HistoryPersistMiddleware` пишет их в журнал) и sink'ам.
+    Без этого middleware в стриме живут только токены, и ни
+    dowstream-логика, ни журнал не получают сводных событий.
     """
 
     def __init__(
@@ -238,3 +258,154 @@ class HistoryReplayMiddleware(StreamSource[AgentContext, AgentEvent]):
                     )
                 case _:
                     pass
+
+
+class HistoryPersistMiddleware(StreamSource[AgentContext, AgentEvent]):
+    """Наблюдает стрим и дописывает события в :class:`HistoryService`.
+
+    Пишущая половина пары с :class:`HistoryReplayMiddleware`: один
+    journaling-слой пишет, второй читает на следующем запуске процесса.
+    Намеренно живёт в source-цепочке, а не в sink-пайплайне —
+    persistence не опциональный observer, её отсутствие ломает
+    восстановление диалога.
+
+    Буфера токенов мы держим сами: на терминальных событиях итерации
+    (``GenerationDone``, ``GenerationFailed``, ``PromptFailed``,
+    ``PersistenceFailed``, ``MaxIterationsReached``,
+    ``RepeatedFormatFailure``) дописываем агрегированные ``*Complete``
+    события, чтобы журнал содержал связные сообщения даже при сбое
+    посреди стрима. Полагаться на ``*Complete``-события из стрима
+    нельзя: :class:`AssistantMessagePersistenceMiddleware` эмитит их
+    только на ``GenerationDone``, и при обрыве генерации они не
+    появятся.
+
+    Размещается **снаружи** от остальных middleware в цепочке (самый
+    внешний слой), чтобы через него прошли все события, включая
+    эмиссию :class:`AgentErrorRouterMiddleware`
+    (``MaxIterationsReached`` и т.п.).
+    """
+
+    def __init__(
+        self,
+        inner: StreamSource[AgentContext, AgentEvent],
+        history: HistoryService,
+    ) -> None:
+        self._inner = inner
+        self._history = history
+        self._thinking_buf: dict[RequestId, list[str]] = defaultdict(list)
+        self._answer_buf: dict[RequestId, list[str]] = defaultdict(list)
+        self._refusal_buf: dict[RequestId, list[str]] = defaultdict(list)
+        self._tool_args: dict[RequestId, dict[int, tuple[str, str, list[str]]]] = (
+            defaultdict(dict)
+        )
+
+    def name(self) -> str:
+        return "HistoryPersist"
+
+    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+        for event in self._inner.stream(ctx):
+            self._observe(event)
+            yield event
+
+    def _observe(self, event: AgentEvent) -> None:  # noqa: C901, PLR0912
+        match event:
+            case ThinkingToken(request_id, token=t):
+                self._thinking_buf[request_id].append(t)
+                self._history.append(event)
+            case AnswerToken(request_id, token=t):
+                self._answer_buf[request_id].append(t)
+                self._history.append(event)
+            case RefusalToken(request_id, token=t):
+                self._refusal_buf[request_id].append(t)
+                self._history.append(event)
+            case ToolCallArgumentDelta(request_id, index=i, arguments=args):
+                if i in self._tool_args[request_id]:
+                    self._tool_args[request_id][i][2].append(args)
+                self._history.append(event)
+            case ToolCallBegin(request_id, index=i, tool_call_id=tid, tool_name=fn):
+                self._tool_args[request_id][i] = (tid, fn, [])
+                self._history.append(event)
+            case GenerationDone(request_id):
+                self._flush_thinking(request_id)
+                self._flush_answer(request_id)
+                self._flush_refusal(request_id)
+                self._flush_tool_calls(request_id)
+                self._history.append(event)
+            case GenerationFailed(request_id):
+                self._flush_thinking(request_id)
+                self._flush_answer(request_id)
+                self._flush_refusal(request_id)
+                self._flush_tool_calls(request_id)
+                self._history.append(event)
+            case (
+                PromptFailed(request_id)
+                | PersistenceFailed(request_id)
+                | MaxIterationsReached(request_id)
+                | RepeatedFormatFailure(request_id)
+            ):
+                self._flush_thinking(request_id)
+                self._flush_answer(request_id)
+                self._flush_refusal(request_id)
+                self._flush_tool_calls(request_id)
+                self._history.append(event)
+            case AnswerStarted(request_id):
+                self._flush_thinking(request_id)
+            case ThinkingStarted(request_id):
+                self._flush_answer(request_id)
+            case AnswerDiscarded(request_id):
+                self._answer_buf.pop(request_id, None)
+                self._history.append(event)
+            case (
+                ToolExecutionFailed()
+                | ToolCallFormatFailed()
+                | UserNoticeReady()
+            ):
+                self._history.append(event)
+            case (
+                UserQueryReceived()
+                | StageStarted()
+                | StageCompleted()
+                | GenerationStarted()
+                | ThinkingComplete()
+                | AnswerComplete()
+                | RefusalComplete()
+                | ToolCallComplete()
+                | ToolResultReady()
+            ):
+                pass
+            case _ as unreachable:
+                assert_never(unreachable)
+
+    def _flush_thinking(self, request_id: RequestId) -> None:
+        buf = self._thinking_buf.pop(request_id, [])
+        if buf:
+            self._history.append(
+                ThinkingComplete(request_id=request_id, content="".join(buf))
+            )
+
+    def _flush_answer(self, request_id: RequestId) -> None:
+        buf = self._answer_buf.pop(request_id, [])
+        if buf:
+            self._history.append(
+                AnswerComplete(request_id=request_id, content="".join(buf))
+            )
+
+    def _flush_refusal(self, request_id: RequestId) -> None:
+        buf = self._refusal_buf.pop(request_id, [])
+        if buf:
+            self._history.append(
+                RefusalComplete(request_id=request_id, content="".join(buf))
+            )
+
+    def _flush_tool_calls(self, request_id: RequestId) -> None:
+        tools = self._tool_args.pop(request_id, {})
+        for tid, fn, args_parts in tools.values():
+            if args_parts:
+                self._history.append(
+                    ToolCallComplete(
+                        request_id=request_id,
+                        tool_call_id=tid,
+                        tool_name=fn,
+                        arguments="".join(args_parts),
+                    )
+                )

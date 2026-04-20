@@ -30,6 +30,7 @@ from boba.domain.agent.meat.content_tool_call import (
 )
 from boba.domain.agent.meat.dialogue import (
     AssistantMessagePersistenceMiddleware,
+    HistoryPersistMiddleware,
     HistoryReplayMiddleware,
 )
 from boba.domain.agent.meat.error_routing import (
@@ -57,6 +58,7 @@ __all__ = [
     "AgentErrorRouter",
     "AgentErrorRouterMiddleware",
     "AssistantMessagePersistenceMiddleware",
+    "HistoryPersistMiddleware",
     "HistoryReplayMiddleware",
     "IterationCounterMiddleware",
     "JsonContentToolCallMiddleware",
