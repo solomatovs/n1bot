@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from collections.abc import Iterator
 
 from dishka import Provider, Scope, from_context, provide
 
 from boba.adapters.aggregating_llm_request_factory import AggregatingLLMRequestFactory
 from boba.adapters.console_sink import ConsoleSink
-from boba.adapters.fs_workspace import FsWorkspaceManager
+from boba.adapters.fs_workspace import (
+    FsSystemWorkspaceManager,
+    FsTmpWorkspaceManager,
+    FsUserWorkspaceManager,
+)
 from boba.adapters.history_sink import HistorySink
 from boba.adapters.in_memory_messages import InMemoryMessageService
 from boba.adapters.jsonl_history import JsonLinesHistoryService
@@ -76,9 +80,19 @@ from boba.domain.core.tools import (
     ToolsService,
 )
 from boba.domain.core.workspace import (
+    SYSTEM_WORKSPACE_KIND,
+    TMP_WORKSPACE_KIND,
+    USER_WORKSPACE_KIND,
+    AllowedWorkspacesSpec,
+    MappingWorkspaceResolver,
+    SystemWorkspaceManager,
+    SystemWorkspaceService,
+    TmpWorkspaceManager,
+    TmpWorkspaceService,
+    UserWorkspaceManager,
+    UserWorkspaceService,
     WorkspaceId,
-    WorkspaceManager,
-    WorkspaceService,
+    WorkspaceResolver,
 )
 
 
@@ -103,8 +117,25 @@ class AppProvider(Provider):
         return self._app_config
 
     @provide
-    def workspace_manager(self, config: AppConfig) -> WorkspaceManager:
-        return FsWorkspaceManager(Path(config.workspace_base_dir))
+    def user_workspace_manager(self, config: AppConfig) -> UserWorkspaceManager:
+        return FsUserWorkspaceManager(
+            config.workspaces.root(),
+            config.workspaces.subdir(USER_WORKSPACE_KIND),
+        )
+
+    @provide
+    def system_workspace_manager(self, config: AppConfig) -> SystemWorkspaceManager:
+        return FsSystemWorkspaceManager(
+            config.workspaces.root(),
+            config.workspaces.subdir(SYSTEM_WORKSPACE_KIND),
+        )
+
+    @provide
+    def tmp_workspace_manager(self, config: AppConfig) -> TmpWorkspaceManager:
+        return FsTmpWorkspaceManager(
+            config.workspaces.root(),
+            config.workspaces.subdir(TMP_WORKSPACE_KIND),
+        )
 
     @provide
     def agent_config(self) -> AgentConfig:
@@ -161,26 +192,91 @@ class RequestProvider(Provider):
 
     scope = Scope.REQUEST
 
-    workspace_id = from_context(provides=WorkspaceId | None, scope=Scope.REQUEST)
+    workspace_id = from_context(provides=WorkspaceId, scope=Scope.REQUEST)
 
     @provide
-    def workspace_service(
+    def user_workspace(
         self,
-        workspace_id: WorkspaceId | None,
-        manager: WorkspaceManager,
-    ) -> WorkspaceService:
-        if workspace_id is None:
-            return manager.create()
-        return manager.get(workspace_id)
+        workspace_id: WorkspaceId,
+        manager: UserWorkspaceManager,
+    ) -> UserWorkspaceService:
+        svc = manager.get_or_create(workspace_id)
+        assert isinstance(svc, UserWorkspaceService)
+        return svc
 
     @provide
-    def tool_factory(self, workspace: WorkspaceService) -> ToolFactory:
+    def system_workspace(
+        self,
+        workspace_id: WorkspaceId,
+        manager: SystemWorkspaceManager,
+    ) -> SystemWorkspaceService:
+        svc = manager.get_or_create(workspace_id)
+        assert isinstance(svc, SystemWorkspaceService)
+        return svc
+
+    @provide
+    def tmp_workspace(
+        self,
+        workspace_id: WorkspaceId,
+        manager: TmpWorkspaceManager,
+    ) -> Iterator[TmpWorkspaceService]:
+        """Tmp workspace с чисткой на выходе из scope.
+
+        Generator-паттерн dishka: всё, что между ``yield`` и ``finally``,
+        выполнится при закрытии request scope — даже если внутри упадёт
+        исключение. Ошибка cleanup'а пробрасывается наружу: потеря tmp-
+        директории — сигнал, который пользователь должен увидеть.
+        """
+        svc = manager.get_or_create(workspace_id)
+        assert isinstance(svc, TmpWorkspaceService)
+        try:
+            yield svc
+        finally:
+            manager.delete(workspace_id)
+
+    @provide
+    def workspace_resolver(
+        self,
+        user: UserWorkspaceService,
+        tmp: TmpWorkspaceService,
+    ) -> WorkspaceResolver:
+        """Резолвер ``WorkspaceKind → WorkspaceService`` для tools.
+
+        Сервисы берутся из DI — ID сессии у всех один (см.
+        :func:`boba.infra.container.request_scope`). Системный workspace
+        не экспонируется: tools в него писать не должны.
+        """
+        return MappingWorkspaceResolver(
+            {
+                USER_WORKSPACE_KIND: user,
+                TMP_WORKSPACE_KIND: tmp,
+            }
+        )
+
+    @provide
+    def tool_workspace_allow(self) -> AllowedWorkspacesSpec:
+        """Белый список workspace'ов, доступных builtin-tools.
+
+        Держим синхронно с :meth:`workspace_resolver` — tool не должен
+        уметь обращаться к kind'у, которого нет в резолвере. Если
+        понадобится разный allow-list на разных tools — перенести в
+        per-tool конфиг.
+        """
+        return AllowedWorkspacesSpec(
+            [USER_WORKSPACE_KIND, TMP_WORKSPACE_KIND]
+        )
+
+    @provide
+    def tool_factory(
+        self,
+        resolver: WorkspaceResolver,
+        allowed: AllowedWorkspacesSpec,
+    ) -> ToolFactory:
         """Агрегатор источников инструментов, собираемый на запрос.
 
-        Per-request, потому что workspace-bound tools получают текущий
-        :class:`WorkspaceService` через конструктор — ``Tool.execute`` не
-        принимает ctx. Плагины/MCP-источники подключать сюда же рядом с
-        builtin-пачкой.
+        Per-request, потому что file-tools получают per-request резолвер
+        workspace'ов (сервисы в нём per-request). Плагины/MCP-источники
+        подключать сюда же рядом с builtin-пачкой.
         """
         factory = ToolFactory()
         factory.register(
@@ -188,11 +284,11 @@ class RequestProvider(Provider):
                 source_id=ToolSourceId("builtin.files"),
                 priority=10,
                 tools=[
-                    ReadFileTool(workspace),
-                    EditFileTool(workspace),
-                    DeleteFileTool(workspace),
-                    LsTool(workspace),
-                    TreeTool(workspace),
+                    ReadFileTool(resolver, allowed),
+                    EditFileTool(resolver, allowed),
+                    DeleteFileTool(resolver, allowed),
+                    LsTool(resolver, allowed),
+                    TreeTool(resolver, allowed),
                 ],
             )
         )
@@ -223,12 +319,12 @@ class RequestProvider(Provider):
     @provide
     def history_service(
         self,
-        workspace: WorkspaceService,
+        workspace: SystemWorkspaceService,
     ) -> HistoryService:
         return JsonLinesHistoryService(workspace)
 
     @provide
-    def raw_llm_observer(self, workspace: WorkspaceService) -> RawLLMObserver:
+    def raw_llm_observer(self, workspace: SystemWorkspaceService) -> RawLLMObserver:
         """Комбинированный наблюдатель, пишет два файла внутри workspace и
         логирует сводку в консоль:
 

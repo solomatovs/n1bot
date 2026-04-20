@@ -70,6 +70,7 @@ class ParamSchema:
     description: str
     required: bool = True
     default: Any = None
+    enum: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)

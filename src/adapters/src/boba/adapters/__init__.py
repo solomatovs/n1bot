@@ -18,6 +18,12 @@ from boba.adapters.aggregating_llm_request_factory import AggregatingLLMRequestF
 from boba.adapters.console_sink import ConsoleSink
 from boba.adapters.fs_workspace import (
     FsPathValidator,
+    FsSystemWorkspaceManager,
+    FsSystemWorkspaceService,
+    FsTmpWorkspaceManager,
+    FsTmpWorkspaceService,
+    FsUserWorkspaceManager,
+    FsUserWorkspaceService,
     FsWorkspaceManager,
     FsWorkspaceService,
 )
@@ -68,6 +74,12 @@ __all__ = [
     "FileRawLLMObserver",
     "FromOpenAIChunkConverter",
     "FsPathValidator",
+    "FsSystemWorkspaceManager",
+    "FsSystemWorkspaceService",
+    "FsTmpWorkspaceManager",
+    "FsTmpWorkspaceService",
+    "FsUserWorkspaceManager",
+    "FsUserWorkspaceService",
     "FsWorkspaceManager",
     "FsWorkspaceService",
     "GitPromptProvider",

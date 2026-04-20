@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from itertools import islice
 from typing import Any
 
+from boba.adapters.tools._workspace_arg import (
+    WORKSPACE_PARAM_NAME,
+    parse_workspace_arg,
+    workspace_param_schema,
+)
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     JsonType,
@@ -18,18 +23,34 @@ from boba.domain.core.tools import (
     ToolResult,
     ToolSourceId,
 )
-from boba.domain.core.workspace import WorkspaceError, WorkspaceService
+from boba.domain.core.workspace import (
+    USER_WORKSPACE_KIND,
+    AllowedWorkspacesSpec,
+    WorkspaceError,
+    WorkspaceKind,
+    WorkspaceResolver,
+)
 
 
 @dataclass(frozen=True)
 class TreeArgs:
+    workspace: WorkspaceKind = USER_WORKSPACE_KIND
     limit: int | None = None
 
 
 class TreeArgsConverter(Converter[dict[str, Any], TreeArgs]):
+    def __init__(self, allowed: AllowedWorkspacesSpec, tool_id: ToolId) -> None:
+        self._allowed = allowed
+        self._tool_id = tool_id
+
     def convert(self, value: dict[str, Any]) -> TreeArgs:
         limit = value.get("limit")
-        return TreeArgs(limit=int(limit) if limit is not None else None)
+        return TreeArgs(
+            workspace=parse_workspace_arg(
+                value.get(WORKSPACE_PARAM_NAME), self._allowed, self._tool_id
+            ),
+            limit=int(limit) if limit is not None else None,
+        )
 
 
 class TreeTool(Tool[TreeArgs]):
@@ -38,8 +59,13 @@ class TreeTool(Tool[TreeArgs]):
     _ID = ToolId("tree")
     _SOURCE = ToolSourceId("builtin.files")
 
-    def __init__(self, workspace: WorkspaceService) -> None:
-        self._workspace = workspace
+    def __init__(
+        self,
+        resolver: WorkspaceResolver,
+        allowed: AllowedWorkspacesSpec,
+    ) -> None:
+        self._resolver = resolver
+        self._allowed = allowed
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -48,7 +74,7 @@ class TreeTool(Tool[TreeArgs]):
         return self._SOURCE
 
     def args_converter(self) -> Converter[dict[str, Any], TreeArgs]:
-        return TreeArgsConverter()
+        return TreeArgsConverter(self._allowed, self._ID)
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
@@ -58,6 +84,7 @@ class TreeTool(Tool[TreeArgs]):
             ),
             input_schema=ToolInputSchema(
                 params=[
+                    workspace_param_schema(self._allowed),
                     ParamSchema(
                         name="limit",
                         type=JsonType.INTEGER,
@@ -78,8 +105,9 @@ class TreeTool(Tool[TreeArgs]):
                 message=f"limit должен быть >= 0, получено {args.limit}",
             )
 
+        workspace = self._resolver.resolve(args.workspace)
         try:
-            iterator = self._workspace.tree()
+            iterator = workspace.tree()
             items = (
                 list(iterator)
                 if args.limit is None
@@ -91,9 +119,11 @@ class TreeTool(Tool[TreeArgs]):
             ) from e
 
         if not items:
-            return ToolResult(content="Workspace пуст.")
+            return ToolResult(
+                content=f"Workspace {args.workspace.name} пуст."
+            )
 
-        header = f"Файлы ({len(items)}"
+        header = f"Файлы {args.workspace.name} ({len(items)}"
         if args.limit is not None:
             header += f", лимит={args.limit}"
         header += "):"

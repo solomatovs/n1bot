@@ -394,14 +394,19 @@ class ToOpenAIToolConverter(Converter[Tool[Any], ChatCompletionToolParam]):
     def convert(self, value: Tool[Any]) -> ChatCompletionToolParam:
         definition = value.definition()
 
-        properties: dict[str, dict[str, str]] = {}
+        properties: dict[str, dict[str, Any]] = {}
         required: list[str] = []
 
         for p in definition.input_schema.params:
-            properties[p.name] = {
+            prop: dict[str, Any] = {
                 "type": p.type.value,
                 "description": p.description,
             }
+            if p.enum is not None:
+                prop["enum"] = list(p.enum)
+            if p.default is not None:
+                prop["default"] = p.default
+            properties[p.name] = prop
             if p.required:
                 required.append(p.name)
 
