@@ -60,8 +60,8 @@ from boba.domain.core.errors import Retryable
 from boba.domain.core.patterns import (
     Converter,
     ExceptionSpecification,
+    FirstMatchConverter,
     IsInstance,
-    RuleBasedConverter,
     Specification,
     StreamConverter,
     StreamSource,
@@ -316,9 +316,9 @@ class IsStatusCode(ExceptionSpecification):
         )
 
 
-class OpenAIErrorConverter(RuleBasedConverter[Exception, LLMError]):
+class OpenAIErrorConverter(FirstMatchConverter[Exception, LLMError]):
     """Классифицирует сырые ``openai``/``httpx`` исключения в доменные
-    :class:`LLMError` через :class:`RuleBasedConverter`.
+    :class:`LLMError` через :class:`FirstMatchConverter`.
 
     Правила применяются в порядке регистрации; первое совпадение —
     победитель. Если ни одно не сработало — fallback в
@@ -332,8 +332,10 @@ class OpenAIErrorConverter(RuleBasedConverter[Exception, LLMError]):
         self,
     ) -> None:
         super().__init__(
-            rules=self.default_rules(),
-            fallback=lambda e: LLMProviderInternalError(f"{type(e).__name__}: {e}"),
+            routes=self.default_rules(),
+            fallback_route=lambda e: LLMProviderInternalError(
+                f"{type(e).__name__}: {e}"
+            ),
         )
 
     @staticmethod

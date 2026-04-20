@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable, MutableSequence, Sequence
+from collections.abc import Callable, Iterable, Iterator, MutableSequence, Sequence
 from types import TracebackType
 from typing import Generic, Self, TypeVar
 from uuid import UUID, uuid4
@@ -498,47 +498,6 @@ class FoldFactory(
             state = p.apply(state)
 
         return self.finalize(state)
-
-
-class DispatcherKeyError(KeyError):
-    """Ключ не зарегистрирован в Dispatcher."""
-
-
-class Dispatcher(Generic[TId, TValue]):
-    """
-    Находит хэндлер по ключу (или бросает исключение).
-
-    Fan-in select:
-    ``register(key, handler)``: кладёт handler во внутреннее хранилище
-    ``unregister(self, key: TId)``: удаляет handler из внутреннего хранилища по ключу
-    ``dispatch(key)`` возвращает найденного хэндлера по ключу
-
-    Что делать с Что с ним делать (вызвать ``execute``, инспектировать metadata,
-    обернуть в middleware) — дело вызывающего;
-    Dispatcher не ассоциирует себя с ``UseCase`` и вообще не навязывает
-    форму хэндлера.
-    """
-
-    def __init__(self) -> None:
-        self._handlers: dict[TId, TValue] = {}
-
-    def register(self, key: TId, handler: TValue) -> None:
-        self._handlers[key] = handler
-
-    def unregister(self, key: TId) -> None:
-        self._handlers.pop(key, None)
-
-    def dispatch(self, key: TId) -> TValue:
-        handler = self._handlers.get(key)
-        if handler is None:
-            raise DispatcherKeyError(key)
-        return handler
-
-    def keys(self) -> Iterable[TId]:
-        return iter(self._handlers.keys())
-
-    def values(self) -> Iterable[TValue]:
-        return iter(self._handlers.values())
 
 
 class Serializer(Generic[TIn, TOut]):
@@ -1164,9 +1123,7 @@ class StreamSourceChainBuilder(Generic[TCtx, TOut]):
         self._factories.append(factory)
         return self
 
-    def terminal(
-        self, terminal: StreamSource[TCtx, TOut]
-    ) -> StreamSource[TCtx, TOut]:
+    def terminal(self, terminal: StreamSource[TCtx, TOut]) -> StreamSource[TCtx, TOut]:
         """Собрать цепочку, обернув ``terminal`` зарегистрированными
         middleware в обратном порядке. Возвращает внешний ``StreamSource``,
         готовый к использованию."""
@@ -1176,14 +1133,14 @@ class StreamSourceChainBuilder(Generic[TCtx, TOut]):
         return chain
 
 
-class RuleDispatch(Generic[TIn, TOut]):
+class FirstMatchDispatcher(Generic[TIn, TOut]):
     """
-    Callable-движок rule-dispatch: ``(Specification, builder)`` + ``fallback``.
+    Callable-диспетчер «первое совпадение + fallback».
 
-    Экземпляр — чистый callable ``TIn → TOut``. При вызове пробегает
-    правила в порядке регистрации: первое, у которого предикат
-    сработал, строит результат через ``builder``; если никто не
-    совпал — отрабатывает ``fallback``.
+    Экземпляр — callable ``TIn → TOut``. При вызове пробегает маршруты
+    в порядке регистрации: первый, у которого предикат сработал, строит
+    результат через ``route`` — цикл **прерывается**. Если ни один
+    предикат не совпал — отрабатывает ``fallback_route``.
 
     Схема::
 
@@ -1191,43 +1148,41 @@ class RuleDispatch(Generic[TIn, TOut]):
                            │
                            ▼
                     ┌─────────────┐  да    ┌──────────────┐
-                    │ spec₁.check │ ─────▶ │ builder₁     │──▶ out
+                    │ spec₁.check │ ─────▶ │   route₁     │──▶ out
                     └──────┬──────┘        └──────────────┘
                            │ нет
                            ▼
                     ┌─────────────┐  да    ┌──────────────┐
-                    │ spec₂.check │ ─────▶ │ builder₂     │──▶ out
+                    │ spec₂.check │ ─────▶ │   route₂     │──▶ out
                     └──────┬──────┘        └──────────────┘
                            │ нет
                            ▼
                           ...
                            │
                            ▼
-                    ┌─────────────┐
-                    │  fallback   │──▶ out
-                    └─────────────┘
+                    ┌──────────────────┐
+                    │  fallback_route  │──▶ out
+                    └──────────────────┘
 
-    Сам по себе не :class:`Converter` / :class:`Executor` — это
-    независимое ядро, которое композируется в протокольные адаптеры.
     Использование:
 
-    - как есть — везде, где нужен ``Callable[[TIn], TOut]``
-      (например, как ``builder`` или ``fallback`` внутри другого
-      ``RuleDispatch`` — правила композируются иерархически);
-    - как бэкэнд :class:`RuleBasedConverter` — доменный ``Converter``
+    - как есть — везде, где ожидается ``Callable[[TIn], TOut]``;
+      маршрут можно передать как ``route`` или ``fallback_route`` другого
+      диспетчера (иерархические правила);
+    - как бэкэнд :class:`FirstMatchConverter` — доменный ``Converter``
       делегирует ``convert`` в ``self._dispatch(value)``;
     - для :class:`Executor`-варианта — обёртка вызывает
       ``self._dispatch((ctx, req))``, спецификации работают над
-      парой ``tuple[TCtx, TIn]``.
+      ``tuple[TCtx, TIn]``.
 
     Когда использовать:
 
-    - выбор делается по предикату над всем значением, не сводящемуся к
-      одному ключу (``IsInstance(BadRequestError).and_(
-      IsContextLengthError())``);
-    - правила могут пересекаться и важен приоритет по порядку;
-    - нужен явный ``fallback`` на случай, когда ни одно правило не
-      сработало.
+    - выбор не сводится к одному ключу: составные/пересекающиеся
+      предикаты (``IsInstance(BadRequestError).and_(
+      IsContextLengthError())``), порядок правил важен;
+    - нужен явный ``fallback_route`` на случай, когда ничего не
+      совпало. Если «не совпало» — это инвариант-нарушение,
+      передай ``fallback_route`` вида ``lambda v: raise ...``.
 
     Для тривиальной маршрутизации по уникальному ключу (``msg.role``,
     ``tool_id``) встраивай lookup прямо в доменный сервис через
@@ -1235,35 +1190,172 @@ class RuleDispatch(Generic[TIn, TOut]):
 
     Контракт:
 
-    - порядок ``rules`` = приоритет: более специфичные правила должны
+    - порядок ``routes`` = приоритет: более специфичные маршруты должны
       идти раньше более общих (подклассы раньше родителей и т.п.);
-    - правила не обязаны покрывать всё пространство входов — для того и
-      ``fallback``; если fallback бросает — это явная ошибка.
+    - маршруты не обязаны покрывать всё пространство входов — для того
+      и ``fallback_route``.
+
+    Сравнение с «братьями» (той же формы ``Sequence[(Spec, route)]``,
+    но разной логикой цикла):
+
+    - :class:`AllMatchesDispatcher` — не прерывается, собирает
+      результаты всех совпавших правил в ``list``;
+    - :class:`FoldingDispatcher` — прокатывает значение через все
+      совпавшие трансформы последовательно (``TValue → TValue``).
     """
 
     def __init__(
         self,
-        rules: Sequence[tuple[Specification[TIn], Callable[[TIn], TOut]]],
-        fallback: Callable[[TIn], TOut],
+        routes: Sequence[tuple[Specification[TIn], Callable[[TIn], TOut]]],
+        fallback_route: Callable[[TIn], TOut],
     ) -> None:
-        self._rules = list(rules)
-        self._fallback = fallback
+        self._routes = list(routes)
+        self._fallback_route = fallback_route
 
     def __call__(self, value: TIn) -> TOut:
-        for spec, builder in self._rules:
+        for spec, route in self._routes:
             if spec.check(value):
-                return builder(value)
-        return self._fallback(value)
+                return route(value)
+        return self._fallback_route(value)
 
 
-class RuleBasedConverter(Converter[TIn, TOut], Generic[TIn, TOut]):
+class AllMatchesDispatcher(Generic[TIn, TOut]):
     """
-    :class:`Converter`-адаптер над :class:`RuleDispatch`.
+    Callable-диспетчер «все совпавшие правила → поток результатов».
 
-    Тонкая протокольная обёртка: принимает те же ``rules`` и ``fallback``,
-    что и :class:`RuleDispatch`, и делегирует ``convert`` в его
-    ``__call__``. Нужна там, где ожидается именно ``Converter[TIn, TOut]``
-    (доменные порты, сериализаторы, тесты с моками converter'ов).
+    Экземпляр — callable ``TIn → Iterator[TOut]``. Проходит по ВСЕМ
+    маршрутам лениво: для каждого маршрута, чей предикат совпал,
+    ``yield`` даёт результат ``route(value)`` — до следующей итерации
+    потребителя следующие правила не проверяются. Пустой поток = ничего
+    не совпало; отдельного ``fallback`` нет, «ничего не совпало»
+    трактуется как валидный пустой ответ.
+
+    Если нужен материализованный список — потребитель делает это сам:
+    ``list(dispatcher(value))``.
+
+    Схема::
+
+                         value
+                           │
+                           ▼
+                    ┌─────────────┐  да    ┌──────────────┐
+                    │ spec₁.check │ ─────▶ │   route₁     │──▶ yield
+                    └──────┬──────┘        └──────────────┘
+                           │ (нет — пропуск)
+                           ▼
+                    ┌─────────────┐  да    ┌──────────────┐
+                    │ spec₂.check │ ─────▶ │   route₂     │──▶ yield
+                    └──────┬──────┘        └──────────────┘
+                           │
+                          ...
+
+    Использование:
+
+    - тэгирование: один объект → все подходящие категории;
+    - мульти-валидация: собрать список ВСЕХ нарушений, а не только
+      первое;
+    - fan-out: одно событие → несколько дочерних событий для разных
+      подписчиков, обрабатываемых по мере поступления;
+    - стриминговая обработка, где early-break потребителем избавляет
+      от вычисления хвостовых правил.
+
+    Контракт:
+
+    - ``routes`` проверяются по мере потребления — предикаты и
+      ``route`` не должны иметь побочных эффектов, на которые
+      завязана логика;
+    - результаты идут в порядке регистрации правил;
+    - генератор одноразовый; для повторного прохода вызови dispatcher
+      ещё раз.
+    """
+
+    def __init__(
+        self,
+        routes: Sequence[tuple[Specification[TIn], Callable[[TIn], TOut]]],
+    ) -> None:
+        self._routes = list(routes)
+
+    def __call__(self, value: TIn) -> Iterator[TOut]:
+        for spec, route in self._routes:
+            if spec.check(value):
+                yield route(value)
+
+
+class FoldingDispatcher(Generic[TValue]):
+    """
+    Callable-диспетчер «условная цепочка трансформаций» (fold).
+
+    Экземпляр — callable ``TValue → TValue``. При вызове прокатывает
+    значение через ВСЕ маршруты по очереди. Для каждого маршрута:
+    если предикат совпал — применяется ``transform``, его результат
+    становится новым значением для следующего маршрута. Если не
+    совпал — значение проходит как есть. Цикл не прерывается.
+
+    Важно: сигнатура **мономорфная** (``TValue`` на вход и выход),
+    потому что промежуточный результат передаётся следующему шагу.
+    Для разнотипных стадий это не подходит — см.
+    :class:`FirstMatchDispatcher`.
+
+    Схема::
+
+                         value
+                           │
+                           ▼
+                    ┌─────────────┐  да    ┌───────────────┐
+                    │ spec₁.check │ ─────▶ │  transform₁   │
+                    └──────┬──────┘        └───────┬───────┘
+                           │ нет (pass-through)    │
+                           └────────────┬──────────┘
+                                        ▼
+                    ┌─────────────┐  да    ┌───────────────┐
+                    │ spec₂.check │ ─────▶ │  transform₂   │
+                    └──────┬──────┘        └───────┬───────┘
+                           │ нет                   │
+                           └────────────┬──────────┘
+                                        ▼
+                                       ...
+                                        │
+                                        ▼
+                                   value_final
+
+    Использование:
+
+    - условные нормализации: ``trim`` / ``unescape`` / ``lowercase``,
+      применяемые только если соответствующие предикаты совпали;
+    - каскадное обогащение объекта доп. данными от нескольких
+      источников;
+    - порядок-зависимые правила переписывания (rewrite rules).
+
+    Контракт:
+
+    - ``transform`` обязана возвращать значение того же типа ``TValue``
+      (мономорфный fold);
+    - предикаты вычисляются над **текущим** значением на момент шага
+      — после предыдущих трансформ; порядок правил критичен.
+    """
+
+    def __init__(
+        self,
+        routes: Sequence[tuple[Specification[TValue], Callable[[TValue], TValue]]],
+    ) -> None:
+        self._routes = list(routes)
+
+    def __call__(self, value: TValue) -> TValue:
+        for spec, transform in self._routes:
+            if spec.check(value):
+                value = transform(value)
+        return value
+
+
+class FirstMatchConverter(Converter[TIn, TOut], Generic[TIn, TOut]):
+    """
+    :class:`Converter`-адаптер над :class:`FirstMatchDispatcher`.
+
+    Тонкая протокольная обёртка: принимает те же ``routes`` и
+    ``fallback_route``, что и :class:`FirstMatchDispatcher`, и
+    делегирует ``convert`` в его ``__call__``. Нужна там, где
+    ожидается именно ``Converter[TIn, TOut]`` (доменные порты,
+    сериализаторы, тесты с моками converter'ов).
 
     Типовые применения:
 
@@ -1273,14 +1365,20 @@ class RuleBasedConverter(Converter[TIn, TOut], Generic[TIn, TOut]):
     - нормализация ``finish_reason`` разных провайдеров в единый enum;
     - валидация входных параметров tool'ов (правило → сообщение об
       ошибке).
+
+    Converter-адаптеры для :class:`AllMatchesDispatcher` и
+    :class:`FoldingDispatcher` не заведены — добавить тривиально,
+    когда появится реальный клиент.
     """
 
     def __init__(
         self,
-        rules: Sequence[tuple[Specification[TIn], Callable[[TIn], TOut]]],
-        fallback: Callable[[TIn], TOut],
+        routes: Sequence[tuple[Specification[TIn], Callable[[TIn], TOut]]],
+        fallback_route: Callable[[TIn], TOut],
     ) -> None:
-        self._dispatch: Callable[[TIn], TOut] = RuleDispatch(rules, fallback)
+        self._dispatch: Callable[[TIn], TOut] = FirstMatchDispatcher(
+            routes, fallback_route
+        )
 
     def convert(self, value: TIn) -> TOut:
         return self._dispatch(value)
