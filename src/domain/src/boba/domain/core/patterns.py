@@ -702,22 +702,10 @@ class StreamSourcePipeline(StreamSource[TCtx, TOut]):
               │ srcₙ   │─▶ eventsₙ ┘
               └────────┘
 
-    Обработка ошибок задаётся спецификацией ``continue_if_error``:
-    - если не задана, исключение в любой стадии прерывает весь pipeline;
-    - если задана, используется как context manager над стадией:
-      исключение проверяется через ``continue_if_error.check``; при
-      истинном предикате стадия пропускается, pipeline продолжает
-      со следующей. Иначе исключение пробрасывается с исходным
-      traceback.
-
-    Примеры ``continue_if_error``:
-    - ``IsInstance(TimeoutError, ConnectionError)`` — по типам (аналог
-      ``except (TimeoutError, ConnectionError)``);
-    - ``IsInstance(HTTPError).and_(IsTransientHTTPError())`` — по типу
-      и дополнительному предикату над атрибутами исключения.
-
-    ``BaseException`` (``KeyboardInterrupt``, ``SystemExit``) никогда
-    не перехватывается независимо от ``continue_if_error``.
+    Исключение в любой стадии прерывает весь pipeline и пробрасывается
+    наружу с исходным traceback. Если нужна exception-tolerant стадия —
+    оберни её в собственный декоратор-стадию с локальным ``try/except``
+    или :class:`ExceptionSpecification` как context manager.
 
     Когда использовать:
     - несколько независимых источников событий нужно слить в один
@@ -740,10 +728,8 @@ class StreamSourcePipeline(StreamSource[TCtx, TOut]):
     def __init__(
         self,
         stages: MutableSequence[StreamSource[TCtx, TOut]],
-        continue_if_error: ExceptionSpecification | None = None,
     ) -> None:
         self._stages = stages
-        self._continue_if_error = continue_if_error
 
     def append(self, stage: StreamSource[TCtx, TOut]):
         self._stages.append(stage)
@@ -761,14 +747,8 @@ class StreamSourcePipeline(StreamSource[TCtx, TOut]):
             stage.reset()
 
     def stream(self, ctx: TCtx) -> Iterable[TOut]:
-        if self._continue_if_error is None:
-            for stage in self._stages:
-                yield from stage.stream(ctx)
-            return
-
         for stage in self._stages:
-            with self._continue_if_error:
-                yield from stage.stream(ctx)
+            yield from stage.stream(ctx)
 
 
 class StreamSinkPipeline(StreamSink[TCtx, TIn]):
@@ -797,14 +777,10 @@ class StreamSinkPipeline(StreamSink[TCtx, TIn]):
     сохраняет предсказуемый порядок побочных эффектов (консольный
     вывод появляется до записи в журнал).
 
-    Обработка ошибок задаётся спецификацией ``continue_if_error``:
-    - если не задана, исключение в любом sink'е прерывает обработку
-      события, оставшиеся sink'и его не получат;
-    - если задана, используется как context manager над каждым
-      sink'ом: подходящие исключения подавляются, pipeline продолжает
-      со следующим. Иначе исключение пробрасывается.
-
-    ``BaseException`` никогда не перехватывается.
+    Исключение в любом sink'е прерывает обработку события — оставшиеся
+    sink'и его не получат. Если нужен exception-tolerant sink — оберни
+    его в локальный декоратор с ``try/except`` или
+    :class:`ExceptionSpecification` как context manager.
 
     Когда использовать:
     - одно событие нужно доставить в несколько независимых каналов;
@@ -825,10 +801,8 @@ class StreamSinkPipeline(StreamSink[TCtx, TIn]):
     def __init__(
         self,
         stages: MutableSequence[StreamSink[TCtx, TIn]],
-        continue_if_error: ExceptionSpecification | None = None,
     ) -> None:
         self._stages = stages
-        self._continue_if_error = continue_if_error
 
     def append(self, stage: StreamSink[TCtx, TIn]):
         self._stages.append(stage)
@@ -846,14 +820,8 @@ class StreamSinkPipeline(StreamSink[TCtx, TIn]):
             stage.reset()
 
     def handle(self, ctx: TCtx, event: TIn) -> None:
-        if self._continue_if_error is None:
-            for stage in self._stages:
-                stage.handle(ctx, event)
-            return
-
         for stage in self._stages:
-            with self._continue_if_error:
-                stage.handle(ctx, event)
+            stage.handle(ctx, event)
 
 
 class StreamTransformerPipeline(StreamTransformer[TCtx, TIn, TOut]):
@@ -899,9 +867,10 @@ class StreamTransformerPipeline(StreamTransformer[TCtx, TIn, TOut]):
     размере буфера и семантике отмены. Ответственность — на
     вызывающем коде.
 
-    Обработка ошибок устроена так же, как в
-    :class:`StreamSourcePipeline`: ``continue_if_error`` как context
-    manager над стадией, ``BaseException`` никогда не перехватывается.
+    Исключение в любой стадии прерывает весь pipeline и пробрасывается
+    наружу с исходным traceback. Если нужна exception-tolerant стадия —
+    оберни её в собственный декоратор-стадию с локальным ``try/except``
+    или :class:`ExceptionSpecification` как context manager.
 
     Когда использовать:
     - один входной поток нужно разложить на несколько производных
@@ -923,10 +892,8 @@ class StreamTransformerPipeline(StreamTransformer[TCtx, TIn, TOut]):
     def __init__(
         self,
         stages: MutableSequence[StreamTransformer[TCtx, TIn, TOut]],
-        continue_if_error: ExceptionSpecification | None = None,
     ) -> None:
         self._stages = stages
-        self._continue_if_error = continue_if_error
 
     def append(self, stage: StreamTransformer[TCtx, TIn, TOut]):
         self._stages.append(stage)
@@ -944,14 +911,8 @@ class StreamTransformerPipeline(StreamTransformer[TCtx, TIn, TOut]):
             stage.reset()
 
     def stream(self, ctx: TCtx, stream: Iterable[TIn]) -> Iterable[TOut]:
-        if self._continue_if_error is None:
-            for stage in self._stages:
-                yield from stage.stream(ctx, stream)
-            return
-
         for stage in self._stages:
-            with self._continue_if_error:
-                yield from stage.stream(ctx, stream)
+            yield from stage.stream(ctx, stream)
 
 
 class StreamSourceLoop(StreamSource[TCtx, TOut]):
