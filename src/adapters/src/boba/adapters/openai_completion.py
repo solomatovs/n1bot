@@ -22,6 +22,7 @@ from openai.types.chat import (
 from openai.types.chat.chat_completion_chunk import (
     ChatCompletionChunk,
     Choice,
+    ChoiceDelta,
 )
 
 from boba.adapters.raw_llm_observer import RawLLMObserver
@@ -72,7 +73,10 @@ logger = logging.getLogger(__name__)
 
 
 class LoggingLLMMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Логирует запрос, количество событий и время генерации."""
+    """Логирует запрос, количество событий, токены по категориям,
+    ``finish_reason`` и время генерации. ``finish_reason=length`` или
+    подозрительный ``stop`` на границе ``max_tokens`` сразу виден в
+    консоли без копания в ``raw_messages.md``."""
 
     def __init__(self, inner: StreamSource[AgentContext, AgentEvent]) -> None:
         self._inner = inner
@@ -84,13 +88,60 @@ class LoggingLLMMiddleware(StreamSource[AgentContext, AgentEvent]):
         logger.info("LLM request: model=%s", ctx.request.model)
         start = time.monotonic()
         count = 0
+        answer_tokens = 0
+        thinking_tokens = 0
+        tool_arg_chunks = 0
+        finish_reason: str | None = None
+        outcome = "ok"
 
-        for event in self._inner.stream(ctx):
-            count += 1
-            yield event
-
-        elapsed = time.monotonic() - start
-        logger.info("LLM done: %d events in %.2fs", count, elapsed)
+        # try/finally: downstream может бросить исключение на yield
+        # (например, LLMToolCallFormatError из парсера content-JSON).
+        # Без finally итоговый лог "LLM done" не напишется и мы потеряем
+        # видимость finish_reason/токенов на падениях.
+        try:
+            for event in self._inner.stream(ctx):
+                count += 1
+                if isinstance(event, AnswerToken):
+                    answer_tokens += 1
+                elif isinstance(event, ThinkingToken):
+                    thinking_tokens += 1
+                elif isinstance(event, ToolCallArgumentDelta):
+                    tool_arg_chunks += 1
+                elif isinstance(event, GenerationDone):
+                    finish_reason = event.finish_reason
+                yield event
+        except GeneratorExit:
+            outcome = "cancelled"
+            raise
+        except BaseException as e:
+            outcome = f"raised:{type(e).__name__}"
+            raise
+        finally:
+            elapsed = time.monotonic() - start
+            sampling_max = ctx.llm_builder.sampling.max_tokens
+            suspected_truncation = (
+                finish_reason == "stop"
+                and sampling_max is not None
+                and answer_tokens + thinking_tokens >= sampling_max
+            )
+            suffix = (
+                " (подозрение на обрыв по max_tokens)"
+                if suspected_truncation
+                else ""
+            )
+            logger.info(
+                "LLM done: %s, %d events in %.2fs, finish=%s, answer=%d, "
+                "thinking=%d, tool_arg_chunks=%d, max_tokens=%s%s",
+                outcome,
+                count,
+                elapsed,
+                finish_reason,
+                answer_tokens,
+                thinking_tokens,
+                tool_arg_chunks,
+                sampling_max,
+                suffix,
+            )
 
 
 class StupidRetryLLMMiddleware(StreamSource[AgentContext, AgentEvent]):
@@ -141,7 +192,7 @@ class FromOpenAIChunkConverter(
         self._pipeline = StreamTransformerPipeline[AgentContext, Choice, AgentEvent](
             [
                 RoleSource(request_id),
-                ThinkingSource(request_id),
+                ThinkingSource(request_id, MultiKeyReasoningExtractor()),
                 AnswerSource(request_id),
                 RefusalSource(request_id),
                 ToolCallSource(request_id),
@@ -222,7 +273,17 @@ class IsContextLengthError(ExceptionSpecification):
             if isinstance(err, dict) and err.get("code") == "context_length_exceeded":
                 return True
         msg = str(candidate).lower()
-        return "context length" in msg or "maximum context" in msg
+        # Разные бэкенды формулируют по-своему:
+        # OpenAI: "maximum context length"
+        # Anthropic/Azure: "context length"
+        # LiteLLM pre-call check: "context window exceeded"
+        # vLLM: "token limit"
+        return (
+            "context length" in msg
+            or "maximum context" in msg
+            or "context window" in msg
+            or "contextwindowexceeded" in msg
+        )
 
 
 class IsServerError(ExceptionSpecification):
@@ -499,11 +560,60 @@ class RoleSource(StreamTransformer[AgentContext, Choice, AgentEvent]):
                     yield GenerationStarted(request_id=self._request_id)
 
 
-class ThinkingSource(StreamTransformer[AgentContext, Choice, AgentEvent]):
-    """Порождает ThinkingStarted/ThinkingToken из reasoning_content."""
+class MultiKeyReasoningExtractor(Converter[ChoiceDelta, str | None]):
+    """Извлекает reasoning-токен из ``delta.model_extra``, перебирая
+    известные ключи по порядку.
 
-    def __init__(self, request_id: RequestId) -> None:
+    Разные провайдеры кладут «рассуждения» модели в разные поля:
+
+    - ``reasoning_content`` — DeepSeek, xAI Grok, часть OpenAI-compat прокси;
+    - ``thinking`` — Anthropic через openai-compat, некоторые LiteLLM-маршруты;
+    - ``reasoning`` — Ollama native, Groq.
+
+    Дефолтный набор покрывает всех. Можно сузить/переопределить список,
+    передав свой кортеж в конструктор.
+
+    Провайдер-специфичный экстрактор — это просто другой
+    :class:`Converter[ChoiceDelta, str | None]` в отдельном модуле,
+    подключается через DI параметром :class:`ThinkingSource`. Прецедент
+    возврата ``None`` без исключений — :class:`JsonHeaderParser`
+    (``Converter[str, JsonToolCallHeader | None]``).
+    """
+
+    DEFAULT_KEYS: tuple[str, ...] = (
+        "reasoning_content",
+        "thinking",
+        "reasoning",
+    )
+
+    def __init__(self, keys: tuple[str, ...] | None = None) -> None:
+        self._keys = keys if keys is not None else self.DEFAULT_KEYS
+
+    def convert(self, value: ChoiceDelta) -> str | None:
+        extra = value.model_extra or {}
+        for k in self._keys:
+            v = extra.get(k)
+            if v:
+                return str(v)
+        return None
+
+
+class ThinkingSource(StreamTransformer[AgentContext, Choice, AgentEvent]):
+    """Порождает ``ThinkingStarted``/``ThinkingToken``.
+
+    Извлечение reasoning-поля делегируется
+    ``Converter[ChoiceDelta, str | None]``. По умолчанию —
+    :class:`MultiKeyReasoningExtractor` на все известные провайдеры;
+    для нестандартного бэкенда передай кастомный Converter через DI.
+    """
+
+    def __init__(
+        self,
+        request_id: RequestId,
+        extractor: Converter[ChoiceDelta, str | None],
+    ) -> None:
         self._request_id = request_id
+        self._extractor = extractor
         self._started = False
 
     def name(self) -> str:
@@ -516,14 +626,11 @@ class ThinkingSource(StreamTransformer[AgentContext, Choice, AgentEvent]):
         self, ctx: AgentContext, stream: Iterable[Choice]
     ) -> Iterable[AgentEvent]:
         for choice in stream:
-            extra = choice.delta.model_extra or {}
-            thinking = extra.get("reasoning_content") or extra.get("thinking")
-
+            thinking = self._extractor.convert(choice.delta)
             if thinking:
                 if not self._started:
                     self._started = True
                     yield ThinkingStarted(request_id=self._request_id)
-
                 yield ThinkingToken(request_id=self._request_id, token=thinking)
 
 
