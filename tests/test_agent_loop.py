@@ -11,8 +11,7 @@ from boba.infra.config import ConfigLoader
 from boba.infra.container import create_container, request_scope
 
 
-def test_agent_loop_hello() -> None:
-    query = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "привет"
+def test_agent_loop_hello(query: str) -> None:
     loader = ConfigLoader()
     app_config = loader.load_app()
     agent_config = loader.load_agent()
@@ -42,4 +41,5 @@ def test_agent_loop_hello() -> None:
 
 
 if __name__ == "__main__":
-    test_agent_loop_hello()
+    query = " ".join(sys.argv[1:])
+    test_agent_loop_hello(query)
