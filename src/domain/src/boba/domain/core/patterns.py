@@ -1176,15 +1176,14 @@ class StreamSourceChainBuilder(Generic[TCtx, TOut]):
         return chain
 
 
-class RuleBasedConverter(Converter[TIn, TOut], Generic[TIn, TOut]):
+class RuleDispatch(Generic[TIn, TOut]):
     """
-    :class:`Converter` по списку правил ``(Specification, builder)``.
-    Первое правило, у которого предикат сработал, строит результат
-    через ``builder``; если ни одно не подошло — отрабатывает ``fallback``.
+    Callable-движок rule-dispatch: ``(Specification, builder)`` + ``fallback``.
 
-    ``builder`` / ``fallback`` — любой ``Callable[[TIn], TOut]``: lambda,
-    метод существующего :class:`Converter` (``my_conv.convert``), свободная
-    функция. Оборачивать в отдельный класс не требуется.
+    Экземпляр — чистый callable ``TIn → TOut``. При вызове пробегает
+    правила в порядке регистрации: первое, у которого предикат
+    сработал, строит результат через ``builder``; если никто не
+    совпал — отрабатывает ``fallback``.
 
     Схема::
 
@@ -1208,6 +1207,19 @@ class RuleBasedConverter(Converter[TIn, TOut], Generic[TIn, TOut]):
                     │  fallback   │──▶ out
                     └─────────────┘
 
+    Сам по себе не :class:`Converter` / :class:`Executor` — это
+    независимое ядро, которое композируется в протокольные адаптеры.
+    Использование:
+
+    - как есть — везде, где нужен ``Callable[[TIn], TOut]``
+      (например, как ``builder`` или ``fallback`` внутри другого
+      ``RuleDispatch`` — правила композируются иерархически);
+    - как бэкэнд :class:`RuleBasedConverter` — доменный ``Converter``
+      делегирует ``convert`` в ``self._dispatch(value)``;
+    - для :class:`Executor`-варианта — обёртка вызывает
+      ``self._dispatch((ctx, req))``, спецификации работают над
+      парой ``tuple[TCtx, TIn]``.
+
     Когда использовать:
 
     - выбор делается по предикату над всем значением, не сводящемуся к
@@ -1227,15 +1239,6 @@ class RuleBasedConverter(Converter[TIn, TOut], Generic[TIn, TOut]):
       идти раньше более общих (подклассы раньше родителей и т.п.);
     - правила не обязаны покрывать всё пространство входов — для того и
       ``fallback``; если fallback бросает — это явная ошибка.
-
-    Типовые применения:
-
-    - классификация «сырых» исключений адаптера в доменные
-      (``openai.BadRequestError`` + ``context_length_exceeded`` →
-      ``LLMContextLengthError``);
-    - нормализация `finish_reason` разных провайдеров в единый enum;
-    - валидация входных параметров tool'ов (правило → сообщение об
-      ошибке).
     """
 
     def __init__(
@@ -1246,8 +1249,38 @@ class RuleBasedConverter(Converter[TIn, TOut], Generic[TIn, TOut]):
         self._rules = list(rules)
         self._fallback = fallback
 
-    def convert(self, value: TIn) -> TOut:
+    def __call__(self, value: TIn) -> TOut:
         for spec, builder in self._rules:
             if spec.check(value):
                 return builder(value)
         return self._fallback(value)
+
+
+class RuleBasedConverter(Converter[TIn, TOut], Generic[TIn, TOut]):
+    """
+    :class:`Converter`-адаптер над :class:`RuleDispatch`.
+
+    Тонкая протокольная обёртка: принимает те же ``rules`` и ``fallback``,
+    что и :class:`RuleDispatch`, и делегирует ``convert`` в его
+    ``__call__``. Нужна там, где ожидается именно ``Converter[TIn, TOut]``
+    (доменные порты, сериализаторы, тесты с моками converter'ов).
+
+    Типовые применения:
+
+    - классификация «сырых» исключений адаптера в доменные
+      (``openai.BadRequestError`` + ``context_length_exceeded`` →
+      ``LLMContextLengthError``);
+    - нормализация ``finish_reason`` разных провайдеров в единый enum;
+    - валидация входных параметров tool'ов (правило → сообщение об
+      ошибке).
+    """
+
+    def __init__(
+        self,
+        rules: Sequence[tuple[Specification[TIn], Callable[[TIn], TOut]]],
+        fallback: Callable[[TIn], TOut],
+    ) -> None:
+        self._dispatch: Callable[[TIn], TOut] = RuleDispatch(rules, fallback)
+
+    def convert(self, value: TIn) -> TOut:
+        return self._dispatch(value)
