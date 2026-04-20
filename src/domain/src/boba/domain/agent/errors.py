@@ -36,9 +36,9 @@
     │   │   │   └── PermanentPromptError
     │   │   │       └── PromptProviderError
     │   │   │
-    │   │   ├── HistoryError        [agent.history]   → PersistenceFailed
-    │   │   │   ├── HistoryWriteError
-    │   │   │   └── HistoryReadError
+    │   │   ├── MessageStoreError   [agent.messages]  → PersistenceFailed
+    │   │   │   ├── MessageStoreWriteError
+    │   │   │   └── MessageStoreReadError
     │   │   │
     │   │   ├── MaxIterationsExceededError [agent.errors] → MaxIterationsReached
     │   │   │
@@ -70,7 +70,7 @@
 ├──────────────────────────────────┼────────────────────────────────┤
 │ LLM упала/недоступна             │ LLMError / подкласс            │
 │ Промпт не собрался               │ PromptError (agent.prompt)     │
-│ Журнал недоступен                │ HistoryError (core.history)    │
+│ Хранилище сообщений недоступно   │ MessageStoreError (agent.msg)  │
 │ Tool упал (LLM должна увидеть)   │ ToolFeedbackError              │
 │ LLM сломала формат tool call     │ LLMToolCallFormatError         │
 │ Нотис пользователю               │ UserNoticeError (core.errors)  │
@@ -95,11 +95,11 @@
     except OSError as e:
         raise PromptProviderError(f"cannot read: {e}", provider="git") from e
 
-    from boba.domain.agent.history import HistoryWriteError
+    from boba.domain.agent.messages import MessageStoreWriteError
     try:
-        storage.write(entry)
+        storage.write(message)
     except OSError as e:
-        raise HistoryWriteError(e, ctx=f"entry_id={entry.id}") from e
+        raise MessageStoreWriteError(e, ctx=f"role={message.role}") from e
 
 **Сказать LLM про ошибку tool** (``ToolExecutionMiddleware`` обогащает
 «сырую» :class:`~boba.domain.core.tools.ToolExecutionError`

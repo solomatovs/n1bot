@@ -72,4 +72,7 @@ class AppConfig:
     workspaces: WorkspaceLayout = field(default_factory=WorkspaceLayout)
     ssl_verify: bool = False
     log_level: str = "INFO"
+    # Если задан — логи пишутся в этот файл. Если ``None`` — в stdout.
+    # Путь относительный резолвится от CWD процесса.
+    log_file: str | None = None
     llm: LLMConfig = field(default_factory=LLMConfig)

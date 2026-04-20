@@ -16,11 +16,11 @@ class AggregatingLLMRequestFactory(LLMRequestFactory):
     - ``ctx.llm_builder.tools`` — :class:`ToolsDefinitionMiddleware`;
     - ``ctx.llm_builder.sampling/tool_choice/response_format`` —
       соответствующие middleware (когда появятся);
-    - :class:`MessageService` — диалог (user/assistant/tool): первые user
-      сообщения кладут :class:`HistoryReplayMiddleware` (из истории) и
-      :class:`UserPromptMiddleware` (текущий запрос на итерации 1),
-      assistant — :class:`AssistantMessagePersistenceMiddleware`,
-      tool — :class:`ToolExecutionMiddleware`.
+    - :class:`MessageService` — диалог (user/assistant/tool): persistent-
+      реализация сама восстанавливает прошлый диалог при создании; новые
+      сообщения кладут :class:`UserPromptMiddleware` (user-запрос текущей
+      сессии), :class:`AssistantMessagePersistenceMiddleware` (assistant)
+      и :class:`ToolExecutionMiddleware` (tool).
 
     Сама фабрика ничего не строит — только читает слоты и склеивает
     финальный immutable :class:`LLMRequest`. Отключение любого middleware

@@ -4,8 +4,8 @@
 
 - :mod:`.agent` — оркестратор цикла.
 - :mod:`.prompt` — сборка system/user промптов.
-- :mod:`.dialogue` — синхронизация состояния диалога с
-  :class:`MessageService` (live-персистенс + replay истории).
+- :mod:`.dialogue` — live-синхронизация состояния диалога с
+  :class:`MessageService` (agrregation стриминговых событий).
 - :mod:`.tools` — определение каталога тулов, исполнение вызовов,
   защита от лупа идентичных вызовов.
 - :mod:`.content_tool_call` — эвристики «tool call в ``content``»:
@@ -28,11 +28,7 @@ from boba.domain.agent.meat.content_tool_call import (
     StrictJsonContentToolCallMiddleware,
     StrictJsonToolCallParser,
 )
-from boba.domain.agent.meat.dialogue import (
-    AssistantMessagePersistenceMiddleware,
-    HistoryPersistMiddleware,
-    HistoryReplayMiddleware,
-)
+from boba.domain.agent.meat.dialogue import AssistantMessagePersistenceMiddleware
 from boba.domain.agent.meat.error_routing import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
@@ -58,8 +54,6 @@ __all__ = [
     "AgentErrorRouter",
     "AgentErrorRouterMiddleware",
     "AssistantMessagePersistenceMiddleware",
-    "HistoryPersistMiddleware",
-    "HistoryReplayMiddleware",
     "IterationCounterMiddleware",
     "JsonContentToolCallMiddleware",
     "JsonDepthScanner",

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import sys
 
-from boba.app.logging import configure_logging
 from boba.domain.agent.meat import Agent
 from boba.domain.agent.models import AgentRequest, RequestId
 from boba.domain.core.workspace import UserWorkspaceManager, WorkspaceId
 from boba.infra.config import ConfigLoader
 from boba.infra.container import create_container, request_scope
+from boba.infra.logging import configure_logging
 
 FIXED_WORKSPACE_ID = WorkspaceId.from_wire("00000000-0000-0000-0000-000000000001")
 
@@ -17,7 +17,7 @@ FIXED_WORKSPACE_ID = WorkspaceId.from_wire("00000000-0000-0000-0000-000000000001
 def test_agent_loop_hello(query: str) -> None:
     loader = ConfigLoader()
     app_config = loader.load_app()
-    configure_logging(app_config.log_level)
+    configure_logging(app_config.log_level, app_config.log_file)
     agent_config = loader.load_agent()
     llm_defaults = loader.load_llm_defaults()
     container = create_container(app_config, agent_config, llm_defaults)

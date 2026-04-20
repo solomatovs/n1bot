@@ -1,16 +1,16 @@
 """Публичный API adapters-слоя.
 
-Реэкспортирует фасадные адаптеры: sink'и, сервисы workspace/history/
-messages, OpenAI-совместимый клиент LLM, провайдеры промптов и
-инструментов. Внутренние классы конкретных файлов (``IsServerError``,
-``RoleSource``, ``ThinkingSource`` и т.п. из :mod:`.openai_completion`)
-здесь не выставляются — это детали реализации, импортируй их напрямую
-из сабмодуля при необходимости.
+Реэкспортирует фасадные адаптеры: sink'и, сервисы workspace/messages,
+OpenAI-совместимый клиент LLM, провайдеры промптов и инструментов.
+Внутренние классы конкретных файлов (``IsServerError``, ``RoleSource``,
+``ThinkingSource`` и т.п. из :mod:`.openai_completion`) здесь не
+выставляются — это детали реализации, импортируй их напрямую из
+сабмодуля при необходимости.
 
 Импорты короткой формой::
 
     from boba.adapters import OpenAIMiddleware, StupidRetryLLMMiddleware
-    from boba.adapters import JsonLinesHistoryService, ConsoleSink
+    from boba.adapters import JsonLinesMessageService, ConsoleSink
     from boba.adapters import FsWorkspaceManager, FsWorkspaceService
 """
 
@@ -28,11 +28,7 @@ from boba.adapters.fs_workspace import (
     FsWorkspaceService,
 )
 from boba.adapters.in_memory_messages import InMemoryMessageService
-from boba.adapters.jsonl_history import (
-    HistoryEntryDecoder,
-    HistoryEntryEncoder,
-    JsonLinesHistoryService,
-)
+from boba.adapters.jsonl_messages import JsonLinesMessageService
 from boba.adapters.openai_completion import (
     FromOpenAIChunkConverter,
     OpenAIErrorConverter,
@@ -82,11 +78,9 @@ __all__ = [
     "FsWorkspaceManager",
     "FsWorkspaceService",
     "GitPromptProvider",
-    "HistoryEntryDecoder",
-    "HistoryEntryEncoder",
     "IDESelectionProvider",
     "InMemoryMessageService",
-    "JsonLinesHistoryService",
+    "JsonLinesMessageService",
     "MetricsRawLLMObserver",
     "MultiKeyReasoningExtractor",
     "OpenAIErrorConverter",

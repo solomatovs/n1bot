@@ -66,6 +66,7 @@ class ConfigLoader:
                 "INFO",
                 section=self._app,
             ),
+            log_file=self._resolve_opt("LOG_FILE", "log_file", self._app),
             llm=LLMConfig(
                 base_url=self._resolve(
                     "LLM_BASE_URL",
