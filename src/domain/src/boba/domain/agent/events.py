@@ -24,6 +24,27 @@ class FinishReason(StrEnum):
     TOOL_CALLS = "tool_calls"
     CONTENT_FILTER = "content_filter"
 
+    @property
+    def is_terminal(self) -> bool:
+        """Останавливает ли это завершение цикл агента.
+
+        ``TOOL_CALLS`` — единственное не-терминальное значение: LLM просит
+        выполнить tool, цикл делает следующую итерацию с результатом.
+        Остальные варианты означают, что LLM закончила работу над запросом
+        (успешно, обрывом по длине или фильтром контента) — продолжать
+        бессмысленно.
+
+        Реализовано через исчерпывающий ``match`` без ``default``: при
+        добавлении нового значения в enum pyright укажет на непокрытую
+        ветку, заставив явно классифицировать — а не молча унаследовать
+        поведение одного из лагерей.
+        """
+        match self:
+            case FinishReason.TOOL_CALLS:
+                return False
+            case FinishReason.STOP | FinishReason.LENGTH | FinishReason.CONTENT_FILTER:
+                return True
+
 
 @dataclass(frozen=True)
 class BaseEvent(ABC):

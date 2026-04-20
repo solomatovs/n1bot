@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import time
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -24,13 +23,17 @@ from openai.types.chat.chat_completion_chunk import (
     ChoiceDelta,
 )
 
-from boba.adapters.raw_llm_observer import RawLLMObserver
+from boba.adapters.raw_llm_observer import (
+    MultiKeyReasoningExtractor,
+    RawLLMObserver,
+)
 from boba.domain.agent.errors import (
     LLMAuthError,
     LLMConnectionError,
     LLMContextLengthError,
     LLMError,
     LLMInvalidRequestError,
+    LLMProtocolError,
     LLMProviderInternalError,
     LLMRateLimitError,
     LLMTimeoutError,
@@ -72,78 +75,6 @@ from boba.domain.core.patterns import (
 from boba.domain.core.tools import Tool
 
 logger = logging.getLogger(__name__)
-
-
-class LoggingLLMMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Логирует запрос, количество событий, токены по категориям,
-    ``finish_reason`` и время генерации. ``finish_reason=length`` или
-    подозрительный ``stop`` на границе ``max_tokens`` сразу виден в
-    консоли без копания в ``raw_messages.md``."""
-
-    def __init__(self, inner: StreamSource[AgentContext, AgentEvent]) -> None:
-        self._inner = inner
-
-    def name(self) -> str:
-        return "LoggingLLM"
-
-    def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
-        logger.info("LLM request: model=%s", ctx.request.model)
-        start = time.monotonic()
-        count = 0
-        answer_tokens = 0
-        thinking_tokens = 0
-        tool_arg_chunks = 0
-        finish_reason: FinishReason | None = None
-        outcome = "ok"
-
-        # try/finally: downstream может бросить исключение на yield
-        # (например, LLMToolCallFormatError из парсера content-JSON).
-        # Без finally итоговый лог "LLM done" не напишется и мы потеряем
-        # видимость finish_reason/токенов на падениях.
-        try:
-            for event in self._inner.stream(ctx):
-                count += 1
-                if isinstance(event, AnswerToken):
-                    answer_tokens += 1
-                elif isinstance(event, ThinkingToken):
-                    thinking_tokens += 1
-                elif isinstance(event, ToolCallArgumentDelta):
-                    tool_arg_chunks += 1
-                elif isinstance(event, GenerationDone):
-                    finish_reason = event.finish_reason
-                yield event
-        except GeneratorExit:
-            outcome = "cancelled"
-            raise
-        except BaseException as e:
-            outcome = f"raised:{type(e).__name__}"
-            raise
-        finally:
-            elapsed = time.monotonic() - start
-            sampling_max = ctx.llm_builder.sampling.max_tokens
-            suspected_truncation = (
-                finish_reason == FinishReason.STOP
-                and sampling_max is not None
-                and answer_tokens + thinking_tokens >= sampling_max
-            )
-            suffix = (
-                " (подозрение на обрыв по max_tokens)"
-                if suspected_truncation
-                else ""
-            )
-            logger.info(
-                "LLM done: %s, %d events in %.2fs, finish=%s, answer=%d, "
-                "thinking=%d, tool_arg_chunks=%d, max_tokens=%s%s",
-                outcome,
-                count,
-                elapsed,
-                finish_reason,
-                answer_tokens,
-                thinking_tokens,
-                tool_arg_chunks,
-                sampling_max,
-                suffix,
-            )
 
 
 class StupidRetryLLMMiddleware(StreamSource[AgentContext, AgentEvent]):
@@ -239,18 +170,28 @@ class OpenAIMiddleware(StreamSource[AgentContext, AgentEvent]):
         llm_request = self._llm_request_factory.build(ctx)
         kwargs = self._to_request_converter.convert(llm_request)
 
+        outcome = "ok"
+        self._observer.on_request(kwargs)
         try:
-            self._observer.on_request(kwargs)
-            response = self._client.chat.completions.create(**kwargs)
-            yield from FromOpenAIChunkConverter(ctx.request.request_id).stream(
-                ctx, self._log_chunks(response)
-            )
-        except LLMError:
+            try:
+                response = self._client.chat.completions.create(**kwargs)
+                yield from FromOpenAIChunkConverter(ctx.request.request_id).stream(
+                    ctx, self._observe_chunks(response)
+                )
+            except LLMError:
+                raise
+            except (openai.APIError, httpx.HTTPError) as e:
+                raise self._error_converter.convert(e) from e
+        except GeneratorExit:
+            outcome = "cancelled"
             raise
-        except (openai.APIError, httpx.HTTPError) as e:
-            raise self._error_converter.convert(e) from e
+        except BaseException as e:
+            outcome = f"raised:{type(e).__name__}"
+            raise
+        finally:
+            self._observer.on_request_end(outcome)
 
-    def _log_chunks(
+    def _observe_chunks(
         self, chunks: Iterable[ChatCompletionChunk]
     ) -> Iterable[ChatCompletionChunk]:
         for chunk in chunks:
@@ -557,44 +498,6 @@ class RoleSource(StreamTransformer[AgentContext, Choice, AgentEvent]):
                     yield GenerationStarted(request_id=self._request_id)
 
 
-class MultiKeyReasoningExtractor(Converter[ChoiceDelta, str | None]):
-    """Извлекает reasoning-токен из ``delta.model_extra``, перебирая
-    известные ключи по порядку.
-
-    Разные провайдеры кладут «рассуждения» модели в разные поля:
-
-    - ``reasoning_content`` — DeepSeek, xAI Grok, часть OpenAI-compat прокси;
-    - ``thinking`` — Anthropic через openai-compat, некоторые LiteLLM-маршруты;
-    - ``reasoning`` — Ollama native, Groq.
-
-    Дефолтный набор покрывает всех. Можно сузить/переопределить список,
-    передав свой кортеж в конструктор.
-
-    Провайдер-специфичный экстрактор — это просто другой
-    :class:`Converter[ChoiceDelta, str | None]` в отдельном модуле,
-    подключается через DI параметром :class:`ThinkingSource`. Прецедент
-    возврата ``None`` без исключений — :class:`JsonHeaderParser`
-    (``Converter[str, JsonToolCallHeader | None]``).
-    """
-
-    DEFAULT_KEYS: tuple[str, ...] = (
-        "reasoning_content",
-        "thinking",
-        "reasoning",
-    )
-
-    def __init__(self, keys: tuple[str, ...] | None = None) -> None:
-        self._keys = keys if keys is not None else self.DEFAULT_KEYS
-
-    def convert(self, value: ChoiceDelta) -> str | None:
-        extra = value.model_extra or {}
-        for k in self._keys:
-            v = extra.get(k)
-            if v:
-                return str(v)
-        return None
-
-
 class ThinkingSource(StreamTransformer[AgentContext, Choice, AgentEvent]):
     """Порождает ``ThinkingStarted``/``ThinkingToken``.
 
@@ -731,7 +634,14 @@ class FinishSource(StreamTransformer[AgentContext, Choice, AgentEvent]):
     ) -> Iterable[AgentEvent]:
         for choice in stream:
             if choice.finish_reason:
+                try:
+                    reason = FinishReason(choice.finish_reason)
+                except ValueError as e:
+                    raise LLMProtocolError(
+                        f"unknown finish_reason from provider: "
+                        f"{choice.finish_reason!r}"
+                    ) from e
                 yield GenerationDone(
                     request_id=self._request_id,
-                    finish_reason=FinishReason(choice.finish_reason),
+                    finish_reason=reason,
                 )

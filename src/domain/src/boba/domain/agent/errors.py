@@ -241,6 +241,17 @@ class LLMContextLengthError(PermanentLLMError):
     """Суммарная длина сообщений превысила окно модели."""
 
 
+class LLMProtocolError(PermanentLLMError):
+    """Провайдер вернул ответ вне ожидаемой схемы.
+
+    Пример: ``finish_reason`` пришёл со значением, которого нет в
+    :class:`~boba.domain.agent.events.FinishReason`. Retry не поможет —
+    провайдер вернёт ту же структуру. Адаптер должен поднять эту ошибку
+    при любом рассогласовании с контрактом (неизвестный enum, отсутствие
+    обязательного поля, неверный тип).
+    """
+
+
 class MaxIterationsExceededError(TerminalError):
     """Агентский цикл исчерпал лимит итераций без финального ответа.
 
@@ -261,7 +272,8 @@ class RepeatedFormatFailureError(TerminalError):
     """Модель N раз подряд вывела неверный формат tool call.
 
     Поднимается :class:`~boba.domain.agent.meat.RepeatedFormatFailureGuardMiddleware`
-    после накопления ``limit`` подряд :class:`~boba.domain.agent.events.ToolCallFormatFailed`
+    после накопления ``limit`` подряд
+    :class:`~boba.domain.agent.events.ToolCallFormatFailed`
     без успешного `ToolResultReady`. Роутер конвертирует в
     :class:`~boba.domain.agent.events.RepeatedFormatFailure`;
     :class:`~boba.domain.agent.meat.StopOnAnyFailure` ловит событие и

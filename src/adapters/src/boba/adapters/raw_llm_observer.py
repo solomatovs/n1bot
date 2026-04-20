@@ -9,13 +9,55 @@ Ollama/LiteLLM/третьи прокси.
 from __future__ import annotations
 
 import json
+import logging
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from typing import Any
 
-from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
+from openai.types.chat.chat_completion_chunk import ChatCompletionChunk, ChoiceDelta
 
+from boba.domain.core.patterns import Converter
 from boba.domain.core.workspace import WorkspaceService
+
+logger = logging.getLogger(__name__)
+
+
+class MultiKeyReasoningExtractor(Converter[ChoiceDelta, str | None]):
+    """Извлекает reasoning-токен из ``delta.model_extra``, перебирая
+    известные ключи по порядку.
+
+    Разные провайдеры кладут «рассуждения» модели в разные поля:
+
+    - ``reasoning_content`` — DeepSeek, xAI Grok, часть OpenAI-compat прокси;
+    - ``thinking`` — Anthropic через openai-compat, некоторые LiteLLM-маршруты;
+    - ``reasoning`` — Ollama native, Groq.
+
+    Дефолтный набор покрывает всех. Можно сузить/переопределить список,
+    передав свой кортеж в конструктор.
+
+    Провайдер-специфичный экстрактор — это просто другой
+    :class:`Converter[ChoiceDelta, str | None]` в отдельном модуле,
+    подключается через DI параметром :class:`ThinkingSource` /
+    :class:`MetricsRawLLMObserver`.
+    """
+
+    DEFAULT_KEYS: tuple[str, ...] = (
+        "reasoning_content",
+        "thinking",
+        "reasoning",
+    )
+
+    def __init__(self, keys: tuple[str, ...] | None = None) -> None:
+        self._keys = keys if keys is not None else self.DEFAULT_KEYS
+
+    def convert(self, value: ChoiceDelta) -> str | None:
+        extra = value.model_extra or {}
+        for k in self._keys:
+            v = extra.get(k)
+            if v:
+                return str(v)
+        return None
 
 
 class RawLLMObserver(ABC):
@@ -29,6 +71,12 @@ class RawLLMObserver(ABC):
     @abstractmethod
     def on_response_chunk(self, chunk: ChatCompletionChunk) -> None:
         """Вызывается для каждого полученного chunk-а потока ответа."""
+        ...
+
+    @abstractmethod
+    def on_request_end(self, outcome: str) -> None:
+        """Вызывается по завершении потока — ``outcome`` описывает исход
+        на wire-слое: ``ok`` / ``cancelled`` / ``raised:<ExcClassName>``."""
         ...
 
 
@@ -45,6 +93,10 @@ class CompositeRawLLMObserver(RawLLMObserver):
     def on_response_chunk(self, chunk: ChatCompletionChunk) -> None:
         for o in self._observers:
             o.on_response_chunk(chunk)
+
+    def on_request_end(self, outcome: str) -> None:
+        for o in self._observers:
+            o.on_request_end(outcome)
 
 
 class FileRawLLMObserver(RawLLMObserver):
@@ -71,6 +123,9 @@ class FileRawLLMObserver(RawLLMObserver):
     def on_response_chunk(self, chunk: ChatCompletionChunk) -> None:
         body = chunk.model_dump_json(indent=2)
         self._append(f"## Response chunk\n\n```json\n{body}\n```\n\n")
+
+    def on_request_end(self, outcome: str) -> None:
+        self._append(f"## End: {outcome}\n\n")
 
     def _append(self, text: str) -> None:
         with self._workspace.append_text(self._path) as f:
@@ -107,6 +162,79 @@ class FileContentObserver(RawLLMObserver):
             if content:
                 self._append(content)
 
+    def on_request_end(self, outcome: str) -> None:
+        self._append(f"\n\n## End: {outcome}\n")
+
     def _append(self, text: str) -> None:
         with self._workspace.append_text(self._path) as f:
             f.write(text)
+
+
+class MetricsRawLLMObserver(RawLLMObserver):
+    """Пишет одну строку-сводку в logger по завершении запроса.
+
+    Считает по **сырым** chunk-ам, а не по :class:`AgentEvent` после
+    трансформаций — так цифры не искажаются ``StrictJsonContentToolCall`` и
+    подобными middleware, которые переупаковывают content в tool-calls.
+    Замеряет также elapsed и outcome (ok/cancelled/raised:X) на wire-слое.
+    """
+
+    def __init__(
+        self,
+        reasoning_extractor: Converter[ChoiceDelta, str | None] | None = None,
+    ) -> None:
+        self._reasoning_extractor = (
+            reasoning_extractor
+            if reasoning_extractor is not None
+            else MultiKeyReasoningExtractor()
+        )
+        self._reset()
+
+    def _reset(self) -> None:
+        self._start: float | None = None
+        self._model: str | None = None
+        self._chunks = 0
+        self._content_chars = 0
+        self._reasoning_chars = 0
+        self._tool_arg_chars = 0
+        self._tool_call_indices: set[int] = set()
+        self._finish_reason: str | None = None
+
+    def on_request(self, kwargs: dict[str, Any]) -> None:
+        self._reset()
+        self._start = time.monotonic()
+        self._model = kwargs.get("model")
+        logger.info("LLM request: model=%s", self._model)
+
+    def on_response_chunk(self, chunk: ChatCompletionChunk) -> None:
+        self._chunks += 1
+        for choice in chunk.choices:
+            delta = choice.delta
+            if delta.content:
+                self._content_chars += len(delta.content)
+            reasoning = self._reasoning_extractor.convert(delta)
+            if reasoning:
+                self._reasoning_chars += len(reasoning)
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    self._tool_call_indices.add(tc.index)
+                    if tc.function and tc.function.arguments:
+                        self._tool_arg_chars += len(tc.function.arguments)
+            if choice.finish_reason:
+                self._finish_reason = choice.finish_reason
+
+    def on_request_end(self, outcome: str) -> None:
+        elapsed = time.monotonic() - self._start if self._start else 0.0
+        logger.info(
+            "LLM done: %s, model=%s, chunks=%d, content=%d ch, "
+            "reasoning=%d ch, tool_calls=%d (args=%d ch), finish=%s, elapsed=%.2fs",
+            outcome,
+            self._model,
+            self._chunks,
+            self._content_chars,
+            self._reasoning_chars,
+            len(self._tool_call_indices),
+            self._tool_arg_chars,
+            self._finish_reason,
+            elapsed,
+        )

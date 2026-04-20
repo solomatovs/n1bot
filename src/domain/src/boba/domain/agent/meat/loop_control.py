@@ -8,7 +8,6 @@ from collections.abc import Iterator
 from boba.domain.agent.errors import MaxIterationsExceededError
 from boba.domain.agent.events import (
     AgentEvent,
-    FinishReason,
     GenerationDone,
     GenerationFailed,
     MaxIterationsReached,
@@ -57,7 +56,7 @@ class StopOnFinished(Specification[tuple[AgentContext, AgentEvent]]):
         _ctx, event = candidate
 
         if isinstance(event, GenerationDone):
-            return event.finish_reason != FinishReason.TOOL_CALLS
+            return event.finish_reason.is_terminal
 
         return False
 
