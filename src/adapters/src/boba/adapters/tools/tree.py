@@ -15,6 +15,7 @@ from boba.domain.core.tools import (
     NonEmpty,
     ParamSchema,
     Pass,
+    Required,
     Tool,
     ToolDefinition,
     ToolExecutionError,
@@ -31,8 +32,8 @@ from boba.domain.core.workspace import (
 
 @dataclass(frozen=True)
 class TreeArgs:
-    path: str | None = None
-    limit: int | None = None
+    path: str | None
+    limit: int
 
 
 class TreeArgsConverter(Converter[dict[str, Any], TreeArgs]):
@@ -41,7 +42,7 @@ class TreeArgsConverter(Converter[dict[str, Any], TreeArgs]):
     def convert(self, value: dict[str, Any]) -> TreeArgs:
         return TreeArgs(
             path=value.get("path"),
-            limit=value.get("limit"),
+            limit=value["limit"],
         )
 
 
@@ -69,7 +70,9 @@ class TreeTool(Tool[TreeArgs]):
                 "Рекурсивно показать все файлы указанной директории, включая "
                 "содержимое всех вложенных поддиректорий. Возвращает плоский "
                 "список путей в порядке файловой системы, без сортировки. "
-                "Для одного уровня вложенности используй tool 'ls'."
+                "Для одного уровня вложенности используй tool 'ls'. Если "
+                "файлов больше limit — ответ обрезается, в заголовке будет "
+                "маркер '(truncated at limit=N)'."
             ),
             input_schema=ToolInputSchema(
                 params=[
@@ -84,10 +87,14 @@ class TreeTool(Tool[TreeArgs]):
                     ParamSchema(
                         name="limit",
                         description=(
-                            "Максимум элементов в ответе (целое >= 0). "
-                            "Без него возвращаются все."
+                            "Максимум элементов в ответе (целое >= 1). "
+                            "Обязательный параметр. Рекурсивный обход легко "
+                            "выдаёт тысячи путей — подбирай значение "
+                            "осознанно (разумные величины 100–1000); если "
+                            "маркер усечения сработал, сузь scope через "
+                            "более глубокий path."
                         ),
-                        validator=ChainValidator(IsInt(), MinValue(0)),
+                        validator=ChainValidator(Required(), IsInt(), MinValue(1)),
                     ),
                 ],
                 invariants=Pass(),
@@ -97,24 +104,24 @@ class TreeTool(Tool[TreeArgs]):
     def execute(self, ctx: None, args: TreeArgs) -> ToolResult:
         try:
             iterator = self._workspace.tree(args.path)
-            items = (
-                list(iterator)
-                if args.limit is None
-                else list(islice(iterator, args.limit))
-            )
+            items = list(islice(iterator, args.limit + 1))
         except WorkspaceError as e:
             raise ToolExecutionError(
                 tool_id=self._ID, message=f"Ошибка обхода: {e}"
             ) from e
+
+        truncated = len(items) > args.limit
+        if truncated:
+            items = items[: args.limit]
 
         location = args.path or "/"
 
         if not items:
             return ToolResult(content=f"{location} пуст.")
 
-        header = f"Файлы {location} ({len(items)}"
-        if args.limit is not None:
-            header += f", лимит={args.limit}"
+        header = f"Файлы {location} ({len(items)}, лимит={args.limit}"
+        if truncated:
+            header += f", truncated at limit={args.limit}"
         header += "):"
         body = "\n".join(f"- {p}" for p in items)
         return ToolResult(content=f"{header}\n{body}")
