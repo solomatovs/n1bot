@@ -13,7 +13,6 @@ from boba.adapters.fs_workspace import (
     FsTmpWorkspaceManager,
     FsUserWorkspaceManager,
 )
-from boba.adapters.history_sink import HistorySink
 from boba.adapters.in_memory_messages import InMemoryMessageService
 from boba.adapters.jsonl_history import JsonLinesHistoryService
 from boba.adapters.openai_completion import (
@@ -51,6 +50,7 @@ from boba.domain.agent.meat import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
     AssistantMessagePersistenceMiddleware,
+    HistoryPersistMiddleware,
     HistoryReplayMiddleware,
     IterationCounterMiddleware,
     RepeatedFormatFailureGuardMiddleware,
@@ -367,6 +367,14 @@ class RequestProvider(Provider):
         error_router: AgentErrorRouter,
     ) -> StreamSourceLoop[AgentContext, AgentEvent]:
         builder = StreamSourceChainBuilder[AgentContext, AgentEvent]()
+        builder.use(
+            lambda inner: HistoryPersistMiddleware(inner, history_service)
+        )
+        builder.use(
+            lambda inner: HistoryReplayMiddleware(
+                inner, history_service, message_service
+            )
+        )
         builder.use(IterationCounterMiddleware)
         builder.use(
             lambda inner: RepeatedFormatFailureGuardMiddleware(
@@ -376,11 +384,6 @@ class RequestProvider(Provider):
             )
         )
         builder.use(lambda inner: AgentErrorRouterMiddleware(inner, error_router))
-        builder.use(
-            lambda inner: HistoryReplayMiddleware(
-                inner, history_service, message_service
-            )
-        )
         builder.use(lambda inner: SystemPromptMiddleware(inner, prompt_providers))
         builder.use(
             lambda inner: UserPromptMiddleware(inner, prompt_providers, message_service)
@@ -414,16 +417,8 @@ class RequestProvider(Provider):
         return StreamSourceLoop(chain, stop)
 
     @provide
-    def agent_sink(
-        self,
-        history: HistoryService,
-    ) -> StreamSink[AgentContext, AgentEvent]:
-        return StreamSinkPipeline(
-            [
-                ConsoleSink(),
-                HistorySink(history),
-            ]
-        )
+    def agent_sink(self) -> StreamSink[AgentContext, AgentEvent]:
+        return StreamSinkPipeline([ConsoleSink()])
 
     @provide
     def agent(
