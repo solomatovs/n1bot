@@ -1,11 +1,10 @@
-"""Tool: удаление файла из workspace."""
+"""Tool: удаление файла из пользовательского workspace."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
 
-from boba.adapters.tools._workspace_arg import WorkspaceScopedToolId
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainValidator,
@@ -23,10 +22,9 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
+    UserWorkspaceService,
     WorkspaceError,
-    WorkspaceKind,
     WorkspaceNotFoundError,
-    WorkspaceResolver,
 )
 
 
@@ -45,20 +43,14 @@ class DeleteFileArgsConverter(Converter[dict[str, Any], DeleteFileArgs]):
 class DeleteFileTool(Tool[DeleteFileArgs]):
     """Удаление файла из workspace."""
 
-    _BASE_NAME = "delete_file"
+    _ID = ToolId("delete_file")
     _SOURCE = ToolSourceId("builtin.files")
 
-    def __init__(
-        self,
-        resolver: WorkspaceResolver,
-        workspace: WorkspaceKind,
-    ) -> None:
-        self._resolver = resolver
+    def __init__(self, workspace: UserWorkspaceService) -> None:
         self._workspace = workspace
-        self._id = WorkspaceScopedToolId.build(workspace, self._BASE_NAME)
 
     def tool_id(self) -> ToolId:
-        return self._id
+        return self._ID
 
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
@@ -69,15 +61,15 @@ class DeleteFileTool(Tool[DeleteFileArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                f"Удалить файл из workspace '{self._workspace.name}'. "
-                "Операция безвозвратна — отмены нет, используй с осторожностью. "
-                "Если файла нет — возвращает ошибку 'Файл не найден'."
+                "Удалить файл. Операция безвозвратна — отмены нет, используй "
+                "с осторожностью. Если файла нет — возвращает ошибку 'Файл "
+                "не найден'."
             ),
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
                         name="filename",
-                        description="Путь к файлу относительно корня workspace.",
+                        description="Путь к файлу.",
                         validator=ChainValidator(Required(), IsString(), NonEmpty()),
                     ),
                 ],
@@ -86,17 +78,14 @@ class DeleteFileTool(Tool[DeleteFileArgs]):
         )
 
     def execute(self, ctx: None, args: DeleteFileArgs) -> ToolResult:
-        workspace = self._resolver.resolve(self._workspace)
         try:
-            workspace.delete(args.filename)
+            self._workspace.delete(args.filename)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._id, message=f"Файл не найден: {args.filename}"
+                tool_id=self._ID, message=f"Файл не найден: {args.filename}"
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._id, message=f"Ошибка удаления: {e}"
+                tool_id=self._ID, message=f"Ошибка удаления: {e}"
             ) from e
-        return ToolResult(
-            content=f"Файл удалён: {self._workspace.name}:{args.filename}"
-        )
+        return ToolResult(content=f"Файл удалён: {args.filename}")

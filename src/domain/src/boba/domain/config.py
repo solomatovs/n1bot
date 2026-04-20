@@ -8,17 +8,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import MappingProxyType
-
-from boba.domain.core.workspace import (
-    SYSTEM_WORKSPACE_KIND,
-    TMP_WORKSPACE_KIND,
-    USER_WORKSPACE_KIND,
-    WorkspaceKind,
-)
 
 
 @dataclass(frozen=True)
@@ -34,31 +25,18 @@ class LLMConfig:
 class WorkspaceLayout:
     """Раскладка namespace'ов workspace'а относительно ``base_dir``.
 
-    Единый источник истины для путей: DI-проводка не знает, как называется
-    подкаталог под user/system/tmp — только спрашивает ``resolve(kind)``.
-    Дефолты = ``kind.name`` (``user`` / ``system`` / ``tmp``), но каждое
-    имя можно переопределить через конфиг.
+    Поля — подкаталоги для user/system/tmp. Дискриминация делается в
+    DI через маркерные сервисы, поэтому конфиг держит имена явно, а не
+    через словарь по ``kind``.
     """
 
     base_dir: str = "./workspaces"
-    subdirs: Mapping[WorkspaceKind, str] = field(
-        default_factory=lambda: MappingProxyType(
-            {
-                USER_WORKSPACE_KIND: USER_WORKSPACE_KIND.name,
-                SYSTEM_WORKSPACE_KIND: SYSTEM_WORKSPACE_KIND.name,
-                TMP_WORKSPACE_KIND: TMP_WORKSPACE_KIND.name,
-            }
-        )
-    )
+    user_subdir: str = "user"
+    system_subdir: str = "system"
+    tmp_subdir: str = "tmp"
 
     def root(self) -> Path:
         return Path(self.base_dir)
-
-    def subdir(self, kind: WorkspaceKind) -> str:
-        try:
-            return self.subdirs[kind]
-        except KeyError as e:
-            raise KeyError(f"no subdir configured for kind {kind!r}") from e
 
 
 @dataclass(frozen=True)

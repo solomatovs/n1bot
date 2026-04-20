@@ -76,11 +76,6 @@ from boba.domain.core.tools import (
     ToolsService,
 )
 from boba.domain.core.workspace import (
-    SYSTEM_WORKSPACE_KIND,
-    TMP_WORKSPACE_KIND,
-    USER_WORKSPACE_KIND,
-    AllowedWorkspacesSpec,
-    MappingWorkspaceResolver,
     SystemWorkspaceManager,
     SystemWorkspaceService,
     TmpWorkspaceManager,
@@ -88,7 +83,6 @@ from boba.domain.core.workspace import (
     UserWorkspaceManager,
     UserWorkspaceService,
     WorkspaceId,
-    WorkspaceResolver,
 )
 
 
@@ -116,21 +110,21 @@ class AppProvider(Provider):
     def user_workspace_manager(self, config: AppConfig) -> UserWorkspaceManager:
         return FsUserWorkspaceManager(
             config.workspaces.root(),
-            config.workspaces.subdir(USER_WORKSPACE_KIND),
+            config.workspaces.user_subdir,
         )
 
     @provide
     def system_workspace_manager(self, config: AppConfig) -> SystemWorkspaceManager:
         return FsSystemWorkspaceManager(
             config.workspaces.root(),
-            config.workspaces.subdir(SYSTEM_WORKSPACE_KIND),
+            config.workspaces.system_subdir,
         )
 
     @provide
     def tmp_workspace_manager(self, config: AppConfig) -> TmpWorkspaceManager:
         return FsTmpWorkspaceManager(
             config.workspaces.root(),
-            config.workspaces.subdir(TMP_WORKSPACE_KIND),
+            config.workspaces.tmp_subdir,
         )
 
     @provide
@@ -231,64 +225,26 @@ class RequestProvider(Provider):
             manager.delete(workspace_id)
 
     @provide
-    def workspace_resolver(
-        self,
-        user: UserWorkspaceService,
-        tmp: TmpWorkspaceService,
-    ) -> WorkspaceResolver:
-        """Резолвер ``WorkspaceKind → WorkspaceService`` для tools.
-
-        Сервисы берутся из DI — ID сессии у всех один (см.
-        :func:`boba.infra.container.request_scope`). Системный workspace
-        не экспонируется: tools в него писать не должны.
-        """
-        return MappingWorkspaceResolver(
-            {
-                USER_WORKSPACE_KIND: user,
-                TMP_WORKSPACE_KIND: tmp,
-            }
-        )
-
-    @provide
-    def tool_workspace_allow(self) -> AllowedWorkspacesSpec:
-        """Белый список workspace'ов, доступных builtin-tools.
-
-        Держим синхронно с :meth:`workspace_resolver` — tool не должен
-        уметь обращаться к kind'у, которого нет в резолвере. Если
-        понадобится разный allow-list на разных tools — перенести в
-        per-tool конфиг.
-        """
-        return AllowedWorkspacesSpec(
-            [USER_WORKSPACE_KIND, TMP_WORKSPACE_KIND]
-        )
-
-    @provide
     def tool_factory(
         self,
-        resolver: WorkspaceResolver,
-        allowed: AllowedWorkspacesSpec,
+        user_workspace: UserWorkspaceService,
     ) -> ToolFactory:
         """Агрегатор источников инструментов, собираемый на запрос.
 
-        Per-request, потому что file-tools получают per-request резолвер
-        workspace'ов (сервисы в нём per-request). Плагины/MCP-источники
-        подключать сюда же рядом с builtin-пачкой.
+        Per-request, потому что file-tools получают per-request сервис
+        workspace'а. Плагины/MCP-источники подключать сюда же рядом с
+        builtin-пачкой.
 
-        На каждый разрешённый :class:`WorkspaceKind` регистрируется
-        отдельный инстанс каждого tool'а — workspace кодируется в имени
-        tool'а (``{kind}__{base}``), а не в параметрах.
+        Builtin file-tools ходят только в :class:`UserWorkspaceService` —
+        системный/tmp пользователю писать нельзя.
         """
-        tools = []
-        for kind in sorted(allowed.kinds, key=lambda k: k.name):
-            tools.extend(
-                [
-                    ReadFileTool(resolver, kind),
-                    EditFileTool(resolver, kind),
-                    DeleteFileTool(resolver, kind),
-                    LsTool(resolver, kind),
-                    TreeTool(resolver, kind),
-                ]
-            )
+        tools = [
+            ReadFileTool(user_workspace),
+            EditFileTool(user_workspace),
+            DeleteFileTool(user_workspace),
+            LsTool(user_workspace),
+            TreeTool(user_workspace),
+        ]
 
         factory = ToolFactory()
         factory.register(
