@@ -302,6 +302,34 @@ class WorkspaceService(ABC):
         """
         ...
 
+    @abstractmethod
+    def edit_text(
+        self,
+        path: str,
+        old: str,
+        new: str,
+        *,
+        replace_all: bool = False,
+        encoding: str = "utf-8",
+    ) -> int:
+        """Find-and-replace редактирование текстового файла.
+
+        Подменяет ``old`` на ``new`` в содержимом файла. Если
+        ``replace_all=False`` (по умолчанию), ``old`` должен встречаться
+        ровно один раз — иначе ``WorkspaceError`` с явным сообщением
+        (LLM должна перечитать файл и уточнить контекст). Если
+        ``replace_all=True``, заменяются все вхождения. ``old`` не должна
+        быть пустой. Возвращает число выполненных замен.
+
+        Raises:
+            WorkspaceNotFoundError: файла не существует.
+            WorkspacePermissionError: нет прав.
+            WorkspaceDecodingError: файл не декодируется в ``encoding``.
+            WorkspaceError: ``old`` не найден / неуникален без
+                ``replace_all`` / прочие I/O-ошибки.
+        """
+        ...
+
 
 class WorkspaceManager(ABC):
     """Управляет жизненным циклом workspace'ов одного namespace.
