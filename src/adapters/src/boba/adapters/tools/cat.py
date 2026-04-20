@@ -35,7 +35,7 @@ from boba.domain.core.workspace import (
 
 @dataclass(frozen=True)
 class CatArgs:
-    filename: str
+    path: str
     encoding: str
     start_line: int
     end_line: int
@@ -46,7 +46,7 @@ class CatArgsConverter(Converter[dict[str, Any], CatArgs]):
 
     def convert(self, value: dict[str, Any]) -> CatArgs:
         return CatArgs(
-            filename=value["filename"],
+            path=value["path"],
             encoding=value["encoding"],
             start_line=value["start_line"],
             end_line=value["end_line"],
@@ -99,7 +99,7 @@ class CatTool(Tool[CatArgs]):
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
-                        name="filename",
+                        name="path",
                         description="Путь к файлу.",
                         validator=ChainValidator(Required(), IsString(), NonEmpty()),
                     ),
@@ -150,18 +150,18 @@ class CatTool(Tool[CatArgs]):
             )
 
         try:
-            with self._workspace.read_text(args.filename, args.encoding) as f:
+            with self._workspace.read_text(args.path, args.encoding) as f:
                 text, last = self._read_range(f, args.start_line, args.end_line)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Файл не найден: {args.filename}"
+                tool_id=self._ID, message=f"Файл не найден: {args.path}"
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
                 tool_id=self._ID, message=f"Ошибка чтения: {e}"
             ) from e
 
-        label = f"{args.filename}:{args.start_line}-{last}"
+        label = f"{args.path}:{args.start_line}-{last}"
         return ToolResult(content=f"### {label}\n\n{text}")
 
     @staticmethod

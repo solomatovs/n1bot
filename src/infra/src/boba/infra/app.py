@@ -32,6 +32,7 @@ from boba.adapters.raw_llm_observer import (
     MetricsRawLLMObserver,
     RawLLMObserver,
 )
+from boba.adapters.tool_call_reindexer import DuplicateToolCallIndexReindexer
 from boba.adapters.tool_providers import StaticToolSource
 from boba.adapters.tools import (
     AppendTool,
@@ -235,6 +236,41 @@ class AppProvider(Provider):
                     "history.jsonl, raw_messages.md. Первый хранит "
                     "читаемый стрим ответов модели, второй — журнал "
                     "событий, третий — сырой дамп запросов и чанков.\n"
+                ),
+                kind=PromptKind.SYSTEM,
+            ),
+            StaticPromptProvider(
+                PromptId("tool_errors"),
+                priority=85,
+                content=(
+                    "Ошибка инструмента — не повод писать "
+                    "пользователю.\n"
+                    "\n"
+                    "Если tool вернул ошибку "
+                    "(InvalidToolArgumentError, неизвестный "
+                    "параметр, неверный путь и т.п.) — это сигнал "
+                    "исправить вызов и повторить его следующим "
+                    "турном в режиме 1 (только tool_calls, content "
+                    "пустой). Объяснять ошибку пользователю прозой "
+                    "запрещено: он видит её сам в логе, ему нужен "
+                    "результат задачи, а не разбор синтаксиса "
+                    "вызова.\n"
+                    "\n"
+                    "Исключение — когда исправить вызов объективно "
+                    "нельзя: нет подходящего инструмента, нет прав, "
+                    "файл не существует после проверки через stat/"
+                    "ls. Только в этих случаях допустима короткая "
+                    "проза с констатацией причины.\n"
+                    "\n"
+                    "Задача пользователя обязательна к выполнению. "
+                    "Нельзя перекладывать её обратно фразами вида "
+                    "«укажите файл», «нужно прочитать?», «помогу, "
+                    "если скажете». Если у тебя уже есть результат "
+                    "ls, stat или список файлов — выбирай цели сам "
+                    "и читай их. Если запрос неоднозначен — всё "
+                    "равно делай разумный шаг (например, прочитать "
+                    "все файлы из корня workspace), уточнения "
+                    "оставь на потом."
                 ),
                 kind=PromptKind.SYSTEM,
             ),
@@ -472,7 +508,14 @@ class RequestProvider(Provider):
         builder.use(StrictJsonContentToolCallMiddleware)
 
         chain = builder.terminal(
-            OpenAIMiddleware(config.llm, llm_request_factory, raw_observer)
+            OpenAIMiddleware(
+                config.llm,
+                llm_request_factory,
+                raw_observer,
+                chunk_preprocessor_factory=lambda _rid: (
+                    DuplicateToolCallIndexReindexer(),
+                ),
+            )
         )
 
         stop = StopOnFinished().or_(StopOnAnyFailure())

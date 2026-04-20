@@ -32,7 +32,7 @@ from boba.domain.core.workspace import (
 
 @dataclass(frozen=True)
 class EditArgs:
-    filename: str
+    path: str
     old_string: str
     new_string: str
     replace_all: bool
@@ -42,7 +42,7 @@ class EditArgs:
 class EditArgsConverter(Converter[dict[str, Any], EditArgs]):
     def convert(self, value: dict[str, Any]) -> EditArgs:
         return EditArgs(
-            filename=value["filename"],
+            path=value["path"],
             old_string=value["old_string"],
             new_string=value["new_string"],
             replace_all=value["replace_all"],
@@ -82,7 +82,7 @@ class EditTool(Tool[EditArgs]):
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
-                        name="filename",
+                        name="path",
                         description="Путь к файлу.",
                         validator=ChainValidator(Required(), IsString(), NonEmpty()),
                     ),
@@ -130,7 +130,7 @@ class EditTool(Tool[EditArgs]):
     def execute(self, ctx: None, args: EditArgs) -> ToolResult:
         try:
             applied = self._workspace.edit_text(
-                args.filename,
+                args.path,
                 args.old_string,
                 args.new_string,
                 replace_all=args.replace_all,
@@ -138,12 +138,12 @@ class EditTool(Tool[EditArgs]):
             )
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Файл не найден: {args.filename}",
+                tool_id=self._ID, message=f"Файл не найден: {args.path}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
                 tool_id=self._ID, message=f"Ошибка edit: {e}",
             ) from e
         return ToolResult(
-            content=f"Заменено в {args.filename}: {applied} вхождение(й).",
+            content=f"Заменено в {args.path}: {applied} вхождение(й).",
         )
