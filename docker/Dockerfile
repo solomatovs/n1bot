@@ -34,9 +34,5 @@ COPY src/boba-domain/src/boba_domain/     ./src/boba-domain/src/boba_domain/
 COPY src/boba-app/src/boba_app/           ./src/boba-app/src/boba_app/
 COPY src/boba-adapters/src/boba_adapters/ ./src/boba-adapters/src/boba_adapters/
 COPY src/boba-infra/src/boba_infra/       ./src/boba-infra/src/boba_infra/
-COPY src/boba-api/src/boba_api/               ./src/boba-api/src/boba_api/
-COPY src/boba-chainlit/src/boba_chainlit/     ./src/boba-chainlit/src/boba_chainlit/
 
-ENV PYTHONPATH="/app/src/boba-domain/src:/app/src/boba-app/src:/app/src/boba-adapters/src:/app/src/boba-infra/src:/app/src/boba-api/src:/app/src/boba-chainlit/src"
-
-EXPOSE 8000 8080
+ENV PYTHONPATH="/app/src/boba-domain/src:/app/src/boba-app/src:/app/src/boba-adapters/src:/app/src/boba-infra/src"

@@ -6,31 +6,37 @@
 #
 # Секреты хранятся отдельно в ../secrets/:
 #   echo "your-api-key" > ../secrets/litellm_api_key
-#   echo "your-token" > ../secrets/confluence_token
+#
+# Приоритет разрешения: <KEY>_FILE → <KEY> env → TOML → default
 # ============================================================
 
 [app]
-litellm_url = "http://litellm:4000"
-confluence_url = "http://confl:8090"
-default_collection = "testing"
-embedding_model = "e5-large-instruct"
-llm_timeout = 600
-embedding_timeout = 120
 ssl_verify = false
-import_base_dir = "./import"
 log_level = "INFO"
+# log_file = "/var/log/boba.log"
 
-[agent]
-max_iterations = 10
-default_model = "qwen3-0.6b"
-# limit_message = "Достигнут лимит итераций агента."
+[app.llm]
+base_url = "http://localhost:11434/v1"
+model = "qwen3:8b"
+# api_key подаётся через LITELLM_API_KEY_FILE (или LITELLM_API_KEY env)
 
-[api]
-root_path = "/boba"
-host = "0.0.0.0"
-port = 8000
+# Дефолты sampling (применяются SamplingMiddleware):
+# temperature = 0.7
+# top_p = 1.0
+# max_tokens = 4096
+# seed = 42
+# stop = ["</s>"]
+# frequency_penalty = 0.0
+# presence_penalty = 0.0
+# parallel_tool_calls = true
 
-[chainlit]
-root_path = "/boba"
-host = "0.0.0.0"
-port = 8080
+[app.agent]
+max_iterations = 20
+max_consecutive_tool_calls = 3
+max_consecutive_format_failures = 3
+
+[app.workspaces]
+base_dir = "./workspaces"
+user = "user"
+system = "system"
+tmp = "tmp"

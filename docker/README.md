@@ -1,6 +1,6 @@
 # Boba Docker
 
-Astra Linux CE 2.12 + glibc 2.28 + Python 3.11. Два сервиса: FastAPI (API) + Chainlit (UI).
+Astra Linux CE 2.12 + glibc 2.28 + Python 3.11.
 
 ## Быстрый старт
 
@@ -39,10 +39,9 @@ docker build -f Dockerfile.base -t boba-base ..
 ```
 docker/
 ├── config/
-│   ├── config.toml            # [app] + [api] + [chainlit] — всё приложение
+│   ├── config.toml            # [app] — всё приложение
 │   ├── config.debug.toml      # то же для launch.json
-│   ├── config.example.toml    # шаблон (в git)
-│   └── .chainlit/config.toml  # UI/features Chainlit
+│   └── config.example.toml    # шаблон (в git)
 ├── secrets/                   # Docker secrets (не в git)
 ├── wheels/                    # Python wheels для offline-сборки
 ├── import/                    # данные — папки с документами
@@ -50,15 +49,6 @@ docker/
 ├── Dockerfile.base            # полная сборка из astra_linux_ce
 └── docker-compose.yml
 ```
-
-## Сервисы
-
-| Сервис | Порт | Назначение |
-|--------|------|------------|
-| `boba-api` | 8000 | FastAPI — `/boba/api/chat`, `/boba/health` |
-| `boba-chainlit` | 8080 | Chainlit UI — `/boba/` |
-
-Доступ через nginx: `https://loshara.com/boba/`
 
 ## Команды
 

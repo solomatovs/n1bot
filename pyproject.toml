@@ -15,8 +15,6 @@ boba-domain = { path = "src/domain", develop = true }
 boba-app = { path = "src/app", develop = true }
 boba-adapters = { path = "src/adapters", develop = true }
 boba-infra = { path = "src/infra", develop = true }
-boba-api = { path = "src/api", develop = true }
-boba-chainlit = { path = "src/chainlit", develop = true }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"
@@ -30,8 +28,6 @@ pythonpath = [
     "src/app/src",
     "src/adapters/src",
     "src/infra/src",
-    "src/api/src",
-    "src/chainlit/src",
 ]
 
 [tool.pyright]
@@ -47,8 +43,6 @@ extraPaths = [
     "src/app/src",
     "src/adapters/src",
     "src/infra/src",
-    "src/api/src",
-    "src/chainlit/src",
 ]
 venvPath = "."
 venv = ".venv"
