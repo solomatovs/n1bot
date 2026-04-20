@@ -21,6 +21,7 @@ from boba.domain.agent.events import (
     AnswerDiscarded,
     AnswerStarted,
     AnswerToken,
+    FinishReason,
     GenerationDone,
     ToolCallArgumentDelta,
     ToolCallBegin,
@@ -265,7 +266,9 @@ class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]
         try:
             parsed = self._parser.convert(raw)
         except LLMToolCallFormatError:
-            yield GenerationDone(request_id=rid, finish_reason="tool_calls")
+            yield GenerationDone(
+                request_id=rid, finish_reason=FinishReason.TOOL_CALLS
+            )
             raise
         yield AnswerDiscarded(request_id=rid)
         yield ToolCallBegin(
@@ -279,4 +282,4 @@ class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]
             index=0,
             arguments=parsed.arguments,
         )
-        yield GenerationDone(request_id=rid, finish_reason="tool_calls")
+        yield GenerationDone(request_id=rid, finish_reason=FinishReason.TOOL_CALLS)

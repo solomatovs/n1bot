@@ -18,10 +18,8 @@
 ждут внешние импорты ``from boba.domain.agent.meat import ...``.
 """
 
-from boba.domain.agent.models import AgentContext
-
-from .agent import Agent
-from .content_tool_call import (
+from boba.domain.agent.meat import Agent
+from boba.domain.agent.meat.content_tool_call import (
     JsonContentToolCallMiddleware,
     JsonDepthScanner,
     JsonHeaderParser,
@@ -30,24 +28,28 @@ from .content_tool_call import (
     StrictJsonContentToolCallMiddleware,
     StrictJsonToolCallParser,
 )
-from .dialogue import (
+from boba.domain.agent.meat.dialogue import (
     AssistantMessagePersistenceMiddleware,
     HistoryReplayMiddleware,
 )
-from .error_routing import AgentErrorRouter, AgentErrorRouterMiddleware
-from .loop_control import (
+from boba.domain.agent.meat.error_routing import (
+    AgentErrorRouter,
+    AgentErrorRouterMiddleware,
+)
+from boba.domain.agent.meat.loop_control import (
     IterationCounterMiddleware,
     StopOnAnyFailure,
     StopOnFinished,
 )
-from .prompt import SystemPromptMiddleware, UserPromptMiddleware
-from .sampling import SamplingMiddleware
-from .tools import (
+from boba.domain.agent.meat.prompt import SystemPromptMiddleware, UserPromptMiddleware
+from boba.domain.agent.meat.sampling import SamplingMiddleware
+from boba.domain.agent.meat.tools import (
     RepeatedFormatFailureGuardMiddleware,
     RepeatedToolCallGuardMiddleware,
     ToolExecutionMiddleware,
     ToolsDefinitionMiddleware,
 )
+from boba.domain.agent.models import AgentContext
 
 __all__ = [
     "Agent",
