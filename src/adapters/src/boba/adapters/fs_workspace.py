@@ -32,7 +32,7 @@ from boba.domain.core.workspace import (
     WorkspacePermissionError,
     WorkspaceService,
 )
-from boba.domain.growbuffer import GrowBuffer
+from boba.adapters.growbuffer import GrowBuffer
 
 
 class FsPathValidator(Validator[str]):
