@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Literal, TypeAlias
+from typing import Literal, TypeAlias, assert_never
 
 from boba.domain.agent.models import RequestId
 from boba.domain.core.errors import UserNoticeSeverity
@@ -34,16 +34,18 @@ class FinishReason(StrEnum):
         (успешно, обрывом по длине или фильтром контента) — продолжать
         бессмысленно.
 
-        Реализовано через исчерпывающий ``match`` без ``default``: при
-        добавлении нового значения в enum pyright укажет на непокрытую
-        ветку, заставив явно классифицировать — а не молча унаследовать
-        поведение одного из лагерей.
+        Реализовано через исчерпывающий ``match`` с :func:`assert_never`
+        в хвосте: при добавлении нового значения в enum pyright укажет на
+        непокрытую ветку, заставив явно классифицировать — а не молча
+        унаследовать поведение одного из лагерей.
         """
         match self:
             case FinishReason.TOOL_CALLS:
                 return False
             case FinishReason.STOP | FinishReason.LENGTH | FinishReason.CONTENT_FILTER:
                 return True
+            case _:
+                assert_never(self)
 
 
 @dataclass(frozen=True)

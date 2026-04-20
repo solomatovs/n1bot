@@ -18,7 +18,7 @@
 ждут внешние импорты ``from boba.domain.agent.meat import ...``.
 """
 
-from boba.domain.agent.meat import Agent
+from boba.domain.agent.meat.agent import Agent
 from boba.domain.agent.meat.content_tool_call import (
     JsonContentToolCallMiddleware,
     JsonDepthScanner,
