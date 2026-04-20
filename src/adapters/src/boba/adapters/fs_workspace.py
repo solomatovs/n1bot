@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import stat as stat_mod
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -311,6 +312,12 @@ class FsWorkspaceService(WorkspaceService):
         with self._map_errors(resolved):
             resolved.absolute.mkdir(parents=True, exist_ok=True)
 
+    def touch(self, path: str) -> None:
+        resolved = self._resolve(path)
+        with self._map_errors(resolved):
+            resolved.absolute.parent.mkdir(parents=True, exist_ok=True)
+            resolved.absolute.touch(exist_ok=True)
+
     def _ensure_created(self, resolved: _ResolvedPath) -> Path:
         resolved.absolute.parent.mkdir(parents=True, exist_ok=True)
         return resolved.absolute
@@ -416,10 +423,59 @@ class FsWorkspaceService(WorkspaceService):
         with self._map_errors(resolved):
             return resolved.absolute.exists()
 
-    def delete(self, key: str) -> None:
+    def delete(self, key: str, *, recursive: bool = False) -> None:
         resolved = self._resolve(key)
         with self._map_errors(resolved):
-            resolved.absolute.unlink()
+            if not resolved.absolute.exists():
+                raise WorkspaceNotFoundError(resolved.relative)
+            if resolved.absolute.is_dir():
+                if not recursive:
+                    raise WorkspaceError(
+                        f"is a directory: {resolved.relative!r} "
+                        f"(use recursive=True)",
+                        path=resolved.relative,
+                    )
+                shutil.rmtree(resolved.absolute)
+            else:
+                resolved.absolute.unlink()
+
+    def move(self, src: str, dst: str) -> None:
+        src_resolved = self._resolve(src)
+        dst_resolved = self._resolve(dst)
+        with self._map_errors(src_resolved):
+            if not src_resolved.absolute.exists():
+                raise WorkspaceNotFoundError(src_resolved.relative)
+            shutil.move(str(src_resolved.absolute), str(dst_resolved.absolute))
+
+    def copy(self, src: str, dst: str, *, recursive: bool = False) -> None:
+        src_resolved = self._resolve(src)
+        dst_resolved = self._resolve(dst)
+        with self._map_errors(src_resolved):
+            if not src_resolved.absolute.exists():
+                raise WorkspaceNotFoundError(src_resolved.relative)
+
+            # cp-совместимая семантика: если dst — существующая
+            # директория, копия кладётся внутрь с именем src.
+            if dst_resolved.absolute.is_dir():
+                final_dst = dst_resolved.absolute / src_resolved.absolute.name
+            else:
+                final_dst = dst_resolved.absolute
+
+            if src_resolved.absolute.is_dir():
+                if not recursive:
+                    raise WorkspaceError(
+                        f"is a directory: {src_resolved.relative!r} "
+                        f"(use recursive=True)",
+                        path=src_resolved.relative,
+                    )
+                shutil.copytree(
+                    src_resolved.absolute,
+                    final_dst,
+                    copy_function=shutil.copyfile,
+                    dirs_exist_ok=True,
+                )
+            else:
+                shutil.copyfile(src_resolved.absolute, final_dst)
 
     def _iter_files(
         self, path: str | None, spec: Specification[str] | None, recursive: bool
@@ -452,12 +508,19 @@ class FsWorkspaceService(WorkspaceService):
     def meta(self, key: str) -> FileMeta:
         resolved = self._resolve(key)
         with self._map_errors(resolved):
-            stat = resolved.absolute.stat()
+            st = resolved.absolute.stat()
+            if stat_mod.S_ISDIR(st.st_mode):
+                kind = "directory"
+            elif stat_mod.S_ISREG(st.st_mode):
+                kind = "file"
+            else:
+                kind = "other"
 
             return FileMeta(
                 path=resolved.relative,
-                size=stat.st_size,
-                modified=datetime.fromtimestamp(stat.st_mtime, tz=None),
+                size=st.st_size,
+                modified=datetime.fromtimestamp(st.st_mtime, tz=None),
+                kind=kind,
             )
 
     def _resolve(self, source: str) -> _ResolvedPath:

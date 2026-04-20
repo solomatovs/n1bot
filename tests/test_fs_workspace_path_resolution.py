@@ -271,6 +271,362 @@ class TestCd:
         assert (workspace_root / "docs" / "note.md").read_text() == "hi"
 
 
+class TestMkdir:
+    """Создание директории через сервис."""
+
+    def test_mkdir_creates_nested(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        service.mkdir("docs/api")
+        assert (workspace_root / "docs" / "api").is_dir()
+
+    def test_mkdir_existing_is_noop(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "docs").mkdir()
+        service.mkdir("docs")
+        assert (workspace_root / "docs").is_dir()
+
+    def test_mkdir_over_file_raises(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "file.txt").write_text("x")
+        with pytest.raises(WorkspaceError) as exc:
+            service.mkdir("file.txt")
+        assert exc.value.path == "file.txt"
+
+    def test_mkdir_relative_to_cwd(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "docs").mkdir()
+        service.cd("/docs")
+        service.mkdir("api")
+        assert (workspace_root / "docs" / "api").is_dir()
+
+    def test_mkdir_escape_clamped(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        service.mkdir("../../evil")
+        assert (workspace_root / "evil").is_dir()
+
+
+class TestRm:
+    """Удаление файлов и директорий (rm / rm -r)."""
+
+    def test_rm_file(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("x")
+        service.delete("a.txt")
+        assert not (workspace_root / "a.txt").exists()
+
+    def test_rm_missing_raises_not_found(
+        self, service: FsWorkspaceService
+    ) -> None:
+        with pytest.raises(WorkspaceNotFoundError) as exc:
+            service.delete("ghost.txt")
+        assert exc.value.path == "ghost.txt"
+
+    def test_rm_dir_without_recursive_fails(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "docs").mkdir()
+        with pytest.raises(WorkspaceError) as exc:
+            service.delete("docs")
+        assert not isinstance(exc.value, WorkspaceNotFoundError)
+        assert "is a directory" in str(exc.value)
+        assert exc.value.path == "docs"
+        assert (workspace_root / "docs").is_dir()
+
+    def test_rm_dir_recursive(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "docs" / "api").mkdir(parents=True)
+        (workspace_root / "docs" / "api" / "file.md").write_text("x")
+        service.delete("docs", recursive=True)
+        assert not (workspace_root / "docs").exists()
+
+
+class TestMv:
+    """Перемещение/переименование."""
+
+    def test_mv_rename_file(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("x")
+        service.move("a.txt", "b.txt")
+        assert not (workspace_root / "a.txt").exists()
+        assert (workspace_root / "b.txt").read_text() == "x"
+
+    def test_mv_into_existing_dir(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("x")
+        (workspace_root / "docs").mkdir()
+        service.move("a.txt", "docs")
+        assert (workspace_root / "docs" / "a.txt").read_text() == "x"
+
+    def test_mv_missing_src_raises_not_found(
+        self, service: FsWorkspaceService
+    ) -> None:
+        with pytest.raises(WorkspaceNotFoundError) as exc:
+            service.move("ghost.txt", "b.txt")
+        assert exc.value.path == "ghost.txt"
+
+    def test_mv_overwrites_existing_file(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("new")
+        (workspace_root / "b.txt").write_text("old")
+        service.move("a.txt", "b.txt")
+        assert (workspace_root / "b.txt").read_text() == "new"
+
+    def test_mv_absolute_paths(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("x")
+        service.move("/a.txt", "/b.txt")
+        assert (workspace_root / "b.txt").read_text() == "x"
+
+    def test_mv_respects_cwd(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "docs").mkdir()
+        (workspace_root / "docs" / "a.txt").write_text("x")
+        service.cd("/docs")
+        service.move("a.txt", "b.txt")
+        assert (workspace_root / "docs" / "b.txt").read_text() == "x"
+
+
+class TestCatStreamingRange:
+    """CatTool должен стримить строки, а не грузить файл целиком."""
+
+    def test_range_returns_only_requested_lines(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        from boba.adapters.tools.cat import CatArgs, CatTool
+
+        (workspace_root / "a.txt").write_text("a\nb\nc\nd\ne\n")
+        tool = CatTool(service)
+        result = tool.execute(None, CatArgs("a.txt", "utf-8", 2, 4))
+        assert result.content == "### a.txt:2-4\n\nb\nc\nd"
+
+    def test_range_beyond_end_reports_actual_last(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        from boba.adapters.tools.cat import CatArgs, CatTool
+
+        (workspace_root / "a.txt").write_text("a\nb\nc\n")
+        tool = CatTool(service)
+        result = tool.execute(None, CatArgs("a.txt", "utf-8", 1, 100))
+        assert result.content == "### a.txt:1-3\n\na\nb\nc"
+
+    def test_range_stops_reading_after_end(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        """Хвост за ``end_line`` не читается — проверяем через счётчик."""
+        from io import StringIO
+
+        from boba.adapters.tools.cat import CatTool
+
+        class CountingIO(StringIO):
+            def __init__(self, s: str) -> None:
+                super().__init__(s)
+                self.lines_consumed = 0
+
+            def __next__(self) -> str:  # pragma: no cover — делегирует
+                self.lines_consumed += 1
+                return super().__next__()
+
+        fake = CountingIO("1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        text, last = CatTool._read_range(fake, start=2, end=3)
+        assert text == "2\n3"
+        assert last == 3
+        assert fake.lines_consumed == 4  # прочитали 1,2,3, затем 4 → break
+
+    def test_full_read_without_range(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        from boba.adapters.tools.cat import CatArgs, CatTool
+
+        (workspace_root / "a.txt").write_text("hello\nworld\n")
+        tool = CatTool(service)
+        result = tool.execute(None, CatArgs("a.txt", "utf-8", None, None))
+        assert result.content == "### a.txt\n\nhello\nworld\n"
+
+
+class TestStat:
+    """Метаданные через сервис и StatTool."""
+
+    def test_meta_file(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("hello")
+        meta = service.meta("a.txt")
+        assert meta.path == "a.txt"
+        assert meta.kind == "file"
+        assert meta.size == 5
+
+    def test_meta_directory(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "docs").mkdir()
+        meta = service.meta("docs")
+        assert meta.path == "docs"
+        assert meta.kind == "directory"
+
+    def test_meta_missing_raises_not_found(
+        self, service: FsWorkspaceService
+    ) -> None:
+        with pytest.raises(WorkspaceNotFoundError) as exc:
+            service.meta("ghost.txt")
+        assert exc.value.path == "ghost.txt"
+
+    def test_meta_path_is_relative_to_workspace(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        """Абсолютный путь на диске не должен утекать в path."""
+        (workspace_root / "a.txt").write_text("x")
+        meta = service.meta("/a.txt")
+        assert meta.path == "a.txt"
+        assert str(workspace_root) not in meta.path
+
+    def test_stat_tool_returns_relative_path(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        from boba.adapters.tools.stat import StatArgs, StatTool
+
+        (workspace_root / "docs").mkdir()
+        (workspace_root / "docs" / "a.txt").write_text("hi")
+        service.cd("/docs")
+        tool = StatTool(service)
+        result = tool.execute(None, StatArgs("a.txt"))
+        assert "path: docs/a.txt" in result.content
+        assert "kind: file" in result.content
+        assert "size: 2" in result.content
+        assert str(workspace_root) not in result.content
+
+
+class TestCp:
+    """Копирование файлов и директорий (cp / cp -r)."""
+
+    def test_cp_file_to_new_path(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_bytes(b"hello")
+        service.copy("a.txt", "b.txt")
+        assert (workspace_root / "a.txt").read_bytes() == b"hello"
+        assert (workspace_root / "b.txt").read_bytes() == b"hello"
+
+    def test_cp_file_into_existing_dir(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_bytes(b"x")
+        (workspace_root / "docs").mkdir()
+        service.copy("a.txt", "docs")
+        assert (workspace_root / "docs" / "a.txt").read_bytes() == b"x"
+        assert (workspace_root / "a.txt").exists()
+
+    def test_cp_overwrites_existing_file(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_bytes(b"new")
+        (workspace_root / "b.txt").write_bytes(b"old")
+        service.copy("a.txt", "b.txt")
+        assert (workspace_root / "b.txt").read_bytes() == b"new"
+
+    def test_cp_missing_src_raises_not_found(
+        self, service: FsWorkspaceService
+    ) -> None:
+        with pytest.raises(WorkspaceNotFoundError) as exc:
+            service.copy("ghost.txt", "b.txt")
+        assert exc.value.path == "ghost.txt"
+
+    def test_cp_dir_without_recursive_fails(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "src").mkdir()
+        with pytest.raises(WorkspaceError) as exc:
+            service.copy("src", "dst")
+        assert not isinstance(exc.value, WorkspaceNotFoundError)
+        assert "is a directory" in str(exc.value)
+        assert exc.value.path == "src"
+        assert not (workspace_root / "dst").exists()
+
+    def test_cp_dir_recursive(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "src" / "nested").mkdir(parents=True)
+        (workspace_root / "src" / "a.txt").write_bytes(b"a")
+        (workspace_root / "src" / "nested" / "b.txt").write_bytes(b"b")
+        service.copy("src", "dst", recursive=True)
+        assert (workspace_root / "dst" / "a.txt").read_bytes() == b"a"
+        assert (workspace_root / "dst" / "nested" / "b.txt").read_bytes() == b"b"
+        assert (workspace_root / "src" / "a.txt").exists()
+
+    def test_cp_respects_cwd(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "docs").mkdir()
+        (workspace_root / "docs" / "a.txt").write_bytes(b"x")
+        service.cd("/docs")
+        service.copy("a.txt", "b.txt")
+        assert (workspace_root / "docs" / "b.txt").read_bytes() == b"x"
+
+
+class TestTouch:
+    """Создание файла / обновление mtime."""
+
+    def test_touch_creates_empty_file(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        service.touch("new.txt")
+        assert (workspace_root / "new.txt").is_file()
+        assert (workspace_root / "new.txt").read_bytes() == b""
+
+    def test_touch_creates_parents(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        service.touch("a/b/c.txt")
+        assert (workspace_root / "a" / "b" / "c.txt").is_file()
+
+    def test_touch_preserves_existing_content(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_bytes(b"keep me")
+        service.touch("a.txt")
+        assert (workspace_root / "a.txt").read_bytes() == b"keep me"
+
+    def test_touch_updates_mtime(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        import os
+        import time
+
+        f = workspace_root / "a.txt"
+        f.write_bytes(b"x")
+        old_mtime = f.stat().st_mtime
+        os.utime(f, (old_mtime - 10, old_mtime - 10))
+        time.sleep(0.01)
+        service.touch("a.txt")
+        assert f.stat().st_mtime > old_mtime - 10
+
+    def test_touch_on_existing_directory_is_noop(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "docs").mkdir()
+        service.touch("docs")
+        assert (workspace_root / "docs").is_dir()
+
+    def test_touch_respects_cwd(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "docs").mkdir()
+        service.cd("/docs")
+        service.touch("note.md")
+        assert (workspace_root / "docs" / "note.md").is_file()
+
+
 class TestServiceHappyPath:
     """Реальные операции чтения/записи через нормализованные пути."""
 

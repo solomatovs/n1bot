@@ -34,12 +34,17 @@ from boba.adapters.raw_llm_observer import (
 )
 from boba.adapters.tool_providers import StaticToolSource
 from boba.adapters.tools import (
+    CatTool,
     CdTool,
-    DeleteFileTool,
+    CpTool,
     EditFileTool,
     LsTool,
+    MkdirTool,
+    MvTool,
     PwdTool,
-    ReadFileTool,
+    RmTool,
+    StatTool,
+    TouchTool,
     TreeTool,
 )
 from boba.domain.agent.events import AgentEvent
@@ -243,11 +248,16 @@ class RequestProvider(Provider):
         tools = [
             PwdTool(user_workspace),
             CdTool(user_workspace),
-            ReadFileTool(user_workspace),
+            MkdirTool(user_workspace),
+            TouchTool(user_workspace),
+            CatTool(user_workspace),
             EditFileTool(user_workspace),
-            DeleteFileTool(user_workspace),
+            RmTool(user_workspace),
+            MvTool(user_workspace),
+            CpTool(user_workspace),
             LsTool(user_workspace),
             TreeTool(user_workspace),
+            StatTool(user_workspace),
         ]
 
         factory = ToolFactory()
