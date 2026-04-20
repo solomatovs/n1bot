@@ -346,3 +346,78 @@ class Pass(Validator[Any]):
 
     def validate(self, value: Any) -> Any:
         return value
+
+
+# ───────── cross-field валидаторы (работают над dict'ом аргументов) ─────────
+
+_MIN_CROSS_FIELD_NAMES = 2
+
+
+class MutuallyExclusive(Validator[dict[str, Any]]):
+    """Одновременно задан может быть максимум один из перечисленных параметров.
+
+    Работает на уровне ``ToolInputSchema.invariants`` — получает dict уже
+    провалидированных по отдельности параметров и проверяет, что в нём
+    нет более одного ключа из ``names``.
+    """
+
+    def __init__(self, *names: str) -> None:
+        if len(names) < _MIN_CROSS_FIELD_NAMES:
+            raise ValueError(
+                f"MutuallyExclusive требует минимум {_MIN_CROSS_FIELD_NAMES} имени"
+            )
+        self._names = names
+
+    def validate(self, value: dict[str, Any]) -> dict[str, Any]:
+        present = [n for n in self._names if n in value]
+        if len(present) > 1:
+            raise ParamValidationError(
+                f"параметры {present} взаимоисключающие — "
+                f"задайте только один"
+            )
+        return value
+
+
+class RequiresTogether(Validator[dict[str, Any]]):
+    """Перечисленные параметры должны быть либо все заданы, либо все отсутствовать."""
+
+    def __init__(self, *names: str) -> None:
+        if len(names) < _MIN_CROSS_FIELD_NAMES:
+            raise ValueError(
+                f"RequiresTogether требует минимум {_MIN_CROSS_FIELD_NAMES} имени"
+            )
+        self._names = names
+
+    def validate(self, value: dict[str, Any]) -> dict[str, Any]:
+        present = [n for n in self._names if n in value]
+        if present and len(present) != len(self._names):
+            missing = [n for n in self._names if n not in value]
+            raise ParamValidationError(
+                f"параметры {list(self._names)} должны быть заданы вместе; "
+                f"отсутствуют: {missing}"
+            )
+        return value
+
+
+class Ordered(Validator[dict[str, Any]]):
+    """``value[first] <= value[second]``, когда оба параметра заданы.
+
+    Применимо к числовым/строковым параметрам, сравнимым через ``<=``.
+    Если хотя бы один из двух не задан — проверка пропускается.
+    """
+
+    def __init__(self, first: str, second: str) -> None:
+        self._first = first
+        self._second = second
+
+    def validate(self, value: dict[str, Any]) -> dict[str, Any]:
+        if (
+            self._first in value
+            and self._second in value
+            and value[self._first] > value[self._second]
+        ):
+            raise ParamValidationError(
+                f"{self._first}={value[self._first]!r} должно быть <= "
+                f"{self._second}={value[self._second]!r}"
+            )
+        return value

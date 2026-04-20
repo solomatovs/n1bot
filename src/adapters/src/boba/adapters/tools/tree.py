@@ -24,6 +24,7 @@ from boba.domain.core.validation import (
     IsString,
     MinValue,
     NonEmpty,
+    Pass,
 )
 from boba.domain.core.workspace import (
     WorkspaceError,
@@ -97,7 +98,8 @@ class TreeTool(Tool[TreeArgs]):
                         ),
                         validator=ChainValidator(IsInt(), MinValue(0)),
                     ),
-                ]
+                ],
+                invariants=Pass(),
             ),
         )
 
