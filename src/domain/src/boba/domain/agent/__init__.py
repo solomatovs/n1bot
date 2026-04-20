@@ -67,16 +67,13 @@ from boba.domain.agent.events import (
     UserNoticeReady,
     UserQueryReceived,
 )
-from boba.domain.agent.history import (
-    EntryId,
-    HistoryEntry,
-    HistoryError,
-    HistoryReadError,
-    HistoryService,
-    HistoryWriteError,
-)
 from boba.domain.agent.llm_request_factory import LLMRequestFactory
-from boba.domain.agent.messages import MessageService
+from boba.domain.agent.messages import (
+    MessageService,
+    MessageStoreError,
+    MessageStoreReadError,
+    MessageStoreWriteError,
+)
 from boba.domain.agent.models import (
     AgentConfig,
     AgentContext,
@@ -117,16 +114,10 @@ __all__ = [
     "AnswerStarted",
     "AnswerToken",
     "BaseEvent",
-    "EntryId",
     "FinishReason",
     "GenerationDone",
     "GenerationFailed",
     "GenerationStarted",
-    "HistoryEntry",
-    "HistoryError",
-    "HistoryReadError",
-    "HistoryService",
-    "HistoryWriteError",
     "LLMAuthError",
     "LLMConnectionError",
     "LLMContextLengthError",
@@ -146,6 +137,9 @@ __all__ = [
     "MaxIterationsExceededError",
     "MaxIterationsReached",
     "MessageService",
+    "MessageStoreError",
+    "MessageStoreReadError",
+    "MessageStoreWriteError",
     "PermanentLLMError",
     "PermanentPromptError",
     "PersistenceFailed",

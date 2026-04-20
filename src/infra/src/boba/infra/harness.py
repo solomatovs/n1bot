@@ -33,6 +33,7 @@ from boba.domain.core.patterns import StreamSink, StreamSinkPipeline, StreamSour
 from boba.domain.core.workspace import UserWorkspaceManager, WorkspaceId
 from boba.infra.config import ConfigLoader
 from boba.infra.container import create_container, request_scope
+from boba.infra.logging import configure_logging, log_context
 
 
 class CapturingSink(StreamSink[AgentContext, AgentEvent]):
@@ -60,6 +61,9 @@ class AgentHarness:
     def __init__(self, **agent_overrides: Any) -> None:
         loader = ConfigLoader()
         self._app_config = loader.load_app()
+        # Процессный bootstrap: именно harness владеет глобальными
+        # side-effect'ами типа logging. create_container — чистая функция.
+        configure_logging(self._app_config.log_level, self._app_config.log_file)
         agent_config = loader.load_agent()
         if agent_overrides:
             agent_config = replace(agent_config, **agent_overrides)
@@ -72,8 +76,15 @@ class AgentHarness:
     def ask(self, workspace_id: WorkspaceId, query: str) -> list[AgentEvent]:
         manager = self._container.get(UserWorkspaceManager)
         storage = manager.get_or_create(workspace_id)
+        request_id = RequestId.new()
 
-        with request_scope(self._container, storage.workspace_id) as req:
+        with (
+            log_context(
+                request_id=request_id.to_wire(),
+                workspace_id=storage.workspace_id.to_wire(),
+            ),
+            request_scope(self._container, storage.workspace_id) as req,
+        ):
             source = req.get(StreamSourceLoop[AgentContext, AgentEvent])
             real_sink = req.get(StreamSink[AgentContext, AgentEvent])
             capturing = CapturingSink()
@@ -84,7 +95,7 @@ class AgentHarness:
                 query=query,
                 model=self._app_config.llm.model,
                 workspace_id=storage.workspace_id,
-                request_id=RequestId.new(),
+                request_id=request_id,
             )
             agent.run(self._agent_config, request)
             return capturing.events

@@ -23,8 +23,7 @@ from boba.domain.agent.events import (
     ToolExecutionFailed,
     UserNoticeReady,
 )
-from boba.domain.agent.history import HistoryError
-from boba.domain.agent.messages import MessageService
+from boba.domain.agent.messages import MessageService, MessageStoreError
 from boba.domain.agent.models import AgentContext, LLMMessage
 from boba.domain.agent.prompt import PromptError
 from boba.domain.core.errors import (
@@ -58,7 +57,7 @@ class AgentErrorRouter:
       ``retryable`` по маркеру :class:`Retryable`). Терминально.
     - :class:`PromptError` → :class:`PromptFailed` (``provider``).
       Терминально.
-    - :class:`HistoryError` → :class:`PersistenceFailed`. Терминально.
+    - :class:`MessageStoreError` → :class:`PersistenceFailed`. Терминально.
     - :class:`MaxIterationsExceededError` → :class:`MaxIterationsReached`.
       Терминально.
     - :class:`RepeatedFormatFailureError` → :class:`RepeatedFormatFailure`.
@@ -99,7 +98,7 @@ class AgentErrorRouter:
                     retryable=retryable,
                     provider=err.provider,
                 )
-            case HistoryError():
+            case MessageStoreError():
                 yield PersistenceFailed(
                     request_id=rid,
                     error_kind=kind,

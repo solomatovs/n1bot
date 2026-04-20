@@ -13,8 +13,7 @@ from boba.adapters.fs_workspace import (
     FsTmpWorkspaceManager,
     FsUserWorkspaceManager,
 )
-from boba.adapters.in_memory_messages import InMemoryMessageService
-from boba.adapters.jsonl_history import JsonLinesHistoryService
+from boba.adapters.jsonl_messages import JsonLinesMessageService
 from boba.adapters.openai_completion import (
     OpenAIMiddleware,
     StupidRetryLLMMiddleware,
@@ -42,7 +41,6 @@ from boba.adapters.tools import (
     TreeTool,
 )
 from boba.domain.agent.events import AgentEvent
-from boba.domain.agent.history import HistoryService
 from boba.domain.agent.llm_request_factory import LLMRequestFactory
 from boba.domain.agent.meat import (
     Agent,
@@ -50,8 +48,6 @@ from boba.domain.agent.meat import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
     AssistantMessagePersistenceMiddleware,
-    HistoryPersistMiddleware,
-    HistoryReplayMiddleware,
     IterationCounterMiddleware,
     RepeatedFormatFailureGuardMiddleware,
     RepeatedToolCallGuardMiddleware,
@@ -306,8 +302,18 @@ class RequestProvider(Provider):
         return service
 
     @provide
-    def message_service(self) -> MessageService:
-        return InMemoryMessageService()
+    def message_service(
+        self,
+        workspace: SystemWorkspaceService,
+    ) -> MessageService:
+        """Persistent-реализация сервиса сообщений.
+
+        При создании инстанса читает ``messages.jsonl`` из system-workspace
+        и наполняет in-memory список — восстановление диалога между
+        запусками живёт здесь, а не в отдельном replay-middleware. На
+        ``add`` одновременно дописывает строку JSON в файл и пушит в список.
+        """
+        return JsonLinesMessageService(workspace)
 
     @provide
     def llm_request_factory(
@@ -315,13 +321,6 @@ class RequestProvider(Provider):
         message_service: MessageService,
     ) -> LLMRequestFactory:
         return AggregatingLLMRequestFactory(message_service)
-
-    @provide
-    def history_service(
-        self,
-        workspace: SystemWorkspaceService,
-    ) -> HistoryService:
-        return JsonLinesHistoryService(workspace)
 
     @provide
     def raw_llm_observer(self, workspace: SystemWorkspaceService) -> RawLLMObserver:
@@ -361,20 +360,11 @@ class RequestProvider(Provider):
         prompt_providers: list[PromptProvider],
         message_service: MessageService,
         tools_service: ToolsService,
-        history_service: HistoryService,
         llm_request_factory: LLMRequestFactory,
         raw_observer: RawLLMObserver,
         error_router: AgentErrorRouter,
     ) -> StreamSourceLoop[AgentContext, AgentEvent]:
         builder = StreamSourceChainBuilder[AgentContext, AgentEvent]()
-        builder.use(
-            lambda inner: HistoryPersistMiddleware(inner, history_service)
-        )
-        builder.use(
-            lambda inner: HistoryReplayMiddleware(
-                inner, history_service, message_service
-            )
-        )
         builder.use(IterationCounterMiddleware)
         builder.use(
             lambda inner: RepeatedFormatFailureGuardMiddleware(

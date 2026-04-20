@@ -3,16 +3,54 @@
 Всё «инфраструктурное» (конфиг, логи, контейнер, scope, сбор событий)
 живёт в :class:`boba.infra.AgentHarness`. Тестам остаётся запросить
 фикстуру и вызвать ``harness.ask(ws_id, query)``.
+
+Этот модуль также выполняет bootstrap окружения для тестов: подставляет
+пути к артефактам внутри ``.vscode/`` (workspaces, config.toml,
+secrets), чтобы ``pytest`` из корня репозитория не засорял root-директорию
+и сразу находил конфиг без ручного экспорта env-переменных. Значения
+ставятся через :meth:`os.environ.setdefault` — VS Code launch.json или
+CI-окружение всегда имеют приоритет.
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterable
+from pathlib import Path
 
 import pytest
 
 from boba.domain.agent.events import AgentEvent, GenerationDone, GenerationFailed
 from boba.infra import AgentHarness
+
+
+def _bootstrap_test_env() -> None:
+    """Перенаправить артефакты тестов в ``.vscode/``.
+
+    Всё ставится через :meth:`os.environ.setdefault` — VS Code launch.json
+    и CI, где переменные уже заданы, имеют приоритет. `AgentHarness` читает
+    env только в момент построения (внутри фикстуры), так что bootstrap
+    успевает отработать раньше.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    vscode_dir = repo_root / ".vscode"
+
+    defaults: dict[str, str] = {
+        "WORKSPACE_BASE_DIR": str(vscode_dir / "workspaces"),
+        "LOG_FILE": str(vscode_dir / "logs" / "tests.log"),
+    }
+    config_toml = vscode_dir / "config" / "config.toml"
+    if config_toml.is_file():
+        defaults["BOBA_CONFIG"] = str(config_toml)
+    api_key = vscode_dir / "secrets" / "litellm_api_key"
+    if api_key.is_file():
+        defaults["LITELLM_API_KEY_FILE"] = str(api_key)
+
+    for key, value in defaults.items():
+        os.environ.setdefault(key, value)
+
+
+_bootstrap_test_env()
 
 OutcomeClassifier = Callable[[Iterable[AgentEvent]], str]
 

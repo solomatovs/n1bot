@@ -7,7 +7,6 @@ from contextlib import contextmanager
 
 from dishka import Container, make_container
 
-from boba.app.logging import configure_logging
 from boba.domain.agent.models import AgentConfig, LLMRequestDefaults
 from boba.domain.config import AppConfig
 from boba.domain.core.workspace import WorkspaceId
@@ -19,10 +18,6 @@ def create_container(
     agent_config: AgentConfig,
     llm_defaults: LLMRequestDefaults,
 ) -> Container:
-    # Логирование — инфраструктурная забота: раньше каждый caller звал
-    # configure_logging руками, теперь это делает контейнер.
-    # basicConfig(force=True) делает вызов идемпотентным.
-    configure_logging(app_config.log_level)
     return make_container(  # pyright: ignore[reportArgumentType]
         AppProvider(app_config, agent_config, llm_defaults),
         RequestProvider(),
