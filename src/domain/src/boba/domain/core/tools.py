@@ -24,8 +24,6 @@ from boba.domain.core.patterns import (
     Converter,
     Definition,
     Executor,
-    ExecutorDispatcher,
-    ExecutorRouteError,
     FoldFactory,
     Id,
     PrioritySource,
@@ -243,51 +241,28 @@ class ToolFactory(
         return ToolCatalog(state.tools())
 
 
-class InvokableTool(Executor[None, ToolCall, ToolResult], Generic[TArgs]):
-    """
-    Адаптер ``Tool[TArgs]`` → ``Executor[None, ToolCall, ToolResult]``.
-
-    Делает парсинг ``call.arguments`` через ``tool.args_converter()`` и
-    вызывает ``tool.execute(None, args)``. Нужен, когда тулы кладутся как
-    handler'ы в :class:`ExecutorDispatcher` (или любую другую композицию
-    поверх ``Executor[None, ToolCall, ToolResult]``).
-    """
-
-    def __init__(self, tool: Tool[TArgs]) -> None:
-        self._tool = tool
-
-    def execute(self, ctx: None, call: ToolCall) -> ToolResult:
-        args = self._tool.args_converter().convert(call.arguments)
-        return self._tool.execute(ctx, args)
-
-
 class ToolsService(Executor[None, ToolCall, ToolResult]):
+    """Диспетчер tool-вызовов над :class:`ToolCatalog`.
+
+    Маршрутизация встроена по ``call.tool_id``
+    ищет :class:`Tool` в ToolCatalog и вызывает ``tool.execute``.
+
+    Ошибка :class:`ToolExecutionError`:
+    - Неизвестный tool
+    - ошибка парсинга аргументов
+    - произвольное исключение тула
+    """
+
     def __init__(
         self,
         factory: ToolFactory,
     ) -> None:
         self._factory = factory
         self._catalog: ToolCatalog = ToolCatalog([])
-        self._dispatcher: ExecutorDispatcher[None, ToolCall, ToolResult] = (
-            self._build_dispatcher(self._catalog)
-        )
-
-    @staticmethod
-    def _build_dispatcher(
-        catalog: ToolCatalog,
-    ) -> ExecutorDispatcher[None, ToolCall, ToolResult]:
-        routes: dict[ToolId, Executor[None, ToolCall, ToolResult]] = {
-            tool.tool_id(): InvokableTool(tool) for tool in catalog.tools()
-        }
-        return ExecutorDispatcher(
-            routes=routes,
-            key_fn=lambda _ctx, call: call.tool_id,
-        )
 
     def rebuild_catalog(self) -> None:
-        """Пересобрать каталог и dispatcher под ним."""
+        """Пересобрать каталог из источников фабрики."""
         self._catalog = self._factory.build()
-        self._dispatcher = self._build_dispatcher(self._catalog)
 
     def tools(self) -> Iterable[Tool[Any]]:
         """Все собранные инструменты — если нужны и id, и definition."""
@@ -298,10 +273,12 @@ class ToolsService(Executor[None, ToolCall, ToolResult]):
         return self._catalog.definitions()
 
     def execute(self, ctx: None, call: ToolCall) -> ToolResult:
+        tool = self._catalog.get(call.tool_id)
+        if tool is None:
+            raise self._unknown_tool(call.tool_id)
         try:
-            return self._dispatcher.execute(ctx, call)
-        except ExecutorRouteError as e:
-            raise self._unknown_tool(call.tool_id) from e
+            args = tool.args_converter().convert(call.arguments)
+            return tool.execute(ctx, args)
         except ToolExecutionError:
             raise
         except Exception as e:
