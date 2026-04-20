@@ -13,7 +13,6 @@ from boba.adapters.history_sink import HistorySink
 from boba.adapters.in_memory_messages import InMemoryMessageService
 from boba.adapters.jsonl_history import JsonLinesHistoryService
 from boba.adapters.openai_completion import (
-    LoggingLLMMiddleware,
     OpenAIMiddleware,
     StupidRetryLLMMiddleware,
 )
@@ -28,6 +27,7 @@ from boba.adapters.raw_llm_observer import (
     CompositeRawLLMObserver,
     FileContentObserver,
     FileRawLLMObserver,
+    MetricsRawLLMObserver,
     RawLLMObserver,
 )
 from boba.adapters.tool_providers import StaticToolSource
@@ -229,18 +229,24 @@ class RequestProvider(Provider):
 
     @provide
     def raw_llm_observer(self, workspace: WorkspaceService) -> RawLLMObserver:
-        """Комбинированный наблюдатель, пишет два файла внутри workspace:
+        """Комбинированный наблюдатель, пишет два файла внутри workspace и
+        логирует сводку в консоль:
 
         - ``raw_messages.md`` — полный JSON-дамп kwargs и каждого
           ChatCompletionChunk (для дебаг-разбора протокола);
         - ``raw_content.md`` — читаемый текстовый стрим: заголовок
           Request (kwargs JSON) и Response с склеенным ``delta.content``
-          (чтобы быстро видеть, что модель реально сказала).
+          (чтобы быстро видеть, что модель реально сказала);
+        - :class:`MetricsRawLLMObserver` — одна строка ``LLM done ...`` в
+          logger по завершении запроса: считает по сырым chunk-ам, поэтому
+          цифры не искажаются middleware, переупаковывающими content в
+          tool-calls.
         """
         return CompositeRawLLMObserver(
             [
                 FileRawLLMObserver(workspace),
                 FileContentObserver(workspace),
+                MetricsRawLLMObserver(),
             ]
         )
 
@@ -297,7 +303,6 @@ class RequestProvider(Provider):
                 agent_config.max_consecutive_tool_calls,
             )
         )
-        builder.use(LoggingLLMMiddleware)
         builder.use(lambda inner: StupidRetryLLMMiddleware(inner, max_retries=3))
         builder.use(
             lambda inner: AssistantMessagePersistenceMiddleware(inner, message_service)
