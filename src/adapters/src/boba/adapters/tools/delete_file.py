@@ -5,14 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from boba.adapters.tools._workspace_arg import (
-    WORKSPACE_PARAM_NAME,
-    parse_workspace_arg,
-    workspace_param_schema,
-)
+from boba.adapters.tools._workspace_arg import workspace_tool_id
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
-    JsonType,
     ParamSchema,
     Tool,
     ToolDefinition,
@@ -22,9 +17,13 @@ from boba.domain.core.tools import (
     ToolResult,
     ToolSourceId,
 )
+from boba.domain.core.validation import (
+    ChainValidator,
+    IsString,
+    NonEmpty,
+    Required,
+)
 from boba.domain.core.workspace import (
-    USER_WORKSPACE_KIND,
-    AllowedWorkspacesSpec,
     WorkspaceError,
     WorkspaceKind,
     WorkspaceNotFoundError,
@@ -35,73 +34,65 @@ from boba.domain.core.workspace import (
 @dataclass(frozen=True)
 class DeleteFileArgs:
     filename: str
-    workspace: WorkspaceKind = USER_WORKSPACE_KIND
 
 
 class DeleteFileArgsConverter(Converter[dict[str, Any], DeleteFileArgs]):
-    def __init__(self, allowed: AllowedWorkspacesSpec, tool_id: ToolId) -> None:
-        self._allowed = allowed
-        self._tool_id = tool_id
+    """Маппит провалидированный dict в :class:`DeleteFileArgs`."""
 
     def convert(self, value: dict[str, Any]) -> DeleteFileArgs:
-        return DeleteFileArgs(
-            filename=str(value["filename"]),
-            workspace=parse_workspace_arg(
-                value.get(WORKSPACE_PARAM_NAME), self._allowed, self._tool_id
-            ),
-        )
+        return DeleteFileArgs(filename=value["filename"])
 
 
 class DeleteFileTool(Tool[DeleteFileArgs]):
     """Удаление файла из workspace."""
 
-    _ID = ToolId("delete_file")
+    _BASE_NAME = "delete_file"
     _SOURCE = ToolSourceId("builtin.files")
 
     def __init__(
         self,
         resolver: WorkspaceResolver,
-        allowed: AllowedWorkspacesSpec,
+        workspace: WorkspaceKind,
     ) -> None:
         self._resolver = resolver
-        self._allowed = allowed
+        self._workspace = workspace
+        self._id = workspace_tool_id(workspace, self._BASE_NAME)
 
     def tool_id(self) -> ToolId:
-        return self._ID
+        return self._id
 
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
 
-    def args_converter(self) -> Converter[dict[str, Any], DeleteFileArgs]:
-        return DeleteFileArgsConverter(self._allowed, self._ID)
+    def typed_args_converter(self) -> Converter[dict[str, Any], DeleteFileArgs]:
+        return DeleteFileArgsConverter()
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
-            description="Удалить файл из workspace.",
+            description=f"Удалить файл из workspace '{self._workspace.name}'.",
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
                         name="filename",
-                        type=JsonType.STRING,
-                        description="Путь к файлу внутри workspace",
+                        description="Путь к файлу внутри workspace.",
+                        validator=ChainValidator(Required(), IsString(), NonEmpty()),
                     ),
-                    workspace_param_schema(self._allowed),
                 ]
             ),
         )
 
     def execute(self, ctx: None, args: DeleteFileArgs) -> ToolResult:
-        workspace = self._resolver.resolve(args.workspace)
+        workspace = self._resolver.resolve(self._workspace)
         try:
             workspace.delete(args.filename)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Файл не найден: {args.filename}"
+                tool_id=self._id, message=f"Файл не найден: {args.filename}"
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Ошибка удаления: {e}"
+                tool_id=self._id, message=f"Ошибка удаления: {e}"
             ) from e
         return ToolResult(
-            content=f"Файл удалён: {args.workspace.name}:{args.filename}"
+            content=f"Файл удалён: {self._workspace.name}:{args.filename}"
         )
