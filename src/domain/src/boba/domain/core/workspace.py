@@ -91,6 +91,34 @@ class WorkspaceService(ABC):
     @abstractmethod
     def workspace_id(self) -> WorkspaceId: ...
 
+    @property
+    @abstractmethod
+    def cwd(self) -> str:
+        """Текущая директория относительно корня workspace.
+
+        Формат: ``/`` для корня, ``/docs/api`` для вложенной. Все методы
+        сервиса разрешают относительные пути от ``cwd``; абсолютные (с
+        ведущим ``/``) — от корня workspace.
+        """
+        ...
+
+    @abstractmethod
+    def cd(self, path: str) -> None:
+        """Сменить текущую директорию.
+
+        Путь нормализуется теми же правилами, что и в остальных методах:
+        абсолютный — от корня workspace, относительный — от текущей
+        ``cwd``. После успеха последующие обращения по относительным
+        путям разрешаются уже от новой ``cwd``.
+
+        Raises:
+            WorkspaceNotFoundError: если путь не существует.
+            WorkspacePermissionError: если нет прав.
+            WorkspaceError: если путь существует, но не директория, или
+                при прочих I/O-ошибках.
+        """
+        ...
+
     @abstractmethod
     def exists(self, path: str) -> bool: ...
 

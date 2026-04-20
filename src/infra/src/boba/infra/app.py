@@ -34,9 +34,11 @@ from boba.adapters.raw_llm_observer import (
 )
 from boba.adapters.tool_providers import StaticToolSource
 from boba.adapters.tools import (
+    CdTool,
     DeleteFileTool,
     EditFileTool,
     LsTool,
+    PwdTool,
     ReadFileTool,
     TreeTool,
 )
@@ -239,6 +241,8 @@ class RequestProvider(Provider):
         системный/tmp пользователю писать нельзя.
         """
         tools = [
+            PwdTool(user_workspace),
+            CdTool(user_workspace),
             ReadFileTool(user_workspace),
             EditFileTool(user_workspace),
             DeleteFileTool(user_workspace),
