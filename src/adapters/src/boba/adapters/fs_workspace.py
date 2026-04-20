@@ -418,6 +418,48 @@ class FsWorkspaceService(WorkspaceService):
                 resolved,
             )
 
+    def edit_text(
+        self,
+        path: str,
+        old: str,
+        new: str,
+        *,
+        replace_all: bool = False,
+        encoding: str = "utf-8",
+    ) -> int:
+        if not old:
+            raise WorkspaceError(
+                "old_string must not be empty", path=path,
+            )
+        resolved = self._resolve(path)
+        with self._map_errors(resolved):
+            if not resolved.absolute.exists():
+                raise WorkspaceNotFoundError(resolved.relative)
+            try:
+                content = resolved.absolute.read_text(encoding=encoding)
+            except UnicodeDecodeError as e:
+                raise WorkspaceDecodingError(
+                    resolved.relative, encoding, e,
+                ) from e
+            count = content.count(old)
+            if count == 0:
+                raise WorkspaceError(
+                    f"old_string not found in {resolved.relative!r}; "
+                    f"re-read the file and copy the exact substring",
+                    path=resolved.relative,
+                )
+            if count > 1 and not replace_all:
+                raise WorkspaceError(
+                    f"old_string matches {count} times in "
+                    f"{resolved.relative!r}; add more surrounding context "
+                    f"to make it unique, or set replace_all=true",
+                    path=resolved.relative,
+                )
+            applied = count if replace_all else 1
+            new_content = content.replace(old, new, -1 if replace_all else 1)
+            resolved.absolute.write_text(new_content, encoding=encoding)
+            return applied
+
     def exists(self, key: str) -> bool:
         resolved = self._resolve(key)
         with self._map_errors(resolved):

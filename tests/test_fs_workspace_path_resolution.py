@@ -627,6 +627,85 @@ class TestTouch:
         assert (workspace_root / "docs" / "note.md").is_file()
 
 
+class TestEditText:
+    """Find-and-replace редактирование файла."""
+
+    def test_replace_unique_occurrence(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("hello world")
+        applied = service.edit_text("a.txt", "world", "there")
+        assert applied == 1
+        assert (workspace_root / "a.txt").read_text() == "hello there"
+
+    def test_replace_empty_new_deletes_substring(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("hello world")
+        applied = service.edit_text("a.txt", " world", "")
+        assert applied == 1
+        assert (workspace_root / "a.txt").read_text() == "hello"
+
+    def test_missing_substring_raises_error(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("hello")
+        with pytest.raises(WorkspaceError) as exc:
+            service.edit_text("a.txt", "world", "there")
+        assert not isinstance(exc.value, WorkspaceNotFoundError)
+        assert "not found" in str(exc.value)
+        assert (workspace_root / "a.txt").read_text() == "hello"
+
+    def test_ambiguous_without_replace_all_raises_error(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("foo foo foo")
+        with pytest.raises(WorkspaceError) as exc:
+            service.edit_text("a.txt", "foo", "bar")
+        assert "matches 3 times" in str(exc.value)
+        assert (workspace_root / "a.txt").read_text() == "foo foo foo"
+
+    def test_replace_all_replaces_every_occurrence(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("foo foo foo")
+        applied = service.edit_text("a.txt", "foo", "bar", replace_all=True)
+        assert applied == 3
+        assert (workspace_root / "a.txt").read_text() == "bar bar bar"
+
+    def test_missing_file_raises_not_found(
+        self, service: FsWorkspaceService
+    ) -> None:
+        with pytest.raises(WorkspaceNotFoundError) as exc:
+            service.edit_text("ghost.txt", "a", "b")
+        assert exc.value.path == "ghost.txt"
+
+    def test_empty_old_string_raises(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("x")
+        with pytest.raises(WorkspaceError) as exc:
+            service.edit_text("a.txt", "", "y")
+        assert "must not be empty" in str(exc.value)
+
+    def test_cwd_relative_path(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "docs").mkdir()
+        (workspace_root / "docs" / "a.txt").write_text("hi")
+        service.cd("/docs")
+        service.edit_text("a.txt", "hi", "hello")
+        assert (workspace_root / "docs" / "a.txt").read_text() == "hello"
+
+    def test_multiline_substring(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("line1\nline2\nline3\n")
+        applied = service.edit_text("a.txt", "line2\nline3", "LINE")
+        assert applied == 1
+        assert (workspace_root / "a.txt").read_text() == "line1\nLINE\n"
+
+
 class TestServiceHappyPath:
     """Реальные операции чтения/записи через нормализованные пути."""
 
