@@ -25,7 +25,7 @@ from boba.domain.core.patterns import (
     ConverterOutputError,
     UuId,
 )
-from boba.domain.core.workspace import WorkspaceError, WorkspaceService
+from boba.domain.core.workspace import SystemWorkspaceService, WorkspaceError
 
 
 class HistoryEntryEncoder(Converter[HistoryEntry, str]):
@@ -128,7 +128,7 @@ class HistoryEntryDecoder(Converter[str, HistoryEntry]):
 class JsonLinesHistoryService(HistoryService):
     """Журнал истории в формате jsonlines. Один файл на workspace."""
 
-    def __init__(self, workspace: WorkspaceService) -> None:
+    def __init__(self, workspace: SystemWorkspaceService) -> None:
         self._workspace = workspace
         self._encoder = HistoryEntryEncoder()
         self._decoder = HistoryEntryDecoder()

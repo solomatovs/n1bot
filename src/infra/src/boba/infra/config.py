@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import tomli
@@ -20,7 +21,13 @@ from boba.domain.agent.models import (
     LLMRequestDefaults,
     SamplingParams,
 )
-from boba.domain.config import AppConfig, LLMConfig
+from boba.domain.config import AppConfig, LLMConfig, WorkspaceLayout
+from boba.domain.core.workspace import (
+    SYSTEM_WORKSPACE_KIND,
+    TMP_WORKSPACE_KIND,
+    USER_WORKSPACE_KIND,
+    WorkspaceKind,
+)
 
 
 class ConfigLoader:
@@ -30,20 +37,22 @@ class ConfigLoader:
         val = self._app.get(name)
         return val if isinstance(val, dict) else {}
 
+    _WORKSPACE_KINDS: tuple[tuple[WorkspaceKind, str], ...] = (
+        (USER_WORKSPACE_KIND, "WORKSPACE_USER_SUBDIR"),
+        (SYSTEM_WORKSPACE_KIND, "WORKSPACE_SYSTEM_SUBDIR"),
+        (TMP_WORKSPACE_KIND, "WORKSPACE_TMP_SUBDIR"),
+    )
+
     def __init__(self) -> None:
         self._app = self._load_section("app")
         self._llm = self._subsection("llm")
         self._agent = self._subsection("agent")
+        self._workspaces = self._subsection("workspaces")
 
     def load_app(self) -> AppConfig:
         """Кросс-слойные настройки приложения + :class:`LLMConfig`."""
         return AppConfig(
-            workspace_base_dir=self._resolve(
-                "WORKSPACE_BASE_DIR",
-                "workspace_base_dir",
-                "./workspaces",
-                section=self._app,
-            ),
+            workspaces=self._load_workspace_layout(),
             ssl_verify=self._resolve(
                 "SSL_VERIFY",
                 "ssl_verify",
@@ -77,6 +86,27 @@ class ConfigLoader:
                     section=self._llm,
                 ),
             ),
+        )
+
+    def _load_workspace_layout(self) -> WorkspaceLayout:
+        base_dir = self._resolve(
+            "WORKSPACE_BASE_DIR",
+            "base_dir",
+            "./workspaces",
+            section=self._workspaces,
+        )
+        subdirs = {
+            kind: self._resolve(
+                env_key,
+                kind.name,
+                kind.name,
+                section=self._workspaces,
+            )
+            for kind, env_key in self._WORKSPACE_KINDS
+        }
+        return WorkspaceLayout(
+            base_dir=base_dir,
+            subdirs=MappingProxyType(subdirs),
         )
 
     def load_llm_defaults(self) -> LLMRequestDefaults:

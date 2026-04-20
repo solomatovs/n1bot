@@ -7,16 +7,16 @@ from typing import cast
 
 import pytest
 
-from boba.adapters.fs_workspace import FsWorkspaceService
+from boba.adapters.fs_workspace import FsSystemWorkspaceService
 from boba.adapters.prompt_providers import WorkspaceSystemPromptProvider
 from boba.domain.agent.models import AgentContext
 from boba.domain.agent.prompt import PromptId, PromptState
-from boba.domain.core.workspace import WorkspaceId
+from boba.domain.core.workspace import SYSTEM_WORKSPACE_KIND, WorkspaceId
 
 
 @pytest.fixture
-def ws(tmp_path: Path) -> FsWorkspaceService:
-    return FsWorkspaceService(WorkspaceId.new(), tmp_path)
+def ws(tmp_path: Path) -> FsSystemWorkspaceService:
+    return FsSystemWorkspaceService(WorkspaceId.new(), tmp_path, SYSTEM_WORKSPACE_KIND)
 
 
 @pytest.fixture
@@ -30,7 +30,7 @@ class TestWorkspaceSystemPromptProvider:
     location = "prompts/system"
 
     def test_missing_directory_yields_empty_iterator(
-        self, ws: FsWorkspaceService, state: PromptState[AgentContext]
+        self, ws: FsSystemWorkspaceService, state: PromptState[AgentContext]
     ) -> None:
         provider = WorkspaceSystemPromptProvider(
             PromptId("system"),
@@ -41,7 +41,7 @@ class TestWorkspaceSystemPromptProvider:
         assert list(provider.blocks(state)) == []
 
     def test_reads_files_in_lexicographic_order(
-        self, ws: FsWorkspaceService, state: PromptState[AgentContext]
+        self, ws: FsSystemWorkspaceService, state: PromptState[AgentContext]
     ) -> None:
         ws.mkdir("prompts/system")
         with ws.write_text("prompts/system/02-rules.md") as f:
@@ -64,7 +64,7 @@ class TestWorkspaceSystemPromptProvider:
         ]
 
     def test_empty_files_skipped(
-        self, ws: FsWorkspaceService, state: PromptState[AgentContext]
+        self, ws: FsSystemWorkspaceService, state: PromptState[AgentContext]
     ) -> None:
         ws.mkdir("prompts/system")
         with ws.write_text("prompts/system/a.md") as f:
@@ -85,7 +85,7 @@ class TestWorkspaceSystemPromptProvider:
         assert [b.content for b in blocks] == ["A", "C"]
 
     def test_custom_directory(
-        self, ws: FsWorkspaceService, state: PromptState[AgentContext]
+        self, ws: FsSystemWorkspaceService, state: PromptState[AgentContext]
     ) -> None:
         ws.mkdir("custom")
         with ws.write_text("custom/one.txt") as f:
@@ -101,7 +101,7 @@ class TestWorkspaceSystemPromptProvider:
 
         assert [b.content for b in blocks] == ["hello"]
 
-    def test_id_and_priority(self, ws: FsWorkspaceService) -> None:
+    def test_id_and_priority(self, ws: FsSystemWorkspaceService) -> None:
         provider = WorkspaceSystemPromptProvider(
             PromptId("sys"),
             priority=42,

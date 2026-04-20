@@ -17,7 +17,7 @@ from boba.domain.agent.prompt import (
     PromptProvider,
     PromptState,
 )
-from boba.domain.core.workspace import WorkspaceService
+from boba.domain.core.workspace import SystemWorkspaceService
 
 
 class StaticPromptProvider(PromptProvider):
@@ -96,7 +96,7 @@ class WorkspaceSystemPromptProvider(PromptProvider):
         self,
         prompt_id: PromptId,
         priority: int,
-        workspace: WorkspaceService,
+        workspace: SystemWorkspaceService,
         directory: str,
     ) -> None:
         self._id = prompt_id

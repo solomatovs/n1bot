@@ -18,7 +18,7 @@ from typing import Any
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk, ChoiceDelta
 
 from boba.domain.core.patterns import Converter
-from boba.domain.core.workspace import WorkspaceService
+from boba.domain.core.workspace import SystemWorkspaceService
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ class FileRawLLMObserver(RawLLMObserver):
 
     def __init__(
         self,
-        workspace: WorkspaceService,
+        workspace: SystemWorkspaceService,
         path: str = "raw_messages.md",
     ) -> None:
         self._workspace = workspace
@@ -144,7 +144,7 @@ class FileContentObserver(RawLLMObserver):
 
     def __init__(
         self,
-        workspace: WorkspaceService,
+        workspace: SystemWorkspaceService,
         path: str = "raw_content.md",
     ) -> None:
         self._workspace = workspace

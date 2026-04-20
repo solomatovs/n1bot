@@ -1,16 +1,43 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from io import BufferedIOBase, TextIOBase
+from typing import Self
 
-from boba.domain.core.patterns import Specification, UuId
+from boba.domain.core.patterns import Id, Resolver, Specification, UuId
 
 
 class WorkspaceId(UuId):
     """Идентификатор workspace'а — value object."""
+
+
+class WorkspaceKind(Id[str]):
+    """Namespace workspace'а. Инкапсулирует имя подкаталога / namespace-ключа.
+
+    Строковое представление всегда равно ``name``. Единый источник истины
+    для путей/ключей — сам экземпляр ``WorkspaceKind``, хардкод строк в
+    адаптерах и DI-проводке не допускается.
+    """
+
+    def to_wire(self) -> str:
+        return self._name
+
+    @classmethod
+    def from_wire(cls, value: str) -> Self:
+        return cls(value)
+
+
+USER_WORKSPACE_KIND = WorkspaceKind("user")
+"""Пользовательский workspace — доступен tools."""
+
+SYSTEM_WORKSPACE_KIND = WorkspaceKind("system")
+"""Системный workspace — history, debug-артефакты, tools его не видят."""
+
+TMP_WORKSPACE_KIND = WorkspaceKind("tmp")
+"""Временный workspace — чистится на выходе из request scope."""
 
 
 @dataclass(frozen=True)
@@ -36,10 +63,8 @@ class WorkspaceError(Exception):
 
 
 class WorkspaceNotFoundError(WorkspaceError):
-    """Ресурс внутри workspace не найден.
-
-    Абстрактная замена ``FileNotFoundError`` для бэкендов, не основанных на
-    файловой системе. Сохраняет путь ресурса.
+    """
+    Ресурс внутри workspace не найден.
     """
 
     def __init__(self, path: str) -> None:
@@ -47,10 +72,8 @@ class WorkspaceNotFoundError(WorkspaceError):
 
 
 class WorkspacePermissionError(WorkspaceError):
-    """Нет прав на операцию с ресурсом.
-
-    Покрывает как системный ``PermissionError``, так и нарушение границ
-    workspace'а (выход за пределы root). Сохраняет путь ресурса и причину.
+    """
+    Нет прав на операцию с ресурсом.
     """
 
     def __init__(self, path: str, reason: str | None = None) -> None:
@@ -62,10 +85,8 @@ class WorkspacePermissionError(WorkspaceError):
 
 
 class WorkspaceDecodingError(WorkspaceError):
-    """Невозможно декодировать содержимое ресурса в строку.
-
-    Сохраняет контекст: путь ресурса, запрошенная кодировка, позиция
-    ошибочного байта. Исходный ``UnicodeDecodeError`` — через ``__cause__``.
+    """
+    Невозможно декодировать содержимое ресурса в строку.
     """
 
     def __init__(
@@ -88,6 +109,12 @@ class WorkspaceService(ABC):
     @property
     @abstractmethod
     def workspace_id(self) -> WorkspaceId: ...
+
+    @property
+    @abstractmethod
+    def kind(self) -> WorkspaceKind:
+        """Namespace (user/system/tmp)."""
+        ...
 
     @abstractmethod
     def exists(self, path: str) -> bool: ...
@@ -214,21 +241,128 @@ class WorkspaceService(ABC):
 
 
 class WorkspaceManager(ABC):
-    """Управляет жизненным циклом workspace'ов."""
+    """Управляет жизненным циклом workspace'ов одного ``WorkspaceKind``.
+
+    Менеджер фиксирует ровно один namespace: реализация знает свой
+    :attr:`kind`, а сервис-ключ в DI — маркерный подкласс (например,
+    :class:`UserWorkspaceManager`). Разделять namespace'ы через параметр
+    метода намеренно не стали — иначе пришлось бы тянуть kind в сигнатуры
+    tools и сервисов.
+    """
+
+    @property
+    @abstractmethod
+    def kind(self) -> WorkspaceKind: ...
 
     @abstractmethod
     def create(self) -> WorkspaceService:
-        """Создать новый workspace."""
+        """Создать новый workspace с автосгенерированным ``WorkspaceId``."""
         ...
 
     @abstractmethod
     def get(self, workspace_id: WorkspaceId) -> WorkspaceService:
+        """Получить существующий workspace.
+
+        Raises:
+            WorkspaceNotFoundError: если workspace не существует.
         """
-        Получить существующий workspace.
-        Бросает FileNotFoundError, если не найден."""
+        ...
+
+    @abstractmethod
+    def get_or_create(self, workspace_id: WorkspaceId) -> WorkspaceService:
+        """Вернуть существующий workspace или создать новый по заданному id.
+
+        Используется для разделения одного :class:`WorkspaceId` между
+        несколькими менеджерами разных :class:`WorkspaceKind` — каждый
+        создаёт свой namespace под тем же id при первом обращении.
+        """
         ...
 
     @abstractmethod
     def delete(self, workspace_id: WorkspaceId) -> None:
         """Удалить workspace и все его данные."""
         ...
+
+
+class UserWorkspaceService(WorkspaceService):
+    """DI-маркер: пользовательский workspace, доступный tools."""
+
+
+class SystemWorkspaceService(WorkspaceService):
+    """DI-маркер: системный workspace — history, debug-артефакты."""
+
+
+class TmpWorkspaceService(WorkspaceService):
+    """DI-маркер: временный workspace, чистится на выходе из request scope."""
+
+
+class UserWorkspaceManager(WorkspaceManager):
+    """DI-маркер менеджера :class:`UserWorkspaceService`."""
+
+
+class SystemWorkspaceManager(WorkspaceManager):
+    """DI-маркер менеджера :class:`SystemWorkspaceService`."""
+
+
+class TmpWorkspaceManager(WorkspaceManager):
+    """DI-маркер менеджера :class:`TmpWorkspaceService`."""
+
+
+class UnknownWorkspaceKindError(WorkspaceError):
+    """Запрошен :class:`WorkspaceKind`, которого нет в резолвере.
+
+    Отдельная ошибка (а не :class:`WorkspaceNotFoundError`): тот уровень —
+    «ресурс внутри workspace не найден», а здесь — «сам namespace не
+    зарегистрирован». Сохраняем контекст: имя kind.
+    """
+
+    def __init__(self, kind: WorkspaceKind) -> None:
+        super().__init__(f"unknown workspace kind: {kind.name!r}")
+        self.kind = kind
+
+
+class WorkspaceResolver(Resolver[WorkspaceKind, WorkspaceService]):
+    """Маппинг :class:`WorkspaceKind` → :class:`WorkspaceService`.
+
+    Нужен tools'ам, работающим с несколькими namespace'ами одновременно,
+    чтобы вместо инжекции 2-3 конкретных сервисов они получали один
+    резолвер и спрашивали у него сервис по kind. Реализует существующий
+    паттерн :class:`Resolver` из ``core.patterns``.
+    """
+
+
+class MappingWorkspaceResolver(WorkspaceResolver):
+    """Резолвер поверх :class:`Mapping`.
+
+    Зафиксированный набор сервисов передаётся в конструкторе (обычно из
+    DI). При попытке получить неизвестный kind — :class:`UnknownWorkspaceKindError`.
+    """
+
+    def __init__(self, services: Mapping[WorkspaceKind, WorkspaceService]) -> None:
+        self._services: Mapping[WorkspaceKind, WorkspaceService] = dict(services)
+
+    def resolve(self, req: WorkspaceKind) -> WorkspaceService:
+        try:
+            return self._services[req]
+        except KeyError as e:
+            raise UnknownWorkspaceKindError(req) from e
+
+
+class AllowedWorkspacesSpec(Specification[WorkspaceKind]):
+    """Белый список :class:`WorkspaceKind`-ов.
+
+    ``check`` — мембершип-проверка; ``kinds`` — публичная коллекция для
+    построения enum'а в JSON-schema параметра tool'а. Единый источник:
+    оба пути (валидация в ``execute`` и описание схемы) используют один
+    экземпляр spec'а.
+    """
+
+    def __init__(self, allowed: Iterable[WorkspaceKind]) -> None:
+        self._kinds: frozenset[WorkspaceKind] = frozenset(allowed)
+
+    def check(self, value: WorkspaceKind) -> bool:
+        return value in self._kinds
+
+    @property
+    def kinds(self) -> frozenset[WorkspaceKind]:
+        return self._kinds

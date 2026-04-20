@@ -9,13 +9,24 @@ from datetime import datetime
 from io import BufferedIOBase, TextIOBase
 from pathlib import Path
 from threading import Lock
+from typing import Generic, TypeVar
 
 from boba.domain.core.patterns import Specification, Validator
 from boba.domain.core.workspace import (
+    SYSTEM_WORKSPACE_KIND,
+    TMP_WORKSPACE_KIND,
+    USER_WORKSPACE_KIND,
     FileMeta,
+    SystemWorkspaceManager,
+    SystemWorkspaceService,
+    TmpWorkspaceManager,
+    TmpWorkspaceService,
+    UserWorkspaceManager,
+    UserWorkspaceService,
     WorkspaceDecodingError,
     WorkspaceError,
     WorkspaceId,
+    WorkspaceKind,
     WorkspaceManager,
     WorkspaceNotFoundError,
     WorkspacePermissionError,
@@ -187,15 +198,25 @@ class FsWorkspaceService(WorkspaceService):
     """
     """
 
-    def __init__(self, workspace_id: WorkspaceId, root: Path) -> None:
+    def __init__(
+        self,
+        workspace_id: WorkspaceId,
+        root: Path,
+        kind: WorkspaceKind,
+    ) -> None:
         self._workspace_id = workspace_id
         self._root = root.resolve()
         self._validator = FsPathValidator(root)
         self._separator = b"\n"
+        self._kind = kind
 
     @property
     def workspace_id(self) -> WorkspaceId:
         return self._workspace_id
+
+    @property
+    def kind(self) -> WorkspaceKind:
+        return self._kind
 
     @contextmanager
     def _map_errors(self, path: str) -> Iterator[None]:
@@ -353,49 +374,110 @@ class FsWorkspaceService(WorkspaceService):
         return Path(self._validator.validate(path))
 
 
-class FsWorkspaceManager(WorkspaceManager):
-    """
+TWs = TypeVar("TWs", bound=FsWorkspaceService)
+
+
+class FsWorkspaceManager(WorkspaceManager, Generic[TWs]):
+    """Обобщённая файловая реализация менеджера.
+
+    Параметризуется классом сервиса ``service_cls`` и ``kind``. Маркерные
+    менеджеры (:class:`FsUserWorkspaceManager` и т.п.) — тонкие подклассы,
+    фиксирующие эти параметры; больше в них логики не должно быть.
     """
 
-    def __init__(self, base_dir: Path) -> None:
+    def __init__(
+        self,
+        base_dir: Path,
+        service_cls: type[TWs],
+        kind: WorkspaceKind,
+        subdir: str,
+    ) -> None:
         self._base_dir = base_dir
+        self._service_cls = service_cls
+        self._kind = kind
+        self._subdir = subdir
         self._lock = Lock()
-        self._storages: dict[WorkspaceId, FsWorkspaceService] = {}
+        self._storages: dict[WorkspaceId, TWs] = {}
         self._base_dir.mkdir(parents=True, exist_ok=True)
 
-    def create(self) -> WorkspaceService:
+    @property
+    def kind(self) -> WorkspaceKind:
+        return self._kind
+
+    def create(self) -> TWs:
         with self._lock:
             ws_id = WorkspaceId.new()
-            self._workspace_dir(ws_id).mkdir(parents=True, exist_ok=True)
+            return self._instantiate(ws_id)
 
-            storage = FsWorkspaceService(ws_id, self._workspace_dir(ws_id))
-            self._storages[ws_id] = storage
-
-            return storage
-
-    def get(self, workspace_id: WorkspaceId) -> WorkspaceService:
+    def get(self, workspace_id: WorkspaceId) -> TWs:
         with self._lock:
-            if workspace_id in self._storages:
-                return self._storages[workspace_id]
+            cached = self._storages.get(workspace_id)
+            if cached is not None:
+                return cached
 
             path = self._workspace_dir(workspace_id)
             if not path.is_dir():
-                raise FileNotFoundError(f"workspace dir not found: {path}")
+                raise WorkspaceNotFoundError(str(path))
 
-            storage = FsWorkspaceService(workspace_id, path)
-            self._storages[workspace_id] = FsWorkspaceService(workspace_id, path)
-
+            storage = self._service_cls(workspace_id, path, self._kind)
+            self._storages[workspace_id] = storage
             return storage
+
+    def get_or_create(self, workspace_id: WorkspaceId) -> TWs:
+        with self._lock:
+            cached = self._storages.get(workspace_id)
+            if cached is not None:
+                return cached
+            return self._instantiate(workspace_id)
 
     def delete(self, workspace_id: WorkspaceId) -> None:
         with self._lock:
             path = self._workspace_dir(workspace_id)
-            if not path.is_dir():
-                raise FileNotFoundError(f"workspace dir not found: {path}")
-
-            shutil.rmtree(path)
-
+            if path.is_dir():
+                shutil.rmtree(path)
             self._storages.pop(workspace_id, None)
 
+    def _instantiate(self, workspace_id: WorkspaceId) -> TWs:
+        path = self._workspace_dir(workspace_id)
+        path.mkdir(parents=True, exist_ok=True)
+        storage = self._service_cls(workspace_id, path, self._kind)
+        self._storages[workspace_id] = storage
+        return storage
+
     def _workspace_dir(self, workspace_id: WorkspaceId) -> Path:
-        return self._base_dir / str(workspace_id.name)
+        return self._base_dir / str(workspace_id.name) / self._subdir
+
+
+class FsUserWorkspaceService(FsWorkspaceService, UserWorkspaceService):
+    """Файловый :class:`UserWorkspaceService`."""
+
+
+class FsSystemWorkspaceService(FsWorkspaceService, SystemWorkspaceService):
+    """Файловый :class:`SystemWorkspaceService`."""
+
+
+class FsTmpWorkspaceService(FsWorkspaceService, TmpWorkspaceService):
+    """Файловый :class:`TmpWorkspaceService`."""
+
+
+class FsUserWorkspaceManager(
+    FsWorkspaceManager[FsUserWorkspaceService], UserWorkspaceManager
+):
+    def __init__(self, base_dir: Path, subdir: str) -> None:
+        super().__init__(base_dir, FsUserWorkspaceService, USER_WORKSPACE_KIND, subdir)
+
+
+class FsSystemWorkspaceManager(
+    FsWorkspaceManager[FsSystemWorkspaceService], SystemWorkspaceManager
+):
+    def __init__(self, base_dir: Path, subdir: str) -> None:
+        super().__init__(
+            base_dir, FsSystemWorkspaceService, SYSTEM_WORKSPACE_KIND, subdir
+        )
+
+
+class FsTmpWorkspaceManager(
+    FsWorkspaceManager[FsTmpWorkspaceService], TmpWorkspaceManager
+):
+    def __init__(self, base_dir: Path, subdir: str) -> None:
+        super().__init__(base_dir, FsTmpWorkspaceService, TMP_WORKSPACE_KIND, subdir)

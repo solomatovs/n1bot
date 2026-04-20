@@ -26,7 +26,14 @@ def create_container(
 
 @contextmanager
 def request_scope(
-    container: Container, ws_id: WorkspaceId | None = None
+    container: Container, ws_id: WorkspaceId
 ) -> Iterator[Container]:
-    with container({WorkspaceId | None: ws_id}) as request:
+    """Открыть per-request scope.
+
+    ``ws_id`` обязателен и задаёт сессию: все три менеджера
+    (user/system/tmp) разделяют один и тот же id через
+    ``manager.get_or_create(ws_id)``. Сгенерировать новый id заранее —
+    ``WorkspaceId.new()``.
+    """
+    with container({WorkspaceId: ws_id}) as request:
         yield request

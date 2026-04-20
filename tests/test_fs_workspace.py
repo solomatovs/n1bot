@@ -8,12 +8,12 @@ from unittest.mock import patch
 import pytest
 
 from boba.adapters.fs_workspace import FsWorkspaceService
-from boba.domain.core.workspace import WorkspaceId
+from boba.domain.core.workspace import USER_WORKSPACE_KIND, WorkspaceId
 
 
 @pytest.fixture
 def ws(tmp_path: Path) -> FsWorkspaceService:
-    return FsWorkspaceService(WorkspaceId.new(), tmp_path)
+    return FsWorkspaceService(WorkspaceId.new(), tmp_path, USER_WORKSPACE_KIND)
 
 
 class TestLazyParentMkdir:

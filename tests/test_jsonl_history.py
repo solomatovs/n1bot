@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from boba.adapters.fs_workspace import FsWorkspaceService
+from boba.adapters.fs_workspace import FsSystemWorkspaceService
 from boba.adapters.jsonl_history import (
     HistoryEntryDecoder,
     HistoryEntryEncoder,
@@ -37,17 +37,17 @@ from boba.domain.agent.events import (
     ToolResultReady,
     UserQueryReceived,
 )
-from boba.domain.agent.models import RequestId
 from boba.domain.agent.history import EntryId, HistoryEntry, HistoryReadError
+from boba.domain.agent.models import RequestId
 from boba.domain.core.patterns import ConverterInputError
-from boba.domain.core.workspace import WorkspaceId
+from boba.domain.core.workspace import SYSTEM_WORKSPACE_KIND, WorkspaceId
 
 HISTORY_FILE = "history.jsonl"
 
 
 @pytest.fixture
-def ws(tmp_path: Path) -> FsWorkspaceService:
-    return FsWorkspaceService(WorkspaceId.new(), tmp_path)
+def ws(tmp_path: Path) -> FsSystemWorkspaceService:
+    return FsSystemWorkspaceService(WorkspaceId.new(), tmp_path, SYSTEM_WORKSPACE_KIND)
 
 
 @pytest.fixture
@@ -55,7 +55,7 @@ def rid() -> RequestId:
     return RequestId.new()
 
 
-def _append_raw(ws: FsWorkspaceService, text: str) -> None:
+def _append_raw(ws: FsSystemWorkspaceService, text: str) -> None:
     """Дописать произвольный текст в файл истории (минуя сервис)."""
     with ws.append_text(HISTORY_FILE) as f:
         f.write(text)
@@ -63,7 +63,7 @@ def _append_raw(ws: FsWorkspaceService, text: str) -> None:
 
 class TestAppendAndEntries:
     def test_append_returns_entry_with_event(
-        self, ws: FsWorkspaceService, rid: RequestId
+        self, ws: FsSystemWorkspaceService, rid: RequestId
     ) -> None:
         svc = JsonLinesHistoryService(ws)
         entry = svc.append(UserQueryReceived(request_id=rid, query="hi"))
@@ -73,7 +73,9 @@ class TestAppendAndEntries:
         assert isinstance(entry.event, UserQueryReceived)
         assert entry.event.query == "hi"
 
-    def test_parent_id_chain(self, ws: FsWorkspaceService, rid: RequestId) -> None:
+    def test_parent_id_chain(
+        self, ws: FsSystemWorkspaceService, rid: RequestId
+    ) -> None:
         svc = JsonLinesHistoryService(ws)
         e1 = svc.append(UserQueryReceived(request_id=rid, query="q"))
         e2 = svc.append(AnswerComplete(request_id=rid, content="a"))
@@ -84,7 +86,7 @@ class TestAppendAndEntries:
         assert e3.parent_id == e2.id
 
     def test_entries_forward_roundtrip(
-        self, ws: FsWorkspaceService, rid: RequestId
+        self, ws: FsSystemWorkspaceService, rid: RequestId
     ) -> None:
         svc = JsonLinesHistoryService(ws)
         e1 = svc.append(UserQueryReceived(request_id=rid, query="q"))
@@ -105,7 +107,7 @@ class TestAppendAndEntries:
 
 class TestReverseReading:
     def test_entries_reverse_order(
-        self, ws: FsWorkspaceService, rid: RequestId
+        self, ws: FsSystemWorkspaceService, rid: RequestId
     ) -> None:
         svc = JsonLinesHistoryService(ws)
         e1 = svc.append(UserQueryReceived(request_id=rid, query="q"))
@@ -116,12 +118,12 @@ class TestReverseReading:
 
         assert [e.id for e in read] == [e3.id, e2.id, e1.id]
 
-    def test_entries_reverse_on_empty_file(self, ws: FsWorkspaceService) -> None:
+    def test_entries_reverse_on_empty_file(self, ws: FsSystemWorkspaceService) -> None:
         svc = JsonLinesHistoryService(ws)
         assert list(svc.entries(reverse=True)) == []
 
     def test_entries_reverse_single_entry(
-        self, ws: FsWorkspaceService, rid: RequestId
+        self, ws: FsSystemWorkspaceService, rid: RequestId
     ) -> None:
         svc = JsonLinesHistoryService(ws)
         e1 = svc.append(UserQueryReceived(request_id=rid, query="only"))
@@ -131,7 +133,7 @@ class TestReverseReading:
 
 class TestRecoveryLastId:
     def test_reopen_continues_parent_chain(
-        self, ws: FsWorkspaceService, rid: RequestId
+        self, ws: FsSystemWorkspaceService, rid: RequestId
     ) -> None:
         s1 = JsonLinesHistoryService(ws)
         _ = s1.append(UserQueryReceived(request_id=rid, query="q"))
@@ -143,7 +145,7 @@ class TestRecoveryLastId:
         assert e3.parent_id == e2.id
 
     def test_recovery_on_empty_file(
-        self, ws: FsWorkspaceService, rid: RequestId
+        self, ws: FsSystemWorkspaceService, rid: RequestId
     ) -> None:
         svc = JsonLinesHistoryService(ws)
         e = svc.append(UserQueryReceived(request_id=rid, query="first"))
@@ -152,7 +154,7 @@ class TestRecoveryLastId:
 
 class TestPartialAndMalformedLines:
     def test_partial_tail_raises_in_entries_forward(
-        self, ws: FsWorkspaceService, rid: RequestId
+        self, ws: FsSystemWorkspaceService, rid: RequestId
     ) -> None:
         svc = JsonLinesHistoryService(ws)
         _ = svc.append(UserQueryReceived(request_id=rid, query="q"))
@@ -164,7 +166,7 @@ class TestPartialAndMalformedLines:
             list(svc.entries())
 
     def test_partial_tail_raises_in_entries_reverse(
-        self, ws: FsWorkspaceService, rid: RequestId
+        self, ws: FsSystemWorkspaceService, rid: RequestId
     ) -> None:
         svc = JsonLinesHistoryService(ws)
         _ = svc.append(UserQueryReceived(request_id=rid, query="q"))
@@ -176,7 +178,7 @@ class TestPartialAndMalformedLines:
             list(svc.entries(reverse=True))
 
     def test_recovery_ignores_partial_tail(
-        self, ws: FsWorkspaceService, rid: RequestId
+        self, ws: FsSystemWorkspaceService, rid: RequestId
     ) -> None:
         s1 = JsonLinesHistoryService(ws)
         _ = s1.append(UserQueryReceived(request_id=rid, query="q"))
@@ -190,7 +192,7 @@ class TestPartialAndMalformedLines:
         assert e3.parent_id == e2.id
 
     def test_malformed_middle_line_raises_forward(
-        self, ws: FsWorkspaceService, rid: RequestId
+        self, ws: FsSystemWorkspaceService, rid: RequestId
     ) -> None:
         svc = JsonLinesHistoryService(ws)
         _ = svc.append(UserQueryReceived(request_id=rid, query="q"))
@@ -201,7 +203,7 @@ class TestPartialAndMalformedLines:
             list(svc.entries())
 
     def test_malformed_middle_line_raises_reverse(
-        self, ws: FsWorkspaceService, rid: RequestId
+        self, ws: FsSystemWorkspaceService, rid: RequestId
     ) -> None:
         svc = JsonLinesHistoryService(ws)
         _ = svc.append(UserQueryReceived(request_id=rid, query="q"))
@@ -212,7 +214,7 @@ class TestPartialAndMalformedLines:
             list(svc.entries(reverse=True))
 
     def test_unknown_event_type_raises(
-        self, ws: FsWorkspaceService, rid: RequestId
+        self, ws: FsSystemWorkspaceService, rid: RequestId
     ) -> None:
         svc = JsonLinesHistoryService(ws)
         _ = svc.append(UserQueryReceived(request_id=rid, query="q"))
@@ -230,7 +232,9 @@ class TestPartialAndMalformedLines:
         with pytest.raises(HistoryReadError):
             list(svc.entries())
 
-    def test_blank_lines_skipped(self, ws: FsWorkspaceService, rid: RequestId) -> None:
+    def test_blank_lines_skipped(
+        self, ws: FsSystemWorkspaceService, rid: RequestId
+    ) -> None:
         svc = JsonLinesHistoryService(ws)
         e1 = svc.append(UserQueryReceived(request_id=rid, query="q"))
         _append_raw(ws, "\n\n")
@@ -240,7 +244,7 @@ class TestPartialAndMalformedLines:
         assert [e.id for e in read] == [e1.id, e2.id]
 
     def test_truncated_malformed_middle_line_raises(
-        self, ws: FsWorkspaceService, rid: RequestId
+        self, ws: FsSystemWorkspaceService, rid: RequestId
     ) -> None:
         svc = JsonLinesHistoryService(ws)
         _ = svc.append(UserQueryReceived(request_id=rid, query="q"))
