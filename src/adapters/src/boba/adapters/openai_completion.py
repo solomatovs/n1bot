@@ -630,14 +630,20 @@ class FinishSource(StreamTransformer[AgentContext, Choice, AgentEvent]):
 
     def __init__(self, request_id: RequestId) -> None:
         self._request_id = request_id
+        self._saw_tool_call = False
 
     def name(self) -> str:
         return "Finish"
+
+    def reset(self) -> None:
+        self._saw_tool_call = False
 
     def stream(
         self, ctx: AgentContext, stream: Iterable[Choice]
     ) -> Iterable[AgentEvent]:
         for choice in stream:
+            if choice.delta.tool_calls:
+                self._saw_tool_call = True
             if choice.finish_reason:
                 try:
                     reason = FinishReason(choice.finish_reason)
@@ -646,6 +652,11 @@ class FinishSource(StreamTransformer[AgentContext, Choice, AgentEvent]):
                         f"unknown finish_reason from provider: "
                         f"{choice.finish_reason!r}"
                     ) from e
+                # Ollama /api/chat в стриме отдаёт finish_reason=stop даже
+                # когда в дельтах были native tool_calls. Без подмены
+                # StopOnFinished завершит цикл до исполнения инструмента.
+                if self._saw_tool_call and reason is not FinishReason.TOOL_CALLS:
+                    reason = FinishReason.TOOL_CALLS
                 yield GenerationDone(
                     request_id=self._request_id,
                     finish_reason=reason,

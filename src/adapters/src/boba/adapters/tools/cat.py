@@ -37,8 +37,8 @@ from boba.domain.core.workspace import (
 class CatArgs:
     filename: str
     encoding: str
-    start_line: int | None = None
-    end_line: int | None = None
+    start_line: int
+    end_line: int
 
 
 class CatArgsConverter(Converter[dict[str, Any], CatArgs]):
@@ -48,8 +48,8 @@ class CatArgsConverter(Converter[dict[str, Any], CatArgs]):
         return CatArgs(
             filename=value["filename"],
             encoding=value["encoding"],
-            start_line=value.get("start_line"),
-            end_line=value.get("end_line"),
+            start_line=value["start_line"],
+            end_line=value["end_line"],
         )
 
 
@@ -77,27 +77,24 @@ class CatTool(Tool[CatArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                "Прочитать текстовое содержимое файла. Возвращает файл "
-                "целиком либо диапазон строк (1-based, включительно) через "
-                "start_line/end_line. Не подходит для бинарных файлов. Если "
-                "файла нет — возвращает ошибку 'Файл не найден'.\n"
+                "Прочитать окно строк из текстового файла (1-based, "
+                "включительно). Параметры start_line и end_line "
+                "ОБЯЗАТЕЛЬНЫ — прочитать файл целиком одним вызовом "
+                "нельзя. Не подходит для бинарных файлов. Если файла "
+                "нет — возвращает ошибку 'Файл не найден'.\n"
                 "\n"
                 f"ЖЁСТКИЙ ЛИМИТ: за один вызов cat возвращает не более "
-                f"{_MAX_LINES} строк. Лимит встроен в инструмент и не "
-                "настраивается. Если запрошенный диапазон (или весь файл "
-                "при отсутствии диапазона) превышает лимит — вместо "
-                "данных будет типизированная ошибка "
-                "'ToolOutputTooLargeError', вызов НЕ вернёт частичный "
-                "результат.\n"
+                f"{_MAX_LINES} строк. Если end_line - start_line + 1 > "
+                f"{_MAX_LINES} — вызов вернёт типизированную ошибку "
+                "'ToolOutputTooLargeError', частичного результата не "
+                "будет.\n"
                 "\n"
-                "Как НЕ надо: звать cat без start_line/end_line на "
-                "заведомо больших файлах (логи, сгенерённые артефакты, "
-                "большие исходники) в надежде 'посмотреть целиком'.\n"
-                "Как надо: если не уверен в размере — сначала stat, затем "
-                f"пагинируй через start_line/end_line шагами ≤ {_MAX_LINES} "
-                "строк. Если ищешь конкретный фрагмент — используй grep, "
-                "а cat вызывай уже с прицельным диапазоном вокруг "
-                "найденной строки."
+                "Как надо: сначала stat для размера файла, затем читай "
+                f"пошагово окнами ≤ {_MAX_LINES} строк, продвигая "
+                "start_line = предыдущий end_line + 1, пока не дошёл "
+                "до конца или не нашёл нужное. Если ищешь конкретный "
+                "фрагмент — используй grep, а cat вызывай уже с "
+                "прицельным диапазоном вокруг найденной строки."
             ),
             input_schema=ToolInputSchema(
                 params=[
@@ -119,19 +116,18 @@ class CatTool(Tool[CatArgs]):
                     ParamSchema(
                         name="start_line",
                         description=(
-                            "Начальная строка диапазона; 1 — первая строка. "
-                            "Без end_line читается до конца файла. Опционально."
+                            "Начальная строка окна; 1 — первая строка файла. "
+                            "Обязательный параметр."
                         ),
-                        validator=ChainValidator(IsInt(), MinValue(1)),
+                        validator=ChainValidator(Required(), IsInt(), MinValue(1)),
                     ),
                     ParamSchema(
                         name="end_line",
                         description=(
-                            "Конечная строка диапазона, включительно. Без "
-                            "start_line читается с первой строки. Должна "
-                            "быть >= start_line. Опционально."
+                            "Конечная строка окна, включительно; должна "
+                            "быть >= start_line. Обязательный параметр."
                         ),
-                        validator=ChainValidator(IsInt(), MinValue(1)),
+                        validator=ChainValidator(Required(), IsInt(), MinValue(1)),
                     ),
                 ],
                 invariants=Ordered("start_line", "end_line"),
@@ -139,13 +135,23 @@ class CatTool(Tool[CatArgs]):
         )
 
     def execute(self, ctx: None, args: CatArgs) -> ToolResult:
-        ranged = args.start_line is not None or args.end_line is not None
-        start = args.start_line or 1
+        if args.end_line - args.start_line + 1 > _MAX_LINES:
+            raise ToolOutputTooLargeError(
+                tool_id=self._ID,
+                limit=_MAX_LINES,
+                unit="строк",
+                hint=(
+                    f"Запрошенный диапазон "
+                    f"{args.start_line}-{args.end_line} шире лимита. "
+                    f"Читай окнами ≤ {_MAX_LINES} строк: "
+                    f"start_line={args.start_line}, "
+                    f"end_line={args.start_line + _MAX_LINES - 1}."
+                ),
+            )
+
         try:
             with self._workspace.read_text(args.filename, args.encoding) as f:
-                text, last, overflow = self._read_range(
-                    f, start, args.end_line, _MAX_LINES,
-                )
+                text, last = self._read_range(f, args.start_line, args.end_line)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self._ID, message=f"Файл не найден: {args.filename}"
@@ -155,58 +161,26 @@ class CatTool(Tool[CatArgs]):
                 tool_id=self._ID, message=f"Ошибка чтения: {e}"
             ) from e
 
-        if overflow:
-            next_start = last + 1
-            if args.end_line is not None:
-                hint = (
-                    f"Запрошенный диапазон {start}-{args.end_line} шире "
-                    f"лимита. Читай его частями: следующий кусок — "
-                    f"start_line={next_start}, end_line в пределах "
-                    f"{next_start + _MAX_LINES - 1}."
-                )
-            else:
-                hint = (
-                    f"Файл {args.filename!r} длиннее лимита. Используй "
-                    f"stat для размера и читай пагинированно: "
-                    f"start_line={next_start}, "
-                    f"end_line={next_start + _MAX_LINES - 1}. "
-                    "Если нужна не сплошная прокрутка, а конкретный "
-                    "фрагмент — сначала grep."
-                )
-            raise ToolOutputTooLargeError(
-                tool_id=self._ID,
-                limit=_MAX_LINES,
-                unit="строк",
-                hint=hint,
-            )
-
-        label = f"{args.filename}:{start}-{last}" if ranged else args.filename
+        label = f"{args.filename}:{args.start_line}-{last}"
         return ToolResult(content=f"### {label}\n\n{text}")
 
     @staticmethod
     def _read_range(
-        f: TextIOBase, start: int, end: int | None, max_lines: int,
-    ) -> tuple[str, int, bool]:
+        f: TextIOBase, start: int, end: int,
+    ) -> tuple[str, int]:
         """Стримит файл построчно, собирает только строки ``[start, end]``.
 
         Ранние строки читаются и отбрасываются (иначе позицию в файле не
         найти), хвост после ``end`` не читается вовсе — обрываем итерацию.
-        Собирает не более ``max_lines`` строк; если в диапазоне есть ещё
-        данные сверх лимита, возвращает ``overflow=True`` и номер последней
-        собранной строки, чтобы caller мог подсказать LLM следующий
-        start_line. Если диапазон пуст, ``last = start - 1``.
+        Если диапазон пуст, ``last = start - 1``.
         """
         collected: list[str] = []
         last = start - 1
-        overflow = False
         for i, line in enumerate(f, start=1):
             if i < start:
                 continue
-            if end is not None and i > end:
-                break
-            if len(collected) >= max_lines:
-                overflow = True
+            if i > end:
                 break
             collected.append(line.rstrip("\r\n"))
             last = i
-        return "\n".join(collected), last, overflow
+        return "\n".join(collected), last

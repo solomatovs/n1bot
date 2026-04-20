@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import sys
+import argparse
 
 import pytest
 
@@ -18,7 +18,7 @@ pytestmark = pytest.mark.integration
 FIXED_WORKSPACE_ID = WorkspaceId.from_wire("00000000-0000-0000-0000-000000000001")
 
 
-def test_agent_loop_hello(query: str) -> None:
+def _run(query: str, model: str | None) -> None:
     loader = ConfigLoader()
     app_config = loader.load_app()
     configure_logging(app_config.log_level, app_config.log_file)
@@ -33,7 +33,7 @@ def test_agent_loop_hello(query: str) -> None:
         agent = req.get(Agent)
         request = AgentRequest(
             query=query,
-            model=app_config.llm.model,
+            model=model or app_config.llm.model,
             workspace_id=storage.workspace_id,
             request_id=RequestId.new(),
         )
@@ -41,6 +41,17 @@ def test_agent_loop_hello(query: str) -> None:
         agent.run(agent_config, request)
 
 
+def test_agent_loop_hello(query: str) -> None:
+    _run(query, model=None)
+
+
 if __name__ == "__main__":
-    query = " ".join(sys.argv[1:])
-    test_agent_loop_hello(query)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="LiteLLM model name; без опции — значение из config.toml",
+    )
+    parser.add_argument("query", nargs="+", help="Сообщение пользователя")
+    args = parser.parse_args()
+    _run(" ".join(args.query), args.model)

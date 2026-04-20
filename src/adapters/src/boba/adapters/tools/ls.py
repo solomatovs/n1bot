@@ -15,6 +15,7 @@ from boba.domain.core.tools import (
     NonEmpty,
     ParamSchema,
     Pass,
+    Required,
     Tool,
     ToolDefinition,
     ToolExecutionError,
@@ -31,8 +32,8 @@ from boba.domain.core.workspace import (
 
 @dataclass(frozen=True)
 class LsArgs:
-    path: str | None = None
-    limit: int | None = None
+    path: str | None
+    limit: int
 
 
 class LsArgsConverter(Converter[dict[str, Any], LsArgs]):
@@ -45,7 +46,7 @@ class LsArgsConverter(Converter[dict[str, Any], LsArgs]):
     def convert(self, value: dict[str, Any]) -> LsArgs:
         return LsArgs(
             path=value.get("path"),
-            limit=value.get("limit"),
+            limit=value["limit"],
         )
 
 
@@ -73,7 +74,9 @@ class LsTool(Tool[LsArgs]):
                 "Показать содержимое указанной директории на одном уровне "
                 "(без рекурсии). Возвращает имена файлов и поддиректорий в "
                 "порядке файловой системы, без сортировки. Для рекурсивного "
-                "обхода используй tool 'tree'."
+                "обхода используй tool 'tree'. Если элементов больше limit "
+                "— ответ обрезается, в заголовке будет маркер "
+                "'(truncated at limit=N)'."
             ),
             input_schema=ToolInputSchema(
                 params=[
@@ -88,10 +91,12 @@ class LsTool(Tool[LsArgs]):
                     ParamSchema(
                         name="limit",
                         description=(
-                            "Максимум элементов в ответе (целое >= 0). "
-                            "Без него возвращаются все."
+                            "Максимум элементов в ответе (целое >= 1). "
+                            "Обязательный параметр. Подбирай осознанно: "
+                            "большие значения раздувают контекст. "
+                            "Разумные величины — 50–500."
                         ),
-                        validator=ChainValidator(IsInt(), MinValue(0)),
+                        validator=ChainValidator(Required(), IsInt(), MinValue(1)),
                     ),
                 ],
                 invariants=Pass(),
@@ -101,24 +106,24 @@ class LsTool(Tool[LsArgs]):
     def execute(self, ctx: None, args: LsArgs) -> ToolResult:
         try:
             iterator = self._workspace.ls(args.path)
-            items = (
-                list(iterator)
-                if args.limit is None
-                else list(islice(iterator, args.limit))
-            )
+            items = list(islice(iterator, args.limit + 1))
         except WorkspaceError as e:
             raise ToolExecutionError(
                 tool_id=self._ID, message=f"Ошибка обхода: {e}"
             ) from e
+
+        truncated = len(items) > args.limit
+        if truncated:
+            items = items[: args.limit]
 
         location = args.path or "/"
 
         if not items:
             return ToolResult(content=f"{location} пуст.")
 
-        header = f"Элементы {location} ({len(items)}"
-        if args.limit is not None:
-            header += f", лимит={args.limit}"
+        header = f"Элементы {location} ({len(items)}, лимит={args.limit}"
+        if truncated:
+            header += f", truncated at limit={args.limit}"
         header += "):"
         body = "\n".join(f"- {p}" for p in items)
         return ToolResult(content=f"{header}\n{body}")

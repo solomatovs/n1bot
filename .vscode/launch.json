@@ -1,5 +1,26 @@
 {
     "version": "0.2.0",
+    "inputs": [
+        {
+            "id": "model",
+            "type": "pickString",
+            "description": "LiteLLM модель",
+            "default": "qwen3.5-35b",
+            "options": [
+                "qwen3",
+                "qwen3-0.6b",
+                "qwen3-235b",
+                "qwen3.5-35b",
+                "qwen3.5-122b",
+                "deepseek-coder-v2-16b",
+                "qwen2.5-coder-1.5b",
+                "llama3.1-8b",
+                "gemini",
+                "numarkdown-q4",
+                "numarkdown-q8"
+            ]
+        }
+    ],
     "configurations": [
         {
             "name": "Test AgentLoop",
@@ -9,7 +30,10 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/.vscode",
             "python": "${workspaceFolder}/.venv/bin/python",
-            "args": ["прочитай список файлов в системе и объясни что они значат?"],
+            "args": [
+                "--model", "${input:model}",
+                "прочитай список файло и объясни что содержится в них и о ченм там написано?"
+            ],
             "env": {
                 "BOBA_CONFIG": "./config/config.toml",
                 "LITELLM_API_KEY_FILE": "./secrets/litellm_api_key",
