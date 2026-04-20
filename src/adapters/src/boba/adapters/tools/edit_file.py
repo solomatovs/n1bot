@@ -5,10 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from boba.adapters.tools._workspace_arg import workspace_tool_id
+from boba.adapters.tools._workspace_arg import WorkspaceScopedToolId
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
+    ChainValidator,
+    Default,
+    IsString,
+    NonEmpty,
+    OneOf,
     ParamSchema,
+    Pass,
+    Required,
     Tool,
     ToolDefinition,
     ToolExecutionError,
@@ -16,15 +23,6 @@ from boba.domain.core.tools import (
     ToolInputSchema,
     ToolResult,
     ToolSourceId,
-)
-from boba.domain.core.validation import (
-    ChainValidator,
-    Default,
-    IsString,
-    NonEmpty,
-    OneOf,
-    Pass,
-    Required,
 )
 from boba.domain.core.workspace import (
     WorkspaceError,
@@ -69,7 +67,7 @@ class EditFileTool(Tool[EditFileArgs]):
     ) -> None:
         self._resolver = resolver
         self._workspace = workspace
-        self._id = workspace_tool_id(workspace, self._BASE_NAME)
+        self._id = WorkspaceScopedToolId.build(workspace, self._BASE_NAME)
 
     def tool_id(self) -> ToolId:
         return self._id
@@ -83,31 +81,36 @@ class EditFileTool(Tool[EditFileArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                f"Записать в файл workspace '{self._workspace.name}'. "
-                "В режиме 'write' перезаписывает целиком, в 'append' — "
-                "дозаписывает в конец. Создаёт файл, если его не было."
+                f"Записать текст в файл workspace '{self._workspace.name}'. "
+                "Режим 'write' (по умолчанию) полностью перезаписывает "
+                "существующий файл; режим 'append' дозаписывает данные в "
+                "конец. Если файла или промежуточных директорий нет — они "
+                "создаются. Возвращает подтверждение с количеством записанных "
+                "символов."
             ),
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
                         name="filename",
-                        description="Путь к файлу внутри workspace.",
+                        description="Путь к файлу относительно корня workspace.",
                         validator=ChainValidator(Required(), IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="content",
                         description=(
-                            "Содержимое для записи. В режиме 'write' — "
-                            "полное новое содержимое; в 'append' — данные, "
-                            "дописываемые в конец."
+                            "Текст для записи. В режиме 'write' — полное "
+                            "новое содержимое файла. В режиме 'append' — "
+                            "данные, добавляемые в конец существующего "
+                            "файла."
                         ),
                         validator=ChainValidator(Required(), IsString()),
                     ),
                     ParamSchema(
                         name="mode",
                         description=(
-                            "Режим записи: 'write' — перезапись целиком, "
-                            "'append' — дозапись в конец. По умолчанию — 'write'."
+                            "Режим записи: 'write' — перезапись файла "
+                            "целиком, 'append' — дозапись в конец. По "
+                            "умолчанию — 'write'."
                         ),
                         validator=ChainValidator(
                             Default(WRITE_MODE),
@@ -117,7 +120,10 @@ class EditFileTool(Tool[EditFileArgs]):
                     ),
                     ParamSchema(
                         name="encoding",
-                        description="Кодировка файла. По умолчанию — utf-8.",
+                        description=(
+                            "Текстовая кодировка файла, например 'utf-8' "
+                            "или 'cp1251'. По умолчанию — 'utf-8'."
+                        ),
                         validator=ChainValidator(
                             Default("utf-8"), IsString(), NonEmpty()
                         ),

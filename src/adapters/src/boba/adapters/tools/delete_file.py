@@ -5,10 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from boba.adapters.tools._workspace_arg import workspace_tool_id
+from boba.adapters.tools._workspace_arg import WorkspaceScopedToolId
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
+    ChainValidator,
+    IsString,
+    NonEmpty,
     ParamSchema,
+    Pass,
+    Required,
     Tool,
     ToolDefinition,
     ToolExecutionError,
@@ -16,13 +21,6 @@ from boba.domain.core.tools import (
     ToolInputSchema,
     ToolResult,
     ToolSourceId,
-)
-from boba.domain.core.validation import (
-    ChainValidator,
-    IsString,
-    NonEmpty,
-    Pass,
-    Required,
 )
 from boba.domain.core.workspace import (
     WorkspaceError,
@@ -57,7 +55,7 @@ class DeleteFileTool(Tool[DeleteFileArgs]):
     ) -> None:
         self._resolver = resolver
         self._workspace = workspace
-        self._id = workspace_tool_id(workspace, self._BASE_NAME)
+        self._id = WorkspaceScopedToolId.build(workspace, self._BASE_NAME)
 
     def tool_id(self) -> ToolId:
         return self._id
@@ -70,12 +68,16 @@ class DeleteFileTool(Tool[DeleteFileArgs]):
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
-            description=f"Удалить файл из workspace '{self._workspace.name}'.",
+            description=(
+                f"Удалить файл из workspace '{self._workspace.name}'. "
+                "Операция безвозвратна — отмены нет, используй с осторожностью. "
+                "Если файла нет — возвращает ошибку 'Файл не найден'."
+            ),
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
                         name="filename",
-                        description="Путь к файлу внутри workspace.",
+                        description="Путь к файлу относительно корня workspace.",
                         validator=ChainValidator(Required(), IsString(), NonEmpty()),
                     ),
                 ],

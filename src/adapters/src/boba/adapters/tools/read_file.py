@@ -5,19 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from boba.adapters.tools._workspace_arg import workspace_tool_id
+from boba.adapters.tools._workspace_arg import WorkspaceScopedToolId
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
-    ParamSchema,
-    Tool,
-    ToolDefinition,
-    ToolExecutionError,
-    ToolId,
-    ToolInputSchema,
-    ToolResult,
-    ToolSourceId,
-)
-from boba.domain.core.validation import (
     ChainValidator,
     Default,
     IsInt,
@@ -25,7 +15,15 @@ from boba.domain.core.validation import (
     MinValue,
     NonEmpty,
     Ordered,
+    ParamSchema,
     Required,
+    Tool,
+    ToolDefinition,
+    ToolExecutionError,
+    ToolId,
+    ToolInputSchema,
+    ToolResult,
+    ToolSourceId,
 )
 from boba.domain.core.workspace import (
     WorkspaceError,
@@ -68,7 +66,7 @@ class ReadFileTool(Tool[ReadFileArgs]):
     ) -> None:
         self._resolver = resolver
         self._workspace = workspace
-        self._id = workspace_tool_id(workspace, self._BASE_NAME)
+        self._id = WorkspaceScopedToolId.build(workspace, self._BASE_NAME)
 
     def tool_id(self) -> ToolId:
         return self._id
@@ -82,31 +80,44 @@ class ReadFileTool(Tool[ReadFileArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                f"Прочитать содержимое файла из workspace '{self._workspace.name}'. "
-                "Опционально — диапазон строк (1-based, включительно)."
+                f"Прочитать текстовое содержимое файла из workspace "
+                f"'{self._workspace.name}'. По умолчанию возвращает файл "
+                "целиком; через start_line/end_line можно запросить диапазон "
+                "строк (1-based, включительно). Не подходит для бинарных "
+                "файлов. Если файла нет — возвращает ошибку 'Файл не найден'."
             ),
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
                         name="filename",
-                        description="Путь к файлу внутри workspace.",
+                        description="Путь к файлу относительно корня workspace.",
                         validator=ChainValidator(Required(), IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="encoding",
-                        description="Кодировка файла. По умолчанию — utf-8.",
+                        description=(
+                            "Текстовая кодировка файла, например 'utf-8' "
+                            "или 'cp1251'. По умолчанию — 'utf-8'."
+                        ),
                         validator=ChainValidator(
                             Default("utf-8"), IsString(), NonEmpty()
                         ),
                     ),
                     ParamSchema(
                         name="start_line",
-                        description="Начальная строка диапазона (с 1, включительно).",
+                        description=(
+                            "Начальная строка диапазона; 1 — первая строка. "
+                            "Без end_line читается до конца файла. Опционально."
+                        ),
                         validator=ChainValidator(IsInt(), MinValue(1)),
                     ),
                     ParamSchema(
                         name="end_line",
-                        description="Конечная строка диапазона (включительно).",
+                        description=(
+                            "Конечная строка диапазона, включительно. Без "
+                            "start_line читается с первой строки. Должна "
+                            "быть >= start_line. Опционально."
+                        ),
                         validator=ChainValidator(IsInt(), MinValue(1)),
                     ),
                 ],

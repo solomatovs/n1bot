@@ -15,5 +15,4 @@ boba-domain = { path = "../domain", develop = true }
 boba-adapters = { path = "../adapters", develop = true }
 dishka = "*"
 openai = "*"
-httpx = "*"
 tomli = "*"
