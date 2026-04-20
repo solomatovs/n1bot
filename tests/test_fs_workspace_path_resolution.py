@@ -706,6 +706,113 @@ class TestEditText:
         assert (workspace_root / "a.txt").read_text() == "line1\nLINE\n"
 
 
+class TestGrep:
+    """Поиск по содержимому файлов."""
+
+    def test_simple_match_single_file(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("foo\nbar\nbaz\n")
+        matches = list(service.grep("bar"))
+        assert len(matches) == 1
+        assert matches[0].path == "a.txt"
+        assert matches[0].line == 2
+        assert matches[0].content == "bar"
+
+    def test_recursive_across_tree(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("alpha\n")
+        (workspace_root / "docs").mkdir()
+        (workspace_root / "docs" / "b.txt").write_text("alpha here too\n")
+        matches = list(service.grep("alpha"))
+        paths = sorted(m.path for m in matches)
+        assert paths == ["a.txt", "docs/b.txt"]
+
+    def test_include_glob_filters(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.py").write_text("import x\n")
+        (workspace_root / "b.md").write_text("import x\n")
+        matches = list(service.grep("import", include="*.py"))
+        assert [m.path for m in matches] == ["a.py"]
+
+    def test_regex_pattern(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("v1.2.3\nv10.0.0\nhello\n")
+        matches = list(service.grep(r"^v\d+\.\d+\.\d+$"))
+        assert [m.line for m in matches] == [1, 2]
+
+    def test_fixed_string_escapes_regex_meta(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("config.json\nconfigXjson\n")
+        matches = list(service.grep("config.json", fixed_string=True))
+        assert [m.line for m in matches] == [1]
+
+    def test_invalid_regex_raises_error(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("x")
+        with pytest.raises(WorkspaceError) as exc:
+            list(service.grep("[unclosed"))
+        assert not isinstance(exc.value, WorkspaceNotFoundError)
+        assert "invalid regex" in str(exc.value)
+
+    def test_case_insensitive(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("Hello\nHELLO\n")
+        matches = list(service.grep("hello", case_insensitive=True))
+        assert len(matches) == 2
+
+    def test_context_lines(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text(
+            "l1\nl2\nl3\nMATCH\nl5\nl6\nl7\n"
+        )
+        matches = list(service.grep("MATCH", context=2))
+        assert len(matches) == 1
+        m = matches[0]
+        assert m.before == ("l2", "l3")
+        assert m.after == ("l5", "l6")
+
+    def test_binary_file_skipped(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("hello\n")
+        (workspace_root / "b.bin").write_bytes(b"hello\x00\x01\x02")
+        matches = list(service.grep("hello"))
+        assert [m.path for m in matches] == ["a.txt"]
+
+    def test_missing_path_raises_not_found(
+        self, service: FsWorkspaceService
+    ) -> None:
+        with pytest.raises(WorkspaceNotFoundError):
+            list(service.grep("x", "nowhere"))
+
+    def test_limit_truncates(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "a.txt").write_text("x\n" * 10)
+        matches = list(service.grep("x", limit=3))
+        assert len(matches) == 3
+
+    def test_path_uses_cwd_when_none(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "docs").mkdir()
+        (workspace_root / "docs" / "a.txt").write_text("inside\n")
+        (workspace_root / "other.txt").write_text("outside\n")
+        service.cd("/docs")
+        matches = list(service.grep("inside"))
+        assert [m.path for m in matches] == ["docs/a.txt"]
+        matches_out = list(service.grep("outside"))
+        assert matches_out == []
+
+
 class TestServiceHappyPath:
     """Реальные операции чтения/записи через нормализованные пути."""
 

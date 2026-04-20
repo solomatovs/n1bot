@@ -14,6 +14,22 @@ class WorkspaceId(UuId):
 
 
 @dataclass(frozen=True)
+class GrepMatch:
+    """Одно совпадение при поиске через :meth:`WorkspaceService.grep`.
+
+    ``path`` — относительный путь файла от корня workspace. ``line`` — 1-based
+    номер строки с совпадением, ``content`` — сама строка (без trailing
+    newline). ``before``/``after`` — строки контекста (могут быть пустыми).
+    """
+
+    path: str
+    line: int
+    content: str
+    before: tuple[str, ...]
+    after: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class FileMeta:
     """Метаданные ресурса workspace.
 
@@ -299,6 +315,39 @@ class WorkspaceService(ABC):
         Raises:
             WorkspacePermissionError: если нет прав.
             WorkspaceError: при прочих ошибках открытия/создания.
+        """
+        ...
+
+    @abstractmethod
+    def grep(  # noqa: PLR0913 — все параметры — независимые флаги grep'а
+        self,
+        pattern: str,
+        path: str | None = None,
+        *,
+        recursive: bool = True,
+        include: str | None = None,
+        case_insensitive: bool = False,
+        context: int = 0,
+        limit: int = 100,
+        fixed_string: bool = False,
+        encoding: str = "utf-8",
+    ) -> Iterator[GrepMatch]:
+        """Поиск по содержимому файлов (grep-подобный).
+
+        ``pattern`` — regex (Python-синтаксис); при ``fixed_string=True``
+        трактуется как литеральная строка. ``path`` — старт поиска; если
+        файл — ищем только в нём, если директория — обход с учётом
+        ``recursive``. ``include`` — fnmatch-glob по относительному пути
+        (``"*.py"`` и т.п.). ``context`` — строк до/после каждого
+        совпадения. ``limit`` — потолок количества совпадений.
+
+        Бинарные файлы (по null-byte в первых 8 KB) и файлы, не
+        декодирующиеся в ``encoding``, пропускаются молча.
+
+        Raises:
+            WorkspaceNotFoundError: если ``path`` не существует.
+            WorkspacePermissionError: нет прав.
+            WorkspaceError: невалидный regex или прочие I/O-ошибки.
         """
         ...
 

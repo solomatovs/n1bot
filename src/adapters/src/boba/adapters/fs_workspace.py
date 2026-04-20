@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import fnmatch
 import logging
+import re
 import shutil
 import stat as stat_mod
+from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -18,6 +21,7 @@ from boba.adapters.growbuffer import GrowBuffer
 from boba.domain.core.patterns import Specification, Validator
 from boba.domain.core.workspace import (
     FileMeta,
+    GrepMatch,
     SystemWorkspaceManager,
     SystemWorkspaceService,
     TmpWorkspaceManager,
@@ -417,6 +421,147 @@ class FsWorkspaceService(WorkspaceService):
                 self._open_for_write(resolved.absolute, "a", encoding=encoding),
                 resolved,
             )
+
+    def grep(  # noqa: PLR0913 — все параметры — независимые флаги grep'а
+        self,
+        pattern: str,
+        path: str | None = None,
+        *,
+        recursive: bool = True,
+        include: str | None = None,
+        case_insensitive: bool = False,
+        context: int = 0,
+        limit: int = 100,
+        fixed_string: bool = False,
+        encoding: str = "utf-8",
+    ) -> Iterator[GrepMatch]:
+        compiled = self._compile_grep_pattern(
+            pattern, fixed_string=fixed_string, case_insensitive=case_insensitive,
+        )
+        start = self._resolve(path or "")
+        with self._map_errors(start):
+            if not start.absolute.exists():
+                raise WorkspaceNotFoundError(start.relative)
+        return self._grep_iter(
+            compiled, start,
+            recursive=recursive, include=include,
+            context=context, limit=limit, encoding=encoding,
+        )
+
+    @staticmethod
+    def _compile_grep_pattern(
+        pattern: str, *, fixed_string: bool, case_insensitive: bool,
+    ) -> re.Pattern[str]:
+        raw = re.escape(pattern) if fixed_string else pattern
+        flags = re.IGNORECASE if case_insensitive else 0
+        try:
+            return re.compile(raw, flags)
+        except re.error as e:
+            raise WorkspaceError(
+                f"invalid regex {pattern!r}: {e.msg} at position {e.pos}; "
+                f"escape special chars or pass fixed_string=true",
+                path=pattern,
+            ) from e
+
+    def _grep_iter(  # noqa: PLR0913
+        self,
+        compiled: re.Pattern[str],
+        start: _ResolvedPath,
+        *,
+        recursive: bool,
+        include: str | None,
+        context: int,
+        limit: int,
+        encoding: str,
+    ) -> Iterator[GrepMatch]:
+        if start.absolute.is_file():
+            files: Iterator[str] = iter([start.relative])
+        elif recursive:
+            files = self.tree(start.source or None)
+        else:
+            files = self.ls(start.source or None)
+
+        found = 0
+        for rel in files:
+            if found >= limit:
+                break
+            if include and not fnmatch.fnmatch(rel, include):
+                continue
+            abs_path = self._root / rel
+            if self._is_probably_binary(abs_path):
+                continue
+            for match in self._grep_file(
+                abs_path, rel, compiled, context=context, encoding=encoding,
+            ):
+                yield match
+                found += 1
+                if found >= limit:
+                    break
+
+    @staticmethod
+    def _is_probably_binary(abs_path: Path, sniff: int = 8192) -> bool:
+        try:
+            with open(abs_path, "rb") as f:
+                return b"\0" in f.read(sniff)
+        except OSError:
+            return True
+
+    @staticmethod
+    def _grep_file(
+        abs_path: Path,
+        rel_path: str,
+        compiled: re.Pattern[str],
+        *,
+        context: int,
+        encoding: str,
+    ) -> Iterator[GrepMatch]:
+        before: deque[str] = deque(maxlen=context if context > 0 else 0)
+        pending: list[dict] = []  # {"line", "content", "before", "after"}
+        try:
+            with open(abs_path, encoding=encoding) as f:
+                for i, raw in enumerate(f, start=1):
+                    line = raw.rstrip("\r\n")
+                    still_pending: list[dict] = []
+                    for p in pending:
+                        p["after"].append(line)
+                        if len(p["after"]) >= context:
+                            yield GrepMatch(
+                                path=rel_path,
+                                line=p["line"],
+                                content=p["content"],
+                                before=tuple(p["before"]),
+                                after=tuple(p["after"]),
+                            )
+                        else:
+                            still_pending.append(p)
+                    pending = still_pending
+                    if compiled.search(line):
+                        if context == 0:
+                            yield GrepMatch(
+                                path=rel_path,
+                                line=i,
+                                content=line,
+                                before=(),
+                                after=(),
+                            )
+                        else:
+                            pending.append({
+                                "line": i,
+                                "content": line,
+                                "before": tuple(before),
+                                "after": [],
+                            })
+                    before.append(line)
+                for p in pending:
+                    yield GrepMatch(
+                        path=rel_path,
+                        line=p["line"],
+                        content=p["content"],
+                        before=tuple(p["before"]),
+                        after=tuple(p["after"]),
+                    )
+        except UnicodeDecodeError:
+            return
 
     def edit_text(
         self,
