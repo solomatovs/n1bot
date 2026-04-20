@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from io import TextIOBase
 from typing import Any
 
 from boba.domain.core.patterns import Converter
@@ -32,18 +33,18 @@ from boba.domain.core.workspace import (
 
 
 @dataclass(frozen=True)
-class ReadFileArgs:
+class CatArgs:
     filename: str
     encoding: str
     start_line: int | None = None
     end_line: int | None = None
 
 
-class ReadFileArgsConverter(Converter[dict[str, Any], ReadFileArgs]):
-    """Маппит провалидированный dict в :class:`ReadFileArgs`."""
+class CatArgsConverter(Converter[dict[str, Any], CatArgs]):
+    """Маппит провалидированный dict в :class:`CatArgs`."""
 
-    def convert(self, value: dict[str, Any]) -> ReadFileArgs:
-        return ReadFileArgs(
+    def convert(self, value: dict[str, Any]) -> CatArgs:
+        return CatArgs(
             filename=value["filename"],
             encoding=value["encoding"],
             start_line=value.get("start_line"),
@@ -51,10 +52,10 @@ class ReadFileArgsConverter(Converter[dict[str, Any], ReadFileArgs]):
         )
 
 
-class ReadFileTool(Tool[ReadFileArgs]):
+class CatTool(Tool[CatArgs]):
     """Чтение содержимого файла (целиком или диапазон строк 1-based)."""
 
-    _ID = ToolId("read_file")
+    _ID = ToolId("cat")
     _SOURCE = ToolSourceId("builtin.files")
 
     def __init__(self, workspace: UserWorkspaceService) -> None:
@@ -66,8 +67,8 @@ class ReadFileTool(Tool[ReadFileArgs]):
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
 
-    def typed_args_converter(self) -> Converter[dict[str, Any], ReadFileArgs]:
-        return ReadFileArgsConverter()
+    def typed_args_converter(self) -> Converter[dict[str, Any], CatArgs]:
+        return CatArgsConverter()
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
@@ -117,10 +118,17 @@ class ReadFileTool(Tool[ReadFileArgs]):
             ),
         )
 
-    def execute(self, ctx: None, args: ReadFileArgs) -> ToolResult:
+    def execute(self, ctx: None, args: CatArgs) -> ToolResult:
+        ranged = args.start_line is not None or args.end_line is not None
         try:
             with self._workspace.read_text(args.filename, args.encoding) as f:
-                text = f.read()
+                if ranged:
+                    start = args.start_line or 1
+                    text, last = self._read_range(f, start, args.end_line)
+                    label = f"{args.filename}:{start}-{last}"
+                else:
+                    text = f.read()
+                    label = args.filename
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self._ID, message=f"Файл не найден: {args.filename}"
@@ -130,13 +138,26 @@ class ReadFileTool(Tool[ReadFileArgs]):
                 tool_id=self._ID, message=f"Ошибка чтения: {e}"
             ) from e
 
-        if args.start_line is not None or args.end_line is not None:
-            lines = text.splitlines()
-            start = max(1, args.start_line or 1)
-            end = min(len(lines), args.end_line or len(lines))
-            text = "\n".join(lines[start - 1 : end])
-            label = f"{args.filename}:{start}-{end}"
-        else:
-            label = args.filename
-
         return ToolResult(content=f"### {label}\n\n{text}")
+
+    @staticmethod
+    def _read_range(
+        f: TextIOBase, start: int, end: int | None,
+    ) -> tuple[str, int]:
+        """Стримит файл построчно, собирает только строки ``[start, end]``.
+
+        Ранние строки читаются и отбрасываются (иначе позицию в файле не
+        найти), хвост после ``end`` не читается вовсе — обрываем итерацию.
+        Возвращает склеенный через ``\\n`` текст и номер последней реально
+        прочитанной строки (равен ``start - 1`` если диапазон пуст).
+        """
+        collected: list[str] = []
+        last = start - 1
+        for i, line in enumerate(f, start=1):
+            if i < start:
+                continue
+            if end is not None and i > end:
+                break
+            collected.append(line.rstrip("\r\n"))
+            last = i
+        return "\n".join(collected), last

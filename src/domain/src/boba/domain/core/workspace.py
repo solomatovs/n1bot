@@ -15,11 +15,16 @@ class WorkspaceId(UuId):
 
 @dataclass(frozen=True)
 class FileMeta:
-    """Метаданные файла."""
+    """Метаданные ресурса workspace.
+
+    ``path`` — относительный путь от корня workspace (безопасно показывать
+    пользователю). ``kind`` — ``"file"`` / ``"directory"`` / ``"other"``.
+    """
 
     path: str
     size: int
     modified: datetime
+    kind: str
 
 
 class WorkspaceError(Exception):
@@ -123,13 +128,67 @@ class WorkspaceService(ABC):
     def exists(self, path: str) -> bool: ...
 
     @abstractmethod
-    def delete(self, path: str) -> None:
+    def delete(self, path: str, *, recursive: bool = False) -> None:
         """Удалить ресурс.
+
+        Файл удаляется всегда. Директория удаляется только при
+        ``recursive=True`` (со всем содержимым) — без флага на
+        непустой директории возвращается ошибка (аналог ``rm`` vs ``rm -r``).
 
         Raises:
             WorkspaceNotFoundError: если ресурс не найден.
             WorkspacePermissionError: если нет прав.
-            WorkspaceError: при прочих ошибках удаления.
+            WorkspaceError: если это непустая директория без ``recursive``,
+                или при прочих ошибках удаления.
+        """
+        ...
+
+    @abstractmethod
+    def move(self, src: str, dst: str) -> None:
+        """Переместить/переименовать ресурс.
+
+        Семантика ``mv``: если ``dst`` — существующая директория, ``src``
+        переносится внутрь с тем же именем; иначе ``src`` переименовывается
+        в ``dst``. Существующий файл по пути ``dst`` перезаписывается.
+        Промежуточные директории не создаются — родитель ``dst`` должен
+        существовать.
+
+        Raises:
+            WorkspaceNotFoundError: если ``src`` не существует.
+            WorkspacePermissionError: если нет прав.
+            WorkspaceError: при прочих ошибках перемещения.
+        """
+        ...
+
+    @abstractmethod
+    def touch(self, path: str) -> None:
+        """Создать пустой файл или обновить mtime существующего ресурса.
+
+        Если ``path`` не существует — создаётся пустой файл (промежуточные
+        директории создаются автоматически). Если существует — обновляется
+        время модификации (работает и для файла, и для директории).
+
+        Raises:
+            WorkspacePermissionError: если нет прав.
+            WorkspaceError: при прочих I/O-ошибках.
+        """
+        ...
+
+    @abstractmethod
+    def copy(self, src: str, dst: str, *, recursive: bool = False) -> None:
+        """Скопировать ресурс.
+
+        Для файла — байтовое копирование. Для директории требуется
+        ``recursive=True`` (аналог ``cp`` vs ``cp -r``). Если ``dst`` —
+        существующая директория, копия кладётся внутрь с именем ``src``;
+        иначе копируется прямо в ``dst``. Существующий файл по ``dst``
+        перезаписывается.
+
+        Raises:
+            WorkspaceNotFoundError: если ``src`` не существует.
+            WorkspacePermissionError: если нет прав.
+            WorkspaceError: если ``src`` — директория без ``recursive``,
+                или при прочих I/O-ошибках.
         """
         ...
 
