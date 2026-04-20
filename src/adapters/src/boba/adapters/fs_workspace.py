@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import fnmatch
 import logging
+import os
 import re
 import shutil
 import stat as stat_mod
+import tempfile
 from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -558,12 +560,11 @@ class FsWorkspaceShell(WorkspaceShell):
             if not resolved.absolute.exists():
                 raise WorkspaceNotFoundError(resolved.relative)
             try:
-                content = resolved.absolute.read_text(encoding=encoding)
+                count = self._count_stream(resolved.absolute, old, encoding)
             except UnicodeDecodeError as e:
                 raise WorkspaceDecodingError(
                     resolved.relative, encoding, e,
                 ) from e
-            count = content.count(old)
             if count == 0:
                 raise WorkspaceError(
                     f"old_string not found in {resolved.relative!r}; "
@@ -578,9 +579,94 @@ class FsWorkspaceShell(WorkspaceShell):
                     path=resolved.relative,
                 )
             applied = count if replace_all else 1
-            new_content = content.replace(old, new, -1 if replace_all else 1)
-            resolved.absolute.write_text(new_content, encoding=encoding)
+            self._replace_stream(
+                resolved.absolute, old, new, applied, encoding,
+            )
             return applied
+
+    @staticmethod
+    def _count_stream(src: Path, old: str, encoding: str) -> int:
+        """Потоковый подсчёт вхождений ``old`` с overlap-буфером."""
+        old_len = len(old)
+        chunk_size = max(65536, old_len * 2)
+        keep = old_len - 1
+        buffer = ""
+        count = 0
+        with open(src, encoding=encoding) as f:
+            while True:
+                data = f.read(chunk_size)
+                if not data:
+                    break
+                buffer += data
+                pos = 0
+                while True:
+                    idx = buffer.find(old, pos)
+                    if idx < 0:
+                        break
+                    count += 1
+                    pos = idx + old_len
+                # Сохраняем хвост длиной keep: substring может пересечь
+                # границу чанков, следующая итерация найдёт его в
+                # конкатенации хвост+новый_чанк.
+                buffer = buffer[-keep:] if keep else ""
+        return count
+
+    @staticmethod
+    def _replace_stream(
+        target: Path, old: str, new: str, limit: int, encoding: str,
+    ) -> None:
+        """Потоковая замена: src → temp → atomic rename.
+
+        ``limit`` — сколько вхождений заменить (для ``replace_all`` равен
+        уже подсчитанному count). Оригинал не модифицируется до rename.
+        """
+        old_len = len(old)
+        chunk_size = max(65536, old_len * 2)
+        keep = old_len - 1
+        parent = target.parent
+        mode = target.stat().st_mode
+        fd, tmp_name = tempfile.mkstemp(
+            dir=parent, prefix=f".{target.name}.", suffix=".edit.tmp",
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with (
+                open(target, encoding=encoding) as src,
+                os.fdopen(fd, "w", encoding=encoding) as dst,
+            ):
+                buffer = ""
+                replaced = 0
+                while True:
+                    data = src.read(chunk_size)
+                    if not data:
+                        break
+                    buffer += data
+                    pos = 0
+                    while replaced < limit:
+                        idx = buffer.find(old, pos)
+                        if idx < 0:
+                            break
+                        dst.write(buffer[pos:idx])
+                        dst.write(new)
+                        pos = idx + old_len
+                        replaced += 1
+                    # Пишем всё безопасное (до last keep символов), остаток
+                    # оставляем в buffer для следующей итерации.
+                    safe_end = max(pos, len(buffer) - keep)
+                    if safe_end > pos:
+                        dst.write(buffer[pos:safe_end])
+                    buffer = buffer[safe_end:]
+                if buffer:
+                    dst.write(buffer)
+            os.chmod(tmp_path, mode)
+            os.replace(tmp_path, target)
+        except BaseException:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
+            raise
 
     def exists(self, key: str) -> bool:
         resolved = self._resolve(key)
