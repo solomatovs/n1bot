@@ -72,7 +72,7 @@ from boba.domain.core.patterns import (
     StreamTransformer,
     StreamTransformerPipeline,
 )
-from boba.domain.core.tools import Tool, build_param_wire_schema
+from boba.domain.core.tools import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -392,7 +392,7 @@ class ToOpenAIToolConverter(Converter[Tool[Any], ChatCompletionToolParam]):
     """Конвертирует Tool в формат OpenAI tools API.
 
     Описание каждого параметра собирается через
-    :func:`build_param_wire_schema` — обходит валидатор
+    :meth:`ParamSchema.build_wire_schema` — обходит валидатор
     (:class:`SchemaContributor`) и заполняет ``type``/``enum``/``default``/
     флаг required. Дрейфа со схемой валидации быть не может: оба
     канала читают из одного :class:`Validator`.
@@ -405,7 +405,7 @@ class ToOpenAIToolConverter(Converter[Tool[Any], ChatCompletionToolParam]):
         required: list[str] = []
 
         for p in definition.input_schema.params:
-            wire = build_param_wire_schema(p)
+            wire = p.build_wire_schema()
             properties[p.name] = wire.property
             if wire.required:
                 required.append(p.name)

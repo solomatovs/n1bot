@@ -6,10 +6,16 @@ from dataclasses import dataclass
 from itertools import islice
 from typing import Any
 
-from boba.adapters.tools._workspace_arg import workspace_tool_id
+from boba.adapters.tools._workspace_arg import WorkspaceScopedToolId
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
+    ChainValidator,
+    IsInt,
+    IsString,
+    MinValue,
+    NonEmpty,
     ParamSchema,
+    Pass,
     Tool,
     ToolDefinition,
     ToolExecutionError,
@@ -17,14 +23,6 @@ from boba.domain.core.tools import (
     ToolInputSchema,
     ToolResult,
     ToolSourceId,
-)
-from boba.domain.core.validation import (
-    ChainValidator,
-    IsInt,
-    IsString,
-    MinValue,
-    NonEmpty,
-    Pass,
 )
 from boba.domain.core.workspace import (
     WorkspaceError,
@@ -66,7 +64,7 @@ class LsTool(Tool[LsArgs]):
     ) -> None:
         self._resolver = resolver
         self._workspace = workspace
-        self._id = workspace_tool_id(workspace, self._BASE_NAME)
+        self._id = WorkspaceScopedToolId.build(workspace, self._BASE_NAME)
 
     def tool_id(self) -> ToolId:
         return self._id
@@ -80,24 +78,27 @@ class LsTool(Tool[LsArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                f"Список файлов workspace '{self._workspace.name}' — "
-                "только первый уровень вложенности."
+                f"Показать содержимое директории workspace "
+                f"'{self._workspace.name}' на одном уровне (без рекурсии). "
+                "Возвращает имена файлов и поддиректорий в порядке файловой "
+                "системы, без сортировки. Для рекурсивного обхода используй "
+                "tool 'tree'."
             ),
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
                         name="path",
                         description=(
-                            "Путь внутри workspace, с которого начинать "
-                            "листинг. По умолчанию — корень workspace."
+                            "Путь поддиректории относительно корня workspace. "
+                            "Без него листится корень workspace."
                         ),
                         validator=ChainValidator(IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="limit",
                         description=(
-                            "Опциональный лимит количества элементов "
-                            "в ответе. Без него возвращается всё."
+                            "Максимум элементов в ответе (целое >= 0). "
+                            "Без него возвращаются все."
                         ),
                         validator=ChainValidator(IsInt(), MinValue(0)),
                     ),

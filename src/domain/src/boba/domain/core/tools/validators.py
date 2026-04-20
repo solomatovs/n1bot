@@ -1,41 +1,49 @@
-"""Валидаторы значений + контракт обогащения wire-схемы.
+"""Валидаторы аргументов tool'ов.
 
-Решает две связанные задачи в одном объекте:
+Решает две задачи в одном объекте:
 
-1. **Runtime-валидация** значения, пришедшего извне (от LLM в случае
-   tool args). Используется паттерн :class:`Validator` из
-   :mod:`boba.domain.core.patterns` — ``T → T`` с выбросом
-   :class:`ParamValidationError` при нарушении.
+1. **Runtime-валидация** значения, пришедшего извне (от LLM). Используется
+   паттерн :class:`Validator` из :mod:`boba.domain.core.patterns` — ``T → T``
+   с выбросом :class:`ParamValidationError` при нарушении.
 
-2. **Wire-схема** для потребителя (LLM). Валидаторы, реализующие
-   :class:`SchemaContributor`, дополняют JSON-Schema-подобный
-   :class:`ParamWireSchema` нужными полями (``type``, ``enum``,
-   ``default``, ``required``). Так нет дрейфа: правило валидации и
-   описание для LLM собираются из одного объекта.
+2. **Wire-схема** для потребителя. Валидаторы, реализующие
+   :class:`SchemaContributor`, дополняют :class:`ParamWireSchema` нужными
+   полями (``type``, ``enum``, ``default``, ``required``). Так нет
+   дрейфа: правило валидации и описание для LLM собираются из одного
+   объекта.
 
-Композиция — через :class:`ChainValidator`. Полное отсутствие правил —
-через :class:`Pass`.
+Композиция — :class:`ChainValidator`. No-op — :class:`Pass`.
 
 Семантика «значение отсутствует»: оркестратор передаёт сентинел
 :data:`MISSING` в первый валидатор. :class:`Required` бросит,
-:class:`Default` подставит значение, value-валидаторы (наследники
-:class:`ValueValidator`) пропустят MISSING без проверки.
+:class:`Default` подставит значение, value-валидаторы (:class:`ValueValidator`)
+пропустят MISSING без проверки.
 """
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from collections.abc import Sized
-from dataclasses import dataclass, field
 from typing import Any, Final
 
 from boba.domain.core.patterns import Validator
+from boba.domain.core.tools.errors import (
+    InvalidSchemaInvariantError,
+    InvalidToolArgumentError,
+)
+from boba.domain.core.tools.schema import (
+    ParamWireSchema,
+    SchemaContributor,
+    ToolId,
+    ToolInputSchema,
+)
 
 
 class _MissingType:
     """Sentinel-тип для значения «параметр не передан».
 
-    Отличает «ключа не было в dict» от «ключ был, но значение None».
+    Singleton; единственный инстанс — :data:`MISSING`. Отличает «ключа
+    не было в dict» от «ключ был, но значение None».
     """
 
     _instance: _MissingType | None = None
@@ -62,38 +70,6 @@ class ParamValidationError(Exception):
     («должно быть строкой», «не входит в [...]»). Контекст добавляет
     оркестратор, оборачивая в доменную ошибку.
     """
-
-
-@dataclass
-class ParamWireSchema:
-    """Wire-описание одного параметра, собираемое из валидаторов.
-
-    ``property`` — JSON-Schema-подобный dict (``type``, ``description``,
-    ``enum``, ``default``, ...). Конвертер на сторону провайдера
-    (OpenAI, Anthropic) забирает его как есть.
-
-    ``required`` — флаг «параметр обязателен»; конвертер кладёт имя
-    в top-level массив ``required``.
-    """
-
-    property: dict[str, Any] = field(default_factory=dict)
-    required: bool = False
-
-
-class SchemaContributor(ABC):
-    """Mixin: валидатор умеет дополнять :class:`ParamWireSchema`.
-
-    Реализуется теми валидаторами, чьё правило отражается в JSON-Schema:
-    :class:`Required`, :class:`Default`, :class:`OneOf`, типовые
-    :class:`IsString`/:class:`IsInt`/... Композитные валидаторы
-    (:class:`ChainValidator`) делегируют contribute всем участникам
-    цепочки, реализующим этот контракт.
-    """
-
-    @abstractmethod
-    def contribute(self, schema: ParamWireSchema) -> None:
-        """Дополнить ``schema`` данными, выводимыми из этого валидатора."""
-        ...
 
 
 class Required(Validator[Any], SchemaContributor):
@@ -215,9 +191,13 @@ class IsBool(ValueValidator, SchemaContributor):
 class OneOf(ValueValidator, SchemaContributor):
     """Значение должно быть в фиксированном наборе. В wire-схеме: ``enum``."""
 
+    _MIN_OPTIONS = 1
+
     def __init__(self, *options: Any) -> None:
-        if not options:
-            raise ValueError("OneOf требует хотя бы одного варианта")
+        if len(options) < self._MIN_OPTIONS:
+            raise ValueError(
+                f"OneOf требует минимум {self._MIN_OPTIONS} вариант"
+            )
         self._options = options
 
     def _validate_value(self, value: Any) -> Any:
@@ -308,16 +288,13 @@ class NonEmpty(ValueValidator):
         return value
 
 
-# ───────── композиция ─────────
-
-
 class ChainValidator(Validator[Any], SchemaContributor):
     """Последовательно применяет валидаторы, прокидывая результат.
 
     Первое падение прерывает цепочку. ``contribute`` делегируется всем
-    участникам, реализующим :class:`SchemaContributor` — порядок
-    регистрации = порядок применения к схеме (последний может
-    переопределить поле, заданное предыдущим).
+    участникам, реализующим :class:`SchemaContributor`. Порядок
+    регистрации = порядок применения и к значению, и к схеме (последний
+    может переопределить поле, заданное предыдущим).
 
     Пустая цепочка (``ChainValidator()``) — no-op: пропускает любое
     значение, ничего не вкладывает в схему.
@@ -348,23 +325,20 @@ class Pass(Validator[Any]):
         return value
 
 
-# ───────── cross-field валидаторы (работают над dict'ом аргументов) ─────────
-
-_MIN_CROSS_FIELD_NAMES = 2
-
-
 class MutuallyExclusive(Validator[dict[str, Any]]):
     """Одновременно задан может быть максимум один из перечисленных параметров.
 
-    Работает на уровне ``ToolInputSchema.invariants`` — получает dict уже
-    провалидированных по отдельности параметров и проверяет, что в нём
-    нет более одного ключа из ``names``.
+    Работает на уровне ``ToolInputSchema.invariants`` — получает dict
+    уже провалидированных параметров и проверяет, что в нём нет более
+    одного ключа из ``names``.
     """
 
+    _MIN_NAMES = 2
+
     def __init__(self, *names: str) -> None:
-        if len(names) < _MIN_CROSS_FIELD_NAMES:
+        if len(names) < self._MIN_NAMES:
             raise ValueError(
-                f"MutuallyExclusive требует минимум {_MIN_CROSS_FIELD_NAMES} имени"
+                f"MutuallyExclusive требует минимум {self._MIN_NAMES} имени"
             )
         self._names = names
 
@@ -372,19 +346,20 @@ class MutuallyExclusive(Validator[dict[str, Any]]):
         present = [n for n in self._names if n in value]
         if len(present) > 1:
             raise ParamValidationError(
-                f"параметры {present} взаимоисключающие — "
-                f"задайте только один"
+                f"параметры {present} взаимоисключающие — задайте только один"
             )
         return value
 
 
 class RequiresTogether(Validator[dict[str, Any]]):
-    """Перечисленные параметры должны быть либо все заданы, либо все отсутствовать."""
+    """Перечисленные параметры — либо все заданы, либо все отсутствуют."""
+
+    _MIN_NAMES = 2
 
     def __init__(self, *names: str) -> None:
-        if len(names) < _MIN_CROSS_FIELD_NAMES:
+        if len(names) < self._MIN_NAMES:
             raise ValueError(
-                f"RequiresTogether требует минимум {_MIN_CROSS_FIELD_NAMES} имени"
+                f"RequiresTogether требует минимум {self._MIN_NAMES} имени"
             )
         self._names = names
 
@@ -421,3 +396,52 @@ class Ordered(Validator[dict[str, Any]]):
                 f"{self._second}={value[self._second]!r}"
             )
         return value
+
+
+class SchemaArgsValidator(Validator[dict[str, Any]]):
+    """Валидирует сырой dict аргументов против :class:`ToolInputSchema`.
+
+    Контракт:
+    - проверяет, что все ключи входного dict известны схеме; иначе
+      :class:`InvalidToolArgumentError`;
+    - для каждого param в схеме: достаёт значение (или :data:`MISSING`),
+      прогоняет через ``param.validator``; ``ParamValidationError``
+      оборачивает в :class:`InvalidToolArgumentError` с именем
+      параметра и tool_id;
+    - значения, оставшиеся :data:`MISSING` после валидации, в результат
+      не попадают (опциональный параметр без default'а);
+    - в финале прогоняет ``schema.invariants`` над собранным dict'ом;
+      ``ParamValidationError`` оттуда оборачивает в
+      :class:`InvalidSchemaInvariantError`.
+    """
+
+    def __init__(self, schema: ToolInputSchema, tool_id: ToolId) -> None:
+        self._schema = schema
+        self._tool_id = tool_id
+        self._known: frozenset[str] = frozenset(p.name for p in schema.params)
+
+    def validate(self, value: dict[str, Any]) -> dict[str, Any]:
+        unknown = sorted(set(value.keys()) - self._known)
+        if unknown:
+            raise InvalidToolArgumentError(
+                self._tool_id,
+                unknown[0],
+                f"неизвестный параметр (известные: {sorted(self._known)})",
+            )
+
+        result: dict[str, Any] = {}
+        for param in self._schema.params:
+            raw = value.get(param.name, MISSING)
+            try:
+                validated = param.validator.validate(raw)
+            except ParamValidationError as e:
+                raise InvalidToolArgumentError(
+                    self._tool_id, param.name, str(e)
+                ) from e
+            if validated is not MISSING:
+                result[param.name] = validated
+
+        try:
+            return self._schema.invariants.validate(result)
+        except ParamValidationError as e:
+            raise InvalidSchemaInvariantError(self._tool_id, str(e)) from e
