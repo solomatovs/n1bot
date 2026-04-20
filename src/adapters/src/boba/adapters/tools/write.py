@@ -30,7 +30,7 @@ from boba.domain.core.workspace import (
 
 @dataclass(frozen=True)
 class WriteArgs:
-    filename: str
+    path: str
     content: str
     encoding: str
 
@@ -38,7 +38,7 @@ class WriteArgs:
 class WriteArgsConverter(Converter[dict[str, Any], WriteArgs]):
     def convert(self, value: dict[str, Any]) -> WriteArgs:
         return WriteArgs(
-            filename=value["filename"],
+            path=value["path"],
             content=value["content"],
             encoding=value["encoding"],
         )
@@ -73,7 +73,7 @@ class WriteTool(Tool[WriteArgs]):
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
-                        name="filename",
+                        name="path",
                         description="Путь к файлу.",
                         validator=ChainValidator(Required(), IsString(), NonEmpty()),
                     ),
@@ -98,9 +98,9 @@ class WriteTool(Tool[WriteArgs]):
         )
 
     def execute(self, ctx: None, args: WriteArgs) -> ToolResult:
-        existed = self._workspace.exists(args.filename)
+        existed = self._workspace.exists(args.path)
         try:
-            with self._workspace.write_text(args.filename, args.encoding) as f:
+            with self._workspace.write_text(args.path, args.encoding) as f:
                 f.write(args.content)
         except WorkspaceError as e:
             raise ToolExecutionError(
@@ -108,5 +108,5 @@ class WriteTool(Tool[WriteArgs]):
             ) from e
         action = "обновлён" if existed else "создан"
         return ToolResult(
-            content=f"Файл {action}: {args.filename} ({len(args.content)} символов)",
+            content=f"Файл {action}: {args.path} ({len(args.content)} символов)",
         )

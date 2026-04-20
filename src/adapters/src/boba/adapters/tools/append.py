@@ -30,7 +30,7 @@ from boba.domain.core.workspace import (
 
 @dataclass(frozen=True)
 class AppendArgs:
-    filename: str
+    path: str
     content: str
     encoding: str
 
@@ -38,7 +38,7 @@ class AppendArgs:
 class AppendArgsConverter(Converter[dict[str, Any], AppendArgs]):
     def convert(self, value: dict[str, Any]) -> AppendArgs:
         return AppendArgs(
-            filename=value["filename"],
+            path=value["path"],
             content=value["content"],
             encoding=value["encoding"],
         )
@@ -73,7 +73,7 @@ class AppendTool(Tool[AppendArgs]):
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
-                        name="filename",
+                        name="path",
                         description="Путь к файлу.",
                         validator=ChainValidator(Required(), IsString(), NonEmpty()),
                     ),
@@ -98,9 +98,9 @@ class AppendTool(Tool[AppendArgs]):
         )
 
     def execute(self, ctx: None, args: AppendArgs) -> ToolResult:
-        existed = self._workspace.exists(args.filename)
+        existed = self._workspace.exists(args.path)
         try:
-            with self._workspace.append_text(args.filename, args.encoding) as f:
+            with self._workspace.append_text(args.path, args.encoding) as f:
                 f.write(args.content)
         except WorkspaceError as e:
             raise ToolExecutionError(
@@ -108,5 +108,5 @@ class AppendTool(Tool[AppendArgs]):
             ) from e
         action = "дозаписан" if existed else "создан"
         return ToolResult(
-            content=f"Файл {action}: {args.filename} ({len(args.content)} символов)",
+            content=f"Файл {action}: {args.path} ({len(args.content)} символов)",
         )

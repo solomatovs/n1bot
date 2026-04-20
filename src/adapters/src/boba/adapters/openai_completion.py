@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
 import httpx
@@ -119,9 +119,21 @@ class FromOpenAIChunkConverter(
     """
     Конвертирует поток OpenAI chunks в поток AgentEvent.
     Делегирует обработку подключаемым StreamTransformer-ам через pipeline.
+
+    ``chunk_preprocessors`` — опциональная цепочка трансформеров уровня
+    ``Choice → Choice``, выполняемая последовательно ДО fan-out pipeline.
+    Используется для нормализации кривых дельт провайдера (например,
+    коллизий ``index`` у параллельных tool_calls), не замусоривая
+    основную логику источников событий.
     """
 
-    def __init__(self, request_id: RequestId) -> None:
+    def __init__(
+        self,
+        request_id: RequestId,
+        chunk_preprocessors: Sequence[
+            StreamTransformer[AgentContext, Choice, Choice]
+        ] = (),
+    ) -> None:
         self._pipeline = StreamTransformerPipeline[AgentContext, Choice, AgentEvent](
             [
                 RoleSource(request_id),
@@ -132,6 +144,9 @@ class FromOpenAIChunkConverter(
                 FinishSource(request_id),
             ]
         )
+        self._preprocessors: tuple[
+            StreamTransformer[AgentContext, Choice, Choice], ...
+        ] = tuple(chunk_preprocessors)
 
     def name(self) -> str:
         return f"FromOpenAIChunkConverter({self._pipeline.name()})"
@@ -140,7 +155,10 @@ class FromOpenAIChunkConverter(
         self, ctx: AgentContext, stream: Iterable[ChatCompletionChunk]
     ) -> Iterable[AgentEvent]:
         for chunk in stream:
-            yield from self._pipeline.stream(ctx, chunk.choices)
+            choices: Iterable[Choice] = chunk.choices
+            for pre in self._preprocessors:
+                choices = pre.stream(ctx, choices)
+            yield from self._pipeline.stream(ctx, list(choices))
 
 
 class OpenAIMiddleware(StreamSource[AgentContext, AgentEvent]):
@@ -156,12 +174,17 @@ class OpenAIMiddleware(StreamSource[AgentContext, AgentEvent]):
         config: LLMConfig,
         llm_request_factory: LLMRequestFactory,
         observer: RawLLMObserver,
+        chunk_preprocessor_factory: Callable[
+            [RequestId],
+            Sequence[StreamTransformer[AgentContext, Choice, Choice]],
+        ] = lambda _rid: (),
     ) -> None:
         self._client = OpenAI(base_url=config.base_url, api_key=config.api_key)
         self._llm_request_factory = llm_request_factory
         self._observer = observer
         self._to_request_converter = ToOpenAIRequestConverter()
         self._error_converter = OpenAIErrorConverter()
+        self._chunk_preprocessor_factory = chunk_preprocessor_factory
 
     def name(self) -> str:
         return "OpenAICompletion"
@@ -175,9 +198,12 @@ class OpenAIMiddleware(StreamSource[AgentContext, AgentEvent]):
         try:
             try:
                 response = self._client.chat.completions.create(**kwargs)
-                yield from FromOpenAIChunkConverter(ctx.request.request_id).stream(
-                    ctx, self._observe_chunks(response)
+                preprocessors = self._chunk_preprocessor_factory(
+                    ctx.request.request_id
                 )
+                yield from FromOpenAIChunkConverter(
+                    ctx.request.request_id, preprocessors
+                ).stream(ctx, self._observe_chunks(response))
             except LLMError:
                 raise
             except (openai.APIError, httpx.HTTPError) as e:
