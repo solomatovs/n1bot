@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any
 
 import tomli
@@ -22,12 +21,6 @@ from boba.domain.agent.models import (
     SamplingParams,
 )
 from boba.domain.config import AppConfig, LLMConfig, WorkspaceLayout
-from boba.domain.core.workspace import (
-    SYSTEM_WORKSPACE_KIND,
-    TMP_WORKSPACE_KIND,
-    USER_WORKSPACE_KIND,
-    WorkspaceKind,
-)
 
 
 class ConfigLoader:
@@ -36,12 +29,6 @@ class ConfigLoader:
     def _subsection(self, name: str) -> dict[str, Any]:
         val = self._app.get(name)
         return val if isinstance(val, dict) else {}
-
-    _WORKSPACE_KINDS: tuple[tuple[WorkspaceKind, str], ...] = (
-        (USER_WORKSPACE_KIND, "WORKSPACE_USER_SUBDIR"),
-        (SYSTEM_WORKSPACE_KIND, "WORKSPACE_SYSTEM_SUBDIR"),
-        (TMP_WORKSPACE_KIND, "WORKSPACE_TMP_SUBDIR"),
-    )
 
     def __init__(self) -> None:
         self._app = self._load_section("app")
@@ -96,18 +83,17 @@ class ConfigLoader:
             "./workspaces",
             section=self._workspaces,
         )
-        subdirs = {
-            kind: self._resolve(
-                env_key,
-                kind.name,
-                kind.name,
-                section=self._workspaces,
-            )
-            for kind, env_key in self._WORKSPACE_KINDS
-        }
         return WorkspaceLayout(
             base_dir=base_dir,
-            subdirs=MappingProxyType(subdirs),
+            user_subdir=self._resolve(
+                "WORKSPACE_USER_SUBDIR", "user", "user", section=self._workspaces,
+            ),
+            system_subdir=self._resolve(
+                "WORKSPACE_SYSTEM_SUBDIR", "system", "system", section=self._workspaces,
+            ),
+            tmp_subdir=self._resolve(
+                "WORKSPACE_TMP_SUBDIR", "tmp", "tmp", section=self._workspaces,
+            ),
         )
 
     def load_llm_defaults(self) -> LLMRequestDefaults:

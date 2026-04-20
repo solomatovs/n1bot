@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from itertools import islice
 from typing import Any
 
-from boba.adapters.tools._workspace_arg import WorkspaceScopedToolId
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainValidator,
@@ -25,9 +24,8 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
+    UserWorkspaceService,
     WorkspaceError,
-    WorkspaceKind,
-    WorkspaceResolver,
 )
 
 
@@ -50,20 +48,14 @@ class TreeArgsConverter(Converter[dict[str, Any], TreeArgs]):
 class TreeTool(Tool[TreeArgs]):
     """Рекурсивный обход всех файлов workspace."""
 
-    _BASE_NAME = "tree"
+    _ID = ToolId("tree")
     _SOURCE = ToolSourceId("builtin.files")
 
-    def __init__(
-        self,
-        resolver: WorkspaceResolver,
-        workspace: WorkspaceKind,
-    ) -> None:
-        self._resolver = resolver
+    def __init__(self, workspace: UserWorkspaceService) -> None:
         self._workspace = workspace
-        self._id = WorkspaceScopedToolId.build(workspace, self._BASE_NAME)
 
     def tool_id(self) -> ToolId:
-        return self._id
+        return self._ID
 
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
@@ -74,19 +66,18 @@ class TreeTool(Tool[TreeArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                f"Рекурсивно показать все файлы workspace "
-                f"'{self._workspace.name}', включая содержимое всех вложенных "
-                "директорий. Возвращает плоский список путей в порядке "
-                "файловой системы, без сортировки. Для одного уровня "
-                "вложенности используй tool 'ls'."
+                "Рекурсивно показать все файлы указанной директории, включая "
+                "содержимое всех вложенных поддиректорий. Возвращает плоский "
+                "список путей в порядке файловой системы, без сортировки. "
+                "Для одного уровня вложенности используй tool 'ls'."
             ),
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
                         name="path",
                         description=(
-                            "Корневая поддиректория обхода относительно корня "
-                            "workspace. Без него — обход всего workspace."
+                            "Корневая директория обхода. Без неё — обход "
+                            "корневой директории."
                         ),
                         validator=ChainValidator(IsString(), NonEmpty()),
                     ),
@@ -104,9 +95,8 @@ class TreeTool(Tool[TreeArgs]):
         )
 
     def execute(self, ctx: None, args: TreeArgs) -> ToolResult:
-        workspace = self._resolver.resolve(self._workspace)
         try:
-            iterator = workspace.tree(args.path)
+            iterator = self._workspace.tree(args.path)
             items = (
                 list(iterator)
                 if args.limit is None
@@ -114,12 +104,10 @@ class TreeTool(Tool[TreeArgs]):
             )
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._id, message=f"Ошибка обхода workspace: {e}"
+                tool_id=self._ID, message=f"Ошибка обхода: {e}"
             ) from e
 
-        location = self._workspace.name
-        if args.path:
-            location += f":{args.path}"
+        location = args.path or "/"
 
         if not items:
             return ToolResult(content=f"{location} пуст.")

@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from boba.adapters.tools._workspace_arg import WorkspaceScopedToolId
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainValidator,
@@ -26,10 +25,9 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
+    UserWorkspaceService,
     WorkspaceError,
-    WorkspaceKind,
     WorkspaceNotFoundError,
-    WorkspaceResolver,
 )
 
 
@@ -56,20 +54,14 @@ class ReadFileArgsConverter(Converter[dict[str, Any], ReadFileArgs]):
 class ReadFileTool(Tool[ReadFileArgs]):
     """Чтение содержимого файла (целиком или диапазон строк 1-based)."""
 
-    _BASE_NAME = "read_file"
+    _ID = ToolId("read_file")
     _SOURCE = ToolSourceId("builtin.files")
 
-    def __init__(
-        self,
-        resolver: WorkspaceResolver,
-        workspace: WorkspaceKind,
-    ) -> None:
-        self._resolver = resolver
+    def __init__(self, workspace: UserWorkspaceService) -> None:
         self._workspace = workspace
-        self._id = WorkspaceScopedToolId.build(workspace, self._BASE_NAME)
 
     def tool_id(self) -> ToolId:
-        return self._id
+        return self._ID
 
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
@@ -80,17 +72,17 @@ class ReadFileTool(Tool[ReadFileArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                f"Прочитать текстовое содержимое файла из workspace "
-                f"'{self._workspace.name}'. По умолчанию возвращает файл "
-                "целиком; через start_line/end_line можно запросить диапазон "
-                "строк (1-based, включительно). Не подходит для бинарных "
-                "файлов. Если файла нет — возвращает ошибку 'Файл не найден'."
+                "Прочитать текстовое содержимое файла. По умолчанию "
+                "возвращает файл целиком; через start_line/end_line можно "
+                "запросить диапазон строк (1-based, включительно). Не "
+                "подходит для бинарных файлов. Если файла нет — возвращает "
+                "ошибку 'Файл не найден'."
             ),
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
                         name="filename",
-                        description="Путь к файлу относительно корня workspace.",
+                        description="Путь к файлу.",
                         validator=ChainValidator(Required(), IsString(), NonEmpty()),
                     ),
                     ParamSchema(
@@ -126,17 +118,16 @@ class ReadFileTool(Tool[ReadFileArgs]):
         )
 
     def execute(self, ctx: None, args: ReadFileArgs) -> ToolResult:
-        workspace = self._resolver.resolve(self._workspace)
         try:
-            with workspace.read_text(args.filename, args.encoding) as f:
+            with self._workspace.read_text(args.filename, args.encoding) as f:
                 text = f.read()
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._id, message=f"Файл не найден: {args.filename}"
+                tool_id=self._ID, message=f"Файл не найден: {args.filename}"
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._id, message=f"Ошибка чтения: {e}"
+                tool_id=self._ID, message=f"Ошибка чтения: {e}"
             ) from e
 
         if args.start_line is not None or args.end_line is not None:
@@ -148,4 +139,4 @@ class ReadFileTool(Tool[ReadFileArgs]):
         else:
             label = args.filename
 
-        return ToolResult(content=f"### {self._workspace.name}:{label}\n\n{text}")
+        return ToolResult(content=f"### {label}\n\n{text}")

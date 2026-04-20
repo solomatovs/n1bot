@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from itertools import islice
 from typing import Any
 
-from boba.adapters.tools._workspace_arg import WorkspaceScopedToolId
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainValidator,
@@ -25,9 +24,8 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
+    UserWorkspaceService,
     WorkspaceError,
-    WorkspaceKind,
-    WorkspaceResolver,
 )
 
 
@@ -54,20 +52,14 @@ class LsArgsConverter(Converter[dict[str, Any], LsArgs]):
 class LsTool(Tool[LsArgs]):
     """Плоский список элементов workspace (без рекурсии)."""
 
-    _BASE_NAME = "ls"
+    _ID = ToolId("ls")
     _SOURCE = ToolSourceId("builtin.files")
 
-    def __init__(
-        self,
-        resolver: WorkspaceResolver,
-        workspace: WorkspaceKind,
-    ) -> None:
-        self._resolver = resolver
+    def __init__(self, workspace: UserWorkspaceService) -> None:
         self._workspace = workspace
-        self._id = WorkspaceScopedToolId.build(workspace, self._BASE_NAME)
 
     def tool_id(self) -> ToolId:
-        return self._id
+        return self._ID
 
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
@@ -78,19 +70,18 @@ class LsTool(Tool[LsArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                f"Показать содержимое директории workspace "
-                f"'{self._workspace.name}' на одном уровне (без рекурсии). "
-                "Возвращает имена файлов и поддиректорий в порядке файловой "
-                "системы, без сортировки. Для рекурсивного обхода используй "
-                "tool 'tree'."
+                "Показать содержимое указанной директории на одном уровне "
+                "(без рекурсии). Возвращает имена файлов и поддиректорий в "
+                "порядке файловой системы, без сортировки. Для рекурсивного "
+                "обхода используй tool 'tree'."
             ),
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
                         name="path",
                         description=(
-                            "Путь поддиректории относительно корня workspace. "
-                            "Без него листится корень workspace."
+                            "Путь директории. Без него листится корневая "
+                            "директория."
                         ),
                         validator=ChainValidator(IsString(), NonEmpty()),
                     ),
@@ -108,9 +99,8 @@ class LsTool(Tool[LsArgs]):
         )
 
     def execute(self, ctx: None, args: LsArgs) -> ToolResult:
-        workspace = self._resolver.resolve(self._workspace)
         try:
-            iterator = workspace.ls(args.path)
+            iterator = self._workspace.ls(args.path)
             items = (
                 list(iterator)
                 if args.limit is None
@@ -118,12 +108,10 @@ class LsTool(Tool[LsArgs]):
             )
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._id, message=f"Ошибка обхода workspace: {e}"
+                tool_id=self._ID, message=f"Ошибка обхода: {e}"
             ) from e
 
-        location = self._workspace.name
-        if args.path:
-            location += f":{args.path}"
+        location = args.path or "/"
 
         if not items:
             return ToolResult(content=f"{location} пуст.")

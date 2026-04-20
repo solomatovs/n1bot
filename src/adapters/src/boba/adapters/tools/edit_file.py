@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from boba.adapters.tools._workspace_arg import WorkspaceScopedToolId
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainValidator,
@@ -25,9 +24,8 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
+    UserWorkspaceService,
     WorkspaceError,
-    WorkspaceKind,
-    WorkspaceResolver,
 )
 
 WRITE_MODE = "write"
@@ -57,20 +55,14 @@ class EditFileArgsConverter(Converter[dict[str, Any], EditFileArgs]):
 class EditFileTool(Tool[EditFileArgs]):
     """Запись/обновление файла в workspace."""
 
-    _BASE_NAME = "edit_file"
+    _ID = ToolId("edit_file")
     _SOURCE = ToolSourceId("builtin.files")
 
-    def __init__(
-        self,
-        resolver: WorkspaceResolver,
-        workspace: WorkspaceKind,
-    ) -> None:
-        self._resolver = resolver
+    def __init__(self, workspace: UserWorkspaceService) -> None:
         self._workspace = workspace
-        self._id = WorkspaceScopedToolId.build(workspace, self._BASE_NAME)
 
     def tool_id(self) -> ToolId:
-        return self._id
+        return self._ID
 
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
@@ -81,18 +73,17 @@ class EditFileTool(Tool[EditFileArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                f"Записать текст в файл workspace '{self._workspace.name}'. "
-                "Режим 'write' (по умолчанию) полностью перезаписывает "
-                "существующий файл; режим 'append' дозаписывает данные в "
-                "конец. Если файла или промежуточных директорий нет — они "
-                "создаются. Возвращает подтверждение с количеством записанных "
-                "символов."
+                "Записать текст в файл. Режим 'write' (по умолчанию) "
+                "полностью перезаписывает существующий файл; режим 'append' "
+                "дозаписывает данные в конец. Если файла или промежуточных "
+                "директорий нет — они создаются. Возвращает подтверждение с "
+                "количеством записанных символов."
             ),
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
                         name="filename",
-                        description="Путь к файлу относительно корня workspace.",
+                        description="Путь к файлу.",
                         validator=ChainValidator(Required(), IsString(), NonEmpty()),
                     ),
                     ParamSchema(
@@ -134,17 +125,18 @@ class EditFileTool(Tool[EditFileArgs]):
         )
 
     def execute(self, ctx: None, args: EditFileArgs) -> ToolResult:
-        workspace = self._resolver.resolve(self._workspace)
-        existed = workspace.exists(args.filename)
+        existed = self._workspace.exists(args.filename)
         opener = (
-            workspace.append_text if args.mode == APPEND_MODE else workspace.write_text
+            self._workspace.append_text
+            if args.mode == APPEND_MODE
+            else self._workspace.write_text
         )
         try:
             with opener(args.filename, args.encoding) as f:
                 f.write(args.content)
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._id, message=f"Ошибка записи: {e}"
+                tool_id=self._ID, message=f"Ошибка записи: {e}"
             ) from e
 
         if args.mode == APPEND_MODE:
@@ -152,8 +144,5 @@ class EditFileTool(Tool[EditFileArgs]):
         else:
             action = "обновлён" if existed else "создан"
         return ToolResult(
-            content=(
-                f"Файл {action}: {self._workspace.name}:{args.filename} "
-                f"({len(args.content)} символов)"
-            )
+            content=f"Файл {action}: {args.filename} ({len(args.content)} символов)"
         )
