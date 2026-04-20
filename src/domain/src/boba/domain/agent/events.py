@@ -2,11 +2,27 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Literal, TypeAlias
 
 from boba.domain.agent.models import RequestId
 from boba.domain.core.errors import UserNoticeSeverity
 from boba.domain.core.patterns import Converter, Serializer
+
+
+class FinishReason(StrEnum):
+    """Причина завершения генерации LLM.
+
+    Нормализованные значения ``finish_reason`` из OpenAI-совместимых API.
+    Наследование от :class:`StrEnum` даёт прозрачную JSON-сериализацию
+    (значение записывается как строка) и совместимость с ``str`` при
+    сравнениях.
+    """
+
+    STOP = "stop"
+    LENGTH = "length"
+    TOOL_CALLS = "tool_calls"
+    CONTENT_FILTER = "content_filter"
 
 
 @dataclass(frozen=True)
@@ -121,7 +137,15 @@ class RefusalToken(BaseEvent):
 class GenerationDone(BaseEvent):
     """Генерация завершена."""
 
-    finish_reason: str = "stop"  # "stop", "tool_calls", "length"
+    finish_reason: FinishReason = FinishReason.STOP
+
+    def __post_init__(self) -> None:
+        # Нормализуем строку → enum: decoder передаёт сырое значение из
+        # JSON, а frozen-dataclass не даёт обычного присваивания.
+        if not isinstance(self.finish_reason, FinishReason):
+            object.__setattr__(
+                self, "finish_reason", FinishReason(self.finish_reason)
+            )
 
     @classmethod
     def name(cls) -> Literal["GenerationDone"]:

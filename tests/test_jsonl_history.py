@@ -20,6 +20,7 @@ from boba.domain.agent.events import (
     AnswerComplete,
     AnswerStarted,
     AnswerToken,
+    FinishReason,
     GenerationDone,
     GenerationStarted,
     RefusalComplete,
@@ -307,7 +308,7 @@ _EVENT_FACTORIES: list[tuple[str, EventFactory]] = [
     ),
     (
         "GenerationDone",
-        lambda rid: GenerationDone(request_id=rid, finish_reason="stop"),
+        lambda rid: GenerationDone(request_id=rid, finish_reason=FinishReason.STOP),
     ),
     (
         "ToolCallBegin",

@@ -20,6 +20,7 @@ from boba.domain.agent.events import (
     AgentEvent,
     AnswerStarted,
     AnswerToken,
+    FinishReason,
     GenerationDone,
     ToolCallArgumentDelta,
     ToolCallBegin,
@@ -194,7 +195,7 @@ class JsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
                     yield AnswerToken(request_id=rid, token=t)
                 case (_ParserState.TAIL, GenerationDone()):
                     yield GenerationDone(
-                        request_id=rid, finish_reason="tool_calls"
+                        request_id=rid, finish_reason=FinishReason.TOOL_CALLS
                     )
                     state = _ParserState.PASSTHROUGH
 
@@ -219,7 +220,7 @@ class JsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
                     GenerationDone(),
                 ):
                     yield GenerationDone(
-                        request_id=rid, finish_reason="tool_calls"
+                        request_id=rid, finish_reason=FinishReason.TOOL_CALLS
                     )
                     state = _ParserState.PASSTHROUGH
 

@@ -39,6 +39,7 @@ from boba.domain.agent.events import (
     AgentEvent,
     AnswerStarted,
     AnswerToken,
+    FinishReason,
     GenerationDone,
     GenerationStarted,
     RefusalToken,
@@ -92,7 +93,7 @@ class LoggingLLMMiddleware(StreamSource[AgentContext, AgentEvent]):
         answer_tokens = 0
         thinking_tokens = 0
         tool_arg_chunks = 0
-        finish_reason: str | None = None
+        finish_reason: FinishReason | None = None
         outcome = "ok"
 
         # try/finally: downstream может бросить исключение на yield
@@ -121,7 +122,7 @@ class LoggingLLMMiddleware(StreamSource[AgentContext, AgentEvent]):
             elapsed = time.monotonic() - start
             sampling_max = ctx.llm_builder.sampling.max_tokens
             suspected_truncation = (
-                finish_reason == "stop"
+                finish_reason == FinishReason.STOP
                 and sampling_max is not None
                 and answer_tokens + thinking_tokens >= sampling_max
             )
@@ -732,5 +733,5 @@ class FinishSource(StreamTransformer[AgentContext, Choice, AgentEvent]):
             if choice.finish_reason:
                 yield GenerationDone(
                     request_id=self._request_id,
-                    finish_reason=choice.finish_reason,
+                    finish_reason=FinishReason(choice.finish_reason),
                 )
