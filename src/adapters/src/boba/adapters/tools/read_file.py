@@ -24,6 +24,7 @@ from boba.domain.core.validation import (
     IsString,
     MinValue,
     NonEmpty,
+    Ordered,
     Required,
 )
 from boba.domain.core.workspace import (
@@ -108,7 +109,8 @@ class ReadFileTool(Tool[ReadFileArgs]):
                         description="Конечная строка диапазона (включительно).",
                         validator=ChainValidator(IsInt(), MinValue(1)),
                     ),
-                ]
+                ],
+                invariants=Ordered("start_line", "end_line"),
             ),
         )
 

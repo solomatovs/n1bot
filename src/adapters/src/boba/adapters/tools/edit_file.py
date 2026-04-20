@@ -23,6 +23,7 @@ from boba.domain.core.validation import (
     IsString,
     NonEmpty,
     OneOf,
+    Pass,
     Required,
 )
 from boba.domain.core.workspace import (
@@ -121,7 +122,8 @@ class EditFileTool(Tool[EditFileArgs]):
                             Default("utf-8"), IsString(), NonEmpty()
                         ),
                     ),
-                ]
+                ],
+                invariants=Pass(),
             ),
         )
 

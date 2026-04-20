@@ -79,9 +79,19 @@ class ParamSchema:
 
 @dataclass(frozen=True)
 class ToolInputSchema:
-    """Схема входных параметров инструмента."""
+    """Схема входных параметров инструмента.
+
+    ``params`` — независимые описания каждого параметра (валидация +
+    описание для LLM).
+
+    ``invariants`` — cross-field валидатор, который работает над dict'ом
+    уже провалидированных параметров. Проверяет инварианты, связывающие
+    несколько полей: взаимоисключения, совместность, порядок. Обязателен
+    даже при отсутствии таких связей — тогда передавай :class:`Pass`.
+    """
 
     params: list[ParamSchema]
+    invariants: Validator[dict[str, Any]]
 
 
 def build_param_wire_schema(param: ParamSchema) -> ParamWireSchema:
@@ -175,6 +185,20 @@ class InvalidToolArgumentError(ToolExecutionError):
         self.reason = reason
 
 
+class InvalidSchemaInvariantError(ToolExecutionError):
+    """Cross-field инвариант :class:`ToolInputSchema` нарушен.
+
+    Отличается от :class:`InvalidToolArgumentError` тем, что проблема не
+    в одном конкретном параметре, а в сочетании нескольких. Для LLM это
+    даёт отдельный ``error_kind``, чтобы фидбек отличался по формулировке:
+    «параметры X и Y нельзя задавать вместе» vs «параметр X — строка».
+    """
+
+    def __init__(self, tool_id: ToolId, reason: str) -> None:
+        super().__init__(tool_id, f"нарушен инвариант схемы: {reason}")
+        self.reason = reason
+
+
 class SchemaArgsValidator(Validator[dict[str, Any]]):
     """Валидирует сырой dict аргументов против :class:`ToolInputSchema`.
 
@@ -215,7 +239,11 @@ class SchemaArgsValidator(Validator[dict[str, Any]]):
                 ) from e
             if validated is not MISSING:
                 result[param.name] = validated
-        return result
+
+        try:
+            return self._schema.invariants.validate(result)
+        except ParamValidationError as e:
+            raise InvalidSchemaInvariantError(self._tool_id, str(e)) from e
 
 
 class Tool(

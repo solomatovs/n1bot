@@ -21,6 +21,7 @@ from boba.domain.core.validation import (
     ChainValidator,
     IsString,
     NonEmpty,
+    Pass,
     Required,
 )
 from boba.domain.core.workspace import (
@@ -77,7 +78,8 @@ class DeleteFileTool(Tool[DeleteFileArgs]):
                         description="Путь к файлу внутри workspace.",
                         validator=ChainValidator(Required(), IsString(), NonEmpty()),
                     ),
-                ]
+                ],
+                invariants=Pass(),
             ),
         )
 
