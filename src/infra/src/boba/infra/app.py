@@ -202,8 +202,8 @@ class RequestProvider(Provider):
     def tools_service(self, factory: ToolFactory) -> ToolsService:
         """Сервис инструментов поверх :class:`ToolFactory`.
 
-        Per-request вслед за фабрикой. Маршрутизация ``ToolCall → Tool``
-        через :class:`ExecutorDispatcher` внутри сервиса.
+        Per-request вслед за фабрикой. Диспатч ``ToolCall → Tool`` по
+        ``tool_id`` встроен в :meth:`ToolsService.execute`.
         """
         service = ToolsService(factory)
         service.rebuild_catalog()

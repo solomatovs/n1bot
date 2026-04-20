@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable, Mapping, MutableSequence, Sequence
+from collections.abc import Callable, Iterable, MutableSequence, Sequence
 from types import TracebackType
 from typing import Generic, Self, TypeVar
 from uuid import UUID, uuid4
@@ -62,7 +62,6 @@ class UuId(Id[UUID]):
 TCtx = TypeVar("TCtx")
 TIn = TypeVar("TIn")
 TId = TypeVar("TId", bound=Id)
-TKey = TypeVar("TKey")
 TState = TypeVar("TState")
 TOut = TypeVar("TOut")
 TValue = TypeVar("TValue")
@@ -331,23 +330,6 @@ class Executor(ABC, Generic[TCtx, TIn, TOut]):
 
     @abstractmethod
     def execute(self, ctx: TCtx, req: TIn) -> TOut: ...
-
-
-class ChainError(Exception):
-    """Базовая ошибка ``Chain``."""
-
-
-class ChainConfigError(ChainError):
-    """Некорректная конфигурация ``Chain`` (например, пустой список хэндлеров)."""
-
-
-class ChainNoHandlersError(ChainError):
-    """``Chain.execute`` не выполнил ни одного хэндлера.
-
-    Инвариант: возникает только при повреждённом состоянии экземпляра
-    (список хэндлеров опустел после инициализации). В штатном сценарии
-    недостижимо.
-    """
 
 
 class FactoryMethod(ABC, Generic[TOut]):
@@ -788,9 +770,8 @@ class StreamSourcePipeline(StreamSource[TCtx, TOut]):
     - стадии должны оборачивать следующую (middleware-цепочка) —
       :class:`StreamSourceChainBuilder`;
     - первая успешная стадия должна останавливать остальные
-      (fallback) — этот паттерн в Stream-семье не реализован,
-      ближайший аналог — :class:`ExecutorPipeline` на уровне
-      Executor.
+      (fallback) — этот паттерн в Stream-семье не реализован;
+      добавь точечно, когда возникнет реальная потребность.
 
     :meth:`reset` сбрасывает состояние всех stateful-стадий;
     :meth:`name` возвращает читабельное имя вида
@@ -1161,9 +1142,7 @@ class StreamSourceChainBuilder(Generic[TCtx, TOut]):
 
     Когда НЕ использовать:
     - стадии независимы и их события нужно просто слить —
-      :class:`StreamSourcePipeline` (sequential fan-out);
-    - «первый успешный выигрывает» (fallback) — см.
-      :class:`ExecutorPipeline` на уровне Executor.
+      :class:`StreamSourcePipeline` (sequential fan-out).
     """
 
     def __init__(self) -> None:
@@ -1197,205 +1176,15 @@ class StreamSourceChainBuilder(Generic[TCtx, TOut]):
         return chain
 
 
-class ExecutorPipeline(Executor[TCtx, TIn, TOut]):
-    """
-    Упорядоченный fallback-chain поверх списка :class:`Executor`.
-
-    Хэндлеры пробуются по очереди (в порядке передачи). Первый, отработавший
-    без ошибки — выигрывает, его результат возвращается. Если исключение
-    удовлетворяет спецификации ``fallback_on`` — переходим к следующему
-    хэндлеру. Если не удовлетворяет — исключение летит наружу немедленно,
-    без попытки следующего. Если все хэндлеры упали с подходящими ошибками —
-    пробрасывается последнее исключение.
-
-    Схема::
-
-                       ctx, req
-                          │
-                          ▼
-                   ┌──────────────┐    success      ┌──────┐
-                   │  executor₁   │ ──────────────▶ │ out  │
-                   └──────┬───────┘                 └──────┘
-                          │ error
-                          ▼
-                  ┌────────────────┐    нет         ┌────────┐
-                  │  fallback_on   │ ─────────────▶ │ raise  │
-                  │   .check(e)    │                └────────┘
-                  └───────┬────────┘
-                          │ да
-                          ▼
-                   ┌──────────────┐    success      ┌──────┐
-                   │  executor₂   │ ──────────────▶ │ out  │
-                   └──────┬───────┘                 └──────┘
-                          │ error
-                          ▼
-                         ...
-                          │
-                          ▼
-                   ┌──────────────┐    success     ┌──────┐
-                   │  executorₙ   │ ─────────────▶ │ out  │
-                   └──────┬───────┘                └──────┘
-                          │ error
-                          ▼
-                    raise last_exc
-
-    Применимо везде, где нужно попробовать несколько источников и взять
-    первый успешный (resolver-chain, cache→db, и т.п.).
-
-    ``BaseException`` (``KeyboardInterrupt``, ``SystemExit``) никогда не
-    перехватывается — прерывает цепочку сразу, независимо от ``fallback_on``.
-
-    Примеры ``fallback_on``:
-    - ``IsInstance(TimeoutError, ConnectionError)`` — fallback на сетевых;
-    - ``IsInstance(HTTPError).and_(HasRetryableStatus())`` — fallback только
-      на ретраебельные HTTP-коды.
-
-    Если список ``executors`` пуст, :meth:`execute` поднимает
-    :class:`ChainNoHandlersError`.
-    """
-
-    def __init__(
-        self,
-        executors: Sequence[Executor[TCtx, TIn, TOut]],
-        fallback_on: ExceptionSpecification,
-    ) -> None:
-        self._executors = executors
-        self._fallback_on = fallback_on
-
-    def execute(self, ctx: TCtx, req: TIn) -> TOut:
-        last_exc: Exception | None = None
-
-        for h in self._executors:
-            try:
-                return h.execute(ctx, req)
-            except Exception as e:
-                if not self._fallback_on.check(e):
-                    raise
-                last_exc = e
-                continue
-
-        if last_exc is None:
-            raise ChainNoHandlersError("Chain: no handlers were tried")
-
-        raise last_exc
-
-
-class ExecutorConditional(Executor[TCtx, TIn, TOut]):
-    """
-    Бинарная развилка :class:`Executor` по :class:`Specification`.
-
-    Предикат ``when`` смотрит на пару ``(ctx, req)``. Если он удовлетворён —
-    запрос уходит в ``if_true``, иначе — в ``if_false``. Обе ветки должны
-    иметь одинаковую сигнатуру ``Executor[TCtx, TIn, TOut]``, так что
-    снаружи композиция выглядит как обычный Executor того же типа.
-
-    Схема::
-
-                         ctx, req
-                            │
-                            ▼
-                  ┌───────────────────┐
-                  │  when.check       │
-                  │   ((ctx, req))    │
-                  └────┬──────────┬───┘
-                    да │          │ нет
-                       ▼          ▼
-                 ┌──────────┐ ┌──────────┐
-                 │ if_true  │ │ if_false │
-                 └────┬─────┘ └────┬─────┘
-                      │            │
-                      └──────┬─────┘
-                             ▼
-                            out
-
-    Применимо для простых ветвлений: admin/user, cached/fresh, bulk/single
-    и т.п. Для N-арного маршрутинга по ключу — см.
-    :class:`ExecutorDispatcher`.
-    """
-
-    def __init__(
-        self,
-        when: Specification[tuple[TCtx, TIn]],
-        if_true: Executor[TCtx, TIn, TOut],
-        if_false: Executor[TCtx, TIn, TOut],
-    ) -> None:
-        self._when = when
-        self._if_true = if_true
-        self._if_false = if_false
-
-    def execute(self, ctx: TCtx, req: TIn) -> TOut:
-        if self._when.check((ctx, req)):
-            return self._if_true.execute(ctx, req)
-        return self._if_false.execute(ctx, req)
-
-
-class ExecutorRouteError(Exception):
-    """В :class:`ExecutorDispatcher` нет handler'а для вычисленного ключа."""
-
-
-class ExecutorDispatcher(Executor[TCtx, TIn, TOut]):
-    """
-    Маршрутизация запроса по вычисляемому ключу.
-
-    На каждый вызов из пары ``(ctx, req)`` извлекается ключ через ``key_fn``,
-    затем по таблице ``routes`` находится целевой Executor и ему передаётся
-    исходный запрос. Если ключ не зарегистрирован — бросается
-    :class:`ExecutorRouteError`.
-
-    Схема::
-
-                         ctx, req
-                            │
-                            ▼
-                    ┌──────────────┐
-                    │    key_fn    │──▶ key
-                    └──────┬───────┘
-                           ▼
-                    ┌──────────────┐      нет     ┌────────────────────┐
-                    │ routes[key]  │ ───────────▶ │ ExecutorRouteError │
-                    └──────┬───────┘              └────────────────────┘
-                           │ есть
-                           ▼
-                    ┌──────────────┐
-                    │   handler    │──▶ out
-                    └──────────────┘
-
-    В отличие от :class:`ExecutorPipeline`, здесь нет fallback-цепочки:
-    выбирается один handler, и если он бросает — исключение уходит наружу
-    без попытки других маршрутов. Если поверх нужен fallback — оберни
-    handler в :class:`ExecutorPipeline` на уровне соответствующего ключа.
-
-    ``routes`` — read-only :class:`Mapping`, ExecutorDispatcher не управляет
-    жизненным циклом таблицы. Если нужна динамическая регистрация на
-    лету — передайте обычный ``dict`` и мутируйте его снаружи.
-    """
-
-    def __init__(
-        self,
-        routes: Mapping[TKey, Executor[TCtx, TIn, TOut]],
-        key_fn: Callable[[TCtx, TIn], TKey],
-    ) -> None:
-        self._routes = routes
-        self._key_fn = key_fn
-
-    def execute(self, ctx: TCtx, req: TIn) -> TOut:
-        key = self._key_fn(ctx, req)
-        handler = self._routes.get(key)
-        if handler is None:
-            raise ExecutorRouteError(f"no route for key: {key!r}")
-        return handler.execute(ctx, req)
-
-
 class RuleBasedConverter(Converter[TIn, TOut], Generic[TIn, TOut]):
     """
     :class:`Converter` по списку правил ``(Specification, builder)``.
     Первое правило, у которого предикат сработал, строит результат
     через ``builder``; если ни одно не подошло — отрабатывает ``fallback``.
 
-    ``builder`` — любой ``Callable[[TIn], TOut]``: lambda, метод
-    существующего :class:`Converter` (``my_conv.convert``), свободная
-    функция. Так же, как :class:`ExecutorDispatcher` принимает
-    ``key_fn: Callable``, а не требует оборачивать в класс.
+    ``builder`` / ``fallback`` — любой ``Callable[[TIn], TOut]``: lambda,
+    метод существующего :class:`Converter` (``my_conv.convert``), свободная
+    функция. Оборачивать в отдельный класс не требуется.
 
     Схема::
 
@@ -1419,23 +1208,18 @@ class RuleBasedConverter(Converter[TIn, TOut], Generic[TIn, TOut]):
                     │  fallback   │──▶ out
                     └─────────────┘
 
-    Отличия от соседей:
+    Когда использовать:
 
-    - :class:`ExecutorDispatcher` маршрутизирует по **вычисленному ключу**
-      (``key_fn`` + словарь маршрутов) — годится, когда принадлежность
-      однозначна и извлекается как значение. Здесь же каждое правило —
-      произвольный предикат, допускающий составные условия
-      (``IsInstance(BadRequestError).and_(IsContextLengthError())``) и
-      пересечения с явным приоритетом по порядку.
-    - :class:`ExecutorPipeline` — fallback-цепочка **по исключениям**:
-      пробует executors по очереди и переключается на следующего только
-      если текущий упал с ошибкой, удовлетворяющей ``fallback_on``. Здесь
-      ни один builder не пытается «выполниться и упасть» — выбор делается
-      до построения, по предикатам.
-    - :class:`ExecutorConditional` — бинарная if/else-развилка с одним
-      предикатом. Когда развилок ≥ 3 и/или порядок важен, удобнее один
-      ``RuleBasedConverter`` со списком правил, чем вложенные
-      ``ExecutorConditional``.
+    - выбор делается по предикату над всем значением, не сводящемуся к
+      одному ключу (``IsInstance(BadRequestError).and_(
+      IsContextLengthError())``);
+    - правила могут пересекаться и важен приоритет по порядку;
+    - нужен явный ``fallback`` на случай, когда ни одно правило не
+      сработало.
+
+    Для тривиальной маршрутизации по уникальному ключу (``msg.role``,
+    ``tool_id``) встраивай lookup прямо в доменный сервис через
+    dict/каталог — O(1) и без ceremony.
 
     Контракт:
 
