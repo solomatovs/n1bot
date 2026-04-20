@@ -27,6 +27,7 @@ from boba.adapters.fs_workspace import (
     _ResolvedPath,
 )
 from boba.domain.core.workspace import (
+    WorkspaceError,
     WorkspaceId,
     WorkspaceNotFoundError,
 )
@@ -156,6 +157,118 @@ class TestServiceErrorLeakage:
             service.delete("/does/not/exist")
         assert exc_info.value.path == "does/not/exist"
         assert str(workspace_root) not in str(exc_info.value)
+
+
+class TestCwdAwareResolve:
+    """Сейчас cwd всегда ``/`` — существующее поведение не меняется.
+
+    Когда появится ``cd``, эти тесты дополнятся кейсами с непустым cwd.
+    """
+
+    def test_cwd_defaults_to_root(self, service: FsWorkspaceService) -> None:
+        assert service.cwd == "/"
+
+    def test_relative_path_resolves_from_cwd(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        service._cwd_parts = ("docs", "api")
+        resolved = service._resolve("spec.md")
+        assert resolved.relative == "docs/api/spec.md"
+        assert resolved.absolute == workspace_root / "docs/api/spec.md"
+
+    def test_absolute_path_ignores_cwd(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        service._cwd_parts = ("docs", "api")
+        resolved = service._resolve("/readme.md")
+        assert resolved.relative == "readme.md"
+        assert resolved.absolute == workspace_root / "readme.md"
+
+    def test_parent_pops_cwd_before_clamp(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        service._cwd_parts = ("docs", "api")
+        resolved = service._resolve("../../other.md")
+        assert resolved.relative == "other.md"
+        assert resolved.absolute == workspace_root / "other.md"
+
+    def test_escape_from_cwd_clamped_at_root(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        service._cwd_parts = ("docs",)
+        resolved = service._resolve("../../../etc/passwd")
+        assert resolved.relative == "etc/passwd"
+        assert resolved.absolute == workspace_root / "etc/passwd"
+
+
+class TestCd:
+    """Смена cwd через публичный ``cd``: валидация + ошибки."""
+
+    def test_cd_to_existing_dir_updates_cwd(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "docs" / "api").mkdir(parents=True)
+        service.cd("/docs/api")
+        assert service.cwd == "/docs/api"
+
+    def test_cd_relative_appends_to_cwd(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "docs" / "api").mkdir(parents=True)
+        service.cd("docs")
+        service.cd("api")
+        assert service.cwd == "/docs/api"
+
+    def test_cd_dotdot_pops_from_cwd(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "docs" / "api").mkdir(parents=True)
+        service.cd("/docs/api")
+        service.cd("..")
+        assert service.cwd == "/docs"
+
+    def test_cd_root_resets_cwd(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "docs").mkdir()
+        service.cd("/docs")
+        service.cd("/")
+        assert service.cwd == "/"
+
+    def test_cd_to_missing_dir_raises_not_found_and_keeps_cwd(
+        self, service: FsWorkspaceService
+    ) -> None:
+        with pytest.raises(WorkspaceNotFoundError) as exc:
+            service.cd("/does/not/exist")
+        assert exc.value.path == "does/not/exist"
+        assert service.cwd == "/"
+
+    def test_cd_to_file_raises_error_and_keeps_cwd(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "file.txt").write_text("x")
+        with pytest.raises(WorkspaceError) as exc:
+            service.cd("/file.txt")
+        assert not isinstance(exc.value, WorkspaceNotFoundError)
+        assert "not a directory" in str(exc.value)
+        assert exc.value.path == "file.txt"
+        assert service.cwd == "/"
+
+    def test_cd_escape_clamps_but_must_exist(
+        self, service: FsWorkspaceService
+    ) -> None:
+        with pytest.raises(WorkspaceNotFoundError):
+            service.cd("../../etc")
+        assert service.cwd == "/"
+
+    def test_other_ops_resolve_relative_to_cwd_after_cd(
+        self, service: FsWorkspaceService, workspace_root: Path
+    ) -> None:
+        (workspace_root / "docs").mkdir()
+        service.cd("/docs")
+        with service.write_text("note.md") as f:
+            f.write("hi")
+        assert (workspace_root / "docs" / "note.md").read_text() == "hi"
 
 
 class TestServiceHappyPath:

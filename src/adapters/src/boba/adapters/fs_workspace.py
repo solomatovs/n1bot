@@ -35,15 +35,19 @@ from boba.domain.core.workspace import (
 logger = logging.getLogger(__name__)
 
 
-def _clamp_to_workspace(path: str) -> str:
+def _clamp_to_workspace(
+    path: str, cwd_parts: tuple[str, ...] = (),
+) -> str:
     """Нормализует ввод к пути внутри workspace.
 
-    Ведущий ``/`` отбрасывается — абсолютный путь трактуется как
-    относительный к корню workspace. ``.`` пропускается, ``..``
-    обрабатывается по стеку: если стек пуст (вышли бы выше корня) —
-    компонент отбрасывается. Результат не содержит ведущего ``/``.
+    Абсолютный путь (с ведущим ``/``) разрешается от корня workspace —
+    ``cwd_parts`` игнорируется. Относительный — от ``cwd_parts``. ``.``
+    пропускается, ``..`` обрабатывается по стеку: если стек пуст (вышли
+    бы выше корня) — компонент отбрасывается. Результат не содержит
+    ведущего ``/``.
     """
-    stack: list[str] = []
+    is_absolute = path.startswith("/")
+    stack: list[str] = [] if is_absolute else list(cwd_parts)
     for part in path.replace("\\", "/").split("/"):
         if part in ("", "."):
             continue
@@ -274,10 +278,27 @@ class FsWorkspaceService(WorkspaceService):
         self._workspace_id = workspace_id
         self._root = root.resolve()
         self._separator = b"\n"
+        self._cwd_parts: tuple[str, ...] = ()
 
     @property
     def workspace_id(self) -> WorkspaceId:
         return self._workspace_id
+
+    @property
+    def cwd(self) -> str:
+        return "/" + "/".join(self._cwd_parts)
+
+    def cd(self, path: str) -> None:
+        resolved = self._resolve(path)
+        with self._map_errors(resolved):
+            if not resolved.absolute.exists():
+                raise WorkspaceNotFoundError(resolved.relative)
+            if not resolved.absolute.is_dir():
+                raise WorkspaceError(
+                    f"not a directory: {resolved.relative!r}",
+                    path=resolved.relative,
+                )
+        self._cwd_parts = tuple(p for p in resolved.relative.split("/") if p)
 
     @contextmanager
     def _map_errors(self, resolved: _ResolvedPath) -> Iterator[None]:
@@ -440,13 +461,15 @@ class FsWorkspaceService(WorkspaceService):
             )
 
     def _resolve(self, source: str) -> _ResolvedPath:
-        """Нормализует пользовательский путь в ``_ResolvedPath``.
+        """Единая точка сборки физического пути.
 
-        Клампит ``..``, чтобы путь не вышел за корень; после ``resolve()``
-        дополнительно проверяет, что symlink не увёл наружу. В debug-лог
-        пишет связку source → absolute для диагностики.
+        Абсолютный ``source`` (с ведущим ``/``) резолвится от корня
+        workspace; относительный — от ``cwd``. Клампит ``..``, чтобы путь
+        не вышел за корень; после ``Path.resolve()`` проверяет, что
+        symlink не увёл наружу. В debug-лог пишет source → absolute для
+        диагностики.
         """
-        relative = _clamp_to_workspace(source)
+        relative = _clamp_to_workspace(source, self._cwd_parts)
         absolute = (self._root / relative).resolve()
         if not absolute.is_relative_to(self._root):
             logger.debug(
