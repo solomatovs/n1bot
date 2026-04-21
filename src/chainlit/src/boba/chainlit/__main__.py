@@ -68,8 +68,66 @@ def _bootstrap_env() -> None:
         os.environ.setdefault("CHAINLIT_HEADLESS", headless)
 
 
+def _write_ui_config_overrides() -> None:
+    """Рендерит `.chainlit/config.toml` с оверрайдами из env до импорта chainlit.
+
+    Сам chainlit читает UI/features/project-настройки только из TOML —
+    env-переменные для этих секций не поддерживает. Мост:
+
+    - CHAINLIT_UI_NAME               → [UI] name
+    - CHAINLIT_ENABLE_TELEMETRY      → [project] enable_telemetry  (true/false)
+    - CHAINLIT_FILE_UPLOAD_MAX_MB    → [features.spontaneous_file_upload] max_size_mb
+    - CHAINLIT_FILE_UPLOAD_MAX_FILES → [features.spontaneous_file_upload] max_files
+    - CHAINLIT_FILE_UPLOAD_ACCEPT    → [features.spontaneous_file_upload] accept (CSV)
+
+    Пишем только если хоть одна env задана — иначе chainlit сгенерит
+    свои дефолты. Если задана хоть одна из CHAINLIT_FILE_UPLOAD_* —
+    автоматически выставляем `enabled = true` у secondary section,
+    иначе chainlit скрывает кнопку загрузки.
+    """
+    name = os.environ.get("CHAINLIT_UI_NAME")
+    telemetry = os.environ.get("CHAINLIT_ENABLE_TELEMETRY")
+    up_max_mb = os.environ.get("CHAINLIT_FILE_UPLOAD_MAX_MB")
+    up_max_files = os.environ.get("CHAINLIT_FILE_UPLOAD_MAX_FILES")
+    up_accept = os.environ.get("CHAINLIT_FILE_UPLOAD_ACCEPT")
+
+    overrides: list[str] = []
+
+    if telemetry is not None:
+        flag = "true" if telemetry.strip().lower() in ("true", "1", "yes", "on") else "false"
+        overrides += ["[project]", f"enable_telemetry = {flag}", ""]
+
+    has_upload = any(v is not None for v in (up_max_mb, up_max_files, up_accept))
+    if has_upload:
+        accept_list = [s.strip() for s in (up_accept or "*/*").split(",") if s.strip()]
+        accept_toml = "[" + ", ".join(f'"{a}"' for a in accept_list) + "]"
+        overrides += ["[features.spontaneous_file_upload]", "enabled = true"]
+        if up_max_mb is not None:
+            overrides.append(f"max_size_mb = {int(up_max_mb)}")
+        if up_max_files is not None:
+            overrides.append(f"max_files = {int(up_max_files)}")
+        overrides.append(f"accept = {accept_toml}")
+        overrides.append("")
+
+    if name is not None:
+        overrides += ["[UI]", f'name = "{name}"', ""]
+
+    if not overrides:
+        return
+
+    # `[meta] generated_by` обязателен: chainlit проверяет версию на старте
+    # и падает если не задан (или <= "0.3.0"). Строка "boba-chainlit" >
+    # "0.3.0" в лексикографическом сравнении — проходит валидацию.
+    overrides += ["[meta]", 'generated_by = "boba-chainlit"', ""]
+
+    target = Path.cwd() / ".chainlit" / "config.toml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n".join(overrides), encoding="utf-8")
+
+
 def main() -> None:
     _bootstrap_env()
+    _write_ui_config_overrides()
 
     # Импорт chainlit — только после bootstrap: модуль читает env при загрузке.
     from chainlit.cli import run_chainlit  # noqa: PLC0415
