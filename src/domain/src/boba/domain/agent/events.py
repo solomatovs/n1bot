@@ -215,11 +215,22 @@ class GenerationDone(BaseEvent):
 
 
 @dataclass(frozen=True)
-class GenerationFailed(BaseEvent):
-    """Терминальный отказ: адаптер/retry не смогли получить ответ LLM."""
+class TerminalFailure(BaseEvent, ABC):
+    """Базовый класс терминальных отказов — гарантирует ``error_kind`` и ``message``.
+
+    Позволяет sink'ам маршрутизировать все terminal-события в один handler
+    Подклассы добавляют свои
+    специфичные поля (``retryable``, ``limit``, ``status_code``, …).
+    """
 
     error_kind: str
     message: str
+
+
+@dataclass(frozen=True)
+class GenerationFailed(TerminalFailure):
+    """Терминальный отказ: адаптер/retry не смогли получить ответ LLM."""
+
     retryable: bool
     status_code: int | None = None
 
@@ -229,11 +240,9 @@ class GenerationFailed(BaseEvent):
 
 
 @dataclass(frozen=True)
-class PromptFailed(BaseEvent):
+class PromptFailed(TerminalFailure):
     """Терминальный отказ: PromptFactory/провайдер не смогли собрать промпт."""
 
-    error_kind: str
-    message: str
     retryable: bool
     provider: str | None = None
 
@@ -243,11 +252,9 @@ class PromptFailed(BaseEvent):
 
 
 @dataclass(frozen=True)
-class PersistenceFailed(BaseEvent):
+class PersistenceFailed(TerminalFailure):
     """Терминальный отказ: не удалось прочитать/записать журнал/хранилище."""
 
-    error_kind: str
-    message: str
     retryable: bool
 
     @classmethod
@@ -256,11 +263,9 @@ class PersistenceFailed(BaseEvent):
 
 
 @dataclass(frozen=True)
-class MaxIterationsReached(BaseEvent):
+class MaxIterationsReached(TerminalFailure):
     """Терминальный отказ: агентский цикл исчерпал лимит итераций."""
 
-    error_kind: str
-    message: str
     limit: int
     iteration: int
 
@@ -270,16 +275,9 @@ class MaxIterationsReached(BaseEvent):
 
 
 @dataclass(frozen=True)
-class RepeatedFormatFailure(BaseEvent):
-    """Терминальный отказ: модель залипла на неверном формате tool call.
+class RepeatedFormatFailure(TerminalFailure):
+    """Терминальный отказ: модель залипла на неверном формате tool call."""
 
-    Эмитится :class:`~boba.domain.agent.meat.RepeatedFormatFailureGuardMiddleware`
-    через :class:`AgentErrorRouter` после ``limit`` подряд
-    :class:`ToolCallFormatFailed` без успешного `ToolResultReady` между.
-    """
-
-    error_kind: str
-    message: str
     count: int
     limit: int
 
