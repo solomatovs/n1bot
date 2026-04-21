@@ -1,3 +1,20 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba"
+version = "0.1.0"
+description = "Boba — RAG agent for knowledge base"
+requires-python = ">=3.11,<4"
+# requirements.txt. Редактируется руками, никем не генерируется.
+# setuptools читает его в момент сборки, чтобы `pip install .` (если понадобится)
+# видел те же зависимости, что и Dockerfile (`-r requirements.txt`).
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = "requirements.txt" }
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [
