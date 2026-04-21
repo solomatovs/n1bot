@@ -1,5 +1,7 @@
 .venv
 __pycache__
+/local/*
+!/local/*.example
 *.pyc
 *.pyo
 *.pyd
