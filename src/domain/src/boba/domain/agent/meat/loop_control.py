@@ -10,6 +10,7 @@ from boba.domain.agent.events import (
     AgentEvent,
     GenerationDone,
     GenerationFailed,
+    IterationStarted,
     MaxIterationsReached,
     PersistenceFailed,
     PromptFailed,
@@ -46,6 +47,14 @@ class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
                 limit=limit,
                 iteration=ctx.iteration,
             )
+        # Граница итерации — нужна UI, чтобы показывать «2/20» в длинных
+        # цепочках tool calls. Эмитим до внутреннего потока, чтобы
+        # маркер появился раньше событий, относящихся к этой итерации.
+        yield IterationStarted(
+            request_id=ctx.request.request_id,
+            iteration=ctx.iteration,
+            max_iterations=limit,
+        )
         yield from self._inner.stream(ctx)
 
 

@@ -45,6 +45,7 @@ from boba.domain.agent.events import (
     FinishReason,
     GenerationDone,
     GenerationStarted,
+    LLMRequestSent,
     RefusalToken,
     ThinkingStarted,
     ThinkingToken,
@@ -198,6 +199,16 @@ class OpenAIMiddleware(StreamSource[AgentContext, AgentEvent]):
         try:
             try:
                 response = self._client.chat.completions.create(**kwargs)
+                # HTTP-запрос ушёл, handle стрима получен — закрываем
+                # TTFT-слепое пятно до первого чанка (GenerationStarted).
+                # На cold-start'е модели между этим и первым токеном
+                # могут быть десятки секунд.
+                yield LLMRequestSent(
+                    request_id=ctx.request.request_id,
+                    model=str(kwargs.get("model", "")),
+                    messages_count=len(kwargs.get("messages") or ()),
+                    has_tools=bool(kwargs.get("tools")),
+                )
                 preprocessors = self._chunk_preprocessor_factory(
                     ctx.request.request_id
                 )

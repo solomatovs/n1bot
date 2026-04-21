@@ -78,6 +78,25 @@ class UserQueryReceived(BaseEvent):
 
 
 @dataclass(frozen=True)
+class IterationStarted(BaseEvent):
+    """Начало новой итерации агентского цикла.
+
+    Эмитится :class:`IterationCounterMiddleware` после инкремента
+    ``ctx.iteration`` и до проверки лимита. Sink'и UI используют для
+    отрисовки границ итераций — особенно полезно при длинных цепочках
+    tool calls, когда иначе не видно, сколько из ``max_iterations``
+    уже потрачено.
+    """
+
+    iteration: int
+    max_iterations: int
+
+    @classmethod
+    def name(cls) -> Literal["IterationStarted"]:
+        return "IterationStarted"
+
+
+@dataclass(frozen=True)
 class StageStarted(BaseEvent):
     stage: str
 
@@ -94,6 +113,26 @@ class StageCompleted(BaseEvent):
     @classmethod
     def name(cls) -> Literal["StageCompleted"]:
         return "StageCompleted"
+
+
+@dataclass(frozen=True)
+class LLMRequestSent(BaseEvent):
+    """HTTP-запрос к LLM-провайдеру отправлен, стрим-handle получен.
+
+    Эмитится адаптером сразу после возврата ``chat.completions.create``,
+    до итерации по чанкам. Закрывает TTFT-слепое пятно между «агент
+    решил идти в LLM» и ``GenerationStarted`` (первый чанк). Для UX
+    нужен, когда cold-start модели / очередь прокси отдают первый
+    токен через 1–20 секунд.
+    """
+
+    model: str
+    messages_count: int
+    has_tools: bool
+
+    @classmethod
+    def name(cls) -> Literal["LLMRequestSent"]:
+        return "LLMRequestSent"
 
 
 @dataclass(frozen=True)
@@ -288,6 +327,27 @@ class ToolCallComplete(BaseEvent):
 
 
 @dataclass(frozen=True)
+class ToolExecutionStarted(BaseEvent):
+    """Tool начал исполняться.
+
+    Эмитится :class:`ToolExecutionMiddleware` после разбора аргументов
+    и до вызова ``tool.execute(...)``. Закрывает слепое пятно между
+    ``ToolCallComplete`` (LLM дописала args) и ``ToolResultReady``
+    (результат готов) — для медленных tools (fs, http) UI иначе
+    выглядит зависшим. Если разбор args провалился, событие не
+    эмитится — вместо него роутер шлёт :class:`ToolCallFormatFailed`
+    или :class:`ToolExecutionFailed`.
+    """
+
+    tool_call_id: str
+    tool_name: str
+
+    @classmethod
+    def name(cls) -> Literal["ToolExecutionStarted"]:
+        return "ToolExecutionStarted"
+
+
+@dataclass(frozen=True)
 class ToolResultReady(BaseEvent):
     """Результат успешного выполнения tool.
 
@@ -421,8 +481,10 @@ class RefusalComplete(BaseEvent):
 
 AgentEvent = (
     UserQueryReceived
+    | IterationStarted
     | StageStarted
     | StageCompleted
+    | LLMRequestSent
     | GenerationStarted
     | ThinkingStarted
     | ThinkingToken
@@ -442,6 +504,7 @@ AgentEvent = (
     | ToolCallBegin
     | ToolCallArgumentDelta
     | ToolCallComplete
+    | ToolExecutionStarted
     | ToolResultReady
     | ToolExecutionFailed
     | ToolCallFormatFailed
@@ -454,8 +517,10 @@ AgentEvent = (
 # статически функция ``_verify_event_names_exhaustive`` ниже.
 AgentEventName: TypeAlias = Literal[
     "UserQueryReceived",
+    "IterationStarted",
     "StageStarted",
     "StageCompleted",
+    "LLMRequestSent",
     "GenerationStarted",
     "ThinkingStarted",
     "ThinkingToken",
@@ -475,6 +540,7 @@ AgentEventName: TypeAlias = Literal[
     "ToolCallBegin",
     "ToolCallArgumentDelta",
     "ToolCallComplete",
+    "ToolExecutionStarted",
     "ToolResultReady",
     "ToolExecutionFailed",
     "ToolCallFormatFailed",

@@ -30,6 +30,8 @@ from boba.domain.agent.events import (
     GenerationDone,
     GenerationFailed,
     GenerationStarted,
+    IterationStarted,
+    LLMRequestSent,
     MaxIterationsReached,
     PersistenceFailed,
     PromptFailed,
@@ -46,6 +48,7 @@ from boba.domain.agent.events import (
     ToolCallComplete,
     ToolCallFormatFailed,
     ToolExecutionFailed,
+    ToolExecutionStarted,
     ToolResultReady,
     UserNoticeReady,
     UserQueryReceived,
@@ -202,6 +205,14 @@ def _stage_label(stage: str) -> str:
     return _STAGE_LABELS.get(stage, stage)
 
 
+def _llm_request_status(event: LLMRequestSent) -> str:
+    tools_hint = " с tools" if event.has_tools else ""
+    return (
+        f"Жду ответ от модели `{event.model}`{tools_hint}… "
+        f"(сообщений в контексте: {event.messages_count})"
+    )
+
+
 class _EventRenderer:
     """Состояние рендеринга + обработчики событий агента.
 
@@ -322,6 +333,15 @@ class _EventRenderer:
         # стоп-сигнал, дополнительный update() — лишний сетевой тик.
         del event
 
+    async def on_tool_exec_started(self, event: ToolExecutionStarted) -> None:
+        # Tool начал исполняться — меняем индикацию step'а с «args
+        # дописываются» на «running». Без этого медленные tools (fs,
+        # http) выглядят как зависший шаг с аргументами.
+        step = self.tool_steps_by_id.get(event.tool_call_id)
+        if step is not None:
+            step.output = "⏳ выполняется…"
+            await step.update()
+
     async def on_tool_result(self, event: ToolResultReady) -> None:
         step = self.tool_steps_by_id.pop(event.tool_call_id, None)
         if step is not None:
@@ -372,15 +392,34 @@ class _EventRenderer:
         await self._set_status(_stage_label(event.stage))
 
     async def on_stage_completed(self, event: StageCompleted) -> None:
-        # detail из домена ("user prompt added") — техническая служебка,
-        # пользователю её видеть незачем. Статус не трогаем: следующий
-        # StageStarted/GenerationStarted заменит текст, «настоящий»
-        # контент — удалит плашку.
+        # Фаза закрыта — текущий статус («Готовлю запрос…») больше не
+        # соответствует реальности. Убираем плашку; следующий значимый
+        # event (LLMRequestSent / GenerationStarted / ...) сам поставит
+        # актуальный текст. detail из домена ("user prompt added") —
+        # техническая служебка, пользователю её не показываем.
         del event
+        await self._clear_status()
+
+    async def on_llm_request_sent(self, event: LLMRequestSent) -> None:
+        # HTTP-запрос ушёл, ждём TTFT. Заменяет generic-статус
+        # подробным (модель, наличие tools, размер контекста).
+        await self._set_status(_llm_request_status(event))
 
     async def on_generation_started(self, event: GenerationStarted) -> None:
+        # Первый чанк пошёл — статус держим, токены ответа/thinking
+        # всё равно _clear_status() при первом токене.
         del event
         await self._set_status(_GENERATION_STATUS)
+
+    async def on_iteration_started(self, event: IterationStarted) -> None:
+        # Первую итерацию не маркируем — пользователь и так знает,
+        # что только что отправил запрос. Со второй уже полезно: в
+        # длинных tool-цепочках видно, сколько прогресса осталось.
+        if event.iteration <= 1:
+            return
+        await self._set_status(
+            f"Итерация {event.iteration}/{event.max_iterations}…"
+        )
 
     async def on_generation_done(self, event: GenerationDone) -> None:
         # Если после этого пойдут AnswerToken/ToolCallBegin — они сами
@@ -444,6 +483,7 @@ def _build_dispatcher(r: _EventRenderer) -> FirstMatchDispatcher[AgentEvent, Any
         route(ToolCallBegin, r.on_tool_begin),
         route(ToolCallArgumentDelta, r.on_tool_arg_delta),
         route(ToolCallComplete, r.on_tool_complete),
+        route(ToolExecutionStarted, r.on_tool_exec_started),
         route(ToolResultReady, r.on_tool_result),
         route(ToolExecutionFailed, r.on_tool_exec_failed),
         route(ToolCallFormatFailed, r.on_tool_format_failed),
@@ -452,6 +492,8 @@ def _build_dispatcher(r: _EventRenderer) -> FirstMatchDispatcher[AgentEvent, Any
         route(RefusalComplete, r.on_refusal_complete),
         route(StageStarted, r.on_stage_started),
         route(StageCompleted, r.on_stage_completed),
+        route(IterationStarted, r.on_iteration_started),
+        route(LLMRequestSent, r.on_llm_request_sent),
         route(GenerationStarted, r.on_generation_started),
         route(GenerationDone, r.on_generation_done),
         route(UserQueryReceived, r.on_user_query),

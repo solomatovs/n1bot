@@ -11,6 +11,7 @@ from boba.domain.agent.events import (
     AgentEvent,
     ToolCallComplete,
     ToolCallFormatFailed,
+    ToolExecutionStarted,
     ToolResultReady,
 )
 from boba.domain.agent.messages import MessageService
@@ -102,13 +103,10 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
         )
 
     def _run_tool(self, tc: ToolCallComplete) -> Iterator[AgentEvent]:
+        # JSON-decode выделяем отдельно: если args невалидны, tool не
+        # начинал исполняться — ToolExecutionStarted эмитить нечестно.
         try:
             arguments = json.loads(tc.arguments)
-            call = ToolCall(
-                tool_id=ToolId(tc.tool_name),
-                arguments=arguments,
-            )
-            result = self._tools_service.execute(None, call)
         except json.JSONDecodeError as e:
             raise ToolFeedbackError(
                 tool_call_id=tc.tool_call_id,
@@ -116,6 +114,21 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
                 error_kind=type(e).__name__,
                 message=f"invalid JSON arguments: {e}",
             ) from e
+
+        call = ToolCall(
+            tool_id=ToolId(tc.tool_name),
+            arguments=arguments,
+        )
+        # Закрывает слепое пятно ToolCallComplete → ToolResultReady для
+        # медленных tools (fs/http). UI поменяет иконку step'а на
+        # «running», пока ждём результат.
+        yield ToolExecutionStarted(
+            request_id=tc.request_id,
+            tool_call_id=tc.tool_call_id,
+            tool_name=tc.tool_name,
+        )
+        try:
+            result = self._tools_service.execute(None, call)
         except ToolExecutionError as e:
             raise ToolFeedbackError(
                 tool_call_id=tc.tool_call_id,
