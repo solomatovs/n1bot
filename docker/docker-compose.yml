@@ -8,45 +8,38 @@ secrets:
 
 services:
   chainlit:
-    # Network-alias "boba-chainlit" — nginx reverse-proxy
-    # (conf.d/locations/boba.conf) разрешает hostname boba-chainlit.
-    # container_name не фиксируем: в сети ``docker`` уже есть orphan
-    # с тем же именем от старого compose-проекта.
     hostname: boba-chainlit
     image: boba-chainlit:latest
     build:
       # context — корень репо, чтобы COPY src/... из Dockerfile находил пути
       context: ..
       dockerfile: docker/Dockerfile
-    # Запуск без CLI-аргументов: host/port/headless/auth_secret идут из
-    # [chainlit] секции config.toml (boba.chainlit.__main__ прокидывает
-    # их в CHAINLIT_* env до импорта chainlit).
     command: ["python3", "-m", "boba.chainlit"]
-    # Chainlit ищет .chainlit/config.toml и chainlit.md относительно cwd
-    # (или каталога с app.py); cwd=/app/chainlit — единственное место,
-    # куда Dockerfile положил эти файлы.
     working_dir: /app/chainlit
     environment:
       BOBA_CONFIG: /app/config/config.toml
-      # Секреты доменных слоёв — через Docker secrets (файлы в /run/secrets/).
       LITELLM_API_KEY_FILE: /run/secrets/litellm_api_key
-      # Пути для данных рантайма — volume-точки.
       WORKSPACE_BASE_DIR: /app/workspaces
       LOG_FILE: /app/logs/chainlit.log
     volumes:
-      # Конфиг приложения — весь каталог read-only, чтобы [chainlit] и
-      # будущие секции редактировались без пересборки.
       - ./config:/app/config:ro
+      - ../src/chainlit/.chainlit/config.toml:/app/chainlit/.chainlit/config.toml:ro
+      - ../src/chainlit/chainlit.md:/app/chainlit/chainlit.md:ro
       - chainlit-workspaces:/app/workspaces
       - chainlit-logs:/app/logs
     secrets:
       - litellm_api_key
       - chainlit_auth_secret
-    # Без ports: наружу контейнер не выставляется. Внутри общей сети
-    # ``docker`` сервис доступен по hostname ``chainlit:8000``
-    # (для nginx/reverse-proxy), без привязки к хост-порту.
     expose:
       - "8080"
+    # Перекрываем healthcheck из boba-base (унаследованный от streamlit,
+    # стучится в :8501 — всегда падает). Chainlit отвечает на /boba/healthz.
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:8080/boba/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     networks:
       default:
         aliases:

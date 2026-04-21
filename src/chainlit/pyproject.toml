@@ -13,4 +13,4 @@ packages = [{ include = "boba/chainlit", from = "src" }]
 python = "^3.11"
 boba-domain = { path = "../domain", develop = true }
 boba-infra = { path = "../infra", develop = true }
-chainlit = "^1.3"
+chainlit = "^2.11"

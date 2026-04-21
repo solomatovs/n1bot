@@ -9,3 +9,6 @@ chroma_debug_db
 .files/
 chainlit.md
 workspaces
+.chainlit
+.ruff_cache
+.pytest_cache

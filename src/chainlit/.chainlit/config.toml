@@ -13,5 +13,13 @@ default_expand_messages = false
 unsafe_allow_html = false
 latex = false
 
+# Скрепка в композере: без этой подсекции Chainlit не показывает
+# кнопку загрузки, даже если `on_message` умеет принимать файлы.
+[features.spontaneous_file_upload]
+enabled = true
+accept = ["*/*"]
+max_files = 20
+max_size_mb = 500
+
 [meta]
 generated_by = "boba-chainlit"

@@ -43,7 +43,6 @@ docker/
 │   ├── config.debug.toml      # то же для launch.json
 │   └── config.example.toml    # шаблон (в git)
 ├── secrets/                   # Docker secrets (не в git)
-├── wheels/                    # Python wheels для offline-сборки
 ├── import/                    # данные — папки с документами
 ├── Dockerfile                 # runtime (на основе boba-base)
 ├── Dockerfile.base            # полная сборка из astra_linux_ce
@@ -59,6 +58,29 @@ docker compose up -d          # запустить
 docker compose logs -f        # логи
 docker compose down           # остановить
 ```
+
+## Обновление зависимостей
+
+Зависимости ставятся из `poetry.lock` при `docker compose build` — отдельной
+подготовки wheel'ов не требуется (нужен сетевой доступ к PyPI во время
+сборки). После правки любого `pyproject.toml` нужно пересинхронизировать
+lock — и обычный `docker compose build` подхватит новые версии.
+
+Локальный poetry на хосте может быть сломан, поэтому lock удобно гонять
+внутри `boba-base` (Python/glibc совпадают с рантаймом):
+
+```bash
+# из корня репозитория (cd n1bot)
+docker run --rm --entrypoint sh --network=host -v "$PWD":/src -w /src boba-base:latest -c '
+  set -e
+  ln -sf /opt/python3.11/bin/python3 /usr/local/bin/python
+  python3 -m venv /tmp/poetry
+  /tmp/poetry/bin/pip install -q poetry
+  /tmp/poetry/bin/poetry lock --no-interaction
+' && rm -rf .venv
+```
+
+Обновлённый `poetry.lock` коммить вместе с `pyproject.toml`.
 
 ## Сервисы
 

@@ -20,7 +20,11 @@ from boba.domain.core.patterns import (
     StreamSinkPipeline,
     StreamSourceLoop,
 )
-from boba.domain.core.workspace import ProjectWorkspaceRegistry, WorkspaceId
+from boba.domain.core.workspace import (
+    ProjectWorkspaceRegistry,
+    ProjectWorkspaceShell,
+    WorkspaceId,
+)
 from boba.infra.config import ConfigLoader
 from boba.infra.container import create_container, request_scope
 from boba.infra.logging import configure_logging, log_context
@@ -45,11 +49,33 @@ class ChatSession:
             self._app_config, self._agent_config, self._llm_defaults
         )
 
+    @property
+    def default_model(self) -> str:
+        """Модель из ``[app.llm] model`` конфига — fallback, если UI не задал."""
+        return self._app_config.llm.model
+
+    def project_workspace(
+        self, workspace_id: WorkspaceId
+    ) -> ProjectWorkspaceShell:
+        """Project-workspace пользователя: тот же, куда смотрят file-tools агента.
+
+        Реестр ``ProjectWorkspaceRegistry`` живёт в APP scope (см.
+        :class:`boba.infra.app.AppProvider`), поэтому shell доступен вне
+        request scope — чат-UI использует его для upload/list/delete
+        независимо от прогона агента.
+        """
+        registry = self._container.get(ProjectWorkspaceRegistry)
+        shell = registry.get_or_create(workspace_id)
+        assert isinstance(shell, ProjectWorkspaceShell)
+        return shell
+
     def run(
         self,
         workspace_id: WorkspaceId,
         query: str,
         extra_sink: StreamSink[AgentContext, AgentEvent],
+        *,
+        model: str | None = None,
     ) -> None:
         registry = self._container.get(ProjectWorkspaceRegistry)
         shell = registry.get_or_create(workspace_id)
@@ -69,7 +95,7 @@ class ChatSession:
 
             request = AgentRequest(
                 query=query,
-                model=self._app_config.llm.model,
+                model=model or self._app_config.llm.model,
                 workspace_id=shell.workspace_id,
                 request_id=request_id,
             )
