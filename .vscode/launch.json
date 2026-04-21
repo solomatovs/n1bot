@@ -46,9 +46,8 @@
                 "--model", "${input:model}",
                 "${input:query}"
             ],
+            "envFile": "${workspaceFolder}/local/.env",
             "env": {
-                "BOBA_CONFIG": "./local/config.toml",
-                "LITELLM_API_KEY_FILE": "./local/litellm_api_key",
                 "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src"
             }
         },
@@ -80,16 +79,12 @@
                 "${workspaceFolder}/src/chainlit/src/boba/chainlit/app.py",
                 "-h",
                 "--host", "0.0.0.0",
-                "--port", "8080",
+                "--port", "8502",
                 "--root-path", "/boba-debug"
             ],
+            "envFile": "${workspaceFolder}/local/.env",
             "env": {
-                "BOBA_CONFIG": "./local/config.toml",
-                "LITELLM_API_KEY_FILE": "./local/litellm_api_key",
-                "WORKSPACE_BASE_DIR": "./workspaces",
-                "LOG_FILE": "./logs/chainlit.log",
                 "CHAINLIT_APP_ROOT": "${workspaceFolder}/src/chainlit",
-                "CHAINLIT_AUTH_SECRET": "dev-local-secret-change-me",
                 "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src:${workspaceFolder}/src/chainlit/src"
             }
         }

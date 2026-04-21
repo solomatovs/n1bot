@@ -1,5 +1,3 @@
-local/*
-!local/*.example
 chainlit/.chainlit/translations/
 chainlit/.files/
 import
