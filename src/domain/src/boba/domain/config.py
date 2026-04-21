@@ -14,11 +14,15 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class LLMConfig:
-    """Конфигурация LLM-клиента."""
+    """Конфигурация LLM-клиента.
+
+    Только транспорт (``base_url`` и ``api_key``). Имя модели — не
+    часть конфига: его задаёт caller каждого запроса (UI/CLI), чтобы
+    системный дефолт не просачивался в агентский луп.
+    """
 
     base_url: str = "http://localhost:11434/v1"
     api_key: str = "ollama"
-    model: str = "qwen3:8b"
 
 
 @dataclass(frozen=True)

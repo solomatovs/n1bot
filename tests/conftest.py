@@ -61,6 +61,23 @@ def harness() -> AgentHarness:
     return AgentHarness(max_iterations=1)
 
 
+@pytest.fixture
+def model() -> str:
+    """Имя модели для интеграционных тестов — только из env ``LLM_MODEL``.
+
+    Системного дефолта нет: чтобы тест гонял конкретную модель, её надо
+    задать явно (в launch.json / CI / ручном запуске).
+    """
+    value = os.environ.get("LLM_MODEL")
+    if not value:
+        msg = (
+            "LLM_MODEL env var is required for integration tests — "
+            "set it explicitly, no system default"
+        )
+        raise RuntimeError(msg)
+    return value
+
+
 _ERROR_KIND_TO_TAG = {
     "LLMContextLengthError": "failed_context_length",
     "LLMInvalidRequestError": "failed_invalid_request",

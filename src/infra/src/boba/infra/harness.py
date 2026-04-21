@@ -73,7 +73,16 @@ class AgentHarness:
             self._app_config, self._agent_config, self._llm_defaults
         )
 
-    def ask(self, workspace_id: WorkspaceId, query: str) -> list[AgentEvent]:
+    def ask(
+        self,
+        workspace_id: WorkspaceId,
+        query: str,
+        *,
+        model: str,
+    ) -> list[AgentEvent]:
+        """Выполнить один запрос. ``model`` обязателен — имя модели не
+        живёт в конфиге, caller передаёт его явно.
+        """
         registry = self._container.get(ProjectWorkspaceRegistry)
         shell = registry.get_or_create(workspace_id)
         request_id = RequestId.new()
@@ -93,7 +102,7 @@ class AgentHarness:
 
             request = AgentRequest(
                 query=query,
-                model=self._app_config.llm.model,
+                model=model,
                 workspace_id=shell.workspace_id,
                 request_id=request_id,
             )
