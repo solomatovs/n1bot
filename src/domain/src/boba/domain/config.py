@@ -45,16 +45,8 @@ class WorkspaceLayout:
 
 @dataclass(frozen=True)
 class AppConfig:
-    """Кросс-слойные настройки приложения.
-
-    :class:`~boba.domain.agent.models.AgentConfig` **не** агрегируется сюда —
-    он загружается инфраструктурой отдельно и инжектится в DI независимо.
-    """
-
     workspaces: WorkspaceLayout = field(default_factory=WorkspaceLayout)
     ssl_verify: bool = False
     log_level: str = "INFO"
-    # Если задан — логи пишутся в этот файл. Если ``None`` — в stdout.
-    # Путь относительный резолвится от CWD процесса.
     log_file: str | None = None
     llm: LLMConfig = field(default_factory=LLMConfig)
