@@ -16,6 +16,8 @@ from typing import cast
 
 import chainlit as cl
 from boba.chainlit.bridge import ChainlitBridgeSink
+from boba.chainlit.config import load_models
+from boba.chainlit.files import save_upload
 from boba.chainlit.session import ChatSession
 from boba.domain.agent.events import (
     AgentEvent,
@@ -44,8 +46,15 @@ from boba.domain.agent.events import (
     UserQueryReceived,
 )
 from boba.domain.core.workspace import WorkspaceId
+from chainlit.input_widget import Select
 
 logger = logging.getLogger(__name__)
+
+# Дефолт для Select-виджета. Модель в агентский луп попадает только из
+# UI-настроек (ChatSettings) — конфиг [app.llm] model для этого не
+# используется; эта константа задаёт, что будет выбрано при открытии
+# чата до первого взаимодействия с шестерёнкой.
+DEFAULT_MODEL = "qwen3.5-35b"
 
 # Один контейнер и один AgentHarness-подобный wrapper на процесс: сборка
 # DI дорогая, а между сессиями Chainlit общее состояние не нужно — все
@@ -73,16 +82,71 @@ async def on_chat_start() -> None:
     # Прогрев контейнера в фоне — первая отправка сообщения не будет
     # висеть несколько секунд на загрузке конфига.
     await asyncio.to_thread(_get_session)
+
+    # ChatSettings — единственный источник модели для агентского лупа.
+    # Список берём из [chainlit] models; пустой список — misconfiguration,
+    # падаем громко, чтобы не уйти в неявный fallback на конфиг.
+    models = load_models()
+    if not models:
+        msg = "[chainlit] models пуст или не задан — UI не может выбрать модель"
+        raise RuntimeError(msg)
+    initial_index = models.index(DEFAULT_MODEL) if DEFAULT_MODEL in models else 0
+    await cl.ChatSettings(
+        [
+            Select(
+                id="model",
+                label="LLM модель",
+                values=models,
+                initial_index=initial_index,
+            ),
+        ],
+    ).send()
+    # ChatSettings.send() не триггерит on_settings_update, поэтому
+    # явно синхронизируем выбор с тем, что показано в UI.
+    cl.user_session.set("model", models[initial_index])
+
     await cl.Message(
         content=f"Сессия готова. workspace_id = `{workspace_id.to_wire()}`",
         author="system",
     ).send()
 
 
+@cl.on_settings_update
+async def on_settings_update(settings: dict[str, object]) -> None:
+    """Сохранить выбранную в шестерёнке модель для последующих запросов."""
+    model = settings.get("model")
+    if isinstance(model, str) and model:
+        cl.user_session.set("model", model)
+
+
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
     workspace_id = cast(WorkspaceId, cl.user_session.get("workspace_id"))
+    model = cast(str, cl.user_session.get("model"))
     session = _get_session()
+
+    # Аттачменты из композера — сохраняем в тот же project-workspace, из
+    # которого читают file-tools агента. Shell берём из того же реестра,
+    # что и session.run → get-or-create по workspace_id возвращает один
+    # и тот же инстанс, так что agent увидит файл в корне workspace.
+    saved: list[str] = []
+    if message.elements:
+        shell = session.project_workspace(workspace_id)
+        for el in message.elements:
+            src_path = getattr(el, "path", None)
+            name = getattr(el, "name", None)
+            if not src_path or not name:
+                continue
+            rel = await asyncio.to_thread(save_upload, shell, src_path, name)
+            saved.append(rel)
+
+    # Явно сообщаем агенту о прикреплённых файлах — иначе он видит только
+    # текст и не знает, что смотреть (UI-bubble аттачмента в query не
+    # попадает). Имена уже в workspace root, так что `cat <name>` работает.
+    query = message.content
+    if saved:
+        listing = ", ".join(saved)
+        query = f"{query}\n\n[attached files in workspace root: {listing}]"
 
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue()
@@ -90,7 +154,7 @@ async def on_message(message: cl.Message) -> None:
 
     def _run_agent() -> None:
         try:
-            session.run(workspace_id, message.content, bridge)
+            session.run(workspace_id, query, bridge, model=model)
         finally:
             bridge.close()
 
