@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable, Iterator, MutableSequence, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from types import TracebackType
 from typing import Generic, Self, TypeVar
 from uuid import UUID, uuid4
@@ -727,9 +727,9 @@ class StreamSourcePipeline(StreamSource[TCtx, TOut]):
 
     def __init__(
         self,
-        stages: MutableSequence[StreamSource[TCtx, TOut]],
+        stages: Sequence[StreamSource[TCtx, TOut]],
     ) -> None:
-        self._stages = stages
+        self._stages = list(stages)
 
     def append(self, stage: StreamSource[TCtx, TOut]):
         self._stages.append(stage)
@@ -800,9 +800,9 @@ class StreamSinkPipeline(StreamSink[TCtx, TIn]):
 
     def __init__(
         self,
-        stages: MutableSequence[StreamSink[TCtx, TIn]],
+        stages: Sequence[StreamSink[TCtx, TIn]],
     ) -> None:
-        self._stages = stages
+        self._stages = list(stages)
 
     def append(self, stage: StreamSink[TCtx, TIn]):
         self._stages.append(stage)
