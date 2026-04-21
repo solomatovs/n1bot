@@ -5,17 +5,36 @@
 # Если base ещё не собран:
 #   cd docker && docker build -f Dockerfile.base -t boba-base ..
 #
-# Сборка runtime:
+# Сборка runtime (нужен сетевой доступ к PyPI):
 #   cd docker && docker compose build
 # ============================================================
 
 FROM boba-base:latest AS deps
 ENTRYPOINT []
 
-COPY docker/wheels/ /tmp/wheels/
+# Poetry — разовая утилита: ставим в изолированный venv, чтобы он НЕ
+# попал в /opt/python3.11/site-packages, которое копирует рантайм.
+RUN python3 -m venv /tmp/poetry && \
+    /tmp/poetry/bin/pip install --no-cache-dir poetry poetry-plugin-export
 
-RUN pip3 install --no-cache-dir --no-deps --no-index --find-links=/tmp/wheels/ /tmp/wheels/*.whl && \
-    rm -rf /tmp/wheels/
+WORKDIR /tmp/install
+
+# Метаданные монорепо: root pyproject + lock + pyproject'ы под-пакетов
+# (poetry читает их при резолве path-deps boba-*). Исходники здесь не
+# нужны — path-пакеты отфильтровываются из requirements.txt.
+COPY pyproject.toml poetry.lock ./
+COPY src/domain/pyproject.toml    src/domain/
+COPY src/app/pyproject.toml       src/app/
+COPY src/adapters/pyproject.toml  src/adapters/
+COPY src/infra/pyproject.toml     src/infra/
+COPY src/chainlit/pyproject.toml  src/chainlit/
+
+# poetry export → requirements.txt без dev-групп; path-пакеты boba-*
+# (develop=true) вырезаем — они идут через PYTHONPATH, а не через pip.
+# Затем pip install в системный python (то, что скопирует runtime).
+RUN /tmp/poetry/bin/poetry export --without=dev --without-hashes -f requirements.txt \
+      | grep -v "file:///" > req.txt && \
+    pip3 install --no-cache-dir -r req.txt
 
 # ============================================================
 # Runtime
@@ -39,10 +58,11 @@ COPY src/adapters/src/boba/   ./src/adapters/src/boba/
 COPY src/infra/src/boba/      ./src/infra/src/boba/
 COPY src/chainlit/src/boba/   ./src/chainlit/src/boba/
 
-# Chainlit читает .chainlit/ и chainlit.md из working_dir (или из каталога
-# с app.py). Кладём их рядом, чтобы сервис запускался с cwd=/app/chainlit.
+# .chainlit/ должен быть писемой директорией: Chainlit на старте создаёт
+# внутри .chainlit/translations/. Поэтому монтировать весь каталог нельзя —
+# в docker-compose bind'ом прокинут только config.toml (и chainlit.md),
+# а сам каталог с исходным config.toml кладём здесь.
 COPY src/chainlit/.chainlit/  ./chainlit/.chainlit/
-COPY src/chainlit/chainlit.md ./chainlit/chainlit.md
 
 ENV PYTHONPATH="/app/src/domain/src:/app/src/app/src:/app/src/adapters/src:/app/src/infra/src:/app/src/chainlit/src"
 

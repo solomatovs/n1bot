@@ -4,11 +4,5 @@
 
     chainlit run src/chainlit/src/boba/chainlit/app.py
 
-Точка входа — :mod:`boba.chainlit.app`. Мост между синхронным
-``AgentHarness`` и async-петлёй Chainlit реализован в
-:mod:`boba.chainlit.bridge`.
+Точка входа — :mod:`boba.chainlit.app`.
 """
-
-from boba.chainlit.bridge import ChainlitBridgeSink
-
-__all__ = ["ChainlitBridgeSink"]

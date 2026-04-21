@@ -18,20 +18,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-import tomli
-
-
-def _load_chainlit_section() -> dict[str, Any]:
-    path = os.environ.get("BOBA_CONFIG")
-    if not path:
-        return {}
-    cfg = Path(path)
-    if not cfg.is_file():
-        return {}
-    with cfg.open("rb") as f:
-        data = tomli.load(f)
-    section = data.get("chainlit")
-    return section if isinstance(section, dict) else {}
+from boba.chainlit.config import load_chainlit_section
 
 
 def _resolve(
@@ -60,7 +47,7 @@ def _resolve(
 
 
 def _bootstrap_env() -> None:
-    section = _load_chainlit_section()
+    section = load_chainlit_section()
     host = _resolve("CHAINLIT_HOST", section, "host", "0.0.0.0")
     port = _resolve("CHAINLIT_PORT", section, "port", "8000")
     root_path = _resolve("CHAINLIT_ROOT_PATH", section, "root_path", "")

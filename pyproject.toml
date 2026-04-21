@@ -16,6 +16,11 @@ boba-app = { path = "src/app", develop = true }
 boba-adapters = { path = "src/adapters", develop = true }
 boba-infra = { path = "src/infra", develop = true }
 boba-chainlit = { path = "src/chainlit", develop = true }
+# Pin: chainlit 1.3.x объявляет `pydantic >=1,<3`, но с 2.11+ ломается
+# ForwardRef-резолв для `CodeSettings`/`Action` — импорт chainlit падает
+# с `CodeSettings is not fully defined`. Держим в диапазоне 2.10.x до
+# обновления chainlit.
+pydantic = ">=2.10,<2.11"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"

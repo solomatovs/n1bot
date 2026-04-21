@@ -79,8 +79,9 @@
                 "run",
                 "${workspaceFolder}/src/chainlit/src/boba/chainlit/app.py",
                 "-h",
-                "--host", "127.0.0.1",
-                "--port", "8000"
+                "--host", "0.0.0.0",
+                "--port", "8080",
+                "--root-path", "/boba-debug"
             ],
             "env": {
                 "BOBA_CONFIG": "./config/config.toml",
@@ -88,6 +89,7 @@
                 "WORKSPACE_BASE_DIR": "./workspaces",
                 "LOG_FILE": "./logs/chainlit.log",
                 "CHAINLIT_APP_ROOT": "${workspaceFolder}/src/chainlit",
+                "CHAINLIT_AUTH_SECRET": "dev-local-secret-change-me",
                 "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src:${workspaceFolder}/src/chainlit/src"
             }
         }
