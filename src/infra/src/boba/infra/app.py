@@ -335,7 +335,12 @@ class RequestProvider(Provider):
         registry: ProjectWorkspaceRegistry,
     ) -> ProjectWorkspaceShell:
         shell = registry.get_or_create(workspace_id)
-        assert isinstance(shell, ProjectWorkspaceShell)
+        if not isinstance(shell, ProjectWorkspaceShell):
+            msg = (
+                f"ProjectWorkspaceRegistry returned "
+                f"{type(shell).__name__}, expected ProjectWorkspaceShell"
+            )
+            raise TypeError(msg)
         return shell
 
     @provide
@@ -345,7 +350,12 @@ class RequestProvider(Provider):
         registry: HistoryWorkspaceRegistry,
     ) -> HistoryWorkspaceShell:
         shell = registry.get_or_create(workspace_id)
-        assert isinstance(shell, HistoryWorkspaceShell)
+        if not isinstance(shell, HistoryWorkspaceShell):
+            msg = (
+                f"HistoryWorkspaceRegistry returned "
+                f"{type(shell).__name__}, expected HistoryWorkspaceShell"
+            )
+            raise TypeError(msg)
         return shell
 
     @provide
@@ -362,7 +372,12 @@ class RequestProvider(Provider):
         scratch-директории — сигнал, который пользователь должен увидеть.
         """
         shell = registry.get_or_create(workspace_id)
-        assert isinstance(shell, ScratchWorkspaceShell)
+        if not isinstance(shell, ScratchWorkspaceShell):
+            msg = (
+                f"ScratchWorkspaceRegistry returned "
+                f"{type(shell).__name__}, expected ScratchWorkspaceShell"
+            )
+            raise TypeError(msg)
         try:
             yield shell
         finally:

@@ -61,7 +61,12 @@ class ChatSession:
         """
         registry = self._container.get(ProjectWorkspaceRegistry)
         shell = registry.get_or_create(workspace_id)
-        assert isinstance(shell, ProjectWorkspaceShell)
+        if not isinstance(shell, ProjectWorkspaceShell):
+            msg = (
+                f"ProjectWorkspaceRegistry returned "
+                f"{type(shell).__name__}, expected ProjectWorkspaceShell"
+            )
+            raise TypeError(msg)
         return shell
 
     def run(
