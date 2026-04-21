@@ -8,8 +8,8 @@ log_file   = "./logs/boba.log"       # env: LOG_FILE (если не задан �
 # Имени модели здесь нет — она задаётся явно caller'ом (UI/CLI).
 # Chainlit: [chainlit] models (см. ниже); CLI/tests: --model / LLM_MODEL env.
 [app.llm]
-base_url = "http://172.18.0.12:4000" # env: LLM_BASE_URL
-api_key  = "ollama"                  # env: LITELLM_API_KEY (+ *_FILE)
+base_url = "http://REPLACE_ME_LLM_HOST:4000" # env: LLM_BASE_URL
+api_key  = "REPLACE_ME_API_KEY"              # env: LITELLM_API_KEY (+ *_FILE)
 
 # Sampling + tool-controls — всё опционально.
 temperature         = 0.7            # env: LLM_TEMPERATURE

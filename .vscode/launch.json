@@ -47,8 +47,8 @@
                 "${input:query}"
             ],
             "env": {
-                "BOBA_CONFIG": "./config/config.toml",
-                "LITELLM_API_KEY_FILE": "./secrets/litellm_api_key",
+                "BOBA_CONFIG": "./local/config.toml",
+                "LITELLM_API_KEY_FILE": "./local/litellm_api_key",
                 "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src"
             }
         },
@@ -84,8 +84,8 @@
                 "--root-path", "/boba-debug"
             ],
             "env": {
-                "BOBA_CONFIG": "./config/config.toml",
-                "LITELLM_API_KEY_FILE": "./secrets/litellm_api_key",
+                "BOBA_CONFIG": "./local/config.toml",
+                "LITELLM_API_KEY_FILE": "./local/litellm_api_key",
                 "WORKSPACE_BASE_DIR": "./workspaces",
                 "LOG_FILE": "./logs/chainlit.log",
                 "CHAINLIT_APP_ROOT": "${workspaceFolder}/src/chainlit",
