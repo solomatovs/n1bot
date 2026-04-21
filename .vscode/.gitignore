@@ -1,6 +1,5 @@
-secrets/
-config/config.toml
-config/config.toml
+secrets/*
+!secrets/*.example
 chainlit/.chainlit/translations/
 chainlit/.files/
 import
