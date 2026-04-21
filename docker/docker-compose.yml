@@ -3,8 +3,59 @@ secrets:
     file: secrets/litellm_api_key
   confluence_token:
     file: secrets/confluence_token
+  chainlit_auth_secret:
+    file: secrets/chainlit_auth_secret
 
-services: {}
+services:
+  chainlit:
+    # Network-alias "boba-chainlit" — nginx reverse-proxy
+    # (conf.d/locations/boba.conf) разрешает hostname boba-chainlit.
+    # container_name не фиксируем: в сети ``docker`` уже есть orphan
+    # с тем же именем от старого compose-проекта.
+    hostname: boba-chainlit
+    image: boba-chainlit:latest
+    build:
+      # context — корень репо, чтобы COPY src/... из Dockerfile находил пути
+      context: ..
+      dockerfile: docker/Dockerfile
+    # Запуск без CLI-аргументов: host/port/headless/auth_secret идут из
+    # [chainlit] секции config.toml (boba.chainlit.__main__ прокидывает
+    # их в CHAINLIT_* env до импорта chainlit).
+    command: ["python3", "-m", "boba.chainlit"]
+    # Chainlit ищет .chainlit/config.toml и chainlit.md относительно cwd
+    # (или каталога с app.py); cwd=/app/chainlit — единственное место,
+    # куда Dockerfile положил эти файлы.
+    working_dir: /app/chainlit
+    environment:
+      BOBA_CONFIG: /app/config/config.toml
+      # Секреты доменных слоёв — через Docker secrets (файлы в /run/secrets/).
+      LITELLM_API_KEY_FILE: /run/secrets/litellm_api_key
+      # Пути для данных рантайма — volume-точки.
+      WORKSPACE_BASE_DIR: /app/workspaces
+      LOG_FILE: /app/logs/chainlit.log
+    volumes:
+      # Конфиг приложения — весь каталог read-only, чтобы [chainlit] и
+      # будущие секции редактировались без пересборки.
+      - ./config:/app/config:ro
+      - chainlit-workspaces:/app/workspaces
+      - chainlit-logs:/app/logs
+    secrets:
+      - litellm_api_key
+      - chainlit_auth_secret
+    # Без ports: наружу контейнер не выставляется. Внутри общей сети
+    # ``docker`` сервис доступен по hostname ``chainlit:8000``
+    # (для nginx/reverse-proxy), без привязки к хост-порту.
+    expose:
+      - "8080"
+    networks:
+      default:
+        aliases:
+          - boba-chainlit
+    restart: unless-stopped
+
+volumes:
+  chainlit-workspaces:
+  chainlit-logs:
 
 networks:
   default:

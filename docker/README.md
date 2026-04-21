@@ -59,3 +59,15 @@ docker compose up -d          # запустить
 docker compose logs -f        # логи
 docker compose down           # остановить
 ```
+
+## Сервисы
+
+- `chainlit` — Web UI. Наружу не выставляется: доступен внутри сети
+  `docker` по hostname `boba-chainlit:8080` и публично через nginx
+  reverse-proxy на `https://loshara.com/boba/`.
+  Параметры (host/port/root_path/auth_secret) читаются из секции
+  `[chainlit]` `config/config.toml` — CLI-аргументы не используются.
+  `LITELLM_API_KEY` и `CHAINLIT_AUTH_SECRET` — через Docker secrets
+  (`secrets/litellm_api_key`, `secrets/chainlit_auth_secret`).
+  Workspaces и логи — в именованных volume'ах `chainlit-workspaces` /
+  `chainlit-logs`.

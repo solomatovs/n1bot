@@ -66,5 +66,30 @@
                 "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src"
             }
         },
+        {
+            "name": "Chainlit: Boba UI",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "chainlit",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/.vscode",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "run",
+                "${workspaceFolder}/src/chainlit/src/boba/chainlit/app.py",
+                "-h",
+                "--host", "127.0.0.1",
+                "--port", "8000"
+            ],
+            "env": {
+                "BOBA_CONFIG": "./config/config.toml",
+                "LITELLM_API_KEY_FILE": "./secrets/litellm_api_key",
+                "WORKSPACE_BASE_DIR": "./workspaces",
+                "LOG_FILE": "./logs/chainlit.log",
+                "CHAINLIT_APP_ROOT": "${workspaceFolder}/src/chainlit",
+                "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src:${workspaceFolder}/src/chainlit/src"
+            }
+        }
     ]
 }

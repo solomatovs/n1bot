@@ -1,0 +1,17 @@
+[project]
+enable_telemetry = false
+user_env = []
+session_timeout = 3600
+
+[UI]
+name = "Boba"
+show_readme_as_default = true
+default_collapse_content = true
+default_expand_messages = false
+
+[features]
+unsafe_allow_html = false
+latex = false
+
+[meta]
+generated_by = "boba-chainlit"

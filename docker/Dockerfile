@@ -25,14 +25,25 @@ ENTRYPOINT []
 
 WORKDIR /app
 
-# Копируем установленные пакеты из deps stage
+# Python-зависимости из deps-stage
 COPY --from=deps /opt/python3.11/lib/python3.11/site-packages /opt/python3.11/lib/python3.11/site-packages
 COPY --from=deps /opt/python3.11/bin /opt/python3.11/bin
 
-# Копируем пакеты проекта (монорепо)
-COPY src/boba-domain/src/boba_domain/     ./src/boba-domain/src/boba_domain/
-COPY src/boba-app/src/boba_app/           ./src/boba-app/src/boba_app/
-COPY src/boba-adapters/src/boba_adapters/ ./src/boba-adapters/src/boba_adapters/
-COPY src/boba-infra/src/boba_infra/       ./src/boba-infra/src/boba_infra/
+# Монорепозиторий: каждый слой — самостоятельный Poetry-пакет.
+# В контейнере boba-* не устанавливаются через Poetry (нет локального
+# сборщика); используется неявный namespace-пакет boba через PYTHONPATH.
+# Файла boba/__init__.py намеренно нет — Python 3.3+ сам склеивает namespace.
+COPY src/domain/src/boba/     ./src/domain/src/boba/
+COPY src/app/src/boba/        ./src/app/src/boba/
+COPY src/adapters/src/boba/   ./src/adapters/src/boba/
+COPY src/infra/src/boba/      ./src/infra/src/boba/
+COPY src/chainlit/src/boba/   ./src/chainlit/src/boba/
 
-ENV PYTHONPATH="/app/src/boba-domain/src:/app/src/boba-app/src:/app/src/boba-adapters/src:/app/src/boba-infra/src"
+# Chainlit читает .chainlit/ и chainlit.md из working_dir (или из каталога
+# с app.py). Кладём их рядом, чтобы сервис запускался с cwd=/app/chainlit.
+COPY src/chainlit/.chainlit/  ./chainlit/.chainlit/
+COPY src/chainlit/chainlit.md ./chainlit/chainlit.md
+
+ENV PYTHONPATH="/app/src/domain/src:/app/src/app/src:/app/src/adapters/src:/app/src/infra/src:/app/src/chainlit/src"
+
+EXPOSE 8080
