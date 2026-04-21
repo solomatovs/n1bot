@@ -891,9 +891,9 @@ class StreamTransformerPipeline(StreamTransformer[TCtx, TIn, TOut]):
 
     def __init__(
         self,
-        stages: MutableSequence[StreamTransformer[TCtx, TIn, TOut]],
+        stages: Sequence[StreamTransformer[TCtx, TIn, TOut]],
     ) -> None:
-        self._stages = stages
+        self._stages: list[StreamTransformer[TCtx, TIn, TOut]] = list(stages)
 
     def append(self, stage: StreamTransformer[TCtx, TIn, TOut]):
         self._stages.append(stage)
