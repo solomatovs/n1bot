@@ -37,10 +37,13 @@ def load_chainlit_section() -> dict[str, Any]:
 def load_models() -> list[str]:
     """Список моделей для ChatSettings.
 
-    TOML: ``[chainlit] models = ["qwen3.5-35b", "qwen3-0.6b", ...]``.
-    Нестроковые элементы отбрасываются; пустой или отсутствующий список
-    → ``[]`` (caller сам решает, что показать).
+    Env (приоритет): ``CHAINLIT_MODELS=qwen3,qwen3-0.6b,qwen3-235b`` (CSV).
+    TOML (fallback): ``[chainlit] models = ["qwen3.5-35b", ...]``.
+    Пустой/отсутствующий → ``[]`` (caller сам решает, что показать).
     """
+    env_val = os.environ.get("CHAINLIT_MODELS")
+    if env_val is not None:
+        return [m.strip() for m in env_val.split(",") if m.strip()]
     section = load_chainlit_section()
     raw = section.get("models")
     if not isinstance(raw, list):
