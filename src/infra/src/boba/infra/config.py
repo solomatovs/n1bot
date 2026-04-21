@@ -1,19 +1,13 @@
-"""Загрузка AppConfig из TOML-файла и переменных окружения.
-
-Приоритет (от высшего к низшему):
-    1. Env var <KEY>_FILE — путь к файлу с секретом
-    2. Env var <KEY> — переменная окружения
-    3. TOML-файл (секция [app]) — путь задаётся через BOBA_CONFIG
-    4. Значение по умолчанию
-"""
+"""Тонкий фасад над :class:`ConfigFactory` для обратной совместимости."""
 
 from __future__ import annotations
 
 import os
+from abc import abstractmethod
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-
-import tomli
+from typing import Any, ClassVar
 
 from boba.domain.agent.models import (
     AgentConfig,
@@ -21,218 +15,413 @@ from boba.domain.agent.models import (
     SamplingParams,
 )
 from boba.domain.config import AppConfig, LLMConfig, WorkspaceLayout
+from boba.domain.core.config import (
+    BoolConverter,
+    ChainedConfigResolver,
+    ConfigSource,
+    CsvListConverter,
+    FieldSpec,
+    FloatConverter,
+    IntConverter,
+    StrConverter,
+)
+from boba.domain.core.patterns import FoldFactory, PrioritySource, StrId
+
+__all__ = [
+    "AgentSection",
+    "AppCoreSection",
+    "ConfigBundle",
+    "ConfigFactory",
+    "ConfigLoader",
+    "ConfigSectionBuilder",
+    "ConfigState",
+    "DefaultSource",
+    "EnvFileSource",
+    "EnvSource",
+    "LLMDefaultsSection",
+    "LLMTransportSection",
+    "TomlFileSource",
+    "TomlSource",
+    "WorkspacesSection",
+    "default_config_factory",
+    "default_resolver",
+    "load_toml",
+]
 
 
 class ConfigLoader:
-    """Загружает AppConfig, разрешая значения из env / TOML / секретов."""
+    def __init__(self, factory: ConfigFactory | None = None) -> None:
+        self._factory = factory or default_config_factory()
+        self._bundle: ConfigBundle | None = None
 
-    def _subsection(self, name: str) -> dict[str, Any]:
-        val = self._app.get(name)
-        return val if isinstance(val, dict) else {}
-
-    def __init__(self) -> None:
-        self._app = self._load_section("app")
-        self._llm = self._subsection("llm")
-        self._agent = self._subsection("agent")
-        self._workspaces = self._subsection("workspaces")
+    def _ensure(self) -> ConfigBundle:
+        if self._bundle is None:
+            self._bundle = self._factory.build()
+        return self._bundle
 
     def load_app(self) -> AppConfig:
-        """Кросс-слойные настройки приложения + :class:`LLMConfig`."""
-        return AppConfig(
-            workspaces=self._load_workspace_layout(),
-            ssl_verify=self._resolve(
-                "SSL_VERIFY",
-                "ssl_verify",
-                "false",
-                section=self._app,
-            ).lower()
-            in ("true", "1", "yes"),
-            log_level=self._resolve(
-                "LOG_LEVEL",
-                "log_level",
-                "INFO",
-                section=self._app,
-            ),
-            log_file=self._resolve_opt("LOG_FILE", "log_file", self._app),
-            llm=LLMConfig(
-                base_url=self._resolve(
-                    "LLM_BASE_URL",
-                    "base_url",
-                    "http://localhost:11434/v1",
-                    section=self._llm,
-                ),
-                api_key=self._resolve(
-                    "LITELLM_API_KEY",
-                    "api_key",
-                    "ollama",
-                    section=self._llm,
-                ),
-            ),
-        )
-
-    def _load_workspace_layout(self) -> WorkspaceLayout:
-        base_dir = self._resolve(
-            "WORKSPACE_BASE_DIR",
-            "base_dir",
-            "./workspaces",
-            section=self._workspaces,
-        )
-        return WorkspaceLayout(
-            base_dir=base_dir,
-            user_subdir=self._resolve(
-                "WORKSPACE_USER_SUBDIR", "user", "user", section=self._workspaces,
-            ),
-            system_subdir=self._resolve(
-                "WORKSPACE_SYSTEM_SUBDIR", "system", "system", section=self._workspaces,
-            ),
-            tmp_subdir=self._resolve(
-                "WORKSPACE_TMP_SUBDIR", "tmp", "tmp", section=self._workspaces,
-            ),
-        )
-
-    def load_llm_defaults(self) -> LLMRequestDefaults:
-        """Дефолты sampling и ``parallel_tool_calls`` для LLM-запроса.
-        Живут в agent-слое (:class:`LLMRequestDefaults`), поэтому
-        грузятся отдельным методом — :class:`LLMConfig` остаётся
-        транспортным."""
-        s = self._llm
-        return LLMRequestDefaults(
-            sampling=SamplingParams(
-                temperature=self._float_opt("LLM_TEMPERATURE", "temperature", s),
-                top_p=self._float_opt("LLM_TOP_P", "top_p", s),
-                max_tokens=self._int_opt("LLM_MAX_TOKENS", "max_tokens", s),
-                seed=self._int_opt("LLM_SEED", "seed", s),
-                stop=self._list_opt("LLM_STOP", "stop", s),
-                frequency_penalty=self._float_opt(
-                    "LLM_FREQUENCY_PENALTY", "frequency_penalty", s
-                ),
-                presence_penalty=self._float_opt(
-                    "LLM_PRESENCE_PENALTY", "presence_penalty", s
-                ),
-            ),
-            parallel_tool_calls=self._bool_opt(
-                "LLM_PARALLEL_TOOL_CALLS", "parallel_tool_calls", s
-            ),
-        )
+        return self._ensure().app
 
     def load_agent(self) -> AgentConfig:
-        """Настройки agent-loop'а. Отдельный метод — :class:`AppConfig`
-        не тянет зависимость на agent-слой."""
-        return AgentConfig(
-            max_iterations=int(
-                self._resolve(
-                    "AGENT_MAX_ITERATIONS",
-                    "max_iterations",
-                    "20",
-                    section=self._agent,
-                )
+        return self._ensure().agent
+
+    def load_llm_defaults(self) -> LLMRequestDefaults:
+        return self._ensure().llm_defaults
+
+
+@dataclass(frozen=True)
+class ConfigBundle:
+    app: AppConfig
+    agent: AgentConfig
+    llm_defaults: LLMRequestDefaults
+
+
+@dataclass
+class ConfigState:
+    """Накапливаемое состояние. ``None``-слот → дефолт dataclass'а в finalize."""
+
+    resolver: ChainedConfigResolver
+    workspaces: WorkspaceLayout | None = None
+    llm_transport: LLMConfig | None = None
+    ssl_verify: bool | None = None
+    log_level: str | None = None
+    log_file: str | None = None
+    agent: AgentConfig | None = None
+    llm_defaults: LLMRequestDefaults | None = None
+
+
+class ConfigSectionBuilder(PrioritySource[StrId, ConfigState]):
+    """Базовый класс одной секции. ``priority`` формален — секции независимы.
+
+    ``TOML_PATHS`` — карта env-ключей в пути ``(toml_section, toml_key)``
+    для полей, которые могут приходить из TOML. Фабрика собирает
+    объединённую карту по всем зарегистрированным секциям и передаёт в
+    TOML-источники.
+    """
+
+    TOML_PATHS: ClassVar[Mapping[str, tuple[str, str]]] = {}
+
+    def __init__(self, priority: int) -> None:
+        self._priority = priority
+
+    @abstractmethod
+    def id(self) -> StrId: ...
+
+    def priority(self) -> int:
+        return self._priority
+
+    def toml_mapping(self) -> Mapping[str, tuple[str, str]]:
+        return self.TOML_PATHS
+
+    @abstractmethod
+    def apply(self, state: ConfigState) -> ConfigState: ...
+
+
+class AppCoreSection(ConfigSectionBuilder):
+    SSL_VERIFY = FieldSpec("SSL_VERIFY", BoolConverter(), False)
+    LOG_LEVEL = FieldSpec("LOG_LEVEL", StrConverter(), "INFO")
+    LOG_FILE = FieldSpec("LOG_FILE", StrConverter(), None)
+
+    TOML_PATHS: ClassVar[Mapping[str, tuple[str, str]]] = {
+        "SSL_VERIFY": ("app", "ssl_verify"),
+        "LOG_LEVEL": ("app", "log_level"),
+        "LOG_FILE": ("app", "log_file"),
+    }
+
+    def id(self) -> StrId:
+        return StrId("app_core")
+
+    def apply(self, state: ConfigState) -> ConfigState:
+        state.ssl_verify = self.SSL_VERIFY.read(state.resolver)
+        state.log_level = self.LOG_LEVEL.read(state.resolver)
+        state.log_file = self.LOG_FILE.read_opt(state.resolver)
+        return state
+
+
+class WorkspacesSection(ConfigSectionBuilder):
+    BASE_DIR = FieldSpec("WORKSPACE_BASE_DIR", StrConverter(), "./workspaces")
+    USER = FieldSpec("WORKSPACE_USER_SUBDIR", StrConverter(), "user")
+    SYSTEM = FieldSpec("WORKSPACE_SYSTEM_SUBDIR", StrConverter(), "system")
+    TMP = FieldSpec("WORKSPACE_TMP_SUBDIR", StrConverter(), "tmp")
+
+    TOML_PATHS: ClassVar[Mapping[str, tuple[str, str]]] = {
+        "WORKSPACE_BASE_DIR": ("workspaces", "base_dir"),
+        "WORKSPACE_USER_SUBDIR": ("workspaces", "user"),
+        "WORKSPACE_SYSTEM_SUBDIR": ("workspaces", "system"),
+        "WORKSPACE_TMP_SUBDIR": ("workspaces", "tmp"),
+    }
+
+    def id(self) -> StrId:
+        return StrId("workspaces")
+
+    def apply(self, state: ConfigState) -> ConfigState:
+        state.workspaces = WorkspaceLayout(
+            base_dir=self.BASE_DIR.read(state.resolver),
+            user_subdir=self.USER.read(state.resolver),
+            system_subdir=self.SYSTEM.read(state.resolver),
+            tmp_subdir=self.TMP.read(state.resolver),
+        )
+        return state
+
+
+class LLMTransportSection(ConfigSectionBuilder):
+    BASE_URL = FieldSpec("LLM_BASE_URL", StrConverter(), "http://localhost:11434/v1")
+    API_KEY = FieldSpec("LITELLM_API_KEY", StrConverter(), "ollama")
+
+    TOML_PATHS: ClassVar[Mapping[str, tuple[str, str]]] = {
+        "LLM_BASE_URL": ("llm", "base_url"),
+        "LITELLM_API_KEY": ("llm", "api_key"),
+    }
+
+    def id(self) -> StrId:
+        return StrId("llm_transport")
+
+    def apply(self, state: ConfigState) -> ConfigState:
+        state.llm_transport = LLMConfig(
+            base_url=self.BASE_URL.read(state.resolver),
+            api_key=self.API_KEY.read(state.resolver),
+        )
+        return state
+
+
+class AgentSection(ConfigSectionBuilder):
+    MAX_ITERATIONS = FieldSpec("AGENT_MAX_ITERATIONS", IntConverter(), 20)
+    MAX_CONSECUTIVE_TOOL_CALLS = FieldSpec(
+        "AGENT_MAX_CONSECUTIVE_TOOL_CALLS", IntConverter(), 3
+    )
+    MAX_CONSECUTIVE_FORMAT_FAILURES = FieldSpec(
+        "AGENT_MAX_CONSECUTIVE_FORMAT_FAILURES", IntConverter(), 3
+    )
+
+    TOML_PATHS: ClassVar[Mapping[str, tuple[str, str]]] = {
+        "AGENT_MAX_ITERATIONS": ("agent", "max_iterations"),
+        "AGENT_MAX_CONSECUTIVE_TOOL_CALLS": ("agent", "max_consecutive_tool_calls"),
+        "AGENT_MAX_CONSECUTIVE_FORMAT_FAILURES": (
+            "agent",
+            "max_consecutive_format_failures",
+        ),
+    }
+
+    def id(self) -> StrId:
+        return StrId("agent")
+
+    def apply(self, state: ConfigState) -> ConfigState:
+        state.agent = AgentConfig(
+            max_iterations=self.MAX_ITERATIONS.read(state.resolver),
+            max_consecutive_tool_calls=(
+                self.MAX_CONSECUTIVE_TOOL_CALLS.read(state.resolver)
             ),
-            max_consecutive_tool_calls=int(
-                self._resolve(
-                    "AGENT_MAX_CONSECUTIVE_TOOL_CALLS",
-                    "max_consecutive_tool_calls",
-                    "3",
-                    section=self._agent,
-                )
-            ),
-            max_consecutive_format_failures=int(
-                self._resolve(
-                    "AGENT_MAX_CONSECUTIVE_FORMAT_FAILURES",
-                    "max_consecutive_format_failures",
-                    "3",
-                    section=self._agent,
-                )
+            max_consecutive_format_failures=(
+                self.MAX_CONSECUTIVE_FORMAT_FAILURES.read(state.resolver)
             ),
         )
+        return state
 
-    def _resolve(
+
+class LLMDefaultsSection(ConfigSectionBuilder):
+    """Сидит в TOML-секции ``[llm]``, но строит :class:`LLMRequestDefaults`."""
+
+    TEMPERATURE = FieldSpec("LLM_TEMPERATURE", FloatConverter(), None)
+    TOP_P = FieldSpec("LLM_TOP_P", FloatConverter(), None)
+    MAX_TOKENS = FieldSpec("LLM_MAX_TOKENS", IntConverter(), None)
+    SEED = FieldSpec("LLM_SEED", IntConverter(), None)
+    STOP = FieldSpec("LLM_STOP", CsvListConverter(), None)
+    FREQUENCY_PENALTY = FieldSpec("LLM_FREQUENCY_PENALTY", FloatConverter(), None)
+    PRESENCE_PENALTY = FieldSpec("LLM_PRESENCE_PENALTY", FloatConverter(), None)
+    PARALLEL_TOOL_CALLS = FieldSpec("LLM_PARALLEL_TOOL_CALLS", BoolConverter(), None)
+
+    TOML_PATHS: ClassVar[Mapping[str, tuple[str, str]]] = {
+        "LLM_TEMPERATURE": ("llm", "temperature"),
+        "LLM_TOP_P": ("llm", "top_p"),
+        "LLM_MAX_TOKENS": ("llm", "max_tokens"),
+        "LLM_SEED": ("llm", "seed"),
+        "LLM_STOP": ("llm", "stop"),
+        "LLM_FREQUENCY_PENALTY": ("llm", "frequency_penalty"),
+        "LLM_PRESENCE_PENALTY": ("llm", "presence_penalty"),
+        "LLM_PARALLEL_TOOL_CALLS": ("llm", "parallel_tool_calls"),
+    }
+
+    def id(self) -> StrId:
+        return StrId("llm_defaults")
+
+    def apply(self, state: ConfigState) -> ConfigState:
+        r = state.resolver
+        state.llm_defaults = LLMRequestDefaults(
+            sampling=SamplingParams(
+                temperature=self.TEMPERATURE.read_opt(r),
+                top_p=self.TOP_P.read_opt(r),
+                max_tokens=self.MAX_TOKENS.read_opt(r),
+                seed=self.SEED.read_opt(r),
+                stop=self.STOP.read_opt(r),
+                frequency_penalty=self.FREQUENCY_PENALTY.read_opt(r),
+                presence_penalty=self.PRESENCE_PENALTY.read_opt(r),
+            ),
+            parallel_tool_calls=self.PARALLEL_TOOL_CALLS.read_opt(r),
+        )
+        return state
+
+
+class ConfigFactory(FoldFactory[StrId, ConfigState, ConfigBundle]):
+    def __init__(self, resolver: ChainedConfigResolver) -> None:
+        super().__init__()
+        self._resolver = resolver
+
+    def initial(self) -> ConfigState:
+        return ConfigState(resolver=self._resolver)
+
+    def finalize(self, state: ConfigState) -> ConfigBundle:
+        app = AppConfig(
+            workspaces=state.workspaces or WorkspaceLayout(),
+            ssl_verify=state.ssl_verify if state.ssl_verify is not None else False,
+            log_level=state.log_level or "INFO",
+            log_file=state.log_file,
+            llm=state.llm_transport or LLMConfig(),
+        )
+        return ConfigBundle(
+            app=app,
+            agent=state.agent or AgentConfig(),
+            llm_defaults=state.llm_defaults or LLMRequestDefaults(),
+        )
+
+
+_BUILTIN_TOML_PATHS: dict[str, tuple[str, str]] = {
+    **AppCoreSection.TOML_PATHS,
+    **WorkspacesSection.TOML_PATHS,
+    **LLMTransportSection.TOML_PATHS,
+    **AgentSection.TOML_PATHS,
+    **LLMDefaultsSection.TOML_PATHS,
+}
+
+
+def default_resolver(
+    extra_toml_paths: Mapping[str, tuple[str, str]] | None = None,
+    extra_sources: Sequence[ConfigSource] = (),
+) -> ChainedConfigResolver:
+    """Стандартная цепочка: EnvFile → Env → TomlFile → Toml [→ extras].
+
+    ``extra_toml_paths`` расширяют built-in карту TOML-путей — добавляй
+    сюда маппинги полей из модулей-потребителей (chainlit и т.п.).
+    """
+    toml_data: dict[str, Any] = load_toml(os.environ.get("BOBA_CONFIG"))
+    path_map: dict[str, tuple[str, str]] = {**_BUILTIN_TOML_PATHS}
+    if extra_toml_paths:
+        path_map.update(extra_toml_paths)
+    sources: list[ConfigSource] = [
+        EnvFileSource(),
+        EnvSource(),
+        TomlFileSource(toml_data, path_map),
+        TomlSource(toml_data, path_map),
+        *extra_sources,
+    ]
+    return ChainedConfigResolver(sources)
+
+
+def default_config_factory(
+    resolver: ChainedConfigResolver | None = None,
+) -> ConfigFactory:
+    factory = ConfigFactory(resolver or default_resolver())
+    factory.register(AppCoreSection(priority=10))
+    factory.register(WorkspacesSection(priority=20))
+    factory.register(LLMTransportSection(priority=30))
+    factory.register(AgentSection(priority=40))
+    factory.register(LLMDefaultsSection(priority=50))
+    return factory
+
+
+class EnvSource(ConfigSource):
+    def resolve(self, spec: FieldSpec[Any]) -> object | None:
+        return os.environ.get(spec.key)
+
+
+class EnvFileSource(ConfigSource):
+    """``{KEY}_FILE`` → путь к файлу-секрету (Docker-style)."""
+
+    def resolve(self, spec: FieldSpec[Any]) -> object | None:
+        path = os.environ.get(f"{spec.key}_FILE")
+        if not path:
+            return None
+        p = Path(path)
+        if not p.is_file():
+            return None
+        return p.read_text(encoding="utf-8").strip()
+
+
+class TomlSource(ConfigSource):
+    """
+    Значение из TOML по карте ``{FieldSpec.key: (section, toml_key)}``.
+
+    Если ключа нет в карте — пропуск: поле не предназначено для TOML.
+    """
+
+    def __init__(
         self,
-        key: str,
-        toml_key: str,
-        default: str = "",
-        section: dict[str, Any] | None = None,
-    ) -> str:
-        file_path = os.environ.get(f"{key}_FILE")
-        if file_path:
-            p = Path(file_path)
-            if p.is_file():
-                return p.read_text(encoding="utf-8").strip()
+        data: Mapping[str, Any],
+        path_map: Mapping[str, tuple[str, str]],
+    ) -> None:
+        self._data = data
+        self._path_map = path_map
 
-        env_val = os.environ.get(key)
-        if env_val is not None:
-            return env_val
-
-        src = section if section is not None else self._app
-        toml_val = src.get(toml_key)
-        if toml_val is not None:
-            return str(toml_val)
-
-        return default
-
-    def _resolve_opt(
-        self, key: str, toml_key: str, section: dict[str, Any]
-    ) -> str | None:
-        """Вариант ``_resolve`` без дефолта: возвращает ``None``, если
-        значение нигде не задано. Списки/словари из TOML игнорирует
-        (для них есть :meth:`_list_opt`)."""
-        file_path = os.environ.get(f"{key}_FILE")
-        if file_path:
-            p = Path(file_path)
-            if p.is_file():
-                return p.read_text(encoding="utf-8").strip()
-
-        env_val = os.environ.get(key)
-        if env_val is not None:
-            return env_val
-
-        toml_val = section.get(toml_key)
-        if toml_val is None or isinstance(toml_val, (list, dict)):
+    def resolve(self, spec: FieldSpec[Any]) -> object | None:
+        path = self._path_map.get(spec.key)
+        if path is None:
             return None
-        return str(toml_val)
-
-    def _float_opt(
-        self, key: str, toml_key: str, section: dict[str, Any]
-    ) -> float | None:
-        raw = self._resolve_opt(key, toml_key, section)
-        return float(raw) if raw is not None else None
-
-    def _int_opt(
-        self, key: str, toml_key: str, section: dict[str, Any]
-    ) -> int | None:
-        raw = self._resolve_opt(key, toml_key, section)
-        return int(raw) if raw is not None else None
-
-    def _bool_opt(
-        self, key: str, toml_key: str, section: dict[str, Any]
-    ) -> bool | None:
-        raw = self._resolve_opt(key, toml_key, section)
-        if raw is None:
+        section, toml_key = path
+        section_data = self._data.get(section)
+        if not isinstance(section_data, Mapping):
             return None
-        return raw.strip().lower() in ("true", "1", "yes", "on")
+        return section_data.get(toml_key)
 
-    def _list_opt(
-        self, key: str, toml_key: str, section: dict[str, Any]
-    ) -> list[str] | None:
-        """TOML-list имеет приоритет, env — CSV-строка."""
-        toml_val = section.get(toml_key)
-        if isinstance(toml_val, list):
-            return [str(v) for v in toml_val]
-        env_val = os.environ.get(key)
-        if env_val is not None:
-            return [s for s in env_val.split(",") if s]
-        return None
 
-    @staticmethod
-    def _load_section(section: str) -> dict[str, Any]:
-        config_path = os.environ.get("BOBA_CONFIG", "")
-        if not config_path:
-            return {}
-        path = Path(config_path)
-        if not path.is_file():
-            return {}
-        try:
-            with open(path, "rb") as f:
-                data = tomli.load(f)
-            return data.get(section, {})
-        except Exception:
-            return {}
+class TomlFileSource(ConfigSource):
+    """``[section] {toml_key}_file`` → путь к файлу-секрету в TOML."""
+
+    def __init__(
+        self,
+        data: Mapping[str, Any],
+        path_map: Mapping[str, tuple[str, str]],
+    ) -> None:
+        self._data = data
+        self._path_map = path_map
+
+    def resolve(self, spec: FieldSpec[Any]) -> object | None:
+        path = self._path_map.get(spec.key)
+        if path is None:
+            return None
+
+        section, toml_key = path
+        section_data = self._data.get(section)
+        if not isinstance(section_data, Mapping):
+            return None
+
+        file_path = section_data.get(f"{toml_key}_file")
+        if not isinstance(file_path, str):
+            return None
+
+        p = Path(file_path)
+        if not p.is_file():
+            return None
+
+        return p.read_text(encoding="utf-8").strip()
+
+
+class DefaultSource(ConfigSource):
+    """Статический fallback-словарь — для тестов и кастомных пресетов."""
+
+    def __init__(self, defaults: Mapping[str, object]) -> None:
+        self._defaults = defaults
+
+    def resolve(self, spec: FieldSpec[Any]) -> object | None:
+        return self._defaults.get(spec.key)
+
+
+def load_toml(path: str | os.PathLike[str] | None) -> dict[str, Any]:
+    # Битый TOML не глотаем — это инвариант-нарушение, пусть падает громко.
+    import tomli  # noqa: PLC0415
+
+    if not path:
+        return {}
+    p = Path(path)
+    if not p.is_file():
+        return {}
+    with p.open("rb") as f:
+        return tomli.load(f)
