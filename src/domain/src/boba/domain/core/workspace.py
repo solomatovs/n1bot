@@ -309,6 +309,20 @@ class WorkspaceShell(ABC):
         ...
 
     @abstractmethod
+    def write_binary(self, path: str) -> BufferedIOBase:
+        """Открыть/создать ресурс для записи бинарных данных (перезапись).
+
+        Создаёт родительские директории. Нужен для файлов, которые не
+        раскладываются в текст по умолчанию — загрузки пользователя
+        (PDF, архивы, картинки), дампы, кэш-артефакты.
+
+        Raises:
+            WorkspacePermissionError: если нет прав.
+            WorkspaceError: при прочих ошибках открытия/создания.
+        """
+        ...
+
+    @abstractmethod
     def append_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
         """Открыть/создать ресурс для дозаписи.
 

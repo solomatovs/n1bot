@@ -401,6 +401,16 @@ class FsWorkspaceShell(WorkspaceShell):
                 resolved,
             )
 
+    def write_binary(self, path: str) -> BufferedIOBase:
+        resolved = self._resolve(path)
+        with self._map_errors(resolved):
+            try:
+                fp = open(resolved.absolute, "wb")  # noqa: SIM115
+            except FileNotFoundError:
+                resolved.absolute.parent.mkdir(parents=True, exist_ok=True)
+                fp = open(resolved.absolute, "wb")  # noqa: SIM115
+            return _WorkspaceBinaryStream(fp, resolved)  # type: ignore[arg-type]
+
     def grep(  # noqa: PLR0913 — все параметры — независимые флаги grep'а
         self,
         pattern: str,
