@@ -19,19 +19,16 @@ from boba.domain.agent.events import (
     AnswerDiscarded,
     AnswerStarted,
     AnswerToken,
+    BaseEvent,
     GenerationDone,
-    GenerationFailed,
     GenerationStarted,
     IterationStarted,
     LLMRequestSent,
-    MaxIterationsReached,
-    PersistenceFailed,
-    PromptFailed,
     RefusalComplete,
     RefusalToken,
-    RepeatedFormatFailure,
     StageCompleted,
     StageStarted,
+    TerminalFailure,
     ThinkingComplete,
     ThinkingStarted,
     ThinkingToken,
@@ -135,26 +132,16 @@ async def on_message(message: cl.Message) -> None:
 class _IsType(Specification[AgentEvent]):
     """isinstance-предикат. ``IsInstance`` из patterns.py — только для Exception."""
 
-    def __init__(self, *types: type[AgentEvent]) -> None:
+    def __init__(self, *types: type[BaseEvent]) -> None:
         self._types = types
 
     def check(self, candidate: AgentEvent) -> bool:
         return isinstance(candidate, self._types)
 
 
-_TERMINAL_ERRORS = (
-    GenerationFailed,
-    PromptFailed,
-    PersistenceFailed,
-    MaxIterationsReached,
-    RepeatedFormatFailure,
-)
-
 _STAGE_LABELS: dict[str, str] = {
     "UserPrompt": "Готовлю запрос…",
 }
-
-_GENERATION_STATUS = "Модель обрабатывает запрос…"
 
 
 def _stage_label(stage: str) -> str:
@@ -305,7 +292,7 @@ class _EventRenderer:
         self.answer_msg = None
 
     async def on_stage_started(self, event: StageStarted) -> None:
-        await self._set_status(_stage_label(event.stage))
+        await self._set_status("Готовлю запрос…")
 
     async def on_stage_completed(self, event: StageCompleted) -> None:
         del event
@@ -316,7 +303,7 @@ class _EventRenderer:
 
     async def on_generation_started(self, event: GenerationStarted) -> None:
         del event
-        await self._set_status(_GENERATION_STATUS)
+        await self._set_status("Модель обрабатывает запрос…")
 
     async def on_iteration_started(self, event: IterationStarted) -> None:
         # Первую итерацию не маркируем — пользователь только что отправил запрос.
@@ -333,13 +320,11 @@ class _EventRenderer:
     async def on_user_query(self, event: UserQueryReceived) -> None:
         del event
 
-    async def on_terminal_error(self, event: AgentEvent) -> None:
+    async def on_terminal_error(self, event: TerminalFailure) -> None:
         await self._clear_status()
         kind = type(event).__name__
-        msg_text = cast(str, getattr(event, "message", ""))
-        error_kind = cast(str, getattr(event, "error_kind", ""))
         await cl.Message(
-            content=f"**{kind}** `{error_kind}`: {msg_text}",
+            content=f"**{kind}** `{event.error_kind}`: {event.message}",
             author="system",
         ).send()
 
@@ -355,7 +340,7 @@ def _build_dispatcher(r: _EventRenderer) -> FirstMatchDispatcher[AgentEvent, Any
     # контравариантен по аргументу, поэтому нужен cast. Безопасность
     # держится на _IsType(T) — в маршрут попадает только T.
     def route(
-        types: type[AgentEvent] | tuple[type[AgentEvent], ...],
+        types: type[BaseEvent] | tuple[type[BaseEvent], ...],
         handler: Callable[..., Awaitable[None]],
     ) -> tuple[Specification[AgentEvent], _RenderRoute]:
         specs = types if isinstance(types, tuple) else (types,)
@@ -386,7 +371,7 @@ def _build_dispatcher(r: _EventRenderer) -> FirstMatchDispatcher[AgentEvent, Any
         route(GenerationStarted, r.on_generation_started),
         route(GenerationDone, r.on_generation_done),
         route(UserQueryReceived, r.on_user_query),
-        route(_TERMINAL_ERRORS, r.on_terminal_error),
+        route(TerminalFailure, r.on_terminal_error),
     ]
     return FirstMatchDispatcher[AgentEvent, Any](routes, r.on_unknown)
 
