@@ -7,3 +7,6 @@ tomli
 # на pydantic 2.11+ — импорт chainlit падает с "CodeSettings is not
 # fully defined". Держим 2.10.x до апдейта chainlit.
 pydantic>=2.10,<2.11
+
+# tools
+pytest
