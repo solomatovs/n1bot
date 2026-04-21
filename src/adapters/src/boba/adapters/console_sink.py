@@ -13,6 +13,8 @@ from boba.domain.agent.events import (
     GenerationDone,
     GenerationFailed,
     GenerationStarted,
+    IterationStarted,
+    LLMRequestSent,
     MaxIterationsReached,
     PersistenceFailed,
     PromptFailed,
@@ -29,6 +31,7 @@ from boba.domain.agent.events import (
     ToolCallComplete,
     ToolCallFormatFailed,
     ToolExecutionFailed,
+    ToolExecutionStarted,
     ToolResultReady,
     UserNoticeReady,
     UserQueryReceived,
@@ -153,15 +156,22 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
                     f"count={count} limit={limit}: {msg}{self._RESET}"
                 )
 
+            case IterationStarted(iteration=i, max_iterations=limit):
+                print(  # noqa: T201
+                    f"\n{self._DIM}--- iteration {i}/{limit} ---{self._RESET}"
+                )
+
             case (
                 UserQueryReceived()
                 | StageStarted()
                 | StageCompleted()
+                | LLMRequestSent()
                 | GenerationStarted()
                 | ThinkingComplete()
                 | AnswerComplete()
                 | RefusalComplete()
                 | ToolCallComplete()
+                | ToolExecutionStarted()
             ):
                 pass
 
