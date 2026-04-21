@@ -1,9 +1,0 @@
-secrets/
-config/config.toml
-chainlit/.chainlit/translations/
-chainlit/.files/
-python-src
-glibc-src
-gcc-src
-wheels
-import
