@@ -50,12 +50,6 @@ from chainlit.input_widget import Select
 
 logger = logging.getLogger(__name__)
 
-# Дефолт для Select-виджета. Модель в агентский луп попадает только из
-# UI-настроек (ChatSettings) — конфиг [app.llm] model для этого не
-# используется; эта константа задаёт, что будет выбрано при открытии
-# чата до первого взаимодействия с шестерёнкой.
-DEFAULT_MODEL = "qwen3.5-35b"
-
 # Один контейнер и один AgentHarness-подобный wrapper на процесс: сборка
 # DI дорогая, а между сессиями Chainlit общее состояние не нужно — все
 # per-session вещи (WorkspaceId) живут в cl.user_session.
@@ -86,24 +80,25 @@ async def on_chat_start() -> None:
     # ChatSettings — единственный источник модели для агентского лупа.
     # Список берём из [chainlit] models; пустой список — misconfiguration,
     # падаем громко, чтобы не уйти в неявный fallback на конфиг.
+    # Порядок отображения == порядок в TOML; «дефолта» нет — в виджете
+    # подсвечен первый элемент, пользователь при необходимости меняет.
     models = load_models()
     if not models:
         msg = "[chainlit] models пуст или не задан — UI не может выбрать модель"
         raise RuntimeError(msg)
-    initial_index = models.index(DEFAULT_MODEL) if DEFAULT_MODEL in models else 0
     await cl.ChatSettings(
         [
             Select(
                 id="model",
                 label="LLM модель",
                 values=models,
-                initial_index=initial_index,
+                initial_index=0,
             ),
         ],
     ).send()
     # ChatSettings.send() не триггерит on_settings_update, поэтому
     # явно синхронизируем выбор с тем, что показано в UI.
-    cl.user_session.set("model", models[initial_index])
+    cl.user_session.set("model", models[0])
 
     await cl.Message(
         content=f"Сессия готова. workspace_id = `{workspace_id.to_wire()}`",

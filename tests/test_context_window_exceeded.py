@@ -45,10 +45,11 @@ _ACCEPTABLE = frozenset(
 
 def test_context_window_exceeded(
     harness: AgentHarness,
+    model: str,
     classify_overflow_outcome: OutcomeClassifier,
 ) -> None:
     query = _PHRASE * _REPEAT + "теперь ответь одним словом: ок"
-    events = harness.ask(_WORKSPACE_ID, query)
+    events = harness.ask(_WORKSPACE_ID, query, model=model)
     outcome = classify_overflow_outcome(events)
     print(f"[test] outcome={outcome}")  # noqa: T201
     assert outcome in _ACCEPTABLE, (

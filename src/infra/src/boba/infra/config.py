@@ -67,12 +67,6 @@ class ConfigLoader:
                     "ollama",
                     section=self._llm,
                 ),
-                model=self._resolve(
-                    "LLM_MODEL",
-                    "model",
-                    "qwen3:8b",
-                    section=self._llm,
-                ),
             ),
         )
 

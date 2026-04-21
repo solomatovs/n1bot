@@ -18,7 +18,7 @@ pytestmark = pytest.mark.integration
 FIXED_WORKSPACE_ID = WorkspaceId.from_wire("00000000-0000-0000-0000-000000000001")
 
 
-def _run(query: str, model: str | None) -> None:
+def _run(query: str, model: str) -> None:
     loader = ConfigLoader()
     app_config = loader.load_app()
     configure_logging(app_config.log_level, app_config.log_file)
@@ -33,7 +33,7 @@ def _run(query: str, model: str | None) -> None:
         agent = req.get(Agent)
         request = AgentRequest(
             query=query,
-            model=model or app_config.llm.model,
+            model=model,
             workspace_id=storage.workspace_id,
             request_id=RequestId.new(),
         )
@@ -41,16 +41,16 @@ def _run(query: str, model: str | None) -> None:
         agent.run(agent_config, request)
 
 
-def test_agent_loop_hello(query: str) -> None:
-    _run(query, model=None)
+def test_agent_loop_hello(query: str, model: str) -> None:
+    _run(query, model)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--model",
-        default=None,
-        help="LiteLLM model name; без опции — значение из config.toml",
+        required=True,
+        help="LiteLLM model name — обязательный: системного дефолта нет",
     )
     parser.add_argument("query", nargs="+", help="Сообщение пользователя")
     args = parser.parse_args()
