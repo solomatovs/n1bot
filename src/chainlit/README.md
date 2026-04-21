@@ -7,8 +7,8 @@
 * **Stub-авторизация**: любая комбинация login/password → фиксированный
   пользователь `boba`.
 * **Upload файлов**: штатная скрепка в composer'е. Файлы сохраняются
-  в project-workspace пользователя (`uploads/<name>`), agent видит их
-  через свои file-tools (`ls uploads/`, `cat …`, `grep …`). Повторная
+  в корень project-workspace пользователя (`<name>`), agent видит их
+  через свои file-tools (`ls`, `cat …`, `grep …`). Повторная
   загрузка с тем же именем перезаписывает файл.
 * **Чат с агентом**: сообщения идут через `AgentHarness`-подобный
   `ChatSession`, события стримятся в UI (`cl.Message`/`cl.Step`).

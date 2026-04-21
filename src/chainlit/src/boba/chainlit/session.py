@@ -49,11 +49,6 @@ class ChatSession:
             self._app_config, self._agent_config, self._llm_defaults
         )
 
-    @property
-    def default_model(self) -> str:
-        """Модель из ``[app.llm] model`` конфига — fallback, если UI не задал."""
-        return self._app_config.llm.model
-
     def project_workspace(
         self, workspace_id: WorkspaceId
     ) -> ProjectWorkspaceShell:
@@ -75,8 +70,12 @@ class ChatSession:
         query: str,
         extra_sink: StreamSink[AgentContext, AgentEvent],
         *,
-        model: str | None = None,
+        model: str,
     ) -> None:
+        """Запустить агентский цикл. ``model`` обязателен и определяется
+        только на стороне UI (ChatSettings) — конфиг в агентский луп не
+        просачивается.
+        """
         registry = self._container.get(ProjectWorkspaceRegistry)
         shell = registry.get_or_create(workspace_id)
         request_id = RequestId.new()
@@ -95,7 +94,7 @@ class ChatSession:
 
             request = AgentRequest(
                 query=query,
-                model=model or self._app_config.llm.model,
+                model=model,
                 workspace_id=shell.workspace_id,
                 request_id=request_id,
             )
