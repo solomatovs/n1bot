@@ -1,32 +1,3 @@
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
-
-[tool.poetry]
-name = "boba"
-version = "0.1.0"
-description = "Boba — RAG agent for Confluence knowledge base"
-authors = ["Sergei Solomatov"]
-package-mode = false
-
-[tool.poetry.dependencies]
-python = "^3.11"
-boba-domain = { path = "src/domain", develop = true }
-boba-app = { path = "src/app", develop = true }
-boba-adapters = { path = "src/adapters", develop = true }
-boba-infra = { path = "src/infra", develop = true }
-boba-chainlit = { path = "src/chainlit", develop = true }
-# Pin: chainlit 1.3.x объявляет `pydantic >=1,<3`, но с 2.11+ ломается
-# ForwardRef-резолв для `CodeSettings`/`Action` — импорт chainlit падает
-# с `CodeSettings is not fully defined`. Держим в диапазоне 2.10.x до
-# обновления chainlit.
-pydantic = ">=2.10,<2.11"
-
-[tool.poetry.group.dev.dependencies]
-pytest = "*"
-ruff = "*"
-pyright = "*"
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [
@@ -36,8 +7,8 @@ pythonpath = [
     "src/infra/src",
     "src/chainlit/src",
 ]
-# По умолчанию прогон — только быстрые unit-тесты. Интеграционные тесты
-# (реальный LLM, многомегабайтные payload'ы) идут вручную: `pytest -m integration`.
+# По умолчанию — только быстрые unit-тесты. Интеграционные (реальный LLM,
+# большие payload'ы) запускаются вручную: `pytest -m integration`.
 addopts = ["-m", "not integration", "--strict-markers"]
 markers = [
     "integration: требует реального LLM-прокси и большой сети/памяти; manual-only",
@@ -79,24 +50,24 @@ select = [
     "W",      # pycodestyle warnings — стилистические предупреждения
     "I",      # isort — сортировка и группировка импортов
     "B",      # flake8-bugbear — частые баги и антипаттерны
-    "UP",     # pyupgrade — автоматическая модернизация синтаксиса до 3.11+
-    "SIM",    # flake8-simplify — упрощение конструкций (if/else, with, etc.)
-    "C90",    # mccabe — предупреждение о слишком сложных функциях
-    "N",      # pep8-naming — проверка именования (CamelCase для классов, snake_case для функций)
-    "S",      # flake8-bandit — проверки безопасности (hardcoded passwords, SQL injection, etc.)
-    "A",      # flake8-builtins — shadowing встроенных имён (list, type, id, etc.)
-    "C4",     # flake8-comprehensions — упрощение list/dict/set comprehensions
-    "T20",    # flake8-print — находит забытые print() в коде
+    "UP",     # pyupgrade — модернизация синтаксиса до 3.11+
+    "SIM",    # flake8-simplify — упрощение конструкций
+    "C90",    # mccabe — сложность функций
+    "N",      # pep8-naming — CamelCase/snake_case
+    "S",      # flake8-bandit — безопасность
+    "A",      # flake8-builtins — shadowing встроенных имён
+    "C4",     # flake8-comprehensions — упрощение comprehensions
+    "T20",    # flake8-print — забытые print()
     "PT",     # flake8-pytest-style — best practices для pytest
-    "RET",    # flake8-return — упрощение return statements
-    "PIE",    # flake8-pie — разные мелкие улучшения
-    "PL",     # pylint — код-стайл, рефакторинг, подозрительные конструкции
-    "RUF",    # ruff-specific — правила самого ruff (неявные Optional, mutable defaults, etc.)
+    "RET",    # flake8-return — упрощение return
+    "PIE",    # flake8-pie — мелкие улучшения
+    "PL",     # pylint
+    "RUF",    # ruff-specific
 ]
 ignore = [
     "RUF001",  # ambiguous unicode in string — ложные срабатывания на кириллице
-    "RUF002",  # ambiguous unicode in docstring — ложные срабатывания на кириллице
-    "RUF003",  # ambiguous unicode in comment — ложные срабатывания на кириллице
+    "RUF002",  # ambiguous unicode in docstring — same
+    "RUF003",  # ambiguous unicode in comment — same
     "RET504",  # unnecessary assign before return — мешает при построении цепочек
 ]
 
@@ -109,8 +80,8 @@ known-first-party = ["boba"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = [
     "S101",    # assert — ожидаемо в pytest
-    "PLR2004", # magic values — допустимы в assert тестов
+    "PLR2004", # magic values — допустимы в assert
     "SLF001",  # доступ к _private — допустим при тестировании внутренностей
-    "S105",    # hardcoded password — false positive на domain-поля вроде AnswerToken.token
-    "S106",    # hardcoded password — same reason
+    "S105",    # hardcoded password — false positive на поля вроде AnswerToken.token
+    "S106",    # same reason
 ]
