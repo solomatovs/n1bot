@@ -1,12 +1,4 @@
-"""Chainlit entrypoint.
-
-Запуск из корня репозитория::
-
-    chainlit run src/chainlit/src/boba/chainlit/app.py
-
-Окружение (BOBA_CONFIG, LITELLM_API_KEY_FILE, WORKSPACE_BASE_DIR и т.п.)
-читается :class:`ConfigLoader` — те же переменные, что и у CLI-запуска.
-"""
+"""Chainlit entrypoint."""
 
 from __future__ import annotations
 
@@ -59,10 +51,7 @@ from chainlit.input_widget import Select
 
 logger = logging.getLogger(__name__)
 
-# Один контейнер и один AgentHarness-подобный wrapper на процесс: сборка
-# DI дорогая, а между сессиями Chainlit общее состояние не нужно — все
-# per-session вещи (WorkspaceId) живут в cl.user_session. functools.cache
-# даёт ленивую инициализацию без модульного global.
+
 @functools.cache
 def _get_session() -> ChatSession:
     return ChatSession()
@@ -70,23 +59,11 @@ def _get_session() -> ChatSession:
 
 @cl.on_chat_start
 async def on_chat_start() -> None:
-    """Новый WorkspaceId на каждую сессию чата.
-
-    History-workspace внутри WorkspaceId хранит ``messages.jsonl`` — это и
-    есть память диалога: последующие сообщения в той же сессии видят
-    контекст предыдущих.
-    """
     workspace_id = WorkspaceId.new()
     cl.user_session.set("workspace_id", workspace_id)
-    # Прогрев контейнера в фоне — первая отправка сообщения не будет
-    # висеть несколько секунд на загрузке конфига.
+
     await asyncio.to_thread(_get_session)
 
-    # ChatSettings — единственный источник модели для агентского лупа.
-    # Список берём из [chainlit] models; пустой список — misconfiguration,
-    # падаем громко, чтобы не уйти в неявный fallback на конфиг.
-    # Порядок отображения == порядок в TOML; «дефолта» нет — в виджете
-    # подсвечен первый элемент, пользователь при необходимости меняет.
     models = load_models()
     if not models:
         msg = "[chainlit] models пуст или не задан — UI не может выбрать модель"
@@ -101,8 +78,7 @@ async def on_chat_start() -> None:
             ),
         ],
     ).send()
-    # ChatSettings.send() не триггерит on_settings_update, поэтому
-    # явно синхронизируем выбор с тем, что показано в UI.
+
     cl.user_session.set("model", models[0])
 
     await cl.Message(
@@ -113,7 +89,6 @@ async def on_chat_start() -> None:
 
 @cl.on_settings_update
 async def on_settings_update(settings: dict[str, object]) -> None:
-    """Сохранить выбранную в шестерёнке модель для последующих запросов."""
     model = settings.get("model")
     if isinstance(model, str) and model:
         cl.user_session.set("model", model)
@@ -125,10 +100,6 @@ async def on_message(message: cl.Message) -> None:
     model = cast(str, cl.user_session.get("model"))
     session = _get_session()
 
-    # Аттачменты из композера — сохраняем в тот же project-workspace, из
-    # которого читают file-tools агента. Shell берём из того же реестра,
-    # что и session.run → get-or-create по workspace_id возвращает один
-    # и тот же инстанс, так что agent увидит файл в корне workspace.
     saved: list[str] = []
     if message.elements:
         shell = session.project_workspace(workspace_id)
@@ -140,9 +111,6 @@ async def on_message(message: cl.Message) -> None:
             rel = await asyncio.to_thread(save_upload, shell, src_path, name)
             saved.append(rel)
 
-    # Явно сообщаем агенту о прикреплённых файлах — иначе он видит только
-    # текст и не знает, что смотреть (UI-bubble аттачмента в query не
-    # попадает). Имена уже в workspace root, так что `cat <name>` работает.
     query = message.content
     if saved:
         listing = ", ".join(saved)
@@ -158,11 +126,6 @@ async def on_message(message: cl.Message) -> None:
         finally:
             bridge.close()
 
-    # Агент работает в worker-потоке; async-таск рисует UI по событиям.
-    # gather, а не последовательные await: если агент бросит, render_task
-    # иначе остаётся висеть (bridge.close() из finally пошлёт None, но мы
-    # уже перестали слушать). gather'им обе и пробрасываем первое
-    # исключение, не глотая.
     await asyncio.gather(
         asyncio.to_thread(_run_agent),
         _render_events(queue),
@@ -170,11 +133,7 @@ async def on_message(message: cl.Message) -> None:
 
 
 class _IsType(Specification[AgentEvent]):
-    """isinstance-предикат для маршрутизации AgentEvent по типу.
-
-    Локальный вариант — общего ``IsType`` в patterns.py нет,
-    :class:`IsInstance` там специфичен для исключений.
-    """
+    """isinstance-предикат. ``IsInstance`` из patterns.py — только для Exception."""
 
     def __init__(self, *types: type[AgentEvent]) -> None:
         self._types = types
@@ -191,9 +150,6 @@ _TERMINAL_ERRORS = (
     RepeatedFormatFailure,
 )
 
-# Техимена стадий (из domain/agent/meat/*.name()) в человеческий текст.
-# Неизвестные стадии показываются как есть — чтобы при появлении новой
-# было видно, что она есть, но не сломало UI.
 _STAGE_LABELS: dict[str, str] = {
     "UserPrompt": "Готовлю запрос…",
 }
@@ -214,33 +170,17 @@ def _llm_request_status(event: LLMRequestSent) -> str:
 
 
 class _EventRenderer:
-    """Состояние рендеринга + обработчики событий агента.
-
-    Per-request инстанс: состояние (буфер ответа, открытые step'ы) живёт
-    здесь. Один async-таск ведёт эту машину — гонок между обработчиками
-    нет по построению. Маршрутизация вынесена в :class:`FirstMatchDispatcher`
-    из ``domain/core/patterns``, см. :func:`_build_dispatcher`.
-    """
-
     def __init__(self) -> None:
         self.answer_msg: cl.Message | None = None
         self.thinking_step: cl.Step | None = None
-        # Один transient-индикатор прогресса. Stage/Generation события
-        # его обновляют на месте, «настоящий» контент (токены ответа,
-        # tool call, thinking, ошибки) — удаляет, чтобы в истории чата
-        # не копились технические «Готовлю запрос / Модель обрабатывает».
+        # Transient-индикатор прогресса: одна реплика, обновляется на
+        # месте. Реальный контент (токены/tool/error) её удаляет.
         self.status_msg: cl.Message | None = None
-        # index (из ToolCallBegin/Delta) → Step, и tool_call_id → Step.
-        # Оба нужны: дельты приходят по index, результат — по id.
         self.tool_steps_by_index: dict[int, cl.Step] = {}
         self.tool_steps_by_id: dict[str, cl.Step] = {}
-        # Накопленный JSON tool-аргументов по index. Строка, а не list —
-        # join на каждой дельте был бы O(N²) по длине аргумента.
         self.tool_args_buf: dict[int, str] = {}
 
     async def _set_status(self, text: str) -> None:
-        """Показать/обновить transient-статус. Одна реплика на всю
-        сессию ожидания — replace-in-place вместо нового пузыря."""
         if self.status_msg is None:
             self.status_msg = cl.Message(content=text, author="system")
             await self.status_msg.send()
@@ -249,15 +189,11 @@ class _EventRenderer:
             await self.status_msg.update()
 
     async def _clear_status(self) -> None:
-        """Убрать transient-статус перед тем, как показать реальный
-        контент. Вызывается из всех «значимых» handler'ов."""
         if self.status_msg is not None:
             await self.status_msg.remove()
             self.status_msg = None
 
     async def _open_answer(self) -> cl.Message:
-        # Токены ответа — реальный контент, статус-плашка ему больше
-        # не нужна.
         await self._clear_status()
         if self.answer_msg is None:
             self.answer_msg = cl.Message(content="")
@@ -273,8 +209,8 @@ class _EventRenderer:
         await msg.stream_token(event.token)
 
     async def on_answer_discarded(self, event: AnswerDiscarded) -> None:
-        # Middleware переосмыслил поток как tool call — всё, что мы
-        # успели отрисовать как answer, нужно убрать.
+        # Middleware переосмыслил поток как tool call — стираем то,
+        # что успели нарисовать как answer.
         del event
         if self.answer_msg is not None:
             self.answer_msg.content = ""
@@ -282,15 +218,12 @@ class _EventRenderer:
             self.answer_msg = None
 
     async def on_answer_complete(self, event: AnswerComplete) -> None:
-        # Токены уже в UI через stream_token; content переписывать
-        # значит дёргать полную перерисовку (мигание). Отпускаем
-        # ссылку, чтобы следующий AnswerStarted/Token создал новое
-        # сообщение.
+        # Токены уже в UI через stream_token; перезапись content'а
+        # вызвала бы полную перерисовку (мигание).
         del event
         self.answer_msg = None
 
     async def on_thinking_started(self, event: ThinkingStarted) -> None:
-        # Thinking — реальный контент, statusbar больше не нужен.
         del event
         await self._clear_status()
         self.thinking_step = cl.Step(name="thinking", type="run")
@@ -306,7 +239,6 @@ class _EventRenderer:
         self.thinking_step = None
 
     async def on_tool_begin(self, event: ToolCallBegin) -> None:
-        # Tool call — реальный контент, убираем transient-статус.
         await self._clear_status()
         step = cl.Step(name=event.tool_name, type="tool")
         step.input = ""
@@ -316,10 +248,6 @@ class _EventRenderer:
         self.tool_args_buf[event.index] = ""
 
     async def on_tool_arg_delta(self, event: ToolCallArgumentDelta) -> None:
-        # Конкатенируем и отдаём инкрементальный snapshot в UI.
-        # cl.Step не умеет stream_token в .input, так что приходится
-        # переустанавливать поле целиком; строковый += — O(N) на дельту,
-        # list+join давал O(N²).
         self.tool_args_buf[event.index] = (
             self.tool_args_buf.get(event.index, "") + event.arguments
         )
@@ -329,14 +257,10 @@ class _EventRenderer:
             await step.update()
 
     async def on_tool_complete(self, event: ToolCallComplete) -> None:
-        # Дельты уже собрали полный arguments; Complete — только
-        # стоп-сигнал, дополнительный update() — лишний сетевой тик.
         del event
 
     async def on_tool_exec_started(self, event: ToolExecutionStarted) -> None:
-        # Tool начал исполняться — меняем индикацию step'а с «args
-        # дописываются» на «running». Без этого медленные tools (fs,
-        # http) выглядят как зависший шаг с аргументами.
+        # Без смены индикации медленные tools выглядят как зависший шаг.
         step = self.tool_steps_by_id.get(event.tool_call_id)
         if step is not None:
             step.output = "⏳ выполняется…"
@@ -356,8 +280,6 @@ class _EventRenderer:
             await step.update()
 
     async def on_tool_format_failed(self, event: ToolCallFormatFailed) -> None:
-        # Нет привязки к конкретному step (id/index не определились) —
-        # показываем отдельным сообщением об ошибке.
         await self._clear_status()
         await cl.Message(
             content=(
@@ -379,42 +301,25 @@ class _EventRenderer:
         await msg.stream_token(event.token)
 
     async def on_refusal_complete(self, event: RefusalComplete) -> None:
-        # Параллельно AnswerComplete: токены уже застримлены в UI,
-        # только отпускаем ссылку.
         del event
         self.answer_msg = None
 
     async def on_stage_started(self, event: StageStarted) -> None:
-        # Верхнеуровневая фаза цикла. Обновляем transient-индикатор,
-        # не создавая отдельного Step'а — иначе в истории чата копятся
-        # технические «UserPrompt», которые пользователю ничего не
-        # говорят. Неизвестные стадии показываются как есть.
         await self._set_status(_stage_label(event.stage))
 
     async def on_stage_completed(self, event: StageCompleted) -> None:
-        # Фаза закрыта — текущий статус («Готовлю запрос…») больше не
-        # соответствует реальности. Убираем плашку; следующий значимый
-        # event (LLMRequestSent / GenerationStarted / ...) сам поставит
-        # актуальный текст. detail из домена ("user prompt added") —
-        # техническая служебка, пользователю её не показываем.
         del event
         await self._clear_status()
 
     async def on_llm_request_sent(self, event: LLMRequestSent) -> None:
-        # HTTP-запрос ушёл, ждём TTFT. Заменяет generic-статус
-        # подробным (модель, наличие tools, размер контекста).
         await self._set_status(_llm_request_status(event))
 
     async def on_generation_started(self, event: GenerationStarted) -> None:
-        # Первый чанк пошёл — статус держим, токены ответа/thinking
-        # всё равно _clear_status() при первом токене.
         del event
         await self._set_status(_GENERATION_STATUS)
 
     async def on_iteration_started(self, event: IterationStarted) -> None:
-        # Первую итерацию не маркируем — пользователь и так знает,
-        # что только что отправил запрос. Со второй уже полезно: в
-        # длинных tool-цепочках видно, сколько прогресса осталось.
+        # Первую итерацию не маркируем — пользователь только что отправил запрос.
         if event.iteration <= 1:
             return
         await self._set_status(
@@ -422,16 +327,10 @@ class _EventRenderer:
         )
 
     async def on_generation_done(self, event: GenerationDone) -> None:
-        # Если после этого пойдут AnswerToken/ToolCallBegin — они сами
-        # удалят статус. Если генерация закончилась без контента
-        # (terminal error / пустой ответ) — плашку тоже убираем, чтобы
-        # не висела на экране.
         del event
         await self._clear_status()
 
     async def on_user_query(self, event: UserQueryReceived) -> None:
-        # Пользователь уже видит свою реплику в UI — рендерить ещё раз
-        # значит дублировать. Явно no-op.
         del event
 
     async def on_terminal_error(self, event: AgentEvent) -> None:
@@ -452,19 +351,9 @@ _RenderRoute = Callable[[AgentEvent], Awaitable[None]]
 
 
 def _build_dispatcher(r: _EventRenderer) -> FirstMatchDispatcher[AgentEvent, Any]:
-    """Собрать маршруты event-type → handler.
-
-    Возвращаемый диспетчер — callable ``AgentEvent → Awaitable[None]``;
-    ``FirstMatchDispatcher`` параметризуется вторым типом как ``Any``,
-    потому что его сигнатура скрывает asynchrony за generic TOut.
-
-    Каждый handler типизирован узким подклассом ``AgentEvent`` — это
-    удобно для тела, но ``Callable`` контравариантен по аргументу, так
-    что присвоение в ``_RenderRoute`` требует ``cast``. Безопасность
-    типов держится на том, что ``_IsType(T)`` пропускает в маршрут
-    только ``T``, так что узкий параметр handler'а гарантированно
-    совпадает с фактическим.
-    """
+    # Handler'ы типизированы узкими подклассами AgentEvent; Callable
+    # контравариантен по аргументу, поэтому нужен cast. Безопасность
+    # держится на _IsType(T) — в маршрут попадает только T.
     def route(
         types: type[AgentEvent] | tuple[type[AgentEvent], ...],
         handler: Callable[..., Awaitable[None]],
@@ -503,12 +392,6 @@ def _build_dispatcher(r: _EventRenderer) -> FirstMatchDispatcher[AgentEvent, Any
 
 
 async def _render_events(queue: asyncio.Queue[AgentEvent | None]) -> None:
-    """Консюмер очереди событий агента → Chainlit UI.
-
-    Вся диспетчеризация — в :func:`_build_dispatcher` через
-    :class:`FirstMatchDispatcher` из ``domain/core/patterns``. Здесь
-    остаётся только цикл по очереди и выход по sentinel.
-    """
     renderer = _EventRenderer()
     dispatch = _build_dispatcher(renderer)
 
@@ -517,8 +400,3 @@ async def _render_events(queue: asyncio.Queue[AgentEvent | None]) -> None:
         if event is None:
             break
         await dispatch(event)
-
-    # Cleanup'а не требуется: все токены уже отрисованы через
-    # stream_token. Если *Complete не пришёл (оборвался поток) —
-    # оставляем UI как есть; повторный update() без изменений полей
-    # всё равно ничего не добавит и только сгенерирует сетевой ping.

@@ -59,6 +59,17 @@ class UuId(Id[UUID]):
         return cls(UUID(value))
 
 
+class StrId(Id[str]):
+    """Строковый Id — для читабельных идентификаторов (имя секции, стадии)."""
+
+    def to_wire(self) -> str:
+        return self._name
+
+    @classmethod
+    def from_wire(cls, value: str) -> Self:
+        return cls(value)
+
+
 TCtx = TypeVar("TCtx")
 TIn = TypeVar("TIn")
 TId = TypeVar("TId", bound=Id)
