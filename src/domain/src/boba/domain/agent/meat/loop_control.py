@@ -9,12 +9,8 @@ from boba.domain.agent.errors import MaxIterationsExceededError
 from boba.domain.agent.events import (
     AgentEvent,
     GenerationDone,
-    GenerationFailed,
     IterationStarted,
-    MaxIterationsReached,
-    PersistenceFailed,
-    PromptFailed,
-    RepeatedFormatFailure,
+    TerminalFailure,
 )
 from boba.domain.agent.models import AgentContext
 from boba.domain.core.patterns import Specification, StreamSource
@@ -79,13 +75,4 @@ class StopOnAnyFailure(Specification[tuple[AgentContext, AgentEvent]]):
 
     def check(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
         _ctx, event = candidate
-        return isinstance(
-            event,
-            (
-                GenerationFailed,
-                PromptFailed,
-                PersistenceFailed,
-                MaxIterationsReached,
-                RepeatedFormatFailure,
-            ),
-        )
+        return isinstance(event, TerminalFailure)

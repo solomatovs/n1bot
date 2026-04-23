@@ -5,11 +5,13 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 
-from boba.domain.agent.models import LLMMessage
-from boba.domain.core.errors import TerminalError
+from boba.domain.agent.errors import AgentTerminalError
+from boba.domain.agent.events import AgentEvent, PersistenceFailed
+from boba.domain.agent.models import LLMMessage, RequestId
+from boba.domain.core.errors import Retryable
 
 
-class MessageStoreError(TerminalError):
+class MessageStoreError(AgentTerminalError):
     """Базовая ошибка persistent-реализации :class:`MessageService`.
 
     Контракт ошибок: если реализация персистит диалог (например, в файл),
@@ -30,6 +32,14 @@ class MessageStoreError(TerminalError):
 
     def _prefix(self) -> str:
         return "Message store error"
+
+    def to_user_event(self, request_id: RequestId) -> AgentEvent:
+        return PersistenceFailed(
+            request_id=request_id,
+            error_kind=type(self).__name__,
+            message=str(self),
+            retryable=isinstance(self, Retryable),
+        )
 
 
 class MessageStoreWriteError(MessageStoreError):

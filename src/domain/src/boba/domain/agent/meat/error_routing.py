@@ -5,43 +5,27 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 
-from boba.domain.agent.errors import (
-    LLMError,
-    LLMToolCallFormatError,
-    MaxIterationsExceededError,
-    RepeatedFormatFailureError,
-    ToolFeedbackError,
-)
-from boba.domain.agent.events import (
-    AgentEvent,
-    GenerationFailed,
-    MaxIterationsReached,
-    PersistenceFailed,
-    PromptFailed,
-    RepeatedFormatFailure,
-    ToolCallFormatFailed,
-    ToolExecutionFailed,
-    UserNoticeReady,
-)
-from boba.domain.agent.messages import MessageService, MessageStoreError
-from boba.domain.agent.models import AgentContext, LLMMessage
-from boba.domain.agent.prompt import PromptError
+from boba.domain.agent.events import AgentEvent
+from boba.domain.agent.messages import MessageService
+from boba.domain.agent.models import AgentContext
 from boba.domain.core.errors import (
     LLMFeedbackError,
-    Retryable,
     RoutableError,
-    UserNoticeError,
+    UserFeedbackError,
 )
 from boba.domain.core.patterns import StreamSource
 
 
 class AgentErrorRouter:
-    """
-    Централизованная маршрутизация :class:`RoutableError` в события и
-    побочные эффекты.
+    """Полиморфная маршрутизация :class:`RoutableError` через ``to_*_event``.
 
-    Единая точка знания «какой тип ошибки → какое событие + какой сайд-
-    эффект». Middleware, поймавший :class:`RoutableError`, делегирует сюда.
+    Роутер не знает конкретных подклассов — он смотрит только на
+    семейство (:class:`UserFeedbackError` / :class:`LLMFeedbackError`) и
+    делегирует построение события самой ошибке. Добавление новой ошибки
+    не требует правок роутера: достаточно унаследоваться от
+    соответствующего binding-бейза (:class:`AgentTerminalError` /
+    :class:`AgentLLMFeedbackError` / :class:`AgentUserNotice`) и
+    реализовать abstract-методы.
 
     Две API-точки для клиентов:
 
@@ -49,29 +33,20 @@ class AgentErrorRouter:
       :class:`AgentErrorRouterMiddleware` из top-level try/except).
     - :meth:`run_batch` — прогнать серию подзадач-генераторов с
       автоматическим сбором :class:`LLMFeedbackError` и маршрутизацией
-      в конце. Batch-middleware (напр. :class:`ToolExecutionMiddleware`)
-      **не пишет** свой try/except — просто передают генераторы сюда.
+      в конце.
 
-    Маршруты (match-case):
+    Маршруты:
 
-    - :class:`LLMError` → :class:`GenerationFailed` (``status_code``,
-      ``retryable`` по маркеру :class:`Retryable`). Терминально.
-    - :class:`PromptError` → :class:`PromptFailed` (``provider``).
-      Терминально.
-    - :class:`MessageStoreError` → :class:`PersistenceFailed`. Терминально.
-    - :class:`MaxIterationsExceededError` → :class:`MaxIterationsReached`.
-      Терминально.
-    - :class:`RepeatedFormatFailureError` → :class:`RepeatedFormatFailure`.
-      Терминально.
-    - :class:`ToolFeedbackError` → запись ``LLMMessage(role="tool",
-      tool_call_id=..., content=...)`` в :class:`MessageService` +
-      :class:`ToolExecutionFailed`. Не терминально.
-    - :class:`LLMToolCallFormatError` → запись ``LLMMessage(role="user",
-      content=...)`` в :class:`MessageService` +
-      :class:`ToolCallFormatFailed`. Не терминально.
-    - :class:`UserNoticeError` → :class:`UserNoticeReady`. Не терминально.
-    - Непокрытый подкласс → :class:`TypeError` (баг: забыли добавить
-      ветку).
+    - :class:`UserFeedbackError` → ``err.to_user_event()`` в поток
+      (event для sink'ов). Терминальность определяется подклассом —
+      :class:`TerminalError` остановит цикл через
+      :class:`StopOnAnyFailure`, :class:`UserNoticeError` /
+      :class:`LLMFeedbackError` — нет.
+    - :class:`LLMFeedbackError` (подкласс ``UserFeedbackError``) →
+      дополнительно ``err.to_llm_feedback()`` в :class:`MessageService`.
+    - :class:`RoutableError` без принадлежности к
+      :class:`UserFeedbackError` → :class:`TypeError` (мисконфиг
+      иерархии).
     """
 
     def __init__(self, message_service: MessageService) -> None:
@@ -79,88 +54,14 @@ class AgentErrorRouter:
 
     def route(self, ctx: AgentContext, err: RoutableError) -> Iterator[AgentEvent]:
         rid = ctx.agent_request.request_id
-        retryable = isinstance(err, Retryable)
-        kind = type(err).__name__
-        msg = str(err)
-        match err:
-            case LLMError():
-                yield GenerationFailed(
-                    request_id=rid,
-                    error_kind=kind,
-                    message=msg,
-                    retryable=retryable,
-                    status_code=err.status_code,
-                )
-            case PromptError():
-                yield PromptFailed(
-                    request_id=rid,
-                    error_kind=kind,
-                    message=msg,
-                    retryable=retryable,
-                    provider=err.provider,
-                )
-            case MessageStoreError():
-                yield PersistenceFailed(
-                    request_id=rid,
-                    error_kind=kind,
-                    message=msg,
-                    retryable=retryable,
-                )
-            case MaxIterationsExceededError():
-                yield MaxIterationsReached(
-                    request_id=rid,
-                    error_kind=kind,
-                    message=msg,
-                    limit=err.limit,
-                    iteration=err.iteration,
-                )
-            case RepeatedFormatFailureError():
-                yield RepeatedFormatFailure(
-                    request_id=rid,
-                    error_kind=kind,
-                    message=msg,
-                    count=err.count,
-                    limit=err.limit,
-                )
-            case ToolFeedbackError():
-                self._message_service.add(
-                    LLMMessage(
-                        role="tool",
-                        content=err.message,
-                        tool_call_id=err.tool_call_id,
-                    ),
-                )
-                yield ToolExecutionFailed(
-                    request_id=rid,
-                    tool_call_id=err.tool_call_id,
-                    tool_name=err.tool_name,
-                    error_kind=err.error_kind,
-                    message=err.message,
-                )
-            case LLMToolCallFormatError():
-                self._message_service.add(
-                    LLMMessage(
-                        role="user",
-                        content=err.message,
-                    ),
-                )
-                yield ToolCallFormatFailed(
-                    request_id=rid,
-                    error_kind=kind,
-                    message=err.message,
-                )
-            case UserNoticeError():
-                yield UserNoticeReady(
-                    request_id=rid,
-                    message=err.message,
-                    severity=err.severity,
-                )
-            case _:
-                raise TypeError(
-                    f"AgentErrorRouter: unmapped RoutableError subclass "
-                    f"{kind!r}. Добавь ветку в route или унаследуй новый тип "
-                    f"от одного из известных семейств."
-                ) from err
+        if not isinstance(err, UserFeedbackError):
+            raise TypeError(
+                f"{type(err).__name__}: RoutableError, но не унаследован от "
+                "UserFeedbackError. Наследуй от семейства.",
+            ) from err
+        if isinstance(err, LLMFeedbackError):
+            self._message_service.add(err.to_llm_feedback())
+        yield err.to_user_event(rid)
 
     def run_batch(
         self,
@@ -176,7 +77,7 @@ class AgentErrorRouter:
         после завершения всей серии (в порядке возникновения).
 
         :class:`TerminalError` (и любое не-``LLMFeedbackError``
-        ``AgentError``) — пропускаем наверх немедленно: при сбое LLM /
+        ``RoutableError``) — пропускаем наверх немедленно: при сбое LLM /
         persistence дальше работать смысла нет, batch прерывается.
 
         API задуман так, чтобы middleware-автор не писал свой

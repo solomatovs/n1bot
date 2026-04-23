@@ -67,10 +67,10 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
             return repr(text)
         return repr(text[: self._PREVIEW] + "...")
 
-    def handle(self, ctx: AgentContext, event: AgentEvent) -> None:  # noqa: C901, PLR0912
+    def handle(self, ctx: AgentContext, event: AgentEvent) -> None: 
         match event:
             case ThinkingStarted():
-                print(f"{self._DIM}--- thinking ---{self._RESET}")  # noqa: T201
+                print(f"{self._DIM}--- thinking ---{self._RESET}")
             case ThinkingToken(token=t):
                 print(f"{self._DIM}{t}{self._RESET}", end="", flush=True)  # noqa: T201
 

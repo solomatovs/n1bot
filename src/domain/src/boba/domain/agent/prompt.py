@@ -17,7 +17,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Generic, Self, TypeVar
 
-from boba.domain.core.errors import Retryable, TerminalError
+from boba.domain.agent.errors import AgentTerminalError
+from boba.domain.agent.events import AgentEvent, PromptFailed
+from boba.domain.agent.models import RequestId
+from boba.domain.core.errors import Retryable
 from boba.domain.core.patterns import (
     FoldFactory,
     Id,
@@ -27,7 +30,7 @@ from boba.domain.core.patterns import (
 TCtx = TypeVar("TCtx")
 
 
-class PromptError(TerminalError):
+class PromptError(AgentTerminalError):
     """Базовая ошибка сборки промпта.
 
     Адаптеры-провайдеры промптов (чтение файлов, workspace, git) оборачивают
@@ -39,6 +42,15 @@ class PromptError(TerminalError):
     def __init__(self, message: str, *, provider: str | None = None) -> None:
         super().__init__(message)
         self.provider = provider
+
+    def to_user_event(self, request_id: RequestId) -> AgentEvent:
+        return PromptFailed(
+            request_id=request_id,
+            error_kind=type(self).__name__,
+            message=str(self),
+            retryable=isinstance(self, Retryable),
+            provider=self.provider,
+        )
 
 
 class RetryablePromptError(PromptError, Retryable):
