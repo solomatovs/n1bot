@@ -36,7 +36,8 @@ from boba.domain.core.patterns import StreamSource
 
 
 class AgentErrorRouter:
-    """Централизованная маршрутизация :class:`RoutableError` в события и
+    """
+    Централизованная маршрутизация :class:`RoutableError` в события и
     побочные эффекты.
 
     Единая точка знания «какой тип ошибки → какое событие + какой сайд-

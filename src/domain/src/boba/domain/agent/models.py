@@ -47,7 +47,9 @@ class LLMToolCall:
 
 @dataclass(frozen=True)
 class LLMMessage:
-    """Одно сообщение в истории диалога."""
+    """
+    Одно сообщение в истории диалога
+    """
 
     role: str
     content: str
@@ -57,7 +59,9 @@ class LLMMessage:
 
 @dataclass
 class SamplingParams:
-    """Параметры семплирования LLM"""
+    """
+    Параметры семплирования LLM
+    """
 
     temperature: float | None = None
     top_p: float | None = None
@@ -70,16 +74,11 @@ class SamplingParams:
 
 @dataclass(frozen=True)
 class LLMRequestDefaults:
-    """Дефолтные параметры LLM-запроса, применяемые
-    :class:`SamplingMiddleware` на каждой итерации. Живут в agent-слое
-    (аналогично :class:`AgentConfig`), загружаются
-    :class:`~boba.infra.config.ConfigLoader` отдельно от
-    :class:`~boba.domain.config.LLMConfig` — чтобы транспортный
-    :class:`LLMConfig` не тянул семантику запроса.
+    """
+    Дефолтные параметры LLM-запроса
     """
 
     sampling: SamplingParams = field(default_factory=SamplingParams)
-    parallel_tool_calls: bool | None = None
 
 
 @dataclass

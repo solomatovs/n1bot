@@ -38,7 +38,8 @@ from boba.domain.core.patterns import StreamSource
 
 
 class AssistantMessagePersistenceMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Агрегирует стриминговые события LLM в assistant-сообщение и
+    """
+    Собирает стриминговые события LLM в assistant-сообщение и
     коммитит его в :class:`MessageService`.
 
     Наблюдает события от inner-стрима:
@@ -53,12 +54,6 @@ class AssistantMessagePersistenceMiddleware(StreamSource[AgentContext, AgentEven
     - ``GenerationDone`` → flush: эмитит ``*Complete`` события в стрим и
       коммитит ``LLMMessage(role="assistant", content=..., tool_calls=...)``
       в :class:`MessageService`.
-
-    Попутно эмитит агрегированные ``*Complete`` события **в стрим** —
-    это делает их доступными downstream middleware'ам (например,
-    :class:`ToolExecutionMiddleware` ждёт ``ToolCallComplete``) и
-    sink'ам. Без этого middleware в стриме живут только токены, а
-    downstream-логика не получает сводных событий.
     """
 
     def __init__(
@@ -78,7 +73,7 @@ class AssistantMessagePersistenceMiddleware(StreamSource[AgentContext, AgentEven
     def name(self) -> str:
         return "AssistantPersistence"
 
-    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:  # noqa: C901
+    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         for event in self._inner.stream(ctx):
             match event:
                 case GenerationStarted(request_id=rid):

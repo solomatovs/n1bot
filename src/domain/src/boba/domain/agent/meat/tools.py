@@ -23,14 +23,8 @@ from .error_routing import AgentErrorRouter
 
 
 class ToolsDefinitionMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Кладёт текущий снимок каталога :class:`ToolsService` в
-    ``ctx.llm_builder.tools``. :class:`LLMRequestFactory` читает этот слот
-    при сборке :class:`LLMRequest` и мапит в ``kwargs["tools"]`` провайдера.
-
-    Отключение middleware через DI — запрос уходит без tools, LLM не видит
-    инструментов и не вызывает их. Плагины могут зарегистрировать свою
-    реализацию (фильтрация по ролям, лимит по количеству, динамический
-    ``tool_choice``) без правки фабрики.
+    """
+    Кладёт tools'ы в llm_request
     """
 
     def __init__(
@@ -46,33 +40,13 @@ class ToolsDefinitionMiddleware(StreamSource[AgentContext, AgentEvent]):
 
     def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         ctx.llm_request.tools.tools = list(self._tools_service.tools())
+        ctx.llm_request.tools.parallel_tool_calls = True
         yield from self._inner.stream(ctx)
 
 
 class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
     """
-    Выполняет tool calls, полученные от LLM.
-
-    После того как внутренний стрим (LLM) заканчивает итерацию, собирает все
-    ``ToolCallComplete`` события и по каждому:
-
-    1. Парсит JSON ``arguments``. Битый JSON → :class:`ToolFeedbackError`
-       (LLM увидит ошибку и сможет починить).
-    2. Вызывает :meth:`ToolsService.execute`. Сервис бросает «сырую»
-       :class:`ToolExecutionError` (без знания про tool_call_id) — тут
-       обогащается идентификатором вызова и пробрасывается как
-       :class:`ToolFeedbackError`.
-    3. Успех → ``LLMMessage(role="tool", tool_call_id=..., content=...)`` +
-       :class:`ToolResultReady`.
-
-    Batch-семантика делегирована :meth:`AgentErrorRouter.run_batch`:
-    успешные события стримятся сразу, :class:`LLMFeedbackError` из
-    любой подзадачи копится и маршрутизируется в конце — так одна
-    упавшая подзадача не обрывает остальные. Терминальные ошибки
-    пропускаются наверх во внешний :class:`AgentErrorRouterMiddleware`.
-
-    Если LLM не запросила тулов — middleware просто проксирует события
-    inner без побочных эффектов.
+    Выполняет tool calls, полученные от LLM
     """
 
     def __init__(

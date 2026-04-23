@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 
 from boba.domain.agent.events import (
     AgentEvent,
-    StageCompleted,
-    StageStarted,
-    UserQueryReceived,
+    SystemPromptProcessed,
+    SystemPromptProcessingStarted,
+    UserPromptProcessed,
+    UserPromptProcessingStarted,
 )
 from boba.domain.agent.messages import MessageService
 from boba.domain.agent.models import AgentContext
@@ -35,6 +37,13 @@ class SystemPromptMiddleware(StreamSource[AgentContext, AgentEvent]):
         return "SystemPrompt"
 
     def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+        content_before = ctx.llm_request.system_prompt
+        yield SystemPromptProcessingStarted(
+            request_id=ctx.agent_request.request_id,
+            content_before=content_before,
+        )
+
+        start = time.perf_counter()
         content = (
             PromptFactory(ctx, self._prompt_providers)
             .build()
@@ -42,6 +51,15 @@ class SystemPromptMiddleware(StreamSource[AgentContext, AgentEvent]):
         )
         if content:
             ctx.llm_request.system_prompt = content
+
+        duration_ms = (time.perf_counter() - start) * 1000
+
+        yield SystemPromptProcessed(
+            request_id=ctx.agent_request.request_id,
+            content_before=content_before,
+            content_after=ctx.llm_request.system_prompt,
+            duration_ms=duration_ms,
+        )
 
         yield from self._inner.stream(ctx)
 
@@ -74,14 +92,13 @@ class UserPromptMiddleware(StreamSource[AgentContext, AgentEvent]):
 
     def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         if ctx.iteration == 1:
-            yield StageStarted(
-                request_id=ctx.agent_request.request_id, stage=self.name()
-            )
-            yield UserQueryReceived(
+            content_before = ctx.llm_request.user_prompt
+            yield UserPromptProcessingStarted(
                 request_id=ctx.agent_request.request_id,
-                query=ctx.agent_request.query,
+                content_before=content_before,
             )
 
+            start = time.perf_counter()
             content = (
                 PromptFactory(ctx, self._prompt_providers)
                 .build()
@@ -90,10 +107,13 @@ class UserPromptMiddleware(StreamSource[AgentContext, AgentEvent]):
             if content:
                 ctx.llm_request.user_prompt = content
 
-            yield StageCompleted(
+            duration_ms = (time.perf_counter() - start) * 1000
+
+            yield UserPromptProcessed(
                 request_id=ctx.agent_request.request_id,
-                stage=self.name(),
-                detail="user prompt added",
+                content_before=content_before,
+                content_after=ctx.llm_request.user_prompt,
+                duration_ms=duration_ms,
             )
 
         yield from self._inner.stream(ctx)
