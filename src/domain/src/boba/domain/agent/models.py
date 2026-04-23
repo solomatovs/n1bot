@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from boba.domain.core.patterns import UuId
-from boba.domain.core.tools import Tool
+from boba.domain.core.tools.tool import Tool
 from boba.domain.core.workspace import WorkspaceId
 
 
@@ -55,9 +55,9 @@ class LLMMessage:
     tool_calls: list[LLMToolCall] = field(default_factory=list)
 
 
-@dataclass(frozen=True)
+@dataclass
 class SamplingParams:
-    """Параметры семплирования LLM."""
+    """Параметры семплирования LLM"""
 
     temperature: float | None = None
     top_p: float | None = None
@@ -82,55 +82,34 @@ class LLMRequestDefaults:
     parallel_tool_calls: bool | None = None
 
 
-@dataclass(frozen=True)
-class LLMRequest:
-    """Готовый к отправке снимок одной итерации LLM-вызова.
-
-    Агрегирует всё, что нужно чтобы собрать запрос для OpenAI-совместимого
-    API: messages, tools, model, sampling params. Собирается
-    :class:`LLMRequestFactory` на каждой итерации цикла. Адаптер конкретного
-    провайдера мапит ``LLMRequest`` в свою форму в один проход через
-    ``Converter``.
-    """
-
-    model: str
-    messages: list[LLMMessage]
-    tools: list[Tool[Any]] = field(default_factory=list)
-    sampling: SamplingParams = field(default_factory=SamplingParams)
+@dataclass
+class LLMToolRequestBuilder:
     tool_choice: str | None = None
-    response_format: dict[str, Any] | None = None
     parallel_tool_calls: bool | None = None
+    tools: list[Tool[Any]] = field(default_factory=list)
 
 
 @dataclass
 class LLMRequestBuilder:
-    """Мутабельный накопитель для :class:`LLMRequest`.
+    """
+    Класс из которого будет построено одно сообщение в llm
 
-    Middleware-стадии заполняют слоты, пересчитываемые **на каждой
-    итерации** (system-prompt, tools, sampling…). Слоты с семантикой
-    «часть диалога» (user/assistant/tool-сообщения) здесь не живут —
-    они идут через :class:`MessageService`, потому что добавляются ровно
-    один раз и далее только читаются.
-
-    Участники:
-    - ``system_prompt`` — :class:`SystemPromptMiddleware`;
-    - ``tools`` — :class:`ToolsDefinitionMiddleware`;
-    - ``sampling``/``tool_choice``/``response_format`` — стадии,
-      когда появятся.
-
-    :class:`LLMRequestFactory` читает слоты и финализирует в immutable
-    :class:`LLMRequest`. Слот в дефолте (``None``, пустой список или
-    пустой :class:`SamplingParams`) в итоговый запрос не попадает —
-    отключение middleware через DI автоматически убирает соответствующую
-    часть.
+    Middleware-стадии заполняют части этого класса
+    А конвертер в конкретную спецификацию api отправляет итоговое сообщение
     """
 
+    # модель для отправки
+    model: str | None = None
+    # системный prompt
     system_prompt: str | None = None
-    tools: list[Tool[Any]] = field(default_factory=list)
+    # пользовательский prompt
+    user_prompt: str | None = None
+    # история сообщений существовавшая до текущего запроса
+    messages: list[str] = field(default_factory=list)
+    # tools builder
+    tools: LLMToolRequestBuilder = field(default_factory=LLMToolRequestBuilder)
     sampling: SamplingParams = field(default_factory=SamplingParams)
-    tool_choice: str | None = None
     response_format: dict[str, Any] | None = None
-    parallel_tool_calls: bool | None = None
 
 
 @dataclass
@@ -140,7 +119,7 @@ class AgentContext:
     Стадии читают и дополняют его на каждой итерации цикла.
     """
 
-    request: AgentRequest
+    agent_request: AgentRequest
     config: AgentConfig
     iteration: int = 0
-    llm_builder: LLMRequestBuilder = field(default_factory=LLMRequestBuilder)
+    llm_request: LLMRequestBuilder = field(default_factory=LLMRequestBuilder)

@@ -89,9 +89,7 @@ class JsonDepthScanner:
     def depth(self) -> int:
         return self._depth
 
-    def consume(
-        self, text: str, target_depth: int | None = None
-    ) -> tuple[str, str]:
+    def consume(self, text: str, target_depth: int | None = None) -> tuple[str, str]:
         """Обрабатывает ``text``, обновляя глубину.
 
         Если ``target_depth`` задан, останавливается на символе, который
@@ -175,7 +173,7 @@ class JsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
     def stream(  # noqa: C901, PLR0912, PLR0915
         self, ctx: AgentContext
     ) -> Iterator[AgentEvent]:
-        rid = ctx.request.request_id
+        rid = ctx.agent_request.request_id
         state = _ParserState.UNDECIDED
         pending_started: AnswerStarted | None = None
         header_buffer = ""
@@ -341,9 +339,7 @@ class JsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
         remaining = text
 
         if state == _ParserState.STREAM_ARGS and remaining:
-            consumed, remaining = scanner.consume(
-                remaining, target_depth=outer_depth
-            )
+            consumed, remaining = scanner.consume(remaining, target_depth=outer_depth)
             args_out += consumed
             if scanner.depth <= outer_depth:
                 state = _ParserState.CONSUME_WRAPPER

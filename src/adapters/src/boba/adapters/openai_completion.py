@@ -36,6 +36,7 @@ from boba.domain.agent.errors import (
     LLMProtocolError,
     LLMProviderInternalError,
     LLMRateLimitError,
+    LLMRequestModelNoneError,
     LLMTimeoutError,
 )
 from boba.domain.agent.events import (
@@ -52,13 +53,13 @@ from boba.domain.agent.events import (
     ToolCallArgumentDelta,
     ToolCallBegin,
 )
-from boba.domain.agent.llm_request_factory import LLMRequestFactory
+
+# from boba.domain.agent.llm_request_factory import LLMRequestFactory
 from boba.domain.agent.models import (
     AgentContext,
     LLMMessage,
-    LLMRequest,
+    LLMRequestBuilder,
     RequestId,
-    SamplingParams,
 )
 from boba.domain.config import LLMConfig
 from boba.domain.core.errors import Retryable
@@ -173,7 +174,6 @@ class OpenAIMiddleware(StreamSource[AgentContext, AgentEvent]):
     def __init__(
         self,
         config: LLMConfig,
-        llm_request_factory: LLMRequestFactory,
         observer: RawLLMObserver,
         chunk_preprocessor_factory: Callable[
             [RequestId],
@@ -181,7 +181,6 @@ class OpenAIMiddleware(StreamSource[AgentContext, AgentEvent]):
         ] = lambda _rid: (),
     ) -> None:
         self._client = OpenAI(base_url=config.base_url, api_key=config.api_key)
-        self._llm_request_factory = llm_request_factory
         self._observer = observer
         self._to_request_converter = ToOpenAIRequestConverter()
         self._error_converter = OpenAIErrorConverter()
@@ -191,29 +190,25 @@ class OpenAIMiddleware(StreamSource[AgentContext, AgentEvent]):
         return "OpenAICompletion"
 
     def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
-        llm_request = self._llm_request_factory.build(ctx)
-        kwargs = self._to_request_converter.convert(llm_request)
+        kwargs = self._to_request_converter.convert(ctx.llm_request)
 
         outcome = "ok"
         self._observer.on_request(kwargs)
         try:
             try:
                 response = self._client.chat.completions.create(**kwargs)
-                # HTTP-запрос ушёл, handle стрима получен — закрываем
-                # TTFT-слепое пятно до первого чанка (GenerationStarted).
-                # На cold-start'е модели между этим и первым токеном
-                # могут быть десятки секунд.
+
                 yield LLMRequestSent(
-                    request_id=ctx.request.request_id,
+                    request_id=ctx.agent_request.request_id,
                     model=str(kwargs.get("model", "")),
                     messages_count=len(kwargs.get("messages") or ()),
                     has_tools=bool(kwargs.get("tools")),
                 )
                 preprocessors = self._chunk_preprocessor_factory(
-                    ctx.request.request_id
+                    ctx.agent_request.request_id
                 )
                 yield from FromOpenAIChunkConverter(
-                    ctx.request.request_id, preprocessors
+                    ctx.agent_request.request_id, preprocessors
                 ).stream(ctx, self._observe_chunks(response))
             except LLMError:
                 raise
@@ -381,7 +376,7 @@ class OpenAIErrorConverter(FirstMatchConverter[Exception, LLMError]):
         ]
 
 
-class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
+class ToOpenAIRequestConverter(Converter[LLMRequestBuilder, dict[str, Any]]):
     """Мапит :class:`LLMRequest` в kwargs для
     ``client.chat.completions.create``.
     """
@@ -390,39 +385,64 @@ class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
         self._to_message_converter = ToOpenAIMessageConverter()
         self._to_tool_converter = ToOpenAIToolConverter()
 
-    def convert(self, value: LLMRequest) -> dict[str, Any]:
+    def convert(self, value: LLMRequestBuilder) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
-            "model": value.model,
-            "messages": list(self._to_message_converter.convert(value.messages)),
             "stream": True,
         }
 
-        if value.tools:
-            kwargs["tools"] = [self._to_tool_converter.convert(t) for t in value.tools]
-        if value.tool_choice is not None:
-            kwargs["tool_choice"] = value.tool_choice
-        if value.response_format is not None:
-            kwargs["response_format"] = value.response_format
-        if value.parallel_tool_calls is not None:
-            kwargs["parallel_tool_calls"] = value.parallel_tool_calls
+        self._apply_model(kwargs, value)
+        self._apply_messages(kwargs, value)
+        self._apply_sampling(kwargs, value)
+        self._apply_tools(kwargs, value)
+        self._apply_response_format(kwargs, value)
 
-        self._apply_sampling(kwargs, value.sampling)
         return kwargs
 
-    @staticmethod
-    def _apply_sampling(kwargs: dict[str, Any], s: SamplingParams) -> None:
+    def _apply_model(self, kwargs: dict[str, Any], s: LLMRequestBuilder) -> None:
+        if not s.model:
+            raise LLMRequestModelNoneError()
+
+        kwargs.update(
+            {
+                "model": s.model,
+            }
+        )
+
+    def _apply_messages(self, kwargs: dict[str, Any], s: LLMRequestBuilder) -> None:
+        kwargs.update(
+            {
+                "messages": s.messages,
+            }
+        )
+
+    def _apply_sampling(self, kwargs: dict[str, Any], s: LLMRequestBuilder) -> None:
         fields: dict[str, Any] = {
-            "temperature": s.temperature,
-            "top_p": s.top_p,
-            "max_tokens": s.max_tokens,
-            "seed": s.seed,
-            "stop": s.stop,
-            "frequency_penalty": s.frequency_penalty,
-            "presence_penalty": s.presence_penalty,
+            "temperature": s.sampling.temperature,
+            "top_p": s.sampling.top_p,
+            "max_tokens": s.sampling.max_tokens,
+            "seed": s.sampling.seed,
+            "stop": s.sampling.stop,
+            "frequency_penalty": s.sampling.frequency_penalty,
+            "presence_penalty": s.sampling.presence_penalty,
         }
+
         for key, val in fields.items():
             if val is not None:
                 kwargs[key] = val
+
+    def _apply_tools(self, kwargs: dict[str, Any], value: LLMRequestBuilder) -> None:
+        if value.tools.tools:
+            kwargs["tools"] = [
+                self._to_tool_converter.convert(t) for t in value.tools.tools
+            ]
+        if value.tools.tool_choice is not None:
+            kwargs["tool_choice"] = value.tools.tool_choice
+        if value.tools.parallel_tool_calls is not None:
+            kwargs["parallel_tool_calls"] = value.tools.parallel_tool_calls
+
+    def _apply_response_format(self, kwargs: dict[str, Any], value: LLMRequestBuilder):
+        if value.response_format is not None:
+            kwargs["response_format"] = value.response_format
 
 
 class ToOpenAIToolConverter(Converter[Tool[Any], ChatCompletionToolParam]):
@@ -686,8 +706,7 @@ class FinishSource(StreamTransformer[AgentContext, Choice, AgentEvent]):
                     reason = FinishReason(choice.finish_reason)
                 except ValueError as e:
                     raise LLMProtocolError(
-                        f"unknown finish_reason from provider: "
-                        f"{choice.finish_reason!r}"
+                        f"unknown finish_reason from provider: {choice.finish_reason!r}"
                     ) from e
                 # Ollama /api/chat в стриме отдаёт finish_reason=stop даже
                 # когда в дельтах были native tool_calls. Без подмены

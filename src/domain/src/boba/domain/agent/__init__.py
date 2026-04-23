@@ -67,7 +67,8 @@ from boba.domain.agent.events import (
     UserNoticeReady,
     UserQueryReceived,
 )
-from boba.domain.agent.llm_request_factory import LLMRequestFactory
+
+# from boba.domain.agent.llm_request_factory import LLMRequestFactory
 from boba.domain.agent.messages import (
     MessageService,
     MessageStoreError,
@@ -79,7 +80,7 @@ from boba.domain.agent.models import (
     AgentContext,
     AgentRequest,
     LLMMessage,
-    LLMRequest,
+    # LLMRequest,
     LLMRequestBuilder,
     LLMRequestDefaults,
     LLMToolCall,
@@ -127,10 +128,10 @@ __all__ = [
     "LLMProtocolError",
     "LLMProviderInternalError",
     "LLMRateLimitError",
-    "LLMRequest",
+    # "LLMRequest",
     "LLMRequestBuilder",
     "LLMRequestDefaults",
-    "LLMRequestFactory",
+    # "LLMRequestFactory",
     "LLMTimeoutError",
     "LLMToolCall",
     "LLMToolCallFormatError",

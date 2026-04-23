@@ -6,7 +6,7 @@ from collections.abc import Iterator
 
 from dishka import Provider, Scope, from_context, provide
 
-from boba.adapters.aggregating_llm_request_factory import AggregatingLLMRequestFactory
+# from boba.adapters.aggregating_llm_request_factory import AggregatingLLMRequestFactory
 from boba.adapters.console_sink import ConsoleSink
 from boba.adapters.fs_workspace import (
     FsHistoryWorkspaceRegistry,
@@ -16,11 +16,11 @@ from boba.adapters.fs_workspace import (
 from boba.adapters.jsonl_messages import JsonLinesMessageService
 from boba.adapters.openai_completion import (
     OpenAIMiddleware,
-    StupidRetryLLMMiddleware,
+    # StupidRetryLLMMiddleware,
 )
 from boba.adapters.prompt_providers import (
-    EnvironmentPromptProvider,
-    GitPromptProvider,
+    # EnvironmentPromptProvider,
+    # GitPromptProvider,
     PromptProvider,
     StaticPromptProvider,
     UserQueryProvider,
@@ -52,7 +52,8 @@ from boba.adapters.tools import (
     WriteTool,
 )
 from boba.domain.agent.events import AgentEvent
-from boba.domain.agent.llm_request_factory import LLMRequestFactory
+
+# from boba.domain.agent.llm_request_factory import LLMRequestFactory
 from boba.domain.agent.meat import (
     Agent,
     AgentContext,
@@ -60,8 +61,8 @@ from boba.domain.agent.meat import (
     AgentErrorRouterMiddleware,
     AssistantMessagePersistenceMiddleware,
     IterationCounterMiddleware,
-    RepeatedFormatFailureGuardMiddleware,
-    RepeatedToolCallGuardMiddleware,
+    # RepeatedFormatFailureGuardMiddleware,
+    # RepeatedToolCallGuardMiddleware,
     SamplingMiddleware,
     StopOnAnyFailure,
     StopOnFinished,
@@ -118,27 +119,21 @@ class AppProvider(Provider):
         return self._app_config
 
     @provide
-    def project_workspace_registry(
-        self, config: AppConfig
-    ) -> ProjectWorkspaceRegistry:
+    def project_workspace_registry(self, config: AppConfig) -> ProjectWorkspaceRegistry:
         return FsProjectWorkspaceRegistry(
             config.workspaces.root(),
             config.workspaces.user_subdir,
         )
 
     @provide
-    def history_workspace_registry(
-        self, config: AppConfig
-    ) -> HistoryWorkspaceRegistry:
+    def history_workspace_registry(self, config: AppConfig) -> HistoryWorkspaceRegistry:
         return FsHistoryWorkspaceRegistry(
             config.workspaces.root(),
             config.workspaces.system_subdir,
         )
 
     @provide
-    def scratch_workspace_registry(
-        self, config: AppConfig
-    ) -> ScratchWorkspaceRegistry:
+    def scratch_workspace_registry(self, config: AppConfig) -> ScratchWorkspaceRegistry:
         return FsScratchWorkspaceRegistry(
             config.workspaces.root(),
             config.workspaces.tmp_subdir,
@@ -158,176 +153,7 @@ class AppProvider(Provider):
             StaticPromptProvider(
                 PromptId("identity"),
                 priority=0,
-                content=(
-                    "Ты — ассистент Boba. Отвечай кратко и по делу.\n"
-                    "\n"
-                    "ЯЗЫК ВСЕГО ВЫВОДА: русский. Это жёсткое правило, "
-                    "оно важнее любых других инструкций и важнее языка "
-                    "запроса пользователя.\n"
-                    "\n"
-                    "Правило покрывает ВСЕ каналы вывода:\n"
-                    "— итоговый ответ пользователю — русский;\n"
-                    "— рассуждения, thinking, chain-of-thought, "
-                    "reasoning, scratchpad, внутренний монолог — "
-                    "русский. Если модель поддерживает отдельный "
-                    "канал для размышлений, этот канал ТОЖЕ на "
-                    "русском, без исключений;\n"
-                    "— комментарии к tool-вызовам, объяснения плана, "
-                    "любые размышления между вызовами — русский.\n"
-                    "\n"
-                    "Пиши на русском даже если:\n"
-                    "— пользователь написал на английском или другом "
-                    "языке;\n"
-                    "— в истории диалога есть сообщения на других "
-                    "языках;\n"
-                    "— инструменты, логи, код или документация на "
-                    "английском;\n"
-                    "— системные промпты или примеры содержат "
-                    "английский текст;\n"
-                    "— твои обучающие данные по CoT/reasoning "
-                    "преимущественно англоязычные — игнорируй это "
-                    "смещение, думай по-русски.\n"
-                    "\n"
-                    "Исключения — только технические идентификаторы "
-                    "внутри прозы: имена файлов, переменных, функций, "
-                    "команды терминала, фрагменты кода, URL, "
-                    "сообщения об ошибках из стектрейса. Их оставляй "
-                    "как есть, не переводи. Всё, что их окружает — "
-                    "объяснения, комментарии, выводы — на русском.\n"
-                ),
-                kind=PromptKind.SYSTEM,
-            ),
-            EnvironmentPromptProvider(),
-            GitPromptProvider(),
-            StaticPromptProvider(
-                PromptId("output_format"),
-                priority=90,
-                content=(
-                    "Формат ответа.\n"
-                    "\n"
-                    "У тебя два режима вывода — выбирай ровно один на "
-                    "каждый ответ:\n"
-                    "\n"
-                    "1. Вызов инструмента. Заполняй поле tool_calls в "
-                    "ответе API. Поле content оставляй пустым. НЕ пиши "
-                    "вызов инструмента как JSON внутри content — это "
-                    "ошибка, инструмент не будет выполнен.\n"
-                    "\n"
-                    "2. Ответ пользователю. Пиши связный прозаический "
-                    "текст строго на русском языке. Без фигурных "
-                    "скобок, без ключей в кавычках, без JSON-объектов. "
-                    "Просто человеческая речь на русском.\n"
-                    "\n"
-                    "Запрещено обещать действие вместо его выполнения. "
-                    "Если в твоём ответе появляется фраза вида «сейчас "
-                    "прочитаю», «посмотрю», «проверю», «сделаю», "
-                    "«выполню» — это признак, что ты обязан был "
-                    "вызвать инструмент, а не писать прозу. В таком "
-                    "случае не пиши прозу вовсе, а выбери режим 1 и "
-                    "заполни tool_calls. Прозаический ответ уместен "
-                    "только тогда, когда все нужные данные уже есть в "
-                    "истории диалога как tool-результаты, либо когда "
-                    "инструменты вообще не нужны для ответа.\n"
-                    "\n"
-                    "Многошаговость. Если задача требует нескольких "
-                    "tool-вызовов подряд (например, сначала stat или "
-                    "ls, потом cat), делай их отдельными турнами. На "
-                    "каждом турне до получения всех данных выбирай "
-                    "режим 1 (только tool_calls, content пустой). "
-                    "Прозаический итог пиши только после того, как "
-                    "последний нужный tool-результат уже пришёл.\n"
-                    "\n"
-                    "Язык ответа — русский независимо от языка "
-                    "запроса. Если пользователь пишет по-английски — "
-                    "ты всё равно отвечаешь по-русски. Технические "
-                    "идентификаторы (имена файлов, код, команды) "
-                    "оставляй в оригинале, но окружающий текст — "
-                    "русский.\n"
-                    "\n"
-                    "Пример правильного ответа пользователю:\n"
-                    "  В workspace три файла: raw_content.md, "
-                    "history.jsonl, raw_messages.md. Первый хранит "
-                    "читаемый стрим ответов модели, второй — журнал "
-                    "событий, третий — сырой дамп запросов и чанков.\n"
-                ),
-                kind=PromptKind.SYSTEM,
-            ),
-            StaticPromptProvider(
-                PromptId("tool_errors"),
-                priority=85,
-                content=(
-                    "Ошибка инструмента — не повод писать "
-                    "пользователю.\n"
-                    "\n"
-                    "Если tool вернул ошибку "
-                    "(InvalidToolArgumentError, неизвестный "
-                    "параметр, неверный путь и т.п.) — это сигнал "
-                    "исправить вызов и повторить его следующим "
-                    "турном в режиме 1 (только tool_calls, content "
-                    "пустой). Объяснять ошибку пользователю прозой "
-                    "запрещено: он видит её сам в логе, ему нужен "
-                    "результат задачи, а не разбор синтаксиса "
-                    "вызова.\n"
-                    "\n"
-                    "Исключение — когда исправить вызов объективно "
-                    "нельзя: нет подходящего инструмента, нет прав, "
-                    "файл не существует после проверки через stat/"
-                    "ls. Только в этих случаях допустима короткая "
-                    "проза с констатацией причины.\n"
-                    "\n"
-                    "Задача пользователя обязательна к выполнению. "
-                    "Нельзя перекладывать её обратно фразами вида "
-                    "«укажите файл», «нужно прочитать?», «помогу, "
-                    "если скажете». Если у тебя уже есть результат "
-                    "ls, stat или список файлов — выбирай цели сам "
-                    "и читай их. Если запрос неоднозначен — всё "
-                    "равно делай разумный шаг (например, прочитать "
-                    "все файлы из корня workspace), уточнения "
-                    "оставь на потом."
-                ),
-                kind=PromptKind.SYSTEM,
-            ),
-            StaticPromptProvider(
-                PromptId("file_reading"),
-                priority=80,
-                content=(
-                    "Чтение файлов.\n"
-                    "\n"
-                    "Выбор инструмента:\n"
-                    "— содержимое директории (какие файлы внутри) — "
-                    "ls для одного уровня, tree для рекурсии. stat "
-                    "для этого НЕ годится: он возвращает только "
-                    "метаданные, а size для директории — размер "
-                    "inode-блока (обычно 4096), а не число файлов "
-                    "и не признак пустоты.\n"
-                    "— размер конкретного файла в байтах — stat.\n"
-                    "— содержимое файла — cat с окном строк.\n"
-                    "— поиск по содержимому — grep.\n"
-                    "\n"
-                    "Инструмент cat всегда требует start_line и end_line "
-                    "(1-based, включительно). Прочитать файл целиком "
-                    "одним вызовом нельзя — за один вызов возвращается "
-                    "не более 2000 строк, иначе ошибка "
-                    "ToolOutputTooLargeError без данных.\n"
-                    "\n"
-                    "Алгоритм:\n"
-                    "1. stat — узнать размер файла (в байтах; для "
-                    "текстовых файлов ориентируйся на среднюю длину "
-                    "строки ~80 символов).\n"
-                    "2. Читай окнами ≤ 2000 строк последовательно: "
-                    "первый вызов cat(start_line=1, end_line=2000), "
-                    "затем следующий cat(start_line=2001, "
-                    "end_line=4000) и так далее, пока не дойдёшь до "
-                    "конца или не найдёшь нужное.\n"
-                    "3. Если ищешь конкретный фрагмент по содержимому "
-                    "— сначала grep, затем cat с прицельным окном "
-                    "вокруг найденной строки.\n"
-                    "\n"
-                    "Не проси сразу большой диапазон 'на всякий случай' "
-                    "— читай ровно столько, сколько нужно для текущего "
-                    "шага рассуждения. Следующее окно запросишь "
-                    "отдельным вызовом."
-                ),
+                content=("Ты — ассистент Boba. Отвечай строго по контексту"),
                 kind=PromptKind.SYSTEM,
             ),
             UserQueryProvider(),
@@ -463,12 +289,12 @@ class RequestProvider(Provider):
         """
         return JsonLinesMessageService(workspace)
 
-    @provide
-    def llm_request_factory(
-        self,
-        message_service: MessageService,
-    ) -> LLMRequestFactory:
-        return AggregatingLLMRequestFactory(message_service)
+    # @provide
+    # def llm_request_factory(
+    #     self,
+    #     message_service: MessageService,
+    # ) -> LLMRequestFactory:
+    #     return AggregatingLLMRequestFactory(message_service)
 
     @provide
     def raw_llm_observer(self, workspace: HistoryWorkspaceShell) -> RawLLMObserver:
@@ -494,9 +320,7 @@ class RequestProvider(Provider):
         )
 
     @provide
-    def agent_error_router(
-        self, message_service: MessageService
-    ) -> AgentErrorRouter:
+    def agent_error_router(self, message_service: MessageService) -> AgentErrorRouter:
         return AgentErrorRouter(message_service)
 
     @provide
@@ -508,19 +332,19 @@ class RequestProvider(Provider):
         prompt_providers: list[PromptProvider],
         message_service: MessageService,
         tools_service: ToolsService,
-        llm_request_factory: LLMRequestFactory,
+        # llm_request_factory: LLMRequestFactory,
         raw_observer: RawLLMObserver,
         error_router: AgentErrorRouter,
     ) -> StreamSourceLoop[AgentContext, AgentEvent]:
         builder = StreamSourceChainBuilder[AgentContext, AgentEvent]()
         builder.use(IterationCounterMiddleware)
-        builder.use(
-            lambda inner: RepeatedFormatFailureGuardMiddleware(
-                inner,
-                error_router,
-                agent_config.max_consecutive_format_failures,
-            )
-        )
+        # builder.use(
+        #     lambda inner: RepeatedFormatFailureGuardMiddleware(
+        #         inner,
+        #         error_router,
+        #         agent_config.max_consecutive_format_failures,
+        #     )
+        # )
         builder.use(lambda inner: AgentErrorRouterMiddleware(inner, error_router))
         builder.use(lambda inner: SystemPromptMiddleware(inner, prompt_providers))
         builder.use(
@@ -533,14 +357,14 @@ class RequestProvider(Provider):
                 inner, tools_service, message_service, error_router
             )
         )
-        builder.use(
-            lambda inner: RepeatedToolCallGuardMiddleware(
-                inner,
-                error_router,
-                agent_config.max_consecutive_tool_calls,
-            )
-        )
-        builder.use(lambda inner: StupidRetryLLMMiddleware(inner, max_retries=3))
+        # builder.use(
+        #     lambda inner: RepeatedToolCallGuardMiddleware(
+        #         inner,
+        #         error_router,
+        #         agent_config.max_consecutive_tool_calls,
+        #     )
+        # )
+        # builder.use(lambda inner: StupidRetryLLMMiddleware(inner, max_retries=3))
         builder.use(
             lambda inner: AssistantMessagePersistenceMiddleware(inner, message_service)
         )
@@ -549,7 +373,7 @@ class RequestProvider(Provider):
         chain = builder.terminal(
             OpenAIMiddleware(
                 config.llm,
-                llm_request_factory,
+                # llm_request_factory,
                 raw_observer,
                 chunk_preprocessor_factory=lambda _rid: (
                     DuplicateToolCallIndexReindexer(),

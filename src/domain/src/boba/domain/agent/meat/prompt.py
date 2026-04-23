@@ -11,7 +11,7 @@ from boba.domain.agent.events import (
     UserQueryReceived,
 )
 from boba.domain.agent.messages import MessageService
-from boba.domain.agent.models import AgentContext, LLMMessage
+from boba.domain.agent.models import AgentContext
 from boba.domain.agent.prompt import PromptFactory, PromptKind, PromptProvider
 from boba.domain.core.patterns import StreamSource
 
@@ -41,7 +41,7 @@ class SystemPromptMiddleware(StreamSource[AgentContext, AgentEvent]):
             .to_string(PromptKind.SYSTEM)
         )
         if content:
-            ctx.llm_builder.system_prompt = content
+            ctx.llm_request.system_prompt = content
 
         yield from self._inner.stream(ctx)
 
@@ -74,10 +74,12 @@ class UserPromptMiddleware(StreamSource[AgentContext, AgentEvent]):
 
     def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         if ctx.iteration == 1:
-            yield StageStarted(request_id=ctx.request.request_id, stage=self.name())
+            yield StageStarted(
+                request_id=ctx.agent_request.request_id, stage=self.name()
+            )
             yield UserQueryReceived(
-                request_id=ctx.request.request_id,
-                query=ctx.request.query,
+                request_id=ctx.agent_request.request_id,
+                query=ctx.agent_request.query,
             )
 
             content = (
@@ -86,10 +88,10 @@ class UserPromptMiddleware(StreamSource[AgentContext, AgentEvent]):
                 .to_string(PromptKind.USER)
             )
             if content:
-                self._message_service.add(LLMMessage(role="user", content=content))
+                ctx.llm_request.user_prompt = content
 
             yield StageCompleted(
-                request_id=ctx.request.request_id,
+                request_id=ctx.agent_request.request_id,
                 stage=self.name(),
                 detail="user prompt added",
             )

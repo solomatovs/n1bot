@@ -32,6 +32,6 @@ class SamplingMiddleware(StreamSource[AgentContext, AgentEvent]):
         return "Sampling"
 
     def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
-        ctx.llm_builder.sampling = self._defaults.sampling
-        ctx.llm_builder.parallel_tool_calls = self._defaults.parallel_tool_calls
+        ctx.llm_request.sampling = self._defaults.sampling
+        ctx.llm_request.tools.parallel_tool_calls = self._defaults.parallel_tool_calls
         yield from self._inner.stream(ctx)

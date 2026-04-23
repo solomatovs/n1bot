@@ -14,7 +14,7 @@ OpenAI-совместимый клиент LLM, провайдеры промп�
     from boba.adapters import FsWorkspaceRegistry, FsWorkspaceShell
 """
 
-from boba.adapters.aggregating_llm_request_factory import AggregatingLLMRequestFactory
+# from boba.adapters.aggregating_llm_request_factory import AggregatingLLMRequestFactory
 from boba.adapters.console_sink import ConsoleSink
 from boba.adapters.fs_workspace import (
     FsHistoryWorkspaceRegistry,
@@ -59,7 +59,7 @@ from boba.adapters.raw_llm_observer import (
 from boba.adapters.tool_providers import StaticToolSource
 
 __all__ = [
-    "AggregatingLLMRequestFactory",
+    # "AggregatingLLMRequestFactory",
     "CompositeRawLLMObserver",
     "ConsoleSink",
     "EnvironmentPromptProvider",
