@@ -116,6 +116,75 @@ class StageCompleted(BaseEvent):
 
 
 @dataclass(frozen=True)
+class SystemPromptProcessingStarted(BaseEvent):
+    """System-prompt middleware начинает сборку system-prompt.
+
+    Эмитится до вызова :class:`PromptFactory`. ``content_before`` —
+    состояние ``ctx.llm_request.system_prompt`` до middleware (обычно
+    ``None`` на первой итерации, но на последующих может содержать
+    прежний system-prompt).
+    """
+
+    content_before: str | None
+
+    @classmethod
+    def name(cls) -> Literal["SystemPromptProcessingStarted"]:
+        return "SystemPromptProcessingStarted"
+
+
+@dataclass(frozen=True)
+class SystemPromptProcessed(BaseEvent):
+    """System-prompt middleware завершил сборку system-prompt.
+
+    ``duration_ms`` — время работы :class:`PromptFactory`.
+    ``content_before`` / ``content_after`` — состояние слота до/после.
+    """
+
+    content_before: str | None
+    content_after: str | None
+    duration_ms: float
+
+    @classmethod
+    def name(cls) -> Literal["SystemPromptProcessed"]:
+        return "SystemPromptProcessed"
+
+
+@dataclass(frozen=True)
+class UserPromptProcessingStarted(BaseEvent):
+    """User-prompt middleware начинает сборку user-prompt.
+
+    Эмитится до вызова :class:`PromptFactory`. ``content_before`` —
+    состояние ``ctx.llm_request.user_prompt`` до middleware (обычно
+    ``None`` на первой итерации): даёт sink'ам возможность показать,
+    с чего началось преобразование.
+    """
+
+    content_before: str | None
+
+    @classmethod
+    def name(cls) -> Literal["UserPromptProcessingStarted"]:
+        return "UserPromptProcessingStarted"
+
+
+@dataclass(frozen=True)
+class UserPromptProcessed(BaseEvent):
+    """User-prompt middleware завершил сборку user-prompt.
+
+    ``duration_ms`` — время работы :class:`PromptFactory` (и записи
+    результата в ``ctx.llm_request.user_prompt``). ``content_before`` и
+    ``content_after`` — состояние слота до/после, для диффа в UI/журнале.
+    """
+
+    content_before: str | None
+    content_after: str | None
+    duration_ms: float
+
+    @classmethod
+    def name(cls) -> Literal["UserPromptProcessed"]:
+        return "UserPromptProcessed"
+
+
+@dataclass(frozen=True)
 class LLMRequestSent(BaseEvent):
     """HTTP-запрос к LLM-провайдеру отправлен, стрим-handle получен.
 
@@ -482,6 +551,10 @@ AgentEvent = (
     | IterationStarted
     | StageStarted
     | StageCompleted
+    | SystemPromptProcessingStarted
+    | SystemPromptProcessed
+    | UserPromptProcessingStarted
+    | UserPromptProcessed
     | LLMRequestSent
     | GenerationStarted
     | ThinkingStarted
@@ -518,6 +591,10 @@ AgentEventName: TypeAlias = Literal[
     "IterationStarted",
     "StageStarted",
     "StageCompleted",
+    "SystemPromptProcessingStarted",
+    "SystemPromptProcessed",
+    "UserPromptProcessingStarted",
+    "UserPromptProcessed",
     "LLMRequestSent",
     "GenerationStarted",
     "ThinkingStarted",

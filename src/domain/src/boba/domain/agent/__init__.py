@@ -55,6 +55,8 @@ from boba.domain.agent.events import (
     RepeatedFormatFailure,
     StageCompleted,
     StageStarted,
+    SystemPromptProcessed,
+    SystemPromptProcessingStarted,
     ThinkingComplete,
     ThinkingStarted,
     ThinkingToken,
@@ -65,6 +67,8 @@ from boba.domain.agent.events import (
     ToolExecutionFailed,
     ToolResultReady,
     UserNoticeReady,
+    UserPromptProcessed,
+    UserPromptProcessingStarted,
     UserQueryReceived,
 )
 
@@ -164,6 +168,8 @@ __all__ = [
     "SamplingParams",
     "StageCompleted",
     "StageStarted",
+    "SystemPromptProcessed",
+    "SystemPromptProcessingStarted",
     "ThinkingComplete",
     "ThinkingStarted",
     "ThinkingToken",
@@ -175,5 +181,7 @@ __all__ = [
     "ToolFeedbackError",
     "ToolResultReady",
     "UserNoticeReady",
+    "UserPromptProcessed",
+    "UserPromptProcessingStarted",
     "UserQueryReceived",
 ]

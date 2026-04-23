@@ -18,11 +18,13 @@ from boba.domain.agent.events import (
     MaxIterationsReached,
     PersistenceFailed,
     PromptFailed,
-    RepeatedFormatFailure,
     RefusalComplete,
     RefusalToken,
+    RepeatedFormatFailure,
     StageCompleted,
     StageStarted,
+    SystemPromptProcessed,
+    SystemPromptProcessingStarted,
     ThinkingComplete,
     ThinkingStarted,
     ThinkingToken,
@@ -34,6 +36,8 @@ from boba.domain.agent.events import (
     ToolExecutionStarted,
     ToolResultReady,
     UserNoticeReady,
+    UserPromptProcessed,
+    UserPromptProcessingStarted,
     UserQueryReceived,
 )
 from boba.domain.agent.meat import AgentContext
@@ -55,6 +59,13 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
 
     def name(self) -> str:
         return "Console"
+
+    def _preview(self, text: str | None) -> str:
+        if text is None:
+            return "<none>"
+        if len(text) <= self._PREVIEW:
+            return repr(text)
+        return repr(text[: self._PREVIEW] + "...")
 
     def handle(self, ctx: AgentContext, event: AgentEvent) -> None:  # noqa: C901, PLR0912
         match event:
@@ -83,9 +94,7 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
             case ToolResultReady(tool_name=fn, content=c):
                 preview = c[: self._PREVIEW] + ("..." if len(c) > self._PREVIEW else "")
                 print(f"\n{self._GREEN}[result] {fn}: {preview}{self._RESET}")  # noqa: T201
-            case ToolExecutionFailed(
-                tool_name=fn, error_kind=kind, message=msg
-            ):
+            case ToolExecutionFailed(tool_name=fn, error_kind=kind, message=msg):
                 preview = msg[: self._PREVIEW] + (
                     "..." if len(msg) > self._PREVIEW else ""
                 )
@@ -131,9 +140,7 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
                     f"{msg}{self._RESET}"
                 )
 
-            case PersistenceFailed(
-                error_kind=kind, message=msg, retryable=retryable
-            ):
+            case PersistenceFailed(error_kind=kind, message=msg, retryable=retryable):
                 tag = "retryable" if retryable else "permanent"
                 print(  # noqa: T201
                     f"\n{self._RED}[persistence error: {kind} ({tag})] "
@@ -159,6 +166,34 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
             case IterationStarted(iteration=i, max_iterations=limit):
                 print(  # noqa: T201
                     f"\n{self._DIM}--- iteration {i}/{limit} ---{self._RESET}"
+                )
+
+            case SystemPromptProcessingStarted(content_before=before):
+                print(  # noqa: T201
+                    f"\n{self._DIM}--- system-prompt build start --- "
+                    f"before={self._preview(before)}{self._RESET}"
+                )
+            case SystemPromptProcessed(
+                content_before=before, content_after=after, duration_ms=ms
+            ):
+                print(  # noqa: T201
+                    f"{self._DIM}--- system-prompt built in {ms:.1f}ms --- "
+                    f"before={self._preview(before)} "
+                    f"after={self._preview(after)}{self._RESET}"
+                )
+
+            case UserPromptProcessingStarted(content_before=before):
+                print(  # noqa: T201
+                    f"\n{self._DIM}--- user-prompt build start --- "
+                    f"before={self._preview(before)}{self._RESET}"
+                )
+            case UserPromptProcessed(
+                content_before=before, content_after=after, duration_ms=ms
+            ):
+                print(  # noqa: T201
+                    f"{self._DIM}--- user-prompt built in {ms:.1f}ms --- "
+                    f"before={self._preview(before)} "
+                    f"after={self._preview(after)}{self._RESET}"
                 )
 
             case (

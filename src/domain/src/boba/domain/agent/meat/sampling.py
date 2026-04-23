@@ -10,14 +10,8 @@ from boba.domain.core.patterns import StreamSource
 
 
 class SamplingMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Заливает дефолтные sampling-параметры и ``parallel_tool_calls`` в
-    ``ctx.llm_builder`` на каждой итерации. Значения приходят из
-    :class:`LLMRequestDefaults` (его загружает
-    :class:`~boba.infra.config.ConfigLoader` из TOML/env).
-
-    :class:`LLMRequestFactory` читает эти слоты при сборке
-    :class:`LLMRequest`. Отключение middleware через DI возвращает
-    провайдерские дефолты (ничего не отправляется в kwargs).
+    """
+    sampling-параметры из config
     """
 
     def __init__(
@@ -33,5 +27,4 @@ class SamplingMiddleware(StreamSource[AgentContext, AgentEvent]):
 
     def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
         ctx.llm_request.sampling = self._defaults.sampling
-        ctx.llm_request.tools.parallel_tool_calls = self._defaults.parallel_tool_calls
         yield from self._inner.stream(ctx)

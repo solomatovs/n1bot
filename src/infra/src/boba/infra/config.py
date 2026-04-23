@@ -256,7 +256,6 @@ class LLMDefaultsSection(ConfigSectionBuilder):
                 frequency_penalty=self.FREQUENCY_PENALTY.read_opt(r),
                 presence_penalty=self.PRESENCE_PENALTY.read_opt(r),
             ),
-            parallel_tool_calls=self.PARALLEL_TOOL_CALLS.read_opt(r),
         )
         return state
 
