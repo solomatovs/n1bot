@@ -373,7 +373,6 @@ class RequestProvider(Provider):
         chain = builder.terminal(
             OpenAIMiddleware(
                 config.llm,
-                # llm_request_factory,
                 raw_observer,
                 chunk_preprocessor_factory=lambda _rid: (
                     DuplicateToolCallIndexReindexer(),

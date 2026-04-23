@@ -1,3 +1,197 @@
+"""События агента (``AgentEvent``) — канал наблюдений **только в sink'и**
+(UI, телеметрия, журнал). Event'ы эмитит источник через ``yield`` в
+:class:`StreamSource`; потребляют sink'и через ``match-case``. Каждое
+событие — immutable (``frozen=True`` dataclass), несёт стабильное имя
+через classmethod :meth:`BaseEvent.name` (``Literal[...]``-типизировано
+для exhaustive проверки декодерами).
+
+**Важно — разделение ответственности:**
+
+- Events ↔ sink'и (пользователь / UI / телеметрия). Чистый one-way
+  поток наблюдений.
+- LLM ↔ :class:`MessageService`. Для feedback-loop'а (вернуть LLM
+  результат tool'а, ошибку формата, нотис юзера) middleware/router
+  пишут ``LLMMessage`` в :class:`MessageService` — LLM на следующей
+  итерации читает историю при сборке запроса. **LLM events не
+  видит.**
+
+Исключения из «events — для sink'ов» — это middleware, которые
+наблюдают свой upstream (например, :class:`AssistantMessagePersistence`
+агрегирует токены, :class:`RepeatedFormatFailureGuardMiddleware`
+считает сбои формата). Они не «потребители» в смысле sink-ов —
+внутренние state-трекеры, которые прокачивают events дальше.
+Specification'ы типа :class:`StopOnAnyFailure` смотрят events для
+control-flow (остановить цикл) — тоже системная роль, не sink.
+
+Event'ы классифицированы по **семействам** (orthogonal от concrete-типа):
+sink-автор подписывается на семью и ловит всю категорию без enumeration
+concrete'ов. Это основной механизм расширяемости — добавление нового
+concrete'а в семью **не требует правок** sink'ов, подписанных на семью.
+
+
+════════════════════════════════════════════════════════════════════
+  Полная иерархия
+════════════════════════════════════════════════════════════════════
+
+::
+
+    BaseEvent (abstract, frozen dataclass)
+    │   request_id: RequestId
+    │   + classmethod name() -> Literal["..."]
+    │
+    ├── LifecycleMarker (abstract)        границы фазы, без контента
+    │   ├── IterationStarted                iteration, max_iterations
+    │   ├── StageStarted / StageCompleted   stage [+ detail]
+    │   ├── SystemPromptProcessingStarted   content_before
+    │   ├── SystemPromptProcessed           + content_after, duration_ms
+    │   ├── UserPromptProcessingStarted     content_before
+    │   ├── UserPromptProcessed             + content_after, duration_ms
+    │   ├── LLMRequestSent                  model, messages_count, has_tools
+    │   ├── GenerationStarted
+    │   ├── ThinkingStarted
+    │   ├── AnswerStarted
+    │   ├── ToolCallBegin                   index, tool_call_id, tool_name
+    │   ├── ToolExecutionStarted            tool_call_id, tool_name
+    │   └── GenerationDone                  finish_reason
+    │
+    ├── StreamingDelta (abstract)         инкрементальные куски контента
+    │   ├── ThinkingToken                   token
+    │   ├── AnswerToken                     token
+    │   ├── RefusalToken                    token
+    │   └── ToolCallArgumentDelta           index, arguments
+    │
+    ├── DurableMessage (abstract)         завершённые message-единицы
+    │   ├── UserQueryReceived               query
+    │   ├── ThinkingComplete                content (агрегированный reasoning)
+    │   ├── AnswerComplete                  content
+    │   ├── AnswerDiscarded                 (корректирующее — отменяет
+    │   │                                    ранее добавленное сообщение)
+    │   ├── RefusalComplete                 content
+    │   ├── ToolCallComplete                tool_call_id, tool_name, arguments
+    │   └── ToolResultReady                 tool_call_id, tool_name, content
+    │
+    ├── UserNotification (abstract)       уведомление → sink (user-facing),
+    │   │   message: str                    цикл продолжается. Events — это
+    │   │                                   sink-канал; LLM-feedback идёт
+    │   │                                   через MessageService, не через
+    │   │                                   events, поэтому все «цикл идёт»
+    │   │                                   нотисы — одна семья.
+    │   ├── UserNoticeReady                 severity: info|warning|error
+    │   │                                   (общие нотисы — deprecation,
+    │   │                                   soft-reject валидации, fallback)
+    │   ├── ToolExecutionFailed             error_kind, tool_call_id, tool_name
+    │   │                                   (tool упал — observability)
+    │   └── ToolCallFormatFailed            error_kind
+    │                                       (LLM сломала формат tool call —
+    │                                       observability; критика для LLM
+    │                                       пишется параллельно в
+    │                                       MessageService middleware'ом)
+    │
+    └── TerminalFailure (abstract)        ошибка, цикл останавливается
+        │   error_kind: str                 (через StopOnAnyFailure)
+        │   message: str
+        ├── GenerationFailed                retryable, status_code
+        ├── PromptFailed                    retryable, provider
+        ├── PersistenceFailed               retryable
+        ├── MaxIterationsReached            limit, iteration
+        └── RepeatedFormatFailure           count, limit
+
+**UserNotification vs TerminalFailure** — обе user-facing, разница в
+контракте с циклом:
+
+- ``UserNotification`` — цикл продолжается, sink показывает нотис.
+- ``TerminalFailure`` — :class:`StopOnAnyFailure` остановит цикл,
+  sink показывает финальную ошибку.
+
+Sink'и, которым нужна «любая проблема» — объединяют:
+``case TerminalFailure() | UserNotification() as n: ...``.
+
+
+════════════════════════════════════════════════════════════════════
+  Семейство → use-case (sink authoring guide)
+════════════════════════════════════════════════════════════════════
+
+┌─────────────────────┬───────────────────────────────────────────────┐
+│ Семейство           │ Типичный sink                                 │
+├─────────────────────┼───────────────────────────────────────────────┤
+│ LifecycleMarker     │ TelemetrySink — waterfall, durations          │
+│ StreamingDelta      │ UI — inline rendering токенов                 │
+│ DurableMessage      │ HistorySink / AuditSink / TranscriptLogger    │
+│ UserNotification    │ UI notification area, AlertSink               │
+│ TerminalFailure     │ UI error-banner, Sentry, AlertSink            │
+└─────────────────────┴───────────────────────────────────────────────┘
+
+
+════════════════════════════════════════════════════════════════════
+  Примеры
+════════════════════════════════════════════════════════════════════
+
+**Subscription на семью** (``HistorySink``)::
+
+    def handle(self, ctx, event):
+        match event:
+            case DurableMessage():
+                self._append_to_transcript(event)
+            case _:
+                pass
+
+**Subscription на concrete** (UI — разное рендеринг per-тип)::
+
+    match event:
+        case AnswerToken(token=t):
+            sys.stdout.write(t)
+        case ThinkingToken(token=t):
+            sys.stdout.write(dim(t))
+        case ToolResultReady(tool_name=fn, content=c):
+            print(f"[{fn}] {c[:200]}")
+
+**Общий handler на любую проблему** (семьи объединяются ``|``)::
+
+    case TerminalFailure() as f:
+        sentry.capture(f.error_kind, f.message)
+    case UserNotification() as n:
+        ui.show_notification(n.message)
+
+
+════════════════════════════════════════════════════════════════════
+  Как добавить новый event
+════════════════════════════════════════════════════════════════════
+
+1. Выбери семейство:
+
+   - граница фазы                 → :class:`LifecycleMarker`
+   - кусок потока                 → :class:`StreamingDelta`
+   - завершённое сообщение        → :class:`DurableMessage`
+   - нотис пользователю (любой)   → :class:`UserNotification`
+   - ошибка, цикл стоп            → :class:`TerminalFailure`
+   - ничего не подходит           → наследуй от :class:`BaseEvent`
+     напрямую (пока не появится второй похожий — тогда выделим семью).
+
+2. Добавь ``@dataclass(frozen=True)`` с полями.
+3. Реализуй ``classmethod name() -> Literal["..."]``.
+4. Занеси в :data:`AgentEvent`-union и :data:`AgentEventName`-literal
+   (синхронность проверит :func:`_verify_event_names_exhaustive`).
+5. Sink'и, подписанные на семью, получат новый event автоматически.
+   Per-concrete sink'и обновлять не надо, если им не нужен особый
+   рендеринг.
+
+
+════════════════════════════════════════════════════════════════════
+  Что НЕ должно быть AgentEvent
+════════════════════════════════════════════════════════════════════
+
+Внутренние состояния middleware, буферы, счётчики — это implementation
+details, а не наблюдения. Event — стабильный контракт между источником
+и sink'ами, сохраняемый в журнал и пересылаемый по сети. Если данные
+нужны только одному middleware — держи их в ``ctx`` / локальной
+переменной, не эмить событие.
+
+Event не несёт референс на mutable-объект (``frozen=True`` dataclass
+ловит статически). Для mutable-состояния нужен отдельный механизм
+(:class:`~boba.domain.agent.messages.MessageService`,
+:class:`~boba.domain.agent.models.AgentContext`).
+"""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -66,8 +260,70 @@ class BaseEvent(ABC):
         ...
 
 
+# ═════════════════════════════════════════════════════════════════════
+#  Семейства событий (orthogonal классификация для sink'ов)
+# ═════════════════════════════════════════════════════════════════════
+#
+# Concrete-события наследуются от одного семейства. Sink-автор
+# match'ит по семейству и ловит **всю** категорию разом — без
+# enumeration 20+ concrete-типов. Новый concrete в семью —
+# автоматически попадает в подписанные sink'и.
+
+
 @dataclass(frozen=True)
-class UserQueryReceived(BaseEvent):
+class LifecycleMarker(BaseEvent, ABC):
+    """Граница фазы (старт / конец стадии, без контента).
+
+    Для телеметрии и waterfall-трейсинга. Не несёт пользовательских
+    данных сообщения, только отметки времени. Может иметь
+    ``duration_ms`` в concrete-классах, маркирующих завершение.
+    """
+
+
+@dataclass(frozen=True)
+class StreamingDelta(BaseEvent, ABC):
+    """Инкрементальный кусок контента между ``*Started`` и ``*Complete``.
+
+    Concrete-события держат свой field под чанк (``token`` /
+    ``arguments``) — у sink'ов, которые буферизуют агрегированно, есть
+    единая точка подписки; сама структура chunk-а специфична.
+    """
+
+
+@dataclass(frozen=True)
+class DurableMessage(BaseEvent, ABC):
+    """Готовое сообщение, идёт в историю/транскрипт.
+
+    HistorySink / AuditSink подписывается на это семейство вместо
+    перечисления concrete-типов. :class:`AnswerDiscarded` тоже здесь —
+    корректирующее событие, отменяющее ранее добавленное сообщение.
+    """
+
+
+@dataclass(frozen=True)
+class UserNotification(BaseEvent, ABC):
+    """Уведомление пользователю через sink, цикл агента продолжается.
+
+    Events — канал только в sink'и (user-facing observability). LLM
+    уведомления через события НЕ получает; её feedback-loop
+    обслуживает :class:`MessageService` (middleware/router пишут в неё
+    ``LLMMessage``). Поэтому все нотисы «цикл идёт» — одна семья,
+    независимо от того, произошла ли попутно ошибка tool'а или это
+    простой deprecation-warning.
+
+    ``message`` — текст для рендеринга. Concrete-children добавляют
+    свои поля (``severity`` для стилизации, ``error_kind`` /
+    ``tool_call_id`` / ... для категоризации).
+
+    TerminalFailure — отдельная семья: там другой контракт (цикл
+    останавливается через :class:`StopOnAnyFailure`).
+    """
+
+    message: str
+
+
+@dataclass(frozen=True)
+class UserQueryReceived(DurableMessage):
     """Запрос пользователя принят."""
 
     query: str
@@ -78,7 +334,7 @@ class UserQueryReceived(BaseEvent):
 
 
 @dataclass(frozen=True)
-class IterationStarted(BaseEvent):
+class IterationStarted(LifecycleMarker):
     """Начало новой итерации агентского цикла.
 
     Эмитится :class:`IterationCounterMiddleware` после инкремента
@@ -97,7 +353,7 @@ class IterationStarted(BaseEvent):
 
 
 @dataclass(frozen=True)
-class StageStarted(BaseEvent):
+class StageStarted(LifecycleMarker):
     stage: str
 
     @classmethod
@@ -106,7 +362,7 @@ class StageStarted(BaseEvent):
 
 
 @dataclass(frozen=True)
-class StageCompleted(BaseEvent):
+class StageCompleted(LifecycleMarker):
     stage: str
     detail: str
 
@@ -116,7 +372,7 @@ class StageCompleted(BaseEvent):
 
 
 @dataclass(frozen=True)
-class SystemPromptProcessingStarted(BaseEvent):
+class SystemPromptProcessingStarted(LifecycleMarker):
     """System-prompt middleware начинает сборку system-prompt.
 
     Эмитится до вызова :class:`PromptFactory`. ``content_before`` —
@@ -133,7 +389,7 @@ class SystemPromptProcessingStarted(BaseEvent):
 
 
 @dataclass(frozen=True)
-class SystemPromptProcessed(BaseEvent):
+class SystemPromptProcessed(LifecycleMarker):
     """System-prompt middleware завершил сборку system-prompt.
 
     ``duration_ms`` — время работы :class:`PromptFactory`.
@@ -150,7 +406,7 @@ class SystemPromptProcessed(BaseEvent):
 
 
 @dataclass(frozen=True)
-class UserPromptProcessingStarted(BaseEvent):
+class UserPromptProcessingStarted(LifecycleMarker):
     """User-prompt middleware начинает сборку user-prompt.
 
     Эмитится до вызова :class:`PromptFactory`. ``content_before`` —
@@ -167,7 +423,7 @@ class UserPromptProcessingStarted(BaseEvent):
 
 
 @dataclass(frozen=True)
-class UserPromptProcessed(BaseEvent):
+class UserPromptProcessed(LifecycleMarker):
     """User-prompt middleware завершил сборку user-prompt.
 
     ``duration_ms`` — время работы :class:`PromptFactory` (и записи
@@ -185,7 +441,7 @@ class UserPromptProcessed(BaseEvent):
 
 
 @dataclass(frozen=True)
-class LLMRequestSent(BaseEvent):
+class LLMRequestSent(LifecycleMarker):
     """HTTP-запрос к LLM-провайдеру отправлен, стрим-handle получен.
 
     Эмитится адаптером сразу после возврата ``chat.completions.create``,
@@ -205,7 +461,7 @@ class LLMRequestSent(BaseEvent):
 
 
 @dataclass(frozen=True)
-class GenerationStarted(BaseEvent):
+class GenerationStarted(LifecycleMarker):
     """Первый chunk от LLM — генерация началась."""
 
     @classmethod
@@ -214,7 +470,7 @@ class GenerationStarted(BaseEvent):
 
 
 @dataclass(frozen=True)
-class ThinkingStarted(BaseEvent):
+class ThinkingStarted(LifecycleMarker):
     """Модель начала thinking/reasoning."""
 
     @classmethod
@@ -223,7 +479,7 @@ class ThinkingStarted(BaseEvent):
 
 
 @dataclass(frozen=True)
-class ThinkingToken(BaseEvent):
+class ThinkingToken(StreamingDelta):
     """Chunk thinking/reasoning от LLM."""
 
     token: str
@@ -234,7 +490,7 @@ class ThinkingToken(BaseEvent):
 
 
 @dataclass(frozen=True)
-class AnswerStarted(BaseEvent):
+class AnswerStarted(LifecycleMarker):
     """Модель начала генерировать ответ."""
 
     @classmethod
@@ -243,7 +499,7 @@ class AnswerStarted(BaseEvent):
 
 
 @dataclass(frozen=True)
-class AnswerToken(BaseEvent):
+class AnswerToken(StreamingDelta):
     """Chunk текстового ответа от LLM."""
 
     token: str
@@ -254,7 +510,7 @@ class AnswerToken(BaseEvent):
 
 
 @dataclass(frozen=True)
-class RefusalToken(BaseEvent):
+class RefusalToken(StreamingDelta):
     """Chunk отказа модели отвечать."""
 
     token: str
@@ -265,7 +521,7 @@ class RefusalToken(BaseEvent):
 
 
 @dataclass(frozen=True)
-class GenerationDone(BaseEvent):
+class GenerationDone(LifecycleMarker):
     """Генерация завершена."""
 
     finish_reason: FinishReason = FinishReason.STOP
@@ -356,7 +612,7 @@ class RepeatedFormatFailure(TerminalFailure):
 
 
 @dataclass(frozen=True)
-class ToolCallBegin(BaseEvent):
+class ToolCallBegin(LifecycleMarker):
     """Начало tool call — пришёл id и имя функции."""
 
     index: int
@@ -369,7 +625,7 @@ class ToolCallBegin(BaseEvent):
 
 
 @dataclass(frozen=True)
-class ToolCallArgumentDelta(BaseEvent):
+class ToolCallArgumentDelta(StreamingDelta):
     """Chunk аргументов tool call."""
 
     index: int
@@ -381,7 +637,7 @@ class ToolCallArgumentDelta(BaseEvent):
 
 
 @dataclass(frozen=True)
-class ToolCallComplete(BaseEvent):
+class ToolCallComplete(DurableMessage):
     """Агрегированный tool call: имя + полные аргументы."""
 
     tool_call_id: str
@@ -394,7 +650,7 @@ class ToolCallComplete(BaseEvent):
 
 
 @dataclass(frozen=True)
-class ToolExecutionStarted(BaseEvent):
+class ToolExecutionStarted(LifecycleMarker):
     """Tool начал исполняться.
 
     Эмитится :class:`ToolExecutionMiddleware` после разбора аргументов
@@ -415,7 +671,7 @@ class ToolExecutionStarted(BaseEvent):
 
 
 @dataclass(frozen=True)
-class ToolResultReady(BaseEvent):
+class ToolResultReady(DurableMessage):
     """Результат успешного выполнения tool.
 
     Ошибки сюда не попадают — для них есть :class:`ToolExecutionFailed`.
@@ -431,15 +687,16 @@ class ToolResultReady(BaseEvent):
 
 
 @dataclass(frozen=True)
-class UserNoticeReady(BaseEvent):
-    """Нотис для пользователя (не для LLM).
+class UserNoticeReady(UserNotification):
+    """Нотис пользователю с severity (info / warning / error).
 
-    Эмитится роутером из :class:`UserNoticeError`. Sink'и UI отрисуют
-    сообщение по ``severity`` (info / warning / error). Не терминальное —
-    цикл агента продолжается. В :class:`MessageService` не попадает.
+    Эмитится роутером из :class:`UserNoticeError` или middleware
+    напрямую. Sink'и UI отрисуют по ``severity`` — разные цвета/иконки.
+    В :class:`MessageService` не попадает — LLM нотис не видит.
+    Use cases: deprecation-warnings, soft-reject валидации,
+    информирование о fallback'е.
     """
 
-    message: str
     severity: UserNoticeSeverity
 
     @classmethod
@@ -448,20 +705,19 @@ class UserNoticeReady(BaseEvent):
 
 
 @dataclass(frozen=True)
-class ToolExecutionFailed(BaseEvent):
-    """Ошибка выполнения tool.
+class ToolExecutionFailed(UserNotification):
+    """Tool упал — sink пользователя видит факт ошибки.
 
-    Не терминальное событие: цикл агента продолжается. Middleware уже
-    записал ``message`` в ``MessageService`` как ``LLMMessage(role="tool")``,
-    чтобы LLM на следующей итерации увидела ошибку и могла её починить.
-    Событие нужно sink'ам (UI/журнал), чтобы отрисовать/залогировать факт
-    ошибки отдельно от успешного результата.
+    Цикл продолжается. Feedback для LLM (``LLMMessage(role="tool")``)
+    параллельно пишется в :class:`MessageService` middleware'ом /
+    роутером — это отдельный канал, не через events. Событие нужно
+    sink'ам (UI/журнал), чтобы отрисовать/залогировать факт ошибки
+    отдельно от успешного результата.
     """
 
+    error_kind: str
     tool_call_id: str
     tool_name: str
-    error_kind: str
-    message: str
 
     @classmethod
     def name(cls) -> Literal["ToolExecutionFailed"]:
@@ -469,13 +725,13 @@ class ToolExecutionFailed(BaseEvent):
 
 
 @dataclass(frozen=True)
-class ToolCallFormatFailed(BaseEvent):
+class ToolCallFormatFailed(UserNotification):
     """LLM нарушила формат content-as-JSON tool call'а.
 
-    Не терминальное событие: цикл агента продолжается. Роутер уже
-    записал ``message`` в ``MessageService`` как ``LLMMessage(role="user")``,
-    чтобы LLM на следующей итерации увидела критику своего предыдущего
-    вывода и смогла переформулировать tool call.
+    Цикл продолжается. Feedback для LLM (``LLMMessage(role="user")``)
+    пишется в :class:`MessageService` роутером — LLM на следующей
+    итерации увидит критику и сможет переформулировать. Событие —
+    observability для sink'ов.
 
     Tool call не состоялся (разбор провалился до определения ``name``/
     ``tool_call_id``), поэтому поля идентификации вызова отсутствуют —
@@ -483,7 +739,6 @@ class ToolCallFormatFailed(BaseEvent):
     """
 
     error_kind: str
-    message: str
 
     @classmethod
     def name(cls) -> Literal["ToolCallFormatFailed"]:
@@ -491,8 +746,15 @@ class ToolCallFormatFailed(BaseEvent):
 
 
 @dataclass(frozen=True)
-class ThinkingComplete(BaseEvent):
-    """Агрегированный thinking: весь текст рассуждений."""
+class ThinkingComplete(DurableMessage):
+    """Агрегированный thinking: весь текст рассуждений.
+
+    Наследуется от :class:`DurableMessage` как «завершённая message-
+    единица» (в отличие от :class:`ThinkingToken`-дельт). Решение,
+    персистить ли reasoning в :class:`MessageService`, принимает
+    middleware — sink'и просто наблюдают; семья отражает семантику
+    события, а не действия sink-а.
+    """
 
     content: str
 
@@ -502,7 +764,7 @@ class ThinkingComplete(BaseEvent):
 
 
 @dataclass(frozen=True)
-class AnswerComplete(BaseEvent):
+class AnswerComplete(DurableMessage):
     """Агрегированный ответ: весь текст ответа."""
 
     content: str
@@ -513,7 +775,7 @@ class AnswerComplete(BaseEvent):
 
 
 @dataclass(frozen=True)
-class AnswerDiscarded(BaseEvent):
+class AnswerDiscarded(DurableMessage):
     """Ранее отправленные ``AnswerToken``-ы для этого ``request_id``
     следует отбросить: аккумулированный ``content`` не должен попасть
     ни в итоговое ``AnswerComplete``, ни в ``LLMMessage.content``.
@@ -536,7 +798,7 @@ class AnswerDiscarded(BaseEvent):
 
 
 @dataclass(frozen=True)
-class RefusalComplete(BaseEvent):
+class RefusalComplete(DurableMessage):
     """Агрегированный отказ: весь текст отказа."""
 
     content: str
