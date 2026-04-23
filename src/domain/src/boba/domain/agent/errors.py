@@ -341,3 +341,9 @@ class LLMToolCallFormatError(LLMFeedbackError):
         super().__init__(message)
         self.message = message
         self.raw_content = raw_content
+
+class LLMRequestUserpromptNoneError(TerminalError):
+    """Отсутствует user prompt"""
+
+class LLMRequestModelNoneError(TerminalError):
+    """Отсутствует model"""

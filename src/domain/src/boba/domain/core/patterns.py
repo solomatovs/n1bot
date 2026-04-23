@@ -156,6 +156,10 @@ class Converter(ABC, Generic[TIn, TOut]):
         """
         ...
 
+class ContextConverter(ABC, Generic[TCtx, TIn, TOut]):
+    @abstractmethod
+    def convert(self, ctx: TCtx, value: TIn) -> TOut:
+        ...
 
 class StreamConverter(ABC, Generic[TIn, TOut]):
     """

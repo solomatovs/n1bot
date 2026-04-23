@@ -204,7 +204,7 @@ class UserQueryProvider(PromptProvider):
         return PromptKind.USER
 
     def blocks(self, state: PromptState[AgentContext]) -> Iterable[PromptBlock]:
-        yield PromptBlock(name=self._id.name, content=state.ctx.request.query)
+        yield PromptBlock(name=self._id.name, content=state.ctx.agent_request.query)
 
 
 class IDESelectionProvider(PromptProvider):
@@ -255,6 +255,6 @@ class TemplateProvider(PromptProvider):
         return self._kind
 
     def blocks(self, state: PromptState[AgentContext]) -> Iterable[PromptBlock]:
-        content = self._template.format(query=state.ctx.request.query)
+        content = self._template.format(query=state.ctx.agent_request.query)
 
         yield PromptBlock(name=self._id.name, content=content)

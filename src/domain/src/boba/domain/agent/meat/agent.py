@@ -24,7 +24,7 @@ class Agent:
         Запускает цикл обработки запроса агентом.
         """
         ctx = AgentContext(
-            request=request,
+            agent_request=request,
             config=config,
         )
 

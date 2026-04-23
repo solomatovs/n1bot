@@ -124,6 +124,7 @@ class ChannelMode(Enum):
     def is_passthrough(self) -> bool:
         return self is ChannelMode.PASSTHROUGH
 
+
 _StartedEvent = AnswerStarted | ThinkingStarted
 _TokenEvent = AnswerToken | ThinkingToken
 
@@ -168,7 +169,7 @@ class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]
         return "StrictJsonContentToolCall"
 
     def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
-        rid = ctx.request.request_id
+        rid = ctx.agent_request.request_id
         content = _ChannelState(
             token_cls=AnswerToken,
             started_cls=AnswerStarted,
@@ -218,9 +219,7 @@ class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]
             return
         yield from self._decide(ch, event)
 
-    def _decide(
-        self, ch: _ChannelState, event: AgentEvent
-    ) -> Iterator[AgentEvent]:
+    def _decide(self, ch: _ChannelState, event: AgentEvent) -> Iterator[AgentEvent]:
         if isinstance(event, ch.started_cls):
             ch.pending_started = event
             return
@@ -265,9 +264,7 @@ class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]
         try:
             parsed = self._parser.convert(raw)
         except LLMToolCallFormatError:
-            yield GenerationDone(
-                request_id=rid, finish_reason=FinishReason.TOOL_CALLS
-            )
+            yield GenerationDone(request_id=rid, finish_reason=FinishReason.TOOL_CALLS)
             raise
         if emit_discard:
             yield AnswerDiscarded(request_id=rid)

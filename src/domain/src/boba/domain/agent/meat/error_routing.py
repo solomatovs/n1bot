@@ -77,7 +77,7 @@ class AgentErrorRouter:
         self._message_service = message_service
 
     def route(self, ctx: AgentContext, err: RoutableError) -> Iterator[AgentEvent]:
-        rid = ctx.request.request_id
+        rid = ctx.agent_request.request_id
         retryable = isinstance(err, Retryable)
         kind = type(err).__name__
         msg = str(err)

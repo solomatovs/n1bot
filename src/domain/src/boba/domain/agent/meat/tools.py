@@ -45,7 +45,7 @@ class ToolsDefinitionMiddleware(StreamSource[AgentContext, AgentEvent]):
         return "ToolsDefinition"
 
     def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
-        ctx.llm_builder.tools = list(self._tools_service.tools())
+        ctx.llm_request.tools.tools = list(self._tools_service.tools())
         yield from self._inner.stream(ctx)
 
 
