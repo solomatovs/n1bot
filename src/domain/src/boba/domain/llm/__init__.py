@@ -1,0 +1,105 @@
+"""Публичный API LLM-слоя.
+
+Реэкспортирует ошибки, события, модели запросов и middleware.
+
+Короткие импорты::
+
+    from boba.domain.llm import LLMRequest, LLMContext, LLMEvent
+    from boba.domain.llm import LLMError, RetryableLLMError
+"""
+
+from boba.domain.llm.errors import (
+    LLMAuthError,
+    LLMConnectionError,
+    LLMContextLengthError,
+    LLMError,
+    LLMInvalidRequestError,
+    LLMProtocolError,
+    LLMProviderInternalError,
+    LLMRateLimitError,
+    LLMRequestModelNoneError,
+    LLMRequestSystemMessageNoneError,
+    LLMRequestUserMessageNoneError,
+    LLMTimeoutError,
+    PermanentLLMError,
+    RetryableLLMError,
+)
+from boba.domain.llm.events import (
+    BaseLLMEvent,
+    FinishReason,
+    LLMAnswerStarted,
+    LLMAnswerToken,
+    LLMEvent,
+    LLMEventName,
+    LLMGenerationDone,
+    LLMGenerationStarted,
+    LLMLifecycleMarker,
+    LLMRefusalToken,
+    LLMRequestSent,
+    LLMRequestStarted,
+    LLMRetryAttempt,
+    LLMStreamingDelta,
+    LLMThinkingStarted,
+    LLMThinkingToken,
+    LLMToolCallArgumentDelta,
+    LLMToolCallBegin,
+    LLMUserPromptIssued,
+)
+from boba.domain.llm.meat import RetryMiddleware
+from boba.domain.llm.models import (
+    LLMContext,
+    LLMMessage,
+    LLMRequest,
+    LLMRequestBuilder,
+    LLMRole,
+    LLMToolCall,
+    LLMToolRequest,
+    RequestId,
+    SamplingParams,
+)
+
+__all__ = [
+    "BaseLLMEvent",
+    "FinishReason",
+    "LLMAnswerStarted",
+    "LLMAnswerToken",
+    "LLMAuthError",
+    "LLMConnectionError",
+    "LLMContext",
+    "LLMContextLengthError",
+    "LLMError",
+    "LLMEvent",
+    "LLMEventName",
+    "LLMGenerationDone",
+    "LLMGenerationStarted",
+    "LLMInvalidRequestError",
+    "LLMLifecycleMarker",
+    "LLMMessage",
+    "LLMProtocolError",
+    "LLMProviderInternalError",
+    "LLMRateLimitError",
+    "LLMRefusalToken",
+    "LLMRequest",
+    "LLMRequestBuilder",
+    "LLMRequestModelNoneError",
+    "LLMRequestSent",
+    "LLMRequestStarted",
+    "LLMRequestSystemMessageNoneError",
+    "LLMRequestUserMessageNoneError",
+    "LLMRetryAttempt",
+    "LLMRole",
+    "LLMStreamingDelta",
+    "LLMThinkingStarted",
+    "LLMThinkingToken",
+    "LLMTimeoutError",
+    "LLMToolCall",
+    "LLMToolCallArgumentDelta",
+    "LLMToolCallBegin",
+    "LLMToolRequest",
+    "LLMUserPromptIssued",
+    "PermanentLLMError",
+    "RequestId",
+    "RetryMiddleware",
+    "RetryableLLMError",
+    "SamplingParams",
+]
