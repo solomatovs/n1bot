@@ -1,14 +1,20 @@
-"""Простейшая реализация MessageService — список в памяти."""
+"""In-memory реализация :class:`MessageService`."""
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 
 from boba.domain.agent.messages import MessageService
-from boba.domain.agent.models import LLMMessage
+from boba.domain.llm.models import LLMMessage
 
 
 class InMemoryMessageService(MessageService):
+    """Простейшая реализация — список в памяти.
+
+    Живёт в пределах одного прогона агента. Для persistent-варианта
+    (между процессами) появится отдельный адаптер при миграции
+    соответствующего куска из старого ``boba.adapters``.
+    """
 
     def __init__(self) -> None:
         self._messages: list[LLMMessage] = []

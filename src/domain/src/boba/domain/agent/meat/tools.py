@@ -1,12 +1,16 @@
-"""Middleware для tools: определение каталога, исполнение вызовов,
-защита от лупа идентичных вызовов."""
+"""
+Middleware для tools: каталог + исполнение
+"""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 
-from boba.domain.agent.errors import RepeatedFormatFailureError, ToolFeedbackError
+from boba.domain.agent.errors import (
+    RepeatedFormatFailureError,
+    ToolFeedbackError,
+)
 from boba.domain.agent.events import (
     AgentEvent,
     ToolCallComplete,
@@ -14,17 +18,22 @@ from boba.domain.agent.events import (
     ToolExecutionStarted,
     ToolResultReady,
 )
+from boba.domain.agent.meat.error_routing import AgentErrorRouter
 from boba.domain.agent.messages import MessageService
-from boba.domain.agent.models import AgentContext, LLMMessage
+from boba.domain.agent.models import AgentContext
 from boba.domain.core.patterns import StreamSource
-from boba.domain.core.tools import ToolCall, ToolExecutionError, ToolId, ToolsService
-
-from .error_routing import AgentErrorRouter
+from boba.domain.core.tools import (
+    ToolCall,
+    ToolExecutionError,
+    ToolId,
+    ToolsService,
+)
+from boba.domain.llm.models import LLMMessage
 
 
 class ToolsDefinitionMiddleware(StreamSource[AgentContext, AgentEvent]):
     """
-    Кладёт tools'ы в llm_request
+    Кладёт каталог tools в ``ctx.request.tools`` на каждой итерации.
     """
 
     def __init__(
@@ -38,15 +47,18 @@ class ToolsDefinitionMiddleware(StreamSource[AgentContext, AgentEvent]):
     def name(self) -> str:
         return "ToolsDefinition"
 
-    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
-        ctx.llm_request.tools.tools = list(self._tools_service.tools())
-        ctx.llm_request.tools.parallel_tool_calls = True
+    def reset(self) -> None:
+        self._inner.reset()
+
+    def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
+        ctx.request.set_tools(self._tools_service.tools())
+        ctx.request.parallel_tool_calls = True
         yield from self._inner.stream(ctx)
 
 
 class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
     """
-    Выполняет tool calls, полученные от LLM
+    Исполняет tool_calls после завершения inner-стрима.
     """
 
     def __init__(
@@ -64,7 +76,10 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
     def name(self) -> str:
         return "ToolExecution"
 
-    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+    def reset(self) -> None:
+        self._inner.reset()
+
+    def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
         pending: list[ToolCallComplete] = []
 
         for event in self._inner.stream(ctx):
@@ -73,12 +88,18 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
                 pending.append(event)
 
         yield from self._error_router.run_batch(
-            ctx, (self._run_tool(tc) for tc in pending)
+            ctx,
+            (self._run_tool(tc) for tc in pending),
         )
 
     def _run_tool(self, tc: ToolCallComplete) -> Iterator[AgentEvent]:
-        # JSON-decode выделяем отдельно: если args невалидны, tool не
-        # начинал исполняться — ToolExecutionStarted эмитить нечестно.
+        """Одна подзадача: parse → execute → result.
+
+        Ошибки оборачиваются в :class:`ToolFeedbackError` — роутер
+        превратит в ``role="tool"`` сообщение + событие для sink'ов.
+        """
+        # JSON-decode в отдельной ветке — если args невалидны, tool
+        # не начинал исполняться: ToolExecutionStarted эмитить нечестно.
         try:
             arguments = json.loads(tc.arguments)
         except json.JSONDecodeError as e:
@@ -93,14 +114,13 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
             tool_id=ToolId(tc.tool_name),
             arguments=arguments,
         )
-        # Закрывает слепое пятно ToolCallComplete → ToolResultReady для
-        # медленных tools (fs/http). UI поменяет иконку step'а на
-        # «running», пока ждём результат.
+
         yield ToolExecutionStarted(
             request_id=tc.request_id,
             tool_call_id=tc.tool_call_id,
             tool_name=tc.tool_name,
         )
+
         try:
             result = self._tools_service.execute(None, call)
         except ToolExecutionError as e:
@@ -111,6 +131,11 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
                 message=e.message,
             ) from e
 
+        # Успех — фидбек для LLM пишем здесь (role="tool" с результатом).
+        # В роутер это не идёт: роутер обслуживает ОШИБКИ, для
+        # успешного результата отдельная ``to_llm_feedback``-ветка была
+        # бы семантическим натяжением. Источник истины для tool-feedback
+        # — MessageService, middleware обращается к нему прямо.
         self._message_service.add(
             LLMMessage(
                 role="tool",
@@ -118,7 +143,6 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
                 tool_call_id=tc.tool_call_id,
             ),
         )
-
         yield ToolResultReady(
             request_id=tc.request_id,
             tool_call_id=tc.tool_call_id,
@@ -128,31 +152,8 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
 
 
 class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Защита от лупа: подавляет ``(N+1)``-й идентичный
-    :class:`ToolCallComplete` подряд и маршрутизирует его как
-    :class:`ToolFeedbackError`.
-
-    На следующей итерации LLM увидит текст ошибки в ``role="tool"``
-    сообщении (роутер пишет сам через :class:`MessageService`) и должен
-    сменить тактику — либо позвать инструмент с другими аргументами,
-    либо ответить пользователю обычным текстом.
-
-    Сидит **внутри** :class:`ToolExecutionMiddleware`. Подавлённый
-    ``ToolCallComplete`` не долетает до батча выполнения — реальный
-    tool не дёргается. Запись ``LLMMessage(role="tool")`` и эмит
-    :class:`ToolExecutionFailed` делегированы
-    :class:`AgentErrorRouter.route` — той же машинерии, что использует
-    сам :class:`ToolExecutionMiddleware` для штатных
-    :class:`ToolFeedbackError`.
-
-    Сравнение «идентичный» — exact match по ``(tool_name, arguments)``,
-    где ``arguments`` это сырая JSON-строка из события (так же, как её
-    видит downstream). JSON-нормализация (порядок ключей, пробелы) пока
-    не делается — простота важнее.
-
-    Состояние (последний вызов + счётчик подряд) живёт на инстансе
-    middleware. ``agent_chain`` собирается per-request (scope=REQUEST),
-    инстанс — fresh на каждый запрос, отдельный сброс не нужен.
+    """
+    Подавляет ``(N+1)``-й подряд идентичный :class:`ToolCallComplete`.
     """
 
     def __init__(
@@ -170,7 +171,12 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
     def name(self) -> str:
         return "RepeatedToolCallGuard"
 
-    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+    def reset(self) -> None:
+        self._last = None
+        self._count = 0
+        self._inner.reset()
+
+    def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
         for event in self._inner.stream(ctx):
             if not isinstance(event, ToolCallComplete):
                 yield event
@@ -207,36 +213,8 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
 
 
 class RepeatedFormatFailureGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Защита от залипания модели на неверном формате tool call.
-
-    Следит за событиями :class:`ToolCallFormatFailed`, приходящими из
-    нижележащего :class:`AgentErrorRouterMiddleware` (роутер эмитит их при
-    поимке :class:`LLMToolCallFormatError`). При ``max_consecutive + 1``
-    подряд без успешного :class:`ToolResultReady` между — поднимает
-    :class:`RepeatedFormatFailureError` через :meth:`AgentErrorRouter.route`,
-    что превращается в терминальное событие :class:`RepeatedFormatFailure`
-    и останавливает цикл через :class:`StopOnAnyFailure`.
-
-    Зачем отдельный guard (а не только ``StopOnMaxIterations``-подобная
-    спецификация): маленькие модели (qwen3-0.6b и т.п.) умеют залипать на
-    выводе `{...}` в content с первой же итерации и до исчерпания лимита.
-    Дополнительные итерации с одной и той же ошибкой формата в истории не
-    помогают — модель видит свой паттерн и продолжает его воспроизводить.
-    Лучше короткий fail-fast, чем 20 итераций холостого хода.
-
-    Счётчик:
-    - `ToolCallFormatFailed` → count++
-    - `ToolResultReady`       → count=0 (успешный вызов инструмента
-      сбрасывает подозрение в залипании)
-    - другие события — без изменений
-
-    Сидит **снаружи** :class:`AgentErrorRouterMiddleware` (чтобы видеть его
-    выход — :class:`ToolCallFormatFailed`). Использует тот же
-    :class:`AgentErrorRouter` для эмита терминального события — подход
-    симметричен :class:`RepeatedToolCallGuardMiddleware`.
-
-    Состояние — на инстансе. ``agent_chain`` собирается per-request (scope
-    REQUEST), инстанс свежий на каждый запрос — сброс не нужен.
+    """
+    Защита от залипания модели на неверном формате tool call.
     """
 
     def __init__(
@@ -253,7 +231,11 @@ class RepeatedFormatFailureGuardMiddleware(StreamSource[AgentContext, AgentEvent
     def name(self) -> str:
         return "RepeatedFormatFailureGuard"
 
-    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+    def reset(self) -> None:
+        self._count = 0
+        self._inner.reset()
+
+    def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
         for event in self._inner.stream(ctx):
             yield event
 

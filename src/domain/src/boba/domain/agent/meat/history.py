@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from boba.domain.agent.events import AgentEvent
+from boba.domain.agent.messages import MessageService
+from boba.domain.agent.models import AgentContext
 from boba.domain.core.patterns import StreamSource
-from boba_2.domain.agent.events import AgentEvent
-from boba_2.domain.agent.messages import MessageService
-from boba_2.domain.agent.models import AgentContext
 
 
 class HistoryMiddleware(StreamSource[AgentContext, AgentEvent]):

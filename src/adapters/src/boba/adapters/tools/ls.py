@@ -84,8 +84,7 @@ class LsTool(Tool[LsArgs]):
                     ParamSchema(
                         name="path",
                         description=(
-                            "Путь директории. Без него листится корневая "
-                            "директория."
+                            "Путь директории. Без него листится корневая директория."
                         ),
                         validator=ChainValidator(IsString(), NonEmpty()),
                     ),

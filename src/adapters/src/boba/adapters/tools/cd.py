@@ -85,6 +85,7 @@ class CdTool(Tool[CdArgs]):
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Ошибка cd: {e}",
+                tool_id=self._ID,
+                message=f"Ошибка cd: {e}",
             ) from e
         return ToolResult(content=f"Текущая директория: {self._workspace.cwd}")

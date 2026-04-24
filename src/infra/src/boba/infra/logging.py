@@ -1,3 +1,10 @@
+"""Процессный bootstrap логирования + ContextVar-стек request_id / workspace_id.
+
+Подмешивает идентификаторы в каждую запись через
+:class:`logging.Filter`, чтобы trace-context был во всех сообщениях
+без явного прокидывания через kwargs.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -37,7 +44,9 @@ def _short(value: str) -> str:
 
 @contextmanager
 def log_context(
-    *, request_id: str = _NO_ID, workspace_id: str = _NO_ID
+    *,
+    request_id: str = _NO_ID,
+    workspace_id: str = _NO_ID,
 ) -> Iterator[None]:
     """Привязать request_id / workspace_id к текущему ContextVar-стеку.
 
@@ -63,16 +72,15 @@ class _ContextFilter(logging.Filter):
 
 
 def configure_logging(
-    log_level: str = "INFO", log_file: str | None = None
+    log_level: str = "INFO",
+    log_file: str | None = None,
 ) -> None:
-    """
-    Процессный bootstrap логов: handler, формат, фильтр контекста.
+    """Процессный bootstrap логов: handler, формат, фильтр контекста.
 
     Если ``log_file`` задан — пишем в файл (append), родительская
     директория создаётся при необходимости. Если ``None`` — в stdout.
-    Идемпотентно: существующие handler'ы root-логгера сбрасываются, что
-    позволяет безопасно звать функцию повторно (например, в тестах при
-    пересоздании :class:`AgentHarness`).
+    Идемпотентно: существующие handler'ы root-логгера сбрасываются,
+    можно звать повторно (например, при пересборке тестового harness'а).
     """
     level = _LOG_LEVELS.get(log_level.upper(), logging.INFO)
 

@@ -16,8 +16,8 @@ from boba.domain.core.tools.registry import (
     ToolCatalog,
     ToolFactory,
     ToolSource,
-    ToolStore,
     ToolsService,
+    ToolStore,
 )
 from boba.domain.core.tools.schema import (
     ParamSchema,

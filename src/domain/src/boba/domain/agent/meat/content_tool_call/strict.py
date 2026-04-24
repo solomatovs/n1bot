@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from enum import Enum
 from typing import ClassVar
@@ -19,15 +19,16 @@ from boba.domain.agent.events import (
     AnswerDiscarded,
     AnswerStarted,
     AnswerToken,
-    FinishReason,
     GenerationDone,
     ThinkingStarted,
     ThinkingToken,
     ToolCallArgumentDelta,
     ToolCallBegin,
 )
-from boba.domain.agent.models import AgentContext, RequestId
+from boba.domain.agent.models import AgentContext
 from boba.domain.core.patterns import Converter, StreamSource
+from boba.domain.llm.events import FinishReason
+from boba.domain.llm.models import RequestId
 
 
 @dataclass(frozen=True)
@@ -155,7 +156,9 @@ class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]
     поток на ``ToolCall*``-события. Native ``ToolCallBegin`` отменяет оба
     канала. При одновременном buffering-е приоритет у content.
 
-    Ставится innermost — внутри :class:`AssistantMessagePersistenceMiddleware`.
+    Ставится **innermost** — внутри
+    :class:`~boba.domain.agent.meat.dialogue.\
+AssistantMessagePersistenceMiddleware`.
     """
 
     def __init__(
@@ -168,7 +171,10 @@ class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]
     def name(self) -> str:
         return "StrictJsonContentToolCall"
 
-    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+    def reset(self) -> None:
+        self._inner.reset()
+
+    def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
         rid = ctx.agent_request.request_id
         content = _ChannelState(
             token_cls=AnswerToken,
@@ -207,7 +213,9 @@ class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]
                 yield event
 
     def _process_channel(
-        self, ch: _ChannelState, event: AgentEvent
+        self,
+        ch: _ChannelState,
+        event: AgentEvent,
     ) -> Iterator[AgentEvent]:
         if ch.mode.is_passthrough():
             yield event
@@ -219,7 +227,11 @@ class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]
             return
         yield from self._decide(ch, event)
 
-    def _decide(self, ch: _ChannelState, event: AgentEvent) -> Iterator[AgentEvent]:
+    def _decide(
+        self,
+        ch: _ChannelState,
+        event: AgentEvent,
+    ) -> Iterator[AgentEvent]:
         if isinstance(event, ch.started_cls):
             ch.pending_started = event
             return
@@ -255,7 +267,10 @@ class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]
         yield event
 
     def _finalize(
-        self, rid: RequestId, raw: str, emit_discard: bool
+        self,
+        rid: RequestId,
+        raw: str,
+        emit_discard: bool,
     ) -> Iterator[AgentEvent]:
         # При сбое парсинга эмитим GenerationDone(tool_calls) до raise:
         # AssistantMessagePersistenceMiddleware успеет коммитнуть raw буфер,
@@ -264,7 +279,10 @@ class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]
         try:
             parsed = self._parser.convert(raw)
         except LLMToolCallFormatError:
-            yield GenerationDone(request_id=rid, finish_reason=FinishReason.TOOL_CALLS)
+            yield GenerationDone(
+                request_id=rid,
+                finish_reason=FinishReason.TOOL_CALLS,
+            )
             raise
         if emit_discard:
             yield AnswerDiscarded(request_id=rid)
@@ -279,4 +297,7 @@ class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]
             index=0,
             arguments=parsed.arguments,
         )
-        yield GenerationDone(request_id=rid, finish_reason=FinishReason.TOOL_CALLS)
+        yield GenerationDone(
+            request_id=rid,
+            finish_reason=FinishReason.TOOL_CALLS,
+        )

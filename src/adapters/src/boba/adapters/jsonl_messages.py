@@ -19,8 +19,8 @@ from boba.domain.agent.messages import (
     MessageStoreReadError,
     MessageStoreWriteError,
 )
-from boba.domain.agent.models import LLMMessage, LLMToolCall
 from boba.domain.core.workspace import HistoryWorkspaceShell, WorkspaceError
+from boba.domain.llm.models import LLMMessage, LLMToolCall
 
 
 class JsonLinesMessageService(MessageService):
@@ -94,7 +94,7 @@ class JsonLinesMessageService(MessageService):
     @staticmethod
     def _decode(line: str) -> LLMMessage:
         raw = json.loads(line)
-        tool_calls = [LLMToolCall(**tc) for tc in raw.get("tool_calls", [])]
+        tool_calls = tuple(LLMToolCall(**tc) for tc in raw.get("tool_calls", []))
         return LLMMessage(
             role=raw["role"],
             content=raw["content"],

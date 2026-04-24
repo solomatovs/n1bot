@@ -80,6 +80,7 @@ class TouchTool(Tool[TouchArgs]):
             self._workspace.touch(args.path)
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Ошибка touch: {e}",
+                tool_id=self._ID,
+                message=f"Ошибка touch: {e}",
             ) from e
         return ToolResult(content=f"touch: {args.path}")

@@ -1,60 +1,29 @@
-"""События агента (``AgentEvent``) — канал наблюдений **только в sink'и**
-(UI, телеметрия, журнал). Event'ы эмитит источник через ``yield`` в
-:class:`StreamSource`; потребляют sink'и через ``match-case``. Каждое
-событие — immutable (``frozen=True`` dataclass), несёт стабильное имя
-через classmethod :meth:`BaseEvent.name` (``Literal[...]``-типизировано
-для exhaustive проверки декодерами).
-
-**Важно — разделение ответственности:**
-
-- Events ↔ sink'и (пользователь / UI / телеметрия). Чистый one-way
-  поток наблюдений.
-- LLM ↔ :class:`MessageService`. Для feedback-loop'а (вернуть LLM
-  результат tool'а, ошибку формата, нотис юзера) middleware/router
-  пишут ``LLMMessage`` в :class:`MessageService` — LLM на следующей
-  итерации читает историю при сборке запроса. **LLM events не
-  видит.**
-
-Исключения из «events — для sink'ов» — это middleware, которые
-наблюдают свой upstream (например, :class:`AssistantMessagePersistence`
-агрегирует токены, :class:`RepeatedFormatFailureGuardMiddleware`
-считает сбои формата). Они не «потребители» в смысле sink-ов —
-внутренние state-трекеры, которые прокачивают events дальше.
-Specification'ы типа :class:`StopOnAnyFailure` смотрят events для
-control-flow (остановить цикл) — тоже системная роль, не sink.
-
-Event'ы классифицированы по **семействам** (orthogonal от concrete-типа):
-sink-автор подписывается на семью и ловит всю категорию без enumeration
-concrete'ов. Это основной механизм расширяемости — добавление нового
-concrete'а в семью **не требует правок** sink'ов, подписанных на семью.
-
-
+"""
 ════════════════════════════════════════════════════════════════════
-  Полная иерархия
+  События агент-слоя
 ════════════════════════════════════════════════════════════════════
-
-::
-
-    BaseEvent (abstract, frozen dataclass)
+    BaseAgentEvent (abstract, frozen dataclass)
     │   request_id: RequestId
     │   + classmethod name() -> Literal["..."]
     │
     ├── LifecycleMarker (abstract)        границы фазы, без контента
     │   ├── IterationStarted                iteration, max_iterations
-    │   ├── StageStarted / StageCompleted   stage [+ detail]
     │   ├── SystemPromptProcessingStarted   content_before
-    │   ├── SystemPromptProcessed           + content_after, duration_ms
+    │   ├── SystemPromptProcessed           content_before/after, duration_ms
     │   ├── UserPromptProcessingStarted     content_before
-    │   ├── UserPromptProcessed             + content_after, duration_ms
-    │   ├── LLMRequestSent                  model, messages_count, has_tools
+    │   ├── UserPromptProcessed             content_before/after, duration_ms
+    │   ├── LLMUserPromptIssued             user_prompt (snapshot)
+    │   ├── LLMRequestStarted               model, messages_count, has_tools, ts
+    │   ├── LLMRequestSent                  monotonic_ns (парный)
     │   ├── GenerationStarted
     │   ├── ThinkingStarted
     │   ├── AnswerStarted
     │   ├── ToolCallBegin                   index, tool_call_id, tool_name
     │   ├── ToolExecutionStarted            tool_call_id, tool_name
+    │   ├── GenerationRetried               attempt, reason, status_code
     │   └── GenerationDone                  finish_reason
     │
-    ├── StreamingDelta (abstract)         инкрементальные куски контента
+    ├── StreamingDelta (abstract)         инкрементальные куски
     │   ├── ThinkingToken                   token
     │   ├── AnswerToken                     token
     │   ├── RefusalToken                    token
@@ -62,271 +31,115 @@ concrete'а в семью **не требует правок** sink'ов, под
     │
     ├── DurableMessage (abstract)         завершённые message-единицы
     │   ├── UserQueryReceived               query
-    │   ├── ThinkingComplete                content (агрегированный reasoning)
+    │   ├── ThinkingComplete                content
     │   ├── AnswerComplete                  content
-    │   ├── AnswerDiscarded                 (корректирующее — отменяет
-    │   │                                    ранее добавленное сообщение)
     │   ├── RefusalComplete                 content
     │   ├── ToolCallComplete                tool_call_id, tool_name, arguments
-    │   └── ToolResultReady                 tool_call_id, tool_name, content
+    │   ├── ToolResultReady                 tool_call_id, tool_name, content
+    │   └── AnswerDiscarded                 (корректирующее)
     │
-    ├── UserNotification (abstract)       уведомление → sink (user-facing),
-    │   │   message: str                    цикл продолжается. Events — это
-    │   │                                   sink-канал; LLM-feedback идёт
-    │   │                                   через MessageService, не через
-    │   │                                   events, поэтому все «цикл идёт»
-    │   │                                   нотисы — одна семья.
-    │   ├── UserNoticeReady                 severity: info|warning|error
-    │   │                                   (общие нотисы — deprecation,
-    │   │                                   soft-reject валидации, fallback)
+    ├── UserNotification (abstract)       нотис пользователю, цикл идёт
+    │   │   message: str
     │   ├── ToolExecutionFailed             error_kind, tool_call_id, tool_name
-    │   │                                   (tool упал — observability)
     │   └── ToolCallFormatFailed            error_kind
-    │                                       (LLM сломала формат tool call —
-    │                                       observability; критика для LLM
-    │                                       пишется параллельно в
-    │                                       MessageService middleware'ом)
     │
     └── TerminalFailure (abstract)        ошибка, цикл останавливается
-        │   error_kind: str                 (через StopOnAnyFailure)
+        │   error_kind: str
         │   message: str
         ├── GenerationFailed                retryable, status_code
         ├── PromptFailed                    retryable, provider
-        ├── PersistenceFailed               retryable
         ├── MaxIterationsReached            limit, iteration
         └── RepeatedFormatFailure           count, limit
-
-**UserNotification vs TerminalFailure** — обе user-facing, разница в
-контракте с циклом:
-
-- ``UserNotification`` — цикл продолжается, sink показывает нотис.
-- ``TerminalFailure`` — :class:`StopOnAnyFailure` остановит цикл,
-  sink показывает финальную ошибку.
-
-Sink'и, которым нужна «любая проблема» — объединяют:
-``case TerminalFailure() | UserNotification() as n: ...``.
-
-
-════════════════════════════════════════════════════════════════════
-  Семейство → use-case (sink authoring guide)
-════════════════════════════════════════════════════════════════════
-
-┌─────────────────────┬───────────────────────────────────────────────┐
-│ Семейство           │ Типичный sink                                 │
-├─────────────────────┼───────────────────────────────────────────────┤
-│ LifecycleMarker     │ TelemetrySink — waterfall, durations          │
-│ StreamingDelta      │ UI — inline rendering токенов                 │
-│ DurableMessage      │ HistorySink / AuditSink / TranscriptLogger    │
-│ UserNotification    │ UI notification area, AlertSink               │
-│ TerminalFailure     │ UI error-banner, Sentry, AlertSink            │
-└─────────────────────┴───────────────────────────────────────────────┘
-
-
-════════════════════════════════════════════════════════════════════
-  Примеры
-════════════════════════════════════════════════════════════════════
-
-**Subscription на семью** (``HistorySink``)::
-
-    def handle(self, ctx, event):
-        match event:
-            case DurableMessage():
-                self._append_to_transcript(event)
-            case _:
-                pass
-
-**Subscription на concrete** (UI — разное рендеринг per-тип)::
-
-    match event:
-        case AnswerToken(token=t):
-            sys.stdout.write(t)
-        case ThinkingToken(token=t):
-            sys.stdout.write(dim(t))
-        case ToolResultReady(tool_name=fn, content=c):
-            print(f"[{fn}] {c[:200]}")
-
-**Общий handler на любую проблему** (семьи объединяются ``|``)::
-
-    case TerminalFailure() as f:
-        sentry.capture(f.error_kind, f.message)
-    case UserNotification() as n:
-        ui.show_notification(n.message)
-
-
-════════════════════════════════════════════════════════════════════
-  Как добавить новый event
-════════════════════════════════════════════════════════════════════
-
-1. Выбери семейство:
-
-   - граница фазы                 → :class:`LifecycleMarker`
-   - кусок потока                 → :class:`StreamingDelta`
-   - завершённое сообщение        → :class:`DurableMessage`
-   - нотис пользователю (любой)   → :class:`UserNotification`
-   - ошибка, цикл стоп            → :class:`TerminalFailure`
-   - ничего не подходит           → наследуй от :class:`BaseEvent`
-     напрямую (пока не появится второй похожий — тогда выделим семью).
-
-2. Добавь ``@dataclass(frozen=True)`` с полями.
-3. Реализуй ``classmethod name() -> Literal["..."]``.
-4. Занеси в :data:`AgentEvent`-union и :data:`AgentEventName`-literal
-   (синхронность проверит :func:`_verify_event_names_exhaustive`).
-5. Sink'и, подписанные на семью, получат новый event автоматически.
-   Per-concrete sink'и обновлять не надо, если им не нужен особый
-   рендеринг.
-
-
-════════════════════════════════════════════════════════════════════
-  Что НЕ должно быть AgentEvent
-════════════════════════════════════════════════════════════════════
-
-Внутренние состояния middleware, буферы, счётчики — это implementation
-details, а не наблюдения. Event — стабильный контракт между источником
-и sink'ами, сохраняемый в журнал и пересылаемый по сети. Если данные
-нужны только одному middleware — держи их в ``ctx`` / локальной
-переменной, не эмить событие.
-
-Event не несёт референс на mutable-объект (``frozen=True`` dataclass
-ловит статически). Для mutable-состояния нужен отдельный механизм
-(:class:`~boba.domain.agent.messages.MessageService`,
-:class:`~boba.domain.agent.models.AgentContext`).
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from enum import StrEnum
-from typing import Literal, TypeAlias, assert_never
+from typing import Literal, TypeAlias
 
-from boba.domain.agent.models import RequestId
-from boba.domain.core.patterns import Converter, Serializer
-
-UserNoticeSeverity = Literal["info", "warning", "error"]
-"""Уровень важности user-нотиса (см. :class:`AgentUserNotice`)."""
-
-
-class FinishReason(StrEnum):
-    """Причина завершения генерации LLM.
-
-    Нормализованные значения ``finish_reason`` из OpenAI-совместимых API.
-    Наследование от :class:`StrEnum` даёт прозрачную JSON-сериализацию
-    (значение записывается как строка) и совместимость с ``str`` при
-    сравнениях.
-    """
-
-    STOP = "stop"
-    LENGTH = "length"
-    TOOL_CALLS = "tool_calls"
-    CONTENT_FILTER = "content_filter"
-
-    @property
-    def is_terminal(self) -> bool:
-        """Останавливает ли это завершение цикл агента.
-
-        ``TOOL_CALLS`` — единственное не-терминальное значение: LLM просит
-        выполнить tool, цикл делает следующую итерацию с результатом.
-        Остальные варианты означают, что LLM закончила работу над запросом
-        (успешно, обрывом по длине или фильтром контента) — продолжать
-        бессмысленно.
-
-        Реализовано через исчерпывающий ``match`` с :func:`assert_never`
-        в хвосте: при добавлении нового значения в enum pyright укажет на
-        непокрытую ветку, заставив явно классифицировать — а не молча
-        унаследовать поведение одного из лагерей.
-        """
-        match self:
-            case FinishReason.TOOL_CALLS:
-                return False
-            case FinishReason.STOP | FinishReason.LENGTH | FinishReason.CONTENT_FILTER:
-                return True
-            case _:
-                assert_never(self)
+from boba.domain.llm.events import FinishReason
+from boba.domain.llm.models import RequestId
 
 
 @dataclass(frozen=True)
-class BaseEvent(ABC):
+class BaseAgentEvent(ABC):
     """Базовый класс для всех событий агента."""
 
     request_id: RequestId
 
     @classmethod
     @abstractmethod
-    def name(cls) -> str:
-        """Стабильное имя типа события для сериализации.
-
-        Каждый подкласс **должен** возвращать свою ``Literal["..."]``-строку
-        (не просто ``str``): это позволяет статическому анализатору проверять
-        исчерпывающее покрытие match-case в декодерах.
-        """
-        ...
+    def name(cls) -> str: ...
 
 
 # ═════════════════════════════════════════════════════════════════════
-#  Семейства событий (orthogonal классификация для sink'ов)
+#  Семейства
 # ═════════════════════════════════════════════════════════════════════
-#
-# Concrete-события наследуются от одного семейства. Sink-автор
-# match'ит по семейству и ловит **всю** категорию разом — без
-# enumeration 20+ concrete-типов. Новый concrete в семью —
-# автоматически попадает в подписанные sink'и.
 
 
 @dataclass(frozen=True)
-class LifecycleMarker(BaseEvent, ABC):
-    """Граница фазы (старт / конец стадии, без контента).
+class LifecycleMarker(BaseAgentEvent, ABC):
+    """Граница фазы (старт/конец стадии, без контента)."""
 
-    Для телеметрии и waterfall-трейсинга. Не несёт пользовательских
-    данных сообщения, только отметки времени. Может иметь
-    ``duration_ms`` в concrete-классах, маркирующих завершение.
+
+@dataclass(frozen=True)
+class StreamingDelta(BaseAgentEvent, ABC):
+    """Инкрементальный кусок контента между ``*Started`` и ``*Done``."""
+
+
+@dataclass(frozen=True)
+class DurableMessage(BaseAgentEvent, ABC):
+    """Завершённое сообщение — идёт в историю/транскрипт.
+
+    History-sink / audit-sink подписывается на семью вместо
+    перечисления concrete-типов. Добавление нового concrete'а в
+    семью — не требует правок sink'ов, подписанных на семью.
     """
 
 
 @dataclass(frozen=True)
-class StreamingDelta(BaseEvent, ABC):
-    """Инкрементальный кусок контента между ``*Started`` и ``*Complete``.
-
-    Concrete-события держат свой field под чанк (``token`` /
-    ``arguments``) — у sink'ов, которые буферизуют агрегированно, есть
-    единая точка подписки; сама структура chunk-а специфична.
-    """
-
-
-@dataclass(frozen=True)
-class DurableMessage(BaseEvent, ABC):
-    """Готовое сообщение, идёт в историю/транскрипт.
-
-    HistorySink / AuditSink подписывается на это семейство вместо
-    перечисления concrete-типов. :class:`AnswerDiscarded` тоже здесь —
-    корректирующее событие, отменяющее ранее добавленное сообщение.
-    """
-
-
-@dataclass(frozen=True)
-class UserNotification(BaseEvent, ABC):
-    """Уведомление пользователю через sink, цикл агента продолжается.
-
-    Events — канал только в sink'и (user-facing observability). LLM
-    уведомления через события НЕ получает; её feedback-loop
-    обслуживает :class:`MessageService` (middleware/router пишут в неё
-    ``LLMMessage``). Поэтому все нотисы «цикл идёт» — одна семья,
-    независимо от того, произошла ли попутно ошибка tool'а или это
-    простой deprecation-warning.
+class UserNotification(BaseAgentEvent, ABC):
+    """Нотис пользователю через sink, цикл агента продолжается.
 
     ``message`` — текст для рендеринга. Concrete-children добавляют
-    свои поля (``severity`` для стилизации, ``error_kind`` /
-    ``tool_call_id`` / ... для категоризации).
+    свои поля (``error_kind``, ``tool_call_id``, ...).
 
-    TerminalFailure — отдельная семья: там другой контракт (цикл
-    останавливается через :class:`StopOnAnyFailure`).
+    Отличается от :class:`TerminalFailure` именно тем, что цикл не
+    прерывается: LLM на следующей итерации увидит feedback (через
+    ``LLMMessage`` в :class:`MessageService`) и может скорректировать
+    поведение.
     """
 
     message: str
 
 
 @dataclass(frozen=True)
+class TerminalFailure(BaseAgentEvent, ABC):
+    """Ошибка, останавливающая цикл через
+    :class:`~boba.domain.agent.meat.loop_control.StopOnAnyFailure`.
+    """
+
+    error_kind: str
+    message: str
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  Concrete: DurableMessage
+# ═════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
 class UserQueryReceived(DurableMessage):
-    """Запрос пользователя принят."""
+    """Запрос пользователя принят агентом.
+
+    Эмитится один раз — :class:`~boba.domain.agent.meat.prompt.\
+UserPromptMiddleware` на ``ctx.iteration == 1`` после заполнения
+    ``ctx.request.user_message``. Запись сообщения в
+    :class:`MessageService` делает
+    :class:`~boba.domain.agent.meat.llm_invoke.\
+UserMessagePersistenceMiddleware` на границе с LLM.
+    """
 
     query: str
 
@@ -336,15 +149,107 @@ class UserQueryReceived(DurableMessage):
 
 
 @dataclass(frozen=True)
-class IterationStarted(LifecycleMarker):
-    """Начало новой итерации агентского цикла.
+class ThinkingComplete(DurableMessage):
+    """Агрегированный reasoning: весь текст рассуждений итерации."""
 
-    Эмитится :class:`IterationCounterMiddleware` после инкремента
-    ``ctx.iteration`` и до проверки лимита. Sink'и UI используют для
-    отрисовки границ итераций — особенно полезно при длинных цепочках
-    tool calls, когда иначе не видно, сколько из ``max_iterations``
-    уже потрачено.
+    content: str
+
+    @classmethod
+    def name(cls) -> Literal["ThinkingComplete"]:
+        return "ThinkingComplete"
+
+
+@dataclass(frozen=True)
+class AnswerComplete(DurableMessage):
+    """Агрегированный текстовый ответ итерации."""
+
+    content: str
+
+    @classmethod
+    def name(cls) -> Literal["AnswerComplete"]:
+        return "AnswerComplete"
+
+
+@dataclass(frozen=True)
+class RefusalComplete(DurableMessage):
+    """Агрегированный отказ модели."""
+
+    content: str
+
+    @classmethod
+    def name(cls) -> Literal["RefusalComplete"]:
+        return "RefusalComplete"
+
+
+@dataclass(frozen=True)
+class ToolCallComplete(DurableMessage):
+    """Агрегированный tool call: имя + полные сериализованные arguments.
+
+    Эмитится :class:`~boba.domain.agent.meat.dialogue.\
+AssistantMessagePersistenceMiddleware` при ``GenerationDone``
+    — после накопления ``ToolCallBegin`` + серии
+    ``ToolCallArgumentDelta``. :class:`~boba.domain.agent.meat.\
+tools.ToolExecutionMiddleware` реагирует на это событие и
+    исполняет tool.
     """
+
+    tool_call_id: str
+    tool_name: str
+    arguments: str
+
+    @classmethod
+    def name(cls) -> Literal["ToolCallComplete"]:
+        return "ToolCallComplete"
+
+
+@dataclass(frozen=True)
+class ToolResultReady(DurableMessage):
+    """Результат успешного выполнения tool.
+
+    Ошибки сюда не попадают — для них
+    :class:`ToolExecutionFailed` из семьи :class:`UserNotification`.
+    """
+
+    tool_call_id: str
+    tool_name: str
+    content: str
+
+    @classmethod
+    def name(cls) -> Literal["ToolResultReady"]:
+        return "ToolResultReady"
+
+
+@dataclass(frozen=True)
+class AnswerDiscarded(DurableMessage):
+    """Ранее эмитированные ``AnswerToken``-ы для данного ``request_id``
+    следует отбросить: аккумулированный ``content`` не должен попасть
+    ни в ``AnswerComplete``, ни в ``LLMMessage.content``.
+
+    Эмитится, когда middleware решает переинтерпретировать уже
+    проэмиченный текстовый поток как tool call (strict content-tool-
+    call парсер). Токены уже ушли наружу ради отзывчивости UI, но в
+    durable-состоянии (история, журнал) текстовой ветки быть не должно
+    — её заменяют ``ToolCall*``-события.
+
+    Потребители (``AssistantMessagePersistenceMiddleware``, HistorySink)
+    очищают свои answer-буферы для данного ``request_id``; UI-sink
+    может использовать событие как «стереть/перезаписать только что
+    выведенное».
+    """
+
+    @classmethod
+    def name(cls) -> Literal["AnswerDiscarded"]:
+        return "AnswerDiscarded"
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  Concrete: LifecycleMarker
+# ═════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class IterationStarted(LifecycleMarker):
+    """Начало новой итерации агентского цикла."""
 
     iteration: int
     max_iterations: int
@@ -355,35 +260,10 @@ class IterationStarted(LifecycleMarker):
 
 
 @dataclass(frozen=True)
-class StageStarted(LifecycleMarker):
-    stage: str
-
-    @classmethod
-    def name(cls) -> Literal["StageStarted"]:
-        return "StageStarted"
-
-
-@dataclass(frozen=True)
-class StageCompleted(LifecycleMarker):
-    stage: str
-    detail: str
-
-    @classmethod
-    def name(cls) -> Literal["StageCompleted"]:
-        return "StageCompleted"
-
-
-@dataclass(frozen=True)
 class SystemPromptProcessingStarted(LifecycleMarker):
-    """System-prompt middleware начинает сборку system-prompt.
-
-    Эмитится до вызова :class:`PromptFactory`. ``content_before`` —
-    состояние ``ctx.llm_request.system_prompt`` до middleware (обычно
-    ``None`` на первой итерации, но на последующих может содержать
-    прежний system-prompt).
     """
-
-    content_before: str | None
+    System-prompt middleware начал сборку через :class:`PromptFactory`.
+    """
 
     @classmethod
     def name(cls) -> Literal["SystemPromptProcessingStarted"]:
@@ -392,14 +272,15 @@ class SystemPromptProcessingStarted(LifecycleMarker):
 
 @dataclass(frozen=True)
 class SystemPromptProcessed(LifecycleMarker):
-    """System-prompt middleware завершил сборку system-prompt.
+    """System-prompt middleware завершил сборку.
 
+    ``content_after`` — итоговый текст system-промпта, записанный в
+    :class:`MessageService` (``None`` если провайдеры вернули пусто и
+    в MS ничего не пишется).
     ``duration_ms`` — время работы :class:`PromptFactory`.
-    ``content_before`` / ``content_after`` — состояние слота до/после.
     """
 
-    content_before: str | None
-    content_after: str | None
+    content: str
     duration_ms: float
 
     @classmethod
@@ -409,15 +290,7 @@ class SystemPromptProcessed(LifecycleMarker):
 
 @dataclass(frozen=True)
 class UserPromptProcessingStarted(LifecycleMarker):
-    """User-prompt middleware начинает сборку user-prompt.
-
-    Эмитится до вызова :class:`PromptFactory`. ``content_before`` —
-    состояние ``ctx.llm_request.user_prompt`` до middleware (обычно
-    ``None`` на первой итерации): даёт sink'ам возможность показать,
-    с чего началось преобразование.
-    """
-
-    content_before: str | None
+    """User-prompt middleware начал сборку через :class:`PromptFactory`."""
 
     @classmethod
     def name(cls) -> Literal["UserPromptProcessingStarted"]:
@@ -426,15 +299,9 @@ class UserPromptProcessingStarted(LifecycleMarker):
 
 @dataclass(frozen=True)
 class UserPromptProcessed(LifecycleMarker):
-    """User-prompt middleware завершил сборку user-prompt.
+    """User-prompt middleware завершил сборку."""
 
-    ``duration_ms`` — время работы :class:`PromptFactory` (и записи
-    результата в ``ctx.llm_request.user_prompt``). ``content_before`` и
-    ``content_after`` — состояние слота до/после, для диффа в UI/журнале.
-    """
-
-    content_before: str | None
-    content_after: str | None
+    content: str
     duration_ms: float
 
     @classmethod
@@ -443,19 +310,47 @@ class UserPromptProcessed(LifecycleMarker):
 
 
 @dataclass(frozen=True)
-class LLMRequestSent(LifecycleMarker):
-    """HTTP-запрос к LLM-провайдеру отправлен, стрим-handle получен.
+class LLMUserPromptIssued(BaseAgentEvent):
+    """Зеркало :class:`~boba.domain.llm.events.LLMUserPromptIssued`.
 
-    Эмитится адаптером сразу после возврата ``chat.completions.create``,
-    до итерации по чанкам. Закрывает TTFT-слепое пятно между «агент
-    решил идти в LLM» и ``GenerationStarted`` (первый чанк). Для UX
-    нужен, когда cold-start модели / очередь прокси отдают первый
-    токен через 1–20 секунд.
+    Snapshot user-prompt'а, отправленного провайдеру. Эмитится прямо
+    перед :class:`LLMRequestStarted` — для observability/audit.
+    """
+
+    user_prompt: str
+
+    @classmethod
+    def name(cls) -> Literal["LLMUserPromptIssued"]:
+        return "LLMUserPromptIssued"
+
+
+@dataclass(frozen=True)
+class LLMRequestStarted(LifecycleMarker):
+    """HTTP-запрос к LLM-провайдеру вот-вот будет отправлен.
+
+    Парный к :class:`LLMRequestSent` — даёт замер длительности
+    провайдер-вызова через разницу ``monotonic_ns``.
     """
 
     model: str
     messages_count: int
     has_tools: bool
+    monotonic_ns: int
+
+    @classmethod
+    def name(cls) -> Literal["LLMRequestStarted"]:
+        return "LLMRequestStarted"
+
+
+@dataclass(frozen=True)
+class LLMRequestSent(LifecycleMarker):
+    """HTTP-запрос к LLM-провайдеру отправлен — стрим-handle получен.
+
+    Парный к :class:`LLMRequestStarted`. Метаданные запроса живут
+    на ``Started`` — здесь только закрывающий ``monotonic_ns``.
+    """
+
+    monotonic_ns: int
 
     @classmethod
     def name(cls) -> Literal["LLMRequestSent"]:
@@ -473,7 +368,7 @@ class GenerationStarted(LifecycleMarker):
 
 @dataclass(frozen=True)
 class ThinkingStarted(LifecycleMarker):
-    """Модель начала thinking/reasoning."""
+    """Модель начала reasoning."""
 
     @classmethod
     def name(cls) -> Literal["ThinkingStarted"]:
@@ -481,19 +376,8 @@ class ThinkingStarted(LifecycleMarker):
 
 
 @dataclass(frozen=True)
-class ThinkingToken(StreamingDelta):
-    """Chunk thinking/reasoning от LLM."""
-
-    token: str
-
-    @classmethod
-    def name(cls) -> Literal["ThinkingToken"]:
-        return "ThinkingToken"
-
-
-@dataclass(frozen=True)
 class AnswerStarted(LifecycleMarker):
-    """Модель начала генерировать ответ."""
+    """Модель начала отдавать ответ."""
 
     @classmethod
     def name(cls) -> Literal["AnswerStarted"]:
@@ -501,121 +385,15 @@ class AnswerStarted(LifecycleMarker):
 
 
 @dataclass(frozen=True)
-class AnswerToken(StreamingDelta):
-    """Chunk текстового ответа от LLM."""
-
-    token: str
-
-    @classmethod
-    def name(cls) -> Literal["AnswerToken"]:
-        return "AnswerToken"
-
-
-@dataclass(frozen=True)
-class RefusalToken(StreamingDelta):
-    """Chunk отказа модели отвечать."""
-
-    token: str
-
-    @classmethod
-    def name(cls) -> Literal["RefusalToken"]:
-        return "RefusalToken"
-
-
-@dataclass(frozen=True)
-class GenerationDone(LifecycleMarker):
-    """Генерация завершена."""
-
-    finish_reason: FinishReason = FinishReason.STOP
-
-    def __post_init__(self) -> None:
-        # Нормализуем строку → enum: decoder передаёт сырое значение из
-        # JSON, а frozen-dataclass не даёт обычного присваивания.
-        if not isinstance(self.finish_reason, FinishReason):
-            object.__setattr__(
-                self, "finish_reason", FinishReason(self.finish_reason)
-            )
-
-    @classmethod
-    def name(cls) -> Literal["GenerationDone"]:
-        return "GenerationDone"
-
-
-@dataclass(frozen=True)
-class TerminalFailure(BaseEvent, ABC):
-    """Базовый класс терминальных отказов — гарантирует ``error_kind`` и ``message``.
-
-    Позволяет sink'ам маршрутизировать все terminal-события в один handler
-    Подклассы добавляют свои
-    специфичные поля (``retryable``, ``limit``, ``status_code``, …).
-    """
-
-    error_kind: str
-    message: str
-
-
-@dataclass(frozen=True)
-class GenerationFailed(TerminalFailure):
-    """Терминальный отказ: адаптер/retry не смогли получить ответ LLM."""
-
-    retryable: bool
-    status_code: int | None = None
-
-    @classmethod
-    def name(cls) -> Literal["GenerationFailed"]:
-        return "GenerationFailed"
-
-
-@dataclass(frozen=True)
-class PromptFailed(TerminalFailure):
-    """Терминальный отказ: PromptFactory/провайдер не смогли собрать промпт."""
-
-    retryable: bool
-    provider: str | None = None
-
-    @classmethod
-    def name(cls) -> Literal["PromptFailed"]:
-        return "PromptFailed"
-
-
-@dataclass(frozen=True)
-class PersistenceFailed(TerminalFailure):
-    """Терминальный отказ: не удалось прочитать/записать журнал/хранилище."""
-
-    retryable: bool
-
-    @classmethod
-    def name(cls) -> Literal["PersistenceFailed"]:
-        return "PersistenceFailed"
-
-
-@dataclass(frozen=True)
-class MaxIterationsReached(TerminalFailure):
-    """Терминальный отказ: агентский цикл исчерпал лимит итераций."""
-
-    limit: int
-    iteration: int
-
-    @classmethod
-    def name(cls) -> Literal["MaxIterationsReached"]:
-        return "MaxIterationsReached"
-
-
-@dataclass(frozen=True)
-class RepeatedFormatFailure(TerminalFailure):
-    """Терминальный отказ: модель залипла на неверном формате tool call."""
-
-    count: int
-    limit: int
-
-    @classmethod
-    def name(cls) -> Literal["RepeatedFormatFailure"]:
-        return "RepeatedFormatFailure"
-
-
-@dataclass(frozen=True)
 class ToolCallBegin(LifecycleMarker):
-    """Начало tool call — пришёл id и имя функции."""
+    """Начало tool call — пришли ``tool_call_id`` и имя функции.
+
+    ``index`` — порядковый номер вызова в рамках одной итерации
+    (OpenAI позволяет параллельные tool_calls через ``parallel_tool_\
+calls=True``). Используется для связывания с последующими
+    :class:`ToolCallArgumentDelta` и финальным
+    :class:`ToolCallComplete`.
+    """
 
     index: int
     tool_call_id: str
@@ -627,41 +405,15 @@ class ToolCallBegin(LifecycleMarker):
 
 
 @dataclass(frozen=True)
-class ToolCallArgumentDelta(StreamingDelta):
-    """Chunk аргументов tool call."""
-
-    index: int
-    arguments: str
-
-    @classmethod
-    def name(cls) -> Literal["ToolCallArgumentDelta"]:
-        return "ToolCallArgumentDelta"
-
-
-@dataclass(frozen=True)
-class ToolCallComplete(DurableMessage):
-    """Агрегированный tool call: имя + полные аргументы."""
-
-    tool_call_id: str
-    tool_name: str
-    arguments: str
-
-    @classmethod
-    def name(cls) -> Literal["ToolCallComplete"]:
-        return "ToolCallComplete"
-
-
-@dataclass(frozen=True)
 class ToolExecutionStarted(LifecycleMarker):
     """Tool начал исполняться.
 
-    Эмитится :class:`ToolExecutionMiddleware` после разбора аргументов
-    и до вызова ``tool.execute(...)``. Закрывает слепое пятно между
-    ``ToolCallComplete`` (LLM дописала args) и ``ToolResultReady``
-    (результат готов) — для медленных tools (fs, http) UI иначе
-    выглядит зависшим. Если разбор args провалился, событие не
-    эмитится — вместо него роутер шлёт :class:`ToolCallFormatFailed`
-    или :class:`ToolExecutionFailed`.
+    Эмитится :class:`~boba.domain.agent.meat.tools.\
+ToolExecutionMiddleware` после успешного разбора arguments и до
+    вызова ``tool.execute``. Закрывает слепое пятно между
+    :class:`ToolCallComplete` и :class:`ToolResultReady` для
+    медленных tools (fs/http/network) — UI может подсветить
+    «running» статус.
     """
 
     tool_call_id: str
@@ -673,49 +425,115 @@ class ToolExecutionStarted(LifecycleMarker):
 
 
 @dataclass(frozen=True)
-class ToolResultReady(DurableMessage):
-    """Результат успешного выполнения tool.
+class GenerationRetried(LifecycleMarker):
+    """LLM-слой решил повторить запрос.
 
-    Ошибки сюда не попадают — для них есть :class:`ToolExecutionFailed`.
+    Зеркалит :class:`~boba.domain.llm.events.LLMRetryAttempt`:
+    observability-сигнал для sink'ов (UI/журнал), чтобы отрисовать
+    retry-статус. Сам retry выполняется внутри LLM-middleware —
+    агент-цикл не прерывается и не делает дополнительной итерации.
     """
 
-    tool_call_id: str
-    tool_name: str
-    content: str
+    attempt: int
+    reason: str
+    status_code: int | None = None
 
     @classmethod
-    def name(cls) -> Literal["ToolResultReady"]:
-        return "ToolResultReady"
+    def name(cls) -> Literal["GenerationRetried"]:
+        return "GenerationRetried"
 
 
 @dataclass(frozen=True)
-class UserNoticeReady(UserNotification):
-    """Нотис пользователю с severity (info / warning / error).
+class GenerationDone(LifecycleMarker):
+    """Прогон завершён — пришёл ``finish_reason``."""
 
-    Эмитится роутером из :class:`~boba.domain.agent.errors.AgentUserNotice`
-    или middleware напрямую. Sink'и UI отрисуют по ``severity`` — разные
-    цвета/иконки.
-    В :class:`MessageService` не попадает — LLM нотис не видит.
-    Use cases: deprecation-warnings, soft-reject валидации,
-    информирование о fallback'е.
-    """
+    finish_reason: FinishReason = FinishReason.STOP
 
-    severity: UserNoticeSeverity
+    def __post_init__(self) -> None:
+        if not isinstance(self.finish_reason, FinishReason):
+            object.__setattr__(self, "finish_reason", FinishReason(self.finish_reason))
 
     @classmethod
-    def name(cls) -> Literal["UserNoticeReady"]:
-        return "UserNoticeReady"
+    def name(cls) -> Literal["GenerationDone"]:
+        return "GenerationDone"
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  Concrete: StreamingDelta
+# ═════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class ThinkingToken(StreamingDelta):
+    """Chunk reasoning-токена."""
+
+    token: str
+
+    @classmethod
+    def name(cls) -> Literal["ThinkingToken"]:
+        return "ThinkingToken"
+
+
+@dataclass(frozen=True)
+class AnswerToken(StreamingDelta):
+    """Chunk текстового ответа для отображения пользователю."""
+
+    token: str
+
+    @classmethod
+    def name(cls) -> Literal["AnswerToken"]:
+        return "AnswerToken"
+
+
+@dataclass(frozen=True)
+class RefusalToken(StreamingDelta):
+    """Chunk отказа модели отвечать.
+
+    Зеркалит :class:`~boba.domain.llm.events.LLMRefusalToken`.
+    Агрегируется в :class:`RefusalComplete` на этапе
+    dialogue-persistence (миграция стадии идёт параллельно).
+    """
+
+    token: str
+
+    @classmethod
+    def name(cls) -> Literal["RefusalToken"]:
+        return "RefusalToken"
+
+
+@dataclass(frozen=True)
+class ToolCallArgumentDelta(StreamingDelta):
+    """Chunk аргументов tool call (JSON-строка, может прийти частями).
+
+    ``index`` связывает delta с соответствующим
+    :class:`ToolCallBegin`. :class:`~boba.domain.agent.meat.\
+dialogue.AssistantMessagePersistenceMiddleware` агрегирует их в
+    финальный :class:`ToolCallComplete`.
+    """
+
+    index: int
+    arguments: str
+
+    @classmethod
+    def name(cls) -> Literal["ToolCallArgumentDelta"]:
+        return "ToolCallArgumentDelta"
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  Concrete: UserNotification
+# ═════════════════════════════════════════════════════════════════════
 
 
 @dataclass(frozen=True)
 class ToolExecutionFailed(UserNotification):
-    """Tool упал — sink пользователя видит факт ошибки.
+    """Tool упал — sink видит факт ошибки, цикл продолжается.
 
-    Цикл продолжается. Feedback для LLM (``LLMMessage(role="tool")``)
-    параллельно пишется в :class:`MessageService` middleware'ом /
-    роутером — это отдельный канал, не через events. Событие нужно
-    sink'ам (UI/журнал), чтобы отрисовать/залогировать факт ошибки
-    отдельно от успешного результата.
+    Feedback для LLM (``LLMMessage(role="tool")``) параллельно
+    пишется в :class:`MessageService` самим
+    :class:`~boba.domain.agent.meat.tools.ToolExecutionMiddleware`
+    — это отдельный канал, не через events. Событие нужно sink'ам
+    (UI/журнал) чтобы отрисовать/залогировать факт ошибки отдельно
+    от успешного результата.
     """
 
     error_kind: str
@@ -731,14 +549,14 @@ class ToolExecutionFailed(UserNotification):
 class ToolCallFormatFailed(UserNotification):
     """LLM нарушила формат content-as-JSON tool call'а.
 
-    Цикл продолжается. Feedback для LLM (``LLMMessage(role="user")``)
-    пишется в :class:`MessageService` роутером — LLM на следующей
-    итерации увидит критику и сможет переформулировать. Событие —
-    observability для sink'ов.
+    Цикл продолжается. Feedback для LLM (``LLMMessage(role="user",
+    content=<критика>)``) пишется в :class:`MessageService` роутером —
+    на следующей итерации LLM увидит своё нарушение и сможет
+    переформулировать. Событие — observability для sink'ов.
 
-    Tool call не состоялся (разбор провалился до определения ``name``/
-    ``tool_call_id``), поэтому поля идентификации вызова отсутствуют —
-    в отличие от :class:`ToolExecutionFailed`.
+    Tool call не состоялся (разбор провалился до определения
+    ``name``/``tool_call_id``), поэтому полей идентификации вызова
+    нет — в отличие от :class:`ToolExecutionFailed`.
     """
 
     error_kind: str
@@ -748,78 +566,110 @@ class ToolCallFormatFailed(UserNotification):
         return "ToolCallFormatFailed"
 
 
-@dataclass(frozen=True)
-class ThinkingComplete(DurableMessage):
-    """Агрегированный thinking: весь текст рассуждений.
+# ═════════════════════════════════════════════════════════════════════
+#  Concrete: TerminalFailure
+# ═════════════════════════════════════════════════════════════════════
 
-    Наследуется от :class:`DurableMessage` как «завершённая message-
-    единица» (в отличие от :class:`ThinkingToken`-дельт). Решение,
-    персистить ли reasoning в :class:`MessageService`, принимает
-    middleware — sink'и просто наблюдают; семья отражает семантику
-    события, а не действия sink-а.
+
+@dataclass(frozen=True)
+class GenerationFailed(TerminalFailure):
+    """Терминальный отказ — LLM-слой поднял :class:`LLMError`."""
+
+    retryable: bool = False
+    status_code: int | None = None
+
+    @classmethod
+    def name(cls) -> Literal["GenerationFailed"]:
+        return "GenerationFailed"
+
+
+@dataclass(frozen=True)
+class MaxIterationsReached(TerminalFailure):
+    """Терминальный отказ — агентский цикл исчерпал лимит итераций."""
+
+    limit: int
+    iteration: int
+
+    @classmethod
+    def name(cls) -> Literal["MaxIterationsReached"]:
+        return "MaxIterationsReached"
+
+
+@dataclass(frozen=True)
+class PromptFailed(TerminalFailure):
+    """Терминальный отказ — :class:`PromptFactory` не смогла собрать промпт.
+
+    ``provider`` — имя упавшего провайдера (если известно; ``None``
+    для ошибок общей логики).
     """
 
-    content: str
+    retryable: bool = False
+    provider: str | None = None
 
     @classmethod
-    def name(cls) -> Literal["ThinkingComplete"]:
-        return "ThinkingComplete"
+    def name(cls) -> Literal["PromptFailed"]:
+        return "PromptFailed"
 
 
 @dataclass(frozen=True)
-class AnswerComplete(DurableMessage):
-    """Агрегированный ответ: весь текст ответа."""
+class RepeatedFormatFailure(TerminalFailure):
+    """Терминальный отказ — модель залипла на неверном формате tool call.
 
-    content: str
+    Эмитится :class:`~boba.domain.agent.meat.tools.\
+RepeatedFormatFailureGuardMiddleware` после накопления ``limit``
+    подряд :class:`ToolCallFormatFailed` без успешного
+    :class:`ToolResultReady` между ними.
+    """
+
+    count: int
+    limit: int
 
     @classmethod
-    def name(cls) -> Literal["AnswerComplete"]:
-        return "AnswerComplete"
+    def name(cls) -> Literal["RepeatedFormatFailure"]:
+        return "RepeatedFormatFailure"
 
 
 @dataclass(frozen=True)
-class AnswerDiscarded(DurableMessage):
-    """Ранее отправленные ``AnswerToken``-ы для этого ``request_id``
-    следует отбросить: аккумулированный ``content`` не должен попасть
-    ни в итоговое ``AnswerComplete``, ни в ``LLMMessage.content``.
+class PersistenceFailed(TerminalFailure):
+    """Терминальный отказ: не удалось прочитать/записать журнал/хранилище."""
 
-    Эмитится, когда middleware решает переинтерпретировать уже
-    проэмиченный текстовый поток как tool call: токены ушли наружу
-    ради отзывчивости UI, но в долговременном состоянии (сообщение в
-    истории, журнал) текстовой ветки быть не должно — её заменяют
-    ``ToolCallBegin`` / ``ToolCallArgumentDelta`` / ``ToolCallComplete``.
+    retryable: bool = False
 
-    Потребители (``AssistantMessagePersistenceMiddleware``, ``HistorySink``)
-    очищают свои answer-буферы для данного ``request_id``; sink'и UI
-    могут использовать событие как сигнал «стереть/перезаписать то, что
-    только что вывели».
+    @classmethod
+    def name(cls) -> Literal["PersistenceFailed"]:
+        return "PersistenceFailed"
+
+
+@dataclass(frozen=True)
+class GenericTerminalFailure(TerminalFailure):
+    """Fallback для :class:`~boba.domain.core.errors.TerminalError` без
+    :class:`~boba.domain.core.errors.UserFeedbackError`.
+
+    Роутер эмитит это событие, чтобы :class:`StopOnAnyFailure`
+    корректно остановил цикл при «чистом» ``TerminalError``-маркере
+    (без собственного ``to_event``). ``error_kind`` содержит имя
+    класса ошибки — sink может фильтровать/логировать по нему.
     """
 
     @classmethod
-    def name(cls) -> Literal["AnswerDiscarded"]:
-        return "AnswerDiscarded"
+    def name(cls) -> Literal["GenericTerminalFailure"]:
+        return "GenericTerminalFailure"
 
 
-@dataclass(frozen=True)
-class RefusalComplete(DurableMessage):
-    """Агрегированный отказ: весь текст отказа."""
-
-    content: str
-
-    @classmethod
-    def name(cls) -> Literal["RefusalComplete"]:
-        return "RefusalComplete"
+# ═════════════════════════════════════════════════════════════════════
+#  Union + имена
+# ═════════════════════════════════════════════════════════════════════
 
 
 AgentEvent = (
     UserQueryReceived
     | IterationStarted
-    | StageStarted
-    | StageCompleted
     | SystemPromptProcessingStarted
     | SystemPromptProcessed
     | UserPromptProcessingStarted
     | UserPromptProcessed
+    | LLMUserPromptIssued
+    | LLMRequestStarted
     | LLMRequestSent
     | GenerationStarted
     | ThinkingStarted
@@ -831,12 +681,6 @@ AgentEvent = (
     | AnswerDiscarded
     | RefusalToken
     | RefusalComplete
-    | GenerationDone
-    | GenerationFailed
-    | PromptFailed
-    | PersistenceFailed
-    | MaxIterationsReached
-    | RepeatedFormatFailure
     | ToolCallBegin
     | ToolCallArgumentDelta
     | ToolCallComplete
@@ -844,22 +688,26 @@ AgentEvent = (
     | ToolResultReady
     | ToolExecutionFailed
     | ToolCallFormatFailed
-    | UserNoticeReady
+    | GenerationRetried
+    | GenerationDone
+    | GenerationFailed
+    | PromptFailed
+    | MaxIterationsReached
+    | RepeatedFormatFailure
+    | PersistenceFailed
+    | GenericTerminalFailure
 )
 
 
-# Literal-union всех wire-имён событий. Должен содержать ровно те же строки,
-# что возвращают ``name()`` подклассов ``BaseEvent``. Синхронность проверяет
-# статически функция ``_verify_event_names_exhaustive`` ниже.
 AgentEventName: TypeAlias = Literal[
     "UserQueryReceived",
     "IterationStarted",
-    "StageStarted",
-    "StageCompleted",
     "SystemPromptProcessingStarted",
     "SystemPromptProcessed",
     "UserPromptProcessingStarted",
     "UserPromptProcessed",
+    "LLMUserPromptIssued",
+    "LLMRequestStarted",
     "LLMRequestSent",
     "GenerationStarted",
     "ThinkingStarted",
@@ -871,12 +719,6 @@ AgentEventName: TypeAlias = Literal[
     "AnswerDiscarded",
     "RefusalToken",
     "RefusalComplete",
-    "GenerationDone",
-    "GenerationFailed",
-    "PromptFailed",
-    "PersistenceFailed",
-    "MaxIterationsReached",
-    "RepeatedFormatFailure",
     "ToolCallBegin",
     "ToolCallArgumentDelta",
     "ToolCallComplete",
@@ -884,23 +726,17 @@ AgentEventName: TypeAlias = Literal[
     "ToolResultReady",
     "ToolExecutionFailed",
     "ToolCallFormatFailed",
-    "UserNoticeReady",
+    "GenerationRetried",
+    "GenerationDone",
+    "GenerationFailed",
+    "PromptFailed",
+    "MaxIterationsReached",
+    "RepeatedFormatFailure",
+    "PersistenceFailed",
+    "GenericTerminalFailure",
 ]
 
 
-def _verify_event_names_exhaustive(e: AgentEvent) -> AgentEventName:
-    """Compile-time гарантия: union ``AgentEvent.name()`` == ``EventName``.
-
-    Не вызывается в runtime. pyright проверит, что возвращаемое значение
-    ``e.name()`` (union всех Literal-типов) присваивается в ``EventName``.
-
-    При добавлении нового ``AgentEvent`` и забытом имени в ``EventName``
-    pyright сообщит: Literal["NewEvent"] is not assignable to EventName.
-    """
+def _verify_agent_event_names_exhaustive(e: AgentEvent) -> AgentEventName:
+    """Compile-time гарантия синхронности union и Literal-имён."""
     return e.name()
-
-
-# Типы сериализации AgentEvent
-AgentEventEncoder = Converter[AgentEvent, str]
-AgentEventDecoder = Converter[str, AgentEvent]
-AgentEventSerializer = Serializer[AgentEvent, str]

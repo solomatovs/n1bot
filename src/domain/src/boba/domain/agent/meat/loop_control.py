@@ -1,9 +1,6 @@
-"""Управление жизненным циклом цикла агента: счётчик итераций и
-условия остановки (:class:`Specification`)."""
-
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable
 
 from boba.domain.agent.errors import MaxIterationsExceededError
 from boba.domain.agent.events import (
@@ -18,59 +15,54 @@ from boba.domain.core.patterns import Specification, StreamSource
 
 class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
     """
-    Подсчет кол-ва итераций цикла агента.
-    Увеличивает счетчик в контексте и делегирует следующему слою.
-
-    При превышении ``ctx.config.max_iterations`` бросает
-    :class:`MaxIterationsExceededError` — роутер конвертирует в
-    :class:`MaxIterationsReached`, :class:`StopOnAnyFailure` останавливает
-    цикл.
+    Инкрементирует счётчик цикло
+    Выдает исключение если превышено кол-во циклов агента
+    Для маленьких моделей, которые часто зацикливаются это необходимость
     """
 
     def __init__(self, inner: StreamSource[AgentContext, AgentEvent]) -> None:
         self._inner = inner
 
     def name(self) -> str:
-        return "Counter"
+        return "IterationCounter"
 
-    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
+    def reset(self) -> None:
+        self._inner.reset()
+
+    def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
         ctx.iteration += 1
-        limit = ctx.config.max_iterations
-        if ctx.iteration > limit:
+
+        if ctx.iteration > ctx.config.max_iterations:
             raise MaxIterationsExceededError(
                 f"Исчерпан лимит итераций цикла агента: {ctx.iteration} > "
-                f"{limit}. Финальный ответ не получен.",
-                limit=limit,
+                f"{ctx.config.max_iterations}. Финальный ответ не получен.",
+                limit=ctx.config.max_iterations,
                 iteration=ctx.iteration,
             )
 
         yield IterationStarted(
             request_id=ctx.agent_request.request_id,
             iteration=ctx.iteration,
-            max_iterations=limit,
+            max_iterations=ctx.config.max_iterations,
         )
         yield from self._inner.stream(ctx)
 
 
 class StopOnFinished(Specification[tuple[AgentContext, AgentEvent]]):
-    """Останавливает если генерация завершена и не tool_calls."""
+    """
+    Останавливает цикл, если от llm пришла комманда остановки
+    """
 
     def check(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
         _ctx, event = candidate
-
         if isinstance(event, GenerationDone):
             return event.finish_reason.is_terminal
-
         return False
 
 
 class StopOnAnyFailure(Specification[tuple[AgentContext, AgentEvent]]):
-    """Останавливает цикл при любом терминальном failed-событии.
-
-    Покрывает :class:`GenerationFailed`, :class:`PromptFailed`,
-    :class:`PersistenceFailed`, :class:`MaxIterationsReached`,
-    :class:`RepeatedFormatFailure` — узкие *ToEvent middleware уже
-    сконвертировали соответствующие исключения.
+    """
+    Останавливает цикл при любом :class:`TerminalFailure`
     """
 
     def check(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:

@@ -1,4 +1,25 @@
-"""Порт сервиса управления историей сообщений."""
+"""Порт сервиса управления историей сообщений + ошибки persistent-реализаций.
+
+:class:`MessageService` хранит диалог (``system`` / ``user`` /
+``assistant`` / ``tool`` сообщения) как append-log. Нужен для двух
+вещей:
+
+1. **Межзапросная память**. ``UserMessagePersistenceMiddleware``
+   кладёт запрос пользователя один раз (прямо перед отправкой в
+   LLM); каждая итерация агентского цикла подтягивает всю историю
+   в ``ctx.request.history_messages`` через
+   :class:`~boba.domain.agent.meat.history.HistoryMiddleware`.
+2. **Межитерационная память**. После ответа модели
+   :class:`~boba.domain.agent.meat.dialogue.\
+AssistantMessagePersistenceMiddleware` пишет assistant-сообщение в
+   сервис; следующая итерация (с tool-результатом) увидит его в
+   истории.
+
+In-memory реализация — :mod:`boba.adapters.in_memory_messages`,
+persistent (JSONL) — :mod:`boba.adapters.jsonl_messages`.
+Контракт ошибок persistent-реализаций — потомки
+:class:`MessageStoreError`.
+"""
 
 from __future__ import annotations
 
@@ -6,8 +27,12 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 
 from boba.domain.agent.events import AgentEvent, PersistenceFailed
-from boba.domain.agent.models import LLMMessage, RequestId
-from boba.domain.core.errors import Retryable, TerminalError, UserFeedbackError
+from boba.domain.core.errors import (
+    Retryable,
+    TerminalError,
+    UserFeedbackError,
+)
+from boba.domain.llm.models import LLMMessage, RequestId
 
 
 class MessageStoreError(
@@ -16,11 +41,10 @@ class MessageStoreError(
 ):
     """Базовая ошибка persistent-реализации :class:`MessageService`.
 
-    Контракт ошибок: если реализация персистит диалог (например, в файл),
-    любые внутренние исключения (ошибки хранилища, сериализации и т.п.)
-    ОБЯЗАНЫ оборачиваться в потомков этого класса. Исходное исключение
-    доступно через ``__cause__``. In-memory реализации ничего не бросают —
-    это актуально только там, где есть внешнее хранилище.
+    Контракт: persistent-реализации (файл, БД) ОБЯЗАНЫ оборачивать
+    внутренние исключения (диск, сериализация) в потомков этого класса.
+    Исходное исключение доступно через ``__cause__``. In-memory
+    реализации ничего не бросают.
     """
 
     def __init__(self, reason: Exception, ctx: str = "") -> None:
@@ -59,16 +83,16 @@ class MessageStoreReadError(MessageStoreError):
 
 
 class MessageService(ABC):
-    """
-    Абстрактный сервис управления историей сообщений для модели.
+    """Абстрактный сервис управления историей сообщений.
 
-    Реализации могут быть как эпhemeral (in-memory), так и persistent
+    Реализации могут быть как ephemeral (in-memory), так и persistent
     (диалог между запусками процесса восстанавливается реализацией
     самостоятельно при создании инстанса — без внешнего replay-слоя).
 
-    Контракт ошибок: persistent-реализации ОБЯЗАНЫ наружу бросать только
-    потомков :class:`MessageStoreError`. Внутренние исключения (диск,
-    сериализация) должны быть обёрнуты; исходное — через ``__cause__``.
+    Контракт ошибок: persistent-реализации ОБЯЗАНЫ наружу бросать
+    только потомков :class:`MessageStoreError`. Внутренние исключения
+    (диск, сериализация) должны быть обёрнуты; исходное — через
+    ``__cause__``.
     """
 
     @abstractmethod
@@ -76,7 +100,7 @@ class MessageService(ABC):
         """Добавить сообщение в историю.
 
         Raises:
-            MessageStoreWriteError: у persistent-реализации не удалось
+            MessageStoreWriteError: persistent-реализация не смогла
                 записать сообщение в хранилище.
         """
         ...
@@ -88,7 +112,7 @@ class MessageService(ABC):
 
     @abstractmethod
     def last(self) -> LLMMessage | None:
-        """Последнее сообщение или None."""
+        """Последнее сообщение или ``None``, если история пуста."""
         ...
 
     @abstractmethod
@@ -96,7 +120,7 @@ class MessageService(ABC):
         """Очистить всю историю.
 
         Raises:
-            MessageStoreWriteError: у persistent-реализации не удалось
+            MessageStoreWriteError: persistent-реализация не смогла
                 очистить хранилище.
         """
         ...

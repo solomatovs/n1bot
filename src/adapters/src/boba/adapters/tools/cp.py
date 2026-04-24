@@ -103,10 +103,12 @@ class CpTool(Tool[CpArgs]):
             self._workspace.copy(args.src, args.dst, recursive=args.recursive)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Источник не найден: {args.src}",
+                tool_id=self._ID,
+                message=f"Источник не найден: {args.src}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Ошибка копирования: {e}",
+                tool_id=self._ID,
+                message=f"Ошибка копирования: {e}",
             ) from e
         return ToolResult(content=f"Скопировано: {args.src} → {args.dst}")

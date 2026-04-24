@@ -39,9 +39,7 @@ class ToolStore:
 
 class ToolCatalog:
     def __init__(self, tools: Iterable[Tool[Any]]) -> None:
-        self._items: dict[ToolId, Tool[Any]] = {
-            tool.tool_id(): tool for tool in tools
-        }
+        self._items: dict[ToolId, Tool[Any]] = {tool.tool_id(): tool for tool in tools}
 
     def get(self, tool_id: ToolId) -> Tool[Any] | None:
         return self._items.get(tool_id)

@@ -92,10 +92,12 @@ class RmTool(Tool[RmArgs]):
             self._workspace.delete(args.path, recursive=args.recursive)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Не найдено: {args.path}",
+                tool_id=self._ID,
+                message=f"Не найдено: {args.path}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Ошибка удаления: {e}",
+                tool_id=self._ID,
+                message=f"Ошибка удаления: {e}",
             ) from e
         return ToolResult(content=f"Удалено: {args.path}")

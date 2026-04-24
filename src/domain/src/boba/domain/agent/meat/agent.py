@@ -1,32 +1,33 @@
-"""Оркестратор цикла агента."""
+"""Оркестратор агента — связка ``source → sink``.
+
+S4a: ``run(config, request)`` создаёт контекст с конфигом и
+пропускает готовую composed-цепочку. Loop/Boundary/UserQuery-обёртки
+навешиваются снаружи (в контейнере), чтобы Agent оставался тонким
+«source/sink-драйвером» без знания о внутренностях цепочки.
+"""
 
 from __future__ import annotations
 
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.models import AgentConfig, AgentContext, AgentRequest
-from boba.domain.core.patterns import StreamSink, StreamSourceLoop
+from boba.domain.core.patterns import StreamSink, StreamSource
 
 
 class Agent:
+    """Тонкий оркестратор: создаёт контекст, сливает source в sink."""
+
     def __init__(
         self,
-        source: StreamSourceLoop[AgentContext, AgentEvent],
+        source: StreamSource[AgentContext, AgentEvent],
         sink: StreamSink[AgentContext, AgentEvent],
     ) -> None:
         self._source = source
         self._sink = sink
 
     def name(self) -> str:
-        return "AgentLoop"
+        return "Agent"
 
-    def run(self, config: AgentConfig, request: AgentRequest):
-        """
-        Запускает цикл обработки запроса агентом.
-        """
-        ctx = AgentContext(
-            agent_request=request,
-            config=config,
-        )
-
+    def run(self, config: AgentConfig, request: AgentRequest) -> None:
+        ctx = AgentContext(agent_request=request, config=config)
         for event in self._source.stream(ctx):
             self._sink.handle(ctx, event)

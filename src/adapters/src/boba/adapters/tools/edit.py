@@ -119,7 +119,9 @@ class EditTool(Tool[EditArgs]):
                             "или 'cp1251'. По умолчанию — 'utf-8'."
                         ),
                         validator=ChainValidator(
-                            Default("utf-8"), IsString(), NonEmpty(),
+                            Default("utf-8"),
+                            IsString(),
+                            NonEmpty(),
                         ),
                     ),
                 ],
@@ -138,11 +140,13 @@ class EditTool(Tool[EditArgs]):
             )
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Файл не найден: {args.path}",
+                tool_id=self._ID,
+                message=f"Файл не найден: {args.path}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Ошибка edit: {e}",
+                tool_id=self._ID,
+                message=f"Ошибка edit: {e}",
             ) from e
         return ToolResult(
             content=f"Заменено в {args.path}: {applied} вхождение(й).",

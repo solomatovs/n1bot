@@ -79,9 +79,7 @@ class WorkspacePermissionError(WorkspaceError):
 class WorkspaceDecodingError(WorkspaceError):
     """Невозможно декодировать содержимое ресурса в строку."""
 
-    def __init__(
-        self, path: str, encoding: str, cause: UnicodeDecodeError
-    ) -> None:
+    def __init__(self, path: str, encoding: str, cause: UnicodeDecodeError) -> None:
         super().__init__(
             f"cannot decode {path!r} as {encoding!r}: {cause.reason} "
             f"at byte {cause.start}",

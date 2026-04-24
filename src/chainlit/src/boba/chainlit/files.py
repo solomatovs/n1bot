@@ -13,9 +13,7 @@ import shutil
 from boba.domain.core.workspace import ProjectWorkspaceShell
 
 
-def save_upload(
-    shell: ProjectWorkspaceShell, src_path: str, name: str
-) -> str:
+def save_upload(shell: ProjectWorkspaceShell, src_path: str, name: str) -> str:
     """Сохранить файл ``src_path`` как ``<name>`` в корне workspace.
 
     ``src_path`` — абсолютный путь temp-файла, куда Chainlit сложил

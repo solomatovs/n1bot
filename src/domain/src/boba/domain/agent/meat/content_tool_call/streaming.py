@@ -12,21 +12,22 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
-from dataclasses import dataclass
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass, field
 from enum import Enum, auto
 
 from boba.domain.agent.events import (
     AgentEvent,
     AnswerStarted,
     AnswerToken,
-    FinishReason,
     GenerationDone,
     ToolCallArgumentDelta,
     ToolCallBegin,
 )
-from boba.domain.agent.models import AgentContext, RequestId
+from boba.domain.agent.models import AgentContext
 from boba.domain.core.patterns import Converter, StreamSource
+from boba.domain.llm.events import FinishReason
+from boba.domain.llm.models import RequestId
 
 
 @dataclass(frozen=True)
@@ -131,6 +132,19 @@ class _ParserState(Enum):
     PASSTHROUGH = auto()
 
 
+@dataclass
+class _ParserRun:
+    """Состояние одного прогона парсера — локально для одного ``stream``."""
+
+    rid: RequestId
+    state: _ParserState = _ParserState.UNDECIDED
+    pending_started: AnswerStarted | None = None
+    header_buffer: str = ""
+    scanner: JsonDepthScanner = field(default_factory=JsonDepthScanner)
+    outer_depth: int = 0
+    tail_answer_started: bool = False
+
+
 class JsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
     """Эвристика: маленькие модели (Qwen3:8b/Ollama и т.п.) часто
     «галлюцинируют» tool call как JSON-текст в ``content`` вместо
@@ -148,9 +162,10 @@ class JsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
     Если параллельно пришёл настоящий :class:`ToolCallBegin` — буфер
     сбрасывается как текст, дальше passthrough.
 
-    Ставится **innermost** — внутри :class:`AssistantMessagePersistenceMiddleware`,
-    чтобы тот аккумулировал уже переписанные события и эмитил
-    :class:`ToolCallComplete` для downstream-а.
+    Ставится **innermost** — внутри :class:`~boba.domain.agent.meat.\
+dialogue.AssistantMessagePersistenceMiddleware`, чтобы тот аккумулировал
+    уже переписанные события и эмитил :class:`ToolCallComplete` для
+    downstream-а.
 
     Зависимости выделены в самостоятельные паттерны:
     :class:`JsonHeaderParser` — ``Converter[str, JsonToolCallHeader | None]``
@@ -170,157 +185,196 @@ class JsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
     def name(self) -> str:
         return "JsonContentToolCall"
 
-    def stream(  # noqa: C901, PLR0912, PLR0915
-        self, ctx: AgentContext
-    ) -> Iterator[AgentEvent]:
-        rid = ctx.agent_request.request_id
-        state = _ParserState.UNDECIDED
-        pending_started: AnswerStarted | None = None
-        header_buffer = ""
-        scanner = JsonDepthScanner()
-        outer_depth = 0
-        tail_answer_started = False
+    def reset(self) -> None:
+        self._inner.reset()
 
+    def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
+        run = _ParserRun(rid=ctx.agent_request.request_id)
         for event in self._inner.stream(ctx):
-            match (state, event):
-                case (_ParserState.PASSTHROUGH, _):
-                    yield event
+            yield from self._dispatch(run, event)
 
-                case (_ParserState.TAIL, AnswerToken(token=t)):
-                    if not tail_answer_started:
-                        tail_answer_started = True
-                        yield AnswerStarted(request_id=rid)
-                    yield AnswerToken(request_id=rid, token=t)
-                case (_ParserState.TAIL, GenerationDone()):
-                    yield GenerationDone(
-                        request_id=rid, finish_reason=FinishReason.TOOL_CALLS
-                    )
-                    state = _ParserState.PASSTHROUGH
+    def _dispatch(
+        self,
+        run: _ParserRun,
+        event: AgentEvent,
+    ) -> Iterable[AgentEvent]:
+        """Выбирает handler по текущему :class:`_ParserState`."""
+        match run.state:
+            case _ParserState.PASSTHROUGH:
+                yield event
+            case _ParserState.UNDECIDED:
+                yield from self._handle_undecided(run, event)
+            case _ParserState.PARSE_HEADER:
+                yield from self._handle_parse_header(run, event)
+            case _ParserState.STREAM_ARGS | _ParserState.CONSUME_WRAPPER:
+                yield from self._handle_streaming_args(run, event)
+            case _ParserState.TAIL:
+                yield from self._handle_tail(run, event)
 
-                case (
-                    _ParserState.STREAM_ARGS | _ParserState.CONSUME_WRAPPER,
-                    AnswerToken(token=t),
-                ):
-                    state, args_out, tail_out = self._advance(
-                        t, state, scanner, outer_depth
-                    )
-                    if args_out:
-                        yield ToolCallArgumentDelta(
-                            request_id=rid, index=0, arguments=args_out
-                        )
-                    if tail_out:
-                        if not tail_answer_started:
-                            tail_answer_started = True
-                            yield AnswerStarted(request_id=rid)
-                        yield AnswerToken(request_id=rid, token=tail_out)
-                case (
-                    _ParserState.STREAM_ARGS | _ParserState.CONSUME_WRAPPER,
-                    GenerationDone(),
-                ):
-                    yield GenerationDone(
-                        request_id=rid, finish_reason=FinishReason.TOOL_CALLS
-                    )
-                    state = _ParserState.PASSTHROUGH
+    # ── State handlers ──────────────────────────────────────────────
 
-                case (_ParserState.PARSE_HEADER, AnswerToken(token=t)):
-                    header_buffer += t
-                    header = self._parser.convert(header_buffer)
-                    if header is not None:
-                        pending_started = None
-                        yield ToolCallBegin(
-                            request_id=rid,
-                            index=0,
-                            tool_call_id=f"call_{header.name}",
-                            tool_name=header.name,
-                        )
-                        scanner.consume(header_buffer[: header.args_start_idx])
-                        outer_depth = scanner.depth
-                        state = _ParserState.STREAM_ARGS
-                        state, args_out, tail_out = self._advance(
-                            header_buffer[header.args_start_idx :],
-                            state,
-                            scanner,
-                            outer_depth,
-                        )
-                        header_buffer = ""
-                        if args_out:
-                            yield ToolCallArgumentDelta(
-                                request_id=rid, index=0, arguments=args_out
-                            )
-                        if tail_out:
-                            tail_answer_started = True
-                            yield AnswerStarted(request_id=rid)
-                            yield AnswerToken(request_id=rid, token=tail_out)
-                case (_ParserState.PARSE_HEADER, GenerationDone()):
-                    yield from self._flush_header_as_text(
-                        rid, pending_started, header_buffer
-                    )
-                    pending_started = None
-                    header_buffer = ""
-                    yield event
-                    state = _ParserState.PASSTHROUGH
-                case (_ParserState.PARSE_HEADER, ToolCallBegin()):
-                    yield from self._flush_header_as_text(
-                        rid, pending_started, header_buffer
-                    )
-                    pending_started = None
-                    header_buffer = ""
-                    state = _ParserState.PASSTHROUGH
-                    yield event
+    def _handle_undecided(
+        self,
+        run: _ParserRun,
+        event: AgentEvent,
+    ) -> Iterable[AgentEvent]:
+        if isinstance(event, AnswerStarted):
+            run.pending_started = event
+            return
+        if isinstance(event, AnswerToken) and event.token.lstrip().startswith("{"):
+            run.state = _ParserState.PARSE_HEADER
+            run.header_buffer = event.token
+            yield from self._try_parse_and_advance(run)
+            return
+        if isinstance(event, AnswerToken):
+            if run.pending_started is not None:
+                yield run.pending_started
+                run.pending_started = None
+            run.state = _ParserState.PASSTHROUGH
+            yield event
+            return
+        if isinstance(event, ToolCallBegin):
+            run.pending_started = None
+            run.state = _ParserState.PASSTHROUGH
+            yield event
+            return
+        if isinstance(event, GenerationDone):
+            if run.pending_started is not None:
+                yield run.pending_started
+                run.pending_started = None
+            yield event
+            run.state = _ParserState.PASSTHROUGH
+            return
+        yield event
 
-                case (_ParserState.UNDECIDED, AnswerStarted()):
-                    pending_started = event
-                case (_ParserState.UNDECIDED, AnswerToken(token=t)) if (
-                    t.lstrip().startswith("{")
-                ):
-                    state = _ParserState.PARSE_HEADER
-                    header_buffer = t
-                    header = self._parser.convert(header_buffer)
-                    if header is not None:
-                        pending_started = None
-                        yield ToolCallBegin(
-                            request_id=rid,
-                            index=0,
-                            tool_call_id=f"call_{header.name}",
-                            tool_name=header.name,
-                        )
-                        scanner.consume(header_buffer[: header.args_start_idx])
-                        outer_depth = scanner.depth
-                        state = _ParserState.STREAM_ARGS
-                        state, args_out, tail_out = self._advance(
-                            header_buffer[header.args_start_idx :],
-                            state,
-                            scanner,
-                            outer_depth,
-                        )
-                        header_buffer = ""
-                        if args_out:
-                            yield ToolCallArgumentDelta(
-                                request_id=rid, index=0, arguments=args_out
-                            )
-                        if tail_out:
-                            tail_answer_started = True
-                            yield AnswerStarted(request_id=rid)
-                            yield AnswerToken(request_id=rid, token=tail_out)
-                case (_ParserState.UNDECIDED, AnswerToken()):
-                    if pending_started is not None:
-                        yield pending_started
-                        pending_started = None
-                    state = _ParserState.PASSTHROUGH
-                    yield event
-                case (_ParserState.UNDECIDED, ToolCallBegin()):
-                    pending_started = None
-                    state = _ParserState.PASSTHROUGH
-                    yield event
-                case (_ParserState.UNDECIDED, GenerationDone()):
-                    if pending_started is not None:
-                        yield pending_started
-                        pending_started = None
-                    yield event
-                    state = _ParserState.PASSTHROUGH
+    def _handle_parse_header(
+        self,
+        run: _ParserRun,
+        event: AgentEvent,
+    ) -> Iterable[AgentEvent]:
+        if isinstance(event, AnswerToken):
+            run.header_buffer += event.token
+            yield from self._try_parse_and_advance(run)
+            return
+        if isinstance(event, GenerationDone):
+            yield from self._flush_header_as_text(
+                run.rid,
+                run.pending_started,
+                run.header_buffer,
+            )
+            run.pending_started = None
+            run.header_buffer = ""
+            yield event
+            run.state = _ParserState.PASSTHROUGH
+            return
+        if isinstance(event, ToolCallBegin):
+            yield from self._flush_header_as_text(
+                run.rid,
+                run.pending_started,
+                run.header_buffer,
+            )
+            run.pending_started = None
+            run.header_buffer = ""
+            run.state = _ParserState.PASSTHROUGH
+            yield event
+            return
+        yield event
 
-                case _:
-                    yield event
+    def _handle_streaming_args(
+        self,
+        run: _ParserRun,
+        event: AgentEvent,
+    ) -> Iterable[AgentEvent]:
+        if isinstance(event, AnswerToken):
+            run.state, args_out, tail_out = self._advance(
+                event.token,
+                run.state,
+                run.scanner,
+                run.outer_depth,
+            )
+            yield from self._emit_args_and_tail(run, args_out, tail_out)
+            return
+        if isinstance(event, GenerationDone):
+            yield GenerationDone(
+                request_id=run.rid,
+                finish_reason=FinishReason.TOOL_CALLS,
+            )
+            run.state = _ParserState.PASSTHROUGH
+            return
+        yield event
+
+    def _handle_tail(
+        self,
+        run: _ParserRun,
+        event: AgentEvent,
+    ) -> Iterable[AgentEvent]:
+        if isinstance(event, AnswerToken):
+            if not run.tail_answer_started:
+                run.tail_answer_started = True
+                yield AnswerStarted(request_id=run.rid)
+            yield AnswerToken(request_id=run.rid, token=event.token)
+            return
+        if isinstance(event, GenerationDone):
+            yield GenerationDone(
+                request_id=run.rid,
+                finish_reason=FinishReason.TOOL_CALLS,
+            )
+            run.state = _ParserState.PASSTHROUGH
+            return
+        yield event
+
+    # ── Helpers ─────────────────────────────────────────────────────
+
+    def _try_parse_and_advance(
+        self,
+        run: _ParserRun,
+    ) -> Iterable[AgentEvent]:
+        """Пробует извлечь ``JsonToolCallHeader`` из буфера.
+
+        Если удалось — эмитит :class:`ToolCallBegin`, переключает в
+        STREAM_ARGS, прогоняет остаток буфера через ``_advance`` и
+        эмитит args/tail. Если нет — остаётся в PARSE_HEADER, ждёт
+        следующий токен.
+        """
+        header = self._parser.convert(run.header_buffer)
+        if header is None:
+            return
+        run.pending_started = None
+        yield ToolCallBegin(
+            request_id=run.rid,
+            index=0,
+            tool_call_id=f"call_{header.name}",
+            tool_name=header.name,
+        )
+        run.scanner.consume(run.header_buffer[: header.args_start_idx])
+        run.outer_depth = run.scanner.depth
+        run.state = _ParserState.STREAM_ARGS
+        run.state, args_out, tail_out = self._advance(
+            run.header_buffer[header.args_start_idx :],
+            run.state,
+            run.scanner,
+            run.outer_depth,
+        )
+        run.header_buffer = ""
+        yield from self._emit_args_and_tail(run, args_out, tail_out)
+
+    def _emit_args_and_tail(
+        self,
+        run: _ParserRun,
+        args_out: str,
+        tail_out: str,
+    ) -> Iterable[AgentEvent]:
+        if args_out:
+            yield ToolCallArgumentDelta(
+                request_id=run.rid,
+                index=0,
+                arguments=args_out,
+            )
+        if tail_out:
+            if not run.tail_answer_started:
+                run.tail_answer_started = True
+                yield AnswerStarted(request_id=run.rid)
+            yield AnswerToken(request_id=run.rid, token=tail_out)
 
     @staticmethod
     def _advance(

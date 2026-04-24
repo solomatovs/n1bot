@@ -39,7 +39,7 @@ agent-уровню (:class:`~boba.domain.agent.events.AgentEvent`), но не
         └── LLMToolCallArgumentDelta          index, arguments
 
 Семейство ``LLMFailure`` пока не заводим: ошибки — исключения
-(потомки :class:`~boba_2.domain.llm.errors.LLMError`). События-ошибки
+(потомки :class:`~boba.domain.llm.errors.LLMError`). События-ошибки
 появятся, если/когда потребуется стрим сигналов о неудачах без
 прерывания потока.
 """
@@ -51,7 +51,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal, TypeAlias, assert_never
 
-from boba_2.domain.llm.models import RequestId
+from boba.domain.llm.models import RequestId
 
 
 class FinishReason(StrEnum):
@@ -265,9 +265,7 @@ class LLMGenerationDone(LLMLifecycleMarker):
 
     def __post_init__(self) -> None:
         if not isinstance(self.finish_reason, FinishReason):
-            object.__setattr__(
-                self, "finish_reason", FinishReason(self.finish_reason)
-            )
+            object.__setattr__(self, "finish_reason", FinishReason(self.finish_reason))
 
     @classmethod
     def name(cls) -> Literal["LLMGenerationDone"]:

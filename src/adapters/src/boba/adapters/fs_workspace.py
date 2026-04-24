@@ -43,7 +43,8 @@ logger = logging.getLogger(__name__)
 
 
 def _contain_within_root(
-    path: str, cwd_parts: tuple[str, ...] = (),
+    path: str,
+    cwd_parts: tuple[str, ...] = (),
 ) -> str:
     """Нормализует ввод к пути внутри workspace (containment ``..``).
 
@@ -96,22 +97,28 @@ def _translate_os_errors(resolved: WorkspacePath) -> Iterator[None]:
     except FileNotFoundError as e:
         logger.debug(
             "fs workspace not found: source=%r absolute=%s",
-            resolved.source, resolved.absolute,
+            resolved.source,
+            resolved.absolute,
         )
         raise WorkspaceNotFoundError(resolved.relative) from e
     except PermissionError as e:
         logger.debug(
             "fs workspace permission denied: source=%r absolute=%s reason=%s",
-            resolved.source, resolved.absolute, e,
+            resolved.source,
+            resolved.absolute,
+            e,
         )
         raise WorkspacePermissionError(resolved.relative, reason=str(e)) from e
     except OSError as e:
         logger.debug(
             "fs workspace I/O error: source=%r absolute=%s err=%s",
-            resolved.source, resolved.absolute, e,
+            resolved.source,
+            resolved.absolute,
+            e,
         )
         raise WorkspaceError(
-            f"I/O error on {resolved.relative!r}: {e}", path=resolved.relative,
+            f"I/O error on {resolved.relative!r}: {e}",
+            path=resolved.relative,
         ) from e
 
 
@@ -425,21 +432,30 @@ class FsWorkspaceShell(WorkspaceShell):
         encoding: str = "utf-8",
     ) -> Iterator[GrepMatch]:
         compiled = self._compile_grep_pattern(
-            pattern, fixed_string=fixed_string, case_insensitive=case_insensitive,
+            pattern,
+            fixed_string=fixed_string,
+            case_insensitive=case_insensitive,
         )
         start = self._resolve(path or "")
         with self._map_errors(start):
             if not start.absolute.exists():
                 raise WorkspaceNotFoundError(start.relative)
         return self._grep_iter(
-            compiled, start,
-            recursive=recursive, include=include,
-            context=context, limit=limit, encoding=encoding,
+            compiled,
+            start,
+            recursive=recursive,
+            include=include,
+            context=context,
+            limit=limit,
+            encoding=encoding,
         )
 
     @staticmethod
     def _compile_grep_pattern(
-        pattern: str, *, fixed_string: bool, case_insensitive: bool,
+        pattern: str,
+        *,
+        fixed_string: bool,
+        case_insensitive: bool,
     ) -> re.Pattern[str]:
         raw = re.escape(pattern) if fixed_string else pattern
         flags = re.IGNORECASE if case_insensitive else 0
@@ -480,7 +496,11 @@ class FsWorkspaceShell(WorkspaceShell):
             if self._is_probably_binary(abs_path):
                 continue
             for match in self._grep_file(
-                abs_path, rel, compiled, context=context, encoding=encoding,
+                abs_path,
+                rel,
+                compiled,
+                context=context,
+                encoding=encoding,
             ):
                 yield match
                 found += 1
@@ -534,12 +554,14 @@ class FsWorkspaceShell(WorkspaceShell):
                                 after=(),
                             )
                         else:
-                            pending.append({
-                                "line": i,
-                                "content": line,
-                                "before": tuple(before),
-                                "after": [],
-                            })
+                            pending.append(
+                                {
+                                    "line": i,
+                                    "content": line,
+                                    "before": tuple(before),
+                                    "after": [],
+                                }
+                            )
                     before.append(line)
                 for p in pending:
                     yield GrepMatch(
@@ -563,7 +585,8 @@ class FsWorkspaceShell(WorkspaceShell):
     ) -> int:
         if not old:
             raise WorkspaceError(
-                "old_string must not be empty", path=path,
+                "old_string must not be empty",
+                path=path,
             )
         resolved = self._resolve(path)
         with self._map_errors(resolved):
@@ -573,7 +596,9 @@ class FsWorkspaceShell(WorkspaceShell):
                 count = self._count_stream(resolved.absolute, old, encoding)
             except UnicodeDecodeError as e:
                 raise WorkspaceDecodingError(
-                    resolved.relative, encoding, e,
+                    resolved.relative,
+                    encoding,
+                    e,
                 ) from e
             if count == 0:
                 raise WorkspaceError(
@@ -590,7 +615,11 @@ class FsWorkspaceShell(WorkspaceShell):
                 )
             applied = count if replace_all else 1
             self._replace_stream(
-                resolved.absolute, old, new, applied, encoding,
+                resolved.absolute,
+                old,
+                new,
+                applied,
+                encoding,
             )
             return applied
 
@@ -623,7 +652,11 @@ class FsWorkspaceShell(WorkspaceShell):
 
     @staticmethod
     def _replace_stream(
-        target: Path, old: str, new: str, limit: int, encoding: str,
+        target: Path,
+        old: str,
+        new: str,
+        limit: int,
+        encoding: str,
     ) -> None:
         """Потоковая замена: src → temp → atomic rename.
 
@@ -636,7 +669,9 @@ class FsWorkspaceShell(WorkspaceShell):
         parent = target.parent
         mode = target.stat().st_mode
         fd, tmp_name = tempfile.mkstemp(
-            dir=parent, prefix=f".{target.name}.", suffix=".edit.tmp",
+            dir=parent,
+            prefix=f".{target.name}.",
+            suffix=".edit.tmp",
         )
         tmp_path = Path(tmp_name)
         try:
@@ -691,8 +726,7 @@ class FsWorkspaceShell(WorkspaceShell):
             if resolved.absolute.is_dir():
                 if not recursive:
                     raise WorkspaceError(
-                        f"is a directory: {resolved.relative!r} "
-                        f"(use recursive=True)",
+                        f"is a directory: {resolved.relative!r} (use recursive=True)",
                         path=resolved.relative,
                     )
                 shutil.rmtree(resolved.absolute)
@@ -797,14 +831,19 @@ class FsWorkspaceShell(WorkspaceShell):
         if not absolute.is_relative_to(self._root):
             logger.debug(
                 "fs workspace symlink escape: source=%r absolute=%s",
-                source, absolute,
+                source,
+                absolute,
             )
             raise WorkspacePermissionError(
-                relative, reason="symlink escapes workspace",
+                relative,
+                reason="symlink escapes workspace",
             )
         logger.debug(
             "fs workspace resolved: id=%s source=%r relative=%r absolute=%s",
-            self._workspace_id, source, relative, absolute,
+            self._workspace_id,
+            source,
+            relative,
+            absolute,
         )
         return WorkspacePath(source=source, relative=relative, absolute=absolute)
 

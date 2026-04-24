@@ -86,11 +86,13 @@ class StatTool(Tool[StatArgs]):
             meta = self._workspace.meta(args.path)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Не найдено: {args.path}",
+                tool_id=self._ID,
+                message=f"Не найдено: {args.path}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Ошибка stat: {e}",
+                tool_id=self._ID,
+                message=f"Ошибка stat: {e}",
             ) from e
 
         body = (

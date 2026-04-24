@@ -1,7 +1,6 @@
 {
   "include": [
     "src/domain/src",
-    "src/app/src",
     "src/adapters/src",
     "src/infra/src",
     "src/api/src",
@@ -10,7 +9,6 @@
   ],
   "extraPaths": [
     "src/domain/src",
-    "src/app/src",
     "src/adapters/src",
     "src/infra/src",
     "src/api/src",
