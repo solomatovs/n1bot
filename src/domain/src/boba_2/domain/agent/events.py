@@ -1,18 +1,7 @@
-"""События агент-слоя.
-
-S5: появилось семейство ``UserNotification`` (нотисы sink'у —
-цикл продолжается) и полный набор tool-событий:
-``ToolCallBegin`` / ``ToolCallArgumentDelta`` (стримовые),
-``ToolCallComplete`` / ``ToolResultReady`` (durable), плюс
-``ToolExecutionStarted`` (lifecycle) и ``ToolExecutionFailed``
-(notification).
-
+"""
 ════════════════════════════════════════════════════════════════════
-  Иерархия (S5)
+  События агент-слоя
 ════════════════════════════════════════════════════════════════════
-
-::
-
     BaseAgentEvent (abstract, frozen dataclass)
     │   request_id: RequestId
     │   + classmethod name() -> Literal["..."]
@@ -23,7 +12,9 @@ S5: появилось семейство ``UserNotification`` (нотисы sin
     │   ├── SystemPromptProcessed           content_before/after, duration_ms
     │   ├── UserPromptProcessingStarted     content_before
     │   ├── UserPromptProcessed             content_before/after, duration_ms
-    │   ├── LLMRequestSent                  model, messages_count, has_tools
+    │   ├── LLMUserPromptIssued             user_prompt (snapshot)
+    │   ├── LLMRequestStarted               model, messages_count, has_tools, ts
+    │   ├── LLMRequestSent                  monotonic_ns (парный)
     │   ├── GenerationStarted
     │   ├── ThinkingStarted
     │   ├── AnswerStarted
@@ -319,12 +310,47 @@ class UserPromptProcessed(LifecycleMarker):
 
 
 @dataclass(frozen=True)
-class LLMRequestSent(LifecycleMarker):
-    """HTTP-запрос к LLM-провайдеру отправлен — стрим-handle получен."""
+class LLMUserPromptIssued(BaseAgentEvent):
+    """Зеркало :class:`~boba_2.domain.llm.events.LLMUserPromptIssued`.
+
+    Snapshot user-prompt'а, отправленного провайдеру. Эмитится прямо
+    перед :class:`LLMRequestStarted` — для observability/audit.
+    """
+
+    user_prompt: str
+
+    @classmethod
+    def name(cls) -> Literal["LLMUserPromptIssued"]:
+        return "LLMUserPromptIssued"
+
+
+@dataclass(frozen=True)
+class LLMRequestStarted(LifecycleMarker):
+    """HTTP-запрос к LLM-провайдеру вот-вот будет отправлен.
+
+    Парный к :class:`LLMRequestSent` — даёт замер длительности
+    провайдер-вызова через разницу ``monotonic_ns``.
+    """
 
     model: str
     messages_count: int
     has_tools: bool
+    monotonic_ns: int
+
+    @classmethod
+    def name(cls) -> Literal["LLMRequestStarted"]:
+        return "LLMRequestStarted"
+
+
+@dataclass(frozen=True)
+class LLMRequestSent(LifecycleMarker):
+    """HTTP-запрос к LLM-провайдеру отправлен — стрим-handle получен.
+
+    Парный к :class:`LLMRequestStarted`. Метаданные запроса живут
+    на ``Started`` — здесь только закрывающий ``monotonic_ns``.
+    """
+
+    monotonic_ns: int
 
     @classmethod
     def name(cls) -> Literal["LLMRequestSent"]:
@@ -603,6 +629,22 @@ RepeatedFormatFailureGuardMiddleware` после накопления ``limit``
         return "RepeatedFormatFailure"
 
 
+@dataclass(frozen=True)
+class GenericTerminalFailure(TerminalFailure):
+    """Fallback для :class:`~boba.domain.core.errors.TerminalError` без
+    :class:`~boba.domain.core.errors.UserFeedbackError`.
+
+    Роутер эмитит это событие, чтобы :class:`StopOnAnyFailure`
+    корректно остановил цикл при «чистом» ``TerminalError``-маркере
+    (без собственного ``to_event``). ``error_kind`` содержит имя
+    класса ошибки — sink может фильтровать/логировать по нему.
+    """
+
+    @classmethod
+    def name(cls) -> Literal["GenericTerminalFailure"]:
+        return "GenericTerminalFailure"
+
+
 # ═════════════════════════════════════════════════════════════════════
 #  Union + имена
 # ═════════════════════════════════════════════════════════════════════
@@ -615,6 +657,8 @@ AgentEvent = (
     | SystemPromptProcessed
     | UserPromptProcessingStarted
     | UserPromptProcessed
+    | LLMUserPromptIssued
+    | LLMRequestStarted
     | LLMRequestSent
     | GenerationStarted
     | ThinkingStarted
@@ -639,6 +683,7 @@ AgentEvent = (
     | PromptFailed
     | MaxIterationsReached
     | RepeatedFormatFailure
+    | GenericTerminalFailure
 )
 
 
@@ -649,6 +694,8 @@ AgentEventName: TypeAlias = Literal[
     "SystemPromptProcessed",
     "UserPromptProcessingStarted",
     "UserPromptProcessed",
+    "LLMUserPromptIssued",
+    "LLMRequestStarted",
     "LLMRequestSent",
     "GenerationStarted",
     "ThinkingStarted",
@@ -673,6 +720,7 @@ AgentEventName: TypeAlias = Literal[
     "PromptFailed",
     "MaxIterationsReached",
     "RepeatedFormatFailure",
+    "GenericTerminalFailure",
 ]
 
 

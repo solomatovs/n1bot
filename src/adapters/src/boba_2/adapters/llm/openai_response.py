@@ -56,16 +56,51 @@ class MultiKeyReasoningExtractor(Converter[ChoiceDelta, str | None]):
         "reasoning",
     )
 
-    def __init__(self, keys: tuple[str, ...] | None = None) -> None:
-        self._keys = keys if keys is not None else self.DEFAULT_KEYS
+    def __init__(self) -> None:
+        # это ключи в которых я видел как возвращались thinking
+        # зачем разные модели эмитят thinking в разных ключах я не знаю
+        self._keys = self.DEFAULT_KEYS
 
     def convert(self, value: ChoiceDelta) -> str | None:
         extra = value.model_extra or {}
+        # перебираем ключи по порядку и если есть значение возвращаем
         for k in self._keys:
             v = extra.get(k)
             if v:
                 return str(v)
+
         return None
+
+
+class ThinkingSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
+    """
+    Эмитит :class:`LLMThinkingStarted` / :class:`LLMThinkingToken`.
+    Извлечение reasoning-поля делегируется ``Converter``'у
+    """
+
+    def __init__(
+        self,
+        request_id: RequestId,
+        extractor: Converter[ChoiceDelta, str | None],
+    ) -> None:
+        self._request_id = request_id
+        self._extractor = extractor
+        self._started = False
+
+    def name(self) -> str:
+        return "Thinking"
+
+    def reset(self) -> None:
+        self._started = False
+
+    def stream(self, ctx: LLMContext, stream: Iterable[Choice]) -> Iterable[LLMEvent]:
+        for choice in stream:
+            thinking = self._extractor.convert(choice.delta)
+            if thinking:
+                if not self._started:
+                    self._started = True
+                    yield LLMThinkingStarted(request_id=self._request_id)
+                yield LLMThinkingToken(request_id=self._request_id, token=thinking)
 
 
 class RoleSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
@@ -86,48 +121,20 @@ class RoleSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
     def stream(
         self, ctx: LLMContext, stream: Iterable[Choice]
     ) -> Iterable[LLMEvent]:
+        # мы не хотим каждый раз обрабатывать role source
+        # поэтому проверяем роль только при первом проходе
         if not self._started:
+            # choice'ы это варианты ответов, которые генерирует llm
+            # действительно их может быть несколько
+            # и здесь сейчас некорректная логика их обработки
+            # choice'ы просто последовательно генерируют события
+            # однако на практике модели редко генерируют более одного ответа
+            # поэтому когда появиться необходимость
+            # то сделаем обработку с выбором ответа
             for choice in stream:
                 if choice.delta.role and not self._started:
                     self._started = True
                     yield LLMGenerationStarted(request_id=self._request_id)
-
-
-class ThinkingSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
-    """
-    Эмитит :class:`LLMThinkingStarted` / :class:`LLMThinkingToken`.
-
-    Извлечение reasoning-поля делегируется ``Converter[ChoiceDelta,
-    str | None]`` — провайдер-специфичный вариант подключается через DI
-    """
-
-    def __init__(
-        self,
-        request_id: RequestId,
-        extractor: Converter[ChoiceDelta, str | None],
-    ) -> None:
-        self._request_id = request_id
-        self._extractor = extractor
-        self._started = False
-
-    def name(self) -> str:
-        return "Thinking"
-
-    def reset(self) -> None:
-        self._started = False
-
-    def stream(
-        self, ctx: LLMContext, stream: Iterable[Choice]
-    ) -> Iterable[LLMEvent]:
-        for choice in stream:
-            thinking = self._extractor.convert(choice.delta)
-            if thinking:
-                if not self._started:
-                    self._started = True
-                    yield LLMThinkingStarted(request_id=self._request_id)
-                yield LLMThinkingToken(
-                    request_id=self._request_id, token=thinking
-                )
 
 
 class AnswerSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
@@ -224,11 +231,7 @@ class ToolCallSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
 
 class FinishSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
     """
-    Эмитит :class:`LLMGenerationDone` при появлении finish_reason.
-
-    Учитывает baghack Ollama: ``finish_reason=stop`` после native
-    tool_calls подменяется на ``tool_calls`` — иначе агент не поймёт,
-    что нужно выполнить tool и продолжить цикл
+    Эмитит :class:`LLMGenerationDone` при появлении finish_reason
     """
 
     def __init__(self, request_id: RequestId) -> None:
@@ -244,19 +247,34 @@ class FinishSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
     def stream(
         self, ctx: LLMContext, stream: Iterable[Choice]
     ) -> Iterable[LLMEvent]:
+        """
+        Учитывает что может прийти ``finish_reason=stop`` после native tool_calls
+        Поэтому подменяет на tool_calls вместо завершения
+        Это необходимо агенту для выполнения call tool
+        """
         for choice in stream:
             if choice.delta.tool_calls:
+                # запоминаем что прилетел вызов call_tool
                 self._saw_tool_call = True
+
             if choice.finish_reason:
                 try:
                     reason = FinishReason(choice.finish_reason)
                 except ValueError as e:
+                    # хз какой состояние может прислать api
                     raise LLMProtocolError(
                         f"unknown finish_reason from provider: "
                         f"{choice.finish_reason!r}"
                     ) from e
+
+                # если прилетел вызов call_tool
+                # но при этом reason не call_tool значит модель не умеет вызвать tools
+                # либо litellm проксирует некорректно вызовы
+                # поэтому здесь лайфхак, я просто назначаю call_tool принудительно
+                # насколько это петушинное решение, покажет время
                 if self._saw_tool_call and reason is not FinishReason.TOOL_CALLS:
                     reason = FinishReason.TOOL_CALLS
+
                 yield LLMGenerationDone(
                     request_id=self._request_id,
                     finish_reason=reason,
@@ -269,7 +287,7 @@ class FromOpenAIChunkConverter(
     """
     Поток OpenAI chunks → поток :class:`LLMEvent`.
 
-    Внутри — fan-out pipeline независимых декодеров
+    Внутри — fan-out pipeline из независимых декодеров:
     - role
     - thinking
     - answer
@@ -284,6 +302,7 @@ class FromOpenAIChunkConverter(
         self,
         request_id: RequestId,
     ) -> None:
+        # тут строгая последовательность вызова!
         self._pipeline = StreamTransformerPipeline[LLMContext, Choice, LLMEvent](
             [
                 RoleSource(request_id),

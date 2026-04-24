@@ -64,6 +64,15 @@ class LLMRequest:
     sampling: SamplingParams = field(default_factory=SamplingParams)
     response_format: Mapping[str, Any] | None = None
 
+    def messages_count(self):
+        """
+        Возвращает кол-во сообщений отправляемых в llm
+        Это все сообщения истории + system + user prompt
+        """
+        return len(self.history_messages) + 1 + 1
+
+    def has_tools(self) -> bool:
+        return self.tools is not None
 
 class LLMRequestBuilder(FactoryMethod):
     model: str | None = None

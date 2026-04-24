@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -10,7 +11,7 @@ from boba.domain.core.patterns import (
     StreamSourceLoop,
 )
 from boba.domain.core.tools import ToolFactory, ToolsService
-from boba_2.adapters.console_sink import ConsoleSink
+from boba_2.adapters.console_sink import TextOutSink
 from boba_2.adapters.llm.openai_terminal import OpenAITerminal, build_openai_client
 from boba_2.adapters.prompt_providers import (
     StaticPromptProvider,
@@ -183,5 +184,5 @@ def create_agent(
         enable_repeated_tool_call_guard=enable_repeated_tool_call_guard,
         enable_repeated_format_failure_guard=enable_repeated_format_failure_guard,
     )
-    sink = ConsoleSink()
+    sink = TextOutSink(sys.stdout, sys.stderr)
     return Agent(source=source, sink=sink)

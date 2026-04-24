@@ -18,7 +18,7 @@ AgentContext`, но сам модуль работает с любым типо�
 
 ::
 
-    PromptError(AgentTerminalError)                → PromptFailed
+    PromptError(UserFeedbackError[...], TerminalError) → PromptFailed
     │   provider: str | None
     │
     ├── RetryablePromptError(+ Retryable)            транзиентная I/O
@@ -38,21 +38,15 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Generic, Self, TypeVar
 
-from boba.domain.core.errors import Retryable
+from boba.domain.core.errors import Retryable, TerminalError, UserFeedbackError
 from boba.domain.core.patterns import FoldFactory, Id, PrioritySource
-from boba_2.domain.agent.errors import AgentTerminalError
 from boba_2.domain.agent.events import AgentEvent, PromptFailed
 from boba_2.domain.llm.models import RequestId
 
 TCtx = TypeVar("TCtx")
 
 
-# ═════════════════════════════════════════════════════════════════════
-#  Ошибки
-# ═════════════════════════════════════════════════════════════════════
-
-
-class PromptError(AgentTerminalError):
+class PromptError(UserFeedbackError[RequestId, AgentEvent], TerminalError):
     """Базовая ошибка сборки промпта.
 
     Адаптеры-провайдеры (файлы, workspace, git) оборачивают свои
@@ -65,7 +59,7 @@ class PromptError(AgentTerminalError):
         super().__init__(message)
         self.provider = provider
 
-    def to_user_event(self, request_id: RequestId) -> AgentEvent:
+    def to_event(self, request_id: RequestId) -> AgentEvent:
         return PromptFailed(
             request_id=request_id,
             error_kind=type(self).__name__,
@@ -89,11 +83,6 @@ class PromptProviderError(PermanentPromptError):
     Автоматически поднимается :meth:`PromptFactory.build` при
     перехвате ``OSError`` от любого провайдера.
     """
-
-
-# ═════════════════════════════════════════════════════════════════════
-#  Модель данных
-# ═════════════════════════════════════════════════════════════════════
 
 
 class PromptKind(Enum):
@@ -159,14 +148,7 @@ class PromptResult:
 
     def to_string(self, kind: PromptKind) -> str:
         """Конкатенация всех непустых блоков через двойной перенос строки."""
-        return "\n\n".join(
-            b.content for b in self._by_kind.get(kind, []) if b.content
-        )
-
-
-# ═════════════════════════════════════════════════════════════════════
-#  Провайдер + фабрика
-# ═════════════════════════════════════════════════════════════════════
+        return "\n\n".join(b.content for b in self._by_kind.get(kind, []) if b.content)
 
 
 class PromptProvider(PrioritySource[PromptId, PromptState]):

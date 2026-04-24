@@ -20,8 +20,11 @@ agent-уровню (:class:`~boba.domain.agent.events.AgentEvent`), но не
     │   request_id: RequestId
     │   + classmethod name() -> Literal["..."]
     │
-    ├── LLMLifecycleMarker (abstract)       границы фазы, без контента
-    │   ├── LLMRequestSent                    model, messages_count, has_tools
+    ├── LLMUserPromptIssued                 user_prompt (snapshot перед отправкой)
+    │
+    ├── LLMLifecycleMarker (abstract)       границы фазы
+    │   ├── LLMRequestStarted                 model, messages_count, has_tools, ts
+    │   ├── LLMRequestSent                    monotonic_ns (парный — даёт длительность)
     │   ├── LLMGenerationStarted              первый чанк пришёл
     │   ├── LLMThinkingStarted
     │   ├── LLMAnswerStarted
@@ -99,16 +102,55 @@ class LLMStreamingDelta(BaseLLMEvent, ABC):
 
 
 @dataclass(frozen=True)
-class LLMRequestSent(LLMLifecycleMarker):
-    """HTTP-запрос к провайдеру отправлен, stream-handle получен.
+class LLMUserPromptIssued(BaseLLMEvent):
+    """
+    Snapshot user-prompt'а, который вот-вот уйдёт в LLM.
 
-    Закрывает TTFT-слепое пятно между «агент решил идти в LLM» и
-    первым чанком (:class:`LLMGenerationStarted`).
+    Эмитится прямо перед :class:`LLMRequestStarted`. Содержит сам
+    текст user-сообщения — для observability/audit-sink'ов, которые
+    должны зафиксировать, что именно отправлено провайдеру.
+    """
+
+    user_prompt: str
+
+    @classmethod
+    def name(cls) -> Literal["LLMUserPromptIssued"]:
+        return "LLMUserPromptIssued"
+
+
+@dataclass(frozen=True)
+class LLMRequestStarted(LLMLifecycleMarker):
+    """
+    HTTP-запрос к провайдеру вот-вот будет отправлен.
+
+    Парный к :class:`LLMRequestSent` — даёт замер длительности
+    самого ``client.chat.completions.create``. Поле ``monotonic_ns``
+    — :func:`time.monotonic_ns` на момент эмита. Разница с
+    ``monotonic_ns`` у :class:`LLMRequestSent` = время до получения
+    stream-handle (включает сетевой round-trip и TTFB).
     """
 
     model: str
     messages_count: int
     has_tools: bool
+    monotonic_ns: int
+
+    @classmethod
+    def name(cls) -> Literal["LLMRequestStarted"]:
+        return "LLMRequestStarted"
+
+
+@dataclass(frozen=True)
+class LLMRequestSent(LLMLifecycleMarker):
+    """
+    HTTP-запрос к провайдеру отправлен, stream-handle получен.
+
+    Парный к :class:`LLMRequestStarted`. Метаданные запроса
+    (model, messages_count, has_tools) живут на ``Started`` —
+    здесь только закрывающий ``monotonic_ns`` для замера длительности.
+    """
+
+    monotonic_ns: int
 
     @classmethod
     def name(cls) -> Literal["LLMRequestSent"]:
@@ -233,7 +275,9 @@ class LLMGenerationDone(LLMLifecycleMarker):
 
 
 LLMEvent = (
-    LLMRequestSent
+    LLMUserPromptIssued
+    | LLMRequestStarted
+    | LLMRequestSent
     | LLMGenerationStarted
     | LLMThinkingStarted
     | LLMThinkingToken
@@ -248,6 +292,8 @@ LLMEvent = (
 
 
 LLMEventName: TypeAlias = Literal[
+    "LLMUserPromptIssued",
+    "LLMRequestStarted",
     "LLMRequestSent",
     "LLMGenerationStarted",
     "LLMThinkingStarted",

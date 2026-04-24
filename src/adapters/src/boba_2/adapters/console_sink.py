@@ -8,7 +8,6 @@ sink'ом позже.
 
 from __future__ import annotations
 
-import sys
 from typing import TextIO
 
 from boba.domain.core.patterns import StreamSink
@@ -21,20 +20,19 @@ from boba_2.domain.agent.events import (
 from boba_2.domain.agent.models import AgentContext
 
 
-class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
-    """AgentEvent → stdout/stderr.
+class TextOutSink(StreamSink[AgentContext, AgentEvent]):
+    """AgentEvent -> text out
 
-    :attr:`stdout` / :attr:`stderr` принимают любые TextIO — удобно
-    для тестов (``io.StringIO``).
+    принимают любые TextIO — удобно для stdout/stderr и unit test
     """
 
     def __init__(
         self,
-        stdout: TextIO | None = None,
-        stderr: TextIO | None = None,
+        stdout: TextIO,
+        stderr: TextIO,
     ) -> None:
-        self._stdout = stdout if stdout is not None else sys.stdout
-        self._stderr = stderr if stderr is not None else sys.stderr
+        self._stdout = stdout
+        self._stderr = stderr
 
     def name(self) -> str:
         return "ConsoleSink"

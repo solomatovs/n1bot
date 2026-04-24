@@ -1,12 +1,12 @@
 """Публичный API core-слоя.
 
-Реэкспортирует базовые доменные примитивы: иерархию маршрутизируемых
+Реэкспортирует базовые доменные примитивы: маркеры маршрутизируемых
 ошибок, паттерны потоков/конвертеров, доменные модели tools и workspace.
 
 Импорты короткой формой::
 
     from boba.domain.core import Converter, StreamSource, Specification
-    from boba.domain.core import RoutableError, TerminalError, UserNoticeError
+    from boba.domain.core import RoutableError, TerminalError, Retryable
 """
 
 from boba.domain.core.errors import (
@@ -15,8 +15,6 @@ from boba.domain.core.errors import (
     RoutableError,
     TerminalError,
     UserFeedbackError,
-    UserNoticeError,
-    UserNoticeSeverity,
 )
 from boba.domain.core.patterns import (
     AllMatchesDispatcher,
@@ -197,8 +195,6 @@ __all__ = [
     "ToolStore",
     "ToolsService",
     "UserFeedbackError",
-    "UserNoticeError",
-    "UserNoticeSeverity",
     "UuId",
     "Validator",
     "ValueValidator",
