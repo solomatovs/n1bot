@@ -17,10 +17,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Generic, Self, TypeVar
 
-from boba.domain.agent.errors import AgentTerminalError
 from boba.domain.agent.events import AgentEvent, PromptFailed
 from boba.domain.agent.models import RequestId
-from boba.domain.core.errors import Retryable
+from boba.domain.core.errors import Retryable, TerminalError, UserFeedbackError
 from boba.domain.core.patterns import (
     FoldFactory,
     Id,
@@ -30,7 +29,7 @@ from boba.domain.core.patterns import (
 TCtx = TypeVar("TCtx")
 
 
-class PromptError(AgentTerminalError):
+class PromptError(UserFeedbackError[RequestId, AgentEvent], TerminalError):
     """Базовая ошибка сборки промпта.
 
     Адаптеры-провайдеры промптов (чтение файлов, workspace, git) оборачивают
@@ -43,7 +42,7 @@ class PromptError(AgentTerminalError):
         super().__init__(message)
         self.provider = provider
 
-    def to_user_event(self, request_id: RequestId) -> AgentEvent:
+    def to_event(self, request_id: RequestId) -> AgentEvent:
         return PromptFailed(
             request_id=request_id,
             error_kind=type(self).__name__,
@@ -119,9 +118,7 @@ class PromptResult:
 
     def to_string(self, kind: PromptKind) -> str:
         """Конкатенация всех непустых блоков заданного типа."""
-        return "\n\n".join(
-            b.content for b in self._by_kind.get(kind, []) if b.content
-        )
+        return "\n\n".join(b.content for b in self._by_kind.get(kind, []) if b.content)
 
 
 class PromptProvider(PrioritySource[PromptId, PromptState]):

@@ -11,11 +11,14 @@ from boba_2.domain.agent.events import (
     TerminalFailure,
 )
 from boba_2.domain.agent.models import AgentContext
-from boba_2.domain.llm.models import LLMRequestBuilder
 
 
 class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Инкрементирует счётчик циклов"""
+    """
+    Инкрементирует счётчик цикло
+    Выдает исключение если превышено кол-во циклов агента
+    Для маленьких моделей, которые часто зацикливаются это необходимость
+    """
 
     def __init__(self, inner: StreamSource[AgentContext, AgentEvent]) -> None:
         self._inner = inner
@@ -28,21 +31,19 @@ class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
 
     def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
         ctx.iteration += 1
-        limit = ctx.config.max_iterations
-        if ctx.iteration > limit:
+
+        if ctx.iteration > ctx.config.max_iterations:
             raise MaxIterationsExceededError(
                 f"Исчерпан лимит итераций цикла агента: {ctx.iteration} > "
-                f"{limit}. Финальный ответ не получен.",
-                limit=limit,
+                f"{ctx.config.max_iterations}. Финальный ответ не получен.",
+                limit=ctx.config.max_iterations,
                 iteration=ctx.iteration,
             )
-
-        ctx.request = LLMRequestBuilder()
 
         yield IterationStarted(
             request_id=ctx.agent_request.request_id,
             iteration=ctx.iteration,
-            max_iterations=limit,
+            max_iterations=ctx.config.max_iterations,
         )
         yield from self._inner.stream(ctx)
 

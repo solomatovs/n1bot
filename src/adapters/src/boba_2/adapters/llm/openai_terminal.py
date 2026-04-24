@@ -1,35 +1,10 @@
-"""Терминал LLM-слоя — обращение к OpenAI-совместимому API.
-
-Вход — :class:`LLMContext` с immutable :class:`LLMRequest`; выход —
-стрим :class:`LLMEvent`. В отличие от старого ``OpenAIMiddleware``,
-на этом уровне нет ``AgentContext``, ``RawLLMObserver`` и
-chunk-preprocessor-фабрик — всё это (логирование, коррекция
-параллельных tool_calls, retry) живёт в middleware LLM-слоя, а не в
-терминале.
-
-Контракт исключений:
-
-- при ошибке провайдера (``openai.APIError`` / ``httpx.HTTPError``)
-  терминал конвертирует её в потомка
-  :class:`~boba_2.domain.llm.errors.LLMError` через
-  :class:`~boba_2.adapters.llm.openai_errors.OpenAIErrorConverter`;
-- уже-доменные :class:`LLMError` пробрасываются как есть — не
-  переоборачиваем, чтобы ``__cause__`` не удлинялся цепочкой
-  собственных wrap'ов.
-
-Конструктор принимает **готовый** :class:`openai.OpenAI` клиент.
-Это позволяет:
-
-- в проде контейнер строит клиент один раз из
-  :class:`~boba.domain.config.LLMConfig` через
-  :func:`build_openai_client` и переиспользует;
-- в тестах подменить клиент на стаб без доступа к private-атрибутам
-  (никаких ``setattr`` на ``_client``).
+"""
+Терминал LLM-слоя — обращение к OpenAI-совместимому API.
 """
 
 from __future__ import annotations
 
-import logging
+import time
 from collections.abc import Iterable
 
 import httpx
@@ -42,17 +17,18 @@ from boba_2.adapters.llm.openai_errors import OpenAIErrorConverter
 from boba_2.adapters.llm.openai_request import ToOpenAIRequestConverter
 from boba_2.adapters.llm.openai_response import FromOpenAIChunkConverter
 from boba_2.domain.llm.errors import LLMError
-from boba_2.domain.llm.events import LLMEvent, LLMRequestSent
+from boba_2.domain.llm.events import (
+    LLMEvent,
+    LLMRequestSent,
+    LLMRequestStarted,
+    LLMUserPromptIssued,
+)
 from boba_2.domain.llm.models import LLMContext
-
-logger = logging.getLogger(__name__)
 
 
 def build_openai_client(config: LLMConfig) -> OpenAI:
-    """Строит :class:`openai.OpenAI` из транспорт-конфига.
-
-    Вынесено в отдельную функцию, чтобы контейнер и тесты могли
-    ссылаться на один способ конструирования клиента.
+    """
+    Строит :class:`openai.OpenAI` из конфига
     """
     return OpenAI(base_url=config.base_url, api_key=config.api_key)
 
@@ -73,8 +49,30 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
         return "OpenAITerminal"
 
     def stream(self, ctx: LLMContext) -> Iterable[LLMEvent]:
+        # превращаем :class:`LLMRequest` в аргументы вызова openai api
+        # аргументов очень много и самый простой способ это собрать kwargs
         kwargs = self._to_request.convert(ctx.request)
 
+        # snapshot user-prompt'а — что именно сейчас улетит в LLM
+        yield LLMUserPromptIssued(
+            request_id=ctx.request_id,
+            user_prompt=ctx.request.user_message.content,
+        )
+
+        # парные события вокруг HTTP-вызова: Started/Sent
+        # разница monotonic_ns даёт длительность провайдер-запроса
+        # (сетевой round-trip + TTFB до получения stream-handle)
+        yield LLMRequestStarted(
+            request_id=ctx.request_id,
+            model=ctx.request.model,
+            messages_count=ctx.request.messages_count(),
+            has_tools=ctx.request.has_tools(),
+            monotonic_ns=time.monotonic_ns(),
+        )
+
+        # ошибка обработки запроса здесь классифицируется!
+        # Terminal error - это всякие 401, 500, 502, которые нельзя повторить
+        # Retryible error - это всякие лимиты по контексту
         try:
             response = self._client.chat.completions.create(**kwargs)
         except LLMError:
@@ -84,14 +82,11 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
 
         yield LLMRequestSent(
             request_id=ctx.request_id,
-            model=str(kwargs.get("model", "")),
-            messages_count=len(kwargs.get("messages") or ()),
-            has_tools=bool(kwargs.get("tools")),
+            monotonic_ns=time.monotonic_ns(),
         )
 
-        decoder = FromOpenAIChunkConverter(ctx.request_id)
         try:
-            yield from decoder.stream(ctx, response)
+            yield from FromOpenAIChunkConverter(ctx.request_id).stream(ctx, response)
         except LLMError:
             raise
         except (openai.APIError, httpx.HTTPError) as e:

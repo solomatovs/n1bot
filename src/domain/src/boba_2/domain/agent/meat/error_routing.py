@@ -1,3 +1,12 @@
+"""Полиморфная маршрутизация :class:`RoutableError` по маркерам.
+
+Роутер не знает конкретных подклассов — он читает маркеры
+(:class:`UserFeedbackError`, :class:`LLMFeedbackError`,
+:class:`TerminalError`, :class:`Retryable`) независимо и суммирует
+эффекты. Добавление новой ошибки сводится к миксу нужных маркеров и
+реализации их abstract-методов.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
@@ -5,63 +14,101 @@ from collections.abc import Iterable, Iterator
 from boba.domain.core.errors import (
     LLMFeedbackError,
     RoutableError,
+    TerminalError,
     UserFeedbackError,
 )
 from boba.domain.core.patterns import StreamSource
-from boba_2.domain.agent.events import AgentEvent
+from boba_2.domain.agent.events import AgentEvent, GenericTerminalFailure
 from boba_2.domain.agent.messages import MessageService
 from boba_2.domain.agent.models import AgentContext
 
 
 class AgentErrorRouter:
-    """
-    Маршрутизация ошбиок в приложении
+    """Маршрутизирует :class:`RoutableError` по маркерам.
+
+    Эффекты собираются независимо в таком порядке:
+
+    1. :class:`LLMFeedbackError` — ``to_llm_feedback()`` пишется в
+       :class:`MessageService`. LLM увидит фидбек на следующей итерации.
+    2. :class:`UserFeedbackError` — ``to_event(request_id)`` yield-ится
+       в stream. Sink получает событие.
+    3. :class:`TerminalError` — если шаг 2 не дал события, роутер
+       эмитит generic :class:`GenericTerminalFailure`, чтобы
+       :class:`StopOnAnyFailure` остановил цикл. Если ``to_event``
+       уже вернул подкласс ``TerminalFailure`` — повторного события
+       не будет.
+    4. :class:`Retryable` — игнорируется роутером. Обработка —
+       задача retry-middleware глубже по стеку.
+
+    Две API-точки:
+
+    - :meth:`route` — разобрать одну ошибку.
+    - :meth:`run_batch` — прогнать серию подзадач с batch-семантикой:
+      не-терминальные ошибки копятся и маршрутизируются в конце,
+      :class:`TerminalError` пропускается наверх немедленно.
     """
 
     def __init__(self, message_service: MessageService) -> None:
         self._message_service = message_service
 
     def route(
-        self, ctx: AgentContext, err: RoutableError,
+        self,
+        ctx: AgentContext,
+        err: RoutableError,
     ) -> Iterator[AgentEvent]:
-        """
-        Разобрать одну ошибку в поток событий + побочный эффект
-        """
         rid = ctx.agent_request.request_id
-        if not isinstance(err, UserFeedbackError):
-            raise TypeError(
-                f"{type(err).__name__}: RoutableError, но не унаследован от "
-                "UserFeedbackError. Добавь наследование от одного из "
-                "binding-бейзов (AgentTerminalError / AgentLLMFeedbackError "
-                "/ AgentUserNotice).",
-            ) from err
 
         if isinstance(err, LLMFeedbackError):
             self._message_service.add(err.to_llm_feedback())
 
-        yield err.to_user_event(rid)
+        has_event = False
+        if isinstance(err, UserFeedbackError):
+            yield err.to_event(rid)
+            has_event = True
+
+        if isinstance(err, TerminalError) and not has_event:
+            yield GenericTerminalFailure(
+                request_id=rid,
+                error_kind=type(err).__name__,
+                message=str(err),
+            )
 
     def run_batch(
         self,
         ctx: AgentContext,
         tasks: Iterable[Iterator[AgentEvent]],
     ) -> Iterator[AgentEvent]:
+        """Серия подзадач с batch-семантикой для не-терминальных ошибок.
+
+        События успешных подзадач стримятся сразу. Не-терминальные
+        :class:`RoutableError` из подзадач копятся и маршрутизируются
+        после завершения всей серии (в порядке возникновения).
+        :class:`TerminalError` пропускается наверх немедленно — batch
+        прерывается.
         """
-        Прогнать серию подзадач с batch-семантикой для
-        """
-        deferred: list[LLMFeedbackError] = []
+        deferred: list[RoutableError] = []
         for task in tasks:
             try:
                 yield from task
-            except LLMFeedbackError as e:
+            except TerminalError:
+                raise
+            except RoutableError as e:
                 deferred.append(e)
         for err in deferred:
             yield from self.route(ctx, err)
 
 
 class AgentErrorRouterMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """
-    Верхнеуровневый try/except над всей агентской цепочкой.
+    """Top-level try/except над всей агентской цепочкой.
+
+    Ставится самым внешним слоем. Любой middleware глубже может
+    ``raise`` подкласс :class:`RoutableError` — этот middleware
+    ловит и делегирует :class:`AgentErrorRouter`.
+
+    Всё, что не наследует :class:`RoutableError` (``KeyError``,
+    ``TypeError`` и т.п.), проходит насквозь и крашит процесс — баги
+    не маскируем. :class:`Retryable`-подклассы доезжают сюда только
+    после исчерпания попыток во внутреннем retry-слое.
     """
 
     def __init__(

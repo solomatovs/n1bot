@@ -17,36 +17,18 @@ from boba.domain.core.patterns import StreamSource
 
 
 class AgentErrorRouter:
-    """Полиморфная маршрутизация :class:`RoutableError` через ``to_*_event``.
-
-    Роутер не знает конкретных подклассов — он смотрит только на
-    семейство (:class:`UserFeedbackError` / :class:`LLMFeedbackError`) и
-    делегирует построение события самой ошибке. Добавление новой ошибки
-    не требует правок роутера: достаточно унаследоваться от
-    соответствующего binding-бейза (:class:`AgentTerminalError` /
-    :class:`AgentLLMFeedbackError` / :class:`AgentUserNotice`) и
-    реализовать abstract-методы.
-
-    Две API-точки для клиентов:
-
-    - :meth:`route` — разобрать одну ошибку (вызывается верхнеуровневым
-      :class:`AgentErrorRouterMiddleware` из top-level try/except).
-    - :meth:`run_batch` — прогнать серию подзадач-генераторов с
-      автоматическим сбором :class:`LLMFeedbackError` и маршрутизацией
-      в конце.
+    """
+    Роутер смотрит на классы-маркеры и делегирует построение события самой ошибке.
 
     Маршруты:
 
-    - :class:`UserFeedbackError` → ``err.to_user_event()`` в поток
-      (event для sink'ов). Терминальность определяется подклассом —
-      :class:`TerminalError` остановит цикл через
-      :class:`StopOnAnyFailure`, :class:`UserNoticeError` /
-      :class:`LLMFeedbackError` — нет.
-    - :class:`LLMFeedbackError` (подкласс ``UserFeedbackError``) →
-      дополнительно ``err.to_llm_feedback()`` в :class:`MessageService`.
-    - :class:`RoutableError` без принадлежности к
-      :class:`UserFeedbackError` → :class:`TypeError` (мисконфиг
-      иерархии).
+    - если :class:`UserFeedbackError` то отправляем в поток: ``err.to_event()``
+
+    - если :class:`LLMFeedbackError` то отправляем llm: ``err.to_llm_feedback()``
+
+    - если :class:`RoutableError` без маркера :class:`UserFeedbackError` →
+      :class:`TypeError` (в этом слое все concrete-ошибки миксуют
+      ``UserFeedback`` — это ожидание архитектуры).
     """
 
     def __init__(self, message_service: MessageService) -> None:
@@ -54,14 +36,17 @@ class AgentErrorRouter:
 
     def route(self, ctx: AgentContext, err: RoutableError) -> Iterator[AgentEvent]:
         rid = ctx.agent_request.request_id
+
         if not isinstance(err, UserFeedbackError):
             raise TypeError(
                 f"{type(err).__name__}: RoutableError, но не унаследован от "
                 "UserFeedbackError. Наследуй от семейства.",
             ) from err
+
         if isinstance(err, LLMFeedbackError):
             self._message_service.add(err.to_llm_feedback())
-        yield err.to_user_event(rid)
+
+        yield err.to_event(rid)
 
     def run_batch(
         self,

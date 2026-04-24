@@ -1,13 +1,5 @@
-"""Классификация сырых ``openai``/``httpx`` исключений в :class:`LLMError`.
-
-Правила в ``default_rules()`` применяются в порядке регистрации через
-:class:`~boba.domain.core.patterns.FirstMatchConverter`: первое
-совпадение — победитель. Если ни одно правило не сработало, fallback
-в :class:`~boba_2.domain.llm.errors.LLMProviderInternalError`.
-
-Порядок важен: подклассы должны идти раньше родителей
-(``APITimeoutError`` → ``APIConnectionError``; специальный случай
-``context_length_exceeded`` → общий ``BadRequestError``).
+"""
+Классификация сырых ``openai``/``httpx`` исключений в :class:`LLMError`
 """
 
 from __future__ import annotations

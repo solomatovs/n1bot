@@ -23,6 +23,8 @@ from boba_2.domain.agent.events import (
     ToolCallBegin,
 )
 from boba_2.domain.agent.events import LLMRequestSent as AgentLLMRequestSent
+from boba_2.domain.agent.events import LLMRequestStarted as AgentLLMRequestStarted
+from boba_2.domain.agent.events import LLMUserPromptIssued as AgentLLMUserPromptIssued
 from boba_2.domain.agent.models import AgentContext
 from boba_2.domain.llm.errors import LLMError, RetryableLLMError
 from boba_2.domain.llm.events import (
@@ -33,11 +35,13 @@ from boba_2.domain.llm.events import (
     LLMGenerationStarted,
     LLMRefusalToken,
     LLMRequestSent,
+    LLMRequestStarted,
     LLMRetryAttempt,
     LLMThinkingStarted,
     LLMThinkingToken,
     LLMToolCallArgumentDelta,
     LLMToolCallBegin,
+    LLMUserPromptIssued,
 )
 from boba_2.domain.llm.models import LLMContext, LLMRequestBuilder
 
@@ -47,19 +51,31 @@ class LLMEventToAgentEventConverter(Converter[LLMEvent, AgentEvent]):
     Конвертирует все события LLMEvent в AgentEvent
     """
 
-    def convert(self, value: LLMEvent) -> AgentEvent:  # noqa: C901, PLR0911
+    def convert(self, value: LLMEvent) -> AgentEvent:  # noqa: C901, PLR0911, PLR0912
         match value:
-            case LLMRequestSent(
+            case LLMUserPromptIssued(request_id=rid, user_prompt=up):
+                return AgentLLMUserPromptIssued(
+                    request_id=rid,
+                    user_prompt=up,
+                )
+            case LLMRequestStarted(
                 request_id=rid,
                 model=m,
                 messages_count=mc,
                 has_tools=ht,
+                monotonic_ns=ts,
             ):
-                return AgentLLMRequestSent(
+                return AgentLLMRequestStarted(
                     request_id=rid,
                     model=m,
                     messages_count=mc,
                     has_tools=ht,
+                    monotonic_ns=ts,
+                )
+            case LLMRequestSent(request_id=rid, monotonic_ns=ts):
+                return AgentLLMRequestSent(
+                    request_id=rid,
+                    monotonic_ns=ts,
                 )
             case LLMGenerationStarted(request_id=rid):
                 return GenerationStarted(request_id=rid)

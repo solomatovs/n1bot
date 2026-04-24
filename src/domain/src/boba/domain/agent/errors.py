@@ -2,15 +2,15 @@
 
 Этот модуль держит LLM-иерархию (:class:`LLMError` + подклассы),
 :class:`ToolFeedbackError`, :class:`LLMToolCallFormatError` и
-лимит-ошибки цикла. Базовые маркеры (``RoutableError``,
-``TerminalError``, ``UserFeedbackError``, ``LLMFeedbackError``,
-``Retryable``, ``UserNoticeError``) живут в
+лимит-ошибки цикла. Базовые маркеры (:class:`RoutableError`,
+:class:`TerminalError`, :class:`UserFeedbackError`,
+:class:`LLMFeedbackError`, :class:`Retryable`) живут в
 :mod:`boba.domain.core.errors`.
 
-Agent-слой вводит **binding-бейзы** (:class:`AgentTerminalError`,
-:class:`AgentLLMFeedbackError`), которые привязывают core-generics к
-``AgentEvent`` / ``LLMMessage``. Concrete-ошибки наследуются от них и
-реализуют ``to_user_event`` + (для LLM-feedback ветки) ``to_llm_feedback``.
+Каждая concrete-ошибка явно объявляет свои эффекты миксами маркеров
+с прямой привязкой generics:
+``UserFeedbackError[RequestId, AgentEvent]``,
+``LLMFeedbackError[LLMMessage]``.
 
 
 ════════════════════════════════════════════════════════════════════
@@ -21,56 +21,26 @@ Agent-слой вводит **binding-бейзы** (:class:`AgentTerminalError`,
 
     RoutableError                                          [core.errors]
     │
-    ├── UserFeedbackError[TReqId, TUserEvent]   user видит event через sink
-    │   │   to_user_event(request_id) -> TUserEvent
-    │   │
-    │   ├── TerminalError                         + цикл стоп
-    │   │   │
-    │   │   └── AgentTerminalError               [agent.errors] binding
-    │   │       │   bind: TReqId=RequestId, TUserEvent=AgentEvent
-    │   │       │
-    │   │       ├── LLMError                     → GenerationFailed
-    │   │       │   ├── RetryableLLMError         (+ Retryable)
-    │   │       │   │   ├── LLMConnectionError
-    │   │       │   │   ├── LLMTimeoutError
-    │   │       │   │   ├── LLMRateLimitError
-    │   │       │   │   └── LLMProviderInternalError
-    │   │       │   └── PermanentLLMError
-    │   │       │       ├── LLMAuthError
-    │   │       │       ├── LLMInvalidRequestError
-    │   │       │       │   └── LLMRequestModelNoneError
-    │   │       │       ├── LLMContextLengthError
-    │   │       │       └── LLMProtocolError
-    │   │       │
-    │   │       ├── PromptError                  [agent.prompt] → PromptFailed
-    │   │       │   ├── RetryablePromptError     (+ Retryable)
-    │   │       │   └── PermanentPromptError
-    │   │       │       └── PromptProviderError
-    │   │       │
-    │   │       ├── MessageStoreError            [agent.messages] → PersistenceFailed
-    │   │       │   ├── MessageStoreWriteError
-    │   │       │   └── MessageStoreReadError
-    │   │       │
-    │   │       ├── MaxIterationsExceededError   → MaxIterationsReached
-    │   │       │
-    │   │       └── RepeatedFormatFailureError   → RepeatedFormatFailure
-    │   │
-    │   ├── UserNoticeError                       цикл идёт, severity
-    │   │   └── AgentUserNotice                   → UserNoticeReady
-    │   │
-    │   └── LLMFeedbackError[TReqId, TUserEvent,  + LLM feedback через
-    │       │                TFeedback]            MessageService, цикл идёт
-    │       │   to_llm_feedback() -> TFeedback
-    │       │
-    │       └── AgentLLMFeedbackError            [agent.errors] binding
-    │           │   bind: + TFeedback=LLMMessage
-    │           │
-    │           ├── ToolFeedbackError            → role="tool" +
-    │           │                                  ToolExecutionFailed
-    │           └── LLMToolCallFormatError       → role="user" +
-    │                                              ToolCallFormatFailed
+    ├── UserFeedbackError[TReqId, TUserEvent]    event для sink
+    │       to_event(request_id) -> TUserEvent
     │
-    └── Retryable                              маркер, ортогонально всему
+    ├── LLMFeedbackError[TFeedback]              фидбек для LLM
+    │       to_llm_feedback() -> TFeedback
+    │
+    ├── TerminalError                            маркер остановки цикла
+    └── Retryable                                маркер повтора
+
+Concrete-ошибки агент-слоя (миксы):
+
+- ``UserFeedbackError[RequestId, AgentEvent] + TerminalError``:
+  :class:`LLMError` (+ подклассы: :class:`RetryableLLMError`,
+  :class:`PermanentLLMError` и т.д.), :class:`PromptError`
+  (``agent.prompt``), :class:`MessageStoreError` (``agent.messages``),
+  :class:`MaxIterationsExceededError`, :class:`RepeatedFormatFailureError`.
+- ``UserFeedbackError[RequestId, AgentEvent] + LLMFeedbackError[LLMMessage]``:
+  :class:`ToolFeedbackError`, :class:`LLMToolCallFormatError`.
+- ``UserFeedbackError[RequestId, AgentEvent]`` (без terminal):
+  :class:`AgentUserNotice` (+ severity).
 
 
 ════════════════════════════════════════════════════════════════════
@@ -138,28 +108,33 @@ Agent-слой вводит **binding-бейзы** (:class:`AgentTerminalError`,
   Как добавить новый тип ошибки
 ════════════════════════════════════════════════════════════════════
 
-1. Выбери семейство: :class:`AgentTerminalError` (терминально),
-   :class:`UserNoticeError` (нотис), :class:`AgentLLMFeedbackError`
-   (для LLM), или Retryable-mixin поверх любого из них.
-2. Добавь поля контекста в ``__init__`` (``status_code``, ``tool_call_id``,
-   ``provider``, …).
-3. Реализуй абстрактные методы:
+1. Выбери маркеры-эффекты (любая комбинация):
 
-   - ``AgentTerminalError`` / ``UserNoticeError`` → ``to_user_event``.
-   - ``AgentLLMFeedbackError`` → ``to_user_event`` (унаследован) +
-     ``to_llm_feedback``.
+   - :class:`UserFeedbackError[RequestId, AgentEvent]` — event для sink
+     (обязателен ``to_event``);
+   - :class:`LLMFeedbackError[LLMMessage]` — фидбек для LLM
+     (обязателен ``to_llm_feedback``);
+   - :class:`TerminalError` — остановка цикла;
+   - :class:`Retryable` — повтор в retry-middleware.
 
+2. Объяви класс с прямым миксом::
+
+    class Foo(
+        UserFeedbackError[RequestId, AgentEvent],
+        TerminalError,
+    ):
+        def to_event(self, rid): ...
+
+3. Добавь поля контекста в ``__init__``.
 4. Если нужно новое событие — добавь dataclass в ``events.py``,
    занеси в ``AgentEvent``-union и ``AgentEventName``-literal.
 5. Обнови sink'и (``ConsoleSink`` / ``HistorySink``) при необходимости.
 
 Роутер (:class:`~boba.domain.agent.meat.error_routing.AgentErrorRouter`)
-**не правим** — он работает через полиморфизм. Забытый ``to_*_event``
-ловится ruff/pyright-ом статически через ``@abstractmethod``; в рантайме
-первый же вызов поднимает :class:`NotImplementedError` (``BaseException.
-__new__`` обходит ABCMeta-проверку ``__abstractmethods__`` — см.
-CPython #42188, — поэтому инстанцирование абстрактного класса не
-блокируется, защита переносится на вызов метода).
+**не правим** — он работает через полиморфизм по маркерам. Забытый
+``to_*`` метод ловится ruff/pyright-ом статически через
+``@abstractmethod``; в рантайме первый же вызов поднимает
+:class:`NotImplementedError`.
 
 
 ════════════════════════════════════════════════════════════════════
@@ -176,8 +151,6 @@ CPython #42188, — поэтому инстанцирование абстрак
 
 from __future__ import annotations
 
-from abc import ABC
-
 from boba.domain.agent.events import (
     AgentEvent,
     GenerationFailed,
@@ -186,36 +159,39 @@ from boba.domain.agent.events import (
     ToolCallFormatFailed,
     ToolExecutionFailed,
     UserNoticeReady,
+    UserNoticeSeverity,
 )
 from boba.domain.agent.models import LLMMessage, RequestId
 from boba.domain.core.errors import (
     LLMFeedbackError,
     Retryable,
     TerminalError,
-    UserNoticeError,
+    UserFeedbackError,
 )
 
+
 # ═════════════════════════════════════════════════════════════════════
-#  Binding-бейзы: привязываем generics из core к agent-типам
+#  Concrete: user notice (цикл идёт, severity)
 # ═════════════════════════════════════════════════════════════════════
 
 
-class AgentTerminalError(TerminalError[RequestId, AgentEvent], ABC):
-    """Binding ``TerminalError[TReqId=RequestId, TUserEvent=AgentEvent]``.
+class AgentUserNotice(UserFeedbackError[RequestId, AgentEvent]):
+    """Нотис пользователю с ``severity``. Цикл не прерывается.
 
-    Concrete-терминальные ошибки agent-слоя наследуются отсюда и
-    реализуют ``to_user_event`` с возвратом конкретного ``*Failed``-события.
+    Роутер эмитит :class:`~boba.domain.agent.events.UserNoticeReady`.
     """
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        severity: UserNoticeSeverity = "info",
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.severity: UserNoticeSeverity = severity
 
-class AgentUserNotice(UserNoticeError[RequestId, AgentEvent]):
-    """Concrete-нотис пользователю с ``severity``.
-
-    Роутер эмитит :class:`~boba.domain.agent.events.UserNoticeReady`,
-    цикл не прерывается.
-    """
-
-    def to_user_event(self, request_id: RequestId) -> AgentEvent:
+    def to_event(self, request_id: RequestId) -> AgentEvent:
         return UserNoticeReady(
             request_id=request_id,
             message=self.message,
@@ -223,23 +199,12 @@ class AgentUserNotice(UserNoticeError[RequestId, AgentEvent]):
         )
 
 
-class AgentLLMFeedbackError(
-    LLMFeedbackError[RequestId, AgentEvent, LLMMessage], ABC,
-):
-    """Binding ``LLMFeedbackError[RequestId, AgentEvent, LLMMessage]``.
-
-    Concrete LLM-feedback ошибки наследуются отсюда и реализуют
-    ``to_user_event`` (унаследован от :class:`UserFeedbackError`) +
-    ``to_llm_feedback``.
-    """
-
-
 # ═════════════════════════════════════════════════════════════════════
 #  LLM-иерархия
 # ═════════════════════════════════════════════════════════════════════
 
 
-class LLMError(AgentTerminalError):
+class LLMError(UserFeedbackError[RequestId, AgentEvent], TerminalError):
     """Базовая доменная ошибка обращения к LLM.
 
     Адаптеры провайдеров (OpenAI, Ollama, …) ловят сырые исключения
@@ -251,7 +216,7 @@ class LLMError(AgentTerminalError):
         super().__init__(message)
         self.status_code = status_code
 
-    def to_user_event(self, request_id: RequestId) -> AgentEvent:
+    def to_event(self, request_id: RequestId) -> AgentEvent:
         return GenerationFailed(
             request_id=request_id,
             error_kind=type(self).__name__,
@@ -322,7 +287,10 @@ class LLMRequestModelNoneError(LLMInvalidRequestError):
 # ═════════════════════════════════════════════════════════════════════
 
 
-class MaxIterationsExceededError(AgentTerminalError):
+class MaxIterationsExceededError(
+    UserFeedbackError[RequestId, AgentEvent],
+    TerminalError,
+):
     """Агентский цикл исчерпал лимит итераций без финального ответа.
 
     Поднимается :class:`~boba.domain.agent.meat.IterationCounterMiddleware`,
@@ -334,7 +302,7 @@ class MaxIterationsExceededError(AgentTerminalError):
         self.limit = limit
         self.iteration = iteration
 
-    def to_user_event(self, request_id: RequestId) -> AgentEvent:
+    def to_event(self, request_id: RequestId) -> AgentEvent:
         return MaxIterationsReached(
             request_id=request_id,
             error_kind=type(self).__name__,
@@ -344,7 +312,10 @@ class MaxIterationsExceededError(AgentTerminalError):
         )
 
 
-class RepeatedFormatFailureError(AgentTerminalError):
+class RepeatedFormatFailureError(
+    UserFeedbackError[RequestId, AgentEvent],
+    TerminalError,
+):
     """Модель N раз подряд вывела неверный формат tool call.
 
     Поднимается
@@ -358,7 +329,7 @@ class RepeatedFormatFailureError(AgentTerminalError):
         self.count = count
         self.limit = limit
 
-    def to_user_event(self, request_id: RequestId) -> AgentEvent:
+    def to_event(self, request_id: RequestId) -> AgentEvent:
         return RepeatedFormatFailure(
             request_id=request_id,
             error_kind=type(self).__name__,
@@ -373,7 +344,10 @@ class RepeatedFormatFailureError(AgentTerminalError):
 # ═════════════════════════════════════════════════════════════════════
 
 
-class ToolFeedbackError(AgentLLMFeedbackError):
+class ToolFeedbackError(
+    UserFeedbackError[RequestId, AgentEvent],
+    LLMFeedbackError[LLMMessage],
+):
     """Ошибка выполнения конкретного tool'а.
 
     Роутер пишет ``LLMMessage`` с ``role="tool"``,
@@ -400,7 +374,7 @@ class ToolFeedbackError(AgentLLMFeedbackError):
         self.error_kind = error_kind
         self.message = message
 
-    def to_user_event(self, request_id: RequestId) -> AgentEvent:
+    def to_event(self, request_id: RequestId) -> AgentEvent:
         return ToolExecutionFailed(
             request_id=request_id,
             tool_call_id=self.tool_call_id,
@@ -417,7 +391,10 @@ class ToolFeedbackError(AgentLLMFeedbackError):
         )
 
 
-class LLMToolCallFormatError(AgentLLMFeedbackError):
+class LLMToolCallFormatError(
+    UserFeedbackError[RequestId, AgentEvent],
+    LLMFeedbackError[LLMMessage],
+):
     """LLM нарушила формат content-as-JSON tool call'а.
 
     Роутер пишет ``LLMMessage`` с ``role="user"``, ``content=<message>``
@@ -445,7 +422,7 @@ class LLMToolCallFormatError(AgentLLMFeedbackError):
         self.message = message
         self.raw_content = raw_content
 
-    def to_user_event(self, request_id: RequestId) -> AgentEvent:
+    def to_event(self, request_id: RequestId) -> AgentEvent:
         return ToolCallFormatFailed(
             request_id=request_id,
             error_kind=type(self).__name__,

@@ -200,8 +200,10 @@ from enum import StrEnum
 from typing import Literal, TypeAlias, assert_never
 
 from boba.domain.agent.models import RequestId
-from boba.domain.core.errors import UserNoticeSeverity
 from boba.domain.core.patterns import Converter, Serializer
+
+UserNoticeSeverity = Literal["info", "warning", "error"]
+"""Уровень важности user-нотиса (см. :class:`AgentUserNotice`)."""
 
 
 class FinishReason(StrEnum):
@@ -690,8 +692,9 @@ class ToolResultReady(DurableMessage):
 class UserNoticeReady(UserNotification):
     """Нотис пользователю с severity (info / warning / error).
 
-    Эмитится роутером из :class:`UserNoticeError` или middleware
-    напрямую. Sink'и UI отрисуют по ``severity`` — разные цвета/иконки.
+    Эмитится роутером из :class:`~boba.domain.agent.errors.AgentUserNotice`
+    или middleware напрямую. Sink'и UI отрисуют по ``severity`` — разные
+    цвета/иконки.
     В :class:`MessageService` не попадает — LLM нотис не видит.
     Use cases: deprecation-warnings, soft-reject валидации,
     информирование о fallback'е.
