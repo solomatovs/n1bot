@@ -52,6 +52,40 @@
             }
         },
         {
+            "name": "Test AgentLoop (boba_2)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tests/boba_2/test_agent_loop_integration.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/.vscode",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+                "--model", "${input:model}",
+                "${input:query}"
+            ],
+            "envFile": "${workspaceFolder}/local/.env",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src"
+            }
+        },
+        {
+            "name": "boba_2.app (S2 thin slice)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba_2.app",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/.vscode",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+                "--model", "${input:model}",
+                "${input:query}"
+            ],
+            "envFile": "${workspaceFolder}/local/.env",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src"
+            }
+        },
+        {
             "name": "Pytest: current file",
             "type": "debugpy",
             "request": "launch",

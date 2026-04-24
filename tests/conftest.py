@@ -78,6 +78,25 @@ def model() -> str:
     return value
 
 
+@pytest.fixture
+def query() -> str:
+    """Query для integration-тестов — только из env ``LLM_QUERY``.
+
+    Системного дефолта нет (симметрично ``model``). Используется
+    :mod:`tests.boba_2.test_agent_loop`; legacy-тесты рядом тоже
+    объявляли ``query`` в сигнатуре — теперь fixture единая на весь
+    репозиторий.
+    """
+    value = os.environ.get("LLM_QUERY")
+    if not value:
+        msg = (
+            "LLM_QUERY env var is required for integration tests — "
+            "set it explicitly, no system default"
+        )
+        raise RuntimeError(msg)
+    return value
+
+
 _ERROR_KIND_TO_TAG = {
     "LLMContextLengthError": "failed_context_length",
     "LLMInvalidRequestError": "failed_invalid_request",
