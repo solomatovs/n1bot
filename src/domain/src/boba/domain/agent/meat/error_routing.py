@@ -2,7 +2,7 @@
 
 Роутер не знает конкретных подклассов — он читает маркеры
 (:class:`UserFeedbackError`, :class:`LLMFeedbackError`,
-:class:`TerminalError`, :class:`Retryable`) независимо и суммирует
+:class:`TerminalError`) независимо и суммирует
 эффекты. Добавление новой ошибки сводится к миксу нужных маркеров и
 реализации их abstract-методов.
 """
@@ -30,15 +30,13 @@ class AgentErrorRouter:
 
     1. :class:`LLMFeedbackError` — ``to_llm_feedback()`` пишется в
        :class:`MessageService`. LLM увидит фидбек на следующей итерации.
-    2. :class:`UserFeedbackError` — ``to_event(request_id)`` yield-ится
+    2. :class:`UserFeedbackError` — ``to_user_feedback(request_id)`` yield-ится
        в stream. Sink получает событие.
     3. :class:`TerminalError` — если шаг 2 не дал события, роутер
        эмитит generic :class:`GenericTerminalFailure`, чтобы
-       :class:`StopOnAnyFailure` остановил цикл. Если ``to_event``
+       :class:`StopOnAnyFailure` остановил цикл. Если ``to_user_feedback``
        уже вернул подкласс ``TerminalFailure`` — повторного события
        не будет.
-    4. :class:`Retryable` — игнорируется роутером. Обработка —
-       задача retry-middleware глубже по стеку.
 
     Две API-точки:
 
@@ -63,7 +61,7 @@ class AgentErrorRouter:
 
         has_event = False
         if isinstance(err, UserFeedbackError):
-            yield err.to_event(rid)
+            yield err.to_user_feedback(rid)
             has_event = True
 
         if isinstance(err, TerminalError) and not has_event:
@@ -107,8 +105,7 @@ class AgentErrorRouterMiddleware(StreamSource[AgentContext, AgentEvent]):
 
     Всё, что не наследует :class:`RoutableError` (``KeyError``,
     ``TypeError`` и т.п.), проходит насквозь и крашит процесс — баги
-    не маскируем. :class:`Retryable`-подклассы доезжают сюда только
-    после исчерпания попыток во внутреннем retry-слое.
+    не маскируем.
     """
 
     def __init__(

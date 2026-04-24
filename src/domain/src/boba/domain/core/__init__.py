@@ -6,12 +6,11 @@
 Импорты короткой формой::
 
     from boba.domain.core import Converter, StreamSource, Specification
-    from boba.domain.core import RoutableError, TerminalError, Retryable
+    from boba.domain.core import RoutableError, TerminalError
 """
 
 from boba.domain.core.errors import (
     LLMFeedbackError,
-    Retryable,
     RoutableError,
     TerminalError,
     UserFeedbackError,
@@ -161,7 +160,6 @@ __all__ = [
     "Required",
     "RequiresTogether",
     "Resolver",
-    "Retryable",
     "RoutableError",
     "SchemaArgsValidator",
     "SchemaContributor",

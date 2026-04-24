@@ -7,12 +7,12 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import assert_never
 
+from boba.domain.agent.errors import LLMGenerationFailedError
 from boba.domain.agent.events import (
     AgentEvent,
     AnswerStarted,
     AnswerToken,
     GenerationDone,
-    GenerationFailed,
     GenerationRetried,
     GenerationStarted,
     RefusalToken,
@@ -26,7 +26,7 @@ from boba.domain.agent.events import LLMRequestStarted as AgentLLMRequestStarted
 from boba.domain.agent.events import LLMUserPromptIssued as AgentLLMUserPromptIssued
 from boba.domain.agent.models import AgentContext
 from boba.domain.core.patterns import Converter, StreamSource
-from boba.domain.llm.errors import LLMError, RetryableLLMError
+from boba.domain.llm.errors import LLMError
 from boba.domain.llm.events import (
     LLMAnswerStarted,
     LLMAnswerToken,
@@ -155,13 +155,10 @@ class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
             ):
                 yield self._to_agent.convert(event)
         except LLMError as e:
-            yield GenerationFailed(
-                request_id=ctx.agent_request.request_id,
+            raise LLMGenerationFailedError(
+                str(e),
                 error_kind=type(e).__name__,
-                message=str(e),
-                retryable=isinstance(e, RetryableLLMError),
-                status_code=e.status_code,
-            )
+            ) from e
 
 
 class NewLLMRequestMiddleware(StreamSource[AgentContext, AgentEvent]):

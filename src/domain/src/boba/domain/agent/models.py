@@ -12,8 +12,12 @@ Tool-специфичные поля (``workspace_id``, каталог tool'ов
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from boba.domain.llm.models import LLMRequestBuilder, RequestId
+
+if TYPE_CHECKING:
+    from boba.domain.agent.next_turn import NextTurnIntent
 
 
 @dataclass(frozen=True)
@@ -80,3 +84,21 @@ IterationCounterMiddleware` пересоздаёт его. Это принцип
     config: AgentConfig = field(default_factory=AgentConfig)
     iteration: int = 0
     request: LLMRequestBuilder = field(default_factory=LLMRequestBuilder)
+    _next_turn: NextTurnIntent | None = None
+
+    def set_next_turn(self, intent: NextTurnIntent) -> None:
+        """Декларирует intent на следующую итерацию.
+
+        Политика слияния: если slot уже занят — выигрывает больший
+        :meth:`NextTurnIntent.priority`. При равном приоритете —
+        last-wins (последний producer перезаписывает).
+        """
+        current = self._next_turn
+        if current is None or intent.priority() >= current.priority():
+            self._next_turn = intent
+
+    def consume_next_turn(self) -> NextTurnIntent | None:
+        """Возвращает intent и освобождает slot (одноразовое чтение)."""
+        intent = self._next_turn
+        self._next_turn = None
+        return intent

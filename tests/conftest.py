@@ -15,12 +15,10 @@ CI-окружение всегда имеют приоритет.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import pytest
 
-from boba.domain.agent.events import AgentEvent, GenerationDone, GenerationFailed
 from boba.infra.harness import AgentHarness
 
 
@@ -51,8 +49,6 @@ def _bootstrap_test_env() -> None:
 
 
 _bootstrap_test_env()
-
-OutcomeClassifier = Callable[[Iterable[AgentEvent]], str]
 
 
 @pytest.fixture
@@ -95,29 +91,3 @@ def query() -> str:
         )
         raise RuntimeError(msg)
     return value
-
-
-_ERROR_KIND_TO_TAG = {
-    "LLMContextLengthError": "failed_context_length",
-    "LLMInvalidRequestError": "failed_invalid_request",
-    "LLMConnectionError": "failed_connection",
-    "LLMTimeoutError": "failed_timeout",
-}
-
-
-def _classify_overflow_outcome(events: Iterable[AgentEvent]) -> str:
-    for ev in events:
-        if isinstance(ev, GenerationFailed):
-            if ev.status_code == 413:
-                return "failed_413_payload_too_large"
-            return _ERROR_KIND_TO_TAG.get(ev.error_kind, f"failed_{ev.error_kind}")
-    for ev in events:
-        if isinstance(ev, GenerationDone):
-            return "done_trimmed_by_proxy"
-    return "no_terminal_event"
-
-
-@pytest.fixture
-def classify_overflow_outcome() -> OutcomeClassifier:
-    """Свернуть поток событий агента в один тег исхода перегрузки контекста."""
-    return _classify_overflow_outcome

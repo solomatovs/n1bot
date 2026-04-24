@@ -1,11 +1,5 @@
-"""Публичный API LLM-слоя.
-
-Реэкспортирует ошибки, события, модели запросов и middleware.
-
-Короткие импорты::
-
-    from boba.domain.llm import LLMRequest, LLMContext, LLMEvent
-    from boba.domain.llm import LLMError, RetryableLLMError
+"""
+Публичный API LLM-слоя.
 """
 
 from boba.domain.llm.errors import (
@@ -20,7 +14,9 @@ from boba.domain.llm.errors import (
     LLMRequestModelNoneError,
     LLMRequestSystemMessageNoneError,
     LLMRequestUserMessageNoneError,
+    LLMRequestValidationError,
     LLMTimeoutError,
+    LLMUnknownError,
     PermanentLLMError,
     RetryableLLMError,
 )
@@ -86,6 +82,7 @@ __all__ = [
     "LLMRequestStarted",
     "LLMRequestSystemMessageNoneError",
     "LLMRequestUserMessageNoneError",
+    "LLMRequestValidationError",
     "LLMRetryAttempt",
     "LLMRole",
     "LLMStreamingDelta",
@@ -96,6 +93,7 @@ __all__ = [
     "LLMToolCallArgumentDelta",
     "LLMToolCallBegin",
     "LLMToolRequest",
+    "LLMUnknownError",
     "LLMUserPromptIssued",
     "PermanentLLMError",
     "RequestId",

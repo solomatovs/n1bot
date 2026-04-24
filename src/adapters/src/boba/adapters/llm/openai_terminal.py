@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from typing import Any
 
 import httpx
 import openai
@@ -33,6 +35,31 @@ def build_openai_client(config: LLMConfig) -> OpenAI:
     Строит :class:`openai.OpenAI` из конфига
     """
     return OpenAI(base_url=config.base_url, api_key=config.api_key)
+
+
+@contextmanager
+def _observe_request(
+    observer: RawLLMObserver, kwargs: dict[str, Any]
+) -> Iterator[None]:
+    """Оборачивает тело request-стрима парой ``on_request`` / ``on_request_end``.
+
+    Классифицирует исход по типу исключения (или его отсутствию) и
+    гарантирует единичный вызов ``on_request_end`` в любом случае —
+    нормальное завершение, ``GeneratorExit`` от consumer-а,
+    произвольное исключение из тела.
+    """
+
+    observer.on_request(kwargs)
+    try:
+        yield
+    except GeneratorExit:
+        observer.on_request_end(RequestOutcome.cancelled())
+        raise
+    except BaseException as e:
+        observer.on_request_end(RequestOutcome.raised(e))
+        raise
+    else:
+        observer.on_request_end(RequestOutcome.ok())
 
 
 class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
@@ -76,13 +103,10 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
         # аргументов очень много и самый простой способ это собрать kwargs
         kwargs = self._to_request.convert(ctx.request)
 
-        # observer видит kwargs ДО любых yield — чтобы парный
-        # on_request_end гарантированно сработал в finally, даже
-        # если consumer отменит генератор сразу после первого yield.
-        outcome = RequestOutcome.OK
-        exception_name: str | None = None
-        self._observer.on_request(kwargs)
-        try:
+        # observer-lifecycle вынесен в _observe_request: on_request до
+        # любых yield, on_request_end в любом исходе (OK / GeneratorExit
+        # от consumer-а / произвольное исключение).
+        with _observe_request(self._observer, kwargs):
             # snapshot user-prompt'а — что именно сейчас улетит в LLM
             yield LLMUserPromptIssued(
                 request_id=ctx.request_id,
@@ -124,15 +148,6 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
                 raise
             except (openai.APIError, httpx.HTTPError) as e:
                 raise self._error_converter.convert(e) from e
-        except GeneratorExit:
-            outcome = RequestOutcome.CANCELLED
-            raise
-        except BaseException as e:
-            outcome = RequestOutcome.RAISED
-            exception_name = type(e).__name__
-            raise
-        finally:
-            self._observer.on_request_end(outcome, exception_name)
 
     def _observe_chunks(
         self, chunks: Iterable[ChatCompletionChunk]
