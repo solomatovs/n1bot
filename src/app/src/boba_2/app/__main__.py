@@ -25,11 +25,10 @@ from boba_2.adapters.in_memory_messages import InMemoryMessageService
 from boba_2.domain.agent.models import AgentConfig, AgentRequest
 from boba_2.domain.llm.models import RequestId, SamplingParams
 from boba_2.infra.container import (
-    DEFAULT_SYSTEM_PROMPT,
     AgentComponents,
     create_agent,
     create_empty_tools_service,
-    default_prompt_providers,
+    default_static_prompt_providers,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,7 +50,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--system-prompt",
-        default=None,
+        default="you are a helpful assistant. Answer concisely",
         help="Override the default system prompt.",
     )
     return parser
@@ -61,9 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
     if not args.model:
-        sys.stderr.write(
-            "error: --model is required (or set env LLM_MODEL)\n"
-        )
+        sys.stderr.write("error: --model is required (or set env LLM_MODEL)\n")
         return 2
 
     loader = ConfigLoader()
@@ -74,17 +71,12 @@ def main(argv: list[str] | None = None) -> int:
 
     agent_config = AgentConfig(
         max_iterations=legacy_agent_config.max_iterations,
-        max_consecutive_tool_calls=(
-            legacy_agent_config.max_consecutive_tool_calls
-        ),
+        max_consecutive_tool_calls=(legacy_agent_config.max_consecutive_tool_calls),
         max_consecutive_format_failures=(
             legacy_agent_config.max_consecutive_format_failures
         ),
     )
 
-    # legacy SamplingParams → boba_2.SamplingParams (identical shape,
-    # different module). tuple for ``stop``, т.к. boba_2 хранит
-    # immutable.
     legacy_sampling = legacy_llm_defaults.sampling
     sampling = SamplingParams(
         temperature=legacy_sampling.temperature,
@@ -92,19 +84,14 @@ def main(argv: list[str] | None = None) -> int:
         max_tokens=legacy_sampling.max_tokens,
         seed=legacy_sampling.seed,
         stop=(
-            tuple(legacy_sampling.stop)
-            if legacy_sampling.stop is not None
-            else None
+            tuple(legacy_sampling.stop) if legacy_sampling.stop is not None else None
         ),
         frequency_penalty=legacy_sampling.frequency_penalty,
         presence_penalty=legacy_sampling.presence_penalty,
     )
 
-    # --system-prompt подменяет identity-провайдер в дефолтном наборе.
-    # Расширенная конфигурация (Environment, Git, File, ...) — клиент
-    # строит свой список и подаёт в create_agent напрямую.
-    prompt_providers = default_prompt_providers(
-        system_prompt=args.system_prompt or DEFAULT_SYSTEM_PROMPT,
+    prompt_providers = default_static_prompt_providers(
+        system_prompt=args.system_prompt,
     )
 
     agent = create_agent(

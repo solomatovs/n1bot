@@ -1,26 +1,3 @@
-"""HistoryMiddleware — перенос диалога из :class:`MessageService` в
-:class:`~boba_2.domain.llm.models.LLMRequest` на каждой итерации.
-
-Ставится **внутри** цикла (после :class:`IterationCounterMiddleware`,
-который пересоздаёт ``ctx.request``), перед терминалом. Каждая
-итерация начинается с пустого request'а, и эта стадия наполняет
-``history_messages`` срезом всей истории диалога из
-:class:`MessageService` — в порядке её записи.
-
-Отсюда вытекает семантика обновления истории: persistence-стадии
-(:class:`~boba_2.domain.agent.meat.llm_invoke.\
-UserMessagePersistenceMiddleware` перед отправкой,
-:class:`~boba_2.domain.agent.meat.dialogue.\
-AssistantMessagePersistenceMiddleware` после получения ответа,
-:class:`~boba_2.domain.agent.meat.tools.ToolExecutionMiddleware`
-после исполнения tool) **кладут сообщение в MessageService один раз
-и больше не трогают request**. В каждой следующей итерации
-``HistoryMiddleware`` сам «раскатывает» накопленное в текущий
-снапшот запроса.
-
-Собственных событий не эмитит.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -32,7 +9,9 @@ from boba_2.domain.agent.models import AgentContext
 
 
 class HistoryMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Заполняет ``ctx.request.history_messages`` из :class:`MessageService`."""
+    """
+    Заполняет ``ctx.request.history_messages`` из :class:`MessageService`
+    """
 
     def __init__(
         self,

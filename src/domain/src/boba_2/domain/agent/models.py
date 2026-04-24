@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from boba_2.domain.llm.models import LLMRequest, RequestId
+from boba_2.domain.llm.models import LLMRequestBuilder, RequestId
 
 
 @dataclass(frozen=True)
@@ -79,4 +79,4 @@ IterationCounterMiddleware` пересоздаёт его. Это принцип
     agent_request: AgentRequest
     config: AgentConfig = field(default_factory=AgentConfig)
     iteration: int = 0
-    request: LLMRequest = field(default_factory=LLMRequest)
+    request: LLMRequestBuilder = field(default_factory=LLMRequestBuilder)

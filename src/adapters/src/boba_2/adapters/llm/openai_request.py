@@ -1,9 +1,5 @@
-"""Конвертация :class:`LLMRequest` в kwargs для OpenAI-совместимого API.
-
-Вход — :class:`LLMRequest` (уже прошедший :meth:`LLMRequest.validate`
-в :class:`~boba_2.domain.agent.meat.llm_invoke.LLMInvokeMiddleware`,
-так что ``model`` не ``None``). Выход — ``dict[str, Any]``, пригодный
-для ``client.chat.completions.create(**kwargs)``.
+"""
+Конвертация :class:`LLMRequest` в kwargs для OpenAI-совместимого API
 """
 
 from __future__ import annotations
@@ -26,12 +22,8 @@ from boba_2.domain.llm.models import LLMMessage, LLMRequest
 
 
 class ToOpenAIToolConverter(Converter[Tool[Any], ChatCompletionToolParam]):
-    """Tool → OpenAI tools API entry.
-
-    Описание собирается через
-    :meth:`ParamSchema.build_wire_schema` — обход валидатора.
-    Дрейфа со схемой валидации быть не может: оба канала читают из
-    одного :class:`~boba.domain.core.patterns.Validator`.
+    """
+    Конвертация :class:`Tool` -> OpenAI tools
     """
 
     def convert(self, value: Tool[Any]) -> ChatCompletionToolParam:
@@ -61,11 +53,8 @@ class ToOpenAIToolConverter(Converter[Tool[Any], ChatCompletionToolParam]):
 
 
 class ToOpenAIMessageConverter(Converter[LLMMessage, ChatCompletionMessageParam]):
-    """Одно :class:`LLMMessage` → OpenAI message param.
-
-    Узкий ``Literal`` на ``role`` в :class:`LLMMessage` гарантирует
-    исчерпывающее покрытие match-case; pyright подсветит, если
-    появится новое значение.
+    """
+    конверация :class:`LLMMessage` -> OpenAI message param
     """
 
     def convert(self, value: LLMMessage) -> ChatCompletionMessageParam:
@@ -107,12 +96,8 @@ class ToOpenAIMessageConverter(Converter[LLMMessage, ChatCompletionMessageParam]
 
 
 class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
-    """Мапит :class:`LLMRequest` в kwargs для
-    ``client.chat.completions.create``.
-
-    ``stream=True`` добавляется безусловно — S1 LLM-слой всегда
-    стримит; non-stream режим появится как отдельный терминал, если
-    потребуется.
+    """:class:`LLMRequest` -> kwargs для
+    ``client.chat.completions.create``
     """
 
     def __init__(self) -> None:
@@ -120,6 +105,10 @@ class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
         self._to_tool = ToOpenAIToolConverter()
 
     def convert(self, value: LLMRequest) -> dict[str, Any]:
+        # использую stream вариант по умолчанию
+        # возвращает chunk'и, которые можноemit'ить в события
+        # и реактивно отображать в sink'ах
+
         kwargs: dict[str, Any] = {"stream": True}
         self._apply_model(kwargs, value)
         self._apply_messages(kwargs, value)
@@ -129,25 +118,17 @@ class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
         return kwargs
 
     def _apply_model(self, kwargs: dict[str, Any], r: LLMRequest) -> None:
-        # r.model — валидирован как не-None в LLMInvokeMiddleware
-        # задолго до этой точки.
         kwargs["model"] = r.model
 
     def _apply_messages(self, kwargs: dict[str, Any], r: LLMRequest) -> None:
-        """Склеивает в OpenAI-порядок: ``system → history → user``.
-
-        :class:`LLMRequest` хранит system/user как одиночные слоты и
-        history как коллекцию — провайдер-специфичный порядок
-        определяется здесь. Для провайдера, который хочет иной
-        порядок (Anthropic: system как top-level поле вне messages),
-        будет отдельный конвертер.
         """
-        ordered: list[LLMMessage] = []
-        if r.system_message is not None:
-            ordered.append(r.system_message)
-        ordered.extend(r.history_messages)
-        if r.user_message is not None:
-            ordered.append(r.user_message)
+        Склеивает в OpenAI-порядок: ``system → history → user``.
+        """
+        ordered: list[LLMMessage] = [
+            r.system_message,
+            *r.history_messages,
+            r.user_message,
+        ]
         kwargs["messages"] = list(self._convert_messages(ordered))
 
     def _convert_messages(
@@ -172,12 +153,13 @@ class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
                 kwargs[key] = val
 
     def _apply_tools(self, kwargs: dict[str, Any], r: LLMRequest) -> None:
-        if r.tools:
-            kwargs["tools"] = [self._to_tool.convert(t) for t in r.tools]
-        if r.tool_choice is not None:
-            kwargs["tool_choice"] = r.tool_choice
-        if r.parallel_tool_calls is not None:
-            kwargs["parallel_tool_calls"] = r.parallel_tool_calls
+        t = r.tools
+        if t.tools:
+            kwargs["tools"] = [self._to_tool.convert(tool) for tool in t.tools]
+        if t.tool_choice is not None:
+            kwargs["tool_choice"] = t.tool_choice
+        if t.parallel_tool_calls is not None:
+            kwargs["parallel_tool_calls"] = t.parallel_tool_calls
 
     def _apply_response_format(self, kwargs: dict[str, Any], r: LLMRequest) -> None:
         if r.response_format is not None:

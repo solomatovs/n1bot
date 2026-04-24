@@ -29,11 +29,13 @@ S5: появилось семейство ``UserNotification`` (нотисы sin
     │   ├── AnswerStarted
     │   ├── ToolCallBegin                   index, tool_call_id, tool_name
     │   ├── ToolExecutionStarted            tool_call_id, tool_name
+    │   ├── GenerationRetried               attempt, reason, status_code
     │   └── GenerationDone                  finish_reason
     │
     ├── StreamingDelta (abstract)         инкрементальные куски
     │   ├── ThinkingToken                   token
     │   ├── AnswerToken                     token
+    │   ├── RefusalToken                    token
     │   └── ToolCallArgumentDelta           index, arguments
     │
     ├── DurableMessage (abstract)         завершённые message-единицы
@@ -397,6 +399,25 @@ ToolExecutionMiddleware` после успешного разбора arguments 
 
 
 @dataclass(frozen=True)
+class GenerationRetried(LifecycleMarker):
+    """LLM-слой решил повторить запрос.
+
+    Зеркалит :class:`~boba_2.domain.llm.events.LLMRetryAttempt`:
+    observability-сигнал для sink'ов (UI/журнал), чтобы отрисовать
+    retry-статус. Сам retry выполняется внутри LLM-middleware —
+    агент-цикл не прерывается и не делает дополнительной итерации.
+    """
+
+    attempt: int
+    reason: str
+    status_code: int | None = None
+
+    @classmethod
+    def name(cls) -> Literal["GenerationRetried"]:
+        return "GenerationRetried"
+
+
+@dataclass(frozen=True)
 class GenerationDone(LifecycleMarker):
     """Прогон завершён — пришёл ``finish_reason``."""
 
@@ -436,6 +457,22 @@ class AnswerToken(StreamingDelta):
     @classmethod
     def name(cls) -> Literal["AnswerToken"]:
         return "AnswerToken"
+
+
+@dataclass(frozen=True)
+class RefusalToken(StreamingDelta):
+    """Chunk отказа модели отвечать.
+
+    Зеркалит :class:`~boba_2.domain.llm.events.LLMRefusalToken`.
+    Агрегируется в :class:`RefusalComplete` на этапе
+    dialogue-persistence (миграция стадии идёт параллельно).
+    """
+
+    token: str
+
+    @classmethod
+    def name(cls) -> Literal["RefusalToken"]:
+        return "RefusalToken"
 
 
 @dataclass(frozen=True)
@@ -587,6 +624,7 @@ AgentEvent = (
     | AnswerToken
     | AnswerComplete
     | AnswerDiscarded
+    | RefusalToken
     | RefusalComplete
     | ToolCallBegin
     | ToolCallArgumentDelta
@@ -595,6 +633,7 @@ AgentEvent = (
     | ToolResultReady
     | ToolExecutionFailed
     | ToolCallFormatFailed
+    | GenerationRetried
     | GenerationDone
     | GenerationFailed
     | PromptFailed
@@ -619,6 +658,7 @@ AgentEventName: TypeAlias = Literal[
     "AnswerToken",
     "AnswerComplete",
     "AnswerDiscarded",
+    "RefusalToken",
     "RefusalComplete",
     "ToolCallBegin",
     "ToolCallArgumentDelta",
@@ -627,6 +667,7 @@ AgentEventName: TypeAlias = Literal[
     "ToolResultReady",
     "ToolExecutionFailed",
     "ToolCallFormatFailed",
+    "GenerationRetried",
     "GenerationDone",
     "GenerationFailed",
     "PromptFailed",

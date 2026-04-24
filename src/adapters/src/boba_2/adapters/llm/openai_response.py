@@ -1,14 +1,9 @@
 """Декодер потока OpenAI chunks в поток :class:`LLMEvent`.
 
 Стадии-декодеры независимы (fan-out) и собраны через
-:class:`~boba.domain.core.patterns.StreamTransformerPipeline`. Каждая
-смотрит на «свою» часть ``Choice.delta`` и эмитит соответствующие
-LLM-события.
-
-``MultiKeyReasoningExtractor`` — локальная копия старого экстрактора
-из :mod:`boba.adapters.raw_llm_observer`. Копируем (а не импортируем)
-по политике изоляции: слой ``boba_2`` не зависит от адаптеров
-``boba.adapters.*``.
+:class:`~boba.domain.core.patterns.StreamTransformerPipeline`.
+Каждая смотрит на «свою» часть ``Choice.delta``
+и эмитит соответствующие LLM-события.
 """
 
 from __future__ import annotations
@@ -44,14 +39,15 @@ from boba_2.domain.llm.models import LLMContext, RequestId
 
 
 class MultiKeyReasoningExtractor(Converter[ChoiceDelta, str | None]):
-    """Извлекает reasoning-токен из ``delta.model_extra``, перебирая
-    известные ключи по порядку.
-
+    """
     Разные провайдеры кладут «рассуждения» модели в разные поля:
 
     - ``reasoning_content`` — DeepSeek, xAI Grok, часть OpenAI-compat прокси;
     - ``thinking`` — Anthropic через openai-compat, некоторые LiteLLM-маршруты;
     - ``reasoning`` — Ollama native, Groq.
+
+    Этот конвертер позволяет извлекать reasoning-токен из ``delta.model_extra``,
+    перебирая известные ключи по порядку.
     """
 
     DEFAULT_KEYS: tuple[str, ...] = (
@@ -73,7 +69,9 @@ class MultiKeyReasoningExtractor(Converter[ChoiceDelta, str | None]):
 
 
 class RoleSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
-    """Эмитит :class:`LLMGenerationStarted` при первом появлении роли."""
+    """
+    Эмитит :class:`LLMGenerationStarted` при первом появлении роли
+    """
 
     def __init__(self, request_id: RequestId) -> None:
         self._request_id = request_id
@@ -96,10 +94,11 @@ class RoleSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
 
 
 class ThinkingSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
-    """Эмитит :class:`LLMThinkingStarted` / :class:`LLMThinkingToken`.
+    """
+    Эмитит :class:`LLMThinkingStarted` / :class:`LLMThinkingToken`.
 
     Извлечение reasoning-поля делегируется ``Converter[ChoiceDelta,
-    str | None]`` — провайдер-специфичный вариант подключается через DI.
+    str | None]`` — провайдер-специфичный вариант подключается через DI
     """
 
     def __init__(
@@ -132,7 +131,9 @@ class ThinkingSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
 
 
 class AnswerSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
-    """Эмитит :class:`LLMAnswerStarted` / :class:`LLMAnswerToken` из content."""
+    """
+    Эмитит :class:`LLMAnswerStarted` / :class:`LLMAnswerToken` из content
+    """
 
     def __init__(self, request_id: RequestId) -> None:
         self._request_id = request_id
@@ -158,7 +159,9 @@ class AnswerSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
 
 
 class RefusalSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
-    """Эмитит :class:`LLMRefusalToken` из refusal."""
+    """
+    Эмитит :class:`LLMRefusalToken` из refusal
+    """
 
     def __init__(self, request_id: RequestId) -> None:
         self._request_id = request_id
@@ -177,7 +180,9 @@ class RefusalSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
 
 
 class ToolCallSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
-    """Эмитит :class:`LLMToolCallBegin` / :class:`LLMToolCallArgumentDelta`."""
+    """
+    Эмитит :class:`LLMToolCallBegin` / :class:`LLMToolCallArgumentDelta`.
+    """
 
     def __init__(self, request_id: RequestId) -> None:
         self._request_id = request_id
@@ -218,11 +223,12 @@ class ToolCallSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
 
 
 class FinishSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
-    """Эмитит :class:`LLMGenerationDone` при появлении finish_reason.
+    """
+    Эмитит :class:`LLMGenerationDone` при появлении finish_reason.
 
     Учитывает baghack Ollama: ``finish_reason=stop`` после native
     tool_calls подменяется на ``tool_calls`` — иначе агент не поймёт,
-    что нужно выполнить tool и продолжить цикл.
+    что нужно выполнить tool и продолжить цикл
     """
 
     def __init__(self, request_id: RequestId) -> None:
@@ -260,23 +266,28 @@ class FinishSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
 class FromOpenAIChunkConverter(
     StreamTransformer[LLMContext, ChatCompletionChunk, LLMEvent]
 ):
-    """Поток OpenAI chunks → поток :class:`LLMEvent`.
+    """
+    Поток OpenAI chunks → поток :class:`LLMEvent`.
 
     Внутри — fan-out pipeline независимых декодеров
-    (role/thinking/answer/refusal/tool_call/finish). Каждый смотрит на
-    «свою» часть ``Choice.delta`` и эмитит соответствующие события.
+    - role
+    - thinking
+    - answer
+    - refusal
+    - tool_call
+    - finish
+    Каждый смотрит на «свою» часть ``Choice.delta``
+    эмитит соответствующие события
     """
 
     def __init__(
         self,
         request_id: RequestId,
-        reasoning_extractor: Converter[ChoiceDelta, str | None] | None = None,
     ) -> None:
-        extractor = reasoning_extractor or MultiKeyReasoningExtractor()
         self._pipeline = StreamTransformerPipeline[LLMContext, Choice, LLMEvent](
             [
                 RoleSource(request_id),
-                ThinkingSource(request_id, extractor),
+                ThinkingSource(request_id, MultiKeyReasoningExtractor()),
                 AnswerSource(request_id),
                 RefusalSource(request_id),
                 ToolCallSource(request_id),

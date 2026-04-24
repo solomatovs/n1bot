@@ -58,11 +58,10 @@ def build_openai_client(config: LLMConfig) -> OpenAI:
 
 
 class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
-    """Terminal LLM-слоя, вызывающий OpenAI-совместимый API.
+    """
+    Terminal LLM-слоя, вызывающий OpenAI-совместимый API.
 
-    Stateless — можно реюзать экземпляр между запросами. Stateful
-    состояния (счётчики stream-декодеров) инкапсулированы внутри
-    ``FromOpenAIChunkConverter``, создаваемого per-вызов в :meth:`stream`.
+    ``FromOpenAIChunkConverter`` держит внутри счетчики состояния
     """
 
     def __init__(self, client: OpenAI) -> None:

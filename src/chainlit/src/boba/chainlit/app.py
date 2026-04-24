@@ -139,15 +139,6 @@ class _IsType(Specification[AgentEvent]):
         return isinstance(candidate, self._types)
 
 
-_STAGE_LABELS: dict[str, str] = {
-    "UserPrompt": "Готовлю запрос…",
-}
-
-
-def _stage_label(stage: str) -> str:
-    return _STAGE_LABELS.get(stage, stage)
-
-
 def _llm_request_status(event: LLMRequestSent) -> str:
     tools_hint = " с tools" if event.has_tools else ""
     return (
@@ -156,16 +147,42 @@ def _llm_request_status(event: LLMRequestSent) -> str:
     )
 
 
+async def _finalize_step(
+    step: cl.Step, content: str, *, is_error: bool = False,
+) -> None:
+    """Проставляет финальный output у step через streaming API.
+
+    ``stream_token(..., is_sequence=True)`` заменяет содержимое output
+    целиком — эквивалент ``step.output = content``, но через публичный
+    streaming-канал. Прямое присваивание ``step.output = ...``
+    некорректно типизировано в текущей версии chainlit (property +
+    setter + class-level annotation сбивают Pylance).
+    """
+    if is_error:
+        step.is_error = True
+    await step.stream_token(content, is_sequence=True)
+
+
 class _EventRenderer:
+    """Рендерит AgentEvent'ы в Chainlit UI.
+
+    Живёт один инстанс на запрос. Хранит:
+    - ``answer_msg`` — открытое message'о для стриминга ответных токенов;
+    - ``thinking_step`` — активный reasoning-step;
+    - ``status_msg`` — transient-индикатор прогресса между этапами;
+    - ``tool_steps_by_*`` — маппинги активных tool-steps для связи
+      streaming-дельт и результатов.
+
+    ``tool_args_buf`` не нужен — chainlit сам аккумулирует input-токены
+    при вызове ``step.stream_token(..., is_input=True)``.
+    """
+
     def __init__(self) -> None:
         self.answer_msg: cl.Message | None = None
         self.thinking_step: cl.Step | None = None
-        # Transient-индикатор прогресса: одна реплика, обновляется на
-        # месте. Реальный контент (токены/tool/error) её удаляет.
         self.status_msg: cl.Message | None = None
         self.tool_steps_by_index: dict[int, cl.Step] = {}
         self.tool_steps_by_id: dict[str, cl.Step] = {}
-        self.tool_args_buf: dict[int, str] = {}
 
     async def _set_status(self, text: str) -> None:
         if self.status_msg is None:
@@ -213,8 +230,9 @@ class _EventRenderer:
     async def on_thinking_started(self, event: ThinkingStarted) -> None:
         del event
         await self._clear_status()
+        # Без явного input-значения chainlit показывает пустой input
+        # блок — стартовая инициализация не нужна.
         self.thinking_step = cl.Step(name="thinking", type="run")
-        self.thinking_step.input = ""
         await self.thinking_step.send()
 
     async def on_thinking_token(self, event: ThinkingToken) -> None:
@@ -228,20 +246,16 @@ class _EventRenderer:
     async def on_tool_begin(self, event: ToolCallBegin) -> None:
         await self._clear_status()
         step = cl.Step(name=event.tool_name, type="tool")
-        step.input = ""
         await step.send()
         self.tool_steps_by_index[event.index] = step
         self.tool_steps_by_id[event.tool_call_id] = step
-        self.tool_args_buf[event.index] = ""
 
     async def on_tool_arg_delta(self, event: ToolCallArgumentDelta) -> None:
-        self.tool_args_buf[event.index] = (
-            self.tool_args_buf.get(event.index, "") + event.arguments
-        )
+        # Chainlit сам аккумулирует input-токены: ручной буфер
+        # arguments не нужен.
         step = self.tool_steps_by_index.get(event.index)
         if step is not None:
-            step.input = self.tool_args_buf[event.index]
-            await step.update()
+            await step.stream_token(event.arguments, is_input=True)
 
     async def on_tool_complete(self, event: ToolCallComplete) -> None:
         del event
@@ -250,21 +264,21 @@ class _EventRenderer:
         # Без смены индикации медленные tools выглядят как зависший шаг.
         step = self.tool_steps_by_id.get(event.tool_call_id)
         if step is not None:
-            step.output = "⏳ выполняется…"
-            await step.update()
+            await _finalize_step(step, "⏳ выполняется…")
 
     async def on_tool_result(self, event: ToolResultReady) -> None:
         step = self.tool_steps_by_id.pop(event.tool_call_id, None)
         if step is not None:
-            step.output = event.content
-            await step.update()
+            await _finalize_step(step, event.content)
 
     async def on_tool_exec_failed(self, event: ToolExecutionFailed) -> None:
         step = self.tool_steps_by_id.pop(event.tool_call_id, None)
         if step is not None:
-            step.is_error = True
-            step.output = f"[{event.error_kind}] {event.message}"
-            await step.update()
+            await _finalize_step(
+                step,
+                f"[{event.error_kind}] {event.message}",
+                is_error=True,
+            )
 
     async def on_tool_format_failed(self, event: ToolCallFormatFailed) -> None:
         await self._clear_status()
@@ -292,6 +306,7 @@ class _EventRenderer:
         self.answer_msg = None
 
     async def on_stage_started(self, event: StageStarted) -> None:
+        del event
         await self._set_status("Готовлю запрос…")
 
     async def on_stage_completed(self, event: StageCompleted) -> None:
@@ -306,7 +321,8 @@ class _EventRenderer:
         await self._set_status("Модель обрабатывает запрос…")
 
     async def on_iteration_started(self, event: IterationStarted) -> None:
-        # Первую итерацию не маркируем — пользователь только что отправил запрос.
+        # Первую итерацию не маркируем — пользователь только что
+        # отправил запрос.
         if event.iteration <= 1:
             return
         await self._set_status(
@@ -340,11 +356,10 @@ def _build_dispatcher(r: _EventRenderer) -> FirstMatchDispatcher[AgentEvent, Any
     # контравариантен по аргументу, поэтому нужен cast. Безопасность
     # держится на _IsType(T) — в маршрут попадает только T.
     def route(
-        types: type[BaseEvent] | tuple[type[BaseEvent], ...],
+        event_type: type[BaseEvent],
         handler: Callable[..., Awaitable[None]],
     ) -> tuple[Specification[AgentEvent], _RenderRoute]:
-        specs = types if isinstance(types, tuple) else (types,)
-        return (_IsType(*specs), cast(_RenderRoute, handler))
+        return (_IsType(event_type), cast(_RenderRoute, handler))
 
     routes: list[tuple[Specification[AgentEvent], _RenderRoute]] = [
         route(AnswerStarted, r.on_answer_started),
