@@ -308,6 +308,8 @@ LLMEventName: TypeAlias = Literal[
 
 def _verify_llm_event_names_exhaustive(e: LLMEvent) -> LLMEventName:
     """
-    Compile-time гарантия: union ``LLMEvent.name()`` == ``LLMEventName``.
+    Вот это пихай в match-case последним звеном
+    Что бы ловить необработанные event'ы на этапе написания кода
+    А не в рантайме
     """
     return e.name()
