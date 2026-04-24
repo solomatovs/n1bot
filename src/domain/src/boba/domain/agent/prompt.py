@@ -20,10 +20,6 @@ AgentContext`, но сам модуль работает с любым типо�
 
     PromptError(UserFeedbackError[...], TerminalError) → PromptFailed
     │   provider: str | None
-    │
-    ├── RetryablePromptError(+ Retryable)            транзиентная I/O
-    └── PermanentPromptError
-        └── PromptProviderError                      провайдер упал
 
 ``PromptFactory.build()`` оборачивает ``OSError`` → ``PromptProviderError``
 автоматически. ``PromptError`` из провайдеров пропускается как есть
@@ -39,7 +35,7 @@ from enum import Enum
 from typing import Generic, Self, TypeVar
 
 from boba.domain.agent.events import AgentEvent, PromptFailed
-from boba.domain.core.errors import Retryable, TerminalError, UserFeedbackError
+from boba.domain.core.errors import TerminalError, UserFeedbackError
 from boba.domain.core.patterns import FoldFactory, Id, PrioritySource
 from boba.domain.llm.models import RequestId
 
@@ -59,18 +55,13 @@ class PromptError(UserFeedbackError[RequestId, AgentEvent], TerminalError):
         super().__init__(message)
         self.provider = provider
 
-    def to_event(self, request_id: RequestId) -> AgentEvent:
+    def to_user_feedback(self, request_id: RequestId) -> AgentEvent:
         return PromptFailed(
             request_id=request_id,
             error_kind=type(self).__name__,
             message=str(self),
-            retryable=isinstance(self, Retryable),
             provider=self.provider,
         )
-
-
-class RetryablePromptError(PromptError, Retryable):
-    """Временная проблема провайдера (транзиентный I/O, локфайл)."""
 
 
 class PermanentPromptError(PromptError):

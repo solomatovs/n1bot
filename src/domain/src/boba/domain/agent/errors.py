@@ -6,7 +6,6 @@
 - :class:`~boba.domain.core.errors.LLMFeedbackError` — фидбек в
   :class:`MessageService` для LLM;
 - :class:`~boba.domain.core.errors.TerminalError` — остановка цикла;
-- :class:`~boba.domain.core.errors.Retryable` — повтор в retry-middleware.
 
 Маркеры ортогональны — конкретная ошибка выбирает любую комбинацию.
 Generics привязываются прямо в объявлении класса:
@@ -27,6 +26,7 @@ from __future__ import annotations
 
 from boba.domain.agent.events import (
     AgentEvent,
+    GenerationFailed,
     MaxIterationsReached,
     RepeatedFormatFailure,
     ToolCallFormatFailed,
@@ -54,7 +54,7 @@ IterationCounterMiddleware`.
         self.limit = limit
         self.iteration = iteration
 
-    def to_event(self, request_id: RequestId) -> AgentEvent:
+    def to_user_feedback(self, request_id: RequestId) -> AgentEvent:
         return MaxIterationsReached(
             request_id=request_id,
             error_kind=type(self).__name__,
@@ -81,7 +81,7 @@ RepeatedFormatFailureGuardMiddleware` после накопления ``limit``
         self.count = count
         self.limit = limit
 
-    def to_event(self, request_id: RequestId) -> AgentEvent:
+    def to_user_feedback(self, request_id: RequestId) -> AgentEvent:
         return RepeatedFormatFailure(
             request_id=request_id,
             error_kind=type(self).__name__,
@@ -125,7 +125,7 @@ ToolExecutionMiddleware` — обогащает сырую
         self.error_kind = error_kind
         self.message = message
 
-    def to_event(self, request_id: RequestId) -> AgentEvent:
+    def to_user_feedback(self, request_id: RequestId) -> AgentEvent:
         return ToolExecutionFailed(
             request_id=request_id,
             tool_call_id=self.tool_call_id,
@@ -139,6 +139,39 @@ ToolExecutionMiddleware` — обогащает сырую
             role="tool",
             content=self.message,
             tool_call_id=self.tool_call_id,
+        )
+
+
+class LLMGenerationFailedError(UserFeedbackError[RequestId, AgentEvent], TerminalError):
+    """Мост: исключение LLM-слоя, дошедшее до границы агента.
+
+    :mod:`boba.domain.llm.errors` — изолированная иерархия, её типы
+    **не** :class:`RoutableError`. Но агент-слой всё равно должен
+    пропустить отказ через :class:`AgentErrorRouter`, чтобы цикл
+    остановился единообразно с остальными терминальными ошибками.
+
+    :class:`~boba.domain.agent.meat.llm.LLMInvokeMiddleware` ловит
+    :class:`~boba.domain.llm.errors.LLMError`, снимает с него
+    ``error_kind``-маркер и поднимает эту обёртку —
+    роутер маршрутизирует её стандартно и эмитит :class:`GenerationFailed`
+    через :meth:`to_user_feedback`.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_kind: str,
+    ) -> None:
+        super().__init__(message)
+        self.error_kind = error_kind
+
+
+    def to_user_feedback(self, request_id: RequestId) -> AgentEvent:
+        return GenerationFailed(
+            request_id=request_id,
+            error_kind=self.error_kind,
+            message=str(self),
         )
 
 
@@ -164,7 +197,7 @@ StrictJsonToolCallParser`), когда LLM эмитит JSON-объект с
         super().__init__(message)
         self.raw_content = raw_content
 
-    def to_event(self, request_id: RequestId) -> AgentEvent:
+    def to_user_feedback(self, request_id: RequestId) -> AgentEvent:
         return ToolCallFormatFailed(
             request_id=request_id,
             error_kind=type(self).__name__,

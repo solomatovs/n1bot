@@ -78,7 +78,7 @@ class RetryMiddleware(StreamSource[LLMContext, LLMEvent]):
                     request_id=ctx.request_id,
                     attempt=attempt,
                     reason=type(last_exc).__name__,
-                    status_code=last_exc.status_code,
+                    status_code=getattr(last_exc, "status_code", None),
                 )
                 if self._delay_seconds > 0:
                     self._sleep(self._delay_seconds)

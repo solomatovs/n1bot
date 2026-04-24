@@ -13,6 +13,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
@@ -61,23 +62,51 @@ class MultiKeyReasoningExtractor(Converter[ChoiceDelta, str | None]):
         return None
 
 
-class RequestOutcome(Enum):
-    """Исход запроса LLM на wire-слое.
-
-    ``RAISED`` всегда сопровождается именем класса исключения,
-    прокидываемым вторым аргументом ``exception_name`` в
-    :meth:`RawLLMObserver.on_request_end`.
-    """
+class RequestOutcomeKind(Enum):
+    """Дискриминатор :class:`RequestOutcome`."""
 
     OK = "ok"
     CANCELLED = "cancelled"
     RAISED = "raised"
 
-    def label(self, exception_name: str | None = None) -> str:
+
+@dataclass(frozen=True, slots=True)
+class RequestOutcome:
+    """Исход запроса LLM на wire-слое.
+
+    Инвариант: ``exception_name`` задан тогда и только тогда, когда
+    ``kind is RequestOutcomeKind.RAISED``. Остальные комбинации
+    отвергаются в :meth:`__post_init__` — нелегальные состояния
+    непредставимы.
+    """
+
+    kind: RequestOutcomeKind
+    exception_name: str | None = None
+
+    def __post_init__(self) -> None:
+        is_raised = self.kind is RequestOutcomeKind.RAISED
+        if is_raised and not self.exception_name:
+            raise ValueError("RAISED requires exception_name")
+        if not is_raised and self.exception_name is not None:
+            raise ValueError(f"{self.kind.name} must not carry exception_name")
+
+    @classmethod
+    def ok(cls) -> RequestOutcome:
+        return cls(RequestOutcomeKind.OK)
+
+    @classmethod
+    def cancelled(cls) -> RequestOutcome:
+        return cls(RequestOutcomeKind.CANCELLED)
+
+    @classmethod
+    def raised(cls, exc: BaseException) -> RequestOutcome:
+        return cls(RequestOutcomeKind.RAISED, type(exc).__name__)
+
+    def label(self) -> str:
         """Человеко-читаемая метка: ``ok`` / ``cancelled`` / ``raised:<Exc>``."""
-        if self is RequestOutcome.RAISED and exception_name:
-            return f"{self.value}:{exception_name}"
-        return self.value
+        if self.kind is RequestOutcomeKind.RAISED:
+            return f"{self.kind.value}:{self.exception_name}"
+        return self.kind.value
 
 
 class RawLLMObserver(ABC):
@@ -94,14 +123,8 @@ class RawLLMObserver(ABC):
         ...
 
     @abstractmethod
-    def on_request_end(
-        self,
-        outcome: RequestOutcome,
-        exception_name: str | None = None,
-    ) -> None:
-        """Вызывается по завершении потока. ``exception_name`` задаётся
-        только для :attr:`RequestOutcome.RAISED` и содержит имя класса
-        исключения."""
+    def on_request_end(self, outcome: RequestOutcome) -> None:
+        """Вызывается по завершении потока."""
         ...
 
 
@@ -119,13 +142,9 @@ class CompositeRawLLMObserver(RawLLMObserver):
         for o in self._observers:
             o.on_response_chunk(chunk)
 
-    def on_request_end(
-        self,
-        outcome: RequestOutcome,
-        exception_name: str | None = None,
-    ) -> None:
+    def on_request_end(self, outcome: RequestOutcome) -> None:
         for o in self._observers:
-            o.on_request_end(outcome, exception_name)
+            o.on_request_end(outcome)
 
 
 class FileRawLLMObserver(RawLLMObserver):
@@ -153,12 +172,8 @@ class FileRawLLMObserver(RawLLMObserver):
         body = chunk.model_dump_json(indent=2)
         self._append(f"## Response chunk\n\n```json\n{body}\n```\n\n")
 
-    def on_request_end(
-        self,
-        outcome: RequestOutcome,
-        exception_name: str | None = None,
-    ) -> None:
-        self._append(f"## End: {outcome.label(exception_name)}\n\n")
+    def on_request_end(self, outcome: RequestOutcome) -> None:
+        self._append(f"## End: {outcome.label()}\n\n")
 
     def _append(self, text: str) -> None:
         with self._workspace.append_text(self._path) as f:
@@ -193,12 +208,8 @@ class FileContentObserver(RawLLMObserver):
             if content:
                 self._append(content)
 
-    def on_request_end(
-        self,
-        outcome: RequestOutcome,
-        exception_name: str | None = None,
-    ) -> None:
-        self._append(f"\n\n## End: {outcome.label(exception_name)}\n")
+    def on_request_end(self, outcome: RequestOutcome) -> None:
+        self._append(f"\n\n## End: {outcome.label()}\n")
 
     def _append(self, text: str) -> None:
         with self._workspace.append_text(self._path) as f:
@@ -259,16 +270,12 @@ class MetricsRawLLMObserver(RawLLMObserver):
             if choice.finish_reason:
                 self._finish_reason = choice.finish_reason
 
-    def on_request_end(
-        self,
-        outcome: RequestOutcome,
-        exception_name: str | None = None,
-    ) -> None:
+    def on_request_end(self, outcome: RequestOutcome) -> None:
         elapsed = time.monotonic() - self._start if self._start else 0.0
         logger.info(
             "LLM done: %s, model=%s, chunks=%d, content=%d ch, "
             "reasoning=%d ch, tool_calls=%d (args=%d ch), finish=%s, elapsed=%.2fs",
-            outcome.label(exception_name),
+            outcome.label(),
             self._model,
             self._chunks,
             self._content_chars,

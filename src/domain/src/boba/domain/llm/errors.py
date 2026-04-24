@@ -1,41 +1,31 @@
-"""Ошибки LLM-слоя.
-
-Независимая иерархия, не связанная с агентским слоем. Терминальный
-адаптер (OpenAI/др.) конвертирует сырые исключения провайдера
-(``openai.*``, ``httpx.*``) в эти типы; middleware LLM-слоя (retry,
-cache) принимают решения, опираясь на базовые маркеры
-(:class:`RetryableLLMError` / :class:`PermanentLLMError`). Выше по
-стеку — на границе агента — перехватываются и превращаются в
-агент-специфичные ``*Failed``-события.
-
-Политика — **не наследуемся** от
-``boba.domain.core.errors.Retryable`` / ``TerminalError``. Это
-осознанная изоляция: LLM-слой не знает про агентские события и
-feedback-каналы; связность только через точечные переходы на границе.
-
+"""
+Ошибки LLM-слоя
 ════════════════════════════════════════════════════════════════════
   Иерархия
 ════════════════════════════════════════════════════════════════════
-
-::
-
     LLMError (Exception)
-    │   status_code: int | None
     │
     ├── RetryableLLMError          маркер «имеет смысл повторить»
     │   ├── LLMConnectionError
     │   ├── LLMTimeoutError
-    │   ├── LLMRateLimitError
-    │   └── LLMProviderInternalError
+    │   ├── LLMRateLimitError              + status_code: int
+    │   ├── LLMProviderInternalError       + status_code: int
     │
     └── PermanentLLMError          маркер «повтор не поможет»
-        ├── LLMAuthError
-        ├── LLMInvalidRequestError
-        │   ├── LLMRequestModelNoneError
-        │   ├── LLMRequestUserMessageNoneError
-        │   └── LLMRequestSystemMessageNoneError
-        ├── LLMContextLengthError
-        └── LLMProtocolError
+        ├── LLMAuthError                   + status_code: int
+        ├── LLMInvalidRequestError         + status_code: int (HTTP 400 от провайдера)
+        ├── LLMContextLengthError          + status_code: int
+        ├── LLMProtocolError               ответ вне схемы
+        ├── LLMRequestValidationError      клиентская валидация запроса (без HTTP)
+        |   ├── LLMRequestModelNoneError
+        |   ├── LLMRequestUserMessageNoneError
+        |   └── LLMRequestSystemMessageNoneError
+    │   └── LLMUnknownError                нераспознанное исключение провайдера
+
+``LLMRequestValidationError`` - Клиентские валидации
+``LLMConnectionError``, ``LLMTimeoutError`` - сетевые обрывы
+``LLMProtocolError`` - несовместимость схемы
+``LLMUnknownError`` - нераспознанные исключения
 """
 
 from __future__ import annotations
@@ -46,14 +36,15 @@ class LLMError(Exception):
     Базовая ошибка обращения к LLM
     """
 
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+    def __init__(self, message: str) -> None:
         super().__init__(message)
-        self.status_code = status_code
 
 
 class RetryableLLMError(LLMError):
     """
     Маркер «имеет смысл повторить»: сеть, таймаут, rate-limit, 5xx
+    Если подключен Middleware который обрабатывает эту ошибку
+    То он по своей доступной логике может повторить http request в openai api
     """
 
 
@@ -72,21 +63,52 @@ class LLMTimeoutError(RetryableLLMError):
 class LLMRateLimitError(RetryableLLMError):
     """Провайдер ответил 429 Too Many Requests."""
 
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class LLMProviderInternalError(RetryableLLMError):
     """Провайдер ответил 5xx или оборвал стрим по внутренней причине."""
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class LLMUnknownError(PermanentLLMError):
+    """
+    Нераспознанное исключение провайдера
+
+    Возвращается fallback-веткой :class:`OpenAIErrorConverter`, когда
+    ни одна из известных спецификаций не сматчилась. Консервативно
+    помечаем как retryable — повторная попытка безопасна, а реальная
+    классификация должна быть добавлена в правила конвертера.
+    """
 
 
 class LLMAuthError(PermanentLLMError):
     """Провайдер ответил 401/403."""
 
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class LLMInvalidRequestError(PermanentLLMError):
     """Провайдер ответил 400 — запрос сформирован некорректно."""
 
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class LLMContextLengthError(PermanentLLMError):
     """Суммарная длина сообщений превысила окно модели"""
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class LLMProtocolError(PermanentLLMError):
@@ -95,7 +117,16 @@ class LLMProtocolError(PermanentLLMError):
     """
 
 
-class LLMRequestModelNoneError(LLMInvalidRequestError):
+class LLMRequestValidationError(PermanentLLMError):
+    """
+    Клиентская валидация LLM-запроса упала
+
+    Запрос не отправляется провайдеру — проверка запускается в
+    ``LLMRequestBuilder``. HTTP-статуса у такой ошибки нет.
+    """
+
+
+class LLMRequestModelNoneError(LLMRequestValidationError):
     """
     LLM-запрос собран без model
     """
@@ -104,7 +135,7 @@ class LLMRequestModelNoneError(LLMInvalidRequestError):
         super().__init__("LLMRequest.model is None")
 
 
-class LLMRequestUserMessageNoneError(LLMInvalidRequestError):
+class LLMRequestUserMessageNoneError(LLMRequestValidationError):
     """
     LLM-запрос собран без user_message
     """
@@ -113,7 +144,7 @@ class LLMRequestUserMessageNoneError(LLMInvalidRequestError):
         super().__init__("LLMRequest.user_message is None")
 
 
-class LLMRequestSystemMessageNoneError(LLMInvalidRequestError):
+class LLMRequestSystemMessageNoneError(LLMRequestValidationError):
     """
     LLM-запрос собран без system_message
     """

@@ -46,8 +46,8 @@
     └── TerminalFailure (abstract)        ошибка, цикл останавливается
         │   error_kind: str
         │   message: str
-        ├── GenerationFailed                retryable, status_code
-        ├── PromptFailed                    retryable, provider
+        ├── GenerationFailed                status_code
+        ├── PromptFailed                    provider
         ├── MaxIterationsReached            limit, iteration
         └── RepeatedFormatFailure           count, limit
 """
@@ -575,9 +575,6 @@ class ToolCallFormatFailed(UserNotification):
 class GenerationFailed(TerminalFailure):
     """Терминальный отказ — LLM-слой поднял :class:`LLMError`."""
 
-    retryable: bool = False
-    status_code: int | None = None
-
     @classmethod
     def name(cls) -> Literal["GenerationFailed"]:
         return "GenerationFailed"
@@ -603,7 +600,6 @@ class PromptFailed(TerminalFailure):
     для ошибок общей логики).
     """
 
-    retryable: bool = False
     provider: str | None = None
 
     @classmethod
@@ -633,8 +629,6 @@ RepeatedFormatFailureGuardMiddleware` после накопления ``limit``
 class PersistenceFailed(TerminalFailure):
     """Терминальный отказ: не удалось прочитать/записать журнал/хранилище."""
 
-    retryable: bool = False
-
     @classmethod
     def name(cls) -> Literal["PersistenceFailed"]:
         return "PersistenceFailed"
@@ -647,7 +641,7 @@ class GenericTerminalFailure(TerminalFailure):
 
     Роутер эмитит это событие, чтобы :class:`StopOnAnyFailure`
     корректно остановил цикл при «чистом» ``TerminalError``-маркере
-    (без собственного ``to_event``). ``error_kind`` содержит имя
+    (без собственного ``to_user_feedback``). ``error_kind`` содержит имя
     класса ошибки — sink может фильтровать/логировать по нему.
     """
 

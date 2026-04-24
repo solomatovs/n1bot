@@ -9,7 +9,7 @@
 
 :class:`UserFeedbackError[TReqId, TUserEvent]`
     Ошибка превращается в observability-событие для sink'ов.
-    Реализует :meth:`to_event`.
+    Реализует :meth:`to_user_feedback`.
 
 :class:`LLMFeedbackError[TFeedback]`
     Ошибка добавляется в историю (MessageService) как сообщение для
@@ -19,27 +19,22 @@
 :class:`TerminalError`
     Чистый маркер. Ошибка должна остановить цикл. Роутер гарантирует,
     что для такой ошибки в stream выйдет событие из семейства
-    ``TerminalFailure``: либо собственное через ``to_event`` (если
+    ``TerminalFailure``: либо собственное через ``to_user_feedback`` (если
     ошибка также :class:`UserFeedbackError`), либо generic.
-
-:class:`Retryable`
-    Чистый маркер. Retry-middleware ловит ошибку по маркеру и
-    выполняет повтор. После исчерпания попыток ошибка уходит наверх
-    и маршрутизируется по остальным маркерам.
 
 Комбинировать можно произвольно::
 
     class MaxIter(UserFeedbackError[RequestId, AgentEvent], TerminalError):
-        def to_event(self, rid): return MaxIterationsReached(...)
+        def to_user_feedback(self, rid): return MaxIterationsReached(...)
 
     class ToolFail(
         UserFeedbackError[RequestId, AgentEvent],
         LLMFeedbackError[LLMMessage],
     ):
-        def to_event(self, rid): ...
+        def to_user_feedback(self, rid): ...
         def to_llm_feedback(self): ...
 
-    class LLMConn(LLMFeedbackError[LLMMessage], Retryable):
+    class LLMConn(LLMFeedbackError[LLMMessage]):
         def to_llm_feedback(self): ...
 
 Прямое наследование от :class:`RoutableError` без маркеров валидно —
@@ -63,7 +58,7 @@ class RoutableError(Exception):
     Сам по себе не несёт эффектов — служит контрактом «эту ошибку
     обрабатывает роутер». Эффекты добавляются миксами маркеров:
     :class:`UserFeedbackError`, :class:`LLMFeedbackError`,
-    :class:`TerminalError`, :class:`Retryable`.
+    :class:`TerminalError`
     """
 
 
@@ -81,7 +76,7 @@ class UserFeedbackError(RoutableError, Generic[TReqId, TUserEvent], ABC):
     """
 
     @abstractmethod
-    def to_event(self, request_id: TReqId) -> TUserEvent:
+    def to_user_feedback(self, request_id: TReqId) -> TUserEvent:
         """Построить observability-событие для stream."""
         ...
 
@@ -108,18 +103,8 @@ class TerminalError(RoutableError):
     :class:`TerminalError` в stream выйдет событие из семейства
     ``TerminalFailure``:
 
-    - если ошибка также :class:`UserFeedbackError` — :meth:`to_event`
+    - если ошибка также :class:`UserFeedbackError` — :meth:`to_user_feedback`
       должен вернуть подкласс ``TerminalFailure``;
     - если :class:`UserFeedbackError` не миксован — роутер эмитит
       generic ``TerminalFailure`` сам.
-    """
-
-
-class Retryable(RoutableError):  # noqa: N818
-    """Маркер: ошибку имеет смысл повторить.
-
-    Чистый маркер — без методов. Retry-middleware ловит по маркеру
-    и выполняет повтор без знания конкретной причины. После
-    исчерпания попыток ошибка уходит выше и маршрутизируется по
-    остальным маркерам.
     """

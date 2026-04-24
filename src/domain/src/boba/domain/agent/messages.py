@@ -28,7 +28,6 @@ from collections.abc import Iterator
 
 from boba.domain.agent.events import AgentEvent, PersistenceFailed
 from boba.domain.core.errors import (
-    Retryable,
     TerminalError,
     UserFeedbackError,
 )
@@ -59,12 +58,11 @@ class MessageStoreError(
     def _prefix(self) -> str:
         return "Message store error"
 
-    def to_event(self, request_id: RequestId) -> AgentEvent:
+    def to_user_feedback(self, request_id: RequestId) -> AgentEvent:
         return PersistenceFailed(
             request_id=request_id,
             error_kind=type(self).__name__,
             message=str(self),
-            retryable=isinstance(self, Retryable),
         )
 
 

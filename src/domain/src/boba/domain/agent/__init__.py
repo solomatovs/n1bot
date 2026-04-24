@@ -14,6 +14,7 @@ middleware-цепочку (см. :mod:`boba.domain.agent.meat`).
 """
 
 from boba.domain.agent.errors import (
+    LLMGenerationFailedError,
     LLMToolCallFormatError,
     MaxIterationsExceededError,
     RepeatedFormatFailureError,
@@ -108,7 +109,6 @@ from boba.domain.agent.prompt import (
     PromptProviderError,
     PromptResult,
     PromptState,
-    RetryablePromptError,
 )
 
 __all__ = [
@@ -140,6 +140,7 @@ __all__ = [
     "JsonHeaderParser",
     "JsonToolCallHeader",
     "LLMEventToAgentEventConverter",
+    "LLMGenerationFailedError",
     "LLMInvokeMiddleware",
     "LLMRequestSent",
     "LLMRequestStarted",
@@ -172,7 +173,6 @@ __all__ = [
     "RepeatedFormatFailureError",
     "RepeatedFormatFailureGuardMiddleware",
     "RepeatedToolCallGuardMiddleware",
-    "RetryablePromptError",
     "SamplingMiddleware",
     "StopOnAnyFailure",
     "StopOnFinished",

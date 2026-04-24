@@ -24,6 +24,7 @@ from boba.domain.llm.errors import (
     LLMProviderInternalError,
     LLMRateLimitError,
     LLMTimeoutError,
+    LLMUnknownError,
 )
 
 
@@ -63,6 +64,7 @@ class IsServerError(ExceptionSpecification):
     def check(self, candidate: Exception) -> bool:
         if not isinstance(candidate, openai.APIStatusError):
             return False
+
         sc = candidate.status_code
         return (
             sc is not None
@@ -91,14 +93,24 @@ class OpenAIErrorConverter(FirstMatchConverter[Exception, LLMError]):
     def __init__(self) -> None:
         super().__init__(
             routes=self.default_rules(),
-            fallback_route=lambda e: LLMProviderInternalError(
-                f"{type(e).__name__}: {e}"
-            ),
+            fallback_route=lambda e: LLMUnknownError(f"{type(e).__name__}: {e}"),
         )
 
     @staticmethod
-    def status_code(exc: Exception) -> int | None:
-        return exc.status_code if isinstance(exc, openai.APIStatusError) else None
+    def status_code(exc: Exception) -> int:
+        """HTTP-статус из ``APIStatusError``.
+
+        Вызывается только из lambda-правил, где ``IsInstance``-спека уже
+        гарантировала ``APIStatusError``-ветку. Проверка фиксирует
+        инвариант маршрутизации: если правило вызвано на другом типе —
+        это баг, а не runtime-ошибка.
+        """
+        if not isinstance(exc, openai.APIStatusError):  # pragma: no cover — инвариант
+            raise RuntimeError(
+                "OpenAIErrorConverter.status_code invariant broken: "
+                f"expected APIStatusError, got {type(exc).__name__}"
+            )
+        return exc.status_code
 
     @classmethod
     def default_rules(
