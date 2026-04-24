@@ -14,7 +14,7 @@ from boba_2.infra.container import (
     AgentComponents,
     create_agent,
     create_empty_tools_service,
-    default_prompt_providers,
+    default_static_prompt_providers,
 )
 
 pytestmark = pytest.mark.integration
@@ -30,9 +30,7 @@ def _run(query: str, model: str) -> None:
 
     agent_config = AgentConfig(
         max_iterations=legacy_agent_config.max_iterations,
-        max_consecutive_tool_calls=(
-            legacy_agent_config.max_consecutive_tool_calls
-        ),
+        max_consecutive_tool_calls=(legacy_agent_config.max_consecutive_tool_calls),
         max_consecutive_format_failures=(
             legacy_agent_config.max_consecutive_format_failures
         ),
@@ -45,9 +43,7 @@ def _run(query: str, model: str) -> None:
         max_tokens=legacy_sampling.max_tokens,
         seed=legacy_sampling.seed,
         stop=(
-            tuple(legacy_sampling.stop)
-            if legacy_sampling.stop is not None
-            else None
+            tuple(legacy_sampling.stop) if legacy_sampling.stop is not None else None
         ),
         frequency_penalty=legacy_sampling.frequency_penalty,
         presence_penalty=legacy_sampling.presence_penalty,
@@ -58,7 +54,9 @@ def _run(query: str, model: str) -> None:
         components=AgentComponents(
             agent_config=agent_config,
             sampling=sampling,
-            prompt_providers=default_prompt_providers(),
+            prompt_providers=default_static_prompt_providers(
+                "Ты асистент Boba. Отвечай строго по контексту"
+            ),
             message_service=InMemoryMessageService(),
             tools_service=create_empty_tools_service(),
         ),

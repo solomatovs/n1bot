@@ -27,7 +27,7 @@ from boba_2.domain.agent.meat.error_routing import (
     AgentErrorRouterMiddleware,
 )
 from boba_2.domain.agent.meat.history import HistoryMiddleware
-from boba_2.domain.agent.meat.llm_invoke import LLMInvokeMiddleware
+from boba_2.domain.agent.meat.llm import LLMInvokeMiddleware, NewLLMRequestMiddleware
 from boba_2.domain.agent.meat.loop_control import (
     IterationCounterMiddleware,
     StopOnAnyFailure,
@@ -51,10 +51,6 @@ from boba_2.domain.llm.events import LLMEvent
 from boba_2.domain.llm.meat.retry import RetryMiddleware
 from boba_2.domain.llm.models import LLMContext, SamplingParams
 
-DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant. Answer concisely."
-DEFAULT_LLM_MAX_ATTEMPTS = 3
-DEFAULT_LLM_RETRY_DELAY = 0.5
-
 
 @dataclass(frozen=True)
 class AgentComponents:
@@ -65,8 +61,8 @@ class AgentComponents:
     tools_service: ToolsService
 
 
-def default_prompt_providers(
-    system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+def default_static_prompt_providers(
+    system_prompt: str,
 ) -> list[PromptProvider]:
     return [
         StaticPromptProvider(
@@ -88,8 +84,8 @@ def create_empty_tools_service() -> ToolsService:
 
 def create_llm_source(
     llm_config: LLMConfig,
-    max_attempts: int = DEFAULT_LLM_MAX_ATTEMPTS,
-    retry_delay_seconds: float = DEFAULT_LLM_RETRY_DELAY,
+    max_attempts: int = 3,
+    retry_delay_seconds: float = 0.5,
 ) -> StreamSource[LLMContext, LLMEvent]:
     """RetryMiddleware → OpenAITerminal."""
     return (
@@ -125,34 +121,39 @@ def create_agent_source(
     if enable_repeated_format_failure_guard:
         chain_builder.use(
             lambda inner: RepeatedFormatFailureGuardMiddleware(
-                inner, error_router, agent_config.max_consecutive_format_failures,
+                inner,
+                error_router,
+                agent_config.max_consecutive_format_failures,
             )
         )
     chain_builder.use(lambda inner: AgentErrorRouterMiddleware(inner, error_router))
+    chain_builder.use(NewLLMRequestMiddleware)
     chain_builder.use(IterationCounterMiddleware)
-    chain_builder.use(
-        lambda inner: SystemPromptMiddleware(inner, prompt_providers)
-    )
-    chain_builder.use(
-        lambda inner: UserPromptMiddleware(inner, prompt_providers)
-    )
+    chain_builder.use(lambda inner: SystemPromptMiddleware(inner, prompt_providers))
+    chain_builder.use(lambda inner: UserPromptMiddleware(inner, prompt_providers))
     chain_builder.use(lambda inner: HistoryMiddleware(inner, message_service))
     chain_builder.use(lambda inner: ToolsDefinitionMiddleware(inner, tools_service))
     chain_builder.use(lambda inner: SamplingMiddleware(inner, sampling))
     chain_builder.use(
         lambda inner: ToolExecutionMiddleware(
-            inner, tools_service, message_service, error_router,
+            inner,
+            tools_service,
+            message_service,
+            error_router,
         )
     )
     if enable_repeated_tool_call_guard:
         chain_builder.use(
             lambda inner: RepeatedToolCallGuardMiddleware(
-                inner, error_router, agent_config.max_consecutive_tool_calls,
+                inner,
+                error_router,
+                agent_config.max_consecutive_tool_calls,
             )
         )
     chain_builder.use(
         lambda inner: AssistantMessagePersistenceMiddleware(
-            inner, message_service,
+            inner,
+            message_service,
         )
     )
     if enable_strict_content_tool_call:

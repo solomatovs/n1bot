@@ -32,7 +32,8 @@ feedback-каналы; связность только через точечны
         ├── LLMAuthError
         ├── LLMInvalidRequestError
         │   ├── LLMRequestModelNoneError
-        │   └── LLMRequestUserMessageNoneError
+        │   ├── LLMRequestUserMessageNoneError
+        │   └── LLMRequestSystemMessageNoneError
         ├── LLMContextLengthError
         └── LLMProtocolError
 """
@@ -110,3 +111,12 @@ class LLMRequestUserMessageNoneError(LLMInvalidRequestError):
 
     def __init__(self) -> None:
         super().__init__("LLMRequest.user_message is None")
+
+
+class LLMRequestSystemMessageNoneError(LLMInvalidRequestError):
+    """
+    LLM-запрос собран без system_message
+    """
+
+    def __init__(self) -> None:
+        super().__init__("LLMRequest.system_message is None")

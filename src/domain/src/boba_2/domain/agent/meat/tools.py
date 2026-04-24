@@ -1,23 +1,5 @@
-"""Middleware для tools: каталог + исполнение.
-
-Две стадии:
-
-- :class:`ToolsDefinitionMiddleware` — регистрирует tools из
-  :class:`ToolsService` в ``ctx.request.tools`` каждую итерацию
-  (request пересоздаётся в :class:`IterationCounterMiddleware`, так
-  что стадия **внутри** цикла).
-- :class:`ToolExecutionMiddleware` — наблюдает
-  :class:`ToolCallComplete` из inner-стрима, после завершения
-  inner исполняет их через :class:`ToolsService`. Ошибки
-  (parse JSON-args / :class:`ToolExecutionError`) бросает как
-  :class:`ToolFeedbackError`, которую :class:`AgentErrorRouter`
-  превращает в ``role="tool"``-сообщение в MS + эмит
-  :class:`ToolExecutionFailed`-события.
-
-Batch-семантика: одна упавшая tool-подзадача не обрывает
-остальные. Это важно для параллельных tool_calls (OpenAI позволяет
-несколько за один response): если первый упал, второй всё равно
-исполняется, LLM видит оба результата в истории.
+"""
+Middleware для tools: каталог + исполнение
 """
 
 from __future__ import annotations
@@ -50,13 +32,8 @@ from boba_2.domain.llm.models import LLMMessage
 
 
 class ToolsDefinitionMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Кладёт каталог tools в ``ctx.request.tools`` на каждой итерации.
-
-    ``parallel_tool_calls=True`` — разрешаем параллельные вызовы
-    (OpenAI-совместимые провайдеры их поддерживают, LLM может
-    позвать несколько tools за один response). ``AssistantPersistence``
-    и :class:`ToolExecutionMiddleware` корректно обрабатывают
-    множественные ``ToolCallComplete``.
+    """
+    Кладёт каталог tools в ``ctx.request.tools`` на каждой итерации.
     """
 
     def __init__(
@@ -80,19 +57,8 @@ class ToolsDefinitionMiddleware(StreamSource[AgentContext, AgentEvent]):
 
 
 class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Исполняет tool_calls после завершения inner-стрима.
-
-    Алгоритм:
-
-    1. Проксирует события inner, попутно собирает
-       ``ToolCallComplete`` в pending.
-    2. После исчерпания inner-стрима — прогоняет pending через
-       :meth:`AgentErrorRouter.run_batch`. На успехе каждая
-       подзадача эмитит :class:`ToolExecutionStarted` +
-       :class:`ToolResultReady` и пишет ``role="tool"`` в MS.
-       На :class:`ToolFeedbackError` — роутер ловит, пишет
-       ``to_llm_feedback()`` (``role="tool"`` с error-текстом) и
-       эмитит ``to_user_event()`` (:class:`ToolExecutionFailed`).
+    """
+    Исполняет tool_calls после завершения inner-стрима.
     """
 
     def __init__(
@@ -185,25 +151,8 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
 
 
 class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Подавляет ``(N+1)``-й подряд идентичный :class:`ToolCallComplete`.
-
-    Сравнение — exact match по ``(tool_name, arguments)``, где
-    ``arguments`` — сырая JSON-строка события (та же, которую видит
-    downstream; JSON-нормализация порядка ключей не делается — простота
-    важнее).
-
-    При превышении ``max_consecutive``:
-
-    - ``ToolCallComplete`` **не прокидывается** дальше (tool не
-      вызовется);
-    - через :class:`AgentErrorRouter` эмитится
-      :class:`ToolFeedbackError` → ``role="tool"`` сообщение в MS
-      (критика для LLM) + :class:`ToolExecutionFailed`-event.
-
-    Ставится **внутри** :class:`ToolExecutionMiddleware` в onion-
-    цепочке, чтобы подавленные события не достигли pending-списка в
-    ToolExecution. Счётчик — per-instance; т.к. контейнер
-    собирается на каждый запрос, инстанс — свежий.
+    """
+    Подавляет ``(N+1)``-й подряд идентичный :class:`ToolCallComplete`.
     """
 
     def __init__(
@@ -263,29 +212,8 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
 
 
 class RepeatedFormatFailureGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Защита от залипания модели на неверном формате tool call.
-
-    Следит за :class:`ToolCallFormatFailed`-событиями (их эмитит
-    :class:`AgentErrorRouter` при поимке
-    :class:`LLMToolCallFormatError` из content-tool-call парсера).
-    При ``max_consecutive + 1`` подряд без успешного
-    :class:`ToolResultReady` между — через
-    :meth:`AgentErrorRouter.route` эмитит
-    :class:`RepeatedFormatFailureError` → терминальное
-    :class:`RepeatedFormatFailure` event, :class:`StopOnAnyFailure`
-    останавливает цикл.
-
-    Зачем отдельный guard: маленькие модели залипают на выводе
-    `{...}` в content с первой же итерации до исчерпания лимита.
-    Дополнительные итерации не помогают — модель видит свой паттерн
-    и воспроизводит. Fail-fast короче 20 итераций холостого хода.
-
-    Ставится **снаружи** :class:`AgentErrorRouterMiddleware`, чтобы
-    видеть его выход (``ToolCallFormatFailed``). Требует архитектуры
-    с inner ``AgentErrorRouterMiddleware`` внутри loop; в дефолтной
-    сборке ``create_agent`` не подключается — добавляется явно
-    через :func:`create_agent_source_with_format_guard` или в
-    интеграционном тесте.
+    """
+    Защита от залипания модели на неверном формате tool call.
     """
 
     def __init__(
