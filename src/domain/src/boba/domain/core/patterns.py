@@ -515,6 +515,125 @@ class FoldFactory(
         return self.finalize(state)
 
 
+class ContextPrioritySource(ABC, Generic[TCtx, TId, TState]):
+    """
+    Context-aware reducer для :class:`ContextFoldFactory`.
+
+    Отличается от :class:`PrioritySource` ровно одним: :meth:`apply`
+    принимает ``ctx: TCtx``. Каждый reducer:
+
+    - имеет уникальный :meth:`id` — по нему его можно зарегистрировать
+      или снять с регистрации в фабрике;
+    - имеет :meth:`priority` — определяет порядок применения
+      (меньше число — раньше выполнение);
+    - в :meth:`apply` получает текущее состояние И внешний контекст,
+      возвращает новое состояние.
+
+    Когда использовать:
+    - reducer зависит от per-call состояния (request_id, workspace,
+      trigger того, почему собираемся в этот раз);
+    - сам reducer остаётся stateless по отношению к бизнес-контексту —
+      данные приходят снаружи через ``ctx``.
+
+    Когда НЕ использовать:
+    - ``ctx`` не нужен — берите :class:`PrioritySource` (он легче
+      и явно заявляет отсутствие зависимости).
+    """
+
+    @abstractmethod
+    def id(self) -> TId: ...
+
+    @abstractmethod
+    def priority(self) -> int: ...
+
+    @abstractmethod
+    def apply(self, ctx: TCtx, state: TState) -> TState: ...
+
+
+class ContextFoldFactory(
+    ContextFactoryMethod[TCtx, TOut],
+    Generic[TCtx, TId, TState, TOut],
+):
+    """
+    :class:`ContextFactoryMethod`, собирающий объект через
+    последовательность стадий (fold), которым нужен внешний контекст.
+
+    Симметричен :class:`FoldFactory`, но :meth:`initial`,
+    :meth:`finalize` и reducer'ы (:class:`ContextPrioritySource`)
+    принимают ``ctx: TCtx`` — всё, что зависит от per-call
+    состояния, прокидывается через него.
+
+    Схема работы ``build(ctx)``::
+
+                        ctx
+                         │
+                         ▼
+                  ┌──────────────┐
+                  │ initial(ctx) │
+                  └──────┬───────┘
+                         │ state₀
+                         ▼
+                  ┌──────────────┐
+                  │  reducer #1  │  apply(ctx, state)
+                  └──────┬───────┘
+                         │ state₁
+                         ▼
+                        ...
+                         │ stateₙ
+                         ▼
+                  ┌──────────────┐
+                  │finalize(ctx) │
+                  └──────┬───────┘
+                         │
+                         ▼
+                        out
+
+    Контракт наследника:
+    - :meth:`initial`  — построить начальное состояние (ctx доступен,
+      можно применить входные эффекты к внешним ресурсам);
+    - :meth:`finalize` — превратить накопленное состояние в результат;
+    - стадии подключаются извне через :meth:`register` /
+      :meth:`unregister`.
+
+    Гарантии:
+    - стадии применяются строго по возрастанию ``priority()``;
+    - повторный :meth:`register` с тем же ``id()`` заменяет предыдущий
+      reducer — это официальный способ переопределить стадию.
+
+    Для context-free сборки — см. :class:`FoldFactory`.
+    """
+
+    def __init__(self) -> None:
+        self._reducers: dict[TId, ContextPrioritySource[TCtx, TId, TState]] = {}
+
+    def register(self, reducer: ContextPrioritySource[TCtx, TId, TState]) -> None:
+        self._reducers[reducer.id()] = reducer
+
+    def unregister(self, key: TId) -> None:
+        self._reducers.pop(key, None)
+
+    def providers(self) -> Iterable[ContextPrioritySource[TCtx, TId, TState]]:
+        return iter(self._reducers.values())
+
+    @abstractmethod
+    def initial(self, ctx: TCtx) -> TState:
+        """Начальное состояние сборки."""
+        ...
+
+    @abstractmethod
+    def finalize(self, ctx: TCtx, state: TState) -> TOut:
+        """Превратить накопленное состояние в результат."""
+        ...
+
+    def build(self, ctx: TCtx) -> TOut:
+        state = self.initial(ctx)
+
+        for p in sorted(self._reducers.values(), key=lambda p: p.priority()):
+            state = p.apply(ctx, state)
+
+        return self.finalize(ctx, state)
+
+
 class Serializer(Generic[TIn, TOut]):
     """
     Двусторонняя конвертация = композиция двух Converter.
