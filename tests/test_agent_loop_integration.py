@@ -4,18 +4,18 @@ import argparse
 
 import pytest
 
-from boba.infra.config import ConfigLoader
-from boba.infra.logging import configure_logging
-from boba_2.adapters.in_memory_messages import InMemoryMessageService
-from boba_2.domain.agent.meat.agent import Agent
-from boba_2.domain.agent.models import AgentConfig, AgentRequest
-from boba_2.domain.llm.models import RequestId, SamplingParams
-from boba_2.infra.container import (
+from boba.adapters.in_memory_messages import InMemoryMessageService
+from boba.domain.agent.meat.agent import Agent
+from boba.domain.agent.models import AgentRequest
+from boba.domain.llm.models import RequestId
+from boba.infra.config import ConfigLoader, SamplingLoader
+from boba.infra.container import (
     AgentComponents,
     create_agent,
     create_empty_tools_service,
     default_static_prompt_providers,
 )
+from boba.infra.logging import configure_logging
 
 pytestmark = pytest.mark.integration
 
@@ -24,30 +24,9 @@ def _run(query: str, model: str) -> None:
     """Собирает агент с полным стеком middleware и прогоняет один запрос."""
     loader = ConfigLoader()
     app_config = loader.load_app()
-    legacy_agent_config = loader.load_agent()
-    legacy_llm_defaults = loader.load_llm_defaults()
+    agent_config = loader.load_agent()
+    sampling = SamplingLoader().load()
     configure_logging(app_config.log_level, app_config.log_file)
-
-    agent_config = AgentConfig(
-        max_iterations=legacy_agent_config.max_iterations,
-        max_consecutive_tool_calls=(legacy_agent_config.max_consecutive_tool_calls),
-        max_consecutive_format_failures=(
-            legacy_agent_config.max_consecutive_format_failures
-        ),
-    )
-
-    legacy_sampling = legacy_llm_defaults.sampling
-    sampling = SamplingParams(
-        temperature=legacy_sampling.temperature,
-        top_p=legacy_sampling.top_p,
-        max_tokens=legacy_sampling.max_tokens,
-        seed=legacy_sampling.seed,
-        stop=(
-            tuple(legacy_sampling.stop) if legacy_sampling.stop is not None else None
-        ),
-        frequency_penalty=legacy_sampling.frequency_penalty,
-        presence_penalty=legacy_sampling.presence_penalty,
-    )
 
     agent: Agent = create_agent(
         llm_config=app_config.llm,

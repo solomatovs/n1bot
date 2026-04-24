@@ -15,7 +15,7 @@ from boba.domain.core.patterns import (
     IsInstance,
     Specification,
 )
-from boba_2.domain.llm.errors import (
+from boba.domain.llm.errors import (
     LLMAuthError,
     LLMConnectionError,
     LLMContextLengthError,

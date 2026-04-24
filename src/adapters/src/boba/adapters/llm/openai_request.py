@@ -18,7 +18,7 @@ from openai.types.chat import (
 
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools.tool import Tool
-from boba_2.domain.llm.models import LLMMessage, LLMRequest
+from boba.domain.llm.models import LLMMessage, LLMRequest
 
 
 class ToOpenAIToolConverter(Converter[Tool[Any], ChatCompletionToolParam]):

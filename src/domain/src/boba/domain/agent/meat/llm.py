@@ -7,8 +7,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import assert_never
 
-from boba.domain.core.patterns import Converter, StreamSource
-from boba_2.domain.agent.events import (
+from boba.domain.agent.events import (
     AgentEvent,
     AnswerStarted,
     AnswerToken,
@@ -22,12 +21,13 @@ from boba_2.domain.agent.events import (
     ToolCallArgumentDelta,
     ToolCallBegin,
 )
-from boba_2.domain.agent.events import LLMRequestSent as AgentLLMRequestSent
-from boba_2.domain.agent.events import LLMRequestStarted as AgentLLMRequestStarted
-from boba_2.domain.agent.events import LLMUserPromptIssued as AgentLLMUserPromptIssued
-from boba_2.domain.agent.models import AgentContext
-from boba_2.domain.llm.errors import LLMError, RetryableLLMError
-from boba_2.domain.llm.events import (
+from boba.domain.agent.events import LLMRequestSent as AgentLLMRequestSent
+from boba.domain.agent.events import LLMRequestStarted as AgentLLMRequestStarted
+from boba.domain.agent.events import LLMUserPromptIssued as AgentLLMUserPromptIssued
+from boba.domain.agent.models import AgentContext
+from boba.domain.core.patterns import Converter, StreamSource
+from boba.domain.llm.errors import LLMError, RetryableLLMError
+from boba.domain.llm.events import (
     LLMAnswerStarted,
     LLMAnswerToken,
     LLMEvent,
@@ -43,7 +43,7 @@ from boba_2.domain.llm.events import (
     LLMToolCallBegin,
     LLMUserPromptIssued,
 )
-from boba_2.domain.llm.models import LLMContext, LLMRequestBuilder
+from boba.domain.llm.models import LLMContext, LLMRequestBuilder
 
 
 class LLMEventToAgentEventConverter(Converter[LLMEvent, AgentEvent]):

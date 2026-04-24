@@ -133,7 +133,9 @@ class GrepTool(Tool[GrepArgs]):
                             "каждого совпадения. По умолчанию 0."
                         ),
                         validator=ChainValidator(
-                            Default(0), IsInt(), MinValue(0),
+                            Default(0),
+                            IsInt(),
+                            MinValue(0),
                         ),
                     ),
                     ParamSchema(
@@ -143,7 +145,9 @@ class GrepTool(Tool[GrepArgs]):
                             "умолчанию 100."
                         ),
                         validator=ChainValidator(
-                            Default(100), IsInt(), MinValue(1),
+                            Default(100),
+                            IsInt(),
+                            MinValue(1),
                         ),
                     ),
                     ParamSchema(
@@ -175,11 +179,13 @@ class GrepTool(Tool[GrepArgs]):
             matches = list(islice(iterator, args.limit + 1))
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Путь не найден: {args.path}",
+                tool_id=self._ID,
+                message=f"Путь не найден: {args.path}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Ошибка grep: {e}",
+                tool_id=self._ID,
+                message=f"Ошибка grep: {e}",
             ) from e
 
         truncated = len(matches) > args.limit

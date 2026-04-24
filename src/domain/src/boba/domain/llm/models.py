@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from boba.domain.core.patterns import FactoryMethod, UuId
 from boba.domain.core.tools.tool import Tool
-from boba_2.domain.llm.errors import (
+from boba.domain.llm.errors import (
     LLMRequestModelNoneError,
     LLMRequestSystemMessageNoneError,
     LLMRequestUserMessageNoneError,
@@ -74,6 +74,7 @@ class LLMRequest:
     def has_tools(self) -> bool:
         return self.tools is not None
 
+
 class LLMRequestBuilder(FactoryMethod):
     model: str | None = None
     system_message: LLMMessage | None = None
@@ -125,6 +126,7 @@ class LLMRequestBuilder(FactoryMethod):
             sampling=self.sampling,
             response_format=self.response_format,
         )
+
 
 @dataclass
 class LLMContext:

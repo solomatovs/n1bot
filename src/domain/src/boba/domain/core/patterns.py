@@ -930,6 +930,86 @@ class StreamTransformerPipeline(StreamTransformer[TCtx, TIn, TOut]):
             yield from stage.stream(ctx, stream)
 
 
+class StreamTransformerChain(StreamTransformer[TCtx, TIn, TIn]):
+    """Chain-композиция :class:`StreamTransformer`-ов одного типа
+    (``TIn → TIn``): выход предыдущей стадии — вход следующей.
+
+    Симметричен :class:`StreamTransformerPipeline` (fan-out), но
+    решает противоположную задачу — последовательное преобразование
+    потока без fan-out эффекта. Тип элемента сохраняется на всех
+    стадиях (чтобы цепочка типизировалась как один ``StreamTransformer``).
+
+    Типовой кейс — цепочка нормализаторов/фильтров/реиндексеров
+    перед основной обработкой: например, исправление кривых дельт
+    провайдера LLM (``Choice → Choice``) перед fan-out pipeline в
+    события.
+
+    Схема::
+
+                ctx, Iterable[TIn]
+                       │
+                       ▼
+                  ┌──────────┐
+                  │ stage₁   │─┐
+                  └──────────┘ │ Iterable[TIn]
+                               ▼
+                  ┌──────────┐
+                  │ stage₂   │─┐
+                  └──────────┘ │ Iterable[TIn]
+                               ▼
+                        ... (n стадий)
+                               │
+                               ▼
+                         Iterable[TIn]
+
+    Пустая цепочка (``stages=()``) работает как identity —
+    передаёт входной поток без изменений. Полезно как default.
+
+    Исключение в любой стадии прерывает цепочку и пробрасывается
+    наружу с исходным traceback.
+
+    Когда использовать:
+    - несколько stateful-трансформеров типа ``T → T`` надо склеить
+      в один объект (например, чтобы передать одним параметром);
+    - нужна композиция по принципу "выход одной = вход следующей".
+
+    Когда НЕ использовать:
+    - стадии имеют разные in/out типы — собирайте вручную через
+      вложенные ``stream()``;
+    - стадии независимы и должны видеть один и тот же входной
+      поток — используйте :class:`StreamTransformerPipeline`.
+
+    :meth:`reset` сбрасывает состояние всех стадий каскадно;
+    :meth:`name` — ``TransformerChain(a -> b -> c)``.
+    """
+
+    def __init__(
+        self,
+        stages: Sequence[StreamTransformer[TCtx, TIn, TIn]],
+    ) -> None:
+        self._stages: list[StreamTransformer[TCtx, TIn, TIn]] = list(stages)
+
+    def append(self, stage: StreamTransformer[TCtx, TIn, TIn]) -> StreamTransformerChain[TCtx, TIn]:
+        self._stages.append(stage)
+        return self
+
+    def stage_names(self) -> Iterable[str]:
+        for s in self._stages:
+            yield s.name()
+
+    def name(self) -> str:
+        return "TransformerChain({})".format(" -> ".join(self.stage_names()))
+
+    def reset(self) -> None:
+        for stage in self._stages:
+            stage.reset()
+
+    def stream(self, ctx: TCtx, stream: Iterable[TIn]) -> Iterable[TIn]:
+        for stage in self._stages:
+            stream = stage.stream(ctx, stream)
+        yield from stream
+
+
 class StreamSourceLoop(StreamSource[TCtx, TOut]):
     """
     Циклический запуск :class:`StreamSource` до срабатывания условия

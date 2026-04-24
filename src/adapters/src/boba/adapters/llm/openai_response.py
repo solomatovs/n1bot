@@ -21,8 +21,8 @@ from boba.domain.core.patterns import (
     StreamTransformer,
     StreamTransformerPipeline,
 )
-from boba_2.domain.llm.errors import LLMProtocolError
-from boba_2.domain.llm.events import (
+from boba.domain.llm.errors import LLMProtocolError
+from boba.domain.llm.events import (
     FinishReason,
     LLMAnswerStarted,
     LLMAnswerToken,
@@ -35,7 +35,7 @@ from boba_2.domain.llm.events import (
     LLMToolCallArgumentDelta,
     LLMToolCallBegin,
 )
-from boba_2.domain.llm.models import LLMContext, RequestId
+from boba.domain.llm.models import LLMContext, RequestId
 
 
 class MultiKeyReasoningExtractor(Converter[ChoiceDelta, str | None]):
@@ -118,9 +118,7 @@ class RoleSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
     def reset(self) -> None:
         self._started = False
 
-    def stream(
-        self, ctx: LLMContext, stream: Iterable[Choice]
-    ) -> Iterable[LLMEvent]:
+    def stream(self, ctx: LLMContext, stream: Iterable[Choice]) -> Iterable[LLMEvent]:
         # мы не хотим каждый раз обрабатывать role source
         # поэтому проверяем роль только при первом проходе
         if not self._started:
@@ -152,9 +150,7 @@ class AnswerSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
     def reset(self) -> None:
         self._started = False
 
-    def stream(
-        self, ctx: LLMContext, stream: Iterable[Choice]
-    ) -> Iterable[LLMEvent]:
+    def stream(self, ctx: LLMContext, stream: Iterable[Choice]) -> Iterable[LLMEvent]:
         for choice in stream:
             if choice.delta.content:
                 if not self._started:
@@ -176,9 +172,7 @@ class RefusalSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
     def name(self) -> str:
         return "Refusal"
 
-    def stream(
-        self, ctx: LLMContext, stream: Iterable[Choice]
-    ) -> Iterable[LLMEvent]:
+    def stream(self, ctx: LLMContext, stream: Iterable[Choice]) -> Iterable[LLMEvent]:
         for choice in stream:
             if choice.delta.refusal:
                 yield LLMRefusalToken(
@@ -201,9 +195,7 @@ class ToolCallSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
     def reset(self) -> None:
         self._seen.clear()
 
-    def stream(
-        self, ctx: LLMContext, stream: Iterable[Choice]
-    ) -> Iterable[LLMEvent]:
+    def stream(self, ctx: LLMContext, stream: Iterable[Choice]) -> Iterable[LLMEvent]:
         for choice in stream:
             if not choice.delta.tool_calls:
                 continue
@@ -244,9 +236,7 @@ class FinishSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
     def reset(self) -> None:
         self._saw_tool_call = False
 
-    def stream(
-        self, ctx: LLMContext, stream: Iterable[Choice]
-    ) -> Iterable[LLMEvent]:
+    def stream(self, ctx: LLMContext, stream: Iterable[Choice]) -> Iterable[LLMEvent]:
         """
         Учитывает что может прийти ``finish_reason=stop`` после native tool_calls
         Поэтому подменяет на tool_calls вместо завершения
@@ -263,8 +253,7 @@ class FinishSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
                 except ValueError as e:
                     # хз какой состояние может прислать api
                     raise LLMProtocolError(
-                        f"unknown finish_reason from provider: "
-                        f"{choice.finish_reason!r}"
+                        f"unknown finish_reason from provider: {choice.finish_reason!r}"
                     ) from e
 
                 # если прилетел вызов call_tool
@@ -295,12 +284,20 @@ class FromOpenAIChunkConverter(
     - tool_call
     - finish
     Каждый смотрит на «свою» часть ``Choice.delta``
-    эмитит соответствующие события
+    эмитит соответствующие события.
+
+    ``preprocessor`` — pre-pipeline трансформер ``Choice → Choice``,
+    выполняемый ДО fan-out pipeline. Обычно это
+    :class:`~boba.domain.core.patterns.StreamTransformerChain` из
+    нескольких нормализаторов/реиндексеров (например, для коллизий
+    ``index`` у параллельных tool_calls в Ollama/LiteLLM). Пустой
+    chain (``StreamTransformerChain([])``) работает как identity.
     """
 
     def __init__(
         self,
         request_id: RequestId,
+        preprocessor: StreamTransformer[LLMContext, Choice, Choice],
     ) -> None:
         # тут строгая последовательность вызова!
         self._pipeline = StreamTransformerPipeline[LLMContext, Choice, LLMEvent](
@@ -313,15 +310,18 @@ class FromOpenAIChunkConverter(
                 FinishSource(request_id),
             ]
         )
+        self._preprocessor = preprocessor
 
     def name(self) -> str:
         return f"FromOpenAIChunkConverter({self._pipeline.name()})"
 
     def reset(self) -> None:
         self._pipeline.reset()
+        self._preprocessor.reset()
 
     def stream(
         self, ctx: LLMContext, stream: Iterable[ChatCompletionChunk]
     ) -> Iterable[LLMEvent]:
         for chunk in stream:
-            yield from self._pipeline.stream(ctx, list(chunk.choices))
+            choices = self._preprocessor.stream(ctx, chunk.choices)
+            yield from self._pipeline.stream(ctx, list(choices))

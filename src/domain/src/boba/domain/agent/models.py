@@ -1,34 +1,54 @@
+"""Модели агент-слоя.
+
+S4a: набор вырос — появился :class:`AgentConfig` (пока только
+``max_iterations``) и поле ``iteration`` в :class:`AgentContext`,
+инкрементируемое :class:`~boba.domain.agent.meat.loop_control.\
+IterationCounterMiddleware` на каждой итерации цикла.
+
+Tool-специфичные поля (``workspace_id``, каталог tool'ов) появятся
+при миграции соответствующих middleware.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
-from boba.domain.core.patterns import UuId
-from boba.domain.core.tools.tool import Tool
-from boba.domain.core.workspace import WorkspaceId
-
-
-class RequestId(UuId):
-    """Идентификатор запроса пользователя."""
+from boba.domain.llm.models import LLMRequestBuilder, RequestId
 
 
 @dataclass(frozen=True)
 class AgentRequest:
-    """
-    Входные данные для AgentLoop
-    Не меняются в процессе выполнения цикла, в отличие от AgentContext
+    """Входные данные для одного прогона агента.
+
+    ``model`` живёт здесь, а не в глобальном конфиге: выбирает caller
+    (UI/CLI), чтобы системный дефолт не просачивался в loop незаметно
+    — поведение совпадает со старой версией.
     """
 
     query: str
     model: str
-    workspace_id: WorkspaceId
     request_id: RequestId
 
 
 @dataclass(frozen=True)
 class AgentConfig:
-    """
-    Настройки AgentLoop
+    """Настройки одного прогона агента.
+
+    Отделён от :class:`AgentRequest`, потому что загружается из TOML/env
+    однократно и шарится между прогонами; ``AgentRequest`` — per-call.
+
+    ``max_consecutive_tool_calls`` — лимит подряд идущих идентичных
+    tool_call'ов (по ``(tool_name, arguments)``). Используется
+    :class:`~boba.domain.agent.meat.tools.\
+RepeatedToolCallGuardMiddleware` — N+1-й вызов подавляется как
+    :class:`~boba.domain.agent.errors.ToolFeedbackError`.
+
+    ``max_consecutive_format_failures`` — лимит подряд идущих
+    ошибок формата content-tool-call. Используется
+    :class:`~boba.domain.agent.meat.tools.\
+RepeatedFormatFailureGuardMiddleware` — после N+1 эмитится
+    :class:`~boba.domain.agent.events.RepeatedFormatFailure` и цикл
+    останавливается.
     """
 
     max_iterations: int = 20
@@ -36,89 +56,27 @@ class AgentConfig:
     max_consecutive_format_failures: int = 3
 
 
-@dataclass(frozen=True)
-class LLMToolCall:
-    """Готовый tool call."""
-
-    id: str
-    name: str
-    arguments: str
-
-
-@dataclass(frozen=True)
-class LLMMessage:
-    """
-    Одно сообщение в истории диалога
-    """
-
-    role: str
-    content: str
-    tool_call_id: str | None = None
-    tool_calls: list[LLMToolCall] = field(default_factory=list)
-
-
-@dataclass
-class SamplingParams:
-    """
-    Параметры семплирования LLM
-    """
-
-    temperature: float | None = None
-    top_p: float | None = None
-    max_tokens: int | None = None
-    seed: int | None = None
-    stop: list[str] | None = None
-    frequency_penalty: float | None = None
-    presence_penalty: float | None = None
-
-
-@dataclass(frozen=True)
-class LLMRequestDefaults:
-    """
-    Дефолтные параметры LLM-запроса
-    """
-
-    sampling: SamplingParams = field(default_factory=SamplingParams)
-
-
-@dataclass
-class LLMToolRequestBuilder:
-    tool_choice: str | None = None
-    parallel_tool_calls: bool | None = None
-    tools: list[Tool[Any]] = field(default_factory=list)
-
-
-@dataclass
-class LLMRequestBuilder:
-    """
-    Класс из которого будет построено одно сообщение в llm
-
-    Middleware-стадии заполняют части этого класса
-    А конвертер в конкретную спецификацию api отправляет итоговое сообщение
-    """
-
-    # модель для отправки
-    model: str | None = None
-    # системный prompt
-    system_prompt: str | None = None
-    # пользовательский prompt
-    user_prompt: str | None = None
-    # история сообщений существовавшая до текущего запроса
-    messages: list[str] = field(default_factory=list)
-    # tools builder
-    tools: LLMToolRequestBuilder = field(default_factory=LLMToolRequestBuilder)
-    sampling: SamplingParams = field(default_factory=SamplingParams)
-    response_format: dict[str, Any] | None = None
-
-
 @dataclass
 class AgentContext:
-    """
-    Мутабельный контекст, передаваемый через стадии Pipeline.
-    Стадии читают и дополняют его на каждой итерации цикла.
+    """Mutable контекст одного прогона, передаваемый через цепочку
+    middleware.
+
+    Middleware-стадии (prompt, tools, sampling, history) заполняют
+    слоты :attr:`request`; терминальная стадия
+    (:class:`~boba.domain.agent.meat.llm_invoke.LLMInvokeMiddleware`)
+    на границе с LLM-слоем валидирует запрос и передаёт его в LLM.
+
+    :attr:`request` **локален для одной итерации** цикла агента: на
+    каждой итерации :class:`~boba.domain.agent.meat.loop_control.\
+IterationCounterMiddleware` пересоздаёт его. Это принципиальная
+    разница со старым кодом, где request жил через все итерации как
+    shared mutable state.
+
+    ``iteration`` — 1-based номер текущей итерации; ``0`` означает «до
+    первой итерации» (счётчик ещё не сработал).
     """
 
     agent_request: AgentRequest
-    config: AgentConfig
+    config: AgentConfig = field(default_factory=AgentConfig)
     iteration: int = 0
-    llm_request: LLMRequestBuilder = field(default_factory=LLMRequestBuilder)
+    request: LLMRequestBuilder = field(default_factory=LLMRequestBuilder)

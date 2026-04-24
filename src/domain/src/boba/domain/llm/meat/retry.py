@@ -32,9 +32,9 @@ import time
 from collections.abc import Callable, Iterable
 
 from boba.domain.core.patterns import StreamSource
-from boba_2.domain.llm.errors import RetryableLLMError
-from boba_2.domain.llm.events import LLMEvent, LLMRetryAttempt
-from boba_2.domain.llm.models import LLMContext
+from boba.domain.llm.errors import RetryableLLMError
+from boba.domain.llm.events import LLMEvent, LLMRetryAttempt
+from boba.domain.llm.models import LLMContext
 
 logger = logging.getLogger(__name__)
 

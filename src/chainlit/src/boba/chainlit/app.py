@@ -19,15 +19,13 @@ from boba.domain.agent.events import (
     AnswerDiscarded,
     AnswerStarted,
     AnswerToken,
-    BaseEvent,
+    BaseAgentEvent,
     GenerationDone,
     GenerationStarted,
     IterationStarted,
-    LLMRequestSent,
+    LLMRequestStarted,
     RefusalComplete,
     RefusalToken,
-    StageCompleted,
-    StageStarted,
     TerminalFailure,
     ThinkingComplete,
     ThinkingStarted,
@@ -39,7 +37,6 @@ from boba.domain.agent.events import (
     ToolExecutionFailed,
     ToolExecutionStarted,
     ToolResultReady,
-    UserNoticeReady,
     UserQueryReceived,
 )
 from boba.domain.core.patterns import FirstMatchDispatcher, Specification
@@ -132,14 +129,14 @@ async def on_message(message: cl.Message) -> None:
 class _IsType(Specification[AgentEvent]):
     """isinstance-предикат. ``IsInstance`` из patterns.py — только для Exception."""
 
-    def __init__(self, *types: type[BaseEvent]) -> None:
+    def __init__(self, *types: type[BaseAgentEvent]) -> None:
         self._types = types
 
     def check(self, candidate: AgentEvent) -> bool:
         return isinstance(candidate, self._types)
 
 
-def _llm_request_status(event: LLMRequestSent) -> str:
+def _llm_request_status(event: LLMRequestStarted) -> str:
     tools_hint = " с tools" if event.has_tools else ""
     return (
         f"Жду ответ от модели `{event.model}`{tools_hint}… "
@@ -148,7 +145,10 @@ def _llm_request_status(event: LLMRequestSent) -> str:
 
 
 async def _finalize_step(
-    step: cl.Step, content: str, *, is_error: bool = False,
+    step: cl.Step,
+    content: str,
+    *,
+    is_error: bool = False,
 ) -> None:
     """Проставляет финальный output у step через streaming API.
 
@@ -284,16 +284,8 @@ class _EventRenderer:
         await self._clear_status()
         await cl.Message(
             content=(
-                f"**Tool call format error** "
-                f"`{event.error_kind}`: {event.message}"
+                f"**Tool call format error** `{event.error_kind}`: {event.message}"
             ),
-            author="system",
-        ).send()
-
-    async def on_notice(self, event: UserNoticeReady) -> None:
-        await self._clear_status()
-        await cl.Message(
-            content=f"**{event.severity}**: {event.message}",
             author="system",
         ).send()
 
@@ -305,15 +297,9 @@ class _EventRenderer:
         del event
         self.answer_msg = None
 
-    async def on_stage_started(self, event: StageStarted) -> None:
-        del event
-        await self._set_status("Готовлю запрос…")
-
-    async def on_stage_completed(self, event: StageCompleted) -> None:
-        del event
-        await self._clear_status()
-
-    async def on_llm_request_sent(self, event: LLMRequestSent) -> None:
+    async def on_llm_request_started(self, event: LLMRequestStarted) -> None:
+        # В boba метаданные запроса (model / messages_count / has_tools)
+        # живут на LLMRequestStarted, а не на LLMRequestSent.
         await self._set_status(_llm_request_status(event))
 
     async def on_generation_started(self, event: GenerationStarted) -> None:
@@ -325,9 +311,7 @@ class _EventRenderer:
         # отправил запрос.
         if event.iteration <= 1:
             return
-        await self._set_status(
-            f"Итерация {event.iteration}/{event.max_iterations}…"
-        )
+        await self._set_status(f"Итерация {event.iteration}/{event.max_iterations}…")
 
     async def on_generation_done(self, event: GenerationDone) -> None:
         del event
@@ -356,7 +340,7 @@ def _build_dispatcher(r: _EventRenderer) -> FirstMatchDispatcher[AgentEvent, Any
     # контравариантен по аргументу, поэтому нужен cast. Безопасность
     # держится на _IsType(T) — в маршрут попадает только T.
     def route(
-        event_type: type[BaseEvent],
+        event_type: type[BaseAgentEvent],
         handler: Callable[..., Awaitable[None]],
     ) -> tuple[Specification[AgentEvent], _RenderRoute]:
         return (_IsType(event_type), cast(_RenderRoute, handler))
@@ -376,13 +360,10 @@ def _build_dispatcher(r: _EventRenderer) -> FirstMatchDispatcher[AgentEvent, Any
         route(ToolResultReady, r.on_tool_result),
         route(ToolExecutionFailed, r.on_tool_exec_failed),
         route(ToolCallFormatFailed, r.on_tool_format_failed),
-        route(UserNoticeReady, r.on_notice),
         route(RefusalToken, r.on_refusal_token),
         route(RefusalComplete, r.on_refusal_complete),
-        route(StageStarted, r.on_stage_started),
-        route(StageCompleted, r.on_stage_completed),
         route(IterationStarted, r.on_iteration_started),
-        route(LLMRequestSent, r.on_llm_request_sent),
+        route(LLMRequestStarted, r.on_llm_request_started),
         route(GenerationStarted, r.on_generation_started),
         route(GenerationDone, r.on_generation_done),
         route(UserQueryReceived, r.on_user_query),

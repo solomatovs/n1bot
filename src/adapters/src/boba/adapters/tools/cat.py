@@ -166,7 +166,9 @@ class CatTool(Tool[CatArgs]):
 
     @staticmethod
     def _read_range(
-        f: TextIOBase, start: int, end: int,
+        f: TextIOBase,
+        start: int,
+        end: int,
     ) -> tuple[str, int]:
         """Стримит файл построчно, собирает только строки ``[start, end]``.
 

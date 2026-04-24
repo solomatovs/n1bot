@@ -1,15 +1,36 @@
 """Сборка LLM-промптов из провайдеров (fold-factory по :class:`PromptKind`).
 
-Provider'ы (``core-errors``-based) поставляют блоки определённого типа
-(``SYSTEM`` / ``USER`` / ``TOOLS_DEFINITION``); :class:`PromptFactory`
-агрегирует их по приоритету в :class:`PromptResult`. Middleware
-``SystemPromptMiddleware`` / ``UserPromptMiddleware`` в ``meat.py``
-используют результат для сборки :class:`LLMRequest`.
+Провайдеры поставляют блоки определённого типа (``SYSTEM`` / ``USER``);
+:class:`PromptFactory` агрегирует их по приоритету в
+:class:`PromptResult`. Middleware ``SystemPromptMiddleware`` и
+``UserPromptMiddleware`` (:mod:`boba.domain.agent.meat.prompt`)
+вызывают фабрику и пишут финальные тексты в :class:`MessageService`.
 
-Параметр ``TCtx`` — тип контекста, прокидываемого провайдерам. В проекте
-это :class:`~boba.domain.agent.models.AgentContext`, но сам модуль
-работает с любым типом через generics.
+Параметр ``TCtx`` в :class:`PromptState` — тип контекста, прокидываемый
+провайдерам. В boba это :class:`~boba.domain.agent.models.\
+AgentContext`, но сам модуль работает с любым типом через generics
+— это делает :class:`PromptProvider` переиспользуемым вне агентского
+слоя (например, для chainlit-prompt сборки).
+
+════════════════════════════════════════════════════════════════════
+  Иерархия ошибок
+════════════════════════════════════════════════════════════════════
+
+::
+
+    PromptError(UserFeedbackError[...], TerminalError) → PromptFailed
+    │   provider: str | None
+    │
+    ├── RetryablePromptError(+ Retryable)            транзиентная I/O
+    └── PermanentPromptError
+        └── PromptProviderError                      провайдер упал
+
+``PromptFactory.build()`` оборачивает ``OSError`` → ``PromptProviderError``
+автоматически. ``PromptError`` из провайдеров пропускается как есть
+(например, провайдер сам валидирует и бросает ``PermanentPromptError``).
 """
+
+from __future__ import annotations
 
 from abc import abstractmethod
 from collections.abc import Iterable, Mapping
@@ -18,13 +39,9 @@ from enum import Enum
 from typing import Generic, Self, TypeVar
 
 from boba.domain.agent.events import AgentEvent, PromptFailed
-from boba.domain.agent.models import RequestId
 from boba.domain.core.errors import Retryable, TerminalError, UserFeedbackError
-from boba.domain.core.patterns import (
-    FoldFactory,
-    Id,
-    PrioritySource,
-)
+from boba.domain.core.patterns import FoldFactory, Id, PrioritySource
+from boba.domain.llm.models import RequestId
 
 TCtx = TypeVar("TCtx")
 
@@ -32,9 +49,9 @@ TCtx = TypeVar("TCtx")
 class PromptError(UserFeedbackError[RequestId, AgentEvent], TerminalError):
     """Базовая ошибка сборки промпта.
 
-    Адаптеры-провайдеры промптов (чтение файлов, workspace, git) оборачивают
-    свои I/O-исключения в потомков этого класса. Ошибки логики/валидации
-    (неверный тип, битая регистрация провайдера) — это баги и должны падать
+    Адаптеры-провайдеры (файлы, workspace, git) оборачивают свои
+    I/O-исключения в потомков этого класса. Ошибки логики/валидации
+    (неверный тип, битая регистрация) — это баги и должны падать
     напрямую, без конвертации в :class:`PromptError`.
     """
 
@@ -53,23 +70,32 @@ class PromptError(UserFeedbackError[RequestId, AgentEvent], TerminalError):
 
 
 class RetryablePromptError(PromptError, Retryable):
-    """Временная проблема провайдера (транзиентная I/O-ошибка, локфайл)."""
+    """Временная проблема провайдера (транзиентный I/O, локфайл)."""
 
 
 class PermanentPromptError(PromptError):
-    """Провайдер не может вернуть блок: нет файла/прав, сломанная конфигурация."""
+    """Провайдер не может вернуть блок: нет файла/прав, битая конфигурация."""
 
 
 class PromptProviderError(PermanentPromptError):
-    """Провайдер промпта упал на чтении своего источника."""
+    """Провайдер упал на чтении своего источника.
+
+    Автоматически поднимается :meth:`PromptFactory.build` при
+    перехвате ``OSError`` от любого провайдера.
+    """
 
 
 class PromptKind(Enum):
-    """Тип собираемого промпта."""
+    """Тип собираемого промпта.
+
+    На S7-этапе — только ``SYSTEM`` и ``USER``. ``TOOLS_DEFINITION``
+    из старого кода не портирован: в boba каталог tools живёт в
+    :class:`~boba.domain.agent.meat.tools.ToolsDefinitionMiddleware`
+    как отдельная стадия, а не собирается через ту же prompt-фабрику.
+    """
 
     SYSTEM = "system"
     USER = "user"
-    TOOLS_DEFINITION = "tools_definition"
 
 
 @dataclass(frozen=True)
@@ -78,18 +104,6 @@ class PromptBlock:
 
     name: str
     content: str
-
-
-class PromptState(Generic[TCtx]):
-    def __init__(self, ctx: TCtx) -> None:
-        self.ctx = ctx
-        self.blocks: dict[PromptKind, list[PromptBlock]] = {}
-
-    def add(self, kind: PromptKind, block: PromptBlock) -> None:
-        self.blocks.setdefault(kind, []).append(block)
-
-
-TPromptState = TypeVar("TPromptState", bound=PromptState)
 
 
 class PromptId(Id[str]):
@@ -103,11 +117,27 @@ class PromptId(Id[str]):
         return cls(value)
 
 
+class PromptState(Generic[TCtx]):
+    """Накапливаемое состояние сборки: blocks per-kind + контекст.
+
+    Контекст передаётся провайдерам, чтобы они могли брать данные из
+    текущего запроса (query, workspace, и т.д.).
+    """
+
+    def __init__(self, ctx: TCtx) -> None:
+        self.ctx = ctx
+        self.blocks: dict[PromptKind, list[PromptBlock]] = {}
+
+    def add(self, kind: PromptKind, block: PromptBlock) -> None:
+        self.blocks.setdefault(kind, []).append(block)
+
+
 class PromptResult:
-    """Результат сборки промптов, сгруппированный по типу (kind)."""
+    """Финальная раскладка: блоки сгруппированы по :class:`PromptKind`."""
 
     def __init__(
-        self, blocks_by_kind: Mapping[PromptKind, Iterable[PromptBlock]]
+        self,
+        blocks_by_kind: Mapping[PromptKind, Iterable[PromptBlock]],
     ) -> None:
         self._by_kind: dict[PromptKind, list[PromptBlock]] = {
             k: list(v) for k, v in blocks_by_kind.items()
@@ -117,15 +147,19 @@ class PromptResult:
         return list(self._by_kind.get(kind, []))
 
     def to_string(self, kind: PromptKind) -> str:
-        """Конкатенация всех непустых блоков заданного типа."""
+        """Конкатенация всех непустых блоков через двойной перенос строки."""
         return "\n\n".join(b.content for b in self._by_kind.get(kind, []) if b.content)
 
 
 class PromptProvider(PrioritySource[PromptId, PromptState]):
-    """
-    Провайдер промпта без внешнего контекста.
-    Поставляет ноль или более блоков одного типа (:meth:`kind`), которые
-    будут собраны в соответствующий раздел итогового :class:`PromptResult`.
+    """Провайдер блоков промпта одного типа (:meth:`kind`).
+
+    Реализации должны указывать:
+
+    - :meth:`id` — уникальный идентификатор (для замены/удаления);
+    - :meth:`priority` — меньше число → раньше в раскладке;
+    - :meth:`kind` — к какому разделу добавляются блоки;
+    - :meth:`blocks` — один или больше :class:`PromptBlock`.
     """
 
     @abstractmethod
@@ -142,12 +176,21 @@ class PromptProvider(PrioritySource[PromptId, PromptState]):
 
 
 class PromptFactory(FoldFactory[PromptId, PromptState[TCtx], PromptResult]):
-    """Сервис для сборки промптов. Тип контекста определяется при использовании."""
+    """Собирает :class:`PromptResult` из зарегистрированных провайдеров.
 
-    def __init__(self, ctx: TCtx, providers: Iterable[PromptProvider]):
+    Per-call экземпляр: :class:`PromptState` строится на лету под
+    переданный ``ctx``. Контракт ошибок в :meth:`build`:
+
+    - :class:`PromptError` из провайдера пробрасывается как есть;
+    - ``OSError`` → :class:`PromptProviderError` (узкий wrap для
+      адаптеров, которые не обернули свой I/O сами);
+    - любые другие исключения (логика, программный баг) — пропускаются
+      наружу и крашат процесс.
+    """
+
+    def __init__(self, ctx: TCtx, providers: Iterable[PromptProvider]) -> None:
         super().__init__()
         self._ctx = ctx
-
         for p in providers:
             self.register(p)
 
@@ -166,6 +209,7 @@ class PromptFactory(FoldFactory[PromptId, PromptState[TCtx], PromptResult]):
                 raise
             except OSError as e:
                 raise PromptProviderError(
-                    f"{type(e).__name__}: {e}", provider=p.id().to_wire()
+                    f"{type(e).__name__}: {e}",
+                    provider=p.id().to_wire(),
                 ) from e
         return self.finalize(state)

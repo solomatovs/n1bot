@@ -195,9 +195,7 @@ class OneOf(ValueValidator, SchemaContributor):
 
     def __init__(self, *options: Any) -> None:
         if len(options) < self._MIN_OPTIONS:
-            raise ValueError(
-                f"OneOf требует минимум {self._MIN_OPTIONS} вариант"
-            )
+            raise ValueError(f"OneOf требует минимум {self._MIN_OPTIONS} вариант")
         self._options = options
 
     def _validate_value(self, value: Any) -> Any:
@@ -435,9 +433,7 @@ class SchemaArgsValidator(Validator[dict[str, Any]]):
             try:
                 validated = param.validator.validate(raw)
             except ParamValidationError as e:
-                raise InvalidToolArgumentError(
-                    self._tool_id, param.name, str(e)
-                ) from e
+                raise InvalidToolArgumentError(self._tool_id, param.name, str(e)) from e
             if validated is not MISSING:
                 result[param.name] = validated
 

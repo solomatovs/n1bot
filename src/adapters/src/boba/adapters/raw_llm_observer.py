@@ -13,6 +13,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
+from enum import Enum
 from typing import Any
 
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk, ChoiceDelta
@@ -60,6 +61,25 @@ class MultiKeyReasoningExtractor(Converter[ChoiceDelta, str | None]):
         return None
 
 
+class RequestOutcome(Enum):
+    """Исход запроса LLM на wire-слое.
+
+    ``RAISED`` всегда сопровождается именем класса исключения,
+    прокидываемым вторым аргументом ``exception_name`` в
+    :meth:`RawLLMObserver.on_request_end`.
+    """
+
+    OK = "ok"
+    CANCELLED = "cancelled"
+    RAISED = "raised"
+
+    def label(self, exception_name: str | None = None) -> str:
+        """Человеко-читаемая метка: ``ok`` / ``cancelled`` / ``raised:<Exc>``."""
+        if self is RequestOutcome.RAISED and exception_name:
+            return f"{self.value}:{exception_name}"
+        return self.value
+
+
 class RawLLMObserver(ABC):
     """Наблюдатель сырых данных на границе LLM-адаптера."""
 
@@ -74,9 +94,14 @@ class RawLLMObserver(ABC):
         ...
 
     @abstractmethod
-    def on_request_end(self, outcome: str) -> None:
-        """Вызывается по завершении потока — ``outcome`` описывает исход
-        на wire-слое: ``ok`` / ``cancelled`` / ``raised:<ExcClassName>``."""
+    def on_request_end(
+        self,
+        outcome: RequestOutcome,
+        exception_name: str | None = None,
+    ) -> None:
+        """Вызывается по завершении потока. ``exception_name`` задаётся
+        только для :attr:`RequestOutcome.RAISED` и содержит имя класса
+        исключения."""
         ...
 
 
@@ -94,9 +119,13 @@ class CompositeRawLLMObserver(RawLLMObserver):
         for o in self._observers:
             o.on_response_chunk(chunk)
 
-    def on_request_end(self, outcome: str) -> None:
+    def on_request_end(
+        self,
+        outcome: RequestOutcome,
+        exception_name: str | None = None,
+    ) -> None:
         for o in self._observers:
-            o.on_request_end(outcome)
+            o.on_request_end(outcome, exception_name)
 
 
 class FileRawLLMObserver(RawLLMObserver):
@@ -124,8 +153,12 @@ class FileRawLLMObserver(RawLLMObserver):
         body = chunk.model_dump_json(indent=2)
         self._append(f"## Response chunk\n\n```json\n{body}\n```\n\n")
 
-    def on_request_end(self, outcome: str) -> None:
-        self._append(f"## End: {outcome}\n\n")
+    def on_request_end(
+        self,
+        outcome: RequestOutcome,
+        exception_name: str | None = None,
+    ) -> None:
+        self._append(f"## End: {outcome.label(exception_name)}\n\n")
 
     def _append(self, text: str) -> None:
         with self._workspace.append_text(self._path) as f:
@@ -152,9 +185,7 @@ class FileContentObserver(RawLLMObserver):
 
     def on_request(self, kwargs: dict[str, Any]) -> None:
         body = json.dumps(kwargs, ensure_ascii=False, indent=2, default=str)
-        self._append(
-            f"\n\n## Request\n\n```json\n{body}\n```\n\n## Response\n\n"
-        )
+        self._append(f"\n\n## Request\n\n```json\n{body}\n```\n\n## Response\n\n")
 
     def on_response_chunk(self, chunk: ChatCompletionChunk) -> None:
         for choice in chunk.choices:
@@ -162,8 +193,12 @@ class FileContentObserver(RawLLMObserver):
             if content:
                 self._append(content)
 
-    def on_request_end(self, outcome: str) -> None:
-        self._append(f"\n\n## End: {outcome}\n")
+    def on_request_end(
+        self,
+        outcome: RequestOutcome,
+        exception_name: str | None = None,
+    ) -> None:
+        self._append(f"\n\n## End: {outcome.label(exception_name)}\n")
 
     def _append(self, text: str) -> None:
         with self._workspace.append_text(self._path) as f:
@@ -176,7 +211,8 @@ class MetricsRawLLMObserver(RawLLMObserver):
     Считает по **сырым** chunk-ам, а не по :class:`AgentEvent` после
     трансформаций — так цифры не искажаются ``StrictJsonContentToolCall`` и
     подобными middleware, которые переупаковывают content в tool-calls.
-    Замеряет также elapsed и outcome (ok/cancelled/raised:X) на wire-слое.
+    Замеряет также elapsed и :class:`RequestOutcome` (с именем
+    исключения для ``RAISED``) на wire-слое.
     """
 
     def __init__(
@@ -223,12 +259,16 @@ class MetricsRawLLMObserver(RawLLMObserver):
             if choice.finish_reason:
                 self._finish_reason = choice.finish_reason
 
-    def on_request_end(self, outcome: str) -> None:
+    def on_request_end(
+        self,
+        outcome: RequestOutcome,
+        exception_name: str | None = None,
+    ) -> None:
         elapsed = time.monotonic() - self._start if self._start else 0.0
         logger.info(
             "LLM done: %s, model=%s, chunks=%d, content=%d ch, "
             "reasoning=%d ch, tool_calls=%d (args=%d ch), finish=%s, elapsed=%.2fs",
-            outcome,
+            outcome.label(exception_name),
             self._model,
             self._chunks,
             self._content_chars,

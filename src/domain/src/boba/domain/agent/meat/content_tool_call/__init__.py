@@ -10,13 +10,13 @@
   критикой через :class:`AgentErrorRouter`.
 """
 
-from .streaming import (
+from boba.domain.agent.meat.content_tool_call.streaming import (
     JsonContentToolCallMiddleware,
     JsonDepthScanner,
     JsonHeaderParser,
     JsonToolCallHeader,
 )
-from .strict import (
+from boba.domain.agent.meat.content_tool_call.strict import (
     ParsedJsonToolCall,
     StrictJsonContentToolCallMiddleware,
     StrictJsonToolCallParser,

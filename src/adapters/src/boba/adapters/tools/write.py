@@ -89,7 +89,9 @@ class WriteTool(Tool[WriteArgs]):
                             "'cp1251'. По умолчанию — 'utf-8'."
                         ),
                         validator=ChainValidator(
-                            Default("utf-8"), IsString(), NonEmpty(),
+                            Default("utf-8"),
+                            IsString(),
+                            NonEmpty(),
                         ),
                     ),
                 ],
@@ -104,7 +106,8 @@ class WriteTool(Tool[WriteArgs]):
                 f.write(args.content)
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Ошибка записи: {e}",
+                tool_id=self._ID,
+                message=f"Ошибка записи: {e}",
             ) from e
         action = "обновлён" if existed else "создан"
         return ToolResult(

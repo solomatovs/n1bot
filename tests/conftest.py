@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from boba.domain.agent.events import AgentEvent, GenerationDone, GenerationFailed
-from boba.infra import AgentHarness
+from boba.infra.harness import AgentHarness
 
 
 def _bootstrap_test_env() -> None:
@@ -83,7 +83,7 @@ def query() -> str:
     """Query для integration-тестов — только из env ``LLM_QUERY``.
 
     Системного дефолта нет (симметрично ``model``). Используется
-    :mod:`tests.boba_2.test_agent_loop`; legacy-тесты рядом тоже
+    :mod:`tests.boba.test_agent_loop`; legacy-тесты рядом тоже
     объявляли ``query`` в сигнатуре — теперь fixture единая на весь
     репозиторий.
     """

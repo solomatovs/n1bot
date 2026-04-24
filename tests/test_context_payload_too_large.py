@@ -8,12 +8,10 @@ from __future__ import annotations
 import pytest
 from conftest import OutcomeClassifier
 
-from boba.domain.core.workspace import WorkspaceId
-from boba.infra import AgentHarness
+from boba.infra.harness import AgentHarness
 
 pytestmark = pytest.mark.integration
 
-_WORKSPACE_ID = WorkspaceId.from_wire("00000000-0000-0000-0000-000000000003")
 _PHRASE = "ААА БББ ВВВ "
 _REPEAT = 5_000_000  # ~60 MB
 
@@ -33,7 +31,7 @@ def test_context_payload_too_large(
     classify_overflow_outcome: OutcomeClassifier,
 ) -> None:
     query = _PHRASE * _REPEAT + "теперь ответь одним словом: ок"
-    events = harness.ask(_WORKSPACE_ID, query, model=model)
+    events = harness.ask(query, model=model)
     outcome = classify_overflow_outcome(events)
     print(f"[test] outcome={outcome}")  # noqa: T201
     assert outcome in _ACCEPTABLE, (

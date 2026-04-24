@@ -1,9 +1,7 @@
-"""Middleware сборки system/user промптов."""
-
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Sequence
 
 from boba.domain.agent.events import (
     AgentEvent,
@@ -11,24 +9,33 @@ from boba.domain.agent.events import (
     SystemPromptProcessingStarted,
     UserPromptProcessed,
     UserPromptProcessingStarted,
+    UserQueryReceived,
 )
-from boba.domain.agent.messages import MessageService
 from boba.domain.agent.models import AgentContext
-from boba.domain.agent.prompt import PromptFactory, PromptKind, PromptProvider
+from boba.domain.agent.prompt import (
+    PromptFactory,
+    PromptKind,
+    PromptProvider,
+)
 from boba.domain.core.patterns import StreamSource
 
 
 class SystemPromptMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Строит system-prompt через :class:`PromptFactory` (срез
-    ``PromptKind.SYSTEM``) и кладёт его в ``ctx.llm_builder.system_prompt``.
-    :class:`LLMRequestFactory` читает этот слот при сборке :class:`LLMRequest`.
-    Отключение middleware через DI убирает system-prompt из запроса.
+    """Собирает system-промпт и кладёт его в ``ctx.request.system_message``.
+
+    Работает каждую итерацию — провайдеры могут отдавать разное
+    содержимое в зависимости от текущего состояния (workspace, git,
+    env, time). :class:`~boba.domain.llm.models.LLMRequest`
+    пересоздаётся на каждой итерации, так что system-слот всегда
+    содержит только свежую сборку.
+
+    Пустой результат сборки → ``system_message`` остаётся ``None``.
     """
 
     def __init__(
         self,
         inner: StreamSource[AgentContext, AgentEvent],
-        prompt_providers: list[PromptProvider],
+        prompt_providers: Sequence[PromptProvider],
     ) -> None:
         self._inner = inner
         self._prompt_providers = prompt_providers
@@ -36,12 +43,12 @@ class SystemPromptMiddleware(StreamSource[AgentContext, AgentEvent]):
     def name(self) -> str:
         return "SystemPrompt"
 
-    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
-        content_before = ctx.llm_request.system_prompt
-        yield SystemPromptProcessingStarted(
-            request_id=ctx.agent_request.request_id,
-            content_before=content_before,
-        )
+    def reset(self) -> None:
+        self._inner.reset()
+
+    def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
+        rid = ctx.agent_request.request_id
+        yield SystemPromptProcessingStarted(request_id=rid)
 
         start = time.perf_counter()
         content = (
@@ -49,15 +56,14 @@ class SystemPromptMiddleware(StreamSource[AgentContext, AgentEvent]):
             .build()
             .to_string(PromptKind.SYSTEM)
         )
-        if content:
-            ctx.llm_request.system_prompt = content
-
         duration_ms = (time.perf_counter() - start) * 1000
 
+        if content:
+            ctx.request.set_system_message(content)
+
         yield SystemPromptProcessed(
-            request_id=ctx.agent_request.request_id,
-            content_before=content_before,
-            content_after=ctx.llm_request.system_prompt,
+            request_id=rid,
+            content=content,
             duration_ms=duration_ms,
         )
 
@@ -65,55 +71,41 @@ class SystemPromptMiddleware(StreamSource[AgentContext, AgentEvent]):
 
 
 class UserPromptMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """На первой итерации строит user-prompt через :class:`PromptFactory`
-    (срез ``PromptKind.USER``) и добавляет его как
-    :class:`LLMMessage` с ``role="user"`` в :class:`MessageService`.
-    Эмитит :class:`UserQueryReceived` для sink'ов.
-
-    User-prompt — часть диалога (append-once), а не пересчитываемый
-    слот. Его правильное место — в :class:`MessageService`, где он
-    становится в конец истории (после replay'а предыдущих сессий) и
-    дальше не меняется. :class:`LLMRequestFactory` читает
-    :class:`MessageService` и не знает, кто его туда положил.
-    """
-
     def __init__(
         self,
         inner: StreamSource[AgentContext, AgentEvent],
-        prompt_providers: list[PromptProvider],
-        message_service: MessageService,
+        prompt_providers: Sequence[PromptProvider],
     ) -> None:
         self._inner = inner
         self._prompt_providers = prompt_providers
-        self._message_service = message_service
 
     def name(self) -> str:
         return "UserPrompt"
 
-    def stream(self, ctx: AgentContext) -> Iterator[AgentEvent]:
-        if ctx.iteration == 1:
-            content_before = ctx.llm_request.user_prompt
-            yield UserPromptProcessingStarted(
-                request_id=ctx.agent_request.request_id,
-                content_before=content_before,
-            )
+    def reset(self) -> None:
+        self._inner.reset()
 
-            start = time.perf_counter()
-            content = (
-                PromptFactory(ctx, self._prompt_providers)
-                .build()
-                .to_string(PromptKind.USER)
-            )
-            if content:
-                ctx.llm_request.user_prompt = content
+    def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
+        rid = ctx.agent_request.request_id
+        yield UserPromptProcessingStarted(request_id=rid)
 
-            duration_ms = (time.perf_counter() - start) * 1000
+        start = time.perf_counter()
+        content = (
+            PromptFactory(ctx, self._prompt_providers)
+            .build()
+            .to_string(PromptKind.USER)
+        )
+        duration_ms = (time.perf_counter() - start) * 1000
 
-            yield UserPromptProcessed(
-                request_id=ctx.agent_request.request_id,
-                content_before=content_before,
-                content_after=ctx.llm_request.user_prompt,
-                duration_ms=duration_ms,
-            )
+        if content:
+            ctx.request.set_user_message(content)
+            if ctx.iteration == 1:
+                yield UserQueryReceived(request_id=rid, query=content)
+
+        yield UserPromptProcessed(
+            request_id=rid,
+            content=content,
+            duration_ms=duration_ms,
+        )
 
         yield from self._inner.stream(ctx)

@@ -28,16 +28,20 @@ from collections.abc import Iterable
 
 from openai.types.chat.chat_completion_chunk import Choice, ChoiceDeltaToolCall
 
-from boba.domain.agent.models import AgentContext
 from boba.domain.core.patterns import StreamTransformer
+from boba.domain.llm.models import LLMContext
 
 logger = logging.getLogger(__name__)
 
 
-class DuplicateToolCallIndexReindexer(
-    StreamTransformer[AgentContext, Choice, Choice]
-):
-    """Перемапливает tool_calls с коллизией по ``index`` на свободные слоты."""
+class DuplicateToolCallIndexReindexer(StreamTransformer[LLMContext, Choice, Choice]):
+    """Перемапливает tool_calls с коллизией по ``index`` на свободные слоты.
+
+    Работает в LLM-слое (ниже agent'а) — параметризован
+    :class:`LLMContext`, а не :class:`AgentContext`: препроцессор
+    сидит внутри :class:`OpenAITerminal`'s chunk-pipeline, до
+    любой agent-семантики.
+    """
 
     def __init__(self) -> None:
         self._index_owner: dict[int, str] = {}
@@ -52,9 +56,7 @@ class DuplicateToolCallIndexReindexer(
         self._remap.clear()
         self._next_free = 0
 
-    def stream(
-        self, ctx: AgentContext, stream: Iterable[Choice]
-    ) -> Iterable[Choice]:
+    def stream(self, ctx: LLMContext, stream: Iterable[Choice]) -> Iterable[Choice]:
         for choice in stream:
             delta = choice.delta
             if delta is not None and delta.tool_calls:

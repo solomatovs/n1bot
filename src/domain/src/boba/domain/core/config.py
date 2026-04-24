@@ -10,14 +10,14 @@ from typing import Any, Generic, TypeVar
 from boba.domain.core.patterns import Converter, ConverterInputError
 
 __all__ = [
-    "ConfigSource",
-    "ChainedConfigResolver",
-    "FieldSpec",
-    "StrConverter",
-    "IntConverter",
-    "FloatConverter",
     "BoolConverter",
+    "ChainedConfigResolver",
+    "ConfigSource",
     "CsvListConverter",
+    "FieldSpec",
+    "FloatConverter",
+    "IntConverter",
+    "StrConverter",
 ]
 
 
@@ -142,6 +142,4 @@ class CsvListConverter(Converter[object, list[str]]):
             return [str(item) for item in value if item is not None and str(item) != ""]
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
-        raise ConverterInputError(
-            f"cannot convert {type(value).__name__} to list[str]"
-        )
+        raise ConverterInputError(f"cannot convert {type(value).__name__} to list[str]")

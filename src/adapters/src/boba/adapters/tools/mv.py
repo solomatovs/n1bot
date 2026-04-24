@@ -88,10 +88,12 @@ class MvTool(Tool[MvArgs]):
             self._workspace.move(args.src, args.dst)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Источник не найден: {args.src}",
+                tool_id=self._ID,
+                message=f"Источник не найден: {args.src}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Ошибка перемещения: {e}",
+                tool_id=self._ID,
+                message=f"Ошибка перемещения: {e}",
             ) from e
         return ToolResult(content=f"Перемещено: {args.src} → {args.dst}")

@@ -79,6 +79,7 @@ class MkdirTool(Tool[MkdirArgs]):
             self._workspace.mkdir(args.path)
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Ошибка mkdir: {e}",
+                tool_id=self._ID,
+                message=f"Ошибка mkdir: {e}",
             ) from e
         return ToolResult(content=f"Директория создана: {args.path}")
