@@ -7,7 +7,7 @@ from datetime import datetime
 from io import BufferedIOBase, TextIOBase
 from typing import Generic, TypeVar
 
-from boba.domain.core.patterns import Id, Specification, UuId
+from boba.domain.core.patterns import Id, Specification, StrId, UuId
 
 TWsId = TypeVar("TWsId", bound=Id)
 
@@ -470,3 +470,25 @@ class HistoryWorkspaceRegistry(WorkspaceRegistry[WorkspaceId]):
 
 class ScratchWorkspaceRegistry(WorkspaceRegistry[WorkspaceId]):
     """DI-маркер реестра :class:`ScratchWorkspaceShell`."""
+
+
+class PluginWorkspaceId(StrId):
+    """Строковый id plugin-namespace.
+
+    В отличие от :class:`WorkspaceId` (UUID, генерится для каждой
+    user-сессии), plugin workspace — application-singleton, и id у него
+    единственный и стабильный. :class:`StrId` даёт читаемое имя (например,
+    ``"plugins"``), без UUID-балласта в путях и логах.
+    """
+
+
+class PluginWorkspaceShell(WorkspaceShell[PluginWorkspaceId]):
+    """DI-маркер: workspace c .py-плагинами и их данными — application-singleton.
+
+    Используется PluginLoader'ом для discovery (`tree`/`read_text`) и
+    самими плагинами для собственного I/O (state, кэш, data-файлы).
+    """
+
+
+class PluginWorkspaceRegistry(WorkspaceRegistry[PluginWorkspaceId]):
+    """DI-маркер реестра :class:`PluginWorkspaceShell`."""

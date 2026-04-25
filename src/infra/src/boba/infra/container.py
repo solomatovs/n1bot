@@ -48,6 +48,7 @@ from boba.domain.core.patterns import (
 from boba.domain.core.tools import ToolFactory, ToolsService
 from boba.domain.llm.events import LLMEvent
 from boba.domain.llm.models import LLMContext, SamplingParams
+from boba.infra.plugins import PluginContext, PluginLoader
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,17 @@ def create_empty_tools_service() -> ToolsService:
     service = ToolsService(factory)
     service.rebuild_catalog()
     return service
+
+
+def create_tools_service(loader: PluginLoader, ctx: PluginContext) -> ToolsService:
+    """Per-request сборка :class:`ToolsService` через :class:`PluginLoader`.
+
+    ``loader`` — application-singleton (создаётся один раз на старте,
+    discovery выполнен в его конструкторе). ``ctx`` — свежий per-request,
+    несёт сессионный :class:`ProjectWorkspaceShell` и application-level
+    DI. Каждый плагин получает один и тот же ``ctx``.
+    """
+    return loader.build_tools_service(ctx)
 
 
 def create_llm_source(
