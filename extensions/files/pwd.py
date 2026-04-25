@@ -19,7 +19,7 @@ from boba.domain.core.tools import (
     ToolSource,
     ToolSourceId,
 )
-from boba.infra.plugins import PluginContext
+from boba.infra.extensions import ExtensionContext
 
 
 @dataclass(frozen=True)
@@ -56,7 +56,7 @@ class PwdTool(Tool[PwdArgs]):
     def execute(self, ctx: ToolContext, args: PwdArgs) -> ToolResult:
         return ToolResult(content=ctx.project_workspace.cwd)
 
-def register(ctx: PluginContext) -> Iterable[ToolSource]:
+def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.pwd"),
         priority=0,

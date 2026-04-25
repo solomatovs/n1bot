@@ -23,17 +23,14 @@ from boba.adapters.growbuffer import GrowBuffer
 from boba.domain.core.patterns import Id, Specification
 from boba.domain.core.workspace import (
     EntryMeta,
+    ExtensionWorkspaceId,
+    ExtensionWorkspaceRegistry,
+    ExtensionWorkspaceShell,
     GrepMatch,
     HistoryWorkspaceRegistry,
     HistoryWorkspaceShell,
-    PluginWorkspaceId,
-    PluginWorkspaceRegistry,
-    PluginWorkspaceShell,
     ProjectWorkspaceRegistry,
     ProjectWorkspaceShell,
-    PromptWorkspaceId,
-    PromptWorkspaceRegistry,
-    PromptWorkspaceShell,
     ScratchWorkspaceRegistry,
     ScratchWorkspaceShell,
     WorkspaceDecodingError,
@@ -963,64 +960,34 @@ class FsScratchWorkspaceRegistry(
         super().__init__(base_dir, FsScratchWorkspaceShell, subdir, WorkspaceId.new)
 
 
-class FsPluginWorkspaceShell(
-    FsWorkspaceShell[PluginWorkspaceId], PluginWorkspaceShell
+class FsExtensionWorkspaceShell(
+    FsWorkspaceShell[ExtensionWorkspaceId], ExtensionWorkspaceShell
 ):
-    """Файловый :class:`PluginWorkspaceShell`."""
+    """Файловый :class:`ExtensionWorkspaceShell`."""
 
 
-class FsPluginWorkspaceRegistry(
-    FsWorkspaceRegistry[FsPluginWorkspaceShell, PluginWorkspaceId],
-    PluginWorkspaceRegistry,
+class FsExtensionWorkspaceRegistry(
+    FsWorkspaceRegistry[FsExtensionWorkspaceShell, ExtensionWorkspaceId],
+    ExtensionWorkspaceRegistry,
 ):
-    """Singleton-registry plugin-namespace.
+    """Singleton-registry extension-namespace.
 
-    Корнем shell'а служит сам ``root`` — без id и subdir в пути, потому
-    что plugin workspace на всё приложение один. Конструктор принимает
-    только директорию (обычно ``app_config.plugins_dir``); остальные
-    параметры базового :class:`FsWorkspaceRegistry` фиксированы.
+    Корнем shell'а служит сам ``root`` (обычно
+    ``app_config.extensions_dir``) — без id и subdir в пути, потому что
+    extension workspace на всё приложение один. Конструктор принимает
+    только директорию; остальные параметры базового
+    :class:`FsWorkspaceRegistry` фиксированы.
     """
 
-    _SINGLETON_ID = PluginWorkspaceId("plugins")
+    _SINGLETON_ID = ExtensionWorkspaceId("extensions")
 
     def __init__(self, root: Path) -> None:
         super().__init__(
             base_dir=root,
-            shell_cls=FsPluginWorkspaceShell,
+            shell_cls=FsExtensionWorkspaceShell,
             subdir="",
             id_factory=lambda: self._SINGLETON_ID,
         )
 
-    def _workspace_dir(self, workspace_id: PluginWorkspaceId) -> Path:
-        return self._base_dir
-
-
-class FsPromptWorkspaceShell(
-    FsWorkspaceShell[PromptWorkspaceId], PromptWorkspaceShell
-):
-    """Файловый :class:`PromptWorkspaceShell`."""
-
-
-class FsPromptWorkspaceRegistry(
-    FsWorkspaceRegistry[FsPromptWorkspaceShell, PromptWorkspaceId],
-    PromptWorkspaceRegistry,
-):
-    """Singleton-registry prompt-namespace.
-
-    Симметрично :class:`FsPluginWorkspaceRegistry`: корнем shell'а
-    служит сам ``root`` (обычно ``app_config.prompts_dir``), без id
-    и subdir в пути, потому что prompt workspace application-singleton.
-    """
-
-    _SINGLETON_ID = PromptWorkspaceId("prompts")
-
-    def __init__(self, root: Path) -> None:
-        super().__init__(
-            base_dir=root,
-            shell_cls=FsPromptWorkspaceShell,
-            subdir="",
-            id_factory=lambda: self._SINGLETON_ID,
-        )
-
-    def _workspace_dir(self, workspace_id: PromptWorkspaceId) -> Path:
+    def _workspace_dir(self, workspace_id: ExtensionWorkspaceId) -> Path:
         return self._base_dir

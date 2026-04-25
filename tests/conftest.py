@@ -28,12 +28,10 @@ def _bootstrap_test_env() -> None:
     defaults: dict[str, str] = {
         "WORKSPACE_BASE_DIR": str(vscode_dir / "workspaces"),
         "LOG_FILE": str(vscode_dir / "logs" / "tests.log"),
-        # Дефолтная директория плагинов для тестов — те же 15 built-in
-        # tool-плагинов из репо. Конфиг считает поле обязательным.
-        "BOBA_PLUGINS_DIR": str(repo_root / "plugins"),
-        # Дефолтная директория промптов для тестов — текстовые блоки и
-        # prompt-плагины. Конфиг считает поле обязательным.
-        "BOBA_PROMPTS_DIR": str(repo_root / "prompts"),
+        # Дефолтная директория расширений для тестов — те же 15
+        # built-in tool-плагинов плюс text-промпты. Конфиг считает
+        # поле обязательным.
+        "BOBA_EXTENSIONS_DIR": str(repo_root / "extensions"),
     }
     config_toml = vscode_dir / "config" / "config.toml"
     if config_toml.is_file():

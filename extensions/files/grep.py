@@ -35,7 +35,7 @@ from boba.domain.core.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
-from boba.infra.plugins import PluginContext
+from boba.infra.extensions import ExtensionContext
 
 
 @dataclass(frozen=True)
@@ -217,7 +217,7 @@ class GrepTool(Tool[GrepArgs]):
                 parts.append(f"{m.path}:{n}- {ctx_line}")
         return "\n".join(parts)
 
-def register(ctx: PluginContext) -> Iterable[ToolSource]:
+def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.grep"),
         priority=0,

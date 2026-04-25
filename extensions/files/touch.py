@@ -28,7 +28,7 @@ from boba.domain.core.tools import (
 from boba.domain.core.workspace import (
     WorkspaceError,
 )
-from boba.infra.plugins import PluginContext
+from boba.infra.extensions import ExtensionContext
 
 
 @dataclass(frozen=True)
@@ -86,7 +86,7 @@ class TouchTool(Tool[TouchArgs]):
             ) from e
         return ToolResult(content=f"touch: {args.path}")
 
-def register(ctx: PluginContext) -> Iterable[ToolSource]:
+def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.touch"),
         priority=0,

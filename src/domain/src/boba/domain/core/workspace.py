@@ -472,45 +472,26 @@ class ScratchWorkspaceRegistry(WorkspaceRegistry[WorkspaceId]):
     """DI-маркер реестра :class:`ScratchWorkspaceShell`."""
 
 
-class PluginWorkspaceId(StrId):
-    """Строковый id plugin-namespace.
+class ExtensionWorkspaceId(StrId):
+    """Строковый id extension-namespace.
 
     В отличие от :class:`WorkspaceId` (UUID, генерится для каждой
-    user-сессии), plugin workspace — application-singleton, и id у него
-    единственный и стабильный. :class:`StrId` даёт читаемое имя (например,
-    ``"plugins"``), без UUID-балласта в путях и логах.
+    user-сессии), extension workspace — application-singleton, и id у него
+    единственный и стабильный. :class:`StrId` даёт читаемое имя
+    (``"extensions"``), без UUID-балласта в путях и логах.
     """
 
 
-class PluginWorkspaceShell(WorkspaceShell[PluginWorkspaceId]):
-    """DI-маркер: workspace c .py-плагинами и их данными — application-singleton.
+class ExtensionWorkspaceShell(WorkspaceShell[ExtensionWorkspaceId]):
+    """DI-маркер: workspace c расширениями (``*.py``-плагинами и
+    ``*.md``/``*.txt``-промптами) — application-singleton.
 
-    Используется PluginLoader'ом для discovery (`tree`/`read_text`) и
-    самими плагинами для собственного I/O (state, кэш, data-файлы).
+    Используется :class:`~boba.infra.extensions.ExtensionLoader` для
+    discovery (``tree``/``read_text``); сами расширения могут читать
+    соседние файлы через ``ctx.extension_workspace`` (data-файлы,
+    шаблоны, кэш).
     """
 
 
-class PluginWorkspaceRegistry(WorkspaceRegistry[PluginWorkspaceId]):
-    """DI-маркер реестра :class:`PluginWorkspaceShell`."""
-
-
-class PromptWorkspaceId(StrId):
-    """Строковый id prompt-namespace.
-
-    Symmetric к :class:`PluginWorkspaceId`: prompt-workspace —
-    application-singleton, id у него единственный и стабильный.
-    """
-
-
-class PromptWorkspaceShell(WorkspaceShell[PromptWorkspaceId]):
-    """DI-маркер: workspace c .md/.txt-промптами и .py prompt-плагинами —
-    application-singleton.
-
-    Используется :class:`~boba.infra.prompts.PromptLoader` для discovery
-    (`tree`/`read_text`) и сами prompt-плагины могут читать соседние
-    файлы через ``ctx.prompt_workspace``.
-    """
-
-
-class PromptWorkspaceRegistry(WorkspaceRegistry[PromptWorkspaceId]):
-    """DI-маркер реестра :class:`PromptWorkspaceShell`."""
+class ExtensionWorkspaceRegistry(WorkspaceRegistry[ExtensionWorkspaceId]):
+    """DI-маркер реестра :class:`ExtensionWorkspaceShell`."""

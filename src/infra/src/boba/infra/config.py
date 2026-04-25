@@ -68,10 +68,9 @@ __all__ = [
     "DefaultSource",
     "EnvFileSource",
     "EnvSource",
+    "ExtensionsSection",
     "LLMSamplingSection",
     "LLMTransportSection",
-    "PluginsSection",
-    "PromptsSection",
     "SamplingLoader",
     "TomlFileSource",
     "TomlSource",
@@ -163,8 +162,7 @@ class ConfigState:
     log_file: str | None = None
     agent: AgentConfig | None = None
     sampling: SamplingParams | None = None
-    plugins_dir: str | None = None
-    prompts_dir: str | None = None
+    extensions_dir: str | None = None
 
 
 class ConfigError(Exception):
@@ -353,49 +351,28 @@ class AgentSection(ConfigSectionBuilder):
         return state
 
 
-class PluginsSection(ConfigSectionBuilder):
-    """Секция конфига плагинов: путь к директории с .py-плагинами.
+class ExtensionsSection(ConfigSectionBuilder):
+    """Секция конфига расширений: путь к директории с .py/.md/.txt.
 
-    Поле ``BOBA_PLUGINS_DIR`` обязательно — без него
+    Поле ``BOBA_EXTENSIONS_DIR`` обязательно — без него
     :meth:`FieldSpec.read` бросит :class:`ConverterInputError`, и
-    приложение не стартует. Это контракт: оператор обязан явно указать,
-    откуда грузить плагины (через env, через TOML ``[plugins] dir``
-    или через ``_FILE``-секрет).
+    приложение не стартует. Оператор обязан явно указать, откуда
+    :class:`~boba.infra.extensions.ExtensionLoader` берёт tools и
+    prompts при старте (env, TOML ``[extensions] dir`` или
+    ``_FILE``-секрет).
     """
 
-    DIR = FieldSpec[str]("BOBA_PLUGINS_DIR", StrConverter())
+    DIR = FieldSpec[str]("BOBA_EXTENSIONS_DIR", StrConverter())
 
     TOML_PATHS: ClassVar[Mapping[str, tuple[str, str]]] = {
-        "BOBA_PLUGINS_DIR": ("plugins", "dir"),
+        "BOBA_EXTENSIONS_DIR": ("extensions", "dir"),
     }
 
     def id(self) -> StrId:
-        return StrId("plugins")
+        return StrId("extensions")
 
     def apply(self, state: ConfigState) -> ConfigState:
-        state.plugins_dir = self.DIR.read(state.resolver)
-        return state
-
-
-class PromptsSection(ConfigSectionBuilder):
-    """Секция конфига промптов: путь к директории с .md/.txt/.py.
-
-    Поле ``BOBA_PROMPTS_DIR`` обязательно — оператор явно указывает,
-    откуда :class:`~boba.infra.prompts.PromptLoader` берёт текстовые
-    блоки и provider-плагины при старте.
-    """
-
-    DIR = FieldSpec[str]("BOBA_PROMPTS_DIR", StrConverter())
-
-    TOML_PATHS: ClassVar[Mapping[str, tuple[str, str]]] = {
-        "BOBA_PROMPTS_DIR": ("prompts", "dir"),
-    }
-
-    def id(self) -> StrId:
-        return StrId("prompts")
-
-    def apply(self, state: ConfigState) -> ConfigState:
-        state.prompts_dir = self.DIR.read(state.resolver)
+        state.extensions_dir = self.DIR.read(state.resolver)
         return state
 
 
@@ -450,8 +427,7 @@ class ConfigFactory(FoldFactory[StrId, ConfigState, ConfigBundle]):
     _SLOT_SSL_VERIFY = ConfigSlot[bool]("ssl_verify", "AppCoreSection (ssl_verify)")
     _SLOT_LOG_LEVEL = ConfigSlot[str]("log_level", "AppCoreSection (log_level)")
     _SLOT_LLM = ConfigSlot[LLMConfig]("llm_transport", "LLMTransportSection")
-    _SLOT_PLUGINS_DIR = ConfigSlot[str]("plugins_dir", "PluginsSection")
-    _SLOT_PROMPTS_DIR = ConfigSlot[str]("prompts_dir", "PromptsSection")
+    _SLOT_EXTENSIONS_DIR = ConfigSlot[str]("extensions_dir", "ExtensionsSection")
     _SLOT_AGENT = ConfigSlot[AgentConfig]("agent", "AgentSection")
 
     def __init__(self, resolver: ChainedConfigResolver) -> None:
@@ -468,8 +444,7 @@ class ConfigFactory(FoldFactory[StrId, ConfigState, ConfigBundle]):
             log_level=self._SLOT_LOG_LEVEL.read(state),
             log_file=state.log_file,
             llm=self._SLOT_LLM.read(state),
-            plugins_dir=self._SLOT_PLUGINS_DIR.read(state),
-            prompts_dir=self._SLOT_PROMPTS_DIR.read(state),
+            extensions_dir=self._SLOT_EXTENSIONS_DIR.read(state),
         )
         return ConfigBundle(
             app=app,
@@ -492,8 +467,7 @@ def default_resolver(
         **WorkspacesSection.TOML_PATHS,
         **LLMTransportSection.TOML_PATHS,
         **AgentSection.TOML_PATHS,
-        **PluginsSection.TOML_PATHS,
-        **PromptsSection.TOML_PATHS,
+        **ExtensionsSection.TOML_PATHS,
         **LLMSamplingSection.TOML_PATHS,
     }
 
@@ -520,8 +494,7 @@ def default_config_factory(
     factory.register(WorkspacesSection(priority=20))
     factory.register(LLMTransportSection(priority=30))
     factory.register(AgentSection(priority=40))
-    factory.register(PluginsSection(priority=50))
-    factory.register(PromptsSection(priority=60))
+    factory.register(ExtensionsSection(priority=50))
     return factory
 
 

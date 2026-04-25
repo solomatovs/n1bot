@@ -45,7 +45,7 @@ from boba.domain.core.patterns import (
 from boba.domain.core.tools import ToolContext, ToolsService
 from boba.domain.llm.events import LLMEvent
 from boba.domain.llm.models import LLMContext, SamplingParams
-from boba.infra.prompts import PromptLoader
+from boba.infra.extensions import ExtensionLoader
 
 
 @dataclass(frozen=True)
@@ -57,16 +57,17 @@ class AgentComponents:
     tools_service: ToolsService
 
 
-def build_prompt_providers(loader: PromptLoader) -> Sequence[PromptProvider]:
+def build_prompt_providers(loader: ExtensionLoader) -> Sequence[PromptProvider]:
     """Application-level список :class:`PromptProvider` для агента.
 
-    К провайдерам, загруженным :class:`PromptLoader` из директории
-    ``BOBA_PROMPTS_DIR`` (текстовые ``.md``/``.txt`` и ``.py``-плагины),
-    добавляется :class:`UserQueryProvider` — инфраструктурный провайдер,
-    превращающий ``AgentRequest.query`` в USER-блок. Он не часть
-    «контента» промптов и не лежит в директории.
+    К провайдерам, загруженным :class:`ExtensionLoader` из директории
+    ``BOBA_EXTENSIONS_DIR`` (текстовые ``.md``/``.txt`` и ``.py``-плагины
+    с ``register_prompts``), добавляется :class:`UserQueryProvider` —
+    инфраструктурный провайдер, превращающий ``AgentRequest.query``
+    в USER-блок. Он не часть «контента» промптов и не лежит в
+    директории.
     """
-    return (*loader.providers(), UserQueryProvider())
+    return (*loader.prompt_providers(), UserQueryProvider())
 
 
 def create_llm_source(

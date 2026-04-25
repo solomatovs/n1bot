@@ -29,7 +29,7 @@ from boba.domain.core.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
-from boba.infra.plugins import PluginContext
+from boba.infra.extensions import ExtensionContext
 
 
 @dataclass(frozen=True)
@@ -99,7 +99,7 @@ class MvTool(Tool[MvArgs]):
             ) from e
         return ToolResult(content=f"Перемещено: {args.src} → {args.dst}")
 
-def register(ctx: PluginContext) -> Iterable[ToolSource]:
+def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.mv"),
         priority=0,

@@ -1,9 +1,9 @@
 """Инфраструктурный слой: загрузка конфигурации, сборка DI-контейнера,
-plugin-loader и настройка логирования.
+extension-loader и настройка логирования.
 
 Короткие импорты::
 
-    from boba.infra import AgentComponents, PluginContext, PluginLoader
+    from boba.infra import AgentComponents, ExtensionContext, ExtensionLoader
     from boba.infra import create_agent, create_agent_source, create_llm_source
     from boba.infra import ConfigLoader, ConfigBundle, configure_logging
 """
@@ -19,6 +19,7 @@ from boba.infra.config import (
     DefaultSource,
     EnvFileSource,
     EnvSource,
+    ExtensionsSection,
     LLMSamplingSection,
     LLMTransportSection,
     SamplingLoader,
@@ -36,21 +37,14 @@ from boba.infra.container import (
     create_agent_source,
     create_llm_source,
 )
+from boba.infra.extensions import (
+    ExtensionContext,
+    ExtensionError,
+    ExtensionLoader,
+    ExtensionLoadError,
+    ExtensionRegisterError,
+)
 from boba.infra.logging import configure_logging, log_context
-from boba.infra.plugins import (
-    PluginContext,
-    PluginError,
-    PluginLoader,
-    PluginLoadError,
-    PluginRegisterError,
-)
-from boba.infra.prompts import (
-    PromptContext,
-    PromptError,
-    PromptLoader,
-    PromptLoadError,
-    PromptRegisterError,
-)
 
 __all__ = [
     "AgentComponents",
@@ -64,18 +58,14 @@ __all__ = [
     "DefaultSource",
     "EnvFileSource",
     "EnvSource",
+    "ExtensionContext",
+    "ExtensionError",
+    "ExtensionLoadError",
+    "ExtensionLoader",
+    "ExtensionRegisterError",
+    "ExtensionsSection",
     "LLMSamplingSection",
     "LLMTransportSection",
-    "PluginContext",
-    "PluginError",
-    "PluginLoadError",
-    "PluginLoader",
-    "PluginRegisterError",
-    "PromptContext",
-    "PromptError",
-    "PromptLoadError",
-    "PromptLoader",
-    "PromptRegisterError",
     "SamplingLoader",
     "TomlFileSource",
     "TomlSource",
