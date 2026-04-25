@@ -1,18 +1,23 @@
-"""Сборка LLM-промптов из провайдеров (fold-factory по :class:`PromptKind`).
+"""Сборка system-prompt из провайдеров (fold-factory).
 
-Провайдеры поставляют блоки определённого типа (``SYSTEM`` / ``USER``);
-:class:`PromptFactory` агрегирует их по приоритету в
-:class:`PromptResult`. System-промпт собирается
+Провайдеры поставляют :class:`PromptBlock`-и; :class:`PromptFactory`
+агрегирует их по приоритету в :class:`PromptResult` и склеивает в
+строку. Используется
 :class:`~boba.domain.agent.turn.reducers.SystemPromptReducer` каждую
-итерацию; user-промпт собирается один раз на первой итерации в
-:class:`~boba.domain.agent.meat.turn.InitialUserQueryMiddleware` и
-декларируется как :class:`~boba.domain.agent.turn.effects.UserQueryEffect`.
+итерацию — содержимое пересобирается per-call, провайдеры могут
+реагировать на ``ctx.agent`` (workspace, iteration и т.д.).
+
+USER-сообщение через эту фабрику **не** идёт. Пользовательский
+ввод приходит уже отформатированным в :attr:`AgentRequest.query`
+и кладётся в :class:`MessageService` агентом первой операцией —
+обогащение (IDE selection, шаблоны и пр.) — ответственность caller'а
+(frontend/CLI), а не агентского слоя.
 
 Параметр ``TCtx`` в :class:`PromptState` — тип контекста, прокидываемый
 провайдерам. В boba это :class:`~boba.domain.agent.models.\
 AgentContext`, но сам модуль работает с любым типом через generics
 — это делает :class:`PromptProvider` переиспользуемым вне агентского
-слоя (например, для chainlit-prompt сборки).
+слоя.
 
 ════════════════════════════════════════════════════════════════════
   Иерархия ошибок
@@ -31,9 +36,8 @@ AgentContext`, но сам модуль работает с любым типо�
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass
-from enum import Enum
 from typing import Generic, Self, TypeVar
 
 from boba.domain.agent.events import AgentEvent, PromptFailed
@@ -78,18 +82,6 @@ class PromptProviderError(PermanentPromptError):
     """
 
 
-class PromptKind(Enum):
-    """Тип собираемого промпта.
-
-    Только ``SYSTEM`` и ``USER``. Каталог tools собирается отдельно —
-    :class:`~boba.domain.agent.turn.reducers.ToolsReducer`, а не через
-    prompt-фабрику.
-    """
-
-    SYSTEM = "system"
-    USER = "user"
-
-
 @dataclass(frozen=True)
 class PromptBlock:
     """Один собранный блок промпта."""
@@ -110,60 +102,50 @@ class PromptId(Id[str]):
 
 
 class PromptState(Generic[TCtx]):
-    """Накапливаемое состояние сборки: blocks per-kind + контекст.
+    """Накапливаемое состояние сборки: список blocks + контекст.
 
     Контекст передаётся провайдерам, чтобы они могли брать данные из
-    текущего запроса (query, workspace, и т.д.).
+    текущего запроса (workspace, iteration и т.д.).
     """
 
     def __init__(self, ctx: TCtx) -> None:
         self.ctx = ctx
-        self.blocks: dict[PromptKind, list[PromptBlock]] = {}
+        self.blocks: list[PromptBlock] = []
 
-    def add(self, kind: PromptKind, block: PromptBlock) -> None:
-        self.blocks.setdefault(kind, []).append(block)
+    def add(self, block: PromptBlock) -> None:
+        self.blocks.append(block)
 
 
 class PromptResult:
-    """Финальная раскладка: блоки сгруппированы по :class:`PromptKind`."""
+    """Финальная раскладка собранных блоков."""
 
-    def __init__(
-        self,
-        blocks_by_kind: Mapping[PromptKind, Iterable[PromptBlock]],
-    ) -> None:
-        self._by_kind: dict[PromptKind, list[PromptBlock]] = {
-            k: list(v) for k, v in blocks_by_kind.items()
-        }
+    def __init__(self, blocks: Iterable[PromptBlock]) -> None:
+        self._blocks: list[PromptBlock] = list(blocks)
 
-    def blocks(self, kind: PromptKind) -> list[PromptBlock]:
-        return list(self._by_kind.get(kind, []))
+    def blocks(self) -> list[PromptBlock]:
+        return list(self._blocks)
 
-    def to_string(self, kind: PromptKind) -> str:
+    def to_string(self) -> str:
         """Конкатенация всех непустых блоков через двойной перенос строки."""
-        return "\n\n".join(b.content for b in self._by_kind.get(kind, []) if b.content)
+        return "\n\n".join(b.content for b in self._blocks if b.content)
 
 
 class PromptProvider(PrioritySource[PromptId, PromptState]):
-    """Провайдер блоков промпта одного типа (:meth:`kind`).
+    """Провайдер блоков system-prompt.
 
     Реализации должны указывать:
 
     - :meth:`id` — уникальный идентификатор (для замены/удаления);
     - :meth:`priority` — меньше число → раньше в раскладке;
-    - :meth:`kind` — к какому разделу добавляются блоки;
     - :meth:`blocks` — один или больше :class:`PromptBlock`.
     """
-
-    @abstractmethod
-    def kind(self) -> PromptKind: ...
 
     @abstractmethod
     def blocks(self, state: PromptState) -> Iterable[PromptBlock]: ...
 
     def apply(self, state: PromptState) -> PromptState:
-        kind = self.kind()
         for block in self.blocks(state):
-            state.add(kind, block)
+            state.add(block)
         return state
 
 

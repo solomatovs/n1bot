@@ -17,37 +17,19 @@ from openai.types.chat import (
 )
 
 from boba.domain.core.patterns import Converter
-from boba.domain.core.tools.tool import Tool
-from boba.domain.llm.models import LLMMessage, LLMRequest
+from boba.domain.llm.models import LLMMessage, LLMRequest, LLMToolSchema
 
 
-class ToOpenAIToolConverter(Converter[Tool[Any], ChatCompletionToolParam]):
-    """
-    Конвертация :class:`Tool` -> OpenAI tools
-    """
+class ToOpenAIToolConverter(Converter[LLMToolSchema, ChatCompletionToolParam]):
+    """Конвертация :class:`LLMToolSchema` → OpenAI tools."""
 
-    def convert(self, value: Tool[Any]) -> ChatCompletionToolParam:
-        definition = value.definition()
-
-        properties: dict[str, dict[str, Any]] = {}
-        required: list[str] = []
-
-        for p in definition.input_schema.params:
-            wire = p.build_wire_schema()
-            properties[p.name] = wire.property
-            if wire.required:
-                required.append(p.name)
-
+    def convert(self, value: LLMToolSchema) -> ChatCompletionToolParam:
         return {
             "type": "function",
             "function": {
-                "name": value.tool_id().to_wire(),
-                "description": definition.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
-                },
+                "name": value.name,
+                "description": value.description,
+                "parameters": dict(value.parameters_schema),
             },
         }
 

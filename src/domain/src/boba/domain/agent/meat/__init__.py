@@ -32,14 +32,12 @@ from boba.domain.agent.meat.tools import (
     RepeatedToolCallGuardMiddleware,
     ToolExecutionMiddleware,
 )
-from boba.domain.agent.meat.turn import InitialUserQueryMiddleware
 
 __all__ = [
     "Agent",
     "AgentErrorRouter",
     "AgentErrorRouterMiddleware",
     "AssistantMessagePersistenceMiddleware",
-    "InitialUserQueryMiddleware",
     "IterationCounterMiddleware",
     "JsonContentToolCallMiddleware",
     "JsonDepthScanner",

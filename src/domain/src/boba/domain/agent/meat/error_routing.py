@@ -9,20 +9,18 @@
 типом возвращаемого события (наследник ``TerminalFailure``), который
 роутер просто yield-ит как любое user-событие.
 
-:class:`LLMFeedbackError` больше не пишется в :class:`MessageService`
-напрямую. Вместо этого роутер декларирует :class:`LLMFeedbackEffect`
-через :meth:`TurnTriggerQueue.declare` (``ctx.triggers``) — эффект
-применяется к сервису в начале следующей итерации через
-:meth:`TurnSpec.initial`.
+:class:`LLMFeedbackError` пишется в :class:`MessageService` через
+:class:`DialogueWriter` — на следующей итерации модель увидит
+feedback в истории.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 
+from boba.domain.agent.dialogue_writer import DialogueWriter
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.models import AgentContext
-from boba.domain.agent.turn.effects import LLMFeedbackEffect
 from boba.domain.core.errors import (
     LLMFeedbackError,
     RoutableError,
@@ -36,15 +34,17 @@ class AgentErrorRouter:
 
     Эффекты собираются независимо:
 
-    1. :class:`LLMFeedbackError` — декларируется
-       :class:`LLMFeedbackEffect` в ``ctx``. LLM увидит фидбек на
-       следующей итерации после того, как :meth:`TurnSpec.initial`
-       применит эффект к :class:`MessageService`.
+    1. :class:`LLMFeedbackError` — пишется в :class:`MessageService`
+       через :class:`DialogueWriter`. LLM увидит фидбек на
+       следующей итерации.
     2. :class:`UserFeedbackError` — ``to_user_feedback(request_id)``
        yield-ится в stream. Sink получает событие; если событие —
        наследник ``TerminalFailure`` (как у :class:`TerminalError`-ошибок),
        :class:`StopOnAnyFailure` остановит цикл.
     """
+
+    def __init__(self, writer: DialogueWriter) -> None:
+        self._writer = writer
 
     def route(
         self,
@@ -54,13 +54,7 @@ class AgentErrorRouter:
         rid = ctx.agent_request.request_id
 
         if isinstance(err, LLMFeedbackError):
-            ctx.triggers.declare(
-                LLMFeedbackEffect(
-                    message=err.to_llm_feedback(),
-                    error_kind=type(err).__name__,
-                ),
-                "feedback",
-            )
+            self._writer.append_llm_feedback(err.to_llm_feedback())
 
         if isinstance(err, UserFeedbackError):
             yield err.to_user_feedback(rid)

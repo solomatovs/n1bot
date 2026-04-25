@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import pytest
 
+from boba.adapters.console_sink import ConsoleSink
 from boba.adapters.fs_workspace import (
     FsExtensionWorkspaceRegistry,
+    FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
 )
 from boba.adapters.in_memory_messages import InMemoryMessageService
-from boba.domain.agent.meat.agent import Agent
+from boba.adapters.raw_llm_observer import FileContentObserver
 from boba.domain.agent.models import AgentRequest
 from boba.domain.core.tools import ToolContext
 from boba.domain.core.workspace import (
@@ -59,7 +62,12 @@ def _run(query: str, model: str) -> None:
         subdir=app_config.workspaces.user_subdir,
     ).get_or_create(workspace_id)
 
-    agent: Agent = create_agent(
+    history_workspace = FsHistoryWorkspaceRegistry(
+        base_dir=Path(app_config.workspaces.base_dir),
+        subdir=app_config.workspaces.system_subdir,
+    ).get_or_create(workspace_id)
+
+    agent = create_agent(
         llm_config=app_config.llm,
         components=AgentComponents(
             agent_config=agent_config,
@@ -69,14 +77,16 @@ def _run(query: str, model: str) -> None:
             tools_service=extension_loader.tools_service(),
         ),
         tool_ctx=ToolContext(project_workspace=project_workspace),
+        observer=FileContentObserver(history_workspace),
+        sink=ConsoleSink(sys.stdout, sys.stderr),
     )
 
     request = AgentRequest(
-        query=query,
         model=model,
         request_id=RequestId.new(),
     )
-    agent.run(agent_config, request)
+
+    agent.run(agent_config, request, query)
 
 
 def test_agent_loop_hello(query: str, model: str) -> None:

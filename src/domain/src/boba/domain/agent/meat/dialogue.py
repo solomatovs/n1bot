@@ -1,6 +1,6 @@
 """AssistantMessagePersistenceMiddleware — агрегация стриминговых
 событий ответа в ``*Complete`` события и запись assistant-сообщения
-в :class:`MessageService`.
+через :class:`DialogueWriter`.
 
 Поведение на стриме событий inner'а:
 
@@ -16,8 +16,7 @@
   :class:`AnswerComplete` / :class:`ThinkingComplete` (если были
   текстовые токены) и :class:`ToolCallComplete` (по одному на каждый
   tool_call index) **перед** самой ``GenerationDone``; затем коммитит
-  ``LLMMessage(role="assistant", content=..., tool_calls=...)`` в
-  :class:`MessageService`.
+  assistant-сообщение через :class:`DialogueWriter`.
 
 Порядок tool_calls в финальном сообщении — по возрастанию
 ``index`` (как их нумеровал провайдер); chronological-порядок
@@ -33,6 +32,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable, Iterator
 
+from boba.domain.agent.dialogue_writer import DialogueWriter
 from boba.domain.agent.events import (
     AgentEvent,
     AnswerComplete,
@@ -46,10 +46,9 @@ from boba.domain.agent.events import (
     ToolCallBegin,
     ToolCallComplete,
 )
-from boba.domain.agent.messages import MessageService
 from boba.domain.agent.models import AgentContext
 from boba.domain.core.patterns import StreamSource
-from boba.domain.llm.models import LLMMessage, LLMToolCall, RequestId
+from boba.domain.llm.models import LLMToolCall, RequestId
 
 
 class AssistantMessagePersistenceMiddleware(StreamSource[AgentContext, AgentEvent]):
@@ -58,10 +57,10 @@ class AssistantMessagePersistenceMiddleware(StreamSource[AgentContext, AgentEven
     def __init__(
         self,
         inner: StreamSource[AgentContext, AgentEvent],
-        message_service: MessageService,
+        writer: DialogueWriter,
     ) -> None:
         self._inner = inner
-        self._message_service = message_service
+        self._writer = writer
         self._thinking: dict[RequestId, list[str]] = defaultdict(list)
         self._answer: dict[RequestId, list[str]] = defaultdict(list)
         # per-rid: index → (tool_call_id, tool_name, list[arg_chunks])
@@ -153,10 +152,4 @@ class AssistantMessagePersistenceMiddleware(StreamSource[AgentContext, AgentEven
 
         content = "".join(answer_parts)
         if content or tool_calls:
-            self._message_service.add(
-                LLMMessage(
-                    role="assistant",
-                    content=content,
-                    tool_calls=tuple(tool_calls),
-                ),
-            )
+            self._writer.append_assistant(content, tool_calls)

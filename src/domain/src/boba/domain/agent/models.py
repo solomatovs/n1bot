@@ -4,19 +4,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from boba.domain.agent.turn.trigger import TurnTriggerQueue
 from boba.domain.llm.models import RequestId
 
 
 @dataclass(frozen=True)
 class AgentRequest:
-    """Входные данные для одного прогона агента.
+    """Параметры одного прогона агента.
+
+    Связка per-call настроек обработки: ``model``, ``request_id``
+    (и в будущем — ``temperature``, ``response_format`` и пр.).
+    Само сообщение пользователя сюда **не входит** — оно передаётся
+    в :meth:`Agent.run` отдельным параметром ``query`` и сразу
+    кладётся в :class:`MessageService` через :class:`DialogueWriter`,
+    после чего нигде в runtime-контексте не дублируется.
 
     ``model`` живёт здесь, а не в глобальном конфиге: выбирает caller
     (UI/CLI), чтобы системный дефолт не просачивался в loop незаметно.
     """
 
-    query: str
     model: str
     request_id: RequestId
 
@@ -28,8 +33,8 @@ class AgentConfig:
     ``max_consecutive_tool_calls`` — лимит подряд идущих идентичных
     tool_call'ов (по ``(tool_name, arguments)``). Используется
     :class:`~boba.domain.agent.meat.tools.RepeatedToolCallGuardMiddleware`:
-    N+1-й вызов подавляется, declare :class:`LLMFeedbackEffect` с
-    критикой в адрес модели.
+    N+1-й вызов подавляется, в историю пишется feedback с
+    ``role="tool"`` через :class:`DialogueWriter`.
 
     ``max_consecutive_format_failures`` — лимит подряд идущих
     ошибок формата content-tool-call. Используется
@@ -51,16 +56,8 @@ class AgentContext:
 
     - :attr:`iteration` — 1-based номер текущей итерации; ``0`` означает
       «до первой итерации» (счётчик ещё не сработал).
-
-    - :attr:`triggers` — очередь эффектов следующего turn'а,
-      :class:`TurnTriggerQueue`. Producer'ы внутри итерации
-      дописывают через :meth:`TurnTriggerQueue.declare`;
-      :class:`LLMInvokeMiddleware` один раз за итерацию вычитывает
-      через :meth:`TurnTriggerQueue.consume` и прогоняет через
-      :class:`TurnSpec`.
     """
 
     agent_request: AgentRequest
     config: AgentConfig = field(default_factory=AgentConfig)
     iteration: int = 0
-    triggers: TurnTriggerQueue = field(default_factory=TurnTriggerQueue)

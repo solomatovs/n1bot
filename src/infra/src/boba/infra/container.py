@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from boba.adapters.console_sink import TextOutSink
 from boba.adapters.llm.openai_terminal import OpenAITerminal, build_openai_client
-from boba.adapters.prompt_providers import UserQueryProvider
-from boba.adapters.raw_llm_observer import MetricsRawLLMObserver
+from boba.adapters.raw_llm_observer import RawLLMObserver
+from boba.domain.agent.dialogue_writer import DialogueWriter
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.meat.agent import Agent
 from boba.domain.agent.meat.dialogue import AssistantMessagePersistenceMiddleware
@@ -24,7 +22,6 @@ from boba.domain.agent.meat.loop_control import (
 from boba.domain.agent.meat.tools import (
     ToolExecutionMiddleware,
 )
-from boba.domain.agent.meat.turn import InitialUserQueryMiddleware
 from boba.domain.agent.messages import MessageService
 from boba.domain.agent.models import AgentConfig, AgentContext
 from boba.domain.agent.prompt import PromptProvider
@@ -38,6 +35,7 @@ from boba.domain.agent.turn.reducers import (
 from boba.domain.agent.turn.spec import TurnSpec
 from boba.domain.config import LLMConfig
 from boba.domain.core.patterns import (
+    StreamSink,
     StreamSource,
     StreamSourceChainBuilder,
     StreamSourceLoop,
@@ -58,25 +56,25 @@ class AgentComponents:
 
 
 def build_prompt_providers(loader: ExtensionLoader) -> Sequence[PromptProvider]:
-    """Application-level список :class:`PromptProvider` для агента.
+    """Application-level список :class:`PromptProvider` (system-prompt).
 
-    К провайдерам, загруженным :class:`ExtensionLoader` из директории
+    Все провайдеры идут от :class:`ExtensionLoader` из директории
     ``BOBA_EXTENSIONS_DIR`` (текстовые ``.md``/``.txt`` и ``.py``-плагины
-    с ``register_prompts``), добавляется :class:`UserQueryProvider` —
-    инфраструктурный провайдер, превращающий ``AgentRequest.query``
-    в USER-блок. Он не часть «контента» промптов и не лежит в
-    директории.
+    с ``register_prompts``). USER-блок через PromptFactory не
+    собирается — пользовательское сообщение приходит уже
+    отформатированным в ``AgentRequest.query``.
     """
-    return (*loader.prompt_providers(), UserQueryProvider())
+    return loader.prompt_providers()
 
 
 def create_llm_source(
     llm_config: LLMConfig,
+    observer: RawLLMObserver,
 ) -> StreamSource[LLMContext, LLMEvent]:
     return StreamSourceChainBuilder[LLMContext, LLMEvent]().terminal(
         OpenAITerminal(
             build_openai_client(llm_config),
-            observer=MetricsRawLLMObserver(),
+            observer=observer,
         )
     )
 
@@ -95,27 +93,23 @@ def create_agent_source(
     llm_source: StreamSource[LLMContext, LLMEvent],
     components: AgentComponents,
     tool_ctx: ToolContext,
+    writer: DialogueWriter,
 ) -> StreamSource[AgentContext, AgentEvent]:
     message_service = components.message_service
-    prompt_providers = components.prompt_providers
 
-    error_router = AgentErrorRouter()
+    error_router = AgentErrorRouter(writer)
     turn_spec = build_turn_spec(components)
 
     chain_builder = StreamSourceChainBuilder[AgentContext, AgentEvent]()
     chain_builder.use(lambda inner: AgentErrorRouterMiddleware(inner, error_router))
     chain_builder.use(IterationCounterMiddleware)
-    chain_builder.use(lambda inner: InitialUserQueryMiddleware(inner, prompt_providers))
     chain_builder.use(
         lambda inner: ToolExecutionMiddleware(
-            inner, components.tools_service, tool_ctx
+            inner, components.tools_service, tool_ctx, writer
         )
     )
     chain_builder.use(
-        lambda inner: AssistantMessagePersistenceMiddleware(
-            inner,
-            message_service,
-        )
+        lambda inner: AssistantMessagePersistenceMiddleware(inner, writer)
     )
     chain = chain_builder.terminal(
         LLMInvokeMiddleware(llm_source, turn_spec, message_service)
@@ -131,12 +125,16 @@ def create_agent(
     llm_config: LLMConfig,
     components: AgentComponents,
     tool_ctx: ToolContext,
+    observer: RawLLMObserver,
+    sink: StreamSink[AgentContext, AgentEvent],
 ) -> Agent:
-    llm_source = create_llm_source(llm_config)
+    writer = DialogueWriter(components.message_service)
+    llm_source = create_llm_source(llm_config, observer)
     source = create_agent_source(
         llm_source,
         components,
         tool_ctx,
+        writer,
     )
 
-    return Agent(source=source, sink=TextOutSink(sys.stdout, sys.stderr))
+    return Agent(source=source, sink=sink, writer=writer)

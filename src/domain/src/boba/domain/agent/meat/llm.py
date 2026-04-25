@@ -4,9 +4,9 @@
 :class:`LLMInvokeMiddleware` — терминал агентской цепочки. На каждую
 итерацию:
 
-1. консьюмит накопленный :class:`TurnTrigger` из ``ctx.triggers``;
-2. собирает :class:`LLMRequest` через :class:`TurnSpec`;
-3. стримит события LLM-слоя и конвертирует их в :class:`AgentEvent`.
+1. собирает :class:`LLMRequest` через :class:`TurnSpec` из текущего
+   снапшота :class:`MessageService`;
+2. стримит события LLM-слоя и конвертирует их в :class:`AgentEvent`.
 """
 
 from __future__ import annotations
@@ -132,12 +132,12 @@ class LLMEventToAgentEventConverter(Converter[LLMEvent, AgentEvent]):
 
 
 class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Терминал агентской цепочки: consume trigger → build request → invoke LLM.
+    """Терминал агентской цепочки: build request → invoke LLM.
 
-    Единственная точка записи в :class:`MessageService`:
-    :meth:`TurnSpec.initial` применяет эффекты trigger'а к сервису
-    (user query, tool results, LLM feedback). Затем reducer'ы spec'а
-    собирают :class:`LLMRequest`, который уходит в LLM-слой.
+    Снапшот истории читается :class:`HistoryReducer` напрямую из
+    :class:`MessageService` — все записи предыдущей итерации
+    (assistant, tool_results, feedback) уже зафиксированы через
+    :class:`DialogueWriter`.
 
     :class:`LLMError` из LLM-слоя оборачивается в
     :class:`LLMGenerationFailedError` (terminal + user-feedback) —
@@ -159,11 +159,9 @@ class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
         return "LLMInvoke"
 
     def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
-        trigger = ctx.triggers.consume()
         request = self._spec.build(
             TurnResolveContext(
                 agent=ctx,
-                trigger=trigger,
                 message_service=self._message_service,
             )
         )

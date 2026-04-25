@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from boba.domain.core.patterns import UuId
-from boba.domain.core.tools.tool import Tool
 
 LLMRole = Literal["system", "user", "assistant", "tool"]
 
@@ -43,8 +42,29 @@ class SamplingParams:
 
 
 @dataclass(frozen=True)
+class LLMToolSchema:
+    """Декларация тула для LLM-провайдера: имя, описание, JSON-schema.
+
+    Чистый DTO без связи с доменным ``Tool`` (последний живёт в
+    :mod:`boba.domain.core.tools` и несёт execute-логику, валидаторы,
+    типизированные args). LLM-слой работает только с этим типом —
+    каждый адаптер (OpenAI/Anthropic/...) мапит его в свой нативный
+    формат.
+
+    ``parameters_schema`` — JSON-Schema-объект (как правило
+    ``{"type": "object", "properties": {...}, "required": [...]}``).
+    Конверсия ``Tool → LLMToolSchema`` — задача агентского слоя
+    (см. :class:`~boba.domain.agent.turn.reducers.ToolsReducer`).
+    """
+
+    name: str
+    description: str
+    parameters_schema: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
 class LLMToolRequest:
-    tools: tuple[Tool[Any], ...] = ()
+    tools: tuple[LLMToolSchema, ...] = ()
     tool_choice: str | None = None
     parallel_tool_calls: bool | None = None
 
@@ -59,8 +79,8 @@ class LLMRequest:
     response_format: Mapping[str, Any] | None = None
 
     def messages_count(self) -> int:
-        """Всего сообщений в запросе: system + весь диалог."""
-        return 1 + len(self.messages)
+        """Всего сообщений в запросе"""
+        return len(self.messages)
 
     def has_tools(self) -> bool:
         return bool(self.tools.tools)

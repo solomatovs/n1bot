@@ -18,9 +18,12 @@ from pathlib import Path
 
 from boba.adapters.fs_workspace import (
     FsExtensionWorkspaceRegistry,
+    FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
 )
 from boba.adapters.in_memory_messages import InMemoryMessageService
+from boba.adapters.raw_llm_observer import FileContentObserver
+from boba.domain.agent.dialogue_writer import DialogueWriter
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.meat.agent import Agent
 from boba.domain.agent.models import AgentContext, AgentRequest
@@ -61,6 +64,10 @@ class ChatSession:
         self._workspaces = FsProjectWorkspaceRegistry(
             base_dir=Path(self._app_config.workspaces.base_dir),
             subdir=self._app_config.workspaces.user_subdir,
+        )
+        self._history_workspaces = FsHistoryWorkspaceRegistry(
+            base_dir=Path(self._app_config.workspaces.base_dir),
+            subdir=self._app_config.workspaces.system_subdir,
         )
         # Extension workspace — application-singleton. ExtensionContext
         # тоже application-level: per-request данные (project_workspace
@@ -127,23 +134,27 @@ class ChatSession:
         # Сам ToolsService — application-singleton, собранный в __init__.
         tool_ctx = ToolContext(project_workspace=project_workspace)
 
-        llm_source = create_llm_source(self._app_config.llm)
+        history_workspace = self._history_workspaces.get_or_create(workspace_id)
+        observer = FileContentObserver(history_workspace)
+        message_service = InMemoryMessageService()
+        writer = DialogueWriter(message_service)
+        llm_source = create_llm_source(self._app_config.llm, observer)
         source = create_agent_source(
             llm_source,
             AgentComponents(
                 agent_config=self._agent_config,
                 sampling=self._sampling,
                 prompt_providers=self._prompt_providers,
-                message_service=InMemoryMessageService(),
+                message_service=message_service,
                 tools_service=self._tools_service,
             ),
             tool_ctx,
+            writer,
         )
         sink = StreamSinkPipeline([extra_sink])
-        agent = Agent(source=source, sink=sink)
+        agent = Agent(source=source, sink=sink, writer=writer)
 
         request = AgentRequest(
-            query=query,
             model=model,
             request_id=request_id,
         )
@@ -151,4 +162,4 @@ class ChatSession:
             request_id=request_id.to_wire(),
             workspace_id=workspace_id.to_wire(),
         ):
-            agent.run(self._agent_config, request)
+            agent.run(self._agent_config, request, query)
