@@ -19,6 +19,7 @@ from pathlib import Path
 from boba.adapters.fs_workspace import (
     FsPluginWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
+    FsPromptWorkspaceRegistry,
 )
 from boba.adapters.in_memory_messages import InMemoryMessageService
 from boba.domain.agent.events import AgentEvent
@@ -28,19 +29,21 @@ from boba.domain.core.patterns import StreamSink, StreamSinkPipeline
 from boba.domain.core.workspace import (
     PluginWorkspaceId,
     ProjectWorkspaceShell,
+    PromptWorkspaceId,
     WorkspaceId,
 )
 from boba.domain.llm.models import RequestId
 from boba.infra.config import ConfigLoader, SamplingLoader
 from boba.infra.container import (
     AgentComponents,
+    build_prompt_providers,
     create_agent_source,
     create_llm_source,
     create_tools_service,
-    default_static_prompt_providers,
 )
 from boba.infra.logging import configure_logging, log_context
 from boba.infra.plugins import PluginContext, PluginLoader
+from boba.infra.prompts import PromptLoader
 
 
 class ChatSession:
@@ -51,8 +54,6 @@ class ChatSession:
     Workspace-registry живёт снаружи агентского цикла и используется
     UI-слоем для upload'ов файлов (см. :meth:`project_workspace`).
     """
-
-    _DEFAULT_SYSTEM_PROMPT = "you are a helpful assistant. Answer concisely"
 
     def __init__(self) -> None:
         loader = ConfigLoader()
@@ -71,6 +72,15 @@ class ChatSession:
             root=Path(self._app_config.plugins_dir),
         ).get_or_create(PluginWorkspaceId("plugins"))
         self._plugin_loader = PluginLoader(self._plugin_workspace)
+        # Prompt workspace — тоже application-singleton; PromptLoader
+        # читает .md/.txt/.py из директории и кэширует список
+        # PromptProvider'ов на всю жизнь процесса.
+        prompt_workspace = FsPromptWorkspaceRegistry(
+            root=Path(self._app_config.prompts_dir),
+        ).get_or_create(PromptWorkspaceId("prompts"))
+        self._prompt_providers = build_prompt_providers(
+            PromptLoader(prompt_workspace, self._app_config),
+        )
 
     def project_workspace(self, workspace_id: WorkspaceId) -> ProjectWorkspaceShell:
         """Project-workspace пользователя: тот же, куда смотрят file-tools агента.
@@ -125,9 +135,7 @@ class ChatSession:
             AgentComponents(
                 agent_config=self._agent_config,
                 sampling=self._sampling,
-                prompt_providers=default_static_prompt_providers(
-                    system_prompt=self._DEFAULT_SYSTEM_PROMPT,
-                ),
+                prompt_providers=self._prompt_providers,
                 message_service=InMemoryMessageService(),
                 tools_service=create_tools_service(self._plugin_loader, plugin_ctx),
             ),

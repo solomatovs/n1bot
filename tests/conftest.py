@@ -31,6 +31,9 @@ def _bootstrap_test_env() -> None:
         # Дефолтная директория плагинов для тестов — те же 15 built-in
         # tool-плагинов из репо. Конфиг считает поле обязательным.
         "BOBA_PLUGINS_DIR": str(repo_root / "plugins"),
+        # Дефолтная директория промптов для тестов — текстовые блоки и
+        # prompt-плагины. Конфиг считает поле обязательным.
+        "BOBA_PROMPTS_DIR": str(repo_root / "prompts"),
     }
     config_toml = vscode_dir / "config" / "config.toml"
     if config_toml.is_file():

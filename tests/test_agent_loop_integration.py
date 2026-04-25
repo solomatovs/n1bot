@@ -8,21 +8,27 @@ import pytest
 from boba.adapters.fs_workspace import (
     FsPluginWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
+    FsPromptWorkspaceRegistry,
 )
 from boba.adapters.in_memory_messages import InMemoryMessageService
 from boba.domain.agent.meat.agent import Agent
 from boba.domain.agent.models import AgentRequest
-from boba.domain.core.workspace import PluginWorkspaceId, WorkspaceId
+from boba.domain.core.workspace import (
+    PluginWorkspaceId,
+    PromptWorkspaceId,
+    WorkspaceId,
+)
 from boba.domain.llm.models import RequestId
 from boba.infra.config import ConfigLoader, SamplingLoader
 from boba.infra.container import (
     AgentComponents,
+    build_prompt_providers,
     create_agent,
     create_tools_service,
-    default_static_prompt_providers,
 )
 from boba.infra.logging import configure_logging
 from boba.infra.plugins import PluginContext, PluginLoader
+from boba.infra.prompts import PromptLoader
 
 pytestmark = pytest.mark.integration
 
@@ -39,6 +45,13 @@ def _run(query: str, model: str) -> None:
         root=Path(app_config.plugins_dir),
     ).get_or_create(PluginWorkspaceId("plugins"))
     plugin_loader = PluginLoader(plugin_workspace)
+
+    prompt_workspace = FsPromptWorkspaceRegistry(
+        root=Path(app_config.prompts_dir),
+    ).get_or_create(PromptWorkspaceId("prompts"))
+    prompt_providers = build_prompt_providers(
+        PromptLoader(prompt_workspace, app_config),
+    )
 
     project_workspace = FsProjectWorkspaceRegistry(
         base_dir=Path(app_config.workspaces.base_dir),
@@ -58,9 +71,7 @@ def _run(query: str, model: str) -> None:
         components=AgentComponents(
             agent_config=agent_config,
             sampling=sampling,
-            prompt_providers=default_static_prompt_providers(
-                "Ты асистент Boba. Отвечай строго по контексту"
-            ),
+            prompt_providers=prompt_providers,
             message_service=InMemoryMessageService(),
             tools_service=create_tools_service(plugin_loader, plugin_ctx),
         ),
