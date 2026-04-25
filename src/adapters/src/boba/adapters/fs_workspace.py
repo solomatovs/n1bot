@@ -10,7 +10,7 @@ import shutil
 import stat as stat_mod
 import tempfile
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,7 +20,7 @@ from threading import Lock
 from typing import Generic, TypeVar
 
 from boba.adapters.growbuffer import GrowBuffer
-from boba.domain.core.patterns import Specification
+from boba.domain.core.patterns import Id, Specification
 from boba.domain.core.workspace import (
     EntryMeta,
     GrepMatch,
@@ -38,6 +38,8 @@ from boba.domain.core.workspace import (
     WorkspaceRegistry,
     WorkspaceShell,
 )
+
+TWsId = TypeVar("TWsId", bound=Id)
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +254,7 @@ class _WorkspaceBinaryStream(BufferedIOBase):
         return self._inner.seekable()
 
 
-class FsWorkspaceShell(WorkspaceShell):
+class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
     """Файловый shell с фиксированным корнем ``root``.
 
     Все пути нормализуются через :meth:`_resolve` в :class:`WorkspacePath`,
@@ -263,7 +265,7 @@ class FsWorkspaceShell(WorkspaceShell):
 
     def __init__(
         self,
-        workspace_id: WorkspaceId,
+        workspace_id: TWsId,
         root: Path,
     ) -> None:
         self._workspace_id = workspace_id
@@ -272,7 +274,7 @@ class FsWorkspaceShell(WorkspaceShell):
         self._cwd_parts: tuple[str, ...] = ()
 
     @property
-    def workspace_id(self) -> WorkspaceId:
+    def workspace_id(self) -> TWsId:
         return self._workspace_id
 
     @property
@@ -851,13 +853,16 @@ class FsWorkspaceShell(WorkspaceShell):
 TWs = TypeVar("TWs", bound=FsWorkspaceShell)
 
 
-class FsWorkspaceRegistry(WorkspaceRegistry, Generic[TWs]):
+class FsWorkspaceRegistry(WorkspaceRegistry[TWsId], Generic[TWs, TWsId]):
     """Обобщённая файловая реализация реестра.
 
-    Параметризуется классом shell'а ``shell_cls`` и ``subdir`` — именем
-    подкаталога внутри workspace-id директории. Маркерные реестры
-    (:class:`FsProjectWorkspaceRegistry` и т.п.) — тонкие подклассы,
-    фиксирующие эти параметры; больше в них логики не должно быть.
+    Параметризуется классом shell'а ``shell_cls``, ``subdir`` — именем
+    подкаталога внутри id-директории, и ``id_factory`` — генератором
+    нового id для :meth:`create` (например, :meth:`WorkspaceId.new`
+    для UUID-namespace'а или фиксированный конструктор для строкового).
+    Маркерные реестры (:class:`FsProjectWorkspaceRegistry` и т.п.) —
+    тонкие подклассы, фиксирующие эти параметры; больше в них логики
+    не должно быть.
     """
 
     def __init__(
@@ -865,20 +870,22 @@ class FsWorkspaceRegistry(WorkspaceRegistry, Generic[TWs]):
         base_dir: Path,
         shell_cls: type[TWs],
         subdir: str,
+        id_factory: Callable[[], TWsId],
     ) -> None:
         self._base_dir = base_dir
         self._shell_cls = shell_cls
         self._subdir = subdir
+        self._id_factory = id_factory
         self._lock = Lock()
-        self._shells: dict[WorkspaceId, TWs] = {}
+        self._shells: dict[TWsId, TWs] = {}
         self._base_dir.mkdir(parents=True, exist_ok=True)
 
     def create(self) -> TWs:
         with self._lock:
-            ws_id = WorkspaceId.new()
+            ws_id = self._id_factory()
             return self._instantiate(ws_id)
 
-    def get(self, workspace_id: WorkspaceId) -> TWs:
+    def get(self, workspace_id: TWsId) -> TWs:
         with self._lock:
             cached = self._shells.get(workspace_id)
             if cached is not None:
@@ -892,59 +899,59 @@ class FsWorkspaceRegistry(WorkspaceRegistry, Generic[TWs]):
             self._shells[workspace_id] = shell
             return shell
 
-    def get_or_create(self, workspace_id: WorkspaceId) -> TWs:
+    def get_or_create(self, workspace_id: TWsId) -> TWs:
         with self._lock:
             cached = self._shells.get(workspace_id)
             if cached is not None:
                 return cached
             return self._instantiate(workspace_id)
 
-    def delete(self, workspace_id: WorkspaceId) -> None:
+    def delete(self, workspace_id: TWsId) -> None:
         with self._lock:
             path = self._workspace_dir(workspace_id)
             if path.is_dir():
                 shutil.rmtree(path)
             self._shells.pop(workspace_id, None)
 
-    def _instantiate(self, workspace_id: WorkspaceId) -> TWs:
+    def _instantiate(self, workspace_id: TWsId) -> TWs:
         path = self._workspace_dir(workspace_id)
         path.mkdir(parents=True, exist_ok=True)
         shell = self._shell_cls(workspace_id, path)
         self._shells[workspace_id] = shell
         return shell
 
-    def _workspace_dir(self, workspace_id: WorkspaceId) -> Path:
+    def _workspace_dir(self, workspace_id: TWsId) -> Path:
         return self._base_dir / str(workspace_id.name) / self._subdir
 
 
-class FsProjectWorkspaceShell(FsWorkspaceShell, ProjectWorkspaceShell):
+class FsProjectWorkspaceShell(FsWorkspaceShell[WorkspaceId], ProjectWorkspaceShell):
     """Файловый :class:`ProjectWorkspaceShell`."""
 
 
-class FsHistoryWorkspaceShell(FsWorkspaceShell, HistoryWorkspaceShell):
+class FsHistoryWorkspaceShell(FsWorkspaceShell[WorkspaceId], HistoryWorkspaceShell):
     """Файловый :class:`HistoryWorkspaceShell`."""
 
 
-class FsScratchWorkspaceShell(FsWorkspaceShell, ScratchWorkspaceShell):
+class FsScratchWorkspaceShell(FsWorkspaceShell[WorkspaceId], ScratchWorkspaceShell):
     """Файловый :class:`ScratchWorkspaceShell`."""
 
 
 class FsProjectWorkspaceRegistry(
-    FsWorkspaceRegistry[FsProjectWorkspaceShell], ProjectWorkspaceRegistry
+    FsWorkspaceRegistry[FsProjectWorkspaceShell, WorkspaceId], ProjectWorkspaceRegistry
 ):
     def __init__(self, base_dir: Path, subdir: str) -> None:
-        super().__init__(base_dir, FsProjectWorkspaceShell, subdir)
+        super().__init__(base_dir, FsProjectWorkspaceShell, subdir, WorkspaceId.new)
 
 
 class FsHistoryWorkspaceRegistry(
-    FsWorkspaceRegistry[FsHistoryWorkspaceShell], HistoryWorkspaceRegistry
+    FsWorkspaceRegistry[FsHistoryWorkspaceShell, WorkspaceId], HistoryWorkspaceRegistry
 ):
     def __init__(self, base_dir: Path, subdir: str) -> None:
-        super().__init__(base_dir, FsHistoryWorkspaceShell, subdir)
+        super().__init__(base_dir, FsHistoryWorkspaceShell, subdir, WorkspaceId.new)
 
 
 class FsScratchWorkspaceRegistry(
-    FsWorkspaceRegistry[FsScratchWorkspaceShell], ScratchWorkspaceRegistry
+    FsWorkspaceRegistry[FsScratchWorkspaceShell, WorkspaceId], ScratchWorkspaceRegistry
 ):
     def __init__(self, base_dir: Path, subdir: str) -> None:
-        super().__init__(base_dir, FsScratchWorkspaceShell, subdir)
+        super().__init__(base_dir, FsScratchWorkspaceShell, subdir, WorkspaceId.new)
