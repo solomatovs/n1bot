@@ -38,9 +38,12 @@ def _run(query: str, model: str) -> None:
     sampling = SamplingLoader().load()
     configure_logging(app_config.log_level, app_config.log_file)
 
+    workspace_id = WorkspaceId.from_wire("00000000-0000-0000-0000-000000000001")
+
     extension_workspace = FsExtensionWorkspaceRegistry(
         root=Path(app_config.extensions_dir),
     ).get_or_create(ExtensionWorkspaceId("extensions"))
+
     extension_loader = ExtensionLoader(
         extension_workspace,
         ExtensionContext(
@@ -54,7 +57,7 @@ def _run(query: str, model: str) -> None:
     project_workspace = FsProjectWorkspaceRegistry(
         base_dir=Path(app_config.workspaces.base_dir),
         subdir=app_config.workspaces.user_subdir,
-    ).get_or_create(WorkspaceId.new())
+    ).get_or_create(workspace_id)
 
     agent: Agent = create_agent(
         llm_config=app_config.llm,
