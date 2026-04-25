@@ -35,7 +35,7 @@ from abc import abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Generic, TypeVar, cast
 
 from boba.domain.agent.models import AgentConfig
 from boba.domain.config import AppConfig, LLMConfig, WorkspaceLayout
@@ -52,19 +52,25 @@ from boba.domain.core.config import (
 from boba.domain.core.patterns import FoldFactory, PrioritySource, StrId
 from boba.domain.llm.models import SamplingParams
 
+T = TypeVar("T")
+
 __all__ = [
     "AgentSection",
     "AppCoreSection",
     "ConfigBundle",
+    "ConfigError",
     "ConfigFactory",
     "ConfigLoader",
     "ConfigSectionBuilder",
+    "ConfigSlot",
+    "ConfigSlotMissingError",
     "ConfigState",
     "DefaultSource",
     "EnvFileSource",
     "EnvSource",
     "LLMSamplingSection",
     "LLMTransportSection",
+    "PluginsSection",
     "SamplingLoader",
     "TomlFileSource",
     "TomlSource",
@@ -91,6 +97,7 @@ class ConfigLoader:
     def _ensure(self) -> ConfigBundle:
         if self._bundle is None:
             self._bundle = self._factory.build()
+
         return self._bundle
 
     def load_app(self) -> AppConfig:
@@ -134,7 +141,11 @@ class ConfigBundle:
 
 @dataclass
 class ConfigState:
-    """Накапливаемое состояние. ``None``-слот → дефолт dataclass'а в finalize.
+    """Накапливаемое состояние. Все слоты стартуют с ``None`` и заполняются
+    ``apply()``-ом своей :class:`ConfigSectionBuilder`-секции. Какие
+    из них на стадии :meth:`ConfigFactory.finalize` обязательны, а какие
+    нет — декларируется через :class:`ConfigSlot`-константы внутри
+    фабрики, не через дефолты dataclass'а.
 
     ``sampling`` намеренно присутствует: :class:`LLMSamplingSection`
     складывает сюда значение, но финализатор :class:`ConfigFactory`
@@ -151,6 +162,65 @@ class ConfigState:
     log_file: str | None = None
     agent: AgentConfig | None = None
     sampling: SamplingParams | None = None
+    plugins_dir: str | None = None
+
+
+class ConfigError(Exception):
+    """Базовая ошибка конфиг-инфры — отделяет сбои ConfigFactory/Slot
+    от ошибок-резолверов (:class:`ConverterInputError` и потомков).
+    """
+
+
+class ConfigSlotMissingError(ConfigError):
+    """Слот :class:`ConfigState` пуст на стадии ``finalize``: значит,
+    соответствующая :class:`ConfigSectionBuilder` не была
+    зарегистрирована в :class:`ConfigFactory`. Это инвариант сборки
+    фабрики, не пользовательский сбой.
+    """
+
+    def __init__(self, attr: str, section: str) -> None:
+        super().__init__(
+            f"ConfigState slot {attr!r} is None: "
+            f"{section} must be registered in ConfigFactory"
+        )
+        self.attr = attr
+        self.section = section
+
+
+@dataclass(frozen=True)
+class ConfigSlot(Generic[T]):
+    """Декларативное описание обязательного слота :class:`ConfigState`.
+
+    Симметричная пара к :class:`FieldSpec`: ``FieldSpec`` декларирует,
+    как взять значение из source-цепочки на стадии ``apply``;
+    ``ConfigSlot`` декларирует, как достать валидированное значение из
+    :class:`ConfigState` на стадии ``finalize``. ``None`` означает, что
+    обязательная секция не была зарегистрирована в фабрике —
+    fail-fast через :class:`ConfigSlotMissingError`.
+
+    Использование — class-level константы внутри ``Factory``-класса,
+    по аналогии с ``FieldSpec`` внутри ``Section``-класса::
+
+        class ConfigFactory(...):
+            _WORKSPACES = ConfigSlot[WorkspaceLayout](
+                "workspaces", "WorkspacesSection"
+            )
+
+            def finalize(self, state):
+                return ConfigBundle(
+                    app=AppConfig(workspaces=self._WORKSPACES.read(state), ...),
+                    ...
+                )
+    """
+
+    attr: str
+    section: str
+
+    def read(self, state: ConfigState) -> T:
+        value = getattr(state, self.attr)
+        if value is None:
+            raise ConfigSlotMissingError(self.attr, self.section)
+        return cast(T, value)
 
 
 class ConfigSectionBuilder(PrioritySource[StrId, ConfigState]):
@@ -281,6 +351,30 @@ class AgentSection(ConfigSectionBuilder):
         return state
 
 
+class PluginsSection(ConfigSectionBuilder):
+    """Секция конфига плагинов: путь к директории с .py-плагинами.
+
+    Поле ``BOBA_PLUGINS_DIR`` обязательно — без него
+    :meth:`FieldSpec.read` бросит :class:`ConverterInputError`, и
+    приложение не стартует. Это контракт: оператор обязан явно указать,
+    откуда грузить плагины (через env, через TOML ``[plugins] dir``
+    или через ``_FILE``-секрет).
+    """
+
+    DIR = FieldSpec[str]("BOBA_PLUGINS_DIR", StrConverter())
+
+    TOML_PATHS: ClassVar[Mapping[str, tuple[str, str]]] = {
+        "BOBA_PLUGINS_DIR": ("plugins", "dir"),
+    }
+
+    def id(self) -> StrId:
+        return StrId("plugins")
+
+    def apply(self, state: ConfigState) -> ConfigState:
+        state.plugins_dir = self.DIR.read(state.resolver)
+        return state
+
+
 class LLMSamplingSection(ConfigSectionBuilder):
     """Секция TOML ``[llm]`` → :class:`SamplingParams` (без обёрток)."""
 
@@ -321,6 +415,20 @@ class LLMSamplingSection(ConfigSectionBuilder):
 
 
 class ConfigFactory(FoldFactory[StrId, ConfigState, ConfigBundle]):
+    """Фабрика конфиг-бандла. Обязательные слоты :class:`ConfigState`
+    декларируются как class-level :class:`ConfigSlot`-константы (см.
+    ниже) — на стадии :meth:`finalize` они зачитываются и валидируются
+    в одно действие. Опциональные поля (например, ``log_file``) читаются
+    из ``state`` напрямую без слота — их ``None`` валидное значение.
+    """
+
+    _SLOT_WORKSPACES = ConfigSlot[WorkspaceLayout]("workspaces", "WorkspacesSection")
+    _SLOT_SSL_VERIFY = ConfigSlot[bool]("ssl_verify", "AppCoreSection (ssl_verify)")
+    _SLOT_LOG_LEVEL = ConfigSlot[str]("log_level", "AppCoreSection (log_level)")
+    _SLOT_LLM = ConfigSlot[LLMConfig]("llm_transport", "LLMTransportSection")
+    _SLOT_PLUGINS_DIR = ConfigSlot[str]("plugins_dir", "PluginsSection")
+    _SLOT_AGENT = ConfigSlot[AgentConfig]("agent", "AgentSection")
+
     def __init__(self, resolver: ChainedConfigResolver) -> None:
         super().__init__()
         self._resolver = resolver
@@ -330,28 +438,17 @@ class ConfigFactory(FoldFactory[StrId, ConfigState, ConfigBundle]):
 
     def finalize(self, state: ConfigState) -> ConfigBundle:
         app = AppConfig(
-            workspaces=state.workspaces or WorkspaceLayout(),
-            ssl_verify=state.ssl_verify if state.ssl_verify is not None else False,
-            log_level=state.log_level or "INFO",
+            workspaces=self._SLOT_WORKSPACES.read(state),
+            ssl_verify=self._SLOT_SSL_VERIFY.read(state),
+            log_level=self._SLOT_LOG_LEVEL.read(state),
             log_file=state.log_file,
-            llm=state.llm_transport or LLMConfig(),
+            llm=self._SLOT_LLM.read(state),
+            plugins_dir=self._SLOT_PLUGINS_DIR.read(state),
         )
         return ConfigBundle(
             app=app,
-            agent=state.agent or AgentConfig(),
+            agent=self._SLOT_AGENT.read(state),
         )
-
-
-_BUILTIN_TOML_PATHS: dict[str, tuple[str, str]] = {
-    **AppCoreSection.TOML_PATHS,
-    **WorkspacesSection.TOML_PATHS,
-    **LLMTransportSection.TOML_PATHS,
-    **AgentSection.TOML_PATHS,
-    # LLMSamplingSection.TOML_PATHS добавляются автоматически в
-    # default_resolver ниже — чтобы sampling читался из того же
-    # TOML-файла без явной регистрации секции в ConfigFactory.
-    **LLMSamplingSection.TOML_PATHS,
-}
 
 
 def default_resolver(
@@ -363,8 +460,18 @@ def default_resolver(
     ``extra_toml_paths`` расширяют built-in карту TOML-путей — добавляй
     сюда маппинги полей из модулей-потребителей (chainlit и т.п.).
     """
+
+    builtin_toml_paths = {
+        **AppCoreSection.TOML_PATHS,
+        **WorkspacesSection.TOML_PATHS,
+        **LLMTransportSection.TOML_PATHS,
+        **AgentSection.TOML_PATHS,
+        **PluginsSection.TOML_PATHS,
+        **LLMSamplingSection.TOML_PATHS,
+    }
+
     toml_data: dict[str, Any] = load_toml(os.environ.get("BOBA_CONFIG"))
-    path_map: dict[str, tuple[str, str]] = {**_BUILTIN_TOML_PATHS}
+    path_map: dict[str, tuple[str, str]] = {**builtin_toml_paths}
     if extra_toml_paths:
         path_map.update(extra_toml_paths)
     sources: list[ConfigSource] = [
@@ -386,6 +493,7 @@ def default_config_factory(
     factory.register(WorkspacesSection(priority=20))
     factory.register(LLMTransportSection(priority=30))
     factory.register(AgentSection(priority=40))
+    factory.register(PluginsSection(priority=50))
     return factory
 
 

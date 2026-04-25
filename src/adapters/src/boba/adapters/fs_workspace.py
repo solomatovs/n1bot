@@ -26,6 +26,9 @@ from boba.domain.core.workspace import (
     GrepMatch,
     HistoryWorkspaceRegistry,
     HistoryWorkspaceShell,
+    PluginWorkspaceId,
+    PluginWorkspaceRegistry,
+    PluginWorkspaceShell,
     ProjectWorkspaceRegistry,
     ProjectWorkspaceShell,
     ScratchWorkspaceRegistry,
@@ -955,3 +958,35 @@ class FsScratchWorkspaceRegistry(
 ):
     def __init__(self, base_dir: Path, subdir: str) -> None:
         super().__init__(base_dir, FsScratchWorkspaceShell, subdir, WorkspaceId.new)
+
+
+class FsPluginWorkspaceShell(
+    FsWorkspaceShell[PluginWorkspaceId], PluginWorkspaceShell
+):
+    """Файловый :class:`PluginWorkspaceShell`."""
+
+
+class FsPluginWorkspaceRegistry(
+    FsWorkspaceRegistry[FsPluginWorkspaceShell, PluginWorkspaceId],
+    PluginWorkspaceRegistry,
+):
+    """Singleton-registry plugin-namespace.
+
+    Корнем shell'а служит сам ``root`` — без id и subdir в пути, потому
+    что plugin workspace на всё приложение один. Конструктор принимает
+    только директорию (обычно ``app_config.plugins_dir``); остальные
+    параметры базового :class:`FsWorkspaceRegistry` фиксированы.
+    """
+
+    _SINGLETON_ID = PluginWorkspaceId("plugins")
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(
+            base_dir=root,
+            shell_cls=FsPluginWorkspaceShell,
+            subdir="",
+            id_factory=lambda: self._SINGLETON_ID,
+        )
+
+    def _workspace_dir(self, workspace_id: PluginWorkspaceId) -> Path:
+        return self._base_dir

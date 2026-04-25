@@ -50,3 +50,4 @@ class AppConfig:
     log_level: str = "INFO"
     log_file: str | None = None
     llm: LLMConfig = field(default_factory=LLMConfig)
+    plugins_dir: str = "./plugins"
