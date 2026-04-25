@@ -20,6 +20,7 @@ from boba.domain.core.tools import (
     ParamSchema,
     Required,
     Tool,
+    ToolContext,
     ToolDefinition,
     ToolExecutionError,
     ToolId,
@@ -30,7 +31,6 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
-    ProjectWorkspaceShell,
     WorkspaceError,
     WorkspaceNotFoundError,
 )
@@ -65,9 +65,6 @@ class CatTool(Tool[CatArgs]):
 
     _ID = ToolId("cat")
     _SOURCE = ToolSourceId("builtin.files")
-
-    def __init__(self, workspace: ProjectWorkspaceShell) -> None:
-        self._workspace = workspace
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -138,7 +135,7 @@ class CatTool(Tool[CatArgs]):
             ),
         )
 
-    def execute(self, ctx: None, args: CatArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, args: CatArgs) -> ToolResult:
         if args.end_line - args.start_line + 1 > _MAX_LINES:
             raise ToolOutputTooLargeError(
                 tool_id=self._ID,
@@ -154,7 +151,7 @@ class CatTool(Tool[CatArgs]):
             )
 
         try:
-            with self._workspace.read_text(args.path, args.encoding) as f:
+            with ctx.project_workspace.read_text(args.path, args.encoding) as f:
                 text, last = self._read_range(f, args.start_line, args.end_line)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
@@ -195,5 +192,5 @@ def register(ctx: PluginContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.cat"),
         priority=0,
-        tools=[CatTool(ctx.project_workspace)],
+        tools=[CatTool()],
     )

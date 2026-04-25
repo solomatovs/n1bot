@@ -18,6 +18,7 @@ from boba.domain.core.tools import (
     Pass,
     Required,
     Tool,
+    ToolContext,
     ToolDefinition,
     ToolExecutionError,
     ToolId,
@@ -27,7 +28,6 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
-    ProjectWorkspaceShell,
     WorkspaceError,
     WorkspaceNotFoundError,
 )
@@ -50,9 +50,6 @@ class RmTool(Tool[RmArgs]):
 
     _ID = ToolId("rm")
     _SOURCE = ToolSourceId("builtin.files")
-
-    def __init__(self, workspace: ProjectWorkspaceShell) -> None:
-        self._workspace = workspace
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -91,9 +88,9 @@ class RmTool(Tool[RmArgs]):
             ),
         )
 
-    def execute(self, ctx: None, args: RmArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, args: RmArgs) -> ToolResult:
         try:
-            self._workspace.delete(args.path, recursive=args.recursive)
+            ctx.project_workspace.delete(args.path, recursive=args.recursive)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
@@ -110,5 +107,5 @@ def register(ctx: PluginContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.rm"),
         priority=0,
-        tools=[RmTool(ctx.project_workspace)],
+        tools=[RmTool()],
     )

@@ -35,7 +35,6 @@ from boba.domain.config import AppConfig
 from boba.domain.core.tools import ToolFactory, ToolSource, ToolsService
 from boba.domain.core.workspace import (
     PluginWorkspaceShell,
-    ProjectWorkspaceShell,
     WorkspaceError,
 )
 from boba.domain.llm.models import SamplingParams
@@ -77,10 +76,12 @@ class PluginRegisterError(PluginError):
 class PluginContext:
     """Контракт окружения, передаваемый плагину при инстанцировании tool'ов.
 
-    Per-request: ``project_workspace`` создаётся заново на каждое
-    сообщение из user-session id и используется tool'ами для I/O в
-    проект пользователя. Application-singletons: всё остальное — одно
-    на процесс, шарится между запросами.
+    Все поля — application-singletons: ``PluginContext`` строится один
+    раз на старте процесса, передаётся в ``register(ctx)`` каждого
+    плагина, дальше не меняется. ``project_workspace`` сюда не входит:
+    Tool-классы — application-singletons и получают рабочий workspace
+    per-request через :class:`~boba.domain.core.tools.ToolContext` в
+    методе :meth:`Tool.execute`, а не через ``__init__`` при регистрации.
 
     LLM-credentials намеренно НЕ передаются: плагины — full-trust код
     (см. trust-модель в :class:`PluginLoader`), но даже в trust-модели
@@ -89,7 +90,6 @@ class PluginContext:
     LLM-клиент-фасад без credentials, а не :class:`LLMConfig` целиком.
     """
 
-    project_workspace: ProjectWorkspaceShell
     plugin_workspace: PluginWorkspaceShell
     app_config: AppConfig
     agent_config: AgentConfig
@@ -98,13 +98,22 @@ class PluginContext:
 
 class PluginLoader:
     """Discovery .py-плагинов из :class:`PluginWorkspaceShell` и сборка
-    :class:`ToolsService` на каждый запрос.
+    :class:`ToolsService` один раз на старте процесса.
 
-    Discovery — один раз в конструкторе: I/O идёт через ``WorkspaceShell``,
-    физические пути не утекают. Импорт через ``exec(compile(...))`` в
-    свежий :class:`ModuleType` — без относительных импортов внутри
-    плагина и без регистрации в ``sys.modules``; для одно-файловых
-    плагинов это нормальный компромисс.
+    Discovery + ``register(ctx)`` происходят в конструкторе: модуль
+    читается через ``WorkspaceShell``, ``exec``-ится в свежий
+    :class:`ModuleType` (с регистрацией в ``sys.modules`` для корректной
+    работы dataclass/typing.get_type_hints), затем сразу же зовётся его
+    ``register(ctx)`` и возвращённые ``ToolSource``-ы складываются в
+    кэшированный :class:`ToolsService`. ``build_tools_service()``
+    возвращает этот же инстанс — никакого I/O или пере-регистрации.
+
+    Tool-инстансы — application-singletons. Per-request зависимости
+    (``project_workspace``) приходят к каждому tool позже, через
+    :class:`~boba.domain.core.tools.ToolContext` в
+    :meth:`~boba.domain.core.tools.Tool.execute` — поэтому ``register``
+    может звать ``CatTool()`` без аргументов и кэшированно; workspace
+    пользователя меняется между запросами, а tool-объект тот же.
 
     **Trust-модель.** Плагины исполняются как полноценный Python-код в
     адресном пространстве процесса (``exec``) — это RCE по построению,
@@ -128,44 +137,44 @@ class PluginLoader:
        причин раздавать секреты каждому плагину «на всякий случай».
     """
 
-    def __init__(self, workspace: PluginWorkspaceShell) -> None:
+    def __init__(
+        self,
+        workspace: PluginWorkspaceShell,
+        ctx: PluginContext,
+    ) -> None:
         self._workspace = workspace
+        self._ctx = ctx
         self._registers: list[tuple[str, PluginRegisterFn]] = []
         self._discover()
+        self._tools_service = self._build_tools_service()
 
     def plugin_count(self) -> int:
         """Количество загруженных плагинов — для smoke-тестов и логов."""
         return len(self._registers)
 
-    def build_tools_service(self, ctx: PluginContext) -> ToolsService:
-        """Per-request сборка :class:`ToolsService` через
-        ``register(ctx)`` всех загруженных плагинов.
+    def build_tools_service(self) -> ToolsService:
+        """Закэшированный :class:`ToolsService` — собран в конструкторе."""
+        return self._tools_service
 
-        :class:`PluginRegisterError` (исключение в ``register`` или
-        некорректный возврат) логируется и пропускается; остальные
-        плагины подключаются. Низкоуровневые исключения из тела
-        ``register`` оборачиваются в ``PluginRegisterError`` —
-        наружу из loader они не уходят.
-        """
+    def _build_tools_service(self) -> ToolsService:
         factory = ToolFactory()
         for rel_path, register in self._registers:
             try:
-                self._apply_register(rel_path, register, ctx, factory)
+                self._apply_register(rel_path, register, factory)
             except PluginRegisterError as e:
-                logger.warning("%s; skipped this request", e)
+                logger.warning("%s; skipped", e)
         service = ToolsService(factory)
         service.rebuild_catalog()
         return service
 
-    @staticmethod
     def _apply_register(
+        self,
         rel_path: str,
         register: PluginRegisterFn,
-        ctx: PluginContext,
         factory: ToolFactory,
     ) -> None:
         try:
-            sources = register(ctx)
+            sources = register(self._ctx)
             for source in sources:
                 factory.register(source)
         except PluginError:

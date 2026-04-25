@@ -16,6 +16,7 @@ from boba.domain.core.tools import (
     Pass,
     Required,
     Tool,
+    ToolContext,
     ToolDefinition,
     ToolExecutionError,
     ToolId,
@@ -25,7 +26,6 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
-    ProjectWorkspaceShell,
     WorkspaceError,
 )
 from boba.infra.plugins import PluginContext
@@ -46,9 +46,6 @@ class TouchTool(Tool[TouchArgs]):
 
     _ID = ToolId("touch")
     _SOURCE = ToolSourceId("builtin.files")
-
-    def __init__(self, workspace: ProjectWorkspaceShell) -> None:
-        self._workspace = workspace
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -79,9 +76,9 @@ class TouchTool(Tool[TouchArgs]):
             ),
         )
 
-    def execute(self, ctx: None, args: TouchArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, args: TouchArgs) -> ToolResult:
         try:
-            self._workspace.touch(args.path)
+            ctx.project_workspace.touch(args.path)
         except WorkspaceError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
@@ -93,5 +90,5 @@ def register(ctx: PluginContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.touch"),
         priority=0,
-        tools=[TouchTool(ctx.project_workspace)],
+        tools=[TouchTool()],
     )

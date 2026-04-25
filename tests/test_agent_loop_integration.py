@@ -13,6 +13,7 @@ from boba.adapters.fs_workspace import (
 from boba.adapters.in_memory_messages import InMemoryMessageService
 from boba.domain.agent.meat.agent import Agent
 from boba.domain.agent.models import AgentRequest
+from boba.domain.core.tools import ToolContext
 from boba.domain.core.workspace import (
     PluginWorkspaceId,
     PromptWorkspaceId,
@@ -24,7 +25,6 @@ from boba.infra.container import (
     AgentComponents,
     build_prompt_providers,
     create_agent,
-    create_tools_service,
 )
 from boba.infra.logging import configure_logging
 from boba.infra.plugins import PluginContext, PluginLoader
@@ -44,7 +44,15 @@ def _run(query: str, model: str) -> None:
     plugin_workspace = FsPluginWorkspaceRegistry(
         root=Path(app_config.plugins_dir),
     ).get_or_create(PluginWorkspaceId("plugins"))
-    plugin_loader = PluginLoader(plugin_workspace)
+    tools_service = PluginLoader(
+        plugin_workspace,
+        PluginContext(
+            plugin_workspace=plugin_workspace,
+            app_config=app_config,
+            agent_config=agent_config,
+            sampling=sampling,
+        ),
+    ).build_tools_service()
 
     prompt_workspace = FsPromptWorkspaceRegistry(
         root=Path(app_config.prompts_dir),
@@ -58,14 +66,6 @@ def _run(query: str, model: str) -> None:
         subdir=app_config.workspaces.user_subdir,
     ).get_or_create(WorkspaceId.new())
 
-    plugin_ctx = PluginContext(
-        project_workspace=project_workspace,
-        plugin_workspace=plugin_workspace,
-        app_config=app_config,
-        agent_config=agent_config,
-        sampling=sampling,
-    )
-
     agent: Agent = create_agent(
         llm_config=app_config.llm,
         components=AgentComponents(
@@ -73,8 +73,9 @@ def _run(query: str, model: str) -> None:
             sampling=sampling,
             prompt_providers=prompt_providers,
             message_service=InMemoryMessageService(),
-            tools_service=create_tools_service(plugin_loader, plugin_ctx),
+            tools_service=tools_service,
         ),
+        tool_ctx=ToolContext(project_workspace=project_workspace),
     )
 
     request = AgentRequest(

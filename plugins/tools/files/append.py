@@ -17,6 +17,7 @@ from boba.domain.core.tools import (
     Pass,
     Required,
     Tool,
+    ToolContext,
     ToolDefinition,
     ToolExecutionError,
     ToolId,
@@ -26,7 +27,6 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
-    ProjectWorkspaceShell,
     WorkspaceError,
 )
 from boba.infra.plugins import PluginContext
@@ -53,9 +53,6 @@ class AppendTool(Tool[AppendArgs]):
 
     _ID = ToolId("append")
     _SOURCE = ToolSourceId("builtin.files")
-
-    def __init__(self, workspace: ProjectWorkspaceShell) -> None:
-        self._workspace = workspace
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -103,10 +100,10 @@ class AppendTool(Tool[AppendArgs]):
             ),
         )
 
-    def execute(self, ctx: None, args: AppendArgs) -> ToolResult:
-        existed = self._workspace.exists(args.path)
+    def execute(self, ctx: ToolContext, args: AppendArgs) -> ToolResult:
+        existed = ctx.project_workspace.exists(args.path)
         try:
-            with self._workspace.append_text(args.path, args.encoding) as f:
+            with ctx.project_workspace.append_text(args.path, args.encoding) as f:
                 f.write(args.content)
         except WorkspaceError as e:
             raise ToolExecutionError(
@@ -123,5 +120,5 @@ def register(ctx: PluginContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.append"),
         priority=0,
-        tools=[AppendTool(ctx.project_workspace)],
+        tools=[AppendTool()],
     )

@@ -42,10 +42,9 @@ from boba.domain.core.patterns import (
     StreamSourceChainBuilder,
     StreamSourceLoop,
 )
-from boba.domain.core.tools import ToolsService
+from boba.domain.core.tools import ToolContext, ToolsService
 from boba.domain.llm.events import LLMEvent
 from boba.domain.llm.models import LLMContext, SamplingParams
-from boba.infra.plugins import PluginContext, PluginLoader
 from boba.infra.prompts import PromptLoader
 
 
@@ -68,17 +67,6 @@ def build_prompt_providers(loader: PromptLoader) -> Sequence[PromptProvider]:
     «контента» промптов и не лежит в директории.
     """
     return (*loader.providers(), UserQueryProvider())
-
-
-def create_tools_service(loader: PluginLoader, ctx: PluginContext) -> ToolsService:
-    """Per-request сборка :class:`ToolsService` через :class:`PluginLoader`.
-
-    ``loader`` — application-singleton (создаётся один раз на старте,
-    discovery выполнен в его конструкторе). ``ctx`` — свежий per-request,
-    несёт сессионный :class:`ProjectWorkspaceShell` и application-level
-    DI. Каждый плагин получает один и тот же ``ctx``.
-    """
-    return loader.build_tools_service(ctx)
 
 
 def create_llm_source(
@@ -105,6 +93,7 @@ def build_turn_spec(components: AgentComponents) -> TurnSpec:
 def create_agent_source(
     llm_source: StreamSource[LLMContext, LLMEvent],
     components: AgentComponents,
+    tool_ctx: ToolContext,
 ) -> StreamSource[AgentContext, AgentEvent]:
     message_service = components.message_service
     prompt_providers = components.prompt_providers
@@ -117,7 +106,9 @@ def create_agent_source(
     chain_builder.use(IterationCounterMiddleware)
     chain_builder.use(lambda inner: InitialUserQueryMiddleware(inner, prompt_providers))
     chain_builder.use(
-        lambda inner: ToolExecutionMiddleware(inner, components.tools_service)
+        lambda inner: ToolExecutionMiddleware(
+            inner, components.tools_service, tool_ctx
+        )
     )
     chain_builder.use(
         lambda inner: AssistantMessagePersistenceMiddleware(
@@ -138,11 +129,13 @@ def create_agent_source(
 def create_agent(
     llm_config: LLMConfig,
     components: AgentComponents,
+    tool_ctx: ToolContext,
 ) -> Agent:
     llm_source = create_llm_source(llm_config)
     source = create_agent_source(
         llm_source,
         components,
+        tool_ctx,
     )
 
     return Agent(source=source, sink=TextOutSink(sys.stdout, sys.stderr))

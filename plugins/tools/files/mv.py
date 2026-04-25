@@ -16,6 +16,7 @@ from boba.domain.core.tools import (
     Pass,
     Required,
     Tool,
+    ToolContext,
     ToolDefinition,
     ToolExecutionError,
     ToolId,
@@ -25,7 +26,6 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
-    ProjectWorkspaceShell,
     WorkspaceError,
     WorkspaceNotFoundError,
 )
@@ -48,9 +48,6 @@ class MvTool(Tool[MvArgs]):
 
     _ID = ToolId("mv")
     _SOURCE = ToolSourceId("builtin.files")
-
-    def __init__(self, workspace: ProjectWorkspaceShell) -> None:
-        self._workspace = workspace
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -87,9 +84,9 @@ class MvTool(Tool[MvArgs]):
             ),
         )
 
-    def execute(self, ctx: None, args: MvArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, args: MvArgs) -> ToolResult:
         try:
-            self._workspace.move(args.src, args.dst)
+            ctx.project_workspace.move(args.src, args.dst)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
@@ -106,5 +103,5 @@ def register(ctx: PluginContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.mv"),
         priority=0,
-        tools=[MvTool(ctx.project_workspace)],
+        tools=[MvTool()],
     )

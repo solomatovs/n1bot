@@ -19,6 +19,7 @@ from boba.domain.core.tools import (
     Pass,
     Required,
     Tool,
+    ToolContext,
     ToolDefinition,
     ToolExecutionError,
     ToolId,
@@ -28,7 +29,6 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
-    ProjectWorkspaceShell,
     WorkspaceError,
 )
 from boba.infra.plugins import PluginContext
@@ -55,9 +55,6 @@ class TreeTool(Tool[TreeArgs]):
 
     _ID = ToolId("tree")
     _SOURCE = ToolSourceId("builtin.files")
-
-    def __init__(self, workspace: ProjectWorkspaceShell) -> None:
-        self._workspace = workspace
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -105,9 +102,9 @@ class TreeTool(Tool[TreeArgs]):
             ),
         )
 
-    def execute(self, ctx: None, args: TreeArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, args: TreeArgs) -> ToolResult:
         try:
-            iterator = self._workspace.tree(args.path)
+            iterator = ctx.project_workspace.tree(args.path)
             items = list(islice(iterator, args.limit + 1))
         except WorkspaceError as e:
             raise ToolExecutionError(
@@ -134,5 +131,5 @@ def register(ctx: PluginContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.tree"),
         priority=0,
-        tools=[TreeTool(ctx.project_workspace)],
+        tools=[TreeTool()],
     )

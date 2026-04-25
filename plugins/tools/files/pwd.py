@@ -11,6 +11,7 @@ from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     Pass,
     Tool,
+    ToolContext,
     ToolDefinition,
     ToolId,
     ToolInputSchema,
@@ -18,7 +19,6 @@ from boba.domain.core.tools import (
     ToolSource,
     ToolSourceId,
 )
-from boba.domain.core.workspace import ProjectWorkspaceShell
 from boba.infra.plugins import PluginContext
 
 
@@ -38,9 +38,6 @@ class PwdTool(Tool[PwdArgs]):
     _ID = ToolId("pwd")
     _SOURCE = ToolSourceId("builtin.files")
 
-    def __init__(self, workspace: ProjectWorkspaceShell) -> None:
-        self._workspace = workspace
-
     def tool_id(self) -> ToolId:
         return self._ID
 
@@ -56,12 +53,12 @@ class PwdTool(Tool[PwdArgs]):
             input_schema=ToolInputSchema(params=[], invariants=Pass()),
         )
 
-    def execute(self, ctx: None, args: PwdArgs) -> ToolResult:
-        return ToolResult(content=self._workspace.cwd)
+    def execute(self, ctx: ToolContext, args: PwdArgs) -> ToolResult:
+        return ToolResult(content=ctx.project_workspace.cwd)
 
 def register(ctx: PluginContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.pwd"),
         priority=0,
-        tools=[PwdTool(ctx.project_workspace)],
+        tools=[PwdTool()],
     )

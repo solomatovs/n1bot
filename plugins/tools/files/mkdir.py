@@ -16,6 +16,7 @@ from boba.domain.core.tools import (
     Pass,
     Required,
     Tool,
+    ToolContext,
     ToolDefinition,
     ToolExecutionError,
     ToolId,
@@ -25,7 +26,6 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
-    ProjectWorkspaceShell,
     WorkspaceError,
 )
 from boba.infra.plugins import PluginContext
@@ -46,9 +46,6 @@ class MkdirTool(Tool[MkdirArgs]):
 
     _ID = ToolId("mkdir")
     _SOURCE = ToolSourceId("builtin.files")
-
-    def __init__(self, workspace: ProjectWorkspaceShell) -> None:
-        self._workspace = workspace
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -78,9 +75,9 @@ class MkdirTool(Tool[MkdirArgs]):
             ),
         )
 
-    def execute(self, ctx: None, args: MkdirArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, args: MkdirArgs) -> ToolResult:
         try:
-            self._workspace.mkdir(args.path)
+            ctx.project_workspace.mkdir(args.path)
         except WorkspaceError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
@@ -92,5 +89,5 @@ def register(ctx: PluginContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.mkdir"),
         priority=0,
-        tools=[MkdirTool(ctx.project_workspace)],
+        tools=[MkdirTool()],
     )

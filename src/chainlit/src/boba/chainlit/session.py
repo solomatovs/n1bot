@@ -26,6 +26,7 @@ from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.meat.agent import Agent
 from boba.domain.agent.models import AgentContext, AgentRequest
 from boba.domain.core.patterns import StreamSink, StreamSinkPipeline
+from boba.domain.core.tools import ToolContext
 from boba.domain.core.workspace import (
     PluginWorkspaceId,
     ProjectWorkspaceShell,
@@ -39,7 +40,6 @@ from boba.infra.container import (
     build_prompt_providers,
     create_agent_source,
     create_llm_source,
-    create_tools_service,
 )
 from boba.infra.logging import configure_logging, log_context
 from boba.infra.plugins import PluginContext, PluginLoader
@@ -65,13 +65,24 @@ class ChatSession:
             base_dir=Path(self._app_config.workspaces.base_dir),
             subdir=self._app_config.workspaces.user_subdir,
         )
-        # Plugin workspace — application-singleton: создаётся один раз
-        # при старте процесса. PluginLoader делает discovery в его
-        # конструкторе (читает все .py через PluginWorkspaceShell).
-        self._plugin_workspace = FsPluginWorkspaceRegistry(
+        # Plugin workspace — application-singleton. PluginContext тоже
+        # application-level: project_workspace в нём нет (tool'ы получат
+        # workspace per-request через ToolContext в execute), здесь
+        # только app-singletons. PluginLoader в конструкторе делает
+        # discovery, зовёт register(ctx) и собирает ToolsService один
+        # раз — на всю жизнь процесса.
+        plugin_workspace = FsPluginWorkspaceRegistry(
             root=Path(self._app_config.plugins_dir),
         ).get_or_create(PluginWorkspaceId("plugins"))
-        self._plugin_loader = PluginLoader(self._plugin_workspace)
+        self._tools_service = PluginLoader(
+            plugin_workspace,
+            PluginContext(
+                plugin_workspace=plugin_workspace,
+                app_config=self._app_config,
+                agent_config=self._agent_config,
+                sampling=self._sampling,
+            ),
+        ).build_tools_service()
         # Prompt workspace — тоже application-singleton; PromptLoader
         # читает .md/.txt/.py из директории и кэширует список
         # PromptProvider'ов на всю жизнь процесса.
@@ -119,15 +130,10 @@ class ChatSession:
         project_workspace = self._workspaces.get_or_create(workspace_id)
         request_id = RequestId.new()
 
-        # PluginContext свежий на каждый запрос — в нём per-request
-        # project_workspace, остальное — application-singletons.
-        plugin_ctx = PluginContext(
-            project_workspace=project_workspace,
-            plugin_workspace=self._plugin_workspace,
-            app_config=self._app_config,
-            agent_config=self._agent_config,
-            sampling=self._sampling,
-        )
+        # ToolContext — единственное per-request DI: прокидывает
+        # сессионный workspace в Tool.execute через ToolExecutionMiddleware.
+        # Сам ToolsService — application-singleton, собранный в __init__.
+        tool_ctx = ToolContext(project_workspace=project_workspace)
 
         llm_source = create_llm_source(self._app_config.llm)
         source = create_agent_source(
@@ -137,8 +143,9 @@ class ChatSession:
                 sampling=self._sampling,
                 prompt_providers=self._prompt_providers,
                 message_service=InMemoryMessageService(),
-                tools_service=create_tools_service(self._plugin_loader, plugin_ctx),
+                tools_service=self._tools_service,
             ),
+            tool_ctx,
         )
         sink = StreamSinkPipeline([extra_sink])
         agent = Agent(source=source, sink=sink)

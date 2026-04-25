@@ -18,6 +18,7 @@ from boba.domain.core.tools import (
     Pass,
     Required,
     Tool,
+    ToolContext,
     ToolDefinition,
     ToolExecutionError,
     ToolId,
@@ -27,7 +28,6 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
-    ProjectWorkspaceShell,
     WorkspaceError,
     WorkspaceNotFoundError,
 )
@@ -59,9 +59,6 @@ class EditTool(Tool[EditArgs]):
 
     _ID = ToolId("edit")
     _SOURCE = ToolSourceId("builtin.files")
-
-    def __init__(self, workspace: ProjectWorkspaceShell) -> None:
-        self._workspace = workspace
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -133,9 +130,9 @@ class EditTool(Tool[EditArgs]):
             ),
         )
 
-    def execute(self, ctx: None, args: EditArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, args: EditArgs) -> ToolResult:
         try:
-            applied = self._workspace.edit_text(
+            applied = ctx.project_workspace.edit_text(
                 args.path,
                 args.old_string,
                 args.new_string,
@@ -160,5 +157,5 @@ def register(ctx: PluginContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.edit"),
         priority=0,
-        tools=[EditTool(ctx.project_workspace)],
+        tools=[EditTool()],
     )
