@@ -132,11 +132,7 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
                 monotonic_ns=time.monotonic_ns(),
             )
 
-            # self._preprocessor.reset()
             try:
-                # yield from FromOpenAIChunkConverter(
-                #     ctx.request_id, self._preprocessor
-                # ).stream(ctx, self._observe_chunks(response))
                 yield from FromOpenAIChunkConverter(ctx.request_id).stream(
                     ctx, self._observe_chunks(response)
                 )
