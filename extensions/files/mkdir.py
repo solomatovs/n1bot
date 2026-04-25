@@ -59,9 +59,8 @@ class MkdirTool(Tool[MkdirArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                "Создать директорию. Промежуточные директории создаются "
-                "автоматически. Если директория уже существует — ничего не "
-                "делает. Если по этому пути лежит файл — возвращает ошибку."
+                "Создать директорию (включая промежуточные). Если уже "
+                "существует — no-op. Если по пути файл — ошибка."
             ),
             input_schema=ToolInputSchema(
                 params=[

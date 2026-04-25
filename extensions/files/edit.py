@@ -72,13 +72,10 @@ class EditTool(Tool[EditArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                "Точечно изменить файл: заменить подстроку old_string на "
-                "new_string. По умолчанию old_string должна встречаться в "
-                "файле ровно один раз — иначе возвращается ошибка и нужно "
-                "расширить контекст для уникальности. С replace_all=true "
-                "заменяются все вхождения. Копируй old_string дословно из "
-                "файла (включая пробелы и переводы строк); если не нашли — "
-                "перечитай файл через cat."
+                "Заменить подстроку old_string на new_string. По умолчанию "
+                "old_string должна встречаться в файле ровно один раз — "
+                "иначе ошибка. С replace_all=true заменяются все вхождения. "
+                "Совпадение точное, посимвольное."
             ),
             input_schema=ToolInputSchema(
                 params=[
@@ -89,36 +86,22 @@ class EditTool(Tool[EditArgs]):
                     ),
                     ParamSchema(
                         name="old_string",
-                        description=(
-                            "Точная подстрока, которую надо заменить. "
-                            "Должна встречаться в файле хотя бы один раз; "
-                            "без replace_all — ровно один раз."
-                        ),
+                        description="Подстрока для замены. Совпадение точное.",
                         validator=ChainValidator(Required(), IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="new_string",
-                        description=(
-                            "Текст, на который заменяется old_string. "
-                            "Может быть пустой строкой — тогда old_string "
-                            "удаляется."
-                        ),
+                        description="Заменяющий текст. Пустая строка = удаление.",
                         validator=ChainValidator(Required(), IsString()),
                     ),
                     ParamSchema(
                         name="replace_all",
-                        description=(
-                            "Если true — заменить все вхождения. По "
-                            "умолчанию false: требуется уникальность."
-                        ),
+                        description="Заменить все вхождения. По умолчанию false.",
                         validator=ChainValidator(Default(False), IsBool()),
                     ),
                     ParamSchema(
                         name="encoding",
-                        description=(
-                            "Текстовая кодировка файла, например 'utf-8' "
-                            "или 'cp1251'. По умолчанию — 'utf-8'."
-                        ),
+                        description="Кодировка файла. По умолчанию 'utf-8'.",
                         validator=ChainValidator(
                             Default("utf-8"),
                             IsString(),

@@ -77,26 +77,7 @@ class CatTool(Tool[CatArgs]):
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
-            description=(
-                "Прочитать окно строк из текстового файла (1-based, "
-                "включительно). Параметры start_line и end_line "
-                "ОБЯЗАТЕЛЬНЫ — прочитать файл целиком одним вызовом "
-                "нельзя. Не подходит для бинарных файлов. Если файла "
-                "нет — возвращает ошибку 'Файл не найден'.\n"
-                "\n"
-                f"ЖЁСТКИЙ ЛИМИТ: за один вызов cat возвращает не более "
-                f"{_MAX_LINES} строк. Если end_line - start_line + 1 > "
-                f"{_MAX_LINES} — вызов вернёт типизированную ошибку "
-                "'ToolOutputTooLargeError', частичного результата не "
-                "будет.\n"
-                "\n"
-                "Как надо: сначала stat для размера файла, затем читай "
-                f"пошагово окнами ≤ {_MAX_LINES} строк, продвигая "
-                "start_line = предыдущий end_line + 1, пока не дошёл "
-                "до конца или не нашёл нужное. Если ищешь конкретный "
-                "фрагмент — используй grep, а cat вызывай уже с "
-                "прицельным диапазоном вокруг найденной строки."
-            ),
+            description="Прочитать строки [start_line; end_line] из текстового файла.",
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
@@ -106,27 +87,20 @@ class CatTool(Tool[CatArgs]):
                     ),
                     ParamSchema(
                         name="encoding",
-                        description=(
-                            "Текстовая кодировка файла, например 'utf-8' "
-                            "или 'cp1251'. По умолчанию — 'utf-8'."
-                        ),
+                        description="Кодировка файла. По умолчанию 'utf-8'.",
                         validator=ChainValidator(
                             Default("utf-8"), IsString(), NonEmpty()
                         ),
                     ),
                     ParamSchema(
                         name="start_line",
-                        description=(
-                            "Начальная строка окна; 1 — первая строка файла. "
-                            "Обязательный параметр."
-                        ),
+                        description="Первая строка окна. 1 = начало файла.",
                         validator=ChainValidator(Required(), IsInt(), MinValue(1)),
                     ),
                     ParamSchema(
                         name="end_line",
                         description=(
-                            "Конечная строка окна, включительно; должна "
-                            "быть >= start_line. Обязательный параметр."
+                            "Последняя строка окна, включительно. >= start_line."
                         ),
                         validator=ChainValidator(Required(), IsInt(), MinValue(1)),
                     ),

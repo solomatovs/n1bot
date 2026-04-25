@@ -65,12 +65,7 @@ class AppendTool(Tool[AppendArgs]):
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
-            description=(
-                "Дозаписать текст в конец файла. Если файла или "
-                "промежуточных директорий нет — они создаются. Для "
-                "полной перезаписи используй write; для точечной правки — "
-                "edit."
-            ),
+            description="Дописать текст в конец файла. Если файла нет — создать.",
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
@@ -80,15 +75,12 @@ class AppendTool(Tool[AppendArgs]):
                     ),
                     ParamSchema(
                         name="content",
-                        description="Текст для добавления в конец файла.",
+                        description="Дописываемый текст.",
                         validator=ChainValidator(Required(), IsString()),
                     ),
                     ParamSchema(
                         name="encoding",
-                        description=(
-                            "Текстовая кодировка, например 'utf-8' или "
-                            "'cp1251'. По умолчанию — 'utf-8'."
-                        ),
+                        description="Кодировка файла. По умолчанию 'utf-8'.",
                         validator=ChainValidator(
                             Default("utf-8"),
                             IsString(),

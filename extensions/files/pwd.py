@@ -49,7 +49,7 @@ class PwdTool(Tool[PwdArgs]):
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
-            description="Показать путь текущей директории.",
+            description="Вернуть путь текущей директории.",
             input_schema=ToolInputSchema(params=[], invariants=Pass()),
         )
 
