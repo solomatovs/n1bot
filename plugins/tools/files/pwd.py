@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from boba.adapters.tool_providers import StaticToolSource
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     Pass,
@@ -13,9 +15,11 @@ from boba.domain.core.tools import (
     ToolId,
     ToolInputSchema,
     ToolResult,
+    ToolSource,
     ToolSourceId,
 )
 from boba.domain.core.workspace import ProjectWorkspaceShell
+from boba.infra.plugins import PluginContext
 
 
 @dataclass(frozen=True)
@@ -54,3 +58,10 @@ class PwdTool(Tool[PwdArgs]):
 
     def execute(self, ctx: None, args: PwdArgs) -> ToolResult:
         return ToolResult(content=self._workspace.cwd)
+
+def register(ctx: PluginContext) -> Iterable[ToolSource]:
+    yield StaticToolSource(
+        ToolSourceId("builtin.files.pwd"),
+        priority=0,
+        tools=[PwdTool(ctx.project_workspace)],
+    )

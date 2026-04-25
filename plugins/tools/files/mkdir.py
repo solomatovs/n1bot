@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from boba.adapters.tool_providers import StaticToolSource
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainValidator,
@@ -19,12 +21,14 @@ from boba.domain.core.tools import (
     ToolId,
     ToolInputSchema,
     ToolResult,
+    ToolSource,
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
     ProjectWorkspaceShell,
     WorkspaceError,
 )
+from boba.infra.plugins import PluginContext
 
 
 @dataclass(frozen=True)
@@ -83,3 +87,10 @@ class MkdirTool(Tool[MkdirArgs]):
                 message=f"Ошибка mkdir: {e}",
             ) from e
         return ToolResult(content=f"Директория создана: {args.path}")
+
+def register(ctx: PluginContext) -> Iterable[ToolSource]:
+    yield StaticToolSource(
+        ToolSourceId("builtin.files.mkdir"),
+        priority=0,
+        tools=[MkdirTool(ctx.project_workspace)],
+    )

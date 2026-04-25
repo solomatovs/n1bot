@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from boba.adapters.tool_providers import StaticToolSource
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainValidator,
@@ -19,6 +21,7 @@ from boba.domain.core.tools import (
     ToolId,
     ToolInputSchema,
     ToolResult,
+    ToolSource,
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
@@ -26,6 +29,7 @@ from boba.domain.core.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
+from boba.infra.plugins import PluginContext
 
 
 @dataclass(frozen=True)
@@ -102,3 +106,10 @@ class StatTool(Tool[StatArgs]):
             f"modified: {meta.modified.isoformat()}"
         )
         return ToolResult(content=body)
+
+def register(ctx: PluginContext) -> Iterable[ToolSource]:
+    yield StaticToolSource(
+        ToolSourceId("builtin.files.stat"),
+        priority=0,
+        tools=[StatTool(ctx.project_workspace)],
+    )

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from boba.adapters.tool_providers import StaticToolSource
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainValidator,
@@ -19,6 +21,7 @@ from boba.domain.core.tools import (
     ToolId,
     ToolInputSchema,
     ToolResult,
+    ToolSource,
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
@@ -26,6 +29,7 @@ from boba.domain.core.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
+from boba.infra.plugins import PluginContext
 
 
 @dataclass(frozen=True)
@@ -89,3 +93,10 @@ class CdTool(Tool[CdArgs]):
                 message=f"Ошибка cd: {e}",
             ) from e
         return ToolResult(content=f"Текущая директория: {self._workspace.cwd}")
+
+def register(ctx: PluginContext) -> Iterable[ToolSource]:
+    yield StaticToolSource(
+        ToolSourceId("builtin.files.cd"),
+        priority=0,
+        tools=[CdTool(ctx.project_workspace)],
+    )

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from boba.adapters.tool_providers import StaticToolSource
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainValidator,
@@ -19,12 +21,14 @@ from boba.domain.core.tools import (
     ToolId,
     ToolInputSchema,
     ToolResult,
+    ToolSource,
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
     ProjectWorkspaceShell,
     WorkspaceError,
 )
+from boba.infra.plugins import PluginContext
 
 
 @dataclass(frozen=True)
@@ -84,3 +88,10 @@ class TouchTool(Tool[TouchArgs]):
                 message=f"Ошибка touch: {e}",
             ) from e
         return ToolResult(content=f"touch: {args.path}")
+
+def register(ctx: PluginContext) -> Iterable[ToolSource]:
+    yield StaticToolSource(
+        ToolSourceId("builtin.files.touch"),
+        priority=0,
+        tools=[TouchTool(ctx.project_workspace)],
+    )
