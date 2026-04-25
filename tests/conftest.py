@@ -1,14 +1,10 @@
 """Общие фикстуры для интеграционных тестов агента.
 
-Всё «инфраструктурное» (конфиг, логи, контейнер, scope, сбор событий)
-живёт в :class:`boba.infra.AgentHarness`. Тестам остаётся запросить
-фикстуру и вызвать ``harness.ask(ws_id, query)``.
-
-Этот модуль также выполняет bootstrap окружения для тестов: подставляет
-пути к артефактам внутри ``.vscode/`` (workspaces, config.toml,
-secrets), чтобы ``pytest`` из корня репозитория не засорял root-директорию
-и сразу находил конфиг без ручного экспорта env-переменных. Значения
-ставятся через :meth:`os.environ.setdefault` — VS Code launch.json или
+Bootstrap окружения для тестов: подставляет пути к артефактам внутри
+``.vscode/`` (workspaces, config.toml, secrets, plugins), чтобы
+``pytest`` из корня репозитория не засорял root-директорию и сразу
+находил конфиг без ручного экспорта env-переменных. Значения ставятся
+через :meth:`os.environ.setdefault` — VS Code launch.json или
 CI-окружение всегда имеют приоритет.
 """
 
@@ -19,16 +15,12 @@ from pathlib import Path
 
 import pytest
 
-from boba.infra.harness import AgentHarness
-
 
 def _bootstrap_test_env() -> None:
-    """Перенаправить артефакты тестов в ``.vscode/``.
+    """Перенаправить артефакты тестов в ``.vscode/`` и указать plugins-папку.
 
     Всё ставится через :meth:`os.environ.setdefault` — VS Code launch.json
-    и CI, где переменные уже заданы, имеют приоритет. `AgentHarness` читает
-    env только в момент построения (внутри фикстуры), так что bootstrap
-    успевает отработать раньше.
+    и CI, где переменные уже заданы, имеют приоритет.
     """
     repo_root = Path(__file__).resolve().parent.parent
     vscode_dir = repo_root / ".vscode"
@@ -36,6 +28,9 @@ def _bootstrap_test_env() -> None:
     defaults: dict[str, str] = {
         "WORKSPACE_BASE_DIR": str(vscode_dir / "workspaces"),
         "LOG_FILE": str(vscode_dir / "logs" / "tests.log"),
+        # Дефолтная директория плагинов для тестов — те же 15 built-in
+        # tool-плагинов из репо. Конфиг считает поле обязательным.
+        "BOBA_PLUGINS_DIR": str(repo_root / "plugins"),
     }
     config_toml = vscode_dir / "config" / "config.toml"
     if config_toml.is_file():
@@ -49,12 +44,6 @@ def _bootstrap_test_env() -> None:
 
 
 _bootstrap_test_env()
-
-
-@pytest.fixture
-def harness() -> AgentHarness:
-    """AgentHarness с ``max_iterations=1`` — для smoke-прогонов одного запроса."""
-    return AgentHarness(max_iterations=1)
 
 
 @pytest.fixture

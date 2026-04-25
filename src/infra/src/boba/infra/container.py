@@ -45,7 +45,7 @@ from boba.domain.core.patterns import (
     StreamSourceChainBuilder,
     StreamSourceLoop,
 )
-from boba.domain.core.tools import ToolFactory, ToolsService
+from boba.domain.core.tools import ToolsService
 from boba.domain.llm.events import LLMEvent
 from boba.domain.llm.models import LLMContext, SamplingParams
 from boba.infra.plugins import PluginContext, PluginLoader
@@ -72,13 +72,6 @@ def default_static_prompt_providers(
         ),
         UserQueryProvider(),
     ]
-
-
-def create_empty_tools_service() -> ToolsService:
-    factory = ToolFactory()
-    service = ToolsService(factory)
-    service.rebuild_catalog()
-    return service
 
 
 def create_tools_service(loader: PluginLoader, ctx: PluginContext) -> ToolsService:
