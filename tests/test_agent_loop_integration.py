@@ -39,9 +39,6 @@ def _run(query: str, model: str) -> None:
             message_service=InMemoryMessageService(),
             tools_service=create_empty_tools_service(),
         ),
-        enable_strict_content_tool_call=True,
-        enable_repeated_tool_call_guard=True,
-        enable_repeated_format_failure_guard=True,
     )
 
     request = AgentRequest(

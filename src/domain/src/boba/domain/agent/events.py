@@ -8,11 +8,6 @@
     │
     ├── LifecycleMarker (abstract)        границы фазы, без контента
     │   ├── IterationStarted                iteration, max_iterations
-    │   ├── SystemPromptProcessingStarted   content_before
-    │   ├── SystemPromptProcessed           content_before/after, duration_ms
-    │   ├── UserPromptProcessingStarted     content_before
-    │   ├── UserPromptProcessed             content_before/after, duration_ms
-    │   ├── LLMUserPromptIssued             user_prompt (snapshot)
     │   ├── LLMRequestStarted               model, messages_count, has_tools, ts
     │   ├── LLMRequestSent                  monotonic_ns (парный)
     │   ├── GenerationStarted
@@ -133,12 +128,11 @@ class TerminalFailure(BaseAgentEvent, ABC):
 class UserQueryReceived(DurableMessage):
     """Запрос пользователя принят агентом.
 
-    Эмитится один раз — :class:`~boba.domain.agent.meat.prompt.\
-UserPromptMiddleware` на ``ctx.iteration == 1`` после заполнения
-    ``ctx.request.user_message``. Запись сообщения в
-    :class:`MessageService` делает
-    :class:`~boba.domain.agent.meat.llm_invoke.\
-UserMessagePersistenceMiddleware` на границе с LLM.
+    Эмитится один раз :class:`~boba.domain.agent.meat.turn.\
+InitialUserQueryMiddleware` на ``ctx.iteration == 1`` после того, как
+    :class:`~boba.domain.agent.turn.effects.UserQueryEffect` декларирован
+    в :attr:`AgentContext.triggers`. Запись в :class:`MessageService`
+    происходит в :meth:`TurnSpec.initial` при применении эффекта.
     """
 
     query: str
@@ -257,71 +251,6 @@ class IterationStarted(LifecycleMarker):
     @classmethod
     def name(cls) -> Literal["IterationStarted"]:
         return "IterationStarted"
-
-
-@dataclass(frozen=True)
-class SystemPromptProcessingStarted(LifecycleMarker):
-    """
-    System-prompt middleware начал сборку через :class:`PromptFactory`.
-    """
-
-    @classmethod
-    def name(cls) -> Literal["SystemPromptProcessingStarted"]:
-        return "SystemPromptProcessingStarted"
-
-
-@dataclass(frozen=True)
-class SystemPromptProcessed(LifecycleMarker):
-    """System-prompt middleware завершил сборку.
-
-    ``content_after`` — итоговый текст system-промпта, записанный в
-    :class:`MessageService` (``None`` если провайдеры вернули пусто и
-    в MS ничего не пишется).
-    ``duration_ms`` — время работы :class:`PromptFactory`.
-    """
-
-    content: str
-    duration_ms: float
-
-    @classmethod
-    def name(cls) -> Literal["SystemPromptProcessed"]:
-        return "SystemPromptProcessed"
-
-
-@dataclass(frozen=True)
-class UserPromptProcessingStarted(LifecycleMarker):
-    """User-prompt middleware начал сборку через :class:`PromptFactory`."""
-
-    @classmethod
-    def name(cls) -> Literal["UserPromptProcessingStarted"]:
-        return "UserPromptProcessingStarted"
-
-
-@dataclass(frozen=True)
-class UserPromptProcessed(LifecycleMarker):
-    """User-prompt middleware завершил сборку."""
-
-    content: str
-    duration_ms: float
-
-    @classmethod
-    def name(cls) -> Literal["UserPromptProcessed"]:
-        return "UserPromptProcessed"
-
-
-@dataclass(frozen=True)
-class LLMUserPromptIssued(BaseAgentEvent):
-    """Зеркало :class:`~boba.domain.llm.events.LLMUserPromptIssued`.
-
-    Snapshot user-prompt'а, отправленного провайдеру. Эмитится прямо
-    перед :class:`LLMRequestStarted` — для observability/audit.
-    """
-
-    user_prompt: str
-
-    @classmethod
-    def name(cls) -> Literal["LLMUserPromptIssued"]:
-        return "LLMUserPromptIssued"
 
 
 @dataclass(frozen=True)
@@ -634,22 +563,6 @@ class PersistenceFailed(TerminalFailure):
         return "PersistenceFailed"
 
 
-@dataclass(frozen=True)
-class GenericTerminalFailure(TerminalFailure):
-    """Fallback для :class:`~boba.domain.core.errors.TerminalError` без
-    :class:`~boba.domain.core.errors.UserFeedbackError`.
-
-    Роутер эмитит это событие, чтобы :class:`StopOnAnyFailure`
-    корректно остановил цикл при «чистом» ``TerminalError``-маркере
-    (без собственного ``to_user_feedback``). ``error_kind`` содержит имя
-    класса ошибки — sink может фильтровать/логировать по нему.
-    """
-
-    @classmethod
-    def name(cls) -> Literal["GenericTerminalFailure"]:
-        return "GenericTerminalFailure"
-
-
 # ═════════════════════════════════════════════════════════════════════
 #  Union + имена
 # ═════════════════════════════════════════════════════════════════════
@@ -658,11 +571,6 @@ class GenericTerminalFailure(TerminalFailure):
 AgentEvent = (
     UserQueryReceived
     | IterationStarted
-    | SystemPromptProcessingStarted
-    | SystemPromptProcessed
-    | UserPromptProcessingStarted
-    | UserPromptProcessed
-    | LLMUserPromptIssued
     | LLMRequestStarted
     | LLMRequestSent
     | GenerationStarted
@@ -689,18 +597,12 @@ AgentEvent = (
     | MaxIterationsReached
     | RepeatedFormatFailure
     | PersistenceFailed
-    | GenericTerminalFailure
 )
 
 
 AgentEventName: TypeAlias = Literal[
     "UserQueryReceived",
     "IterationStarted",
-    "SystemPromptProcessingStarted",
-    "SystemPromptProcessed",
-    "UserPromptProcessingStarted",
-    "UserPromptProcessed",
-    "LLMUserPromptIssued",
     "LLMRequestStarted",
     "LLMRequestSent",
     "GenerationStarted",
@@ -727,7 +629,6 @@ AgentEventName: TypeAlias = Literal[
     "MaxIterationsReached",
     "RepeatedFormatFailure",
     "PersistenceFailed",
-    "GenericTerminalFailure",
 ]
 
 

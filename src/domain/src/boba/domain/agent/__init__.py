@@ -8,9 +8,9 @@ middleware-цепочку (см. :mod:`boba.domain.agent.meat`).
     from boba.domain.agent import Agent, AgentConfig, AgentContext
     from boba.domain.agent import AgentEvent, AnswerComplete, ToolResultReady
 
-Имена событий ``LLMUserPromptIssued``, ``LLMRequestStarted``,
-``LLMRequestSent`` принадлежат agent-слою и отличаются от одноимённых
-событий из :mod:`boba.domain.llm.events` — не смешивать.
+Имена событий ``LLMRequestStarted``, ``LLMRequestSent`` принадлежат
+agent-слою и отличаются от одноимённых событий из
+:mod:`boba.domain.llm.events` — не смешивать.
 """
 
 from boba.domain.agent.errors import (
@@ -18,7 +18,6 @@ from boba.domain.agent.errors import (
     LLMToolCallFormatError,
     MaxIterationsExceededError,
     RepeatedFormatFailureError,
-    ToolFeedbackError,
 )
 from boba.domain.agent.events import (
     AgentEvent,
@@ -33,12 +32,10 @@ from boba.domain.agent.events import (
     GenerationFailed,
     GenerationRetried,
     GenerationStarted,
-    GenericTerminalFailure,
     IterationStarted,
     LifecycleMarker,
     LLMRequestSent,
     LLMRequestStarted,
-    LLMUserPromptIssued,
     MaxIterationsReached,
     PersistenceFailed,
     PromptFailed,
@@ -46,8 +43,6 @@ from boba.domain.agent.events import (
     RefusalToken,
     RepeatedFormatFailure,
     StreamingDelta,
-    SystemPromptProcessed,
-    SystemPromptProcessingStarted,
     TerminalFailure,
     ThinkingComplete,
     ThinkingStarted,
@@ -60,8 +55,6 @@ from boba.domain.agent.events import (
     ToolExecutionStarted,
     ToolResultReady,
     UserNotification,
-    UserPromptProcessed,
-    UserPromptProcessingStarted,
     UserQueryReceived,
 )
 from boba.domain.agent.meat import (
@@ -69,7 +62,7 @@ from boba.domain.agent.meat import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
     AssistantMessagePersistenceMiddleware,
-    HistoryMiddleware,
+    InitialUserQueryMiddleware,
     IterationCounterMiddleware,
     JsonContentToolCallMiddleware,
     JsonDepthScanner,
@@ -77,19 +70,14 @@ from boba.domain.agent.meat import (
     JsonToolCallHeader,
     LLMEventToAgentEventConverter,
     LLMInvokeMiddleware,
-    NewLLMRequestMiddleware,
     ParsedJsonToolCall,
     RepeatedFormatFailureGuardMiddleware,
     RepeatedToolCallGuardMiddleware,
-    SamplingMiddleware,
     StopOnAnyFailure,
     StopOnFinished,
     StrictJsonContentToolCallMiddleware,
     StrictJsonToolCallParser,
-    SystemPromptMiddleware,
     ToolExecutionMiddleware,
-    ToolsDefinitionMiddleware,
-    UserPromptMiddleware,
 )
 from boba.domain.agent.messages import (
     MessageService,
@@ -110,6 +98,21 @@ from boba.domain.agent.prompt import (
     PromptResult,
     PromptState,
 )
+from boba.domain.agent.turn.effects import (
+    LLMFeedbackEffect,
+    ToolResultEffect,
+    TurnEffect,
+    UserQueryEffect,
+)
+from boba.domain.agent.turn.reducers import (
+    HistoryReducer,
+    ModelReducer,
+    SamplingReducer,
+    SystemPromptReducer,
+    ToolsReducer,
+)
+from boba.domain.agent.turn.spec import TurnResolveContext, TurnSpec, TurnState
+from boba.domain.agent.turn.trigger import TurnTrigger
 
 __all__ = [
     "Agent",
@@ -131,8 +134,8 @@ __all__ = [
     "GenerationFailed",
     "GenerationRetried",
     "GenerationStarted",
-    "GenericTerminalFailure",
-    "HistoryMiddleware",
+    "HistoryReducer",
+    "InitialUserQueryMiddleware",
     "IterationCounterMiddleware",
     "IterationStarted",
     "JsonContentToolCallMiddleware",
@@ -140,12 +143,12 @@ __all__ = [
     "JsonHeaderParser",
     "JsonToolCallHeader",
     "LLMEventToAgentEventConverter",
+    "LLMFeedbackEffect",
     "LLMGenerationFailedError",
     "LLMInvokeMiddleware",
     "LLMRequestSent",
     "LLMRequestStarted",
     "LLMToolCallFormatError",
-    "LLMUserPromptIssued",
     "LifecycleMarker",
     "MaxIterationsExceededError",
     "MaxIterationsReached",
@@ -153,7 +156,7 @@ __all__ = [
     "MessageStoreError",
     "MessageStoreReadError",
     "MessageStoreWriteError",
-    "NewLLMRequestMiddleware",
+    "ModelReducer",
     "ParsedJsonToolCall",
     "PermanentPromptError",
     "PersistenceFailed",
@@ -173,15 +176,13 @@ __all__ = [
     "RepeatedFormatFailureError",
     "RepeatedFormatFailureGuardMiddleware",
     "RepeatedToolCallGuardMiddleware",
-    "SamplingMiddleware",
+    "SamplingReducer",
     "StopOnAnyFailure",
     "StopOnFinished",
     "StreamingDelta",
     "StrictJsonContentToolCallMiddleware",
     "StrictJsonToolCallParser",
-    "SystemPromptMiddleware",
-    "SystemPromptProcessed",
-    "SystemPromptProcessingStarted",
+    "SystemPromptReducer",
     "TerminalFailure",
     "ThinkingComplete",
     "ThinkingStarted",
@@ -193,12 +194,15 @@ __all__ = [
     "ToolExecutionFailed",
     "ToolExecutionMiddleware",
     "ToolExecutionStarted",
-    "ToolFeedbackError",
+    "ToolResultEffect",
     "ToolResultReady",
-    "ToolsDefinitionMiddleware",
+    "ToolsReducer",
+    "TurnEffect",
+    "TurnResolveContext",
+    "TurnSpec",
+    "TurnState",
+    "TurnTrigger",
     "UserNotification",
-    "UserPromptMiddleware",
-    "UserPromptProcessed",
-    "UserPromptProcessingStarted",
+    "UserQueryEffect",
     "UserQueryReceived",
 ]

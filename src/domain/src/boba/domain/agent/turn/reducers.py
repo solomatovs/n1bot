@@ -88,11 +88,11 @@ class SystemPromptReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnS
 
 
 class HistoryReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
-    """Копирует всю историю из :class:`MessageService` в state.
+    """Копирует весь диалог из :class:`MessageService` в state.
 
     Ставится ПОСЛЕ :meth:`TurnSpec.initial` (где effects уже
     применены к сервису). Если между initial и этим reducer'ом
-    никто не дописывает в svc — история полная и свежая.
+    никто не дописывает в svc — снапшот полный и свежий.
     """
 
     def __init__(self, priority: int = 30) -> None:
@@ -105,7 +105,7 @@ class HistoryReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]
         return self._priority
 
     def apply(self, ctx: TurnResolveContext, state: TurnState) -> TurnState:
-        state.history_messages = tuple(ctx.messages.message_iter())
+        state.messages = tuple(ctx.message_service.message_iter())
         return state
 
 

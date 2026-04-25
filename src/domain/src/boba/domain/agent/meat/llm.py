@@ -1,5 +1,12 @@
 """
-Граница между ответственностью Agent и LLMAgent
+Граница между ответственностью Agent и LLMAgent.
+
+:class:`LLMInvokeMiddleware` — терминал агентской цепочки. На каждую
+итерацию:
+
+1. консьюмит накопленный :class:`TurnTrigger` из ``ctx.triggers``;
+2. собирает :class:`LLMRequest` через :class:`TurnSpec`;
+3. стримит события LLM-слоя и конвертирует их в :class:`AgentEvent`.
 """
 
 from __future__ import annotations
@@ -23,8 +30,9 @@ from boba.domain.agent.events import (
 )
 from boba.domain.agent.events import LLMRequestSent as AgentLLMRequestSent
 from boba.domain.agent.events import LLMRequestStarted as AgentLLMRequestStarted
-from boba.domain.agent.events import LLMUserPromptIssued as AgentLLMUserPromptIssued
+from boba.domain.agent.messages import MessageService
 from boba.domain.agent.models import AgentContext
+from boba.domain.agent.turn.spec import TurnResolveContext, TurnSpec
 from boba.domain.core.patterns import Converter, StreamSource
 from boba.domain.llm.errors import LLMError
 from boba.domain.llm.events import (
@@ -41,9 +49,8 @@ from boba.domain.llm.events import (
     LLMThinkingToken,
     LLMToolCallArgumentDelta,
     LLMToolCallBegin,
-    LLMUserPromptIssued,
 )
-from boba.domain.llm.models import LLMContext, LLMRequestBuilder
+from boba.domain.llm.models import LLMContext
 
 
 class LLMEventToAgentEventConverter(Converter[LLMEvent, AgentEvent]):
@@ -53,11 +60,6 @@ class LLMEventToAgentEventConverter(Converter[LLMEvent, AgentEvent]):
 
     def convert(self, value: LLMEvent) -> AgentEvent:  # noqa: C901, PLR0911, PLR0912
         match value:
-            case LLMUserPromptIssued(request_id=rid, user_prompt=up):
-                return AgentLLMUserPromptIssued(
-                    request_id=rid,
-                    user_prompt=up,
-                )
             case LLMRequestStarted(
                 request_id=rid,
                 model=m,
@@ -130,26 +132,45 @@ class LLMEventToAgentEventConverter(Converter[LLMEvent, AgentEvent]):
 
 
 class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """
-    Вызывает LLMAgent для обработки LLMRequest
-    собранного Agent'ом по Middleware цепочке ранее
+    """Терминал агентской цепочки: consume trigger → build request → invoke LLM.
+
+    Единственная точка записи в :class:`MessageService`:
+    :meth:`TurnSpec.initial` применяет эффекты trigger'а к сервису
+    (user query, tool results, LLM feedback). Затем reducer'ы spec'а
+    собирают :class:`LLMRequest`, который уходит в LLM-слой.
+
+    :class:`LLMError` из LLM-слоя оборачивается в
+    :class:`LLMGenerationFailedError` (terminal + user-feedback) —
+    роутер остановит цикл и эмитит :class:`GenerationFailed`.
     """
 
     def __init__(
         self,
         llm_source: StreamSource[LLMContext, LLMEvent],
+        spec: TurnSpec,
+        message_service: MessageService,
     ) -> None:
         self._llm_source = llm_source
+        self._spec = spec
+        self._message_service = message_service
         self._to_agent = LLMEventToAgentEventConverter()
 
     def name(self) -> str:
         return "LLMInvoke"
 
     def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
+        trigger = ctx.triggers.consume()
+        request = self._spec.build(
+            TurnResolveContext(
+                agent=ctx,
+                trigger=trigger,
+                message_service=self._message_service,
+            )
+        )
         try:
             for event in self._llm_source.stream(
                 LLMContext(
-                    request=ctx.request.build(),
+                    request=request,
                     request_id=ctx.agent_request.request_id,
                 )
             ):
@@ -159,20 +180,3 @@ class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
                 str(e),
                 error_kind=type(e).__name__,
             ) from e
-
-
-class NewLLMRequestMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """"""
-
-    def __init__(self, inner: StreamSource[AgentContext, AgentEvent]) -> None:
-        self._inner = inner
-
-    def name(self) -> str:
-        return "IterationCounter"
-
-    def reset(self) -> None:
-        self._inner.reset()
-
-    def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
-        ctx.request = LLMRequestBuilder()
-        yield from self._inner.stream(ctx)

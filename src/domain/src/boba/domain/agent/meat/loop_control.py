@@ -15,7 +15,7 @@ from boba.domain.core.patterns import Specification, StreamSource
 
 class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
     """
-    Инкрементирует счётчик цикло
+    Инкрементирует счётчик циклов
     Выдает исключение если превышено кол-во циклов агента
     Для маленьких моделей, которые часто зацикливаются это необходимость
     """

@@ -35,27 +35,10 @@
     ],
     "configurations": [
         {
-            "name": "Test AgentLoop",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/tests/test_agent_loop.py",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/.vscode",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "args": [
-                "--model", "${input:model}",
-                "${input:query}"
-            ],
-            "envFile": "${workspaceFolder}/local/.env",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src"
-            }
-        },
-        {
             "name": "Test AgentLoop (boba)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/tests/boba/test_agent_loop_integration.py",
+            "program": "${workspaceFolder}/tests/test_agent_loop_integration.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/.vscode",
             "python": "${workspaceFolder}/.venv/bin/python",

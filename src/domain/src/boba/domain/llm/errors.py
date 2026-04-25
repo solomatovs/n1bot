@@ -18,7 +18,7 @@
         ├── LLMProtocolError               ответ вне схемы
         ├── LLMRequestValidationError      клиентская валидация запроса (без HTTP)
         |   ├── LLMRequestModelNoneError
-        |   ├── LLMRequestUserMessageNoneError
+        |   ├── LLMRequestEmptyMessagesError
         |   └── LLMRequestSystemMessageNoneError
     │   └── LLMUnknownError                нераспознанное исключение провайдера
 
@@ -122,7 +122,7 @@ class LLMRequestValidationError(PermanentLLMError):
     Клиентская валидация LLM-запроса упала
 
     Запрос не отправляется провайдеру — проверка запускается в
-    ``LLMRequestBuilder``. HTTP-статуса у такой ошибки нет.
+    :meth:`TurnSpec.finalize`. HTTP-статуса у такой ошибки нет.
     """
 
 
@@ -135,13 +135,13 @@ class LLMRequestModelNoneError(LLMRequestValidationError):
         super().__init__("LLMRequest.model is None")
 
 
-class LLMRequestUserMessageNoneError(LLMRequestValidationError):
+class LLMRequestEmptyMessagesError(LLMRequestValidationError):
     """
-    LLM-запрос собран без user_message
+    LLM-запрос собран с пустым списком сообщений
     """
 
     def __init__(self) -> None:
-        super().__init__("LLMRequest.user_message is None")
+        super().__init__("LLMRequest.messages is empty")
 
 
 class LLMRequestSystemMessageNoneError(LLMRequestValidationError):

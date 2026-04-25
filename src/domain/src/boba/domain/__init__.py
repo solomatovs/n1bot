@@ -16,10 +16,10 @@
 
 Коллизии имён:
 
-- ``LLMUserPromptIssued``, ``LLMRequestStarted``, ``LLMRequestSent``
-  есть и в :mod:`boba.domain.llm`, и в :mod:`boba.domain.agent` —
-  это разные события, их нельзя смешивать на плоском уровне
-  ``boba.domain``; используйте подпакеты.
+- ``LLMRequestStarted``, ``LLMRequestSent`` есть и в
+  :mod:`boba.domain.llm`, и в :mod:`boba.domain.agent` — это разные
+  события, их нельзя смешивать на плоском уровне ``boba.domain``;
+  используйте подпакеты.
 """
 
 from boba.domain.config import AppConfig, LLMConfig, WorkspaceLayout

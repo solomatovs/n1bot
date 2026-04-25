@@ -20,8 +20,6 @@ agent-уровню (:class:`~boba.domain.agent.events.AgentEvent`), но не
     │   request_id: RequestId
     │   + classmethod name() -> Literal["..."]
     │
-    ├── LLMUserPromptIssued                 user_prompt (snapshot перед отправкой)
-    │
     ├── LLMLifecycleMarker (abstract)       границы фазы
     │   ├── LLMRequestStarted                 model, messages_count, has_tools, ts
     │   ├── LLMRequestSent                    monotonic_ns (парный — даёт длительность)
@@ -99,23 +97,6 @@ class LLMLifecycleMarker(BaseLLMEvent, ABC):
 @dataclass(frozen=True)
 class LLMStreamingDelta(BaseLLMEvent, ABC):
     """Инкрементальный кусок контента между ``*Started`` и ``*Done``."""
-
-
-@dataclass(frozen=True)
-class LLMUserPromptIssued(BaseLLMEvent):
-    """
-    Snapshot user-prompt'а, который вот-вот уйдёт в LLM.
-
-    Эмитится прямо перед :class:`LLMRequestStarted`. Содержит сам
-    текст user-сообщения — для observability/audit-sink'ов, которые
-    должны зафиксировать, что именно отправлено провайдеру.
-    """
-
-    user_prompt: str
-
-    @classmethod
-    def name(cls) -> Literal["LLMUserPromptIssued"]:
-        return "LLMUserPromptIssued"
 
 
 @dataclass(frozen=True)
@@ -273,8 +254,7 @@ class LLMGenerationDone(LLMLifecycleMarker):
 
 
 LLMEvent = (
-    LLMUserPromptIssued
-    | LLMRequestStarted
+    LLMRequestStarted
     | LLMRequestSent
     | LLMGenerationStarted
     | LLMThinkingStarted
@@ -290,7 +270,6 @@ LLMEvent = (
 
 
 LLMEventName: TypeAlias = Literal[
-    "LLMUserPromptIssued",
     "LLMRequestStarted",
     "LLMRequestSent",
     "LLMGenerationStarted",

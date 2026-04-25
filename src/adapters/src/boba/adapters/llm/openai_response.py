@@ -297,7 +297,7 @@ class FromOpenAIChunkConverter(
     def __init__(
         self,
         request_id: RequestId,
-        preprocessor: StreamTransformer[LLMContext, Choice, Choice],
+        # preprocessor: StreamTransformer[LLMContext, Choice, Choice],
     ) -> None:
         # тут строгая последовательность вызова!
         self._pipeline = StreamTransformerPipeline[LLMContext, Choice, LLMEvent](
@@ -310,18 +310,18 @@ class FromOpenAIChunkConverter(
                 FinishSource(request_id),
             ]
         )
-        self._preprocessor = preprocessor
+        # self._preprocessor = preprocessor
 
     def name(self) -> str:
         return f"FromOpenAIChunkConverter({self._pipeline.name()})"
 
     def reset(self) -> None:
         self._pipeline.reset()
-        self._preprocessor.reset()
+        # self._preprocessor.reset()
 
     def stream(
         self, ctx: LLMContext, stream: Iterable[ChatCompletionChunk]
     ) -> Iterable[LLMEvent]:
         for chunk in stream:
-            choices = self._preprocessor.stream(ctx, chunk.choices)
-            yield from self._pipeline.stream(ctx, list(choices))
+            # choices = self._preprocessor.stream(ctx, chunk.choices)
+            yield from self._pipeline.stream(ctx, chunk.choices)

@@ -30,7 +30,6 @@ from boba.domain.agent.events import (
     MaxIterationsReached,
     RepeatedFormatFailure,
     ToolCallFormatFailed,
-    ToolExecutionFailed,
 )
 from boba.domain.core.errors import (
     LLMFeedbackError,
@@ -40,9 +39,7 @@ from boba.domain.core.errors import (
 from boba.domain.llm.models import LLMMessage, RequestId
 
 
-class MaxIterationsExceededError(
-    UserFeedbackError[RequestId, AgentEvent], TerminalError
-):
+class MaxIterationsExceededError(TerminalError[RequestId, AgentEvent]):
     """Цикл агента исчерпал лимит итераций без финального ответа.
 
     Поднимается :class:`~boba.domain.agent.meat.loop_control.\
@@ -54,7 +51,7 @@ IterationCounterMiddleware`.
         self.limit = limit
         self.iteration = iteration
 
-    def to_user_feedback(self, request_id: RequestId) -> AgentEvent:
+    def to_user_feedback(self, request_id: RequestId) -> MaxIterationsReached:
         return MaxIterationsReached(
             request_id=request_id,
             error_kind=type(self).__name__,
@@ -64,9 +61,7 @@ IterationCounterMiddleware`.
         )
 
 
-class RepeatedFormatFailureError(
-    UserFeedbackError[RequestId, AgentEvent], TerminalError
-):
+class RepeatedFormatFailureError(TerminalError[RequestId, AgentEvent]):
     """Модель N раз подряд вывела неверный формат tool call.
 
     Поднимается :class:`~boba.domain.agent.meat.tools.\
@@ -81,7 +76,7 @@ RepeatedFormatFailureGuardMiddleware` после накопления ``limit``
         self.count = count
         self.limit = limit
 
-    def to_user_feedback(self, request_id: RequestId) -> AgentEvent:
+    def to_user_feedback(self, request_id: RequestId) -> RepeatedFormatFailure:
         return RepeatedFormatFailure(
             request_id=request_id,
             error_kind=type(self).__name__,
@@ -91,58 +86,7 @@ RepeatedFormatFailureGuardMiddleware` после накопления ``limit``
         )
 
 
-class ToolFeedbackError(
-    UserFeedbackError[RequestId, AgentEvent], LLMFeedbackError[LLMMessage]
-):
-    """Tool упал: sink видит событие, LLM видит фидбек в истории.
-
-    Роутер:
-
-    1. Пишет ``LLMMessage(role="tool", tool_call_id=<id>,
-       content=<message>)`` в :class:`MessageService` — LLM на
-       следующей итерации увидит объяснение ошибки и должна
-       скорректировать поведение.
-    2. Эмитит :class:`~boba.domain.agent.events.ToolExecutionFailed`
-       в поток событий.
-
-    Поднимается :class:`~boba.domain.agent.meat.tools.\
-ToolExecutionMiddleware` — обогащает сырую
-    :class:`~boba.domain.core.tools.ToolExecutionError` идентификатором
-    tool call'а.
-    """
-
-    def __init__(
-        self,
-        *,
-        tool_call_id: str,
-        tool_name: str,
-        error_kind: str,
-        message: str,
-    ) -> None:
-        super().__init__(message)
-        self.tool_call_id = tool_call_id
-        self.tool_name = tool_name
-        self.error_kind = error_kind
-        self.message = message
-
-    def to_user_feedback(self, request_id: RequestId) -> AgentEvent:
-        return ToolExecutionFailed(
-            request_id=request_id,
-            tool_call_id=self.tool_call_id,
-            tool_name=self.tool_name,
-            error_kind=self.error_kind,
-            message=self.message,
-        )
-
-    def to_llm_feedback(self) -> LLMMessage:
-        return LLMMessage(
-            role="tool",
-            content=self.message,
-            tool_call_id=self.tool_call_id,
-        )
-
-
-class LLMGenerationFailedError(UserFeedbackError[RequestId, AgentEvent], TerminalError):
+class LLMGenerationFailedError(TerminalError[RequestId, AgentEvent]):
     """Мост: исключение LLM-слоя, дошедшее до границы агента.
 
     :mod:`boba.domain.llm.errors` — изолированная иерархия, её типы
@@ -167,7 +111,7 @@ class LLMGenerationFailedError(UserFeedbackError[RequestId, AgentEvent], Termina
         self.error_kind = error_kind
 
 
-    def to_user_feedback(self, request_id: RequestId) -> AgentEvent:
+    def to_user_feedback(self, request_id: RequestId) -> GenerationFailed:
         return GenerationFailed(
             request_id=request_id,
             error_kind=self.error_kind,
