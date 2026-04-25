@@ -26,6 +26,7 @@ from boba.domain.agent.turn.effects import LLMFeedbackEffect, ToolResultEffect
 from boba.domain.core.patterns import StreamSource
 from boba.domain.core.tools import (
     ToolCall,
+    ToolContext,
     ToolExecutionError,
     ToolId,
     ToolsService,
@@ -47,9 +48,11 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
         self,
         inner: StreamSource[AgentContext, AgentEvent],
         tools_service: ToolsService,
+        tool_ctx: ToolContext,
     ) -> None:
         self._inner = inner
         self._tools_service = tools_service
+        self._tool_ctx = tool_ctx
 
     def name(self) -> str:
         return "ToolExecution"
@@ -100,7 +103,7 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
 
         try:
             result = self._tools_service.execute(
-                None,
+                self._tool_ctx,
                 ToolCall(tool_id=ToolId(tc.tool_name), arguments=arguments),
             )
         except ToolExecutionError as e:

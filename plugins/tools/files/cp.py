@@ -18,6 +18,7 @@ from boba.domain.core.tools import (
     Pass,
     Required,
     Tool,
+    ToolContext,
     ToolDefinition,
     ToolExecutionError,
     ToolId,
@@ -27,7 +28,6 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
-    ProjectWorkspaceShell,
     WorkspaceError,
     WorkspaceNotFoundError,
 )
@@ -55,9 +55,6 @@ class CpTool(Tool[CpArgs]):
 
     _ID = ToolId("cp")
     _SOURCE = ToolSourceId("builtin.files")
-
-    def __init__(self, workspace: ProjectWorkspaceShell) -> None:
-        self._workspace = workspace
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -102,9 +99,9 @@ class CpTool(Tool[CpArgs]):
             ),
         )
 
-    def execute(self, ctx: None, args: CpArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, args: CpArgs) -> ToolResult:
         try:
-            self._workspace.copy(args.src, args.dst, recursive=args.recursive)
+            ctx.project_workspace.copy(args.src, args.dst, recursive=args.recursive)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
@@ -121,5 +118,5 @@ def register(ctx: PluginContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.cp"),
         priority=0,
-        tools=[CpTool(ctx.project_workspace)],
+        tools=[CpTool()],
     )

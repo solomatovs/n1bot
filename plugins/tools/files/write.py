@@ -17,6 +17,7 @@ from boba.domain.core.tools import (
     Pass,
     Required,
     Tool,
+    ToolContext,
     ToolDefinition,
     ToolExecutionError,
     ToolId,
@@ -26,7 +27,6 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
-    ProjectWorkspaceShell,
     WorkspaceError,
 )
 from boba.infra.plugins import PluginContext
@@ -53,9 +53,6 @@ class WriteTool(Tool[WriteArgs]):
 
     _ID = ToolId("write")
     _SOURCE = ToolSourceId("builtin.files")
-
-    def __init__(self, workspace: ProjectWorkspaceShell) -> None:
-        self._workspace = workspace
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -103,10 +100,10 @@ class WriteTool(Tool[WriteArgs]):
             ),
         )
 
-    def execute(self, ctx: None, args: WriteArgs) -> ToolResult:
-        existed = self._workspace.exists(args.path)
+    def execute(self, ctx: ToolContext, args: WriteArgs) -> ToolResult:
+        existed = ctx.project_workspace.exists(args.path)
         try:
-            with self._workspace.write_text(args.path, args.encoding) as f:
+            with ctx.project_workspace.write_text(args.path, args.encoding) as f:
                 f.write(args.content)
         except WorkspaceError as e:
             raise ToolExecutionError(
@@ -122,5 +119,5 @@ def register(ctx: PluginContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.write"),
         priority=0,
-        tools=[WriteTool(ctx.project_workspace)],
+        tools=[WriteTool()],
     )

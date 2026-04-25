@@ -20,7 +20,7 @@ from boba.domain.core.tools.schema import (
     ToolId,
     ToolSourceId,
 )
-from boba.domain.core.tools.tool import Tool, ToolCall, ToolResult
+from boba.domain.core.tools.tool import Tool, ToolCall, ToolContext, ToolResult
 
 
 class ToolStore:
@@ -92,11 +92,14 @@ class ToolFactory(
         return ToolCatalog(state.tools())
 
 
-class ToolsService(Executor[None, ToolCall, ToolResult]):
+class ToolsService(Executor[ToolContext, ToolCall, ToolResult]):
     """Диспетчер tool-вызовов над :class:`ToolCatalog`.
 
     Маршрутизация встроена по ``call.tool_id``: ищет :class:`Tool` в
-    ToolCatalog и вызывает ``tool.execute``.
+    ToolCatalog и вызывает ``tool.execute(ctx, args)``. ``ctx`` —
+    per-request :class:`ToolContext`, строится middleware'ом
+    (:class:`~boba.domain.agent.meat.tools.ToolExecutionMiddleware`)
+    из per-session ``project_workspace``.
 
     Ошибка :class:`ToolExecutionError`:
     - неизвестный tool;
@@ -123,7 +126,7 @@ class ToolsService(Executor[None, ToolCall, ToolResult]):
         """Описания всех собранных инструментов — для передачи потребителю."""
         return self._catalog.definitions()
 
-    def execute(self, ctx: None, call: ToolCall) -> ToolResult:
+    def execute(self, ctx: ToolContext, call: ToolCall) -> ToolResult:
         tool = self._catalog.get(call.tool_id)
         if tool is None:
             raise self._unknown_tool(call.tool_id)

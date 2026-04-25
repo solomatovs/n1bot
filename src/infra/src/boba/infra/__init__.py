@@ -35,7 +35,6 @@ from boba.infra.container import (
     create_agent,
     create_agent_source,
     create_llm_source,
-    create_tools_service,
 )
 from boba.infra.logging import configure_logging, log_context
 from boba.infra.plugins import (
@@ -86,7 +85,6 @@ __all__ = [
     "create_agent",
     "create_agent_source",
     "create_llm_source",
-    "create_tools_service",
     "default_config_factory",
     "default_resolver",
     "load_toml",

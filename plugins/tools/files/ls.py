@@ -19,6 +19,7 @@ from boba.domain.core.tools import (
     Pass,
     Required,
     Tool,
+    ToolContext,
     ToolDefinition,
     ToolExecutionError,
     ToolId,
@@ -28,7 +29,6 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
-    ProjectWorkspaceShell,
     WorkspaceError,
 )
 from boba.infra.plugins import PluginContext
@@ -59,9 +59,6 @@ class LsTool(Tool[LsArgs]):
 
     _ID = ToolId("ls")
     _SOURCE = ToolSourceId("builtin.files")
-
-    def __init__(self, workspace: ProjectWorkspaceShell) -> None:
-        self._workspace = workspace
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -107,9 +104,9 @@ class LsTool(Tool[LsArgs]):
             ),
         )
 
-    def execute(self, ctx: None, args: LsArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, args: LsArgs) -> ToolResult:
         try:
-            iterator = self._workspace.ls(args.path)
+            iterator = ctx.project_workspace.ls(args.path)
             items = list(islice(iterator, args.limit + 1))
         except WorkspaceError as e:
             raise ToolExecutionError(
@@ -136,5 +133,5 @@ def register(ctx: PluginContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.ls"),
         priority=0,
-        tools=[LsTool(ctx.project_workspace)],
+        tools=[LsTool()],
     )

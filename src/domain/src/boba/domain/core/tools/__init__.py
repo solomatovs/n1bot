@@ -28,7 +28,7 @@ from boba.domain.core.tools.schema import (
     ToolInputSchema,
     ToolSourceId,
 )
-from boba.domain.core.tools.tool import Tool, ToolCall, ToolResult
+from boba.domain.core.tools.tool import Tool, ToolCall, ToolContext, ToolResult
 from boba.domain.core.tools.validators import (
     MISSING,
     ChainValidator,
@@ -82,6 +82,7 @@ __all__ = [
     "Tool",
     "ToolCall",
     "ToolCatalog",
+    "ToolContext",
     "ToolDefinition",
     "ToolExecutionError",
     "ToolFactory",

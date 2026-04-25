@@ -13,8 +13,28 @@ from boba.domain.core.tools.schema import (
     ToolSourceId,
 )
 from boba.domain.core.tools.validators import SchemaArgsValidator
+from boba.domain.core.workspace import ProjectWorkspaceShell
 
 TArgs = TypeVar("TArgs")
+
+
+@dataclass(frozen=True)
+class ToolContext:
+    """Per-request контекст исполнения tool'а.
+
+    Tool-классы — application-singletons (создаются один раз при
+    регистрации плагина и кэшируются в :class:`ToolsService`). Всё, что
+    зависит от конкретной user-сессии — проходит через ``ToolContext``,
+    который middleware строит на каждый запрос и пробрасывает в
+    :meth:`Tool.execute`.
+
+    Сейчас контракт минимальный — только ``project_workspace``. Если
+    появится tool, которому нужны другие per-request зависимости (LLM-
+    клиент, секреты, agent-config), они добавятся сюда; контракт
+    расширяется по мере появления реальных потребителей.
+    """
+
+    project_workspace: ProjectWorkspaceShell
 
 
 @dataclass(frozen=True)
@@ -44,7 +64,7 @@ class ToolResult:
 
 
 class Tool(
-    Executor[None, TArgs, ToolResult],
+    Executor[ToolContext, TArgs, ToolResult],
     Definition[ToolDefinition],
     Generic[TArgs],
 ):
@@ -55,6 +75,12 @@ class Tool(
     :meth:`typed_args_converter` (маппинг провалидированного dict в
     типизированный TArgs). Перекрывать :meth:`args_converter` нельзя —
     валидация по схеме обязательна для всех tool'ов.
+
+    ``execute(ctx: ToolContext, args: TArgs)`` принимает per-request
+    контекст с ``project_workspace`` и любым DI, зависящим от сессии.
+    Сами Tool-инстансы — application-singletons: создаются один раз при
+    регистрации плагина и переиспользуются между запросами; никакого
+    per-session состояния в ``self`` хранить нельзя.
     """
 
     @abstractmethod

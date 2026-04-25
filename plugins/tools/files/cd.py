@@ -16,6 +16,7 @@ from boba.domain.core.tools import (
     Pass,
     Required,
     Tool,
+    ToolContext,
     ToolDefinition,
     ToolExecutionError,
     ToolId,
@@ -25,7 +26,6 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
-    ProjectWorkspaceShell,
     WorkspaceError,
     WorkspaceNotFoundError,
 )
@@ -47,9 +47,6 @@ class CdTool(Tool[CdArgs]):
 
     _ID = ToolId("cd")
     _SOURCE = ToolSourceId("builtin.files")
-
-    def __init__(self, workspace: ProjectWorkspaceShell) -> None:
-        self._workspace = workspace
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -79,9 +76,9 @@ class CdTool(Tool[CdArgs]):
             ),
         )
 
-    def execute(self, ctx: None, args: CdArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, args: CdArgs) -> ToolResult:
         try:
-            self._workspace.cd(args.path)
+            ctx.project_workspace.cd(args.path)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
@@ -92,11 +89,11 @@ class CdTool(Tool[CdArgs]):
                 tool_id=self._ID,
                 message=f"Ошибка cd: {e}",
             ) from e
-        return ToolResult(content=f"Текущая директория: {self._workspace.cwd}")
+        return ToolResult(content=f"Текущая директория: {ctx.project_workspace.cwd}")
 
 def register(ctx: PluginContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.cd"),
         priority=0,
-        tools=[CdTool(ctx.project_workspace)],
+        tools=[CdTool()],
     )

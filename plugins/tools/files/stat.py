@@ -16,6 +16,7 @@ from boba.domain.core.tools import (
     Pass,
     Required,
     Tool,
+    ToolContext,
     ToolDefinition,
     ToolExecutionError,
     ToolId,
@@ -25,7 +26,6 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
-    ProjectWorkspaceShell,
     WorkspaceError,
     WorkspaceNotFoundError,
 )
@@ -47,9 +47,6 @@ class StatTool(Tool[StatArgs]):
 
     _ID = ToolId("stat")
     _SOURCE = ToolSourceId("builtin.files")
-
-    def __init__(self, workspace: ProjectWorkspaceShell) -> None:
-        self._workspace = workspace
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -85,9 +82,9 @@ class StatTool(Tool[StatArgs]):
             ),
         )
 
-    def execute(self, ctx: None, args: StatArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, args: StatArgs) -> ToolResult:
         try:
-            meta = self._workspace.meta(args.path)
+            meta = ctx.project_workspace.meta(args.path)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
@@ -111,5 +108,5 @@ def register(ctx: PluginContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.stat"),
         priority=0,
-        tools=[StatTool(ctx.project_workspace)],
+        tools=[StatTool()],
     )
