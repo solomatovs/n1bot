@@ -1,9 +1,9 @@
 """Инфраструктурный слой: загрузка конфигурации, сборка DI-контейнера,
-harness для интеграционных прогонов и настройка логирования.
+plugin-loader и настройка логирования.
 
 Короткие импорты::
 
-    from boba.infra import AgentHarness, AgentComponents
+    from boba.infra import AgentComponents, PluginContext, PluginLoader
     from boba.infra import create_agent, create_agent_source, create_llm_source
     from boba.infra import ConfigLoader, ConfigBundle, configure_logging
 """
@@ -33,19 +33,23 @@ from boba.infra.container import (
     AgentComponents,
     create_agent,
     create_agent_source,
-    create_empty_tools_service,
     create_llm_source,
+    create_tools_service,
     default_static_prompt_providers,
 )
-from boba.infra.harness import AgentHarness, CapturingSink
 from boba.infra.logging import configure_logging, log_context
+from boba.infra.plugins import (
+    PluginContext,
+    PluginError,
+    PluginLoader,
+    PluginLoadError,
+    PluginRegisterError,
+)
 
 __all__ = [
     "AgentComponents",
-    "AgentHarness",
     "AgentSection",
     "AppCoreSection",
-    "CapturingSink",
     "ConfigBundle",
     "ConfigFactory",
     "ConfigLoader",
@@ -56,6 +60,11 @@ __all__ = [
     "EnvSource",
     "LLMSamplingSection",
     "LLMTransportSection",
+    "PluginContext",
+    "PluginError",
+    "PluginLoadError",
+    "PluginLoader",
+    "PluginRegisterError",
     "SamplingLoader",
     "TomlFileSource",
     "TomlSource",
@@ -63,8 +72,8 @@ __all__ = [
     "configure_logging",
     "create_agent",
     "create_agent_source",
-    "create_empty_tools_service",
     "create_llm_source",
+    "create_tools_service",
     "default_config_factory",
     "default_resolver",
     "default_static_prompt_providers",

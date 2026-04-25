@@ -1,21 +1,28 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import pytest
 
+from boba.adapters.fs_workspace import (
+    FsPluginWorkspaceRegistry,
+    FsProjectWorkspaceRegistry,
+)
 from boba.adapters.in_memory_messages import InMemoryMessageService
 from boba.domain.agent.meat.agent import Agent
 from boba.domain.agent.models import AgentRequest
+from boba.domain.core.workspace import PluginWorkspaceId, WorkspaceId
 from boba.domain.llm.models import RequestId
 from boba.infra.config import ConfigLoader, SamplingLoader
 from boba.infra.container import (
     AgentComponents,
     create_agent,
-    create_empty_tools_service,
+    create_tools_service,
     default_static_prompt_providers,
 )
 from boba.infra.logging import configure_logging
+from boba.infra.plugins import PluginContext, PluginLoader
 
 pytestmark = pytest.mark.integration
 
@@ -28,6 +35,24 @@ def _run(query: str, model: str) -> None:
     sampling = SamplingLoader().load()
     configure_logging(app_config.log_level, app_config.log_file)
 
+    plugin_workspace = FsPluginWorkspaceRegistry(
+        root=Path(app_config.plugins_dir),
+    ).get_or_create(PluginWorkspaceId("plugins"))
+    plugin_loader = PluginLoader(plugin_workspace)
+
+    project_workspace = FsProjectWorkspaceRegistry(
+        base_dir=Path(app_config.workspaces.base_dir),
+        subdir=app_config.workspaces.user_subdir,
+    ).get_or_create(WorkspaceId.new())
+
+    plugin_ctx = PluginContext(
+        project_workspace=project_workspace,
+        plugin_workspace=plugin_workspace,
+        app_config=app_config,
+        agent_config=agent_config,
+        sampling=sampling,
+    )
+
     agent: Agent = create_agent(
         llm_config=app_config.llm,
         components=AgentComponents(
@@ -37,7 +62,7 @@ def _run(query: str, model: str) -> None:
                 "Ты асистент Boba. Отвечай строго по контексту"
             ),
             message_service=InMemoryMessageService(),
-            tools_service=create_empty_tools_service(),
+            tools_service=create_tools_service(plugin_loader, plugin_ctx),
         ),
     )
 

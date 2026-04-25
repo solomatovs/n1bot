@@ -16,13 +16,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from boba.adapters.fs_workspace import FsProjectWorkspaceRegistry
+from boba.adapters.fs_workspace import (
+    FsPluginWorkspaceRegistry,
+    FsProjectWorkspaceRegistry,
+)
 from boba.adapters.in_memory_messages import InMemoryMessageService
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.meat.agent import Agent
 from boba.domain.agent.models import AgentContext, AgentRequest
 from boba.domain.core.patterns import StreamSink, StreamSinkPipeline
 from boba.domain.core.workspace import (
+    PluginWorkspaceId,
     ProjectWorkspaceShell,
     WorkspaceId,
 )
@@ -31,11 +35,12 @@ from boba.infra.config import ConfigLoader, SamplingLoader
 from boba.infra.container import (
     AgentComponents,
     create_agent_source,
-    create_empty_tools_service,
     create_llm_source,
+    create_tools_service,
     default_static_prompt_providers,
 )
 from boba.infra.logging import configure_logging, log_context
+from boba.infra.plugins import PluginContext, PluginLoader
 
 
 class ChatSession:
@@ -59,6 +64,13 @@ class ChatSession:
             base_dir=Path(self._app_config.workspaces.base_dir),
             subdir=self._app_config.workspaces.user_subdir,
         )
+        # Plugin workspace — application-singleton: создаётся один раз
+        # при старте процесса. PluginLoader делает discovery в его
+        # конструкторе (читает все .py через PluginWorkspaceShell).
+        self._plugin_workspace = FsPluginWorkspaceRegistry(
+            root=Path(self._app_config.plugins_dir),
+        ).get_or_create(PluginWorkspaceId("plugins"))
+        self._plugin_loader = PluginLoader(self._plugin_workspace)
 
     def project_workspace(self, workspace_id: WorkspaceId) -> ProjectWorkspaceShell:
         """Project-workspace пользователя: тот же, куда смотрят file-tools агента.
@@ -94,8 +106,18 @@ class ChatSession:
         # workspace подтягивается/создаётся, чтобы последующий upload в
         # тот же workspace_id работал; сам agent про него ничего не
         # знает — AgentRequest в boba workspace_id не хранит.
-        self._workspaces.get_or_create(workspace_id)
+        project_workspace = self._workspaces.get_or_create(workspace_id)
         request_id = RequestId.new()
+
+        # PluginContext свежий на каждый запрос — в нём per-request
+        # project_workspace, остальное — application-singletons.
+        plugin_ctx = PluginContext(
+            project_workspace=project_workspace,
+            plugin_workspace=self._plugin_workspace,
+            app_config=self._app_config,
+            agent_config=self._agent_config,
+            sampling=self._sampling,
+        )
 
         llm_source = create_llm_source(self._app_config.llm)
         source = create_agent_source(
@@ -107,7 +129,7 @@ class ChatSession:
                     system_prompt=self._DEFAULT_SYSTEM_PROMPT,
                 ),
                 message_service=InMemoryMessageService(),
-                tools_service=create_empty_tools_service(),
+                tools_service=create_tools_service(self._plugin_loader, plugin_ctx),
             ),
         )
         sink = StreamSinkPipeline([extra_sink])
