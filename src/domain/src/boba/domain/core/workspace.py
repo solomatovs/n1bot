@@ -5,12 +5,21 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from io import BufferedIOBase, TextIOBase
+from typing import Generic, TypeVar
 
-from boba.domain.core.patterns import Specification, UuId
+from boba.domain.core.patterns import Id, Specification, UuId
+
+TWsId = TypeVar("TWsId", bound=Id)
 
 
 class WorkspaceId(UuId):
-    """Идентификатор workspace'а — value object."""
+    """Идентификатор user-сессии — value object.
+
+    Шарится между namespace'ами одной сессии (project/history/scratch):
+    один и тот же `WorkspaceId` адресует три параллельных хранилища
+    через разные `WorkspaceRegistry`. Plugin-namespace использует
+    отдельный Id-тип (см. подклассы :class:`Id` в plugin-инфраструктуре).
+    """
 
 
 @dataclass(frozen=True)
@@ -89,7 +98,7 @@ class WorkspaceDecodingError(WorkspaceError):
         self.position = cause.start
 
 
-class WorkspaceShell(ABC):
+class WorkspaceShell(ABC, Generic[TWsId]):
     """Shell-сессия над изолированным workspace'ом.
 
     Hold'ит состояние сессии (``cwd``) и предоставляет shell-подобный API
@@ -105,12 +114,15 @@ class WorkspaceShell(ABC):
     конкурентный доступ, которое требует единого владельца ресурса.
     Дискриминация «какой workspace» делается в DI через маркерные
     подклассы (:class:`ProjectWorkspaceShell` и т.п.), а не runtime-
-    полем.
+    полем. Тип идентификатора фиксируется generic-параметром ``TWsId``
+    в маркерном подклассе: user-namespace'ы (project/history/scratch)
+    используют :class:`WorkspaceId` (UUID), plugin-namespace —
+    собственный строковый Id.
     """
 
     @property
     @abstractmethod
-    def workspace_id(self) -> WorkspaceId: ...
+    def workspace_id(self) -> TWsId: ...
 
     @property
     @abstractmethod
@@ -394,23 +406,25 @@ class WorkspaceShell(ABC):
         ...
 
 
-class WorkspaceRegistry(ABC):
+class WorkspaceRegistry(ABC, Generic[TWsId]):
     """Реестр workspace'ов одного namespace.
 
     Реестр фиксирует ровно один namespace: реализация знает свою
     директорию, а ключ в DI — маркерный подкласс (например,
     :class:`ProjectWorkspaceRegistry`). Разделять namespace'ы через параметр
     метода намеренно не стали — иначе пришлось бы тянуть дискриминатор
-    в сигнатуры tools и сервисов.
+    в сигнатуры tools и сервисов. Тип идентификатора (``TWsId``)
+    фиксируется маркерным подклассом и должен совпадать с типом,
+    параметризующим соответствующий :class:`WorkspaceShell`.
     """
 
     @abstractmethod
-    def create(self) -> WorkspaceShell:
-        """Создать новый workspace с автосгенерированным ``WorkspaceId``."""
+    def create(self) -> WorkspaceShell[TWsId]:
+        """Создать новый workspace с автосгенерированным id."""
         ...
 
     @abstractmethod
-    def get(self, workspace_id: WorkspaceId) -> WorkspaceShell:
+    def get(self, workspace_id: TWsId) -> WorkspaceShell[TWsId]:
         """Получить существующий workspace.
 
         Raises:
@@ -419,40 +433,40 @@ class WorkspaceRegistry(ABC):
         ...
 
     @abstractmethod
-    def get_or_create(self, workspace_id: WorkspaceId) -> WorkspaceShell:
+    def get_or_create(self, workspace_id: TWsId) -> WorkspaceShell[TWsId]:
         """Вернуть существующий workspace или создать новый по заданному id.
 
-        Используется для разделения одного :class:`WorkspaceId` между
-        несколькими реестрами разных namespace'ов — каждый создаёт
-        свой namespace под тем же id при первом обращении.
+        Используется для разделения одного id между несколькими реестрами
+        разных namespace'ов — каждый создаёт свой namespace под тем же id
+        при первом обращении.
         """
         ...
 
     @abstractmethod
-    def delete(self, workspace_id: WorkspaceId) -> None:
+    def delete(self, workspace_id: TWsId) -> None:
         """Удалить workspace и все его данные."""
         ...
 
 
-class ProjectWorkspaceShell(WorkspaceShell):
+class ProjectWorkspaceShell(WorkspaceShell[WorkspaceId]):
     """DI-маркер: workspace проекта — код/документы пользователя, доступен tools."""
 
 
-class HistoryWorkspaceShell(WorkspaceShell):
+class HistoryWorkspaceShell(WorkspaceShell[WorkspaceId]):
     """DI-маркер: системный workspace — history, debug-артефакты."""
 
 
-class ScratchWorkspaceShell(WorkspaceShell):
+class ScratchWorkspaceShell(WorkspaceShell[WorkspaceId]):
     """DI-маркер: эфемерный workspace, чистится на выходе из request scope."""
 
 
-class ProjectWorkspaceRegistry(WorkspaceRegistry):
+class ProjectWorkspaceRegistry(WorkspaceRegistry[WorkspaceId]):
     """DI-маркер реестра :class:`ProjectWorkspaceShell`."""
 
 
-class HistoryWorkspaceRegistry(WorkspaceRegistry):
+class HistoryWorkspaceRegistry(WorkspaceRegistry[WorkspaceId]):
     """DI-маркер реестра :class:`HistoryWorkspaceShell`."""
 
 
-class ScratchWorkspaceRegistry(WorkspaceRegistry):
+class ScratchWorkspaceRegistry(WorkspaceRegistry[WorkspaceId]):
     """DI-маркер реестра :class:`ScratchWorkspaceShell`."""
