@@ -24,8 +24,8 @@ from boba.domain.core.workspace import (
     ExtensionWorkspaceId,
     WorkspaceId,
 )
-from boba.domain.llm.models import RequestId
-from boba.infra.config import ConfigLoader, SamplingLoader
+from boba.domain.llm.models import RequestId, SamplingParams
+from boba.infra.config import ConfigLoader
 from boba.infra.container import (
     AgentComponents,
     build_prompt_providers,
@@ -37,12 +37,11 @@ from boba.infra.logging import configure_logging
 pytestmark = pytest.mark.integration
 
 
-def _run(query: str, model: str) -> None:
+def _run(query: str, model: str, sampling: SamplingParams | None) -> None:
     """Собирает агент с полным стеком middleware и прогоняет один запрос."""
     loader = ConfigLoader()
     app_config = loader.load_app()
     agent_config = loader.load_agent()
-    sampling = SamplingLoader().load()
     configure_logging(app_config.log_level, app_config.log_file)
 
     workspace_id = WorkspaceId.from_wire("00000000-0000-0000-0000-000000000001")
@@ -57,7 +56,6 @@ def _run(query: str, model: str) -> None:
             extension_workspace=extension_workspace,
             app_config=app_config,
             agent_config=agent_config,
-            sampling=sampling,
         ),
     )
 
@@ -75,7 +73,6 @@ def _run(query: str, model: str) -> None:
         llm_config=app_config.llm,
         components=AgentComponents(
             agent_config=agent_config,
-            sampling=sampling,
             prompt_providers=build_prompt_providers(extension_loader),
             message_service=InMemoryMessageService(),
             tools_service=extension_loader.tools_service(),
@@ -93,13 +90,46 @@ def _run(query: str, model: str) -> None:
     request = AgentRequest(
         model=model,
         request_id=RequestId.new(),
+        sampling=sampling,
     )
 
     agent.run(agent_config, request, query)
 
 
 def test_agent_loop_hello(query: str, model: str) -> None:
-    _run(query, model)
+    _run(query, model, sampling=None)
+
+
+def _opt_float(value: str) -> float | None:
+    """Пустая строка → None (флаг проигнорирован); иначе float(value).
+
+    Нужно для launch.json: пользователь может стереть значение во
+    VSCode-input'е, и тогда параметр не передаётся провайдеру.
+    """
+    return None if value == "" else float(value)
+
+
+def _opt_int(value: str) -> int | None:
+    return None if value == "" else int(value)
+
+
+def _build_sampling(args: argparse.Namespace) -> SamplingParams | None:
+    """Собирает SamplingParams из CLI-флагов. Если ни один не задан — None
+    (провайдеру не передаётся ничего, поведение модели — её собственный
+    дефолт).
+    """
+    fields = {
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "max_tokens": args.max_tokens,
+        "seed": args.seed,
+        "stop": tuple(args.stop) if args.stop else None,
+        "frequency_penalty": args.frequency_penalty,
+        "presence_penalty": args.presence_penalty,
+    }
+    if all(v is None for v in fields.values()):
+        return None
+    return SamplingParams(**fields)
 
 
 if __name__ == "__main__":
@@ -109,6 +139,18 @@ if __name__ == "__main__":
         required=True,
         help="Имя модели — обязательно (системного дефолта нет)",
     )
+    parser.add_argument("--temperature", type=_opt_float, default=None)
+    parser.add_argument("--top-p", type=_opt_float, default=None)
+    parser.add_argument("--max-tokens", type=_opt_int, default=None)
+    parser.add_argument("--seed", type=_opt_int, default=None)
+    parser.add_argument(
+        "--stop",
+        action="append",
+        default=None,
+        help="Stop-последовательность; флаг можно повторять для нескольких",
+    )
+    parser.add_argument("--frequency-penalty", type=_opt_float, default=None)
+    parser.add_argument("--presence-penalty", type=_opt_float, default=None)
     parser.add_argument("query", nargs="+", help="Сообщение пользователя")
     args = parser.parse_args()
-    _run(" ".join(args.query), args.model)
+    _run(" ".join(args.query), args.model, _build_sampling(args))

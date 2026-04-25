@@ -50,7 +50,6 @@ from boba.domain.agent.prompt import PromptId, PromptProvider
 from boba.domain.config import AppConfig
 from boba.domain.core.tools import ToolFactory, ToolSource, ToolsService
 from boba.domain.core.workspace import ExtensionWorkspaceShell, WorkspaceError
-from boba.domain.llm.models import SamplingParams
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +102,6 @@ class ExtensionContext:
     extension_workspace: ExtensionWorkspaceShell
     app_config: AppConfig
     agent_config: AgentConfig
-    sampling: SamplingParams
 
 
 _PRIORITY_PREFIX_RE = re.compile(r"^(\d+)-")

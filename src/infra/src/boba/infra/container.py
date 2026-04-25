@@ -26,9 +26,9 @@ from boba.domain.agent.messages import MessageService
 from boba.domain.agent.models import AgentConfig, AgentContext
 from boba.domain.agent.prompt import PromptProvider
 from boba.domain.agent.turn.reducers import (
+    AgentRequestSamplingReducer,
     HistoryReducer,
     ModelReducer,
-    SamplingReducer,
     SystemPromptReducer,
     ToolsReducer,
 )
@@ -42,14 +42,13 @@ from boba.domain.core.patterns import (
 )
 from boba.domain.core.tools import ToolContext, ToolsService
 from boba.domain.llm.events import LLMEvent
-from boba.domain.llm.models import LLMContext, SamplingParams
+from boba.domain.llm.models import LLMContext
 from boba.infra.extensions import ExtensionLoader
 
 
 @dataclass(frozen=True)
 class AgentComponents:
     agent_config: AgentConfig
-    sampling: SamplingParams
     prompt_providers: Sequence[PromptProvider]
     message_service: MessageService
     tools_service: ToolsService
@@ -85,7 +84,7 @@ def build_turn_spec(components: AgentComponents) -> TurnSpec:
     spec.register(SystemPromptReducer(components.prompt_providers))
     spec.register(HistoryReducer())
     spec.register(ToolsReducer(components.tools_service))
-    spec.register(SamplingReducer(components.sampling))
+    spec.register(AgentRequestSamplingReducer())
     return spec
 
 

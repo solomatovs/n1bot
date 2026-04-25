@@ -13,19 +13,14 @@
   порядке ``priority`` и финализирующий в :class:`ConfigBundle`.
 - :class:`ConfigLoader` — тонкая обёртка с lazy-кэшем бандла.
 
-Разделение ответственности:
+:class:`ConfigBundle` / :class:`ConfigLoader` — **агрегат приложения**:
+:class:`AppConfig` + :class:`AgentConfig`. То, что шарится на весь
+процесс и читается один раз на старте.
 
-- :class:`ConfigBundle` / :class:`ConfigLoader` — **агрегат приложения**:
-  :class:`AppConfig` + :class:`AgentConfig`. То, что шарится на весь
-  процесс и читается один раз на старте.
-- :class:`SamplingParams` — параметры :class:`~boba.domain.agent.turn.\
-reducers.SamplingReducer` и не часть bundle. Загружаются отдельно
-  через :class:`SamplingLoader`, чтобы LLM-специфика не протекала в
-  общий agent/app-агрегат.
-
-Оба загрузчика переиспользуют одну и ту же инфраструктуру источников
-(:func:`default_resolver`), так что env/TOML-картина для sampling
-совместима с общим конфигом.
+LLM-sampling-параметров здесь нет: единственный источник —
+:class:`~boba.domain.agent.models.AgentRequest.sampling`, прокидываемый
+caller'ом (UI/CLI) per-request. См.
+:class:`~boba.domain.agent.turn.reducers.AgentRequestSamplingReducer`.
 """
 
 from __future__ import annotations
@@ -43,14 +38,11 @@ from boba.domain.core.config import (
     BoolConverter,
     ChainedConfigResolver,
     ConfigSource,
-    CsvListConverter,
     FieldSpec,
-    FloatConverter,
     IntConverter,
     StrConverter,
 )
 from boba.domain.core.patterns import FoldFactory, PrioritySource, StrId
-from boba.domain.llm.models import SamplingParams
 
 T = TypeVar("T")
 
@@ -69,9 +61,7 @@ __all__ = [
     "EnvFileSource",
     "EnvSource",
     "ExtensionsSection",
-    "LLMSamplingSection",
     "LLMTransportSection",
-    "SamplingLoader",
     "TomlFileSource",
     "TomlSource",
     "WorkspacesSection",
@@ -86,8 +76,8 @@ class ConfigLoader:
     первой сборки.
 
     Возвращает агрегат приложения (:class:`AppConfig` +
-    :class:`AgentConfig`). :class:`SamplingParams` здесь сознательно
-    нет — см. :class:`SamplingLoader`.
+    :class:`AgentConfig`). LLM-sampling сюда не входит — он приезжает
+    per-request через :class:`~boba.domain.agent.models.AgentRequest`.
     """
 
     def __init__(self, factory: ConfigFactory | None = None) -> None:
@@ -107,32 +97,6 @@ class ConfigLoader:
         return self._ensure().agent
 
 
-class SamplingLoader:
-    """Отдельный загрузчик :class:`SamplingParams` для
-    :class:`~boba.domain.agent.turn.reducers.SamplingReducer`.
-
-    Почему отдельно: sampling — это параметры конкретного reducer'а
-    TurnSpec, а не уровня приложения. Держим его вне
-    :class:`ConfigBundle`, чтобы LLM-специфика не протекала в общий
-    agent/app-агрегат. Переиспользует :func:`default_resolver` для
-    единой картины env/TOML-источников с :class:`ConfigLoader`.
-    """
-
-    def __init__(
-        self,
-        resolver: ChainedConfigResolver | None = None,
-    ) -> None:
-        self._section = LLMSamplingSection(priority=0)
-        self._state = ConfigState(resolver=resolver or default_resolver())
-        self._cached: SamplingParams | None = None
-
-    def load(self) -> SamplingParams:
-        if self._cached is None:
-            self._section.apply(self._state)
-            self._cached = self._state.sampling or SamplingParams()
-        return self._cached
-
-
 @dataclass(frozen=True)
 class ConfigBundle:
     app: AppConfig
@@ -146,12 +110,6 @@ class ConfigState:
     из них на стадии :meth:`ConfigFactory.finalize` обязательны, а какие
     нет — декларируется через :class:`ConfigSlot`-константы внутри
     фабрики, не через дефолты dataclass'а.
-
-    ``sampling`` намеренно присутствует: :class:`LLMSamplingSection`
-    складывает сюда значение, но финализатор :class:`ConfigFactory`
-    его игнорирует (sampling не часть :class:`ConfigBundle`).
-    Поле нужно :class:`SamplingLoader`, который вызывает
-    :meth:`LLMSamplingSection.apply` напрямую.
     """
 
     resolver: ChainedConfigResolver
@@ -161,7 +119,6 @@ class ConfigState:
     log_level: str | None = None
     log_file: str | None = None
     agent: AgentConfig | None = None
-    sampling: SamplingParams | None = None
     extensions_dir: str | None = None
 
 
@@ -376,45 +333,6 @@ class ExtensionsSection(ConfigSectionBuilder):
         return state
 
 
-class LLMSamplingSection(ConfigSectionBuilder):
-    """Секция TOML ``[llm]`` → :class:`SamplingParams` (без обёрток)."""
-
-    TEMPERATURE = FieldSpec("LLM_TEMPERATURE", FloatConverter(), None)
-    TOP_P = FieldSpec("LLM_TOP_P", FloatConverter(), None)
-    MAX_TOKENS = FieldSpec("LLM_MAX_TOKENS", IntConverter(), None)
-    SEED = FieldSpec("LLM_SEED", IntConverter(), None)
-    STOP = FieldSpec("LLM_STOP", CsvListConverter(), None)
-    FREQUENCY_PENALTY = FieldSpec("LLM_FREQUENCY_PENALTY", FloatConverter(), None)
-    PRESENCE_PENALTY = FieldSpec("LLM_PRESENCE_PENALTY", FloatConverter(), None)
-
-    TOML_PATHS: ClassVar[Mapping[str, tuple[str, str]]] = {
-        "LLM_TEMPERATURE": ("llm", "temperature"),
-        "LLM_TOP_P": ("llm", "top_p"),
-        "LLM_MAX_TOKENS": ("llm", "max_tokens"),
-        "LLM_SEED": ("llm", "seed"),
-        "LLM_STOP": ("llm", "stop"),
-        "LLM_FREQUENCY_PENALTY": ("llm", "frequency_penalty"),
-        "LLM_PRESENCE_PENALTY": ("llm", "presence_penalty"),
-    }
-
-    def id(self) -> StrId:
-        return StrId("llm_sampling")
-
-    def apply(self, state: ConfigState) -> ConfigState:
-        r = state.resolver
-        stop = self.STOP.read_opt(r)
-        state.sampling = SamplingParams(
-            temperature=self.TEMPERATURE.read_opt(r),
-            top_p=self.TOP_P.read_opt(r),
-            max_tokens=self.MAX_TOKENS.read_opt(r),
-            seed=self.SEED.read_opt(r),
-            stop=tuple(stop) if stop is not None else None,
-            frequency_penalty=self.FREQUENCY_PENALTY.read_opt(r),
-            presence_penalty=self.PRESENCE_PENALTY.read_opt(r),
-        )
-        return state
-
-
 class ConfigFactory(FoldFactory[StrId, ConfigState, ConfigBundle]):
     """Фабрика конфиг-бандла. Обязательные слоты :class:`ConfigState`
     декларируются как class-level :class:`ConfigSlot`-константы (см.
@@ -468,7 +386,6 @@ def default_resolver(
         **LLMTransportSection.TOML_PATHS,
         **AgentSection.TOML_PATHS,
         **ExtensionsSection.TOML_PATHS,
-        **LLMSamplingSection.TOML_PATHS,
     }
 
     toml_data: dict[str, Any] = load_toml(os.environ.get("BOBA_CONFIG"))
@@ -488,7 +405,11 @@ def default_resolver(
 def default_config_factory(
     resolver: ChainedConfigResolver,
 ) -> ConfigFactory:
-    """Фабрика приложения: app + agent. Sampling — в :class:`SamplingLoader`."""
+    """Фабрика приложения: app + agent.
+
+    LLM-sampling сюда не входит — он приезжает per-request через
+    :class:`~boba.domain.agent.models.AgentRequest`.
+    """
     factory = ConfigFactory(resolver)
     factory.register(AppCoreSection(priority=10))
     factory.register(WorkspacesSection(priority=20))

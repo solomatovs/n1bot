@@ -25,7 +25,6 @@ from boba.domain.llm.models import (
     LLMMessage,
     LLMToolRequest,
     LLMToolSchema,
-    SamplingParams,
 )
 
 _MODEL_ID = StrId("model")
@@ -173,20 +172,27 @@ class ToolsReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
         return state
 
 
-class SamplingReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
-    """Константные sampling-параметры из конфига.
+class AgentRequestSamplingReducer(
+    ContextPrioritySource[TurnResolveContext, StrId, TurnState]
+):
+    """Берёт ``SamplingParams`` из ``ctx.agent.agent_request.sampling``.
 
-    Для per-trigger тюнинга (ниже temperature при tag="feedback")
-    — отдельный TagAwareSamplingReducer с большим priority, который
-    читает ``ctx.trigger.tags`` и патчит ``state.sampling``.
+    Семантика «передано — применяем, не передано — не трогаем»:
+    ``None`` в ``agent_request.sampling`` оставляет ``state.sampling``
+    как есть (дефолтный :class:`SamplingParams` со всеми ``None``-полями
+    — провайдер ничего не подложит, см.
+    :meth:`~boba.adapters.llm.openai_request.\
+ToOpenAIRequestConverter._apply_sampling`).
+
+    Глобального дефолта sampling в системе нет: единственный источник —
+    :class:`~boba.domain.agent.models.AgentRequest`. Для per-trigger
+    тюнинга (ниже temperature при tag="feedback") — отдельный
+    TagAwareSamplingReducer с большим priority, который читает
+    ``ctx.trigger.tags`` и патчит ``state.sampling`` уже поверх
+    выставленного здесь значения.
     """
 
-    def __init__(
-        self,
-        sampling: SamplingParams,
-        priority: int = 50,
-    ) -> None:
-        self._sampling = sampling
+    def __init__(self, priority: int = 50) -> None:
         self._priority = priority
 
     def id(self) -> StrId:
@@ -196,5 +202,7 @@ class SamplingReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState
         return self._priority
 
     def apply(self, ctx: TurnResolveContext, state: TurnState) -> TurnState:
-        state.sampling = self._sampling
+        sampling = ctx.agent.agent_request.sampling
+        if sampling is not None:
+            state.sampling = sampling
         return state

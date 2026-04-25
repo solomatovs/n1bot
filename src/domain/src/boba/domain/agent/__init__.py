@@ -98,9 +98,9 @@ from boba.domain.agent.prompt import (
     PromptState,
 )
 from boba.domain.agent.turn.reducers import (
+    AgentRequestSamplingReducer,
     HistoryReducer,
     ModelReducer,
-    SamplingReducer,
     SystemPromptReducer,
     ToolsReducer,
 )
@@ -115,6 +115,7 @@ __all__ = [
     "AgentEvent",
     "AgentEventName",
     "AgentRequest",
+    "AgentRequestSamplingReducer",
     "AnswerComplete",
     "AnswerDiscarded",
     "AnswerStarted",
@@ -166,7 +167,6 @@ __all__ = [
     "RepeatedFormatFailureError",
     "RepeatedFormatFailureGuardMiddleware",
     "RepeatedToolCallGuardMiddleware",
-    "SamplingReducer",
     "StopOnAnyFailure",
     "StopOnFinished",
     "StreamingDelta",

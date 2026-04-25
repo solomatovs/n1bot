@@ -35,7 +35,7 @@ from boba.domain.core.workspace import (
     WorkspaceId,
 )
 from boba.domain.llm.models import RequestId
-from boba.infra.config import ConfigLoader, SamplingLoader
+from boba.infra.config import ConfigLoader
 from boba.infra.container import (
     AgentComponents,
     build_prompt_providers,
@@ -60,7 +60,6 @@ class ChatSession:
         self._app_config = loader.load_app()
         configure_logging(self._app_config.log_level, self._app_config.log_file)
         self._agent_config = loader.load_agent()
-        self._sampling = SamplingLoader().load()
         self._workspaces = FsProjectWorkspaceRegistry(
             base_dir=Path(self._app_config.workspaces.base_dir),
             subdir=self._app_config.workspaces.user_subdir,
@@ -86,7 +85,6 @@ class ChatSession:
                 extension_workspace=extension_workspace,
                 app_config=self._app_config,
                 agent_config=self._agent_config,
-                sampling=self._sampling,
             ),
         )
         self._tools_service = extension_loader.tools_service()
@@ -143,7 +141,6 @@ class ChatSession:
             llm_source,
             AgentComponents(
                 agent_config=self._agent_config,
-                sampling=self._sampling,
                 prompt_providers=self._prompt_providers,
                 message_service=message_service,
                 tools_service=self._tools_service,
