@@ -31,7 +31,7 @@ from boba.domain.core.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
-from boba.infra.plugins import PluginContext
+from boba.infra.extensions import ExtensionContext
 
 
 @dataclass(frozen=True)
@@ -153,7 +153,7 @@ class EditTool(Tool[EditArgs]):
             content=f"Заменено в {args.path}: {applied} вхождение(й).",
         )
 
-def register(ctx: PluginContext) -> Iterable[ToolSource]:
+def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.edit"),
         priority=0,

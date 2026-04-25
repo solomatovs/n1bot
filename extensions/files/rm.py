@@ -31,7 +31,7 @@ from boba.domain.core.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
-from boba.infra.plugins import PluginContext
+from boba.infra.extensions import ExtensionContext
 
 
 @dataclass(frozen=True)
@@ -103,7 +103,7 @@ class RmTool(Tool[RmArgs]):
             ) from e
         return ToolResult(content=f"Удалено: {args.path}")
 
-def register(ctx: PluginContext) -> Iterable[ToolSource]:
+def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.rm"),
         priority=0,

@@ -29,7 +29,7 @@ from boba.domain.core.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
-from boba.infra.plugins import PluginContext
+from boba.infra.extensions import ExtensionContext
 
 
 @dataclass(frozen=True)
@@ -91,7 +91,7 @@ class CdTool(Tool[CdArgs]):
             ) from e
         return ToolResult(content=f"Текущая директория: {ctx.project_workspace.cwd}")
 
-def register(ctx: PluginContext) -> Iterable[ToolSource]:
+def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
         ToolSourceId("builtin.files.cd"),
         priority=0,

@@ -6,17 +6,15 @@ from pathlib import Path
 import pytest
 
 from boba.adapters.fs_workspace import (
-    FsPluginWorkspaceRegistry,
+    FsExtensionWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
-    FsPromptWorkspaceRegistry,
 )
 from boba.adapters.in_memory_messages import InMemoryMessageService
 from boba.domain.agent.meat.agent import Agent
 from boba.domain.agent.models import AgentRequest
 from boba.domain.core.tools import ToolContext
 from boba.domain.core.workspace import (
-    PluginWorkspaceId,
-    PromptWorkspaceId,
+    ExtensionWorkspaceId,
     WorkspaceId,
 )
 from boba.domain.llm.models import RequestId
@@ -26,9 +24,8 @@ from boba.infra.container import (
     build_prompt_providers,
     create_agent,
 )
+from boba.infra.extensions import ExtensionContext, ExtensionLoader
 from boba.infra.logging import configure_logging
-from boba.infra.plugins import PluginContext, PluginLoader
-from boba.infra.prompts import PromptLoader
 
 pytestmark = pytest.mark.integration
 
@@ -41,24 +38,17 @@ def _run(query: str, model: str) -> None:
     sampling = SamplingLoader().load()
     configure_logging(app_config.log_level, app_config.log_file)
 
-    plugin_workspace = FsPluginWorkspaceRegistry(
-        root=Path(app_config.plugins_dir),
-    ).get_or_create(PluginWorkspaceId("plugins"))
-    tools_service = PluginLoader(
-        plugin_workspace,
-        PluginContext(
-            plugin_workspace=plugin_workspace,
+    extension_workspace = FsExtensionWorkspaceRegistry(
+        root=Path(app_config.extensions_dir),
+    ).get_or_create(ExtensionWorkspaceId("extensions"))
+    extension_loader = ExtensionLoader(
+        extension_workspace,
+        ExtensionContext(
+            extension_workspace=extension_workspace,
             app_config=app_config,
             agent_config=agent_config,
             sampling=sampling,
         ),
-    ).build_tools_service()
-
-    prompt_workspace = FsPromptWorkspaceRegistry(
-        root=Path(app_config.prompts_dir),
-    ).get_or_create(PromptWorkspaceId("prompts"))
-    prompt_providers = build_prompt_providers(
-        PromptLoader(prompt_workspace, app_config),
     )
 
     project_workspace = FsProjectWorkspaceRegistry(
@@ -71,9 +61,9 @@ def _run(query: str, model: str) -> None:
         components=AgentComponents(
             agent_config=agent_config,
             sampling=sampling,
-            prompt_providers=prompt_providers,
+            prompt_providers=build_prompt_providers(extension_loader),
             message_service=InMemoryMessageService(),
-            tools_service=tools_service,
+            tools_service=extension_loader.tools_service(),
         ),
         tool_ctx=ToolContext(project_workspace=project_workspace),
     )
