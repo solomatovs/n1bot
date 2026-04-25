@@ -310,18 +310,15 @@ class FromOpenAIChunkConverter(
                 FinishSource(request_id),
             ]
         )
-        # self._preprocessor = preprocessor
 
     def name(self) -> str:
         return f"FromOpenAIChunkConverter({self._pipeline.name()})"
 
     def reset(self) -> None:
         self._pipeline.reset()
-        # self._preprocessor.reset()
 
     def stream(
         self, ctx: LLMContext, stream: Iterable[ChatCompletionChunk]
     ) -> Iterable[LLMEvent]:
         for chunk in stream:
-            # choices = self._preprocessor.stream(ctx, chunk.choices)
             yield from self._pipeline.stream(ctx, chunk.choices)
