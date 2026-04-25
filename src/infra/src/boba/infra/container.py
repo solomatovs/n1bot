@@ -6,10 +6,7 @@ from dataclasses import dataclass
 
 from boba.adapters.console_sink import TextOutSink
 from boba.adapters.llm.openai_terminal import OpenAITerminal, build_openai_client
-from boba.adapters.prompt_providers import (
-    StaticPromptProvider,
-    UserQueryProvider,
-)
+from boba.adapters.prompt_providers import UserQueryProvider
 from boba.adapters.raw_llm_observer import MetricsRawLLMObserver
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.meat.agent import Agent
@@ -30,7 +27,7 @@ from boba.domain.agent.meat.tools import (
 from boba.domain.agent.meat.turn import InitialUserQueryMiddleware
 from boba.domain.agent.messages import MessageService
 from boba.domain.agent.models import AgentConfig, AgentContext
-from boba.domain.agent.prompt import PromptId, PromptKind, PromptProvider
+from boba.domain.agent.prompt import PromptProvider
 from boba.domain.agent.turn.reducers import (
     HistoryReducer,
     ModelReducer,
@@ -49,6 +46,7 @@ from boba.domain.core.tools import ToolsService
 from boba.domain.llm.events import LLMEvent
 from boba.domain.llm.models import LLMContext, SamplingParams
 from boba.infra.plugins import PluginContext, PluginLoader
+from boba.infra.prompts import PromptLoader
 
 
 @dataclass(frozen=True)
@@ -60,18 +58,16 @@ class AgentComponents:
     tools_service: ToolsService
 
 
-def default_static_prompt_providers(
-    system_prompt: str,
-) -> list[PromptProvider]:
-    return [
-        StaticPromptProvider(
-            PromptId("identity"),
-            priority=0,
-            content=system_prompt,
-            kind=PromptKind.SYSTEM,
-        ),
-        UserQueryProvider(),
-    ]
+def build_prompt_providers(loader: PromptLoader) -> Sequence[PromptProvider]:
+    """Application-level список :class:`PromptProvider` для агента.
+
+    К провайдерам, загруженным :class:`PromptLoader` из директории
+    ``BOBA_PROMPTS_DIR`` (текстовые ``.md``/``.txt`` и ``.py``-плагины),
+    добавляется :class:`UserQueryProvider` — инфраструктурный провайдер,
+    превращающий ``AgentRequest.query`` в USER-блок. Он не часть
+    «контента» промптов и не лежит в директории.
+    """
+    return (*loader.providers(), UserQueryProvider())
 
 
 def create_tools_service(loader: PluginLoader, ctx: PluginContext) -> ToolsService:

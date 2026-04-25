@@ -51,3 +51,4 @@ class AppConfig:
     log_file: str | None = None
     llm: LLMConfig = field(default_factory=LLMConfig)
     plugins_dir: str = "./plugins"
+    prompts_dir: str = "./prompts"

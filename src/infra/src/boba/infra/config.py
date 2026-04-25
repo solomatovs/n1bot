@@ -71,6 +71,7 @@ __all__ = [
     "LLMSamplingSection",
     "LLMTransportSection",
     "PluginsSection",
+    "PromptsSection",
     "SamplingLoader",
     "TomlFileSource",
     "TomlSource",
@@ -91,7 +92,7 @@ class ConfigLoader:
     """
 
     def __init__(self, factory: ConfigFactory | None = None) -> None:
-        self._factory = factory or default_config_factory()
+        self._factory = factory or default_config_factory(default_resolver())
         self._bundle: ConfigBundle | None = None
 
     def _ensure(self) -> ConfigBundle:
@@ -163,6 +164,7 @@ class ConfigState:
     agent: AgentConfig | None = None
     sampling: SamplingParams | None = None
     plugins_dir: str | None = None
+    prompts_dir: str | None = None
 
 
 class ConfigError(Exception):
@@ -375,6 +377,28 @@ class PluginsSection(ConfigSectionBuilder):
         return state
 
 
+class PromptsSection(ConfigSectionBuilder):
+    """Секция конфига промптов: путь к директории с .md/.txt/.py.
+
+    Поле ``BOBA_PROMPTS_DIR`` обязательно — оператор явно указывает,
+    откуда :class:`~boba.infra.prompts.PromptLoader` берёт текстовые
+    блоки и provider-плагины при старте.
+    """
+
+    DIR = FieldSpec[str]("BOBA_PROMPTS_DIR", StrConverter())
+
+    TOML_PATHS: ClassVar[Mapping[str, tuple[str, str]]] = {
+        "BOBA_PROMPTS_DIR": ("prompts", "dir"),
+    }
+
+    def id(self) -> StrId:
+        return StrId("prompts")
+
+    def apply(self, state: ConfigState) -> ConfigState:
+        state.prompts_dir = self.DIR.read(state.resolver)
+        return state
+
+
 class LLMSamplingSection(ConfigSectionBuilder):
     """Секция TOML ``[llm]`` → :class:`SamplingParams` (без обёрток)."""
 
@@ -427,6 +451,7 @@ class ConfigFactory(FoldFactory[StrId, ConfigState, ConfigBundle]):
     _SLOT_LOG_LEVEL = ConfigSlot[str]("log_level", "AppCoreSection (log_level)")
     _SLOT_LLM = ConfigSlot[LLMConfig]("llm_transport", "LLMTransportSection")
     _SLOT_PLUGINS_DIR = ConfigSlot[str]("plugins_dir", "PluginsSection")
+    _SLOT_PROMPTS_DIR = ConfigSlot[str]("prompts_dir", "PromptsSection")
     _SLOT_AGENT = ConfigSlot[AgentConfig]("agent", "AgentSection")
 
     def __init__(self, resolver: ChainedConfigResolver) -> None:
@@ -444,6 +469,7 @@ class ConfigFactory(FoldFactory[StrId, ConfigState, ConfigBundle]):
             log_file=state.log_file,
             llm=self._SLOT_LLM.read(state),
             plugins_dir=self._SLOT_PLUGINS_DIR.read(state),
+            prompts_dir=self._SLOT_PROMPTS_DIR.read(state),
         )
         return ConfigBundle(
             app=app,
@@ -467,6 +493,7 @@ def default_resolver(
         **LLMTransportSection.TOML_PATHS,
         **AgentSection.TOML_PATHS,
         **PluginsSection.TOML_PATHS,
+        **PromptsSection.TOML_PATHS,
         **LLMSamplingSection.TOML_PATHS,
     }
 
@@ -485,15 +512,16 @@ def default_resolver(
 
 
 def default_config_factory(
-    resolver: ChainedConfigResolver | None = None,
+    resolver: ChainedConfigResolver,
 ) -> ConfigFactory:
     """Фабрика приложения: app + agent. Sampling — в :class:`SamplingLoader`."""
-    factory = ConfigFactory(resolver or default_resolver())
+    factory = ConfigFactory(resolver)
     factory.register(AppCoreSection(priority=10))
     factory.register(WorkspacesSection(priority=20))
     factory.register(LLMTransportSection(priority=30))
     factory.register(AgentSection(priority=40))
     factory.register(PluginsSection(priority=50))
+    factory.register(PromptsSection(priority=60))
     return factory
 
 

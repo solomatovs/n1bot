@@ -156,10 +156,11 @@ class Converter(ABC, Generic[TIn, TOut]):
         """
         ...
 
+
 class ContextConverter(ABC, Generic[TCtx, TIn, TOut]):
     @abstractmethod
-    def convert(self, ctx: TCtx, value: TIn) -> TOut:
-        ...
+    def convert(self, ctx: TCtx, value: TIn) -> TOut: ...
+
 
 class StreamConverter(ABC, Generic[TIn, TOut]):
     """
@@ -1108,7 +1109,9 @@ class StreamTransformerChain(StreamTransformer[TCtx, TIn, TIn]):
     ) -> None:
         self._stages: list[StreamTransformer[TCtx, TIn, TIn]] = list(stages)
 
-    def append(self, stage: StreamTransformer[TCtx, TIn, TIn]) -> StreamTransformerChain[TCtx, TIn]:
+    def append(
+        self, stage: StreamTransformer[TCtx, TIn, TIn]
+    ) -> StreamTransformerChain[TCtx, TIn]:
         self._stages.append(stage)
         return self
 

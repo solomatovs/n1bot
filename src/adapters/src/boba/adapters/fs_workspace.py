@@ -31,6 +31,9 @@ from boba.domain.core.workspace import (
     PluginWorkspaceShell,
     ProjectWorkspaceRegistry,
     ProjectWorkspaceShell,
+    PromptWorkspaceId,
+    PromptWorkspaceRegistry,
+    PromptWorkspaceShell,
     ScratchWorkspaceRegistry,
     ScratchWorkspaceShell,
     WorkspaceDecodingError,
@@ -989,4 +992,35 @@ class FsPluginWorkspaceRegistry(
         )
 
     def _workspace_dir(self, workspace_id: PluginWorkspaceId) -> Path:
+        return self._base_dir
+
+
+class FsPromptWorkspaceShell(
+    FsWorkspaceShell[PromptWorkspaceId], PromptWorkspaceShell
+):
+    """Файловый :class:`PromptWorkspaceShell`."""
+
+
+class FsPromptWorkspaceRegistry(
+    FsWorkspaceRegistry[FsPromptWorkspaceShell, PromptWorkspaceId],
+    PromptWorkspaceRegistry,
+):
+    """Singleton-registry prompt-namespace.
+
+    Симметрично :class:`FsPluginWorkspaceRegistry`: корнем shell'а
+    служит сам ``root`` (обычно ``app_config.prompts_dir``), без id
+    и subdir в пути, потому что prompt workspace application-singleton.
+    """
+
+    _SINGLETON_ID = PromptWorkspaceId("prompts")
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(
+            base_dir=root,
+            shell_cls=FsPromptWorkspaceShell,
+            subdir="",
+            id_factory=lambda: self._SINGLETON_ID,
+        )
+
+    def _workspace_dir(self, workspace_id: PromptWorkspaceId) -> Path:
         return self._base_dir

@@ -31,11 +31,11 @@ from boba.infra.config import (
 )
 from boba.infra.container import (
     AgentComponents,
+    build_prompt_providers,
     create_agent,
     create_agent_source,
     create_llm_source,
     create_tools_service,
-    default_static_prompt_providers,
 )
 from boba.infra.logging import configure_logging, log_context
 from boba.infra.plugins import (
@@ -44,6 +44,13 @@ from boba.infra.plugins import (
     PluginLoader,
     PluginLoadError,
     PluginRegisterError,
+)
+from boba.infra.prompts import (
+    PromptContext,
+    PromptError,
+    PromptLoader,
+    PromptLoadError,
+    PromptRegisterError,
 )
 
 __all__ = [
@@ -65,10 +72,16 @@ __all__ = [
     "PluginLoadError",
     "PluginLoader",
     "PluginRegisterError",
+    "PromptContext",
+    "PromptError",
+    "PromptLoadError",
+    "PromptLoader",
+    "PromptRegisterError",
     "SamplingLoader",
     "TomlFileSource",
     "TomlSource",
     "WorkspacesSection",
+    "build_prompt_providers",
     "configure_logging",
     "create_agent",
     "create_agent_source",
@@ -76,7 +89,6 @@ __all__ = [
     "create_tools_service",
     "default_config_factory",
     "default_resolver",
-    "default_static_prompt_providers",
     "load_toml",
     "log_context",
 ]

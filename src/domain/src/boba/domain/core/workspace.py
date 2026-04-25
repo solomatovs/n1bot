@@ -492,3 +492,25 @@ class PluginWorkspaceShell(WorkspaceShell[PluginWorkspaceId]):
 
 class PluginWorkspaceRegistry(WorkspaceRegistry[PluginWorkspaceId]):
     """DI-маркер реестра :class:`PluginWorkspaceShell`."""
+
+
+class PromptWorkspaceId(StrId):
+    """Строковый id prompt-namespace.
+
+    Symmetric к :class:`PluginWorkspaceId`: prompt-workspace —
+    application-singleton, id у него единственный и стабильный.
+    """
+
+
+class PromptWorkspaceShell(WorkspaceShell[PromptWorkspaceId]):
+    """DI-маркер: workspace c .md/.txt-промптами и .py prompt-плагинами —
+    application-singleton.
+
+    Используется :class:`~boba.infra.prompts.PromptLoader` для discovery
+    (`tree`/`read_text`) и сами prompt-плагины могут читать соседние
+    файлы через ``ctx.prompt_workspace``.
+    """
+
+
+class PromptWorkspaceRegistry(WorkspaceRegistry[PromptWorkspaceId]):
+    """DI-маркер реестра :class:`PromptWorkspaceShell`."""
