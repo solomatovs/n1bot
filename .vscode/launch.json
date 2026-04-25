@@ -11,7 +11,7 @@
                 "qwen3.5-35b",
                 "llama3.1:8b-instruct-fp16",
                 "llama3.1-8b",
-                "qwen2.5:14b",
+                "qwen2.5-14b",
             ]
         },
         {
