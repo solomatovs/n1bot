@@ -13,7 +13,11 @@ from boba.adapters.fs_workspace import (
     FsProjectWorkspaceRegistry,
 )
 from boba.adapters.in_memory_messages import InMemoryMessageService
-from boba.adapters.raw_llm_observer import CompositeRawLLMObserver, FileContentObserver
+from boba.adapters.raw_llm_observer import (
+    CompositeRawLLMObserver,
+    FileContentObserver,
+    FileRawLLMObserver,
+)
 from boba.domain.agent.models import AgentRequest
 from boba.domain.core.tools import ToolContext
 from boba.domain.core.workspace import (
@@ -79,6 +83,7 @@ def _run(query: str, model: str) -> None:
         tool_ctx=ToolContext(project_workspace=project_workspace),
         observer=CompositeRawLLMObserver(
             [
+                FileRawLLMObserver(history_workspace),
                 FileContentObserver(history_workspace),
             ]
         ),

@@ -82,56 +82,46 @@ class GrepTool(Tool[GrepArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                "Поиск по содержимому текстовых файлов. По умолчанию pattern "
-                "интерпретируется как regex (Python-синтаксис). Для "
-                "литерального поиска выставь fixed_string=true. Бинарные и "
-                "не декодируемые файлы пропускаются молча. Результат — "
-                "список совпадений в формате 'path:line: content'; при "
-                "context>0 добавляются строки до/после. Если результат "
-                "урезан по limit — будет явный маркер."
+                "Найти совпадения pattern в текстовых файлах. Формат "
+                "результата: 'path:line: content'. Бинарные и недекодируемые "
+                "файлы пропускаются. При переполнении limit ответ обрезается "
+                "с маркером."
             ),
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
                         name="pattern",
-                        description=(
-                            "Regex (Python) или литерал при fixed_string=true."
-                        ),
+                        description="Python-regex; литерал при fixed_string=true.",
                         validator=ChainValidator(Required(), IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="path",
-                        description=(
-                            "Стартовый путь (файл или директория). Без "
-                            "параметра — от текущей cwd."
-                        ),
+                        description="Стартовый путь. Без значения — cwd.",
                         validator=ChainValidator(IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="recursive",
-                        description=(
-                            "Рекурсивный обход директории. По умолчанию true."
-                        ),
+                        description="Рекурсивный обход директории. По умолчанию true.",
                         validator=ChainValidator(Default(True), IsBool()),
                     ),
                     ParamSchema(
                         name="include",
                         description=(
-                            "Fnmatch-glob по относительному пути "
-                            "(например '*.py'). Без параметра — все файлы."
+                            "Fnmatch-glob по пути (например '*.py'). "
+                            "Без значения — все файлы."
                         ),
                         validator=ChainValidator(IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="case_insensitive",
-                        description="Регистронезависимый поиск. По умолчанию false.",
+                        description="Игнорировать регистр. По умолчанию false.",
                         validator=ChainValidator(Default(False), IsBool()),
                     ),
                     ParamSchema(
                         name="context",
                         description=(
-                            "Сколько строк контекста показывать до и после "
-                            "каждого совпадения. По умолчанию 0."
+                            "Строк контекста до и после каждого совпадения. "
+                            "По умолчанию 0."
                         ),
                         validator=ChainValidator(
                             Default(0),
@@ -141,10 +131,7 @@ class GrepTool(Tool[GrepArgs]):
                     ),
                     ParamSchema(
                         name="limit",
-                        description=(
-                            "Максимум совпадений в ответе (целое >= 1). По "
-                            "умолчанию 100."
-                        ),
+                        description="Максимум совпадений в ответе. По умолчанию 100.",
                         validator=ChainValidator(
                             Default(100),
                             IsInt(),
@@ -153,11 +140,7 @@ class GrepTool(Tool[GrepArgs]):
                     ),
                     ParamSchema(
                         name="fixed_string",
-                        description=(
-                            "Если true — pattern литеральная строка "
-                            "(спецсимволы regex экранируются). По умолчанию "
-                            "false."
-                        ),
+                        description="Литеральный поиск без regex. По умолчанию false.",
                         validator=ChainValidator(Default(False), IsBool()),
                     ),
                 ],

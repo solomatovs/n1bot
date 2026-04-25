@@ -63,10 +63,8 @@ class RmTool(Tool[RmArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                "Удалить файл или директорию. Файл удаляется всегда. "
-                "Директория удаляется только с recursive=true (со всем "
-                "содержимым); без флага на директории возвращает ошибку. "
-                "Операция безвозвратна."
+                "Удалить файл или директорию. Для директорий требуется "
+                "recursive=true. Безвозвратно."
             ),
             input_schema=ToolInputSchema(
                 params=[
@@ -78,8 +76,8 @@ class RmTool(Tool[RmArgs]):
                     ParamSchema(
                         name="recursive",
                         description=(
-                            "Если true — рекурсивно удалить директорию со всем "
-                            "содержимым. По умолчанию false."
+                            "Удалить директорию со всем содержимым. "
+                            "По умолчанию false."
                         ),
                         validator=ChainValidator(Default(False), IsBool()),
                     ),

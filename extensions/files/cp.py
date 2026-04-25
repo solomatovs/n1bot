@@ -68,11 +68,8 @@ class CpTool(Tool[CpArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                "Скопировать файл или директорию. Файл копируется всегда. "
-                "Директория — только с recursive=true (рекурсивно со всем "
-                "содержимым). Если dst — существующая директория, копия "
-                "кладётся внутрь с именем src. Существующий файл по dst "
-                "перезаписывается."
+                "Скопировать файл или директорию. Для директорий "
+                "требуется recursive=true."
             ),
             input_schema=ToolInputSchema(
                 params=[
@@ -89,7 +86,7 @@ class CpTool(Tool[CpArgs]):
                     ParamSchema(
                         name="recursive",
                         description=(
-                            "Если true — рекурсивно скопировать директорию. "
+                            "Рекурсивное копирование директории. "
                             "По умолчанию false."
                         ),
                         validator=ChainValidator(Default(False), IsBool()),

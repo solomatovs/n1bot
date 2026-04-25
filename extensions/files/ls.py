@@ -72,31 +72,20 @@ class LsTool(Tool[LsArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                "Показать содержимое указанной директории на одном уровне "
-                "(без рекурсии). Возвращает имена файлов и поддиректорий в "
-                "порядке файловой системы, без сортировки. limit обязательный аргумент!"
-                "Для рекурсивного обхода используй tool 'tree'. "
-                "Если элементов больше limit "
-                "— ответ обрезается, в заголовке будет маркер "
-                "'(truncated at limit=N)'."
+                "Перечислить содержимое директории на одном уровне без рекурсии. "
+                "При переполнении limit ответ обрезается с маркером "
+                "'(truncated at limit=N)'. Для рекурсии — tree."
             ),
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
                         name="path",
-                        description=(
-                            "Путь директории. Без него листится корневая директория."
-                        ),
+                        description="Путь директории. Без значения — корень workspace.",
                         validator=ChainValidator(IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="limit",
-                        description=(
-                            "Максимум элементов в ответе (целое >= 1). "
-                            "Обязательный параметр. Подбирай осознанно: "
-                            "большие значения раздувают контекст. "
-                            "Разумные величины — 50–500."
-                        ),
+                        description="Максимум элементов в ответе.",
                         validator=ChainValidator(Required(), IsInt(), MinValue(1)),
                     ),
                 ],

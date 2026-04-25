@@ -59,11 +59,7 @@ class CdTool(Tool[CdArgs]):
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
-            description=(
-                "Перейти в указанную директорию. Последующие относительные "
-                "пути в других tool'ах будут разрешаться от неё. Если пути "
-                "не существует или это не директория — возвращает ошибку."
-            ),
+            description="Сменить текущую директорию.",
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(

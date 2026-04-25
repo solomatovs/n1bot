@@ -66,10 +66,8 @@ class WriteTool(Tool[WriteArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                "Полностью перезаписать файл указанным содержимым. Если "
-                "файла или промежуточных директорий нет — они создаются. "
-                "Для точечной правки фрагмента используй edit; для "
-                "дозаписи в конец — append."
+                "Перезаписать файл указанным содержимым. Если файла или "
+                "промежуточных директорий нет — создать."
             ),
             input_schema=ToolInputSchema(
                 params=[
@@ -80,15 +78,12 @@ class WriteTool(Tool[WriteArgs]):
                     ),
                     ParamSchema(
                         name="content",
-                        description="Полное новое содержимое файла.",
+                        description="Новое содержимое файла.",
                         validator=ChainValidator(Required(), IsString()),
                     ),
                     ParamSchema(
                         name="encoding",
-                        description=(
-                            "Текстовая кодировка, например 'utf-8' или "
-                            "'cp1251'. По умолчанию — 'utf-8'."
-                        ),
+                        description="Кодировка файла. По умолчанию 'utf-8'.",
                         validator=ChainValidator(
                             Default("utf-8"),
                             IsString(),
