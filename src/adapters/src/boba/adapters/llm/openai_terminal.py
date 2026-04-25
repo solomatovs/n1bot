@@ -12,20 +12,19 @@ from typing import Any
 import httpx
 import openai
 from openai import OpenAI
-from openai.types.chat.chat_completion_chunk import ChatCompletionChunk, Choice
+from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 from boba.adapters.llm.openai_errors import OpenAIErrorConverter
 from boba.adapters.llm.openai_request import ToOpenAIRequestConverter
 from boba.adapters.llm.openai_response import FromOpenAIChunkConverter
 from boba.adapters.raw_llm_observer import RawLLMObserver, RequestOutcome
 from boba.domain.config import LLMConfig
-from boba.domain.core.patterns import StreamSource, StreamTransformer
+from boba.domain.core.patterns import StreamSource
 from boba.domain.llm.errors import LLMError
 from boba.domain.llm.events import (
     LLMEvent,
     LLMRequestSent,
     LLMRequestStarted,
-    LLMUserPromptIssued,
 )
 from boba.domain.llm.models import LLMContext
 
@@ -87,13 +86,13 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
         self,
         client: OpenAI,
         observer: RawLLMObserver,
-        preprocessor: StreamTransformer[LLMContext, Choice, Choice],
+        # preprocessor: StreamTransformer[LLMContext, Choice, Choice],
     ) -> None:
         self._client = client
         self._to_request = ToOpenAIRequestConverter()
         self._error_converter = OpenAIErrorConverter()
         self._observer = observer
-        self._preprocessor = preprocessor
+        # self._preprocessor = preprocessor
 
     def name(self) -> str:
         return "OpenAITerminal"
@@ -107,12 +106,6 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
         # любых yield, on_request_end в любом исходе (OK / GeneratorExit
         # от consumer-а / произвольное исключение).
         with _observe_request(self._observer, kwargs):
-            # snapshot user-prompt'а — что именно сейчас улетит в LLM
-            yield LLMUserPromptIssued(
-                request_id=ctx.request_id,
-                user_prompt=ctx.request.user_message.content,
-            )
-
             # парные события вокруг HTTP-вызова: Started/Sent
             # разница monotonic_ns даёт длительность провайдер-запроса
             # (сетевой round-trip + TTFB до получения stream-handle)
@@ -139,11 +132,14 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
                 monotonic_ns=time.monotonic_ns(),
             )
 
-            self._preprocessor.reset()
+            # self._preprocessor.reset()
             try:
-                yield from FromOpenAIChunkConverter(
-                    ctx.request_id, self._preprocessor
-                ).stream(ctx, self._observe_chunks(response))
+                # yield from FromOpenAIChunkConverter(
+                #     ctx.request_id, self._preprocessor
+                # ).stream(ctx, self._observe_chunks(response))
+                yield from FromOpenAIChunkConverter(ctx.request_id).stream(
+                    ctx, self._observe_chunks(response)
+                )
             except LLMError:
                 raise
             except (openai.APIError, httpx.HTTPError) as e:

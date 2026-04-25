@@ -18,35 +18,28 @@ from boba.domain.agent.meat.error_routing import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
 )
-from boba.domain.agent.meat.history import HistoryMiddleware
 from boba.domain.agent.meat.llm import (
     LLMEventToAgentEventConverter,
     LLMInvokeMiddleware,
-    NewLLMRequestMiddleware,
 )
 from boba.domain.agent.meat.loop_control import (
     IterationCounterMiddleware,
     StopOnAnyFailure,
     StopOnFinished,
 )
-from boba.domain.agent.meat.prompt import (
-    SystemPromptMiddleware,
-    UserPromptMiddleware,
-)
-from boba.domain.agent.meat.sampling import SamplingMiddleware
 from boba.domain.agent.meat.tools import (
     RepeatedFormatFailureGuardMiddleware,
     RepeatedToolCallGuardMiddleware,
     ToolExecutionMiddleware,
-    ToolsDefinitionMiddleware,
 )
+from boba.domain.agent.meat.turn import InitialUserQueryMiddleware
 
 __all__ = [
     "Agent",
     "AgentErrorRouter",
     "AgentErrorRouterMiddleware",
     "AssistantMessagePersistenceMiddleware",
-    "HistoryMiddleware",
+    "InitialUserQueryMiddleware",
     "IterationCounterMiddleware",
     "JsonContentToolCallMiddleware",
     "JsonDepthScanner",
@@ -54,17 +47,12 @@ __all__ = [
     "JsonToolCallHeader",
     "LLMEventToAgentEventConverter",
     "LLMInvokeMiddleware",
-    "NewLLMRequestMiddleware",
     "ParsedJsonToolCall",
     "RepeatedFormatFailureGuardMiddleware",
     "RepeatedToolCallGuardMiddleware",
-    "SamplingMiddleware",
     "StopOnAnyFailure",
     "StopOnFinished",
     "StrictJsonContentToolCallMiddleware",
     "StrictJsonToolCallParser",
-    "SystemPromptMiddleware",
     "ToolExecutionMiddleware",
-    "ToolsDefinitionMiddleware",
-    "UserPromptMiddleware",
 ]

@@ -16,15 +16,17 @@
     LLM — на следующей итерации модель увидит фидбек.
     Реализует :meth:`to_llm_feedback`.
 
-:class:`TerminalError`
-    Чистый маркер. Ошибка должна остановить цикл. Роутер гарантирует,
-    что для такой ошибки в stream выйдет событие из семейства
-    ``TerminalFailure``: либо собственное через ``to_user_feedback`` (если
-    ошибка также :class:`UserFeedbackError`), либо generic.
+:class:`TerminalError[TReqId, TUserEvent]`
+    Специализация :class:`UserFeedbackError`: ошибка останавливает
+    агентский цикл. Концепт «остановить цикл» кодируется *типом
+    возвращаемого события* (наследник ``TerminalFailure``), поэтому
+    :class:`TerminalError` обязывает реализовать :meth:`to_user_feedback`
+    и задокументирован как возвращающий терминальное событие —
+    никакого отдельного маркера без метода нет.
 
 Комбинировать можно произвольно::
 
-    class MaxIter(UserFeedbackError[RequestId, AgentEvent], TerminalError):
+    class MaxIter(TerminalError[RequestId, AgentEvent]):
         def to_user_feedback(self, rid): return MaxIterationsReached(...)
 
     class ToolFail(
@@ -58,7 +60,7 @@ class RoutableError(Exception):
     Сам по себе не несёт эффектов — служит контрактом «эту ошибку
     обрабатывает роутер». Эффекты добавляются миксами маркеров:
     :class:`UserFeedbackError`, :class:`LLMFeedbackError`,
-    :class:`TerminalError`
+    :class:`TerminalError`.
     """
 
 
@@ -96,15 +98,18 @@ class LLMFeedbackError(RoutableError, Generic[TFeedback], ABC):
         ...
 
 
-class TerminalError(RoutableError):
+class TerminalError(UserFeedbackError[TReqId, TUserEvent], ABC):
     """Маркер: ошибка останавливает агентский цикл.
 
-    Чистый маркер — без методов. Роутер гарантирует, что для
-    :class:`TerminalError` в stream выйдет событие из семейства
-    ``TerminalFailure``:
+    Специализация :class:`UserFeedbackError`. «Терминальность» —
+    свойство *события*, а не ошибки: цикл останавливается, когда в
+    stream выходит наследник ``TerminalFailure``. Поэтому
+    :class:`TerminalError` обязывает реализовать
+    :meth:`to_user_feedback`, который обязан вернуть подкласс
+    ``TerminalFailure``.
 
-    - если ошибка также :class:`UserFeedbackError` — :meth:`to_user_feedback`
-      должен вернуть подкласс ``TerminalFailure``;
-    - если :class:`UserFeedbackError` не миксован — роутер эмитит
-      generic ``TerminalFailure`` сам.
+    Контракт на тип возврата выражен документально (в core-слое нет
+    ссылки на ``TerminalFailure`` из agent-слоя), но covariance возврата
+    в Python делает сужение статически проверяемым: подкласс может
+    аннотировать ``-> TerminalFailure`` и type-checker примет.
     """

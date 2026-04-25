@@ -122,13 +122,9 @@ class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
 
     def _apply_messages(self, kwargs: dict[str, Any], r: LLMRequest) -> None:
         """
-        Склеивает в OpenAI-порядок: ``system → history → user``.
+        Склеивает в OpenAI-порядок: ``system → messages``.
         """
-        ordered: list[LLMMessage] = [
-            r.system_message,
-            *r.history_messages,
-            r.user_message,
-        ]
+        ordered: list[LLMMessage] = [r.system_message, *r.messages]
         kwargs["messages"] = list(self._convert_messages(ordered))
 
     def _convert_messages(

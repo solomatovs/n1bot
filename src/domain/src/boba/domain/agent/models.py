@@ -1,21 +1,11 @@
-"""Модели агент-слоя.
-
-S4a: набор вырос — появился :class:`AgentConfig` (пока только
-``max_iterations``) и поле ``iteration`` в :class:`AgentContext`,
-инкрементируемое :class:`~boba.domain.agent.meat.loop_control.\
-IterationCounterMiddleware` на каждой итерации цикла.
-
-Tool-специфичные поля (``workspace_id``, каталог tool'ов) появятся
-при миграции соответствующих middleware.
-"""
+"""Модели агент-слоя."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from boba.domain.agent.turn.effects import TurnEffect
-from boba.domain.agent.turn.trigger import TurnTrigger
-from boba.domain.llm.models import LLMRequestBuilder, RequestId
+from boba.domain.agent.turn.trigger import TurnTriggerQueue
+from boba.domain.llm.models import RequestId
 
 
 @dataclass(frozen=True)
@@ -23,8 +13,7 @@ class AgentRequest:
     """Входные данные для одного прогона агента.
 
     ``model`` живёт здесь, а не в глобальном конфиге: выбирает caller
-    (UI/CLI), чтобы системный дефолт не просачивался в loop незаметно
-    — поведение совпадает со старой версией.
+    (UI/CLI), чтобы системный дефолт не просачивался в loop незаметно.
     """
 
     query: str
@@ -36,19 +25,16 @@ class AgentRequest:
 class AgentConfig:
     """Настройки одного прогона агента.
 
-    Отделён от :class:`AgentRequest`, потому что загружается из TOML/env
-    однократно и шарится между прогонами; ``AgentRequest`` — per-call.
-
     ``max_consecutive_tool_calls`` — лимит подряд идущих идентичных
     tool_call'ов (по ``(tool_name, arguments)``). Используется
-    :class:`~boba.domain.agent.meat.tools.\
-RepeatedToolCallGuardMiddleware` — N+1-й вызов подавляется как
-    :class:`~boba.domain.agent.errors.ToolFeedbackError`.
+    :class:`~boba.domain.agent.meat.tools.RepeatedToolCallGuardMiddleware`:
+    N+1-й вызов подавляется, declare :class:`LLMFeedbackEffect` с
+    критикой в адрес модели.
 
     ``max_consecutive_format_failures`` — лимит подряд идущих
     ошибок формата content-tool-call. Используется
     :class:`~boba.domain.agent.meat.tools.\
-RepeatedFormatFailureGuardMiddleware` — после N+1 эмитится
+RepeatedFormatFailureGuardMiddleware`: после N+1 эмитится
     :class:`~boba.domain.agent.events.RepeatedFormatFailure` и цикл
     останавливается.
     """
@@ -63,39 +49,18 @@ class AgentContext:
     """Mutable контекст одного прогона, передаваемый через цепочку
     middleware.
 
-    Middleware-стадии (prompt, tools, sampling, history) заполняют
-    слоты :attr:`request`; терминальная стадия
-    (:class:`~boba.domain.agent.meat.llm_invoke.LLMInvokeMiddleware`)
-    на границе с LLM-слоем валидирует запрос и передаёт его в LLM.
+    - :attr:`iteration` — 1-based номер текущей итерации; ``0`` означает
+      «до первой итерации» (счётчик ещё не сработал).
 
-    :attr:`request` **локален для одной итерации** цикла агента: на
-    каждой итерации :class:`~boba.domain.agent.meat.loop_control.\
-IterationCounterMiddleware` пересоздаёт его. Это принципиальная
-    разница со старым кодом, где request жил через все итерации как
-    shared mutable state.
-
-    ``iteration`` — 1-based номер текущей итерации; ``0`` означает «до
-    первой итерации» (счётчик ещё не сработал).
+    - :attr:`triggers` — очередь эффектов следующего turn'а,
+      :class:`TurnTriggerQueue`. Producer'ы внутри итерации
+      дописывают через :meth:`TurnTriggerQueue.declare`;
+      :class:`LLMInvokeMiddleware` один раз за итерацию вычитывает
+      через :meth:`TurnTriggerQueue.consume` и прогоняет через
+      :class:`TurnSpec`.
     """
 
     agent_request: AgentRequest
     config: AgentConfig = field(default_factory=AgentConfig)
     iteration: int = 0
-    request: LLMRequestBuilder = field(default_factory=LLMRequestBuilder)
-    _pending: TurnTrigger = field(default_factory=TurnTrigger)
-
-    def declare(self, effect: TurnEffect, *tags: str) -> None:
-        """Декларирует эффект следующего хода.
-
-        Append-семантика: эффекты накапливаются в порядке деклараций,
-        теги объединяются. Потери при конкурентной декларации
-        разных producer'ов нет — все payload'ы сохраняются.
-        """
-        self._pending = self._pending.merged_with(
-            TurnTrigger(effects=(effect,), tags=frozenset(tags)),
-        )
-
-    def consume_trigger(self) -> TurnTrigger:
-        """Возвращает накопленный trigger и очищает slot (одноразовое чтение)."""
-        trigger, self._pending = self._pending, TurnTrigger()
-        return trigger
+    triggers: TurnTriggerQueue = field(default_factory=TurnTriggerQueue)

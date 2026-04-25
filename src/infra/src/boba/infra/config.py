@@ -18,9 +18,10 @@
 - :class:`ConfigBundle` / :class:`ConfigLoader` — **агрегат приложения**:
   :class:`AppConfig` + :class:`AgentConfig`. То, что шарится на весь
   процесс и читается один раз на старте.
-- :class:`SamplingParams` — параметры :class:`SamplingMiddleware` и
-  не часть bundle. Загружаются отдельно через :class:`SamplingLoader`,
-  чтобы LLM-специфика не протекала в общий agent/app-агрегат.
+- :class:`SamplingParams` — параметры :class:`~boba.domain.agent.turn.\
+reducers.SamplingReducer` и не часть bundle. Загружаются отдельно
+  через :class:`SamplingLoader`, чтобы LLM-специфика не протекала в
+  общий agent/app-агрегат.
 
 Оба загрузчика переиспользуют одну и ту же инфраструктуру источников
 (:func:`default_resolver`), так что env/TOML-картина для sampling
@@ -101,13 +102,13 @@ class ConfigLoader:
 
 class SamplingLoader:
     """Отдельный загрузчик :class:`SamplingParams` для
-    :class:`~boba.domain.agent.meat.sampling.SamplingMiddleware`.
+    :class:`~boba.domain.agent.turn.reducers.SamplingReducer`.
 
-    Почему отдельно: sampling — это параметры конкретного middleware,
-    а не уровня приложения. Держим его вне :class:`ConfigBundle`,
-    чтобы LLM-специфика не протекала в общий agent/app-агрегат.
-    Переиспользует :func:`default_resolver` для единой картины
-    env/TOML-источников с :class:`ConfigLoader`.
+    Почему отдельно: sampling — это параметры конкретного reducer'а
+    TurnSpec, а не уровня приложения. Держим его вне
+    :class:`ConfigBundle`, чтобы LLM-специфика не протекала в общий
+    agent/app-агрегат. Переиспользует :func:`default_resolver` для
+    единой картины env/TOML-источников с :class:`ConfigLoader`.
     """
 
     def __init__(

@@ -1,19 +1,18 @@
 """Порт сервиса управления историей сообщений + ошибки persistent-реализаций.
 
 :class:`MessageService` хранит диалог (``system`` / ``user`` /
-``assistant`` / ``tool`` сообщения) как append-log. Нужен для двух
-вещей:
+``assistant`` / ``tool`` сообщения) как append-log. Записи в сервис
+делают в трёх местах:
 
-1. **Межзапросная память**. ``UserMessagePersistenceMiddleware``
-   кладёт запрос пользователя один раз (прямо перед отправкой в
-   LLM); каждая итерация агентского цикла подтягивает всю историю
-   в ``ctx.request.history_messages`` через
-   :class:`~boba.domain.agent.meat.history.HistoryMiddleware`.
-2. **Межитерационная память**. После ответа модели
-   :class:`~boba.domain.agent.meat.dialogue.\
-AssistantMessagePersistenceMiddleware` пишет assistant-сообщение в
-   сервис; следующая итерация (с tool-результатом) увидит его в
-   истории.
+1. :meth:`~boba.domain.agent.turn.spec.TurnSpec.initial` — применяет
+   :class:`~boba.domain.agent.turn.effects.TurnEffect`-ы trigger'а
+   в начале каждой итерации (user-query, tool-result, LLM feedback).
+2. :class:`~boba.domain.agent.meat.dialogue.\
+AssistantMessagePersistenceMiddleware` — записывает assistant-сообщение
+   после :class:`~boba.domain.agent.events.GenerationDone`.
+3. :class:`~boba.domain.agent.turn.reducers.HistoryReducer` — не пишет,
+   а только **читает** ``message_iter()`` в ``TurnState.messages``
+   при сборке следующего :class:`LLMRequest`.
 
 In-memory реализация — :mod:`boba.adapters.in_memory_messages`,
 persistent (JSONL) — :mod:`boba.adapters.jsonl_messages`.
@@ -27,17 +26,11 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 
 from boba.domain.agent.events import AgentEvent, PersistenceFailed
-from boba.domain.core.errors import (
-    TerminalError,
-    UserFeedbackError,
-)
+from boba.domain.core.errors import TerminalError
 from boba.domain.llm.models import LLMMessage, RequestId
 
 
-class MessageStoreError(
-    UserFeedbackError[RequestId, AgentEvent],
-    TerminalError,
-):
+class MessageStoreError(TerminalError[RequestId, AgentEvent]):
     """Базовая ошибка persistent-реализации :class:`MessageService`.
 
     Контракт: persistent-реализации (файл, БД) ОБЯЗАНЫ оборачивать
@@ -58,7 +51,7 @@ class MessageStoreError(
     def _prefix(self) -> str:
         return "Message store error"
 
-    def to_user_feedback(self, request_id: RequestId) -> AgentEvent:
+    def to_user_feedback(self, request_id: RequestId) -> PersistenceFailed:
         return PersistenceFailed(
             request_id=request_id,
             error_kind=type(self).__name__,

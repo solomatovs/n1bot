@@ -2,9 +2,11 @@
 
 Провайдеры поставляют блоки определённого типа (``SYSTEM`` / ``USER``);
 :class:`PromptFactory` агрегирует их по приоритету в
-:class:`PromptResult`. Middleware ``SystemPromptMiddleware`` и
-``UserPromptMiddleware`` (:mod:`boba.domain.agent.meat.prompt`)
-вызывают фабрику и пишут финальные тексты в :class:`MessageService`.
+:class:`PromptResult`. System-промпт собирается
+:class:`~boba.domain.agent.turn.reducers.SystemPromptReducer` каждую
+итерацию; user-промпт собирается один раз на первой итерации в
+:class:`~boba.domain.agent.meat.turn.InitialUserQueryMiddleware` и
+декларируется как :class:`~boba.domain.agent.turn.effects.UserQueryEffect`.
 
 Параметр ``TCtx`` в :class:`PromptState` — тип контекста, прокидываемый
 провайдерам. В boba это :class:`~boba.domain.agent.models.\
@@ -18,7 +20,7 @@ AgentContext`, но сам модуль работает с любым типо�
 
 ::
 
-    PromptError(UserFeedbackError[...], TerminalError) → PromptFailed
+    PromptError(TerminalError[RequestId, AgentEvent]) → PromptFailed
     │   provider: str | None
 
 ``PromptFactory.build()`` оборачивает ``OSError`` → ``PromptProviderError``
@@ -35,14 +37,14 @@ from enum import Enum
 from typing import Generic, Self, TypeVar
 
 from boba.domain.agent.events import AgentEvent, PromptFailed
-from boba.domain.core.errors import TerminalError, UserFeedbackError
+from boba.domain.core.errors import TerminalError
 from boba.domain.core.patterns import FoldFactory, Id, PrioritySource
 from boba.domain.llm.models import RequestId
 
 TCtx = TypeVar("TCtx")
 
 
-class PromptError(UserFeedbackError[RequestId, AgentEvent], TerminalError):
+class PromptError(TerminalError[RequestId, AgentEvent]):
     """Базовая ошибка сборки промпта.
 
     Адаптеры-провайдеры (файлы, workspace, git) оборачивают свои
@@ -55,7 +57,7 @@ class PromptError(UserFeedbackError[RequestId, AgentEvent], TerminalError):
         super().__init__(message)
         self.provider = provider
 
-    def to_user_feedback(self, request_id: RequestId) -> AgentEvent:
+    def to_user_feedback(self, request_id: RequestId) -> PromptFailed:
         return PromptFailed(
             request_id=request_id,
             error_kind=type(self).__name__,
@@ -79,10 +81,9 @@ class PromptProviderError(PermanentPromptError):
 class PromptKind(Enum):
     """Тип собираемого промпта.
 
-    На S7-этапе — только ``SYSTEM`` и ``USER``. ``TOOLS_DEFINITION``
-    из старого кода не портирован: в boba каталог tools живёт в
-    :class:`~boba.domain.agent.meat.tools.ToolsDefinitionMiddleware`
-    как отдельная стадия, а не собирается через ту же prompt-фабрику.
+    Только ``SYSTEM`` и ``USER``. Каталог tools собирается отдельно —
+    :class:`~boba.domain.agent.turn.reducers.ToolsReducer`, а не через
+    prompt-фабрику.
     """
 
     SYSTEM = "system"

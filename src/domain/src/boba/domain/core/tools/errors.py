@@ -1,9 +1,11 @@
 """Иерархия ошибок выполнения tool'ов.
 
 Все tool-ошибки — потомки :class:`ToolExecutionError`. Agent-слой
-(middleware) ловит родительский тип, достаёт ``error_kind`` из
-``type(e).__name__`` и превращает в ``ToolFeedbackError`` для LLM —
-разные подклассы дают разные ``error_kind``, LLM видит конкретику.
+(:class:`~boba.domain.agent.meat.tools.ToolExecutionMiddleware`) ловит
+родительский тип и декларирует :class:`~boba.domain.agent.turn.effects.\
+ToolResultEffect` с текстом ошибки — LLM получает её как
+``role="tool"`` сообщение на следующей итерации и может скорректировать
+поведение.
 """
 
 from __future__ import annotations

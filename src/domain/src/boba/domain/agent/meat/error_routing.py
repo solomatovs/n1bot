@@ -1,23 +1,31 @@
 """Полиморфная маршрутизация :class:`RoutableError` по маркерам.
 
 Роутер не знает конкретных подклассов — он читает маркеры
-(:class:`UserFeedbackError`, :class:`LLMFeedbackError`,
-:class:`TerminalError`) независимо и суммирует
-эффекты. Добавление новой ошибки сводится к миксу нужных маркеров и
-реализации их abstract-методов.
+(:class:`UserFeedbackError`, :class:`LLMFeedbackError`) независимо и
+суммирует эффекты.
+
+:class:`TerminalError` — специализация :class:`UserFeedbackError`,
+поэтому отдельной ветки не требует: «терминальность» кодируется
+типом возвращаемого события (наследник ``TerminalFailure``), который
+роутер просто yield-ит как любое user-событие.
+
+:class:`LLMFeedbackError` больше не пишется в :class:`MessageService`
+напрямую. Вместо этого роутер декларирует :class:`LLMFeedbackEffect`
+через :meth:`TurnTriggerQueue.declare` (``ctx.triggers``) — эффект
+применяется к сервису в начале следующей итерации через
+:meth:`TurnSpec.initial`.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 
-from boba.domain.agent.events import AgentEvent, GenericTerminalFailure
-from boba.domain.agent.messages import MessageService
+from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.models import AgentContext
+from boba.domain.agent.turn.effects import LLMFeedbackEffect
 from boba.domain.core.errors import (
     LLMFeedbackError,
     RoutableError,
-    TerminalError,
     UserFeedbackError,
 )
 from boba.domain.core.patterns import StreamSource
@@ -26,28 +34,17 @@ from boba.domain.core.patterns import StreamSource
 class AgentErrorRouter:
     """Маршрутизирует :class:`RoutableError` по маркерам.
 
-    Эффекты собираются независимо в таком порядке:
+    Эффекты собираются независимо:
 
-    1. :class:`LLMFeedbackError` — ``to_llm_feedback()`` пишется в
-       :class:`MessageService`. LLM увидит фидбек на следующей итерации.
-    2. :class:`UserFeedbackError` — ``to_user_feedback(request_id)`` yield-ится
-       в stream. Sink получает событие.
-    3. :class:`TerminalError` — если шаг 2 не дал события, роутер
-       эмитит generic :class:`GenericTerminalFailure`, чтобы
-       :class:`StopOnAnyFailure` остановил цикл. Если ``to_user_feedback``
-       уже вернул подкласс ``TerminalFailure`` — повторного события
-       не будет.
-
-    Две API-точки:
-
-    - :meth:`route` — разобрать одну ошибку.
-    - :meth:`run_batch` — прогнать серию подзадач с batch-семантикой:
-      не-терминальные ошибки копятся и маршрутизируются в конце,
-      :class:`TerminalError` пропускается наверх немедленно.
+    1. :class:`LLMFeedbackError` — декларируется
+       :class:`LLMFeedbackEffect` в ``ctx``. LLM увидит фидбек на
+       следующей итерации после того, как :meth:`TurnSpec.initial`
+       применит эффект к :class:`MessageService`.
+    2. :class:`UserFeedbackError` — ``to_user_feedback(request_id)``
+       yield-ится в stream. Sink получает событие; если событие —
+       наследник ``TerminalFailure`` (как у :class:`TerminalError`-ошибок),
+       :class:`StopOnAnyFailure` остановит цикл.
     """
-
-    def __init__(self, message_service: MessageService) -> None:
-        self._message_service = message_service
 
     def route(
         self,
@@ -57,43 +54,16 @@ class AgentErrorRouter:
         rid = ctx.agent_request.request_id
 
         if isinstance(err, LLMFeedbackError):
-            self._message_service.add(err.to_llm_feedback())
-
-        has_event = False
-        if isinstance(err, UserFeedbackError):
-            yield err.to_user_feedback(rid)
-            has_event = True
-
-        if isinstance(err, TerminalError) and not has_event:
-            yield GenericTerminalFailure(
-                request_id=rid,
-                error_kind=type(err).__name__,
-                message=str(err),
+            ctx.triggers.declare(
+                LLMFeedbackEffect(
+                    message=err.to_llm_feedback(),
+                    error_kind=type(err).__name__,
+                ),
+                "feedback",
             )
 
-    def run_batch(
-        self,
-        ctx: AgentContext,
-        tasks: Iterable[Iterator[AgentEvent]],
-    ) -> Iterator[AgentEvent]:
-        """Серия подзадач с batch-семантикой для не-терминальных ошибок.
-
-        События успешных подзадач стримятся сразу. Не-терминальные
-        :class:`RoutableError` из подзадач копятся и маршрутизируются
-        после завершения всей серии (в порядке возникновения).
-        :class:`TerminalError` пропускается наверх немедленно — batch
-        прерывается.
-        """
-        deferred: list[RoutableError] = []
-        for task in tasks:
-            try:
-                yield from task
-            except TerminalError:
-                raise
-            except RoutableError as e:
-                deferred.append(e)
-        for err in deferred:
-            yield from self.route(ctx, err)
+        if isinstance(err, UserFeedbackError):
+            yield err.to_user_feedback(rid)
 
 
 class AgentErrorRouterMiddleware(StreamSource[AgentContext, AgentEvent]):

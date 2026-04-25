@@ -93,10 +93,11 @@ class _ToolArgsPipeline(Converter[dict[str, Any], TArgs], Generic[TArgs]):
 
     :class:`InvalidToolArgumentError` (`ToolExecutionError`-потомок)
     пропускается наружу — caller (agent middleware) ловит его в
-    `except ToolExecutionError` и оборачивает в `ToolFeedbackError`
-    для LLM. Контракт `Converter` про `ConverterError` нарушается
-    осознанно: для tool args домен-специфичная иерархия
-    `ToolExecutionError` — единый канал ошибок.
+    `except ToolExecutionError` и декларирует `ToolResultEffect`
+    с текстом ошибки для LLM. Контракт `Converter` про
+    `ConverterError` нарушается осознанно: для tool args
+    домен-специфичная иерархия `ToolExecutionError` — единый канал
+    ошибок.
     """
 
     def __init__(

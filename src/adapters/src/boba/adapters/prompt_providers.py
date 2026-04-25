@@ -267,24 +267,8 @@ class TemplateProvider(PromptProvider):
 
 
 class WorkspaceSystemPromptProvider(PromptProvider):
-    """Собирает system-промпт из файлов внутри директории workspace'а.
-
-    Каждый непустой файл в указанной поддиректории становится
-    отдельным :class:`PromptBlock`. Файлы читаются в
-    лексикографическом порядке имён. Отсутствующая директория или
-    пустой набор непустых файлов → пустой итератор (на выходе
-    фабрики — просто нет вклада этого провайдера).
-
-    Использует абстрактный :class:`HistoryWorkspaceShell` из
-    shared ``boba.domain.core.workspace`` — сам workspace-слой в
-    ``boba`` не копируется, провайдер работает над любой
-    совместимой реализацией (``FsHistoryWorkspaceShell`` из
-    прода, mock / in-memory в тестах).
-
-    I/O-ошибки от workspace (``WorkspaceError`` / ``OSError``)
-    **не** глушатся здесь: их ловит :class:`PromptFactory.build` и
-    оборачивает в :class:`PromptProviderError` → :class:`PromptFailed`
-    через стандартную маршрутизацию.
+    """
+    Собирает system-промпт из файлов внутри директории workspace'а.
     """
 
     def __init__(
