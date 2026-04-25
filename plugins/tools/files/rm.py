@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from boba.adapters.tool_providers import StaticToolSource
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainValidator,
@@ -21,6 +23,7 @@ from boba.domain.core.tools import (
     ToolId,
     ToolInputSchema,
     ToolResult,
+    ToolSource,
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
@@ -28,6 +31,7 @@ from boba.domain.core.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
+from boba.infra.plugins import PluginContext
 
 
 @dataclass(frozen=True)
@@ -101,3 +105,10 @@ class RmTool(Tool[RmArgs]):
                 message=f"Ошибка удаления: {e}",
             ) from e
         return ToolResult(content=f"Удалено: {args.path}")
+
+def register(ctx: PluginContext) -> Iterable[ToolSource]:
+    yield StaticToolSource(
+        ToolSourceId("builtin.files.rm"),
+        priority=0,
+        tools=[RmTool(ctx.project_workspace)],
+    )

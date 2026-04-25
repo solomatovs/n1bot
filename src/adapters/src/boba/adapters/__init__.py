@@ -3,7 +3,9 @@
 Подпакеты:
 
 - :mod:`boba.adapters.llm` — OpenAI-терминал и конвертеры.
-- :mod:`boba.adapters.tools` — встроенные tool-ы агента.
+
+Tool-ы агента живут вне пакета — в директории plugins/, грузятся
+:class:`boba.infra.plugins.PluginLoader` через ``BOBA_PLUGINS_DIR``.
 
 На верхнем уровне реэкспортированы адаптеры из плоских модулей
 (``console_sink``, ``fs_workspace``, ``prompt_providers``,

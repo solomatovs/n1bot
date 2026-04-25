@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from types import ModuleType
@@ -197,7 +198,15 @@ class PluginLoader:
         except WorkspaceError as e:
             raise PluginLoadError(rel_path, f"read failed: {e}") from e
 
-        module = ModuleType(f"boba.plugins.{rel_path}")
+        # Валидное Python-имя модуля: "tools/files/cat.py" -> "tools.files.cat".
+        # Без этого ``typing.get_type_hints`` (который дёргается из
+        # ``@dataclass``-декоратора и подобных) пытается достать
+        # ``sys.modules[cls.__module__]``, не находит и падает с
+        # AttributeError на ``None.__dict__``.
+        module_name = "boba.plugins." + (
+            rel_path.removesuffix(".py").replace("/", ".")
+        )
+        module = ModuleType(module_name)
         # __file__ нужен для понятных трейсбеков; реальный физический путь
         # наружу не показываем — relative path внутри workspace и так
         # уникален для diagnostics.
@@ -206,15 +215,23 @@ class PluginLoader:
             code = compile(source, rel_path, "exec")
         except SyntaxError as e:
             raise PluginLoadError(rel_path, f"syntax error: {e}") from e
+
+        # Регистрируем модуль в sys.modules ДО exec — иначе
+        # ``typing.get_type_hints`` не сможет резолвить аннотации внутри
+        # ``@dataclass``/``@dataclass(frozen=True)``. На failure снимаем
+        # запись, чтобы битый плагин не висел в namespace.
+        sys.modules[module_name] = module
         try:
             exec(code, module.__dict__)  # noqa: S102
         except Exception as e:
+            sys.modules.pop(module_name, None)
             raise PluginLoadError(
                 rel_path, f"exec failed: {type(e).__name__}: {e}"
             ) from e
 
         register = module.__dict__.get("register")
         if not callable(register):
+            sys.modules.pop(module_name, None)
             raise PluginLoadError(
                 rel_path, "missing or non-callable `register(ctx)`"
             )

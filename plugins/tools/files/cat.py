@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from io import TextIOBase
 from typing import Any
 
+from boba.adapters.tool_providers import StaticToolSource
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainValidator,
@@ -24,6 +26,7 @@ from boba.domain.core.tools import (
     ToolInputSchema,
     ToolOutputTooLargeError,
     ToolResult,
+    ToolSource,
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
@@ -31,6 +34,7 @@ from boba.domain.core.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
+from boba.infra.plugins import PluginContext
 
 
 @dataclass(frozen=True)
@@ -186,3 +190,10 @@ class CatTool(Tool[CatArgs]):
             collected.append(line.rstrip("\r\n"))
             last = i
         return "\n".join(collected), last
+
+def register(ctx: PluginContext) -> Iterable[ToolSource]:
+    yield StaticToolSource(
+        ToolSourceId("builtin.files.cat"),
+        priority=0,
+        tools=[CatTool(ctx.project_workspace)],
+    )
