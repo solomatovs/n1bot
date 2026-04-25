@@ -5,7 +5,7 @@
             "id": "model",
             "type": "pickString",
             "description": "LiteLLM модель",
-            "default": "qwen3.5-35b",
+            "default": "qwen3-0.6b",
             "options": [
                 "qwen3-0.6b",
                 "qwen3",
@@ -48,7 +48,8 @@
             ],
             "envFile": "${workspaceFolder}/local/.env",
             "env": {
-                "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src"
+                "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src",
+                "BOBA_EXTENSIONS_DIR": "${workspaceFolder}/extensions"
             }
         },
         {
@@ -85,7 +86,8 @@
             "envFile": "${workspaceFolder}/local/.env",
             "env": {
                 "CHAINLIT_APP_ROOT": "${workspaceFolder}/src/chainlit",
-                "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src:${workspaceFolder}/src/chainlit/src"
+                "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src:${workspaceFolder}/src/chainlit/src",
+                "BOBA_EXTENSIONS_DIR": "${workspaceFolder}/extensions"
             }
         }
     ]
