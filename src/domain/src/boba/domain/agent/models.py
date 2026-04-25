@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from boba.domain.llm.models import RequestId
+from boba.domain.llm.models import RequestId, SamplingParams
 
 
 @dataclass(frozen=True)
 class AgentRequest:
     """Параметры одного прогона агента.
 
-    Связка per-call настроек обработки: ``model``, ``request_id``
-    (и в будущем — ``temperature``, ``response_format`` и пр.).
+    Связка per-call настроек обработки: ``model``, ``request_id``,
+    опциональный ``sampling`` (per-call override параметров генерации).
     Само сообщение пользователя сюда **не входит** — оно передаётся
     в :meth:`Agent.run` отдельным параметром ``query`` и сразу
     кладётся в :class:`MessageService` через :class:`DialogueWriter`,
@@ -20,10 +20,16 @@ class AgentRequest:
 
     ``model`` живёт здесь, а не в глобальном конфиге: выбирает caller
     (UI/CLI), чтобы системный дефолт не просачивался в loop незаметно.
+
+    ``sampling`` — единственный источник параметров sampling: глобального
+    конфига нет. ``None`` означает «провайдеру не передавать ничего» —
+    каждое поле :class:`SamplingParams` обрабатывается независимо в
+    :class:`~boba.domain.agent.turn.reducers.AgentRequestSamplingReducer`.
     """
 
     model: str
     request_id: RequestId
+    sampling: SamplingParams | None = None
 
 
 @dataclass(frozen=True)

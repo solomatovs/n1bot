@@ -37,6 +37,10 @@
             "python": "${workspaceFolder}/.venv/bin/python",
             "args": [
                 "--model", "${input:model}",
+                "--temperature", "0.2",
+                "--top-p", "0.95",
+                "--presence-penalty", "0.0",
+                "--frequency-penalty", "0.0",
                 "${input:query}"
             ],
             "envFile": "${workspaceFolder}/local/.env",
