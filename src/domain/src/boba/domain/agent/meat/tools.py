@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 
+from boba.domain.agent.dialogue_writer import DialogueWriter
 from boba.domain.agent.errors import RepeatedFormatFailureError
 from boba.domain.agent.events import (
     AgentEvent,
@@ -22,7 +23,6 @@ from boba.domain.agent.events import (
 )
 from boba.domain.agent.meat.error_routing import AgentErrorRouter
 from boba.domain.agent.models import AgentContext
-from boba.domain.agent.turn.effects import LLMFeedbackEffect, ToolResultEffect
 from boba.domain.core.patterns import StreamSource
 from boba.domain.core.tools import (
     ToolCall,
@@ -38,10 +38,10 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
     """
     Исполняет tool_calls после завершения inner-стрима.
 
-    На каждый :class:`ToolCallComplete` декларирует
-    :class:`ToolResultEffect` — и успех, и ошибка идут одним путём
-    ``role="tool"`` в следующий виток. Ошибки параллельно yield'ят
-    :class:`ToolExecutionFailed` для sink'ов.
+    На каждый :class:`ToolCallComplete` пишет результат в историю
+    через :class:`DialogueWriter` — и успех, и ошибка идут одним
+    путём ``role="tool"`` в следующий виток. Ошибки параллельно
+    yield'ят :class:`ToolExecutionFailed` для sink'ов.
     """
 
     def __init__(
@@ -49,10 +49,12 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
         inner: StreamSource[AgentContext, AgentEvent],
         tools_service: ToolsService,
         tool_ctx: ToolContext,
+        writer: DialogueWriter,
     ) -> None:
         self._inner = inner
         self._tools_service = tools_service
         self._tool_ctx = tool_ctx
+        self._writer = writer
 
     def name(self) -> str:
         return "ToolExecution"
@@ -69,22 +71,18 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
                 pending.append(event)
 
         for tc in pending:
-            yield from self._run_tool(ctx, tc)
+            yield from self._run_tool(tc)
 
     def _run_tool(
         self,
-        ctx: AgentContext,
         tc: ToolCallComplete,
     ) -> Iterable[AgentEvent]:
         try:
             arguments = json.loads(tc.arguments)
         except json.JSONDecodeError as e:
-            ctx.triggers.declare(
-                ToolResultEffect(
-                    tool_call_id=tc.tool_call_id,
-                    content=f"invalid JSON arguments: {e}",
-                ),
-                "tool_result",
+            self._writer.append_tool_result(
+                tool_call_id=tc.tool_call_id,
+                content=f"invalid JSON arguments: {e}",
             )
             yield ToolExecutionFailed(
                 request_id=tc.request_id,
@@ -107,12 +105,9 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
                 ToolCall(tool_id=ToolId(tc.tool_name), arguments=arguments),
             )
         except ToolExecutionError as e:
-            ctx.triggers.declare(
-                ToolResultEffect(
-                    tool_call_id=tc.tool_call_id,
-                    content=e.message,
-                ),
-                "tool_result",
+            self._writer.append_tool_result(
+                tool_call_id=tc.tool_call_id,
+                content=e.message,
             )
             yield ToolExecutionFailed(
                 request_id=tc.request_id,
@@ -123,12 +118,9 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
             )
             return
 
-        ctx.triggers.declare(
-            ToolResultEffect(
-                tool_call_id=tc.tool_call_id,
-                content=result.content,
-            ),
-            "tool_result",
+        self._writer.append_tool_result(
+            tool_call_id=tc.tool_call_id,
+            content=result.content,
         )
         yield ToolResultReady(
             request_id=tc.request_id,
@@ -142,18 +134,20 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
     """
     Подавляет ``(N+1)``-й подряд идентичный :class:`ToolCallComplete`.
 
-    На подавлении декларирует :class:`LLMFeedbackEffect` с
-    ``role="tool"`` — LLM на следующей итерации увидит замечание
-    вместо дублирующего вызова.
+    На подавлении пишет в историю через :class:`DialogueWriter`
+    feedback с ``role="tool"`` — LLM на следующей итерации увидит
+    замечание вместо дублирующего вызова.
     """
 
     def __init__(
         self,
         inner: StreamSource[AgentContext, AgentEvent],
         max_consecutive: int,
+        writer: DialogueWriter,
     ) -> None:
         self._inner = inner
         self._max_consecutive = max_consecutive
+        self._writer = writer
         self._last: tuple[str, str] | None = None
         self._count = 0
 
@@ -188,16 +182,12 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
                     f"либо сформулируй ответ пользователю обычным "
                     f"текстом."
                 )
-                ctx.triggers.declare(
-                    LLMFeedbackEffect(
-                        message=LLMMessage(
-                            role="tool",
-                            content=message,
-                            tool_call_id=event.tool_call_id,
-                        ),
-                        error_kind="RepeatedToolCallError",
+                self._writer.append_llm_feedback(
+                    LLMMessage(
+                        role="tool",
+                        content=message,
+                        tool_call_id=event.tool_call_id,
                     ),
-                    "feedback",
                 )
                 yield ToolExecutionFailed(
                     request_id=event.request_id,

@@ -15,18 +15,49 @@ reducer'ы с более высоким ``priority``, мутирующие те 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
-from boba.domain.agent.prompt import PromptFactory, PromptKind, PromptProvider
+from boba.domain.agent.prompt import PromptFactory, PromptProvider
 from boba.domain.agent.turn.spec import TurnResolveContext, TurnState
 from boba.domain.core.patterns import ContextPrioritySource, StrId
-from boba.domain.core.tools import ToolsService
-from boba.domain.llm.models import LLMMessage, LLMToolRequest, SamplingParams
+from boba.domain.core.tools import Tool, ToolsService
+from boba.domain.llm.models import (
+    LLMMessage,
+    LLMToolRequest,
+    LLMToolSchema,
+    SamplingParams,
+)
 
 _MODEL_ID = StrId("model")
 _SYSTEM_ID = StrId("system")
 _HISTORY_ID = StrId("history")
 _TOOLS_ID = StrId("tools")
 _SAMPLING_ID = StrId("sampling")
+
+
+def _tool_to_schema(tool: Tool[Any]) -> LLMToolSchema:
+    """Конверсия доменного :class:`Tool` в data-only :class:`LLMToolSchema`.
+
+    Граница между tools-доменом и LLM-слоем: дальше в LLM едет только
+    name + description + JSON-schema, без execute-логики и валидаторов.
+    """
+    definition = tool.definition()
+    properties: dict[str, dict[str, Any]] = {}
+    required: list[str] = []
+    for p in definition.input_schema.params:
+        wire = p.build_wire_schema()
+        properties[p.name] = wire.property
+        if wire.required:
+            required.append(p.name)
+    return LLMToolSchema(
+        name=tool.tool_id().to_wire(),
+        description=definition.description,
+        parameters_schema={
+            "type": "object",
+            "properties": properties,
+            "required": required,
+        },
+    )
 
 
 class ModelReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
@@ -80,7 +111,7 @@ class SystemPromptReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnS
         content = (
             PromptFactory(ctx.agent, self._providers)
             .build()
-            .to_string(PromptKind.SYSTEM)
+            .to_string()
         )
         if content:
             state.system_message = LLMMessage(role="system", content=content)
@@ -90,9 +121,9 @@ class SystemPromptReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnS
 class HistoryReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
     """Копирует весь диалог из :class:`MessageService` в state.
 
-    Ставится ПОСЛЕ :meth:`TurnSpec.initial` (где effects уже
-    применены к сервису). Если между initial и этим reducer'ом
-    никто не дописывает в svc — снапшот полный и свежий.
+    Все записи (user-query, assistant, tool_result, feedback) уже
+    зафиксированы в svc через :class:`DialogueWriter` к моменту
+    вызова reducer'а — снапшот полный и свежий.
     """
 
     def __init__(self, priority: int = 30) -> None:
@@ -136,7 +167,7 @@ class ToolsReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
 
     def apply(self, ctx: TurnResolveContext, state: TurnState) -> TurnState:
         state.tools = LLMToolRequest(
-            tools=tuple(self._tools_service.tools()),
+            tools=tuple(_tool_to_schema(t) for t in self._tools_service.tools()),
             parallel_tool_calls=self._parallel,
         )
         return state

@@ -13,7 +13,7 @@ Tool-ы агента живут вне пакета — в директории 
 
 Короткие импорты::
 
-    from boba.adapters import TextOutSink, FsProjectWorkspaceRegistry
+    from boba.adapters import ConsoleSink, FsProjectWorkspaceRegistry
     from boba.adapters import JsonLinesMessageService, StaticPromptProvider
     from boba.adapters.llm import OpenAITerminal
 
@@ -23,7 +23,7 @@ Tool-ы агента живут вне пакета — в директории 
 плоский уровень ни одну не выносим, импортируйте из подмодуля.
 """
 
-from boba.adapters.console_sink import TextOutSink
+from boba.adapters.console_sink import ConsoleSink
 from boba.adapters.fs_workspace import (
     FsHistoryWorkspaceRegistry,
     FsHistoryWorkspaceShell,
@@ -42,10 +42,7 @@ from boba.adapters.prompt_providers import (
     EnvironmentPromptProvider,
     FilePromptProvider,
     GitPromptProvider,
-    IDESelectionProvider,
     StaticPromptProvider,
-    TemplateProvider,
-    UserQueryProvider,
     WorkspaceSystemPromptProvider,
 )
 from boba.adapters.raw_llm_observer import (
@@ -61,6 +58,7 @@ from boba.adapters.tool_providers import StaticToolSource
 
 __all__ = [
     "CompositeRawLLMObserver",
+    "ConsoleSink",
     "DuplicateToolCallIndexReindexer",
     "EnvironmentPromptProvider",
     "FileContentObserver",
@@ -76,7 +74,6 @@ __all__ = [
     "FsWorkspaceShell",
     "GitPromptProvider",
     "GrowBuffer",
-    "IDESelectionProvider",
     "InMemoryMessageService",
     "JsonLinesMessageService",
     "MetricsRawLLMObserver",
@@ -84,9 +81,6 @@ __all__ = [
     "RequestOutcome",
     "StaticPromptProvider",
     "StaticToolSource",
-    "TemplateProvider",
-    "TextOutSink",
-    "UserQueryProvider",
     "WorkspacePath",
     "WorkspaceSystemPromptProvider",
 ]

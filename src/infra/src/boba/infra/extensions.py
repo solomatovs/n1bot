@@ -9,9 +9,8 @@
   ``register_prompts(ctx) -> Iterable[PromptProvider]``. Файл без
   обеих — warning + skip.
 * ``*.md`` / ``*.txt`` — становится :class:`StaticPromptProvider`
-  с ``kind=PromptKind.SYSTEM`` (USER-блоки реализуются через ``.py``
-  с :func:`register_prompts`). Priority извлекается из ``\\d+-``
-  префикса в имени файла; пустые файлы — skip.
+  (system-prompt блок). Priority извлекается из ``\\d+-`` префикса
+  в имени файла; пустые файлы — skip.
 * любое другое расширение — silently skip.
 * любой сегмент пути с ``_*`` префиксом — silently skip (как
   ``__pycache__``, ``_draft.md``, ``_helpers.py``).
@@ -47,7 +46,7 @@ from typing import cast
 
 from boba.adapters.prompt_providers import StaticPromptProvider
 from boba.domain.agent.models import AgentConfig
-from boba.domain.agent.prompt import PromptId, PromptKind, PromptProvider
+from boba.domain.agent.prompt import PromptId, PromptProvider
 from boba.domain.config import AppConfig
 from boba.domain.core.tools import ToolFactory, ToolSource, ToolsService
 from boba.domain.core.workspace import ExtensionWorkspaceShell, WorkspaceError
@@ -187,7 +186,6 @@ class ExtensionLoader:
                 prompt_id=prompt_id,
                 priority=priority,
                 content=content.rstrip("\n"),
-                kind=PromptKind.SYSTEM,
             )
         )
 

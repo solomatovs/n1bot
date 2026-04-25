@@ -1,4 +1,9 @@
-"""Конкретные реализации :class:`PromptProvider`.
+"""Конкретные реализации :class:`PromptProvider` (system-prompt).
+
+Все провайдеры пишут в system-prompt: USER-сообщение в boba не
+собирается через :class:`PromptFactory` — оно приходит готовым в
+:attr:`AgentRequest.query` от caller'а (frontend/CLI отвечает за
+обогащение IDE-selection / шаблонами / контекстом вызова).
 
 Набор провайдеров:
 
@@ -6,9 +11,6 @@
 - ``FilePromptProvider`` — читает блок с диска.
 - ``EnvironmentPromptProvider`` — информация о среде выполнения.
 - ``GitPromptProvider`` — состояние git-репо.
-- ``UserQueryProvider`` — query из :class:`AgentContext`.
-- ``IDESelectionProvider`` — выделенный код из IDE.
-- ``TemplateProvider`` — шаблон с подстановкой ``{query}``.
 - ``WorkspaceSystemPromptProvider`` — читает все файлы директории
   внутри :class:`HistoryWorkspaceShell` (workspace-слой живёт в
   shared ``boba.domain.core.workspace``).
@@ -27,7 +29,6 @@ from boba.domain.agent.models import AgentContext
 from boba.domain.agent.prompt import (
     PromptBlock,
     PromptId,
-    PromptKind,
     PromptProvider,
     PromptState,
 )
@@ -42,21 +43,16 @@ class StaticPromptProvider(PromptProvider):
         prompt_id: PromptId,
         priority: int,
         content: str,
-        kind: PromptKind,
     ) -> None:
         self._id = prompt_id
         self._priority = priority
         self._content = content
-        self._kind = kind
 
     def id(self) -> PromptId:
         return self._id
 
     def priority(self) -> int:
         return self._priority
-
-    def kind(self) -> PromptKind:
-        return self._kind
 
     def blocks(self, state: PromptState[AgentContext]) -> Iterable[PromptBlock]:
         yield PromptBlock(name=self._id.name, content=self._content)
@@ -73,13 +69,11 @@ class FilePromptProvider(PromptProvider):
         prompt_id: PromptId,
         priority: int,
         path: Path,
-        kind: PromptKind,
         default_prompt: str = "",
     ) -> None:
         self._id = prompt_id
         self._priority = priority
         self._path = path
-        self._kind = kind
         self._default_prompt = default_prompt
 
     def id(self) -> PromptId:
@@ -87,9 +81,6 @@ class FilePromptProvider(PromptProvider):
 
     def priority(self) -> int:
         return self._priority
-
-    def kind(self) -> PromptKind:
-        return self._kind
 
     def blocks(self, state: PromptState[AgentContext]) -> Iterable[PromptBlock]:
         if self._path.exists():
@@ -115,9 +106,6 @@ class EnvironmentPromptProvider(PromptProvider):
 
     def priority(self) -> int:
         return self._priority
-
-    def kind(self) -> PromptKind:
-        return PromptKind.SYSTEM
 
     def blocks(self, state: PromptState[AgentContext]) -> Iterable[PromptBlock]:
         lines = [
@@ -149,9 +137,6 @@ class GitPromptProvider(PromptProvider):
     def priority(self) -> int:
         return self._priority
 
-    def kind(self) -> PromptKind:
-        return PromptKind.SYSTEM
-
     def blocks(self, state: PromptState[AgentContext]) -> Iterable[PromptBlock]:
         branch = self._git("branch", "--show-current")
         status = self._git("status", "--short")
@@ -177,95 +162,6 @@ class GitPromptProvider(PromptProvider):
             return "(unavailable)"
 
 
-class UserQueryProvider(PromptProvider):
-    """Query пользователя из :class:`AgentContext.agent_request.query`.
-
-    Самый частый user-провайдер: ставится первым в цепочке user-блоков,
-    дальше могут идти template/context-провайдеры, оборачивающие
-    / дополняющие query.
-    """
-
-    def __init__(self, priority: int = 50) -> None:
-        self._id = PromptId("user_query")
-        self._priority = priority
-
-    def id(self) -> PromptId:
-        return self._id
-
-    def priority(self) -> int:
-        return self._priority
-
-    def kind(self) -> PromptKind:
-        return PromptKind.USER
-
-    def blocks(self, state: PromptState[AgentContext]) -> Iterable[PromptBlock]:
-        yield PromptBlock(
-            name=self._id.name,
-            content=state.ctx.agent_request.query,
-        )
-
-
-class IDESelectionProvider(PromptProvider):
-    """Контекст выделенных строк из IDE (файл + блок кода)."""
-
-    def __init__(
-        self,
-        file_path: str,
-        selection: str,
-        priority: int = 30,
-    ) -> None:
-        self._id = PromptId("ide_selection")
-        self._file_path = file_path
-        self._selection = selection
-        self._priority = priority
-
-    def id(self) -> PromptId:
-        return self._id
-
-    def priority(self) -> int:
-        return self._priority
-
-    def kind(self) -> PromptKind:
-        return PromptKind.USER
-
-    def blocks(self, state: PromptState[AgentContext]) -> Iterable[PromptBlock]:
-        content = f"Selected code from {self._file_path}:\n```\n{self._selection}\n```"
-        yield PromptBlock(name=self._id.name, content=content)
-
-
-class TemplateProvider(PromptProvider):
-    """Шаблон с подстановкой ``{query}`` из ``AgentContext``.
-
-    Удобен, когда нужно обернуть query инструкцией (например,
-    «Answer in Russian: {query}») без написания отдельного провайдера.
-    """
-
-    def __init__(
-        self,
-        prompt_id: PromptId,
-        priority: int,
-        template: str,
-        kind: PromptKind,
-    ) -> None:
-        self._id = prompt_id
-        self._priority = priority
-        self._template = template
-        self._kind = kind
-
-    def id(self) -> PromptId:
-        return self._id
-
-    def priority(self) -> int:
-        return self._priority
-
-    def kind(self) -> PromptKind:
-        return self._kind
-
-    def blocks(self, state: PromptState[AgentContext]) -> Iterable[PromptBlock]:
-        content = self._template.format(query=state.ctx.agent_request.query)
-        yield PromptBlock(name=self._id.name, content=content)
-
-
 class WorkspaceSystemPromptProvider(PromptProvider):
     """
     Собирает system-промпт из файлов внутри директории workspace'а.
@@ -288,9 +184,6 @@ class WorkspaceSystemPromptProvider(PromptProvider):
 
     def priority(self) -> int:
         return self._priority
-
-    def kind(self) -> PromptKind:
-        return PromptKind.SYSTEM
 
     def blocks(self, state: PromptState[AgentContext]) -> Iterator[PromptBlock]:
         for path in sorted(self._workspace.ls(self._directory)):
