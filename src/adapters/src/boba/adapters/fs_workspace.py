@@ -718,13 +718,13 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
                 pass
             raise
 
-    def exists(self, key: str) -> bool:
-        resolved = self._resolve(key)
+    def exists(self, path: str) -> bool:
+        resolved = self._resolve(path)
         with self._map_errors(resolved):
             return resolved.absolute.exists()
 
-    def delete(self, key: str, *, recursive: bool = False) -> None:
-        resolved = self._resolve(key)
+    def delete(self, path: str, *, recursive: bool = False) -> None:
+        resolved = self._resolve(path)
         with self._map_errors(resolved):
             if not resolved.absolute.exists():
                 raise WorkspaceNotFoundError(resolved.relative)
@@ -804,8 +804,8 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
     ) -> Iterator[str]:
         return self._iter_files(path, spec, recursive=True)
 
-    def meta(self, key: str) -> EntryMeta:
-        resolved = self._resolve(key)
+    def meta(self, path: str) -> EntryMeta:
+        resolved = self._resolve(path)
         with self._map_errors(resolved):
             st = resolved.absolute.stat()
             if stat_mod.S_ISDIR(st.st_mode):

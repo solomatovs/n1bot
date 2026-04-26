@@ -724,18 +724,22 @@ class ExceptionSpecification(Specification[Exception]):
                do_request()  # Timeout/ConnectionError — подавляются
                              # остальные — пробрасываются дальше
 
-    2. Композиция :meth:`and_` / :meth:`or_` / :meth:`not_` остаётся
-       в типе :class:`ExceptionSpecification`, поэтому собранную цепочку
-       тоже можно использовать в ``with``.
+    2. Композиция :meth:`and_` / :meth:`or_` / :meth:`not_` сужает
+       результат до :class:`ExceptionSpecification`, поэтому собранную
+       цепочку тоже можно использовать в ``with``. Параметры при этом —
+       любая :class:`Specification[Exception]` (LSP-совместимая
+       контравариантность входа): можно скомпоновать ``ExceptionSpec``
+       с обычной ``Specification[Exception]``, результат всё равно
+       пригоден как context manager.
 
     ``BaseException`` (``KeyboardInterrupt``, ``SystemExit``) никогда не
     подавляется — даже если :meth:`check` вернёт True.
     """
 
-    def and_(self, other: ExceptionSpecification) -> ExceptionSpecification:
+    def and_(self, other: Specification[Exception]) -> ExceptionSpecification:
         return _ExcAndSpec(self, other)
 
-    def or_(self, other: ExceptionSpecification) -> ExceptionSpecification:
+    def or_(self, other: Specification[Exception]) -> ExceptionSpecification:
         return _ExcOrSpec(self, other)
 
     def not_(self) -> ExceptionSpecification:
@@ -759,7 +763,9 @@ class ExceptionSpecification(Specification[Exception]):
 
 class _ExcAndSpec(ExceptionSpecification):
     def __init__(
-        self, left: ExceptionSpecification, right: ExceptionSpecification
+        self,
+        left: Specification[Exception],
+        right: Specification[Exception],
     ) -> None:
         self._left = left
         self._right = right
@@ -770,7 +776,9 @@ class _ExcAndSpec(ExceptionSpecification):
 
 class _ExcOrSpec(ExceptionSpecification):
     def __init__(
-        self, left: ExceptionSpecification, right: ExceptionSpecification
+        self,
+        left: Specification[Exception],
+        right: Specification[Exception],
     ) -> None:
         self._left = left
         self._right = right
@@ -780,7 +788,7 @@ class _ExcOrSpec(ExceptionSpecification):
 
 
 class _ExcNotSpec(ExceptionSpecification):
-    def __init__(self, spec: ExceptionSpecification) -> None:
+    def __init__(self, spec: Specification[Exception]) -> None:
         self._spec = spec
 
     def check(self, candidate: Exception) -> bool:
