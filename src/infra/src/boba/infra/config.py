@@ -279,17 +279,10 @@ class AgentSection(ConfigSectionBuilder):
     MAX_CONSECUTIVE_TOOL_CALLS = FieldSpec(
         "AGENT_MAX_CONSECUTIVE_TOOL_CALLS", IntConverter(), 3
     )
-    MAX_CONSECUTIVE_FORMAT_FAILURES = FieldSpec(
-        "AGENT_MAX_CONSECUTIVE_FORMAT_FAILURES", IntConverter(), 3
-    )
 
     TOML_PATHS: ClassVar[Mapping[str, tuple[str, str]]] = {
         "AGENT_MAX_ITERATIONS": ("agent", "max_iterations"),
         "AGENT_MAX_CONSECUTIVE_TOOL_CALLS": ("agent", "max_consecutive_tool_calls"),
-        "AGENT_MAX_CONSECUTIVE_FORMAT_FAILURES": (
-            "agent",
-            "max_consecutive_format_failures",
-        ),
     }
 
     def id(self) -> StrId:
@@ -300,9 +293,6 @@ class AgentSection(ConfigSectionBuilder):
             max_iterations=self.MAX_ITERATIONS.read(state.resolver),
             max_consecutive_tool_calls=(
                 self.MAX_CONSECUTIVE_TOOL_CALLS.read(state.resolver)
-            ),
-            max_consecutive_format_failures=(
-                self.MAX_CONSECUTIVE_FORMAT_FAILURES.read(state.resolver)
             ),
         )
         return state

@@ -42,15 +42,14 @@
     │   ├── RefusalComplete                 content
     │   ├── ToolCallComplete                call: LLMToolCall
     │   ├── ToolResultReady                 call: LLMToolCall, result: ToolCallResult
-    │   └── FeedbackToLLMAdded              content, cause
+    │   └── FeedbackToLLMAdded              content
     │
     ├── Advisory (abstract)               нефатальный нотис, цикл идёт
     │   │   headline() -> str
     │   │   details() -> Mapping[str, str]
     │   │   body() -> str | None
     │   │   severity() -> Severity (WARN по умолчанию)
-    │   ├── ToolExecutionFailed             call, failure
-    │   └── ToolCallFormatFailed            failure
+    │   └── ToolExecutionFailed             call, failure
     │
     └── Terminal (abstract)               цикл остановлен
         │   headline() -> str
@@ -60,7 +59,6 @@
         ├── GenerationFailed                error_kind, message
         ├── PromptFailed                    provider, error_kind, message
         ├── MaxIterationsReached            limit, iteration
-        ├── RepeatedFormatFailure           count, limit
         └── PersistenceFailed               target, error_kind, message
 
 Sink матчится только по семьям и дёргает интерфейс — concrete-типы ему
@@ -82,7 +80,6 @@ from typing import Literal, TypeAlias
 
 from boba.domain.agent.payloads import (
     ToolCallFailure,
-    ToolCallFormatFailure,
     ToolCallResult,
 )
 from boba.domain.llm.events import FinishReason
@@ -691,12 +688,9 @@ class FeedbackToLLMAdded(ContentSnapshot):
     Эмитится middleware-роутером ошибок и guard'ами луппинга — каждое
     сообщение, попадающее в историю, должно иметь парный снапшот.
     Без этого инвариант «снапшоты = диалог» нарушается.
-
-    ``cause`` — почему был вставлен feedback (для классификации в UI).
     """
 
     content: str
-    cause: Literal["tool_format", "repeated_tool_call", "other"]
 
     @classmethod
     def name(cls) -> Literal["FeedbackToLLMAdded"]:
@@ -707,9 +701,6 @@ class FeedbackToLLMAdded(ContentSnapshot):
 
     def slot_id(self) -> str:
         return self.request_id.to_wire()
-
-    def headline(self) -> str:
-        return f"feedback ({self.cause})"
 
     def body(self) -> str:
         return self.content
@@ -747,31 +738,6 @@ class ToolExecutionFailed(Advisory):
 
     def body(self) -> str | None:
         return f"args: {self.call.arguments}\nerror: {self.failure.message}"
-
-
-@dataclass(frozen=True)
-class ToolCallFormatFailed(Advisory):
-    """LLM выдала невалидный JSON tool call в ``content``. Цикл продолжается.
-
-    Несём малформированный input — sink может показать его разработчику
-    для диагностики промпта. ID/name неизвестны: парсер провалился до
-    их извлечения.
-    """
-
-    failure: ToolCallFormatFailure
-
-    @classmethod
-    def name(cls) -> Literal["ToolCallFormatFailed"]:
-        return "ToolCallFormatFailed"
-
-    def headline(self) -> str:
-        return "invalid tool_call format"
-
-    def details(self) -> Mapping[str, str]:
-        return {"kind": self.failure.error_kind}
-
-    def body(self) -> str | None:
-        return f"raw: {self.failure.raw_content}\nerror: {self.failure.message}"
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -857,37 +823,6 @@ class MaxIterationsReached(Terminal):
 
 
 @dataclass(frozen=True)
-class RepeatedFormatFailure(Terminal):
-    """Модель N раз подряд вывела неверный формат tool call.
-
-    Сами провалы уже эмитировались как :class:`ToolCallFormatFailed` —
-    здесь несём только факт превышения лимита.
-    """
-
-    error_kind: str
-    message: str
-    count: int
-    limit: int
-
-    @classmethod
-    def name(cls) -> Literal["RepeatedFormatFailure"]:
-        return "RepeatedFormatFailure"
-
-    def headline(self) -> str:
-        return f"repeated format failure: {self.count}/{self.limit}"
-
-    def details(self) -> Mapping[str, str]:
-        return {
-            "kind": self.error_kind,
-            "count": str(self.count),
-            "limit": str(self.limit),
-        }
-
-    def body(self) -> str | None:
-        return self.message
-
-
-@dataclass(frozen=True)
 class PersistenceFailed(Terminal):
     """Не удалось прочитать/записать journal/хранилище."""
 
@@ -940,12 +875,10 @@ AgentEvent = (
     | FeedbackToLLMAdded
     # Advisory
     | ToolExecutionFailed
-    | ToolCallFormatFailed
     # Terminal
     | GenerationFailed
     | PromptFailed
     | MaxIterationsReached
-    | RepeatedFormatFailure
     | PersistenceFailed
 )
 
@@ -973,11 +906,9 @@ AgentEventName: TypeAlias = Literal[
     "ToolResultReady",
     "FeedbackToLLMAdded",
     "ToolExecutionFailed",
-    "ToolCallFormatFailed",
     "GenerationFailed",
     "PromptFailed",
     "MaxIterationsReached",
-    "RepeatedFormatFailure",
     "PersistenceFailed",
 ]
 

@@ -70,12 +70,37 @@ class DialogueWriter:
             ),
         )
 
-    def append_llm_feedback(self, message: LLMMessage) -> None:
-        """Готовый feedback-message от роутера ошибок / guard'а лупов.
+    def append_llm_critique(self, content: str) -> None:
+        """Общая критика к LLM (``role="user"``).
 
-        Роль и формат сообщения определяет источник через
-        ``err.to_llm_feedback()`` (обычно ``role="user"`` — критика
-        парсера, или ``role="tool"`` — подавление дублирующего
-        вызова). Writer не интерпретирует payload — пишет как есть.
+        Не привязана к конкретному tool_call'у. Используется для
+        feedback'а, относящегося к нарушению протокола / формата
+        ответа в целом (например, плохо построенный JSON).
+
+        Контракт writer'а: только примитивы на входе — ``LLMMessage``
+        собирается здесь. Внешним вызывающим код-путям нельзя
+        прокинуть готовый ``LLMMessage``.
         """
-        self._service.add(message)
+        self._service.add(LLMMessage(role="user", content=content))
+
+    def append_tool_call_rejection(
+        self,
+        *,
+        tool_call_id: str,
+        content: str,
+    ) -> None:
+        """Подавление tool_call'а: синтетический ответ в его слот
+        (``role="tool"`` + ``tool_call_id``).
+
+        Используется guard'ами, которые **не запускали** tool, но
+        обязаны заполнить слот объявленного вызова — иначе LLM увидит
+        зависший tool_call без ответа. Содержание — критика причины
+        подавления.
+
+        Семантически отличается от :meth:`append_tool_result`: тот
+        фиксирует «мы запустили tool и получили X», этот — «мы НЕ
+        запускали; вот критика».
+        """
+        self._service.add(
+            LLMMessage(role="tool", content=content, tool_call_id=tool_call_id),
+        )

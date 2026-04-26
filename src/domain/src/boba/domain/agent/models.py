@@ -41,18 +41,10 @@ class AgentConfig:
     :class:`~boba.domain.agent.meat.tools.RepeatedToolCallGuardMiddleware`:
     N+1-й вызов подавляется, в историю пишется feedback с
     ``role="tool"`` через :class:`DialogueWriter`.
-
-    ``max_consecutive_format_failures`` — лимит подряд идущих
-    ошибок формата content-tool-call. Используется
-    :class:`~boba.domain.agent.meat.tools.\
-RepeatedFormatFailureGuardMiddleware`: после N+1 эмитится
-    :class:`~boba.domain.agent.events.RepeatedFormatFailure` и цикл
-    останавливается.
     """
 
     max_iterations: int = 20
     max_consecutive_tool_calls: int = 3
-    max_consecutive_format_failures: int = 3
 
 
 @dataclass

@@ -21,20 +21,33 @@
 
 from __future__ import annotations
 
+from abc import ABC
+
 from boba.domain.agent.events import (
     AgentEvent,
     GenerationFailed,
     MaxIterationsReached,
-    RepeatedFormatFailure,
-    ToolCallFormatFailed,
 )
-from boba.domain.agent.payloads import ToolCallFormatFailure
-from boba.domain.core.errors import (
-    LLMFeedbackError,
-    TerminalError,
-    UserFeedbackError,
-)
-from boba.domain.llm.models import LLMMessage, RequestId
+from boba.domain.agent.payloads import LLMFeedback
+from boba.domain.core.errors import LLMFeedbackError, TerminalError
+from boba.domain.llm.models import RequestId
+
+
+class AgentLLMFeedbackError(LLMFeedbackError[LLMFeedback], ABC):
+    """Agent-уровневая специализация :class:`LLMFeedbackError`.
+
+    Фиксирует ``TFeedback = LLMFeedback`` — discriminated union из
+    :class:`LLMCritique` / :class:`ToolCallRejection`. Это даёт
+    типизированное narrowing в :class:`AgentErrorRouter` (match-case
+    раскрывает union в конкретные варианты) и не пропускает «снаружи»
+    raw ``LLMMessage`` через writer: каждый вариант мапится в свой
+    узкий метод :class:`DialogueWriter`.
+
+    Concrete-ошибки агента, которые хотят писать feedback в историю
+    через роутер, наследуются **от этого класса**, а не от
+    :class:`LLMFeedbackError` напрямую, и реализуют ``to_llm_feedback``
+    с возвратом одного из вариантов :class:`LLMFeedback`.
+    """
 
 
 class MaxIterationsExceededError(TerminalError[RequestId, AgentEvent]):
@@ -56,31 +69,6 @@ IterationCounterMiddleware`.
             message=str(self),
             limit=self.limit,
             iteration=self.iteration,
-        )
-
-
-class RepeatedFormatFailureError(TerminalError[RequestId, AgentEvent]):
-    """Модель N раз подряд вывела неверный формат tool call.
-
-    Поднимается :class:`~boba.domain.agent.meat.tools.\
-RepeatedFormatFailureGuardMiddleware` после накопления ``limit``
-    подряд :class:`~boba.domain.agent.events.ToolCallFormatFailed`
-    без успешного :class:`~boba.domain.agent.events.ToolResultReady`
-    между ними.
-    """
-
-    def __init__(self, message: str, *, count: int, limit: int) -> None:
-        super().__init__(message)
-        self.count = count
-        self.limit = limit
-
-    def to_user_feedback(self, request_id: RequestId) -> RepeatedFormatFailure:
-        return RepeatedFormatFailure(
-            request_id=request_id,
-            error_kind=type(self).__name__,
-            message=str(self),
-            count=self.count,
-            limit=self.limit,
         )
 
 
@@ -114,40 +102,3 @@ class LLMGenerationFailedError(TerminalError[RequestId, AgentEvent]):
             error_kind=self.error_kind,
             message=str(self),
         )
-
-
-class LLMToolCallFormatError(
-    UserFeedbackError[RequestId, AgentEvent], LLMFeedbackError[LLMMessage]
-):
-    """LLM нарушила формат content-as-JSON tool call'а.
-
-    Роутер:
-
-    1. Пишет ``LLMMessage(role="user", content=<критика>)`` в
-       :class:`MessageService` — на следующей итерации модель увидит
-       feedback как user-сообщение. Параллельно эмитится
-       :class:`FeedbackToLLMAdded` (снапшот записи).
-    2. Эмитит :class:`~boba.domain.agent.events.ToolCallFormatFailed`.
-
-    Поднимается парсером content-as-JSON
-    (:class:`~boba.domain.agent.meat.content_tool_call.strict.\
-StrictJsonToolCallParser`), когда LLM эмитит JSON-объект с
-    неверной структурой.
-    """
-
-    def __init__(self, message: str, *, raw_content: str) -> None:
-        super().__init__(message)
-        self.raw_content = raw_content
-
-    def to_user_feedback(self, request_id: RequestId) -> AgentEvent:
-        return ToolCallFormatFailed(
-            request_id=request_id,
-            failure=ToolCallFormatFailure(
-                raw_content=self.raw_content,
-                error_kind=type(self).__name__,
-                message=str(self),
-            ),
-        )
-
-    def to_llm_feedback(self) -> LLMMessage:
-        return LLMMessage(role="user", content=str(self))

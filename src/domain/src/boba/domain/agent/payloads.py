@@ -21,6 +21,7 @@ LLM-реквест в события не пакуется: предыдущие
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TypeAlias
 
 
 @dataclass(frozen=True)
@@ -48,18 +49,39 @@ class ToolCallFailure:
     message: str
 
 
+# ═════════════════════════════════════════════════════════════════════
+#  Feedback к LLM — discriminated union
+# ═════════════════════════════════════════════════════════════════════
+#
+# :class:`AgentLLMFeedbackError.to_llm_feedback` возвращает один из этих
+# вариантов; :class:`AgentErrorRouter` диспетчирует их в узкие методы
+# :class:`DialogueWriter`. ``LLMMessage`` наружу не утекает — writer
+# собирает его сам из примитивов.
+
+
 @dataclass(frozen=True)
-class ToolCallFormatFailure:
-    """LLM нарушила формат content-as-JSON tool call'а.
+class LLMCritique:
+    """Общая критика к LLM (``role="user"``).
 
-    Эмитится до того, как удалось извлечь ``id``/``name`` (парсер
-    провалился). Поэтому несём не ``LLMToolCall``, а сырой ``content``,
-    который LLM выдала, плюс описание провала.
-
-    ``raw_content`` — полная строка от модели; sink может её показать
-    разработчику для диагностики промпта.
+    Не привязана к конкретному tool_call'у. Используется для feedback'а,
+    отражающего нарушение протокола / формата ответа в целом.
     """
 
-    raw_content: str
-    error_kind: str
-    message: str
+    content: str
+
+
+@dataclass(frozen=True)
+class ToolCallRejection:
+    """Подавление tool_call'а: ответ в слот конкретного вызова
+    (``role="tool"`` + ``tool_call_id``).
+
+    Используется guard'ами, которые **подавили** реальный запуск tool'а,
+    но обязаны заполнить слот объявленного вызова — иначе LLM увидит
+    зависший tool_call без ответа.
+    """
+
+    tool_call_id: str
+    content: str
+
+
+LLMFeedback: TypeAlias = LLMCritique | ToolCallRejection
