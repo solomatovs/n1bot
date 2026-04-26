@@ -7,14 +7,16 @@ name = "boba"
 version = "0.1.0"
 description = "Boba — RAG agent for knowledge base"
 requires-python = ">=3.11,<4"
-# Минимум для агентского runtime: OpenAI-совместимый клиент, http и
-# TOML-парсер для конфига. UI-зависимости (chainlit/pydantic-pin)
-# живут в ``packages/boba-chainlit``; vector-store deps — в
+# Минимум для агентского runtime: OpenAI-совместимый клиент и http.
+# Источники конфигурации (env, TOML, …) живут в отдельных пакетах
+# ``packages/boba-config-*`` — bootstrap приложения сам их подключает,
+# чтобы core не тащил парсеры конкретных форматов.
+# UI-зависимости (chainlit/pydantic-pin) живут в
+# ``packages/boba-chainlit``; vector-store deps — в
 # ``packages/boba-ext-chromadb`` и ``packages/boba-cli-vector-index``.
 dependencies = [
     "httpx",
     "openai",
-    "tomli",
 ]
 
 [project.optional-dependencies]

@@ -11,7 +11,7 @@ requires-python = ">=3.11,<4"
 # ставится через --no-deps, потому что boba доставляется PYTHONPATH'ом, не
 # pip-инсталляцией. Tool-плагины подгружаются через entry-points
 # установленных pip-пакетов (boba-ext-files, boba-ext-chromadb и т.п.).
-dependencies = ["boba"]
+dependencies = ["boba", "boba-config-env", "boba-config-toml"]
 
 [project.scripts]
 boba-cli-agent-run = "boba_cli_agent_run.cli:main"

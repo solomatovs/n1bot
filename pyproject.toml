@@ -30,6 +30,8 @@ extraPaths = [
     "packages/boba/src/domain/src",
     "packages/boba/src/adapters/src",
     "packages/boba/src/infra/src",
+    "packages/boba-config-env/src",
+    "packages/boba-config-toml/src",
     "packages/boba-chainlit/src",
     "packages/boba-cli-agent-run/src",
     "packages/boba-cli-vector-index/src",
@@ -81,7 +83,19 @@ ignore = [
 max-complexity = 10
 
 [tool.ruff.lint.isort]
-known-first-party = ["boba"]
+# Все пакеты монорепо считаются first-party — иначе isort расталкивает
+# `boba_config_*`/`boba_chainlit`/`boba_chromadb`/... как third-party
+# и кладёт перед `boba.*`, что ломает группировку.
+known-first-party = [
+    "boba",
+    "boba_chainlit",
+    "boba_chromadb",
+    "boba_cli_agent_run",
+    "boba_cli_vector_index",
+    "boba_config_env",
+    "boba_config_toml",
+    "boba_files",
+]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = [

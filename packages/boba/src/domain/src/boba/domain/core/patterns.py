@@ -75,6 +75,12 @@ TIn = TypeVar("TIn")
 TId = TypeVar("TId", bound=Id)
 TState = TypeVar("TState")
 TOut = TypeVar("TOut")
+# Covariant variant of TOut для классов, у которых TOut стоит **только** в
+# output-позициях (return). Позволяет, например, передать
+# ``Converter[object, str]`` туда, где ожидается ``Converter[object, str | None]``
+# (через Liskov: всё, что возвращает ``str``, возвращает и ``str | None``).
+# Использовать в Serializer/иных классах с TOut в input-позиции — нельзя.
+TOut_co = TypeVar("TOut_co", covariant=True)
 TValue = TypeVar("TValue")
 TQuery = TypeVar("TQuery")
 
@@ -137,17 +143,21 @@ class ConverterOutputError(ConverterError):
     """
 
 
-class Converter(ABC, Generic[TIn, TOut]):
+class Converter(ABC, Generic[TIn, TOut_co]):
     """Однонаправленная конвертация 1:1. A → B.
 
     Контракт ошибок: ``convert`` бросает только потомков ``ConverterError``.
     ``ConverterInputError`` — если проблема в данных входа;
     ``ConverterOutputError`` — если проблема в построении выхода.
     Исходное низкоуровневое исключение доступно через ``__cause__``.
+
+    Output covariance: ``Converter[A, B]`` — подтип ``Converter[A, B']``,
+    если ``B <: B'`` (например, ``Converter[object, str]`` подходит туда,
+    где ждут ``Converter[object, str | None]``).
     """
 
     @abstractmethod
-    def convert(self, value: TIn) -> TOut:
+    def convert(self, value: TIn) -> TOut_co:
         """Выполнить конвертацию.
 
         Raises:

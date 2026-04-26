@@ -15,6 +15,8 @@ requires-python = ">=3.11,<4"
 # исчезнет, чтобы chainlit-app остался автономно устанавливаемым).
 dependencies = [
     "boba",
+    "boba-config-env",
+    "boba-config-toml",
     "chainlit>=2.11,<3",
     # chainlit 2.11+ ломает ForwardRef-резолв ``CodeSettings``/``Action``
     # на pydantic 2.11+ — импорт chainlit падает с "CodeSettings is not
@@ -24,6 +26,13 @@ dependencies = [
 
 [project.scripts]
 boba-chainlit = "boba_chainlit.__main__:main"
+
+# Конфиг chainlit-сервера и UI-оверрайдов — в общем bundle'е приложения,
+# подхватываются ConfigFactory через discovery. Bootstrap (__main__) и
+# ChatSession читают их через bundle.section(...).
+[project.entry-points."boba.config_sections"]
+chainlit = "boba_chainlit.config:ChainlitSection"
+chainlit_ui_override = "boba_chainlit.ui_overrides:ChainlitUiOverrideSection"
 
 [tool.setuptools.packages.find]
 where = ["src"]

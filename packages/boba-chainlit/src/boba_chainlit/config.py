@@ -1,50 +1,122 @@
-"""FieldSpec'и секции ``[chainlit]``."""
+"""Chainlit-server конфиг как :class:`ConfigSection`.
+
+:class:`ChainlitSection` объявляет поля декларативно (через
+:class:`FieldSpec`) и собирает типизированный :class:`ChainlitConfig`.
+Регистрируется в :class:`ConfigFactory` через entry-point group
+``boba.config_sections`` (см. ``pyproject.toml``).
+
+Bootstrap (:mod:`boba_chainlit.__main__`) собирает бандл и через
+``bundle.section(ChainlitSection)`` получает значения, после чего
+прокидывает их в ``CHAINLIT_*`` env для самой библиотеки chainlit
+(она читает env при импорте).
+
+Конвенция имён та же, что у app-секций:
+``ConfigKey("chainlit","host")`` → env ``BOBA_CHAINLIT_HOST``,
+TOML ``[chainlit] host``.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any, ClassVar
 
 from boba.domain.core.config import (
     ChainedConfigResolver,
+    ConfigKey,
+    ConfigSection,
     CsvListConverter,
     FieldSpec,
     StrConverter,
 )
-from boba.infra.config import default_resolver
+from boba.domain.core.patterns import StrId
 
-__all__ = [
-    "AUTH_SECRET",
-    "HEADLESS",
-    "HOST",
-    "MODELS",
-    "PORT",
-    "ROOT_PATH",
-    "chainlit_resolver",
-    "load_models",
-]
+__all__ = ["ChainlitConfig", "ChainlitSection"]
 
 
-HOST = FieldSpec("CHAINLIT_HOST", StrConverter(), "127.0.0.1")
-PORT = FieldSpec("CHAINLIT_PORT", StrConverter(), "8501")
-ROOT_PATH = FieldSpec("CHAINLIT_ROOT_PATH", StrConverter(), "")
-AUTH_SECRET = FieldSpec("CHAINLIT_AUTH_SECRET", StrConverter(), None)
-HEADLESS = FieldSpec("CHAINLIT_HEADLESS", StrConverter(), "true")
-MODELS = FieldSpec("CHAINLIT_MODELS", CsvListConverter(), [])
+@dataclass(frozen=True)
+class ChainlitConfig:
+    """Параметры chainlit-сервера + список доступных в UI моделей.
+
+    ``host``/``port``/``root_path``/``auth_secret``/``headless`` — bridge
+    к одноимённым ``CHAINLIT_*`` env-переменным (значения хранятся
+    строкой, потому что bridge пишет напрямую в env, а chainlit-библиотека
+    парсит сама).
+
+    ``models`` — список LLM-моделей для UI ChatSettings. Пустой список —
+    UI не сможет выбрать модель и кинет ошибку при старте сессии.
+    """
+
+    host: str
+    port: str
+    root_path: str
+    auth_secret: str | None
+    headless: str
+    models: list[str]
 
 
-TOML_PATHS: Mapping[str, tuple[str, str]] = {
-    "CHAINLIT_HOST": ("chainlit", "host"),
-    "CHAINLIT_PORT": ("chainlit", "port"),
-    "CHAINLIT_ROOT_PATH": ("chainlit", "root_path"),
-    "CHAINLIT_AUTH_SECRET": ("chainlit", "auth_secret"),
-    "CHAINLIT_HEADLESS": ("chainlit", "headless"),
-    "CHAINLIT_MODELS": ("chainlit", "models"),
-}
+class ChainlitSection(ConfigSection[ChainlitConfig]):
+    """Секция chainlit-server. Регистрируется через entry-point
+    ``boba.config_sections``.
+    """
 
+    id: ClassVar[StrId] = StrId("chainlit")
 
-def chainlit_resolver() -> ChainedConfigResolver:
-    return default_resolver(extra_toml_paths=TOML_PATHS)
+    HOST = FieldSpec(
+        key=ConfigKey("chainlit", "host"),
+        converter=StrConverter(),
+        default="127.0.0.1",
+        description="Адрес, на котором слушает chainlit-сервер.",
+    )
+    PORT = FieldSpec(
+        key=ConfigKey("chainlit", "port"),
+        converter=StrConverter(),
+        default="8501",
+        description="Порт chainlit-сервера. Хранится строкой — bridge "
+        "пишет напрямую в CHAINLIT_PORT env.",
+    )
+    ROOT_PATH = FieldSpec(
+        key=ConfigKey("chainlit", "root_path"),
+        converter=StrConverter(),
+        default="",
+        description="HTTP root path под reverse-proxy. Пусто — chainlit на корне.",
+    )
+    AUTH_SECRET = FieldSpec[str | None](
+        key=ConfigKey("chainlit", "auth_secret"),
+        converter=StrConverter(),
+        default=None,
+        description="Секрет для подписи user-session cookie. Если не "
+        "задан — chainlit генерит сам.",
+    )
+    HEADLESS = FieldSpec(
+        key=ConfigKey("chainlit", "headless"),
+        converter=StrConverter(),
+        default="true",
+        description="``true`` — не пытаться открыть браузер при старте.",
+    )
+    MODELS = FieldSpec(
+        key=ConfigKey("chainlit", "models"),
+        converter=CsvListConverter(),
+        default=[],
+        description="CSV/TOML-list LLM-моделей, выбираемых пользователем "
+        "в ChatSettings.",
+    )
 
+    fields: ClassVar[Sequence[FieldSpec[Any]]] = (
+        HOST,
+        PORT,
+        ROOT_PATH,
+        AUTH_SECRET,
+        HEADLESS,
+        MODELS,
+    )
 
-def load_models() -> list[str]:
-    return MODELS.read(chainlit_resolver())
+    def build(self, resolver: ChainedConfigResolver) -> ChainlitConfig:
+        return ChainlitConfig(
+            host=self.HOST.read(resolver),
+            port=self.PORT.read(resolver),
+            root_path=self.ROOT_PATH.read(resolver),
+            auth_secret=self.AUTH_SECRET.read(resolver),
+            headless=self.HEADLESS.read(resolver),
+            models=self.MODELS.read(resolver),
+        )

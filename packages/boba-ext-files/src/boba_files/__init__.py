@@ -40,8 +40,8 @@ def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
     источником.
 
     ``ctx`` пока не используется — пакет не имеет конфига и не нуждается
-    в зависимостях из :class:`AppConfig`. Параметр сохранён для
-    совместимости с :data:`RegisterToolsFn`.
+    в зависимостях из :class:`~boba.infra.config.ConfigBundle`. Параметр
+    сохранён для совместимости с :data:`RegisterToolsFn`.
     """
     del ctx
     yield StaticToolSource(

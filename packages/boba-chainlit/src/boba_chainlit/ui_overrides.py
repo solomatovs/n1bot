@@ -1,17 +1,23 @@
-"""Рендер ``.chainlit/config.toml`` из env-оверрайдов.
+"""UI-overrides для ``.chainlit/config.toml``.
 
 Chainlit читает UI/features/project-настройки только из TOML —
-env-переменные для этих секций фреймворк не смотрит.
+env-переменные для этих секций фреймворк не смотрит. Мы декларируем
+эти оверрайды как :class:`ChainlitUiOverrideSection`, при сборке
+бандла читаем значения из единой цепочки источников и затем рендерим
+.chainlit/config.toml через :class:`UIOverrideTomlConverter`.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from boba.domain.core.config import (
     BoolConverter,
     ChainedConfigResolver,
+    ConfigKey,
+    ConfigSection,
     CsvListConverter,
     FieldSpec,
     IntConverter,
@@ -21,13 +27,13 @@ from boba.domain.core.patterns import (
     AllMatchesDispatcher,
     Converter,
     Specification,
+    StrId,
 )
-from boba_chainlit.config import chainlit_resolver
 
 __all__ = [
+    "ChainlitUiOverrideSection",
     "UIOverride",
     "UIOverrideTomlConverter",
-    "read_ui_override",
 ]
 
 
@@ -50,22 +56,61 @@ class UIOverride:
         )
 
 
-UI_NAME = FieldSpec("CHAINLIT_UI_NAME", StrConverter(), None)
-UI_ENABLE_TELEMETRY = FieldSpec("CHAINLIT_ENABLE_TELEMETRY", BoolConverter(), None)
-UI_UPLOAD_MAX_MB = FieldSpec("CHAINLIT_FILE_UPLOAD_MAX_MB", IntConverter(), None)
-UI_UPLOAD_MAX_FILES = FieldSpec("CHAINLIT_FILE_UPLOAD_MAX_FILES", IntConverter(), None)
-UI_UPLOAD_ACCEPT = FieldSpec("CHAINLIT_FILE_UPLOAD_ACCEPT", CsvListConverter(), None)
+class ChainlitUiOverrideSection(ConfigSection[UIOverride]):
+    """Секция UI-оверрайдов chainlit. Регистрируется через entry-point
+    ``boba.config_sections``; bootstrap читает её через
+    ``bundle.section(ChainlitUiOverrideSection)`` и рендерит в TOML.
+    """
 
+    id: ClassVar[StrId] = StrId("chainlit_ui_override")
 
-def read_ui_override(resolver: ChainedConfigResolver | None = None) -> UIOverride:
-    r = resolver or chainlit_resolver()
-    return UIOverride(
-        name=UI_NAME.read_opt(r),
-        enable_telemetry=UI_ENABLE_TELEMETRY.read_opt(r),
-        upload_max_size_mb=UI_UPLOAD_MAX_MB.read_opt(r),
-        upload_max_files=UI_UPLOAD_MAX_FILES.read_opt(r),
-        upload_accept=UI_UPLOAD_ACCEPT.read_opt(r),
+    NAME = FieldSpec[str | None](
+        key=ConfigKey("chainlit", "ui_name"),
+        converter=StrConverter(),
+        default=None,
+        description="Заголовок чата в UI. Если не задано — chainlit-дефолт.",
     )
+    ENABLE_TELEMETRY = FieldSpec[bool | None](
+        key=ConfigKey("chainlit", "enable_telemetry"),
+        converter=BoolConverter(),
+        default=None,
+        description="Опт-аут chainlit-телеметрии. None — не трогать дефолт.",
+    )
+    UPLOAD_MAX_MB = FieldSpec[int | None](
+        key=ConfigKey("chainlit", "file_upload_max_mb"),
+        converter=IntConverter(),
+        default=None,
+        description="Лимит размера загружаемого файла, MB.",
+    )
+    UPLOAD_MAX_FILES = FieldSpec[int | None](
+        key=ConfigKey("chainlit", "file_upload_max_files"),
+        converter=IntConverter(),
+        default=None,
+        description="Максимум файлов в одном сообщении.",
+    )
+    UPLOAD_ACCEPT = FieldSpec[list[str] | None](
+        key=ConfigKey("chainlit", "file_upload_accept"),
+        converter=CsvListConverter(),
+        default=None,
+        description="MIME-типы/расширения, разрешённые к загрузке (CSV).",
+    )
+
+    fields: ClassVar[Sequence[FieldSpec[Any]]] = (
+        NAME,
+        ENABLE_TELEMETRY,
+        UPLOAD_MAX_MB,
+        UPLOAD_MAX_FILES,
+        UPLOAD_ACCEPT,
+    )
+
+    def build(self, resolver: ChainedConfigResolver) -> UIOverride:
+        return UIOverride(
+            name=self.NAME.read(resolver),
+            enable_telemetry=self.ENABLE_TELEMETRY.read(resolver),
+            upload_max_size_mb=self.UPLOAD_MAX_MB.read(resolver),
+            upload_max_files=self.UPLOAD_MAX_FILES.read(resolver),
+            upload_accept=self.UPLOAD_ACCEPT.read(resolver),
+        )
 
 
 class _TelemetryIsSet(Specification[UIOverride]):

@@ -7,6 +7,7 @@ optional dependency не ломало базовый импорт пакета.
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 
 from boba_cli_vector_index.readers._base import Document, Reader
@@ -57,13 +58,17 @@ def _try_extras_reader(suffix: str) -> Reader | None:
     """Лениво импортирует optional reader'ы. Если соответствующая
     deps-группа не установлена — возвращает ``None`` (caller получит
     ``UnsupportedFormatError`` с подсказкой про extras).
+
+    ``importlib.import_module`` вместо обычного ``import``-statement —
+    чтобы статический анализатор не падал на отсутствующих опциональных
+    модулях (``readers/html.py`` будет создан вместе с extras-deps).
     """
     if suffix in (".html", ".htm"):
         try:
-            from boba_cli_vector_index.readers.html import HtmlReader  # noqa: PLC0415
+            module = importlib.import_module("boba_cli_vector_index.readers.html")
         except ImportError:
             return None
-        return HtmlReader()
+        return module.HtmlReader()
     # confluence пока без файлового расширения — будет отдельный
     # ``boba-cli-vector-index index-confluence ...`` подпайплайн позже.
     return None

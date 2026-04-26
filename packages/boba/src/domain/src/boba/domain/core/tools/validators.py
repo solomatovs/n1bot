@@ -1,42 +1,44 @@
-"""Валидаторы аргументов tool'ов.
+"""Валидаторы аргументов tool'ов: tool-специфичный слой.
 
-Решает две задачи в одном объекте:
+Часть валидаторов общего назначения вынесена в
+:mod:`boba.domain.core.validators` (``Pass``, ``ChainValidator``,
+``OneOf``, ``MinValue``/``MaxValue``, ``MinLength``/``MaxLength``,
+``NonEmpty``, ``ParamValidationError``) и :mod:`boba.domain.core.schema`
+(``ParamWireSchema``, ``SchemaContributor``) — они применимы и к
+tool-аргументам, и к полям конфига.
 
-1. **Runtime-валидация** значения, пришедшего извне (от LLM). Используется
-   паттерн :class:`Validator` из :mod:`boba.domain.core.patterns` — ``T → T``
-   с выбросом :class:`ParamValidationError` при нарушении.
+Здесь живёт tool-specific:
 
-2. **Wire-схема** для потребителя. Валидаторы, реализующие
-   :class:`SchemaContributor`, дополняют :class:`ParamWireSchema` нужными
-   полями (``type``, ``enum``, ``default``, ``required``). Так нет
-   дрейфа: правило валидации и описание для LLM собираются из одного
-   объекта.
-
-Композиция — :class:`ChainValidator`. No-op — :class:`Pass`.
+- :data:`MISSING` и MISSING-aware прослойка :class:`ValueValidator`,
+  на которой построены тип-валидаторы (:class:`IsString` и т.п.);
+- :class:`Required` / :class:`Default` — реакция на отсутствие значения;
+- cross-field валидаторы для :class:`ToolInputSchema.invariants`
+  (:class:`MutuallyExclusive`, :class:`RequiresTogether`,
+  :class:`Ordered`);
+- top-level orchestrator :class:`SchemaArgsValidator`.
 
 Семантика «значение отсутствует»: оркестратор передаёт сентинел
 :data:`MISSING` в первый валидатор. :class:`Required` бросит,
 :class:`Default` подставит значение, value-валидаторы (:class:`ValueValidator`)
-пропустят MISSING без проверки.
+пропустят MISSING без проверки. Семантические валидаторы из
+``core.validators`` MISSING-skip не делают — на практике в живых
+цепочках перед ними всегда стоит :class:`Required` или :class:`Default`,
+поэтому MISSING до них не доходит.
 """
 
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Sized
 from typing import Any, Final
 
 from boba.domain.core.patterns import Validator
+from boba.domain.core.schema import ParamWireSchema, SchemaContributor
 from boba.domain.core.tools.errors import (
     InvalidSchemaInvariantError,
     InvalidToolArgumentError,
 )
-from boba.domain.core.tools.schema import (
-    ParamWireSchema,
-    SchemaContributor,
-    ToolId,
-    ToolInputSchema,
-)
+from boba.domain.core.tools.schema import ToolId, ToolInputSchema
+from boba.domain.core.validators import ParamValidationError
 
 
 class _MissingType:
@@ -61,15 +63,6 @@ class _MissingType:
 
 
 MISSING: Final = _MissingType()
-
-
-class ParamValidationError(Exception):
-    """Сырая ошибка валидатора — без контекста (имя параметра, tool_id).
-
-    Сообщение должно быть человекочитаемым и содержать причину отказа
-    («должно быть строкой», «не входит в [...]»). Контекст добавляет
-    оркестратор, оборачивая в доменную ошибку.
-    """
 
 
 class Required(Validator[Any], SchemaContributor):
@@ -109,7 +102,7 @@ class Default(Validator[Any], SchemaContributor):
 
 
 class ValueValidator(Validator[Any]):
-    """База value-валидаторов: пропускают :data:`MISSING` без проверки.
+    """База тип-валидаторов: пропускают :data:`MISSING` без проверки.
 
     Полезно, когда параметр опциональный и ``Required``/``Default``
     в цепочке нет — значит ``MISSING`` должен дойти до оркестратора как
@@ -186,141 +179,6 @@ class IsBool(ValueValidator, SchemaContributor):
 
     def contribute(self, schema: ParamWireSchema) -> None:
         schema.property["type"] = "boolean"
-
-
-class OneOf(ValueValidator, SchemaContributor):
-    """Значение должно быть в фиксированном наборе. В wire-схеме: ``enum``."""
-
-    _MIN_OPTIONS = 1
-
-    def __init__(self, *options: Any) -> None:
-        if len(options) < self._MIN_OPTIONS:
-            raise ValueError(f"OneOf требует минимум {self._MIN_OPTIONS} вариант")
-        self._options = options
-
-    def _validate_value(self, value: Any) -> Any:
-        if value not in self._options:
-            raise ParamValidationError(
-                f"должно быть одно из {list(self._options)}, получено {value!r}"
-            )
-        return value
-
-    def contribute(self, schema: ParamWireSchema) -> None:
-        schema.property["enum"] = list(self._options)
-
-
-class MinValue(ValueValidator):
-    """Значение >= ``threshold``. Применимо к числовым типам."""
-
-    def __init__(self, threshold: int | float) -> None:
-        self._threshold = threshold
-
-    def _validate_value(self, value: Any) -> Any:
-        if value < self._threshold:
-            raise ParamValidationError(
-                f"должно быть >= {self._threshold}, получено {value}"
-            )
-        return value
-
-
-class MaxValue(ValueValidator):
-    """Значение <= ``threshold``. Применимо к числовым типам."""
-
-    def __init__(self, threshold: int | float) -> None:
-        self._threshold = threshold
-
-    def _validate_value(self, value: Any) -> Any:
-        if value > self._threshold:
-            raise ParamValidationError(
-                f"должно быть <= {self._threshold}, получено {value}"
-            )
-        return value
-
-
-class MinLength(ValueValidator):
-    """Длина >= ``threshold``. Применимо к строкам/коллекциям."""
-
-    def __init__(self, threshold: int) -> None:
-        self._threshold = threshold
-
-    def _validate_value(self, value: Any) -> Any:
-        if not isinstance(value, Sized):
-            raise ParamValidationError(
-                f"длина не определена для {type(value).__name__}"
-            )
-        if len(value) < self._threshold:
-            raise ParamValidationError(
-                f"длина должна быть >= {self._threshold}, получено {len(value)}"
-            )
-        return value
-
-
-class MaxLength(ValueValidator):
-    """Длина <= ``threshold``. Применимо к строкам/коллекциям."""
-
-    def __init__(self, threshold: int) -> None:
-        self._threshold = threshold
-
-    def _validate_value(self, value: Any) -> Any:
-        if not isinstance(value, Sized):
-            raise ParamValidationError(
-                f"длина не определена для {type(value).__name__}"
-            )
-        if len(value) > self._threshold:
-            raise ParamValidationError(
-                f"длина должна быть <= {self._threshold}, получено {len(value)}"
-            )
-        return value
-
-
-class NonEmpty(ValueValidator):
-    """Значение непустое (длина > 0). Применимо к строкам/коллекциям."""
-
-    def _validate_value(self, value: Any) -> Any:
-        if not isinstance(value, Sized):
-            raise ParamValidationError(
-                f"пустота не определена для {type(value).__name__}"
-            )
-        if len(value) == 0:
-            raise ParamValidationError("значение не должно быть пустым")
-        return value
-
-
-class ChainValidator(Validator[Any], SchemaContributor):
-    """Последовательно применяет валидаторы, прокидывая результат.
-
-    Первое падение прерывает цепочку. ``contribute`` делегируется всем
-    участникам, реализующим :class:`SchemaContributor`. Порядок
-    регистрации = порядок применения и к значению, и к схеме (последний
-    может переопределить поле, заданное предыдущим).
-
-    Пустая цепочка (``ChainValidator()``) — no-op: пропускает любое
-    значение, ничего не вкладывает в схему.
-    """
-
-    def __init__(self, *validators: Validator[Any]) -> None:
-        self._validators = validators
-
-    def validate(self, value: Any) -> Any:
-        for v in self._validators:
-            value = v.validate(value)
-        return value
-
-    def contribute(self, schema: ParamWireSchema) -> None:
-        for v in self._validators:
-            if isinstance(v, SchemaContributor):
-                v.contribute(schema)
-
-
-class Pass(Validator[Any]):
-    """No-op валидатор: возвращает значение как есть, всегда успех.
-
-    Используется как явный «без правил» вместо None — соответствует
-    принципу «строгая ParamSchema без Optional/default».
-    """
-
-    def validate(self, value: Any) -> Any:
-        return value
 
 
 class MutuallyExclusive(Validator[dict[str, Any]]):

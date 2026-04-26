@@ -15,6 +15,7 @@ from boba.domain.agent.events import (
     AgentEvent,
     ContentDelta,
     ContentSnapshot,
+    IterationStarted,
     LLMRequestSent,
     PhaseTransition,
     SlotKind,
@@ -25,7 +26,6 @@ from boba.domain.agent.events import (
 )
 from boba.domain.core.workspace import WorkspaceId
 from boba_chainlit.bridge import ChainlitBridgeSink
-from boba_chainlit.config import load_models
 from boba_chainlit.files import save_upload
 from boba_chainlit.session import ChatSession
 
@@ -42,9 +42,9 @@ async def on_chat_start() -> None:
     workspace_id = WorkspaceId.new()
     cl.user_session.set("workspace_id", workspace_id)
 
-    await asyncio.to_thread(_get_session)
+    session = await asyncio.to_thread(_get_session)
 
-    models = load_models()
+    models = session.models
     if not models:
         msg = "[chainlit] models пуст или не задан — UI не может выбрать модель"
         raise RuntimeError(msg)
@@ -253,10 +253,16 @@ class _EventRenderer:
                     f"Жду ответ от модели `{e.model}`{tools_hint}… "
                     f"(сообщений в контексте: {e.messages_count})",
                 )
+            case IterationStarted() if e.iteration > 1:
+                # Первую итерацию не маркируем — пользователь только что
+                # отправил запрос. Дальнейшие — статус-строка.
+                await self._set_status(
+                    f"Итерация: {e.iteration}/{e.max_iterations}…",
+                )
             case _:
-                # IterationStarted, GenerationStarted, ThinkingStarted,
-                # AnswerStarted, GenerationDone, GenerationRetried — у
-                # этих рендер-эффект только в очистке статуса.
+                # GenerationStarted, ThinkingStarted, AnswerStarted,
+                # GenerationDone, GenerationRetried, IterationStarted (1) —
+                # у этих рендер-эффект только в очистке статуса.
                 if e.label() == "answer":
                     await self._open_answer()
                 elif e.label() == "thinking":
@@ -267,15 +273,8 @@ class _EventRenderer:
                     await self._set_status("Модель обрабатывает запрос…")
                 elif e.label().startswith("generation done"):
                     await self._clear_status()
-                elif e.label().startswith("iteration "):
-                    if not e.label().endswith("/1") and "1/" not in e.label():
-                        # Первую итерацию не маркируем — пользователь
-                        # только что отправил запрос.
-                        await self._set_status(f"Итерация: {e.label()}…")
 
-    async def _on_tool_call_stream_started(
-        self, e: ToolCallStreamStarted
-    ) -> None:
+    async def _on_tool_call_stream_started(self, e: ToolCallStreamStarted) -> None:
         await self._clear_status()
         step = cl.Step(name=e.tool_name, type="tool")
         await step.send()

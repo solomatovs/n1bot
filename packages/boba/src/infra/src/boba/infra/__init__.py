@@ -1,5 +1,10 @@
-"""Инфраструктурный слой: загрузка конфигурации, сборка DI-контейнера,
-prompt/tool-loader'ы и настройка логирования.
+"""Инфраструктурный слой: сборка типизированной конфигурации,
+DI-контейнер, prompt/tool-loader'ы и настройка логирования.
+
+Конкретные :class:`~boba.domain.core.config.ConfigSource`-реализации
+(env, TOML, …) живут в отдельных пакетах ``boba-config-*`` — core инфра
+их не подтягивает. Bootstrap приложения сам собирает свою цепочку и
+передаёт готовый резолвер в :func:`default_config_factory`.
 
 Короткие импорты::
 
@@ -10,26 +15,21 @@ prompt/tool-loader'ы и настройка логирования.
 """
 
 from boba.infra.config import (
+    CONFIG_SECTIONS_ENTRY_POINT,
     AgentSection,
+    AppCoreConfig,
     AppCoreSection,
     ConfigBundle,
+    ConfigError,
     ConfigFactory,
     ConfigLoader,
-    ConfigSectionBuilder,
-    ConfigState,
+    ConfigSectionAlreadyRegisteredError,
+    ConfigSectionMissingError,
     DefaultSource,
-    EnvFileSource,
-    EnvSource,
-    ExtensionsBagSection,
-    ExtensionsBagSource,
     LLMTransportSection,
     PromptsSection,
-    TomlFileSource,
-    TomlSource,
     WorkspacesSection,
     default_config_factory,
-    default_resolver,
-    load_toml,
 )
 from boba.infra.container import (
     AgentComponents,
@@ -50,27 +50,24 @@ from boba.infra.tool_plugin_loader import (
 )
 
 __all__ = [
+    "CONFIG_SECTIONS_ENTRY_POINT",
     "ENTRY_POINTS_GROUP",
     "AgentComponents",
     "AgentSection",
+    "AppCoreConfig",
     "AppCoreSection",
     "ConfigBundle",
+    "ConfigError",
     "ConfigFactory",
     "ConfigLoader",
-    "ConfigSectionBuilder",
-    "ConfigState",
+    "ConfigSectionAlreadyRegisteredError",
+    "ConfigSectionMissingError",
     "DefaultSource",
-    "EnvFileSource",
-    "EnvSource",
     "ExtensionContext",
-    "ExtensionsBagSection",
-    "ExtensionsBagSource",
     "LLMTransportSection",
     "PromptLoadError",
     "PromptLoader",
     "PromptsSection",
-    "TomlFileSource",
-    "TomlSource",
     "ToolPluginError",
     "ToolPluginLoadError",
     "ToolPluginLoader",
@@ -82,7 +79,5 @@ __all__ = [
     "create_agent_source",
     "create_llm_source",
     "default_config_factory",
-    "default_resolver",
-    "load_toml",
     "log_context",
 ]

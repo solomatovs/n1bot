@@ -119,6 +119,8 @@ class VectorStore:
         # Наш dict[str, str] — частный случай, но list-инвариантность
         # требует явного ignore: значения времени выполнения валидны.
         metadatas = [dict(c[2]) for c in chunks]
-        col.upsert(  # type: ignore[arg-type]
-            ids=ids, documents=documents, metadatas=metadatas
+        col.upsert(
+            ids=ids,
+            documents=documents,
+            metadatas=metadatas,  # pyright: ignore[reportArgumentType]
         )
