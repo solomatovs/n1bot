@@ -7,7 +7,7 @@ from typing import Any
 
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
-    ChainValidator,
+    ChainConverter,
     IsString,
     NonEmpty,
     ParamSchema,
@@ -61,7 +61,7 @@ class CdTool(Tool[CdArgs]):
                     ParamSchema(
                         name="path",
                         description="Путь директории.",
-                        validator=ChainValidator(Required(), IsString(), NonEmpty()),
+                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
                 ],
                 invariants=Pass(),

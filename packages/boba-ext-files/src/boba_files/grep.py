@@ -8,7 +8,7 @@ from typing import Any
 
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
-    ChainValidator,
+    ChainConverter,
     Default,
     IsBool,
     IsInt,
@@ -88,17 +88,17 @@ class GrepTool(Tool[GrepArgs]):
                     ParamSchema(
                         name="pattern",
                         description="Python-regex; литерал при fixed_string=true.",
-                        validator=ChainValidator(Required(), IsString(), NonEmpty()),
+                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="path",
                         description="Стартовый путь. Без значения — cwd.",
-                        validator=ChainValidator(IsString(), NonEmpty()),
+                        converter=ChainConverter(IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="recursive",
                         description="Рекурсивный обход директории. По умолчанию true.",
-                        validator=ChainValidator(Default(True), IsBool()),
+                        converter=ChainConverter(Default(True), IsBool()),
                     ),
                     ParamSchema(
                         name="include",
@@ -106,12 +106,12 @@ class GrepTool(Tool[GrepArgs]):
                             "Fnmatch-glob по пути (например '*.py'). "
                             "Без значения — все файлы."
                         ),
-                        validator=ChainValidator(IsString(), NonEmpty()),
+                        converter=ChainConverter(IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="case_insensitive",
                         description="Игнорировать регистр. По умолчанию false.",
-                        validator=ChainValidator(Default(False), IsBool()),
+                        converter=ChainConverter(Default(False), IsBool()),
                     ),
                     ParamSchema(
                         name="context",
@@ -119,7 +119,7 @@ class GrepTool(Tool[GrepArgs]):
                             "Строк контекста до и после каждого совпадения. "
                             "По умолчанию 0."
                         ),
-                        validator=ChainValidator(
+                        converter=ChainConverter(
                             Default(0),
                             IsInt(),
                             MinValue(0),
@@ -128,7 +128,7 @@ class GrepTool(Tool[GrepArgs]):
                     ParamSchema(
                         name="limit",
                         description="Максимум совпадений в ответе. По умолчанию 100.",
-                        validator=ChainValidator(
+                        converter=ChainConverter(
                             Default(100),
                             IsInt(),
                             MinValue(1),
@@ -137,7 +137,7 @@ class GrepTool(Tool[GrepArgs]):
                     ParamSchema(
                         name="fixed_string",
                         description="Литеральный поиск без regex. По умолчанию false.",
-                        validator=ChainValidator(Default(False), IsBool()),
+                        converter=ChainConverter(Default(False), IsBool()),
                     ),
                 ],
                 invariants=Pass(),

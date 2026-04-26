@@ -25,16 +25,21 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from boba.domain.core.config import (
-    REQUIRED,
     ChainedConfigResolver,
     ConfigKey,
     ConfigSection,
     FieldSpec,
-    IntConverter,
-    StrConverter,
 )
 from boba.domain.core.patterns import StrId
-from boba.domain.core.validators import MinValue, OneOf
+from boba.domain.core.validators import (
+    ChainConverter,
+    Default,
+    MinValue,
+    OneOf,
+    ParseInt,
+    ParseString,
+    Required,
+)
 
 __all__ = ["ChromaExtConfig", "ChromadbSection"]
 
@@ -54,37 +59,30 @@ class ChromadbSection(ConfigSection[ChromaExtConfig]):
 
     id: ClassVar[StrId] = StrId("ext.chromadb")
 
-    PERSIST_PATH = FieldSpec(
+    PERSIST_PATH: FieldSpec[str] = FieldSpec(
         key=ConfigKey("ext", "chromadb", "persist_path"),
-        converter=StrConverter(),
-        default=REQUIRED,
+        converter=ChainConverter(Required(), ParseString()),
         description=(
             "Путь к persistent ChromaDB (общий с boba-cli-vector-index, "
             "чтобы агент видел свежепроиндексированные коллекции)."
         ),
     )
-    EMBEDDING_MODEL = FieldSpec(
+    EMBEDDING_MODEL: FieldSpec[str] = FieldSpec(
         key=ConfigKey("ext", "chromadb", "embedding_model"),
-        converter=StrConverter(),
-        default="default",
-        validator=OneOf("default"),
+        converter=ChainConverter(Default("default"), ParseString(), OneOf("default")),
         description=(
             "Модель эмбеддингов. v0.1: только 'default' (built-in ONNX). "
             "Расширим, когда добавим sentence-transformers как optional dep."
         ),
     )
-    MAX_TOP_K = FieldSpec(
+    MAX_TOP_K: FieldSpec[int] = FieldSpec(
         key=ConfigKey("ext", "chromadb", "max_top_k"),
-        converter=IntConverter(),
-        default=20,
-        validator=MinValue(1),
+        converter=ChainConverter(Default(20), ParseInt(), MinValue(1)),
         description="Жёсткий потолок top_k для kb_search (защита от дикого LLM).",
     )
-    SNIPPET_CHARS = FieldSpec(
+    SNIPPET_CHARS: FieldSpec[int] = FieldSpec(
         key=ConfigKey("ext", "chromadb", "snippet_chars"),
-        converter=IntConverter(),
-        default=300,
-        validator=MinValue(1),
+        converter=ChainConverter(Default(300), ParseInt(), MinValue(1)),
         description="Максимальная длина сниппета документа в результате kb_search.",
     )
 

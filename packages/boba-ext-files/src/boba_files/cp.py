@@ -7,7 +7,7 @@ from typing import Any
 
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
-    ChainValidator,
+    ChainConverter,
     Default,
     IsBool,
     IsString,
@@ -72,12 +72,12 @@ class CpTool(Tool[CpArgs]):
                     ParamSchema(
                         name="src",
                         description="Путь источника.",
-                        validator=ChainValidator(Required(), IsString(), NonEmpty()),
+                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="dst",
                         description="Путь назначения.",
-                        validator=ChainValidator(Required(), IsString(), NonEmpty()),
+                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="recursive",
@@ -85,7 +85,7 @@ class CpTool(Tool[CpArgs]):
                             "Рекурсивное копирование директории. "
                             "По умолчанию false."
                         ),
-                        validator=ChainValidator(Default(False), IsBool()),
+                        converter=ChainConverter(Default(False), IsBool()),
                     ),
                 ],
                 invariants=Pass(),

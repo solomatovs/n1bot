@@ -7,7 +7,7 @@ from typing import Any
 
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
-    ChainValidator,
+    ChainConverter,
     Default,
     IsBool,
     IsString,
@@ -78,27 +78,27 @@ class EditTool(Tool[EditArgs]):
                     ParamSchema(
                         name="path",
                         description="Путь к файлу.",
-                        validator=ChainValidator(Required(), IsString(), NonEmpty()),
+                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="old_string",
                         description="Подстрока для замены. Совпадение точное.",
-                        validator=ChainValidator(Required(), IsString(), NonEmpty()),
+                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="new_string",
                         description="Заменяющий текст. Пустая строка = удаление.",
-                        validator=ChainValidator(Required(), IsString()),
+                        converter=ChainConverter(Required(), IsString()),
                     ),
                     ParamSchema(
                         name="replace_all",
                         description="Заменить все вхождения. По умолчанию false.",
-                        validator=ChainValidator(Default(False), IsBool()),
+                        converter=ChainConverter(Default(False), IsBool()),
                     ),
                     ParamSchema(
                         name="encoding",
                         description="Кодировка файла. По умолчанию 'utf-8'.",
-                        validator=ChainValidator(
+                        converter=ChainConverter(
                             Default("utf-8"),
                             IsString(),
                             NonEmpty(),

@@ -39,18 +39,23 @@ from typing import Any, ClassVar, TypeVar, cast
 from boba.domain.agent.models import AgentConfig
 from boba.domain.config import AppConfig, LLMConfig, WorkspaceLayout
 from boba.domain.core.config import (
-    REQUIRED,
-    BoolConverter,
     ChainedConfigResolver,
     ConfigKey,
     ConfigSection,
     ConfigSource,
     FieldSpec,
-    IntConverter,
-    StrConverter,
 )
 from boba.domain.core.patterns import StrId
-from boba.domain.core.validators import MinValue
+from boba.domain.core.validators import (
+    ChainConverter,
+    Default,
+    MinValue,
+    Nullable,
+    ParseBool,
+    ParseInt,
+    ParseString,
+    Required,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -201,22 +206,19 @@ class AppCoreSection(ConfigSection[AppCoreConfig]):
 
     id: ClassVar[StrId] = StrId("app_core")
 
-    SSL_VERIFY = FieldSpec(
+    SSL_VERIFY: FieldSpec[bool] = FieldSpec(
         key=ConfigKey("app", "ssl_verify"),
-        converter=BoolConverter(),
-        default=False,
+        converter=ChainConverter(Default(False), ParseBool()),
         description="Проверять ли TLS-сертификат у HTTPS-запросов из приложения.",
     )
-    LOG_LEVEL = FieldSpec(
+    LOG_LEVEL: FieldSpec[str] = FieldSpec(
         key=ConfigKey("app", "log_level"),
-        converter=StrConverter(),
-        default="INFO",
+        converter=ChainConverter(Default("INFO"), ParseString()),
         description="Уровень корневого логгера: DEBUG/INFO/WARNING/ERROR/CRITICAL.",
     )
-    LOG_FILE = FieldSpec[str | None](
+    LOG_FILE: FieldSpec[str | None] = FieldSpec(
         key=ConfigKey("app", "log_file"),
-        converter=StrConverter(),
-        default=None,
+        converter=Nullable(ParseString()),
         description="Путь к log-файлу. Если пусто — логи только в stderr.",
     )
 
@@ -226,7 +228,7 @@ class AppCoreSection(ConfigSection[AppCoreConfig]):
         return AppCoreConfig(
             ssl_verify=self.SSL_VERIFY.read(resolver),
             log_level=self.LOG_LEVEL.read(resolver),
-            log_file=self.LOG_FILE.read_opt(resolver),
+            log_file=self.LOG_FILE.read(resolver),
         )
 
 
@@ -235,28 +237,24 @@ class WorkspacesSection(ConfigSection[WorkspaceLayout]):
 
     id: ClassVar[StrId] = StrId("workspaces")
 
-    BASE_DIR = FieldSpec(
+    BASE_DIR: FieldSpec[str] = FieldSpec(
         key=ConfigKey("workspaces", "base_dir"),
-        converter=StrConverter(),
-        default="./workspaces",
+        converter=ChainConverter(Default("./workspaces"), ParseString()),
         description="Корневая директория всех workspace-namespace'ов.",
     )
-    USER = FieldSpec(
+    USER: FieldSpec[str] = FieldSpec(
         key=ConfigKey("workspaces", "user_subdir"),
-        converter=StrConverter(),
-        default="user",
+        converter=ChainConverter(Default("user"), ParseString()),
         description="Имя поддиректории user-workspace'а внутри base_dir.",
     )
-    SYSTEM = FieldSpec(
+    SYSTEM: FieldSpec[str] = FieldSpec(
         key=ConfigKey("workspaces", "system_subdir"),
-        converter=StrConverter(),
-        default="system",
+        converter=ChainConverter(Default("system"), ParseString()),
         description="Имя поддиректории system-workspace'а внутри base_dir.",
     )
-    TMP = FieldSpec(
+    TMP: FieldSpec[str] = FieldSpec(
         key=ConfigKey("workspaces", "tmp_subdir"),
-        converter=StrConverter(),
-        default="tmp",
+        converter=ChainConverter(Default("tmp"), ParseString()),
         description="Имя поддиректории tmp-workspace'а внутри base_dir.",
     )
 
@@ -276,16 +274,16 @@ class LLMTransportSection(ConfigSection[LLMConfig]):
 
     id: ClassVar[StrId] = StrId("llm_transport")
 
-    BASE_URL = FieldSpec(
+    BASE_URL: FieldSpec[str] = FieldSpec(
         key=ConfigKey("llm", "base_url"),
-        converter=StrConverter(),
-        default="http://localhost:11434/v1",
+        converter=ChainConverter(
+            Default("http://localhost:11434/v1"), ParseString(),
+        ),
         description="OpenAI-совместимый base URL LLM-сервера (LiteLLM/Ollama/...).",
     )
-    API_KEY = FieldSpec(
+    API_KEY: FieldSpec[str] = FieldSpec(
         key=ConfigKey("llm", "api_key"),
-        converter=StrConverter(),
-        default="ollama",
+        converter=ChainConverter(Default("ollama"), ParseString()),
         description="API-ключ LLM-сервера. Для локального Ollama — любой непустой.",
     )
 
@@ -303,18 +301,14 @@ class AgentSection(ConfigSection[AgentConfig]):
 
     id: ClassVar[StrId] = StrId("agent")
 
-    MAX_ITERATIONS = FieldSpec(
+    MAX_ITERATIONS: FieldSpec[int] = FieldSpec(
         key=ConfigKey("agent", "max_iterations"),
-        converter=IntConverter(),
-        default=20,
-        validator=MinValue(1),
+        converter=ChainConverter(Default(20), ParseInt(), MinValue(1)),
         description="Жёсткий потолок числа итераций агента в одной сессии.",
     )
-    MAX_CONSECUTIVE_TOOL_CALLS = FieldSpec(
+    MAX_CONSECUTIVE_TOOL_CALLS: FieldSpec[int] = FieldSpec(
         key=ConfigKey("agent", "max_consecutive_tool_calls"),
-        converter=IntConverter(),
-        default=3,
-        validator=MinValue(1),
+        converter=ChainConverter(Default(3), ParseInt(), MinValue(1)),
         description="Сколько раз подряд агент может звать tools без LLM-ответа.",
     )
 
@@ -340,10 +334,9 @@ class PromptsSection(ConfigSection[str]):
 
     id: ClassVar[StrId] = StrId("prompts")
 
-    DIR = FieldSpec(
+    DIR: FieldSpec[str] = FieldSpec(
         key=ConfigKey("prompts", "dir"),
-        converter=StrConverter(),
-        default=REQUIRED,
+        converter=ChainConverter(Required(), ParseString()),
         description="Корневая директория .md/.txt-файлов с system-prompt'ами.",
     )
 

@@ -8,7 +8,7 @@ from typing import Any
 
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
-    ChainValidator,
+    ChainConverter,
     IsInt,
     IsString,
     MinValue,
@@ -77,12 +77,12 @@ class LsTool(Tool[LsArgs]):
                     ParamSchema(
                         name="path",
                         description="Путь директории. Без значения — корень workspace.",
-                        validator=ChainValidator(IsString(), NonEmpty()),
+                        converter=ChainConverter(IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="limit",
                         description="Максимум элементов в ответе.",
-                        validator=ChainValidator(Required(), IsInt(), MinValue(1)),
+                        converter=ChainConverter(Required(), IsInt(), MinValue(1)),
                     ),
                 ],
                 invariants=Pass(),

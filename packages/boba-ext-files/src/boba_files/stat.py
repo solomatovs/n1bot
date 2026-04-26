@@ -7,7 +7,7 @@ from typing import Any
 
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
-    ChainValidator,
+    ChainConverter,
     IsString,
     NonEmpty,
     ParamSchema,
@@ -66,7 +66,7 @@ class StatTool(Tool[StatArgs]):
                     ParamSchema(
                         name="path",
                         description="Путь к файлу или директории.",
-                        validator=ChainValidator(Required(), IsString(), NonEmpty()),
+                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
                 ],
                 invariants=Pass(),

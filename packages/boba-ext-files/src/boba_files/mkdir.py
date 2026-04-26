@@ -7,7 +7,7 @@ from typing import Any
 
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
-    ChainValidator,
+    ChainConverter,
     IsString,
     NonEmpty,
     ParamSchema,
@@ -63,7 +63,7 @@ class MkdirTool(Tool[MkdirArgs]):
                     ParamSchema(
                         name="path",
                         description="Путь создаваемой директории.",
-                        validator=ChainValidator(Required(), IsString(), NonEmpty()),
+                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
                 ],
                 invariants=Pass(),

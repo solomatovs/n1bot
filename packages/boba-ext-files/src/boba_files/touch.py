@@ -7,7 +7,7 @@ from typing import Any
 
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
-    ChainValidator,
+    ChainConverter,
     IsString,
     NonEmpty,
     ParamSchema,
@@ -64,7 +64,7 @@ class TouchTool(Tool[TouchArgs]):
                     ParamSchema(
                         name="path",
                         description="Путь к файлу.",
-                        validator=ChainValidator(Required(), IsString(), NonEmpty()),
+                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
                 ],
                 invariants=Pass(),

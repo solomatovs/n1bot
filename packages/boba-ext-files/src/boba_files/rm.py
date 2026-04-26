@@ -7,7 +7,7 @@ from typing import Any
 
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
-    ChainValidator,
+    ChainConverter,
     Default,
     IsBool,
     IsString,
@@ -67,7 +67,7 @@ class RmTool(Tool[RmArgs]):
                     ParamSchema(
                         name="path",
                         description="Путь к файлу или директории.",
-                        validator=ChainValidator(Required(), IsString(), NonEmpty()),
+                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="recursive",
@@ -75,7 +75,7 @@ class RmTool(Tool[RmArgs]):
                             "Удалить директорию со всем содержимым. "
                             "По умолчанию false."
                         ),
-                        validator=ChainValidator(Default(False), IsBool()),
+                        converter=ChainConverter(Default(False), IsBool()),
                     ),
                 ],
                 invariants=Pass(),
