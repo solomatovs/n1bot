@@ -10,6 +10,7 @@
 -e ./packages/boba-web-chainlit
 -e ./packages/boba-cli-agent-run
 -e ./packages/boba-cli-vector-index
+-e ./packages/boba-config-cli
 -e ./packages/boba-config-env
 -e ./packages/boba-config-toml
 -e ./packages/boba-ext-files

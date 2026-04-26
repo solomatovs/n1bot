@@ -4,7 +4,6 @@
 
     from boba.web.chainlit import ChainlitBridgeSink, ChatSession
     from boba.web.chainlit import ChainlitConfig, ChainlitSection
-    from boba.web.chainlit import UIOverride, ChainlitUiOverrideSection
 
 Модули :mod:`boba.web.chainlit.app` и :mod:`boba.web.chainlit.__main__` — точки
 входа приложения, их содержимое не реэкспортируется.
@@ -14,19 +13,13 @@ from boba.web.chainlit.bridge import ChainlitBridgeSink
 from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
 from boba.web.chainlit.files import save_upload
 from boba.web.chainlit.session import ChatSession
-from boba.web.chainlit.ui_overrides import (
-    ChainlitUiOverrideSection,
-    UIOverride,
-    UIOverrideTomlConverter,
-)
+from boba.web.chainlit.ui_overrides import UIOverrideTomlConverter
 
 __all__ = [
     "ChainlitBridgeSink",
     "ChainlitConfig",
     "ChainlitSection",
-    "ChainlitUiOverrideSection",
     "ChatSession",
-    "UIOverride",
     "UIOverrideTomlConverter",
     "save_upload",
 ]

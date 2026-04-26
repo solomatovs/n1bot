@@ -1,14 +1,21 @@
 """Bootstrap chainlit-приложения.
 
-Собирает application :class:`ConfigBundle` из env+TOML, читает из него
-chainlit-секции (:class:`ChainlitSection`, :class:`ChainlitUiOverrideSection`)
-и:
+Здесь — единственное место в пакете, где собирается ConfigBundle и
+строится цепочка ConfigSource'ов. :class:`ChatSession` получает уже
+готовый bundle через ``ChatSession.from_bundle(bundle)`` — никакого
+повторного похода в env/TOML.
 
-1. прокидывает server-параметры в ``CHAINLIT_*`` env (chainlit-библиотека
-   читает их при импорте);
-2. рендерит ``.chainlit/config.toml`` для UI-оверрайдов (chainlit
-   смотрит TOML только при старте сервера);
-3. импортирует chainlit и запускает.
+Шаги:
+
+1. собрать ConfigBundle (env + TOML, плюс расширения через
+   entry-points);
+2. через :func:`bridge_chainlit_env` прокинуть chainlit-server-поля
+   в ``CHAINLIT_*`` env (chainlit-библиотека читает их при импорте) и
+   получить абсолютный ``app_root``;
+3. через :class:`UIOverrideTomlConverter` отрендерить
+   ``app_root/.chainlit/config.toml`` для UI-overrides (chainlit для
+   этих полей env не смотрит, только TOML);
+4. импортировать chainlit и запустить ``run_chainlit(app.py)``.
 """
 
 from __future__ import annotations
@@ -35,18 +42,21 @@ from boba.infra import (
     ConfigLoader,
 )
 from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
-from boba.web.chainlit.ui_overrides import (
-    ChainlitUiOverrideSection,
-    UIOverrideTomlConverter,
-)
+from boba.web.chainlit.session import ChatSession
+from boba.web.chainlit.ui_overrides import UIOverrideTomlConverter
 
 
-def _build_resolver() -> ChainedConfigResolver:
-    """Локальный резолвер для bootstrap'а: env (с file-указателем) +
-    TOML (с file-указателем). Тот же набор, что у ChatSession.
+def build_bundle() -> ConfigBundle:
+    """Собирает application :class:`ConfigBundle`.
+
+    Цепочка источников: env-file > env > toml-file > toml. Регистрирует
+    встроенные секции (``app_core``/``agent``) и adapter-секции (FS-
+    workspace, OpenAI-транспорт, file-prompt loader, chainlit).
+    Расширения через entry-point group ``boba.config_sections``
+    подхватываются после.
     """
     toml_data = load_toml(os.environ.get(CONFIG_PATH_ENV))
-    return ChainedConfigResolver(
+    resolver = ChainedConfigResolver(
         [
             EnvFileSource(),
             EnvSource(),
@@ -54,9 +64,22 @@ def _build_resolver() -> ChainedConfigResolver:
             TomlSource(toml_data),
         ]
     )
+    factory = ConfigFactory(resolver)
+    factory.register(AppCoreSection())
+    factory.register(AgentSection())
+    factory.register(WorkspacesSection())
+    factory.register(LLMTransportSection())
+    factory.register(PromptsSection())
+    factory.register(ChainlitSection())
+    factory.discover_extension_sections()
+    return ConfigLoader(factory).load_bundle()
 
 
-def _bootstrap_env(cfg: ChainlitConfig) -> None:
+def bridge_chainlit_env(cfg: ChainlitConfig) -> Path:
+    """Прокидывает поля :class:`ChainlitConfig` в ``CHAINLIT_*`` env, что
+    chainlit-библиотека читает при импорте. Возвращает абсолютный
+    ``app_root`` — он же используется для записи UI-overrides.
+    """
     os.environ.setdefault("CHAINLIT_HOST", cfg.host)
     os.environ.setdefault("CHAINLIT_PORT", cfg.port)
     if cfg.root_path:
@@ -64,45 +87,36 @@ def _bootstrap_env(cfg: ChainlitConfig) -> None:
     if cfg.auth_secret:
         os.environ.setdefault("CHAINLIT_AUTH_SECRET", cfg.auth_secret)
     os.environ.setdefault("CHAINLIT_HEADLESS", cfg.headless)
+    app_root = Path(cfg.app_root).resolve()
+    app_root.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("CHAINLIT_APP_ROOT", str(app_root))
+    return app_root
 
 
-def _write_ui_config_overrides(bundle: ConfigBundle) -> None:
-    """Рендерит ``.chainlit/config.toml`` из UI-оверрайдов до импорта chainlit.
+def write_ui_config_overrides(cfg: ChainlitConfig, app_root: Path) -> None:
+    """Рендерит ``app_root/.chainlit/config.toml`` из UI-полей конфига.
 
-    Логика разнесена по слоям: чтение из бандла → :class:`UIOverride`,
-    сериализация :class:`UIOverride` → TOML-строка. Здесь остался только
-    оркестратор: «прочитай, отрендерь, если не пусто — запиши».
+    Chainlit смотрит TOML только при старте сервера, поэтому делается
+    до импорта chainlit. Пустая строка от конвертера → файл не пишется
+    (chainlit использует свои дефолты).
     """
-    override = bundle.section(ChainlitUiOverrideSection)
-    content = UIOverrideTomlConverter().convert(override)
+    content = UIOverrideTomlConverter().convert(cfg)
     if not content:
         return
-    target = Path.cwd() / ".chainlit" / "config.toml"
+    target = app_root / ".chainlit" / "config.toml"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
 
 
-def _build_factory() -> ConfigFactory:
-    """Регистрирует встроенные секции (``app_core``/``agent``) и
-    adapter-секции (FS-workspace, OpenAI-транспорт, file-prompt loader).
-    Расширения через entry-point group ``boba.config_sections``
-    подхватываются после.
-    """
-    factory = ConfigFactory(_build_resolver())
-    factory.register(AppCoreSection())
-    factory.register(AgentSection())
-    factory.register(WorkspacesSection())
-    factory.register(LLMTransportSection())
-    factory.register(PromptsSection())
-    factory.discover_extension_sections()
-    return factory
-
-
 def main() -> None:
-    loader = ConfigLoader(_build_factory())
-    bundle = loader.load_bundle()
-    _bootstrap_env(bundle.section(ChainlitSection))
-    _write_ui_config_overrides(bundle)
+    bundle = build_bundle()
+    chainlit_cfg = bundle.section(ChainlitSection)
+    app_root = bridge_chainlit_env(chainlit_cfg)
+    write_ui_config_overrides(chainlit_cfg, app_root)
+
+    # ChatSession будет создан лениво из bundle при первом cl.on_chat_start;
+    # сюда передаём bundle через app-level фабрику.
+    ChatSession.set_bundle(bundle)
 
     # Импорт chainlit — только после bootstrap: модуль читает env при загрузке.
     from chainlit.cli import run_chainlit  # noqa: PLC0415

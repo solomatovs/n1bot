@@ -1,18 +1,20 @@
-"""Chainlit-server конфиг как :class:`ConfigSection`.
+"""Конфиг chainlit-приложения как единая :class:`ConfigSection`.
 
-:class:`ChainlitSection` объявляет поля декларативно (через
-:class:`FieldSpec`) и собирает типизированный :class:`ChainlitConfig`.
-Регистрируется в :class:`ConfigFactory` через entry-point group
-``boba.config_sections`` (см. ``pyproject.toml``).
+Все поля — server-параметры (host/port/root_path/auth_secret/headless),
+рантайм-расположение (app_root), список моделей для UI ChatSettings и
+UI-overrides для ``.chainlit/config.toml`` (title, telemetry, лимиты
+загрузки) — лежат в одной секции с namespace ``("chainlit",)``. DTO-имена
+== TOML/env-имена: ``[chainlit] ui_name`` ↔ env ``BOBA_CHAINLIT_UI_NAME``
+↔ ``ChainlitConfig.ui_name``. Никаких оператор-DTO mapping'ов.
 
 Bootstrap (:mod:`boba.web.chainlit.__main__`) собирает бандл и через
-``bundle.section(ChainlitSection)`` получает значения, после чего
-прокидывает их в ``CHAINLIT_*`` env для самой библиотеки chainlit
-(она читает env при импорте).
+``bundle.section(ChainlitSection)`` получает значения, после чего:
 
-Конвенция имён та же, что у app-секций:
-``ConfigKey("chainlit","host")`` → env ``BOBA_CHAINLIT_HOST``,
-TOML ``[chainlit] host``.
+1. через :func:`bridge_chainlit_env` прокидывает server-поля в
+   ``CHAINLIT_*`` env (chainlit-библиотека читает их при импорте);
+2. через :class:`UIOverrideTomlConverter` рендерит UI-поля в
+   ``app_root/.chainlit/config.toml`` (chainlit смотрит TOML только
+   при старте сервера).
 """
 
 from __future__ import annotations
@@ -30,7 +32,9 @@ from boba.domain.core.validators import (
     ChainConverter,
     Default,
     Nullable,
+    ParseBool,
     ParseCsvList,
+    ParseInt,
     ParseString,
 )
 
@@ -39,15 +43,25 @@ __all__ = ["ChainlitConfig", "ChainlitSection"]
 
 @dataclass(frozen=True)
 class ChainlitConfig:
-    """Параметры chainlit-сервера + список доступных в UI моделей.
+    """Параметры chainlit-приложения.
 
-    ``host``/``port``/``root_path``/``auth_secret``/``headless`` — bridge
-    к одноимённым ``CHAINLIT_*`` env-переменным (значения хранятся
-    строкой, потому что bridge пишет напрямую в env, а chainlit-библиотека
-    парсит сама).
+    ``host``/``port``/``root_path``/``auth_secret``/``headless`` —
+    server-параметры, прокидываются в одноимённые ``CHAINLIT_*`` env.
+    Хранятся строкой — chainlit-библиотека парсит сама.
 
-    ``models`` — список LLM-моделей для UI ChatSettings. Пустой список —
-    UI не сможет выбрать модель и кинет ошибку при старте сессии.
+    ``app_root`` — директория chainlit runtime-state (``.chainlit/``,
+    ``chainlit.md``, ``public/``, ``translations/``). Прокидывается в
+    ``CHAINLIT_APP_ROOT``. Лежит вне исходников (по умолчанию —
+    ``./local/chainlit``).
+
+    ``models`` — список LLM-моделей для UI ChatSettings. Пустой список
+    — UI не сможет выбрать модель и кинет ошибку при старте сессии.
+
+    UI-overrides (``ui_name``, ``enable_telemetry``,
+    ``upload_max_size_mb``/``upload_max_files``/``upload_accept``) —
+    рендерятся в ``app_root/.chainlit/config.toml`` (chainlit для UI
+    env не смотрит, только TOML). ``None`` означает «не трогать
+    chainlit-дефолт».
     """
 
     host: str
@@ -55,11 +69,18 @@ class ChainlitConfig:
     root_path: str
     auth_secret: str | None
     headless: str
+    app_root: str
     models: list[str]
+
+    ui_name: str | None
+    enable_telemetry: bool | None
+    upload_max_size_mb: int | None
+    upload_max_files: int | None
+    upload_accept: list[str] | None
 
 
 class ChainlitSection(ConfigSection[ChainlitConfig]):
-    """Секция chainlit-server. Регистрируется через entry-point
+    """Секция chainlit-приложения. Регистрируется через entry-point
     ``boba.config_sections``.
     """
 
@@ -67,9 +88,10 @@ class ChainlitSection(ConfigSection[ChainlitConfig]):
     namespace: ClassVar[tuple[str, ...]] = ("chainlit",)
 
     schema: ClassVar[ObjectSchema[ChainlitConfig]] = ObjectSchema(
-        description="Параметры chainlit-сервера + список доступных в UI "
-        "моделей.",
+        description="Параметры chainlit-приложения: server, runtime-root, "
+        "список моделей, UI-overrides.",
         fields=[
+            # ── server ─────────────────────────────────────────────
             FieldSpec(
                 name="host",
                 converter=ChainConverter(Default("127.0.0.1"), ParseString()),
@@ -99,10 +121,49 @@ class ChainlitSection(ConfigSection[ChainlitConfig]):
                 description="``true`` — не пытаться открыть браузер при старте.",
             ),
             FieldSpec(
+                name="app_root",
+                converter=ChainConverter(Default("./local/chainlit"), ParseString()),
+                description="Директория chainlit runtime-state: "
+                "``.chainlit/config.toml``, ``chainlit.md``, ``public/``, "
+                "``translations/``. Не лежит в исходниках — вынесена в "
+                "``local/`` (gitignored). Bridge ставит её в "
+                "``CHAINLIT_APP_ROOT``.",
+            ),
+            FieldSpec(
                 name="models",
                 converter=ChainConverter(Default([]), ParseCsvList()),
                 description="CSV/TOML-list LLM-моделей, выбираемых "
                 "пользователем в ChatSettings.",
+            ),
+            # ── UI overrides (None = не трогать chainlit-дефолт) ───
+            FieldSpec(
+                name="ui_name",
+                converter=Nullable(ParseString()),
+                description="Заголовок чата в UI (chainlit ``[UI] name``).",
+            ),
+            FieldSpec(
+                name="enable_telemetry",
+                converter=Nullable(ParseBool()),
+                description="Опт-аут chainlit-телеметрии "
+                "(``[project] enable_telemetry``).",
+            ),
+            FieldSpec(
+                name="upload_max_size_mb",
+                converter=Nullable(ParseInt()),
+                description="Лимит размера загружаемого файла, MB "
+                "(``[features.spontaneous_file_upload] max_size_mb``).",
+            ),
+            FieldSpec(
+                name="upload_max_files",
+                converter=Nullable(ParseInt()),
+                description="Максимум файлов в одном сообщении "
+                "(``[features.spontaneous_file_upload] max_files``).",
+            ),
+            FieldSpec(
+                name="upload_accept",
+                converter=Nullable(ParseCsvList()),
+                description="MIME-типы/расширения, разрешённые к загрузке "
+                "(``[features.spontaneous_file_upload] accept``).",
             ),
         ],
         factory=ChainlitConfig,

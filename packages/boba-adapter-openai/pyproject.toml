@@ -7,9 +7,6 @@ name = "boba-adapter-openai"
 version = "0.1.0"
 description = "OpenAI-compatible LLM adapter for the Boba agent: terminal, chunk-stream converter, raw-observer."
 requires-python = ">=3.11,<4"
-# Реализует LLM-боковой StreamSource поверх openai-SDK
-# (LiteLLM/Ollama/прокси — все openai-compat). Никаких других LLM-провайдеров
-# в этом пакете нет: каждый адаптер — отдельный pip-пакет.
 dependencies = ["boba", "openai>=1.40", "httpx"]
 
 [tool.setuptools.packages.find]

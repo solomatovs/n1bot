@@ -7,41 +7,31 @@
 :func:`create_agent_source`, ``Agent(source, UI-sink)``, синхронный
 прогон.
 
-Один инстанс на процесс Chainlit: чтобы не перечитывать конфиг и не
-пересоздавать workspace registry на каждое сообщение. Состояние
-сессии (``WorkspaceId``) живёт в ``cl.user_session``.
+Один инстанс на процесс Chainlit: конфиг приходит из bundle, который
+собирает :mod:`boba.web.chainlit.__main__` ДО запуска chainlit-сервера
+и инжектит через :meth:`ChatSession.set_bundle`. Состояние сессии
+(``WorkspaceId``) живёт в ``cl.user_session``.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from boba.adapter.fs_workspace import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
     FsPromptWorkspaceRegistry,
-    WorkspacesSection,
 )
 from boba.adapter.messages import InMemoryMessageService
 from boba.adapter.openai import (
     FileContentObserver,
-    LLMTransportSection,
     create_llm_source,
 )
-from boba.adapter.prompt_providers import PromptLoader, PromptsSection
-from boba.config.env import EnvFileSource, EnvSource
-from boba.config.toml import (
-    CONFIG_PATH_ENV,
-    TomlFileSource,
-    TomlSource,
-    load_toml,
-)
+from boba.adapter.prompt_providers import PromptLoader
 from boba.domain.agent import Agent
 from boba.domain.agent.dialogue_writer import DialogueWriter
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.models import AgentContext, AgentRequest
-from boba.domain.core.config import ChainedConfigResolver
 from boba.domain.core.patterns import StreamSink, StreamSinkPipeline
 from boba.domain.core.tools import ToolContext
 from boba.domain.core.workspace import (
@@ -52,10 +42,7 @@ from boba.domain.core.workspace import (
 from boba.domain.llm.models import RequestId
 from boba.infra import (
     AgentComponents,
-    AgentSection,
-    AppCoreSection,
-    ConfigFactory,
-    ConfigLoader,
+    ConfigBundle,
     ExtensionContext,
     ToolPluginLoader,
     configure_logging,
@@ -65,50 +52,32 @@ from boba.infra import (
 from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
 
 
-def _build_resolver() -> ChainedConfigResolver:
-    """Стандартная цепочка для chainlit-runtime: env (с file-указателем) +
-    TOML (с file-указателем). Тот же набор источников, что и у CLI —
-    перечислено явно, чтобы было видно, какие подключены.
-    """
-    toml_data = load_toml(os.environ.get(CONFIG_PATH_ENV))
-    return ChainedConfigResolver(
-        [
-            EnvFileSource(),
-            EnvSource(),
-            TomlFileSource(toml_data),
-            TomlSource(toml_data),
-        ]
-    )
-
-
-def _build_factory() -> ConfigFactory:
-    """Регистрирует встроенные секции (``app_core``/``agent``) и
-    adapter-секции выбранного стека (FS-workspace, OpenAI-транспорт,
-    file-prompt loader). Расширения через entry-point group
-    ``boba.config_sections`` подхватываются после.
-    """
-    factory = ConfigFactory(_build_resolver())
-    factory.register(AppCoreSection())
-    factory.register(AgentSection())
-    factory.register(WorkspacesSection())
-    factory.register(LLMTransportSection())
-    factory.register(PromptsSection())
-    factory.discover_extension_sections()
-    return factory
-
-
 class ChatSession:
     """One-shot обёртка: конфиг + workspace registry один раз, агент
     пересобирается на каждый :meth:`run`.
 
-    Chainlit держит один инстанс на процесс (через ``functools.cache``).
-    Workspace-registry живёт снаружи агентского цикла и используется
-    UI-слоем для upload'ов файлов (см. :meth:`project_workspace`).
+    Bundle инжектится из :mod:`boba.web.chainlit.__main__` через
+    :meth:`set_bundle` ДО первого ``cl.on_chat_start`` (там chainlit
+    создаёт ``ChatSession()`` через ``functools.cache``).
     """
 
+    _bundle: ConfigBundle | None = None
+
+    @classmethod
+    def set_bundle(cls, bundle: ConfigBundle) -> None:
+        """Инжектит application-level bundle. Должно быть вызвано до
+        первого ``ChatSession()``-вызова — обычно из ``__main__.main()``.
+        """
+        cls._bundle = bundle
+
     def __init__(self) -> None:
-        loader = ConfigLoader(_build_factory())
-        bundle = loader.load_bundle()
+        if ChatSession._bundle is None:
+            msg = (
+                "ChatSession instantiated before ChatSession.set_bundle() — "
+                "bootstrap must call set_bundle() in __main__.main()."
+            )
+            raise RuntimeError(msg)
+        bundle = ChatSession._bundle
         self._app_config = bundle.app
         configure_logging(self._app_config.log_level, self._app_config.log_file)
         self._agent_config = bundle.agent
