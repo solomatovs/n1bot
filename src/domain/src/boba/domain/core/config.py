@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
@@ -17,6 +17,7 @@ __all__ = [
     "FieldSpec",
     "FloatConverter",
     "IntConverter",
+    "MappingMappingConverter",
     "StrConverter",
 ]
 
@@ -143,3 +144,42 @@ class CsvListConverter(Converter[object, list[str]]):
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         raise ConverterInputError(f"cannot convert {type(value).__name__} to list[str]")
+
+
+class MappingMappingConverter(
+    Converter[object, Mapping[str, Mapping[str, str]]]
+):
+    """Двухуровневая namespaced-карта ``{namespace: {key: value}}``.
+
+    Внешний и внутренний ключи обязаны быть строками; значения
+    приводятся к ``str`` (env-источники возвращают только строки,
+    TOML — типизированные значения, единый строковый contract упрощает
+    потребителям парсинг).
+    """
+
+    def convert(self, value: object) -> Mapping[str, Mapping[str, str]]:
+        if not isinstance(value, Mapping):
+            raise ConverterInputError(
+                f"expected Mapping, got {type(value).__name__}"
+            )
+        result: dict[str, Mapping[str, str]] = {}
+        for ns, sub in value.items():
+            if not isinstance(ns, str):
+                raise ConverterInputError(
+                    f"namespace key must be str, got {type(ns).__name__}"
+                )
+            if not isinstance(sub, Mapping):
+                raise ConverterInputError(
+                    f"value for namespace {ns!r} must be Mapping, "
+                    f"got {type(sub).__name__}"
+                )
+            inner: dict[str, str] = {}
+            for k, v in sub.items():
+                if not isinstance(k, str):
+                    raise ConverterInputError(
+                        f"key in namespace {ns!r} must be str, "
+                        f"got {type(k).__name__}"
+                    )
+                inner[k] = str(v)
+            result[ns] = inner
+        return result
