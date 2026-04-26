@@ -1,12 +1,9 @@
 """Идентификаторы tool-домена.
 
-Описание tool'а — это :class:`~boba.domain.core.declaration.ObjectSchema`
-напрямую (одно и то же примитив, что описывает config-секцию). Никаких
-обёрток вокруг ObjectSchema нет: ``ToolDefinition``/``ToolInputSchema``
-дублировали бы существующее API без новой пользы.
-
-Tool возвращает свой :class:`ObjectSchema` через :meth:`Tool.definition`;
-``description`` живёт на самой схеме (``ObjectSchema.description``).
+Лежат в отдельном модуле, чтобы разорвать цикл
+:mod:`tool` ↔ :mod:`errors`: ошибки используют ``ToolId``/``ToolSourceId``
+для своего конструктора, а tool — ошибки. Слив идентификаторов в
+``tool.py`` создал бы циклический импорт.
 """
 
 from __future__ import annotations

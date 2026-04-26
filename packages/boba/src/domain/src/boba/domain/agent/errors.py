@@ -16,7 +16,7 @@
   летят мимо роутера, крашат процесс.
 - LLM-ошибки из :mod:`boba.domain.llm.errors` — изолированы и
   **не** :class:`RoutableError`. Мост делает
-  :class:`~boba.domain.agent.meat.llm.LLMInvokeMiddleware`.
+  :class:`~boba.domain.agent.middleware.llm.LLMInvokeMiddleware`.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ class AgentLLMFeedbackError(LLMFeedbackError[LLMFeedback], ABC):
 class MaxIterationsExceededError(TerminalError[RequestId, AgentEvent]):
     """Цикл агента исчерпал лимит итераций без финального ответа.
 
-    Поднимается :class:`~boba.domain.agent.meat.loop_control.\
+    Поднимается :class:`~boba.domain.agent.middleware.loop_control.\
 IterationCounterMiddleware`.
     """
 
@@ -80,7 +80,7 @@ class LLMGenerationFailedError(TerminalError[RequestId, AgentEvent]):
     пропустить отказ через :class:`AgentErrorRouter`, чтобы цикл
     остановился единообразно с остальными терминальными ошибками.
 
-    :class:`~boba.domain.agent.meat.llm.LLMInvokeMiddleware` ловит
+    :class:`~boba.domain.agent.middleware.llm.LLMInvokeMiddleware` ловит
     :class:`~boba.domain.llm.errors.LLMError`, снимает с него
     ``error_kind``-маркер и поднимает эту обёртку —
     роутер маршрутизирует её стандартно и эмитит :class:`GenerationFailed`
