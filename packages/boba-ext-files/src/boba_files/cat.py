@@ -15,7 +15,7 @@ from boba.domain.core.tools import (
     MinValue,
     NonEmpty,
     Ordered,
-    ParamSchema,
+    FieldSpec,
     Required,
     Tool,
     ToolContext,
@@ -76,24 +76,24 @@ class CatTool(Tool[CatArgs]):
             description="Прочитать строки [start_line; end_line] из текстового файла.",
             input_schema=ToolInputSchema(
                 params=[
-                    ParamSchema(
+                    FieldSpec(
                         name="path",
                         description="Путь к файлу.",
                         converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="encoding",
                         description="Кодировка файла. По умолчанию 'utf-8'.",
                         converter=ChainConverter(
                             Default("utf-8"), IsString(), NonEmpty()
                         ),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="start_line",
                         description="Первая строка окна. 1 = начало файла.",
                         converter=ChainConverter(Required(), IsInt(), MinValue(1)),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="end_line",
                         description=(
                             "Последняя строка окна, включительно. >= start_line."

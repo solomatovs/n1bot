@@ -10,7 +10,7 @@ from boba.domain.core.tools import (
     ChainConverter,
     IsString,
     NonEmpty,
-    ParamSchema,
+    FieldSpec,
     Pass,
     Required,
     Tool,
@@ -60,7 +60,7 @@ class MkdirTool(Tool[MkdirArgs]):
             ),
             input_schema=ToolInputSchema(
                 params=[
-                    ParamSchema(
+                    FieldSpec(
                         name="path",
                         description="Путь создаваемой директории.",
                         converter=ChainConverter(Required(), IsString(), NonEmpty()),

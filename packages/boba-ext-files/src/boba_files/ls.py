@@ -13,7 +13,7 @@ from boba.domain.core.tools import (
     IsString,
     MinValue,
     NonEmpty,
-    ParamSchema,
+    FieldSpec,
     Pass,
     Required,
     Tool,
@@ -74,12 +74,12 @@ class LsTool(Tool[LsArgs]):
             ),
             input_schema=ToolInputSchema(
                 params=[
-                    ParamSchema(
+                    FieldSpec(
                         name="path",
                         description="Путь директории. Без значения — корень workspace.",
                         converter=ChainConverter(IsString(), NonEmpty()),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="limit",
                         description="Максимум элементов в ответе.",
                         converter=ChainConverter(Required(), IsInt(), MinValue(1)),

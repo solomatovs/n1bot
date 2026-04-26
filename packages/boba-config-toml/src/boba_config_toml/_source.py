@@ -24,7 +24,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
 
-from boba.domain.core.config import ConfigKey, ConfigSource, FieldSpec
+from boba.domain.core.config import ConfigKey, ConfigSource
 
 __all__ = [
     "CONFIG_PATH_ENV",
@@ -80,14 +80,14 @@ class TomlSource(ConfigSource):
     :class:`ConfigKey`.
 
     Любые типы из TOML проходят как есть (``int``/``str``/``bool``/
-    ``list``/...) — конвертер :class:`FieldSpec` сам их разберёт.
+    ``list``/...) — конвертер ``FieldSpec`` сам их разберёт.
     """
 
     def __init__(self, data: Mapping[str, Any]) -> None:
         self._data = data
 
-    def resolve(self, spec: FieldSpec[Any]) -> object | None:
-        section_path, leaf = toml_path(spec.key)
+    def resolve(self, key: ConfigKey) -> object | None:
+        section_path, leaf = toml_path(key)
         section = _toml_lookup(self._data, section_path)
         if section is None:
             return None
@@ -107,8 +107,8 @@ class TomlFileSource(ConfigSource):
     def __init__(self, data: Mapping[str, Any]) -> None:
         self._data = data
 
-    def resolve(self, spec: FieldSpec[Any]) -> object | None:
-        section_path, leaf = toml_path(spec.key)
+    def resolve(self, key: ConfigKey) -> object | None:
+        section_path, leaf = toml_path(key)
         section = _toml_lookup(self._data, section_path)
         if section is None:
             return None

@@ -23,7 +23,6 @@ from typing import Any, ClassVar
 
 from boba.domain.core.config import (
     ChainedConfigResolver,
-    ConfigKey,
     ConfigSection,
     FieldSpec,
 )
@@ -66,36 +65,37 @@ class ChainlitSection(ConfigSection[ChainlitConfig]):
     """
 
     id: ClassVar[StrId] = StrId("chainlit")
+    namespace: ClassVar[tuple[str, ...]] = ("chainlit",)
 
     HOST: FieldSpec[str] = FieldSpec(
-        key=ConfigKey("chainlit", "host"),
+        name="host",
         converter=ChainConverter(Default("127.0.0.1"), ParseString()),
         description="Адрес, на котором слушает chainlit-сервер.",
     )
     PORT: FieldSpec[str] = FieldSpec(
-        key=ConfigKey("chainlit", "port"),
+        name="port",
         converter=ChainConverter(Default("8501"), ParseString()),
         description="Порт chainlit-сервера. Хранится строкой — bridge "
         "пишет напрямую в CHAINLIT_PORT env.",
     )
     ROOT_PATH: FieldSpec[str] = FieldSpec(
-        key=ConfigKey("chainlit", "root_path"),
+        name="root_path",
         converter=ChainConverter(Default(""), ParseString()),
         description="HTTP root path под reverse-proxy. Пусто — chainlit на корне.",
     )
     AUTH_SECRET: FieldSpec[str | None] = FieldSpec(
-        key=ConfigKey("chainlit", "auth_secret"),
+        name="auth_secret",
         converter=Nullable(ParseString()),
         description="Секрет для подписи user-session cookie. Если не "
         "задан — chainlit генерит сам.",
     )
     HEADLESS: FieldSpec[str] = FieldSpec(
-        key=ConfigKey("chainlit", "headless"),
+        name="headless",
         converter=ChainConverter(Default("true"), ParseString()),
         description="``true`` — не пытаться открыть браузер при старте.",
     )
     MODELS: FieldSpec[list[str]] = FieldSpec(
-        key=ConfigKey("chainlit", "models"),
+        name="models",
         converter=ChainConverter(Default([]), ParseCsvList()),
         description="CSV/TOML-list LLM-моделей, выбираемых пользователем "
         "в ChatSettings.",
@@ -112,10 +112,10 @@ class ChainlitSection(ConfigSection[ChainlitConfig]):
 
     def build(self, resolver: ChainedConfigResolver) -> ChainlitConfig:
         return ChainlitConfig(
-            host=self.HOST.read(resolver),
-            port=self.PORT.read(resolver),
-            root_path=self.ROOT_PATH.read(resolver),
-            auth_secret=self.AUTH_SECRET.read(resolver),
-            headless=self.HEADLESS.read(resolver),
-            models=self.MODELS.read(resolver),
+            host=self._read(self.HOST, resolver),
+            port=self._read(self.PORT, resolver),
+            root_path=self._read(self.ROOT_PATH, resolver),
+            auth_secret=self._read(self.AUTH_SECRET, resolver),
+            headless=self._read(self.HEADLESS, resolver),
+            models=self._read(self.MODELS, resolver),
         )

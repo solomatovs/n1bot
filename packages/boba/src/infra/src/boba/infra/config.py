@@ -101,8 +101,8 @@ class DefaultSource(ConfigSource):
     def __init__(self, defaults: Mapping[ConfigKey, object]) -> None:
         self._defaults = dict(defaults)
 
-    def resolve(self, spec: FieldSpec[Any]) -> object | None:
-        return self._defaults.get(spec.key)
+    def resolve(self, key: ConfigKey) -> object | None:
+        return self._defaults.get(key)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -205,19 +205,20 @@ class AppCoreSection(ConfigSection[AppCoreConfig]):
     """Кросс-слойные настройки приложения: SSL/логирование."""
 
     id: ClassVar[StrId] = StrId("app_core")
+    namespace: ClassVar[tuple[str, ...]] = ("app",)
 
     SSL_VERIFY: FieldSpec[bool] = FieldSpec(
-        key=ConfigKey("app", "ssl_verify"),
+        name="ssl_verify",
         converter=ChainConverter(Default(False), ParseBool()),
         description="Проверять ли TLS-сертификат у HTTPS-запросов из приложения.",
     )
     LOG_LEVEL: FieldSpec[str] = FieldSpec(
-        key=ConfigKey("app", "log_level"),
+        name="log_level",
         converter=ChainConverter(Default("INFO"), ParseString()),
         description="Уровень корневого логгера: DEBUG/INFO/WARNING/ERROR/CRITICAL.",
     )
     LOG_FILE: FieldSpec[str | None] = FieldSpec(
-        key=ConfigKey("app", "log_file"),
+        name="log_file",
         converter=Nullable(ParseString()),
         description="Путь к log-файлу. Если пусто — логи только в stderr.",
     )
@@ -226,9 +227,9 @@ class AppCoreSection(ConfigSection[AppCoreConfig]):
 
     def build(self, resolver: ChainedConfigResolver) -> AppCoreConfig:
         return AppCoreConfig(
-            ssl_verify=self.SSL_VERIFY.read(resolver),
-            log_level=self.LOG_LEVEL.read(resolver),
-            log_file=self.LOG_FILE.read(resolver),
+            ssl_verify=self._read(self.SSL_VERIFY, resolver),
+            log_level=self._read(self.LOG_LEVEL, resolver),
+            log_file=self._read(self.LOG_FILE, resolver),
         )
 
 
@@ -236,24 +237,25 @@ class WorkspacesSection(ConfigSection[WorkspaceLayout]):
     """Раскладка namespace'ов workspace'а относительно ``base_dir``."""
 
     id: ClassVar[StrId] = StrId("workspaces")
+    namespace: ClassVar[tuple[str, ...]] = ("workspaces",)
 
     BASE_DIR: FieldSpec[str] = FieldSpec(
-        key=ConfigKey("workspaces", "base_dir"),
+        name="base_dir",
         converter=ChainConverter(Default("./workspaces"), ParseString()),
         description="Корневая директория всех workspace-namespace'ов.",
     )
     USER: FieldSpec[str] = FieldSpec(
-        key=ConfigKey("workspaces", "user_subdir"),
+        name="user_subdir",
         converter=ChainConverter(Default("user"), ParseString()),
         description="Имя поддиректории user-workspace'а внутри base_dir.",
     )
     SYSTEM: FieldSpec[str] = FieldSpec(
-        key=ConfigKey("workspaces", "system_subdir"),
+        name="system_subdir",
         converter=ChainConverter(Default("system"), ParseString()),
         description="Имя поддиректории system-workspace'а внутри base_dir.",
     )
     TMP: FieldSpec[str] = FieldSpec(
-        key=ConfigKey("workspaces", "tmp_subdir"),
+        name="tmp_subdir",
         converter=ChainConverter(Default("tmp"), ParseString()),
         description="Имя поддиректории tmp-workspace'а внутри base_dir.",
     )
@@ -262,10 +264,10 @@ class WorkspacesSection(ConfigSection[WorkspaceLayout]):
 
     def build(self, resolver: ChainedConfigResolver) -> WorkspaceLayout:
         return WorkspaceLayout(
-            base_dir=self.BASE_DIR.read(resolver),
-            user_subdir=self.USER.read(resolver),
-            system_subdir=self.SYSTEM.read(resolver),
-            tmp_subdir=self.TMP.read(resolver),
+            base_dir=self._read(self.BASE_DIR, resolver),
+            user_subdir=self._read(self.USER, resolver),
+            system_subdir=self._read(self.SYSTEM, resolver),
+            tmp_subdir=self._read(self.TMP, resolver),
         )
 
 
@@ -273,16 +275,17 @@ class LLMTransportSection(ConfigSection[LLMConfig]):
     """Транспорт LLM-клиента: ``base_url`` + ``api_key``."""
 
     id: ClassVar[StrId] = StrId("llm_transport")
+    namespace: ClassVar[tuple[str, ...]] = ("llm",)
 
     BASE_URL: FieldSpec[str] = FieldSpec(
-        key=ConfigKey("llm", "base_url"),
+        name="base_url",
         converter=ChainConverter(
             Default("http://localhost:11434/v1"), ParseString(),
         ),
         description="OpenAI-совместимый base URL LLM-сервера (LiteLLM/Ollama/...).",
     )
     API_KEY: FieldSpec[str] = FieldSpec(
-        key=ConfigKey("llm", "api_key"),
+        name="api_key",
         converter=ChainConverter(Default("ollama"), ParseString()),
         description="API-ключ LLM-сервера. Для локального Ollama — любой непустой.",
     )
@@ -291,8 +294,8 @@ class LLMTransportSection(ConfigSection[LLMConfig]):
 
     def build(self, resolver: ChainedConfigResolver) -> LLMConfig:
         return LLMConfig(
-            base_url=self.BASE_URL.read(resolver),
-            api_key=self.API_KEY.read(resolver),
+            base_url=self._read(self.BASE_URL, resolver),
+            api_key=self._read(self.API_KEY, resolver),
         )
 
 
@@ -300,14 +303,15 @@ class AgentSection(ConfigSection[AgentConfig]):
     """Лимиты агентского лупа."""
 
     id: ClassVar[StrId] = StrId("agent")
+    namespace: ClassVar[tuple[str, ...]] = ("agent",)
 
     MAX_ITERATIONS: FieldSpec[int] = FieldSpec(
-        key=ConfigKey("agent", "max_iterations"),
+        name="max_iterations",
         converter=ChainConverter(Default(20), ParseInt(), MinValue(1)),
         description="Жёсткий потолок числа итераций агента в одной сессии.",
     )
     MAX_CONSECUTIVE_TOOL_CALLS: FieldSpec[int] = FieldSpec(
-        key=ConfigKey("agent", "max_consecutive_tool_calls"),
+        name="max_consecutive_tool_calls",
         converter=ChainConverter(Default(3), ParseInt(), MinValue(1)),
         description="Сколько раз подряд агент может звать tools без LLM-ответа.",
     )
@@ -319,8 +323,10 @@ class AgentSection(ConfigSection[AgentConfig]):
 
     def build(self, resolver: ChainedConfigResolver) -> AgentConfig:
         return AgentConfig(
-            max_iterations=self.MAX_ITERATIONS.read(resolver),
-            max_consecutive_tool_calls=self.MAX_CONSECUTIVE_TOOL_CALLS.read(resolver),
+            max_iterations=self._read(self.MAX_ITERATIONS, resolver),
+            max_consecutive_tool_calls=self._read(
+                self.MAX_CONSECUTIVE_TOOL_CALLS, resolver,
+            ),
         )
 
 
@@ -330,12 +336,17 @@ class PromptsSection(ConfigSection[str]):
     ``DIR`` — обязательное поле: оператор должен явно указать, откуда
     :class:`~boba.infra.prompt_loader.PromptLoader` берёт system-prompt
     блоки при старте.
+
+    Поле в env-источнике маппится в ``BOBA_PROMPTS_DIR`` (одна часть,
+    минуя стандартный двойной namespace) — секция декларирует
+    namespace ``("prompts",)`` и имя поля ``"dir"``.
     """
 
     id: ClassVar[StrId] = StrId("prompts")
+    namespace: ClassVar[tuple[str, ...]] = ("prompts",)
 
     DIR: FieldSpec[str] = FieldSpec(
-        key=ConfigKey("prompts", "dir"),
+        name="dir",
         converter=ChainConverter(Required(), ParseString()),
         description="Корневая директория .md/.txt-файлов с system-prompt'ами.",
     )
@@ -343,7 +354,7 @@ class PromptsSection(ConfigSection[str]):
     fields: ClassVar[Sequence[FieldSpec[Any]]] = (DIR,)
 
     def build(self, resolver: ChainedConfigResolver) -> str:
-        return self.DIR.read(resolver)
+        return self._read(self.DIR, resolver)
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -10,7 +10,7 @@ from boba.domain.core.tools import (
     ChainConverter,
     IsString,
     NonEmpty,
-    ParamSchema,
+    FieldSpec,
     Pass,
     Required,
     Tool,
@@ -63,7 +63,7 @@ class StatTool(Tool[StatArgs]):
             ),
             input_schema=ToolInputSchema(
                 params=[
-                    ParamSchema(
+                    FieldSpec(
                         name="path",
                         description="Путь к файлу или директории.",
                         converter=ChainConverter(Required(), IsString(), NonEmpty()),

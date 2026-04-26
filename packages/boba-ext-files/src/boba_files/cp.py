@@ -12,7 +12,7 @@ from boba.domain.core.tools import (
     IsBool,
     IsString,
     NonEmpty,
-    ParamSchema,
+    FieldSpec,
     Pass,
     Required,
     Tool,
@@ -69,17 +69,17 @@ class CpTool(Tool[CpArgs]):
             ),
             input_schema=ToolInputSchema(
                 params=[
-                    ParamSchema(
+                    FieldSpec(
                         name="src",
                         description="Путь источника.",
                         converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="dst",
                         description="Путь назначения.",
                         converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="recursive",
                         description=(
                             "Рекурсивное копирование директории. "

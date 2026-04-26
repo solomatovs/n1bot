@@ -21,6 +21,7 @@ from boba.domain.core.config import (
     ChainedConfigResolver,
     ConfigKey,
     FieldSpec,
+    read_field,
 )
 from boba.domain.core.patterns import ConverterInputError
 from boba.domain.core.validators import ChainConverter, ParseString, Required
@@ -32,8 +33,13 @@ from boba_config_toml import (
     load_toml,
 )
 
+# Контракт общего ключа с :class:`~boba_chromadb._config.ChromadbSection`.
+# CLI ad-hoc читает то же поле, не подключая всю секцию: пара
+# (key, FieldSpec) хранится здесь явно, чтобы не зависеть от
+# boba-ext-chromadb по импорту.
+_PERSIST_KEY = ConfigKey("ext", "chromadb", "persist_path")
 _PERSIST_PATH: FieldSpec[str] = FieldSpec(
-    key=ConfigKey("ext", "chromadb", "persist_path"),
+    name="persist_path",
     converter=ChainConverter(Required(), ParseString()),
 )
 
@@ -65,9 +71,9 @@ class CliConfig:
             ]
         )
         try:
-            persist_path = _PERSIST_PATH.read(resolver)
+            persist_path = read_field(_PERSIST_KEY, _PERSIST_PATH, resolver)
         except ConverterInputError as e:
-            env = env_name(_PERSIST_PATH.key)
+            env = env_name(_PERSIST_KEY)
             raise CliConfigError(
                 f"persist_path is required: pass --persist-path, set env "
                 f"{env}, или укажи [ext.chromadb] persist_path в TOML, на "

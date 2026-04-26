@@ -461,4 +461,5 @@ class NonEmpty(Converter[Any, Any]):
             )
         if len(value) == 0:
             raise ConverterInputError("значение не должно быть пустым")
+
         return value

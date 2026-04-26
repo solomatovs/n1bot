@@ -10,7 +10,7 @@ from boba.domain.core.tools import (
     ChainConverter,
     IsString,
     NonEmpty,
-    ParamSchema,
+    FieldSpec,
     Pass,
     Required,
     Tool,
@@ -58,7 +58,7 @@ class CdTool(Tool[CdArgs]):
             description="Сменить текущую директорию.",
             input_schema=ToolInputSchema(
                 params=[
-                    ParamSchema(
+                    FieldSpec(
                         name="path",
                         description="Путь директории.",
                         converter=ChainConverter(Required(), IsString(), NonEmpty()),
