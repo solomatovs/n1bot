@@ -356,8 +356,8 @@ class ConfigLoader:
 
     Конструктор принимает уже собранную фабрику — у инфры нет своих
     источников значений, цепочку резолвера собирает bootstrap приложения
-    из подключённых пакетов (например, :mod:`boba_config_env` +
-    :mod:`boba_config_toml`).
+    из подключённых пакетов (например, :mod:`boba.config.env` +
+    :mod:`boba.config.toml`).
     """
 
     def __init__(self, factory: ConfigFactory) -> None:

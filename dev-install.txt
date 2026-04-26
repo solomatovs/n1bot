@@ -7,8 +7,10 @@
 -e ./packages/boba-adapter-messages
 -e ./packages/boba-adapter-openai
 -e ./packages/boba-adapter-prompt-providers
--e ./packages/boba-chainlit
+-e ./packages/boba-web-chainlit
 -e ./packages/boba-cli-agent-run
 -e ./packages/boba-cli-vector-index
+-e ./packages/boba-config-env
+-e ./packages/boba-config-toml
 -e ./packages/boba-ext-files
 -e ./packages/boba-ext-chromadb

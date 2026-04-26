@@ -14,3 +14,5 @@ dependencies = ["boba", "openai>=1.40", "httpx"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["boba*"]
+namespaces = true
