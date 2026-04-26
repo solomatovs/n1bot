@@ -20,7 +20,6 @@ from boba.domain.core.tools import (
     Required,
     Tool,
     ToolContext,
-    ToolDefinition,
     ToolExecutionError,
     ToolId,
     ToolOutputTooLargeError,
@@ -71,38 +70,36 @@ class CatTool(Tool[CatArgs]):
     def typed_args_converter(self) -> Converter[dict[str, Any], CatArgs]:
         return CatArgsConverter()
 
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
+    def definition(self) -> ObjectSchema[dict[str, Any]]:
+        return ObjectSchema(
             description="Прочитать строки [start_line; end_line] из текстового файла.",
-            input_schema=ObjectSchema(
-                fields=[
-                    FieldSpec(
-                        name="path",
-                        description="Путь к файлу.",
-                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
+            fields=[
+                FieldSpec(
+                    name="path",
+                    description="Путь к файлу.",
+                    converter=ChainConverter(Required(), IsString(), NonEmpty()),
+                ),
+                FieldSpec(
+                    name="encoding",
+                    description="Кодировка файла. По умолчанию 'utf-8'.",
+                    converter=ChainConverter(
+                        Default("utf-8"), IsString(), NonEmpty()
                     ),
-                    FieldSpec(
-                        name="encoding",
-                        description="Кодировка файла. По умолчанию 'utf-8'.",
-                        converter=ChainConverter(
-                            Default("utf-8"), IsString(), NonEmpty()
-                        ),
+                ),
+                FieldSpec(
+                    name="start_line",
+                    description="Первая строка окна. 1 = начало файла.",
+                    converter=ChainConverter(Required(), IsInt(), MinValue(1)),
+                ),
+                FieldSpec(
+                    name="end_line",
+                    description=(
+                        "Последняя строка окна, включительно. >= start_line."
                     ),
-                    FieldSpec(
-                        name="start_line",
-                        description="Первая строка окна. 1 = начало файла.",
-                        converter=ChainConverter(Required(), IsInt(), MinValue(1)),
-                    ),
-                    FieldSpec(
-                        name="end_line",
-                        description=(
-                            "Последняя строка окна, включительно. >= start_line."
-                        ),
-                        converter=ChainConverter(Required(), IsInt(), MinValue(1)),
-                    ),
-                ],
-                invariants=Ordered("start_line", "end_line"),
-            ),
+                    converter=ChainConverter(Required(), IsInt(), MinValue(1)),
+                ),
+            ],
+            invariants=Ordered("start_line", "end_line"),
         )
 
     def execute(self, ctx: ToolContext, req: CatArgs) -> ToolResult:

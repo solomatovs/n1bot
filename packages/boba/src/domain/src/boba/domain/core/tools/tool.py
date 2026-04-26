@@ -13,17 +13,18 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
-from boba.domain.core.patterns import Converter, ConverterInputError, Definition, Executor
+from boba.domain.core.declaration import ObjectSchema
+from boba.domain.core.patterns import (
+    Converter,
+    ConverterInputError,
+    Definition,
+    Executor,
+)
 from boba.domain.core.tools.errors import (
     InvalidSchemaInvariantError,
     InvalidToolArgumentError,
 )
-from boba.domain.core.tools.schema import (
-    ToolDefinition,
-    ToolId,
-    ToolInputSchema,
-    ToolSourceId,
-)
+from boba.domain.core.tools.schema import ToolId, ToolSourceId
 from boba.domain.core.validators import MISSING
 from boba.domain.core.workspace import ProjectWorkspaceShell
 
@@ -77,10 +78,17 @@ class ToolResult:
 
 class Tool(
     Executor[ToolContext, TArgs, ToolResult],
-    Definition[ToolDefinition],
+    Definition[ObjectSchema[dict[str, Any]]],
     Generic[TArgs],
 ):
     """Базовый класс tool'а.
+
+    :meth:`definition` возвращает :class:`ObjectSchema[dict]` —
+    тот же примитив, что описывает config-секцию. Текстовое описание
+    действия tool'а живёт на ``schema.description``; набор параметров
+    — в ``schema.fields``; cross-field инварианты — в
+    ``schema.invariants``; ``factory=dict`` (tool возвращает сырой
+    dict, типизирует :meth:`typed_args_converter`).
 
     Шаблонный метод :meth:`args_converter` собирает pipeline:
     :class:`SchemaArgsValidator` (валидация по схеме) →
@@ -121,7 +129,7 @@ class Tool(
         :meth:`typed_args_converter`.
         """
         return _ToolArgsPipeline(
-            SchemaArgsValidator(self.definition().input_schema, self.tool_id()),
+            SchemaArgsValidator(self.definition(), self.tool_id()),
             self.typed_args_converter(),
         )
 
@@ -152,7 +160,7 @@ class _ToolArgsPipeline(Converter[dict[str, Any], TArgs], Generic[TArgs]):
 
 
 class SchemaArgsValidator(Converter[dict[str, Any], dict[str, Any]]):
-    """Валидирует сырой dict аргументов против :class:`ToolInputSchema`.
+    """Валидирует сырой dict аргументов против :class:`ObjectSchema`.
 
     Контракт:
     - проверяет, что все ключи входного dict известны схеме; иначе
@@ -174,7 +182,11 @@ class SchemaArgsValidator(Converter[dict[str, Any], dict[str, Any]]):
     нужны для специфичных ошибок).
     """
 
-    def __init__(self, schema: ToolInputSchema, tool_id: ToolId) -> None:
+    def __init__(
+        self,
+        schema: ObjectSchema[dict[str, Any]],
+        tool_id: ToolId,
+    ) -> None:
         self._schema = schema
         self._tool_id = tool_id
         self._known: frozenset[str] = frozenset(p.name for p in schema.fields)

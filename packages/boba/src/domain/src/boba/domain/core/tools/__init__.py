@@ -26,9 +26,7 @@ from boba.domain.core.tools.registry import (
     ToolStore,
 )
 from boba.domain.core.tools.schema import (
-    ToolDefinition,
     ToolId,
-    ToolInputSchema,
     ToolSourceId,
 )
 from boba.domain.core.tools.tool import (
@@ -103,12 +101,10 @@ __all__ = [
     "ToolCall",
     "ToolCatalog",
     "ToolContext",
-    "ToolDefinition",
     "ToolExecutionError",
     "ToolFactory",
     "ToolId",
     "ToolIdCollisionError",
-    "ToolInputSchema",
     "ToolOutputTooLargeError",
     "ToolResult",
     "ToolSource",

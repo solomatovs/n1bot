@@ -15,7 +15,6 @@ from boba.domain.core.tools import (
     Required,
     Tool,
     ToolContext,
-    ToolDefinition,
     ToolExecutionError,
     ToolId,
     ObjectSchema,
@@ -52,23 +51,21 @@ class TouchTool(Tool[TouchArgs]):
     def typed_args_converter(self) -> Converter[dict[str, Any], TouchArgs]:
         return TouchArgsConverter()
 
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
+    def definition(self) -> ObjectSchema[dict[str, Any]]:
+        return ObjectSchema(
             description=(
                 "Создать пустой файл (включая промежуточные директории). "
                 "Если уже существует — обновить время модификации, "
                 "содержимое не трогать."
             ),
-            input_schema=ObjectSchema(
-                fields=[
+            fields=[
                     FieldSpec(
                         name="path",
                         description="Путь к файлу.",
                         converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
                 ],
-                invariants=Pass(),
-            ),
+                invariants=Pass()
         )
 
     def execute(self, ctx: ToolContext, req: TouchArgs) -> ToolResult:

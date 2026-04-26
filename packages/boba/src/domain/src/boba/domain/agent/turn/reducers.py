@@ -39,25 +39,20 @@ def _tool_to_schema(tool: Tool[Any]) -> LLMToolSchema:
 
     Граница между tools-доменом и LLM-слоем: дальше в LLM едет только
     name + description + JSON-schema, без execute-логики и валидаторов.
-    Wire-схему агрегирует :meth:`ObjectSchema.build_wire_schema` —
-    тот же код, что для operator-доки конфига.
+    ``Tool.definition`` возвращает :class:`ObjectSchema` напрямую —
+    тот же примитив, что описывает config-секцию. Текстовое описание
+    действия tool'а лежит на ``schema.description``.
     """
-    definition = tool.definition()
-    wire = definition.input_schema.build_wire_schema()
-    parameters_schema: dict[str, Any] = {
-        "type": "object",
-        "properties": wire.properties,
-        "required": wire.required,
-    }
-    # Опциональный input-shape description (отдельно от tool-action
-    # description в ToolDefinition.description). LLM-провайдеры терпимо
-    # к лишним полям, но пустую строку не пишем — это шум в JSON-Schema.
-    if wire.description:
-        parameters_schema["description"] = wire.description
+    schema = tool.definition()
+    wire = schema.build_wire_schema()
     return LLMToolSchema(
         name=tool.tool_id().to_wire(),
-        description=definition.description,
-        parameters_schema=parameters_schema,
+        description=schema.description,
+        parameters_schema={
+            "type": "object",
+            "properties": wire.properties,
+            "required": wire.required,
+        },
     )
 
 

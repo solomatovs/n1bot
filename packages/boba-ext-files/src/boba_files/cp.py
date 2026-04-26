@@ -17,7 +17,6 @@ from boba.domain.core.tools import (
     Required,
     Tool,
     ToolContext,
-    ToolDefinition,
     ToolExecutionError,
     ToolId,
     ObjectSchema,
@@ -61,14 +60,13 @@ class CpTool(Tool[CpArgs]):
     def typed_args_converter(self) -> Converter[dict[str, Any], CpArgs]:
         return CpArgsConverter()
 
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
+    def definition(self) -> ObjectSchema[dict[str, Any]]:
+        return ObjectSchema(
             description=(
                 "Скопировать файл или директорию. Для директорий "
                 "требуется recursive=true."
             ),
-            input_schema=ObjectSchema(
-                fields=[
+            fields=[
                     FieldSpec(
                         name="src",
                         description="Путь источника.",
@@ -88,8 +86,7 @@ class CpTool(Tool[CpArgs]):
                         converter=ChainConverter(Default(False), IsBool()),
                     ),
                 ],
-                invariants=Pass(),
-            ),
+                invariants=Pass()
         )
 
     def execute(self, ctx: ToolContext, req: CpArgs) -> ToolResult:

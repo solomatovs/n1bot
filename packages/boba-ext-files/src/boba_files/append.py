@@ -9,17 +9,16 @@ from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainConverter,
     Default,
+    FieldSpec,
     IsString,
     NonEmpty,
-    FieldSpec,
+    ObjectSchema,
     Pass,
     Required,
     Tool,
     ToolContext,
-    ToolDefinition,
     ToolExecutionError,
     ToolId,
-    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )
@@ -59,33 +58,31 @@ class AppendTool(Tool[AppendArgs]):
     def typed_args_converter(self) -> Converter[dict[str, Any], AppendArgs]:
         return AppendArgsConverter()
 
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
+    def definition(self) -> ObjectSchema[dict[str, Any]]:
+        return ObjectSchema(
             description="Дописать текст в конец файла. Если файла нет — создать.",
-            input_schema=ObjectSchema(
-                fields=[
-                    FieldSpec(
-                        name="path",
-                        description="Путь к файлу.",
-                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
+            fields=[
+                FieldSpec(
+                    name="path",
+                    description="Путь к файлу.",
+                    converter=ChainConverter(Required(), IsString(), NonEmpty()),
+                ),
+                FieldSpec(
+                    name="content",
+                    description="Дописываемый текст.",
+                    converter=ChainConverter(Required(), IsString()),
+                ),
+                FieldSpec(
+                    name="encoding",
+                    description="Кодировка файла. По умолчанию 'utf-8'.",
+                    converter=ChainConverter(
+                        Default("utf-8"),
+                        IsString(),
+                        NonEmpty(),
                     ),
-                    FieldSpec(
-                        name="content",
-                        description="Дописываемый текст.",
-                        converter=ChainConverter(Required(), IsString()),
-                    ),
-                    FieldSpec(
-                        name="encoding",
-                        description="Кодировка файла. По умолчанию 'utf-8'.",
-                        converter=ChainConverter(
-                            Default("utf-8"),
-                            IsString(),
-                            NonEmpty(),
-                        ),
-                    ),
-                ],
-                invariants=Pass(),
-            ),
+                ),
+            ],
+            invariants=Pass(),
         )
 
     def execute(self, ctx: ToolContext, req: AppendArgs) -> ToolResult:
@@ -102,5 +99,3 @@ class AppendTool(Tool[AppendArgs]):
         return ToolResult(
             content=f"Файл {action}: {req.path} ({len(req.content)} символов)",
         )
-
-

@@ -15,7 +15,6 @@ from boba.domain.core.tools import (
     Required,
     Tool,
     ToolContext,
-    ToolDefinition,
     ToolExecutionError,
     ToolId,
     ObjectSchema,
@@ -52,22 +51,20 @@ class MkdirTool(Tool[MkdirArgs]):
     def typed_args_converter(self) -> Converter[dict[str, Any], MkdirArgs]:
         return MkdirArgsConverter()
 
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
+    def definition(self) -> ObjectSchema[dict[str, Any]]:
+        return ObjectSchema(
             description=(
                 "Создать директорию (включая промежуточные). Если уже "
                 "существует — no-op. Если по пути файл — ошибка."
             ),
-            input_schema=ObjectSchema(
-                fields=[
+            fields=[
                     FieldSpec(
                         name="path",
                         description="Путь создаваемой директории.",
                         converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
                 ],
-                invariants=Pass(),
-            ),
+                invariants=Pass()
         )
 
     def execute(self, ctx: ToolContext, req: MkdirArgs) -> ToolResult:

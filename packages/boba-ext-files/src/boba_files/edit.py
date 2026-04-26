@@ -18,7 +18,6 @@ from boba.domain.core.tools import (
     Required,
     Tool,
     ToolContext,
-    ToolDefinition,
     ToolExecutionError,
     ToolId,
     ToolResult,
@@ -65,16 +64,15 @@ class EditTool(Tool[EditArgs]):
     def typed_args_converter(self) -> Converter[dict[str, Any], EditArgs]:
         return EditArgsConverter()
 
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
+    def definition(self) -> ObjectSchema[dict[str, Any]]:
+        return ObjectSchema(
             description=(
                 "Заменить подстроку old_string на new_string. По умолчанию "
                 "old_string должна встречаться в файле ровно один раз — "
                 "иначе ошибка. С replace_all=true заменяются все вхождения. "
                 "Совпадение точное, посимвольное."
             ),
-            input_schema=ObjectSchema(
-                fields=[
+            fields=[
                     FieldSpec(
                         name="path",
                         description="Путь к файлу.",
@@ -105,8 +103,7 @@ class EditTool(Tool[EditArgs]):
                         ),
                     ),
                 ],
-                invariants=Pass(),
-            ),
+                invariants=Pass()
         )
 
     def execute(self, ctx: ToolContext, req: EditArgs) -> ToolResult:

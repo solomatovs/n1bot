@@ -13,13 +13,10 @@ from abc import abstractmethod
 from collections.abc import Iterable
 from typing import Any
 
+from boba.domain.core.declaration import ObjectSchema
 from boba.domain.core.patterns import Executor, FoldFactory, PrioritySource
 from boba.domain.core.tools.errors import ToolExecutionError, ToolIdCollisionError
-from boba.domain.core.tools.schema import (
-    ToolDefinition,
-    ToolId,
-    ToolSourceId,
-)
+from boba.domain.core.tools.schema import ToolId, ToolSourceId
 from boba.domain.core.tools.tool import Tool, ToolCall, ToolContext, ToolResult
 
 
@@ -50,7 +47,7 @@ class ToolCatalog:
     def tools(self) -> Iterable[Tool[Any]]:
         return iter(self._items.values())
 
-    def definitions(self) -> Iterable[ToolDefinition]:
+    def definitions(self) -> Iterable[ObjectSchema[dict[str, Any]]]:
         """Описания всех инструментов — для передачи потребителю."""
         return (tool.definition() for tool in self._items.values())
 
@@ -122,7 +119,7 @@ class ToolsService(Executor[ToolContext, ToolCall, ToolResult]):
         """Все собранные инструменты — если нужны и id, и definition."""
         return self._catalog.tools()
 
-    def definitions(self) -> Iterable[ToolDefinition]:
+    def definitions(self) -> Iterable[ObjectSchema[dict[str, Any]]]:
         """Описания всех собранных инструментов — для передачи потребителю."""
         return self._catalog.definitions()
 

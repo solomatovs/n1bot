@@ -18,7 +18,6 @@ from boba.domain.core.tools import (
     Required,
     Tool,
     ToolContext,
-    ToolDefinition,
     ToolExecutionError,
     ToolId,
     ObjectSchema,
@@ -65,15 +64,14 @@ class LsTool(Tool[LsArgs]):
     def typed_args_converter(self) -> Converter[dict[str, Any], LsArgs]:
         return LsArgsConverter()
 
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
+    def definition(self) -> ObjectSchema[dict[str, Any]]:
+        return ObjectSchema(
             description=(
                 "Перечислить содержимое директории на одном уровне без рекурсии. "
                 "При переполнении limit ответ обрезается с маркером "
                 "'(truncated at limit=N)'. Для рекурсии — tree."
             ),
-            input_schema=ObjectSchema(
-                fields=[
+            fields=[
                     FieldSpec(
                         name="path",
                         description="Путь директории. Без значения — корень workspace.",
@@ -85,8 +83,7 @@ class LsTool(Tool[LsArgs]):
                         converter=ChainConverter(Required(), IsInt(), MinValue(1)),
                     ),
                 ],
-                invariants=Pass(),
-            ),
+                invariants=Pass()
         )
 
     def execute(self, ctx: ToolContext, req: LsArgs) -> ToolResult:

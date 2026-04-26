@@ -15,7 +15,6 @@ from boba.domain.core.tools import (
     Required,
     Tool,
     ToolContext,
-    ToolDefinition,
     ToolExecutionError,
     ToolId,
     ObjectSchema,
@@ -53,24 +52,22 @@ class StatTool(Tool[StatArgs]):
     def typed_args_converter(self) -> Converter[dict[str, Any], StatArgs]:
         return StatArgsConverter()
 
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
+    def definition(self) -> ObjectSchema[dict[str, Any]]:
+        return ObjectSchema(
             description=(
                 "Вернуть метаданные ресурса: тип (file/directory/other), "
                 "размер в байтах, время модификации. Если ресурса нет — "
                 "ошибка. Для директорий size — размер inode-блока ФС, не "
                 "количество файлов; для содержимого директории — ls/tree."
             ),
-            input_schema=ObjectSchema(
-                fields=[
+            fields=[
                     FieldSpec(
                         name="path",
                         description="Путь к файлу или директории.",
                         converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
                 ],
-                invariants=Pass(),
-            ),
+                invariants=Pass()
         )
 
     def execute(self, ctx: ToolContext, req: StatArgs) -> ToolResult:
