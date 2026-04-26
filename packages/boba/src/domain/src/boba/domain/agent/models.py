@@ -38,7 +38,7 @@ class AgentConfig:
 
     ``max_consecutive_tool_calls`` — лимит подряд идущих идентичных
     tool_call'ов (по ``(tool_name, arguments)``). Используется
-    :class:`~boba.domain.agent.meat.tools.RepeatedToolCallGuardMiddleware`:
+    :class:`~boba.domain.agent.middleware.tools.RepeatedToolCallGuardMiddleware`:
     N+1-й вызов подавляется, в историю пишется feedback с
     ``role="tool"`` через :class:`DialogueWriter`.
     """

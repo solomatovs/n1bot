@@ -16,7 +16,7 @@ from typing import Any
 from boba.domain.core.declaration import ObjectSchema
 from boba.domain.core.patterns import Executor, FoldFactory, PrioritySource
 from boba.domain.core.tools.errors import ToolExecutionError, ToolIdCollisionError
-from boba.domain.core.tools.schema import ToolId, ToolSourceId
+from boba.domain.core.tools.ids import ToolId, ToolSourceId
 from boba.domain.core.tools.tool import Tool, ToolCall, ToolContext, ToolResult
 
 
@@ -95,7 +95,7 @@ class ToolsService(Executor[ToolContext, ToolCall, ToolResult]):
     Маршрутизация встроена по ``call.tool_id``: ищет :class:`Tool` в
     ToolCatalog и вызывает ``tool.execute(ctx, args)``. ``ctx`` —
     per-request :class:`ToolContext`, строится middleware'ом
-    (:class:`~boba.domain.agent.meat.tools.ToolExecutionMiddleware`)
+    (:class:`~boba.domain.agent.middleware.tools.ToolExecutionMiddleware`)
     из per-session ``project_workspace``.
 
     Ошибка :class:`ToolExecutionError`:

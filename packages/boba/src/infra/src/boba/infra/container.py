@@ -5,34 +5,29 @@ from dataclasses import dataclass
 
 from boba.adapters.llm.openai_terminal import OpenAITerminal, build_openai_client
 from boba.adapters.raw_llm_observer import RawLLMObserver
-from boba.domain.agent.dialogue_writer import DialogueWriter
-from boba.domain.agent.events import AgentEvent
-from boba.domain.agent.meat.agent import Agent
-from boba.domain.agent.meat.dialogue import AssistantMessagePersistenceMiddleware
-from boba.domain.agent.meat.error_routing import (
+from boba.domain.agent import (
+    Agent,
+    AgentConfig,
+    AgentContext,
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
-)
-from boba.domain.agent.meat.llm import LLMInvokeMiddleware
-from boba.domain.agent.meat.loop_control import (
+    AgentEvent,
+    AgentRequestSamplingReducer,
+    AssistantMessagePersistenceMiddleware,
+    DialogueWriter,
+    HistoryReducer,
     IterationCounterMiddleware,
+    LLMInvokeMiddleware,
+    MessageService,
+    ModelReducer,
+    PromptProvider,
     StopOnAnyFailure,
     StopOnFinished,
-)
-from boba.domain.agent.meat.tools import (
-    ToolExecutionMiddleware,
-)
-from boba.domain.agent.messages import MessageService
-from boba.domain.agent.models import AgentConfig, AgentContext
-from boba.domain.agent.prompt import PromptProvider
-from boba.domain.agent.turn.reducers import (
-    AgentRequestSamplingReducer,
-    HistoryReducer,
-    ModelReducer,
     SystemPromptReducer,
+    ToolExecutionMiddleware,
     ToolsReducer,
+    TurnSpec,
 )
-from boba.domain.agent.turn.spec import TurnSpec
 from boba.domain.config import LLMConfig
 from boba.domain.core.patterns import (
     StreamSink,

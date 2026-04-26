@@ -33,7 +33,7 @@ class DialogueWriter:
     def append_user_query(self, content: str) -> None:
         """Первое сообщение пользователя.
 
-        Вызывается :class:`~boba.domain.agent.meat.agent.Agent` ровно
+        Вызывается :class:`~boba.domain.agent.orchestrator.Agent` ровно
         один раз на старте прогона, до запуска stream'а. ``content``
         — уже отформатированный текст: обогащение (IDE selection,
         шаблоны, контекст вызова) — ответственность caller'а

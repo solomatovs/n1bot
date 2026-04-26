@@ -1,6 +1,10 @@
 """Базовый класс :class:`Tool`, value-объекты вызова и tool-specific
 оркестратор валидации аргументов.
 
+Описание tool'а — это :class:`~boba.domain.core.declaration.ObjectSchema`
+напрямую (тот же примитив, что описывает config-секцию). Tool возвращает
+его через :meth:`Tool.definition`; ``description`` живёт на самой схеме.
+
 :class:`SchemaArgsValidator` тут осознанно — он плотно связан с
 :class:`Tool` (используется в :meth:`Tool.args_converter`) и не имеет
 смысла за пределами tool-границы (использует tool-domain ошибки
@@ -24,7 +28,7 @@ from boba.domain.core.tools.errors import (
     InvalidSchemaInvariantError,
     InvalidToolArgumentError,
 )
-from boba.domain.core.tools.schema import ToolId, ToolSourceId
+from boba.domain.core.tools.ids import ToolId, ToolSourceId
 from boba.domain.core.validators import MISSING
 from boba.domain.core.workspace import ProjectWorkspaceShell
 

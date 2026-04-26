@@ -1,7 +1,7 @@
 """Иерархия ошибок выполнения tool'ов.
 
 Все tool-ошибки — потомки :class:`ToolExecutionError`. Agent-слой
-(:class:`~boba.domain.agent.meat.tools.ToolExecutionMiddleware`) ловит
+(:class:`~boba.domain.agent.middleware.tools.ToolExecutionMiddleware`) ловит
 родительский тип и декларирует :class:`~boba.domain.agent.turn.effects.\
 ToolResultEffect` с текстом ошибки — LLM получает её как
 ``role="tool"`` сообщение на следующей итерации и может скорректировать
@@ -10,7 +10,7 @@ ToolResultEffect` с текстом ошибки — LLM получает её �
 
 from __future__ import annotations
 
-from boba.domain.core.tools.schema import ToolId, ToolSourceId
+from boba.domain.core.tools.ids import ToolId, ToolSourceId
 
 
 class ToolExecutionError(Exception):

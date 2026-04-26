@@ -24,9 +24,9 @@ from boba.adapters.fs_workspace import (
 )
 from boba.adapters.in_memory_messages import InMemoryMessageService
 from boba.adapters.raw_llm_observer import FileContentObserver
+from boba.domain.agent import Agent
 from boba.domain.agent.dialogue_writer import DialogueWriter
 from boba.domain.agent.events import AgentEvent
-from boba.domain.agent.meat.agent import Agent
 from boba.domain.agent.models import AgentContext, AgentRequest
 from boba.domain.core.config import ChainedConfigResolver
 from boba.domain.core.patterns import StreamSink, StreamSinkPipeline

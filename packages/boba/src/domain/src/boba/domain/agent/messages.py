@@ -7,7 +7,7 @@
 1. :meth:`~boba.domain.agent.turn.spec.TurnSpec.initial` — применяет
    :class:`~boba.domain.agent.turn.effects.TurnEffect`-ы trigger'а
    в начале каждой итерации (user-query, tool-result, LLM feedback).
-2. :class:`~boba.domain.agent.meat.dialogue.\
+2. :class:`~boba.domain.agent.middleware.dialogue.\
 AssistantMessagePersistenceMiddleware` — записывает assistant-сообщение
    после :class:`~boba.domain.agent.events.GenerationDone`.
 3. :class:`~boba.domain.agent.turn.reducers.HistoryReducer` — не пишет,

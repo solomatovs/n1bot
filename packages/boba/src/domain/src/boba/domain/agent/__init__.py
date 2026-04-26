@@ -1,7 +1,7 @@
 """Публичный API агент-слоя.
 
 Реэкспортирует ошибки, события, сообщения, модели, prompt-примитивы и
-middleware-цепочку (см. :mod:`boba.domain.agent.meat`).
+middleware-цепочку (см. :mod:`boba.domain.agent.middleware`).
 
 Короткие импорты::
 
@@ -53,8 +53,7 @@ from boba.domain.agent.events import (
     ToolResultReady,
     UserQueryReceived,
 )
-from boba.domain.agent.meat import (
-    Agent,
+from boba.domain.agent.middleware import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
     AssistantMessagePersistenceMiddleware,
@@ -65,6 +64,7 @@ from boba.domain.agent.meat import (
     StopOnFinished,
     ToolExecutionMiddleware,
 )
+from boba.domain.agent.orchestrator import Agent
 from boba.domain.agent.messages import (
     MessageService,
     MessageStoreError,

@@ -40,7 +40,7 @@ from boba.domain.llm.events import (
     LLMToolCallArgumentDelta,
     LLMToolCallBegin,
 )
-from boba.domain.llm.meat import RetryMiddleware
+from boba.domain.llm.middleware import RetryMiddleware
 from boba.domain.llm.models import (
     LLMContext,
     LLMMessage,
