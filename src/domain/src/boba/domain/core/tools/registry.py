@@ -126,18 +126,18 @@ class ToolsService(Executor[ToolContext, ToolCall, ToolResult]):
         """Описания всех собранных инструментов — для передачи потребителю."""
         return self._catalog.definitions()
 
-    def execute(self, ctx: ToolContext, call: ToolCall) -> ToolResult:
-        tool = self._catalog.get(call.tool_id)
+    def execute(self, ctx: ToolContext, req: ToolCall) -> ToolResult:
+        tool = self._catalog.get(req.tool_id)
         if tool is None:
-            raise self._unknown_tool(call.tool_id)
+            raise self._unknown_tool(req.tool_id)
         try:
-            args = tool.args_converter().convert(call.arguments)
+            args = tool.args_converter().convert(req.arguments)
             return tool.execute(ctx, args)
         except ToolExecutionError:
             raise
         except Exception as e:
             raise ToolExecutionError(
-                tool_id=call.tool_id,
+                tool_id=req.tool_id,
                 message=f"{type(e).__name__}: {e}",
             ) from e
 
