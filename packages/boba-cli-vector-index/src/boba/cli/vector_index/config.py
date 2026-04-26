@@ -1,7 +1,9 @@
 """Конфигурация CLI.
 
-Источники (в порядке приоритета): CLI-флаг > env > env-file > TOML >
-TOML-file > error.
+Источники собираются стандартной :class:`ChainedConfigResolver`-цепочкой:
+``CLI > env-file > env > toml-file > toml > error``. CLI-флаги
+прокидываются через :class:`~boba.config.cli.CliArgsSource` (highest
+priority в цепочке).
 
 Контракт общего ключа с ``boba-ext-chromadb`` — :class:`ConfigKey`
 ``("ext","chromadb","persist_path")``: оператор задаёт путь один раз
@@ -17,6 +19,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from boba.config.cli import CliArgsSource
 from boba.config.env import EnvFileSource, EnvSource, env_name
 from boba.config.toml import (
     CONFIG_PATH_ENV,
@@ -54,16 +57,16 @@ class CliConfig:
 
     @classmethod
     def resolve(cls, *, persist_path_arg: str | None) -> CliConfig:
-        """Собирает конфиг из CLI-аргумента и env/TOML. Бросает
-        :class:`CliConfigError` если ни один источник не задал
-        обязательное поле.
-        """
-        if persist_path_arg:
-            return cls(persist_path=persist_path_arg)
+        """Собирает конфиг из всей стандартной цепочки источников.
 
+        ``persist_path_arg`` — значение CLI-флага ``--persist-path`` (или
+        ``None`` если не передан); прокидывается через
+        :class:`CliArgsSource` как highest-priority overlay.
+        """
         toml_data = load_toml(os.environ.get(CONFIG_PATH_ENV))
         resolver = ChainedConfigResolver(
             [
+                CliArgsSource({_PERSIST_KEY: persist_path_arg}),
                 EnvFileSource(),
                 EnvSource(),
                 TomlFileSource(toml_data),

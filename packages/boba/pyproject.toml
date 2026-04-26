@@ -7,14 +7,6 @@ name = "boba"
 version = "0.1.0"
 description = "Boba — RAG agent for knowledge base"
 requires-python = ">=3.11,<4"
-# Минимум для агентского runtime: только httpx (внутренние утилиты).
-# LLM-провайдеры/файловые workspace'ы/MessageService'ы/PromptProvider'ы
-# вынесены в отдельные pip-пакеты ``packages/boba-adapter-*`` — bootstrap
-# приложения сам их подключает, чтобы core не тащил конкретные SDK.
-# Источники конфигурации (env/TOML/…) — отдельные пакеты
-# ``packages/boba-config-*``. UI-зависимости (chainlit) — в
-# ``packages/boba-chainlit``; vector-store deps — в
-# ``packages/boba-ext-chromadb`` и ``packages/boba-cli-vector-index``.
 dependencies = [
     "httpx",
 ]
@@ -25,17 +17,8 @@ dev = [
     "ruff",
 ]
 
-# boba — namespace-package (PEP 420) c тремя sub-пакетами в разных
-# src-корнях. ``packages.find`` со списком ``where`` тут не работает
-# (setuptools требует, чтобы каждый найденный пакет существовал во
-# ВСЕХ ``where``), поэтому маппим корни sub-пакетов явно через
-# ``package-dir`` и перечисляем все импортируемые пакеты в
-# ``packages``.
-#
-# Если добавляется новый sub-package (например, ``boba.domain.kb``) —
-# нужно дописать его в ``packages``. Можно регенерить из дерева:
-#   find packages/boba/src -mindepth 4 -type d -path '*/src/boba*' \
-#     -not -path '*__pycache__*' -not -name '*.egg-info'
+# PEP 420 namespace-package: sub-пакеты в разных src-корнях, маппим явно.
+# При добавлении нового sub-пакета — дописать в ``[tool.setuptools] packages``.
 [tool.setuptools.package-dir]
 "boba.domain" = "src/domain/src/boba/domain"
 "boba.infra" = "src/infra/src/boba/infra"

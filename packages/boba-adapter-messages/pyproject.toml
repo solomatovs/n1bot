@@ -7,8 +7,6 @@ name = "boba-adapter-messages"
 version = "0.1.0"
 description = "MessageService implementations for Boba: in-memory and JSONL-on-workspace."
 requires-python = ">=3.11,<4"
-# Реализует :class:`boba.domain.agent.messages.MessageService`. JSONL-вариант
-# поверх :class:`HistoryWorkspaceShell`, in-memory — без персистенции.
 dependencies = ["boba"]
 
 [tool.setuptools.packages.find]

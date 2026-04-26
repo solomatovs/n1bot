@@ -1,49 +1,38 @@
-# Шаблон TOML-конфига. Скопируйте в ``local/config.toml``, заполните
-# и укажите путь через env:
-#
-#   BOBA_CONFIG_PATH=/abs/path/to/local/config.toml
-#
-# Все поля опциональны: если поле отсутствует, ConfigLoader берёт env
-# (``BOBA_*``) или дефолт. TOML удобен когда хочется хранить много
-# полей в структурированном виде вместо плоских env-переменных.
-#
-# Имена секций/ключей задаются единым алгоритмом в boba-config-toml:
-#   ConfigKey(parts...) -> [parts[:-1]] parts[-1]
-# (см. packages/boba-config-toml/src/boba_config_toml/_source.py).
-
 [app]
-# ssl_verify = false
-# log_level = "INFO"
-# log_file = "/app/local/logs/boba.log"
-
-[workspaces]
-# base_dir = "/app/local/workspaces"
-
-[llm]
-# base_url = "http://litellm-proxy:4000"
-# api_key  = "sk-..."
+log_level = "DEBUG"
+ssl_verify = false
 
 [agent]
-# max_iterations = 200
-# max_consecutive_tool_calls = 30
+max_iterations = 200
+max_consecutive_tool_calls = 30
+
+[workspaces]
+base_dir = "./local/workspaces"
+user_subdir = "user"
+system_subdir = "system"
+tmp_subdir = "tmp"
 
 [prompts]
-# dir = "/app/local/prompts"
+dir = "./local/prompts"
 
 [chainlit]
-# host = "0.0.0.0"
-# port = "8502"
-# root_path = "/boba-debug"
-# auth_secret = "..."
-# headless = "true"
-# models = ["qwen3-0.6b", "qwen3.5-35b"]
+host = "0.0.0.0"
+port = "8502"
+root_path = "/boba-debug"
+app_root = "./local/chainlit"
+models = [
+    "qwen3",
+    "qwen3-0.6b",
+    "qwen3-235b",
+    "qwen3.5-35b",
+    "qwen3.5-122b",
+    "deepseek-coder-v2-16b",
+    "qwen2.5-coder-1.5b",
+    "llama3.1-8b",
+    "gemini",
+    "numarkdown-q4",
+    "numarkdown-q8",
+]
 
-# Extension-секции — namespaced под ``ext.<имя>``; путь TOML строится
-# буквально из ConfigKey: ``ConfigKey("ext","chromadb","persist_path")``
-# → ``[ext.chromadb] persist_path``. Альтернатива env-переменным
-# ``BOBA_EXT_CHROMADB_*``.
 [ext.chromadb]
-# persist_path = "/app/local/chroma"
-# embedding_model = "default"
-# max_top_k = 20
-# snippet_chars = 300
+persist_path = "./local/chroma"

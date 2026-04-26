@@ -1,14 +1,3 @@
-# Корневой pyproject.toml монорепо.
-#
-# Сам по себе НЕ устанавливаемый пакет — никакой ``[project]`` секции.
-# Все pip-installable пакеты живут в ``packages/<name>/``, каждый со
-# своим ``pyproject.toml``. Установить весь workspace одной командой:
-#
-#     pip install -r dev-install.txt
-#
-# Здесь — только конфиги общих dev-инструментов (ruff/pytest/pyright),
-# которые применяются к коду из всех пакетов.
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [
@@ -18,6 +7,7 @@ pythonpath = [
     "packages/boba-adapter-messages/src",
     "packages/boba-adapter-openai/src",
     "packages/boba-adapter-prompt-providers/src",
+    "packages/boba-config-cli/src",
     "packages/boba-config-env/src",
     "packages/boba-config-toml/src",
     "packages/boba-web-chainlit/src",
@@ -43,6 +33,7 @@ extraPaths = [
     "packages/boba-adapter-messages/src",
     "packages/boba-adapter-openai/src",
     "packages/boba-adapter-prompt-providers/src",
+    "packages/boba-config-cli/src",
     "packages/boba-config-env/src",
     "packages/boba-config-toml/src",
     "packages/boba-web-chainlit/src",
@@ -66,50 +57,21 @@ line-length = 88
 
 [tool.ruff.lint]
 select = [
-    "F",      # pyflakes — неиспользуемые импорты, undefined names, redefined unused
-    "E",      # pycodestyle errors — стилистические ошибки (пробелы, отступы)
-    "W",      # pycodestyle warnings — стилистические предупреждения
-    "I",      # isort — сортировка и группировка импортов
-    "B",      # flake8-bugbear — частые баги и антипаттерны
-    "UP",     # pyupgrade — модернизация синтаксиса до 3.11+
-    "SIM",    # flake8-simplify — упрощение конструкций
-    "C90",    # mccabe — сложность функций
-    "N",      # pep8-naming — CamelCase/snake_case
-    "S",      # flake8-bandit — безопасность
-    "A",      # flake8-builtins — shadowing встроенных имён
-    "C4",     # flake8-comprehensions — упрощение comprehensions
-    "T20",    # flake8-print — забытые print()
-    "PT",     # flake8-pytest-style — best practices для pytest
-    "RET",    # flake8-return — упрощение return
-    "PIE",    # flake8-pie — мелкие улучшения
-    "PL",     # pylint
-    "RUF",    # ruff-specific
+    "F", "E", "W", "I", "B", "UP", "SIM", "C90", "N", "S",
+    "A", "C4", "T20", "PT", "RET", "PIE", "PL", "RUF",
 ]
 ignore = [
-    "RUF001",  # ambiguous unicode in string — ложные срабатывания на кириллице
-    "RUF002",  # ambiguous unicode in docstring — same
-    "RUF003",  # ambiguous unicode in comment — same
-    "RET504",  # unnecessary assign before return — мешает при построении цепочек
+    # ambiguous unicode — ложные срабатывания на кириллице
+    "RUF001", "RUF002", "RUF003",
+    "RET504",
 ]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10
 
 [tool.ruff.lint.isort]
-# Все пакеты монорепо живут под общим namespace ``boba.*`` — одной
-# записи достаточно, чтобы isort группировал их вместе и не считал
-# third-party.
 known-first-party = ["boba"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = [
-    "S101",    # assert — ожидаемо в pytest
-    "PLR2004", # magic values — допустимы в assert
-    "SLF001",  # доступ к _private — допустим при тестировании внутренностей
-    "S105",    # hardcoded password — false positive на поля вроде AnswerToken.token
-    "S106",    # same reason
-]
-"packages/boba-cli-*/**" = [
-    "T201",    # print — основной канал вывода CLI, не runtime-код
-    "BLE001",  # broad except — CLI логирует и продолжает, не падает на одной коллекции
-]
+"tests/**" = ["S101", "PLR2004", "SLF001", "S105", "S106"]
+"packages/boba-cli-*/**" = ["T201", "BLE001"]

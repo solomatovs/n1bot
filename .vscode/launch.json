@@ -49,7 +49,7 @@
             "name": "Agent: run query",
             "type": "debugpy",
             "request": "launch",
-            "module": "boba_cli_agent_run",
+            "module": "boba.cli.agent_run",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
@@ -64,17 +64,14 @@
             ],
             "envFile": "${workspaceFolder}/local/.env",
             "env": {
-                "BOBA_PROMPTS_DIR": "${workspaceFolder}/local/prompts",
-                "BOBA_WORKSPACES_BASE_DIR": "${workspaceFolder}/local/workspaces",
-                "BOBA_APP_LOG_FILE": "${workspaceFolder}/local/logs/agent-run.log",
-                "BOBA_EXT_CHROMADB_PERSIST_PATH": "${workspaceFolder}/local/chroma"
+                "BOBA_APP_LOG_FILE": "${workspaceFolder}/local/logs/agent-run.log"
             }
         },
         {
             "name": "Vector Index: index path",
             "type": "debugpy",
             "request": "launch",
-            "module": "boba_cli_vector_index",
+            "module": "boba.cli.vector_index",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
@@ -86,8 +83,9 @@
                 "--collection", "${input:indexCollection}",
                 "--description", "${input:indexDescription}"
             ],
+            "envFile": "${workspaceFolder}/local/.env",
             "env": {
-                "BOBA_EXT_CHROMADB_PERSIST_PATH": "${workspaceFolder}/local/chroma"
+                "BOBA_APP_LOG_FILE": "${workspaceFolder}/local/logs/vector-index.log"
             }
         },
         {
@@ -101,7 +99,7 @@
             "justMyCode": false,
             "args": [
                 "run",
-                "${workspaceFolder}/packages/boba-chainlit/src/boba_chainlit/app.py",
+                "${workspaceFolder}/packages/boba-web-chainlit/src/boba/web/chainlit/app.py",
                 "-h",
                 "--host", "0.0.0.0",
                 "--port", "8502",
@@ -109,11 +107,7 @@
             ],
             "envFile": "${workspaceFolder}/local/.env",
             "env": {
-                "CHAINLIT_APP_ROOT": "${workspaceFolder}/packages/boba-chainlit",
-                "BOBA_PROMPTS_DIR": "${workspaceFolder}/local/prompts",
-                "BOBA_WORKSPACES_BASE_DIR": "${workspaceFolder}/local/workspaces",
-                "BOBA_APP_LOG_FILE": "${workspaceFolder}/local/logs/chainlit.log",
-                "BOBA_EXT_CHROMADB_PERSIST_PATH": "${workspaceFolder}/local/chroma"
+                "BOBA_APP_LOG_FILE": "${workspaceFolder}/local/logs/chainlit.log"
             }
         },
         {
@@ -131,8 +125,6 @@
             ],
             "envFile": "${workspaceFolder}/local/.env",
             "env": {
-                "BOBA_PROMPTS_DIR": "${workspaceFolder}/local/prompts",
-                "BOBA_WORKSPACES_BASE_DIR": "${workspaceFolder}/local/workspaces",
                 "BOBA_APP_LOG_FILE": "${workspaceFolder}/local/logs/tests.log"
             }
         },
