@@ -15,17 +15,14 @@ import json
 from collections.abc import Iterable
 
 from boba.domain.agent.dialogue_writer import DialogueWriter
-from boba.domain.agent.errors import RepeatedFormatFailureError
 from boba.domain.agent.events import (
     AgentEvent,
     FeedbackToLLMAdded,
     ToolCallComplete,
-    ToolCallFormatFailed,
     ToolExecutionFailed,
     ToolExecutionStarted,
     ToolResultReady,
 )
-from boba.domain.agent.meat.error_routing import AgentErrorRouter
 from boba.domain.agent.models import AgentContext
 from boba.domain.agent.payloads import ToolCallFailure, ToolCallResult
 from boba.domain.core.patterns import StreamSource
@@ -38,7 +35,6 @@ from boba.domain.core.tools import (
     ToolId,
     ToolsService,
 )
-from boba.domain.llm.models import LLMMessage
 
 
 class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
@@ -196,17 +192,13 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
                     f"либо сформулируй ответ пользователю обычным "
                     f"текстом."
                 )
-                self._writer.append_llm_feedback(
-                    LLMMessage(
-                        role="tool",
-                        content=message,
-                        tool_call_id=call.id,
-                    ),
+                self._writer.append_tool_call_rejection(
+                    tool_call_id=call.id,
+                    content=message,
                 )
                 yield FeedbackToLLMAdded(
                     request_id=event.request_id,
                     content=message,
-                    cause="repeated_tool_call",
                 )
                 yield ToolExecutionFailed(
                     request_id=event.request_id,
@@ -221,51 +213,3 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
             yield event
 
 
-class RepeatedFormatFailureGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Защита от залипания модели на неверном формате tool call.
-
-    После N+1 подряд :class:`ToolCallFormatFailed` без
-    :class:`ToolResultReady` между ними — поднимает
-    :class:`RepeatedFormatFailureError` (terminal), роутер останавливает
-    цикл.
-    """
-
-    def __init__(
-        self,
-        inner: StreamSource[AgentContext, AgentEvent],
-        error_router: AgentErrorRouter,
-        max_consecutive: int,
-    ) -> None:
-        self._inner = inner
-        self._router = error_router
-        self._max_consecutive = max_consecutive
-        self._count = 0
-
-    def name(self) -> str:
-        return "RepeatedFormatFailureGuard"
-
-    def reset(self) -> None:
-        self._count = 0
-        self._inner.reset()
-
-    def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
-        for event in self._inner.stream(ctx):
-            yield event
-
-            if isinstance(event, ToolCallFormatFailed):
-                self._count += 1
-                if self._count > self._max_consecutive:
-                    yield from self._router.route(
-                        ctx,
-                        RepeatedFormatFailureError(
-                            f"Модель {self._count} раз подряд вывела неверный "
-                            f"формат tool call (лимит {self._max_consecutive}). "
-                            f"Дальнейшие объяснения формата не помогают — "
-                            f"цикл остановлен.",
-                            count=self._count,
-                            limit=self._max_consecutive,
-                        ),
-                    )
-                    return
-            elif isinstance(event, ToolResultReady):
-                self._count = 0

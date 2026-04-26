@@ -1,7 +1,7 @@
 """Полиморфная маршрутизация :class:`RoutableError` по маркерам.
 
 Роутер не знает конкретных подклассов — он читает маркеры
-(:class:`UserFeedbackError`, :class:`LLMFeedbackError`) независимо и
+(:class:`UserFeedbackError`, :class:`AgentLLMFeedbackError`) независимо и
 суммирует эффекты.
 
 :class:`TerminalError` — специализация :class:`UserFeedbackError`,
@@ -9,43 +9,28 @@
 типом возвращаемого события (наследник ``Terminal``), который
 роутер просто yield-ит как любое user-событие.
 
-:class:`LLMFeedbackError` пишется в :class:`MessageService` через
-:class:`DialogueWriter` — на следующей итерации модель увидит
-feedback в истории. Параллельно роутер эмитит
-:class:`FeedbackToLLMAdded` — это снапшот-событие, фиксирующее факт
-записи в диалог (инвариант «снапшот на каждую запись в MessageService»).
+:class:`AgentLLMFeedbackError` — agent-уровневая специализация
+:class:`LLMFeedbackError` с зафиксированным ``TFeedback = LLMMessage``.
+Пишется в :class:`MessageService` через :class:`DialogueWriter` — на
+следующей итерации модель увидит feedback в истории. Параллельно роутер
+эмитит :class:`FeedbackToLLMAdded` (снапшот для sink'а / history-
+реконструкции). Использование agent-специализации вместо generic-
+маркера даёт честную типизацию ``feedback.content`` — без ``Unknown``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
-from typing import Literal
+from typing import assert_never
 
 from boba.domain.agent.dialogue_writer import DialogueWriter
-from boba.domain.agent.errors import LLMToolCallFormatError
+from boba.domain.agent.errors import AgentLLMFeedbackError
 from boba.domain.agent.events import AgentEvent, FeedbackToLLMAdded
 from boba.domain.agent.models import AgentContext
-from boba.domain.core.errors import (
-    LLMFeedbackError,
-    RoutableError,
-    UserFeedbackError,
-)
+from boba.domain.agent.payloads import LLMCritique, LLMFeedback, ToolCallRejection
+from boba.domain.core.errors import RoutableError, UserFeedbackError
 from boba.domain.core.patterns import StreamSource
-from boba.domain.llm.models import LLMMessage, RequestId
-
-
-def _cause_for_feedback_error(
-    err: LLMFeedbackError[LLMMessage],
-) -> Literal["tool_format", "other"]:
-    """Маппинг concrete-ошибки в ``cause`` для :class:`FeedbackToLLMAdded`.
-
-    Жестко заданный диспетчер: error_routing — agent-domain модуль,
-    ему позволено знать concrete agent-errors. Если появятся новые
-    feedback-ошибки — добавляются ветки.
-    """
-    if isinstance(err, LLMToolCallFormatError):
-        return "tool_format"
-    return "other"
+from boba.domain.llm.models import RequestId
 
 
 class AgentErrorRouter:
@@ -53,8 +38,9 @@ class AgentErrorRouter:
 
     Эффекты собираются независимо:
 
-    1. :class:`LLMFeedbackError` — пишется в :class:`MessageService`
-       через :class:`DialogueWriter`; параллельно эмитится
+    1. :class:`AgentLLMFeedbackError` — `to_llm_feedback()` отдаёт
+       :class:`LLMFeedback`-union, который match-диспетчер раскрывает
+       в узкие методы :class:`DialogueWriter`. Параллельно эмитится
        :class:`FeedbackToLLMAdded` (снапшот для sink'а / history-
        реконструкции). LLM увидит feedback на следующей итерации.
     2. :class:`UserFeedbackError` — ``to_user_feedback(request_id)``
@@ -73,17 +59,33 @@ class AgentErrorRouter:
     ) -> Iterator[AgentEvent]:
         rid: RequestId = ctx.agent_request.request_id
 
-        if isinstance(err, LLMFeedbackError):
+        if isinstance(err, AgentLLMFeedbackError):
             feedback = err.to_llm_feedback()
-            self._writer.append_llm_feedback(feedback)
+            self._dispatch_feedback(feedback)
             yield FeedbackToLLMAdded(
                 request_id=rid,
                 content=feedback.content,
-                cause=_cause_for_feedback_error(err),
             )
 
         if isinstance(err, UserFeedbackError):
             yield err.to_user_feedback(rid)
+
+    def _dispatch_feedback(self, feedback: LLMFeedback) -> None:
+        """Раскрывает :class:`LLMFeedback`-union в узкие writer-методы.
+
+        ``assert_never`` в default-ветке гарантирует exhaustiveness:
+        при добавлении нового варианта в :class:`LLMFeedback` pyright
+        потребует обработать его здесь.
+        """
+        match feedback:
+            case LLMCritique(content=c):
+                self._writer.append_llm_critique(c)
+            case ToolCallRejection(tool_call_id=tid, content=c):
+                self._writer.append_tool_call_rejection(
+                    tool_call_id=tid, content=c,
+                )
+            case _:
+                assert_never(feedback)
 
 
 class AgentErrorRouterMiddleware(StreamSource[AgentContext, AgentEvent]):

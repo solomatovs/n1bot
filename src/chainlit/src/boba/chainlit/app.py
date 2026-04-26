@@ -233,7 +233,7 @@ class _EventRenderer:
                 pass
             case SlotKind.FEEDBACK:
                 await cl.Message(
-                    content=f"**Feedback to LLM** ({e.headline() or ''}):\n\n{e.body()}",
+                    content=f"**Feedback to LLM**:\n\n{e.body()}",
                     author="system",
                 ).send()
 

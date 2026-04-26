@@ -21,5 +21,6 @@
   "reportMissingImports": true,
   "reportMissingTypeStubs": false,
   "reportUnusedImport": true,
-  "reportUnusedVariable": true
+  "reportUnusedVariable": true,
+  "reportIncompatibleMethodOverride": "error"
 }

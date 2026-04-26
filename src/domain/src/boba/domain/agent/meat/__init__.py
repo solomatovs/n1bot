@@ -4,15 +4,6 @@
 """
 
 from boba.domain.agent.meat.agent import Agent
-from boba.domain.agent.meat.content_tool_call import (
-    JsonContentToolCallMiddleware,
-    JsonDepthScanner,
-    JsonHeaderParser,
-    JsonToolCallHeader,
-    ParsedJsonToolCall,
-    StrictJsonContentToolCallMiddleware,
-    StrictJsonToolCallParser,
-)
 from boba.domain.agent.meat.dialogue import AssistantMessagePersistenceMiddleware
 from boba.domain.agent.meat.error_routing import (
     AgentErrorRouter,
@@ -25,7 +16,6 @@ from boba.domain.agent.meat.loop_control import (
     StopOnFinished,
 )
 from boba.domain.agent.meat.tools import (
-    RepeatedFormatFailureGuardMiddleware,
     RepeatedToolCallGuardMiddleware,
     ToolExecutionMiddleware,
 )
@@ -36,17 +26,9 @@ __all__ = [
     "AgentErrorRouterMiddleware",
     "AssistantMessagePersistenceMiddleware",
     "IterationCounterMiddleware",
-    "JsonContentToolCallMiddleware",
-    "JsonDepthScanner",
-    "JsonHeaderParser",
-    "JsonToolCallHeader",
     "LLMInvokeMiddleware",
-    "ParsedJsonToolCall",
-    "RepeatedFormatFailureGuardMiddleware",
     "RepeatedToolCallGuardMiddleware",
     "StopOnAnyFailure",
     "StopOnFinished",
-    "StrictJsonContentToolCallMiddleware",
-    "StrictJsonToolCallParser",
     "ToolExecutionMiddleware",
 ]
