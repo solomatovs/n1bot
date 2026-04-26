@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-cli-vector-index"
+version = "0.1.0"
+description = "Operator CLI: index documents into a vector database (ChromaDB) for the Boba agent."
+requires-python = ">=3.11,<4"
+dependencies = ["chromadb>=0.5"]
+
+[project.optional-dependencies]
+html = ["beautifulsoup4>=4.12", "lxml>=5.0"]
+confluence = ["atlassian-python-api>=3.41"]
+
+[project.scripts]
+boba-cli-vector-index = "boba_cli_vector_index.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

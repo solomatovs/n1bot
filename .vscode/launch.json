@@ -24,6 +24,24 @@
                 "Как именовать таблицы в adqm? прочитай это в файлах и объясни простым языком",
                 "Прочитай файл 950276.html и расскажи как именовать таблицы в adqm на основе его содержимого?",
             ]
+        },
+        {
+            "id": "indexPath",
+            "type": "promptString",
+            "description": "Путь к файлу или директории для индексации",
+            "default": "${workspaceFolder}/prompts"
+        },
+        {
+            "id": "indexCollection",
+            "type": "promptString",
+            "description": "Имя коллекции в ChromaDB",
+            "default": "docs"
+        },
+        {
+            "id": "indexDescription",
+            "type": "promptString",
+            "description": "Описание коллекции (применяется только при создании)",
+            "default": "Документы, проиндексированные оператором"
         }
     ],
     "configurations": [
@@ -61,6 +79,58 @@
             "args": ["-v", "${file}"],
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src"
+            }
+        },
+        {
+            "name": "Vector Index: index path",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba_cli_vector_index",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "-v",
+                "index",
+                "${input:indexPath}",
+                "--collection", "${input:indexCollection}",
+                "--description", "${input:indexDescription}"
+            ],
+            "env": {
+                "BOBA_VECTOR_INDEX_PERSIST_PATH": "${workspaceFolder}/local/chroma"
+            }
+        },
+        {
+            "name": "Vector Index: list collections",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba_cli_vector_index",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": ["list"],
+            "env": {
+                "BOBA_VECTOR_INDEX_PERSIST_PATH": "${workspaceFolder}/local/chroma"
+            }
+        },
+        {
+            "name": "Vector Index: delete collection",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba_cli_vector_index",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "delete",
+                "--collection", "${input:indexCollection}",
+                "--yes"
+            ],
+            "env": {
+                "BOBA_VECTOR_INDEX_PERSIST_PATH": "${workspaceFolder}/local/chroma"
             }
         },
         {

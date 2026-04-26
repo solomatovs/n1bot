@@ -99,3 +99,7 @@ known-first-party = ["boba", "boba"]
     "S105",    # hardcoded password — false positive на поля вроде AnswerToken.token
     "S106",    # same reason
 ]
+"cli/**" = [
+    "T201",    # print — основной канал вывода CLI, не runtime-код
+    "BLE001",  # broad except — CLI логирует и продолжает, не падает на одной коллекции
+]
