@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-config-cli"
+version = "0.1.0"
+description = "CLI-arguments ConfigSource implementation for Boba (argparse → ConfigKey mapping)."
+requires-python = ">=3.11,<4"
+dependencies = ["boba"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
