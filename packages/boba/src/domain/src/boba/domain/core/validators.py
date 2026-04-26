@@ -1,22 +1,13 @@
 """Базовые runtime-Converter-ы общего назначения.
 
-Единая абстракция «валидация / трансформация значения» — это
-Converter. Identity-проверки
-(OneOf, MinValue, NonEmpty) — degenerate-конвертеры с
-TIn == TOut. Type-narrowing (ParseInt, IsString) — обычные
-Converter[A, B]. Default/Required работают с MISSING-
-сентинелом на входе.
+- Identity-проверки (OneOf/MinValue/NonEmpty) — Converter[A, A].
+- Type-narrowing (ParseInt/IsString) — Converter[A, B].
+- Default/Required работают с MISSING-сентинелом.
 
-Контракт ошибок: любой реализующий convert бросает только
-ConverterInputError для семантических
-отказов (значение не подошло) и
-ConverterOutputError для багов
-реализации. Никаких голых ValueError/TypeError наружу.
+Контракт ошибок: convert бросает только ConverterInputError (семантический
+отказ) или ConverterOutputError (баг реализации) — никаких ValueError/TypeError.
 
-Валидаторы, чьё правило выражается в wire-схеме (type, enum,
-default, required), реализуют SchemaContributor —
-единый источник правды для runtime-проверки и описания внешнему
-потребителю.
+Валидаторы, выражающие правило в wire-схеме, реализуют SchemaContributor.
 """
 
 from __future__ import annotations

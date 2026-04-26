@@ -1,24 +1,10 @@
 """Конкретные реализации PromptProvider + file-based loader.
 
-Состав пакета:
+- providers — Static/File/Environment/Git/WorkspaceSystem (system-prompt);
+- loader — PromptLoader, discovery *.md/*.txt из PromptWorkspaceShell;
+- config — PromptsSection (путь до prompts-dir).
 
-- _providers — провайдеры (Static/File/Environment/Git/
-  WorkspaceSystem), пишут в system-prompt; USER-блок caller передаёт
-  через query.
-- _loader — PromptLoader, discovery *.md/*.txt
-  из PromptWorkspaceShell в коллекцию
-  StaticPromptProvider.
-- _config — PromptsSection (путь до prompts-dir).
-
-Пакет — отдельный pip-package; основной boba от него НЕ зависит.
-Короткие импорты::
-
-    from boba.adapter.prompt_providers import (
-        PromptLoader, PromptsSection,
-        StaticPromptProvider, FilePromptProvider,
-        EnvironmentPromptProvider, GitPromptProvider,
-        WorkspaceSystemPromptProvider,
-    )
+Отдельный pip-пакет; core boba от него не зависит.
 """
 
 from boba.adapter.prompt_providers.config import PromptsSection

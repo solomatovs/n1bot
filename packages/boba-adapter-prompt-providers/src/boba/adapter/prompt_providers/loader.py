@@ -1,34 +1,16 @@
 """File-based loader статических system-prompt блоков.
 
-Читает *.md и *.txt из PromptWorkspaceShell
-(директория BOBA_PROMPTS_DIR) и собирает
-Sequence[PromptProvider] один раз на старте процесса.
+Читает *.md и *.txt из PromptWorkspaceShell (BOBA_PROMPTS_DIR) и
+собирает Sequence[PromptProvider] один раз на старте процесса.
 
-Отдельно от загрузки tool-плагинов: tools — это код с зависимостями
-(pip-installable пакеты, регистрируемые через Python entry-points,
-см. tool_plugin_loader); промпты — это просто
-текстовый контент, и их discovery остаётся файловым.
-
-Семантика discovery:
-
-* любой сегмент пути с _ префиксом — silently skip
-  (__pycache__, _draft.md, _helpers/);
+Discovery:
+* сегмент пути с префиксом _ — skip;
 * пустые файлы — skip с info-логом;
-* любые другие расширения — silently skip;
-* приоритет извлекается из \\d+- префикса в имени файла,
-  иначе — _DEFAULT_PRIORITY.
+* другие расширения — skip;
+* приоритет — \\d+- префикс в имени файла, иначе _DEFAULT_PRIORITY.
 
-Жизненный цикл: discovery + чтение всех файлов происходит в
-конструкторе PromptLoader; результат кэшируется и возвращается
-prompt_providers.
-
-Trust-модель:
-
-1. Промпт-файлы — это код для LLM, не пользовательский ввод.
-   Поставляются через trusted-канал (CI с code-review/подписями).
-2. prompts_dir обязан быть read-only в runtime — writable директория
-   = locally-unprivileged эскалация в prompt-injection при
-   перезапуске. Контролируется на уровне deploy.
+Trust: prompts_dir должен быть read-only в runtime — writable директория
+= prompt-injection при перезапуске.
 """
 
 from __future__ import annotations

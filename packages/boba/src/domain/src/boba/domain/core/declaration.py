@@ -1,26 +1,14 @@
 """Декларативные примитивы описания объекта.
 
-Универсальные строительные блоки, общие между tool-input-схемами и
-config-секциями:
+Общие блоки между tool-input-схемами и config-секциями:
 
-- FieldSpec — самодостаточная декларация одного поля
-  (name + Converter-цепочка + описание).
-- ObjectSchema — декларация объекта: набор полей +
-  cross-field инварианты + фабрика финального DTO.
-- validate_object — orchestrator: читает каждое поле через
-  callable-источник, прогоняет через converter, отбрасывает
-  MISSING, применяет invariants, отдаёт в factory.
+- FieldSpec — декларация одного поля (name + Converter + описание).
+- ObjectSchema — поля + cross-field инварианты + DTO-фабрика.
+- validate_object — orchestrator: читает поле, прогоняет через converter,
+  отбрасывает MISSING, применяет invariants, отдаёт в factory.
 
-Никакой адресации в глобальном namespace тут нет — это задача
-владельца коллекции (для конфига —
-ConfigSection с её
-namespace; для tool-схемы —
-ToolDefinition, который
-агрегирует ObjectSchema без адресации).
-
-Wire-схема (внешнее представление декларации) живёт в
-schema (ParamWireSchema,
-ObjectWireSchema, SchemaContributor).
+Адресация в namespace — задача владельца коллекции (ConfigSection /
+ToolDefinition). Wire-схема живёт в schema.
 """
 
 from __future__ import annotations

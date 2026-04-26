@@ -1,18 +1,13 @@
 """Конкретные реализации PromptProvider (system-prompt).
 
-Все провайдеры пишут в system-prompt: USER-сообщение в boba не
-собирается через PromptFactory — оно приходит готовым в
-query от caller'а (frontend/CLI отвечает за
-обогащение IDE-selection / шаблонами / контекстом вызова).
+- Static — фиксированный текст из DI.
+- File — читает блок с диска.
+- Environment — информация о среде.
+- Git — состояние репо.
+- WorkspaceSystem — все файлы директории внутри HistoryWorkspaceShell.
 
-Набор провайдеров:
-
-- StaticPromptProvider — фиксированный текст из DI.
-- FilePromptProvider — читает блок с диска.
-- EnvironmentPromptProvider — информация о среде выполнения.
-- GitPromptProvider — состояние git-репо.
-- WorkspaceSystemPromptProvider — читает все файлы директории
-  внутри HistoryWorkspaceShell.
+USER-сообщение через PromptFactory не идёт — приходит готовым в query
+от caller'а (frontend/CLI обогащает IDE-selection и шаблонами).
 """
 
 from __future__ import annotations

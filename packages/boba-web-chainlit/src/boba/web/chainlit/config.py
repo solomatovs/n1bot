@@ -1,20 +1,11 @@
 """Конфиг chainlit-приложения как единая ConfigSection.
 
-Все поля — server-параметры (host/port/root_path/auth_secret/headless),
-рантайм-расположение (app_root), список моделей для UI ChatSettings и
-UI-overrides для .chainlit/config.toml (title, telemetry, лимиты
-загрузки) — лежат в одной секции с namespace ("chainlit",). DTO-имена
-== TOML/env-имена: [chainlit] ui_name ↔ env BOBA_CHAINLIT_UI_NAME
-↔ ChainlitConfig.ui_name. Никаких оператор-DTO mapping'ов.
+Server-параметры, app_root, models, UI-overrides — все в одной секции
+namespace ("chainlit",). DTO-имена == TOML/env-имена.
 
-Bootstrap (__main__) собирает бандл и через
-bundle.section(ChainlitSection) получает значения, после чего:
-
-1. через bridge_chainlit_env прокидывает server-поля в
-   CHAINLIT_* env (chainlit-библиотека читает их при импорте);
-2. через UIOverrideTomlConverter рендерит UI-поля в
-   app_root/.chainlit/config.toml (chainlit смотрит TOML только
-   при старте сервера).
+Bootstrap получает значения через bundle.section(ChainlitSection):
+bridge_chainlit_env прокидывает server-поля в CHAINLIT_* env;
+UIOverrideTomlConverter рендерит UI-поля в app_root/.chainlit/config.toml.
 """
 
 from __future__ import annotations

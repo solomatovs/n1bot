@@ -1,19 +1,11 @@
 """Оркестратор агента — связка source → sink.
 
-run(config, request, query):
+run() кладёт query в MessageService через DialogueWriter (единственная
+точка, где первый user-message появляется в истории — после записи он
+нигде в runtime-контексте не живёт), создаёт AgentContext и сливает
+source в sink.
 
-1. Кладёт query в MessageService через
-   DialogueWriter — это единственная точка, где первый
-   user-message появляется в истории. query к этому моменту
-   уже отформатирован caller'ом (frontend/CLI: обогащение
-   IDE-selection / шаблонами и пр.) и после записи нигде в
-   runtime-контексте не существует — AgentContext/
-   AgentRequest его не несут.
-2. Создаёт AgentContext и сливает source в sink.
-
-Loop/Boundary-обёртки навешиваются снаружи (в контейнере), чтобы
-Agent оставался тонким «source/sink-драйвером» без знания о
-внутренностях цепочки.
+Loop/Boundary-обёртки навешиваются снаружи в контейнере.
 """
 
 from __future__ import annotations

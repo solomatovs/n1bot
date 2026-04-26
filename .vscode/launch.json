@@ -55,11 +55,11 @@
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "args": [
-                "--model", "${input:model}",
-                "--temperature", "0.2",
-                "--top-p", "0.95",
-                "--presence-penalty", "0.0",
-                "--frequency-penalty", "0.0",
+                "--agent-run-model", "${input:model}",
+                "--agent-run-temperature", "0.2",
+                "--agent-run-top-p", "0.95",
+                "--agent-run-presence-penalty", "0.0",
+                "--agent-run-frequency-penalty", "0.0",
                 "${input:query}"
             ],
             "envFile": "${workspaceFolder}/local/.env",
@@ -92,18 +92,15 @@
             "name": "Chainlit: Boba UI",
             "type": "debugpy",
             "request": "launch",
-            "module": "chainlit",
+            "module": "boba.web.chainlit",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "args": [
-                "run",
-                "${workspaceFolder}/packages/boba-web-chainlit/src/boba/web/chainlit/app.py",
-                "-h",
-                "--host", "0.0.0.0",
-                "--port", "8502",
-                "--root-path", "/boba-debug"
+                "--chainlit-host", "0.0.0.0",
+                "--chainlit-port", "8502",
+                "--chainlit-root-path", "/boba-debug"
             ],
             "envFile": "${workspaceFolder}/local/.env",
             "env": {

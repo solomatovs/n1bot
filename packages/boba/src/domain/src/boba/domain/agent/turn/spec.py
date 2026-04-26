@@ -1,24 +1,11 @@
 """TurnSpec — fold-фабрика, собирающая LLMRequest из reducer'ов.
 
-Собирается один раз в контейнере: подключаются нужные
-reducer'ы, спек готов к многократному build'у.
+build(resolve_ctx): initial → пустой TurnState → reducer'ы по возрастанию
+priority() заполняют slots (model/system/messages/tools/sampling) →
+finalize валидирует обязательные slot'ы и возвращает immutable LLMRequest.
 
-Per-call:
-
-1. Caller формирует TurnResolveContext из
-   AgentContext + MessageService.
-2. spec.build(resolve_ctx) → LLMRequest.
-
-Что происходит внутри build:
-
-- initial возвращает пустой TurnState.
-- Reducer'ы по возрастанию priority() заполняют slots state'а
-  (model, system, messages, tools, sampling). HistoryReducer
-  читает свежий снапшот из MessageService — все записи
-  предыдущей итерации (assistant, tool_results, feedback) уже
-  зафиксированы через DialogueWriter.
-- finalize валидирует заполненность обязательных slot'ов
-  и возвращает immutable LLMRequest.
+HistoryReducer читает свежий снапшот из MessageService: все записи
+предыдущей итерации уже зафиксированы через DialogueWriter.
 """
 
 from __future__ import annotations

@@ -1,22 +1,14 @@
 """Адресация и резолвинг конфигурационных значений.
 
-Единственная ответственность модуля — связь между декларативным
-описанием объекта (см. declaration) и плоским
-миром источников значений (env, TOML, CLI, …):
+Связь между ObjectSchema и плоским миром источников (env/TOML/CLI):
 
-- ConfigKey — иерархический source-agnostic идентификатор
-  поля. Source-реализации (env, toml)
-  превращают его в env-имя / TOML-путь / CLI-флаг.
-- ConfigSource + ChainedConfigResolver — пул источников
-  и итерация «первый non-None выигрывает».
-- ConfigSection — ObjectSchema плюс namespace
-  для адресации полей. build собирает полный ConfigKey из
-  namespace и field.name, читает значение через резолвер и
-  отдаёт его validate_object для прогона через цепочку
-  конвертеров и фабрику.
-- read_field — ad-hoc helper для чтения одного поля без
-  секции (например, в CLI, который читает ровно один общий с
-  расширением ключ).
+- ConfigKey — иерархический source-agnostic идентификатор поля.
+- ConfigSource + ChainedConfigResolver — пул источников, первый
+  non-None выигрывает.
+- ConfigSection — ObjectSchema + namespace; build() собирает ConfigKey
+  из namespace + field.name, читает через резолвер и прогоняет через
+  validate_object.
+- read_field — ad-hoc helper для одного поля без секции.
 """
 
 from __future__ import annotations

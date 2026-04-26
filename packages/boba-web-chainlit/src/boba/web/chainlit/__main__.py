@@ -1,31 +1,25 @@
 """Bootstrap chainlit-приложения.
 
-Здесь — единственное место в пакете, где собирается ConfigBundle и
-строится цепочка ConfigSource'ов. ChatSession получает уже
-готовый bundle через ChatSession.from_bundle(bundle) — никакого
-повторного похода в env/TOML.
+Единственное место в пакете, где собирается ConfigBundle. ChatSession
+получает готовый bundle через set_bundle() — без повторного похода в env/TOML.
 
-Шаги:
-
-1. собрать ConfigBundle (env + TOML, плюс расширения через
-   entry-points);
-2. через bridge_chainlit_env прокинуть chainlit-server-поля
-   в CHAINLIT_* env (chainlit-библиотека читает их при импорте) и
-   получить абсолютный app_root;
-3. через UIOverrideTomlConverter отрендерить
-   app_root/.chainlit/config.toml для UI-overrides (chainlit для
-   этих полей env не смотрит, только TOML);
-4. импортировать chainlit и запустить run_chainlit(app.py).
+Шаги: CLI-флаги → ConfigBundle (CLI > env > TOML + entry-points) →
+bridge_chainlit_env (server-поля в CHAINLIT_* env, app_root) →
+UIOverrideTomlConverter (UI-поля в app_root/.chainlit/config.toml) →
+run_chainlit(app.py).
 """
 
 from __future__ import annotations
 
+import argparse
 import os
+from collections.abc import Sequence
 from pathlib import Path
 
 from boba.adapter.fs_workspace import WorkspacesSection
 from boba.adapter.openai import LLMTransportSection
 from boba.adapter.prompt_providers import PromptsSection
+from boba.config.cli import CliFlag, add_to_parser, from_namespace
 from boba.config.env import EnvFileSource, EnvSource
 from boba.config.toml import (
     CONFIG_PATH_ENV,
@@ -33,7 +27,7 @@ from boba.config.toml import (
     TomlSource,
     load_toml,
 )
-from boba.domain.core.config import ChainedConfigResolver
+from boba.domain.core.config import ChainedConfigResolver, ConfigKey
 from boba.infra import (
     AgentSection,
     AppCoreSection,
@@ -45,19 +39,49 @@ from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
 from boba.web.chainlit.session import ChatSession
 from boba.web.chainlit.ui_overrides import UIOverrideTomlConverter
 
+# Декларативный список CLI-флагов: пакет boba.config.cli использует его и
+# для add_to_parser (генерация argparse-аргументов), и для from_namespace
+# (сборка CliArgsSource из распарсенного Namespace).
+_FLAGS: tuple[CliFlag, ...] = (
+    CliFlag(ConfigKey("chainlit", "host")),
+    CliFlag(ConfigKey("chainlit", "port")),
+    CliFlag(ConfigKey("chainlit", "root_path")),
+    CliFlag(ConfigKey("chainlit", "app_root")),
+)
 
-def build_bundle() -> ConfigBundle:
+
+# ──────────────────────────────────────────────────────────────────────
+# Argparse
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="boba-web-chainlit",
+        description="Bootstrap and start the Chainlit web UI for the Boba agent.",
+    )
+    add_to_parser(parser, _FLAGS)
+    return parser
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Bundle assembly
+# ──────────────────────────────────────────────────────────────────────
+
+
+def build_bundle(args: argparse.Namespace) -> ConfigBundle:
     """Собирает application ConfigBundle.
 
-    Цепочка источников: env-file > env > toml-file > toml. Регистрирует
-    встроенные секции (app_core/agent) и adapter-секции (FS-
-    workspace, OpenAI-транспорт, file-prompt loader, chainlit).
+    Цепочка источников: CLI > env-file > env > toml-file > toml.
+    Регистрирует встроенные секции (app_core/agent) и adapter-секции
+    (FS-workspace, OpenAI-транспорт, file-prompt loader, chainlit).
     Расширения через entry-point group boba.config_sections
     подхватываются после.
     """
     toml_data = load_toml(os.environ.get(CONFIG_PATH_ENV))
     resolver = ChainedConfigResolver(
         [
+            from_namespace(args, _FLAGS),
             EnvFileSource(),
             EnvSource(),
             TomlFileSource(toml_data),
@@ -73,6 +97,11 @@ def build_bundle() -> ConfigBundle:
     factory.register(ChainlitSection())
     factory.discover_extension_sections()
     return ConfigLoader(factory).load_bundle()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Chainlit env bridge + UI overrides
+# ──────────────────────────────────────────────────────────────────────
 
 
 def bridge_chainlit_env(cfg: ChainlitConfig) -> Path:
@@ -108,8 +137,14 @@ def write_ui_config_overrides(cfg: ChainlitConfig, app_root: Path) -> None:
     target.write_text(content, encoding="utf-8")
 
 
-def main() -> None:
-    bundle = build_bundle()
+# ──────────────────────────────────────────────────────────────────────
+# Entry point
+# ──────────────────────────────────────────────────────────────────────
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    args = _build_parser().parse_args(argv)
+    bundle = build_bundle(args)
     chainlit_cfg = bundle.section(ChainlitSection)
     app_root = bridge_chainlit_env(chainlit_cfg)
     write_ui_config_overrides(chainlit_cfg, app_root)

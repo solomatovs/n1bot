@@ -1,36 +1,14 @@
 """Сборка system-prompt из провайдеров (fold-factory).
 
-Провайдеры поставляют PromptBlock-и; PromptFactory
-агрегирует их по приоритету в PromptResult и склеивает в
-строку. Используется
-SystemPromptReducer каждую
-итерацию — содержимое пересобирается per-call, провайдеры могут
-реагировать на ctx.agent (workspace, iteration и т.д.).
+Провайдеры поставляют PromptBlock-и; PromptFactory агрегирует их по
+приоритету в PromptResult. Пересобирается каждой итерацией —
+провайдеры могут реагировать на ctx.agent.
 
-USER-сообщение через эту фабрику **не** идёт. Пользовательский
-ввод приходит уже отформатированным в query
-и кладётся в MessageService агентом первой операцией —
-обогащение (IDE selection, шаблоны и пр.) — ответственность caller'а
-(frontend/CLI), а не агентского слоя.
+USER-сообщение через эту фабрику не идёт: обогащение пользовательского
+ввода (IDE selection, шаблоны) — ответственность frontend'а.
 
-Параметр TCtx в PromptState — тип контекста, прокидываемый
-провайдерам. В boba это \
-AgentContext, но сам модуль работает с любым типом через generics
-— это делает PromptProvider переиспользуемым вне агентского
-слоя.
-
-════════════════════════════════════════════════════════════════════
-  Иерархия ошибок
-════════════════════════════════════════════════════════════════════
-
-::
-
-    PromptError(TerminalError[RequestId, AgentEvent]) → PromptFailed
-    │   provider: str | None
-
-PromptFactory.build() оборачивает OSError → PromptProviderError
-автоматически. PromptError из провайдеров пропускается как есть
-(например, провайдер сам валидирует и бросает PermanentPromptError).
+PromptFactory.build() оборачивает OSError → PromptProviderError;
+PromptError из провайдеров пропускается как есть.
 """
 
 from __future__ import annotations

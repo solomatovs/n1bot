@@ -1,47 +1,13 @@
 """Маркеры доменных ошибок для полиморфной маршрутизации.
 
-Идея: concrete-ошибка наследуется от RoutableError и миксует
-любое подмножество маркеров-эффектов. Роутер читает маркеры
-независимо и суммирует эффекты — никакой жёсткой иерархии между
-маркерами нет.
+Concrete-ошибка наследуется от RoutableError и миксует подмножество
+маркеров; роутер читает маркеры независимо и суммирует эффекты.
 
-Маркеры:
+- UserFeedbackError — превращается в observability-событие (to_user_feedback).
+- LLMFeedbackError — добавляется в историю как сообщение для LLM (to_llm_feedback).
+- TerminalError — специализация UserFeedbackError, останавливает цикл.
 
-UserFeedbackError[TReqId, TUserEvent]
-    Ошибка превращается в observability-событие для sink'ов.
-    Реализует to_user_feedback.
-
-LLMFeedbackError[TFeedback]
-    Ошибка добавляется в историю (MessageService) как сообщение для
-    LLM — на следующей итерации модель увидит фидбек.
-    Реализует to_llm_feedback.
-
-TerminalError[TReqId, TUserEvent]
-    Специализация UserFeedbackError: ошибка останавливает
-    агентский цикл. Концепт «остановить цикл» кодируется *типом
-    возвращаемого события* (наследник TerminalFailure), поэтому
-    TerminalError обязывает реализовать to_user_feedback
-    и задокументирован как возвращающий терминальное событие —
-    никакого отдельного маркера без метода нет.
-
-Комбинировать можно произвольно::
-
-    class MaxIter(TerminalError[RequestId, AgentEvent]):
-        def to_user_feedback(self, rid): return MaxIterationsReached(...)
-
-    class ToolFail(
-        UserFeedbackError[RequestId, AgentEvent],
-        LLMFeedbackError[LLMMessage],
-    ):
-        def to_user_feedback(self, rid): ...
-        def to_llm_feedback(self): ...
-
-    class LLMConn(LLMFeedbackError[LLMMessage]):
-        def to_llm_feedback(self): ...
-
-Прямое наследование от RoutableError без маркеров валидно —
-роутер обработает такую ошибку как no-op (ничего не эмитит, цикл
-не прерывает).
+Прямой наследник RoutableError без маркеров — no-op для роутера.
 """
 
 from __future__ import annotations

@@ -1,36 +1,18 @@
 """Entry-points loader для tool-плагинов.
 
-Tools поставляются как pip-installable Python-пакеты, объявляющие
-entry-point в группе boba.tools::
+Tools — pip-installable пакеты с entry-point в группе boba.tools::
 
     [project.entry-points."boba.tools"]
     chromadb = "boba.ext.chromadb:register_tools"
 
-Где register_tools(ctx: ExtensionContext) -> Iterable[ToolSource] —
-функция, регистрирующая один или несколько ToolSource.
+register_tools(ctx: ExtensionContext) -> Iterable[ToolSource] регистрирует
+один или несколько ToolSource. Discovery в конструкторе ToolPluginLoader,
+результат кэшируется.
 
-Discovery — через entry_points. Никакой
-файловой папки с плагинами больше нет: оператор устанавливает
-расширения обычным pip install (например, pip install -e
-./extensions/<name> для in-tree dev-установки), и при старте
-ToolPluginLoader собирает их в один ToolsService.
-
-Жизненный цикл: discovery + register-вызовы происходят в конструкторе
-ToolPluginLoader; собранный ToolsService кэшируется
-и отдаётся tools_service.
-
-Trust-модель:
-
-1. Расширения — это код, не пользовательский ввод. Поставляются через
-   trusted-канал (внутренний PyPI / git с code-review/подписями).
-2. ExtensionContext намеренно урезан: не содержит credentials
-   (api_key, токены) и файлового workspace — pip-пакет сам знает
-   свою корневую директорию через __file__ для package data.
-   Конфиг расширения объявляется как ConfigSection и
-   подхватывается ConfigFactory через entry-point group
-   boba.config_sections (см. config); внутри
-   register_tools он достаётся через
-   ctx.config.section(MyExtSection).
+Trust-модель: расширения — доверенный код (внутренний PyPI / git).
+ExtensionContext не содержит credentials и файлового workspace; конфиг
+расширения объявляется ConfigSection через entry-point group
+boba.config_sections и достаётся через ctx.config.section(MyExtSection).
 """
 
 from __future__ import annotations
