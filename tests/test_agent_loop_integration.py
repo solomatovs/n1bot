@@ -8,9 +8,9 @@ import pytest
 
 from boba.adapters.console_sink import ConsoleSink
 from boba.adapters.fs_workspace import (
-    FsExtensionWorkspaceRegistry,
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
+    FsPromptWorkspaceRegistry,
 )
 from boba.adapters.in_memory_messages import InMemoryMessageService
 from boba.adapters.raw_llm_observer import (
@@ -21,7 +21,7 @@ from boba.adapters.raw_llm_observer import (
 from boba.domain.agent.models import AgentRequest
 from boba.domain.core.tools import ToolContext
 from boba.domain.core.workspace import (
-    ExtensionWorkspaceId,
+    PromptWorkspaceId,
     WorkspaceId,
 )
 from boba.domain.llm.models import RequestId, SamplingParams
@@ -31,8 +31,9 @@ from boba.infra.container import (
     build_prompt_providers,
     create_agent,
 )
-from boba.infra.extensions import ExtensionContext, ExtensionLoader
 from boba.infra.logging import configure_logging
+from boba.infra.prompt_loader import PromptLoader
+from boba.infra.tool_plugin_loader import ExtensionContext, ToolPluginLoader
 
 pytestmark = pytest.mark.integration
 
@@ -46,14 +47,13 @@ def _run(query: str, model: str, sampling: SamplingParams | None) -> None:
 
     workspace_id = WorkspaceId.from_wire("00000000-0000-0000-0000-000000000001")
 
-    extension_workspace = FsExtensionWorkspaceRegistry(
-        root=Path(app_config.extensions_dir),
-    ).get_or_create(ExtensionWorkspaceId("extensions"))
+    prompt_workspace = FsPromptWorkspaceRegistry(
+        root=Path(app_config.prompts_dir),
+    ).get_or_create(PromptWorkspaceId("prompts"))
+    prompt_loader = PromptLoader(prompt_workspace)
 
-    extension_loader = ExtensionLoader(
-        extension_workspace,
+    tool_loader = ToolPluginLoader(
         ExtensionContext(
-            extension_workspace=extension_workspace,
             app_config=app_config,
             agent_config=agent_config,
         ),
@@ -73,9 +73,9 @@ def _run(query: str, model: str, sampling: SamplingParams | None) -> None:
         llm_config=app_config.llm,
         components=AgentComponents(
             agent_config=agent_config,
-            prompt_providers=build_prompt_providers(extension_loader),
+            prompt_providers=build_prompt_providers(prompt_loader),
             message_service=InMemoryMessageService(),
-            tools_service=extension_loader.tools_service(),
+            tools_service=tool_loader.tools_service(),
         ),
         tool_ctx=ToolContext(project_workspace=project_workspace),
         observer=CompositeRawLLMObserver(

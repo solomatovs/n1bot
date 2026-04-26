@@ -17,9 +17,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from boba.adapters.fs_workspace import (
-    FsExtensionWorkspaceRegistry,
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
+    FsPromptWorkspaceRegistry,
 )
 from boba.adapters.in_memory_messages import InMemoryMessageService
 from boba.adapters.raw_llm_observer import FileContentObserver
@@ -30,8 +30,8 @@ from boba.domain.agent.models import AgentContext, AgentRequest
 from boba.domain.core.patterns import StreamSink, StreamSinkPipeline
 from boba.domain.core.tools import ToolContext
 from boba.domain.core.workspace import (
-    ExtensionWorkspaceId,
     ProjectWorkspaceShell,
+    PromptWorkspaceId,
     WorkspaceId,
 )
 from boba.domain.llm.models import RequestId
@@ -42,8 +42,9 @@ from boba.infra.container import (
     create_agent_source,
     create_llm_source,
 )
-from boba.infra.extensions import ExtensionContext, ExtensionLoader
 from boba.infra.logging import configure_logging, log_context
+from boba.infra.prompt_loader import PromptLoader
+from boba.infra.tool_plugin_loader import ExtensionContext, ToolPluginLoader
 
 
 class ChatSession:
@@ -68,27 +69,26 @@ class ChatSession:
             base_dir=Path(self._app_config.workspaces.base_dir),
             subdir=self._app_config.workspaces.system_subdir,
         )
-        # Extension workspace — application-singleton. ExtensionContext
-        # тоже application-level: per-request данные (project_workspace
-        # пользователя) сюда НЕ входят — tool'ы получают рабочий
-        # workspace через ToolContext в execute, prompt-провайдеры —
-        # через state.ctx в blocks. ExtensionLoader в конструкторе
-        # делает discovery, зовёт register_tools/register_prompts и
-        # собирает ToolsService + Sequence[PromptProvider] один раз
-        # на всю жизнь процесса.
-        extension_workspace = FsExtensionWorkspaceRegistry(
-            root=Path(self._app_config.extensions_dir),
-        ).get_or_create(ExtensionWorkspaceId("extensions"))
-        extension_loader = ExtensionLoader(
-            extension_workspace,
+        # Prompts: file-based discovery .md/.txt из BOBA_PROMPTS_DIR.
+        # Tool-плагины: pip-installed Python-пакеты, регистрируемые через
+        # entry-points группы "boba.tools". Оба loader'а application-
+        # level: discovery + сборка происходят в конструкторе один раз
+        # на всю жизнь процесса. ExtensionContext не несёт per-request
+        # данных — tool'ы получают рабочий workspace через ToolContext
+        # в execute, prompt-провайдеры — через state.ctx в blocks.
+        prompt_workspace = FsPromptWorkspaceRegistry(
+            root=Path(self._app_config.prompts_dir),
+        ).get_or_create(PromptWorkspaceId("prompts"))
+        prompt_loader = PromptLoader(prompt_workspace)
+        self._prompt_providers = build_prompt_providers(prompt_loader)
+
+        tool_loader = ToolPluginLoader(
             ExtensionContext(
-                extension_workspace=extension_workspace,
                 app_config=self._app_config,
                 agent_config=self._agent_config,
             ),
         )
-        self._tools_service = extension_loader.tools_service()
-        self._prompt_providers = build_prompt_providers(extension_loader)
+        self._tools_service = tool_loader.tools_service()
 
     def project_workspace(self, workspace_id: WorkspaceId) -> ProjectWorkspaceShell:
         """Project-workspace пользователя: тот же, куда смотрят file-tools агента.

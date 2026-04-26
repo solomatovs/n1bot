@@ -472,26 +472,26 @@ class ScratchWorkspaceRegistry(WorkspaceRegistry[WorkspaceId]):
     """DI-маркер реестра :class:`ScratchWorkspaceShell`."""
 
 
-class ExtensionWorkspaceId(StrId):
-    """Строковый id extension-namespace.
+class PromptWorkspaceId(StrId):
+    """Строковый id prompt-namespace.
 
     В отличие от :class:`WorkspaceId` (UUID, генерится для каждой
-    user-сессии), extension workspace — application-singleton, и id у него
+    user-сессии), prompt workspace — application-singleton, и id у него
     единственный и стабильный. :class:`StrId` даёт читаемое имя
-    (``"extensions"``), без UUID-балласта в путях и логах.
+    (``"prompts"``), без UUID-балласта в путях и логах.
     """
 
 
-class ExtensionWorkspaceShell(WorkspaceShell[ExtensionWorkspaceId]):
-    """DI-маркер: workspace c расширениями (``*.py``-плагинами и
-    ``*.md``/``*.txt``-промптами) — application-singleton.
+class PromptWorkspaceShell(WorkspaceShell[PromptWorkspaceId]):
+    """DI-маркер: workspace со статическими ``*.md``/``*.txt``-промптами
+    (system-prompt блоки) — application-singleton.
 
-    Используется :class:`~boba.infra.extensions.ExtensionLoader` для
-    discovery (``tree``/``read_text``); сами расширения могут читать
-    соседние файлы через ``ctx.extension_workspace`` (data-файлы,
-    шаблоны, кэш).
+    Используется :class:`~boba.infra.prompt_loader.PromptLoader` для
+    discovery (``tree``/``read_text``). Tool-расширения сюда не входят —
+    они подгружаются через Python entry-points pip-installed пакетов,
+    минуя файловый workspace.
     """
 
 
-class ExtensionWorkspaceRegistry(WorkspaceRegistry[ExtensionWorkspaceId]):
-    """DI-маркер реестра :class:`ExtensionWorkspaceShell`."""
+class PromptWorkspaceRegistry(WorkspaceRegistry[PromptWorkspaceId]):
+    """DI-маркер реестра :class:`PromptWorkspaceShell`."""

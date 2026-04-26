@@ -51,7 +51,7 @@ class AppConfig:
     log_level: str = "INFO"
     log_file: str | None = None
     llm: LLMConfig = field(default_factory=LLMConfig)
-    extensions_dir: str = "./extensions"
+    prompts_dir: str = "./prompts"
     # Namespaced bag для конфигов pip-installed extension-пакетов.
     # Заполняется ConfigLoader из env (``BOBA_EXT_<NS>__<KEY>``) и TOML
     # (``[extensions.<ns>]``). Каждое расширение читает только свой
