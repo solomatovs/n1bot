@@ -136,7 +136,7 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
         self._line(self._paint(f"{head} {body}", color))
 
     def _on_phase(self, e: PhaseTransition) -> None:
-        color = self._YELLOW if e.severity() is Severity.WARN else self._DIM
+        color = self._color_for_severity(e.severity())
         details_str = self._fmt_details(e.details())
         self._line(self._paint(f"[{e.label()}]{details_str}", color))
         body = e.body()
@@ -144,15 +144,17 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
             self._line(self._paint(self._truncate(body), self._DIM))
 
     def _on_advisory(self, e: Advisory) -> None:
+        color = self._color_for_severity(e.severity())
         details_str = self._fmt_details(e.details())
-        self._err(self._paint(f"[WARN] {e.headline()}{details_str}", self._YELLOW))
+        self._err(self._paint(f"[WARN] {e.headline()}{details_str}", color))
         body = e.body()
         if body:
             self._err(self._paint(self._truncate(body), self._DIM))
 
     def _on_terminal(self, e: Terminal) -> None:
+        color = self._color_for_severity(e.severity())
         details_str = self._fmt_details(e.details())
-        self._err(self._paint(f"[FATAL] {e.headline()}{details_str}", self._BOLD_RED))
+        self._err(self._paint(f"[FATAL] {e.headline()}{details_str}", color))
         body = e.body()
         if body:
             self._err(self._paint(self._truncate(body), self._DIM))
@@ -171,6 +173,13 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
             SlotKind.USER_QUERY: self._BOLD_GREEN,
             SlotKind.FEEDBACK: self._BLUE,
         }[slot]
+
+    def _color_for_severity(self, severity: Severity) -> str:
+        return {
+            Severity.INFO: self._DIM,
+            Severity.WARN: self._YELLOW,
+            Severity.ERROR: self._BOLD_RED,
+        }[severity]
 
     def _fmt_details(self, details: Mapping[str, str]) -> str:
         if not details:
