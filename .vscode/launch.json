@@ -46,13 +46,14 @@
     ],
     "configurations": [
         {
-            "name": "Test AgentLoop (boba)",
+            "name": "Agent: run query",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/tests/test_agent_loop_integration.py",
+            "module": "boba_cli_agent_run",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/.vscode",
             "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
             "args": [
                 "--model", "${input:model}",
                 "--temperature", "0.2",
