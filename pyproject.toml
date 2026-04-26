@@ -15,6 +15,39 @@ dynamic = ["dependencies"]
 [tool.setuptools.dynamic]
 dependencies = { file = "requirements.txt" }
 
+# boba — namespace-package (PEP 420) c четырьмя sub-пакетами в разных
+# src-корнях. ``packages.find`` со списком ``where`` тут не работает
+# (setuptools требует, чтобы каждый найденный пакет существовал во
+# ВСЕХ ``where``), поэтому маппим корни sub-пакетов явно через
+# ``package-dir`` и перечисляем все импортируемые пакеты в
+# ``packages``.
+#
+# Если добавляется новый sub-package (например, ``boba.domain.kb``) —
+# нужно дописать его в ``packages``. Можно регенерить из дерева:
+#   find src -mindepth 4 -type d -path '*/src/boba*' \
+#     -not -path '*__pycache__*' -not -name '*.egg-info'
+[tool.setuptools.package-dir]
+"boba.domain" = "src/domain/src/boba/domain"
+"boba.adapters" = "src/adapters/src/boba/adapters"
+"boba.infra" = "src/infra/src/boba/infra"
+"boba.chainlit" = "src/chainlit/src/boba/chainlit"
+
+[tool.setuptools]
+packages = [
+    "boba.adapters",
+    "boba.adapters.llm",
+    "boba.chainlit",
+    "boba.domain",
+    "boba.domain.agent",
+    "boba.domain.agent.meat",
+    "boba.domain.agent.turn",
+    "boba.domain.core",
+    "boba.domain.core.tools",
+    "boba.domain.llm",
+    "boba.domain.llm.meat",
+    "boba.infra",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [
@@ -23,12 +56,7 @@ pythonpath = [
     "src/infra/src",
     "src/chainlit/src",
 ]
-# По умолчанию — только быстрые unit-тесты. Интеграционные (реальный LLM,
-# большие payload'ы) запускаются вручную: `pytest -m integration`.
-addopts = ["-m", "not integration", "--strict-markers"]
-markers = [
-    "integration: требует реального LLM-прокси и большой сети/памяти; manual-only",
-]
+addopts = ["--strict-markers"]
 
 [tool.pyright]
 include = ["src", "tests"]

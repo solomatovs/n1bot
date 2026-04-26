@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-cli-agent-run"
+version = "0.1.0"
+description = "Operator CLI: run a single agent query against the Boba runtime."
+requires-python = ">=3.11,<4"
+# Декларируем зависимость от boba core явно. На dev-машине и в Dockerfile
+# ставится через --no-deps, потому что boba доставляется PYTHONPATH'ом, не
+# pip-инсталляцией. Tool-плагины подгружаются через entry-points
+# установленных pip-пакетов (boba-ext-files, boba-ext-chromadb и т.п.).
+dependencies = ["boba"]
+
+[project.scripts]
+boba-cli-agent-run = "boba_cli_agent_run.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
