@@ -2,24 +2,24 @@
 
 Источники собираются стандартной ChainedConfigResolver-цепочкой:
 CLI > env-file > env > toml-file > toml > error. CLI-флаги
-прокидываются через CliArgsSource (highest
-priority в цепочке).
+прокидываются через CliArgsSource (highest priority).
 
 Контракт общего ключа с boba-ext-chromadb — ConfigKey
 ("ext","chromadb","persist_path"): оператор задаёт путь один раз
 (env BOBA_EXT_CHROMADB_PERSIST_PATH или [ext.chromadb] persist_path
-в TOML), и тот же путь видит chainlit/agent-cli через
-ChromadbSection. Импортно CLI на extension
-не зависит — оператор может запустить индексирование на машине, где
-extension не установлен.
+в TOML), и тот же путь видит chainlit/agent-cli через ChromadbSection.
+Импортно CLI на extension не зависит — оператор может запустить
+индексирование на машине, где extension не установлен.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 
-from boba.config.cli import CliArgsSource
+from boba.config.cli import CliFlag, from_namespace
 from boba.config.env import EnvFileSource, EnvSource, env_name
 from boba.config.toml import (
     CONFIG_PATH_ENV,
@@ -36,10 +36,9 @@ from boba.domain.core.config import (
 from boba.domain.core.patterns import ConverterInputError
 from boba.domain.core.validators import ChainConverter, ParseString, Required
 
-# Контракт общего ключа с ChromadbSection.
-# CLI ad-hoc читает то же поле, не подключая всю секцию: пара
-# (key, FieldSpec) хранится здесь явно, чтобы не зависеть от
-# boba-ext-chromadb по импорту.
+# Контракт общего ключа с ChromadbSection. CLI ad-hoc читает то же поле,
+# не подключая всю секцию: пара (key, FieldSpec) хранится явно, чтобы не
+# зависеть от boba-ext-chromadb по импорту.
 _PERSIST_KEY = ConfigKey("ext", "chromadb", "persist_path")
 _PERSIST_PATH: FieldSpec[str] = FieldSpec(
     name="persist_path",
@@ -56,17 +55,22 @@ class CliConfig:
     persist_path: str
 
     @classmethod
-    def resolve(cls, *, persist_path_arg: str | None) -> CliConfig:
-        """Собирает конфиг из всей стандартной цепочки источников.
+    def resolve(
+        cls,
+        *,
+        args: argparse.Namespace,
+        flags: Iterable[CliFlag],
+    ) -> CliConfig:
+        """Собирает конфиг из стандартной цепочки источников.
 
-        persist_path_arg — значение CLI-флага --persist-path (или
-        None если не передан); прокидывается через
-        CliArgsSource как highest-priority overlay.
+        args/flags — от cli.py: тот же список CliFlag, что был
+        зарегистрирован через add_to_parser. Значения вытаскиваются через
+        from_namespace и идут highest-priority overlay'ем в резолвер.
         """
         toml_data = load_toml(os.environ.get(CONFIG_PATH_ENV))
         resolver = ChainedConfigResolver(
             [
-                CliArgsSource({_PERSIST_KEY: persist_path_arg}),
+                from_namespace(args, flags),
                 EnvFileSource(),
                 EnvSource(),
                 TomlFileSource(toml_data),

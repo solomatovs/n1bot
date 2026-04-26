@@ -1,22 +1,9 @@
 """Инфраструктурный слой: framework конфигурации, DI-сборка agent-source,
-tool-plugin loader и настройка логирования.
+tool-plugin loader, настройка логирования.
 
-Adapter-зависимый wiring (LLM-source, file-prompt loader, secp-секции
-для адаптеров) живёт в соответствующих boba-adapter-* пакетах —
-core ничего про конкретные SDK не знает. Конкретные
-ConfigSource-реализации (env, TOML,
-…) — в пакетах boba-config-*. Bootstrap приложения сам собирает
-свою цепочку источников и регистрирует нужные секции в
-ConfigFactory.
-
-Короткие импорты::
-
-    from boba.infra import AgentComponents, ExtensionContext
-    from boba.infra import ToolPluginLoader
-    from boba.infra import create_agent, create_agent_source
-    from boba.infra import (
-        ConfigBundle, ConfigFactory, ConfigLoader, configure_logging,
-    )
+Adapter-зависимый wiring живёт в boba-adapter-*; конкретные ConfigSource —
+в boba-config-*. Bootstrap приложения сам собирает цепочку источников
+и регистрирует секции в ConfigFactory.
 """
 
 from boba.infra.config import (

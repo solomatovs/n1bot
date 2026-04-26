@@ -1,10 +1,13 @@
 """argparse-парсер и dispatch для команды boba-cli-agent-run.
 
-Собирает полный agent stack через container (тот же
-путь что и chainlit-runtime), прогоняет один пользовательский запрос с
-sink'ом на stdout/stderr и завершает процесс. Всё DI — на стороне
-boba.infra, CLI только маппит CLI-флаги в SamplingParams и
-формирует AgentRequest.
+Конфиг полностью идёт через ConfigSource-цепочку. CLI-флаги
+декларируются как кортеж CliFlag и обрабатываются пакетом
+boba.config.cli (add_to_parser строит argparse-args; from_namespace
+собирает CliArgsSource из распарсенного Namespace). Никакого
+ручного маппинга argparse → ConfigKey в этом файле.
+
+Позиционный query — это вход одного запроса (не конфиг), идёт
+напрямую в agent.run(...).
 """
 
 from __future__ import annotations
@@ -30,7 +33,9 @@ from boba.adapter.openai import (
     create_llm_source,
 )
 from boba.adapter.prompt_providers import PromptLoader, PromptsSection
+from boba.cli.agent_run.config import AgentRunConfig, AgentRunSection
 from boba.cli.agent_run.console_sink import ConsoleSink
+from boba.config.cli import CliFlag, add_to_parser, from_namespace
 from boba.config.env import EnvFileSource, EnvSource
 from boba.config.toml import (
     CONFIG_PATH_ENV,
@@ -39,13 +44,13 @@ from boba.config.toml import (
     load_toml,
 )
 from boba.domain.agent.models import AgentRequest
-from boba.domain.core.config import ChainedConfigResolver
+from boba.domain.core.config import ChainedConfigResolver, ConfigKey
 from boba.domain.core.tools import ToolContext
 from boba.domain.core.workspace import (
     PromptWorkspaceId,
     WorkspaceId,
 )
-from boba.domain.llm.models import RequestId, SamplingParams
+from boba.domain.llm.models import RequestId
 from boba.infra import (
     AgentComponents,
     AgentSection,
@@ -58,17 +63,39 @@ from boba.infra import (
     create_agent,
 )
 
+# Декларативный список CLI-флагов: пакет boba.config.cli использует его и
+# для add_to_parser (генерация argparse-аргументов), и для from_namespace
+# (сборка CliArgsSource из распарсенного Namespace). dest-имена выводятся
+# из long-флагов автоматически (--max-tokens → max_tokens).
+_FLAGS: tuple[CliFlag, ...] = (
+    CliFlag(
+        ConfigKey("agent_run", "model"),
+        help="LLM model (overrides BOBA_AGENT_RUN_MODEL / [agent_run] model).",
+    ),
+    CliFlag(ConfigKey("agent_run", "temperature")),
+    CliFlag(ConfigKey("agent_run", "top_p")),
+    CliFlag(ConfigKey("agent_run", "max_tokens")),
+    CliFlag(ConfigKey("agent_run", "seed")),
+    CliFlag(
+        ConfigKey("agent_run", "stop"),
+        action="append",
+        help="Stop sequence; flag can be repeated for multiple values.",
+    ),
+    CliFlag(ConfigKey("agent_run", "frequency_penalty")),
+    CliFlag(ConfigKey("agent_run", "presence_penalty")),
+)
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Entry-point. Возвращает exit-code (0 = успех)."""
-    parser = _build_parser()
-    args = parser.parse_args(argv)
-    _run(
-        query=" ".join(args.query),
-        model=args.model,
-        sampling=_build_sampling(args),
-    )
+    args = _build_parser().parse_args(argv)
+    _run(args)
     return 0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Argparse
+# ──────────────────────────────────────────────────────────────────────
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -79,100 +106,55 @@ def _build_parser() -> argparse.ArgumentParser:
             "Outputs all events to stdout/stderr via ConsoleSink."
         ),
     )
-    parser.add_argument(
-        "--model",
-        required=True,
-        help="LLM model name — required (no system default).",
-    )
-    parser.add_argument("--temperature", type=_opt_float, default=None)
-    parser.add_argument("--top-p", type=_opt_float, default=None)
-    parser.add_argument("--max-tokens", type=_opt_int, default=None)
-    parser.add_argument("--seed", type=_opt_int, default=None)
-    parser.add_argument(
-        "--stop",
-        action="append",
-        default=None,
-        help="Stop sequence; flag can be repeated for multiple values.",
-    )
-    parser.add_argument("--frequency-penalty", type=_opt_float, default=None)
-    parser.add_argument("--presence-penalty", type=_opt_float, default=None)
-    parser.add_argument("query", nargs="+", help="User query.")
+    add_to_parser(parser, _FLAGS)
+    parser.add_argument("query", nargs="+", help="User query (positional).")
     return parser
 
 
-def _opt_float(value: str) -> float | None:
-    """Пустая строка → None (флаг проигнорирован); иначе float(value).
-
-    Нужно для launch.json: пользователь может стереть значение во
-    VSCode-input'е, и тогда параметр не передаётся провайдеру.
-    """
-    return None if value == "" else float(value)
+# ──────────────────────────────────────────────────────────────────────
+# Bundle assembly
+# ──────────────────────────────────────────────────────────────────────
 
 
-def _opt_int(value: str) -> int | None:
-    return None if value == "" else int(value)
+def _build_factory(args: argparse.Namespace) -> ConfigFactory:
+    """Стандартная цепочка источников + регистрация секций.
 
-
-def _build_sampling(args: argparse.Namespace) -> SamplingParams | None:
-    """Собирает SamplingParams из CLI-флагов. Если ни один не
-    задан — None (провайдеру не передаётся ничего, поведение модели
-    — её собственный дефолт).
-    """
-    fields = {
-        "temperature": args.temperature,
-        "top_p": args.top_p,
-        "max_tokens": args.max_tokens,
-        "seed": args.seed,
-        "stop": tuple(args.stop) if args.stop else None,
-        "frequency_penalty": args.frequency_penalty,
-        "presence_penalty": args.presence_penalty,
-    }
-    if all(v is None for v in fields.values()):
-        return None
-    return SamplingParams(**fields)
-
-
-def _build_resolver() -> ChainedConfigResolver:
-    """Стандартная цепочка источников для CLI: env (с file-указателем) и
-    TOML (с file-указателем) — порядок: env-file > env > toml-file > toml.
-
-    Перечислено явно, чтобы было видно, какие источники подключены
-    в этом потребителе. Других потребителей это не касается — каждый
-    собирает свою цепочку под свои нужды.
+    Цепочка: CLI > env-file > env > toml-file > toml. Adapter-секции
+    и own-section (agent_run) регистрируются вручную; ext-секции —
+    через discovery.
     """
     toml_data = load_toml(os.environ.get(CONFIG_PATH_ENV))
-    return ChainedConfigResolver(
+    resolver = ChainedConfigResolver(
         [
+            from_namespace(args, _FLAGS),
             EnvFileSource(),
             EnvSource(),
             TomlFileSource(toml_data),
             TomlSource(toml_data),
         ]
     )
-
-
-def _build_factory() -> ConfigFactory:
-    """Регистрирует встроенные секции (app_core/agent) и
-    adapter-секции выбранного стека (FS-workspace, OpenAI-транспорт,
-    file-prompt loader). Расширения через entry-point group
-    boba.config_sections подхватываются после.
-    """
-    factory = ConfigFactory(_build_resolver())
+    factory = ConfigFactory(resolver)
     factory.register(AppCoreSection())
     factory.register(AgentSection())
     factory.register(WorkspacesSection())
     factory.register(LLMTransportSection())
     factory.register(PromptsSection())
+    factory.register(AgentRunSection())
     factory.discover_extension_sections()
     return factory
 
 
-def _run(query: str, model: str, sampling: SamplingParams | None) -> None:
+# ──────────────────────────────────────────────────────────────────────
+# Run
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _run(args: argparse.Namespace) -> None:
     """Собирает агент с полным стеком middleware и прогоняет один запрос."""
-    loader = ConfigLoader(_build_factory())
-    bundle = loader.load_bundle()
+    bundle = ConfigLoader(_build_factory(args)).load_bundle()
     app_config = bundle.app
     agent_config = bundle.agent
+    run_cfg: AgentRunConfig = bundle.section(AgentRunSection)
     configure_logging(app_config.log_level, app_config.log_file)
 
     workspace_id = WorkspaceId.from_wire("00000000-0000-0000-0000-000000000001")
@@ -215,9 +197,9 @@ def _run(query: str, model: str, sampling: SamplingParams | None) -> None:
     )
 
     request = AgentRequest(
-        model=model,
+        model=run_cfg.model,
         request_id=RequestId.new(),
-        sampling=sampling,
+        sampling=run_cfg.to_sampling_params(),
     )
 
-    agent.run(agent_config, request, query)
+    agent.run(agent_config, request, " ".join(args.query))

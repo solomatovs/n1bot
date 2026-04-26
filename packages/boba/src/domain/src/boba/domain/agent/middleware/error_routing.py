@@ -1,21 +1,15 @@
 """Полиморфная маршрутизация RoutableError по маркерам.
 
-Роутер не знает конкретных подклассов — он читает маркеры
-(UserFeedbackError, AgentLLMFeedbackError) независимо и
+Роутер не знает конкретных подклассов — читает маркеры независимо и
 суммирует эффекты.
 
-TerminalError — специализация UserFeedbackError,
-поэтому отдельной ветки не требует: «терминальность» кодируется
-типом возвращаемого события (наследник Terminal), который
-роутер просто yield-ит как любое user-событие.
+TerminalError — специализация UserFeedbackError; «терминальность»
+кодируется типом возвращаемого события (Terminal), роутер yield-ит его
+как обычное user-событие.
 
-AgentLLMFeedbackError — agent-уровневая специализация
-LLMFeedbackError с зафиксированным TFeedback = LLMMessage.
-Пишется в MessageService через DialogueWriter — на
-следующей итерации модель увидит feedback в истории. Параллельно роутер
-эмитит FeedbackToLLMAdded (снапшот для sink'а / history-
-реконструкции). Использование agent-специализации вместо generic-
-маркера даёт честную типизацию feedback.content — без Unknown.
+AgentLLMFeedbackError — agent-уровневая специализация LLMFeedbackError
+с зафиксированным TFeedback=LLMMessage. Роутер пишет в MessageService
+через DialogueWriter и параллельно эмитит FeedbackToLLMAdded.
 """
 
 from __future__ import annotations

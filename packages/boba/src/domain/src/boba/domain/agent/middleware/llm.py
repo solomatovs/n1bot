@@ -1,22 +1,13 @@
-"""Граница между ответственностью Agent и LLM-слоя.
+"""Граница между Agent и LLM-слоем.
 
-LLMInvokeMiddleware — терминал агентской цепочки. На каждую
-итерацию:
+LLMInvokeMiddleware на каждой итерации: (1) собирает LLMRequest через
+TurnSpec из MessageReader; (2) стримит LLM-события и конвертирует их в
+AgentEvent.
 
-1. собирает LLMRequest через TurnSpec из текущего
-   снапшота MessageReader;
-2. стримит события LLM-слоя и конвертирует их в AgentEvent.
-
-Маппинг LLM → Agent stateful: на стороне агента LLMRequestSent
-означает «round-trip отправлен», а stream-handle получен — это
-LLMResponseStreamOpened. Конвертер живёт замыканием вокруг
-текущего LLMRequest — он его не несёт в события, но использует
-для обогащения метаданными round-trip'а.
-
-Для ToolCallArgumentDelta конвертер запоминает соответствие
-index → (tool_call_id, tool_name) из предшествующего
-LLMToolCallBegin — это нужно, чтобы delta-события на агент-
-уровне были self-sufficient (несли имя tool'а, а не только index).
+Маппинг stateful: LLMRequestSent на агенте = «round-trip отправлен»,
+stream-handle получен → LLMResponseStreamOpened. Для ToolCallArgumentDelta
+конвертер запоминает index → (tool_call_id, tool_name) из предшествующего
+LLMToolCallBegin, чтобы delta-события на агент-уровне были self-sufficient.
 """
 
 from __future__ import annotations

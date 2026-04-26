@@ -1,29 +1,12 @@
 """Порт хранения истории сообщений: разделение на Reader и Writer.
 
-Контракты:
+- MessageReader — read-side (message_iter / last). Использует HistoryReducer.
+- MessageWriter — write-side (add / clear). Только DialogueWriter получает
+  его через DI: инвариант «один писатель», поднятый с конвенции на типы.
+- MessageService — композиция; реализации (in-memory, JSONL) отвечают
+  на оба контракта, внешним консьюмерам отдают узкий интерфейс.
 
-- MessageReader — read-side. message_iter() / last().
-  Используется HistoryReducer
-  для сборки снапшота диалога в LLMRequest.
-- MessageWriter — write-side. add(message) / clear().
-  Используется ТОЛЬКО \
-DialogueWriter — он маппит доменные операции (user-query, assistant,
-  tool-result, …) в правильные LLMMessage-структуры. Никто иной
-  не получает MessageWriter через DI — это инвариант «один
-  писатель», поднятый с уровня конвенции на уровень типов.
-- MessageService — композиция обоих интерфейсов. Тип для
-  *реализаций* (in-memory, JSONL): они держат собственно хранилище и
-  отвечают на оба контракта. Внешним консьюмерам отдают НАРРОВ:
-  reader-сторонникам — MessageReader, DialogueWriter'у —
-  MessageWriter.
-
-Реализации:
-
-- in-memory — in_memory,
-- persistent (JSONL) — jsonl.
-
-Контракт ошибок persistent-реализаций — потомки
-MessageStoreError.
+Контракт ошибок persistent-реализаций — потомки MessageStoreError.
 """
 
 from __future__ import annotations

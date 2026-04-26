@@ -1,21 +1,14 @@
 """Value-объекты, которые носятся внутри агентских событий.
 
-Принцип self-sufficient: если событие говорит «tool вернул результат» —
-оно несёт LLMToolCall исходного вызова и ToolCallResult;
-если «tool упал» — несёт вызов и ToolCallFailure. Sink, видящий
-событие в изоляции, может полностью его отрисовать без обращения к
-MessageService или к буферам middleware.
+Принцип self-sufficient: каждое событие несёт всё нужное для отрисовки
+sink'ом без обращения к MessageService или middleware-буферам.
 
-Сам LLMToolCall (id + name + arguments-as-string) живёт в
-models — там же, где используется
-LLMMessage. Здесь — только payload'ы, специфичные для агентских
-событий и не имеющие смысла на LLM-уровне.
+LLMToolCall живёт в models (id + name + arguments). Здесь — только
+payload'ы, специфичные для агент-событий.
 
 История диалога (MessageService) реконструируется из суммы
-ContentSnapshot-событий — каждое сообщение, попадающее в
-MessageService, имеет парный снапшот-event. Это означает, что
-LLM-реквест в события не пакуется: предыдущие сообщения уже были
-объявлены своими собственными снапшотами.
+ContentSnapshot-событий: каждое сообщение имеет парный снапшот-event,
+поэтому LLM-реквест в события не пакуется.
 """
 
 from __future__ import annotations

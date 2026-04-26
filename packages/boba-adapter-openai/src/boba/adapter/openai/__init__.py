@@ -1,24 +1,12 @@
-"""OpenAI-совместимый LLM-адаптер для Boba.
+"""OpenAI-совместимый LLM-адаптер (LiteLLM/Ollama тоже).
 
-Реализует StreamSource[LLMContext, LLMEvent] поверх openai-SDK
-(годен и для LiteLLM-прокси, Ollama и других openai-совместимых
-бэкендов). Внутри:
+- OpenAITerminal — StreamSource[LLMContext, LLMEvent] поверх openai-SDK;
+- build_openai_client — фабрика SDK-клиента из LLMConfig;
+- RawLLMObserver — наблюдатели сырых kwargs/chunks (file/content/metrics);
+- DuplicateToolCallIndexReindexer — workaround для коллизии index у
+  параллельных tool_calls.
 
-- OpenAITerminal — терминал LLM-цепочки (отправляет HTTP,
-  стримит chunks, конвертирует в LLMEvent);
-- build_openai_client — фабрика SDK-клиента из
-  LLMConfig;
-- RawLLMObserver + реализации (file-, content-, composite-,
-  metrics-) — наблюдатели сырых kwargs/chunks для отладки и сбора
-  датасетов;
-- DuplicateToolCallIndexReindexer — починка кривых
-  index-полей в delta-чанках от провайдеров, которые повторяют
-  индексы между разными tool_call'ами в одном round-trip.
-
-Пакет — отдельный pip-package; основной boba от него НЕ зависит.
-Подключение через bootstrap (container.py / session.py / CLI):
-
-    from boba.adapter.openai import OpenAITerminal, build_openai_client
+Отдельный pip-пакет; core boba от него не зависит.
 """
 
 from boba.adapter.openai.config import LLMTransportSection, create_llm_source

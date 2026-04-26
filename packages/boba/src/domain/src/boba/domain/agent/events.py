@@ -1,6 +1,11 @@
 """События агент-слоя.
 
-::
+Sink матчит по семьям (PhaseTransition / ContentDelta / ContentSnapshot /
+Advisory / Terminal) и дёргает интерфейс семьи. Каждое событие несёт
+только свой target — диалог восстанавливается из суммы ContentSnapshot'ов,
+поэтому LLMRequestSent/GenerationFailed не дублируют messages-список.
+
+Иерархия::
 
     BaseAgentEvent (abstract, frozen dataclass)
     │   request_id: RequestId
@@ -60,14 +65,6 @@
         ├── PromptFailed                    provider, error_kind, message
         ├── MaxIterationsReached            limit, iteration
         └── PersistenceFailed               target, error_kind, message
-
-Sink матчится только по семьям и дёргает интерфейс — concrete-типы ему
-видны, но не нужны: добавление нового concrete'а не требует правок sink'ов.
-
-Self-sufficient: каждое событие несёт *только свой target*. Сообщения,
-которые шли в LLM, уже были эмитированы как ContentSnapshot-ы; сумма
-снапшотов = диалог. Поэтому ни LLMRequestSent, ни GenerationFailed
-не дублируют messages-список — у каждого своя ответственность.
 """
 
 from __future__ import annotations

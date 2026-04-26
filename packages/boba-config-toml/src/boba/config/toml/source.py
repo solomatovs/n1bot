@@ -1,19 +1,14 @@
 """TOML ConfigSource-реализации.
 
-Алгоритм мапинга ConfigKey → TOML-путь:
+Мапинг ConfigKey → TOML-путь: parts[:-1] — секции, parts[-1] — leaf.
+ConfigKey("ext","chromadb","persist_path") → [ext.chromadb] persist_path.
 
-    section_path = key.parts[:-1]     # вложенные таблицы
-    leaf_key     = key.parts[-1]      # имя поля в листовой таблице
+TomlFileSource — TOML-вариант Docker-style секрета: значение — путь к
+файлу под ключом {leaf}_file, содержимое читается и trailing-whitespace
+обрезается.
 
-Например, ConfigKey("ext","chromadb","persist_path") → [ext.chromadb] persist_path.
-Двухчастные ключи (ConfigKey("llm","base_url")) ложатся как [llm] base_url.
-
-TomlFileSource — TOML-вариант Docker-style секрета: значение —
-не само поле, а путь к файлу под ключом {leaf}_file, содержимое
-читается и возвращается с обрезанным trailing-whitespace.
-
-TOML-данные читаются один раз при старте через load_toml;
-обычно путь хранится в env-переменной CONFIG_PATH_ENV.
+TOML читается один раз при старте через load_toml; путь обычно в
+env-переменной CONFIG_PATH_ENV.
 """
 
 from __future__ import annotations

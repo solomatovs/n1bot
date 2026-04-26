@@ -13,6 +13,7 @@ dependencies = [
     "boba-adapter-messages",
     "boba-adapter-openai",
     "boba-adapter-prompt-providers",
+    "boba-config-cli",
     "boba-config-env",
     "boba-config-toml",
 ]

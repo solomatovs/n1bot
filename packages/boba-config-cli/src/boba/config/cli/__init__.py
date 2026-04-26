@@ -1,33 +1,30 @@
 """CLI-arguments ConfigSource для Boba.
 
-Public API::
+Раздаёт значения из argparse.Namespace по ConfigKey-биндингам.
+Имя флага вычисляется из ключа симметрично env_name/toml_path:
 
-    from boba.config.cli import CliArgsSource, CliFlagBinding, from_namespace
+    ConfigKey("agent_run","model") -> "--agent-run-model"
+    (мирно с BOBA_AGENT_RUN_MODEL и [agent_run] model)
 
-Подключение в bootstrap'е CLI-приложения::
-
-    import argparse
-    from boba.domain.core.config import ChainedConfigResolver, ConfigKey
-    from boba.config.cli import CliArgsSource
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--persist-path", dest="persist_path")
-    args = parser.parse_args()
-
-    cli_source = CliArgsSource({
-        ConfigKey("ext", "chromadb", "persist_path"): args.persist_path,
-    })
-    resolver = ChainedConfigResolver([cli_source, EnvSource(), TomlSource(...)])
+Обычно идёт первым в ChainedConfigResolver (highest priority).
 """
 
 from boba.config.cli.source import (
+    FLAG_PREFIX,
     CliArgsSource,
-    CliFlagBinding,
+    CliFlag,
+    add_to_parser,
+    cli_dest,
+    cli_flag_name,
     from_namespace,
 )
 
 __all__ = [
+    "FLAG_PREFIX",
     "CliArgsSource",
-    "CliFlagBinding",
+    "CliFlag",
+    "add_to_parser",
+    "cli_dest",
+    "cli_flag_name",
     "from_namespace",
 ]

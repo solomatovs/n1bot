@@ -1,31 +1,21 @@
-"""
-Ошибки LLM-слоя
-════════════════════════════════════════════════════════════════════
-  Иерархия
-════════════════════════════════════════════════════════════════════
+"""Ошибки LLM-слоя.
+
     LLMError (Exception)
-    │
-    ├── RetryableLLMError          маркер «имеет смысл повторить»
+    ├── RetryableLLMError          имеет смысл повторить
     │   ├── LLMConnectionError
     │   ├── LLMTimeoutError
     │   ├── LLMRateLimitError              + status_code: int
-    │   ├── LLMProviderInternalError       + status_code: int
-    │
-    └── PermanentLLMError          маркер «повтор не поможет»
+    │   └── LLMProviderInternalError       + status_code: int
+    └── PermanentLLMError          повтор не поможет
         ├── LLMAuthError                   + status_code: int
-        ├── LLMInvalidRequestError         + status_code: int (HTTP 400 от провайдера)
+        ├── LLMInvalidRequestError         + status_code: int (HTTP 400)
         ├── LLMContextLengthError          + status_code: int
         ├── LLMProtocolError               ответ вне схемы
-        ├── LLMRequestValidationError      клиентская валидация запроса (без HTTP)
-        |   ├── LLMRequestModelNoneError
-        |   ├── LLMRequestEmptyMessagesError
-        |   └── LLMRequestSystemMessageNoneError
-    │   └── LLMUnknownError                нераспознанное исключение провайдера
-
-LLMRequestValidationError - Клиентские валидации
-LLMConnectionError, LLMTimeoutError - сетевые обрывы
-LLMProtocolError - несовместимость схемы
-LLMUnknownError - нераспознанные исключения
+        ├── LLMRequestValidationError      клиентская валидация (без HTTP)
+        │   ├── LLMRequestModelNoneError
+        │   ├── LLMRequestEmptyMessagesError
+        │   └── LLMRequestSystemMessageNoneError
+        └── LLMUnknownError                нераспознанное исключение провайдера
 """
 
 from __future__ import annotations

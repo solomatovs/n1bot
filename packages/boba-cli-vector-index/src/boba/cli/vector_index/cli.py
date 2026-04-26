@@ -27,8 +27,24 @@ from boba.cli.vector_index.indexer import (
     index_paths,
 )
 from boba.cli.vector_index.store import VectorStore
+from boba.config.cli import CliFlag, add_to_parser
+from boba.domain.core.config import ConfigKey
 
 logger = logging.getLogger("boba.cli.vector_index")
+
+# Декларативный список config-CLI-флагов: пакет boba.config.cli использует
+# его и для add_to_parser, и для from_namespace (внутри CliConfig.resolve).
+# Per-command флаги (--collection, --chunk-size, ...) — это входы команды,
+# не конфиг; они декларируются прямо на subparser'ах.
+_FLAGS: tuple[CliFlag, ...] = (
+    CliFlag(
+        ConfigKey("ext", "chromadb", "persist_path"),
+        help=(
+            "ChromaDB persist directory (overrides "
+            "BOBA_EXT_CHROMADB_PERSIST_PATH / [ext.chromadb] persist_path)."
+        ),
+    ),
+)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -39,7 +55,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     _setup_logging(args.verbose)
 
     try:
-        cfg = CliConfig.resolve(persist_path_arg=args.persist_path)
+        cfg = CliConfig.resolve(args=args, flags=_FLAGS)
     except CliConfigError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -59,14 +75,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "vector knowledge base (ChromaDB)."
         ),
     )
-    parser.add_argument(
-        "--persist-path",
-        default=None,
-        help=(
-            "ChromaDB persist directory. Defaults to $CHROMA_PERSIST_PATH "
-            "(same env var read by boba-ext-chromadb)."
-        ),
-    )
+    add_to_parser(parser, _FLAGS)
     parser.add_argument(
         "-v",
         "--verbose",

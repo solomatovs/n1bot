@@ -1,27 +1,16 @@
-"""AssistantMessagePersistenceMiddleware — агрегация стриминговых
-событий ответа в ContentSnapshot-события и запись assistant-
-сообщения через DialogueWriter.
+"""AssistantMessagePersistenceMiddleware.
 
-Поведение на стриме событий inner'а:
+Агрегирует стриминговые токены и tool-call-дельты в ContentSnapshot-события,
+коммитит assistant-сообщение через DialogueWriter:
 
-- GenerationStarted → сброс per-request_id буферов
-  (корректность после retry в LLM-слое, который может перезапустить
-  генерацию с нуля — до первого yield'а);
-- AnswerToken / ThinkingToken → аккумуляция
-  во внутренние буферы;
-- ToolCallStreamStarted → регистрация tool call по index;
-- ToolCallArgumentDelta → аккумуляция arguments-чанков к
-  соответствующему index;
-- GenerationDone → **flush**: эмитит
-  AnswerComplete / ThinkingComplete (если были
-  текстовые токены) и ToolCallComplete (по одному на каждый
-  tool_call index, в порядке возрастания) **перед** самой
-  GenerationDone; затем коммитит assistant-сообщение через
-  DialogueWriter.
+- GenerationStarted → сброс per-request_id буферов (корректность после retry);
+- AnswerToken/ThinkingToken → аккумуляция в буферы;
+- ToolCallStreamStarted/ToolCallArgumentDelta → регистрация и аккумуляция
+  arguments по index;
+- GenerationDone → flush AnswerComplete/ThinkingComplete + ToolCallComplete
+  (по index, в возрастающем порядке) ПЕРЕД самой GenerationDone, затем коммит.
 
-RefusalComplete (из RefusalToken) пока не эмитим — событие
-RefusalToken не используется в полной семантике на агент-слое.
-Когда появится, семантика идёт по той же схеме.
+RefusalComplete пока не эмитится — RefusalToken не используется на агент-слое.
 """
 
 from __future__ import annotations

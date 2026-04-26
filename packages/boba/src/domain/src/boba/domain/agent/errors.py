@@ -1,22 +1,12 @@
 """Агент-специфичные ошибки, построенные на маркерах core.errors.
 
-Каждая concrete-ошибка явно объявляет свои эффекты миксами маркеров:
+Concrete-ошибка миксует ортогональные маркеры (UserFeedbackError /
+LLMFeedbackError / TerminalError) в любых комбинациях.
 
-- UserFeedbackError — event для sink;
-- LLMFeedbackError — фидбек в
-  MessageService для LLM;
-- TerminalError — остановка цикла;
-
-Маркеры ортогональны — конкретная ошибка выбирает любую комбинацию.
-
-Политика:
-
-- Программные баги (KeyError, TypeError, ValueError,
-  AssertionError) — **не** наследуют RoutableError и
-  летят мимо роутера, крашат процесс.
-- LLM-ошибки из errors — изолированы и
-  **не** RoutableError. Мост делает
-  LLMInvokeMiddleware.
+Программные баги (KeyError/TypeError/ValueError/AssertionError) НЕ
+наследуют RoutableError — летят мимо роутера, крашат процесс.
+LLM-ошибки изолированы и тоже НЕ RoutableError — мост делает
+LLMInvokeMiddleware.
 """
 
 from __future__ import annotations

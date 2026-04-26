@@ -1,33 +1,14 @@
 """Сборка типизированной конфигурации приложения из секций.
 
-Структурно:
+- ConfigSection декларирует поля через FieldSpec и строит DTO.
+- ConfigFactory регистрирует встроенные секции и подхватывает секции
+  расширений через entry-point group boba.config_sections; build()
+  возвращает ConfigBundle.
+- ConfigBundle — dict[StrId, T_DTO] + типизированный section();
+  свойства app/agent композируют AppConfig/AgentConfig.
+- ConfigLoader — ленивая обёртка с кэшем бандла.
 
-- ConfigSection-секции (agent, app_core,
-  плюс секции адаптеров: LLMTransportSection /
-  WorkspacesSection / PromptsSection живут в соответствующих
-  boba-adapter-* пакетах) объявляют свои поля декларативно (через
-  FieldSpec поверх
-  ConfigKey) и строят типизированный
-  DTO.
-- ConfigFactory регистрирует секции и подхватывает секции
-  расширений через entry-point group boba.config_sections.
-  build возвращает ConfigBundle.
-- ConfigBundle — итог сборки: dict[StrId, T_DTO] +
-  типизированный доступ через section. Удобные
-  свойства app и agent
-  композируют AppConfig / AgentConfig из секций
-  app_core, workspaces, llm_transport, prompts,
-  agent (последние три приходят из адаптерных пакетов).
-- ConfigLoader — тонкая ленивая обёртка с кэшем бандла.
-
-Bootstrap приложения собирает цепочку ConfigSource-источников
-(env/TOML/…), создаёт ConfigFactory, регистрирует
-встроенные AppCoreSection/AgentSection и нужные
-adapter-секции, и затем зовёт build.
-
-LLM-sampling-параметров здесь нет: единственный источник —
-sampling, прокидываемый
-caller'ом (UI/CLI) per-request.
+LLM-sampling-параметров здесь нет — sampling прокидывается caller'ом per-request.
 """
 
 from __future__ import annotations

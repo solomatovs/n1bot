@@ -1,22 +1,6 @@
 """Файловые реализации WorkspaceShell / WorkspaceRegistry.
 
-Состав пакета:
-
-- _shell — FsWorkspaceShell (общая реализация) +
-  concrete shells для Project/History/Scratch/Prompt namespace'ов.
-- _registry — FsWorkspaceRegistry + concrete
-  registries.
-- _growbuffer — приватный buffered-I/O helper для
-  read_text / streaming reads.
-
-Пакет — отдельный pip-package; основной boba от него НЕ зависит.
-Внешние потребители импортируют::
-
-    from boba.adapter.fs_workspace import (
-        FsProjectWorkspaceRegistry,
-        FsHistoryWorkspaceRegistry,
-        ...
-    )
+Отдельный pip-пакет; core boba от него не зависит.
 """
 
 from boba.adapter.fs_workspace.config import WorkspacesSection

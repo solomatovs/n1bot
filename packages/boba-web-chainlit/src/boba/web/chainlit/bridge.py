@@ -1,18 +1,11 @@
 """Мост между синхронным агентским циклом и async-петлёй Chainlit.
 
-Агентская цепочка — синхронный pull-поток (for event in source.stream(ctx)),
-Chainlit — асинхронный фреймворк поверх event loop. Склейка делается через
-thread-safe очередь:
+ChainlitBridgeSink в агентском потоке (asyncio.to_thread) для каждого
+handle() вызывает loop.call_soon_threadsafe — кладёт событие в Queue
+основного async-handler'а; async-consumer в app.py итерирует очередь.
 
-- ChainlitBridgeSink живёт в агентском потоке (asyncio.to_thread)
-  и для каждого handle() вызывает loop.call_soon_threadsafe —
-  безопасно кладёт событие в Queue, принадлежащий event loop
-  основного async-handler'а Chainlit;
-- async-consumer в app.py итерирует очередь и рисует UI.
-
-Sentinel None сигнализирует consumer'у, что агентский поток завершился
-(штатно или исключением — решение о терминальном сообщении принимает
-consumer по последнему событию).
+Sentinel None сигналит, что агентский поток завершился; решение о
+терминальном сообщении принимает consumer по последнему событию.
 """
 
 from __future__ import annotations

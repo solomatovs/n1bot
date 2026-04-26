@@ -1,21 +1,11 @@
 """Конфигурация ChromaDB-extension.
 
-ChromadbSection — ConfigSection,
-объявляющая поля расширения через FieldSpec поверх
-ConfigKey. Регистрируется в ConfigFactory через
-entry-point group boba.config_sections (см. pyproject.toml);
-при сборке ConfigBundle секция читает значения через резолвер,
-собранный bootstrap'ом приложения, и строит типизированный
-ChromaExtConfig.
+ChromadbSection регистрируется через entry-point boba.config_sections;
+внутри tool'ов конфиг достаётся ctx.config.section(ChromadbSection).
 
-Внутри tool'ов конфиг достаётся через
-ctx.config.section(ChromadbSection) в register_tools.
-
-Семантика поля embedding_model в v0.1: поддерживается только
-default — встроенная ONNX-модель ChromaDB (валидация через
-OneOf). Поле оставлено в конфиге как явный контракт на будущее
-(когда добавим поддержку sentence-transformers через optional dep),
-чтобы оператор не настраивал «бессмысленную» переменную.
+embedding_model в v0.1 валидируется как OneOf("default") — встроенная
+ONNX-модель ChromaDB; поле оставлено как контракт на будущее
+(sentence-transformers через optional dep).
 """
 
 from __future__ import annotations
