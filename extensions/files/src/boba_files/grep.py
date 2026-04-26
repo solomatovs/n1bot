@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import islice
 from typing import Any
 
-from boba.adapters.tool_providers import StaticToolSource
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainValidator,
@@ -27,7 +25,6 @@ from boba.domain.core.tools import (
     ToolId,
     ToolInputSchema,
     ToolResult,
-    ToolSource,
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
@@ -35,7 +32,6 @@ from boba.domain.core.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
-from boba.infra.extensions import ExtensionContext
 
 
 @dataclass(frozen=True)
@@ -200,9 +196,3 @@ class GrepTool(Tool[GrepArgs]):
                 parts.append(f"{m.path}:{n}- {ctx_line}")
         return "\n".join(parts)
 
-def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
-    yield StaticToolSource(
-        ToolSourceId("builtin.files.grep"),
-        priority=0,
-        tools=[GrepTool()],
-    )

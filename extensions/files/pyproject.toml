@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-ext-files"
+version = "0.1.0"
+description = "Builtin file-system tools for the Boba agent (cat/ls/grep/edit/write/...)."
+requires-python = ">=3.11,<4"
+# Зависит на core "boba" — оператор устанавливает оба пакета (или
+# ставит ext-files уже из окружения, где boba установлен ранее).
+# Для in-tree dev-режима в Dockerfile делается `pip install -e .` для
+# boba, потом `pip install -e extensions/files` — оба editable, оба
+# доступны для импорта.
+dependencies = ["boba"]
+
+[project.entry-points."boba.tools"]
+files = "boba_files:register_tools"
+
+[tool.setuptools.packages.find]
+where = ["src"]

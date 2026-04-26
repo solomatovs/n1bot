@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from boba.adapters.tool_providers import StaticToolSource
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainValidator,
@@ -22,13 +20,11 @@ from boba.domain.core.tools import (
     ToolId,
     ToolInputSchema,
     ToolResult,
-    ToolSource,
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
     WorkspaceError,
 )
-from boba.infra.extensions import ExtensionContext
 
 
 @dataclass(frozen=True)
@@ -84,9 +80,3 @@ class MkdirTool(Tool[MkdirArgs]):
             ) from e
         return ToolResult(content=f"Директория создана: {req.path}")
 
-def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
-    yield StaticToolSource(
-        ToolSourceId("builtin.files.mkdir"),
-        priority=0,
-        tools=[MkdirTool()],
-    )
