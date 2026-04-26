@@ -15,7 +15,6 @@ from boba.domain.core.tools import (
     Required,
     Tool,
     ToolContext,
-    ToolDefinition,
     ToolExecutionError,
     ToolId,
     ObjectSchema,
@@ -53,20 +52,18 @@ class CdTool(Tool[CdArgs]):
     def typed_args_converter(self) -> Converter[dict[str, Any], CdArgs]:
         return CdArgsConverter()
 
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
+    def definition(self) -> ObjectSchema[dict[str, Any]]:
+        return ObjectSchema(
             description="Сменить текущую директорию.",
-            input_schema=ObjectSchema(
-                fields=[
-                    FieldSpec(
-                        name="path",
-                        description="Путь директории.",
-                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
-                    ),
-                ],
-                invariants=Pass(),
-            ),
-        )
+            fields=[
+                FieldSpec(
+                    name="path",
+                    description="Путь директории.",
+                    converter=ChainConverter(Required(), IsString(), NonEmpty()),
+                ),
+            ],
+            invariants=Pass(),
+            )
 
     def execute(self, ctx: ToolContext, req: CdArgs) -> ToolResult:
         try:

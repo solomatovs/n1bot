@@ -15,7 +15,6 @@ from boba.domain.core.tools import (
     Required,
     Tool,
     ToolContext,
-    ToolDefinition,
     ToolExecutionError,
     ToolId,
     ObjectSchema,
@@ -54,16 +53,15 @@ class MvTool(Tool[MvArgs]):
     def typed_args_converter(self) -> Converter[dict[str, Any], MvArgs]:
         return MvArgsConverter()
 
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
+    def definition(self) -> ObjectSchema[dict[str, Any]]:
+        return ObjectSchema(
             description=(
                 "Переместить или переименовать файл/директорию. Если dst — "
                 "существующая директория, src переносится внутрь. Файл по "
                 "пути dst перезаписывается. Промежуточные директории не "
                 "создаются."
             ),
-            input_schema=ObjectSchema(
-                fields=[
+            fields=[
                     FieldSpec(
                         name="src",
                         description="Путь источника.",
@@ -75,8 +73,7 @@ class MvTool(Tool[MvArgs]):
                         converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
                 ],
-                invariants=Pass(),
-            ),
+                invariants=Pass()
         )
 
     def execute(self, ctx: ToolContext, req: MvArgs) -> ToolResult:

@@ -17,7 +17,6 @@ from boba.domain.core.tools import (
     Required,
     Tool,
     ToolContext,
-    ToolDefinition,
     ToolExecutionError,
     ToolId,
     ObjectSchema,
@@ -56,14 +55,13 @@ class RmTool(Tool[RmArgs]):
     def typed_args_converter(self) -> Converter[dict[str, Any], RmArgs]:
         return RmArgsConverter()
 
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
+    def definition(self) -> ObjectSchema[dict[str, Any]]:
+        return ObjectSchema(
             description=(
                 "Удалить файл или директорию. Для директорий требуется "
                 "recursive=true. Безвозвратно."
             ),
-            input_schema=ObjectSchema(
-                fields=[
+            fields=[
                     FieldSpec(
                         name="path",
                         description="Путь к файлу или директории.",
@@ -78,8 +76,7 @@ class RmTool(Tool[RmArgs]):
                         converter=ChainConverter(Default(False), IsBool()),
                     ),
                 ],
-                invariants=Pass(),
-            ),
+                invariants=Pass()
         )
 
     def execute(self, ctx: ToolContext, req: RmArgs) -> ToolResult:

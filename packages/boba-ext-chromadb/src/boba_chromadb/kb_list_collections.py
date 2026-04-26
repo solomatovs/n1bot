@@ -8,12 +8,11 @@ from typing import Any
 
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
+    ObjectSchema,
     Pass,
     Tool,
     ToolContext,
-    ToolDefinition,
     ToolId,
-    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )
@@ -25,9 +24,7 @@ class KbListCollectionsArgs:
     """Без параметров — kb_list_collections аргументов не принимает."""
 
 
-class KbListCollectionsArgsConverter(
-    Converter[dict[str, Any], KbListCollectionsArgs]
-):
+class KbListCollectionsArgsConverter(Converter[dict[str, Any], KbListCollectionsArgs]):
     def convert(self, value: dict[str, Any]) -> KbListCollectionsArgs:
         return KbListCollectionsArgs()
 
@@ -56,20 +53,19 @@ class KbListCollectionsTool(Tool[KbListCollectionsArgs]):
     ) -> Converter[dict[str, Any], KbListCollectionsArgs]:
         return KbListCollectionsArgsConverter()
 
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
+    def definition(self) -> ObjectSchema[dict[str, Any]]:
+        return ObjectSchema(
             description=(
                 "Список доступных knowledge-base коллекций ChromaDB. "
                 "Возвращает JSON-массив объектов "
                 "{name, description}. Используй перед kb_search чтобы "
                 "выбрать подходящую коллекцию."
             ),
-            input_schema=ObjectSchema(fields=[], invariants=Pass()),
+            fields=[],
+            invariants=Pass(),
         )
 
-    def execute(
-        self, ctx: ToolContext, req: KbListCollectionsArgs
-    ) -> ToolResult:
+    def execute(self, ctx: ToolContext, req: KbListCollectionsArgs) -> ToolResult:
         del ctx, req
         items = [
             {"name": c.name, "description": c.description}

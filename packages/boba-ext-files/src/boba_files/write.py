@@ -16,7 +16,6 @@ from boba.domain.core.tools import (
     Required,
     Tool,
     ToolContext,
-    ToolDefinition,
     ToolExecutionError,
     ToolId,
     ObjectSchema,
@@ -59,14 +58,13 @@ class WriteTool(Tool[WriteArgs]):
     def typed_args_converter(self) -> Converter[dict[str, Any], WriteArgs]:
         return WriteArgsConverter()
 
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
+    def definition(self) -> ObjectSchema[dict[str, Any]]:
+        return ObjectSchema(
             description=(
                 "Перезаписать файл указанным содержимым. Если файла или "
                 "промежуточных директорий нет — создать."
             ),
-            input_schema=ObjectSchema(
-                fields=[
+            fields=[
                     FieldSpec(
                         name="path",
                         description="Путь к файлу.",
@@ -87,8 +85,7 @@ class WriteTool(Tool[WriteArgs]):
                         ),
                     ),
                 ],
-                invariants=Pass(),
-            ),
+                invariants=Pass()
         )
 
     def execute(self, ctx: ToolContext, req: WriteArgs) -> ToolResult:

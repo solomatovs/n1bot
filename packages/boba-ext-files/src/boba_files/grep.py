@@ -20,7 +20,6 @@ from boba.domain.core.tools import (
     Required,
     Tool,
     ToolContext,
-    ToolDefinition,
     ToolExecutionError,
     ToolId,
     ObjectSchema,
@@ -75,16 +74,15 @@ class GrepTool(Tool[GrepArgs]):
     def typed_args_converter(self) -> Converter[dict[str, Any], GrepArgs]:
         return GrepArgsConverter()
 
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
+    def definition(self) -> ObjectSchema[dict[str, Any]]:
+        return ObjectSchema(
             description=(
                 "Найти совпадения pattern в текстовых файлах. Формат "
                 "результата: 'path:line: content'. Бинарные и недекодируемые "
                 "файлы пропускаются. При переполнении limit ответ обрезается "
                 "с маркером."
             ),
-            input_schema=ObjectSchema(
-                fields=[
+            fields=[
                     FieldSpec(
                         name="pattern",
                         description="Python-regex; литерал при fixed_string=true.",
@@ -140,8 +138,7 @@ class GrepTool(Tool[GrepArgs]):
                         converter=ChainConverter(Default(False), IsBool()),
                     ),
                 ],
-                invariants=Pass(),
-            ),
+                invariants=Pass()
         )
 
     def execute(self, ctx: ToolContext, req: GrepArgs) -> ToolResult:

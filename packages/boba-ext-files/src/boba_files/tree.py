@@ -18,7 +18,6 @@ from boba.domain.core.tools import (
     Required,
     Tool,
     ToolContext,
-    ToolDefinition,
     ToolExecutionError,
     ToolId,
     ObjectSchema,
@@ -61,15 +60,14 @@ class TreeTool(Tool[TreeArgs]):
     def typed_args_converter(self) -> Converter[dict[str, Any], TreeArgs]:
         return TreeArgsConverter()
 
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
+    def definition(self) -> ObjectSchema[dict[str, Any]]:
+        return ObjectSchema(
             description=(
                 "Рекурсивно перечислить все файлы под директорией. Плоский "
                 "список путей. При переполнении limit ответ обрезается с "
                 "маркером '(truncated at limit=N)'. Для одного уровня — ls."
             ),
-            input_schema=ObjectSchema(
-                fields=[
+            fields=[
                     FieldSpec(
                         name="path",
                         description="Корень обхода. Без значения — корень workspace.",
@@ -81,8 +79,7 @@ class TreeTool(Tool[TreeArgs]):
                         converter=ChainConverter(Required(), IsInt(), MinValue(1)),
                     ),
                 ],
-                invariants=Pass(),
-            ),
+                invariants=Pass()
         )
 
     def execute(self, ctx: ToolContext, req: TreeArgs) -> ToolResult:

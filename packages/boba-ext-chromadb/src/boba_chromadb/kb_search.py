@@ -10,19 +10,18 @@ from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainConverter,
     Default,
+    FieldSpec,
     IsInt,
     IsString,
     MaxValue,
     MinLength,
     MinValue,
-    FieldSpec,
+    ObjectSchema,
     Pass,
     Required,
     Tool,
     ToolContext,
-    ToolDefinition,
     ToolId,
-    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )
@@ -71,8 +70,8 @@ class KbSearchTool(Tool[KbSearchArgs]):
     def typed_args_converter(self) -> Converter[dict[str, Any], KbSearchArgs]:
         return KbSearchArgsConverter()
 
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
+    def definition(self) -> ObjectSchema[dict[str, Any]]:
+        return ObjectSchema(
             description=(
                 "Semantic search по KB-коллекции ChromaDB. Возвращает "
                 "JSON-массив hits {id, distance, metadata, snippet}, "
@@ -80,42 +79,36 @@ class KbSearchTool(Tool[KbSearchArgs]):
                 "ближе). Перед вызовом узнай доступные коллекции через "
                 "kb_list_collections."
             ),
-            input_schema=ObjectSchema(
-                fields=[
-                    FieldSpec(
-                        name="collection",
-                        description="Имя коллекции из kb_list_collections.",
-                        converter=ChainConverter(
-                            Required(), IsString(), MinLength(1)
-                        ),
+            fields=[
+                FieldSpec(
+                    name="collection",
+                    description="Имя коллекции из kb_list_collections.",
+                    converter=ChainConverter(Required(), IsString(), MinLength(1)),
+                ),
+                FieldSpec(
+                    name="query",
+                    description=(
+                        "Поисковый запрос на естественном языке — "
+                        "будет преобразован в embedding и сопоставлен "
+                        "с документами коллекции."
                     ),
-                    FieldSpec(
-                        name="query",
-                        description=(
-                            "Поисковый запрос на естественном языке — "
-                            "будет преобразован в embedding и сопоставлен "
-                            "с документами коллекции."
-                        ),
-                        converter=ChainConverter(
-                            Required(), IsString(), MinLength(1)
-                        ),
+                    converter=ChainConverter(Required(), IsString(), MinLength(1)),
+                ),
+                FieldSpec(
+                    name="top_k",
+                    description=(
+                        f"Сколько hits вернуть (1..{self._cfg.max_top_k}). "
+                        f"По умолчанию 5."
                     ),
-                    FieldSpec(
-                        name="top_k",
-                        description=(
-                            f"Сколько hits вернуть (1..{self._cfg.max_top_k}). "
-                            f"По умолчанию 5."
-                        ),
-                        converter=ChainConverter(
-                            Default(5),
-                            IsInt(),
-                            MinValue(1),
-                            MaxValue(self._cfg.max_top_k),
-                        ),
+                    converter=ChainConverter(
+                        Default(5),
+                        IsInt(),
+                        MinValue(1),
+                        MaxValue(self._cfg.max_top_k),
                     ),
-                ],
-                invariants=Pass(),
-            ),
+                ),
+            ],
+            invariants=Pass(),
         )
 
     def execute(self, ctx: ToolContext, req: KbSearchArgs) -> ToolResult:

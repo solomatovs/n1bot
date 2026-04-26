@@ -10,7 +10,6 @@ from boba.domain.core.tools import (
     Pass,
     Tool,
     ToolContext,
-    ToolDefinition,
     ToolId,
     ObjectSchema,
     ToolResult,
@@ -43,10 +42,10 @@ class PwdTool(Tool[PwdArgs]):
     def typed_args_converter(self) -> Converter[dict[str, Any], PwdArgs]:
         return PwdArgsConverter()
 
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
+    def definition(self) -> ObjectSchema[dict[str, Any]]:
+        return ObjectSchema(
             description="Вернуть путь текущей директории.",
-            input_schema=ObjectSchema(fields=[], invariants=Pass()),
+            fields=[], invariants=Pass()
         )
 
     def execute(self, ctx: ToolContext, req: PwdArgs) -> ToolResult:
