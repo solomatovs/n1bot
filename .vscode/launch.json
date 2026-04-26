@@ -64,7 +64,6 @@
             ],
             "envFile": "${workspaceFolder}/local/.env",
             "env": {
-                "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src",
                 "BOBA_PROMPTS_DIR": "${workspaceFolder}/prompts"
             }
         },
@@ -77,10 +76,7 @@
             "cwd": "${workspaceFolder}/.vscode",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
-            "args": ["-v", "${file}"],
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src"
-            }
+            "args": ["-v", "${file}"]
         },
         {
             "name": "Vector Index: index path",
@@ -145,7 +141,7 @@
             "justMyCode": false,
             "args": [
                 "run",
-                "${workspaceFolder}/src/chainlit/src/boba/chainlit/app.py",
+                "${workspaceFolder}/apps/chainlit/src/boba_chainlit/app.py",
                 "-h",
                 "--host", "0.0.0.0",
                 "--port", "8502",
@@ -153,8 +149,7 @@
             ],
             "envFile": "${workspaceFolder}/local/.env",
             "env": {
-                "CHAINLIT_APP_ROOT": "${workspaceFolder}/src/chainlit",
-                "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src:${workspaceFolder}/src/chainlit/src",
+                "CHAINLIT_APP_ROOT": "${workspaceFolder}/apps/chainlit",
                 "BOBA_PROMPTS_DIR": "${workspaceFolder}/prompts"
             }
         }

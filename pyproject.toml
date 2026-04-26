@@ -7,13 +7,21 @@ name = "boba"
 version = "0.1.0"
 description = "Boba — RAG agent for knowledge base"
 requires-python = ">=3.11,<4"
-# requirements.txt. Редактируется руками, никем не генерируется.
-# setuptools читает его в момент сборки, чтобы `pip install .` (если понадобится)
-# видел те же зависимости, что и Dockerfile (`-r requirements.txt`).
-dynamic = ["dependencies"]
+# Минимум для агентского runtime: OpenAI-совместимый клиент, http и
+# TOML-парсер для конфига. UI-зависимости (chainlit/pydantic-pin)
+# живут в ``apps/chainlit``; vector-store deps — в
+# ``extensions/chromadb`` и ``apps/vector-index``.
+dependencies = [
+    "httpx",
+    "openai",
+    "tomli",
+]
 
-[tool.setuptools.dynamic]
-dependencies = { file = "requirements.txt" }
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
 
 # boba — namespace-package (PEP 420) c четырьмя sub-пакетами в разных
 # src-корнях. ``packages.find`` со списком ``where`` тут не работает
@@ -30,13 +38,11 @@ dependencies = { file = "requirements.txt" }
 "boba.domain" = "src/domain/src/boba/domain"
 "boba.adapters" = "src/adapters/src/boba/adapters"
 "boba.infra" = "src/infra/src/boba/infra"
-"boba.chainlit" = "src/chainlit/src/boba/chainlit"
 
 [tool.setuptools]
 packages = [
     "boba.adapters",
     "boba.adapters.llm",
-    "boba.chainlit",
     "boba.domain",
     "boba.domain.agent",
     "boba.domain.agent.meat",
@@ -54,7 +60,6 @@ pythonpath = [
     "src/domain/src",
     "src/adapters/src",
     "src/infra/src",
-    "src/chainlit/src",
 ]
 addopts = ["--strict-markers"]
 
@@ -70,7 +75,9 @@ extraPaths = [
     "src/domain/src",
     "src/adapters/src",
     "src/infra/src",
-    "src/chainlit/src",
+    "apps/chainlit/src",
+    "apps/agent-run/src",
+    "apps/vector-index/src",
 ]
 venvPath = "."
 venv = ".venv"
@@ -127,7 +134,7 @@ known-first-party = ["boba", "boba"]
     "S105",    # hardcoded password — false positive на поля вроде AnswerToken.token
     "S106",    # same reason
 ]
-"cli/**" = [
+"apps/**" = [
     "T201",    # print — основной канал вывода CLI, не runtime-код
     "BLE001",  # broad except — CLI логирует и продолжает, не падает на одной коллекции
 ]

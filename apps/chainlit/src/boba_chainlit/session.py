@@ -119,7 +119,7 @@ class ChatSession:
         просачивается.
 
         ``extra_sink`` подмешивается к собранному source — это UI-мост
-        (:class:`~boba.chainlit.bridge.ChainlitBridgeSink`).
+        (:class:`~boba_chainlit.bridge.ChainlitBridgeSink`).
         """
         # workspace подтягивается/создаётся, чтобы последующий upload в
         # тот же workspace_id работал; сам agent про него ничего не

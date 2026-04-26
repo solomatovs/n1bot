@@ -8,10 +8,8 @@ import logging
 from typing import cast
 
 import chainlit as cl
-from boba.chainlit.bridge import ChainlitBridgeSink
-from boba.chainlit.config import load_models
-from boba.chainlit.files import save_upload
-from boba.chainlit.session import ChatSession
+from chainlit.input_widget import Select
+
 from boba.domain.agent.events import (
     Advisory,
     AgentEvent,
@@ -26,7 +24,10 @@ from boba.domain.agent.events import (
     ToolExecutionStarted,
 )
 from boba.domain.core.workspace import WorkspaceId
-from chainlit.input_widget import Select
+from boba_chainlit.bridge import ChainlitBridgeSink
+from boba_chainlit.config import load_models
+from boba_chainlit.files import save_upload
+from boba_chainlit.session import ChatSession
 
 logger = logging.getLogger(__name__)
 

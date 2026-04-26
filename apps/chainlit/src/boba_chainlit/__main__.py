@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from boba.chainlit.config import (
+from boba_chainlit.config import (
     AUTH_SECRET,
     HEADLESS,
     HOST,
@@ -11,7 +11,7 @@ from boba.chainlit.config import (
     ROOT_PATH,
     chainlit_resolver,
 )
-from boba.chainlit.ui_overrides import UIOverrideTomlConverter, read_ui_override
+from boba_chainlit.ui_overrides import UIOverrideTomlConverter, read_ui_override
 
 
 def _bootstrap_env() -> None:

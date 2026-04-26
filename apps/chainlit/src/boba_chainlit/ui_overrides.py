@@ -9,7 +9,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.chainlit.config import chainlit_resolver
 from boba.domain.core.config import (
     BoolConverter,
     ChainedConfigResolver,
@@ -23,6 +22,7 @@ from boba.domain.core.patterns import (
     Converter,
     Specification,
 )
+from boba_chainlit.config import chainlit_resolver
 
 __all__ = [
     "UIOverride",
