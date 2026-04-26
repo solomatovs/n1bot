@@ -21,7 +21,7 @@ from boba.domain.core.tools import (
     ToolDefinition,
     ToolExecutionError,
     ToolId,
-    ToolInputSchema,
+    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )
@@ -68,8 +68,8 @@ class TreeTool(Tool[TreeArgs]):
                 "список путей. При переполнении limit ответ обрезается с "
                 "маркером '(truncated at limit=N)'. Для одного уровня — ls."
             ),
-            input_schema=ToolInputSchema(
-                params=[
+            input_schema=ObjectSchema(
+                fields=[
                     FieldSpec(
                         name="path",
                         description="Корень обхода. Без значения — корень workspace.",

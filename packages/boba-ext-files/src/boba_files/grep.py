@@ -23,7 +23,7 @@ from boba.domain.core.tools import (
     ToolDefinition,
     ToolExecutionError,
     ToolId,
-    ToolInputSchema,
+    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )
@@ -83,8 +83,8 @@ class GrepTool(Tool[GrepArgs]):
                 "файлы пропускаются. При переполнении limit ответ обрезается "
                 "с маркером."
             ),
-            input_schema=ToolInputSchema(
-                params=[
+            input_schema=ObjectSchema(
+                fields=[
                     FieldSpec(
                         name="pattern",
                         description="Python-regex; литерал при fixed_string=true.",

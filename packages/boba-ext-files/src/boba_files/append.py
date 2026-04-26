@@ -19,7 +19,7 @@ from boba.domain.core.tools import (
     ToolDefinition,
     ToolExecutionError,
     ToolId,
-    ToolInputSchema,
+    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )
@@ -62,8 +62,8 @@ class AppendTool(Tool[AppendArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description="Дописать текст в конец файла. Если файла нет — создать.",
-            input_schema=ToolInputSchema(
-                params=[
+            input_schema=ObjectSchema(
+                fields=[
                     FieldSpec(
                         name="path",
                         description="Путь к файлу.",

@@ -17,14 +17,13 @@ TOML ``[chainlit] host``.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from boba.domain.core.config import (
-    ChainedConfigResolver,
     ConfigSection,
     FieldSpec,
+    ObjectSchema,
 )
 from boba.domain.core.patterns import StrId
 from boba.domain.core.validators import (
@@ -67,55 +66,44 @@ class ChainlitSection(ConfigSection[ChainlitConfig]):
     id: ClassVar[StrId] = StrId("chainlit")
     namespace: ClassVar[tuple[str, ...]] = ("chainlit",)
 
-    HOST: FieldSpec[str] = FieldSpec(
-        name="host",
-        converter=ChainConverter(Default("127.0.0.1"), ParseString()),
-        description="Адрес, на котором слушает chainlit-сервер.",
+    schema: ClassVar[ObjectSchema[ChainlitConfig]] = ObjectSchema(
+        description="Параметры chainlit-сервера + список доступных в UI "
+        "моделей.",
+        fields=[
+            FieldSpec(
+                name="host",
+                converter=ChainConverter(Default("127.0.0.1"), ParseString()),
+                description="Адрес, на котором слушает chainlit-сервер.",
+            ),
+            FieldSpec(
+                name="port",
+                converter=ChainConverter(Default("8501"), ParseString()),
+                description="Порт chainlit-сервера. Хранится строкой — bridge "
+                "пишет напрямую в CHAINLIT_PORT env.",
+            ),
+            FieldSpec(
+                name="root_path",
+                converter=ChainConverter(Default(""), ParseString()),
+                description="HTTP root path под reverse-proxy. Пусто — "
+                "chainlit на корне.",
+            ),
+            FieldSpec(
+                name="auth_secret",
+                converter=Nullable(ParseString()),
+                description="Секрет для подписи user-session cookie. "
+                "Если не задан — chainlit генерит сам.",
+            ),
+            FieldSpec(
+                name="headless",
+                converter=ChainConverter(Default("true"), ParseString()),
+                description="``true`` — не пытаться открыть браузер при старте.",
+            ),
+            FieldSpec(
+                name="models",
+                converter=ChainConverter(Default([]), ParseCsvList()),
+                description="CSV/TOML-list LLM-моделей, выбираемых "
+                "пользователем в ChatSettings.",
+            ),
+        ],
+        factory=ChainlitConfig,
     )
-    PORT: FieldSpec[str] = FieldSpec(
-        name="port",
-        converter=ChainConverter(Default("8501"), ParseString()),
-        description="Порт chainlit-сервера. Хранится строкой — bridge "
-        "пишет напрямую в CHAINLIT_PORT env.",
-    )
-    ROOT_PATH: FieldSpec[str] = FieldSpec(
-        name="root_path",
-        converter=ChainConverter(Default(""), ParseString()),
-        description="HTTP root path под reverse-proxy. Пусто — chainlit на корне.",
-    )
-    AUTH_SECRET: FieldSpec[str | None] = FieldSpec(
-        name="auth_secret",
-        converter=Nullable(ParseString()),
-        description="Секрет для подписи user-session cookie. Если не "
-        "задан — chainlit генерит сам.",
-    )
-    HEADLESS: FieldSpec[str] = FieldSpec(
-        name="headless",
-        converter=ChainConverter(Default("true"), ParseString()),
-        description="``true`` — не пытаться открыть браузер при старте.",
-    )
-    MODELS: FieldSpec[list[str]] = FieldSpec(
-        name="models",
-        converter=ChainConverter(Default([]), ParseCsvList()),
-        description="CSV/TOML-list LLM-моделей, выбираемых пользователем "
-        "в ChatSettings.",
-    )
-
-    fields: ClassVar[Sequence[FieldSpec[Any]]] = (
-        HOST,
-        PORT,
-        ROOT_PATH,
-        AUTH_SECRET,
-        HEADLESS,
-        MODELS,
-    )
-
-    def build(self, resolver: ChainedConfigResolver) -> ChainlitConfig:
-        return ChainlitConfig(
-            host=self._read(self.HOST, resolver),
-            port=self._read(self.PORT, resolver),
-            root_path=self._read(self.ROOT_PATH, resolver),
-            auth_secret=self._read(self.AUTH_SECRET, resolver),
-            headless=self._read(self.HEADLESS, resolver),
-            models=self._read(self.MODELS, resolver),
-        )

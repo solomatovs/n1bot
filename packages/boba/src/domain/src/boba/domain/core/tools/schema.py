@@ -1,23 +1,27 @@
 """Описание инструмента: идентификаторы и схема параметров.
 
 Содержит data-объекты, которые tool-автор заполняет в :meth:`Tool.definition`:
-:class:`ToolInputSchema`, :class:`ToolDefinition`. Сами параметры — это
+:data:`ToolInputSchema`, :class:`ToolDefinition`. Параметры — это
 :class:`~boba.domain.core.config.FieldSpec` (тот же примитив, что
-описывает поле конфига): унифицировано имя + конвертер + описание +
-``build_wire_schema``.
+описывает поле конфига); схема — это
+:class:`~boba.domain.core.config.ObjectSchema` (тот же примитив, что
+описывает секцию конфига). Tool отличается от config только тем, что
+сырые данные приходят как ``dict[str, Any]`` от LLM, а не из резолвера.
 
-Wire-схема (:class:`~boba.domain.core.schema.ParamWireSchema` +
+Wire-схема (:class:`~boba.domain.core.schema.ParamWireSchema`,
+:class:`~boba.domain.core.config.ObjectWireSchema` +
 :class:`~boba.domain.core.schema.SchemaContributor`) живёт в
-:mod:`boba.domain.core.schema` — общий контракт для tools и config.
+:mod:`boba.domain.core.schema` / :mod:`boba.domain.core.config` —
+общий контракт для tools и config.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Self
+from typing import Any, Self, TypeAlias
 
-from boba.domain.core.config import FieldSpec
-from boba.domain.core.patterns import Converter, Id
+from boba.domain.core.config import ObjectSchema
+from boba.domain.core.patterns import Id
 
 
 class ToolId(Id[str]):
@@ -42,23 +46,14 @@ class ToolSourceId(Id[str]):
         return cls(value)
 
 
-@dataclass(frozen=True)
-class ToolInputSchema:
-    """Схема входных параметров инструмента.
+ToolInputSchema: TypeAlias = ObjectSchema[dict[str, Any]]
+"""Алиас :class:`ObjectSchema` со специализацией ``factory=dict``.
 
-    ``params`` — независимые описания каждого параметра. Тип параметра —
-    :class:`FieldSpec` (тот же примитив, что описывает поле конфига):
-    ``name`` — имя ключа в input-dict от LLM, ``converter`` — цепочка
-    Required/Default/IsX/constraints, ``description`` — текст для LLM.
-
-    ``invariants`` — cross-field конвертер, работающий над dict'ом
-    уже провалидированных параметров. Проверяет инварианты, связывающие
-    несколько полей: взаимоисключения, совместность, порядок. Обязателен
-    даже при отсутствии таких связей — тогда передавай ``Pass``.
-    """
-
-    params: list[FieldSpec[Any]]
-    invariants: Converter[dict[str, Any], dict[str, Any]]
+Tool-args — это всегда ``dict[str, Any]`` (Tool.execute сам типизирует
+их через свой ``args_converter``). Используется только как
+type-annotation; конструируется через ``ObjectSchema(fields=...,
+invariants=..., factory=dict)``.
+"""
 
 
 @dataclass(frozen=True)

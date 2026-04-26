@@ -18,7 +18,7 @@ from boba.domain.core.tools import (
     ToolDefinition,
     ToolExecutionError,
     ToolId,
-    ToolInputSchema,
+    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )
@@ -61,8 +61,8 @@ class StatTool(Tool[StatArgs]):
                 "ошибка. Для директорий size — размер inode-блока ФС, не "
                 "количество файлов; для содержимого директории — ls/tree."
             ),
-            input_schema=ToolInputSchema(
-                params=[
+            input_schema=ObjectSchema(
+                fields=[
                     FieldSpec(
                         name="path",
                         description="Путь к файлу или директории.",

@@ -18,7 +18,7 @@ from boba.domain.core.tools import (
     ToolDefinition,
     ToolExecutionError,
     ToolId,
-    ToolInputSchema,
+    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )
@@ -62,8 +62,8 @@ class MvTool(Tool[MvArgs]):
                 "пути dst перезаписывается. Промежуточные директории не "
                 "создаются."
             ),
-            input_schema=ToolInputSchema(
-                params=[
+            input_schema=ObjectSchema(
+                fields=[
                     FieldSpec(
                         name="src",
                         description="Путь источника.",

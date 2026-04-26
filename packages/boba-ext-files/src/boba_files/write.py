@@ -19,7 +19,7 @@ from boba.domain.core.tools import (
     ToolDefinition,
     ToolExecutionError,
     ToolId,
-    ToolInputSchema,
+    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )
@@ -65,8 +65,8 @@ class WriteTool(Tool[WriteArgs]):
                 "Перезаписать файл указанным содержимым. Если файла или "
                 "промежуточных директорий нет — создать."
             ),
-            input_schema=ToolInputSchema(
-                params=[
+            input_schema=ObjectSchema(
+                fields=[
                     FieldSpec(
                         name="path",
                         description="Путь к файлу.",

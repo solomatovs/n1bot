@@ -22,7 +22,7 @@ from boba.domain.core.tools import (
     ToolContext,
     ToolDefinition,
     ToolId,
-    ToolInputSchema,
+    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )
@@ -80,8 +80,8 @@ class KbSearchTool(Tool[KbSearchArgs]):
                 "ближе). Перед вызовом узнай доступные коллекции через "
                 "kb_list_collections."
             ),
-            input_schema=ToolInputSchema(
-                params=[
+            input_schema=ObjectSchema(
+                fields=[
                     FieldSpec(
                         name="collection",
                         description="Имя коллекции из kb_list_collections.",

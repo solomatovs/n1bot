@@ -20,14 +20,13 @@ entry-point group ``boba.config_sections`` (см. ``pyproject.toml``);
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from boba.domain.core.config import (
-    ChainedConfigResolver,
     ConfigSection,
     FieldSpec,
+    ObjectSchema,
 )
 from boba.domain.core.patterns import StrId
 from boba.domain.core.validators import (
@@ -59,44 +58,40 @@ class ChromadbSection(ConfigSection[ChromaExtConfig]):
     id: ClassVar[StrId] = StrId("ext.chromadb")
     namespace: ClassVar[tuple[str, ...]] = ("ext", "chromadb")
 
-    PERSIST_PATH: FieldSpec[str] = FieldSpec(
-        name="persist_path",
-        converter=ChainConverter(Required(), ParseString()),
-        description=(
-            "Путь к persistent ChromaDB (общий с boba-cli-vector-index, "
-            "чтобы агент видел свежепроиндексированные коллекции)."
-        ),
+    schema: ClassVar[ObjectSchema[ChromaExtConfig]] = ObjectSchema(
+        description="Конфигурация ChromaDB-extension: путь к persistent "
+        "store, embedding-модель, лимиты kb_search.",
+        fields=[
+            FieldSpec(
+                name="persist_path",
+                converter=ChainConverter(Required(), ParseString()),
+                description=(
+                    "Путь к persistent ChromaDB (общий с boba-cli-vector-index, "
+                    "чтобы агент видел свежепроиндексированные коллекции)."
+                ),
+            ),
+            FieldSpec(
+                name="embedding_model",
+                converter=ChainConverter(
+                    Default("default"), ParseString(), OneOf("default"),
+                ),
+                description=(
+                    "Модель эмбеддингов. v0.1: только 'default' (built-in ONNX). "
+                    "Расширим, когда добавим sentence-transformers как optional dep."
+                ),
+            ),
+            FieldSpec(
+                name="max_top_k",
+                converter=ChainConverter(Default(20), ParseInt(), MinValue(1)),
+                description="Жёсткий потолок top_k для kb_search "
+                "(защита от дикого LLM).",
+            ),
+            FieldSpec(
+                name="snippet_chars",
+                converter=ChainConverter(Default(300), ParseInt(), MinValue(1)),
+                description="Максимальная длина сниппета документа "
+                "в результате kb_search.",
+            ),
+        ],
+        factory=ChromaExtConfig,
     )
-    EMBEDDING_MODEL: FieldSpec[str] = FieldSpec(
-        name="embedding_model",
-        converter=ChainConverter(Default("default"), ParseString(), OneOf("default")),
-        description=(
-            "Модель эмбеддингов. v0.1: только 'default' (built-in ONNX). "
-            "Расширим, когда добавим sentence-transformers как optional dep."
-        ),
-    )
-    MAX_TOP_K: FieldSpec[int] = FieldSpec(
-        name="max_top_k",
-        converter=ChainConverter(Default(20), ParseInt(), MinValue(1)),
-        description="Жёсткий потолок top_k для kb_search (защита от дикого LLM).",
-    )
-    SNIPPET_CHARS: FieldSpec[int] = FieldSpec(
-        name="snippet_chars",
-        converter=ChainConverter(Default(300), ParseInt(), MinValue(1)),
-        description="Максимальная длина сниппета документа в результате kb_search.",
-    )
-
-    fields: ClassVar[Sequence[FieldSpec[Any]]] = (
-        PERSIST_PATH,
-        EMBEDDING_MODEL,
-        MAX_TOP_K,
-        SNIPPET_CHARS,
-    )
-
-    def build(self, resolver: ChainedConfigResolver) -> ChromaExtConfig:
-        return ChromaExtConfig(
-            persist_path=self._read(self.PERSIST_PATH, resolver),
-            embedding_model=self._read(self.EMBEDDING_MODEL, resolver),
-            max_top_k=self._read(self.MAX_TOP_K, resolver),
-            snippet_chars=self._read(self.SNIPPET_CHARS, resolver),
-        )

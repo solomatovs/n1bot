@@ -20,7 +20,7 @@ from boba.domain.core.tools import (
     ToolDefinition,
     ToolExecutionError,
     ToolId,
-    ToolInputSchema,
+    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )
@@ -67,8 +67,8 @@ class CpTool(Tool[CpArgs]):
                 "Скопировать файл или директорию. Для директорий "
                 "требуется recursive=true."
             ),
-            input_schema=ToolInputSchema(
-                params=[
+            input_schema=ObjectSchema(
+                fields=[
                     FieldSpec(
                         name="src",
                         description="Путь источника.",

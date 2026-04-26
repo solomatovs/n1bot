@@ -18,7 +18,7 @@ from boba.domain.core.tools import (
     ToolDefinition,
     ToolExecutionError,
     ToolId,
-    ToolInputSchema,
+    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )
@@ -58,8 +58,8 @@ class MkdirTool(Tool[MkdirArgs]):
                 "Создать директорию (включая промежуточные). Если уже "
                 "существует — no-op. Если по пути файл — ошибка."
             ),
-            input_schema=ToolInputSchema(
-                params=[
+            input_schema=ObjectSchema(
+                fields=[
                     FieldSpec(
                         name="path",
                         description="Путь создаваемой директории.",

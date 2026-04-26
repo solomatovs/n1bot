@@ -18,7 +18,7 @@ from boba.domain.core.tools import (
     ToolDefinition,
     ToolExecutionError,
     ToolId,
-    ToolInputSchema,
+    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )
@@ -59,8 +59,8 @@ class TouchTool(Tool[TouchArgs]):
                 "Если уже существует — обновить время модификации, "
                 "содержимое не трогать."
             ),
-            input_schema=ToolInputSchema(
-                params=[
+            input_schema=ObjectSchema(
+                fields=[
                     FieldSpec(
                         name="path",
                         description="Путь к файлу.",
