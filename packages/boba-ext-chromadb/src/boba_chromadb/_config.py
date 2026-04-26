@@ -1,9 +1,15 @@
 """Конфигурация ChromaDB-extension.
 
-Читается **один раз** при первом вызове ``register_tools`` из namespaced
-bag :attr:`AppConfig.extensions` (см. секцию ``extensions.chromadb`` в
-TOML или env-переменные ``BOBA_EXT_CHROMADB__*``). Дальше передаётся
-во все Tool-инстансы через конструктор и в singleton-фабрику KB.
+Читается **один раз** при первом вызове ``register_tools``:
+
+* ``persist_path`` — из общей env-переменной ``CHROMA_PERSIST_PATH``,
+  той же что использует :mod:`boba_cli_vector_index`. Так оператор
+  индексирует CLI-ом и сразу видит коллекции в агенте без дублирования
+  путей в конфиге.
+* остальные поля (``embedding_model``, ``max_top_k``, ``snippet_chars``)
+  — из namespaced bag :attr:`AppConfig.extensions` (секция
+  ``extensions.chromadb`` в TOML или env-переменные
+  ``BOBA_EXT_CHROMADB__*``).
 
 Семантика поля ``embedding_model`` в v0.1: поддерживается только
 ``default`` — встроенная ONNX-модель ChromaDB. Поле оставлено в
@@ -14,12 +20,14 @@ TOML или env-переменные ``BOBA_EXT_CHROMADB__*``). Дальше п�
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 from boba.domain.config import AppConfig
 
 NAMESPACE = "chromadb"
+PERSIST_PATH_ENV = "CHROMA_PERSIST_PATH"
 SUPPORTED_EMBEDDING_MODELS = frozenset({"default"})
 
 
@@ -38,8 +46,15 @@ class ChromaExtConfig:
 
     @classmethod
     def from_app_config(cls, app_config: AppConfig) -> ChromaExtConfig:
+        persist_path = os.environ.get(PERSIST_PATH_ENV)
+        if not persist_path:
+            raise ChromaExtConfigError(
+                f"chromadb extension: required env var "
+                f"{PERSIST_PATH_ENV!r} is missing — set the path to "
+                f"chromadb persist directory (the same value as for "
+                f"boba-cli-vector-index)"
+            )
         section: Mapping[str, str] = app_config.extensions.get(NAMESPACE, {})
-        persist_path = cls._required(section, "persist_path")
         embedding_model = section.get("embedding_model", "default")
         if embedding_model not in SUPPORTED_EMBEDDING_MODELS:
             raise ChromaExtConfigError(
@@ -53,18 +68,6 @@ class ChromaExtConfig:
             max_top_k=cls._int(section, "max_top_k", 20),
             snippet_chars=cls._int(section, "snippet_chars", 300),
         )
-
-    @staticmethod
-    def _required(section: Mapping[str, str], key: str) -> str:
-        value = section.get(key)
-        if not value:
-            env_key = f"BOBA_EXT_{NAMESPACE.upper()}__{key.upper()}"
-            raise ChromaExtConfigError(
-                f"chromadb extension config: required field {key!r} "
-                f"is missing — set {env_key} or "
-                f"[extensions.{NAMESPACE}] {key} in TOML"
-            )
-        return value
 
     @staticmethod
     def _int(section: Mapping[str, str], key: str, default: int) -> int:

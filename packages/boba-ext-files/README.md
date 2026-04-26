@@ -12,7 +12,7 @@ session-workspace'у пользователя — никакого свобод�
 In-tree dev-режим (editable):
 
 ```bash
-pip install -e ./extensions/files
+pip install -e ./packages/boba-ext-files
 ```
 
 Из готового wheel — обычным `pip install boba-ext-files`.

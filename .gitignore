@@ -1,7 +1,18 @@
 .venv
 __pycache__
+# local/ — runtime data (env, secrets, workspaces, logs, chromadb,
+# prompts). В git трекаем только структуру (.gitkeep), одиночные
+# шаблоны (*.example) и шаблонные директории (*.example/...).
 /local/*
 !/local/*.example
+!/local/.gitkeep
+!/local/*/
+/local/*/*
+!/local/*/.gitkeep
+!/local/README.md
+# Шаблонные директории (например local/prompts.example/) — целиком в git
+!/local/*.example/
+!/local/*.example/**
 *.pyc
 *.pyo
 *.pyd
@@ -11,7 +22,6 @@ chroma_debug_db
 .chainlit/translations/
 .files/
 chainlit.md
-workspaces
 .chainlit
 .ruff_cache
 .pytest_cache

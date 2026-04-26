@@ -1,0 +1,10 @@
+# Manifest всех локальных pip-пакетов монорепо. Установка одной
+# командой:
+#     pip install -r dev-install.txt
+
+-e ./packages/boba
+-e ./packages/boba-chainlit
+-e ./packages/boba-cli-agent-run
+-e ./packages/boba-cli-vector-index
+-e ./packages/boba-ext-files
+-e ./packages/boba-ext-chromadb

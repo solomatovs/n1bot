@@ -17,7 +17,7 @@ pip install -e .                    # из корня репо: ставит bob
 
 Затем сам CLI:
 ```bash
-pip install -e ./apps/agent-run
+pip install -e ./packages/boba-cli-agent-run
 ```
 
 После этого `boba-cli-agent-run` работает из терминала без `PYTHONPATH`.
@@ -47,7 +47,7 @@ boba-cli-agent-run --model qwen2.5-14b "Прочитай файл X и расс�
 
 Берётся через `boba.infra.config.ConfigLoader` — те же env-переменные,
 что и chainlit-runtime: `BOBA_PROMPTS_DIR`, `WORKSPACE_BASE_DIR`,
-`LLM_BASE_URL`, `LITELLM_API_KEY` (или `LITELLM_API_KEY_FILE`),
+`LLM_BASE_URL`, `LITELLM_API_KEY`,
 `BOBA_CONFIG` (опциональный TOML), плюс namespaced
 `BOBA_EXT_<NAMESPACE>__*` для pip-installed extension-пакетов.
 

@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba"
+version = "0.1.0"
+description = "Boba — RAG agent for knowledge base"
+requires-python = ">=3.11,<4"
+# Минимум для агентского runtime: OpenAI-совместимый клиент, http и
+# TOML-парсер для конфига. UI-зависимости (chainlit/pydantic-pin)
+# живут в ``packages/boba-chainlit``; vector-store deps — в
+# ``packages/boba-ext-chromadb`` и ``packages/boba-cli-vector-index``.
+dependencies = [
+    "httpx",
+    "openai",
+    "tomli",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+# boba — namespace-package (PEP 420) c тремя sub-пакетами в разных
+# src-корнях. ``packages.find`` со списком ``where`` тут не работает
+# (setuptools требует, чтобы каждый найденный пакет существовал во
+# ВСЕХ ``where``), поэтому маппим корни sub-пакетов явно через
+# ``package-dir`` и перечисляем все импортируемые пакеты в
+# ``packages``.
+#
+# Если добавляется новый sub-package (например, ``boba.domain.kb``) —
+# нужно дописать его в ``packages``. Можно регенерить из дерева:
+#   find packages/boba/src -mindepth 4 -type d -path '*/src/boba*' \
+#     -not -path '*__pycache__*' -not -name '*.egg-info'
+[tool.setuptools.package-dir]
+"boba.domain" = "src/domain/src/boba/domain"
+"boba.adapters" = "src/adapters/src/boba/adapters"
+"boba.infra" = "src/infra/src/boba/infra"
+
+[tool.setuptools]
+packages = [
+    "boba.adapters",
+    "boba.adapters.llm",
+    "boba.domain",
+    "boba.domain.agent",
+    "boba.domain.agent.meat",
+    "boba.domain.agent.turn",
+    "boba.domain.core",
+    "boba.domain.core.tools",
+    "boba.domain.llm",
+    "boba.domain.llm.meat",
+    "boba.infra",
+]
