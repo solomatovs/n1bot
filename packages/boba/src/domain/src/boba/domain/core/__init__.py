@@ -14,10 +14,11 @@ from boba.domain.core.config import (
     ConfigKey,
     ConfigSection,
     ConfigSource,
+    read_field,
+)
+from boba.domain.core.declaration import (
     FieldSpec,
     ObjectSchema,
-    ObjectWireSchema,
-    read_field,
     validate_object,
 )
 from boba.domain.core.errors import (
@@ -62,7 +63,11 @@ from boba.domain.core.patterns import (
     StreamTransformerPipeline,
     UuId,
 )
-from boba.domain.core.schema import ParamWireSchema, SchemaContributor
+from boba.domain.core.schema import (
+    ObjectWireSchema,
+    ParamWireSchema,
+    SchemaContributor,
+)
 from boba.domain.core.tools import (
     InvalidSchemaInvariantError,
     InvalidToolArgumentError,

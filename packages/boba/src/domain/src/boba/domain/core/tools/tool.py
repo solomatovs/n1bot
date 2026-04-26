@@ -1,4 +1,11 @@
-"""Базовый класс :class:`Tool` и связанные value-объекты вызова."""
+"""Базовый класс :class:`Tool`, value-объекты вызова и tool-specific
+оркестратор валидации аргументов.
+
+:class:`SchemaArgsValidator` тут осознанно — он плотно связан с
+:class:`Tool` (используется в :meth:`Tool.args_converter`) и не имеет
+смысла за пределами tool-границы (использует tool-domain ошибки
+:class:`InvalidToolArgumentError` / :class:`InvalidSchemaInvariantError`).
+"""
 
 from __future__ import annotations
 
@@ -6,13 +13,18 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
-from boba.domain.core.patterns import Converter, Definition, Executor
+from boba.domain.core.patterns import Converter, ConverterInputError, Definition, Executor
+from boba.domain.core.tools.errors import (
+    InvalidSchemaInvariantError,
+    InvalidToolArgumentError,
+)
 from boba.domain.core.tools.schema import (
     ToolDefinition,
     ToolId,
+    ToolInputSchema,
     ToolSourceId,
 )
-from boba.domain.core.tools.validators import SchemaArgsValidator
+from boba.domain.core.validators import MISSING
 from boba.domain.core.workspace import ProjectWorkspaceShell
 
 TArgs = TypeVar("TArgs")
@@ -137,3 +149,61 @@ class _ToolArgsPipeline(Converter[dict[str, Any], TArgs], Generic[TArgs]):
     def convert(self, value: dict[str, Any]) -> TArgs:
         validated = self._validator.convert(value)
         return self._typed.convert(validated)
+
+
+class SchemaArgsValidator(Converter[dict[str, Any], dict[str, Any]]):
+    """Валидирует сырой dict аргументов против :class:`ToolInputSchema`.
+
+    Контракт:
+    - проверяет, что все ключи входного dict известны схеме; иначе
+      :class:`InvalidToolArgumentError`;
+    - для каждого param в схеме: достаёт значение (или :data:`MISSING`),
+      прогоняет через ``param.converter``; :class:`ConverterInputError`
+      оборачивает в :class:`InvalidToolArgumentError` с именем
+      параметра и tool_id;
+    - значения, оставшиеся :data:`MISSING` после конвертации, в результат
+      не попадают (опциональный параметр без default'а);
+    - в финале прогоняет ``schema.invariants`` над собранным dict'ом;
+      :class:`ConverterInputError` оттуда оборачивает в
+      :class:`InvalidSchemaInvariantError`.
+
+    Tool-specific (использует :class:`InvalidToolArgumentError` /
+    :class:`InvalidSchemaInvariantError` и :class:`ToolId`) — поэтому
+    лежит в tools-слое, а не в общем :func:`validate_object`. Логика
+    обхода полей дублируется минимально (имя поля / признак invariants
+    нужны для специфичных ошибок).
+    """
+
+    def __init__(self, schema: ToolInputSchema, tool_id: ToolId) -> None:
+        self._schema = schema
+        self._tool_id = tool_id
+        self._known: frozenset[str] = frozenset(p.name for p in schema.fields)
+
+    def convert(self, value: dict[str, Any]) -> dict[str, Any]:
+        unknown = sorted(set(value.keys()) - self._known)
+        if unknown:
+            raise InvalidToolArgumentError(
+                self._tool_id,
+                unknown[0],
+                f"неизвестный параметр (известные: {sorted(self._known)})",
+            )
+
+        # Симметрично :func:`validate_object`, но с tool-специфичными
+        # обёртками ошибок (tool_id, имя параметра / признак invariants).
+        result: dict[str, Any] = {}
+        for param in self._schema.fields:
+            raw = value.get(param.name, MISSING)
+            try:
+                validated = param.converter.convert(raw)
+            except ConverterInputError as e:
+                raise InvalidToolArgumentError(
+                    self._tool_id, param.name, str(e)
+                ) from e
+            if validated is not MISSING:
+                result[param.name] = validated
+
+        try:
+            final = self._schema.invariants.convert(result)
+        except ConverterInputError as e:
+            raise InvalidSchemaInvariantError(self._tool_id, str(e)) from e
+        return self._schema.factory(**final)

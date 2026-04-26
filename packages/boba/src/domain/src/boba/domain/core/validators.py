@@ -32,13 +32,19 @@ __all__ = [
     "MISSING",
     "ChainConverter",
     "Default",
+    "IsBool",
+    "IsInt",
+    "IsNumber",
+    "IsString",
     "MaxLength",
     "MaxValue",
     "MinLength",
     "MinValue",
+    "MutuallyExclusive",
     "NonEmpty",
     "Nullable",
     "OneOf",
+    "Ordered",
     "ParseBool",
     "ParseCsvList",
     "ParseFloat",
@@ -46,6 +52,7 @@ __all__ = [
     "ParseString",
     "Pass",
     "Required",
+    "RequiresTogether",
     "ValueConverter",
 ]
 
@@ -462,4 +469,166 @@ class NonEmpty(Converter[Any, Any]):
         if len(value) == 0:
             raise ConverterInputError("значение не должно быть пустым")
 
+        return value
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  Strict type-checkers — Is* (input уже типизирован, без coercion)
+# ═════════════════════════════════════════════════════════════════════
+#
+# Различие с Parse*-семейством:
+#   ParseString().convert(42)    → "42"  (lenient: str(value))
+#   IsString().convert(42)       → ConverterInputError
+#
+# Используются там, где input уже типизирован: JSON-аргументы tool'ов
+# (LLM передал их как str/int/etc), TOML-значения (типизированы парсером).
+# Для config-env (всё str) больше подходит Parse*.
+
+
+class IsString(ValueConverter, SchemaContributor):
+    """Тип значения — строго ``str``. В wire-схеме: ``type: string``.
+
+    В отличие от :class:`ParseString`, не делает coercion: ``int`` или
+    ``dict`` будут отвергнуты. Уместно там, где input уже типизирован —
+    например, JSON-аргументы tool'ов.
+    """
+
+    def _convert_value(self, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ConverterInputError(
+                f"ожидалась строка, получено {type(value).__name__}"
+            )
+        return value
+
+    def contribute(self, schema: ParamWireSchema) -> None:
+        schema.property["type"] = "string"
+
+
+class IsInt(ValueConverter, SchemaContributor):
+    """Тип значения — целое число. ``bool`` отвергается отдельно
+    (это семантически другой тип, хотя и подкласс ``int``).
+
+    В wire-схеме: ``type: integer``.
+    """
+
+    def _convert_value(self, value: Any) -> int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ConverterInputError(
+                f"ожидалось целое число, получено {type(value).__name__}"
+            )
+        return value
+
+    def contribute(self, schema: ParamWireSchema) -> None:
+        schema.property["type"] = "integer"
+
+
+class IsNumber(ValueConverter, SchemaContributor):
+    """Тип значения — число (``int`` или ``float``). ``bool`` отвергается.
+
+    В wire-схеме: ``type: number``.
+    """
+
+    def _convert_value(self, value: Any) -> int | float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ConverterInputError(
+                f"ожидалось число, получено {type(value).__name__}"
+            )
+        return value
+
+    def contribute(self, schema: ParamWireSchema) -> None:
+        schema.property["type"] = "number"
+
+
+class IsBool(ValueConverter, SchemaContributor):
+    """Тип значения — булево. В wire-схеме: ``type: boolean``."""
+
+    def _convert_value(self, value: Any) -> bool:
+        if not isinstance(value, bool):
+            raise ConverterInputError(
+                f"ожидался bool, получено {type(value).__name__}"
+            )
+        return value
+
+    def contribute(self, schema: ParamWireSchema) -> None:
+        schema.property["type"] = "boolean"
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  Cross-field инварианты (для ObjectSchema.invariants)
+# ═════════════════════════════════════════════════════════════════════
+#
+# Работают над dict'ом уже провалидированных полей — стандартный
+# слот в ObjectSchema. Применимы и для tool-input-схем, и для
+# config-секций (после унификации обе используют ObjectSchema).
+
+
+class MutuallyExclusive(Converter[dict[str, Any], dict[str, Any]]):
+    """Одновременно задан может быть максимум один из перечисленных полей.
+
+    Получает dict уже провалидированных полей и проверяет, что в нём
+    нет более одного ключа из ``names``.
+    """
+
+    _MIN_NAMES: ClassVar[int] = 2
+
+    def __init__(self, *names: str) -> None:
+        if len(names) < self._MIN_NAMES:
+            raise ValueError(
+                f"MutuallyExclusive требует минимум {self._MIN_NAMES} имени"
+            )
+        self._names = names
+
+    def convert(self, value: dict[str, Any]) -> dict[str, Any]:
+        present = [n for n in self._names if n in value]
+        if len(present) > 1:
+            raise ConverterInputError(
+                f"параметры {present} взаимоисключающие — задайте только один"
+            )
+        return value
+
+
+class RequiresTogether(Converter[dict[str, Any], dict[str, Any]]):
+    """Перечисленные поля — либо все заданы, либо все отсутствуют."""
+
+    _MIN_NAMES: ClassVar[int] = 2
+
+    def __init__(self, *names: str) -> None:
+        if len(names) < self._MIN_NAMES:
+            raise ValueError(
+                f"RequiresTogether требует минимум {self._MIN_NAMES} имени"
+            )
+        self._names = names
+
+    def convert(self, value: dict[str, Any]) -> dict[str, Any]:
+        present = [n for n in self._names if n in value]
+        if present and len(present) != len(self._names):
+            missing = [n for n in self._names if n not in value]
+            raise ConverterInputError(
+                f"параметры {list(self._names)} должны быть заданы вместе; "
+                f"отсутствуют: {missing}"
+            )
+        return value
+
+
+class Ordered(Converter[dict[str, Any], dict[str, Any]]):
+    """``value[first] <= value[second]``, когда оба поля заданы.
+
+    Применимо к числовым/строковым полям, сравнимым через ``<=``.
+    Если хотя бы одно из двух не задано — проверка пропускается.
+    """
+
+    def __init__(self, first: str, second: str) -> None:
+        self._first = first
+        self._second = second
+
+    def convert(self, value: dict[str, Any]) -> dict[str, Any]:
+        if (
+            self._first in value
+            and self._second in value
+            and value[self._first] > value[self._second]
+        ):
+            raise ConverterInputError(
+                f"{self._first}={value[self._first]!r} должно быть <= "
+                f"{self._second}={value[self._second]!r}"
+            )
         return value
