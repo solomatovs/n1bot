@@ -15,8 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from boba.adapters.tool_providers import StaticToolSource
-from boba.domain.core.tools import ToolSource, ToolSourceId
+from boba.domain.core.tools import StaticToolSource, ToolSource, ToolSourceId
 from boba.infra.tool_plugin_loader import ExtensionContext
 from boba_chromadb._config import ChromadbSection
 from boba_chromadb._kb import get_knowledge_base

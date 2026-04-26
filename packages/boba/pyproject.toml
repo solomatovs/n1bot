@@ -7,16 +7,16 @@ name = "boba"
 version = "0.1.0"
 description = "Boba — RAG agent for knowledge base"
 requires-python = ">=3.11,<4"
-# Минимум для агентского runtime: OpenAI-совместимый клиент и http.
-# Источники конфигурации (env, TOML, …) живут в отдельных пакетах
-# ``packages/boba-config-*`` — bootstrap приложения сам их подключает,
-# чтобы core не тащил парсеры конкретных форматов.
-# UI-зависимости (chainlit/pydantic-pin) живут в
+# Минимум для агентского runtime: только httpx (внутренние утилиты).
+# LLM-провайдеры/файловые workspace'ы/MessageService'ы/PromptProvider'ы
+# вынесены в отдельные pip-пакеты ``packages/boba-adapter-*`` — bootstrap
+# приложения сам их подключает, чтобы core не тащил конкретные SDK.
+# Источники конфигурации (env/TOML/…) — отдельные пакеты
+# ``packages/boba-config-*``. UI-зависимости (chainlit) — в
 # ``packages/boba-chainlit``; vector-store deps — в
 # ``packages/boba-ext-chromadb`` и ``packages/boba-cli-vector-index``.
 dependencies = [
     "httpx",
-    "openai",
 ]
 
 [project.optional-dependencies]
@@ -38,20 +38,17 @@ dev = [
 #     -not -path '*__pycache__*' -not -name '*.egg-info'
 [tool.setuptools.package-dir]
 "boba.domain" = "src/domain/src/boba/domain"
-"boba.adapters" = "src/adapters/src/boba/adapters"
 "boba.infra" = "src/infra/src/boba/infra"
 
 [tool.setuptools]
 packages = [
-    "boba.adapters",
-    "boba.adapters.llm",
     "boba.domain",
     "boba.domain.agent",
-    "boba.domain.agent.meat",
+    "boba.domain.agent.middleware",
     "boba.domain.agent.turn",
     "boba.domain.core",
     "boba.domain.core.tools",
     "boba.domain.llm",
-    "boba.domain.llm.meat",
+    "boba.domain.llm.middleware",
     "boba.infra",
 ]

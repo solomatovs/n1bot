@@ -9,18 +9,18 @@ from typing import Any
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainConverter,
+    FieldSpec,
     IsInt,
     IsString,
     MinValue,
     NonEmpty,
-    FieldSpec,
+    ObjectSchema,
     Pass,
     Required,
     Tool,
     ToolContext,
     ToolExecutionError,
     ToolId,
-    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )

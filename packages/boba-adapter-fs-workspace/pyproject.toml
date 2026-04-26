@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-adapter-fs-workspace"
+version = "0.1.0"
+description = "Filesystem WorkspaceShell/Registry adapter for the Boba agent."
+requires-python = ">=3.11,<4"
+# Реализует :class:`boba.domain.core.workspace.WorkspaceShell` и
+# :class:`WorkspaceRegistry` поверх локальной ФС: project, history,
+# scratch, prompt namespaces. Никаких внешних зависимостей кроме boba.
+dependencies = ["boba"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

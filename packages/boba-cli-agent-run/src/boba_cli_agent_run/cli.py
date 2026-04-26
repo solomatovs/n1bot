@@ -15,18 +15,6 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from boba.adapters.console_sink import ConsoleSink
-from boba.adapters.fs_workspace import (
-    FsHistoryWorkspaceRegistry,
-    FsProjectWorkspaceRegistry,
-    FsPromptWorkspaceRegistry,
-)
-from boba.adapters.in_memory_messages import InMemoryMessageService
-from boba.adapters.raw_llm_observer import (
-    CompositeRawLLMObserver,
-    FileContentObserver,
-    FileRawLLMObserver,
-)
 from boba.domain.agent.models import AgentRequest
 from boba.domain.core.config import ChainedConfigResolver
 from boba.domain.core.tools import ToolContext
@@ -44,6 +32,18 @@ from boba.infra.container import (
 from boba.infra.logging import configure_logging
 from boba.infra.prompt_loader import PromptLoader
 from boba.infra.tool_plugin_loader import ExtensionContext, ToolPluginLoader
+from boba_adapter_fs_workspace import (
+    FsHistoryWorkspaceRegistry,
+    FsProjectWorkspaceRegistry,
+    FsPromptWorkspaceRegistry,
+)
+from boba_adapter_messages import InMemoryMessageService
+from boba_adapter_openai import (
+    CompositeRawLLMObserver,
+    FileContentObserver,
+    FileRawLLMObserver,
+)
+from boba_cli_agent_run.console_sink import ConsoleSink
 from boba_config_env import EnvFileSource, EnvSource
 from boba_config_toml import (
     CONFIG_PATH_ENV,

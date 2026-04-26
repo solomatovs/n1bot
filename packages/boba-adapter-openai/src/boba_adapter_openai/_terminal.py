@@ -14,11 +14,11 @@ import openai
 from openai import OpenAI
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
-from boba.adapters.llm.openai_errors import OpenAIErrorConverter
-from boba.adapters.llm.openai_request import ToOpenAIRequestConverter
-from boba.adapters.llm.openai_response import FromOpenAIChunkConverter
-from boba.adapters.raw_llm_observer import RawLLMObserver, RequestOutcome
 from boba.domain.config import LLMConfig
+from boba_adapter_openai._errors import OpenAIErrorConverter
+from boba_adapter_openai._raw_observer import RawLLMObserver, RequestOutcome
+from boba_adapter_openai._request import ToOpenAIRequestConverter
+from boba_adapter_openai._response import FromOpenAIChunkConverter
 from boba.domain.core.patterns import StreamSource
 from boba.domain.llm.errors import LLMError
 from boba.domain.llm.events import (

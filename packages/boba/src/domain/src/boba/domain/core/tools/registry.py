@@ -75,6 +75,33 @@ class ToolSource(
         return state
 
 
+class StaticToolSource(ToolSource):
+    """Фиксированный набор ``Tool``, зашитый в код.
+
+    Подходит для builtin-инструментов: создаёшь список Tool-ов, оборачиваешь
+    в этот источник и регистрируешь в ``ToolFactory``.
+    """
+
+    def __init__(
+        self,
+        source_id: ToolSourceId,
+        priority: int,
+        tools: Iterable[Tool[Any]],
+    ) -> None:
+        self._id = source_id
+        self._priority = priority
+        self._tools = list(tools)
+
+    def id(self) -> ToolSourceId:
+        return self._id
+
+    def priority(self) -> int:
+        return self._priority
+
+    def tools(self) -> Iterable[Tool[Any]]:
+        return iter(self._tools)
+
+
 class ToolFactory(
     FoldFactory[
         ToolSourceId,

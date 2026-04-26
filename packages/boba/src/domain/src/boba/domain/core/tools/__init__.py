@@ -19,6 +19,7 @@ from boba.domain.core.tools.errors import (
     ToolOutputTooLargeError,
 )
 from boba.domain.core.tools.registry import (
+    StaticToolSource,
     ToolCatalog,
     ToolFactory,
     ToolSource,
@@ -94,6 +95,7 @@ __all__ = [
     "RequiresTogether",
     "SchemaArgsValidator",
     "SchemaContributor",
+    "StaticToolSource",
     "Tool",
     "ToolCall",
     "ToolCatalog",

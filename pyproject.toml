@@ -13,8 +13,11 @@
 testpaths = ["tests"]
 pythonpath = [
     "packages/boba/src/domain/src",
-    "packages/boba/src/adapters/src",
     "packages/boba/src/infra/src",
+    "packages/boba-adapter-fs-workspace/src",
+    "packages/boba-adapter-messages/src",
+    "packages/boba-adapter-openai/src",
+    "packages/boba-adapter-prompt-providers/src",
 ]
 addopts = ["--strict-markers"]
 
@@ -28,8 +31,11 @@ exclude = [
 ]
 extraPaths = [
     "packages/boba/src/domain/src",
-    "packages/boba/src/adapters/src",
     "packages/boba/src/infra/src",
+    "packages/boba-adapter-fs-workspace/src",
+    "packages/boba-adapter-messages/src",
+    "packages/boba-adapter-openai/src",
+    "packages/boba-adapter-prompt-providers/src",
     "packages/boba-config-env/src",
     "packages/boba-config-toml/src",
     "packages/boba-chainlit/src",
@@ -88,6 +94,10 @@ max-complexity = 10
 # и кладёт перед `boba.*`, что ломает группировку.
 known-first-party = [
     "boba",
+    "boba_adapter_fs_workspace",
+    "boba_adapter_messages",
+    "boba_adapter_openai",
+    "boba_adapter_prompt_providers",
     "boba_chainlit",
     "boba_chromadb",
     "boba_cli_agent_run",
