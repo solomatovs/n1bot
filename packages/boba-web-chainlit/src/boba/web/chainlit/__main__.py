@@ -3,14 +3,14 @@
 Единственное место в пакете, где собирается ConfigBundle. ChatSession
 получает готовый bundle через set_bundle() — без повторного похода в env/TOML.
 
-Шаги: ConfigBundle (Cli/Env/Toml — все автономны, читают свои каналы
-сами) → bridge_chainlit_env (server-поля в CHAINLIT_* env, app_root) →
-UIOverrideTomlConverter (UI-поля в app_root/.chainlit/config.toml) →
-run_chainlit(app.py).
+Шаги: ConfigBundle (CLI argparse строится из FieldSpec'ев на bind_schema,
+env/TOML читают свои каналы сами) → bridge_chainlit_env (server-поля в
+CHAINLIT_* env, app_root) → UIOverrideTomlConverter (UI-поля в
+app_root/.chainlit/config.toml) → run_chainlit(app.py).
 
-Имена CLI-флагов вычисляются из ConfigKey'ев секции (см. cli_flag_name).
-Свой argparse тут не объявляем — нет позиционных аргументов; флаги
-видит CliSource напрямую из sys.argv.
+Имена CLI-флагов вычисляются из ConfigKey'ев секции (см. cli_flag_name);
+``--help`` автогенерируется через CliSource по всем зарегистрированным
+секциям, опечатки во флагах валятся argparse-ошибкой на bind_schema.
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ from boba.adapter.openai import LLMTransportSection
 from boba.adapter.prompt_providers import PromptsSection
 from boba.config.cli import CliSource
 from boba.config.env import EnvFileSource, EnvSource
-from boba.config.toml import TomlFileSource, TomlSource
-from boba.domain.core.config import ChainedConfigResolver
+from boba.config.toml import CONFIG_PATH_ENV, TomlFileSource, TomlSource
+from boba.domain.core.patterns import ConverterInputError
 from boba.infra import (
     AgentSection,
     AppCoreSection,
@@ -42,26 +42,19 @@ from boba.web.chainlit.ui_overrides import UIOverrideTomlConverter
 # ──────────────────────────────────────────────────────────────────────
 
 
-def build_bundle() -> ConfigBundle:
-    """Собирает application ConfigBundle.
+def build_factory(argv: Sequence[str] | None = None) -> ConfigFactory:
+    """Готовая ConfigFactory с зарегистрированными секциями и
+    подключёнными источниками. Bundle ещё не собран — вызови
+    ``ConfigLoader(factory).load_bundle()`` или ``factory.build()``.
 
     Цепочка источников: CLI > env-file > env > toml-file > toml.
-    Все источники автономны: Cli ходит за sys.argv, Env за os.environ,
-    Toml за файлом по env BOBA_CONFIG_PATH. Регистрирует встроенные
-    секции (app_core/agent) и adapter-секции (FS-workspace, OpenAI,
-    prompt-providers, chainlit). Расширения через entry-point group
-    boba.config_sections подхватываются после.
+    Регистрирует встроенные секции (app_core/agent), adapter-секции
+    (FS-workspace, OpenAI, prompt-providers, chainlit) и поднимает
+    extension-секции через entry-point group boba.config_sections.
+    argparse-парсер строит CliSource из FieldSpec'ов всех зарегистри-
+    рованных секций на стадии ``factory.build()``.
     """
-    resolver = ChainedConfigResolver(
-        [
-            CliSource(),
-            EnvFileSource(),
-            EnvSource(),
-            TomlFileSource(),
-            TomlSource(),
-        ]
-    )
-    factory = ConfigFactory(resolver)
+    factory = ConfigFactory()
     factory.register(AppCoreSection())
     factory.register(AgentSection())
     factory.register(WorkspacesSection())
@@ -69,7 +62,23 @@ def build_bundle() -> ConfigBundle:
     factory.register(PromptsSection())
     factory.register(ChainlitSection())
     factory.discover_extension_sections()
-    return ConfigLoader(factory).load_bundle()
+    factory.attach_sources(
+        [
+            CliSource(argv),
+            EnvFileSource(),
+            EnvSource(extra_known={CONFIG_PATH_ENV}),
+            TomlFileSource(),
+            TomlSource(),
+        ]
+    )
+    return factory
+
+
+def build_bundle(argv: Sequence[str] | None = None) -> ConfigBundle:
+    """Тонкая обёртка над build_factory + load_bundle. Не ловит
+    ConverterInputError — caller'ы (main / тесты) сами решают, что с
+    ним делать."""
+    return ConfigLoader(build_factory(argv)).load_bundle()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -115,12 +124,16 @@ def write_ui_config_overrides(cfg: ChainlitConfig, app_root: Path) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    # argv в эту main приходит для совместимости с stdlib-конвенцией
-    # (entry-point script + python -m); CliSource внутри build_bundle
-    # читает sys.argv сам.
-    del argv
-    bundle = build_bundle()
+def main(argv: Sequence[str] | None = None) -> int:
+    # argv пробрасывается в CliSource через build_factory. None →
+    # CliSource берёт sys.argv[1:] сам (совместимо с stdlib-конвенцией
+    # entry-point script / python -m).
+    factory = build_factory(argv)
+    try:
+        bundle = ConfigLoader(factory).load_bundle()
+    except ConverterInputError as e:
+        print(f"error: {factory.format_config_error(e)}", file=sys.stderr)
+        return 2
     chainlit_cfg = bundle.section(ChainlitSection)
     app_root = bridge_chainlit_env(chainlit_cfg)
     write_ui_config_overrides(chainlit_cfg, app_root)
@@ -134,6 +147,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     app_path = Path(__file__).with_name("app.py")
     run_chainlit(str(app_path))
+    return 0
 
 
 if __name__ == "__main__":

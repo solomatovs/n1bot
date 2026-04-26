@@ -16,7 +16,7 @@ from abc import abstractmethod
 from collections.abc import Sized
 from typing import Any, ClassVar, Final, Generic, TypeVar
 
-from boba.domain.core.patterns import Converter, ConverterInputError
+from boba.domain.core.patterns import Converter, ConverterInputError, MissingValueError
 from boba.domain.core.schema import ParamWireSchema, SchemaContributor
 
 __all__ = [
@@ -134,18 +134,28 @@ class ChainConverter(Converter[Any, T], SchemaContributor, Generic[T]):
 
 
 class Required(Converter[Any, Any], SchemaContributor):
-    """Параметр обязателен. Бросает на MISSING и на None.
+    """Параметр обязателен. Бросает MissingValueError на MISSING/None.
 
-    Помечает параметр как required в wire-схеме.
+    Маркер MissingValueError — не просто текстовый ConverterInputError —
+    позволяет верхнему уровню (validate_object → ConfigSection.build →
+    ConfigFactory) отличить «значение не предоставлено» от «предоставлено
+    что-то невалидное» и сформировать operator-friendly recipe со списком
+    источников, которые могли бы это значение задать.
+
+    None трактуется как тот же missing-кейс: «явный null» от какого-то
+    источника не считается «значение есть, но битое» — Required-recipe
+    ровно тот же.
+
+    В wire-схему вкладывает required=True.
     """
 
     def convert(self, value: Any) -> Any:
         if value is MISSING:
-            raise ConverterInputError(
+            raise MissingValueError(
                 "параметр обязателен — значение не передано"
             )
         if value is None:
-            raise ConverterInputError("параметр обязателен — null недопустим")
+            raise MissingValueError("параметр обязателен — null недопустим")
         return value
 
     def contribute(self, schema: ParamWireSchema) -> None:
