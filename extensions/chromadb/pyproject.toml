@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-ext-chromadb"
+version = "0.1.0"
+description = "Read-only ChromaDB knowledge-base tools for the Boba agent."
+requires-python = ">=3.11,<4"
+# `boba` доставляется через PYTHONPATH (см. Dockerfile boba-artifacts), а
+# не через pip — поэтому в Dockerfile используем `pip install --no-deps`.
+# `chromadb` ставится pip'ом отдельно (через requirements.txt boba-base).
+dependencies = ["boba", "chromadb>=0.5"]
+
+[project.entry-points."boba.tools"]
+chromadb = "boba_chromadb:register_tools"
+
+[tool.setuptools.packages.find]
+where = ["src"]
