@@ -109,34 +109,34 @@ class CatTool(Tool[CatArgs]):
             ),
         )
 
-    def execute(self, ctx: ToolContext, args: CatArgs) -> ToolResult:
-        if args.end_line - args.start_line + 1 > _MAX_LINES:
+    def execute(self, ctx: ToolContext, req: CatArgs) -> ToolResult:
+        if req.end_line - req.start_line + 1 > _MAX_LINES:
             raise ToolOutputTooLargeError(
                 tool_id=self._ID,
                 limit=_MAX_LINES,
                 unit="строк",
                 hint=(
                     f"Запрошенный диапазон "
-                    f"{args.start_line}-{args.end_line} шире лимита. "
+                    f"{req.start_line}-{req.end_line} шире лимита. "
                     f"Читай окнами ≤ {_MAX_LINES} строк: "
-                    f"start_line={args.start_line}, "
-                    f"end_line={args.start_line + _MAX_LINES - 1}."
+                    f"start_line={req.start_line}, "
+                    f"end_line={req.start_line + _MAX_LINES - 1}."
                 ),
             )
 
         try:
-            with ctx.project_workspace.read_text(args.path, args.encoding) as f:
-                text, last = self._read_range(f, args.start_line, args.end_line)
+            with ctx.project_workspace.read_text(req.path, req.encoding) as f:
+                text, last = self._read_range(f, req.start_line, req.end_line)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Файл не найден: {args.path}"
+                tool_id=self._ID, message=f"Файл не найден: {req.path}"
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
                 tool_id=self._ID, message=f"Ошибка чтения: {e}"
             ) from e
 
-        label = f"{args.path}:{args.start_line}-{last}"
+        label = f"{req.path}:{req.start_line}-{last}"
         return ToolResult(content=f"### {label}\n\n{text}")
 
     @staticmethod

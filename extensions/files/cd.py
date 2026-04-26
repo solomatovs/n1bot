@@ -72,13 +72,13 @@ class CdTool(Tool[CdArgs]):
             ),
         )
 
-    def execute(self, ctx: ToolContext, args: CdArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, req: CdArgs) -> ToolResult:
         try:
-            ctx.project_workspace.cd(args.path)
+            ctx.project_workspace.cd(req.path)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
-                message=f"Директория не найдена: {args.path}",
+                message=f"Директория не найдена: {req.path}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(

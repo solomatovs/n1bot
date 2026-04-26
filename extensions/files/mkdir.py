@@ -74,15 +74,15 @@ class MkdirTool(Tool[MkdirArgs]):
             ),
         )
 
-    def execute(self, ctx: ToolContext, args: MkdirArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, req: MkdirArgs) -> ToolResult:
         try:
-            ctx.project_workspace.mkdir(args.path)
+            ctx.project_workspace.mkdir(req.path)
         except WorkspaceError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
                 message=f"Ошибка mkdir: {e}",
             ) from e
-        return ToolResult(content=f"Директория создана: {args.path}")
+        return ToolResult(content=f"Директория создана: {req.path}")
 
 def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
     yield StaticToolSource(

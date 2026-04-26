@@ -148,23 +148,23 @@ class GrepTool(Tool[GrepArgs]):
             ),
         )
 
-    def execute(self, ctx: ToolContext, args: GrepArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, req: GrepArgs) -> ToolResult:
         try:
             iterator = ctx.project_workspace.grep(
-                args.pattern,
-                args.path,
-                recursive=args.recursive,
-                include=args.include,
-                case_insensitive=args.case_insensitive,
-                context=args.context,
-                limit=args.limit + 1,  # +1 чтобы заметить, что упёрлись в потолок
-                fixed_string=args.fixed_string,
+                req.pattern,
+                req.path,
+                recursive=req.recursive,
+                include=req.include,
+                case_insensitive=req.case_insensitive,
+                context=req.context,
+                limit=req.limit + 1,  # +1 чтобы заметить, что упёрлись в потолок
+                fixed_string=req.fixed_string,
             )
-            matches = list(islice(iterator, args.limit + 1))
+            matches = list(islice(iterator, req.limit + 1))
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
-                message=f"Путь не найден: {args.path}",
+                message=f"Путь не найден: {req.path}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
@@ -172,17 +172,17 @@ class GrepTool(Tool[GrepArgs]):
                 message=f"Ошибка grep: {e}",
             ) from e
 
-        truncated = len(matches) > args.limit
+        truncated = len(matches) > req.limit
         if truncated:
-            matches = matches[: args.limit]
+            matches = matches[: req.limit]
 
         if not matches:
             return ToolResult(content="Совпадений не найдено.")
 
-        body = self._format_matches(matches, args.context)
+        body = self._format_matches(matches, req.context)
         footer = f"\n\n{len(matches)} совпадение(й)"
         if truncated:
-            footer += f" (truncated at limit={args.limit})"
+            footer += f" (truncated at limit={req.limit})"
         return ToolResult(content=body + footer)
 
     @staticmethod

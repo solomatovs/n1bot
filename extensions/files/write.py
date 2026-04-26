@@ -95,11 +95,11 @@ class WriteTool(Tool[WriteArgs]):
             ),
         )
 
-    def execute(self, ctx: ToolContext, args: WriteArgs) -> ToolResult:
-        existed = ctx.project_workspace.exists(args.path)
+    def execute(self, ctx: ToolContext, req: WriteArgs) -> ToolResult:
+        existed = ctx.project_workspace.exists(req.path)
         try:
-            with ctx.project_workspace.write_text(args.path, args.encoding) as f:
-                f.write(args.content)
+            with ctx.project_workspace.write_text(req.path, req.encoding) as f:
+                f.write(req.content)
         except WorkspaceError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
@@ -107,7 +107,7 @@ class WriteTool(Tool[WriteArgs]):
             ) from e
         action = "обновлён" if existed else "создан"
         return ToolResult(
-            content=f"Файл {action}: {args.path} ({len(args.content)} символов)",
+            content=f"Файл {action}: {req.path} ({len(req.content)} символов)",
         )
 
 def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:

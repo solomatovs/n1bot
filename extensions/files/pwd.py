@@ -53,7 +53,7 @@ class PwdTool(Tool[PwdArgs]):
             input_schema=ToolInputSchema(params=[], invariants=Pass()),
         )
 
-    def execute(self, ctx: ToolContext, args: PwdArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, req: PwdArgs) -> ToolResult:
         return ToolResult(content=ctx.project_workspace.cwd)
 
 def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:

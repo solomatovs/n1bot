@@ -113,19 +113,19 @@ class EditTool(Tool[EditArgs]):
             ),
         )
 
-    def execute(self, ctx: ToolContext, args: EditArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, req: EditArgs) -> ToolResult:
         try:
             applied = ctx.project_workspace.edit_text(
-                args.path,
-                args.old_string,
-                args.new_string,
-                replace_all=args.replace_all,
-                encoding=args.encoding,
+                req.path,
+                req.old_string,
+                req.new_string,
+                replace_all=req.replace_all,
+                encoding=req.encoding,
             )
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
-                message=f"Файл не найден: {args.path}",
+                message=f"Файл не найден: {req.path}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
@@ -133,7 +133,7 @@ class EditTool(Tool[EditArgs]):
                 message=f"Ошибка edit: {e}",
             ) from e
         return ToolResult(
-            content=f"Заменено в {args.path}: {applied} вхождение(й).",
+            content=f"Заменено в {req.path}: {applied} вхождение(й).",
         )
 
 def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
