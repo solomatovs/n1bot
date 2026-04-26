@@ -22,7 +22,7 @@ from boba.domain.agent.events import (
     AnswerToken,
     GenerationDone,
     ToolCallArgumentDelta,
-    ToolCallBegin,
+    ToolCallStreamStarted,
 )
 from boba.domain.agent.models import AgentContext
 from boba.domain.core.patterns import Converter, StreamSource
@@ -143,6 +143,10 @@ class _ParserRun:
     scanner: JsonDepthScanner = field(default_factory=JsonDepthScanner)
     outer_depth: int = 0
     tail_answer_started: bool = False
+    # Заполняются при эмите ``ToolCallStreamStarted`` — нужны для
+    # обогащения последующих ``ToolCallArgumentDelta`` именем tool'а.
+    tool_call_id: str = ""
+    tool_name: str = ""
 
 
 class JsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
@@ -233,7 +237,7 @@ dialogue.AssistantMessagePersistenceMiddleware`, чтобы тот аккуму�
             run.state = _ParserState.PASSTHROUGH
             yield event
             return
-        if isinstance(event, ToolCallBegin):
+        if isinstance(event, ToolCallStreamStarted):
             run.pending_started = None
             run.state = _ParserState.PASSTHROUGH
             yield event
@@ -267,7 +271,7 @@ dialogue.AssistantMessagePersistenceMiddleware`, чтобы тот аккуму�
             yield event
             run.state = _ParserState.PASSTHROUGH
             return
-        if isinstance(event, ToolCallBegin):
+        if isinstance(event, ToolCallStreamStarted):
             yield from self._flush_header_as_text(
                 run.rid,
                 run.pending_started,
@@ -340,11 +344,13 @@ dialogue.AssistantMessagePersistenceMiddleware`, чтобы тот аккуму�
         if header is None:
             return
         run.pending_started = None
-        yield ToolCallBegin(
+        run.tool_call_id = f"call_{header.name}"
+        run.tool_name = header.name
+        yield ToolCallStreamStarted(
             request_id=run.rid,
             index=0,
-            tool_call_id=f"call_{header.name}",
-            tool_name=header.name,
+            tool_call_id=run.tool_call_id,
+            tool_name=run.tool_name,
         )
         run.scanner.consume(run.header_buffer[: header.args_start_idx])
         run.outer_depth = run.scanner.depth
@@ -368,7 +374,9 @@ dialogue.AssistantMessagePersistenceMiddleware`, чтобы тот аккуму�
             yield ToolCallArgumentDelta(
                 request_id=run.rid,
                 index=0,
-                arguments=args_out,
+                tool_call_id=run.tool_call_id,
+                tool_name=run.tool_name,
+                arguments_chunk=args_out,
             )
         if tail_out:
             if not run.tail_answer_started:

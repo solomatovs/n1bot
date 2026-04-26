@@ -59,6 +59,7 @@ class MessageStoreError(TerminalError[RequestId, AgentEvent]):
         )
 
 
+
 class MessageStoreWriteError(MessageStoreError):
     """Не удалось записать сообщение в хранилище."""
 

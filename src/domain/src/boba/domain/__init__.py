@@ -16,9 +16,10 @@
 
 Коллизии имён:
 
-- ``LLMRequestStarted``, ``LLMRequestSent`` есть и в
-  :mod:`boba.domain.llm`, и в :mod:`boba.domain.agent` — это разные
-  события, их нельзя смешивать на плоском уровне ``boba.domain``;
+- ``LLMRequestSent`` есть и в :mod:`boba.domain.llm`, и в
+  :mod:`boba.domain.agent` — это разные события (LLM-уровень = chunk
+  «отправили HTTP-запрос», agent-уровень = «round-trip к LLM начат»),
+  их нельзя смешивать на плоском уровне ``boba.domain``;
   используйте подпакеты.
 """
 

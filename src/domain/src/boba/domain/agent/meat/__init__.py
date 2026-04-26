@@ -18,10 +18,7 @@ from boba.domain.agent.meat.error_routing import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
 )
-from boba.domain.agent.meat.llm import (
-    LLMEventToAgentEventConverter,
-    LLMInvokeMiddleware,
-)
+from boba.domain.agent.meat.llm import LLMInvokeMiddleware
 from boba.domain.agent.meat.loop_control import (
     IterationCounterMiddleware,
     StopOnAnyFailure,
@@ -43,7 +40,6 @@ __all__ = [
     "JsonDepthScanner",
     "JsonHeaderParser",
     "JsonToolCallHeader",
-    "LLMEventToAgentEventConverter",
     "LLMInvokeMiddleware",
     "ParsedJsonToolCall",
     "RepeatedFormatFailureGuardMiddleware",

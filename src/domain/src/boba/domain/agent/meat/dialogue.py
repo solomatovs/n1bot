@@ -1,6 +1,6 @@
 """AssistantMessagePersistenceMiddleware — агрегация стриминговых
-событий ответа в ``*Complete`` события и запись assistant-сообщения
-через :class:`DialogueWriter`.
+событий ответа в ``ContentSnapshot``-события и запись assistant-
+сообщения через :class:`DialogueWriter`.
 
 Поведение на стриме событий inner'а:
 
@@ -9,22 +9,19 @@
   генерацию с нуля — до первого yield'а);
 - :class:`AnswerToken` / :class:`ThinkingToken` → аккумуляция
   во внутренние буферы;
-- :class:`ToolCallBegin` → регистрация tool call по ``index``;
+- :class:`ToolCallStreamStarted` → регистрация tool call по ``index``;
 - :class:`ToolCallArgumentDelta` → аккумуляция arguments-чанков к
   соответствующему ``index``;
 - :class:`GenerationDone` → **flush**: эмитит
   :class:`AnswerComplete` / :class:`ThinkingComplete` (если были
   текстовые токены) и :class:`ToolCallComplete` (по одному на каждый
-  tool_call index) **перед** самой ``GenerationDone``; затем коммитит
-  assistant-сообщение через :class:`DialogueWriter`.
-
-Порядок tool_calls в финальном сообщении — по возрастанию
-``index`` (как их нумеровал провайдер); chronological-порядок
-поступления чанков внутри каждого tool_call сохраняется.
+  tool_call index, в порядке возрастания) **перед** самой
+  ``GenerationDone``; затем коммитит assistant-сообщение через
+  :class:`DialogueWriter`.
 
 ``RefusalComplete`` (из ``RefusalToken``) пока не эмитим — событие
-``RefusalToken`` не мэпится в агент-слое. Когда появится, семантика
-идёт по той же схеме (accumulate → flush → durable event).
+``RefusalToken`` не используется в полной семантике на агент-слое.
+Когда появится, семантика идёт по той же схеме.
 """
 
 from __future__ import annotations
@@ -36,15 +33,14 @@ from boba.domain.agent.dialogue_writer import DialogueWriter
 from boba.domain.agent.events import (
     AgentEvent,
     AnswerComplete,
-    AnswerDiscarded,
     AnswerToken,
     GenerationDone,
     GenerationStarted,
     ThinkingComplete,
     ThinkingToken,
     ToolCallArgumentDelta,
-    ToolCallBegin,
     ToolCallComplete,
+    ToolCallStreamStarted,
 )
 from boba.domain.agent.models import AgentContext
 from boba.domain.core.patterns import StreamSource
@@ -90,13 +86,7 @@ class AssistantMessagePersistenceMiddleware(StreamSource[AgentContext, AgentEven
                 case AnswerToken(request_id=rid, token=t):
                     self._answer[rid].append(t)
                     yield event
-                case AnswerDiscarded(request_id=rid):
-                    # Strict-парсер переинтерпретировал ответ как tool_call —
-                    # сбрасываем накопленный answer-буфер, чтобы он не
-                    # попал в AnswerComplete / assistant-msg.
-                    self._answer.pop(rid, None)
-                    yield event
-                case ToolCallBegin(
+                case ToolCallStreamStarted(
                     request_id=rid,
                     index=i,
                     tool_call_id=tid,
@@ -107,7 +97,7 @@ class AssistantMessagePersistenceMiddleware(StreamSource[AgentContext, AgentEven
                 case ToolCallArgumentDelta(
                     request_id=rid,
                     index=i,
-                    arguments=a,
+                    arguments_chunk=a,
                 ):
                     if i in self._tool_calls[rid]:
                         self._tool_calls[rid][i][2].append(a)
@@ -141,14 +131,9 @@ class AssistantMessagePersistenceMiddleware(StreamSource[AgentContext, AgentEven
 
         tool_calls: list[LLMToolCall] = []
         for _index, (tid, tn, arg_parts) in sorted(tool_calls_raw.items()):
-            arg_str = "".join(arg_parts)
-            yield ToolCallComplete(
-                request_id=rid,
-                tool_call_id=tid,
-                tool_name=tn,
-                arguments=arg_str,
-            )
-            tool_calls.append(LLMToolCall(id=tid, name=tn, arguments=arg_str))
+            call = LLMToolCall(id=tid, name=tn, arguments="".join(arg_parts))
+            yield ToolCallComplete(request_id=rid, call=call)
+            tool_calls.append(call)
 
         content = "".join(answer_parts)
         if content or tool_calls:

@@ -1,41 +1,27 @@
-"""
-Sink в stdout/stderr с покрытием всех :class:`AgentEvent`-категорий.
-Назначение — читаемый отладочный лог хода агентского цикла:
+"""Sink в stdout/stderr поверх семей событий.
+
+Идея: sink матчит ровно по семьям (`PhaseTransition`, `ContentDelta`,
+`ContentSnapshot`, `Advisory`, `Terminal`) и дёргает интерфейс семьи
+(``label() / body() / slot() / chunk() / headline() / details() /
+severity()``). Concrete-типы видны, но не нужны — добавление нового
+concrete'а в семью не требует правок sink'а.
 """
 
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from typing import TextIO
 
 from boba.domain.agent.events import (
+    Advisory,
     AgentEvent,
-    AnswerComplete,
-    AnswerDiscarded,
-    AnswerStarted,
-    AnswerToken,
-    GenerationDone,
-    GenerationFailed,
-    GenerationRetried,
-    GenerationStarted,
-    IterationStarted,
-    LLMRequestStarted,
-    MaxIterationsReached,
-    PersistenceFailed,
-    PromptFailed,
-    RefusalComplete,
-    RefusalToken,
-    RepeatedFormatFailure,
-    ThinkingComplete,
-    ThinkingStarted,
-    ThinkingToken,
-    ToolCallBegin,
-    ToolCallComplete,
-    ToolCallFormatFailed,
-    ToolExecutionFailed,
-    ToolExecutionStarted,
-    ToolResultReady,
-    UserQueryReceived,
+    ContentDelta,
+    ContentSnapshot,
+    PhaseTransition,
+    Severity,
+    SlotKind,
+    Terminal,
 )
 from boba.domain.agent.models import AgentContext
 from boba.domain.core.patterns import StreamSink
@@ -51,26 +37,47 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
       * ``None`` (по умолчанию) — авто: включаем, если оба потока —
         TTY и не выставлена переменная окружения ``NO_COLOR``.
       * ``True`` / ``False`` — явный override.
+
+    ``verbose``:
+      * ``False`` (по умолчанию) — для ``PhaseTransition`` показываем
+        только ``label()``; ``body()`` пропускаем.
+      * ``True`` — показываем и ``body()`` (полные details, payload'ы
+        round-trip'а).
+
+    Streaming-токены идут inline без перевода строки. ``ContentSnapshot``
+    для streaming-слотов (ANSWER/THINKING/REFUSAL) только закрывает
+    строку — токены уже выведены потоково. Остальные snapshot'ы
+    рисуются полностью с заголовком и body.
     """
+
+    # ── Цвета ────────────────────────────────────────────────────────
+    _RESET = "\x1b[0m"
+    _DIM = "\x1b[2m"
+    _GREEN = "\x1b[32m"
+    _YELLOW = "\x1b[33m"
+    _CYAN = "\x1b[36m"
+    _MAGENTA = "\x1b[35m"
+    _BLUE = "\x1b[34m"
+    _BOLD_RED = "\x1b[1;31m"
+    _BOLD_CYAN = "\x1b[1;36m"
+    _BOLD_GREEN = "\x1b[1;32m"
+
+    # Слоты, у которых snapshot — это просто закрытие streaming-строки.
+    _STREAMING_SLOTS = frozenset({SlotKind.ANSWER, SlotKind.THINKING, SlotKind.REFUSAL})
+
+    _MAX_PREVIEW = 200
 
     def __init__(
         self,
         stdout: TextIO,
         stderr: TextIO,
         use_color: bool | None = None,
+        verbose: bool = False,
     ) -> None:
-        self._RESET = "\x1b[0m"
-        self._DIM = "\x1b[2m"
-        self._GREEN = "\x1b[32m"
-        self._YELLOW = "\x1b[33m"
-        self._CYAN = "\x1b[36m"
-        self._MAGENTA = "\x1b[35m"
-        self._BOLD_RED = "\x1b[1;31m"
-        self._BOLD_CYAN = "\x1b[1;36m"
-        self._BOLD_GREEN = "\x1b[1;32m"
         self._stdout = stdout
         self._stderr = stderr
         self._color = self._resolve_color(stdout, stderr, use_color)
+        self._verbose = verbose
 
     @staticmethod
     def _resolve_color(
@@ -88,159 +95,91 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
     def name(self) -> str:
         return "ConsoleSink"
 
-    def handle(self, ctx: AgentContext, event: AgentEvent) -> None:  # noqa: C901, PLR0912, PLR0915
+    # ── Главный диспетчер по семьям ──────────────────────────────────
+
+    def handle(self, ctx: AgentContext, event: AgentEvent) -> None:
+        del ctx
         match event:
-            # ── Streaming tokens (inline, без перевода строки) ──────────
-            case AnswerToken(token=t):
-                self._inline(t)  # answer — без подкраски (основной текст)
-            case ThinkingToken(token=t):
-                self._inline(self._paint(t, self._DIM))
-            case RefusalToken(token=t):
-                self._inline(self._paint(t, self._YELLOW))
+            case ContentDelta():
+                self._on_delta(event)
+            case ContentSnapshot():
+                self._on_snapshot(event)
+            case PhaseTransition():
+                self._on_phase(event)
+            case Advisory():
+                self._on_advisory(event)
+            case Terminal():
+                self._on_terminal(event)
 
-            # ── Lifecycle markers ───────────────────────────────────────
-            case IterationStarted(iteration=i, max_iterations=mx):
-                self._line(
-                    self._paint(f"\n=== Iteration {i}/{mx} ===", self._BOLD_CYAN)
-                )
-            case LLMRequestStarted(model=m, messages_count=mc, has_tools=ht):
-                self._line(
-                    self._paint(
-                        f"[LLMRequest] model={m} messages={mc} has_tools={ht}",
-                        self._DIM,
-                    )
-                )
-            case GenerationStarted():
-                self._line(self._paint("[GenerationStarted]", self._DIM))
-            case GenerationRetried(attempt=a, reason=r, status_code=sc):
-                self._line(
-                    self._paint(
-                        f"[GenerationRetried] attempt={a} reason={r} status={sc}",
-                        self._YELLOW,
-                    )
-                )
-            case ThinkingStarted():
-                self._line(self._paint("\n[thinking]", self._CYAN))
-            case AnswerStarted():
-                self._line(self._paint("\n[answer]", self._BOLD_CYAN))
-            case ToolCallBegin(index=i, tool_name=tn, tool_call_id=tid):
-                self._line(
-                    self._paint(
-                        f"\n[ToolCall#{i} begin] name={tn} id={tid}",
-                        self._MAGENTA,
-                    )
-                )
-            case ToolExecutionStarted(tool_name=tn, tool_call_id=tid):
-                self._line(
-                    self._paint(
-                        f"[ToolExec start] name={tn} id={tid}",
-                        self._MAGENTA,
-                    )
-                )
-            case GenerationDone(finish_reason=fr):
-                tail = "" if fr.is_terminal else " (continuing)"
-                prefix = "\n" if fr.is_terminal else ""
-                self._line(
-                    self._paint(
-                        f"{prefix}[GenerationDone] finish_reason={fr.value}{tail}",
-                        self._DIM,
-                    )
-                )
+    # ── Per-family ───────────────────────────────────────────────────
 
-            # ── Durable messages ────────────────────────────────────────
-            case UserQueryReceived(query=q):
-                self._line(
-                    self._paint(f"[UserQuery] {self._truncate(q)}", self._BOLD_GREEN)
-                )
-            case ThinkingComplete():
-                self._line("")  # newline после потока thinking-токенов
-            case AnswerComplete():
-                self._line("")  # newline после потока answer-токенов
-            case RefusalComplete():
-                self._line("")
-            case AnswerDiscarded():
-                self._line(
-                    self._paint(
-                        "[AnswerDiscarded] (re-interpreted as tool_call)",
-                        self._YELLOW,
-                    )
-                )
-            case ToolCallComplete(tool_name=tn, arguments=a):
-                self._line(
-                    self._paint(
-                        f"[ToolCall complete] name={tn} args={self._truncate(a)}",
-                        self._MAGENTA,
-                    )
-                )
-            case ToolResultReady(tool_name=tn, content=c):
-                self._line(
-                    self._paint(
-                        f"[ToolResult] name={tn} content={self._truncate(c)}",
-                        self._GREEN,
-                    )
-                )
+    def _on_delta(self, e: ContentDelta) -> None:
+        # Inline-токен в slot — без перевода строки.
+        chunk = e.chunk()
+        if not chunk:
+            return
+        color = self._color_for_slot(e.slot())
+        self._inline(self._paint(chunk, color))
 
-            # ── User notifications (stderr) ─────────────────────────────
-            case ToolExecutionFailed(
-                error_kind=k, tool_name=tn, tool_call_id=tid, message=msg
-            ):
-                self._err(
-                    self._paint(
-                        f"[ToolExec failed] kind={k} name={tn} id={tid}: {msg}",
-                        self._YELLOW,
-                    )
-                )
-            case ToolCallFormatFailed(error_kind=k, message=msg):
-                self._err(
-                    self._paint(
-                        f"[ToolCallFormat failed] kind={k}: {msg}",
-                        self._YELLOW,
-                    )
-                )
+    def _on_snapshot(self, e: ContentSnapshot) -> None:
+        slot = e.slot()
+        # Для streaming-слотов токены уже выведены — просто закрываем строку.
+        if slot in self._STREAMING_SLOTS:
+            self._line("")
+            return
+        color = self._color_for_slot(slot)
+        head_label = slot.value
+        if e.headline():
+            head_label = f"{head_label}:{e.headline()}"
+        head = f"[{head_label}]"
+        body = self._truncate(e.body())
+        self._line(self._paint(f"{head} {body}", color))
 
-            # ── Terminal failures (stderr, явный префикс) ───────────────
-            case GenerationFailed(error_kind=k, message=msg):
-                self._err(
-                    self._paint(
-                        f"[FATAL GenerationFailed] kind={k}: {msg}",
-                        self._BOLD_RED,
-                    )
-                )
-            case MaxIterationsReached(limit=lim, iteration=it, message=msg):
-                self._err(
-                    self._paint(
-                        f"[FATAL MaxIterations] limit={lim} iter={it}: {msg}",
-                        self._BOLD_RED,
-                    )
-                )
-            case PromptFailed(error_kind=k, provider=p, message=msg):
-                self._err(
-                    self._paint(
-                        f"[FATAL PromptFailed] kind={k} provider={p}: {msg}",
-                        self._BOLD_RED,
-                    )
-                )
-            case RepeatedFormatFailure(count=c, limit=lim, message=msg):
-                self._err(
-                    self._paint(
-                        f"[FATAL RepeatedFormatFailure] {c}/{lim}: {msg}",
-                        self._BOLD_RED,
-                    )
-                )
-            case PersistenceFailed(error_kind=k, message=msg):
-                self._err(
-                    self._paint(
-                        f"[FATAL PersistenceFailed] kind={k}: {msg}",
-                        self._BOLD_RED,
-                    )
-                )
+    def _on_phase(self, e: PhaseTransition) -> None:
+        color = self._YELLOW if e.severity() is Severity.WARN else self._DIM
+        details_str = self._fmt_details(e.details())
+        self._line(self._paint(f"[{e.label()}]{details_str}", color))
+        body = e.body()
+        if self._verbose and body:
+            self._line(self._paint(self._truncate(body), self._DIM))
 
-            # ToolCallArgumentDelta, LLMRequestSent — намеренно подавлены.
+    def _on_advisory(self, e: Advisory) -> None:
+        details_str = self._fmt_details(e.details())
+        self._err(self._paint(f"[WARN] {e.headline()}{details_str}", self._YELLOW))
+        body = e.body()
+        if body:
+            self._err(self._paint(self._truncate(body), self._DIM))
 
-    # ── helpers ─────────────────────────────────────────────────────────
+    def _on_terminal(self, e: Terminal) -> None:
+        details_str = self._fmt_details(e.details())
+        self._err(self._paint(f"[FATAL] {e.headline()}{details_str}", self._BOLD_RED))
+        body = e.body()
+        if body:
+            self._err(self._paint(self._truncate(body), self._DIM))
+
+    # ── helpers ──────────────────────────────────────────────────────
+
+    def _color_for_slot(self, slot: SlotKind) -> str:
+        # ANSWER без подкраски — это основной текст ответа пользователю.
+        return {
+            SlotKind.ANSWER: "",
+            SlotKind.THINKING: self._DIM,
+            SlotKind.REFUSAL: self._YELLOW,
+            SlotKind.TOOL_ARGS: self._MAGENTA,
+            SlotKind.TOOL_CALL: self._MAGENTA,
+            SlotKind.TOOL_RESULT: self._GREEN,
+            SlotKind.USER_QUERY: self._BOLD_GREEN,
+            SlotKind.FEEDBACK: self._BLUE,
+        }[slot]
+
+    def _fmt_details(self, details: Mapping[str, str]) -> str:
+        if not details:
+            return ""
+        items = " ".join(f"{k}={v}" for k, v in details.items() if v != "")
+        return f" {items}" if items else ""
 
     def _paint(self, text: str, code: str) -> str:
-        if not self._color:
+        if not self._color or not code:
             return text
         return f"{code}{text}{self._RESET}"
 
@@ -255,8 +194,6 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
     def _err(self, text: str) -> None:
         self._stderr.write(text + "\n")
         self._stderr.flush()
-
-    _MAX_PREVIEW = 200
 
     @classmethod
     def _truncate(cls, text: str) -> str:

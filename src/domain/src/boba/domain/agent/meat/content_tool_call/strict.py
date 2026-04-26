@@ -16,14 +16,13 @@ from typing import ClassVar
 from boba.domain.agent.errors import LLMToolCallFormatError
 from boba.domain.agent.events import (
     AgentEvent,
-    AnswerDiscarded,
     AnswerStarted,
     AnswerToken,
     GenerationDone,
     ThinkingStarted,
     ThinkingToken,
     ToolCallArgumentDelta,
-    ToolCallBegin,
+    ToolCallStreamStarted,
 )
 from boba.domain.agent.models import AgentContext
 from boba.domain.core.patterns import Converter, StreamSource
@@ -134,10 +133,12 @@ _TokenEvent = AnswerToken | ThinkingToken
 class _ChannelState:
     token_cls: type[_TokenEvent]
     started_cls: type[_StartedEvent]
-    # content персистится как assistant-message и требует discard при
-    # переинтерпретации; thinking в assistant-message не попадает.
-    emit_discard: bool
     mode: ChannelMode = ChannelMode.UNDECIDED
+    # В UNDECIDED накапливаем started-события, чтобы yield-нуть их
+    # одновременно с переходом в PASSTHROUGH (когда первый токен
+    # оказался не JSON-префиксом). В BUFFERING держим started-ы
+    # «арестованными»: если канал переинтерпретируется как tool_call —
+    # они вообще не уйдут наружу.
     pending_started: _StartedEvent | None = None
     buffer: str = ""
 
@@ -152,9 +153,17 @@ class _ChannelState:
 
 class StrictJsonContentToolCallMiddleware(StreamSource[AgentContext, AgentEvent]):
     """Срабатывает на ``AnswerToken``/``ThinkingToken`` с префиксом ``{``:
-    буферизует канал до ``GenerationDone``, парсит как tool call, переписывает
-    поток на ``ToolCall*``-события. Native ``ToolCallBegin`` отменяет оба
-    канала. При одновременном buffering-е приоритет у content.
+    буферизует канал **транзакционно** до ``GenerationDone``, парсит как
+    tool call, переписывает поток на ``ToolCall*``-события. Native
+    ``ToolCallStreamStarted`` отменяет оба канала. При одновременном
+    buffering-е приоритет у content.
+
+    Транзакционность: в режиме ``BUFFERING`` middleware **не пропускает**
+    ни ``Started``-события, ни токены. Sink увидит контент канала только
+    после ``GenerationDone``: либо tool_call-серию (если парсер
+    распознал), либо «отложенный» `Started`+единый `Token` (если парс
+    провалился — для self-correction LLM). Это убирает необходимость в
+    компенсирующем «отзыв слота» событии.
 
     Ставится **innermost** — внутри
     :class:`~boba.domain.agent.meat.dialogue.\
@@ -179,19 +188,22 @@ AssistantMessagePersistenceMiddleware`.
         content = _ChannelState(
             token_cls=AnswerToken,
             started_cls=AnswerStarted,
-            emit_discard=True,
         )
         reasoning = _ChannelState(
             token_cls=ThinkingToken,
             started_cls=ThinkingStarted,
-            emit_discard=False,
         )
         channels = (content, reasoning)
 
         for event in self._inner.stream(ctx):
-            if isinstance(event, ToolCallBegin):
+            if isinstance(event, ToolCallStreamStarted):
+                # Native tool_call отменяет наши спекуляции по обоим каналам.
+                # Если что-то было «арестовано» в UNDECIDED — флэшим как
+                # обычный текст, чтобы не потерять.
                 for ch in channels:
-                    ch.pending_started = None
+                    if ch.mode.is_undecided() and ch.pending_started is not None:
+                        yield ch.pending_started
+                        ch.pending_started = None
                     if ch.mode.is_undecided():
                         ch.mode = ChannelMode.PASSTHROUGH
                 yield event
@@ -221,9 +233,10 @@ AssistantMessagePersistenceMiddleware`.
             yield event
             return
         if ch.mode.is_buffering():
+            # Транзакционно: ничего не пропускаем наружу, только копим
+            # в buffer. Started-event уже «арестован» в pending_started.
             if isinstance(event, ch.token_cls):
                 ch.buffer += event.token
-            yield event
             return
         yield from self._decide(ch, event)
 
@@ -236,15 +249,18 @@ AssistantMessagePersistenceMiddleware`.
             ch.pending_started = event
             return
         if isinstance(event, ch.token_cls):
+            if event.token.lstrip().startswith("{"):
+                # Подозреваем JSON tool_call → задерживаем started + первый
+                # токен до решения на ``GenerationDone``.
+                ch.buffer = event.token
+                ch.mode = ChannelMode.BUFFERING
+                return
+            # Обычный текст → флэшим started + токен и переключаемся.
             if ch.pending_started is not None:
                 yield ch.pending_started
                 ch.pending_started = None
             yield event
-            if event.token.lstrip().startswith("{"):
-                ch.buffer = event.token
-                ch.mode = ChannelMode.BUFFERING
-            else:
-                ch.mode = ChannelMode.PASSTHROUGH
+            ch.mode = ChannelMode.PASSTHROUGH
             return
         yield event
 
@@ -254,14 +270,16 @@ AssistantMessagePersistenceMiddleware`.
         event: GenerationDone,
         channels: tuple[_ChannelState, ...],
     ) -> Iterator[AgentEvent]:
+        # Канал в UNDECIDED со «застрявшим» Started — пустой стрим без
+        # токенов. Флэшим Started, чтобы цепочка была согласованной.
         for ch in channels:
-            if ch.pending_started is not None:
+            if ch.mode.is_undecided() and ch.pending_started is not None:
                 yield ch.pending_started
                 ch.pending_started = None
 
         for ch in channels:
             if ch.mode.is_buffering():
-                yield from self._finalize(rid, ch.buffer, ch.emit_discard)
+                yield from self._finalize(rid, ch)
                 return
 
         yield event
@@ -269,33 +287,40 @@ AssistantMessagePersistenceMiddleware`.
     def _finalize(
         self,
         rid: RequestId,
-        raw: str,
-        emit_discard: bool,
+        ch: _ChannelState,
     ) -> Iterator[AgentEvent]:
-        # При сбое парсинга эмитим GenerationDone(tool_calls) до raise:
-        # AssistantMessagePersistenceMiddleware успеет коммитнуть raw буфер,
-        # а tool_calls не даёт StopOnFinished оборвать цикл — LLM на
-        # следующей итерации увидит свой вывод и критику роутера.
+        # При сбое парсинга «откатываем»: эмитим задержанный Started +
+        # единый Token со всем буфером, потом оригинальный GenerationDone,
+        # и поднимаем LLMToolCallFormatError. Роутер запишет критику в
+        # MessageService и эмитит ToolCallFormatFailed (Advisory) — цикл
+        # не остановится, LLM получит feedback и шанс исправиться.
         try:
-            parsed = self._parser.convert(raw)
+            parsed = self._parser.convert(ch.buffer)
         except LLMToolCallFormatError:
+            if ch.pending_started is not None:
+                yield ch.pending_started
+                ch.pending_started = None
+            yield ch.token_cls(request_id=rid, token=ch.buffer)
             yield GenerationDone(
                 request_id=rid,
                 finish_reason=FinishReason.TOOL_CALLS,
             )
             raise
-        if emit_discard:
-            yield AnswerDiscarded(request_id=rid)
-        yield ToolCallBegin(
+        # Парс удался: задержанный Started + буфер не нужны — мы их
+        # переинтерпретировали как tool_call. ничего наружу о тексте.
+        tool_call_id = f"call_{parsed.name}"
+        yield ToolCallStreamStarted(
             request_id=rid,
             index=0,
-            tool_call_id=f"call_{parsed.name}",
+            tool_call_id=tool_call_id,
             tool_name=parsed.name,
         )
         yield ToolCallArgumentDelta(
             request_id=rid,
             index=0,
-            arguments=parsed.arguments,
+            tool_call_id=tool_call_id,
+            tool_name=parsed.name,
+            arguments_chunk=parsed.arguments,
         )
         yield GenerationDone(
             request_id=rid,
