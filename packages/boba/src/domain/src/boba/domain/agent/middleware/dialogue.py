@@ -1,26 +1,26 @@
 """AssistantMessagePersistenceMiddleware — агрегация стриминговых
-событий ответа в ``ContentSnapshot``-события и запись assistant-
-сообщения через :class:`DialogueWriter`.
+событий ответа в ContentSnapshot-события и запись assistant-
+сообщения через DialogueWriter.
 
 Поведение на стриме событий inner'а:
 
-- :class:`GenerationStarted` → сброс per-``request_id`` буферов
+- GenerationStarted → сброс per-request_id буферов
   (корректность после retry в LLM-слое, который может перезапустить
   генерацию с нуля — до первого yield'а);
-- :class:`AnswerToken` / :class:`ThinkingToken` → аккумуляция
+- AnswerToken / ThinkingToken → аккумуляция
   во внутренние буферы;
-- :class:`ToolCallStreamStarted` → регистрация tool call по ``index``;
-- :class:`ToolCallArgumentDelta` → аккумуляция arguments-чанков к
-  соответствующему ``index``;
-- :class:`GenerationDone` → **flush**: эмитит
-  :class:`AnswerComplete` / :class:`ThinkingComplete` (если были
-  текстовые токены) и :class:`ToolCallComplete` (по одному на каждый
+- ToolCallStreamStarted → регистрация tool call по index;
+- ToolCallArgumentDelta → аккумуляция arguments-чанков к
+  соответствующему index;
+- GenerationDone → **flush**: эмитит
+  AnswerComplete / ThinkingComplete (если были
+  текстовые токены) и ToolCallComplete (по одному на каждый
   tool_call index, в порядке возрастания) **перед** самой
-  ``GenerationDone``; затем коммитит assistant-сообщение через
-  :class:`DialogueWriter`.
+  GenerationDone; затем коммитит assistant-сообщение через
+  DialogueWriter.
 
-``RefusalComplete`` (из ``RefusalToken``) пока не эмитим — событие
-``RefusalToken`` не используется в полной семантике на агент-слое.
+RefusalComplete (из RefusalToken) пока не эмитим — событие
+RefusalToken не используется в полной семантике на агент-слое.
 Когда появится, семантика идёт по той же схеме.
 """
 

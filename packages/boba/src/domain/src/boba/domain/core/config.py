@@ -1,20 +1,20 @@
 """Адресация и резолвинг конфигурационных значений.
 
 Единственная ответственность модуля — связь между декларативным
-описанием объекта (см. :mod:`boba.domain.core.declaration`) и плоским
+описанием объекта (см. declaration) и плоским
 миром источников значений (env, TOML, CLI, …):
 
-- :class:`ConfigKey` — иерархический source-agnostic идентификатор
-  поля. Source-реализации (:mod:`boba.config.env`, :mod:`boba.config.toml`)
+- ConfigKey — иерархический source-agnostic идентификатор
+  поля. Source-реализации (env, toml)
   превращают его в env-имя / TOML-путь / CLI-флаг.
-- :class:`ConfigSource` + :class:`ChainedConfigResolver` — пул источников
-  и итерация «первый non-``None`` выигрывает».
-- :class:`ConfigSection` — :class:`ObjectSchema` плюс :attr:`namespace`
-  для адресации полей. ``build`` собирает полный :class:`ConfigKey` из
-  ``namespace`` и ``field.name``, читает значение через резолвер и
-  отдаёт его :func:`validate_object` для прогона через цепочку
+- ConfigSource + ChainedConfigResolver — пул источников
+  и итерация «первый non-None выигрывает».
+- ConfigSection — ObjectSchema плюс namespace
+  для адресации полей. build собирает полный ConfigKey из
+  namespace и field.name, читает значение через резолвер и
+  отдаёт его validate_object для прогона через цепочку
   конвертеров и фабрику.
-- :func:`read_field` — ad-hoc helper для чтения одного поля без
+- read_field — ad-hoc helper для чтения одного поля без
   секции (например, в CLI, который читает ровно один общий с
   расширением ключ).
 """
@@ -51,7 +51,7 @@ class ConfigKey:
     Принимает 1+ строковую часть: первая — логическая секция, последняя —
     имя поля, промежуточные — sub-namespaces (для extension'ов). Конкретный
     мапинг на env-переменную, TOML-путь, CLI-флаг — забота источников
-    (:class:`ConfigSource`).
+    (ConfigSource).
 
     Примеры::
 
@@ -59,10 +59,10 @@ class ConfigKey:
         ConfigKey("ext", "chromadb", "persist_path")
         ConfigKey("foo")                    # top-level поле без секции
 
-    Каждая часть допускает ``[A-Za-z0-9_]``.
+    Каждая часть допускает [A-Za-z0-9_].
 
-    Сам :class:`ConfigKey` не хранится у :class:`FieldSpec` — поле знает
-    только своё локальное имя. Полный ключ собирает :class:`ConfigSection`
+    Сам ConfigKey не хранится у FieldSpec — поле знает
+    только своё локальное имя. Полный ключ собирает ConfigSection
     при чтении из своего namespace + имени поля.
     """
 
@@ -104,9 +104,9 @@ class ConfigKey:
 
 
 class ConfigSource(ABC):
-    """Источник сырых значений по :class:`ConfigKey`.
+    """Источник сырых значений по ConfigKey.
 
-    ``None`` = «пропусти меня», не «поле отсутствует» — отсутствие
+    None = «пропусти меня», не «поле отсутствует» — отсутствие
     выявляется после опроса всех источников.
 
     Конкретный источник сам решает, как превратить ключ в свою
@@ -120,7 +120,7 @@ class ConfigSource(ABC):
 
 
 class ChainedConfigResolver:
-    """Опрашивает источники по порядку; первый non-``None`` выигрывает."""
+    """Опрашивает источники по порядку; первый non-None выигрывает."""
 
     def __init__(self, sources: Sequence[ConfigSource]) -> None:
         self._sources = list(sources)
@@ -138,16 +138,16 @@ def read_field(
     field: FieldSpec[T],
     resolver: ChainedConfigResolver,
 ) -> T:
-    """Прочитать значение для ``key`` через резолвер и прогнать его через
-    converter ``field``.
+    """Прочитать значение для key через резолвер и прогнать его через
+    converter field.
 
-    ``None`` от резолвера означает «никто не дал значения» — на вход
-    цепочки подаётся :data:`MISSING`. ``Required()`` бросит,
-    ``Default(...)`` подставит, ``Nullable(...)`` отдаст ``None``.
+    None от резолвера означает «никто не дал значения» — на вход
+    цепочки подаётся MISSING. Required() бросит,
+    Default(...) подставит, Nullable(...) отдаст None.
 
     Используется для ad-hoc чтения одного поля вне секции (например,
     из CLI, который читает один общий ключ с расширением). Для
-    регулярного чтения секций — :class:`ConfigSection.build`.
+    регулярного чтения секций — build.
     """
     raw: object | None = resolver.resolve(key)
     value: Any = MISSING if raw is None else raw
@@ -162,22 +162,22 @@ def read_field(
 class ConfigSection(ABC, Generic[T]):
     """Декларация одной секции конфига как самодостаточного модуля.
 
-    Секция = :class:`ObjectSchema` + namespace для адресации полей в
+    Секция = ObjectSchema + namespace для адресации полей в
     env/TOML:
 
-    - :attr:`id` — уникальный :class:`StrId` для регистрации в
-      :class:`~boba.infra.config.ConfigFactory`;
-    - :attr:`namespace` — кортеж частей префикса (``("ext", "chromadb")``,
-      ``("app",)``, ...). Полный :class:`ConfigKey` для поля собирается
-      как ``ConfigKey(*namespace, field.name)``.
-    - :attr:`schema` — :class:`ObjectSchema` секции (поля + invariants +
-      factory + description). Сборка DTO в :meth:`build` — generic-через
-      :func:`validate_object`.
+    - id — уникальный StrId для регистрации в
+      ConfigFactory;
+    - namespace — кортеж частей префикса (("ext", "chromadb"),
+      ("app",), ...). Полный ConfigKey для поля собирается
+      как ConfigKey(*namespace, field.name).
+    - schema — ObjectSchema секции (поля + invariants +
+      factory + description). Сборка DTO в build — generic-через
+      validate_object.
 
     Один и тот же примитив используется и для core-секций (LLM,
     workspaces, agent, …), и для extension-секций — последние
     объявляются в pip-installed пакетах и поднимаются через
-    entry-point group ``boba.config_sections``.
+    entry-point group boba.config_sections.
     """
 
     id: ClassVar[StrId]
@@ -185,12 +185,12 @@ class ConfigSection(ABC, Generic[T]):
     schema: ClassVar[ObjectSchema[Any]]
 
     def build(self, resolver: ChainedConfigResolver) -> T:
-        """Прочитать поля :attr:`schema` через резолвер и собрать DTO.
+        """Прочитать поля schema через резолвер и собрать DTO.
 
-        Адресация: каждое имя поля комбинируется с :attr:`namespace`
-        секции в полный :class:`ConfigKey`. ``None`` от резолвера →
-        :data:`MISSING` на вход converter-цепочки (как в
-        :func:`read_field`).
+        Адресация: каждое имя поля комбинируется с namespace
+        секции в полный ConfigKey. None от резолвера →
+        MISSING на вход converter-цепочки (как в
+        read_field).
         """
 
         def _read_raw(name: str) -> object:

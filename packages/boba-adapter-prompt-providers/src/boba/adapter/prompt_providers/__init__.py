@@ -1,16 +1,16 @@
-"""Конкретные реализации :class:`PromptProvider` + file-based loader.
+"""Конкретные реализации PromptProvider + file-based loader.
 
 Состав пакета:
 
-- :mod:`._providers` — провайдеры (Static/File/Environment/Git/
+- _providers — провайдеры (Static/File/Environment/Git/
   WorkspaceSystem), пишут в system-prompt; USER-блок caller передаёт
-  через :attr:`AgentRequest.query`.
-- :mod:`._loader` — :class:`PromptLoader`, discovery ``*.md``/``*.txt``
-  из :class:`PromptWorkspaceShell` в коллекцию
-  :class:`StaticPromptProvider`.
-- :mod:`._config` — :class:`PromptsSection` (путь до prompts-dir).
+  через query.
+- _loader — PromptLoader, discovery *.md/*.txt
+  из PromptWorkspaceShell в коллекцию
+  StaticPromptProvider.
+- _config — PromptsSection (путь до prompts-dir).
 
-Пакет — отдельный pip-package; основной ``boba`` от него НЕ зависит.
+Пакет — отдельный pip-package; основной boba от него НЕ зависит.
 Короткие импорты::
 
     from boba.adapter.prompt_providers import (

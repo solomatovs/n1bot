@@ -2,31 +2,31 @@
 
 Структурно:
 
-- :class:`~boba.domain.core.config.ConfigSection`-секции (agent, app_core,
-  плюс секции адаптеров: ``LLMTransportSection`` /
-  ``WorkspacesSection`` / ``PromptsSection`` живут в соответствующих
-  ``boba-adapter-*`` пакетах) объявляют свои поля декларативно (через
-  :class:`~boba.domain.core.config.FieldSpec` поверх
-  :class:`~boba.domain.core.config.ConfigKey`) и строят типизированный
+- ConfigSection-секции (agent, app_core,
+  плюс секции адаптеров: LLMTransportSection /
+  WorkspacesSection / PromptsSection живут в соответствующих
+  boba-adapter-* пакетах) объявляют свои поля декларативно (через
+  FieldSpec поверх
+  ConfigKey) и строят типизированный
   DTO.
-- :class:`ConfigFactory` регистрирует секции и подхватывает секции
-  расширений через entry-point group ``boba.config_sections``.
-  :meth:`ConfigFactory.build` возвращает :class:`ConfigBundle`.
-- :class:`ConfigBundle` — итог сборки: ``dict[StrId, T_DTO]`` +
-  типизированный доступ через :meth:`ConfigBundle.section`. Удобные
-  свойства :attr:`ConfigBundle.app` и :attr:`ConfigBundle.agent`
-  композируют :class:`AppConfig` / :class:`AgentConfig` из секций
-  ``app_core``, ``workspaces``, ``llm_transport``, ``prompts``,
-  ``agent`` (последние три приходят из адаптерных пакетов).
-- :class:`ConfigLoader` — тонкая ленивая обёртка с кэшем бандла.
+- ConfigFactory регистрирует секции и подхватывает секции
+  расширений через entry-point group boba.config_sections.
+  build возвращает ConfigBundle.
+- ConfigBundle — итог сборки: dict[StrId, T_DTO] +
+  типизированный доступ через section. Удобные
+  свойства app и agent
+  композируют AppConfig / AgentConfig из секций
+  app_core, workspaces, llm_transport, prompts,
+  agent (последние три приходят из адаптерных пакетов).
+- ConfigLoader — тонкая ленивая обёртка с кэшем бандла.
 
-Bootstrap приложения собирает цепочку :class:`ConfigSource`-источников
-(env/TOML/…), создаёт :class:`ConfigFactory`, регистрирует
-встроенные :class:`AppCoreSection`/:class:`AgentSection` и нужные
-adapter-секции, и затем зовёт :meth:`build`.
+Bootstrap приложения собирает цепочку ConfigSource-источников
+(env/TOML/…), создаёт ConfigFactory, регистрирует
+встроенные AppCoreSection/AgentSection и нужные
+adapter-секции, и затем зовёт build.
 
 LLM-sampling-параметров здесь нет: единственный источник —
-:class:`~boba.domain.agent.models.AgentRequest.sampling`, прокидываемый
+sampling, прокидываемый
 caller'ом (UI/CLI) per-request.
 """
 
@@ -90,8 +90,8 @@ CONFIG_SECTIONS_ENTRY_POINT = "boba.config_sections"
 class DefaultSource(ConfigSource):
     """Статический fallback-словарь — для тестов и кастомных пресетов.
 
-    Принимает :class:`ConfigKey` → значение. Возвращает значение по точному
-    совпадению ключа; неизвестные ключи — ``None``. Обычно ставят последним
+    Принимает ConfigKey → значение. Возвращает значение по точному
+    совпадению ключа; неизвестные ключи — None. Обычно ставят последним
     в цепочке, чтобы он отрабатывал, только когда «настоящие» источники
     промолчали.
     """
@@ -110,12 +110,12 @@ class DefaultSource(ConfigSource):
 
 class ConfigError(Exception):
     """Базовая ошибка конфиг-инфры — отделяет сбои фабрики/бандла от
-    ошибок-резолверов (:class:`ConverterInputError` и потомков).
+    ошибок-резолверов (ConverterInputError и потомков).
     """
 
 
 class ConfigSectionAlreadyRegisteredError(ConfigError):
-    """Попытка зарегистрировать вторую секцию с тем же :class:`StrId`."""
+    """Попытка зарегистрировать вторую секцию с тем же StrId."""
 
     def __init__(self, section_id: StrId) -> None:
         super().__init__(f"ConfigSection {section_id!r} is already registered")
@@ -123,12 +123,12 @@ class ConfigSectionAlreadyRegisteredError(ConfigError):
 
 
 class ConfigSectionMissingError(ConfigError):
-    """Запрошен ``bundle.section(SectionCls)``, но секция не зарегистрирована.
+    """Запрошен bundle.section(SectionCls), но секция не зарегистрирована.
 
     Это инвариант сборки фабрики: секция должна быть зарегистрирована до
-    :meth:`ConfigFactory.build`. Для встроенных секций гарантируется
-    :func:`default_config_factory`; для секций расширений — discovery через
-    entry-point group ``boba.config_sections``.
+    build. Для встроенных секций гарантируется
+    default_config_factory; для секций расширений — discovery через
+    entry-point group boba.config_sections.
     """
 
     def __init__(self, section_cls: type[ConfigSection[Any]]) -> None:
@@ -141,10 +141,10 @@ class ConfigSectionMissingError(ConfigError):
 
 @dataclass(frozen=True)
 class AppCoreConfig:
-    """Внутренний DTO :class:`AppCoreSection`.
+    """Внутренний DTO AppCoreSection.
 
-    Не часть публичного API — :class:`AppConfig` агрегирует поля плоско,
-    эта структура нужна только чтобы :class:`AppCoreSection.build` имела
+    Не часть публичного API — AppConfig агрегирует поля плоско,
+    эта структура нужна только чтобы build имела
     типизированный return-type, симметричный остальным секциям.
     """
 
@@ -159,13 +159,13 @@ _PROMPTS_ID = StrId("prompts")
 
 
 class ConfigBundle:
-    """Итог сборки: типизированный реестр секций по :class:`StrId`.
+    """Итог сборки: типизированный реестр секций по StrId.
 
-    :meth:`section` достаёт DTO нужной секции по её классу — type-checker
-    видит конкретный T_DTO. :attr:`app` / :attr:`agent` — удобные свойства
-    для типичного app-стека: первый собирает :class:`AppConfig` из
-    ``app_core`` + adapter-секций (``workspaces``/``llm_transport``/
-    ``prompts``), второй — DTO ``agent``.
+    section достаёт DTO нужной секции по её классу — type-checker
+    видит конкретный T_DTO. app / agent — удобные свойства
+    для типичного app-стека: первый собирает AppConfig из
+    app_core + adapter-секций (workspaces/llm_transport/
+    prompts), второй — DTO agent.
 
     Бандл иммутабельный (внутренний dict копируется при создании).
     """
@@ -174,8 +174,8 @@ class ConfigBundle:
         self._sections: dict[StrId, object] = dict(sections)
 
     def section(self, cls: type[ConfigSection[T]]) -> T:
-        """Достать DTO секции ``cls``. Бросает
-        :class:`ConfigSectionMissingError`, если секция не была
+        """Достать DTO секции cls. Бросает
+        ConfigSectionMissingError, если секция не была
         зарегистрирована в фабрике.
         """
         sid = cls.id
@@ -184,9 +184,9 @@ class ConfigBundle:
         return cast(T, self._sections[sid])
 
     def _by_id(self, section_id: StrId) -> object:
-        """Сырой лукап по id — используется агрегатами :attr:`app` /
-        :attr:`agent`, чтобы не зависеть от классов секций (они живут в
-        adapter-пакетах). Если секции с таким id нет — :class:`ConfigError`.
+        """Сырой лукап по id — используется агрегатами app /
+        agent, чтобы не зависеть от классов секций (они живут в
+        adapter-пакетах). Если секции с таким id нет — ConfigError.
         """
         if section_id not in self._sections:
             raise ConfigError(
@@ -197,8 +197,8 @@ class ConfigBundle:
 
     @property
     def app(self) -> AppConfig:
-        """Композиция ``app_core`` + ``workspaces`` + ``llm_transport`` +
-        ``prompts`` в :class:`AppConfig`. Adapter-секции должны быть
+        """Композиция app_core + workspaces + llm_transport +
+        prompts в AppConfig. Adapter-секции должны быть
         зарегистрированы в фабрике.
         """
         core = self.section(AppCoreSection)
@@ -284,13 +284,13 @@ class AgentSection(ConfigSection[AgentConfig]):
 
 
 class ConfigFactory:
-    """Реестр секций + сборщик :class:`ConfigBundle`.
+    """Реестр секций + сборщик ConfigBundle.
 
-    Регистрация секций — императивная (:meth:`register`). Discovery
+    Регистрация секций — императивная (register). Discovery
     extension-секций — через entry-point group
-    :data:`CONFIG_SECTIONS_ENTRY_POINT` (:meth:`discover_extension_sections`).
-    Сборка бандла — :meth:`build`: каждая зарегистрированная секция строит
-    свой DTO, результат складывается по :attr:`ConfigSection.id`.
+    CONFIG_SECTIONS_ENTRY_POINT (discover_extension_sections).
+    Сборка бандла — build: каждая зарегистрированная секция строит
+    свой DTO, результат складывается по id.
     """
 
     def __init__(self, resolver: ChainedConfigResolver) -> None:
@@ -308,10 +308,10 @@ class ConfigFactory:
 
     def discover_extension_sections(self) -> None:
         """Подхватывает секции расширений через entry-point group
-        ``boba.config_sections``.
+        boba.config_sections.
 
         Контракт entry-point: target — класс-наследник
-        :class:`ConfigSection`. Битые/некорректные entry-point'ы логируются
+        ConfigSection. Битые/некорректные entry-point'ы логируются
         warning'ом и пропускаются, чтобы один сломанный плагин не валил
         старт всего приложения.
         """
@@ -351,13 +351,13 @@ class ConfigFactory:
 
 
 class ConfigLoader:
-    """Ленивый фасад над :class:`ConfigFactory`: кэширует бандл после
+    """Ленивый фасад над ConfigFactory: кэширует бандл после
     первой сборки.
 
     Конструктор принимает уже собранную фабрику — у инфры нет своих
     источников значений, цепочку резолвера собирает bootstrap приложения
-    из подключённых пакетов (например, :mod:`boba.config.env` +
-    :mod:`boba.config.toml`).
+    из подключённых пакетов (например, env +
+    toml).
     """
 
     def __init__(self, factory: ConfigFactory) -> None:

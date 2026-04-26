@@ -1,6 +1,6 @@
-"""Файловые реализации :class:`WorkspaceRegistry` (base + concrete).
+"""Файловые реализации WorkspaceRegistry (base + concrete).
 
-Shell-классы — рядом в :mod:`._shell`.
+Shell-классы — рядом в _shell.
 """
 
 from __future__ import annotations
@@ -37,11 +37,11 @@ TWs = TypeVar("TWs", bound=FsWorkspaceShell)
 class FsWorkspaceRegistry(WorkspaceRegistry[TWsId], Generic[TWs, TWsId]):
     """Обобщённая файловая реализация реестра.
 
-    Параметризуется классом shell'а ``shell_cls``, ``subdir`` — именем
-    подкаталога внутри id-директории, и ``id_factory`` — генератором
-    нового id для :meth:`create` (например, :meth:`WorkspaceId.new`
+    Параметризуется классом shell'а shell_cls, subdir — именем
+    подкаталога внутри id-директории, и id_factory — генератором
+    нового id для create (например, new
     для UUID-namespace'а или фиксированный конструктор для строкового).
-    Маркерные реестры (:class:`FsProjectWorkspaceRegistry` и т.п.) —
+    Маркерные реестры (FsProjectWorkspaceRegistry и т.п.) —
     тонкие подклассы, фиксирующие эти параметры; больше в них логики
     не должно быть.
     """
@@ -132,11 +132,11 @@ class FsPromptWorkspaceRegistry(
 ):
     """Singleton-registry prompt-namespace.
 
-    Корнем shell'а служит сам ``root`` (обычно
-    ``app_config.prompts_dir``) — без id и subdir в пути, потому что
+    Корнем shell'а служит сам root (обычно
+    app_config.prompts_dir) — без id и subdir в пути, потому что
     prompt workspace на всё приложение один. Конструктор принимает
     только директорию; остальные параметры базового
-    :class:`FsWorkspaceRegistry` фиксированы.
+    FsWorkspaceRegistry фиксированы.
     """
 
     _SINGLETON_ID = PromptWorkspaceId("prompts")

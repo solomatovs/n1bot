@@ -1,22 +1,22 @@
 """Сборка system-prompt из провайдеров (fold-factory).
 
-Провайдеры поставляют :class:`PromptBlock`-и; :class:`PromptFactory`
-агрегирует их по приоритету в :class:`PromptResult` и склеивает в
+Провайдеры поставляют PromptBlock-и; PromptFactory
+агрегирует их по приоритету в PromptResult и склеивает в
 строку. Используется
-:class:`~boba.domain.agent.turn.reducers.SystemPromptReducer` каждую
+SystemPromptReducer каждую
 итерацию — содержимое пересобирается per-call, провайдеры могут
-реагировать на ``ctx.agent`` (workspace, iteration и т.д.).
+реагировать на ctx.agent (workspace, iteration и т.д.).
 
 USER-сообщение через эту фабрику **не** идёт. Пользовательский
-ввод приходит уже отформатированным в :attr:`AgentRequest.query`
-и кладётся в :class:`MessageService` агентом первой операцией —
+ввод приходит уже отформатированным в query
+и кладётся в MessageService агентом первой операцией —
 обогащение (IDE selection, шаблоны и пр.) — ответственность caller'а
 (frontend/CLI), а не агентского слоя.
 
-Параметр ``TCtx`` в :class:`PromptState` — тип контекста, прокидываемый
-провайдерам. В boba это :class:`~boba.domain.agent.models.\
-AgentContext`, но сам модуль работает с любым типом через generics
-— это делает :class:`PromptProvider` переиспользуемым вне агентского
+Параметр TCtx в PromptState — тип контекста, прокидываемый
+провайдерам. В boba это \
+AgentContext, но сам модуль работает с любым типом через generics
+— это делает PromptProvider переиспользуемым вне агентского
 слоя.
 
 ════════════════════════════════════════════════════════════════════
@@ -28,9 +28,9 @@ AgentContext`, но сам модуль работает с любым типо�
     PromptError(TerminalError[RequestId, AgentEvent]) → PromptFailed
     │   provider: str | None
 
-``PromptFactory.build()`` оборачивает ``OSError`` → ``PromptProviderError``
-автоматически. ``PromptError`` из провайдеров пропускается как есть
-(например, провайдер сам валидирует и бросает ``PermanentPromptError``).
+PromptFactory.build() оборачивает OSError → PromptProviderError
+автоматически. PromptError из провайдеров пропускается как есть
+(например, провайдер сам валидирует и бросает PermanentPromptError).
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ class PromptError(TerminalError[RequestId, AgentEvent]):
     Адаптеры-провайдеры (файлы, workspace, git) оборачивают свои
     I/O-исключения в потомков этого класса. Ошибки логики/валидации
     (неверный тип, битая регистрация) — это баги и должны падать
-    напрямую, без конвертации в :class:`PromptError`.
+    напрямую, без конвертации в PromptError.
     """
 
     def __init__(self, message: str, *, provider: str | None = None) -> None:
@@ -77,8 +77,8 @@ class PermanentPromptError(PromptError):
 class PromptProviderError(PermanentPromptError):
     """Провайдер упал на чтении своего источника.
 
-    Автоматически поднимается :meth:`PromptFactory.build` при
-    перехвате ``OSError`` от любого провайдера.
+    Автоматически поднимается build при
+    перехвате OSError от любого провайдера.
     """
 
 
@@ -135,9 +135,9 @@ class PromptProvider(PrioritySource[PromptId, PromptState]):
 
     Реализации должны указывать:
 
-    - :meth:`id` — уникальный идентификатор (для замены/удаления);
-    - :meth:`priority` — меньше число → раньше в раскладке;
-    - :meth:`blocks` — один или больше :class:`PromptBlock`.
+    - id — уникальный идентификатор (для замены/удаления);
+    - priority — меньше число → раньше в раскладке;
+    - blocks — один или больше PromptBlock.
     """
 
     @abstractmethod
@@ -150,13 +150,13 @@ class PromptProvider(PrioritySource[PromptId, PromptState]):
 
 
 class PromptFactory(FoldFactory[PromptId, PromptState[TCtx], PromptResult]):
-    """Собирает :class:`PromptResult` из зарегистрированных провайдеров.
+    """Собирает PromptResult из зарегистрированных провайдеров.
 
-    Per-call экземпляр: :class:`PromptState` строится на лету под
-    переданный ``ctx``. Контракт ошибок в :meth:`build`:
+    Per-call экземпляр: PromptState строится на лету под
+    переданный ctx. Контракт ошибок в build:
 
-    - :class:`PromptError` из провайдера пробрасывается как есть;
-    - ``OSError`` → :class:`PromptProviderError` (узкий wrap для
+    - PromptError из провайдера пробрасывается как есть;
+    - OSError → PromptProviderError (узкий wrap для
       адаптеров, которые не обернули свой I/O сами);
     - любые другие исключения (логика, программный баг) — пропускаются
       наружу и крашат процесс.

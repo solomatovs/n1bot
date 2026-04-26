@@ -1,13 +1,13 @@
-"""argparse-парсер и dispatch для команд ``boba-cli-vector-index``.
+"""argparse-парсер и dispatch для команд boba-cli-vector-index.
 
 Доступные команды (v0.1):
 
-* ``index <paths>...`` — почанковать и upsert файлы в коллекцию.
-* ``list`` — показать существующие коллекции с количеством чанков.
-* ``delete --collection <name>`` — удалить коллекцию целиком.
+* index <paths>... — почанковать и upsert файлы в коллекцию.
+* list — показать существующие коллекции с количеством чанков.
+* delete --collection <name> — удалить коллекцию целиком.
 
-Точка входа: :func:`main`. Также доступно как
-``python -m boba.cli.vector_index``.
+Точка входа: main. Также доступно как
+python -m boba.cli.vector_index.
 """
 
 from __future__ import annotations

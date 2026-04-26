@@ -1,15 +1,15 @@
 """Конфигурация CLI.
 
-Источники собираются стандартной :class:`ChainedConfigResolver`-цепочкой:
-``CLI > env-file > env > toml-file > toml > error``. CLI-флаги
-прокидываются через :class:`~boba.config.cli.CliArgsSource` (highest
+Источники собираются стандартной ChainedConfigResolver-цепочкой:
+CLI > env-file > env > toml-file > toml > error. CLI-флаги
+прокидываются через CliArgsSource (highest
 priority в цепочке).
 
-Контракт общего ключа с ``boba-ext-chromadb`` — :class:`ConfigKey`
-``("ext","chromadb","persist_path")``: оператор задаёт путь один раз
-(env ``BOBA_EXT_CHROMADB_PERSIST_PATH`` или ``[ext.chromadb] persist_path``
+Контракт общего ключа с boba-ext-chromadb — ConfigKey
+("ext","chromadb","persist_path"): оператор задаёт путь один раз
+(env BOBA_EXT_CHROMADB_PERSIST_PATH или [ext.chromadb] persist_path
 в TOML), и тот же путь видит chainlit/agent-cli через
-:class:`~boba.ext.chromadb.config.ChromadbSection`. Импортно CLI на extension
+ChromadbSection. Импортно CLI на extension
 не зависит — оператор может запустить индексирование на машине, где
 extension не установлен.
 """
@@ -36,7 +36,7 @@ from boba.domain.core.config import (
 from boba.domain.core.patterns import ConverterInputError
 from boba.domain.core.validators import ChainConverter, ParseString, Required
 
-# Контракт общего ключа с :class:`~boba.ext.chromadb.config.ChromadbSection`.
+# Контракт общего ключа с ChromadbSection.
 # CLI ad-hoc читает то же поле, не подключая всю секцию: пара
 # (key, FieldSpec) хранится здесь явно, чтобы не зависеть от
 # boba-ext-chromadb по импорту.
@@ -59,9 +59,9 @@ class CliConfig:
     def resolve(cls, *, persist_path_arg: str | None) -> CliConfig:
         """Собирает конфиг из всей стандартной цепочки источников.
 
-        ``persist_path_arg`` — значение CLI-флага ``--persist-path`` (или
-        ``None`` если не передан); прокидывается через
-        :class:`CliArgsSource` как highest-priority overlay.
+        persist_path_arg — значение CLI-флага --persist-path (или
+        None если не передан); прокидывается через
+        CliArgsSource как highest-priority overlay.
         """
         toml_data = load_toml(os.environ.get(CONFIG_PATH_ENV))
         resolver = ChainedConfigResolver(

@@ -1,9 +1,9 @@
 """Доменные ошибки KB-tools.
 
-Все наследуются от :class:`ToolExecutionError` core-API — это значит,
-``ToolExecutionMiddleware`` поймает их по базовому типу, запишет
-``message`` в историю как ``role="tool"`` и эмитит
-:class:`ToolExecutionFailed` для observability. Никакого специального
+Все наследуются от ToolExecutionError core-API — это значит,
+ToolExecutionMiddleware поймает их по базовому типу, запишет
+message в историю как role="tool" и эмитит
+ToolExecutionFailed для observability. Никакого специального
 проброса не нужно.
 """
 
@@ -20,7 +20,7 @@ class KnowledgeBaseError(ToolExecutionError):
 
 class CollectionNotFoundError(KnowledgeBaseError):
     """Коллекция с таким именем не зарегистрирована в БД. Агент увидит
-    список доступных через ``kb_list_collections``.
+    список доступных через kb_list_collections.
     """
 
     def __init__(self, tool_id: ToolId, name: str) -> None:

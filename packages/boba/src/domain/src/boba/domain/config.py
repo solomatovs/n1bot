@@ -1,13 +1,13 @@
 """Конфигурация приложения.
 
-:class:`AppConfig` — кросс-слойные настройки приложения + :class:`LLMConfig`.
-:class:`~boba.domain.agent.models.AgentConfig` живёт в agent-слое и
-загружается :class:`~boba.infra.config.ConfigLoader`-ом отдельно —
-чтобы корневой ``AppConfig`` не тянул зависимость на ``agent/``.
+AppConfig — кросс-слойные настройки приложения + LLMConfig.
+AgentConfig живёт в agent-слое и
+загружается ConfigLoader-ом отдельно —
+чтобы корневой AppConfig не тянул зависимость на agent/.
 
 Конфиги расширений сюда не попадают: extension объявляет собственную
-:class:`~boba.domain.core.config.ConfigSection`, и её типизированный DTO
-достаётся через ``ConfigBundle.section(SectionCls)``.
+ConfigSection, и её типизированный DTO
+достаётся через ConfigBundle.section(SectionCls).
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from pathlib import Path
 class LLMConfig:
     """Конфигурация LLM-клиента.
 
-    Только транспорт (``base_url`` и ``api_key``). Имя модели — не
+    Только транспорт (base_url и api_key). Имя модели — не
     часть конфига: его задаёт caller каждого запроса (UI/CLI), чтобы
     системный дефолт не просачивался в агентский луп.
     """
@@ -31,11 +31,11 @@ class LLMConfig:
 
 @dataclass(frozen=True)
 class WorkspaceLayout:
-    """Раскладка namespace'ов workspace'а относительно ``base_dir``.
+    """Раскладка namespace'ов workspace'а относительно base_dir.
 
     Поля — подкаталоги для user/system/tmp. Дискриминация делается в
     DI через маркерные сервисы, поэтому конфиг держит имена явно, а не
-    через словарь по ``kind``.
+    через словарь по kind.
     """
 
     base_dir: str = "./workspaces"

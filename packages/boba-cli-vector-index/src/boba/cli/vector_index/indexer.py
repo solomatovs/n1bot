@@ -2,16 +2,16 @@
 
 Пайплайн на один файл:
 
-1. Подобрать reader по extension (см. ``readers``).
-2. Reader → один или несколько :class:`Document` (с logical
-   ``source_path`` и metadata).
+1. Подобрать reader по extension (см. readers).
+2. Reader → один или несколько Document (с logical
+   source_path и metadata).
 3. Для каждого Document:
-   a. Удалить старые чанки этого ``source_path`` из коллекции
+   a. Удалить старые чанки этого source_path из коллекции
       (idempotent reindex — см. договорённость по dedupe);
-   b. Чанковать ``text`` через :func:`split_text`;
+   b. Чанковать text через split_text;
    c. Сгенерировать стабильный chunk id из (source_path, chunk_index);
    d. Upsert в коллекцию с metadata
-      ``{source_path, chunk_index, file_mtime, ...reader_metadata}``.
+      {source_path, chunk_index, file_mtime, ...reader_metadata}.
 """
 
 from __future__ import annotations
@@ -60,11 +60,11 @@ def index_paths(
     description: str | None,
     options: IndexOptions,
 ) -> IndexStats:
-    """Главная функция CLI ``index``. ``paths`` — смесь файлов и
+    """Главная функция CLI index. paths — смесь файлов и
     директорий. Для директорий рекурсивно собираются файлы, чьи
     расширения покрывает зарегистрированный reader.
 
-    Коллекция создаётся при отсутствии (с ``description`` в metadata),
+    Коллекция создаётся при отсутствии (с description в metadata),
     иначе используется существующая (description не переписывается).
     """
     store.get_or_create_collection(collection_name, description)
@@ -132,10 +132,10 @@ def index_paths(
 def _walk_files(paths: list[str]) -> Iterator[str]:
     """Раскрытие смеси файлов и директорий в плоский список файлов.
 
-    Для директорий — рекурсивно через ``Path.rglob('*')``. Симлинки
+    Для директорий — рекурсивно через Path.rglob('*'). Симлинки
     игнорируются (Path.is_file идёт по симлинку, и он попадёт в выдачу
     — для CLI это OK, оператор отвечает за то, что в `paths`).
-    Скрытые файлы (имя начинается с ``.``) пропускаются — в .git и
+    Скрытые файлы (имя начинается с .) пропускаются — в .git и
     других служебных директориях нет полезного контента для
     индексации.
     """

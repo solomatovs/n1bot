@@ -1,5 +1,5 @@
 """
-Конвертация :class:`LLMRequest` в kwargs для OpenAI-совместимого API
+Конвертация LLMRequest в kwargs для OpenAI-совместимого API
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from openai.types.chat import (
 
 
 class ToOpenAIToolConverter(Converter[LLMToolSchema, ChatCompletionToolParam]):
-    """Конвертация :class:`LLMToolSchema` → OpenAI tools."""
+    """Конвертация LLMToolSchema → OpenAI tools."""
 
     def convert(self, value: LLMToolSchema) -> ChatCompletionToolParam:
         return {
@@ -35,7 +35,7 @@ class ToOpenAIToolConverter(Converter[LLMToolSchema, ChatCompletionToolParam]):
 
 class ToOpenAIMessageConverter(Converter[LLMMessage, ChatCompletionMessageParam]):
     """
-    конверация :class:`LLMMessage` -> OpenAI message param
+    конверация LLMMessage -> OpenAI message param
     """
 
     def convert(self, value: LLMMessage) -> ChatCompletionMessageParam:
@@ -77,8 +77,8 @@ class ToOpenAIMessageConverter(Converter[LLMMessage, ChatCompletionMessageParam]
 
 
 class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
-    """:class:`LLMRequest` -> kwargs для
-    ``client.chat.completions.create``
+    """LLMRequest -> kwargs для
+    client.chat.completions.create
     """
 
     def __init__(self) -> None:
@@ -103,7 +103,7 @@ class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
 
     def _apply_messages(self, kwargs: dict[str, Any], r: LLMRequest) -> None:
         """
-        Склеивает в OpenAI-порядок: ``system → messages``.
+        Склеивает в OpenAI-порядок: system → messages.
         """
         ordered: list[LLMMessage] = [r.system_message, *r.messages]
         kwargs["messages"] = list(self._convert_messages(ordered))

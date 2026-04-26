@@ -1,12 +1,12 @@
-"""Рендер UI-полей :class:`ChainlitConfig` в ``.chainlit/config.toml``.
+"""Рендер UI-полей ChainlitConfig в .chainlit/config.toml.
 
 Chainlit читает UI/features/project-настройки только из TOML —
 env-переменные для этих секций фреймворк не смотрит. Поэтому для
-полей ``ui_name``/``enable_telemetry``/``upload_*`` из единой
-:class:`ChainlitSection` приходится отдельно рендерить
-``app_root/.chainlit/config.toml``.
+полей ui_name/enable_telemetry/upload_* из единой
+ChainlitSection приходится отдельно рендерить
+app_root/.chainlit/config.toml.
 
-:class:`UIOverrideTomlConverter` берёт :class:`ChainlitConfig` и
+UIOverrideTomlConverter берёт ChainlitConfig и
 выдаёт строку TOML; пустая строка означает «оверрайдов нет, файл не
 писать».
 """
@@ -79,7 +79,7 @@ _META = "\n".join(["[meta]", 'generated_by = "boba-chainlit"', ""])
 
 
 class UIOverrideTomlConverter(Converter[ChainlitConfig, str]):
-    """``ChainlitConfig`` → TOML-строка для ``.chainlit/config.toml``.
+    """ChainlitConfig → TOML-строка для .chainlit/config.toml.
 
     Пустая строка означает «оверрайдов нет, файл писать не надо»
     (chainlit использует свои дефолты).

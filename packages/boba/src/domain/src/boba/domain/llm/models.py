@@ -45,16 +45,16 @@ class SamplingParams:
 class LLMToolSchema:
     """Декларация тула для LLM-провайдера: имя, описание, JSON-schema.
 
-    Чистый DTO без связи с доменным ``Tool`` (последний живёт в
-    :mod:`boba.domain.core.tools` и несёт execute-логику, валидаторы,
+    Чистый DTO без связи с доменным Tool (последний живёт в
+    tools и несёт execute-логику, валидаторы,
     типизированные args). LLM-слой работает только с этим типом —
     каждый адаптер (OpenAI/Anthropic/...) мапит его в свой нативный
     формат.
 
-    ``parameters_schema`` — JSON-Schema-объект (как правило
-    ``{"type": "object", "properties": {...}, "required": [...]}``).
-    Конверсия ``Tool → LLMToolSchema`` — задача агентского слоя
-    (см. :class:`~boba.domain.agent.turn.reducers.ToolsReducer`).
+    parameters_schema — JSON-Schema-объект (как правило
+    {"type": "object", "properties": {...}, "required": [...]}).
+    Конверсия Tool → LLMToolSchema — задача агентского слоя
+    (см. ToolsReducer).
     """
 
     name: str

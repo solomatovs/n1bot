@@ -1,6 +1,6 @@
-"""Реестр reader'ов: file extension → :class:`Reader`.
+"""Реестр reader'ов: file extension → Reader.
 
-Регистрируются здесь — extras-reader'ы (``html``, ``confluence``)
+Регистрируются здесь — extras-reader'ы (html, confluence)
 импортируются лениво в момент первого вызова, чтобы отсутствие
 optional dependency не ломало базовый импорт пакета.
 """
@@ -41,7 +41,7 @@ class UnsupportedFormatError(Exception):
 
 def reader_for(path: str) -> Reader:
     """Найти reader для файла по его расширению. Бросает
-    :class:`UnsupportedFormatError`, если ни один встроенный или
+    UnsupportedFormatError, если ни один встроенный или
     extras-reader не подходит.
     """
     suffix = Path(path).suffix.lower()
@@ -56,12 +56,12 @@ def reader_for(path: str) -> Reader:
 
 def _try_extras_reader(suffix: str) -> Reader | None:
     """Лениво импортирует optional reader'ы. Если соответствующая
-    deps-группа не установлена — возвращает ``None`` (caller получит
-    ``UnsupportedFormatError`` с подсказкой про extras).
+    deps-группа не установлена — возвращает None (caller получит
+    UnsupportedFormatError с подсказкой про extras).
 
-    ``importlib.import_module`` вместо обычного ``import``-statement —
+    importlib.import_module вместо обычного import-statement —
     чтобы статический анализатор не падал на отсутствующих опциональных
-    модулях (``readers/html.py`` будет создан вместе с extras-deps).
+    модулях (readers/html.py будет создан вместе с extras-deps).
     """
     if suffix in (".html", ".htm"):
         try:
@@ -70,5 +70,5 @@ def _try_extras_reader(suffix: str) -> Reader | None:
             return None
         return module.HtmlReader()
     # confluence пока без файлового расширения — будет отдельный
-    # ``boba-cli-vector-index index-confluence ...`` подпайплайн позже.
+    # boba-cli-vector-index index-confluence ... подпайплайн позже.
     return None

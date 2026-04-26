@@ -1,20 +1,20 @@
 """Конфигурация ChromaDB-extension.
 
-:class:`ChromadbSection` — :class:`~boba.domain.core.config.ConfigSection`,
-объявляющая поля расширения через :class:`FieldSpec` поверх
-:class:`ConfigKey`. Регистрируется в :class:`ConfigFactory` через
-entry-point group ``boba.config_sections`` (см. ``pyproject.toml``);
-при сборке :class:`ConfigBundle` секция читает значения через резолвер,
+ChromadbSection — ConfigSection,
+объявляющая поля расширения через FieldSpec поверх
+ConfigKey. Регистрируется в ConfigFactory через
+entry-point group boba.config_sections (см. pyproject.toml);
+при сборке ConfigBundle секция читает значения через резолвер,
 собранный bootstrap'ом приложения, и строит типизированный
-:class:`ChromaExtConfig`.
+ChromaExtConfig.
 
 Внутри tool'ов конфиг достаётся через
-``ctx.config.section(ChromadbSection)`` в :func:`register_tools`.
+ctx.config.section(ChromadbSection) в register_tools.
 
-Семантика поля ``embedding_model`` в v0.1: поддерживается только
-``default`` — встроенная ONNX-модель ChromaDB (валидация через
-:class:`OneOf`). Поле оставлено в конфиге как явный контракт на будущее
-(когда добавим поддержку ``sentence-transformers`` через optional dep),
+Семантика поля embedding_model в v0.1: поддерживается только
+default — встроенная ONNX-модель ChromaDB (валидация через
+OneOf). Поле оставлено в конфиге как явный контракт на будущее
+(когда добавим поддержку sentence-transformers через optional dep),
 чтобы оператор не настраивал «бессмысленную» переменную.
 """
 
@@ -52,7 +52,7 @@ class ChromaExtConfig:
 
 class ChromadbSection(ConfigSection[ChromaExtConfig]):
     """Секция конфига расширения chromadb. Регистрируется через
-    entry-point ``boba.config_sections``.
+    entry-point boba.config_sections.
     """
 
     id: ClassVar[StrId] = StrId("ext.chromadb")

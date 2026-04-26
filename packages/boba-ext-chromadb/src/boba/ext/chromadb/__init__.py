@@ -1,12 +1,12 @@
 """Boba extension: read-only ChromaDB knowledge-base tools.
 
-Регистрируется в боба через entry-point ``boba.tools`` (см.
-pyproject.toml). ``ToolPluginLoader`` при старте процесса вызывает
-:func:`register_tools` — функция возвращает один :class:`StaticToolSource`
-с двумя tools (``kb_list_collections``, ``kb_search``) под общим
-``ToolSourceId("ext.chromadb")``.
+Регистрируется в боба через entry-point boba.tools (см.
+pyproject.toml). ToolPluginLoader при старте процесса вызывает
+register_tools — функция возвращает один StaticToolSource
+с двумя tools (kb_list_collections, kb_search) под общим
+ToolSourceId("ext.chromadb").
 
-Зависит на ``chromadb`` runtime + ``boba`` core API. ``chromadb``-клиент
+Зависит на chromadb runtime + boba core API. chromadb-клиент
 живёт как singleton процесса, инстанцируется лениво при первом вызове
 любого tool.
 """
@@ -26,15 +26,15 @@ __all__ = ["register_tools"]
 
 
 def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
-    """Entry-point ``boba.tools``: возвращает 2 read-only tools одним
+    """Entry-point boba.tools: возвращает 2 read-only tools одним
     источником.
 
     Конфиг расширения достаётся из бандла через
-    ``ctx.config.section(ChromadbSection)``. Сама :class:`ChromadbSection`
-    регистрируется в :class:`ConfigFactory` через парный entry-point
-    ``boba.config_sections`` (см. pyproject.toml); если её там нет —
-    ``ctx.config.section(ChromadbSection)`` бросит
-    :class:`~boba.infra.config.ConfigSectionMissingError`.
+    ctx.config.section(ChromadbSection). Сама ChromadbSection
+    регистрируется в ConfigFactory через парный entry-point
+    boba.config_sections (см. pyproject.toml); если её там нет —
+    ctx.config.section(ChromadbSection) бросит
+    ConfigSectionMissingError.
     """
     cfg = ctx.config.section(ChromadbSection)
     kb = get_knowledge_base(cfg)

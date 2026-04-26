@@ -31,7 +31,7 @@ from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 def build_openai_client(config: LLMConfig) -> OpenAI:
     """
-    Строит :class:`openai.OpenAI` из конфига
+    Строит OpenAI из конфига
     """
     return OpenAI(base_url=config.base_url, api_key=config.api_key)
 
@@ -40,11 +40,11 @@ def build_openai_client(config: LLMConfig) -> OpenAI:
 def _observe_request(
     observer: RawLLMObserver, kwargs: dict[str, Any]
 ) -> Iterator[None]:
-    """Оборачивает тело request-стрима парой ``on_request`` / ``on_request_end``.
+    """Оборачивает тело request-стрима парой on_request / on_request_end.
 
     Классифицирует исход по типу исключения (или его отсутствию) и
-    гарантирует единичный вызов ``on_request_end`` в любом случае —
-    нормальное завершение, ``GeneratorExit`` от consumer-а,
+    гарантирует единичный вызов on_request_end в любом случае —
+    нормальное завершение, GeneratorExit от consumer-а,
     произвольное исключение из тела.
     """
 
@@ -65,20 +65,20 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
     """
     Terminal LLM-слоя, вызывающий OpenAI-совместимый API.
 
-    ``FromOpenAIChunkConverter`` держит внутри счетчики состояния.
+    FromOpenAIChunkConverter держит внутри счетчики состояния.
 
-    ``observer`` — наблюдатель сырых запросов/ответов. Вызывается
-    до любой доменной конверсии: ``on_request(kwargs)`` перед HTTP-
-    вызовом, ``on_response_chunk(chunk)`` на каждый входящий chunk,
-    ``on_request_end(outcome, exception_name)`` при завершении стрима
-    (:class:`RequestOutcome` ``OK``/``CANCELLED``/``RAISED``; имя
-    класса исключения — только для ``RAISED``).
+    observer — наблюдатель сырых запросов/ответов. Вызывается
+    до любой доменной конверсии: on_request(kwargs) перед HTTP-
+    вызовом, on_response_chunk(chunk) на каждый входящий chunk,
+    on_request_end(outcome, exception_name) при завершении стрима
+    (RequestOutcome OK/CANCELLED/RAISED; имя
+    класса исключения — только для RAISED).
 
-    ``preprocessor`` — pre-pipeline трансформер ``Choice → Choice``,
+    preprocessor — pre-pipeline трансформер Choice → Choice,
     выполняемый ДО fan-out в LLM-события. Обычно
-    :class:`~boba.domain.core.patterns.StreamTransformerChain` из
-    нескольких нормализаторов (reindexer коллизий ``index`` и т.п.).
-    Перед каждым :meth:`stream` вызывается ``preprocessor.reset()`` —
+    StreamTransformerChain из
+    нескольких нормализаторов (reindexer коллизий index и т.п.).
+    Перед каждым stream вызывается preprocessor.reset() —
     stateful-стадии получают чистое состояние per-request.
     """
 
@@ -98,7 +98,7 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
         return "OpenAITerminal"
 
     def stream(self, ctx: LLMContext) -> Iterable[LLMEvent]:
-        # превращаем :class:`LLMRequest` в аргументы вызова openai api
+        # превращаем LLMRequest в аргументы вызова openai api
         # аргументов очень много и самый простой способ это собрать kwargs
         kwargs = self._to_request.convert(ctx.request)
 

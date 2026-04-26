@@ -1,4 +1,4 @@
-"""In-memory реализация :class:`MessageService`."""
+"""In-memory реализация MessageService."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ class InMemoryMessageService(MessageService):
 
     Живёт в пределах одного прогона агента. Для persistent-варианта
     (между процессами) появится отдельный адаптер при миграции
-    соответствующего куска из старого ``boba.adapters``.
+    соответствующего куска из старого boba.adapters.
     """
 
     def __init__(self) -> None:

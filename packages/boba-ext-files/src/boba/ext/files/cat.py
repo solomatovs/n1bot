@@ -41,7 +41,7 @@ class CatArgs:
 
 
 class CatArgsConverter(Converter[dict[str, Any], CatArgs]):
-    """Маппит провалидированный dict в :class:`CatArgs`."""
+    """Маппит провалидированный dict в CatArgs."""
 
     def convert(self, value: dict[str, Any]) -> CatArgs:
         return CatArgs(
@@ -138,11 +138,11 @@ class CatTool(Tool[CatArgs]):
         start: int,
         end: int,
     ) -> tuple[str, int]:
-        """Стримит файл построчно, собирает только строки ``[start, end]``.
+        """Стримит файл построчно, собирает только строки [start, end].
 
         Ранние строки читаются и отбрасываются (иначе позицию в файле не
-        найти), хвост после ``end`` не читается вовсе — обрываем итерацию.
-        Если диапазон пуст, ``last = start - 1``.
+        найти), хвост после end не читается вовсе — обрываем итерацию.
+        Если диапазон пуст, last = start - 1.
         """
         collected: list[str] = []
         last = start - 1

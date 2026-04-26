@@ -1,14 +1,14 @@
-"""События LLM-слоя (``LLMEvent``).
+"""События LLM-слоя (LLMEvent).
 
 Чистый поток наблюдений за обращением к LLM: от отправки запроса до
-получения финального ``finish_reason``. Семейства зеркальны
-agent-уровню (:class:`~boba.domain.agent.events.AgentEvent`), но не
+получения финального finish_reason. Семейства зеркальны
+agent-уровню (AgentEvent), но не
 пересекаются по типам — это отдельный домен, со своей границей.
 
-На границе агент-слоя ``LLMEvent`` будет перекодироваться в
-``AgentEvent`` специализированным
-:class:`~boba.domain.core.patterns.StreamTransformer`-ом. До этого
-момента ни один sink не подписывается на ``LLMEvent`` напрямую.
+На границе агент-слоя LLMEvent будет перекодироваться в
+AgentEvent специализированным
+StreamTransformer-ом. До этого
+момента ни один sink не подписывается на LLMEvent напрямую.
 
 ════════════════════════════════════════════════════════════════════
   Полная иерархия
@@ -36,8 +36,8 @@ agent-уровню (:class:`~boba.domain.agent.events.AgentEvent`), но не
         ├── LLMRefusalToken
         └── LLMToolCallArgumentDelta          index, arguments
 
-Семейство ``LLMFailure`` пока не заводим: ошибки — исключения
-(потомки :class:`~boba.domain.llm.errors.LLMError`). События-ошибки
+Семейство LLMFailure пока не заводим: ошибки — исключения
+(потомки LLMError). События-ошибки
 появятся, если/когда потребуется стрим сигналов о неудачах без
 прерывания потока.
 """
@@ -56,9 +56,9 @@ class FinishReason(StrEnum):
     """Нормализованная причина завершения генерации LLM.
 
     Значения совпадают со старым
-    :class:`boba.domain.agent.events.FinishReason` — wire-совместимость
+    FinishReason — wire-совместимость
     на случай, если потребуется общий сериализатор. Семантика
-    ``is_terminal`` та же: ``TOOL_CALLS`` — не-терминальное (агент
+    is_terminal та же: TOOL_CALLS — не-терминальное (агент
     делает следующую итерацию с результатом), остальные — терминальные.
     """
 
@@ -96,7 +96,7 @@ class LLMLifecycleMarker(BaseLLMEvent, ABC):
 
 @dataclass(frozen=True)
 class LLMStreamingDelta(BaseLLMEvent, ABC):
-    """Инкрементальный кусок контента между ``*Started`` и ``*Done``."""
+    """Инкрементальный кусок контента между *Started и *Done."""
 
 
 @dataclass(frozen=True)
@@ -104,10 +104,10 @@ class LLMRequestStarted(LLMLifecycleMarker):
     """
     HTTP-запрос к провайдеру вот-вот будет отправлен.
 
-    Парный к :class:`LLMRequestSent` — даёт замер длительности
-    самого ``client.chat.completions.create``. Поле ``monotonic_ns``
-    — :func:`time.monotonic_ns` на момент эмита. Разница с
-    ``monotonic_ns`` у :class:`LLMRequestSent` = время до получения
+    Парный к LLMRequestSent — даёт замер длительности
+    самого client.chat.completions.create. Поле monotonic_ns
+    — monotonic_ns на момент эмита. Разница с
+    monotonic_ns у LLMRequestSent = время до получения
     stream-handle (включает сетевой round-trip и TTFB).
     """
 
@@ -126,9 +126,9 @@ class LLMRequestSent(LLMLifecycleMarker):
     """
     HTTP-запрос к провайдеру отправлен, stream-handle получен.
 
-    Парный к :class:`LLMRequestStarted`. Метаданные запроса
-    (model, messages_count, has_tools) живут на ``Started`` —
-    здесь только закрывающий ``monotonic_ns`` для замера длительности.
+    Парный к LLMRequestStarted. Метаданные запроса
+    (model, messages_count, has_tools) живут на Started —
+    здесь только закрывающий monotonic_ns для замера длительности.
     """
 
     monotonic_ns: int

@@ -5,20 +5,20 @@ reducer'ы, спек готов к многократному build'у.
 
 Per-call:
 
-1. Caller формирует :class:`TurnResolveContext` из
-   ``AgentContext`` + :class:`MessageService`.
-2. ``spec.build(resolve_ctx)`` → :class:`LLMRequest`.
+1. Caller формирует TurnResolveContext из
+   AgentContext + MessageService.
+2. spec.build(resolve_ctx) → LLMRequest.
 
-Что происходит внутри :meth:`build`:
+Что происходит внутри build:
 
-- :meth:`initial` возвращает пустой :class:`TurnState`.
-- Reducer'ы по возрастанию ``priority()`` заполняют slots state'а
-  (model, system, messages, tools, sampling). :class:`HistoryReducer`
-  читает свежий снапшот из :class:`MessageService` — все записи
+- initial возвращает пустой TurnState.
+- Reducer'ы по возрастанию priority() заполняют slots state'а
+  (model, system, messages, tools, sampling). HistoryReducer
+  читает свежий снапшот из MessageService — все записи
   предыдущей итерации (assistant, tool_results, feedback) уже
-  зафиксированы через :class:`DialogueWriter`.
-- :meth:`finalize` валидирует заполненность обязательных slot'ов
-  и возвращает immutable :class:`LLMRequest`.
+  зафиксированы через DialogueWriter.
+- finalize валидирует заполненность обязательных slot'ов
+  и возвращает immutable LLMRequest.
 """
 
 from __future__ import annotations

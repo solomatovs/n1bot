@@ -1,10 +1,10 @@
 """Адаптер ChromaDB для CLI: write-операции (upsert, delete) и
 служебные (list, get-or-create, delete-by-source).
 
-Read-tools для агента живут в отдельном пакете ``boba-ext-chromadb``
+Read-tools для агента живут в отдельном пакете boba-ext-chromadb
 и работают только на чтение. CLI намеренно не зависит на тот пакет —
 оператор может запустить CLI на машине, где extension не установлен.
-Backend client (``chromadb.PersistentClient``) общий, поэтому БД
+Backend client (chromadb.PersistentClient) общий, поэтому БД
 видят оба процесса.
 """
 
@@ -25,7 +25,7 @@ class CollectionSummary:
 
 
 class VectorStore:
-    """Тонкая обёртка над :class:`chromadb.PersistentClient` для
+    """Тонкая обёртка над PersistentClient для
     операций индексирования.
     """
 
@@ -64,7 +64,7 @@ class VectorStore:
     ):
         """Возвращает существующую коллекцию или создаёт новую.
 
-        ``description`` записывается в ``metadata["description"]``
+        description записывается в metadata["description"]
         **только при создании**. Для существующей коллекции описание
         не перезаписывается, чтобы операторские правки не потерялись
         при `index --description ...` повторно.
@@ -84,7 +84,7 @@ class VectorStore:
         self._client.delete_collection(name=name)
 
     def delete_by_source(self, collection_name: str, source_path: str) -> int:
-        """Удаляет все чанки, у которых ``metadata["source_path"]``
+        """Удаляет все чанки, у которых metadata["source_path"]
         совпадает с заданным. Возвращает кол-во удалённых.
 
         Используется в `_indexer` для idempotent reindex: перед upsert
@@ -104,9 +104,9 @@ class VectorStore:
         collection_name: str,
         chunks: Sequence[tuple[str, str, Mapping[str, str]]],
     ) -> None:
-        """``chunks`` — список ``(id, document_text, metadata)``.
+        """chunks — список (id, document_text, metadata).
 
-        Принимает уже подготовленные id'ы (см. ``_indexer._chunk_id``),
+        Принимает уже подготовленные id'ы (см. _indexer._chunk_id),
         чтобы повторный upsert был idempotent под одной и той же
         парой (source_path, chunk_index).
         """

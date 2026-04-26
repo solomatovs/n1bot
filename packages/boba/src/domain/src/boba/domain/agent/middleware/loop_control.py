@@ -62,7 +62,7 @@ class StopOnFinished(Specification[tuple[AgentContext, AgentEvent]]):
 
 class StopOnAnyFailure(Specification[tuple[AgentContext, AgentEvent]]):
     """
-    Останавливает цикл при любом :class:`Terminal`
+    Останавливает цикл при любом Terminal
     """
 
     def check(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:

@@ -2,12 +2,12 @@
 tool-plugin loader и настройка логирования.
 
 Adapter-зависимый wiring (LLM-source, file-prompt loader, secp-секции
-для адаптеров) живёт в соответствующих ``boba-adapter-*`` пакетах —
+для адаптеров) живёт в соответствующих boba-adapter-* пакетах —
 core ничего про конкретные SDK не знает. Конкретные
-:class:`~boba.domain.core.config.ConfigSource`-реализации (env, TOML,
-…) — в пакетах ``boba-config-*``. Bootstrap приложения сам собирает
+ConfigSource-реализации (env, TOML,
+…) — в пакетах boba-config-*. Bootstrap приложения сам собирает
 свою цепочку источников и регистрирует нужные секции в
-:class:`ConfigFactory`.
+ConfigFactory.
 
 Короткие импорты::
 

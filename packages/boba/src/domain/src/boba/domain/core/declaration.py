@@ -3,24 +3,24 @@
 Универсальные строительные блоки, общие между tool-input-схемами и
 config-секциями:
 
-- :class:`FieldSpec` — самодостаточная декларация одного поля
-  (``name`` + :class:`Converter`-цепочка + описание).
-- :class:`ObjectSchema` — декларация объекта: набор полей +
+- FieldSpec — самодостаточная декларация одного поля
+  (name + Converter-цепочка + описание).
+- ObjectSchema — декларация объекта: набор полей +
   cross-field инварианты + фабрика финального DTO.
-- :func:`validate_object` — orchestrator: читает каждое поле через
+- validate_object — orchestrator: читает каждое поле через
   callable-источник, прогоняет через converter, отбрасывает
-  :data:`MISSING`, применяет invariants, отдаёт в factory.
+  MISSING, применяет invariants, отдаёт в factory.
 
 Никакой адресации в глобальном namespace тут нет — это задача
 владельца коллекции (для конфига —
-:class:`~boba.domain.core.config.ConfigSection` с её
-:attr:`namespace`; для tool-схемы —
-:class:`~boba.domain.core.tools.schema.ToolDefinition`, который
-агрегирует ``ObjectSchema`` без адресации).
+ConfigSection с её
+namespace; для tool-схемы —
+ToolDefinition, который
+агрегирует ObjectSchema без адресации).
 
 Wire-схема (внешнее представление декларации) живёт в
-:mod:`boba.domain.core.schema` (:class:`ParamWireSchema`,
-:class:`ObjectWireSchema`, :class:`SchemaContributor`).
+schema (ParamWireSchema,
+ObjectWireSchema, SchemaContributor).
 """
 
 from __future__ import annotations
@@ -51,18 +51,18 @@ T = TypeVar("T")
 class FieldSpec(Generic[T]):
     """Декларация одного поля.
 
-    Самодостаточно: знает только своё локальное ``name``,
-    :class:`Converter`-цепочку и человекочитаемое описание. Не несёт
+    Самодостаточно: знает только своё локальное name,
+    Converter-цепочку и человекочитаемое описание. Не несёт
     адреса в глобальном namespace — это задача владельца (для конфига
-    — :class:`~boba.domain.core.config.ConfigSection`, для tool-схемы —
-    :class:`~boba.domain.core.tools.schema.ToolInputSchema`).
+    — ConfigSection, для tool-схемы —
+    ToolInputSchema).
 
     Один и тот же класс используется и для config-полей, и для
     tool-параметров. Различие — только в том, кто складывает поля и
     как читает значение.
 
-    ``converter`` — цепочка трансформации сырого значения в
-    типизированный ``T``. Типичный шаблон::
+    converter — цепочка трансформации сырого значения в
+    типизированный T. Типичный шаблон::
 
         ChainConverter(
             Default(20),     # подставит, если источников молчат
@@ -70,8 +70,8 @@ class FieldSpec(Generic[T]):
             MinValue(1),     # семантическое ограничение
         )
 
-    Реализующие :class:`SchemaContributor` шаги цепочки наполняют
-    :class:`ParamWireSchema` (тип, default, required, enum, …) — единый
+    Реализующие SchemaContributor шаги цепочки наполняют
+    ParamWireSchema (тип, default, required, enum, …) — единый
     источник правды для runtime-валидации и описания внешнему потребителю.
     """
 
@@ -80,10 +80,10 @@ class FieldSpec(Generic[T]):
     description: str = ""
 
     def build_wire_schema(self) -> ParamWireSchema:
-        """Собрать wire-описание поля через :class:`SchemaContributor`.
+        """Собрать wire-описание поля через SchemaContributor.
 
-        Стартует с ``description`` и даёт каждому шагу конвертера
-        дозаполнить ``type`` / ``enum`` / ``default`` / ``required`` и
+        Стартует с description и даёт каждому шагу конвертера
+        дозаполнить type / enum / default / required и
         т.п. Если шаг не реализует contributor-протокол — пропускается;
         итоговая схема содержит только то, что реально объявлено.
         """
@@ -98,24 +98,24 @@ class ObjectSchema(Generic[T]):
     """Описание объекта с именованными полями, инвариантами и фабрикой.
 
     Универсальный примитив для tool-input-схем и config-секций:
-    различие — только в способе чтения сырых данных (``dict`` от LLM vs
+    различие — только в способе чтения сырых данных (dict от LLM vs
     резолвер env/TOML), которое инкапсулируется в callable передаваемом
-    в :func:`validate_object`.
+    в validate_object.
 
     Поля:
 
-    - ``fields`` — независимые описания каждого слота (``FieldSpec``);
-    - ``invariants`` — cross-field конвертер, работающий над dict'ом
+    - fields — независимые описания каждого слота (FieldSpec);
+    - invariants — cross-field конвертер, работающий над dict'ом
       уже провалидированных полей. Проверяет инварианты, связывающие
       несколько полей: взаимоисключения, совместность, порядок. По
-      умолчанию :class:`Pass` (no-op);
-    - ``factory`` — фабрика финального DTO из kwargs. Для tool-args
-      обычно ``dict`` (identity), для config — конкретный dataclass;
-    - ``description`` — описание самого объекта/секции (для autogen
+      умолчанию Pass (no-op);
+    - factory — фабрика финального DTO из kwargs. Для tool-args
+      обычно dict (identity), для config — конкретный dataclass;
+    - description — описание самого объекта/секции (для autogen
       operator-доки конфига и tool-schema'ы для LLM).
 
-    Wire-схему агрегата строит :meth:`build_wire_schema` — итерируется
-    по полям и собирает :class:`ObjectWireSchema`.
+    Wire-схему агрегата строит build_wire_schema — итерируется
+    по полям и собирает ObjectWireSchema.
     """
 
     fields: Sequence[FieldSpec[Any]]
@@ -128,9 +128,9 @@ class ObjectSchema(Generic[T]):
     def build_wire_schema(self) -> ObjectWireSchema:
         """JSON-Schema-подобное описание объекта.
 
-        Каждое поле даёт ``ParamWireSchema`` через
-        :meth:`FieldSpec.build_wire_schema`; итог агрегируется в
-        ``{name → property-dict}`` + список ``required`` + ``description``
+        Каждое поле даёт ParamWireSchema через
+        build_wire_schema; итог агрегируется в
+        {name → property-dict} + список required + description
         самого объекта.
         """
         schema = ObjectWireSchema(description=self.description)
@@ -146,15 +146,15 @@ def validate_object(
     schema: ObjectSchema[T],
     read_raw: Callable[[str], object],
 ) -> T:
-    """Прочитать каждое поле через ``read_raw``, прогнать converter,
-    отбросить :data:`MISSING`-значения, применить ``invariants``,
-    отдать результат в ``factory``.
+    """Прочитать каждое поле через read_raw, прогнать converter,
+    отбросить MISSING-значения, применить invariants,
+    отдать результат в factory.
 
     Симметричный orchestrator для tool-args (источник —
-    ``dict[str, Any]`` от LLM) и для config-секций (источник —
-    :class:`~boba.domain.core.config.ChainedConfigResolver`).
+    dict[str, Any] от LLM) и для config-секций (источник —
+    ChainedConfigResolver).
 
-    Семантика ошибок: :class:`ConverterInputError` от любого шага
+    Семантика ошибок: ConverterInputError от любого шага
     пробрасывается наружу с обогащением имени поля. Caller (tools или
     config) сам оборачивает в свою domain-ошибку с дополнительным
     контекстом.

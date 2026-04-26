@@ -9,12 +9,12 @@
         next_offset = buf.consumed
 
 Контракт времени жизни memoryview:
-    Выданные ``iter_lines_*`` и ``tail()`` ``memoryview`` валидны до следующего
-    вызова любого метода, который читает из fd (``iter_lines_*``). Если при
+    Выданные iter_lines_* и tail() memoryview валидны до следующего
+    вызова любого метода, который читает из fd (iter_lines_*). Если при
     таком повторном чтении буфер должен вырасти, а на него есть живые
-    ``memoryview`` — будет поднят ``BufferError``. Это защищает от тихого
+    memoryview — будет поднят BufferError. Это защищает от тихого
     stale-указателя: клиент видит громкую ошибку и обязан освободить/
-    материализовать (``bytes(mv)``) старые ``memoryview`` до следующего чтения.
+    материализовать (bytes(mv)) старые memoryview до следующего чтения.
 """
 
 from __future__ import annotations
@@ -35,13 +35,13 @@ class GrowBuffer:
     def __init__(
         self, fd: BufferedReader, *, max_capacity: int | None = None
     ) -> None:
-        """Создать буфер поверх ``fd``.
+        """Создать буфер поверх fd.
 
-        :param max_capacity: верхняя граница ёмкости в байтах. ``None``
+        :param max_capacity: верхняя граница ёмкости в байтах. None
             (по умолчанию) — без ограничения. Если при чтении требуется
-            вырасти больше ``max_capacity`` — поднимается ``BufferError``.
-            Если ``max_capacity`` меньше ``_INITIAL_CAPACITY`` — начальная
-            ёмкость урезается до ``max_capacity``.
+            вырасти больше max_capacity — поднимается BufferError.
+            Если max_capacity меньше _INITIAL_CAPACITY — начальная
+            ёмкость урезается до max_capacity.
         """
         if max_capacity is not None and max_capacity <= 0:
             raise ValueError(f"max_capacity must be positive, got {max_capacity}")
@@ -62,7 +62,7 @@ class GrowBuffer:
 
     @property
     def max_capacity(self) -> int | None:
-        """Верхняя граница ёмкости. ``None`` — без ограничения."""
+        """Верхняя граница ёмкости. None — без ограничения."""
         return self._max_capacity
 
     @property
@@ -84,7 +84,7 @@ class GrowBuffer:
         """Читает [offset, EOF] и yield'ит полные строки в порядке от начала к концу.
 
         Неполная последняя строка (без separator) не включается.
-        Количество обработанных байт от offset доступно через ``consumed``.
+        Количество обработанных байт от offset доступно через consumed.
         """
         end = self._load(separator, offset)
         if end == 0:
@@ -105,7 +105,7 @@ class GrowBuffer:
         """Читает [offset, EOF] и yield'ит полные строки в обратном порядке.
 
         Неполная последняя строка (без separator) не включается.
-        Количество обработанных байт от offset доступно через ``consumed``.
+        Количество обработанных байт от offset доступно через consumed.
         """
         end = self._load(separator, offset)
         if end == 0:
@@ -126,7 +126,7 @@ class GrowBuffer:
         """Прочитать [offset, EOF] в буфер и вернуть позицию после последнего separator.
 
         Возвращает 0 если нечего итерировать (пустой регион или нет separator'а).
-        Побочно обновляет ``consumed``.
+        Побочно обновляет consumed.
         """
         self._fd.seek(offset)
         self._fill()
@@ -156,11 +156,11 @@ class GrowBuffer:
             self._size += n
 
     def _grow(self) -> None:
-        """Удвоить ёмкость буфера in-place, но не выше ``max_capacity``.
+        """Удвоить ёмкость буфера in-place, но не выше max_capacity.
 
-        Падает с ``BufferError`` в двух случаях:
-        - достигнут ``max_capacity`` и дальше расти некуда;
-        - на bytearray есть живые экспорты (ранее выданные ``memoryview``)
+        Падает с BufferError в двух случаях:
+        - достигнут max_capacity и дальше расти некуда;
+        - на bytearray есть живые экспорты (ранее выданные memoryview)
           — рост при живых view-шках привёл бы к stale-указателю.
         """
         cur = len(self._buf)

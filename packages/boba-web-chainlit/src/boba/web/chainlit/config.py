@@ -1,19 +1,19 @@
-"""Конфиг chainlit-приложения как единая :class:`ConfigSection`.
+"""Конфиг chainlit-приложения как единая ConfigSection.
 
 Все поля — server-параметры (host/port/root_path/auth_secret/headless),
 рантайм-расположение (app_root), список моделей для UI ChatSettings и
-UI-overrides для ``.chainlit/config.toml`` (title, telemetry, лимиты
-загрузки) — лежат в одной секции с namespace ``("chainlit",)``. DTO-имена
-== TOML/env-имена: ``[chainlit] ui_name`` ↔ env ``BOBA_CHAINLIT_UI_NAME``
-↔ ``ChainlitConfig.ui_name``. Никаких оператор-DTO mapping'ов.
+UI-overrides для .chainlit/config.toml (title, telemetry, лимиты
+загрузки) — лежат в одной секции с namespace ("chainlit",). DTO-имена
+== TOML/env-имена: [chainlit] ui_name ↔ env BOBA_CHAINLIT_UI_NAME
+↔ ChainlitConfig.ui_name. Никаких оператор-DTO mapping'ов.
 
-Bootstrap (:mod:`boba.web.chainlit.__main__`) собирает бандл и через
-``bundle.section(ChainlitSection)`` получает значения, после чего:
+Bootstrap (__main__) собирает бандл и через
+bundle.section(ChainlitSection) получает значения, после чего:
 
-1. через :func:`bridge_chainlit_env` прокидывает server-поля в
-   ``CHAINLIT_*`` env (chainlit-библиотека читает их при импорте);
-2. через :class:`UIOverrideTomlConverter` рендерит UI-поля в
-   ``app_root/.chainlit/config.toml`` (chainlit смотрит TOML только
+1. через bridge_chainlit_env прокидывает server-поля в
+   CHAINLIT_* env (chainlit-библиотека читает их при импорте);
+2. через UIOverrideTomlConverter рендерит UI-поля в
+   app_root/.chainlit/config.toml (chainlit смотрит TOML только
    при старте сервера).
 """
 
@@ -45,22 +45,22 @@ __all__ = ["ChainlitConfig", "ChainlitSection"]
 class ChainlitConfig:
     """Параметры chainlit-приложения.
 
-    ``host``/``port``/``root_path``/``auth_secret``/``headless`` —
-    server-параметры, прокидываются в одноимённые ``CHAINLIT_*`` env.
+    host/port/root_path/auth_secret/headless —
+    server-параметры, прокидываются в одноимённые CHAINLIT_* env.
     Хранятся строкой — chainlit-библиотека парсит сама.
 
-    ``app_root`` — директория chainlit runtime-state (``.chainlit/``,
-    ``chainlit.md``, ``public/``, ``translations/``). Прокидывается в
-    ``CHAINLIT_APP_ROOT``. Лежит вне исходников (по умолчанию —
-    ``./local/chainlit``).
+    app_root — директория chainlit runtime-state (.chainlit/,
+    chainlit.md, public/, translations/). Прокидывается в
+    CHAINLIT_APP_ROOT. Лежит вне исходников (по умолчанию —
+    ./local/chainlit).
 
-    ``models`` — список LLM-моделей для UI ChatSettings. Пустой список
+    models — список LLM-моделей для UI ChatSettings. Пустой список
     — UI не сможет выбрать модель и кинет ошибку при старте сессии.
 
-    UI-overrides (``ui_name``, ``enable_telemetry``,
-    ``upload_max_size_mb``/``upload_max_files``/``upload_accept``) —
-    рендерятся в ``app_root/.chainlit/config.toml`` (chainlit для UI
-    env не смотрит, только TOML). ``None`` означает «не трогать
+    UI-overrides (ui_name, enable_telemetry,
+    upload_max_size_mb/upload_max_files/upload_accept) —
+    рендерятся в app_root/.chainlit/config.toml (chainlit для UI
+    env не смотрит, только TOML). None означает «не трогать
     chainlit-дефолт».
     """
 
@@ -81,7 +81,7 @@ class ChainlitConfig:
 
 class ChainlitSection(ConfigSection[ChainlitConfig]):
     """Секция chainlit-приложения. Регистрируется через entry-point
-    ``boba.config_sections``.
+    boba.config_sections.
     """
 
     id: ClassVar[StrId] = StrId("chainlit")
@@ -118,16 +118,16 @@ class ChainlitSection(ConfigSection[ChainlitConfig]):
             FieldSpec(
                 name="headless",
                 converter=ChainConverter(Default("true"), ParseString()),
-                description="``true`` — не пытаться открыть браузер при старте.",
+                description="true — не пытаться открыть браузер при старте.",
             ),
             FieldSpec(
                 name="app_root",
                 converter=ChainConverter(Default("./local/chainlit"), ParseString()),
                 description="Директория chainlit runtime-state: "
-                "``.chainlit/config.toml``, ``chainlit.md``, ``public/``, "
-                "``translations/``. Не лежит в исходниках — вынесена в "
-                "``local/`` (gitignored). Bridge ставит её в "
-                "``CHAINLIT_APP_ROOT``.",
+                ".chainlit/config.toml, chainlit.md, public/, "
+                "translations/. Не лежит в исходниках — вынесена в "
+                "local/ (gitignored). Bridge ставит её в "
+                "CHAINLIT_APP_ROOT.",
             ),
             FieldSpec(
                 name="models",
@@ -139,31 +139,31 @@ class ChainlitSection(ConfigSection[ChainlitConfig]):
             FieldSpec(
                 name="ui_name",
                 converter=Nullable(ParseString()),
-                description="Заголовок чата в UI (chainlit ``[UI] name``).",
+                description="Заголовок чата в UI (chainlit [UI] name).",
             ),
             FieldSpec(
                 name="enable_telemetry",
                 converter=Nullable(ParseBool()),
                 description="Опт-аут chainlit-телеметрии "
-                "(``[project] enable_telemetry``).",
+                "([project] enable_telemetry).",
             ),
             FieldSpec(
                 name="upload_max_size_mb",
                 converter=Nullable(ParseInt()),
                 description="Лимит размера загружаемого файла, MB "
-                "(``[features.spontaneous_file_upload] max_size_mb``).",
+                "([features.spontaneous_file_upload] max_size_mb).",
             ),
             FieldSpec(
                 name="upload_max_files",
                 converter=Nullable(ParseInt()),
                 description="Максимум файлов в одном сообщении "
-                "(``[features.spontaneous_file_upload] max_files``).",
+                "([features.spontaneous_file_upload] max_files).",
             ),
             FieldSpec(
                 name="upload_accept",
                 converter=Nullable(ParseCsvList()),
                 description="MIME-типы/расширения, разрешённые к загрузке "
-                "(``[features.spontaneous_file_upload] accept``).",
+                "([features.spontaneous_file_upload] accept).",
             ),
         ],
         factory=ChainlitConfig,

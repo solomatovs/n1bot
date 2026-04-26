@@ -1,21 +1,21 @@
-"""Полиморфная маршрутизация :class:`RoutableError` по маркерам.
+"""Полиморфная маршрутизация RoutableError по маркерам.
 
 Роутер не знает конкретных подклассов — он читает маркеры
-(:class:`UserFeedbackError`, :class:`AgentLLMFeedbackError`) независимо и
+(UserFeedbackError, AgentLLMFeedbackError) независимо и
 суммирует эффекты.
 
-:class:`TerminalError` — специализация :class:`UserFeedbackError`,
+TerminalError — специализация UserFeedbackError,
 поэтому отдельной ветки не требует: «терминальность» кодируется
-типом возвращаемого события (наследник ``Terminal``), который
+типом возвращаемого события (наследник Terminal), который
 роутер просто yield-ит как любое user-событие.
 
-:class:`AgentLLMFeedbackError` — agent-уровневая специализация
-:class:`LLMFeedbackError` с зафиксированным ``TFeedback = LLMMessage``.
-Пишется в :class:`MessageService` через :class:`DialogueWriter` — на
+AgentLLMFeedbackError — agent-уровневая специализация
+LLMFeedbackError с зафиксированным TFeedback = LLMMessage.
+Пишется в MessageService через DialogueWriter — на
 следующей итерации модель увидит feedback в истории. Параллельно роутер
-эмитит :class:`FeedbackToLLMAdded` (снапшот для sink'а / history-
+эмитит FeedbackToLLMAdded (снапшот для sink'а / history-
 реконструкции). Использование agent-специализации вместо generic-
-маркера даёт честную типизацию ``feedback.content`` — без ``Unknown``.
+маркера даёт честную типизацию feedback.content — без Unknown.
 """
 
 from __future__ import annotations
@@ -34,19 +34,19 @@ from boba.domain.llm.models import RequestId
 
 
 class AgentErrorRouter:
-    """Маршрутизирует :class:`RoutableError` по маркерам.
+    """Маршрутизирует RoutableError по маркерам.
 
     Эффекты собираются независимо:
 
-    1. :class:`AgentLLMFeedbackError` — `to_llm_feedback()` отдаёт
-       :class:`LLMFeedback`-union, который match-диспетчер раскрывает
-       в узкие методы :class:`DialogueWriter`. Параллельно эмитится
-       :class:`FeedbackToLLMAdded` (снапшот для sink'а / history-
+    1. AgentLLMFeedbackError — `to_llm_feedback()` отдаёт
+       LLMFeedback-union, который match-диспетчер раскрывает
+       в узкие методы DialogueWriter. Параллельно эмитится
+       FeedbackToLLMAdded (снапшот для sink'а / history-
        реконструкции). LLM увидит feedback на следующей итерации.
-    2. :class:`UserFeedbackError` — ``to_user_feedback(request_id)``
+    2. UserFeedbackError — to_user_feedback(request_id)
        yield-ится в stream. Sink получает событие; если событие —
-       наследник ``Terminal`` (как у :class:`TerminalError`-ошибок),
-       :class:`StopOnAnyFailure` остановит цикл.
+       наследник Terminal (как у TerminalError-ошибок),
+       StopOnAnyFailure остановит цикл.
     """
 
     def __init__(self, writer: DialogueWriter) -> None:
@@ -71,10 +71,10 @@ class AgentErrorRouter:
             yield err.to_user_feedback(rid)
 
     def _dispatch_feedback(self, feedback: LLMFeedback) -> None:
-        """Раскрывает :class:`LLMFeedback`-union в узкие writer-методы.
+        """Раскрывает LLMFeedback-union в узкие writer-методы.
 
-        ``assert_never`` в default-ветке гарантирует exhaustiveness:
-        при добавлении нового варианта в :class:`LLMFeedback` pyright
+        assert_never в default-ветке гарантирует exhaustiveness:
+        при добавлении нового варианта в LLMFeedback pyright
         потребует обработать его здесь.
         """
         match feedback:
@@ -92,11 +92,11 @@ class AgentErrorRouterMiddleware(StreamSource[AgentContext, AgentEvent]):
     """Top-level try/except над всей агентской цепочкой.
 
     Ставится самым внешним слоем. Любой middleware глубже может
-    ``raise`` подкласс :class:`RoutableError` — этот middleware
-    ловит и делегирует :class:`AgentErrorRouter`.
+    raise подкласс RoutableError — этот middleware
+    ловит и делегирует AgentErrorRouter.
 
-    Всё, что не наследует :class:`RoutableError` (``KeyError``,
-    ``TypeError`` и т.п.), проходит насквозь и крашит процесс — баги
+    Всё, что не наследует RoutableError (KeyError,
+    TypeError и т.п.), проходит насквозь и крашит процесс — баги
     не маскируем.
     """
 

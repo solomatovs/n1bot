@@ -1,16 +1,16 @@
 """Мост между синхронным агентским циклом и async-петлёй Chainlit.
 
-Агентская цепочка — синхронный pull-поток (``for event in source.stream(ctx)``),
+Агентская цепочка — синхронный pull-поток (for event in source.stream(ctx)),
 Chainlit — асинхронный фреймворк поверх event loop. Склейка делается через
 thread-safe очередь:
 
-- :class:`ChainlitBridgeSink` живёт в агентском потоке (``asyncio.to_thread``)
-  и для каждого ``handle()`` вызывает ``loop.call_soon_threadsafe`` —
-  безопасно кладёт событие в :class:`asyncio.Queue`, принадлежащий event loop
+- ChainlitBridgeSink живёт в агентском потоке (asyncio.to_thread)
+  и для каждого handle() вызывает loop.call_soon_threadsafe —
+  безопасно кладёт событие в Queue, принадлежащий event loop
   основного async-handler'а Chainlit;
-- async-consumer в ``app.py`` итерирует очередь и рисует UI.
+- async-consumer в app.py итерирует очередь и рисует UI.
 
-Sentinel ``None`` сигнализирует consumer'у, что агентский поток завершился
+Sentinel None сигнализирует consumer'у, что агентский поток завершился
 (штатно или исключением — решение о терминальном сообщении принимает
 consumer по последнему событию).
 """
@@ -28,7 +28,7 @@ class ChainlitBridgeSink(StreamSink[AgentContext, AgentEvent]):
     """Sink, перекладывающий AgentEvent в async-очередь из другого потока.
 
     Владелец очереди — async-handler Chainlit. Sink живёт в рабочем потоке
-    (``to_thread``). ``call_soon_threadsafe`` — единственный безопасный
+    (to_thread). call_soon_threadsafe — единственный безопасный
     способ тронуть объекты loop'а из стороннего потока.
     """
 
@@ -50,7 +50,7 @@ class ChainlitBridgeSink(StreamSink[AgentContext, AgentEvent]):
     def close(self) -> None:
         """Сигнал async-consumer'у: событий больше не будет.
 
-        Вызывается из того же рабочего потока после ``agent.run(...)``
-        (или в ``finally`` вокруг него).
+        Вызывается из того же рабочего потока после agent.run(...)
+        (или в finally вокруг него).
         """
         self._loop.call_soon_threadsafe(self._queue.put_nowait, None)

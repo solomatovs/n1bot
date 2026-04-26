@@ -1,6 +1,6 @@
-"""Файловые реализации :class:`WorkspaceShell` (base + concrete).
+"""Файловые реализации WorkspaceShell (base + concrete).
 
-Registry-классы — рядом в :mod:`._registry`.
+Registry-классы — рядом в _registry.
 """
 
 from __future__ import annotations
@@ -48,13 +48,13 @@ def _contain_within_root(
     path: str,
     cwd_parts: tuple[str, ...] = (),
 ) -> str:
-    """Нормализует ввод к пути внутри workspace (containment ``..``).
+    """Нормализует ввод к пути внутри workspace (containment ..).
 
-    Абсолютный путь (с ведущим ``/``) разрешается от корня workspace —
-    ``cwd_parts`` игнорируется. Относительный — от ``cwd_parts``. ``.``
-    пропускается, ``..`` обрабатывается по стеку: если стек пуст (вышли
+    Абсолютный путь (с ведущим /) разрешается от корня workspace —
+    cwd_parts игнорируется. Относительный — от cwd_parts. .
+    пропускается, .. обрабатывается по стеку: если стек пуст (вышли
     бы выше корня) — компонент отбрасывается. Результат не содержит
-    ведущего ``/``.
+    ведущего /.
     """
     is_absolute = path.startswith("/")
     stack: list[str] = [] if is_absolute else list(cwd_parts)
@@ -71,12 +71,12 @@ def _contain_within_root(
 
 @dataclass(frozen=True)
 class WorkspacePath:
-    """Три формы одного пути, обработанного :meth:`FsWorkspaceShell._resolve`.
+    """Три формы одного пути, обработанного _resolve.
 
-    * ``source`` — исходный ввод как есть (для логов и диагностики).
-    * ``relative`` — путь относительно корня workspace, безопасно
+    * source — исходный ввод как есть (для логов и диагностики).
+    * relative — путь относительно корня workspace, безопасно
       показывать пользователю в ошибках (не раскрывает реальный путь).
-    * ``absolute`` — физический путь на диске, для I/O и логов.
+    * absolute — физический путь на диске, для I/O и логов.
     """
 
     source: str
@@ -86,9 +86,9 @@ class WorkspacePath:
 
 @contextmanager
 def _translate_os_errors(resolved: WorkspacePath) -> Iterator[None]:
-    """Переводит низкоуровневые ``OSError`` в иерархию ``WorkspaceError``.
+    """Переводит низкоуровневые OSError в иерархию WorkspaceError.
 
-    В публичные ошибки кладётся ``resolved.relative`` (не раскрывает
+    В публичные ошибки кладётся resolved.relative (не раскрывает
     реальный путь), а в debug-лог уходят source + absolute для
     диагностики.
     """
@@ -129,7 +129,7 @@ class _WorkspaceTextStream(TextIOBase):
 
     Покрывает все I/O-вызовы (write, read, close, flush, seek, tell и т.п.):
     любая низкоуровневая ошибка диска/прав наружу выходит единственно в
-    форме ``WorkspaceError`` (и потомков). Привязан к ``WorkspacePath``,
+    форме WorkspaceError (и потомков). Привязан к WorkspacePath,
     чтобы отдавать пользователю относительный путь, а в логи — source +
     абсолютный.
     """
@@ -197,7 +197,7 @@ class _WorkspaceTextStream(TextIOBase):
 
 
 class _WorkspaceBinaryStream(BufferedIOBase):
-    """Бинарный stream внутри workspace — ``OSError`` → ``WorkspaceError``."""
+    """Бинарный stream внутри workspace — OSError → WorkspaceError."""
 
     def __init__(self, inner: BufferedIOBase, resolved: WorkspacePath) -> None:
         super().__init__()
@@ -255,9 +255,9 @@ class _WorkspaceBinaryStream(BufferedIOBase):
 
 
 class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
-    """Файловый shell с фиксированным корнем ``root``.
+    """Файловый shell с фиксированным корнем root.
 
-    Все пути нормализуются через :meth:`_resolve` в :class:`WorkspacePath`,
+    Все пути нормализуются через _resolve в WorkspacePath,
     где хранится и исходный ввод (для логов), и путь относительно
     workspace (для ошибок пользователю), и физический путь на диске
     (для I/O и диагностики).
@@ -627,7 +627,7 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
 
     @staticmethod
     def _count_stream(src: Path, old: str, encoding: str) -> int:
-        """Потоковый подсчёт вхождений ``old`` с overlap-буфером."""
+        """Потоковый подсчёт вхождений old с overlap-буфером."""
         old_len = len(old)
         chunk_size = max(65536, old_len * 2)
         keep = old_len - 1
@@ -662,7 +662,7 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
     ) -> None:
         """Потоковая замена: src → temp → atomic rename.
 
-        ``limit`` — сколько вхождений заменить (для ``replace_all`` равен
+        limit — сколько вхождений заменить (для replace_all равен
         уже подсчитанному count). Оригинал не модифицируется до rename.
         """
         old_len = len(old)
@@ -822,9 +822,9 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
     def _resolve(self, source: str) -> WorkspacePath:
         """Единая точка сборки физического пути.
 
-        Абсолютный ``source`` (с ведущим ``/``) резолвится от корня
-        workspace; относительный — от ``cwd``. Клампит ``..``, чтобы путь
-        не вышел за корень; после ``Path.resolve()`` проверяет, что
+        Абсолютный source (с ведущим /) резолвится от корня
+        workspace; относительный — от cwd. Клампит .., чтобы путь
+        не вышел за корень; после Path.resolve() проверяет, что
         symlink не увёл наружу. В debug-лог пишет source → absolute для
         диагностики.
         """
@@ -854,19 +854,19 @@ TWs = TypeVar("TWs", bound=FsWorkspaceShell)
 
 
 class FsProjectWorkspaceShell(FsWorkspaceShell[WorkspaceId], ProjectWorkspaceShell):
-    """Файловый :class:`ProjectWorkspaceShell`."""
+    """Файловый ProjectWorkspaceShell."""
 
 
 class FsHistoryWorkspaceShell(FsWorkspaceShell[WorkspaceId], HistoryWorkspaceShell):
-    """Файловый :class:`HistoryWorkspaceShell`."""
+    """Файловый HistoryWorkspaceShell."""
 
 
 class FsScratchWorkspaceShell(FsWorkspaceShell[WorkspaceId], ScratchWorkspaceShell):
-    """Файловый :class:`ScratchWorkspaceShell`."""
+    """Файловый ScratchWorkspaceShell."""
 
 
 class FsPromptWorkspaceShell(
     FsWorkspaceShell[PromptWorkspaceId], PromptWorkspaceShell
 ):
-    """Файловый :class:`PromptWorkspaceShell`."""
+    """Файловый PromptWorkspaceShell."""
 

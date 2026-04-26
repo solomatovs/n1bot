@@ -36,10 +36,10 @@ class LsArgs:
 
 
 class LsArgsConverter(Converter[dict[str, Any], LsArgs]):
-    """Маппит провалидированный dict в :class:`LsArgs`.
+    """Маппит провалидированный dict в LsArgs.
 
     Все проверки (тип, длина, min) уже сделаны
-    :class:`SchemaArgsValidator` — здесь только сборка dataclass.
+    SchemaArgsValidator — здесь только сборка dataclass.
     """
 
     def convert(self, value: dict[str, Any]) -> LsArgs:

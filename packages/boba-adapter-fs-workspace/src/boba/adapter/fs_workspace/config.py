@@ -1,8 +1,8 @@
 """Конфиг-секция файлового workspace-адаптера.
 
-Описывает раскладку namespace'ов под ``base_dir`` —
+Описывает раскладку namespace'ов под base_dir —
 project/history/scratch — это деталь реализации FS-адаптера, в
-доменном :class:`WorkspaceShell` её нет.
+доменном WorkspaceShell её нет.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from boba.domain.core.validators import ChainConverter, Default, ParseString
 
 
 class WorkspacesSection(ConfigSection[WorkspaceLayout]):
-    """Раскладка namespace'ов workspace'а относительно ``base_dir``."""
+    """Раскладка namespace'ов workspace'а относительно base_dir."""
 
     id: ClassVar[StrId] = StrId("workspaces")
     namespace: ClassVar[tuple[str, ...]] = ("workspaces",)
