@@ -10,6 +10,7 @@ sink'ом на stdout/stderr и завершает процесс. Всё DI —
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -27,13 +28,14 @@ from boba.adapters.raw_llm_observer import (
     FileRawLLMObserver,
 )
 from boba.domain.agent.models import AgentRequest
+from boba.domain.core.config import ChainedConfigResolver
 from boba.domain.core.tools import ToolContext
 from boba.domain.core.workspace import (
     PromptWorkspaceId,
     WorkspaceId,
 )
 from boba.domain.llm.models import RequestId, SamplingParams
-from boba.infra.config import ConfigLoader
+from boba.infra.config import ConfigLoader, default_config_factory
 from boba.infra.container import (
     AgentComponents,
     build_prompt_providers,
@@ -42,6 +44,13 @@ from boba.infra.container import (
 from boba.infra.logging import configure_logging
 from boba.infra.prompt_loader import PromptLoader
 from boba.infra.tool_plugin_loader import ExtensionContext, ToolPluginLoader
+from boba_config_env import EnvFileSource, EnvSource
+from boba_config_toml import (
+    CONFIG_PATH_ENV,
+    TomlFileSource,
+    TomlSource,
+    load_toml,
+)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -117,11 +126,31 @@ def _build_sampling(args: argparse.Namespace) -> SamplingParams | None:
     return SamplingParams(**fields)
 
 
+def _build_resolver() -> ChainedConfigResolver:
+    """Стандартная цепочка источников для CLI: env (с file-указателем) и
+    TOML (с file-указателем) — порядок: env-file > env > toml-file > toml.
+
+    Перечислено явно, чтобы было видно, какие источники подключены
+    в этом потребителе. Других потребителей это не касается — каждый
+    собирает свою цепочку под свои нужды.
+    """
+    toml_data = load_toml(os.environ.get(CONFIG_PATH_ENV))
+    return ChainedConfigResolver(
+        [
+            EnvFileSource(),
+            EnvSource(),
+            TomlFileSource(toml_data),
+            TomlSource(toml_data),
+        ]
+    )
+
+
 def _run(query: str, model: str, sampling: SamplingParams | None) -> None:
     """Собирает агент с полным стеком middleware и прогоняет один запрос."""
-    loader = ConfigLoader()
-    app_config = loader.load_app()
-    agent_config = loader.load_agent()
+    loader = ConfigLoader(default_config_factory(_build_resolver()))
+    bundle = loader.load_bundle()
+    app_config = bundle.app
+    agent_config = bundle.agent
     configure_logging(app_config.log_level, app_config.log_file)
 
     workspace_id = WorkspaceId.from_wire("00000000-0000-0000-0000-000000000001")
@@ -131,12 +160,7 @@ def _run(query: str, model: str, sampling: SamplingParams | None) -> None:
     ).get_or_create(PromptWorkspaceId("prompts"))
     prompt_loader = PromptLoader(prompt_workspace)
 
-    tool_loader = ToolPluginLoader(
-        ExtensionContext(
-            app_config=app_config,
-            agent_config=agent_config,
-        ),
-    )
+    tool_loader = ToolPluginLoader(ExtensionContext(config=bundle))
 
     project_workspace = FsProjectWorkspaceRegistry(
         base_dir=Path(app_config.workspaces.base_dir),

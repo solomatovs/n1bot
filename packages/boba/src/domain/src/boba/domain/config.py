@@ -4,11 +4,14 @@
 :class:`~boba.domain.agent.models.AgentConfig` живёт в agent-слое и
 загружается :class:`~boba.infra.config.ConfigLoader`-ом отдельно —
 чтобы корневой ``AppConfig`` не тянул зависимость на ``agent/``.
+
+Конфиги расширений сюда не попадают: extension объявляет собственную
+:class:`~boba.domain.core.config.ConfigSection`, и её типизированный DTO
+достаётся через ``ConfigBundle.section(SectionCls)``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -52,9 +55,3 @@ class AppConfig:
     log_file: str | None = None
     llm: LLMConfig = field(default_factory=LLMConfig)
     prompts_dir: str = "./prompts"
-    # Namespaced bag для конфигов pip-installed extension-пакетов.
-    # Заполняется ConfigLoader из env (``BOBA_EXT_<NS>__<KEY>``) и TOML
-    # (``[extensions.<ns>]``). Каждое расширение читает только свой
-    # namespace — типизированные dataclass-конфиги остаются внутри
-    # самого расширения.
-    extensions: Mapping[str, Mapping[str, str]] = field(default_factory=dict)

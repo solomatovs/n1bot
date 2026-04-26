@@ -26,8 +26,11 @@ Trust-модель:
 2. :class:`ExtensionContext` намеренно урезан: не содержит credentials
    (``api_key``, токены) и файлового workspace — pip-пакет сам знает
    свою корневую директорию через ``__file__`` для package data.
-   Кросс-плагинные shared-конфиги расширения читают через
-   ``ctx.app_config.extensions[<namespace>]``.
+   Конфиг расширения объявляется как :class:`ConfigSection` и
+   подхватывается :class:`ConfigFactory` через entry-point group
+   ``boba.config_sections`` (см. :mod:`boba.infra.config`); внутри
+   ``register_tools`` он достаётся через
+   ``ctx.config.section(MyExtSection)``.
 """
 
 from __future__ import annotations
@@ -36,10 +39,10 @@ import importlib.metadata
 import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import cast
 
-from boba.domain.agent.models import AgentConfig
-from boba.domain.config import AppConfig
 from boba.domain.core.tools import ToolFactory, ToolSource, ToolsService
+from boba.infra.config import ConfigBundle
 
 logger = logging.getLogger(__name__)
 
@@ -75,22 +78,25 @@ class ToolPluginRegisterError(ToolPluginError):
 class ExtensionContext:
     """Контракт окружения для ``register_tools(ctx)``.
 
-    Все поля — application-singletons: ``ExtensionContext`` строится
-    один раз на старте, передаётся в register-вызовы каждого плагина,
-    дальше не меняется. Per-request зависимости (project_workspace
-    пользователя) сюда НЕ входят: tool-инстансы получают рабочий
-    workspace через :class:`~boba.domain.core.tools.ToolContext` в
-    :meth:`Tool.execute`.
+    ``config`` — application-singleton, строится один раз на старте,
+    передаётся в register-вызовы каждого плагина и дальше не меняется.
+    Per-request зависимости (project_workspace пользователя) сюда не
+    входят — tool-инстансы получают рабочий workspace через
+    :class:`~boba.domain.core.tools.ToolContext` в :meth:`Tool.execute`.
 
-    LLM-credentials также не передаются — даже в full-trust модели нет
-    причин раздавать ``api_key`` каждому плагину «на всякий случай».
-    Namespaced extension-конфиги доступны через
-    ``app_config.extensions[<namespace>]`` (см.
-    :class:`~boba.infra.config.ExtensionsBagSection`).
+    Через ``config`` плагин достаёт:
+
+    - ``ctx.config.section(MyExtSection)`` — типизированный DTO своей
+      :class:`~boba.domain.core.config.ConfigSection`;
+    - ``ctx.config.app`` — общий :class:`AppConfig` (workspaces, llm, ...);
+    - ``ctx.config.agent`` — :class:`AgentConfig` для лимитов.
+
+    LLM-credentials отдельно не передаются — они уже внутри
+    ``ctx.config.app.llm``; читать их плагину не запрещено, но и
+    раздавать «на всякий случай» в дискретное поле смысла нет.
     """
 
-    app_config: AppConfig
-    agent_config: AgentConfig
+    config: ConfigBundle
 
 
 class ToolPluginLoader:
@@ -142,7 +148,9 @@ class ToolPluginLoader:
                 ep.name,
                 f"entry-point target is not callable: {type(obj).__name__}",
             )
-        register: RegisterToolsFn = obj
+        # ep.load() returns ``object``; статически сузить до
+        # ``RegisterToolsFn`` нельзя, runtime-проверка callable выше.
+        register = cast("RegisterToolsFn", obj)
         try:
             for source in register(self._ctx):
                 self._tool_sources.append(source)

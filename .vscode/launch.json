@@ -65,9 +65,9 @@
             "envFile": "${workspaceFolder}/local/.env",
             "env": {
                 "BOBA_PROMPTS_DIR": "${workspaceFolder}/local/prompts",
-                "WORKSPACE_BASE_DIR": "${workspaceFolder}/local/workspaces",
-                "LOG_FILE": "${workspaceFolder}/local/logs/agent-run.log",
-                "CHROMA_PERSIST_PATH": "${workspaceFolder}/local/chroma"
+                "BOBA_WORKSPACES_BASE_DIR": "${workspaceFolder}/local/workspaces",
+                "BOBA_APP_LOG_FILE": "${workspaceFolder}/local/logs/agent-run.log",
+                "BOBA_EXT_CHROMADB_PERSIST_PATH": "${workspaceFolder}/local/chroma"
             }
         },
         {
@@ -87,7 +87,7 @@
                 "--description", "${input:indexDescription}"
             ],
             "env": {
-                "CHROMA_PERSIST_PATH": "${workspaceFolder}/local/chroma"
+                "BOBA_EXT_CHROMADB_PERSIST_PATH": "${workspaceFolder}/local/chroma"
             }
         },
         {
@@ -111,9 +111,9 @@
             "env": {
                 "CHAINLIT_APP_ROOT": "${workspaceFolder}/packages/boba-chainlit",
                 "BOBA_PROMPTS_DIR": "${workspaceFolder}/local/prompts",
-                "WORKSPACE_BASE_DIR": "${workspaceFolder}/local/workspaces",
-                "LOG_FILE": "${workspaceFolder}/local/logs/chainlit.log",
-                "CHROMA_PERSIST_PATH": "${workspaceFolder}/local/chroma"
+                "BOBA_WORKSPACES_BASE_DIR": "${workspaceFolder}/local/workspaces",
+                "BOBA_APP_LOG_FILE": "${workspaceFolder}/local/logs/chainlit.log",
+                "BOBA_EXT_CHROMADB_PERSIST_PATH": "${workspaceFolder}/local/chroma"
             }
         },
         {
@@ -132,8 +132,8 @@
             "envFile": "${workspaceFolder}/local/.env",
             "env": {
                 "BOBA_PROMPTS_DIR": "${workspaceFolder}/local/prompts",
-                "WORKSPACE_BASE_DIR": "${workspaceFolder}/local/workspaces",
-                "LOG_FILE": "${workspaceFolder}/local/logs/tests.log"
+                "BOBA_WORKSPACES_BASE_DIR": "${workspaceFolder}/local/workspaces",
+                "BOBA_APP_LOG_FILE": "${workspaceFolder}/local/logs/tests.log"
             }
         },
     ]

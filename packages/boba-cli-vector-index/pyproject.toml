@@ -7,7 +7,16 @@ name = "boba-cli-vector-index"
 version = "0.1.0"
 description = "Operator CLI: index documents into a vector database (ChromaDB) for the Boba agent."
 requires-python = ">=3.11,<4"
-dependencies = ["chromadb>=0.5"]
+# Зависит на ``boba`` core API (FieldSpec/ConfigKey) и source-пакеты для
+# чтения env+TOML. На ``boba-ext-chromadb`` намеренно НЕ зависит:
+# оператор может запустить CLI на машине, где extension не установлен,
+# а контракт общего ключа задаётся ConfigKey'ём, не Python-импортом.
+dependencies = [
+    "boba",
+    "boba-config-env",
+    "boba-config-toml",
+    "chromadb>=0.5",
+]
 
 [project.optional-dependencies]
 html = ["beautifulsoup4>=4.12", "lxml>=5.0"]

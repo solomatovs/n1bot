@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-config-toml"
+version = "0.1.0"
+description = "TOML ConfigSource implementations for Boba ([section] field, [section] field_file)."
+requires-python = ">=3.11,<4"
+# Депенд на core "boba" — пакет реализует ConfigSource-протокол,
+# объявленный в boba.domain.core.config. ``tomli`` нужен только здесь —
+# core "boba" сам TOML не парсит.
+dependencies = ["boba", "tomli"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

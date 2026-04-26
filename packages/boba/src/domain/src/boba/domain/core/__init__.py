@@ -52,9 +52,9 @@ from boba.domain.core.patterns import (
     UuId,
     Validator,
 )
+from boba.domain.core.schema import ParamWireSchema, SchemaContributor
 from boba.domain.core.tools import (
     MISSING,
-    ChainValidator,
     Default,
     InvalidSchemaInvariantError,
     InvalidToolArgumentError,
@@ -62,22 +62,12 @@ from boba.domain.core.tools import (
     IsInt,
     IsNumber,
     IsString,
-    MaxLength,
-    MaxValue,
-    MinLength,
-    MinValue,
     MutuallyExclusive,
-    NonEmpty,
-    OneOf,
     Ordered,
     ParamSchema,
-    ParamValidationError,
-    ParamWireSchema,
-    Pass,
     Required,
     RequiresTogether,
     SchemaArgsValidator,
-    SchemaContributor,
     Tool,
     ToolCall,
     ToolCatalog,
@@ -93,6 +83,17 @@ from boba.domain.core.tools import (
     ToolsService,
     ToolStore,
     ValueValidator,
+)
+from boba.domain.core.validators import (
+    ChainValidator,
+    MaxLength,
+    MaxValue,
+    MinLength,
+    MinValue,
+    NonEmpty,
+    OneOf,
+    ParamValidationError,
+    Pass,
 )
 from boba.domain.core.workspace import (
     EntryMeta,

@@ -1,11 +1,15 @@
 """Конфигурация CLI.
 
-Источники (в порядке приоритета): CLI-флаг > env > error.
+Источники (в порядке приоритета): CLI-флаг > env > env-file > TOML >
+TOML-file > error.
 
-``CHROMA_PERSIST_PATH`` — общая env-переменная: тот же путь читает
-``boba-ext-chromadb`` для read-tools агента. Оператор задаёт её один
-раз и видит свежепроиндексированные коллекции в chainlit/agent-cli без
-повторного указания путей.
+Контракт общего ключа с ``boba-ext-chromadb`` — :class:`ConfigKey`
+``("ext","chromadb","persist_path")``: оператор задаёт путь один раз
+(env ``BOBA_EXT_CHROMADB_PERSIST_PATH`` или ``[ext.chromadb] persist_path``
+в TOML), и тот же путь видит chainlit/agent-cli через
+:class:`~boba_chromadb._config.ChromadbSection`. Импортно CLI на extension
+не зависит — оператор может запустить индексирование на машине, где
+extension не установлен.
 """
 
 from __future__ import annotations
@@ -13,7 +17,27 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-PERSIST_PATH_ENV = "CHROMA_PERSIST_PATH"
+from boba.domain.core.config import (
+    REQUIRED,
+    ChainedConfigResolver,
+    ConfigKey,
+    FieldSpec,
+    StrConverter,
+)
+from boba.domain.core.patterns import ConverterInputError
+from boba_config_env import EnvFileSource, EnvSource, env_name
+from boba_config_toml import (
+    CONFIG_PATH_ENV,
+    TomlFileSource,
+    TomlSource,
+    load_toml,
+)
+
+_PERSIST_PATH = FieldSpec(
+    key=ConfigKey("ext", "chromadb", "persist_path"),
+    converter=StrConverter(),
+    default=REQUIRED,
+)
 
 
 class CliConfigError(Exception):
@@ -26,14 +50,29 @@ class CliConfig:
 
     @classmethod
     def resolve(cls, *, persist_path_arg: str | None) -> CliConfig:
-        """Собирает конфиг из CLI-аргумента и env. Бросает
+        """Собирает конфиг из CLI-аргумента и env/TOML. Бросает
         :class:`CliConfigError` если ни один источник не задал
         обязательное поле.
         """
-        persist_path = persist_path_arg or os.environ.get(PERSIST_PATH_ENV)
-        if not persist_path:
+        if persist_path_arg:
+            return cls(persist_path=persist_path_arg)
+
+        toml_data = load_toml(os.environ.get(CONFIG_PATH_ENV))
+        resolver = ChainedConfigResolver(
+            [
+                EnvFileSource(),
+                EnvSource(),
+                TomlFileSource(toml_data),
+                TomlSource(toml_data),
+            ]
+        )
+        try:
+            persist_path = _PERSIST_PATH.read(resolver)
+        except ConverterInputError as e:
+            env = env_name(_PERSIST_PATH.key)
             raise CliConfigError(
-                f"persist_path is required: pass --persist-path "
-                f"or set {PERSIST_PATH_ENV} env var"
-            )
+                f"persist_path is required: pass --persist-path, set env "
+                f"{env}, или укажи [ext.chromadb] persist_path в TOML, на "
+                f"который указывает {CONFIG_PATH_ENV}"
+            ) from e
         return cls(persist_path=persist_path)

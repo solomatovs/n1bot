@@ -5,6 +5,7 @@
 — деталь реализации.
 """
 
+from boba.domain.core.schema import ParamWireSchema, SchemaContributor
 from boba.domain.core.tools.errors import (
     InvalidSchemaInvariantError,
     InvalidToolArgumentError,
@@ -21,8 +22,6 @@ from boba.domain.core.tools.registry import (
 )
 from boba.domain.core.tools.schema import (
     ParamSchema,
-    ParamWireSchema,
-    SchemaContributor,
     ToolDefinition,
     ToolId,
     ToolInputSchema,
@@ -31,26 +30,28 @@ from boba.domain.core.tools.schema import (
 from boba.domain.core.tools.tool import Tool, ToolCall, ToolContext, ToolResult
 from boba.domain.core.tools.validators import (
     MISSING,
-    ChainValidator,
     Default,
     IsBool,
     IsInt,
     IsNumber,
     IsString,
-    MaxLength,
-    MaxValue,
-    MinLength,
-    MinValue,
     MutuallyExclusive,
-    NonEmpty,
-    OneOf,
     Ordered,
-    ParamValidationError,
-    Pass,
     Required,
     RequiresTogether,
     SchemaArgsValidator,
     ValueValidator,
+)
+from boba.domain.core.validators import (
+    ChainValidator,
+    MaxLength,
+    MaxValue,
+    MinLength,
+    MinValue,
+    NonEmpty,
+    OneOf,
+    ParamValidationError,
+    Pass,
 )
 
 __all__ = [

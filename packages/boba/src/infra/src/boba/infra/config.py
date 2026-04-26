@@ -1,97 +1,451 @@
-"""Загрузка конфигурации приложения из env / env-файлов / TOML.
+"""Сборка типизированной конфигурации приложения из секций.
 
 Структурно:
 
-- :class:`ConfigSource` (в :mod:`boba.domain.core.config`) — источник
-  значений по :class:`FieldSpec`. Реализации:
-  :class:`EnvSource` / :class:`EnvFileSource` / :class:`TomlSource` /
-  :class:`TomlFileSource` / :class:`DefaultSource`.
-- :class:`ConfigSectionBuilder` — одна секция конфига (workspaces,
-  llm, agent, …). Читает поля через ``FieldSpec`` и складывает в
-  :class:`ConfigState`.
-- :class:`ConfigFactory` — fold-factory, применяющий секции в
-  порядке ``priority`` и финализирующий в :class:`ConfigBundle`.
-- :class:`ConfigLoader` — тонкая обёртка с lazy-кэшем бандла.
+- :class:`~boba.domain.core.config.ConfigSection`-секции (LLM, agent,
+  workspaces, …) объявляют свои поля декларативно (через
+  :class:`~boba.domain.core.config.FieldSpec` поверх
+  :class:`~boba.domain.core.config.ConfigKey`) и строят типизированный
+  DTO. Тот же примитив используется секциями расширений.
+- :class:`ConfigFactory` регистрирует встроенные секции и подхватывает
+  секции расширений через entry-point group ``boba.config_sections``.
+  :meth:`ConfigFactory.build` возвращает :class:`ConfigBundle`.
+- :class:`ConfigBundle` — итог сборки: ``dict[StrId, T_DTO]`` +
+  типизированный доступ через :meth:`ConfigBundle.section`. Удобные
+  свойства :attr:`ConfigBundle.app` и :attr:`ConfigBundle.agent`
+  композируют :class:`AppConfig` / :class:`AgentConfig` из встроенных
+  секций.
+- :class:`ConfigLoader` — тонкая ленивая обёртка с кэшем бандла.
 
-:class:`ConfigBundle` / :class:`ConfigLoader` — **агрегат приложения**:
-:class:`AppConfig` + :class:`AgentConfig`. То, что шарится на весь
-процесс и читается один раз на старте.
+Конкретные :class:`ConfigSource`-реализации (env, TOML, …) живут в
+**отдельных пакетах**: :mod:`boba_config_env`, :mod:`boba_config_toml`
+и т.п. Bootstrap приложения сам собирает свою цепочку источников и
+передаёт готовый :class:`~boba.domain.core.config.ChainedConfigResolver`
+в :func:`default_config_factory`.
 
 LLM-sampling-параметров здесь нет: единственный источник —
 :class:`~boba.domain.agent.models.AgentRequest.sampling`, прокидываемый
-caller'ом (UI/CLI) per-request. См.
-:class:`~boba.domain.agent.turn.reducers.AgentRequestSamplingReducer`.
+caller'ом (UI/CLI) per-request.
 """
 
 from __future__ import annotations
 
-import os
-from abc import abstractmethod
+import importlib.metadata
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, ClassVar, Generic, TypeVar, cast
+from typing import Any, ClassVar, TypeVar, cast
 
 from boba.domain.agent.models import AgentConfig
 from boba.domain.config import AppConfig, LLMConfig, WorkspaceLayout
 from boba.domain.core.config import (
+    REQUIRED,
     BoolConverter,
     ChainedConfigResolver,
+    ConfigKey,
+    ConfigSection,
     ConfigSource,
     FieldSpec,
     IntConverter,
-    MappingMappingConverter,
     StrConverter,
 )
-from boba.domain.core.patterns import FoldFactory, PrioritySource, StrId
+from boba.domain.core.patterns import StrId
+from boba.domain.core.validators import MinValue
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
 __all__ = [
+    "CONFIG_SECTIONS_ENTRY_POINT",
     "AgentSection",
+    "AppCoreConfig",
     "AppCoreSection",
     "ConfigBundle",
     "ConfigError",
     "ConfigFactory",
     "ConfigLoader",
-    "ConfigSectionBuilder",
-    "ConfigSlot",
-    "ConfigSlotMissingError",
-    "ConfigState",
+    "ConfigSectionAlreadyRegisteredError",
+    "ConfigSectionMissingError",
     "DefaultSource",
-    "EnvFileSource",
-    "EnvSource",
-    "ExtensionsBagSection",
-    "ExtensionsBagSource",
     "LLMTransportSection",
     "PromptsSection",
-    "TomlFileSource",
-    "TomlSource",
     "WorkspacesSection",
     "default_config_factory",
-    "default_resolver",
-    "load_toml",
 ]
+
+
+CONFIG_SECTIONS_ENTRY_POINT = "boba.config_sections"
+"""Entry-point group для discovery секций расширений."""
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Generic-purpose source: static fallback dict (test/preset helper)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class DefaultSource(ConfigSource):
+    """Статический fallback-словарь — для тестов и кастомных пресетов.
+
+    Принимает :class:`ConfigKey` → значение. Возвращает значение по точному
+    совпадению ключа; неизвестные ключи — ``None``. Обычно ставят последним
+    в цепочке, чтобы он отрабатывал, только когда «настоящие» источники
+    промолчали.
+    """
+
+    def __init__(self, defaults: Mapping[ConfigKey, object]) -> None:
+        self._defaults = dict(defaults)
+
+    def resolve(self, spec: FieldSpec[Any]) -> object | None:
+        return self._defaults.get(spec.key)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Bundle and errors
+# ──────────────────────────────────────────────────────────────────────
+
+
+class ConfigError(Exception):
+    """Базовая ошибка конфиг-инфры — отделяет сбои фабрики/бандла от
+    ошибок-резолверов (:class:`ConverterInputError` и потомков).
+    """
+
+
+class ConfigSectionAlreadyRegisteredError(ConfigError):
+    """Попытка зарегистрировать вторую секцию с тем же :class:`StrId`."""
+
+    def __init__(self, section_id: StrId) -> None:
+        super().__init__(f"ConfigSection {section_id!r} is already registered")
+        self.section_id = section_id
+
+
+class ConfigSectionMissingError(ConfigError):
+    """Запрошен ``bundle.section(SectionCls)``, но секция не зарегистрирована.
+
+    Это инвариант сборки фабрики: секция должна быть зарегистрирована до
+    :meth:`ConfigFactory.build`. Для встроенных секций гарантируется
+    :func:`default_config_factory`; для секций расширений — discovery через
+    entry-point group ``boba.config_sections``.
+    """
+
+    def __init__(self, section_cls: type[ConfigSection[Any]]) -> None:
+        super().__init__(
+            f"ConfigSection {section_cls.__name__!r} (id={section_cls.id!r}) "
+            "is not registered in factory"
+        )
+        self.section_cls = section_cls
+
+
+@dataclass(frozen=True)
+class AppCoreConfig:
+    """Внутренний DTO :class:`AppCoreSection`.
+
+    Не часть публичного API — :class:`AppConfig` агрегирует поля плоско,
+    эта структура нужна только чтобы :class:`AppCoreSection.build` имела
+    типизированный return-type, симметричный остальным секциям.
+    """
+
+    ssl_verify: bool
+    log_level: str
+    log_file: str | None
+
+
+class ConfigBundle:
+    """Итог сборки: типизированный реестр секций по :class:`StrId`.
+
+    :meth:`section` достаёт DTO нужной секции по её классу — type-checker
+    видит конкретный T_DTO. :attr:`app` / :attr:`agent` — удобные свойства
+    для встроенных агрегатов.
+
+    Бандл иммутабельный (внутренний dict копируется при создании).
+    """
+
+    def __init__(self, sections: Mapping[StrId, object]) -> None:
+        self._sections: dict[StrId, object] = dict(sections)
+
+    def section(self, cls: type[ConfigSection[T]]) -> T:
+        """Достать DTO секции ``cls``. Бросает
+        :class:`ConfigSectionMissingError`, если секция не была
+        зарегистрирована в фабрике.
+        """
+        sid = cls.id
+        if sid not in self._sections:
+            raise ConfigSectionMissingError(cls)
+        return cast(T, self._sections[sid])
+
+    @property
+    def app(self) -> AppConfig:
+        """Композиция встроенных секций в :class:`AppConfig`."""
+        core = self.section(AppCoreSection)
+        return AppConfig(
+            workspaces=self.section(WorkspacesSection),
+            ssl_verify=core.ssl_verify,
+            log_level=core.log_level,
+            log_file=core.log_file,
+            llm=self.section(LLMTransportSection),
+            prompts_dir=self.section(PromptsSection),
+        )
+
+    @property
+    def agent(self) -> AgentConfig:
+        return self.section(AgentSection)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Built-in sections
+# ──────────────────────────────────────────────────────────────────────
+
+
+class AppCoreSection(ConfigSection[AppCoreConfig]):
+    """Кросс-слойные настройки приложения: SSL/логирование."""
+
+    id: ClassVar[StrId] = StrId("app_core")
+
+    SSL_VERIFY = FieldSpec(
+        key=ConfigKey("app", "ssl_verify"),
+        converter=BoolConverter(),
+        default=False,
+        description="Проверять ли TLS-сертификат у HTTPS-запросов из приложения.",
+    )
+    LOG_LEVEL = FieldSpec(
+        key=ConfigKey("app", "log_level"),
+        converter=StrConverter(),
+        default="INFO",
+        description="Уровень корневого логгера: DEBUG/INFO/WARNING/ERROR/CRITICAL.",
+    )
+    LOG_FILE = FieldSpec[str | None](
+        key=ConfigKey("app", "log_file"),
+        converter=StrConverter(),
+        default=None,
+        description="Путь к log-файлу. Если пусто — логи только в stderr.",
+    )
+
+    fields: ClassVar[Sequence[FieldSpec[Any]]] = (SSL_VERIFY, LOG_LEVEL, LOG_FILE)
+
+    def build(self, resolver: ChainedConfigResolver) -> AppCoreConfig:
+        return AppCoreConfig(
+            ssl_verify=self.SSL_VERIFY.read(resolver),
+            log_level=self.LOG_LEVEL.read(resolver),
+            log_file=self.LOG_FILE.read_opt(resolver),
+        )
+
+
+class WorkspacesSection(ConfigSection[WorkspaceLayout]):
+    """Раскладка namespace'ов workspace'а относительно ``base_dir``."""
+
+    id: ClassVar[StrId] = StrId("workspaces")
+
+    BASE_DIR = FieldSpec(
+        key=ConfigKey("workspaces", "base_dir"),
+        converter=StrConverter(),
+        default="./workspaces",
+        description="Корневая директория всех workspace-namespace'ов.",
+    )
+    USER = FieldSpec(
+        key=ConfigKey("workspaces", "user_subdir"),
+        converter=StrConverter(),
+        default="user",
+        description="Имя поддиректории user-workspace'а внутри base_dir.",
+    )
+    SYSTEM = FieldSpec(
+        key=ConfigKey("workspaces", "system_subdir"),
+        converter=StrConverter(),
+        default="system",
+        description="Имя поддиректории system-workspace'а внутри base_dir.",
+    )
+    TMP = FieldSpec(
+        key=ConfigKey("workspaces", "tmp_subdir"),
+        converter=StrConverter(),
+        default="tmp",
+        description="Имя поддиректории tmp-workspace'а внутри base_dir.",
+    )
+
+    fields: ClassVar[Sequence[FieldSpec[Any]]] = (BASE_DIR, USER, SYSTEM, TMP)
+
+    def build(self, resolver: ChainedConfigResolver) -> WorkspaceLayout:
+        return WorkspaceLayout(
+            base_dir=self.BASE_DIR.read(resolver),
+            user_subdir=self.USER.read(resolver),
+            system_subdir=self.SYSTEM.read(resolver),
+            tmp_subdir=self.TMP.read(resolver),
+        )
+
+
+class LLMTransportSection(ConfigSection[LLMConfig]):
+    """Транспорт LLM-клиента: ``base_url`` + ``api_key``."""
+
+    id: ClassVar[StrId] = StrId("llm_transport")
+
+    BASE_URL = FieldSpec(
+        key=ConfigKey("llm", "base_url"),
+        converter=StrConverter(),
+        default="http://localhost:11434/v1",
+        description="OpenAI-совместимый base URL LLM-сервера (LiteLLM/Ollama/...).",
+    )
+    API_KEY = FieldSpec(
+        key=ConfigKey("llm", "api_key"),
+        converter=StrConverter(),
+        default="ollama",
+        description="API-ключ LLM-сервера. Для локального Ollama — любой непустой.",
+    )
+
+    fields: ClassVar[Sequence[FieldSpec[Any]]] = (BASE_URL, API_KEY)
+
+    def build(self, resolver: ChainedConfigResolver) -> LLMConfig:
+        return LLMConfig(
+            base_url=self.BASE_URL.read(resolver),
+            api_key=self.API_KEY.read(resolver),
+        )
+
+
+class AgentSection(ConfigSection[AgentConfig]):
+    """Лимиты агентского лупа."""
+
+    id: ClassVar[StrId] = StrId("agent")
+
+    MAX_ITERATIONS = FieldSpec(
+        key=ConfigKey("agent", "max_iterations"),
+        converter=IntConverter(),
+        default=20,
+        validator=MinValue(1),
+        description="Жёсткий потолок числа итераций агента в одной сессии.",
+    )
+    MAX_CONSECUTIVE_TOOL_CALLS = FieldSpec(
+        key=ConfigKey("agent", "max_consecutive_tool_calls"),
+        converter=IntConverter(),
+        default=3,
+        validator=MinValue(1),
+        description="Сколько раз подряд агент может звать tools без LLM-ответа.",
+    )
+
+    fields: ClassVar[Sequence[FieldSpec[Any]]] = (
+        MAX_ITERATIONS,
+        MAX_CONSECUTIVE_TOOL_CALLS,
+    )
+
+    def build(self, resolver: ChainedConfigResolver) -> AgentConfig:
+        return AgentConfig(
+            max_iterations=self.MAX_ITERATIONS.read(resolver),
+            max_consecutive_tool_calls=self.MAX_CONSECUTIVE_TOOL_CALLS.read(resolver),
+        )
+
+
+class PromptsSection(ConfigSection[str]):
+    """Путь к директории с системными prompt'ами.
+
+    ``DIR`` — обязательное поле: оператор должен явно указать, откуда
+    :class:`~boba.infra.prompt_loader.PromptLoader` берёт system-prompt
+    блоки при старте.
+    """
+
+    id: ClassVar[StrId] = StrId("prompts")
+
+    DIR = FieldSpec(
+        key=ConfigKey("prompts", "dir"),
+        converter=StrConverter(),
+        default=REQUIRED,
+        description="Корневая директория .md/.txt-файлов с system-prompt'ами.",
+    )
+
+    fields: ClassVar[Sequence[FieldSpec[Any]]] = (DIR,)
+
+    def build(self, resolver: ChainedConfigResolver) -> str:
+        return self.DIR.read(resolver)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Factory and Loader
+# ──────────────────────────────────────────────────────────────────────
+
+
+class ConfigFactory:
+    """Реестр секций + сборщик :class:`ConfigBundle`.
+
+    Регистрация секций — императивная (:meth:`register`). Discovery
+    extension-секций — через entry-point group
+    :data:`CONFIG_SECTIONS_ENTRY_POINT` (:meth:`discover_extension_sections`).
+    Сборка бандла — :meth:`build`: каждая зарегистрированная секция строит
+    свой DTO, результат складывается по :attr:`ConfigSection.id`.
+    """
+
+    def __init__(self, resolver: ChainedConfigResolver) -> None:
+        self._resolver = resolver
+        self._sections: dict[StrId, ConfigSection[Any]] = {}
+
+    def register(self, section: ConfigSection[Any]) -> None:
+        sid = section.id
+        if sid in self._sections:
+            raise ConfigSectionAlreadyRegisteredError(sid)
+        self._sections[sid] = section
+
+    def registered(self) -> Sequence[ConfigSection[Any]]:
+        return tuple(self._sections.values())
+
+    def discover_extension_sections(self) -> None:
+        """Подхватывает секции расширений через entry-point group
+        ``boba.config_sections``.
+
+        Контракт entry-point: target — класс-наследник
+        :class:`ConfigSection`. Битые/некорректные entry-point'ы логируются
+        warning'ом и пропускаются, чтобы один сломанный плагин не валил
+        старт всего приложения.
+        """
+        for ep in importlib.metadata.entry_points(group=CONFIG_SECTIONS_ENTRY_POINT):
+            try:
+                obj = ep.load()
+            except Exception as e:
+                logger.warning(
+                    "config_sections entry-point %r load failed: %s: %s; skipped",
+                    ep.name,
+                    type(e).__name__,
+                    e,
+                )
+                continue
+            if not (isinstance(obj, type) and issubclass(obj, ConfigSection)):
+                logger.warning(
+                    "config_sections entry-point %r target is not a "
+                    "ConfigSection subclass: %r; skipped",
+                    ep.name,
+                    obj,
+                )
+                continue
+            try:
+                self.register(obj())
+            except ConfigSectionAlreadyRegisteredError as e:
+                logger.warning(
+                    "config_sections entry-point %r: %s; skipped",
+                    ep.name,
+                    e,
+                )
+
+    def build(self) -> ConfigBundle:
+        built: dict[StrId, object] = {}
+        for sid, section in self._sections.items():
+            built[sid] = section.build(self._resolver)
+        return ConfigBundle(built)
 
 
 class ConfigLoader:
     """Ленивый фасад над :class:`ConfigFactory`: кэширует бандл после
     первой сборки.
 
-    Возвращает агрегат приложения (:class:`AppConfig` +
-    :class:`AgentConfig`). LLM-sampling сюда не входит — он приезжает
-    per-request через :class:`~boba.domain.agent.models.AgentRequest`.
+    Конструктор принимает уже собранную фабрику — у инфры нет своих
+    источников значений, цепочку резолвера собирает bootstrap приложения
+    из подключённых пакетов (например, :mod:`boba_config_env` +
+    :mod:`boba_config_toml`).
     """
 
-    def __init__(self, factory: ConfigFactory | None = None) -> None:
-        self._factory = factory or default_config_factory(default_resolver())
+    def __init__(self, factory: ConfigFactory) -> None:
+        self._factory = factory
         self._bundle: ConfigBundle | None = None
 
     def _ensure(self) -> ConfigBundle:
         if self._bundle is None:
             self._bundle = self._factory.build()
-
         return self._bundle
+
+    def load_bundle(self) -> ConfigBundle:
+        return self._ensure()
 
     def load_app(self) -> AppConfig:
         return self._ensure().app
@@ -100,505 +454,20 @@ class ConfigLoader:
         return self._ensure().agent
 
 
-@dataclass(frozen=True)
-class ConfigBundle:
-    app: AppConfig
-    agent: AgentConfig
-
-
-@dataclass
-class ConfigState:
-    """Накапливаемое состояние. Все слоты стартуют с ``None`` и заполняются
-    ``apply()``-ом своей :class:`ConfigSectionBuilder`-секции. Какие
-    из них на стадии :meth:`ConfigFactory.finalize` обязательны, а какие
-    нет — декларируется через :class:`ConfigSlot`-константы внутри
-    фабрики, не через дефолты dataclass'а.
-    """
-
-    resolver: ChainedConfigResolver
-    workspaces: WorkspaceLayout | None = None
-    llm_transport: LLMConfig | None = None
-    ssl_verify: bool | None = None
-    log_level: str | None = None
-    log_file: str | None = None
-    agent: AgentConfig | None = None
-    prompts_dir: str | None = None
-    extensions: Mapping[str, Mapping[str, str]] | None = None
-
-
-class ConfigError(Exception):
-    """Базовая ошибка конфиг-инфры — отделяет сбои ConfigFactory/Slot
-    от ошибок-резолверов (:class:`ConverterInputError` и потомков).
-    """
-
-
-class ConfigSlotMissingError(ConfigError):
-    """Слот :class:`ConfigState` пуст на стадии ``finalize``: значит,
-    соответствующая :class:`ConfigSectionBuilder` не была
-    зарегистрирована в :class:`ConfigFactory`. Это инвариант сборки
-    фабрики, не пользовательский сбой.
-    """
-
-    def __init__(self, attr: str, section: str) -> None:
-        super().__init__(
-            f"ConfigState slot {attr!r} is None: "
-            f"{section} must be registered in ConfigFactory"
-        )
-        self.attr = attr
-        self.section = section
-
-
-@dataclass(frozen=True)
-class ConfigSlot(Generic[T]):
-    """Декларативное описание обязательного слота :class:`ConfigState`.
-
-    Симметричная пара к :class:`FieldSpec`: ``FieldSpec`` декларирует,
-    как взять значение из source-цепочки на стадии ``apply``;
-    ``ConfigSlot`` декларирует, как достать валидированное значение из
-    :class:`ConfigState` на стадии ``finalize``. ``None`` означает, что
-    обязательная секция не была зарегистрирована в фабрике —
-    fail-fast через :class:`ConfigSlotMissingError`.
-
-    Использование — class-level константы внутри ``Factory``-класса,
-    по аналогии с ``FieldSpec`` внутри ``Section``-класса::
-
-        class ConfigFactory(...):
-            _WORKSPACES = ConfigSlot[WorkspaceLayout](
-                "workspaces", "WorkspacesSection"
-            )
-
-            def finalize(self, state):
-                return ConfigBundle(
-                    app=AppConfig(workspaces=self._WORKSPACES.read(state), ...),
-                    ...
-                )
-    """
-
-    attr: str
-    section: str
-
-    def read(self, state: ConfigState) -> T:
-        value = getattr(state, self.attr)
-        if value is None:
-            raise ConfigSlotMissingError(self.attr, self.section)
-        return cast(T, value)
-
-
-class ConfigSectionBuilder(PrioritySource[StrId, ConfigState]):
-    """Базовый класс одной секции. ``priority`` формален — секции независимы.
-
-    ``TOML_PATHS`` — карта env-ключей в пути ``(toml_section, toml_key)``
-    для полей, которые могут приходить из TOML. Фабрика собирает
-    объединённую карту по всем зарегистрированным секциям и передаёт в
-    TOML-источники.
-    """
-
-    TOML_PATHS: ClassVar[Mapping[str, tuple[str, str]]] = {}
-
-    def __init__(self, priority: int) -> None:
-        self._priority = priority
-
-    @abstractmethod
-    def id(self) -> StrId: ...
-
-    def priority(self) -> int:
-        return self._priority
-
-    def toml_mapping(self) -> Mapping[str, tuple[str, str]]:
-        return self.TOML_PATHS
-
-    @abstractmethod
-    def apply(self, state: ConfigState) -> ConfigState: ...
-
-
-class AppCoreSection(ConfigSectionBuilder):
-    SSL_VERIFY = FieldSpec("SSL_VERIFY", BoolConverter(), False)
-    LOG_LEVEL = FieldSpec("LOG_LEVEL", StrConverter(), "INFO")
-    LOG_FILE = FieldSpec("LOG_FILE", StrConverter(), None)
-
-    TOML_PATHS: ClassVar[Mapping[str, tuple[str, str]]] = {
-        "SSL_VERIFY": ("app", "ssl_verify"),
-        "LOG_LEVEL": ("app", "log_level"),
-        "LOG_FILE": ("app", "log_file"),
-    }
-
-    def id(self) -> StrId:
-        return StrId("app_core")
-
-    def apply(self, state: ConfigState) -> ConfigState:
-        state.ssl_verify = self.SSL_VERIFY.read(state.resolver)
-        state.log_level = self.LOG_LEVEL.read(state.resolver)
-        state.log_file = self.LOG_FILE.read_opt(state.resolver)
-        return state
-
-
-class WorkspacesSection(ConfigSectionBuilder):
-    BASE_DIR = FieldSpec("WORKSPACE_BASE_DIR", StrConverter(), "./workspaces")
-    USER = FieldSpec("WORKSPACE_USER_SUBDIR", StrConverter(), "user")
-    SYSTEM = FieldSpec("WORKSPACE_SYSTEM_SUBDIR", StrConverter(), "system")
-    TMP = FieldSpec("WORKSPACE_TMP_SUBDIR", StrConverter(), "tmp")
-
-    TOML_PATHS: ClassVar[Mapping[str, tuple[str, str]]] = {
-        "WORKSPACE_BASE_DIR": ("workspaces", "base_dir"),
-        "WORKSPACE_USER_SUBDIR": ("workspaces", "user"),
-        "WORKSPACE_SYSTEM_SUBDIR": ("workspaces", "system"),
-        "WORKSPACE_TMP_SUBDIR": ("workspaces", "tmp"),
-    }
-
-    def id(self) -> StrId:
-        return StrId("workspaces")
-
-    def apply(self, state: ConfigState) -> ConfigState:
-        state.workspaces = WorkspaceLayout(
-            base_dir=self.BASE_DIR.read(state.resolver),
-            user_subdir=self.USER.read(state.resolver),
-            system_subdir=self.SYSTEM.read(state.resolver),
-            tmp_subdir=self.TMP.read(state.resolver),
-        )
-        return state
-
-
-class LLMTransportSection(ConfigSectionBuilder):
-    BASE_URL = FieldSpec("LLM_BASE_URL", StrConverter(), "http://localhost:11434/v1")
-    API_KEY = FieldSpec("LITELLM_API_KEY", StrConverter(), "ollama")
-
-    TOML_PATHS: ClassVar[Mapping[str, tuple[str, str]]] = {
-        "LLM_BASE_URL": ("llm", "base_url"),
-        "LITELLM_API_KEY": ("llm", "api_key"),
-    }
-
-    def id(self) -> StrId:
-        return StrId("llm_transport")
-
-    def apply(self, state: ConfigState) -> ConfigState:
-        state.llm_transport = LLMConfig(
-            base_url=self.BASE_URL.read(state.resolver),
-            api_key=self.API_KEY.read(state.resolver),
-        )
-        return state
-
-
-class AgentSection(ConfigSectionBuilder):
-    MAX_ITERATIONS = FieldSpec("AGENT_MAX_ITERATIONS", IntConverter(), 20)
-    MAX_CONSECUTIVE_TOOL_CALLS = FieldSpec(
-        "AGENT_MAX_CONSECUTIVE_TOOL_CALLS", IntConverter(), 3
-    )
-
-    TOML_PATHS: ClassVar[Mapping[str, tuple[str, str]]] = {
-        "AGENT_MAX_ITERATIONS": ("agent", "max_iterations"),
-        "AGENT_MAX_CONSECUTIVE_TOOL_CALLS": ("agent", "max_consecutive_tool_calls"),
-    }
-
-    def id(self) -> StrId:
-        return StrId("agent")
-
-    def apply(self, state: ConfigState) -> ConfigState:
-        state.agent = AgentConfig(
-            max_iterations=self.MAX_ITERATIONS.read(state.resolver),
-            max_consecutive_tool_calls=(
-                self.MAX_CONSECUTIVE_TOOL_CALLS.read(state.resolver)
-            ),
-        )
-        return state
-
-
-class PromptsSection(ConfigSectionBuilder):
-    """Секция конфига промптов: путь к директории с .md/.txt-файлами.
-
-    Поле ``BOBA_PROMPTS_DIR`` обязательно — без него
-    :meth:`FieldSpec.read` бросит :class:`ConverterInputError`, и
-    приложение не стартует. Оператор обязан явно указать, откуда
-    :class:`~boba.infra.prompt_loader.PromptLoader` берёт system-prompt
-    блоки при старте (env, TOML ``[prompts] dir`` или ``_FILE``-секрет).
-
-    Tool-расширения сюда не относятся — они находятся через
-    Python entry-points (``[project.entry-points."boba.tools"]``)
-    pip-installed пакетов.
-    """
-
-    DIR = FieldSpec[str]("BOBA_PROMPTS_DIR", StrConverter())
-
-    TOML_PATHS: ClassVar[Mapping[str, tuple[str, str]]] = {
-        "BOBA_PROMPTS_DIR": ("prompts", "dir"),
-    }
-
-    def id(self) -> StrId:
-        return StrId("prompts")
-
-    def apply(self, state: ConfigState) -> ConfigState:
-        state.prompts_dir = self.DIR.read(state.resolver)
-        return state
-
-
-class ExtensionsBagSource(ConfigSource):
-    """Cобирает namespaced-конфиг расширений из env и TOML.
-
-    Конвенция:
-
-    * env: ``BOBA_EXT_<NAMESPACE>__<KEY>`` (двойной ``_`` — разделитель,
-      позволяет одиночные ``_`` в имени namespace, как в pydantic-settings).
-      Имена приводятся к lowercase.
-    * TOML: секция ``[extensions.<namespace>]`` со скалярными полями.
-
-    Cвязывается с :class:`ExtensionsBagSection` через единственный
-    специальный ключ :attr:`BAG_KEY` — на любые другие FieldSpec
-    источник возвращает ``None`` и не мешает остальной цепочке.
-
-    Env wins над TOML — единый precedence по всему проекту.
-    """
-
-    BAG_KEY: ClassVar[str] = "_BOBA_EXTENSIONS_BAG"
-    ENV_PREFIX: ClassVar[str] = "BOBA_EXT_"
-    ENV_SEPARATOR: ClassVar[str] = "__"
-
-    def __init__(self, toml_data: Mapping[str, Any]) -> None:
-        self._toml_data = toml_data
-
-    def resolve(self, spec: FieldSpec[Any]) -> object | None:
-        if spec.key != self.BAG_KEY:
-            return None
-        return self._collect()
-
-    def _collect(self) -> Mapping[str, Mapping[str, str]]:
-        result: dict[str, dict[str, str]] = {}
-        toml_section = self._toml_data.get("extensions")
-        if isinstance(toml_section, Mapping):
-            for ns, sub in toml_section.items():
-                if not isinstance(ns, str) or not isinstance(sub, Mapping):
-                    continue
-                bucket = result.setdefault(ns, {})
-                for k, v in sub.items():
-                    if not isinstance(k, str):
-                        continue
-                    bucket[k] = str(v)
-        for env_key, env_value in os.environ.items():
-            if not env_key.startswith(self.ENV_PREFIX):
-                continue
-            tail = env_key[len(self.ENV_PREFIX) :]
-            ns, sep, key = tail.partition(self.ENV_SEPARATOR)
-            if not sep or not ns or not key:
-                continue
-            result.setdefault(ns.lower(), {})[key.lower()] = env_value
-        return result
-
-
-class ExtensionsBagSection(ConfigSectionBuilder):
-    """Секция namespaced-конфига для pip-installed extension-пакетов.
-
-    Каждое расширение (``boba-ext-chromadb``, ``boba-ext-redis`` и
-    т.п.) читает только свой ``ctx.app_config.extensions[<namespace>]``
-    и валидирует поля своим собственным dataclass-конфигом. Платформа
-    лишь доставляет сырые строки до расширения и не знает их семантики.
-
-    Источники наполняются через :class:`ExtensionsBagSource`:
-
-    * env: ``BOBA_EXT_<NAMESPACE>__<KEY>`` (двойное подчёркивание
-      между namespace и key — позволяет одиночные ``_`` в имени
-      namespace, как в pydantic-settings).
-    * TOML: секция ``[extensions.<namespace>]`` со скалярными полями.
-
-    Env wins над TOML — единый precedence по всему проекту.
-    """
-
-    BAG = FieldSpec[Mapping[str, Mapping[str, str]]](
-        ExtensionsBagSource.BAG_KEY,
-        MappingMappingConverter(),
-        {},
-    )
-
-    def id(self) -> StrId:
-        return StrId("extensions_bag")
-
-    def apply(self, state: ConfigState) -> ConfigState:
-        state.extensions = self.BAG.read(state.resolver)
-        return state
-
-
-class ConfigFactory(FoldFactory[StrId, ConfigState, ConfigBundle]):
-    """Фабрика конфиг-бандла. Обязательные слоты :class:`ConfigState`
-    декларируются как class-level :class:`ConfigSlot`-константы (см.
-    ниже) — на стадии :meth:`finalize` они зачитываются и валидируются
-    в одно действие. Опциональные поля (например, ``log_file``) читаются
-    из ``state`` напрямую без слота — их ``None`` валидное значение.
-    """
-
-    _SLOT_WORKSPACES = ConfigSlot[WorkspaceLayout]("workspaces", "WorkspacesSection")
-    _SLOT_SSL_VERIFY = ConfigSlot[bool]("ssl_verify", "AppCoreSection (ssl_verify)")
-    _SLOT_LOG_LEVEL = ConfigSlot[str]("log_level", "AppCoreSection (log_level)")
-    _SLOT_LLM = ConfigSlot[LLMConfig]("llm_transport", "LLMTransportSection")
-    _SLOT_PROMPTS_DIR = ConfigSlot[str]("prompts_dir", "PromptsSection")
-    _SLOT_EXTENSIONS_BAG = ConfigSlot[Mapping[str, Mapping[str, str]]](
-        "extensions", "ExtensionsBagSection"
-    )
-    _SLOT_AGENT = ConfigSlot[AgentConfig]("agent", "AgentSection")
-
-    def __init__(self, resolver: ChainedConfigResolver) -> None:
-        super().__init__()
-        self._resolver = resolver
-
-    def initial(self) -> ConfigState:
-        return ConfigState(resolver=self._resolver)
-
-    def finalize(self, state: ConfigState) -> ConfigBundle:
-        app = AppConfig(
-            workspaces=self._SLOT_WORKSPACES.read(state),
-            ssl_verify=self._SLOT_SSL_VERIFY.read(state),
-            log_level=self._SLOT_LOG_LEVEL.read(state),
-            log_file=state.log_file,
-            llm=self._SLOT_LLM.read(state),
-            prompts_dir=self._SLOT_PROMPTS_DIR.read(state),
-            extensions=self._SLOT_EXTENSIONS_BAG.read(state),
-        )
-        return ConfigBundle(
-            app=app,
-            agent=self._SLOT_AGENT.read(state),
-        )
-
-
-def default_resolver(
-    extra_toml_paths: Mapping[str, tuple[str, str]] | None = None,
-    extra_sources: Sequence[ConfigSource] = (),
-) -> ChainedConfigResolver:
-    """Стандартная цепочка: EnvFile → Env → TomlFile → Toml [→ extras].
-
-    ``extra_toml_paths`` расширяют built-in карту TOML-путей — добавляй
-    сюда маппинги полей из модулей-потребителей (chainlit и т.п.).
-    """
-
-    builtin_toml_paths = {
-        **AppCoreSection.TOML_PATHS,
-        **WorkspacesSection.TOML_PATHS,
-        **LLMTransportSection.TOML_PATHS,
-        **AgentSection.TOML_PATHS,
-        **PromptsSection.TOML_PATHS,
-    }
-
-    toml_data: dict[str, Any] = load_toml(os.environ.get("BOBA_CONFIG"))
-    path_map: dict[str, tuple[str, str]] = {**builtin_toml_paths}
-    if extra_toml_paths:
-        path_map.update(extra_toml_paths)
-    sources: list[ConfigSource] = [
-        EnvFileSource(),
-        EnvSource(),
-        TomlFileSource(toml_data, path_map),
-        TomlSource(toml_data, path_map),
-        ExtensionsBagSource(toml_data),
-        *extra_sources,
-    ]
-    return ChainedConfigResolver(sources)
-
-
 def default_config_factory(
     resolver: ChainedConfigResolver,
 ) -> ConfigFactory:
-    """Фабрика приложения: app + agent.
+    """Фабрика приложения: регистрирует встроенные секции и подхватывает
+    секции расширений через entry-point group ``boba.config_sections``.
 
-    LLM-sampling сюда не входит — он приезжает per-request через
-    :class:`~boba.domain.agent.models.AgentRequest`.
+    ``resolver`` — обязательный параметр: инфра не знает про конкретные
+    источники, цепочку собирает bootstrap.
     """
     factory = ConfigFactory(resolver)
-    factory.register(AppCoreSection(priority=10))
-    factory.register(WorkspacesSection(priority=20))
-    factory.register(LLMTransportSection(priority=30))
-    factory.register(AgentSection(priority=40))
-    factory.register(PromptsSection(priority=50))
-    factory.register(ExtensionsBagSection(priority=60))
+    factory.register(AppCoreSection())
+    factory.register(WorkspacesSection())
+    factory.register(LLMTransportSection())
+    factory.register(AgentSection())
+    factory.register(PromptsSection())
+    factory.discover_extension_sections()
     return factory
-
-
-class EnvSource(ConfigSource):
-    def resolve(self, spec: FieldSpec[Any]) -> object | None:
-        return os.environ.get(spec.key)
-
-
-class EnvFileSource(ConfigSource):
-    """``{KEY}_FILE`` → путь к файлу-секрету (Docker-style)."""
-
-    def resolve(self, spec: FieldSpec[Any]) -> object | None:
-        path = os.environ.get(f"{spec.key}_FILE")
-        if not path:
-            return None
-        p = Path(path)
-        if not p.is_file():
-            return None
-        return p.read_text(encoding="utf-8").strip()
-
-
-class TomlSource(ConfigSource):
-    """Значение из TOML по карте ``{FieldSpec.key: (section, toml_key)}``.
-
-    Если ключа нет в карте — пропуск: поле не предназначено для TOML.
-    """
-
-    def __init__(
-        self,
-        data: Mapping[str, Any],
-        path_map: Mapping[str, tuple[str, str]],
-    ) -> None:
-        self._data = data
-        self._path_map = path_map
-
-    def resolve(self, spec: FieldSpec[Any]) -> object | None:
-        path = self._path_map.get(spec.key)
-        if path is None:
-            return None
-        section, toml_key = path
-        section_data = self._data.get(section)
-        if not isinstance(section_data, Mapping):
-            return None
-        return section_data.get(toml_key)
-
-
-class TomlFileSource(ConfigSource):
-    """``[section] {toml_key}_file`` → путь к файлу-секрету в TOML."""
-
-    def __init__(
-        self,
-        data: Mapping[str, Any],
-        path_map: Mapping[str, tuple[str, str]],
-    ) -> None:
-        self._data = data
-        self._path_map = path_map
-
-    def resolve(self, spec: FieldSpec[Any]) -> object | None:
-        path = self._path_map.get(spec.key)
-        if path is None:
-            return None
-
-        section, toml_key = path
-        section_data = self._data.get(section)
-        if not isinstance(section_data, Mapping):
-            return None
-
-        file_path = section_data.get(f"{toml_key}_file")
-        if not isinstance(file_path, str):
-            return None
-
-        p = Path(file_path)
-        if not p.is_file():
-            return None
-
-        return p.read_text(encoding="utf-8").strip()
-
-
-class DefaultSource(ConfigSource):
-    """Статический fallback-словарь — для тестов и кастомных пресетов."""
-
-    def __init__(self, defaults: Mapping[str, object]) -> None:
-        self._defaults = defaults
-
-    def resolve(self, spec: FieldSpec[Any]) -> object | None:
-        return self._defaults.get(spec.key)
-
-
-def load_toml(path: str | os.PathLike[str] | None) -> dict[str, Any]:
-    # Битый TOML не глотаем — это инвариант-нарушение, пусть падает громко.
-    import tomli  # noqa: PLC0415
-
-    if not path:
-        return {}
-    p = Path(path)
-    if not p.is_file():
-        return {}
-    with p.open("rb") as f:
-        return tomli.load(f)

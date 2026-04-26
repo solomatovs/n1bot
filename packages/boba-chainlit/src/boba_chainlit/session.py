@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from boba.adapters.fs_workspace import (
@@ -27,6 +28,7 @@ from boba.domain.agent.dialogue_writer import DialogueWriter
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.meat.agent import Agent
 from boba.domain.agent.models import AgentContext, AgentRequest
+from boba.domain.core.config import ChainedConfigResolver
 from boba.domain.core.patterns import StreamSink, StreamSinkPipeline
 from boba.domain.core.tools import ToolContext
 from boba.domain.core.workspace import (
@@ -35,7 +37,7 @@ from boba.domain.core.workspace import (
     WorkspaceId,
 )
 from boba.domain.llm.models import RequestId
-from boba.infra.config import ConfigLoader
+from boba.infra.config import ConfigLoader, default_config_factory
 from boba.infra.container import (
     AgentComponents,
     build_prompt_providers,
@@ -45,6 +47,30 @@ from boba.infra.container import (
 from boba.infra.logging import configure_logging, log_context
 from boba.infra.prompt_loader import PromptLoader
 from boba.infra.tool_plugin_loader import ExtensionContext, ToolPluginLoader
+from boba_chainlit.config import ChainlitConfig, ChainlitSection
+from boba_config_env import EnvFileSource, EnvSource
+from boba_config_toml import (
+    CONFIG_PATH_ENV,
+    TomlFileSource,
+    TomlSource,
+    load_toml,
+)
+
+
+def _build_resolver() -> ChainedConfigResolver:
+    """Стандартная цепочка для chainlit-runtime: env (с file-указателем) +
+    TOML (с file-указателем). Тот же набор источников, что и у CLI —
+    перечислено явно, чтобы было видно, какие подключены.
+    """
+    toml_data = load_toml(os.environ.get(CONFIG_PATH_ENV))
+    return ChainedConfigResolver(
+        [
+            EnvFileSource(),
+            EnvSource(),
+            TomlFileSource(toml_data),
+            TomlSource(toml_data),
+        ]
+    )
 
 
 class ChatSession:
@@ -57,38 +83,36 @@ class ChatSession:
     """
 
     def __init__(self) -> None:
-        loader = ConfigLoader()
-        self._app_config = loader.load_app()
+        loader = ConfigLoader(default_config_factory(_build_resolver()))
+        bundle = loader.load_bundle()
+        self._app_config = bundle.app
         configure_logging(self._app_config.log_level, self._app_config.log_file)
-        self._agent_config = loader.load_agent()
+        self._agent_config = bundle.agent
+        self._chainlit_config: ChainlitConfig = bundle.section(ChainlitSection)
+
         self._workspaces = FsProjectWorkspaceRegistry(
             base_dir=Path(self._app_config.workspaces.base_dir),
             subdir=self._app_config.workspaces.user_subdir,
         )
+
         self._history_workspaces = FsHistoryWorkspaceRegistry(
             base_dir=Path(self._app_config.workspaces.base_dir),
             subdir=self._app_config.workspaces.system_subdir,
         )
-        # Prompts: file-based discovery .md/.txt из BOBA_PROMPTS_DIR.
-        # Tool-плагины: pip-installed Python-пакеты, регистрируемые через
-        # entry-points группы "boba.tools". Оба loader'а application-
-        # level: discovery + сборка происходят в конструкторе один раз
-        # на всю жизнь процесса. ExtensionContext не несёт per-request
-        # данных — tool'ы получают рабочий workspace через ToolContext
-        # в execute, prompt-провайдеры — через state.ctx в blocks.
+
         prompt_workspace = FsPromptWorkspaceRegistry(
             root=Path(self._app_config.prompts_dir),
         ).get_or_create(PromptWorkspaceId("prompts"))
         prompt_loader = PromptLoader(prompt_workspace)
         self._prompt_providers = build_prompt_providers(prompt_loader)
 
-        tool_loader = ToolPluginLoader(
-            ExtensionContext(
-                app_config=self._app_config,
-                agent_config=self._agent_config,
-            ),
-        )
+        tool_loader = ToolPluginLoader(ExtensionContext(config=bundle))
         self._tools_service = tool_loader.tools_service()
+
+    @property
+    def models(self) -> list[str]:
+        """Список LLM-моделей для UI ChatSettings."""
+        return self._chainlit_config.models
 
     def project_workspace(self, workspace_id: WorkspaceId) -> ProjectWorkspaceShell:
         """Project-workspace пользователя: тот же, куда смотрят file-tools агента.
