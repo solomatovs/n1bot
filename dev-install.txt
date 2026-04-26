@@ -3,6 +3,10 @@
 #     pip install -r dev-install.txt
 
 -e ./packages/boba
+-e ./packages/boba-adapter-fs-workspace
+-e ./packages/boba-adapter-messages
+-e ./packages/boba-adapter-openai
+-e ./packages/boba-adapter-prompt-providers
 -e ./packages/boba-chainlit
 -e ./packages/boba-cli-agent-run
 -e ./packages/boba-cli-vector-index

@@ -15,6 +15,9 @@ requires-python = ">=3.11,<4"
 # исчезнет, чтобы chainlit-app остался автономно устанавливаемым).
 dependencies = [
     "boba",
+    "boba-adapter-fs-workspace",
+    "boba-adapter-messages",
+    "boba-adapter-openai",
     "boba-config-env",
     "boba-config-toml",
     "chainlit>=2.11,<3",

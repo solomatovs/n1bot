@@ -8,16 +8,16 @@ from typing import Any
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainConverter,
+    FieldSpec,
     IsString,
     NonEmpty,
-    FieldSpec,
+    ObjectSchema,
     Pass,
     Required,
     Tool,
     ToolContext,
     ToolExecutionError,
     ToolId,
-    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )

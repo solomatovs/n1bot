@@ -7,11 +7,11 @@ from typing import Any
 
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
+    ObjectSchema,
     Pass,
     Tool,
     ToolContext,
     ToolId,
-    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )

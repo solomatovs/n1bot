@@ -17,13 +17,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from boba.adapters.fs_workspace import (
-    FsHistoryWorkspaceRegistry,
-    FsProjectWorkspaceRegistry,
-    FsPromptWorkspaceRegistry,
-)
-from boba.adapters.in_memory_messages import InMemoryMessageService
-from boba.adapters.raw_llm_observer import FileContentObserver
 from boba.domain.agent import Agent
 from boba.domain.agent.dialogue_writer import DialogueWriter
 from boba.domain.agent.events import AgentEvent
@@ -47,6 +40,13 @@ from boba.infra.container import (
 from boba.infra.logging import configure_logging, log_context
 from boba.infra.prompt_loader import PromptLoader
 from boba.infra.tool_plugin_loader import ExtensionContext, ToolPluginLoader
+from boba_adapter_fs_workspace import (
+    FsHistoryWorkspaceRegistry,
+    FsProjectWorkspaceRegistry,
+    FsPromptWorkspaceRegistry,
+)
+from boba_adapter_messages import InMemoryMessageService
+from boba_adapter_openai import FileContentObserver
 from boba_chainlit.config import ChainlitConfig, ChainlitSection
 from boba_config_env import EnvFileSource, EnvSource
 from boba_config_toml import (

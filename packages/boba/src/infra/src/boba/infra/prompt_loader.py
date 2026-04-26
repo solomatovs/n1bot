@@ -37,9 +37,9 @@ import logging
 import re
 from collections.abc import Sequence
 
-from boba.adapters.prompt_providers import StaticPromptProvider
 from boba.domain.agent.prompt import PromptId, PromptProvider
 from boba.domain.core.workspace import PromptWorkspaceShell, WorkspaceError
+from boba_adapter_prompt_providers import StaticPromptProvider
 
 logger = logging.getLogger(__name__)
 

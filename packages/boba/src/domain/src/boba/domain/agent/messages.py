@@ -19,8 +19,8 @@ DialogueWriter` — он маппит доменные операции (user-qu
 
 Реализации:
 
-- in-memory — :mod:`boba.adapters.in_memory_messages`,
-- persistent (JSONL) — :mod:`boba.adapters.jsonl_messages`.
+- in-memory — :mod:`boba_adapter_messages.in_memory`,
+- persistent (JSONL) — :mod:`boba_adapter_messages.jsonl`.
 
 Контракт ошибок persistent-реализаций — потомки
 :class:`MessageStoreError`.

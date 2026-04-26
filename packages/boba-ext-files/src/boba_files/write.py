@@ -9,16 +9,16 @@ from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainConverter,
     Default,
+    FieldSpec,
     IsString,
     NonEmpty,
-    FieldSpec,
+    ObjectSchema,
     Pass,
     Required,
     Tool,
     ToolContext,
     ToolExecutionError,
     ToolId,
-    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )

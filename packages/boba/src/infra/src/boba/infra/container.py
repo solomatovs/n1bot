@@ -3,8 +3,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from boba.adapters.llm.openai_terminal import OpenAITerminal, build_openai_client
-from boba.adapters.raw_llm_observer import RawLLMObserver
+from boba_adapter_openai import (
+    OpenAITerminal,
+    RawLLMObserver,
+    build_openai_client,
+)
 from boba.domain.agent import (
     Agent,
     AgentConfig,

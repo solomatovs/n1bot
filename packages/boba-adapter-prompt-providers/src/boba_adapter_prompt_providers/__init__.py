@@ -14,6 +14,17 @@
 - ``WorkspaceSystemPromptProvider`` — читает все файлы директории
   внутри :class:`HistoryWorkspaceShell` (workspace-слой живёт в
   shared ``boba.domain.core.workspace``).
+
+Пакет — отдельный pip-package; основной ``boba`` от него НЕ зависит.
+Короткие импорты::
+
+    from boba_adapter_prompt_providers import (
+        StaticPromptProvider,
+        FilePromptProvider,
+        EnvironmentPromptProvider,
+        GitPromptProvider,
+        WorkspaceSystemPromptProvider,
+    )
 """
 
 from __future__ import annotations
