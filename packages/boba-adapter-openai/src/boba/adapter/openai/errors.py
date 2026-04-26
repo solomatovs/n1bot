@@ -1,5 +1,5 @@
 """
-Классификация сырых ``openai``/``httpx`` исключений в :class:`LLMError`
+Классификация сырых openai/httpx исключений в LLMError
 """
 
 from __future__ import annotations
@@ -29,9 +29,9 @@ from boba.domain.llm.errors import (
 
 
 class IsContextLengthError(ExceptionSpecification):
-    """Матчит ``openai.BadRequestError`` с маркером ``context_length_exceeded``.
+    """Матчит openai.BadRequestError с маркером context_length_exceeded.
 
-    Матчит по телу ответа (структурированный ``code``) либо по
+    Матчит по телу ответа (структурированный code) либо по
     текстовому сообщению — OpenAI-совместимые бэкенды не всегда
     возвращают структуру, но формулировки в тексте устойчивы.
     """
@@ -56,7 +56,7 @@ class IsContextLengthError(ExceptionSpecification):
 
 
 class IsServerError(ExceptionSpecification):
-    """Матчит ``openai.APIStatusError`` с 5xx."""
+    """Матчит openai.APIStatusError с 5xx."""
 
     _HTTP_SERVER_ERROR_MIN = 500
     _HTTP_SERVER_ERROR_MAX = 600
@@ -73,7 +73,7 @@ class IsServerError(ExceptionSpecification):
 
 
 class IsStatusCode(ExceptionSpecification):
-    """Матчит ``openai.APIStatusError`` с конкретным HTTP-статусом."""
+    """Матчит openai.APIStatusError с конкретным HTTP-статусом."""
 
     def __init__(self, code: int) -> None:
         self._code = code
@@ -86,7 +86,7 @@ class IsStatusCode(ExceptionSpecification):
 
 
 class OpenAIErrorConverter(FirstMatchConverter[Exception, LLMError]):
-    """Сырые ``openai``/``httpx`` исключения → доменные :class:`LLMError`."""
+    """Сырые openai/httpx исключения → доменные LLMError."""
 
     _HTTP_TOO_MANY_REQUESTS = 429
 
@@ -98,10 +98,10 @@ class OpenAIErrorConverter(FirstMatchConverter[Exception, LLMError]):
 
     @staticmethod
     def status_code(exc: Exception) -> int:
-        """HTTP-статус из ``APIStatusError``.
+        """HTTP-статус из APIStatusError.
 
-        Вызывается только из lambda-правил, где ``IsInstance``-спека уже
-        гарантировала ``APIStatusError``-ветку. Проверка фиксирует
+        Вызывается только из lambda-правил, где IsInstance-спека уже
+        гарантировала APIStatusError-ветку. Проверка фиксирует
         инвариант маршрутизации: если правило вызвано на другом типе —
         это баг, а не runtime-ошибка.
         """

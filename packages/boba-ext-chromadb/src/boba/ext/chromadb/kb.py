@@ -1,5 +1,5 @@
 """Адаптер ChromaDB — единственное место в пакете, которое знает про
-``chromadb``-API. Tools работают только с :class:`ChromaKnowledgeBase`
+chromadb-API. Tools работают только с ChromaKnowledgeBase
 и нашими value-objects/ошибками.
 
 Persistent-клиент Chroma живёт как process-singleton: один путь к БД =
@@ -19,15 +19,15 @@ logger = logging.getLogger(__name__)
 
 
 class ChromaKnowledgeBase:
-    """Read-only обёртка над :class:`chromadb.PersistentClient`.
+    """Read-only обёртка над PersistentClient.
 
     Открывает клиента в конструкторе. Все методы:
 
-    * принимают ``tool_id`` — чтобы доменные ошибки несли id вызвавшего
-      tool (нужно для :class:`ToolExecutionMiddleware` и записи в
+    * принимают tool_id — чтобы доменные ошибки несли id вызвавшего
+      tool (нужно для ToolExecutionMiddleware и записи в
       историю);
-    * перехватывают ``chromadb``-исключения и оборачивают в
-      :class:`KnowledgeBaseError` (или его подкласс) с понятным
+    * перехватывают chromadb-исключения и оборачивают в
+      KnowledgeBaseError (или его подкласс) с понятным
       сообщением.
     """
 
@@ -44,8 +44,8 @@ class ChromaKnowledgeBase:
         )
 
     def list_collections(self) -> list[CollectionInfo]:
-        """Все коллекции, что видит клиент. ``description`` берётся из
-        ``metadata["description"]`` (как договорено с оператором при
+        """Все коллекции, что видит клиент. description берётся из
+        metadata["description"] (как договорено с оператором при
         индексации); пустой если не задан.
         """
         result: list[CollectionInfo] = []
@@ -66,12 +66,12 @@ class ChromaKnowledgeBase:
         top_k: int,
     ) -> list[SearchHit]:
         """Semantic search по одной коллекции. Возвращает не больше
-        ``top_k`` результатов, упорядоченных по distance возрастанию
+        top_k результатов, упорядоченных по distance возрастанию
         (ChromaDB-default).
 
-        Документы режутся до ``cfg.snippet_chars`` — полный текст в
+        Документы режутся до cfg.snippet_chars — полный текст в
         первой версии не отдаётся (если понадобится — добавим
-        ``kb_get``).
+        kb_get).
         """
         col = self._get_collection(tool_id, collection)
         try:
@@ -144,9 +144,9 @@ _KB_CACHE: dict[int, ChromaKnowledgeBase] = {}
 
 
 def get_knowledge_base(cfg: ChromaExtConfig) -> ChromaKnowledgeBase:
-    """Process-singleton :class:`ChromaKnowledgeBase` под ключом ``id(cfg)``.
+    """Process-singleton ChromaKnowledgeBase под ключом id(cfg).
 
-    ``register_tools`` вызывается один раз на старте — ``cfg`` будет
+    register_tools вызывается один раз на старте — cfg будет
     стабильным dataclass-инстансом, и все Tool-инстансы получат тот же
     KB.
     """

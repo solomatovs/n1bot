@@ -1,7 +1,7 @@
 """Публичный API агент-слоя.
 
 Реэкспортирует ошибки, события, сообщения, модели, prompt-примитивы и
-middleware-цепочку (см. :mod:`boba.domain.agent.middleware`).
+middleware-цепочку (см. middleware).
 
 Короткие импорты::
 

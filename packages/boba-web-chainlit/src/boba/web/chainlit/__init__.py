@@ -5,7 +5,7 @@
     from boba.web.chainlit import ChainlitBridgeSink, ChatSession
     from boba.web.chainlit import ChainlitConfig, ChainlitSection
 
-Модули :mod:`boba.web.chainlit.app` и :mod:`boba.web.chainlit.__main__` — точки
+Модули app и __main__ — точки
 входа приложения, их содержимое не реэкспортируется.
 """
 

@@ -1,6 +1,6 @@
 """Value-objects, которые KB отдаёт tools (и через них агенту).
 
-Tools затем сериализуют их в JSON для ``ToolResult.content``.
+Tools затем сериализуют их в JSON для ToolResult.content.
 """
 
 from __future__ import annotations
@@ -11,9 +11,9 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class CollectionInfo:
-    """Описание одной коллекции для ``kb_list_collections``.
+    """Описание одной коллекции для kb_list_collections.
 
-    ``description`` — то, что оператор положил в ``metadata["description"]``
+    description — то, что оператор положил в metadata["description"]
     при создании; пусто, если оператор не задал. Остальные поля
     metadata в этой версии в API не пробрасываются — только description,
     чтобы агенту не показывать служебные ключи.
@@ -25,10 +25,10 @@ class CollectionInfo:
 
 @dataclass(frozen=True)
 class SearchHit:
-    """Один результат ``kb_search``.
+    """Один результат kb_search.
 
-    ``distance`` — chromadb-distance (меньше = ближе). ``snippet`` —
-    урезанная до ``ChromaExtConfig.snippet_chars`` копия документа,
+    distance — chromadb-distance (меньше = ближе). snippet —
+    урезанная до ChromaExtConfig.snippet_chars копия документа,
     чтобы не раздувать контекст агента.
     """
 

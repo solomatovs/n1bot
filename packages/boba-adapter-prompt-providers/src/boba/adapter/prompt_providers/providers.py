@@ -1,18 +1,18 @@
-"""Конкретные реализации :class:`PromptProvider` (system-prompt).
+"""Конкретные реализации PromptProvider (system-prompt).
 
 Все провайдеры пишут в system-prompt: USER-сообщение в boba не
-собирается через :class:`PromptFactory` — оно приходит готовым в
-:attr:`AgentRequest.query` от caller'а (frontend/CLI отвечает за
+собирается через PromptFactory — оно приходит готовым в
+query от caller'а (frontend/CLI отвечает за
 обогащение IDE-selection / шаблонами / контекстом вызова).
 
 Набор провайдеров:
 
-- ``StaticPromptProvider`` — фиксированный текст из DI.
-- ``FilePromptProvider`` — читает блок с диска.
-- ``EnvironmentPromptProvider`` — информация о среде выполнения.
-- ``GitPromptProvider`` — состояние git-репо.
-- ``WorkspaceSystemPromptProvider`` — читает все файлы директории
-  внутри :class:`HistoryWorkspaceShell`.
+- StaticPromptProvider — фиксированный текст из DI.
+- FilePromptProvider — читает блок с диска.
+- EnvironmentPromptProvider — информация о среде выполнения.
+- GitPromptProvider — состояние git-репо.
+- WorkspaceSystemPromptProvider — читает все файлы директории
+  внутри HistoryWorkspaceShell.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ class StaticPromptProvider(PromptProvider):
 class FilePromptProvider(PromptProvider):
     """Читает блок промпта из файла на диске.
 
-    Отсутствующий файл → ``default_prompt`` (по умолчанию — пусто).
+    Отсутствующий файл → default_prompt (по умолчанию — пусто).
     """
 
     def __init__(
@@ -119,7 +119,7 @@ class EnvironmentPromptProvider(PromptProvider):
 class GitPromptProvider(PromptProvider):
     """Блок с текущим состоянием git-репозитория.
 
-    Вне репозитория / при отсутствии git — ``"(unavailable)"`` в
+    Вне репозитория / при отсутствии git — "(unavailable)" в
     соответствующих полях, но блок всё равно эмитится (решение
     принято старым кодом, переносим семантику).
     """

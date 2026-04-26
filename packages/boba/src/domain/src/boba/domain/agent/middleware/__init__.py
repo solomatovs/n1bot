@@ -1,13 +1,13 @@
 """Middleware-цепочка агента: внутренняя реализация.
 
-Каждый модуль (``dialogue.py``, ``error_routing.py``, ``llm.py``,
-``loop_control.py``, ``tools.py``) держит middleware-классы своей зоны
+Каждый модуль (dialogue.py, error_routing.py, llm.py,
+loop_control.py, tools.py) держит middleware-классы своей зоны
 ответственности; здесь — только агрегирующий реэкспорт. Публичный API
-всего agent-слоя — :mod:`boba.domain.agent`; внешний код должен
+всего agent-слоя — agent; внешний код должен
 импортировать оттуда.
 
-Сам :class:`Agent`-оркестратор живёт уровнем выше (в
-:mod:`boba.domain.agent.orchestrator`) — он не middleware, а
+Сам Agent-оркестратор живёт уровнем выше (в
+orchestrator) — он не middleware, а
 запускающий движок source/sink-цепочки.
 """
 

@@ -30,9 +30,9 @@ class KbListCollectionsArgsConverter(Converter[dict[str, Any], KbListCollections
 
 
 class KbListCollectionsTool(Tool[KbListCollectionsArgs]):
-    """Возвращает JSON со списком ``[{name, description}]`` коллекций.
+    """Возвращает JSON со списком [{name, description}] коллекций.
 
-    Описание берётся из ``metadata["description"]``, который оператор
+    Описание берётся из metadata["description"], который оператор
     задаёт при создании коллекции (см. README).
     """
 

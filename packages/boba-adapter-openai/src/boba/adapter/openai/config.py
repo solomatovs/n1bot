@@ -1,14 +1,14 @@
 """Конфиг-секция и LLM-source-фабрика OpenAI-адаптера.
 
-Секция мапит env/TOML-ключи в :class:`boba.domain.config.LLMConfig`
-(``base_url`` + ``api_key``) — формат запроса OpenAI-совместимый,
+Секция мапит env/TOML-ключи в LLMConfig
+(base_url + api_key) — формат запроса OpenAI-совместимый,
 поэтому годится и для LiteLLM/Ollama/прочих прокси.
 
-:func:`create_llm_source` — фабрика готового
-:class:`StreamSource[LLMContext, LLMEvent]`: оборачивает
-:class:`OpenAITerminal` в :class:`StreamSourceChainBuilder`. Bootstrap
-приложения вызывает её с ``app_config.llm`` (DTO собран
-:class:`LLMTransportSection`) и ``RawLLMObserver`` нужного типа.
+create_llm_source — фабрика готового
+StreamSource[LLMContext, LLMEvent]: оборачивает
+OpenAITerminal в StreamSourceChainBuilder. Bootstrap
+приложения вызывает её с app_config.llm (DTO собран
+LLMTransportSection) и RawLLMObserver нужного типа.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from boba.domain.llm.models import LLMContext
 
 
 class LLMTransportSection(ConfigSection[LLMConfig]):
-    """Транспорт LLM-клиента: ``base_url`` + ``api_key``."""
+    """Транспорт LLM-клиента: base_url + api_key."""
 
     id: ClassVar[StrId] = StrId("llm_transport")
     namespace: ClassVar[tuple[str, ...]] = ("llm",)
@@ -61,7 +61,7 @@ def create_llm_source(
     llm_config: LLMConfig,
     observer: RawLLMObserver,
 ) -> StreamSource[LLMContext, LLMEvent]:
-    """Готовый :class:`StreamSource` поверх openai-SDK с подключённым observer'ом."""
+    """Готовый StreamSource поверх openai-SDK с подключённым observer'ом."""
     return StreamSourceChainBuilder[LLMContext, LLMEvent]().terminal(
         OpenAITerminal(
             build_openai_client(llm_config),

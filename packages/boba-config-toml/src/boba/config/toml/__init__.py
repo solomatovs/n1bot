@@ -1,4 +1,4 @@
-"""TOML :class:`ConfigSource` для Boba.
+"""TOML ConfigSource для Boba.
 
 Public API::
 

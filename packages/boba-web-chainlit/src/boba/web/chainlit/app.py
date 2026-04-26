@@ -119,9 +119,9 @@ async def _finalize_step(
 ) -> None:
     """Проставляет финальный output у step через streaming API.
 
-    ``stream_token(..., is_sequence=True)`` заменяет содержимое output
-    целиком — эквивалент ``step.output = content``, но через публичный
-    streaming-канал. Прямое присваивание ``step.output = ...``
+    stream_token(..., is_sequence=True) заменяет содержимое output
+    целиком — эквивалент step.output = content, но через публичный
+    streaming-канал. Прямое присваивание step.output = ...
     некорректно типизировано в текущей версии chainlit (property +
     setter + class-level annotation сбивают Pylance).
     """
@@ -133,16 +133,16 @@ async def _finalize_step(
 class _EventRenderer:
     """Рендерит AgentEvent'ы в Chainlit UI поверх семей событий.
 
-    Sink строится вокруг семей: ``ContentDelta`` → стримим в нужный слот
-    через ``slot()`` / ``chunk()``; ``ContentSnapshot`` для streaming-
+    Sink строится вокруг семей: ContentDelta → стримим в нужный слот
+    через slot() / chunk(); ContentSnapshot для streaming-
     слотов закрывает сообщение, для tool-слотов рендерит результат;
-    ``PhaseTransition`` — статус-индикатор; ``Advisory``/``Terminal`` —
+    PhaseTransition — статус-индикатор; Advisory/Terminal —
     system-сообщения.
 
     Concrete-типы используются точечно в двух местах: чтобы знать,
-    какой ``LLMToolCall`` сейчас исполняется (``ToolExecutionStarted``)
-    и для ``ToolExecutionFailed`` (нужен ``call.id`` для матчинга со
-    ``Step``-ом). Это контролируемое нарушение «sink не знает concrete» —
+    какой LLMToolCall сейчас исполняется (ToolExecutionStarted)
+    и для ToolExecutionFailed (нужен call.id для матчинга со
+    Step-ом). Это контролируемое нарушение «sink не знает concrete» —
     chainlit делает rich-UI, ему нужны структурированные поля.
     """
 
@@ -150,7 +150,7 @@ class _EventRenderer:
         self.answer_msg: cl.Message | None = None
         self.thinking_step: cl.Step | None = None
         self.status_msg: cl.Message | None = None
-        # tool_call_id → Step. ``index`` для нас не интересен —
+        # tool_call_id → Step. index для нас не интересен —
         # все события несут tool_call_id уже на уровне семей.
         self.tool_steps_by_id: dict[str, cl.Step] = {}
 
@@ -224,7 +224,7 @@ class _EventRenderer:
                 if step is not None:
                     await _finalize_step(step, e.body())
             case SlotKind.TOOL_CALL:
-                # Step уже создан в ``ToolCallStreamStarted``; args стримятся
+                # Step уже создан в ToolCallStreamStarted; args стримятся
                 # через ContentDelta. Здесь — нечего делать (всё уже в UI).
                 pass
             case SlotKind.USER_QUERY:

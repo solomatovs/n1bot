@@ -1,7 +1,7 @@
 """Наблюдатель сырых запросов/ответов LLM на границе OpenAI-клиента.
 
-Позволяет сохранять kwargs ``chat.completions.create`` и каждый входящий
-``ChatCompletionChunk`` в неизменённом виде — до любой доменной конверсии.
+Позволяет сохранять kwargs chat.completions.create и каждый входящий
+ChatCompletionChunk в неизменённом виде — до любой доменной конверсии.
 Используется для отладки, сбора датасетов, анализа поведения моделей через
 Ollama/LiteLLM/третьи прокси.
 """
@@ -25,22 +25,22 @@ logger = logging.getLogger(__name__)
 
 
 class MultiKeyReasoningExtractor(Converter[ChoiceDelta, str | None]):
-    """Извлекает reasoning-токен из ``delta.model_extra``, перебирая
+    """Извлекает reasoning-токен из delta.model_extra, перебирая
     известные ключи по порядку.
 
     Разные провайдеры кладут «рассуждения» модели в разные поля:
 
-    - ``reasoning_content`` — DeepSeek, xAI Grok, часть OpenAI-compat прокси;
-    - ``thinking`` — Anthropic через openai-compat, некоторые LiteLLM-маршруты;
-    - ``reasoning`` — Ollama native, Groq.
+    - reasoning_content — DeepSeek, xAI Grok, часть OpenAI-compat прокси;
+    - thinking — Anthropic через openai-compat, некоторые LiteLLM-маршруты;
+    - reasoning — Ollama native, Groq.
 
     Дефолтный набор покрывает всех. Можно сузить/переопределить список,
     передав свой кортеж в конструктор.
 
     Провайдер-специфичный экстрактор — это просто другой
-    :class:`Converter[ChoiceDelta, str | None]` в отдельном модуле,
-    подключается через DI параметром :class:`ThinkingSource` /
-    :class:`MetricsRawLLMObserver`.
+    Converter[ChoiceDelta, str | None] в отдельном модуле,
+    подключается через DI параметром ThinkingSource /
+    MetricsRawLLMObserver.
     """
 
     DEFAULT_KEYS: tuple[str, ...] = (
@@ -62,7 +62,7 @@ class MultiKeyReasoningExtractor(Converter[ChoiceDelta, str | None]):
 
 
 class RequestOutcomeKind(Enum):
-    """Дискриминатор :class:`RequestOutcome`."""
+    """Дискриминатор RequestOutcome."""
 
     OK = "ok"
     CANCELLED = "cancelled"
@@ -73,9 +73,9 @@ class RequestOutcomeKind(Enum):
 class RequestOutcome:
     """Исход запроса LLM на wire-слое.
 
-    Инвариант: ``exception_name`` задан тогда и только тогда, когда
-    ``kind is RequestOutcomeKind.RAISED``. Остальные комбинации
-    отвергаются в :meth:`__post_init__` — нелегальные состояния
+    Инвариант: exception_name задан тогда и только тогда, когда
+    kind is RequestOutcomeKind.RAISED. Остальные комбинации
+    отвергаются в __post_init__ — нелегальные состояния
     непредставимы.
     """
 
@@ -102,7 +102,7 @@ class RequestOutcome:
         return cls(RequestOutcomeKind.RAISED, type(exc).__name__)
 
     def label(self) -> str:
-        """Человеко-читаемая метка: ``ok`` / ``cancelled`` / ``raised:<Exc>``."""
+        """Человеко-читаемая метка: ok / cancelled / raised:<Exc>."""
         if self.kind is RequestOutcomeKind.RAISED:
             return f"{self.kind.value}:{self.exception_name}"
         return self.kind.value
@@ -128,7 +128,7 @@ class RawLLMObserver(ABC):
 
 
 class CompositeRawLLMObserver(RawLLMObserver):
-    """Fan-out из нескольких :class:`RawLLMObserver` — вызывает каждого по порядку."""
+    """Fan-out из нескольких RawLLMObserver — вызывает каждого по порядку."""
 
     def __init__(self, observers: Sequence[RawLLMObserver]) -> None:
         self._observers = observers
@@ -149,8 +149,8 @@ class CompositeRawLLMObserver(RawLLMObserver):
 class FileRawLLMObserver(RawLLMObserver):
     """Пишет сырые запросы/ответы в markdown-файл внутри workspace.
 
-    Каждый вызов — отдельная секция с заголовком (``## Request`` /
-    ``## Response chunk``) и блоком ``json``. Файл открывается на каждый
+    Каждый вызов — отдельная секция с заголовком (## Request /
+    ## Response chunk) и блоком json. Файл открывается на каждый
     вызов в режиме append — состояние на уровне файловой системы, между
     перезапусками агента накопление продолжается.
     """
@@ -165,11 +165,11 @@ class FileRawLLMObserver(RawLLMObserver):
 
     def on_request(self, kwargs: dict[str, Any]) -> None:
         body = json.dumps(kwargs, ensure_ascii=False, indent=2, default=str)
-        self._append(f"## Request\n\n```json\n{body}\n```\n\n")
+        self._append(f"## Request\n\n`json\n{body}\n`\n\n")
 
     def on_response_chunk(self, chunk: ChatCompletionChunk) -> None:
         body = chunk.model_dump_json(indent=2)
-        self._append(f"## Response chunk\n\n```json\n{body}\n```\n\n")
+        self._append(f"## Response chunk\n\n`json\n{body}\n`\n\n")
 
     def on_request_end(self, outcome: RequestOutcome) -> None:
         self._append(f"## End: {outcome.label()}\n\n")
@@ -183,19 +183,19 @@ class FileContentObserver(RawLLMObserver):
     """Пишет читаемый markdown-лог запроса/ответа.
 
     Накапливает потоки ответа по семантическим каналам в переменные,
-    в :meth:`on_request_end` собирает их в один markdown-блок и пишет
-    в файл одной операцией. На каждый ``on_request`` state сбрасывается;
+    в on_request_end собирает их в один markdown-блок и пишет
+    в файл одной операцией. На каждый on_request state сбрасывается;
     запросы аккумулируются в одном файле в режиме append.
 
     Чтения чанка прямолинейные:
 
-    - ``delta.content`` → ``self._answer``;
-    - ``delta.model_extra["reasoning_content"]`` → ``self._reasoning``;
-    - ``delta.refusal`` → ``self._refusal``;
-    - ``delta.tool_calls[].function.{name,arguments}`` per-index →
-      ``self._tool_calls[idx]``;
-    - ``choice.finish_reason`` → ``self._finish_reason``;
-    - ``chunk.usage`` → ``self._usage``.
+    - delta.content → self._answer;
+    - delta.model_extra["reasoning_content"] → self._reasoning;
+    - delta.refusal → self._refusal;
+    - delta.tool_calls[].function.{name,arguments} per-index →
+      self._tool_calls[idx];
+    - choice.finish_reason → self._finish_reason;
+    - chunk.usage → self._usage.
     """
 
     _REASONING_KEY = "reasoning_content"
@@ -264,7 +264,7 @@ class FileContentObserver(RawLLMObserver):
         body = json.dumps(
             self._request_kwargs, ensure_ascii=False, indent=2, default=str
         )
-        parts: list[str] = [f"\n\n## Request\n\n```json\n{body}\n```\n\n## Response\n"]
+        parts: list[str] = [f"\n\n## Request\n\n`json\n{body}\n`\n\n## Response\n"]
 
         if self._reasoning:
             parts.append("\n### Reasoning\n\n")
@@ -287,7 +287,7 @@ class FileContentObserver(RawLLMObserver):
             tc_id = tc["id"] or "(none)"
             args_text = "".join(tc["args"])
             parts.append(f"\n### Tool call #{idx}: {name} (id={tc_id})\n\n")
-            parts.append(f"```\n{args_text}\n```\n")
+            parts.append(f"`\n{args_text}\n`\n")
 
         if self._finish_reason:
             parts.append(f"\n_finish_reason={self._finish_reason}_\n")
@@ -307,11 +307,11 @@ class FileContentObserver(RawLLMObserver):
 class MetricsRawLLMObserver(RawLLMObserver):
     """Пишет одну строку-сводку в logger по завершении запроса.
 
-    Считает по **сырым** chunk-ам, а не по :class:`AgentEvent` после
-    трансформаций — так цифры не искажаются ``StrictJsonContentToolCall`` и
+    Считает по **сырым** chunk-ам, а не по AgentEvent после
+    трансформаций — так цифры не искажаются StrictJsonContentToolCall и
     подобными middleware, которые переупаковывают content в tool-calls.
-    Замеряет также elapsed и :class:`RequestOutcome` (с именем
-    исключения для ``RAISED``) на wire-слое.
+    Замеряет также elapsed и RequestOutcome (с именем
+    исключения для RAISED) на wire-слое.
     """
 
     def __init__(

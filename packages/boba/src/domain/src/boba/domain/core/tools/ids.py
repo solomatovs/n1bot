@@ -1,9 +1,9 @@
 """Идентификаторы tool-домена.
 
 Лежат в отдельном модуле, чтобы разорвать цикл
-:mod:`tool` ↔ :mod:`errors`: ошибки используют ``ToolId``/``ToolSourceId``
+tool ↔ errors: ошибки используют ToolId/ToolSourceId
 для своего конструктора, а tool — ошибки. Слив идентификаторов в
-``tool.py`` создал бы циклический импорт.
+tool.py создал бы циклический импорт.
 """
 
 from __future__ import annotations

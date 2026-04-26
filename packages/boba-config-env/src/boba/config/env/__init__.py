@@ -1,4 +1,4 @@
-"""Env-variable :class:`ConfigSource` для Boba.
+"""Env-variable ConfigSource для Boba.
 
 Public API::
 

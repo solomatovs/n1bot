@@ -77,8 +77,8 @@ TState = TypeVar("TState")
 TOut = TypeVar("TOut")
 # Covariant variant of TOut для классов, у которых TOut стоит **только** в
 # output-позициях (return). Позволяет, например, передать
-# ``Converter[object, str]`` туда, где ожидается ``Converter[object, str | None]``
-# (через Liskov: всё, что возвращает ``str``, возвращает и ``str | None``).
+# Converter[object, str] туда, где ожидается Converter[object, str | None]
+# (через Liskov: всё, что возвращает str, возвращает и str | None).
 # Использовать в Serializer/иных классах с TOut в input-позиции — нельзя.
 TOut_co = TypeVar("TOut_co", covariant=True)
 TValue = TypeVar("TValue")
@@ -106,12 +106,12 @@ class StateFull(StateLess):
 
 
 class ConverterError(Exception):
-    """Базовая ошибка ``Converter.convert``.
+    """Базовая ошибка Converter.convert.
 
-    Реализации ``Converter`` ОБЯЗАНЫ оборачивать любые внутренние исключения
-    в потомков этого класса. Голые ``ValueError``/``KeyError``/``TypeError``
+    Реализации Converter ОБЯЗАНЫ оборачивать любые внутренние исключения
+    в потомков этого класса. Голые ValueError/KeyError/TypeError
     и т.п. наружу утекать не должны — потребитель ловит только
-    ``ConverterError``.
+    ConverterError.
     """
 
 
@@ -135,14 +135,14 @@ class ConverterOutputError(ConverterError):
 class Converter(ABC, Generic[TIn, TOut_co]):
     """Однонаправленная конвертация 1:1. A → B.
 
-    Контракт ошибок: ``convert`` бросает только потомков ``ConverterError``.
-    ``ConverterInputError`` — если проблема в данных входа;
-    ``ConverterOutputError`` — если проблема в построении выхода.
-    Исходное низкоуровневое исключение доступно через ``__cause__``.
+    Контракт ошибок: convert бросает только потомков ConverterError.
+    ConverterInputError — если проблема в данных входа;
+    ConverterOutputError — если проблема в построении выхода.
+    Исходное низкоуровневое исключение доступно через __cause__.
 
-    Output covariance: ``Converter[A, B]`` — подтип ``Converter[A, B']``,
-    если ``B <: B'`` (например, ``Converter[object, str]`` подходит туда,
-    где ждут ``Converter[object, str | None]``).
+    Output covariance: Converter[A, B] — подтип Converter[A, B'],
+    если B <: B' (например, Converter[object, str] подходит туда,
+    где ждут Converter[object, str | None]).
     """
 
     @abstractmethod
@@ -174,9 +174,9 @@ class StreamSource(StateFull, Generic[TCtx, TOut]):
     """
     Источник потока событий.
 
-    Генерирует ``Iterable[TOut]``, опираясь только на ``ctx`` и
+    Генерирует Iterable[TOut], опираясь только на ctx и
     зависимости, внедрённые в конструктор. Входного потока у источника
-    нет; если он нужен — это уже :class:`StreamTransformer`.
+    нет; если он нужен — это уже StreamTransformer.
 
     Схема::
 
@@ -188,29 +188,29 @@ class StreamSource(StateFull, Generic[TCtx, TOut]):
                   └──────────────┘
 
     Контракт:
-    - :meth:`stream` возвращает генератор — события выдаются лениво,
+    - stream возвращает генератор — события выдаются лениво,
       по мере готовности; побочные эффекты допустимы (подготовить
-      ``ctx.llm_builder``, отправить запрос, открыть файл);
-    - ``StateFull`` — реализация может копить состояние между
+      ctx.llm_builder, отправить запрос, открыть файл);
+    - StateFull — реализация может копить состояние между
       итерациями (флаг «replay уже выполнен», счётчики);
-      :meth:`reset` возвращает состояние к начальному.
+      reset возвращает состояние к начальному.
 
     Когда использовать:
-    - middleware в агентской цепочке: стадия читает/мутирует ``ctx``,
+    - middleware в агентской цепочке: стадия читает/мутирует ctx,
       эмитит собственные события и делегирует inner'у. Onion-композиция
-      собирается через :class:`StreamSourceChainBuilder`;
+      собирается через StreamSourceChainBuilder;
     - терминальный поставщик событий (LLM-клиент, подписка на очередь,
       обход файлов);
-    - несколько независимых источников на одном ``ctx``, чьи события
-      нужно слить — :class:`StreamSourcePipeline`;
+    - несколько независимых источников на одном ctx, чьи события
+      нужно слить — StreamSourcePipeline;
     - циклический запуск до условия остановки —
-      :class:`StreamSourceLoop`.
+      StreamSourceLoop.
 
     Когда НЕ использовать:
     - если на вход приходит реальный поток данных, который нужно
-      преобразовать — см. :class:`StreamTransformer`;
+      преобразовать — см. StreamTransformer;
     - если стадия только потребляет события и совершает побочный
-      эффект без возврата — см. :class:`StreamSink`.
+      эффект без возврата — см. StreamSink.
     """
 
     @abstractmethod
@@ -240,25 +240,25 @@ class StreamSink(StateFull, Generic[TCtx, TIn]):
             sink.handle(ctx, event)
 
     Контракт:
-    - :meth:`handle` синхронно обрабатывает одно событие и ничего не
+    - handle синхронно обрабатывает одно событие и ничего не
       возвращает; реализация может копить состояние между вызовами
       (буферы для агрегирования стриминговых токенов в «завершённые»
       сообщения, счётчики, дебаунсеры);
-    - ``StateFull`` — :meth:`reset` очищает накопленные буферы.
+    - StateFull — reset очищает накопленные буферы.
 
     Когда использовать:
     - вывод в консоль/UI, запись в журнал, отправка наружу
       (webhook, message bus);
     - агрегация стриминга в «завершённые» сущности (пример —
-      HistorySink: токены → ``*Complete`` в журнал);
+      HistorySink: токены → *Complete в журнал);
     - fan-out одного события на несколько потребителей сразу
-      (консоль + журнал + телеметрия) — :class:`StreamSinkPipeline`.
+      (консоль + журнал + телеметрия) — StreamSinkPipeline.
 
     Когда НЕ использовать:
     - если стадия должна что-то вернуть обратно в поток — это уже
-      обёртка источника, см. :class:`StreamSource` (через inner
+      обёртка источника, см. StreamSource (через inner
       в onion-цепочке);
-    - если есть вход-поток и выход-поток — :class:`StreamTransformer`.
+    - если есть вход-поток и выход-поток — StreamTransformer.
     """
 
     @abstractmethod
@@ -269,8 +269,8 @@ class StreamTransformer(StateFull, Generic[TCtx, TIn, TOut]):
     """
     Потоковое преобразование с контекстом.
 
-    Принимает ``Iterable[TIn]`` и выдаёт ``Iterable[TOut]`` в
-    присутствии ``ctx``. Это «обычная» ETL-стадия: декодер формата,
+    Принимает Iterable[TIn] и выдаёт Iterable[TOut] в
+    присутствии ctx. Это «обычная» ETL-стадия: декодер формата,
     фильтр, разбиение по ключу, генерация событий из дельт, и т.п.
 
     Схема::
@@ -283,29 +283,29 @@ class StreamTransformer(StateFull, Generic[TCtx, TIn, TOut]):
                   └──────────────┘
 
     Отличия от соседних паттернов:
-    - от :class:`StreamConverter` — знает про ``ctx`` (request_id,
-      workspace, config). Если ``ctx`` не нужен — берите
-      ``StreamConverter``: он легче и явно заявляет отсутствие
+    - от StreamConverter — знает про ctx (request_id,
+      workspace, config). Если ctx не нужен — берите
+      StreamConverter: он легче и явно заявляет отсутствие
       зависимости от контекста;
-    - от :class:`StreamSource` — у трансформера есть значимый входной
-      поток. Если вход всегда ``None`` — это источник;
-    - от :class:`StreamSink` — возвращает выходной поток, а не только
+    - от StreamSource — у трансформера есть значимый входной
+      поток. Если вход всегда None — это источник;
+    - от StreamSink — возвращает выходной поток, а не только
       совершает побочный эффект.
 
     Контракт:
-    - :meth:`stream` — лениво; если стадия внутри делает
-      ``for item in stream`` и отдаёт одну-в-одну, стоит подумать,
-      не :class:`Converter` ли это вообще;
-    - ``StateFull`` — допустимо состояние между элементами входа
+    - stream — лениво; если стадия внутри делает
+      for item in stream и отдаёт одну-в-одну, стоит подумать,
+      не Converter ли это вообще;
+    - StateFull — допустимо состояние между элементами входа
       (буфер для склейки дельт, флаги «первое появление»);
-      :meth:`reset` сбрасывает его.
+      reset сбрасывает его.
 
     Когда использовать:
     - ленивый декодер/кодек (OpenAI chunks → AgentEvent);
     - стадия, агрегирующая/разворачивающая поток и производящая
       производные события;
-    - fan-out нескольких трансформеров на один вход с одним ``ctx`` —
-      :class:`StreamTransformerPipeline`.
+    - fan-out нескольких трансформеров на один вход с одним ctx —
+      StreamTransformerPipeline.
     """
 
     @abstractmethod
@@ -326,8 +326,8 @@ class Matcher(ABC, Generic[TQuery, TValue]):
     """
     Находит кандидатов в пуле по запросу.
 
-    Чистая функция ``(query, pool) → candidates``. Не имеет состояния,
-    не знает о хранилище — работает над любым ``Iterable[TValue]``.
+    Чистая функция (query, pool) → candidates. Не имеет состояния,
+    не знает о хранилище — работает над любым Iterable[TValue].
     Применяется там, где «поиск» разделён с «хранением» и «ранжированием»:
     matcher фильтрует, ранкер упорядочивает, резолвер композирует.
     """
@@ -362,9 +362,9 @@ class FactoryMethod(ABC, Generic[TOut]):
 
     Когда НЕ использовать:
     - если сборка распадается на независимые стадии, которые удобно
-      регистрировать/снимать по отдельности — см. :class:`FoldFactory`.
+      регистрировать/снимать по отдельности — см. FoldFactory.
     - если для сборки нужен внешний контекст, известный только в момент
-      вызова — см. :class:`ContextFactoryMethod`.
+      вызова — см. ContextFactoryMethod.
     """
 
     @abstractmethod
@@ -375,8 +375,8 @@ class ContextFactoryMethod(ABC, Generic[TCtx, TOut]):
     """
     Factory, которому для сборки нужен контекст вызова.
 
-    Отличается от :class:`FactoryMethod` ровно одним: :meth:`build`
-    принимает ``ctx: TCtx``. Ответ может меняться от вызова к вызову
+    Отличается от FactoryMethod ровно одним: build
+    принимает ctx: TCtx. Ответ может меняться от вызова к вызову
     даже при одинаково сконфигурированной фабрике, потому что зависит
     от состояния, известного только в момент запроса.
 
@@ -387,12 +387,12 @@ class ContextFactoryMethod(ABC, Generic[TCtx, TOut]):
       статическая сборка (например, snapshot для одного LLM-вызова,
       per-request конфиг, запрос к внешнему API по параметрам ctx);
     - фабрика сама не держит изменяющиеся данные — они приходят снаружи
-      через ``ctx``; это делает её stateless по отношению к бизнес-контексту.
+      через ctx; это делает её stateless по отношению к бизнес-контексту.
 
     Когда НЕ использовать:
-    - если для сборки не нужен внешний контекст — см. :class:`FactoryMethod`;
+    - если для сборки не нужен внешний контекст — см. FactoryMethod;
     - если сборка распадается на независимые стадии — см.
-      :class:`FoldFactory` (статический) или будущий ``ContextFoldFactory``.
+      FoldFactory (статический) или будущий ContextFoldFactory.
     """
 
     @abstractmethod
@@ -401,22 +401,22 @@ class ContextFactoryMethod(ABC, Generic[TCtx, TOut]):
 
 class PrioritySource(ABC, Generic[TId, TState]):
     """
-    Одна стадия сборки для :class:`FoldFactory`.
+    Одна стадия сборки для FoldFactory.
 
     Reducer — это чистое преобразование состояния:
 
         state_n ──[ apply(state) ]──▶ state_{n+1}
 
     Каждый reducer:
-    - имеет уникальный :meth:`id` — по нему его можно зарегистрировать
+    - имеет уникальный id — по нему его можно зарегистрировать
       или снять с регистрации в фабрике;
-    - имеет :meth:`priority` — определяет порядок применения
+    - имеет priority — определяет порядок применения
       (меньше число — раньше выполнение);
-    - в :meth:`apply` получает текущее состояние и возвращает новое.
+    - в apply получает текущее состояние и возвращает новое.
 
     Логика одного reducer'а должна быть изолированной: он не знает
     ни о других стадиях, ни о финальном результате сборки. Для стадий,
-    которым нужен внешний контекст — см. :class:`ContextPrioritySource`.
+    которым нужен внешний контекст — см. ContextPrioritySource.
     """
 
     @abstractmethod
@@ -434,15 +434,15 @@ class FoldFactory(
     Generic[TId, TState, TOut],
 ):
     """
-    :class:`FactoryMethod`, собирающий объект через последовательность
+    FactoryMethod, собирающий объект через последовательность
     стадий (fold).
 
-    В отличие от обычного :class:`FactoryMethod`, здесь сборка разбита на
-    независимые :class:`PrioritySource`-ы, которые регистрируются
+    В отличие от обычного FactoryMethod, здесь сборка разбита на
+    независимые PrioritySource-ы, которые регистрируются
     отдельно и применяются в порядке приоритета. Это удобно, когда набор
     стадий зависит от конфигурации, плагинов или окружения.
 
-    Схема работы ``build()``::
+    Схема работы build()::
 
                       ┌──────────────┐
                       │   initial    │  начальное состояние
@@ -470,18 +470,18 @@ class FoldFactory(
                             out
 
     Контракт наследника:
-    - :meth:`initial`  — построить начальное состояние;
-    - :meth:`finalize` — превратить накопленное состояние в результат;
-    - стадии подключаются извне через :meth:`register` /
-      :meth:`unregister`.
+    - initial  — построить начальное состояние;
+    - finalize — превратить накопленное состояние в результат;
+    - стадии подключаются извне через register /
+      unregister.
 
     Гарантии:
-    - стадии применяются строго по возрастанию ``priority()``;
-    - повторный :meth:`register` с тем же ``id()`` заменяет предыдущий
+    - стадии применяются строго по возрастанию priority();
+    - повторный register с тем же id() заменяет предыдущий
       reducer — это официальный способ переопределить стадию.
 
     Для сборки, зависящей от внешнего контекста —
-    см. :class:`ContextFoldFactory`.
+    см. ContextFoldFactory.
     """
 
     def __init__(self) -> None:
@@ -517,26 +517,26 @@ class FoldFactory(
 
 class ContextPrioritySource(ABC, Generic[TCtx, TId, TState]):
     """
-    Context-aware reducer для :class:`ContextFoldFactory`.
+    Context-aware reducer для ContextFoldFactory.
 
-    Отличается от :class:`PrioritySource` ровно одним: :meth:`apply`
-    принимает ``ctx: TCtx``. Каждый reducer:
+    Отличается от PrioritySource ровно одним: apply
+    принимает ctx: TCtx. Каждый reducer:
 
-    - имеет уникальный :meth:`id` — по нему его можно зарегистрировать
+    - имеет уникальный id — по нему его можно зарегистрировать
       или снять с регистрации в фабрике;
-    - имеет :meth:`priority` — определяет порядок применения
+    - имеет priority — определяет порядок применения
       (меньше число — раньше выполнение);
-    - в :meth:`apply` получает текущее состояние И внешний контекст,
+    - в apply получает текущее состояние И внешний контекст,
       возвращает новое состояние.
 
     Когда использовать:
     - reducer зависит от per-call состояния (request_id, workspace,
       trigger того, почему собираемся в этот раз);
     - сам reducer остаётся stateless по отношению к бизнес-контексту —
-      данные приходят снаружи через ``ctx``.
+      данные приходят снаружи через ctx.
 
     Когда НЕ использовать:
-    - ``ctx`` не нужен — берите :class:`PrioritySource` (он легче
+    - ctx не нужен — берите PrioritySource (он легче
       и явно заявляет отсутствие зависимости).
     """
 
@@ -555,15 +555,15 @@ class ContextFoldFactory(
     Generic[TCtx, TId, TState, TOut],
 ):
     """
-    :class:`ContextFactoryMethod`, собирающий объект через
+    ContextFactoryMethod, собирающий объект через
     последовательность стадий (fold), которым нужен внешний контекст.
 
-    Симметричен :class:`FoldFactory`, но :meth:`initial`,
-    :meth:`finalize` и reducer'ы (:class:`ContextPrioritySource`)
-    принимают ``ctx: TCtx`` — всё, что зависит от per-call
+    Симметричен FoldFactory, но initial,
+    finalize и reducer'ы (ContextPrioritySource)
+    принимают ctx: TCtx — всё, что зависит от per-call
     состояния, прокидывается через него.
 
-    Схема работы ``build(ctx)``::
+    Схема работы build(ctx)::
 
                         ctx
                          │
@@ -589,18 +589,18 @@ class ContextFoldFactory(
                         out
 
     Контракт наследника:
-    - :meth:`initial`  — построить начальное состояние (ctx доступен,
+    - initial  — построить начальное состояние (ctx доступен,
       можно применить входные эффекты к внешним ресурсам);
-    - :meth:`finalize` — превратить накопленное состояние в результат;
-    - стадии подключаются извне через :meth:`register` /
-      :meth:`unregister`.
+    - finalize — превратить накопленное состояние в результат;
+    - стадии подключаются извне через register /
+      unregister.
 
     Гарантии:
-    - стадии применяются строго по возрастанию ``priority()``;
-    - повторный :meth:`register` с тем же ``id()`` заменяет предыдущий
+    - стадии применяются строго по возрастанию priority();
+    - повторный register с тем же id() заменяет предыдущий
       reducer — это официальный способ переопределить стадию.
 
-    Для context-free сборки — см. :class:`FoldFactory`.
+    Для context-free сборки — см. FoldFactory.
     """
 
     def __init__(self) -> None:
@@ -660,9 +660,9 @@ class Specification(ABC, Generic[TValue]):
     """
     Бизнес-правило как объект.
 
-    Проверяет, удовлетворяет ли кандидат условию через :meth:`check`.
-    Правила можно комбинировать через :meth:`and_` / :meth:`or_` /
-    :meth:`not_` — результат композиции тоже :class:`Specification`.
+    Проверяет, удовлетворяет ли кандидат условию через check.
+    Правила можно комбинировать через and_ / or_ /
+    not_ — результат композиции тоже Specification.
     """
 
     @abstractmethod
@@ -710,29 +710,29 @@ class _NotSpec(Specification[TValue]):
 
 class ExceptionSpecification(Specification[Exception]):
     """
-    Специализация :class:`Specification` для исключений.
+    Специализация Specification для исключений.
 
-    Отличается от базовой :class:`Specification` двумя вещами:
+    Отличается от базовой Specification двумя вещами:
 
     1. Работает как context manager — можно фильтровать исключения без
-       ручного ``try/except``, аналогично :func:`contextlib.suppress`,
-       но с произвольным предикатом через :meth:`check`::
+       ручного try/except, аналогично suppress,
+       но с произвольным предикатом через check::
 
            transient = IsInstance(TimeoutError, ConnectionError)
            with transient:
                do_request()  # Timeout/ConnectionError — подавляются
                              # остальные — пробрасываются дальше
 
-    2. Композиция :meth:`and_` / :meth:`or_` / :meth:`not_` сужает
-       результат до :class:`ExceptionSpecification`, поэтому собранную
-       цепочку тоже можно использовать в ``with``. Параметры при этом —
-       любая :class:`Specification[Exception]` (LSP-совместимая
-       контравариантность входа): можно скомпоновать ``ExceptionSpec``
-       с обычной ``Specification[Exception]``, результат всё равно
+    2. Композиция and_ / or_ / not_ сужает
+       результат до ExceptionSpecification, поэтому собранную
+       цепочку тоже можно использовать в with. Параметры при этом —
+       любая Specification[Exception] (LSP-совместимая
+       контравариантность входа): можно скомпоновать ExceptionSpec
+       с обычной Specification[Exception], результат всё равно
        пригоден как context manager.
 
-    ``BaseException`` (``KeyboardInterrupt``, ``SystemExit``) никогда не
-    подавляется — даже если :meth:`check` вернёт True.
+    BaseException (KeyboardInterrupt, SystemExit) никогда не
+    подавляется — даже если check вернёт True.
     """
 
     def and_(self, other: Specification[Exception]) -> ExceptionSpecification:
@@ -795,11 +795,11 @@ class _ExcNotSpec(ExceptionSpecification):
 
 
 class IsInstance(ExceptionSpecification):
-    """Проверка ``isinstance(exc, types)`` как :class:`ExceptionSpecification`.
+    """Проверка isinstance(exc, types) как ExceptionSpecification.
 
-    Мост между классическим ``except (A, B)`` и механизмом спецификаций.
-    Результат можно использовать и как предикат через :meth:`check`,
-    и как context manager через ``with``.
+    Мост между классическим except (A, B) и механизмом спецификаций.
+    Результат можно использовать и как предикат через check,
+    и как context manager через with.
 
     Пример::
 
@@ -817,13 +817,13 @@ class IsInstance(ExceptionSpecification):
 
 class StreamSourcePipeline(StreamSource[TCtx, TOut]):
     """
-    Sequential fan-out композиция :class:`StreamSource`-ов в единый поток.
+    Sequential fan-out композиция StreamSource-ов в единый поток.
 
     Стадии выполняются строго в порядке регистрации. Каждая стадия
-    получает общий ``ctx``; события всех стадий сливаются в выходной
+    получает общий ctx; события всех стадий сливаются в выходной
     поток по мере появления (lazy, без буферизации). Стадии независимы
     друг от друга — предыдущая не видит и не влияет на следующую
-    (в отличие от onion-цепочки из :class:`StreamSourceChainBuilder`).
+    (в отличие от onion-цепочки из StreamSourceChainBuilder).
 
     Схема::
 
@@ -846,25 +846,25 @@ class StreamSourcePipeline(StreamSource[TCtx, TOut]):
 
     Исключение в любой стадии прерывает весь pipeline и пробрасывается
     наружу с исходным traceback. Если нужна exception-tolerant стадия —
-    оберни её в собственный декоратор-стадию с локальным ``try/except``
-    или :class:`ExceptionSpecification` как context manager.
+    оберни её в собственный декоратор-стадию с локальным try/except
+    или ExceptionSpecification как context manager.
 
     Когда использовать:
     - несколько независимых источников событий нужно слить в один
-      поток на общем ``ctx`` (например, разные поставщики уведомлений);
+      поток на общем ctx (например, разные поставщики уведомлений);
     - стадии не должны оборачивать друг друга — у каждой свой
       самостоятельный жизненный цикл.
 
     Когда НЕ использовать:
     - стадии должны оборачивать следующую (middleware-цепочка) —
-      :class:`StreamSourceChainBuilder`;
+      StreamSourceChainBuilder;
     - первая успешная стадия должна останавливать остальные
       (fallback) — этот паттерн в Stream-семье не реализован;
       добавь точечно, когда возникнет реальная потребность.
 
-    :meth:`reset` сбрасывает состояние всех stateful-стадий;
-    :meth:`name` возвращает читабельное имя вида
-    ``SourcePipeline(a -> b -> c)``.
+    reset сбрасывает состояние всех stateful-стадий;
+    name возвращает читабельное имя вида
+    SourcePipeline(a -> b -> c).
     """
 
     def __init__(
@@ -895,7 +895,7 @@ class StreamSourcePipeline(StreamSource[TCtx, TOut]):
 
 class StreamSinkPipeline(StreamSink[TCtx, TIn]):
     """
-    Broadcast-композиция :class:`StreamSink`-ов над одним событием.
+    Broadcast-композиция StreamSink-ов над одним событием.
 
     Каждый sink получает одно и то же событие в порядке регистрации.
     Это «тройник»: одно событие разводится по нескольким независимым
@@ -921,8 +921,8 @@ class StreamSinkPipeline(StreamSink[TCtx, TIn]):
 
     Исключение в любом sink'е прерывает обработку события — оставшиеся
     sink'и его не получат. Если нужен exception-tolerant sink — оберни
-    его в локальный декоратор с ``try/except`` или
-    :class:`ExceptionSpecification` как context manager.
+    его в локальный декоратор с try/except или
+    ExceptionSpecification как context manager.
 
     Когда использовать:
     - одно событие нужно доставить в несколько независимых каналов;
@@ -932,12 +932,11 @@ class StreamSinkPipeline(StreamSink[TCtx, TIn]):
     - sink'и должны вложенно оборачивать друг друга (например,
       метрики вокруг журналирования) — это onion-паттерн, но в
       Stream-семье реализован только на уровне источников
-      (:class:`StreamSourceChainBuilder`); в sink-кейсе соберите
+      (StreamSourceChainBuilder); в sink-кейсе соберите
       middleware вручную.
 
-    :meth:`reset` сбрасывает состояние всех stateful-стадий (в том
-    числе буферы агрегации токенов); :meth:`name` — ``SinkPipeline(
-    a -> b -> c)``.
+    reset сбрасывает состояние всех stateful-стадий (в том
+    числе буферы агрегации токенов); name — SinkPipeline(a -> b -> c).
     """
 
     def __init__(
@@ -968,17 +967,17 @@ class StreamSinkPipeline(StreamSink[TCtx, TIn]):
 
 class StreamTransformerPipeline(StreamTransformer[TCtx, TIn, TOut]):
     """
-    Sequential fan-out композиция :class:`StreamTransformer`-ов над
+    Sequential fan-out композиция StreamTransformer-ов над
     одним входным потоком.
 
-    Каждая стадия получает общий ``ctx`` и один и тот же входной
-    ``stream``; события стадий сливаются в выходной поток по мере
+    Каждая стадия получает общий ctx и один и тот же входной
+    stream; события стадий сливаются в выходной поток по мере
     появления. Стадии выполняются в порядке регистрации и независимы
     друг от друга.
 
     Типовой кейс — один входной поток дельт декодируется несколькими
-    специализированными извлекателями (``RoleSource`` + ``AnswerSource``
-    + ``ToolCallSource``), каждый из которых смотрит на «свою» часть
+    специализированными извлекателями (RoleSource + AnswerSource
+    + ToolCallSource), каждый из которых смотрит на «свою» часть
     события.
 
     Схема::
@@ -1000,19 +999,19 @@ class StreamTransformerPipeline(StreamTransformer[TCtx, TIn, TOut]):
               │ xformₙ │──▶ eventsₙ ┘
               └────────┘
 
-    **Важно**: входной ``stream`` должен быть re-iterable (list,
+    **Важно**: входной stream должен быть re-iterable (list,
     tuple, pydantic-поле). Pipeline НЕ материализует поток и передаёт
     один и тот же объект каждой стадии — если передать generator,
     вторая стадия увидит пустую последовательность. Это осознанный
     выбор: материализация в list «съела» бы ленивость там, где она не
-    нужна, а дубликат через ``itertools.tee`` потребовал бы решений о
+    нужна, а дубликат через itertools.tee потребовал бы решений о
     размере буфера и семантике отмены. Ответственность — на
     вызывающем коде.
 
     Исключение в любой стадии прерывает весь pipeline и пробрасывается
     наружу с исходным traceback. Если нужна exception-tolerant стадия —
-    оберни её в собственный декоратор-стадию с локальным ``try/except``
-    или :class:`ExceptionSpecification` как context manager.
+    оберни её в собственный декоратор-стадию с локальным try/except
+    или ExceptionSpecification как context manager.
 
     Когда использовать:
     - один входной поток нужно разложить на несколько производных
@@ -1023,12 +1022,12 @@ class StreamTransformerPipeline(StreamTransformer[TCtx, TIn, TOut]):
     Когда НЕ использовать:
     - стадии выстраиваются в pipeline «выход одной → вход следующей»
       (это обычная функциональная композиция, соберите её вручную
-      через вложенные ``stream()``);
+      через вложенные stream());
     - нужен fallback (первая успешная выигрывает) — этого в
       Stream-семье нет.
 
-    :meth:`reset` сбрасывает состояние всех stateful-стадий;
-    :meth:`name` — ``TransformerPipeline(a -> b -> c)``.
+    reset сбрасывает состояние всех stateful-стадий;
+    name — TransformerPipeline(a -> b -> c).
     """
 
     def __init__(
@@ -1058,17 +1057,17 @@ class StreamTransformerPipeline(StreamTransformer[TCtx, TIn, TOut]):
 
 
 class StreamTransformerChain(StreamTransformer[TCtx, TIn, TIn]):
-    """Chain-композиция :class:`StreamTransformer`-ов одного типа
-    (``TIn → TIn``): выход предыдущей стадии — вход следующей.
+    """Chain-композиция StreamTransformer-ов одного типа
+    (TIn → TIn): выход предыдущей стадии — вход следующей.
 
-    Симметричен :class:`StreamTransformerPipeline` (fan-out), но
+    Симметричен StreamTransformerPipeline (fan-out), но
     решает противоположную задачу — последовательное преобразование
     потока без fan-out эффекта. Тип элемента сохраняется на всех
-    стадиях (чтобы цепочка типизировалась как один ``StreamTransformer``).
+    стадиях (чтобы цепочка типизировалась как один StreamTransformer).
 
     Типовой кейс — цепочка нормализаторов/фильтров/реиндексеров
     перед основной обработкой: например, исправление кривых дельт
-    провайдера LLM (``Choice → Choice``) перед fan-out pipeline в
+    провайдера LLM (Choice → Choice) перед fan-out pipeline в
     события.
 
     Схема::
@@ -1089,25 +1088,25 @@ class StreamTransformerChain(StreamTransformer[TCtx, TIn, TIn]):
                                ▼
                          Iterable[TIn]
 
-    Пустая цепочка (``stages=()``) работает как identity —
+    Пустая цепочка (stages=()) работает как identity —
     передаёт входной поток без изменений. Полезно как default.
 
     Исключение в любой стадии прерывает цепочку и пробрасывается
     наружу с исходным traceback.
 
     Когда использовать:
-    - несколько stateful-трансформеров типа ``T → T`` надо склеить
+    - несколько stateful-трансформеров типа T → T надо склеить
       в один объект (например, чтобы передать одним параметром);
     - нужна композиция по принципу "выход одной = вход следующей".
 
     Когда НЕ использовать:
     - стадии имеют разные in/out типы — собирайте вручную через
-      вложенные ``stream()``;
+      вложенные stream();
     - стадии независимы и должны видеть один и тот же входной
-      поток — используйте :class:`StreamTransformerPipeline`.
+      поток — используйте StreamTransformerPipeline.
 
-    :meth:`reset` сбрасывает состояние всех стадий каскадно;
-    :meth:`name` — ``TransformerChain(a -> b -> c)``.
+    reset сбрасывает состояние всех стадий каскадно;
+    name — TransformerChain(a -> b -> c).
     """
 
     def __init__(
@@ -1141,19 +1140,19 @@ class StreamTransformerChain(StreamTransformer[TCtx, TIn, TIn]):
 
 class StreamSourceLoop(StreamSource[TCtx, TOut]):
     """
-    Циклический запуск :class:`StreamSource` до срабатывания условия
+    Циклический запуск StreamSource до срабатывания условия
     остановки.
 
     Оборачивает один источник и крутит его в бесконечном цикле: когда
     источник исчерпал свой поток, он вызывается снова на том же
-    ``ctx`` — и так до тех пор, пока очередное событие не удовлетворит
-    спецификации остановки ``stop_if``. Проверка выполняется после
+    ctx — и так до тех пор, пока очередное событие не удовлетворит
+    спецификации остановки stop_if. Проверка выполняется после
     каждого yield'а, поэтому «финальное» событие гарантированно
     попадает в выходной поток — снаружи видно, на чём цикл
     остановился.
 
     Типовой кейс — агентский цикл: источник представляет одну
-    итерацию «запрос в LLM + обработка tool_calls»; ``stop_if``
+    итерацию «запрос в LLM + обработка tool_calls»; stop_if
     срабатывает, когда LLM выдала финальный ответ (без tool_calls)
     или исчерпан лимит итераций.
 
@@ -1176,17 +1175,17 @@ class StreamSourceLoop(StreamSource[TCtx, TOut]):
                                                  STOP
 
     Контракт:
-    - ``stop_if`` получает пару ``(ctx, event)`` и должен быть чистой
+    - stop_if получает пару (ctx, event) и должен быть чистой
       проверкой без побочных эффектов;
-    - проверка выполняется ПОСЛЕ ``yield``, так что «стоп-событие»
+    - проверка выполняется ПОСЛЕ yield, так что «стоп-событие»
       всегда доставляется наружу (вызывающий видит, что его привело
       к остановке);
     - если источник всегда пуст, а условие никогда не срабатывает,
       цикл крутится вхолостую — ответственность за достижимость
       остановки лежит на вызывающем коде (обычно достаточно
       добавить страховочную спецификацию (например, реагирующую на
-      ``MaxIterationsReached``) в композицию через
-      :meth:`Specification.or_`).
+      MaxIterationsReached) в композицию через
+      or_).
 
     Когда использовать:
     - агентский цикл «пока не получим финальный ответ»;
@@ -1222,20 +1221,20 @@ class StreamSourceLoop(StreamSource[TCtx, TOut]):
 
 class StreamSourceChainBuilder(Generic[TCtx, TOut]):
     """
-    Билдер onion-цепочки :class:`StreamSource`-middleware поверх
+    Билдер onion-цепочки StreamSource-middleware поверх
     обязательного терминала, по образцу web-фреймворков (ASP.NET Core
-    ``UseX().Run()``, Rack ``Rack::Builder``).
+    UseX().Run(), Rack Rack::Builder).
 
     Две стадии API:
 
-    - :meth:`use` регистрирует middleware-factory. Factory получает
-      текущий inner ``StreamSource`` и возвращает новый
-      ``StreamSource``, который его оборачивает. Порядок регистрации =
-      порядок выполнения на «пути запроса»: первое ``use()`` — самый
+    - use регистрирует middleware-factory. Factory получает
+      текущий inner StreamSource и возвращает новый
+      StreamSource, который его оборачивает. Порядок регистрации =
+      порядок выполнения на «пути запроса»: первое use() — самый
       внешний слой, ближайший ко входу. Последнее — ближайшее к
       терминалу.
 
-    - :meth:`terminal` принимает терминальный ``StreamSource`` (тот,
+    - terminal принимает терминальный StreamSource (тот,
       что не делегирует дальше) и собирает финальную цепочку,
       оборачивая терминал факториями в обратном порядке регистрации.
       Терминал — **обязательный** аргумент: забыть его нельзя, без
@@ -1265,15 +1264,15 @@ class StreamSourceChainBuilder(Generic[TCtx, TOut]):
 
     Поведение:
     - каждая middleware решает сама, что делать с inner: вызвать
-      ``inner.stream(ctx)`` и пересылать события (прозрачная обёртка),
+      inner.stream(ctx) и пересылать события (прозрачная обёртка),
       отфильтровать/обогатить события, пропустить inner целиком
       (short-circuit), обернуть вызов в try/except (retry), замерить
       время и т.п.;
-    - ``ctx`` общий по всей цепочке — middleware'ы согласовываются
-      через мутации ``ctx`` (``ctx.llm_builder.system_prompt`` и
+    - ctx общий по всей цепочке — middleware'ы согласовываются
+      через мутации ctx (ctx.llm_builder.system_prompt и
       т.п.), а не через события.
 
-    Применимость: любые onion-composable :class:`StreamSource`.
+    Применимость: любые onion-composable StreamSource.
     Агентские middleware — лишь один из случаев; тот же паттерн
     уместен для HTTP-клиентов, таск-раннеров, пайплайнов обработки
     сообщений.
@@ -1286,7 +1285,7 @@ class StreamSourceChainBuilder(Generic[TCtx, TOut]):
 
     Когда НЕ использовать:
     - стадии независимы и их события нужно просто слить —
-      :class:`StreamSourcePipeline` (sequential fan-out).
+      StreamSourcePipeline (sequential fan-out).
     """
 
     def __init__(self) -> None:
@@ -1300,17 +1299,17 @@ class StreamSourceChainBuilder(Generic[TCtx, TOut]):
     ) -> Self:
         """Зарегистрировать middleware-factory.
 
-        Factory — любая callable, принимающая ``inner: StreamSource`` и
-        возвращающая обёрнутый ``StreamSource``. Это может быть конструктор
-        middleware-класса (``SomeMiddleware``) или лямбда с захваченными
-        зависимостями (``lambda inner: SomeMiddleware(inner, dep1, dep2)``).
+        Factory — любая callable, принимающая inner: StreamSource и
+        возвращающая обёрнутый StreamSource. Это может быть конструктор
+        middleware-класса (SomeMiddleware) или лямбда с захваченными
+        зависимостями (lambda inner: SomeMiddleware(inner, dep1, dep2)).
         """
         self._factories.append(factory)
         return self
 
     def terminal(self, terminal: StreamSource[TCtx, TOut]) -> StreamSource[TCtx, TOut]:
-        """Собрать цепочку, обернув ``terminal`` зарегистрированными
-        middleware в обратном порядке. Возвращает внешний ``StreamSource``,
+        """Собрать цепочку, обернув terminal зарегистрированными
+        middleware в обратном порядке. Возвращает внешний StreamSource,
         готовый к использованию."""
         chain = terminal
         for factory in reversed(self._factories):
@@ -1322,10 +1321,10 @@ class FirstMatchDispatcher(Generic[TIn, TOut]):
     """
     Callable-диспетчер «первое совпадение + fallback».
 
-    Экземпляр — callable ``TIn → TOut``. При вызове пробегает маршруты
+    Экземпляр — callable TIn → TOut. При вызове пробегает маршруты
     в порядке регистрации: первый, у которого предикат сработал, строит
-    результат через ``route`` — цикл **прерывается**. Если ни один
-    предикат не совпал — отрабатывает ``fallback_route``.
+    результат через route — цикл **прерывается**. Если ни один
+    предикат не совпал — отрабатывает fallback_route.
 
     Схема::
 
@@ -1351,42 +1350,42 @@ class FirstMatchDispatcher(Generic[TIn, TOut]):
 
     Использование:
 
-    - как есть — везде, где ожидается ``Callable[[TIn], TOut]``;
-      маршрут можно передать как ``route`` или ``fallback_route`` другого
+    - как есть — везде, где ожидается Callable[[TIn], TOut];
+      маршрут можно передать как route или fallback_route другого
       диспетчера (иерархические правила);
-    - как бэкэнд :class:`FirstMatchConverter` — доменный ``Converter``
-      делегирует ``convert`` в ``self._dispatch(value)``;
-    - для :class:`Executor`-варианта — обёртка вызывает
-      ``self._dispatch((ctx, req))``, спецификации работают над
-      ``tuple[TCtx, TIn]``.
+    - как бэкэнд FirstMatchConverter — доменный Converter
+      делегирует convert в self._dispatch(value);
+    - для Executor-варианта — обёртка вызывает
+      self._dispatch((ctx, req)), спецификации работают над
+      tuple[TCtx, TIn].
 
     Когда использовать:
 
     - выбор не сводится к одному ключу: составные/пересекающиеся
-      предикаты (``IsInstance(BadRequestError).and_(
-      IsContextLengthError())``), порядок правил важен;
-    - нужен явный ``fallback_route`` на случай, когда ничего не
+      предикаты (IsInstance(BadRequestError).and_(IsContextLengthError())),
+      порядок правил важен;
+    - нужен явный fallback_route на случай, когда ничего не
       совпало. Если «не совпало» — это инвариант-нарушение,
-      передай ``fallback_route`` вида ``lambda v: raise ...``.
+      передай fallback_route вида lambda v: raise ....
 
-    Для тривиальной маршрутизации по уникальному ключу (``msg.role``,
-    ``tool_id``) встраивай lookup прямо в доменный сервис через
+    Для тривиальной маршрутизации по уникальному ключу (msg.role,
+    tool_id) встраивай lookup прямо в доменный сервис через
     dict/каталог — O(1) и без ceremony.
 
     Контракт:
 
-    - порядок ``routes`` = приоритет: более специфичные маршруты должны
+    - порядок routes = приоритет: более специфичные маршруты должны
       идти раньше более общих (подклассы раньше родителей и т.п.);
     - маршруты не обязаны покрывать всё пространство входов — для того
-      и ``fallback_route``.
+      и fallback_route.
 
-    Сравнение с «братьями» (той же формы ``Sequence[(Spec, route)]``,
+    Сравнение с «братьями» (той же формы Sequence[(Spec, route)],
     но разной логикой цикла):
 
-    - :class:`AllMatchesDispatcher` — не прерывается, собирает
-      результаты всех совпавших правил в ``list``;
-    - :class:`FoldingDispatcher` — прокатывает значение через все
-      совпавшие трансформы последовательно (``TValue → TValue``).
+    - AllMatchesDispatcher — не прерывается, собирает
+      результаты всех совпавших правил в list;
+    - FoldingDispatcher — прокатывает значение через все
+      совпавшие трансформы последовательно (TValue → TValue).
     """
 
     def __init__(
@@ -1408,15 +1407,15 @@ class AllMatchesDispatcher(Generic[TIn, TOut]):
     """
     Callable-диспетчер «все совпавшие правила → поток результатов».
 
-    Экземпляр — callable ``TIn → Iterator[TOut]``. Проходит по ВСЕМ
+    Экземпляр — callable TIn → Iterator[TOut]. Проходит по ВСЕМ
     маршрутам лениво: для каждого маршрута, чей предикат совпал,
-    ``yield`` даёт результат ``route(value)`` — до следующей итерации
+    yield даёт результат route(value) — до следующей итерации
     потребителя следующие правила не проверяются. Пустой поток = ничего
-    не совпало; отдельного ``fallback`` нет, «ничего не совпало»
+    не совпало; отдельного fallback нет, «ничего не совпало»
     трактуется как валидный пустой ответ.
 
     Если нужен материализованный список — потребитель делает это сам:
-    ``list(dispatcher(value))``.
+    list(dispatcher(value)).
 
     Схема::
 
@@ -1446,8 +1445,8 @@ class AllMatchesDispatcher(Generic[TIn, TOut]):
 
     Контракт:
 
-    - ``routes`` проверяются по мере потребления — предикаты и
-      ``route`` не должны иметь побочных эффектов, на которые
+    - routes проверяются по мере потребления — предикаты и
+      route не должны иметь побочных эффектов, на которые
       завязана логика;
     - результаты идут в порядке регистрации правил;
     - генератор одноразовый; для повторного прохода вызови dispatcher
@@ -1470,16 +1469,16 @@ class FoldingDispatcher(Generic[TValue]):
     """
     Callable-диспетчер «условная цепочка трансформаций» (fold).
 
-    Экземпляр — callable ``TValue → TValue``. При вызове прокатывает
+    Экземпляр — callable TValue → TValue. При вызове прокатывает
     значение через ВСЕ маршруты по очереди. Для каждого маршрута:
-    если предикат совпал — применяется ``transform``, его результат
+    если предикат совпал — применяется transform, его результат
     становится новым значением для следующего маршрута. Если не
     совпал — значение проходит как есть. Цикл не прерывается.
 
-    Важно: сигнатура **мономорфная** (``TValue`` на вход и выход),
+    Важно: сигнатура **мономорфная** (TValue на вход и выход),
     потому что промежуточный результат передаётся следующему шагу.
     Для разнотипных стадий это не подходит — см.
-    :class:`FirstMatchDispatcher`.
+    FirstMatchDispatcher.
 
     Схема::
 
@@ -1505,7 +1504,7 @@ class FoldingDispatcher(Generic[TValue]):
 
     Использование:
 
-    - условные нормализации: ``trim`` / ``unescape`` / ``lowercase``,
+    - условные нормализации: trim / unescape / lowercase,
       применяемые только если соответствующие предикаты совпали;
     - каскадное обогащение объекта доп. данными от нескольких
       источников;
@@ -1513,7 +1512,7 @@ class FoldingDispatcher(Generic[TValue]):
 
     Контракт:
 
-    - ``transform`` обязана возвращать значение того же типа ``TValue``
+    - transform обязана возвращать значение того же типа TValue
       (мономорфный fold);
     - предикаты вычисляются над **текущим** значением на момент шага
       — после предыдущих трансформ; порядок правил критичен.
@@ -1534,25 +1533,25 @@ class FoldingDispatcher(Generic[TValue]):
 
 class FirstMatchConverter(Converter[TIn, TOut], Generic[TIn, TOut]):
     """
-    :class:`Converter`-адаптер над :class:`FirstMatchDispatcher`.
+    Converter-адаптер над FirstMatchDispatcher.
 
-    Тонкая протокольная обёртка: принимает те же ``routes`` и
-    ``fallback_route``, что и :class:`FirstMatchDispatcher`, и
-    делегирует ``convert`` в его ``__call__``. Нужна там, где
-    ожидается именно ``Converter[TIn, TOut]`` (доменные порты,
+    Тонкая протокольная обёртка: принимает те же routes и
+    fallback_route, что и FirstMatchDispatcher, и
+    делегирует convert в его __call__. Нужна там, где
+    ожидается именно Converter[TIn, TOut] (доменные порты,
     сериализаторы, тесты с моками converter'ов).
 
     Типовые применения:
 
     - классификация «сырых» исключений адаптера в доменные
-      (``openai.BadRequestError`` + ``context_length_exceeded`` →
-      ``LLMContextLengthError``);
-    - нормализация ``finish_reason`` разных провайдеров в единый enum;
+      (openai.BadRequestError + context_length_exceeded →
+      LLMContextLengthError);
+    - нормализация finish_reason разных провайдеров в единый enum;
     - валидация входных параметров tool'ов (правило → сообщение об
       ошибке).
 
-    Converter-адаптеры для :class:`AllMatchesDispatcher` и
-    :class:`FoldingDispatcher` не заведены — добавить тривиально,
+    Converter-адаптеры для AllMatchesDispatcher и
+    FoldingDispatcher не заведены — добавить тривиально,
     когда появится реальный клиент.
     """
 

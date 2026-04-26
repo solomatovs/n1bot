@@ -1,20 +1,20 @@
-"""Базовые runtime-:class:`Converter`-ы общего назначения.
+"""Базовые runtime-Converter-ы общего назначения.
 
 Единая абстракция «валидация / трансформация значения» — это
-:class:`~boba.domain.core.patterns.Converter`. Identity-проверки
-(``OneOf``, ``MinValue``, ``NonEmpty``) — degenerate-конвертеры с
-``TIn == TOut``. Type-narrowing (``ParseInt``, ``IsString``) — обычные
-:class:`Converter[A, B]`. Default/Required работают с :data:`MISSING`-
+Converter. Identity-проверки
+(OneOf, MinValue, NonEmpty) — degenerate-конвертеры с
+TIn == TOut. Type-narrowing (ParseInt, IsString) — обычные
+Converter[A, B]. Default/Required работают с MISSING-
 сентинелом на входе.
 
-Контракт ошибок: любой реализующий ``convert`` бросает только
-:class:`~boba.domain.core.patterns.ConverterInputError` для семантических
+Контракт ошибок: любой реализующий convert бросает только
+ConverterInputError для семантических
 отказов (значение не подошло) и
-:class:`~boba.domain.core.patterns.ConverterOutputError` для багов
-реализации. Никаких голых ``ValueError``/``TypeError`` наружу.
+ConverterOutputError для багов
+реализации. Никаких голых ValueError/TypeError наружу.
 
-Валидаторы, чьё правило выражается в wire-схеме (``type``, ``enum``,
-``default``, ``required``), реализуют :class:`SchemaContributor` —
+Валидаторы, чьё правило выражается в wire-схеме (type, enum,
+default, required), реализуют SchemaContributor —
 единый источник правды для runtime-проверки и описания внешнему
 потребителю.
 """
@@ -68,8 +68,8 @@ T = TypeVar("T")
 class _MissingType:
     """Sentinel-тип для значения «значения не было».
 
-    Singleton; единственный инстанс — :data:`MISSING`. Отличает «ключа
-    не было в источнике» от «ключ был, но значение ``None``».
+    Singleton; единственный инстанс — MISSING. Отличает «ключа
+    не было в источнике» от «ключ был, но значение None».
     """
 
     _instance: ClassVar[_MissingType | None] = None
@@ -97,9 +97,9 @@ MISSING: Final = _MissingType()
 class Pass(Converter[Any, Any]):
     """No-op конвертер: возвращает значение как есть, всегда успех.
 
-    Используется как явный «без правил» вместо ``None`` в местах, где
-    :class:`Converter` обязателен по контракту (например,
-    :attr:`~boba.domain.core.tools.schema.ToolInputSchema.invariants`).
+    Используется как явный «без правил» вместо None в местах, где
+    Converter обязателен по контракту (например,
+    invariants).
     """
 
     def convert(self, value: Any) -> Any:
@@ -114,12 +114,12 @@ class ChainConverter(Converter[Any, T], SchemaContributor, Generic[T]):
     pyright статически не доказывает корректность связки шагов — это
     осознанный компромисс (как в Pydantic-like pipeline'ах).
 
-    Первое падение прерывает цепочку. ``contribute`` делегируется всем
-    участникам, реализующим :class:`SchemaContributor`. Порядок
+    Первое падение прерывает цепочку. contribute делегируется всем
+    участникам, реализующим SchemaContributor. Порядок
     регистрации = порядок применения и к значению, и к схеме (последний
     может переопределить поле, заданное предыдущим).
 
-    Пустая цепочка (``ChainConverter()``) — no-op-identity: пропускает
+    Пустая цепочка (ChainConverter()) — no-op-identity: пропускает
     любое значение, ничего не вкладывает в схему.
     """
 
@@ -143,9 +143,9 @@ class ChainConverter(Converter[Any, T], SchemaContributor, Generic[T]):
 
 
 class Required(Converter[Any, Any], SchemaContributor):
-    """Параметр обязателен. Бросает на :data:`MISSING` и на ``None``.
+    """Параметр обязателен. Бросает на MISSING и на None.
 
-    Помечает параметр как ``required`` в wire-схеме.
+    Помечает параметр как required в wire-схеме.
     """
 
     def convert(self, value: Any) -> Any:
@@ -162,9 +162,9 @@ class Required(Converter[Any, Any], SchemaContributor):
 
 
 class Default(Converter[Any, Any], SchemaContributor):
-    """Подставить значение по умолчанию, если пришло :data:`MISSING`.
+    """Подставить значение по умолчанию, если пришло MISSING.
 
-    На ``None`` не реагирует — это явное «нет значения», не пропуск.
+    На None не реагирует — это явное «нет значения», не пропуск.
     Помечает default в wire-схеме.
     """
 
@@ -181,15 +181,15 @@ class Default(Converter[Any, Any], SchemaContributor):
 
 
 class Nullable(Converter[Any, Any], SchemaContributor):
-    """Wrapper: при ``MISSING``/``None`` на входе — возвращает ``None``,
+    """Wrapper: при MISSING/None на входе — возвращает None,
     иначе делегирует во внутренний конвертер.
 
-    Удобно для конфиг-полей с типом ``T | None``: чейн вида
-    ``ChainConverter(Default(None), ParseX())`` ломался бы тем, что после
-    ``Default(None)`` ``ParseX`` получает ``None`` и пытается его
-    привести к ``T`` (для ``ParseString`` это ``str(None) == "None"``).
-    ``Nullable(ParseX())`` разрывает цепочку на null и сразу возвращает
-    ``None``, в остальных случаях прогоняя значение через ``ParseX``.
+    Удобно для конфиг-полей с типом T | None: чейн вида
+    ChainConverter(Default(None), ParseX()) ломался бы тем, что после
+    Default(None) ParseX получает None и пытается его
+    привести к T (для ParseString это str(None) == "None").
+    Nullable(ParseX()) разрывает цепочку на null и сразу возвращает
+    None, в остальных случаях прогоняя значение через ParseX.
 
     Контракт wire-схемы: делегируется внутреннему конвертеру; реализации,
     которым важно отметить «nullable» отдельно, могут добавить метку
@@ -210,13 +210,13 @@ class Nullable(Converter[Any, Any], SchemaContributor):
 
 
 class ValueConverter(Converter[Any, Any]):
-    """База тип-конвертеров: пропускают :data:`MISSING` без проверки.
+    """База тип-конвертеров: пропускают MISSING без проверки.
 
-    Полезно, когда параметр опциональный и :class:`Required`/:class:`Default`
-    в цепочке нет — значит ``MISSING`` должен дойти до оркестратора как
+    Полезно, когда параметр опциональный и Required/Default
+    в цепочке нет — значит MISSING должен дойти до оркестратора как
     «значения нет», а не упасть на проверке типа.
 
-    Наследник реализует :meth:`_convert_value` для не-MISSING случая.
+    Наследник реализует _convert_value для не-MISSING случая.
     """
 
     def convert(self, value: Any) -> Any:
@@ -234,14 +234,14 @@ class ValueConverter(Converter[Any, Any]):
 
 
 class ParseString(ValueConverter, SchemaContributor):
-    """Привести любое значение к ``str`` через ``str(value)``.
+    """Привести любое значение к str через str(value).
 
-    Принимает уже-``str`` без изменений; иначе — `str(value)`. Это
+    Принимает уже-str без изменений; иначе — `str(value)`. Это
     lenient-вариант для конфига (env-источник вообще даёт только str).
-    Для строгой проверки «должно быть именно ``str``» — используй
-    :class:`~boba.domain.core.tools.validators.IsString`.
+    Для строгой проверки «должно быть именно str» — используй
+    IsString.
 
-    В wire-схеме: ``type: string``.
+    В wire-схеме: type: string.
     """
 
     def _convert_value(self, value: Any) -> str:
@@ -254,13 +254,13 @@ class ParseString(ValueConverter, SchemaContributor):
 
 
 class ParseInt(ValueConverter, SchemaContributor):
-    """Привести значение к ``int``.
+    """Привести значение к int.
 
-    Принимает ``int`` (но не ``bool`` — это семантически другой тип),
-    парсит ``str`` через ``int(value.strip())``. На остальных типах
+    Принимает int (но не bool — это семантически другой тип),
+    парсит str через int(value.strip()). На остальных типах
     бросает.
 
-    В wire-схеме: ``type: integer``.
+    В wire-схеме: type: integer.
     """
 
     def _convert_value(self, value: Any) -> int:
@@ -284,12 +284,12 @@ class ParseInt(ValueConverter, SchemaContributor):
 
 
 class ParseFloat(ValueConverter, SchemaContributor):
-    """Привести значение к ``float``.
+    """Привести значение к float.
 
-    Принимает ``int``/``float`` (но не ``bool``), парсит ``str`` через
-    ``float(value.strip())``.
+    Принимает int/float (но не bool), парсит str через
+    float(value.strip()).
 
-    В wire-схеме: ``type: number``.
+    В wire-схеме: type: number.
     """
 
     def _convert_value(self, value: Any) -> float:
@@ -313,13 +313,13 @@ class ParseFloat(ValueConverter, SchemaContributor):
 
 
 class ParseBool(ValueConverter, SchemaContributor):
-    """Привести значение к ``bool``.
+    """Привести значение к bool.
 
-    Принимает ``bool`` без изменений, парсит ``str`` по словарю
-    (``true``/``1``/``yes``/``on`` → True; ``false``/``0``/``no``/``off``
+    Принимает bool без изменений, парсит str по словарю
+    (true/1/yes/on → True; false/0/no/off
     → False, регистр не важен).
 
-    В wire-схеме: ``type: boolean``.
+    В wire-схеме: type: boolean.
     """
 
     _TRUE: ClassVar[frozenset[str]] = frozenset({"true", "1", "yes", "on"})
@@ -344,12 +344,12 @@ class ParseBool(ValueConverter, SchemaContributor):
 
 
 class ParseCsvList(ValueConverter, SchemaContributor):
-    """Привести значение к ``list[str]``.
+    """Привести значение к list[str].
 
-    ``list`` — как есть (с пустыми/None отброшенными), ``str`` — split
+    list — как есть (с пустыми/None отброшенными), str — split
     по запятой с обрезкой пробелов.
 
-    В wire-схеме: ``type: array`` (с ``items: {type: string}``).
+    В wire-схеме: type: array (с items: {type: string}).
     """
 
     def _convert_value(self, value: Any) -> list[str]:
@@ -374,7 +374,7 @@ class ParseCsvList(ValueConverter, SchemaContributor):
 
 
 class OneOf(Converter[Any, Any], SchemaContributor):
-    """Значение должно быть в фиксированном наборе. В wire-схеме: ``enum``."""
+    """Значение должно быть в фиксированном наборе. В wire-схеме: enum."""
 
     _MIN_OPTIONS: ClassVar[int] = 1
 
@@ -395,7 +395,7 @@ class OneOf(Converter[Any, Any], SchemaContributor):
 
 
 class MinValue(Converter[Any, Any]):
-    """Значение >= ``threshold``. Применимо к числовым типам."""
+    """Значение >= threshold. Применимо к числовым типам."""
 
     def __init__(self, threshold: int | float) -> None:
         self._threshold = threshold
@@ -409,7 +409,7 @@ class MinValue(Converter[Any, Any]):
 
 
 class MaxValue(Converter[Any, Any]):
-    """Значение <= ``threshold``. Применимо к числовым типам."""
+    """Значение <= threshold. Применимо к числовым типам."""
 
     def __init__(self, threshold: int | float) -> None:
         self._threshold = threshold
@@ -423,7 +423,7 @@ class MaxValue(Converter[Any, Any]):
 
 
 class MinLength(Converter[Any, Any]):
-    """Длина >= ``threshold``. Применимо к строкам/коллекциям."""
+    """Длина >= threshold. Применимо к строкам/коллекциям."""
 
     def __init__(self, threshold: int) -> None:
         self._threshold = threshold
@@ -441,7 +441,7 @@ class MinLength(Converter[Any, Any]):
 
 
 class MaxLength(Converter[Any, Any]):
-    """Длина <= ``threshold``. Применимо к строкам/коллекциям."""
+    """Длина <= threshold. Применимо к строкам/коллекциям."""
 
     def __init__(self, threshold: int) -> None:
         self._threshold = threshold
@@ -486,10 +486,10 @@ class NonEmpty(Converter[Any, Any]):
 
 
 class IsString(ValueConverter, SchemaContributor):
-    """Тип значения — строго ``str``. В wire-схеме: ``type: string``.
+    """Тип значения — строго str. В wire-схеме: type: string.
 
-    В отличие от :class:`ParseString`, не делает coercion: ``int`` или
-    ``dict`` будут отвергнуты. Уместно там, где input уже типизирован —
+    В отличие от ParseString, не делает coercion: int или
+    dict будут отвергнуты. Уместно там, где input уже типизирован —
     например, JSON-аргументы tool'ов.
     """
 
@@ -505,10 +505,10 @@ class IsString(ValueConverter, SchemaContributor):
 
 
 class IsInt(ValueConverter, SchemaContributor):
-    """Тип значения — целое число. ``bool`` отвергается отдельно
-    (это семантически другой тип, хотя и подкласс ``int``).
+    """Тип значения — целое число. bool отвергается отдельно
+    (это семантически другой тип, хотя и подкласс int).
 
-    В wire-схеме: ``type: integer``.
+    В wire-схеме: type: integer.
     """
 
     def _convert_value(self, value: Any) -> int:
@@ -523,9 +523,9 @@ class IsInt(ValueConverter, SchemaContributor):
 
 
 class IsNumber(ValueConverter, SchemaContributor):
-    """Тип значения — число (``int`` или ``float``). ``bool`` отвергается.
+    """Тип значения — число (int или float). bool отвергается.
 
-    В wire-схеме: ``type: number``.
+    В wire-схеме: type: number.
     """
 
     def _convert_value(self, value: Any) -> int | float:
@@ -540,7 +540,7 @@ class IsNumber(ValueConverter, SchemaContributor):
 
 
 class IsBool(ValueConverter, SchemaContributor):
-    """Тип значения — булево. В wire-схеме: ``type: boolean``."""
+    """Тип значения — булево. В wire-схеме: type: boolean."""
 
     def _convert_value(self, value: Any) -> bool:
         if not isinstance(value, bool):
@@ -566,7 +566,7 @@ class MutuallyExclusive(Converter[dict[str, Any], dict[str, Any]]):
     """Одновременно задан может быть максимум один из перечисленных полей.
 
     Получает dict уже провалидированных полей и проверяет, что в нём
-    нет более одного ключа из ``names``.
+    нет более одного ключа из names.
     """
 
     _MIN_NAMES: ClassVar[int] = 2
@@ -611,9 +611,9 @@ class RequiresTogether(Converter[dict[str, Any], dict[str, Any]]):
 
 
 class Ordered(Converter[dict[str, Any], dict[str, Any]]):
-    """``value[first] <= value[second]``, когда оба поля заданы.
+    """value[first] <= value[second], когда оба поля заданы.
 
-    Применимо к числовым/строковым полям, сравнимым через ``<=``.
+    Применимо к числовым/строковым полям, сравнимым через <=.
     Если хотя бы одно из двух не задано — проверка пропускается.
     """
 

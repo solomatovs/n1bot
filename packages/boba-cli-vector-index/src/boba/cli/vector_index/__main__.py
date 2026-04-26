@@ -1,4 +1,4 @@
-"""``python -m boba.cli.vector_index`` — эквивалент ``boba-cli-vector-index``."""
+"""python -m boba.cli.vector_index — эквивалент boba-cli-vector-index."""
 
 from __future__ import annotations
 

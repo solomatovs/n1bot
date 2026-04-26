@@ -1,10 +1,10 @@
 """Реестр и диспетчер вызовов tool'ов.
 
-:class:`ToolStore` и :class:`ToolCatalog` — мутабельный/иммутабельный
-лукапы по :class:`ToolId`. :class:`ToolSource` — стадия наполнения
-store'а одного источника. :class:`ToolFactory` — :class:`FoldFactory`,
-собирающий каталог из всех источников. :class:`ToolsService` —
-исполнитель ``ToolCall → ToolResult`` поверх каталога.
+ToolStore и ToolCatalog — мутабельный/иммутабельный
+лукапы по ToolId. ToolSource — стадия наполнения
+store'а одного источника. ToolFactory — FoldFactory,
+собирающий каталог из всех источников. ToolsService —
+исполнитель ToolCall → ToolResult поверх каталога.
 """
 
 from __future__ import annotations
@@ -76,10 +76,10 @@ class ToolSource(
 
 
 class StaticToolSource(ToolSource):
-    """Фиксированный набор ``Tool``, зашитый в код.
+    """Фиксированный набор Tool, зашитый в код.
 
     Подходит для builtin-инструментов: создаёшь список Tool-ов, оборачиваешь
-    в этот источник и регистрируешь в ``ToolFactory``.
+    в этот источник и регистрируешь в ToolFactory.
     """
 
     def __init__(
@@ -117,15 +117,15 @@ class ToolFactory(
 
 
 class ToolsService(Executor[ToolContext, ToolCall, ToolResult]):
-    """Диспетчер tool-вызовов над :class:`ToolCatalog`.
+    """Диспетчер tool-вызовов над ToolCatalog.
 
-    Маршрутизация встроена по ``call.tool_id``: ищет :class:`Tool` в
-    ToolCatalog и вызывает ``tool.execute(ctx, args)``. ``ctx`` —
-    per-request :class:`ToolContext`, строится middleware'ом
-    (:class:`~boba.domain.agent.middleware.tools.ToolExecutionMiddleware`)
-    из per-session ``project_workspace``.
+    Маршрутизация встроена по call.tool_id: ищет Tool в
+    ToolCatalog и вызывает tool.execute(ctx, args). ctx —
+    per-request ToolContext, строится middleware'ом
+    (ToolExecutionMiddleware)
+    из per-session project_workspace.
 
-    Ошибка :class:`ToolExecutionError`:
+    Ошибка ToolExecutionError:
     - неизвестный tool;
     - ошибка парсинга/валидации аргументов;
     - произвольное исключение тула.

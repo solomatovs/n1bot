@@ -1,4 +1,4 @@
-"""CLI-arguments :class:`ConfigSource` для Boba.
+"""CLI-arguments ConfigSource для Boba.
 
 Public API::
 

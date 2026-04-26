@@ -1,10 +1,10 @@
-"""argparse-парсер и dispatch для команды ``boba-cli-agent-run``.
+"""argparse-парсер и dispatch для команды boba-cli-agent-run.
 
-Собирает полный agent stack через :mod:`boba.infra.container` (тот же
+Собирает полный agent stack через container (тот же
 путь что и chainlit-runtime), прогоняет один пользовательский запрос с
 sink'ом на stdout/stderr и завершает процесс. Всё DI — на стороне
-``boba.infra``, CLI только маппит CLI-флаги в ``SamplingParams`` и
-формирует ``AgentRequest``.
+boba.infra, CLI только маппит CLI-флаги в SamplingParams и
+формирует AgentRequest.
 """
 
 from __future__ import annotations
@@ -101,7 +101,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _opt_float(value: str) -> float | None:
-    """Пустая строка → None (флаг проигнорирован); иначе ``float(value)``.
+    """Пустая строка → None (флаг проигнорирован); иначе float(value).
 
     Нужно для launch.json: пользователь может стереть значение во
     VSCode-input'е, и тогда параметр не передаётся провайдеру.
@@ -114,8 +114,8 @@ def _opt_int(value: str) -> int | None:
 
 
 def _build_sampling(args: argparse.Namespace) -> SamplingParams | None:
-    """Собирает :class:`SamplingParams` из CLI-флагов. Если ни один не
-    задан — ``None`` (провайдеру не передаётся ничего, поведение модели
+    """Собирает SamplingParams из CLI-флагов. Если ни один не
+    задан — None (провайдеру не передаётся ничего, поведение модели
     — её собственный дефолт).
     """
     fields = {
@@ -152,10 +152,10 @@ def _build_resolver() -> ChainedConfigResolver:
 
 
 def _build_factory() -> ConfigFactory:
-    """Регистрирует встроенные секции (``app_core``/``agent``) и
+    """Регистрирует встроенные секции (app_core/agent) и
     adapter-секции выбранного стека (FS-workspace, OpenAI-транспорт,
     file-prompt loader). Расширения через entry-point group
-    ``boba.config_sections`` подхватываются после.
+    boba.config_sections подхватываются после.
     """
     factory = ConfigFactory(_build_resolver())
     factory.register(AppCoreSection())

@@ -1,4 +1,4 @@
-"""``python -m boba.cli.agent_run`` — эквивалент ``boba-cli-agent-run``."""
+"""python -m boba.cli.agent_run — эквивалент boba-cli-agent-run."""
 
 from __future__ import annotations
 

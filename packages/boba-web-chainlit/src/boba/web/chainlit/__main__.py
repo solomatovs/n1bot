@@ -1,21 +1,21 @@
 """Bootstrap chainlit-приложения.
 
 Здесь — единственное место в пакете, где собирается ConfigBundle и
-строится цепочка ConfigSource'ов. :class:`ChatSession` получает уже
-готовый bundle через ``ChatSession.from_bundle(bundle)`` — никакого
+строится цепочка ConfigSource'ов. ChatSession получает уже
+готовый bundle через ChatSession.from_bundle(bundle) — никакого
 повторного похода в env/TOML.
 
 Шаги:
 
 1. собрать ConfigBundle (env + TOML, плюс расширения через
    entry-points);
-2. через :func:`bridge_chainlit_env` прокинуть chainlit-server-поля
-   в ``CHAINLIT_*`` env (chainlit-библиотека читает их при импорте) и
-   получить абсолютный ``app_root``;
-3. через :class:`UIOverrideTomlConverter` отрендерить
-   ``app_root/.chainlit/config.toml`` для UI-overrides (chainlit для
+2. через bridge_chainlit_env прокинуть chainlit-server-поля
+   в CHAINLIT_* env (chainlit-библиотека читает их при импорте) и
+   получить абсолютный app_root;
+3. через UIOverrideTomlConverter отрендерить
+   app_root/.chainlit/config.toml для UI-overrides (chainlit для
    этих полей env не смотрит, только TOML);
-4. импортировать chainlit и запустить ``run_chainlit(app.py)``.
+4. импортировать chainlit и запустить run_chainlit(app.py).
 """
 
 from __future__ import annotations
@@ -47,12 +47,12 @@ from boba.web.chainlit.ui_overrides import UIOverrideTomlConverter
 
 
 def build_bundle() -> ConfigBundle:
-    """Собирает application :class:`ConfigBundle`.
+    """Собирает application ConfigBundle.
 
     Цепочка источников: env-file > env > toml-file > toml. Регистрирует
-    встроенные секции (``app_core``/``agent``) и adapter-секции (FS-
+    встроенные секции (app_core/agent) и adapter-секции (FS-
     workspace, OpenAI-транспорт, file-prompt loader, chainlit).
-    Расширения через entry-point group ``boba.config_sections``
+    Расширения через entry-point group boba.config_sections
     подхватываются после.
     """
     toml_data = load_toml(os.environ.get(CONFIG_PATH_ENV))
@@ -76,9 +76,9 @@ def build_bundle() -> ConfigBundle:
 
 
 def bridge_chainlit_env(cfg: ChainlitConfig) -> Path:
-    """Прокидывает поля :class:`ChainlitConfig` в ``CHAINLIT_*`` env, что
+    """Прокидывает поля ChainlitConfig в CHAINLIT_* env, что
     chainlit-библиотека читает при импорте. Возвращает абсолютный
-    ``app_root`` — он же используется для записи UI-overrides.
+    app_root — он же используется для записи UI-overrides.
     """
     os.environ.setdefault("CHAINLIT_HOST", cfg.host)
     os.environ.setdefault("CHAINLIT_PORT", cfg.port)
@@ -94,7 +94,7 @@ def bridge_chainlit_env(cfg: ChainlitConfig) -> Path:
 
 
 def write_ui_config_overrides(cfg: ChainlitConfig, app_root: Path) -> None:
-    """Рендерит ``app_root/.chainlit/config.toml`` из UI-полей конфига.
+    """Рендерит app_root/.chainlit/config.toml из UI-полей конфига.
 
     Chainlit смотрит TOML только при старте сервера, поэтому делается
     до импорта chainlit. Пустая строка от конвертера → файл не пишется

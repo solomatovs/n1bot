@@ -2,15 +2,15 @@
 
 Семья wire-описаний:
 
-- :class:`ParamWireSchema` — описание одного поля, накапливаемое
-  :class:`SchemaContributor`-конвертерами.
-- :class:`ObjectWireSchema` — JSON-Schema-подобное описание агрегата
+- ParamWireSchema — описание одного поля, накапливаемое
+  SchemaContributor-конвертерами.
+- ObjectWireSchema — JSON-Schema-подобное описание агрегата
   (объекта/секции): description + properties + required.
 
-Изначально жил в :mod:`boba.domain.core.tools.schema`; вынесен в core,
+Изначально жил в schema; вынесен в core,
 поскольку контракт не специфичен для tool-параметров — те же
-конвертеры описывают и поля :class:`~boba.domain.core.declaration.FieldSpec`,
-а агрегат — это любой :class:`~boba.domain.core.declaration.ObjectSchema`,
+конвертеры описывают и поля FieldSpec,
+а агрегат — это любой ObjectSchema,
 будь то tool-input или config-section.
 """
 
@@ -31,12 +31,12 @@ __all__ = [
 class ParamWireSchema:
     """Wire-описание одного параметра/поля, собираемое из конвертеров.
 
-    ``property`` — JSON-Schema-подобный dict (``type``, ``description``,
-    ``enum``, ``default``, ...). Конвертер потребителя (OpenAI, Anthropic,
+    property — JSON-Schema-подобный dict (type, description,
+    enum, default, ...). Конвертер потребителя (OpenAI, Anthropic,
     operator-docs renderer) забирает его как есть.
 
-    ``required`` — флаг «параметр обязателен»; конвертер кладёт имя
-    в top-level массив ``required``.
+    required — флаг «параметр обязателен»; конвертер кладёт имя
+    в top-level массив required.
     """
 
     property: dict[str, Any] = field(default_factory=dict)
@@ -47,9 +47,9 @@ class ParamWireSchema:
 class ObjectWireSchema:
     """JSON-Schema-подобное описание объекта.
 
-    Аналог :class:`ParamWireSchema`, но для агрегата: ``description`` —
-    описание самого объекта/секции, ``properties`` — словарь wire-описаний
-    каждого поля, ``required`` — имена обязательных полей.
+    Аналог ParamWireSchema, но для агрегата: description —
+    описание самого объекта/секции, properties — словарь wire-описаний
+    каждого поля, required — имена обязательных полей.
     Сериализуется в OpenAI tool function schema или в operator-доку
     конфига одним и тем же кодом.
     """
@@ -60,7 +60,7 @@ class ObjectWireSchema:
 
 
 class SchemaContributor(ABC):
-    """Mixin: конвертер умеет дополнять :class:`ParamWireSchema`.
+    """Mixin: конвертер умеет дополнять ParamWireSchema.
 
     Реализуется теми конвертерами, чьё правило отражается в JSON-Schema.
     Композитные конвертеры (например, ChainConverter) делегируют
@@ -69,5 +69,5 @@ class SchemaContributor(ABC):
 
     @abstractmethod
     def contribute(self, schema: ParamWireSchema) -> None:
-        """Дополнить ``schema`` данными, выводимыми из этого конвертера."""
+        """Дополнить schema данными, выводимыми из этого конвертера."""
         ...

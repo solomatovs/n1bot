@@ -1,8 +1,8 @@
 """Контракты для reader'ов разных форматов.
 
 Reader превращает источник (файл, URL, страница Confluence) в один или
-несколько :class:`Document`. Reader'ам не положено знать о чанковании
-или векторном хранилище — это делает :mod:`boba.cli.vector_index.indexer`.
+несколько Document. Reader'ам не положено знать о чанковании
+или векторном хранилище — это делает indexer.
 """
 
 from __future__ import annotations
@@ -16,13 +16,13 @@ from typing import Protocol
 class Document:
     """Логическая единица для индексации до чанкования.
 
-    ``source_path`` — стабильный идентификатор источника, по которому
-    делается dedupe в :mod:`boba.cli.vector_index.indexer`. Для файла
+    source_path — стабильный идентификатор источника, по которому
+    делается dedupe в indexer. Для файла
     это абсолютный путь; для будущих HTML/Confluence — URL/page-id.
 
-    ``metadata`` — произвольные строковые поля, попадут в metadata
-    каждого чанка (вместе с автоматически добавляемыми ``chunk_index``
-    и ``source_path``).
+    metadata — произвольные строковые поля, попадут в metadata
+    каждого чанка (вместе с автоматически добавляемыми chunk_index
+    и source_path).
     """
 
     source_path: str
@@ -31,7 +31,7 @@ class Document:
 
 
 class Reader(Protocol):
-    """Протокол reader'а: extension → ``Iterable[Document]``."""
+    """Протокол reader'а: extension → Iterable[Document]."""
 
     extensions: tuple[str, ...]
 

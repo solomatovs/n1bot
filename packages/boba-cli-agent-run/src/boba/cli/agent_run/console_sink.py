@@ -1,9 +1,7 @@
 """Sink в stdout/stderr поверх семей событий.
 
-Идея: sink матчит ровно по семьям (`PhaseTransition`, `ContentDelta`,
-`ContentSnapshot`, `Advisory`, `Terminal`) и дёргает интерфейс семьи
-(``label() / body() / slot() / chunk() / headline() / details() /
-severity()``). Concrete-типы видны, но не нужны — добавление нового
+Sink матчит по семьям (PhaseTransition, ContentDelta, ContentSnapshot,
+Advisory, Terminal) и дёргает интерфейс семьи. Добавление нового
 concrete'а в семью не требует правок sink'а.
 """
 
@@ -30,21 +28,21 @@ from boba.domain.core.patterns import StreamSink
 class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
     """AgentEvent → stdout/stderr.
 
-    Принимает любые :class:`TextIO` — удобно для stdout/stderr и
+    Принимает любые TextIO — удобно для stdout/stderr и
     для подмены в тестах.
 
-    ``use_color``:
-      * ``None`` (по умолчанию) — авто: включаем, если оба потока —
-        TTY и не выставлена переменная окружения ``NO_COLOR``.
-      * ``True`` / ``False`` — явный override.
+    use_color:
+      * None (по умолчанию) — авто: включаем, если оба потока —
+        TTY и не выставлена переменная окружения NO_COLOR.
+      * True / False — явный override.
 
-    ``verbose``:
-      * ``False`` (по умолчанию) — для ``PhaseTransition`` показываем
-        только ``label()``; ``body()`` пропускаем.
-      * ``True`` — показываем и ``body()`` (полные details, payload'ы
+    verbose:
+      * False (по умолчанию) — для PhaseTransition показываем
+        только label(); body() пропускаем.
+      * True — показываем и body() (полные details, payload'ы
         round-trip'а).
 
-    Streaming-токены идут inline без перевода строки. ``ContentSnapshot``
+    Streaming-токены идут inline без перевода строки. ContentSnapshot
     для streaming-слотов (ANSWER/THINKING/REFUSAL) только закрывает
     строку — токены уже выведены потоково. Остальные snapshot'ы
     рисуются полностью с заголовком и body.

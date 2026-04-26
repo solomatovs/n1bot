@@ -65,8 +65,8 @@ Sink матчится только по семьям и дёргает инте�
 видны, но не нужны: добавление нового concrete'а не требует правок sink'ов.
 
 Self-sufficient: каждое событие несёт *только свой target*. Сообщения,
-которые шли в LLM, уже были эмитированы как ``ContentSnapshot``-ы; сумма
-снапшотов = диалог. Поэтому ни ``LLMRequestSent``, ни ``GenerationFailed``
+которые шли в LLM, уже были эмитированы как ContentSnapshot-ы; сумма
+снапшотов = диалог. Поэтому ни LLMRequestSent, ни GenerationFailed
 не дублируют messages-список — у каждого своя ответственность.
 """
 
@@ -101,7 +101,7 @@ class Severity(StrEnum):
 class SlotKind(StrEnum):
     """Идентификатор «слота» в UI/журнале — куда стримить контент.
 
-    Договорной словарь между ``ContentDelta`` / ``ContentSnapshot``
+    Договорной словарь между ContentDelta / ContentSnapshot
     и sink'ами. Sink, получивший событие с этим
     кодом, знает, в какой UI-элемент его направить (chainlit-Step,
     отдельный message, область thinking и т.п.).
@@ -142,10 +142,10 @@ class BaseAgentEvent(ABC):
 class PhaseTransition(BaseAgentEvent, ABC):
     """Граница фазы в round-trip'е — sink рисует «пульс».
 
-    Может нести метаданные действия (:class:`LLMRequestSent` —
-    параметры round-trip'а, :class:`ToolExecutionStarted` — вызов).
+    Может нести метаданные действия (LLMRequestSent —
+    параметры round-trip'а, ToolExecutionStarted — вызов).
     Контент диалога (messages, history) сюда не попадает — он
-    объявляется ``ContentSnapshot``-ами.
+    объявляется ContentSnapshot-ами.
     """
 
     @abstractmethod
@@ -165,8 +165,8 @@ class PhaseTransition(BaseAgentEvent, ABC):
 class ContentDelta(BaseAgentEvent, ABC):
     """Инкрементальный кусок в «слот» UI.
 
-    Sink стримит ``chunk()`` в слот, идентифицируемый
-    ``slot()`` + ``slot_id()``. Аккумуляция — задача sink'а; событие
+    Sink стримит chunk() в слот, идентифицируемый
+    slot() + slot_id(). Аккумуляция — задача sink'а; событие
     ничего не помнит между вызовами.
     """
 
@@ -185,8 +185,8 @@ class ContentSnapshot(BaseAgentEvent, ABC):
     """Завершённое сообщение в диалоге.
 
     Каждый снапшот соответствует ровно одной записи в
-    :class:`MessageService` (или эквивалентному «целевому» содержимому,
-    если запись не идёт в историю — например, ``ThinkingComplete``).
+    MessageService (или эквивалентному «целевому» содержимому,
+    если запись не идёт в историю — например, ThinkingComplete).
     Сумма снапшотов за сессию реконструирует диалог.
     """
 
@@ -208,7 +208,7 @@ class Advisory(BaseAgentEvent, ABC):
     """Нефатальный нотис: что-то пошло не так, цикл продолжается.
 
     Sink выводит в WARN-канал; LLM получает feedback по отдельному
-    каналу через :class:`FeedbackToLLMAdded`-снапшот.
+    каналу через FeedbackToLLMAdded-снапшот.
     """
 
     @abstractmethod
@@ -228,7 +228,7 @@ class Advisory(BaseAgentEvent, ABC):
 class Terminal(BaseAgentEvent, ABC):
     """Терминальный отказ: цикл остановлен.
 
-    :class:`StopOnAnyFailure` ловит любого потомка этого класса.
+    StopOnAnyFailure ловит любого потомка этого класса.
     """
 
     @abstractmethod
@@ -272,7 +272,7 @@ class LLMRequestSent(PhaseTransition):
     """Round-trip к LLM начат. Несём только метаданные round-trip'а.
 
     Сообщения, которые ушли, уже были эмитированы как
-    :class:`ContentSnapshot`-события на предыдущих шагах (user-query,
+    ContentSnapshot-события на предыдущих шагах (user-query,
     tool-результаты, feedback). Здесь — только то, что описывает сам
     вызов: model, сколько messages в payload, есть ли tools.
     """
@@ -352,9 +352,9 @@ class AnswerStarted(PhaseTransition):
 class ToolCallStreamStarted(PhaseTransition):
     """Tool call объявлен — id и имя пришли, args ещё стримятся.
 
-    ``index`` — порядковый номер вызова в рамках одной итерации
+    index — порядковый номер вызова в рамках одной итерации
     (OpenAI parallel_tool_calls). Полный вызов с args будет в
-    :class:`ToolCallComplete`.
+    ToolCallComplete.
     """
 
     index: int
@@ -380,7 +380,7 @@ class ToolCallStreamStarted(PhaseTransition):
 class ToolExecutionStarted(PhaseTransition):
     """Tool готов к исполнению — args разобраны, диспетчер сейчас стартует.
 
-    Несём полный :class:`LLMToolCall`: sink, видя одно это событие,
+    Несём полный LLMToolCall: sink, видя одно это событие,
     знает, что именно сейчас исполняется (id, name, args).
     """
 
@@ -430,7 +430,7 @@ class GenerationRetried(PhaseTransition):
 
 @dataclass(frozen=True)
 class GenerationDone(PhaseTransition):
-    """Прогон завершён — пришёл ``finish_reason``."""
+    """Прогон завершён — пришёл finish_reason."""
 
     finish_reason: FinishReason = FinishReason.STOP
 
@@ -518,7 +518,7 @@ class RefusalToken(ContentDelta):
 class ToolCallArgumentDelta(ContentDelta):
     """Chunk аргументов tool call (JSON-строка, может прийти частями).
 
-    Несём ``tool_name`` помимо id — sink не должен искать имя
+    Несём tool_name помимо id — sink не должен искать имя
     в прошлых событиях, чтобы отрисовать «куда» льются args.
     """
 
@@ -630,7 +630,7 @@ class RefusalComplete(ContentSnapshot):
 class ToolCallComplete(ContentSnapshot):
     """Завершённый tool call: id + имя + полные args (как часть assistant-сообщения).
 
-    ``ToolExecutionMiddleware`` слушает это событие и исполняет tool.
+    ToolExecutionMiddleware слушает это событие и исполняет tool.
     """
 
     call: LLMToolCall
@@ -658,7 +658,7 @@ class ToolResultReady(ContentSnapshot):
 
     Self-sufficient: sink, видя только это событие, знает name+args
     исходного вызова и текст результата. Парный к
-    :class:`ToolExecutionFailed` (один и тот же вызов, разный исход).
+    ToolExecutionFailed (один и тот же вызов, разный исход).
     """
 
     call: LLMToolCall
@@ -683,7 +683,7 @@ class ToolResultReady(ContentSnapshot):
 
 @dataclass(frozen=True)
 class FeedbackToLLMAdded(ContentSnapshot):
-    """Feedback от агента к LLM записан в ``MessageService``.
+    """Feedback от агента к LLM записан в MessageService.
 
     Эмитится middleware-роутером ошибок и guard'ами луппинга — каждое
     сообщение, попадающее в историю, должно иметь парный снапшот.
@@ -715,7 +715,7 @@ class FeedbackToLLMAdded(ContentSnapshot):
 class ToolExecutionFailed(Advisory):
     """Tool упал — несём И вызов, И описание провала. Цикл продолжается.
 
-    Парный к :class:`ToolResultReady`. Запись ``role="tool"`` с текстом
+    Парный к ToolResultReady. Запись role="tool" с текстом
     ошибки делает middleware параллельно — для LLM на следующей итерации.
     """
 
@@ -747,7 +747,7 @@ class ToolExecutionFailed(Advisory):
 
 @dataclass(frozen=True)
 class GenerationFailed(Terminal):
-    """LLM-слой бросил :class:`LLMError`."""
+    """LLM-слой бросил LLMError."""
 
     error_kind: str
     message: str
@@ -768,9 +768,9 @@ class GenerationFailed(Terminal):
 
 @dataclass(frozen=True)
 class PromptFailed(Terminal):
-    """:class:`PromptFactory` не смогла собрать system-prompt.
+    """PromptFactory не смогла собрать system-prompt.
 
-    ``provider`` — имя упавшего провайдера, если известно; ``None`` для
+    provider — имя упавшего провайдера, если известно; None для
     ошибок общей логики.
     """
 

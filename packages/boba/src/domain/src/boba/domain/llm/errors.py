@@ -22,10 +22,10 @@
         |   └── LLMRequestSystemMessageNoneError
     │   └── LLMUnknownError                нераспознанное исключение провайдера
 
-``LLMRequestValidationError`` - Клиентские валидации
-``LLMConnectionError``, ``LLMTimeoutError`` - сетевые обрывы
-``LLMProtocolError`` - несовместимость схемы
-``LLMUnknownError`` - нераспознанные исключения
+LLMRequestValidationError - Клиентские валидации
+LLMConnectionError, LLMTimeoutError - сетевые обрывы
+LLMProtocolError - несовместимость схемы
+LLMUnknownError - нераспознанные исключения
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ class LLMUnknownError(PermanentLLMError):
     """
     Нераспознанное исключение провайдера
 
-    Возвращается fallback-веткой :class:`OpenAIErrorConverter`, когда
+    Возвращается fallback-веткой OpenAIErrorConverter, когда
     ни одна из известных спецификаций не сматчилась. Консервативно
     помечаем как retryable — повторная попытка безопасна, а реальная
     классификация должна быть добавлена в правила конвертера.
@@ -122,7 +122,7 @@ class LLMRequestValidationError(PermanentLLMError):
     Клиентская валидация LLM-запроса упала
 
     Запрос не отправляется провайдеру — проверка запускается в
-    :meth:`TurnSpec.finalize`. HTTP-статуса у такой ошибки нет.
+    finalize. HTTP-статуса у такой ошибки нет.
     """
 
 

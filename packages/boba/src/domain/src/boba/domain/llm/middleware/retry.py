@@ -1,6 +1,6 @@
 """Retry-middleware LLM-слоя.
 
-Повторяет обращение к inner при :class:`RetryableLLMError` — но
+Повторяет обращение к inner при RetryableLLMError — но
 **только если** до момента ошибки ни одного события не было
 сэмичено вверх. Если стрим уже «заговорил» (yield любого токена или
 lifecycle-маркера), повтор обернул бы клиенту дубликат начала
@@ -9,19 +9,19 @@ lifecycle-маркера), повтор обернул бы клиенту ду�
 
 Политика:
 
-- первая попытка (``attempt=0``) — молчит (happy path);
-- перед каждой повторной попыткой (``attempt >= 1``) эмитится
-  :class:`LLMRetryAttempt` с причиной и HTTP-статусом упавшей;
-- ``ctx.attempt`` инкрементируется согласно номеру попытки;
-- :class:`PermanentLLMError` (и любое не-``RetryableLLMError``
+- первая попытка (attempt=0) — молчит (happy path);
+- перед каждой повторной попыткой (attempt >= 1) эмитится
+  LLMRetryAttempt с причиной и HTTP-статусом упавшей;
+- ctx.attempt инкрементируется согласно номеру попытки;
+- PermanentLLMError (и любое не-RetryableLLMError
   исключение) пропускается наружу без обработки;
-- между попытками — пауза ``delay_seconds`` через инжектируемый
-  ``sleep`` (в тестах подменяется на no-op).
+- между попытками — пауза delay_seconds через инжектируемый
+  sleep (в тестах подменяется на no-op).
 
 Почему тут нет exponential backoff / jitter. На S3 — простейший
 линейный backoff. Когда появятся rate-limit-paвный поток запросов
 / провайдеры со строгими retry-after hints — политика выделится в
-отдельный :class:`RetryPolicy` объект, а middleware станет его
+отдельный RetryPolicy объект, а middleware станет его
 исполнителем. Пока не усложняем.
 """
 
@@ -40,8 +40,8 @@ logger = logging.getLogger(__name__)
 
 
 class RetryMiddleware(StreamSource[LLMContext, LLMEvent]):
-    """Повторяет inner до ``max_attempts`` раз на
-    :class:`RetryableLLMError`, пока стрим не начал выдавать события.
+    """Повторяет inner до max_attempts раз на
+    RetryableLLMError, пока стрим не начал выдавать события.
     """
 
     def __init__(

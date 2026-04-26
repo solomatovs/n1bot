@@ -1,23 +1,23 @@
-"""Починка коллизии ``index`` у параллельных tool_calls в стриме.
+"""Починка коллизии index у параллельных tool_calls в стриме.
 
 Некоторые OpenAI-совместимые провайдеры (в частности, Ollama через
 LiteLLM) при параллельных вызовах инструментов эмитят несколько
 полностью сформированных tool_call-дельт, все с одинаковым
-``index`` (обычно ``0``), но с разными ``id``. По спецификации OpenAI
-streaming ``index`` — это стабильный идентификатор слота, и
-одинаковый ``index`` означает «это продолжение того же tool_call».
-В результате downstream-агрегатор склеивает ``arguments`` разных
-вызовов в одну строку (``{"path": "/a"}{"path": "/b"}``), и JSON-парсер
-падает с ``Extra data``.
+index (обычно 0), но с разными id. По спецификации OpenAI
+streaming index — это стабильный идентификатор слота, и
+одинаковый index означает «это продолжение того же tool_call».
+В результате downstream-агрегатор склеивает arguments разных
+вызовов в одну строку ({"path": "/a"}{"path": "/b"}), и JSON-парсер
+падает с Extra data.
 
-Этот StreamTransformer вклинивается до ``ToolCallSource`` и правит
-коллизию: если приходит чанк с новым ``tool_call_id`` на уже занятом
-``index``, ему присваивается первый свободный слот. Дальше по пайплайну
+Этот StreamTransformer вклинивается до ToolCallSource и правит
+коллизию: если приходит чанк с новым tool_call_id на уже занятом
+index, ему присваивается первый свободный слот. Дальше по пайплайну
 всё выглядит как нормальные параллельные вызовы, оба инструмента
 доходят до исполнения.
 
-Модуль подключается опционально — см. ``OpenAIMiddleware
-.chunk_preprocessor_factory``. Убрать из цепочки — удалить одну строку
+Модуль подключается опционально — см. OpenAIMiddleware.chunk_preprocessor_factory.
+Убрать из цепочки — удалить одну строку
 в DI.
 """
 
@@ -34,11 +34,11 @@ logger = logging.getLogger(__name__)
 
 
 class DuplicateToolCallIndexReindexer(StreamTransformer[LLMContext, Choice, Choice]):
-    """Перемапливает tool_calls с коллизией по ``index`` на свободные слоты.
+    """Перемапливает tool_calls с коллизией по index на свободные слоты.
 
     Работает в LLM-слое (ниже agent'а) — параметризован
-    :class:`LLMContext`, а не :class:`AgentContext`: препроцессор
-    сидит внутри :class:`OpenAITerminal`'s chunk-pipeline, до
+    LLMContext, а не AgentContext: препроцессор
+    сидит внутри OpenAITerminal's chunk-pipeline, до
     любой agent-семантики.
     """
 

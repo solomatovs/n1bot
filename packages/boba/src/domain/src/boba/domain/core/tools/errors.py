@@ -1,10 +1,10 @@
 """Иерархия ошибок выполнения tool'ов.
 
-Все tool-ошибки — потомки :class:`ToolExecutionError`. Agent-слой
-(:class:`~boba.domain.agent.middleware.tools.ToolExecutionMiddleware`) ловит
-родительский тип и декларирует :class:`~boba.domain.agent.turn.effects.\
-ToolResultEffect` с текстом ошибки — LLM получает её как
-``role="tool"`` сообщение на следующей итерации и может скорректировать
+Все tool-ошибки — потомки ToolExecutionError. Agent-слой
+(ToolExecutionMiddleware) ловит
+родительский тип и декларирует \
+ToolResultEffect с текстом ошибки — LLM получает её как
+role="tool" сообщение на следующей итерации и может скорректировать
 поведение.
 """
 
@@ -16,9 +16,9 @@ from boba.domain.core.tools.ids import ToolId, ToolSourceId
 class ToolExecutionError(Exception):
     """Ошибка выполнения инструмента.
 
-    Бросается из ``ToolsService.execute`` / ``Tool.execute`` вместо
+    Бросается из ToolsService.execute / Tool.execute вместо
     возврата флагового результата. Обработка — на стороне caller-а:
-    agent ловит, обогащает ``tool_call_id``-ом (который сервис не знает)
+    agent ловит, обогащает tool_call_id-ом (который сервис не знает)
     и превращает в feedback-сообщение для LLM.
     """
 
@@ -31,9 +31,9 @@ class ToolExecutionError(Exception):
 class InvalidToolArgumentError(ToolExecutionError):
     """Аргумент tool'а не прошёл per-param валидацию.
 
-    Бросается оркестратором ``SchemaArgsValidator`` при отсутствии
+    Бросается оркестратором SchemaArgsValidator при отсутствии
     обязательного параметра, нарушении типа, выходе за enum, незнакомом
-    ключе и т.п. Хранит имя проблемного параметра в ``param``.
+    ключе и т.п. Хранит имя проблемного параметра в param.
     """
 
     def __init__(self, tool_id: ToolId, param: str, reason: str) -> None:
@@ -47,9 +47,9 @@ class ToolOutputTooLargeError(ToolExecutionError):
 
     Бросается tool'ом, когда объём ответа превышает встроенный лимит
     (обязательный, не конфигурируемый LLM). LLM получает отдельный
-    ``error_kind`` и должна сузить запрос: использовать пагинацию
-    (``start_line``/``end_line``, ``offset``/``limit`` и т.п.) или
-    переключиться на более прицельный инструмент (``grep``, ``stat``).
+    error_kind и должна сузить запрос: использовать пагинацию
+    (start_line/end_line, offset/limit и т.п.) или
+    переключиться на более прицельный инструмент (grep, stat).
 
     Полный файл целиком читать нельзя — это антипаттерн, именно ради
     пресечения которого и существует этот класс.
@@ -75,9 +75,9 @@ class ToolOutputTooLargeError(ToolExecutionError):
 class InvalidSchemaInvariantError(ToolExecutionError):
     """Cross-field инвариант схемы нарушен.
 
-    Отличается от :class:`InvalidToolArgumentError` тем, что проблема не
+    Отличается от InvalidToolArgumentError тем, что проблема не
     в одном параметре, а в сочетании нескольких (взаимоисключение,
-    совместность, порядок). Для LLM это даёт отдельный ``error_kind``,
+    совместность, порядок). Для LLM это даёт отдельный error_kind,
     чтобы фидбек отличался по формулировке.
     """
 
@@ -87,7 +87,7 @@ class InvalidSchemaInvariantError(ToolExecutionError):
 
 
 class ToolIdCollisionError(Exception):
-    """Два источника пытаются зарегистрировать tool с одним :class:`ToolId`."""
+    """Два источника пытаются зарегистрировать tool с одним ToolId."""
 
     def __init__(
         self,

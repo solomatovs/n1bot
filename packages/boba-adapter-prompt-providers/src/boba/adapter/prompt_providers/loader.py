@@ -1,32 +1,32 @@
 """File-based loader статических system-prompt блоков.
 
-Читает ``*.md`` и ``*.txt`` из :class:`PromptWorkspaceShell`
-(директория ``BOBA_PROMPTS_DIR``) и собирает
-``Sequence[PromptProvider]`` один раз на старте процесса.
+Читает *.md и *.txt из PromptWorkspaceShell
+(директория BOBA_PROMPTS_DIR) и собирает
+Sequence[PromptProvider] один раз на старте процесса.
 
 Отдельно от загрузки tool-плагинов: tools — это код с зависимостями
 (pip-installable пакеты, регистрируемые через Python entry-points,
-см. :mod:`boba.infra.tool_plugin_loader`); промпты — это просто
+см. tool_plugin_loader); промпты — это просто
 текстовый контент, и их discovery остаётся файловым.
 
 Семантика discovery:
 
-* любой сегмент пути с ``_`` префиксом — silently skip
-  (``__pycache__``, ``_draft.md``, ``_helpers/``);
+* любой сегмент пути с _ префиксом — silently skip
+  (__pycache__, _draft.md, _helpers/);
 * пустые файлы — skip с info-логом;
 * любые другие расширения — silently skip;
-* приоритет извлекается из ``\\d+-`` префикса в имени файла,
-  иначе — :data:`_DEFAULT_PRIORITY`.
+* приоритет извлекается из \\d+- префикса в имени файла,
+  иначе — _DEFAULT_PRIORITY.
 
 Жизненный цикл: discovery + чтение всех файлов происходит в
-конструкторе :class:`PromptLoader`; результат кэшируется и возвращается
-:meth:`prompt_providers`.
+конструкторе PromptLoader; результат кэшируется и возвращается
+prompt_providers.
 
 Trust-модель:
 
 1. Промпт-файлы — это код для LLM, не пользовательский ввод.
    Поставляются через trusted-канал (CI с code-review/подписями).
-2. ``prompts_dir`` обязан быть read-only в runtime — writable директория
+2. prompts_dir обязан быть read-only в runtime — writable директория
    = locally-unprivileged эскалация в prompt-injection при
    перезапуске. Контролируется на уровне deploy.
 """
@@ -58,11 +58,11 @@ _TEXT_EXTENSIONS = (".md", ".txt")
 
 
 class PromptLoader:
-    """Discovery ``*.md``/``*.txt`` из :class:`PromptWorkspaceShell` и
-    сборка ``Sequence[PromptProvider]`` один раз на старте процесса.
+    """Discovery *.md/*.txt из PromptWorkspaceShell и
+    сборка Sequence[PromptProvider] один раз на старте процесса.
 
     Discovery + чтение всех текстовых файлов происходит в конструкторе;
-    результат кэшируется. :meth:`prompt_providers` отдаёт закэшированный
+    результат кэшируется. prompt_providers отдаёт закэшированный
     список.
     """
 
@@ -72,7 +72,7 @@ class PromptLoader:
         self._discover()
 
     def prompt_providers(self) -> Sequence[PromptProvider]:
-        """Закэшированный список :class:`StaticPromptProvider`."""
+        """Закэшированный список StaticPromptProvider."""
         return tuple(self._providers)
 
     def _discover(self) -> None:

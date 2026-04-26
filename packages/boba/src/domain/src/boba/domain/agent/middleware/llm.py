@@ -1,21 +1,21 @@
 """Граница между ответственностью Agent и LLM-слоя.
 
-:class:`LLMInvokeMiddleware` — терминал агентской цепочки. На каждую
+LLMInvokeMiddleware — терминал агентской цепочки. На каждую
 итерацию:
 
-1. собирает :class:`LLMRequest` через :class:`TurnSpec` из текущего
-   снапшота :class:`MessageReader`;
-2. стримит события LLM-слоя и конвертирует их в :class:`AgentEvent`.
+1. собирает LLMRequest через TurnSpec из текущего
+   снапшота MessageReader;
+2. стримит события LLM-слоя и конвертирует их в AgentEvent.
 
-Маппинг LLM → Agent stateful: на стороне агента ``LLMRequestSent``
+Маппинг LLM → Agent stateful: на стороне агента LLMRequestSent
 означает «round-trip отправлен», а stream-handle получен — это
-``LLMResponseStreamOpened``. Конвертер живёт замыканием вокруг
-текущего ``LLMRequest`` — он его не несёт в события, но использует
+LLMResponseStreamOpened. Конвертер живёт замыканием вокруг
+текущего LLMRequest — он его не несёт в события, но использует
 для обогащения метаданными round-trip'а.
 
-Для :class:`ToolCallArgumentDelta` конвертер запоминает соответствие
-``index → (tool_call_id, tool_name)`` из предшествующего
-:class:`LLMToolCallBegin` — это нужно, чтобы delta-события на агент-
+Для ToolCallArgumentDelta конвертер запоминает соответствие
+index → (tool_call_id, tool_name) из предшествующего
+LLMToolCallBegin — это нужно, чтобы delta-события на агент-
 уровне были self-sufficient (несли имя tool'а, а не только index).
 """
 
@@ -66,11 +66,11 @@ from boba.domain.llm.models import LLMContext, LLMRequest
 class _LLMToAgentConverter:
     """Per-stream stateful конвертер LLM → Agent.
 
-    Состояние: ``index → (tool_call_id, tool_name)`` для обогащения
-    :class:`ToolCallArgumentDelta` именем tool'а (на LLM-уровне у delta
-    есть только ``index``; ``LLMToolCallBegin`` несёт ``id`` и ``name``).
+    Состояние: index → (tool_call_id, tool_name) для обогащения
+    ToolCallArgumentDelta именем tool'а (на LLM-уровне у delta
+    есть только index; LLMToolCallBegin несёт id и name).
     Состояние локально для одного round-trip'а — конвертер создаётся
-    заново на каждый ``stream()``.
+    заново на каждый stream().
     """
 
     def __init__(self, request: LLMRequest) -> None:
@@ -148,15 +148,15 @@ class _LLMToAgentConverter:
 class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
     """Терминал агентской цепочки: build request → invoke LLM.
 
-    Снапшот истории :class:`HistoryReducer` читает напрямую из
-    :class:`MessageReader` — все записи предыдущей итерации
+    Снапшот истории HistoryReducer читает напрямую из
+    MessageReader — все записи предыдущей итерации
     (assistant, tool_results, feedback) уже зафиксированы через
-    :class:`DialogueWriter`. Read-only порт по типу: middleware не
+    DialogueWriter. Read-only порт по типу: middleware не
     может писать в историю мимо writer'а.
 
-    :class:`LLMError` из LLM-слоя оборачивается в
-    :class:`LLMGenerationFailedError` (terminal + user-feedback) —
-    роутер остановит цикл и эмитит :class:`GenerationFailed`.
+    LLMError из LLM-слоя оборачивается в
+    LLMGenerationFailedError (terminal + user-feedback) —
+    роутер остановит цикл и эмитит GenerationFailed.
     """
 
     def __init__(
