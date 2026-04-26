@@ -1,19 +1,18 @@
 """argparse-парсер и dispatch для команды boba-cli-agent-run.
 
-Конфиг полностью идёт через ConfigSource-цепочку. CLI-флаги
-декларируются как кортеж CliFlag и обрабатываются пакетом
-boba.config.cli (add_to_parser строит argparse-args; from_namespace
-собирает CliArgsSource из распарсенного Namespace). Никакого
-ручного маппинга argparse → ConfigKey в этом файле.
+Конфиг полностью идёт через ConfigSource-цепочку. Все источники
+(Cli/Env/Toml) автономны: на старте сами читают свои каналы
+(sys.argv / os.environ / BOBA_CONFIG_PATH). Никакого ручного маппинга
+argparse → ConfigKey и никакой явной декларации флагов в этом файле —
+имена флагов вычисляются из ConfigKey'ев секции через cli_flag_name.
 
-Позиционный query — это вход одного запроса (не конфиг), идёт
-напрямую в agent.run(...).
+Здесь argparse нужен только для --help; все значения (включая
+``query``) — поля AgentRunSection, читаемые через bundle.
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -35,16 +34,11 @@ from boba.adapter.openai import (
 from boba.adapter.prompt_providers import PromptLoader, PromptsSection
 from boba.cli.agent_run.config import AgentRunConfig, AgentRunSection
 from boba.cli.agent_run.console_sink import ConsoleSink
-from boba.config.cli import CliFlag, add_to_parser, from_namespace
+from boba.config.cli import CliSource
 from boba.config.env import EnvFileSource, EnvSource
-from boba.config.toml import (
-    CONFIG_PATH_ENV,
-    TomlFileSource,
-    TomlSource,
-    load_toml,
-)
+from boba.config.toml import TomlFileSource, TomlSource
 from boba.domain.agent.models import AgentRequest
-from boba.domain.core.config import ChainedConfigResolver, ConfigKey
+from boba.domain.core.config import ChainedConfigResolver
 from boba.domain.core.tools import ToolContext
 from boba.domain.core.workspace import (
     PromptWorkspaceId,
@@ -63,52 +57,31 @@ from boba.infra import (
     create_agent,
 )
 
-# Декларативный список CLI-флагов: пакет boba.config.cli использует его и
-# для add_to_parser (генерация argparse-аргументов), и для from_namespace
-# (сборка CliArgsSource из распарсенного Namespace). dest-имена выводятся
-# из long-флагов автоматически (--max-tokens → max_tokens).
-_FLAGS: tuple[CliFlag, ...] = (
-    CliFlag(
-        ConfigKey("agent_run", "model"),
-        help="LLM model (overrides BOBA_AGENT_RUN_MODEL / [agent_run] model).",
-    ),
-    CliFlag(ConfigKey("agent_run", "temperature")),
-    CliFlag(ConfigKey("agent_run", "top_p")),
-    CliFlag(ConfigKey("agent_run", "max_tokens")),
-    CliFlag(ConfigKey("agent_run", "seed")),
-    CliFlag(
-        ConfigKey("agent_run", "stop"),
-        action="append",
-        help="Stop sequence; flag can be repeated for multiple values.",
-    ),
-    CliFlag(ConfigKey("agent_run", "frequency_penalty")),
-    CliFlag(ConfigKey("agent_run", "presence_penalty")),
-)
-
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Entry-point. Возвращает exit-code (0 = успех)."""
-    args = _build_parser().parse_args(argv)
-    _run(args)
+    # argv нужен только для --help/typo-validation. CliSource внутри
+    # _build_factory читает sys.argv сам.
+    _build_parser().parse_known_args(argv)
+    _run()
     return 0
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Argparse
+# Argparse — только --help (других позиционных у нас нет)
 # ──────────────────────────────────────────────────────────────────────
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    return argparse.ArgumentParser(
         prog="boba-cli-agent-run",
         description=(
             "Run a single Boba agent query against the configured LLM. "
-            "Outputs all events to stdout/stderr via ConsoleSink."
+            "Все параметры — поля AgentRunSection, передаются через "
+            "--<section>-<field> flags (см. cli_flag_name) или env/TOML. "
+            "Обязательные: --agent-run-query, --agent-run-model."
         ),
     )
-    add_to_parser(parser, _FLAGS)
-    parser.add_argument("query", nargs="+", help="User query (positional).")
-    return parser
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -116,21 +89,20 @@ def _build_parser() -> argparse.ArgumentParser:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _build_factory(args: argparse.Namespace) -> ConfigFactory:
-    """Стандартная цепочка источников + регистрация секций.
+def _build_factory() -> ConfigFactory:
+    """Стандартная цепочка автономных источников + регистрация секций.
 
-    Цепочка: CLI > env-file > env > toml-file > toml. Adapter-секции
-    и own-section (agent_run) регистрируются вручную; ext-секции —
+    Cli > env-file > env > toml-file > toml. Adapter-секции и
+    own-section (agent_run) регистрируются вручную; ext-секции —
     через discovery.
     """
-    toml_data = load_toml(os.environ.get(CONFIG_PATH_ENV))
     resolver = ChainedConfigResolver(
         [
-            from_namespace(args, _FLAGS),
+            CliSource(),
             EnvFileSource(),
             EnvSource(),
-            TomlFileSource(toml_data),
-            TomlSource(toml_data),
+            TomlFileSource(),
+            TomlSource(),
         ]
     )
     factory = ConfigFactory(resolver)
@@ -149,9 +121,9 @@ def _build_factory(args: argparse.Namespace) -> ConfigFactory:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _run(args: argparse.Namespace) -> None:
+def _run() -> None:
     """Собирает агент с полным стеком middleware и прогоняет один запрос."""
-    bundle = ConfigLoader(_build_factory(args)).load_bundle()
+    bundle = ConfigLoader(_build_factory()).load_bundle()
     app_config = bundle.app
     agent_config = bundle.agent
     run_cfg: AgentRunConfig = bundle.section(AgentRunSection)
@@ -202,4 +174,4 @@ def _run(args: argparse.Namespace) -> None:
         sampling=run_cfg.to_sampling_params(),
     )
 
-    agent.run(agent_config, request, " ".join(args.query))
+    agent.run(agent_config, request, run_cfg.query)

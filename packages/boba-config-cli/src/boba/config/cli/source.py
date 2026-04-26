@@ -10,33 +10,33 @@
 * ConfigKey("agent_run","max_tokens")         → --agent-run-max-tokens
 * ConfigKey("ext","chromadb","persist_path")  → --ext-chromadb-persist-path
 
-Имя флага — это deterministic функция от ключа, как BOBA_AGENT_RUN_MODEL
-для env. Никаких алиасов, никаких операторских имён.
+Имя флага — deterministic функция от ключа, как BOBA_AGENT_RUN_MODEL
+для env. Никаких алиасов и operator-side имён.
 
-Каждый CLI декларирует список CliFlag (только key + опционально
-action/help); пакет добавляет add_argument через add_to_parser() и
-собирает CliArgsSource из Namespace через from_namespace(). Обычно
-идёт первым в ChainedConfigResolver. None и пустые строки фильтруются
-конструктором CliArgsSource.
+CliSource — автономный источник, симметричный EnvSource: ни списка
+ключей, ни спецификации флагов. На каждый resolve(key) вычисляется
+имя флага и сканируется sys.argv (поддерживаются формы
+``--flag value`` и ``--flag=value``). Множественность для list-полей
+делается через CSV в значении (``--agent-run-stop "X,Y"``) и
+ParseCsvList валидатор — те же правила, что и для env.
+
+Пустая строка («оператор стёр значение в launch.json input-боксе») и
+None трактуются как «не задано» — следующий источник в цепочке отвечает.
 """
 
 from __future__ import annotations
 
-import argparse
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
-from typing import Any, Final
+import sys
+from collections.abc import Sequence
+from typing import Final
 
 from boba.domain.core.config import ConfigKey, ConfigSource
 
 __all__ = [
     "FLAG_PREFIX",
-    "CliArgsSource",
-    "CliFlag",
-    "add_to_parser",
+    "CliSource",
     "cli_dest",
     "cli_flag_name",
-    "from_namespace",
 ]
 
 
@@ -57,80 +57,40 @@ def cli_dest(key: ConfigKey) -> str:
     """ConfigKey → dest-имя в argparse.Namespace.
 
     argparse автоматически выводит ``"--agent-run-model"`` →
-    ``"agent_run_model"``; делаем то же явно, чтобы from_namespace
-    смотрел на тот же атрибут.
+    ``"agent_run_model"``; делаем то же явно — пригодится, если
+    оператор хочет дублировать флаг в своём user-facing argparse.
     """
-    return "_".join(p for p in key.parts).replace("-", "_")
+    return "_".join(key.parts).replace("-", "_")
 
 
-@dataclass(frozen=True)
-class CliFlag:
-    """Декларативная связка ConfigKey и argparse-флага.
+class CliSource(ConfigSource):
+    """Читает значение из argv по имени, выведенному из ConfigKey
+    через cli_flag_name. По умолчанию sys.argv[1:]; для тестов можно
+    передать явный argv.
 
-    Имя флага вычисляется из key через cli_flag_name() — никакого
-    хардкода в декларации.
-
-    action — argparse-action: ``"store"`` (default) или ``"append"`` для
-    повторяемых флагов (``--agent-run-stop X --agent-run-stop Y``).
-
-    help — строка для argparse ``--help``.
+    При нескольких вхождениях одного флага побеждает последнее (как у
+    argparse store-action). Для list-полей оператор передаёт CSV в
+    значении (``--agent-run-stop "X,Y"``) — раскладывает ParseCsvList.
     """
 
-    key: ConfigKey
-    action: str = "store"
-    help: str = ""
-
-    @property
-    def flag(self) -> str:
-        return cli_flag_name(self.key)
-
-    @property
-    def dest(self) -> str:
-        return cli_dest(self.key)
-
-
-class CliArgsSource(ConfigSource):
-    """ConfigSource поверх Mapping[ConfigKey, object].
-
-    Принимает уже распакованный mapping; типичная сборка — через
-    from_namespace(ns, FLAGS). Empty-string и None трактуются как
-    «не задано» (пустые VS Code launch.json input-боксы) — следующий
-    источник в цепочке отвечает.
-    """
-
-    def __init__(self, args: Mapping[ConfigKey, object | None]) -> None:
-        self._args = {
-            k: v for k, v in args.items() if v is not None and v != ""
-        }
+    def __init__(self, argv: Sequence[str] | None = None) -> None:
+        self._argv: list[str] = list(argv) if argv is not None else list(sys.argv[1:])
 
     def resolve(self, key: ConfigKey) -> object | None:
-        return self._args.get(key)
-
-
-def add_to_parser(
-    parser: argparse.ArgumentParser,
-    flags: Iterable[CliFlag],
-) -> None:
-    """Добавляет в parser argparse-аргументы по списку CliFlag.
-
-    Имя флага и dest вычисляются из key. Все флаги получают
-    ``default=None`` — отсутствие значения в Namespace ↔ «оператор не
-    передал флаг» ↔ fall-through к следующим источникам в резолвере.
-    """
-    for f in flags:
-        kwargs: dict[str, Any] = {"default": None, "dest": f.dest}
-        if f.help:
-            kwargs["help"] = f.help
-        if f.action != "store":
-            kwargs["action"] = f.action
-        parser.add_argument(f.flag, **kwargs)
-
-
-def from_namespace(
-    ns: argparse.Namespace,
-    flags: Iterable[CliFlag],
-) -> CliArgsSource:
-    """Собирает CliArgsSource из argparse.Namespace по тому же списку
-    CliFlag, что был использован в add_to_parser.
-    """
-    return CliArgsSource({f.key: getattr(ns, f.dest, None) for f in flags})
+        flag = cli_flag_name(key)
+        prefix = flag + "="
+        result: str | None = None
+        i = 0
+        while i < len(self._argv):
+            tok = self._argv[i]
+            if tok == flag:
+                if i + 1 < len(self._argv):
+                    result = self._argv[i + 1]
+                i += 2
+                continue
+            if tok.startswith(prefix):
+                result = tok[len(prefix) :]
+            i += 1
+        if result is None or result == "":
+            return None
+        return result

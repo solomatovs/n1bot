@@ -3,15 +3,18 @@
 Единственное место в пакете, где собирается ConfigBundle. ChatSession
 получает готовый bundle через set_bundle() — без повторного похода в env/TOML.
 
-Шаги: CLI-флаги → ConfigBundle (CLI > env > TOML + entry-points) →
-bridge_chainlit_env (server-поля в CHAINLIT_* env, app_root) →
+Шаги: ConfigBundle (Cli/Env/Toml — все автономны, читают свои каналы
+сами) → bridge_chainlit_env (server-поля в CHAINLIT_* env, app_root) →
 UIOverrideTomlConverter (UI-поля в app_root/.chainlit/config.toml) →
 run_chainlit(app.py).
+
+Имена CLI-флагов вычисляются из ConfigKey'ев секции (см. cli_flag_name).
+Свой argparse тут не объявляем — нет позиционных аргументов; флаги
+видит CliSource напрямую из sys.argv.
 """
 
 from __future__ import annotations
 
-import argparse
 import os
 from collections.abc import Sequence
 from pathlib import Path
@@ -19,15 +22,10 @@ from pathlib import Path
 from boba.adapter.fs_workspace import WorkspacesSection
 from boba.adapter.openai import LLMTransportSection
 from boba.adapter.prompt_providers import PromptsSection
-from boba.config.cli import CliFlag, add_to_parser, from_namespace
+from boba.config.cli import CliSource
 from boba.config.env import EnvFileSource, EnvSource
-from boba.config.toml import (
-    CONFIG_PATH_ENV,
-    TomlFileSource,
-    TomlSource,
-    load_toml,
-)
-from boba.domain.core.config import ChainedConfigResolver, ConfigKey
+from boba.config.toml import TomlFileSource, TomlSource
+from boba.domain.core.config import ChainedConfigResolver
 from boba.infra import (
     AgentSection,
     AppCoreSection,
@@ -39,53 +37,28 @@ from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
 from boba.web.chainlit.session import ChatSession
 from boba.web.chainlit.ui_overrides import UIOverrideTomlConverter
 
-# Декларативный список CLI-флагов: пакет boba.config.cli использует его и
-# для add_to_parser (генерация argparse-аргументов), и для from_namespace
-# (сборка CliArgsSource из распарсенного Namespace).
-_FLAGS: tuple[CliFlag, ...] = (
-    CliFlag(ConfigKey("chainlit", "host")),
-    CliFlag(ConfigKey("chainlit", "port")),
-    CliFlag(ConfigKey("chainlit", "root_path")),
-    CliFlag(ConfigKey("chainlit", "app_root")),
-)
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Argparse
-# ──────────────────────────────────────────────────────────────────────
-
-
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="boba-web-chainlit",
-        description="Bootstrap and start the Chainlit web UI for the Boba agent.",
-    )
-    add_to_parser(parser, _FLAGS)
-    return parser
-
-
 # ──────────────────────────────────────────────────────────────────────
 # Bundle assembly
 # ──────────────────────────────────────────────────────────────────────
 
 
-def build_bundle(args: argparse.Namespace) -> ConfigBundle:
+def build_bundle() -> ConfigBundle:
     """Собирает application ConfigBundle.
 
     Цепочка источников: CLI > env-file > env > toml-file > toml.
-    Регистрирует встроенные секции (app_core/agent) и adapter-секции
-    (FS-workspace, OpenAI-транспорт, file-prompt loader, chainlit).
-    Расширения через entry-point group boba.config_sections
-    подхватываются после.
+    Все источники автономны: Cli ходит за sys.argv, Env за os.environ,
+    Toml за файлом по env BOBA_CONFIG_PATH. Регистрирует встроенные
+    секции (app_core/agent) и adapter-секции (FS-workspace, OpenAI,
+    prompt-providers, chainlit). Расширения через entry-point group
+    boba.config_sections подхватываются после.
     """
-    toml_data = load_toml(os.environ.get(CONFIG_PATH_ENV))
     resolver = ChainedConfigResolver(
         [
-            from_namespace(args, _FLAGS),
+            CliSource(),
             EnvFileSource(),
             EnvSource(),
-            TomlFileSource(toml_data),
-            TomlSource(toml_data),
+            TomlFileSource(),
+            TomlSource(),
         ]
     )
     factory = ConfigFactory(resolver)
@@ -143,8 +116,11 @@ def write_ui_config_overrides(cfg: ChainlitConfig, app_root: Path) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    args = _build_parser().parse_args(argv)
-    bundle = build_bundle(args)
+    # argv в эту main приходит для совместимости с stdlib-конвенцией
+    # (entry-point script + python -m); CliSource внутри build_bundle
+    # читает sys.argv сам.
+    del argv
+    bundle = build_bundle()
     chainlit_cfg = bundle.section(ChainlitSection)
     app_root = bridge_chainlit_env(chainlit_cfg)
     write_ui_config_overrides(chainlit_cfg, app_root)
