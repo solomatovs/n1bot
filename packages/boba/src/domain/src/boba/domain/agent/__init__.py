@@ -66,10 +66,12 @@ from boba.domain.agent.middleware import (
 )
 from boba.domain.agent.orchestrator import Agent
 from boba.domain.agent.messages import (
+    MessageReader,
     MessageService,
     MessageStoreError,
     MessageStoreReadError,
     MessageStoreWriteError,
+    MessageWriter,
 )
 from boba.domain.agent.models import AgentConfig, AgentContext, AgentRequest
 from boba.domain.agent.payloads import (
@@ -135,10 +137,12 @@ __all__ = [
     "LLMResponseStreamOpened",
     "MaxIterationsExceededError",
     "MaxIterationsReached",
+    "MessageReader",
     "MessageService",
     "MessageStoreError",
     "MessageStoreReadError",
     "MessageStoreWriteError",
+    "MessageWriter",
     "ModelReducer",
     "PermanentPromptError",
     "PersistenceFailed",

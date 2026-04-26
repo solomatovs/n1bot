@@ -1,34 +1,34 @@
-"""DialogueWriter — единственный писатель в :class:`MessageService`.
-
-Все фиксации в историю диалога внутри агентского цикла идут через
-этот фасад. Это даёт инвариант «один писатель», который снимает
-размазанную ответственность между middleware и упрощает рассуждения
-о порядке записей.
+"""DialogueWriter — единственный писатель в историю сообщений.
 
 Семантика методов привязана к доменным событиям, а не к
 :class:`LLMMessage` напрямую: caller думает в терминах «что
 произошло» (пользователь прислал query, модель ответила, тул вернул
 результат, ошибка превратилась в feedback), а writer кодирует это в
-правильный ``role``/payload.
+правильный ``role``/payload и пишет через :class:`MessageWriter`-порт.
+
+Инвариант «один писатель» гарантируется типами: единственный, кому
+DI отдаёт :class:`MessageWriter` — это сам DialogueWriter. Все
+остальные consumer'ы получают только :class:`MessageReader`, который
+не умеет ``add``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 
-from boba.domain.agent.messages import MessageService
+from boba.domain.agent.messages import MessageWriter
 from boba.domain.llm.models import LLMMessage, LLMToolCall
 
 
 class DialogueWriter:
-    """Тонкий фасад поверх :class:`MessageService`.
+    """Доменный фасад поверх :class:`MessageWriter`.
 
-    Внутри агентского цикла никто не должен звать ``message_service.add()``
-    напрямую — все записи идут через этот объект.
+    Принимает :class:`MessageWriter` (write-side только). Маппит
+    доменные операции в :class:`LLMMessage`-структуры и пишет.
     """
 
-    def __init__(self, service: MessageService) -> None:
-        self._service = service
+    def __init__(self, writer: MessageWriter) -> None:
+        self._writer = writer
 
     def append_user_query(self, content: str) -> None:
         """Первое сообщение пользователя.
@@ -39,7 +39,7 @@ class DialogueWriter:
         шаблоны, контекст вызова) — ответственность caller'а
         (frontend/CLI), не агента.
         """
-        self._service.add(LLMMessage(role="user", content=content))
+        self._writer.add(LLMMessage(role="user", content=content))
 
     def append_assistant(
         self,
@@ -47,7 +47,7 @@ class DialogueWriter:
         tool_calls: Iterable[LLMToolCall],
     ) -> None:
         """Ответ модели после :class:`GenerationDone`."""
-        self._service.add(
+        self._writer.add(
             LLMMessage(
                 role="assistant",
                 content=content,
@@ -62,7 +62,7 @@ class DialogueWriter:
         ещё «результат вызова инструмента», просто с негативным
         payload'ом в случае ошибки.
         """
-        self._service.add(
+        self._writer.add(
             LLMMessage(
                 role="tool",
                 content=content,
@@ -81,7 +81,7 @@ class DialogueWriter:
         собирается здесь. Внешним вызывающим код-путям нельзя
         прокинуть готовый ``LLMMessage``.
         """
-        self._service.add(LLMMessage(role="user", content=content))
+        self._writer.add(LLMMessage(role="user", content=content))
 
     def append_tool_call_rejection(
         self,
@@ -101,6 +101,6 @@ class DialogueWriter:
         фиксирует «мы запустили tool и получили X», этот — «мы НЕ
         запускали; вот критика».
         """
-        self._service.add(
+        self._writer.add(
             LLMMessage(role="tool", content=content, tool_call_id=tool_call_id),
         )

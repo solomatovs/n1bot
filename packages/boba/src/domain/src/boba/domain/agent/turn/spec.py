@@ -27,7 +27,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from boba.domain.agent.messages import MessageService
+from boba.domain.agent.messages import MessageReader
 from boba.domain.agent.models import AgentContext
 from boba.domain.core.patterns import ContextFoldFactory, StrId
 from boba.domain.llm.errors import (
@@ -56,7 +56,7 @@ class TurnState:
 @dataclass(frozen=True)
 class TurnResolveContext:
     agent: AgentContext
-    message_service: MessageService
+    message_reader: MessageReader
 
 
 class TurnSpec(

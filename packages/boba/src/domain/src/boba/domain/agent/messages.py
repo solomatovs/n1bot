@@ -1,21 +1,27 @@
-"""Порт сервиса управления историей сообщений + ошибки persistent-реализаций.
+"""Порт хранения истории сообщений: разделение на Reader и Writer.
 
-:class:`MessageService` хранит диалог (``system`` / ``user`` /
-``assistant`` / ``tool`` сообщения) как append-log. Записи в сервис
-делают в трёх местах:
+Контракты:
 
-1. :meth:`~boba.domain.agent.turn.spec.TurnSpec.initial` — применяет
-   :class:`~boba.domain.agent.turn.effects.TurnEffect`-ы trigger'а
-   в начале каждой итерации (user-query, tool-result, LLM feedback).
-2. :class:`~boba.domain.agent.middleware.dialogue.\
-AssistantMessagePersistenceMiddleware` — записывает assistant-сообщение
-   после :class:`~boba.domain.agent.events.GenerationDone`.
-3. :class:`~boba.domain.agent.turn.reducers.HistoryReducer` — не пишет,
-   а только **читает** ``message_iter()`` в ``TurnState.messages``
-   при сборке следующего :class:`LLMRequest`.
+- :class:`MessageReader` — read-side. ``message_iter()`` / ``last()``.
+  Используется :class:`~boba.domain.agent.turn.reducers.HistoryReducer`
+  для сборки снапшота диалога в :class:`LLMRequest`.
+- :class:`MessageWriter` — write-side. ``add(message)`` / ``clear()``.
+  Используется ТОЛЬКО :class:`~boba.domain.agent.dialogue_writer.\
+DialogueWriter` — он маппит доменные операции (user-query, assistant,
+  tool-result, …) в правильные ``LLMMessage``-структуры. Никто иной
+  не получает ``MessageWriter`` через DI — это инвариант «один
+  писатель», поднятый с уровня конвенции на уровень типов.
+- :class:`MessageService` — композиция обоих интерфейсов. Тип для
+  *реализаций* (in-memory, JSONL): они держат собственно хранилище и
+  отвечают на оба контракта. Внешним консьюмерам отдают НАРРОВ:
+  reader-сторонникам — :class:`MessageReader`, DialogueWriter'у —
+  :class:`MessageWriter`.
 
-In-memory реализация — :mod:`boba.adapters.in_memory_messages`,
-persistent (JSONL) — :mod:`boba.adapters.jsonl_messages`.
+Реализации:
+
+- in-memory — :mod:`boba.adapters.in_memory_messages`,
+- persistent (JSONL) — :mod:`boba.adapters.jsonl_messages`.
+
 Контракт ошибок persistent-реализаций — потомки
 :class:`MessageStoreError`.
 """
@@ -28,6 +34,15 @@ from collections.abc import Iterator
 from boba.domain.agent.events import AgentEvent, PersistenceFailed
 from boba.domain.core.errors import TerminalError
 from boba.domain.llm.models import LLMMessage, RequestId
+
+__all__ = [
+    "MessageReader",
+    "MessageService",
+    "MessageStoreError",
+    "MessageStoreReadError",
+    "MessageStoreWriteError",
+    "MessageWriter",
+]
 
 
 class MessageStoreError(TerminalError[RequestId, AgentEvent]):
@@ -59,7 +74,6 @@ class MessageStoreError(TerminalError[RequestId, AgentEvent]):
         )
 
 
-
 class MessageStoreWriteError(MessageStoreError):
     """Не удалось записать сообщение в хранилище."""
 
@@ -74,17 +88,46 @@ class MessageStoreReadError(MessageStoreError):
         return "Cannot read messages"
 
 
-class MessageService(ABC):
-    """Абстрактный сервис управления историей сообщений.
+class MessageReader(ABC):
+    """Read-side порт хранилища сообщений.
 
-    Реализации могут быть как ephemeral (in-memory), так и persistent
-    (диалог между запусками процесса восстанавливается реализацией
-    самостоятельно при создании инстанса — без внешнего replay-слоя).
+    Тип-маркер для consumer'ов, которым нужно только читать диалог:
+    :class:`~boba.domain.agent.turn.reducers.HistoryReducer` собирает
+    снапшот через :meth:`message_iter` для следующего :class:`LLMRequest`.
 
-    Контракт ошибок: persistent-реализации ОБЯЗАНЫ наружу бросать
-    только потомков :class:`MessageStoreError`. Внутренние исключения
-    (диск, сериализация) должны быть обёрнуты; исходное — через
-    ``__cause__``.
+    Никаких write-методов — даже если объект на самом деле
+    :class:`MessageService` (полная имплементация), reader-аннотация
+    статически запрещает писать.
+    """
+
+    @abstractmethod
+    def message_iter(self) -> Iterator[LLMMessage]:
+        """Вернуть все сообщения в порядке добавления.
+
+        Raises:
+            MessageStoreReadError: persistent-реализация не смогла
+                прочитать хранилище.
+        """
+        ...
+
+    @abstractmethod
+    def last(self) -> LLMMessage | None:
+        """Последнее сообщение или ``None``, если история пуста."""
+        ...
+
+
+class MessageWriter(ABC):
+    """Write-side порт хранилища сообщений.
+
+    Передаётся ТОЛЬКО :class:`~boba.domain.agent.dialogue_writer.\
+DialogueWriter`. Это закрытый канал записи: внешний код agent-слоя
+    не должен иметь референса на ``MessageWriter``, тем самым
+    инвариант «единственный писатель — DialogueWriter» гарантируется
+    типами, а не конвенцией.
+
+    Контракт: ``add`` принимает сырой :class:`LLMMessage`. Маппинг
+    «доменная операция → LLMMessage» делает DialogueWriter; здесь
+    интерфейс уже на transport-уровне.
     """
 
     @abstractmethod
@@ -98,16 +141,6 @@ class MessageService(ABC):
         ...
 
     @abstractmethod
-    def message_iter(self) -> Iterator[LLMMessage]:
-        """Вернуть все сообщения в порядке добавления."""
-        ...
-
-    @abstractmethod
-    def last(self) -> LLMMessage | None:
-        """Последнее сообщение или ``None``, если история пуста."""
-        ...
-
-    @abstractmethod
     def clear(self) -> None:
         """Очистить всю историю.
 
@@ -116,3 +149,27 @@ class MessageService(ABC):
                 очистить хранилище.
         """
         ...
+
+
+class MessageService(MessageReader, MessageWriter, ABC):
+    """Композиция :class:`MessageReader` + :class:`MessageWriter`.
+
+    Тип для *реализаций* (in-memory, JSONL): один объект держит
+    хранилище и реализует оба контракта. Container получает реализацию,
+    а наружу инжектирует НАРРОВ:
+
+    - DialogueWriter принимает :class:`MessageWriter` — может только
+      писать;
+    - HistoryReducer / LLMInvokeMiddleware принимают
+      :class:`MessageReader` — могут только читать.
+
+    Имплементации могут быть как ephemeral (in-memory), так и
+    persistent (диалог между запусками процесса восстанавливается
+    реализацией самостоятельно при создании инстанса — без внешнего
+    replay-слоя).
+
+    Контракт ошибок: persistent-реализации ОБЯЗАНЫ наружу бросать
+    только потомков :class:`MessageStoreError`. Внутренние исключения
+    (диск, сериализация) должны быть обёрнуты; исходное — через
+    ``__cause__``.
+    """

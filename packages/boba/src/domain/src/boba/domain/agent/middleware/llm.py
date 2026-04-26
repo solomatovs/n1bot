@@ -4,7 +4,7 @@
 итерацию:
 
 1. собирает :class:`LLMRequest` через :class:`TurnSpec` из текущего
-   снапшота :class:`MessageService`;
+   снапшота :class:`MessageReader`;
 2. стримит события LLM-слоя и конвертирует их в :class:`AgentEvent`.
 
 Маппинг LLM → Agent stateful: на стороне агента ``LLMRequestSent``
@@ -40,7 +40,7 @@ from boba.domain.agent.events import (
     ToolCallStreamStarted,
 )
 from boba.domain.agent.events import LLMRequestSent as AgentLLMRequestSent
-from boba.domain.agent.messages import MessageService
+from boba.domain.agent.messages import MessageReader
 from boba.domain.agent.models import AgentContext
 from boba.domain.agent.turn.spec import TurnResolveContext, TurnSpec
 from boba.domain.core.patterns import StreamSource
@@ -148,10 +148,11 @@ class _LLMToAgentConverter:
 class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
     """Терминал агентской цепочки: build request → invoke LLM.
 
-    Снапшот истории читается :class:`HistoryReducer` напрямую из
-    :class:`MessageService` — все записи предыдущей итерации
+    Снапшот истории :class:`HistoryReducer` читает напрямую из
+    :class:`MessageReader` — все записи предыдущей итерации
     (assistant, tool_results, feedback) уже зафиксированы через
-    :class:`DialogueWriter`.
+    :class:`DialogueWriter`. Read-only порт по типу: middleware не
+    может писать в историю мимо writer'а.
 
     :class:`LLMError` из LLM-слоя оборачивается в
     :class:`LLMGenerationFailedError` (terminal + user-feedback) —
@@ -162,11 +163,11 @@ class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
         self,
         llm_source: StreamSource[LLMContext, LLMEvent],
         spec: TurnSpec,
-        message_service: MessageService,
+        message_reader: MessageReader,
     ) -> None:
         self._llm_source = llm_source
         self._spec = spec
-        self._message_service = message_service
+        self._message_reader = message_reader
 
     def name(self) -> str:
         return "LLMInvoke"
@@ -175,7 +176,7 @@ class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
         request = self._spec.build(
             TurnResolveContext(
                 agent=ctx,
-                message_service=self._message_service,
+                message_reader=self._message_reader,
             )
         )
         converter = _LLMToAgentConverter(request)
