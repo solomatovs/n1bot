@@ -22,7 +22,7 @@ from boba.domain.core.workspace import (
     WorkspaceNotFoundError,
     WorkspaceRegistry,
 )
-from boba_adapter_fs_workspace._shell import (
+from boba_adapter_fs_workspace.shell import (
     FsHistoryWorkspaceShell,
     FsProjectWorkspaceShell,
     FsPromptWorkspaceShell,

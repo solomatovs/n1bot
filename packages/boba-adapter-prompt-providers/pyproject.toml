@@ -7,9 +7,7 @@ name = "boba-adapter-prompt-providers"
 version = "0.1.0"
 description = "Concrete PromptProvider implementations for Boba (static, file, env, git, workspace-system)."
 requires-python = ">=3.11,<4"
-# Реализует :class:`boba.domain.agent.prompt.PromptProvider`. Все провайдеры
-# пишут в system-prompt; USER-сообщение готовится caller'ом и передаётся
-# через :attr:`AgentRequest.query`.
+# Реализует :class:`boba.domain.agent.prompt.PromptProvider`
 dependencies = ["boba"]
 
 [tool.setuptools.packages.find]

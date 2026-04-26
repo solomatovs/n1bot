@@ -17,7 +17,16 @@ import os
 from pathlib import Path
 
 from boba.domain.core.config import ChainedConfigResolver
-from boba.infra.config import ConfigBundle, ConfigLoader, default_config_factory
+from boba.infra import (
+    AgentSection,
+    AppCoreSection,
+    ConfigBundle,
+    ConfigFactory,
+    ConfigLoader,
+)
+from boba_adapter_fs_workspace import WorkspacesSection
+from boba_adapter_openai import LLMTransportSection
+from boba_adapter_prompt_providers import PromptsSection
 from boba_chainlit.config import ChainlitConfig, ChainlitSection
 from boba_chainlit.ui_overrides import (
     ChainlitUiOverrideSection,
@@ -73,8 +82,24 @@ def _write_ui_config_overrides(bundle: ConfigBundle) -> None:
     target.write_text(content, encoding="utf-8")
 
 
+def _build_factory() -> ConfigFactory:
+    """Регистрирует встроенные секции (``app_core``/``agent``) и
+    adapter-секции (FS-workspace, OpenAI-транспорт, file-prompt loader).
+    Расширения через entry-point group ``boba.config_sections``
+    подхватываются после.
+    """
+    factory = ConfigFactory(_build_resolver())
+    factory.register(AppCoreSection())
+    factory.register(AgentSection())
+    factory.register(WorkspacesSection())
+    factory.register(LLMTransportSection())
+    factory.register(PromptsSection())
+    factory.discover_extension_sections()
+    return factory
+
+
 def main() -> None:
-    loader = ConfigLoader(default_config_factory(_build_resolver()))
+    loader = ConfigLoader(_build_factory())
     bundle = loader.load_bundle()
     _bootstrap_env(bundle.section(ChainlitSection))
     _write_ui_config_overrides(bundle)

@@ -18,6 +18,7 @@ from boba.domain.core.tools.errors import (
     ToolIdCollisionError,
     ToolOutputTooLargeError,
 )
+from boba.domain.core.tools.ids import ToolId, ToolSourceId
 from boba.domain.core.tools.registry import (
     StaticToolSource,
     ToolCatalog,
@@ -26,7 +27,6 @@ from boba.domain.core.tools.registry import (
     ToolsService,
     ToolStore,
 )
-from boba.domain.core.tools.ids import ToolId, ToolSourceId
 from boba.domain.core.tools.tool import (
     SchemaArgsValidator,
     Tool,

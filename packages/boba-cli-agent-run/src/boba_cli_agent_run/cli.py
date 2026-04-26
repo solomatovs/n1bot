@@ -23,26 +23,32 @@ from boba.domain.core.workspace import (
     WorkspaceId,
 )
 from boba.domain.llm.models import RequestId, SamplingParams
-from boba.infra.config import ConfigLoader, default_config_factory
-from boba.infra.container import (
+from boba.infra import (
     AgentComponents,
-    build_prompt_providers,
+    AgentSection,
+    AppCoreSection,
+    ConfigFactory,
+    ConfigLoader,
+    ExtensionContext,
+    ToolPluginLoader,
+    configure_logging,
     create_agent,
 )
-from boba.infra.logging import configure_logging
-from boba.infra.prompt_loader import PromptLoader
-from boba.infra.tool_plugin_loader import ExtensionContext, ToolPluginLoader
 from boba_adapter_fs_workspace import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
     FsPromptWorkspaceRegistry,
+    WorkspacesSection,
 )
 from boba_adapter_messages import InMemoryMessageService
 from boba_adapter_openai import (
     CompositeRawLLMObserver,
     FileContentObserver,
     FileRawLLMObserver,
+    LLMTransportSection,
+    create_llm_source,
 )
+from boba_adapter_prompt_providers import PromptLoader, PromptsSection
 from boba_cli_agent_run.console_sink import ConsoleSink
 from boba_config_env import EnvFileSource, EnvSource
 from boba_config_toml import (
@@ -145,9 +151,25 @@ def _build_resolver() -> ChainedConfigResolver:
     )
 
 
+def _build_factory() -> ConfigFactory:
+    """Регистрирует встроенные секции (``app_core``/``agent``) и
+    adapter-секции выбранного стека (FS-workspace, OpenAI-транспорт,
+    file-prompt loader). Расширения через entry-point group
+    ``boba.config_sections`` подхватываются после.
+    """
+    factory = ConfigFactory(_build_resolver())
+    factory.register(AppCoreSection())
+    factory.register(AgentSection())
+    factory.register(WorkspacesSection())
+    factory.register(LLMTransportSection())
+    factory.register(PromptsSection())
+    factory.discover_extension_sections()
+    return factory
+
+
 def _run(query: str, model: str, sampling: SamplingParams | None) -> None:
     """Собирает агент с полным стеком middleware и прогоняет один запрос."""
-    loader = ConfigLoader(default_config_factory(_build_resolver()))
+    loader = ConfigLoader(_build_factory())
     bundle = loader.load_bundle()
     app_config = bundle.app
     agent_config = bundle.agent
@@ -172,21 +194,23 @@ def _run(query: str, model: str, sampling: SamplingParams | None) -> None:
         subdir=app_config.workspaces.system_subdir,
     ).get_or_create(workspace_id)
 
+    observer = CompositeRawLLMObserver(
+        [
+            FileRawLLMObserver(history_workspace),
+            FileContentObserver(history_workspace),
+        ]
+    )
+    llm_source = create_llm_source(app_config.llm, observer)
+
     agent = create_agent(
-        llm_config=app_config.llm,
+        llm_source=llm_source,
         components=AgentComponents(
             agent_config=agent_config,
-            prompt_providers=build_prompt_providers(prompt_loader),
+            prompt_providers=prompt_loader.prompt_providers(),
             message_service=InMemoryMessageService(),
             tools_service=tool_loader.tools_service(),
         ),
         tool_ctx=ToolContext(project_workspace=project_workspace),
-        observer=CompositeRawLLMObserver(
-            [
-                FileRawLLMObserver(history_workspace),
-                FileContentObserver(history_workspace),
-            ]
-        ),
         sink=ConsoleSink(sys.stdout, sys.stderr),
     )
 

@@ -1,13 +1,17 @@
+"""Сборка agent-source и :class:`Agent` без привязки к LLM-адаптеру.
+
+LLM-source строит caller (через ``boba_adapter_openai.create_llm_source``
+или альтернативный pip-пакет), сюда приходит уже готовый
+:class:`StreamSource[LLMContext, LLMEvent]`. Все middleware/reducer
+агентского слоя — adapter-agnostic, поэтому модуль не тянет зависимостей
+на конкретные SDK.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from boba_adapter_openai import (
-    OpenAITerminal,
-    RawLLMObserver,
-    build_openai_client,
-)
 from boba.domain.agent import (
     Agent,
     AgentConfig,
@@ -31,7 +35,6 @@ from boba.domain.agent import (
     ToolsReducer,
     TurnSpec,
 )
-from boba.domain.config import LLMConfig
 from boba.domain.core.patterns import (
     StreamSink,
     StreamSource,
@@ -41,7 +44,6 @@ from boba.domain.core.patterns import (
 from boba.domain.core.tools import ToolContext, ToolsService
 from boba.domain.llm.events import LLMEvent
 from boba.domain.llm.models import LLMContext
-from boba.infra.prompt_loader import PromptLoader
 
 
 @dataclass(frozen=True)
@@ -50,29 +52,6 @@ class AgentComponents:
     prompt_providers: Sequence[PromptProvider]
     message_service: MessageService
     tools_service: ToolsService
-
-
-def build_prompt_providers(loader: PromptLoader) -> Sequence[PromptProvider]:
-    """Application-level список :class:`PromptProvider` (system-prompt).
-
-    Все провайдеры идут от :class:`PromptLoader` из директории
-    ``BOBA_PROMPTS_DIR`` (текстовые ``.md``/``.txt``-блоки). USER-блок
-    через PromptFactory не собирается — пользовательское сообщение
-    приходит уже отформатированным в ``AgentRequest.query``.
-    """
-    return loader.prompt_providers()
-
-
-def create_llm_source(
-    llm_config: LLMConfig,
-    observer: RawLLMObserver,
-) -> StreamSource[LLMContext, LLMEvent]:
-    return StreamSourceChainBuilder[LLMContext, LLMEvent]().terminal(
-        OpenAITerminal(
-            build_openai_client(llm_config),
-            observer=observer,
-        )
-    )
 
 
 def build_turn_spec(components: AgentComponents) -> TurnSpec:
@@ -118,14 +97,12 @@ def create_agent_source(
 
 
 def create_agent(
-    llm_config: LLMConfig,
+    llm_source: StreamSource[LLMContext, LLMEvent],
     components: AgentComponents,
     tool_ctx: ToolContext,
-    observer: RawLLMObserver,
     sink: StreamSink[AgentContext, AgentEvent],
 ) -> Agent:
     writer = DialogueWriter(components.message_service)
-    llm_source = create_llm_source(llm_config, observer)
     source = create_agent_source(
         llm_source,
         components,

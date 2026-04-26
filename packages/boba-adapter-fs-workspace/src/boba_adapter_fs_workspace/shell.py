@@ -37,7 +37,7 @@ from boba.domain.core.workspace import (
     WorkspacePermissionError,
     WorkspaceShell,
 )
-from boba_adapter_fs_workspace._growbuffer import GrowBuffer
+from boba_adapter_fs_workspace.growbuffer import GrowBuffer
 
 TWsId = TypeVar("TWsId", bound=Id)
 

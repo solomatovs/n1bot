@@ -2,26 +2,28 @@
 
 Структурно:
 
-- :class:`~boba.domain.core.config.ConfigSection`-секции (LLM, agent,
-  workspaces, …) объявляют свои поля декларативно (через
+- :class:`~boba.domain.core.config.ConfigSection`-секции (agent, app_core,
+  плюс секции адаптеров: ``LLMTransportSection`` /
+  ``WorkspacesSection`` / ``PromptsSection`` живут в соответствующих
+  ``boba-adapter-*`` пакетах) объявляют свои поля декларативно (через
   :class:`~boba.domain.core.config.FieldSpec` поверх
   :class:`~boba.domain.core.config.ConfigKey`) и строят типизированный
-  DTO. Тот же примитив используется секциями расширений.
-- :class:`ConfigFactory` регистрирует встроенные секции и подхватывает
-  секции расширений через entry-point group ``boba.config_sections``.
+  DTO.
+- :class:`ConfigFactory` регистрирует секции и подхватывает секции
+  расширений через entry-point group ``boba.config_sections``.
   :meth:`ConfigFactory.build` возвращает :class:`ConfigBundle`.
 - :class:`ConfigBundle` — итог сборки: ``dict[StrId, T_DTO]`` +
   типизированный доступ через :meth:`ConfigBundle.section`. Удобные
   свойства :attr:`ConfigBundle.app` и :attr:`ConfigBundle.agent`
-  композируют :class:`AppConfig` / :class:`AgentConfig` из встроенных
-  секций.
+  композируют :class:`AppConfig` / :class:`AgentConfig` из секций
+  ``app_core``, ``workspaces``, ``llm_transport``, ``prompts``,
+  ``agent`` (последние три приходят из адаптерных пакетов).
 - :class:`ConfigLoader` — тонкая ленивая обёртка с кэшем бандла.
 
-Конкретные :class:`ConfigSource`-реализации (env, TOML, …) живут в
-**отдельных пакетах**: :mod:`boba_config_env`, :mod:`boba_config_toml`
-и т.п. Bootstrap приложения сам собирает свою цепочку источников и
-передаёт готовый :class:`~boba.domain.core.config.ChainedConfigResolver`
-в :func:`default_config_factory`.
+Bootstrap приложения собирает цепочку :class:`ConfigSource`-источников
+(env/TOML/…), создаёт :class:`ConfigFactory`, регистрирует
+встроенные :class:`AppCoreSection`/:class:`AgentSection` и нужные
+adapter-секции, и затем зовёт :meth:`build`.
 
 LLM-sampling-параметров здесь нет: единственный источник —
 :class:`~boba.domain.agent.models.AgentRequest.sampling`, прокидываемый
@@ -55,7 +57,6 @@ from boba.domain.core.validators import (
     ParseBool,
     ParseInt,
     ParseString,
-    Required,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,10 +75,6 @@ __all__ = [
     "ConfigSectionAlreadyRegisteredError",
     "ConfigSectionMissingError",
     "DefaultSource",
-    "LLMTransportSection",
-    "PromptsSection",
-    "WorkspacesSection",
-    "default_config_factory",
 ]
 
 
@@ -156,12 +153,19 @@ class AppCoreConfig:
     log_file: str | None
 
 
+_WORKSPACES_ID = StrId("workspaces")
+_LLM_TRANSPORT_ID = StrId("llm_transport")
+_PROMPTS_ID = StrId("prompts")
+
+
 class ConfigBundle:
     """Итог сборки: типизированный реестр секций по :class:`StrId`.
 
     :meth:`section` достаёт DTO нужной секции по её классу — type-checker
     видит конкретный T_DTO. :attr:`app` / :attr:`agent` — удобные свойства
-    для встроенных агрегатов.
+    для типичного app-стека: первый собирает :class:`AppConfig` из
+    ``app_core`` + adapter-секций (``workspaces``/``llm_transport``/
+    ``prompts``), второй — DTO ``agent``.
 
     Бандл иммутабельный (внутренний dict копируется при создании).
     """
@@ -179,17 +183,32 @@ class ConfigBundle:
             raise ConfigSectionMissingError(cls)
         return cast(T, self._sections[sid])
 
+    def _by_id(self, section_id: StrId) -> object:
+        """Сырой лукап по id — используется агрегатами :attr:`app` /
+        :attr:`agent`, чтобы не зависеть от классов секций (они живут в
+        adapter-пакетах). Если секции с таким id нет — :class:`ConfigError`.
+        """
+        if section_id not in self._sections:
+            raise ConfigError(
+                f"ConfigSection with id {section_id!r} is not registered "
+                "in factory; required by ConfigBundle.app/agent aggregate"
+            )
+        return self._sections[section_id]
+
     @property
     def app(self) -> AppConfig:
-        """Композиция встроенных секций в :class:`AppConfig`."""
+        """Композиция ``app_core`` + ``workspaces`` + ``llm_transport`` +
+        ``prompts`` в :class:`AppConfig`. Adapter-секции должны быть
+        зарегистрированы в фабрике.
+        """
         core = self.section(AppCoreSection)
         return AppConfig(
-            workspaces=self.section(WorkspacesSection),
+            workspaces=cast(WorkspaceLayout, self._by_id(_WORKSPACES_ID)),
             ssl_verify=core.ssl_verify,
             log_level=core.log_level,
             log_file=core.log_file,
-            llm=self.section(LLMTransportSection),
-            prompts_dir=self.section(PromptsSection),
+            llm=cast(LLMConfig, self._by_id(_LLM_TRANSPORT_ID)),
+            prompts_dir=cast(str, self._by_id(_PROMPTS_ID)),
         )
 
     @property
@@ -233,69 +252,6 @@ class AppCoreSection(ConfigSection[AppCoreConfig]):
     )
 
 
-class WorkspacesSection(ConfigSection[WorkspaceLayout]):
-    """Раскладка namespace'ов workspace'а относительно ``base_dir``."""
-
-    id: ClassVar[StrId] = StrId("workspaces")
-    namespace: ClassVar[tuple[str, ...]] = ("workspaces",)
-
-    schema: ClassVar[ObjectSchema[WorkspaceLayout]] = ObjectSchema(
-        description="Раскладка namespace'ов workspace'а относительно "
-        "base_dir.",
-        fields=[
-            FieldSpec(
-                name="base_dir",
-                converter=ChainConverter(Default("./workspaces"), ParseString()),
-                description="Корневая директория всех workspace-namespace'ов.",
-            ),
-            FieldSpec(
-                name="user_subdir",
-                converter=ChainConverter(Default("user"), ParseString()),
-                description="Имя поддиректории user-workspace'а внутри base_dir.",
-            ),
-            FieldSpec(
-                name="system_subdir",
-                converter=ChainConverter(Default("system"), ParseString()),
-                description="Имя поддиректории system-workspace'а внутри base_dir.",
-            ),
-            FieldSpec(
-                name="tmp_subdir",
-                converter=ChainConverter(Default("tmp"), ParseString()),
-                description="Имя поддиректории tmp-workspace'а внутри base_dir.",
-            ),
-        ],
-        factory=WorkspaceLayout,
-    )
-
-
-class LLMTransportSection(ConfigSection[LLMConfig]):
-    """Транспорт LLM-клиента: ``base_url`` + ``api_key``."""
-
-    id: ClassVar[StrId] = StrId("llm_transport")
-    namespace: ClassVar[tuple[str, ...]] = ("llm",)
-
-    schema: ClassVar[ObjectSchema[LLMConfig]] = ObjectSchema(
-        description="Транспорт LLM-клиента: base_url + api_key.",
-        fields=[
-            FieldSpec(
-                name="base_url",
-                converter=ChainConverter(
-                    Default("http://localhost:11434/v1"), ParseString(),
-                ),
-                description="OpenAI-совместимый base URL LLM-сервера "
-                "(LiteLLM/Ollama/...).",
-            ),
-            FieldSpec(
-                name="api_key",
-                converter=ChainConverter(Default("ollama"), ParseString()),
-                description="API-ключ LLM-сервера. "
-                "Для локального Ollama — любой непустой.",
-            ),
-        ],
-        factory=LLMConfig,
-    )
-
-
 class AgentSection(ConfigSection[AgentConfig]):
     """Лимиты агентского лупа."""
 
@@ -319,35 +275,6 @@ class AgentSection(ConfigSection[AgentConfig]):
             ),
         ],
         factory=AgentConfig,
-    )
-
-
-class PromptsSection(ConfigSection[str]):
-    """Путь к директории с системными prompt'ами.
-
-    ``DIR`` — обязательное поле: оператор должен явно указать, откуда
-    :class:`~boba.infra.prompt_loader.PromptLoader` берёт system-prompt
-    блоки при старте.
-
-    Поле в env-источнике маппится в ``BOBA_PROMPTS_DIR`` — секция
-    декларирует namespace ``("prompts",)`` и имя поля ``"dir"``.
-    Factory разворачивает kwargs-dict в строку (поле одно).
-    """
-
-    id: ClassVar[StrId] = StrId("prompts")
-    namespace: ClassVar[tuple[str, ...]] = ("prompts",)
-
-    schema: ClassVar[ObjectSchema[str]] = ObjectSchema(
-        description="Путь к директории с системными prompt'ами агента.",
-        fields=[
-            FieldSpec(
-                name="dir",
-                converter=ChainConverter(Required(), ParseString()),
-                description="Корневая директория .md/.txt-файлов "
-                "с system-prompt'ами.",
-            ),
-        ],
-        factory=lambda dir: dir,
     )
 
 
@@ -450,22 +377,3 @@ class ConfigLoader:
 
     def load_agent(self) -> AgentConfig:
         return self._ensure().agent
-
-
-def default_config_factory(
-    resolver: ChainedConfigResolver,
-) -> ConfigFactory:
-    """Фабрика приложения: регистрирует встроенные секции и подхватывает
-    секции расширений через entry-point group ``boba.config_sections``.
-
-    ``resolver`` — обязательный параметр: инфра не знает про конкретные
-    источники, цепочку собирает bootstrap.
-    """
-    factory = ConfigFactory(resolver)
-    factory.register(AppCoreSection())
-    factory.register(WorkspacesSection())
-    factory.register(LLMTransportSection())
-    factory.register(AgentSection())
-    factory.register(PromptsSection())
-    factory.discover_extension_sections()
-    return factory
