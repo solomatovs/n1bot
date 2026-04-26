@@ -23,14 +23,14 @@ from boba.adapters.growbuffer import GrowBuffer
 from boba.domain.core.patterns import Id, Specification
 from boba.domain.core.workspace import (
     EntryMeta,
-    ExtensionWorkspaceId,
-    ExtensionWorkspaceRegistry,
-    ExtensionWorkspaceShell,
     GrepMatch,
     HistoryWorkspaceRegistry,
     HistoryWorkspaceShell,
     ProjectWorkspaceRegistry,
     ProjectWorkspaceShell,
+    PromptWorkspaceId,
+    PromptWorkspaceRegistry,
+    PromptWorkspaceShell,
     ScratchWorkspaceRegistry,
     ScratchWorkspaceShell,
     WorkspaceDecodingError,
@@ -960,34 +960,34 @@ class FsScratchWorkspaceRegistry(
         super().__init__(base_dir, FsScratchWorkspaceShell, subdir, WorkspaceId.new)
 
 
-class FsExtensionWorkspaceShell(
-    FsWorkspaceShell[ExtensionWorkspaceId], ExtensionWorkspaceShell
+class FsPromptWorkspaceShell(
+    FsWorkspaceShell[PromptWorkspaceId], PromptWorkspaceShell
 ):
-    """Файловый :class:`ExtensionWorkspaceShell`."""
+    """Файловый :class:`PromptWorkspaceShell`."""
 
 
-class FsExtensionWorkspaceRegistry(
-    FsWorkspaceRegistry[FsExtensionWorkspaceShell, ExtensionWorkspaceId],
-    ExtensionWorkspaceRegistry,
+class FsPromptWorkspaceRegistry(
+    FsWorkspaceRegistry[FsPromptWorkspaceShell, PromptWorkspaceId],
+    PromptWorkspaceRegistry,
 ):
-    """Singleton-registry extension-namespace.
+    """Singleton-registry prompt-namespace.
 
     Корнем shell'а служит сам ``root`` (обычно
-    ``app_config.extensions_dir``) — без id и subdir в пути, потому что
-    extension workspace на всё приложение один. Конструктор принимает
+    ``app_config.prompts_dir``) — без id и subdir в пути, потому что
+    prompt workspace на всё приложение один. Конструктор принимает
     только директорию; остальные параметры базового
     :class:`FsWorkspaceRegistry` фиксированы.
     """
 
-    _SINGLETON_ID = ExtensionWorkspaceId("extensions")
+    _SINGLETON_ID = PromptWorkspaceId("prompts")
 
     def __init__(self, root: Path) -> None:
         super().__init__(
             base_dir=root,
-            shell_cls=FsExtensionWorkspaceShell,
+            shell_cls=FsPromptWorkspaceShell,
             subdir="",
             id_factory=lambda: self._SINGLETON_ID,
         )
 
-    def _workspace_dir(self, workspace_id: ExtensionWorkspaceId) -> Path:
+    def _workspace_dir(self, workspace_id: PromptWorkspaceId) -> Path:
         return self._base_dir

@@ -63,8 +63,8 @@ __all__ = [
     "EnvSource",
     "ExtensionsBagSection",
     "ExtensionsBagSource",
-    "ExtensionsSection",
     "LLMTransportSection",
+    "PromptsSection",
     "TomlFileSource",
     "TomlSource",
     "WorkspacesSection",
@@ -122,7 +122,7 @@ class ConfigState:
     log_level: str | None = None
     log_file: str | None = None
     agent: AgentConfig | None = None
-    extensions_dir: str | None = None
+    prompts_dir: str | None = None
     extensions: Mapping[str, Mapping[str, str]] | None = None
 
 
@@ -302,28 +302,31 @@ class AgentSection(ConfigSectionBuilder):
         return state
 
 
-class ExtensionsSection(ConfigSectionBuilder):
-    """Секция конфига расширений: путь к директории с .py/.md/.txt.
+class PromptsSection(ConfigSectionBuilder):
+    """Секция конфига промптов: путь к директории с .md/.txt-файлами.
 
-    Поле ``BOBA_EXTENSIONS_DIR`` обязательно — без него
+    Поле ``BOBA_PROMPTS_DIR`` обязательно — без него
     :meth:`FieldSpec.read` бросит :class:`ConverterInputError`, и
     приложение не стартует. Оператор обязан явно указать, откуда
-    :class:`~boba.infra.extensions.ExtensionLoader` берёт tools и
-    prompts при старте (env, TOML ``[extensions] dir`` или
-    ``_FILE``-секрет).
+    :class:`~boba.infra.prompt_loader.PromptLoader` берёт system-prompt
+    блоки при старте (env, TOML ``[prompts] dir`` или ``_FILE``-секрет).
+
+    Tool-расширения сюда не относятся — они находятся через
+    Python entry-points (``[project.entry-points."boba.tools"]``)
+    pip-installed пакетов.
     """
 
-    DIR = FieldSpec[str]("BOBA_EXTENSIONS_DIR", StrConverter())
+    DIR = FieldSpec[str]("BOBA_PROMPTS_DIR", StrConverter())
 
     TOML_PATHS: ClassVar[Mapping[str, tuple[str, str]]] = {
-        "BOBA_EXTENSIONS_DIR": ("extensions", "dir"),
+        "BOBA_PROMPTS_DIR": ("prompts", "dir"),
     }
 
     def id(self) -> StrId:
-        return StrId("extensions")
+        return StrId("prompts")
 
     def apply(self, state: ConfigState) -> ConfigState:
-        state.extensions_dir = self.DIR.read(state.resolver)
+        state.prompts_dir = self.DIR.read(state.resolver)
         return state
 
 
@@ -423,7 +426,7 @@ class ConfigFactory(FoldFactory[StrId, ConfigState, ConfigBundle]):
     _SLOT_SSL_VERIFY = ConfigSlot[bool]("ssl_verify", "AppCoreSection (ssl_verify)")
     _SLOT_LOG_LEVEL = ConfigSlot[str]("log_level", "AppCoreSection (log_level)")
     _SLOT_LLM = ConfigSlot[LLMConfig]("llm_transport", "LLMTransportSection")
-    _SLOT_EXTENSIONS_DIR = ConfigSlot[str]("extensions_dir", "ExtensionsSection")
+    _SLOT_PROMPTS_DIR = ConfigSlot[str]("prompts_dir", "PromptsSection")
     _SLOT_EXTENSIONS_BAG = ConfigSlot[Mapping[str, Mapping[str, str]]](
         "extensions", "ExtensionsBagSection"
     )
@@ -443,7 +446,7 @@ class ConfigFactory(FoldFactory[StrId, ConfigState, ConfigBundle]):
             log_level=self._SLOT_LOG_LEVEL.read(state),
             log_file=state.log_file,
             llm=self._SLOT_LLM.read(state),
-            extensions_dir=self._SLOT_EXTENSIONS_DIR.read(state),
+            prompts_dir=self._SLOT_PROMPTS_DIR.read(state),
             extensions=self._SLOT_EXTENSIONS_BAG.read(state),
         )
         return ConfigBundle(
@@ -467,7 +470,7 @@ def default_resolver(
         **WorkspacesSection.TOML_PATHS,
         **LLMTransportSection.TOML_PATHS,
         **AgentSection.TOML_PATHS,
-        **ExtensionsSection.TOML_PATHS,
+        **PromptsSection.TOML_PATHS,
     }
 
     toml_data: dict[str, Any] = load_toml(os.environ.get("BOBA_CONFIG"))
@@ -498,7 +501,7 @@ def default_config_factory(
     factory.register(WorkspacesSection(priority=20))
     factory.register(LLMTransportSection(priority=30))
     factory.register(AgentSection(priority=40))
-    factory.register(ExtensionsSection(priority=50))
+    factory.register(PromptsSection(priority=50))
     factory.register(ExtensionsBagSection(priority=60))
     return factory
 

@@ -46,7 +46,7 @@
             "envFile": "${workspaceFolder}/local/.env",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src",
-                "BOBA_EXTENSIONS_DIR": "${workspaceFolder}/extensions"
+                "BOBA_PROMPTS_DIR": "${workspaceFolder}/prompts"
             }
         },
         {
@@ -84,7 +84,7 @@
             "env": {
                 "CHAINLIT_APP_ROOT": "${workspaceFolder}/src/chainlit",
                 "PYTHONPATH": "${workspaceFolder}/src/domain/src:${workspaceFolder}/src/app/src:${workspaceFolder}/src/adapters/src:${workspaceFolder}/src/infra/src:${workspaceFolder}/src/chainlit/src",
-                "BOBA_EXTENSIONS_DIR": "${workspaceFolder}/extensions"
+                "BOBA_PROMPTS_DIR": "${workspaceFolder}/prompts"
             }
         }
     ]

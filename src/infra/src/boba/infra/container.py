@@ -43,7 +43,7 @@ from boba.domain.core.patterns import (
 from boba.domain.core.tools import ToolContext, ToolsService
 from boba.domain.llm.events import LLMEvent
 from boba.domain.llm.models import LLMContext
-from boba.infra.extensions import ExtensionLoader
+from boba.infra.prompt_loader import PromptLoader
 
 
 @dataclass(frozen=True)
@@ -54,14 +54,13 @@ class AgentComponents:
     tools_service: ToolsService
 
 
-def build_prompt_providers(loader: ExtensionLoader) -> Sequence[PromptProvider]:
+def build_prompt_providers(loader: PromptLoader) -> Sequence[PromptProvider]:
     """Application-level список :class:`PromptProvider` (system-prompt).
 
-    Все провайдеры идут от :class:`ExtensionLoader` из директории
-    ``BOBA_EXTENSIONS_DIR`` (текстовые ``.md``/``.txt`` и ``.py``-плагины
-    с ``register_prompts``). USER-блок через PromptFactory не
-    собирается — пользовательское сообщение приходит уже
-    отформатированным в ``AgentRequest.query``.
+    Все провайдеры идут от :class:`PromptLoader` из директории
+    ``BOBA_PROMPTS_DIR`` (текстовые ``.md``/``.txt``-блоки). USER-блок
+    через PromptFactory не собирается — пользовательское сообщение
+    приходит уже отформатированным в ``AgentRequest.query``.
     """
     return loader.prompt_providers()
 
