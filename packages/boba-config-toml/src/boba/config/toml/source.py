@@ -7,8 +7,12 @@ TomlFileSource — TOML-вариант Docker-style секрета: значен
 файлу под ключом {leaf}_file, содержимое читается и trailing-whitespace
 обрезается.
 
-TOML читается один раз при старте через load_toml; путь обычно в
-env-переменной CONFIG_PATH_ENV.
+Источники автономны (симметрично EnvSource): на старте TomlSource() и
+TomlFileSource() сами читают путь из env CONFIG_PATH_ENV, парсят TOML и
+кешируют данные. Оператор может явно передать path в конструктор —
+полезно для тестов или нестандартного расположения. Если путь не задан
+или файл не существует — пустые данные, источник тихо отдаёт None и
+следующий в цепочке отвечает.
 """
 
 from __future__ import annotations
@@ -33,8 +37,7 @@ __all__ = [
 CONFIG_PATH_ENV: Final[str] = "BOBA_CONFIG_PATH"
 """Имя env-переменной, указывающей путь к TOML-файлу приложения.
 
-Конкретно эта env читается оператором bootstrap'а (не самим
-TomlSource) — источник работает с уже распарсенными данными.
+Читается конструкторами TomlSource/TomlFileSource при создании.
 """
 
 TOML_FILE_SUFFIX: Final[str] = "_file"
@@ -69,16 +72,21 @@ def _toml_lookup(
     return node
 
 
-class TomlSource(ConfigSource):
-    """Значение из заранее распарсенных TOML-данных по пути из
-    ConfigKey.
+def _resolve_path(path: str | os.PathLike[str] | None) -> str | os.PathLike[str] | None:
+    """Если path не задан — берём из env CONFIG_PATH_ENV."""
+    return path if path is not None else os.environ.get(CONFIG_PATH_ENV)
 
-    Любые типы из TOML проходят как есть (int/str/bool/
+
+class TomlSource(ConfigSource):
+    """Значение из TOML-файла по пути из ConfigKey.
+
+    На старте читает файл (по умолчанию — из env CONFIG_PATH_ENV) и
+    кеширует. Любые типы из TOML проходят как есть (int/str/bool/
     list/...) — конвертер FieldSpec сам их разберёт.
     """
 
-    def __init__(self, data: Mapping[str, Any]) -> None:
-        self._data = data
+    def __init__(self, path: str | os.PathLike[str] | None = None) -> None:
+        self._data = load_toml(_resolve_path(path))
 
     def resolve(self, key: ConfigKey) -> object | None:
         section_path, leaf = toml_path(key)
@@ -89,27 +97,26 @@ class TomlSource(ConfigSource):
 
 
 class TomlFileSource(ConfigSource):
-    """Значение из файла, путь к которому хранит TOML-ключ
-    {leaf}_file в той же секции, что и TomlSource для
-    leaf.
+    """Значение из файла, путь к которому хранит TOML-ключ {leaf}_file
+    в той же секции, что и TomlSource для leaf.
 
-    Если ключ отсутствует или файл не существует — None
-    (последующие источники продолжают). Содержимое возвращается с
-    обрезанным trailing-whitespace.
+    Если ключ отсутствует или файл не существует — None (последующие
+    источники продолжают). Содержимое возвращается с обрезанным
+    trailing-whitespace.
     """
 
-    def __init__(self, data: Mapping[str, Any]) -> None:
-        self._data = data
+    def __init__(self, path: str | os.PathLike[str] | None = None) -> None:
+        self._data = load_toml(_resolve_path(path))
 
     def resolve(self, key: ConfigKey) -> object | None:
         section_path, leaf = toml_path(key)
         section = _toml_lookup(self._data, section_path)
         if section is None:
             return None
-        path = section.get(leaf + TOML_FILE_SUFFIX)
-        if not isinstance(path, str):
+        file_path = section.get(leaf + TOML_FILE_SUFFIX)
+        if not isinstance(file_path, str):
             return None
-        p = Path(path)
+        p = Path(file_path)
         if not p.is_file():
             return None
         return p.read_text(encoding="utf-8").strip()

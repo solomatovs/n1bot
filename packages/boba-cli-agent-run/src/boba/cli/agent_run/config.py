@@ -42,6 +42,11 @@ __all__ = ["AgentRunConfig", "AgentRunSection"]
 class AgentRunConfig:
     """Параметры одного запуска boba-cli-agent-run.
 
+    query — пользовательский запрос, тоже идёт через ConfigSource-цепочку
+    (как и весь конфиг). Обязательно, нет дефолта — оператор передаёт
+    его флагом ``--agent-run-query "..."`` (CLI), env'ом
+    ``BOBA_AGENT_RUN_QUERY`` или ``[agent_run] query`` в TOML.
+
     model — обязательно, нет смыслового дефолта (выбор модели — это
     выбор поведения).
 
@@ -49,6 +54,7 @@ class AgentRunConfig:
     ничего не передаём, поведение модели — её собственный дефолт».
     """
 
+    query: str
     model: str
     temperature: float | None
     top_p: float | None
@@ -89,6 +95,11 @@ class AgentRunSection(ConfigSection[AgentRunConfig]):
     schema: ClassVar[ObjectSchema[AgentRunConfig]] = ObjectSchema(
         description="Параметры одного запуска CLI-агента: model + sampling.",
         fields=[
+            FieldSpec(
+                name="query",
+                converter=ChainConverter(Required(), ParseString()),
+                description="Пользовательский запрос к агенту. Обязательно.",
+            ),
             FieldSpec(
                 name="model",
                 converter=ChainConverter(Required(), ParseString()),

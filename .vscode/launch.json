@@ -60,7 +60,7 @@
                 "--agent-run-top-p", "0.95",
                 "--agent-run-presence-penalty", "0.0",
                 "--agent-run-frequency-penalty", "0.0",
-                "${input:query}"
+                "--agent-run-query", "${input:query}"
             ],
             "envFile": "${workspaceFolder}/local/.env",
             "env": {
@@ -77,11 +77,11 @@
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "args": [
-                "-v",
-                "index",
-                "${input:indexPath}",
-                "--collection", "${input:indexCollection}",
-                "--description", "${input:indexDescription}"
+                "--vector-index-action", "index",
+                "--vector-index-paths", "${input:indexPath}",
+                "--vector-index-collection", "${input:indexCollection}",
+                "--vector-index-description", "${input:indexDescription}",
+                "--vector-index-verbose", "1"
             ],
             "envFile": "${workspaceFolder}/local/.env",
             "env": {

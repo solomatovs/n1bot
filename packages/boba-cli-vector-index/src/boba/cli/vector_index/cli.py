@@ -1,13 +1,19 @@
 """argparse-парсер и dispatch для команд boba-cli-vector-index.
 
-Доступные команды (v0.1):
+Конфиг полностью идёт через ConfigSource-цепочку (Cli/Env/Toml — все
+автономны). argparse тут только для --help; все значения — поля
+:class:`VectorIndexSection`, читаемые через bundle. Имена флагов
+вычисляются из ConfigKey'ев (см. cli_flag_name).
 
-* index <paths>... — почанковать и upsert файлы в коллекцию.
-* list — показать существующие коллекции с количеством чанков.
-* delete --collection <name> — удалить коллекцию целиком.
+Доступные actions (значения поля ``vector_index.action``):
 
-Точка входа: main. Также доступно как
-python -m boba.cli.vector_index.
+* ``index``  — почанковать и upsert файлы в коллекцию (paths +
+  collection обязательны).
+* ``list``   — показать существующие коллекции с количеством чанков.
+* ``delete`` — удалить коллекцию целиком (collection обязателен;
+  ``confirm_skip=true`` пропускает интерактивное подтверждение).
+
+Точка входа: main. Также доступно как python -m boba.cli.vector_index.
 """
 
 from __future__ import annotations
@@ -17,119 +23,74 @@ import logging
 import sys
 from collections.abc import Sequence
 
-from boba.cli.vector_index.chunking import (
-    DEFAULT_CHUNK_OVERLAP,
-    DEFAULT_CHUNK_SIZE,
+from boba.cli.vector_index.config import (
+    CliConfigError,
+    VectorIndexConfig,
+    VectorIndexSection,
+    build_resolver,
+    load_persist_path,
 )
-from boba.cli.vector_index.config import CliConfig, CliConfigError
 from boba.cli.vector_index.indexer import (
     IndexOptions,
     index_paths,
 )
 from boba.cli.vector_index.store import VectorStore
-from boba.config.cli import CliFlag, add_to_parser
-from boba.domain.core.config import ConfigKey
+from boba.infra import ConfigFactory, ConfigLoader
 
 logger = logging.getLogger("boba.cli.vector_index")
-
-# Декларативный список config-CLI-флагов: пакет boba.config.cli использует
-# его и для add_to_parser, и для from_namespace (внутри CliConfig.resolve).
-# Per-command флаги (--collection, --chunk-size, ...) — это входы команды,
-# не конфиг; они декларируются прямо на subparser'ах.
-_FLAGS: tuple[CliFlag, ...] = (
-    CliFlag(
-        ConfigKey("ext", "chromadb", "persist_path"),
-        help=(
-            "ChromaDB persist directory (overrides "
-            "BOBA_EXT_CHROMADB_PERSIST_PATH / [ext.chromadb] persist_path)."
-        ),
-    ),
-)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Entry-point. Возвращает exit-code (0 = успех)."""
-    parser = _build_parser()
-    args = parser.parse_args(argv)
+    # argv нужен только для --help/typo-validation. Источники внутри
+    # build_resolver() читают свои каналы (sys.argv/env/TOML) сами.
+    _build_parser().parse_known_args(argv)
 
-    _setup_logging(args.verbose)
+    resolver = build_resolver()
+    factory = ConfigFactory(resolver)
+    factory.register(VectorIndexSection())
+    factory.discover_extension_sections()
 
     try:
-        cfg = CliConfig.resolve(args=args, flags=_FLAGS)
+        bundle = ConfigLoader(factory).load_bundle()
+        run_cfg = bundle.section(VectorIndexSection)
+        persist_path = load_persist_path(resolver)
+    except CliConfigError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except Exception as e:  # top-level CLI error reporter
+        print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
+
+    _setup_logging(run_cfg.verbose)
+
+    handler = _HANDLERS.get(run_cfg.action)
+    if handler is None:
+        # OneOf-валидатор уже отверг бы невалидный action — этот
+        # branch недостижим при корректной схеме, оставлен для
+        # type-checker'а.
+        print(f"error: unknown action {run_cfg.action!r}", file=sys.stderr)
+        return 2
+    try:
+        return handler(persist_path, run_cfg)
     except CliConfigError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
-    handler = _HANDLERS.get(args.command)
-    if handler is None:
-        parser.print_help(sys.stderr)
-        return 2
-    return handler(cfg, args)
-
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    """argparse только для --help. Все значения — через source chain."""
+    return argparse.ArgumentParser(
         prog="boba-cli-vector-index",
         description=(
             "Operator CLI: index/list/delete documents in the Boba "
-            "vector knowledge base (ChromaDB)."
+            "vector knowledge base (ChromaDB). Все значения — поля "
+            "VectorIndexSection, передаются через --vector-index-<field> "
+            "flags (см. cli_flag_name) или env/TOML. Обязательно "
+            "--vector-index-action; per-action входы (paths/collection) — "
+            "по таблице --help секции."
         ),
     )
-    add_to_parser(parser, _FLAGS)
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="count",
-        default=0,
-        help="Increase log verbosity (-v: INFO, -vv: DEBUG)",
-    )
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    p_index = sub.add_parser("index", help="Index documents into a collection")
-    p_index.add_argument(
-        "paths",
-        nargs="+",
-        help="Files or directories. Directories are walked recursively.",
-    )
-    p_index.add_argument(
-        "--collection",
-        required=True,
-        help="Target collection name (created if missing).",
-    )
-    p_index.add_argument(
-        "--description",
-        default=None,
-        help=(
-            "Collection description (visible to the agent via "
-            "kb_list_collections). Applied only on collection creation; "
-            "existing collections are not re-described."
-        ),
-    )
-    p_index.add_argument(
-        "--chunk-size",
-        type=int,
-        default=DEFAULT_CHUNK_SIZE,
-        help=f"Character chunk size (default {DEFAULT_CHUNK_SIZE}).",
-    )
-    p_index.add_argument(
-        "--chunk-overlap",
-        type=int,
-        default=DEFAULT_CHUNK_OVERLAP,
-        help=f"Character overlap between chunks (default {DEFAULT_CHUNK_OVERLAP}).",
-    )
-
-    sub.add_parser("list", help="List collections with chunk counts")
-
-    p_delete = sub.add_parser("delete", help="Delete a collection")
-    p_delete.add_argument(
-        "--collection", required=True, help="Collection name to delete."
-    )
-    p_delete.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip interactive confirmation.",
-    )
-    return parser
 
 
 _VERBOSE_INFO = 1
@@ -148,24 +109,41 @@ def _setup_logging(verbose: int) -> None:
     )
 
 
-# --- Handlers ----------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────
+# Action handlers
+# ──────────────────────────────────────────────────────────────────────
 
 
-def _handle_index(cfg: CliConfig, args: argparse.Namespace) -> int:
-    store = VectorStore(cfg.persist_path)
+def _require(value: object, name: str, action: str) -> None:
+    if value in (None, "", []):
+        raise CliConfigError(
+            f"action={action!r}: {name} is required "
+            f"(pass --vector-index-{name.replace('_', '-')}, "
+            f"set BOBA_VECTOR_INDEX_{name.upper()}, или укажи "
+            f"[vector_index] {name} в TOML)"
+        )
+
+
+def _handle_index(persist_path: str, cfg: VectorIndexConfig) -> int:
+    _require(cfg.paths, "paths", "index")
+    _require(cfg.collection, "collection", "index")
+    paths = cfg.paths or []
+    collection = cfg.collection or ""
+
+    store = VectorStore(persist_path)
     options = IndexOptions(
-        chunk_size=args.chunk_size,
-        chunk_overlap=args.chunk_overlap,
+        chunk_size=cfg.chunk_size,
+        chunk_overlap=cfg.chunk_overlap,
     )
     stats = index_paths(
         store,
-        collection_name=args.collection,
-        paths=list(args.paths),
-        description=args.description,
+        collection_name=collection,
+        paths=list(paths),
+        description=cfg.description,
         options=options,
     )
     print(
-        f"collection={args.collection!r} "
+        f"collection={collection!r} "
         f"files_indexed={stats.files_indexed} "
         f"files_skipped={stats.files_skipped} "
         f"chunks_upserted={stats.chunks_upserted} "
@@ -174,9 +152,9 @@ def _handle_index(cfg: CliConfig, args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_list(cfg: CliConfig, args: argparse.Namespace) -> int:
-    del args
-    store = VectorStore(cfg.persist_path)
+def _handle_list(persist_path: str, cfg: VectorIndexConfig) -> int:
+    del cfg
+    store = VectorStore(persist_path)
     collections = store.list_collections()
     if not collections:
         print("(no collections)")
@@ -187,15 +165,18 @@ def _handle_list(cfg: CliConfig, args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_delete(cfg: CliConfig, args: argparse.Namespace) -> int:
-    if not args.yes:
-        prompt = f"Delete collection {args.collection!r}? Type 'yes' to confirm: "
+def _handle_delete(persist_path: str, cfg: VectorIndexConfig) -> int:
+    _require(cfg.collection, "collection", "delete")
+    collection = cfg.collection or ""
+
+    if not cfg.confirm_skip:
+        prompt = f"Delete collection {collection!r}? Type 'yes' to confirm: "
         if input(prompt).strip().lower() != "yes":
             print("aborted", file=sys.stderr)
             return 1
-    store = VectorStore(cfg.persist_path)
-    store.delete_collection(args.collection)
-    print(f"collection={args.collection!r} deleted")
+    store = VectorStore(persist_path)
+    store.delete_collection(collection)
+    print(f"collection={collection!r} deleted")
     return 0
 
 
