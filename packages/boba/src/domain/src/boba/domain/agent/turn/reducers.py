@@ -115,11 +115,13 @@ class SystemPromptReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnS
 
 
 class HistoryReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
-    """Копирует весь диалог из :class:`MessageService` в state.
+    """Копирует весь диалог из :class:`MessageReader` в state.
 
     Все записи (user-query, assistant, tool_result, feedback) уже
-    зафиксированы в svc через :class:`DialogueWriter` к моменту
-    вызова reducer'а — снапшот полный и свежий.
+    зафиксированы в хранилище через :class:`DialogueWriter` к моменту
+    вызова reducer'а — снапшот полный и свежий. Reducer'у достаётся
+    только read-side порт (:class:`MessageReader`); написать в историю
+    отсюда нельзя.
     """
 
     def __init__(self, priority: int = 30) -> None:
@@ -132,7 +134,7 @@ class HistoryReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]
         return self._priority
 
     def apply(self, ctx: TurnResolveContext, state: TurnState) -> TurnState:
-        state.messages = tuple(ctx.message_service.message_iter())
+        state.messages = tuple(ctx.message_reader.message_iter())
         return state
 
 
