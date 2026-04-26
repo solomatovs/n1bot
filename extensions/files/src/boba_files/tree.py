@@ -1,13 +1,11 @@
-"""Tool: список элементов workspace без рекурсии."""
+"""Tool: рекурсивный обход workspace."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import islice
 from typing import Any
 
-from boba.adapters.tool_providers import StaticToolSource
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainValidator,
@@ -25,39 +23,33 @@ from boba.domain.core.tools import (
     ToolId,
     ToolInputSchema,
     ToolResult,
-    ToolSource,
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
     WorkspaceError,
 )
-from boba.infra.extensions import ExtensionContext
 
 
 @dataclass(frozen=True)
-class LsArgs:
+class TreeArgs:
     path: str | None
     limit: int
 
 
-class LsArgsConverter(Converter[dict[str, Any], LsArgs]):
-    """Маппит провалидированный dict в :class:`LsArgs`.
+class TreeArgsConverter(Converter[dict[str, Any], TreeArgs]):
+    """Маппит провалидированный dict в :class:`TreeArgs`."""
 
-    Все проверки (тип, длина, min) уже сделаны
-    :class:`SchemaArgsValidator` — здесь только сборка dataclass.
-    """
-
-    def convert(self, value: dict[str, Any]) -> LsArgs:
-        return LsArgs(
+    def convert(self, value: dict[str, Any]) -> TreeArgs:
+        return TreeArgs(
             path=value.get("path"),
             limit=value["limit"],
         )
 
 
-class LsTool(Tool[LsArgs]):
-    """Плоский список элементов workspace (без рекурсии)."""
+class TreeTool(Tool[TreeArgs]):
+    """Рекурсивный обход всех файлов workspace."""
 
-    _ID = ToolId("ls")
+    _ID = ToolId("tree")
     _SOURCE = ToolSourceId("builtin.files")
 
     def tool_id(self) -> ToolId:
@@ -66,26 +58,26 @@ class LsTool(Tool[LsArgs]):
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
 
-    def typed_args_converter(self) -> Converter[dict[str, Any], LsArgs]:
-        return LsArgsConverter()
+    def typed_args_converter(self) -> Converter[dict[str, Any], TreeArgs]:
+        return TreeArgsConverter()
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description=(
-                "Перечислить содержимое директории на одном уровне без рекурсии. "
-                "При переполнении limit ответ обрезается с маркером "
-                "'(truncated at limit=N)'. Для рекурсии — tree."
+                "Рекурсивно перечислить все файлы под директорией. Плоский "
+                "список путей. При переполнении limit ответ обрезается с "
+                "маркером '(truncated at limit=N)'. Для одного уровня — ls."
             ),
             input_schema=ToolInputSchema(
                 params=[
                     ParamSchema(
                         name="path",
-                        description="Путь директории. Без значения — корень workspace.",
+                        description="Корень обхода. Без значения — корень workspace.",
                         validator=ChainValidator(IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="limit",
-                        description="Максимум элементов в ответе.",
+                        description="Максимум путей в ответе.",
                         validator=ChainValidator(Required(), IsInt(), MinValue(1)),
                     ),
                 ],
@@ -93,9 +85,9 @@ class LsTool(Tool[LsArgs]):
             ),
         )
 
-    def execute(self, ctx: ToolContext, req: LsArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, req: TreeArgs) -> ToolResult:
         try:
-            iterator = ctx.project_workspace.ls(req.path)
+            iterator = ctx.project_workspace.tree(req.path)
             items = list(islice(iterator, req.limit + 1))
         except WorkspaceError as e:
             raise ToolExecutionError(
@@ -111,16 +103,10 @@ class LsTool(Tool[LsArgs]):
         if not items:
             return ToolResult(content=f"{location} пуст.")
 
-        header = f"Элементы {location} ({len(items)}, лимит={req.limit}"
+        header = f"Файлы {location} ({len(items)}, лимит={req.limit}"
         if truncated:
             header += f", truncated at limit={req.limit}"
         header += "):"
         body = "\n".join(f"- {p}" for p in items)
         return ToolResult(content=f"{header}\n{body}")
 
-def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
-    yield StaticToolSource(
-        ToolSourceId("builtin.files.ls"),
-        priority=0,
-        tools=[LsTool()],
-    )

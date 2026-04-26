@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from boba.adapters.tool_providers import StaticToolSource
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainValidator,
@@ -24,14 +22,12 @@ from boba.domain.core.tools import (
     ToolId,
     ToolInputSchema,
     ToolResult,
-    ToolSource,
     ToolSourceId,
 )
 from boba.domain.core.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
-from boba.infra.extensions import ExtensionContext
 
 
 @dataclass(frozen=True)
@@ -111,9 +107,3 @@ class CpTool(Tool[CpArgs]):
             ) from e
         return ToolResult(content=f"Скопировано: {req.src} → {req.dst}")
 
-def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
-    yield StaticToolSource(
-        ToolSourceId("builtin.files.cp"),
-        priority=0,
-        tools=[CpTool()],
-    )
