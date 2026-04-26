@@ -1,13 +1,17 @@
-"""Wire-схема валидируемых значений: контракт «валидатор → JSON-Schema».
+"""Wire-схемы валидируемых значений: контракт «converter → JSON-Schema».
 
-:class:`ParamWireSchema` — JSON-Schema-подобный dict, накапливаемый
-:class:`SchemaContributor`-валидаторами. Используется потребителями
-(LLM-провайдеры для tools, операторская дока для config), которым нужно
-не само runtime-правило, а его описание.
+Семья wire-описаний:
+
+- :class:`ParamWireSchema` — описание одного поля, накапливаемое
+  :class:`SchemaContributor`-конвертерами.
+- :class:`ObjectWireSchema` — JSON-Schema-подобное описание агрегата
+  (объекта/секции): description + properties + required.
 
 Изначально жил в :mod:`boba.domain.core.tools.schema`; вынесен в core,
-поскольку контракт не специфичен для tool-параметров — те же валидаторы
-описывают и поля :class:`~boba.domain.core.config.FieldSpec`.
+поскольку контракт не специфичен для tool-параметров — те же
+конвертеры описывают и поля :class:`~boba.domain.core.declaration.FieldSpec`,
+а агрегат — это любой :class:`~boba.domain.core.declaration.ObjectSchema`,
+будь то tool-input или config-section.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 __all__ = [
+    "ObjectWireSchema",
     "ParamWireSchema",
     "SchemaContributor",
 ]
@@ -24,7 +29,7 @@ __all__ = [
 
 @dataclass
 class ParamWireSchema:
-    """Wire-описание одного параметра/поля, собираемое из валидаторов.
+    """Wire-описание одного параметра/поля, собираемое из конвертеров.
 
     ``property`` — JSON-Schema-подобный dict (``type``, ``description``,
     ``enum``, ``default``, ...). Конвертер потребителя (OpenAI, Anthropic,
@@ -38,15 +43,31 @@ class ParamWireSchema:
     required: bool = False
 
 
-class SchemaContributor(ABC):
-    """Mixin: валидатор умеет дополнять :class:`ParamWireSchema`.
+@dataclass
+class ObjectWireSchema:
+    """JSON-Schema-подобное описание объекта.
 
-    Реализуется теми валидаторами, чьё правило отражается в JSON-Schema.
-    Композитные валидаторы (например, ChainValidator) делегируют
+    Аналог :class:`ParamWireSchema`, но для агрегата: ``description`` —
+    описание самого объекта/секции, ``properties`` — словарь wire-описаний
+    каждого поля, ``required`` — имена обязательных полей.
+    Сериализуется в OpenAI tool function schema или в operator-доку
+    конфига одним и тем же кодом.
+    """
+
+    description: str = ""
+    properties: dict[str, dict[str, Any]] = field(default_factory=dict)
+    required: list[str] = field(default_factory=list)
+
+
+class SchemaContributor(ABC):
+    """Mixin: конвертер умеет дополнять :class:`ParamWireSchema`.
+
+    Реализуется теми конвертерами, чьё правило отражается в JSON-Schema.
+    Композитные конвертеры (например, ChainConverter) делегируют
     contribute всем участникам цепочки, реализующим этот контракт.
     """
 
     @abstractmethod
     def contribute(self, schema: ParamWireSchema) -> None:
-        """Дополнить ``schema`` данными, выводимыми из этого валидатора."""
+        """Дополнить ``schema`` данными, выводимыми из этого конвертера."""
         ...
