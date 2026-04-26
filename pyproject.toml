@@ -1,70 +1,25 @@
-[build-system]
-requires = ["setuptools>=64", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "boba"
-version = "0.1.0"
-description = "Boba — RAG agent for knowledge base"
-requires-python = ">=3.11,<4"
-# Минимум для агентского runtime: OpenAI-совместимый клиент, http и
-# TOML-парсер для конфига. UI-зависимости (chainlit/pydantic-pin)
-# живут в ``apps/chainlit``; vector-store deps — в
-# ``extensions/chromadb`` и ``apps/vector-index``.
-dependencies = [
-    "httpx",
-    "openai",
-    "tomli",
-]
-
-[project.optional-dependencies]
-dev = [
-    "pytest",
-    "ruff",
-]
-
-# boba — namespace-package (PEP 420) c четырьмя sub-пакетами в разных
-# src-корнях. ``packages.find`` со списком ``where`` тут не работает
-# (setuptools требует, чтобы каждый найденный пакет существовал во
-# ВСЕХ ``where``), поэтому маппим корни sub-пакетов явно через
-# ``package-dir`` и перечисляем все импортируемые пакеты в
-# ``packages``.
+# Корневой pyproject.toml монорепо.
 #
-# Если добавляется новый sub-package (например, ``boba.domain.kb``) —
-# нужно дописать его в ``packages``. Можно регенерить из дерева:
-#   find src -mindepth 4 -type d -path '*/src/boba*' \
-#     -not -path '*__pycache__*' -not -name '*.egg-info'
-[tool.setuptools.package-dir]
-"boba.domain" = "src/domain/src/boba/domain"
-"boba.adapters" = "src/adapters/src/boba/adapters"
-"boba.infra" = "src/infra/src/boba/infra"
-
-[tool.setuptools]
-packages = [
-    "boba.adapters",
-    "boba.adapters.llm",
-    "boba.domain",
-    "boba.domain.agent",
-    "boba.domain.agent.meat",
-    "boba.domain.agent.turn",
-    "boba.domain.core",
-    "boba.domain.core.tools",
-    "boba.domain.llm",
-    "boba.domain.llm.meat",
-    "boba.infra",
-]
+# Сам по себе НЕ устанавливаемый пакет — никакой ``[project]`` секции.
+# Все pip-installable пакеты живут в ``packages/<name>/``, каждый со
+# своим ``pyproject.toml``. Установить весь workspace одной командой:
+#
+#     pip install -r dev-install.txt
+#
+# Здесь — только конфиги общих dev-инструментов (ruff/pytest/pyright),
+# которые применяются к коду из всех пакетов.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [
-    "src/domain/src",
-    "src/adapters/src",
-    "src/infra/src",
+    "packages/boba/src/domain/src",
+    "packages/boba/src/adapters/src",
+    "packages/boba/src/infra/src",
 ]
 addopts = ["--strict-markers"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["packages", "tests"]
 exclude = [
     ".venv",
     "**/node_modules",
@@ -72,12 +27,14 @@ exclude = [
     "**/.*",
 ]
 extraPaths = [
-    "src/domain/src",
-    "src/adapters/src",
-    "src/infra/src",
-    "apps/chainlit/src",
-    "apps/agent-run/src",
-    "apps/vector-index/src",
+    "packages/boba/src/domain/src",
+    "packages/boba/src/adapters/src",
+    "packages/boba/src/infra/src",
+    "packages/boba-chainlit/src",
+    "packages/boba-cli-agent-run/src",
+    "packages/boba-cli-vector-index/src",
+    "packages/boba-ext-files/src",
+    "packages/boba-ext-chromadb/src",
 ]
 venvPath = "."
 venv = ".venv"
@@ -124,7 +81,7 @@ ignore = [
 max-complexity = 10
 
 [tool.ruff.lint.isort]
-known-first-party = ["boba", "boba"]
+known-first-party = ["boba"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = [
@@ -134,7 +91,7 @@ known-first-party = ["boba", "boba"]
     "S105",    # hardcoded password — false positive на поля вроде AnswerToken.token
     "S106",    # same reason
 ]
-"apps/**" = [
+"packages/boba-cli-*/**" = [
     "T201",    # print — основной канал вывода CLI, не runtime-код
     "BLE001",  # broad except — CLI логирует и продолжает, не падает на одной коллекции
 ]

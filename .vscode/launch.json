@@ -29,7 +29,7 @@
             "id": "indexPath",
             "type": "promptString",
             "description": "Путь к файлу или директории для индексации",
-            "default": "${workspaceFolder}/prompts"
+            "default": "${workspaceFolder}/local/docs"
         },
         {
             "id": "indexCollection",
@@ -51,7 +51,7 @@
             "request": "launch",
             "module": "boba_cli_agent_run",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/.vscode",
+            "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "args": [
@@ -64,19 +64,11 @@
             ],
             "envFile": "${workspaceFolder}/local/.env",
             "env": {
-                "BOBA_PROMPTS_DIR": "${workspaceFolder}/prompts"
+                "BOBA_PROMPTS_DIR": "${workspaceFolder}/local/prompts",
+                "WORKSPACE_BASE_DIR": "${workspaceFolder}/local/workspaces",
+                "LOG_FILE": "${workspaceFolder}/local/logs/agent-run.log",
+                "CHROMA_PERSIST_PATH": "${workspaceFolder}/local/chroma"
             }
-        },
-        {
-            "name": "Pytest: current file",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "pytest",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/.vscode",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "args": ["-v", "${file}"]
         },
         {
             "name": "Vector Index: index path",
@@ -95,39 +87,7 @@
                 "--description", "${input:indexDescription}"
             ],
             "env": {
-                "BOBA_VECTOR_INDEX_PERSIST_PATH": "${workspaceFolder}/local/chroma"
-            }
-        },
-        {
-            "name": "Vector Index: list collections",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba_cli_vector_index",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "args": ["list"],
-            "env": {
-                "BOBA_VECTOR_INDEX_PERSIST_PATH": "${workspaceFolder}/local/chroma"
-            }
-        },
-        {
-            "name": "Vector Index: delete collection",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba_cli_vector_index",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "args": [
-                "delete",
-                "--collection", "${input:indexCollection}",
-                "--yes"
-            ],
-            "env": {
-                "BOBA_VECTOR_INDEX_PERSIST_PATH": "${workspaceFolder}/local/chroma"
+                "CHROMA_PERSIST_PATH": "${workspaceFolder}/local/chroma"
             }
         },
         {
@@ -136,12 +96,12 @@
             "request": "launch",
             "module": "chainlit",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/.vscode",
+            "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "args": [
                 "run",
-                "${workspaceFolder}/apps/chainlit/src/boba_chainlit/app.py",
+                "${workspaceFolder}/packages/boba-chainlit/src/boba_chainlit/app.py",
                 "-h",
                 "--host", "0.0.0.0",
                 "--port", "8502",
@@ -149,9 +109,32 @@
             ],
             "envFile": "${workspaceFolder}/local/.env",
             "env": {
-                "CHAINLIT_APP_ROOT": "${workspaceFolder}/apps/chainlit",
-                "BOBA_PROMPTS_DIR": "${workspaceFolder}/prompts"
+                "CHAINLIT_APP_ROOT": "${workspaceFolder}/packages/boba-chainlit",
+                "BOBA_PROMPTS_DIR": "${workspaceFolder}/local/prompts",
+                "WORKSPACE_BASE_DIR": "${workspaceFolder}/local/workspaces",
+                "LOG_FILE": "${workspaceFolder}/local/logs/chainlit.log",
+                "CHROMA_PERSIST_PATH": "${workspaceFolder}/local/chroma"
             }
-        }
+        },
+        {
+            "name": "Pytest: current file",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "-v",
+                "${file}"
+            ],
+            "envFile": "${workspaceFolder}/local/.env",
+            "env": {
+                "BOBA_PROMPTS_DIR": "${workspaceFolder}/local/prompts",
+                "WORKSPACE_BASE_DIR": "${workspaceFolder}/local/workspaces",
+                "LOG_FILE": "${workspaceFolder}/local/logs/tests.log"
+            }
+        },
     ]
 }

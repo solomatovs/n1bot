@@ -63,8 +63,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--persist-path",
         default=None,
         help=(
-            "ChromaDB persist directory. Defaults to "
-            "$BOBA_VECTOR_INDEX_PERSIST_PATH."
+            "ChromaDB persist directory. Defaults to $CHROMA_PERSIST_PATH "
+            "(same env var read by boba-ext-chromadb)."
         ),
     )
     parser.add_argument(

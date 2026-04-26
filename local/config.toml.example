@@ -1,0 +1,31 @@
+# Шаблон BOBA_CONFIG (TOML). Скопируйте в ``local/config.toml``,
+# заполните и при необходимости укажите путь к нему через env:
+#
+#   BOBA_CONFIG=/abs/path/to/local/config.toml
+#
+# Все поля опциональны: если поле отсутствует, ConfigLoader берёт env
+# (``BOBA_*``) или дефолт. TOML удобен когда хочется хранить много
+# полей в структурированном виде вместо плоских env-переменных.
+
+[app]
+# log_level = "INFO"
+# log_file = "/app/local/logs/boba.log"
+
+[llm]
+# base_url = "http://litellm-proxy:4000"
+# api_key  = "sk-..."
+
+[agent]
+# max_iterations = 200
+# max_consecutive_tool_calls = 30
+
+[prompts]
+# dir = "/app/prompts"
+
+# Namespaced extension-конфиги (см. AppConfig.extensions, ExtensionsBagSection).
+# Альтернатива env-переменным ``BOBA_EXT_<NS>__<KEY>``.
+[extensions.chromadb]
+# persist_path = "/app/local/chroma"
+# embedding_model = "default"
+# max_top_k = 20
+# snippet_chars = 300

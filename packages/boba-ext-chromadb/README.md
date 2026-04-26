@@ -16,7 +16,7 @@ Read-only ChromaDB knowledge-base tools для агента Boba. Минимал
 
 ```bash
 pip install 'chromadb>=0.5'                      # runtime-зависимость
-pip install --no-deps -e ./extensions/chromadb   # сам extension
+pip install --no-deps -e ./packages/boba-ext-chromadb   # сам extension
 ```
 
 `--no-deps` — потому что `boba` core доставляется через PYTHONPATH, а
@@ -39,17 +39,23 @@ docker build --build-arg INSTALL_EXT_CHROMADB=true ...
 ```
 
 Без флага исходники extension'а попадают в образ
-(`/app/extensions/chromadb`), но `pip install` пропускается —
+(`/app/packages/boba-ext-chromadb`), но `pip install` пропускается —
 entry-point не зарегистрирован, агент tools не видит. Это позволяет
 включить extension позже без пересборки base layer'ов.
 
 ## Конфиг
 
-Через namespaced extension bag (см. `AppConfig.extensions`):
+`persist_path` — через общую env-переменную (тот же путь читает
+`boba-cli-vector-index`):
 
 | Поле | Источник | По умолчанию | Назначение |
 |---|---|---|---|
-| `persist_path` | `BOBA_EXT_CHROMADB__PERSIST_PATH` или `[extensions.chromadb] persist_path` | — (обязательно) | Путь к persistent-БД ChromaDB |
+| `persist_path` | `CHROMA_PERSIST_PATH` (env) | — (обязательно) | Путь к persistent-БД ChromaDB |
+
+Остальные поля — через namespaced extension bag (см. `AppConfig.extensions`):
+
+| Поле | Источник | По умолчанию | Назначение |
+|---|---|---|---|
 | `embedding_model` | `BOBA_EXT_CHROMADB__EMBEDDING_MODEL` | `default` | Имя модели embeddings. В v0.1 поддерживается только `default` (bundled ONNX). |
 | `max_top_k` | `BOBA_EXT_CHROMADB__MAX_TOP_K` | `20` | Потолок параметра `top_k` для `kb_search` |
 | `snippet_chars` | `BOBA_EXT_CHROMADB__SNIPPET_CHARS` | `300` | Длина превью документа в результатах `kb_search` |

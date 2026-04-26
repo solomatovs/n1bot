@@ -12,13 +12,13 @@ ChromaDB; имя пакета нейтральное на случай доба�
 
 Минимум (md/txt):
 ```bash
-pip install -e ./apps/vector-index
+pip install -e ./packages/boba-cli-vector-index
 ```
 
 С дополнительными reader'ами:
 ```bash
-pip install -e './apps/vector-index[html]'        # HTML-страницы
-pip install -e './apps/vector-index[confluence]'  # Confluence (планируется)
+pip install -e './packages/boba-cli-vector-index[html]'        # HTML-страницы
+pip install -e './packages/boba-cli-vector-index[confluence]'  # Confluence (планируется)
 ```
 
 После установки доступна команда `boba-cli-vector-index` (плюс
@@ -29,12 +29,11 @@ pip install -e './apps/vector-index[confluence]'  # Confluence (планируе
 | Источник | Назначение |
 |---|---|
 | `--persist-path` (CLI-флаг) | Путь к ChromaDB persistent-директории |
-| `BOBA_VECTOR_INDEX_PERSIST_PATH` (env) | Тот же, fallback если флаг не указан |
+| `CHROMA_PERSIST_PATH` (env) | Тот же, fallback если флаг не указан |
 
-CLI намеренно использует **собственный** namespace env-переменных, не
-переиспользует агентский `BOBA_EXT_CHROMADB__*` — оператору нужно
-прописать оба указывающими на тот же путь, чтобы агент видел то, что
-проиндексировал CLI.
+`CHROMA_PERSIST_PATH` — общая env с `boba-ext-chromadb` (read-tools
+агента). Один раз задаётся в окружении, и индексирование CLI'ем сразу
+видно агенту/UI без дублирования путей.
 
 ## Команды
 

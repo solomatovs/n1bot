@@ -13,7 +13,7 @@ pip install -e .                    # из корня репо
 
 Затем UI:
 ```bash
-pip install -e ./apps/chainlit
+pip install -e ./packages/boba-chainlit
 ```
 
 ## Запуск
@@ -27,7 +27,7 @@ boba-chainlit
 Через Chainlit CLI напрямую (минуя bootstrap, требует ручной выставки
 `CHAINLIT_*` env):
 ```bash
-chainlit run apps/chainlit/src/boba_chainlit/app.py -h --host 0.0.0.0 --port 8501
+chainlit run packages/boba-chainlit/src/boba_chainlit/app.py -h --host 0.0.0.0 --port 8501
 ```
 
 ## Конфигурация
