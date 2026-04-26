@@ -14,20 +14,23 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from boba.domain.core.config import (
-    BoolConverter,
     ChainedConfigResolver,
     ConfigKey,
     ConfigSection,
-    CsvListConverter,
     FieldSpec,
-    IntConverter,
-    StrConverter,
 )
 from boba.domain.core.patterns import (
     AllMatchesDispatcher,
     Converter,
     Specification,
     StrId,
+)
+from boba.domain.core.validators import (
+    Nullable,
+    ParseBool,
+    ParseCsvList,
+    ParseInt,
+    ParseString,
 )
 
 __all__ = [
@@ -64,34 +67,29 @@ class ChainlitUiOverrideSection(ConfigSection[UIOverride]):
 
     id: ClassVar[StrId] = StrId("chainlit_ui_override")
 
-    NAME = FieldSpec[str | None](
+    NAME: FieldSpec[str | None] = FieldSpec(
         key=ConfigKey("chainlit", "ui_name"),
-        converter=StrConverter(),
-        default=None,
+        converter=Nullable(ParseString()),
         description="Заголовок чата в UI. Если не задано — chainlit-дефолт.",
     )
-    ENABLE_TELEMETRY = FieldSpec[bool | None](
+    ENABLE_TELEMETRY: FieldSpec[bool | None] = FieldSpec(
         key=ConfigKey("chainlit", "enable_telemetry"),
-        converter=BoolConverter(),
-        default=None,
+        converter=Nullable(ParseBool()),
         description="Опт-аут chainlit-телеметрии. None — не трогать дефолт.",
     )
-    UPLOAD_MAX_MB = FieldSpec[int | None](
+    UPLOAD_MAX_MB: FieldSpec[int | None] = FieldSpec(
         key=ConfigKey("chainlit", "file_upload_max_mb"),
-        converter=IntConverter(),
-        default=None,
+        converter=Nullable(ParseInt()),
         description="Лимит размера загружаемого файла, MB.",
     )
-    UPLOAD_MAX_FILES = FieldSpec[int | None](
+    UPLOAD_MAX_FILES: FieldSpec[int | None] = FieldSpec(
         key=ConfigKey("chainlit", "file_upload_max_files"),
-        converter=IntConverter(),
-        default=None,
+        converter=Nullable(ParseInt()),
         description="Максимум файлов в одном сообщении.",
     )
-    UPLOAD_ACCEPT = FieldSpec[list[str] | None](
+    UPLOAD_ACCEPT: FieldSpec[list[str] | None] = FieldSpec(
         key=ConfigKey("chainlit", "file_upload_accept"),
-        converter=CsvListConverter(),
-        default=None,
+        converter=Nullable(ParseCsvList()),
         description="MIME-типы/расширения, разрешённые к загрузке (CSV).",
     )
 

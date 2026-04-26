@@ -18,13 +18,12 @@ import os
 from dataclasses import dataclass
 
 from boba.domain.core.config import (
-    REQUIRED,
     ChainedConfigResolver,
     ConfigKey,
     FieldSpec,
-    StrConverter,
 )
 from boba.domain.core.patterns import ConverterInputError
+from boba.domain.core.validators import ChainConverter, ParseString, Required
 from boba_config_env import EnvFileSource, EnvSource, env_name
 from boba_config_toml import (
     CONFIG_PATH_ENV,
@@ -33,10 +32,9 @@ from boba_config_toml import (
     load_toml,
 )
 
-_PERSIST_PATH = FieldSpec(
+_PERSIST_PATH: FieldSpec[str] = FieldSpec(
     key=ConfigKey("ext", "chromadb", "persist_path"),
-    converter=StrConverter(),
-    default=REQUIRED,
+    converter=ChainConverter(Required(), ParseString()),
 )
 
 

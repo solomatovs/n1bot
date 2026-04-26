@@ -37,6 +37,7 @@ __all__ = [
     "MinLength",
     "MinValue",
     "NonEmpty",
+    "Nullable",
     "OneOf",
     "ParseBool",
     "ParseCsvList",
@@ -170,6 +171,35 @@ class Default(Converter[Any, Any], SchemaContributor):
 
     def contribute(self, schema: ParamWireSchema) -> None:
         schema.property["default"] = self._value
+
+
+class Nullable(Converter[Any, Any], SchemaContributor):
+    """Wrapper: при ``MISSING``/``None`` на входе — возвращает ``None``,
+    иначе делегирует во внутренний конвертер.
+
+    Удобно для конфиг-полей с типом ``T | None``: чейн вида
+    ``ChainConverter(Default(None), ParseX())`` ломался бы тем, что после
+    ``Default(None)`` ``ParseX`` получает ``None`` и пытается его
+    привести к ``T`` (для ``ParseString`` это ``str(None) == "None"``).
+    ``Nullable(ParseX())`` разрывает цепочку на null и сразу возвращает
+    ``None``, в остальных случаях прогоняя значение через ``ParseX``.
+
+    Контракт wire-схемы: делегируется внутреннему конвертеру; реализации,
+    которым важно отметить «nullable» отдельно, могут добавить метку
+    после композиции.
+    """
+
+    def __init__(self, inner: Converter[Any, Any]) -> None:
+        self._inner = inner
+
+    def convert(self, value: Any) -> Any:
+        if value is MISSING or value is None:
+            return None
+        return self._inner.convert(value)
+
+    def contribute(self, schema: ParamWireSchema) -> None:
+        if isinstance(self._inner, SchemaContributor):
+            self._inner.contribute(schema)
 
 
 class ValueConverter(Converter[Any, Any]):

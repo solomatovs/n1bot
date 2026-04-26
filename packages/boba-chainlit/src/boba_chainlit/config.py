@@ -25,11 +25,16 @@ from boba.domain.core.config import (
     ChainedConfigResolver,
     ConfigKey,
     ConfigSection,
-    CsvListConverter,
     FieldSpec,
-    StrConverter,
 )
 from boba.domain.core.patterns import StrId
+from boba.domain.core.validators import (
+    ChainConverter,
+    Default,
+    Nullable,
+    ParseCsvList,
+    ParseString,
+)
 
 __all__ = ["ChainlitConfig", "ChainlitSection"]
 
@@ -62,42 +67,36 @@ class ChainlitSection(ConfigSection[ChainlitConfig]):
 
     id: ClassVar[StrId] = StrId("chainlit")
 
-    HOST = FieldSpec(
+    HOST: FieldSpec[str] = FieldSpec(
         key=ConfigKey("chainlit", "host"),
-        converter=StrConverter(),
-        default="127.0.0.1",
+        converter=ChainConverter(Default("127.0.0.1"), ParseString()),
         description="Адрес, на котором слушает chainlit-сервер.",
     )
-    PORT = FieldSpec(
+    PORT: FieldSpec[str] = FieldSpec(
         key=ConfigKey("chainlit", "port"),
-        converter=StrConverter(),
-        default="8501",
+        converter=ChainConverter(Default("8501"), ParseString()),
         description="Порт chainlit-сервера. Хранится строкой — bridge "
         "пишет напрямую в CHAINLIT_PORT env.",
     )
-    ROOT_PATH = FieldSpec(
+    ROOT_PATH: FieldSpec[str] = FieldSpec(
         key=ConfigKey("chainlit", "root_path"),
-        converter=StrConverter(),
-        default="",
+        converter=ChainConverter(Default(""), ParseString()),
         description="HTTP root path под reverse-proxy. Пусто — chainlit на корне.",
     )
-    AUTH_SECRET = FieldSpec[str | None](
+    AUTH_SECRET: FieldSpec[str | None] = FieldSpec(
         key=ConfigKey("chainlit", "auth_secret"),
-        converter=StrConverter(),
-        default=None,
+        converter=Nullable(ParseString()),
         description="Секрет для подписи user-session cookie. Если не "
         "задан — chainlit генерит сам.",
     )
-    HEADLESS = FieldSpec(
+    HEADLESS: FieldSpec[str] = FieldSpec(
         key=ConfigKey("chainlit", "headless"),
-        converter=StrConverter(),
-        default="true",
+        converter=ChainConverter(Default("true"), ParseString()),
         description="``true`` — не пытаться открыть браузер при старте.",
     )
-    MODELS = FieldSpec(
+    MODELS: FieldSpec[list[str]] = FieldSpec(
         key=ConfigKey("chainlit", "models"),
-        converter=CsvListConverter(),
-        default=[],
+        converter=ChainConverter(Default([]), ParseCsvList()),
         description="CSV/TOML-list LLM-моделей, выбираемых пользователем "
         "в ChatSettings.",
     )

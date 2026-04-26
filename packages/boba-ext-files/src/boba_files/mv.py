@@ -7,7 +7,7 @@ from typing import Any
 
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
-    ChainValidator,
+    ChainConverter,
     IsString,
     NonEmpty,
     ParamSchema,
@@ -67,12 +67,12 @@ class MvTool(Tool[MvArgs]):
                     ParamSchema(
                         name="src",
                         description="Путь источника.",
-                        validator=ChainValidator(Required(), IsString(), NonEmpty()),
+                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="dst",
                         description="Путь назначения.",
-                        validator=ChainValidator(Required(), IsString(), NonEmpty()),
+                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
                 ],
                 invariants=Pass(),

@@ -8,7 +8,7 @@ from typing import Any
 
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
-    ChainValidator,
+    ChainConverter,
     Default,
     IsInt,
     IsString,
@@ -85,7 +85,7 @@ class KbSearchTool(Tool[KbSearchArgs]):
                     ParamSchema(
                         name="collection",
                         description="Имя коллекции из kb_list_collections.",
-                        validator=ChainValidator(
+                        converter=ChainConverter(
                             Required(), IsString(), MinLength(1)
                         ),
                     ),
@@ -96,7 +96,7 @@ class KbSearchTool(Tool[KbSearchArgs]):
                             "будет преобразован в embedding и сопоставлен "
                             "с документами коллекции."
                         ),
-                        validator=ChainValidator(
+                        converter=ChainConverter(
                             Required(), IsString(), MinLength(1)
                         ),
                     ),
@@ -106,7 +106,7 @@ class KbSearchTool(Tool[KbSearchArgs]):
                             f"Сколько hits вернуть (1..{self._cfg.max_top_k}). "
                             f"По умолчанию 5."
                         ),
-                        validator=ChainValidator(
+                        converter=ChainConverter(
                             Default(5),
                             IsInt(),
                             MinValue(1),

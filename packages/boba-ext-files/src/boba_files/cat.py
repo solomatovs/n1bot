@@ -8,7 +8,7 @@ from typing import Any
 
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
-    ChainValidator,
+    ChainConverter,
     Default,
     IsInt,
     IsString,
@@ -79,26 +79,26 @@ class CatTool(Tool[CatArgs]):
                     ParamSchema(
                         name="path",
                         description="Путь к файлу.",
-                        validator=ChainValidator(Required(), IsString(), NonEmpty()),
+                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
                     ParamSchema(
                         name="encoding",
                         description="Кодировка файла. По умолчанию 'utf-8'.",
-                        validator=ChainValidator(
+                        converter=ChainConverter(
                             Default("utf-8"), IsString(), NonEmpty()
                         ),
                     ),
                     ParamSchema(
                         name="start_line",
                         description="Первая строка окна. 1 = начало файла.",
-                        validator=ChainValidator(Required(), IsInt(), MinValue(1)),
+                        converter=ChainConverter(Required(), IsInt(), MinValue(1)),
                     ),
                     ParamSchema(
                         name="end_line",
                         description=(
                             "Последняя строка окна, включительно. >= start_line."
                         ),
-                        validator=ChainValidator(Required(), IsInt(), MinValue(1)),
+                        converter=ChainConverter(Required(), IsInt(), MinValue(1)),
                     ),
                 ],
                 invariants=Ordered("start_line", "end_line"),
