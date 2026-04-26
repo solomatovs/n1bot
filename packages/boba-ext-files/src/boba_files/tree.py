@@ -13,7 +13,7 @@ from boba.domain.core.tools import (
     IsString,
     MinValue,
     NonEmpty,
-    ParamSchema,
+    FieldSpec,
     Pass,
     Required,
     Tool,
@@ -70,12 +70,12 @@ class TreeTool(Tool[TreeArgs]):
             ),
             input_schema=ToolInputSchema(
                 params=[
-                    ParamSchema(
+                    FieldSpec(
                         name="path",
                         description="Корень обхода. Без значения — корень workspace.",
                         converter=ChainConverter(IsString(), NonEmpty()),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="limit",
                         description="Максимум путей в ответе.",
                         converter=ChainConverter(Required(), IsInt(), MinValue(1)),

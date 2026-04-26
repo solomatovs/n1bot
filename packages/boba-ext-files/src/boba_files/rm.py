@@ -12,7 +12,7 @@ from boba.domain.core.tools import (
     IsBool,
     IsString,
     NonEmpty,
-    ParamSchema,
+    FieldSpec,
     Pass,
     Required,
     Tool,
@@ -64,12 +64,12 @@ class RmTool(Tool[RmArgs]):
             ),
             input_schema=ToolInputSchema(
                 params=[
-                    ParamSchema(
+                    FieldSpec(
                         name="path",
                         description="Путь к файлу или директории.",
                         converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="recursive",
                         description=(
                             "Удалить директорию со всем содержимым. "

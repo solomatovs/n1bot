@@ -15,7 +15,7 @@ from boba.domain.core.tools import (
     IsString,
     MinValue,
     NonEmpty,
-    ParamSchema,
+    FieldSpec,
     Pass,
     Required,
     Tool,
@@ -85,22 +85,22 @@ class GrepTool(Tool[GrepArgs]):
             ),
             input_schema=ToolInputSchema(
                 params=[
-                    ParamSchema(
+                    FieldSpec(
                         name="pattern",
                         description="Python-regex; литерал при fixed_string=true.",
                         converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="path",
                         description="Стартовый путь. Без значения — cwd.",
                         converter=ChainConverter(IsString(), NonEmpty()),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="recursive",
                         description="Рекурсивный обход директории. По умолчанию true.",
                         converter=ChainConverter(Default(True), IsBool()),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="include",
                         description=(
                             "Fnmatch-glob по пути (например '*.py'). "
@@ -108,12 +108,12 @@ class GrepTool(Tool[GrepArgs]):
                         ),
                         converter=ChainConverter(IsString(), NonEmpty()),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="case_insensitive",
                         description="Игнорировать регистр. По умолчанию false.",
                         converter=ChainConverter(Default(False), IsBool()),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="context",
                         description=(
                             "Строк контекста до и после каждого совпадения. "
@@ -125,7 +125,7 @@ class GrepTool(Tool[GrepArgs]):
                             MinValue(0),
                         ),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="limit",
                         description="Максимум совпадений в ответе. По умолчанию 100.",
                         converter=ChainConverter(
@@ -134,7 +134,7 @@ class GrepTool(Tool[GrepArgs]):
                             MinValue(1),
                         ),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="fixed_string",
                         description="Литеральный поиск без regex. По умолчанию false.",
                         converter=ChainConverter(Default(False), IsBool()),

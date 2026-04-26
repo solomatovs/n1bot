@@ -10,7 +10,7 @@ from boba.domain.core.tools import (
     ChainConverter,
     IsString,
     NonEmpty,
-    ParamSchema,
+    FieldSpec,
     Pass,
     Required,
     Tool,
@@ -61,7 +61,7 @@ class TouchTool(Tool[TouchArgs]):
             ),
             input_schema=ToolInputSchema(
                 params=[
-                    ParamSchema(
+                    FieldSpec(
                         name="path",
                         description="Путь к файлу.",
                         converter=ChainConverter(Required(), IsString(), NonEmpty()),

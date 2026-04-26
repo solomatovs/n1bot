@@ -11,7 +11,7 @@ from boba.domain.core.tools import (
     Default,
     IsString,
     NonEmpty,
-    ParamSchema,
+    FieldSpec,
     Pass,
     Required,
     Tool,
@@ -64,17 +64,17 @@ class AppendTool(Tool[AppendArgs]):
             description="Дописать текст в конец файла. Если файла нет — создать.",
             input_schema=ToolInputSchema(
                 params=[
-                    ParamSchema(
+                    FieldSpec(
                         name="path",
                         description="Путь к файлу.",
                         converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="content",
                         description="Дописываемый текст.",
                         converter=ChainConverter(Required(), IsString()),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="encoding",
                         description="Кодировка файла. По умолчанию 'utf-8'.",
                         converter=ChainConverter(

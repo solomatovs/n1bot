@@ -15,7 +15,7 @@ from boba.domain.core.tools import (
     MaxValue,
     MinLength,
     MinValue,
-    ParamSchema,
+    FieldSpec,
     Pass,
     Required,
     Tool,
@@ -82,14 +82,14 @@ class KbSearchTool(Tool[KbSearchArgs]):
             ),
             input_schema=ToolInputSchema(
                 params=[
-                    ParamSchema(
+                    FieldSpec(
                         name="collection",
                         description="Имя коллекции из kb_list_collections.",
                         converter=ChainConverter(
                             Required(), IsString(), MinLength(1)
                         ),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="query",
                         description=(
                             "Поисковый запрос на естественном языке — "
@@ -100,7 +100,7 @@ class KbSearchTool(Tool[KbSearchArgs]):
                             Required(), IsString(), MinLength(1)
                         ),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="top_k",
                         description=(
                             f"Сколько hits вернуть (1..{self._cfg.max_top_k}). "

@@ -9,6 +9,14 @@
     from boba.domain.core import RoutableError, TerminalError
 """
 
+from boba.domain.core.config import (
+    ChainedConfigResolver,
+    ConfigKey,
+    ConfigSection,
+    ConfigSource,
+    FieldSpec,
+    read_field,
+)
 from boba.domain.core.errors import (
     LLMFeedbackError,
     RoutableError,
@@ -61,7 +69,6 @@ from boba.domain.core.tools import (
     IsString,
     MutuallyExclusive,
     Ordered,
-    ParamSchema,
     RequiresTogether,
     SchemaArgsValidator,
     Tool,
@@ -154,12 +161,16 @@ __all__ = [
     "MaxValue",
     "MinLength",
     "MinValue",
+    "ChainedConfigResolver",
+    "ConfigKey",
+    "ConfigSection",
+    "ConfigSource",
+    "FieldSpec",
     "MutuallyExclusive",
     "NonEmpty",
     "Nullable",
     "OneOf",
     "Ordered",
-    "ParamSchema",
     "ParamWireSchema",
     "ParseBool",
     "ParseCsvList",
@@ -177,6 +188,7 @@ __all__ = [
     "RequiresTogether",
     "Resolver",
     "RoutableError",
+    "read_field",
     "SchemaArgsValidator",
     "SchemaContributor",
     "ScratchWorkspaceRegistry",

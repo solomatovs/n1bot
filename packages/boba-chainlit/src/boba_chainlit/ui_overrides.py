@@ -15,7 +15,6 @@ from typing import Any, ClassVar
 
 from boba.domain.core.config import (
     ChainedConfigResolver,
-    ConfigKey,
     ConfigSection,
     FieldSpec,
 )
@@ -63,32 +62,36 @@ class ChainlitUiOverrideSection(ConfigSection[UIOverride]):
     """Секция UI-оверрайдов chainlit. Регистрируется через entry-point
     ``boba.config_sections``; bootstrap читает её через
     ``bundle.section(ChainlitUiOverrideSection)`` и рендерит в TOML.
+
+    Делит namespace ``("chainlit",)`` с :class:`ChainlitSection` —
+    оба пишут в одну логическую секцию env/TOML, но дают разные DTO.
     """
 
     id: ClassVar[StrId] = StrId("chainlit_ui_override")
+    namespace: ClassVar[tuple[str, ...]] = ("chainlit",)
 
     NAME: FieldSpec[str | None] = FieldSpec(
-        key=ConfigKey("chainlit", "ui_name"),
+        name="ui_name",
         converter=Nullable(ParseString()),
         description="Заголовок чата в UI. Если не задано — chainlit-дефолт.",
     )
     ENABLE_TELEMETRY: FieldSpec[bool | None] = FieldSpec(
-        key=ConfigKey("chainlit", "enable_telemetry"),
+        name="enable_telemetry",
         converter=Nullable(ParseBool()),
         description="Опт-аут chainlit-телеметрии. None — не трогать дефолт.",
     )
     UPLOAD_MAX_MB: FieldSpec[int | None] = FieldSpec(
-        key=ConfigKey("chainlit", "file_upload_max_mb"),
+        name="file_upload_max_mb",
         converter=Nullable(ParseInt()),
         description="Лимит размера загружаемого файла, MB.",
     )
     UPLOAD_MAX_FILES: FieldSpec[int | None] = FieldSpec(
-        key=ConfigKey("chainlit", "file_upload_max_files"),
+        name="file_upload_max_files",
         converter=Nullable(ParseInt()),
         description="Максимум файлов в одном сообщении.",
     )
     UPLOAD_ACCEPT: FieldSpec[list[str] | None] = FieldSpec(
-        key=ConfigKey("chainlit", "file_upload_accept"),
+        name="file_upload_accept",
         converter=Nullable(ParseCsvList()),
         description="MIME-типы/расширения, разрешённые к загрузке (CSV).",
     )
@@ -103,11 +106,11 @@ class ChainlitUiOverrideSection(ConfigSection[UIOverride]):
 
     def build(self, resolver: ChainedConfigResolver) -> UIOverride:
         return UIOverride(
-            name=self.NAME.read(resolver),
-            enable_telemetry=self.ENABLE_TELEMETRY.read(resolver),
-            upload_max_size_mb=self.UPLOAD_MAX_MB.read(resolver),
-            upload_max_files=self.UPLOAD_MAX_FILES.read(resolver),
-            upload_accept=self.UPLOAD_ACCEPT.read(resolver),
+            name=self._read(self.NAME, resolver),
+            enable_telemetry=self._read(self.ENABLE_TELEMETRY, resolver),
+            upload_max_size_mb=self._read(self.UPLOAD_MAX_MB, resolver),
+            upload_max_files=self._read(self.UPLOAD_MAX_FILES, resolver),
+            upload_accept=self._read(self.UPLOAD_ACCEPT, resolver),
         )
 
 

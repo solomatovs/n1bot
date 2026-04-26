@@ -9,10 +9,10 @@ from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainConverter,
     Default,
+    FieldSpec,
     IsBool,
     IsString,
     NonEmpty,
-    ParamSchema,
     Pass,
     Required,
     Tool,
@@ -75,27 +75,27 @@ class EditTool(Tool[EditArgs]):
             ),
             input_schema=ToolInputSchema(
                 params=[
-                    ParamSchema(
+                    FieldSpec(
                         name="path",
                         description="Путь к файлу.",
                         converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="old_string",
                         description="Подстрока для замены. Совпадение точное.",
                         converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="new_string",
                         description="Заменяющий текст. Пустая строка = удаление.",
                         converter=ChainConverter(Required(), IsString()),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="replace_all",
                         description="Заменить все вхождения. По умолчанию false.",
                         converter=ChainConverter(Default(False), IsBool()),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="encoding",
                         description="Кодировка файла. По умолчанию 'utf-8'.",
                         converter=ChainConverter(
@@ -131,4 +131,3 @@ class EditTool(Tool[EditArgs]):
         return ToolResult(
             content=f"Заменено в {req.path}: {applied} вхождение(й).",
         )
-

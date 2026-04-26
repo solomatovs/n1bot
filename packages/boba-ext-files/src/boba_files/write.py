@@ -11,7 +11,7 @@ from boba.domain.core.tools import (
     Default,
     IsString,
     NonEmpty,
-    ParamSchema,
+    FieldSpec,
     Pass,
     Required,
     Tool,
@@ -67,17 +67,17 @@ class WriteTool(Tool[WriteArgs]):
             ),
             input_schema=ToolInputSchema(
                 params=[
-                    ParamSchema(
+                    FieldSpec(
                         name="path",
                         description="Путь к файлу.",
                         converter=ChainConverter(Required(), IsString(), NonEmpty()),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="content",
                         description="Новое содержимое файла.",
                         converter=ChainConverter(Required(), IsString()),
                     ),
-                    ParamSchema(
+                    FieldSpec(
                         name="encoding",
                         description="Кодировка файла. По умолчанию 'utf-8'.",
                         converter=ChainConverter(

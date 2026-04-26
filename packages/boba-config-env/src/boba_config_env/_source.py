@@ -16,9 +16,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Final
+from typing import Final
 
-from boba.domain.core.config import ConfigKey, ConfigSource, FieldSpec
+from boba.domain.core.config import ConfigKey, ConfigSource
 
 __all__ = [
     "ENV_FILE_SUFFIX",
@@ -51,8 +51,8 @@ class EnvSource(ConfigSource):
     :class:`ConfigKey` через :func:`env_name`.
     """
 
-    def resolve(self, spec: FieldSpec[Any]) -> object | None:
-        return os.environ.get(env_name(spec.key))
+    def resolve(self, key: ConfigKey) -> object | None:
+        return os.environ.get(env_name(key))
 
 
 class EnvFileSource(ConfigSource):
@@ -64,8 +64,8 @@ class EnvFileSource(ConfigSource):
     обрезанным trailing-whitespace.
     """
 
-    def resolve(self, spec: FieldSpec[Any]) -> object | None:
-        path = os.environ.get(env_name(spec.key) + ENV_FILE_SUFFIX)
+    def resolve(self, key: ConfigKey) -> object | None:
+        path = os.environ.get(env_name(key) + ENV_FILE_SUFFIX)
         if not path:
             return None
         p = Path(path)

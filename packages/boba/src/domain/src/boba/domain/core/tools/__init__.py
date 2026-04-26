@@ -5,6 +5,7 @@
 — деталь реализации.
 """
 
+from boba.domain.core.config import FieldSpec
 from boba.domain.core.schema import ParamWireSchema, SchemaContributor
 from boba.domain.core.tools.errors import (
     InvalidSchemaInvariantError,
@@ -21,7 +22,6 @@ from boba.domain.core.tools.registry import (
     ToolStore,
 )
 from boba.domain.core.tools.schema import (
-    ParamSchema,
     ToolDefinition,
     ToolId,
     ToolInputSchema,
@@ -63,6 +63,7 @@ __all__ = [
     "MISSING",
     "ChainConverter",
     "Default",
+    "FieldSpec",
     "InvalidSchemaInvariantError",
     "InvalidToolArgumentError",
     "IsBool",
@@ -78,7 +79,6 @@ __all__ = [
     "Nullable",
     "OneOf",
     "Ordered",
-    "ParamSchema",
     "ParamWireSchema",
     "ParseBool",
     "ParseCsvList",
