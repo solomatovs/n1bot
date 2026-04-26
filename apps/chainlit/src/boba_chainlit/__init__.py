@@ -2,15 +2,15 @@
 
 Короткие импорты::
 
-    from boba.chainlit import ChainlitBridgeSink, ChatSession
-    from boba.chainlit import chainlit_resolver, load_models
+    from boba_chainlit import ChainlitBridgeSink, ChatSession
+    from boba_chainlit import chainlit_resolver, load_models
 
-Модули :mod:`boba.chainlit.app` и :mod:`boba.chainlit.__main__` — точки
+Модули :mod:`boba_chainlit.app` и :mod:`boba_chainlit.__main__` — точки
 входа приложения, их содержимое не реэкспортируется.
 """
 
-from boba.chainlit.bridge import ChainlitBridgeSink
-from boba.chainlit.config import (
+from boba_chainlit.bridge import ChainlitBridgeSink
+from boba_chainlit.config import (
     AUTH_SECRET,
     HEADLESS,
     HOST,
@@ -20,9 +20,9 @@ from boba.chainlit.config import (
     chainlit_resolver,
     load_models,
 )
-from boba.chainlit.files import save_upload
-from boba.chainlit.session import ChatSession
-from boba.chainlit.ui_overrides import (
+from boba_chainlit.files import save_upload
+from boba_chainlit.session import ChatSession
+from boba_chainlit.ui_overrides import (
     UI_ENABLE_TELEMETRY,
     UI_NAME,
     UI_UPLOAD_ACCEPT,

@@ -17,7 +17,7 @@ pip install -e .                    # из корня репо: ставит bob
 
 Затем сам CLI:
 ```bash
-pip install -e ./cli/agent-run
+pip install -e ./apps/agent-run
 ```
 
 После этого `boba-cli-agent-run` работает из терминала без `PYTHONPATH`.

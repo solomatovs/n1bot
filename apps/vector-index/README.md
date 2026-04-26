@@ -12,13 +12,13 @@ ChromaDB; имя пакета нейтральное на случай доба�
 
 Минимум (md/txt):
 ```bash
-pip install -e ./cli/vector-index
+pip install -e ./apps/vector-index
 ```
 
 С дополнительными reader'ами:
 ```bash
-pip install -e './cli/vector-index[html]'        # HTML-страницы
-pip install -e './cli/vector-index[confluence]'  # Confluence (планируется)
+pip install -e './apps/vector-index[html]'        # HTML-страницы
+pip install -e './apps/vector-index[confluence]'  # Confluence (планируется)
 ```
 
 После установки доступна команда `boba-cli-vector-index` (плюс
