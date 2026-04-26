@@ -23,7 +23,9 @@ html = ["beautifulsoup4>=4.12", "lxml>=5.0"]
 confluence = ["atlassian-python-api>=3.41"]
 
 [project.scripts]
-boba-cli-vector-index = "boba_cli_vector_index.cli:main"
+boba-cli-vector-index = "boba.cli.vector_index.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["boba*"]
+namespaces = true

@@ -5,7 +5,7 @@
 миром источников значений (env, TOML, CLI, …):
 
 - :class:`ConfigKey` — иерархический source-agnostic идентификатор
-  поля. Source-реализации (:mod:`boba_config_env`, :mod:`boba_config_toml`)
+  поля. Source-реализации (:mod:`boba.config.env`, :mod:`boba.config.toml`)
   превращают его в env-имя / TOML-путь / CLI-флаг.
 - :class:`ConfigSource` + :class:`ChainedConfigResolver` — пул источников
   и итерация «первый non-``None`` выигрывает».

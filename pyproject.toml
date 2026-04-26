@@ -18,6 +18,13 @@ pythonpath = [
     "packages/boba-adapter-messages/src",
     "packages/boba-adapter-openai/src",
     "packages/boba-adapter-prompt-providers/src",
+    "packages/boba-config-env/src",
+    "packages/boba-config-toml/src",
+    "packages/boba-web-chainlit/src",
+    "packages/boba-cli-agent-run/src",
+    "packages/boba-cli-vector-index/src",
+    "packages/boba-ext-files/src",
+    "packages/boba-ext-chromadb/src",
 ]
 addopts = ["--strict-markers"]
 
@@ -38,7 +45,7 @@ extraPaths = [
     "packages/boba-adapter-prompt-providers/src",
     "packages/boba-config-env/src",
     "packages/boba-config-toml/src",
-    "packages/boba-chainlit/src",
+    "packages/boba-web-chainlit/src",
     "packages/boba-cli-agent-run/src",
     "packages/boba-cli-vector-index/src",
     "packages/boba-ext-files/src",
@@ -89,23 +96,10 @@ ignore = [
 max-complexity = 10
 
 [tool.ruff.lint.isort]
-# Все пакеты монорепо считаются first-party — иначе isort расталкивает
-# `boba_config_*`/`boba_chainlit`/`boba_chromadb`/... как third-party
-# и кладёт перед `boba.*`, что ломает группировку.
-known-first-party = [
-    "boba",
-    "boba_adapter_fs_workspace",
-    "boba_adapter_messages",
-    "boba_adapter_openai",
-    "boba_adapter_prompt_providers",
-    "boba_chainlit",
-    "boba_chromadb",
-    "boba_cli_agent_run",
-    "boba_cli_vector_index",
-    "boba_config_env",
-    "boba_config_toml",
-    "boba_files",
-]
+# Все пакеты монорепо живут под общим namespace ``boba.*`` — одной
+# записи достаточно, чтобы isort группировал их вместе и не считал
+# third-party.
+known-first-party = ["boba"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = [

@@ -10,12 +10,14 @@ requires-python = ">=3.11,<4"
 dependencies = ["boba", "chromadb>=0.5"]
 
 [project.entry-points."boba.tools"]
-chromadb = "boba_chromadb:register_tools"
+chromadb = "boba.ext.chromadb:register_tools"
 
 # Секция конфига extension'а — подхватывается ConfigFactory при сборке
 # бандла, чтобы register_tools(ctx) мог вызвать ctx.config.section(ChromadbSection).
 [project.entry-points."boba.config_sections"]
-chromadb = "boba_chromadb._config:ChromadbSection"
+chromadb = "boba.ext.chromadb.config:ChromadbSection"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["boba*"]
+namespaces = true

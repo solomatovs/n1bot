@@ -22,7 +22,9 @@ dependencies = [
 ]
 
 [project.scripts]
-boba-cli-agent-run = "boba_cli_agent_run.cli:main"
+boba-cli-agent-run = "boba.cli.agent_run.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["boba*"]
+namespaces = true

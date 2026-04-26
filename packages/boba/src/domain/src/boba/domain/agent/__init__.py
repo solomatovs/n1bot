@@ -53,6 +53,14 @@ from boba.domain.agent.events import (
     ToolResultReady,
     UserQueryReceived,
 )
+from boba.domain.agent.messages import (
+    MessageReader,
+    MessageService,
+    MessageStoreError,
+    MessageStoreReadError,
+    MessageStoreWriteError,
+    MessageWriter,
+)
 from boba.domain.agent.middleware import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
@@ -64,16 +72,8 @@ from boba.domain.agent.middleware import (
     StopOnFinished,
     ToolExecutionMiddleware,
 )
-from boba.domain.agent.orchestrator import Agent
-from boba.domain.agent.messages import (
-    MessageReader,
-    MessageService,
-    MessageStoreError,
-    MessageStoreReadError,
-    MessageStoreWriteError,
-    MessageWriter,
-)
 from boba.domain.agent.models import AgentConfig, AgentContext, AgentRequest
+from boba.domain.agent.orchestrator import Agent
 from boba.domain.agent.payloads import (
     LLMCritique,
     LLMFeedback,

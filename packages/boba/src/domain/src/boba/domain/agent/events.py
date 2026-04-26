@@ -6,21 +6,21 @@
     │   request_id: RequestId
     │   + classmethod name() -> str
     │
-    ├── PhaseTransition (abstract)        граница фазы; могут нести метаданные round-trip
+    ├── PhaseTransition (abstract)      граница фазы; могут нести метаданные round-trip
     │   │   label() -> str
     │   │   details() -> Mapping[str, str]
     │   │   body() -> str | None
     │   │   severity() -> Severity (INFO по умолчанию)
-    │   ├── IterationStarted                iteration, max_iterations
-    │   ├── LLMRequestSent                  model, messages_count, has_tools, monotonic_ns
-    │   ├── LLMResponseStreamOpened         monotonic_ns (парный к LLMRequestSent)
+    │   ├── IterationStarted              iteration, max_iterations
+    │   ├── LLMRequestSent                model, messages_count, has_tools, monotonic_ns
+    │   ├── LLMResponseStreamOpened       monotonic_ns (парный к LLMRequestSent)
     │   ├── GenerationStarted
     │   ├── ThinkingStarted
     │   ├── AnswerStarted
-    │   ├── ToolCallStreamStarted           index, tool_call_id, tool_name
-    │   ├── ToolExecutionStarted            call: LLMToolCall
-    │   ├── GenerationRetried               attempt, reason, status_code (severity=WARN)
-    │   └── GenerationDone                  finish_reason
+    │   ├── ToolCallStreamStarted         index, tool_call_id, tool_name
+    │   ├── ToolExecutionStarted          call: LLMToolCall
+    │   ├── GenerationRetried             attempt, reason, status_code (severity=WARN)
+    │   └── GenerationDone                finish_reason
     │
     ├── ContentDelta (abstract)           инкрементальный кусок в слот UI
     │   │   slot() -> SlotKind

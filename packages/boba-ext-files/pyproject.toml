@@ -10,7 +10,9 @@ requires-python = ">=3.11,<4"
 dependencies = ["boba"]
 
 [project.entry-points."boba.tools"]
-files = "boba_files:register_tools"
+files = "boba.ext.files:register_tools"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["boba*"]
+namespaces = true

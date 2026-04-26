@@ -4,7 +4,7 @@ Tools поставляются как pip-installable Python-пакеты, об�
 entry-point в группе ``boba.tools``::
 
     [project.entry-points."boba.tools"]
-    chromadb = "boba_chromadb:register_tools"
+    chromadb = "boba.ext.chromadb:register_tools"
 
 Где ``register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]`` —
 функция, регистрирующая один или несколько :class:`ToolSource`.
