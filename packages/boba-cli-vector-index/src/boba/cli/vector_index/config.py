@@ -6,11 +6,13 @@ chunk_overlap, confirm_skip, verbose. Имена флагов и env-ключе�
 вычисляются из ConfigKey'ев теми же алгоритмами, что и для остальных
 секций (cli_flag_name, env_name, toml_path).
 
-Дополнительно используется shared-ключ
-``ConfigKey("ext","chromadb","persist_path")`` — общий с
-:mod:`boba.ext.chromadb.config.ChromadbSection`. Импортно CLI на
-extension не зависит — оператор может запустить индексирование на
-машине, где extension не установлен; контракт — через ConfigKey.
+Дополнительно регистрируется :class:`ChromadbPersistSection` —
+локальная мини-секция с одним полем ``persist_path``, под общим
+namespace ``("ext", "chromadb")``. Это даёт CLI работать автономно,
+не импортируя ``boba-ext-chromadb`` (extension может быть не
+установлен). Если extension всё-таки установлен и зарегистрировал
+свою полную ChromadbSection, оба секции читают тот же ConfigKey —
+конфликта значений нет.
 """
 
 from __future__ import annotations
@@ -22,22 +24,12 @@ from boba.cli.vector_index.chunking import (
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SIZE,
 )
-from boba.config.cli import CliSource, cli_flag_name
-from boba.config.env import EnvFileSource, EnvSource, env_name
-from boba.config.toml import (
-    CONFIG_PATH_ENV,
-    TomlFileSource,
-    TomlSource,
-)
 from boba.domain.core.config import (
-    ChainedConfigResolver,
-    ConfigKey,
     ConfigSection,
     FieldSpec,
     ObjectSchema,
-    read_field,
 )
-from boba.domain.core.patterns import ConverterInputError, StrId
+from boba.domain.core.patterns import StrId
 from boba.domain.core.validators import (
     ChainConverter,
     Default,
@@ -52,11 +44,11 @@ from boba.domain.core.validators import (
 
 __all__ = [
     "ACTIONS",
+    "ChromadbPersistConfig",
+    "ChromadbPersistSection",
     "CliConfigError",
     "VectorIndexConfig",
     "VectorIndexSection",
-    "build_resolver",
-    "load_persist_path",
 ]
 
 
@@ -172,52 +164,54 @@ class VectorIndexSection(ConfigSection[VectorIndexConfig]):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Shared chromadb persist_path (ad-hoc, без импорта boba-ext-chromadb)
+# Shared chromadb persist_path как мини-секция
 # ──────────────────────────────────────────────────────────────────────
 
 
-_PERSIST_KEY = ConfigKey("ext", "chromadb", "persist_path")
-_PERSIST_PATH: FieldSpec[str] = FieldSpec(
-    name="persist_path",
-    converter=ChainConverter(Required(), ParseString()),
-)
+@dataclass(frozen=True)
+class ChromadbPersistConfig:
+    """Минимальный DTO под shared ``ext.chromadb.persist_path``."""
+
+    persist_path: str
+
+
+class ChromadbPersistSection(ConfigSection[ChromadbPersistConfig]):
+    """Локальная мини-секция: только persist_path. Регистрируется
+    в ``boba.cli.vector_index.cli`` рядом с VectorIndexSection.
+
+    persist_path помечен Required: отсутствие пути — это блокер для
+    индексатора, и framework сам сформирует operator-friendly recipe
+    через ConfigFactory.format_config_error (FieldMissingError +
+    describe() от каждого подключённого источника). Если установлен
+    boba-ext-chromadb, его full ChromadbSection держит то же поле
+    под тем же ConfigKey — оба разрешаются в одно значение.
+    """
+
+    id: ClassVar[StrId] = StrId("vector_index_chromadb_persist")
+    namespace: ClassVar[tuple[str, ...]] = ("ext", "chromadb")
+
+    schema: ClassVar[ObjectSchema[ChromadbPersistConfig]] = ObjectSchema(
+        description=(
+            "Локальная мини-секция с persist_path для CLI-индексатора. "
+            "Дублирует одноимённое поле full ChromadbSection из "
+            "boba-ext-chromadb, чтобы CLI работал без установленного "
+            "extension'а."
+        ),
+        fields=[
+            FieldSpec(
+                name="persist_path",
+                converter=ChainConverter(Required(), ParseString()),
+                description=(
+                    "Путь к persistent ChromaDB store. Общий с "
+                    "boba-ext-chromadb (если установлен)."
+                ),
+            ),
+        ],
+        factory=ChromadbPersistConfig,
+    )
 
 
 class CliConfigError(Exception):
     """Ошибка конфига: невалидное состояние per-action или отсутствует
     обязательное поле (например, persist_path).
     """
-
-
-def build_resolver() -> ChainedConfigResolver:
-    """Стандартная цепочка автономных источников.
-
-    Используется и сборкой bundle'а (через ConfigFactory), и ad-hoc
-    чтением shared-ключа ``ext.chromadb.persist_path``.
-    """
-    return ChainedConfigResolver(
-        [
-            CliSource(),
-            EnvFileSource(),
-            EnvSource(),
-            TomlFileSource(),
-            TomlSource(),
-        ]
-    )
-
-
-def load_persist_path(resolver: ChainedConfigResolver) -> str:
-    """Достаёт shared chromadb persist_path из готового резолвера.
-
-    Поднимает :class:`CliConfigError` с человекочитаемым сообщением,
-    указывающим все три способа задать путь (CLI/env/TOML).
-    """
-    try:
-        return read_field(_PERSIST_KEY, _PERSIST_PATH, resolver)
-    except ConverterInputError as e:
-        raise CliConfigError(
-            f"persist_path is required: pass {cli_flag_name(_PERSIST_KEY)}, "
-            f"set env {env_name(_PERSIST_KEY)}, или укажи "
-            f"[ext.chromadb] persist_path в TOML, на который указывает "
-            f"{CONFIG_PATH_ENV}"
-        ) from e

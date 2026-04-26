@@ -15,9 +15,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeAlias, TypeVar
 
-from boba.domain.core.patterns import Converter, ConverterInputError
+from boba.domain.core.patterns import (
+    Converter,
+    ConverterInputError,
+    MissingValueError,
+)
 from boba.domain.core.schema import (
     ObjectWireSchema,
     ParamWireSchema,
@@ -26,10 +30,54 @@ from boba.domain.core.schema import (
 from boba.domain.core.validators import MISSING, Pass
 
 __all__ = [
+    "FieldAddress",
+    "FieldConverterError",
+    "FieldMissingError",
     "FieldSpec",
     "ObjectSchema",
     "validate_object",
 ]
+
+
+# declaration.py живёт ниже config.py — не должен знать про ConfigKey.
+# Но обязан хранить «адрес поля во внешнем namespace» для верхнего слоя
+# (ConfigSection.build кладёт сюда ConfigKey, ConfigFactory достаёт его
+# через isinstance(..., FieldConverterError)). Алиас object — этот слой
+# содержимое адреса не интерпретирует, только переносит.
+FieldAddress: TypeAlias = object
+
+
+class FieldConverterError(ConverterInputError):
+    """ConverterInputError, прокинутый через слой ObjectSchema.
+
+    Несёт FieldSpec, на котором отказала конвертер-цепочка, и
+    опциональный ``key`` — адрес поля во внешнем namespace (см.
+    :data:`FieldAddress`). Для tool-input ``key`` остаётся None;
+    для config-секций его наполняет ConfigSection.build.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        field: FieldSpec[Any],
+        key: FieldAddress | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.field = field
+        self.key = key
+
+
+class FieldMissingError(FieldConverterError, MissingValueError):
+    """FieldConverterError + MissingValueError-маркер.
+
+    Пустой подкласс с MRO-склейкой: позволяет ловить
+    ``except MissingValueError`` (диагностика «значение не задано»)
+    и ``except FieldConverterError`` (имеется поле-контекст) одинаково
+    — оба isinstance возвращают True. Конструктор унаследован от
+    FieldConverterError; MRO C3-линеаризация склеивает диамант на
+    общем предке ConverterInputError.
+    """
 
 
 T = TypeVar("T")
@@ -142,20 +190,35 @@ def validate_object(
     dict[str, Any] от LLM) и для config-секций (источник —
     ChainedConfigResolver).
 
-    Семантика ошибок: ConverterInputError от любого шага
-    пробрасывается наружу с обогащением имени поля. Caller (tools или
-    config) сам оборачивает в свою domain-ошибку с дополнительным
-    контекстом.
+    Семантика ошибок: ConverterInputError от любого шага оборачивается
+    в FieldConverterError (или FieldMissingError, если внутрь упал
+    MissingValueError-маркер) с привязкой FieldSpec — это даёт верхним
+    слоям возможность диагностировать без парсинга текста сообщения.
     """
     validated: dict[str, Any] = {}
     for fld in schema.fields:
         try:
             value = fld.converter.convert(read_raw(fld.name))
         except ConverterInputError as exc:
-            raise ConverterInputError(
-                f"field {fld.name!r}: {exc}"
-            ) from exc
+            raise _wrap_field_error(exc, fld) from exc
         if value is not MISSING:
             validated[fld.name] = value
     final = schema.invariants.convert(validated)
     return schema.factory(**final)
+
+
+def _wrap_field_error(
+    exc: ConverterInputError,
+    fld: FieldSpec[Any],
+) -> FieldConverterError:
+    """Завернуть ошибку конвертера в field-aware подкласс.
+
+    Сохраняет MissingValue-маркер: упал MissingValueError →
+    FieldMissingError; иначе — обычный FieldConverterError. Адрес
+    (``key``) не наследуется — он принадлежит верхнему слою (ConfigSection
+    знает namespace), здесь оставляем None.
+    """
+    message = f"field {fld.name!r}: {exc}"
+    if isinstance(exc, MissingValueError):
+        return FieldMissingError(message, field=fld)
+    return FieldConverterError(message, field=fld)

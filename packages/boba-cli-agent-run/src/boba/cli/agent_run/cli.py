@@ -1,18 +1,14 @@
-"""argparse-парсер и dispatch для команды boba-cli-agent-run.
+"""Entry-point boba-cli-agent-run.
 
-Конфиг полностью идёт через ConfigSource-цепочку. Все источники
-(Cli/Env/Toml) автономны: на старте сами читают свои каналы
-(sys.argv / os.environ / BOBA_CONFIG_PATH). Никакого ручного маппинга
-argparse → ConfigKey и никакой явной декларации флагов в этом файле —
-имена флагов вычисляются из ConfigKey'ев секции через cli_flag_name.
-
-Здесь argparse нужен только для --help; все значения (включая
-``query``) — поля AgentRunSection, читаемые через bundle.
+Конфиг полностью идёт через ConfigSource-цепочку, собранную фабрикой
+после регистрации секций. argparse-парсер строит CliSource на этапе
+``factory.build()`` — отсюда автогенерация ``--help`` для всех
+зарегистрированных полей и typo-detection для опечаток в флагах.
+Локального argparse тут нет.
 """
 
 from __future__ import annotations
 
-import argparse
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -36,9 +32,9 @@ from boba.cli.agent_run.config import AgentRunConfig, AgentRunSection
 from boba.cli.agent_run.console_sink import ConsoleSink
 from boba.config.cli import CliSource
 from boba.config.env import EnvFileSource, EnvSource
-from boba.config.toml import TomlFileSource, TomlSource
+from boba.config.toml import CONFIG_PATH_ENV, TomlFileSource, TomlSource
 from boba.domain.agent.models import AgentRequest
-from boba.domain.core.config import ChainedConfigResolver
+from boba.domain.core.patterns import ConverterInputError
 from boba.domain.core.tools import ToolContext
 from boba.domain.core.workspace import (
     PromptWorkspaceId,
@@ -60,28 +56,16 @@ from boba.infra import (
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Entry-point. Возвращает exit-code (0 = успех)."""
-    # argv нужен только для --help/typo-validation. CliSource внутри
-    # _build_factory читает sys.argv сам.
-    _build_parser().parse_known_args(argv)
-    _run()
+    factory = _build_factory(argv)
+    try:
+        _run(factory)
+    except ConverterInputError as e:
+        # Фабрика форматирует FieldMissingError в operator-friendly
+        # recipe (CLI/env/TOML — describe() от каждого источника);
+        # прочие ошибки конвертера остаются как есть.
+        print(f"error: {factory.format_config_error(e)}", file=sys.stderr)
+        return 2
     return 0
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Argparse — только --help (других позиционных у нас нет)
-# ──────────────────────────────────────────────────────────────────────
-
-
-def _build_parser() -> argparse.ArgumentParser:
-    return argparse.ArgumentParser(
-        prog="boba-cli-agent-run",
-        description=(
-            "Run a single Boba agent query against the configured LLM. "
-            "Все параметры — поля AgentRunSection, передаются через "
-            "--<section>-<field> flags (см. cli_flag_name) или env/TOML. "
-            "Обязательные: --agent-run-query, --agent-run-model."
-        ),
-    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -89,23 +73,15 @@ def _build_parser() -> argparse.ArgumentParser:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _build_factory() -> ConfigFactory:
-    """Стандартная цепочка автономных источников + регистрация секций.
+def _build_factory(argv: Sequence[str] | None) -> ConfigFactory:
+    """Регистрация секций + источников.
 
     Cli > env-file > env > toml-file > toml. Adapter-секции и
     own-section (agent_run) регистрируются вручную; ext-секции —
-    через discovery.
+    через discovery. argparse-парсер строит CliSource на bind_schema
+    из FieldSpec'ов всех зарегистрированных секций.
     """
-    resolver = ChainedConfigResolver(
-        [
-            CliSource(),
-            EnvFileSource(),
-            EnvSource(),
-            TomlFileSource(),
-            TomlSource(),
-        ]
-    )
-    factory = ConfigFactory(resolver)
+    factory = ConfigFactory()
     factory.register(AppCoreSection())
     factory.register(AgentSection())
     factory.register(WorkspacesSection())
@@ -113,6 +89,15 @@ def _build_factory() -> ConfigFactory:
     factory.register(PromptsSection())
     factory.register(AgentRunSection())
     factory.discover_extension_sections()
+    factory.attach_sources(
+        [
+            CliSource(argv),
+            EnvFileSource(),
+            EnvSource(extra_known={CONFIG_PATH_ENV}),
+            TomlFileSource(),
+            TomlSource(),
+        ]
+    )
     return factory
 
 
@@ -121,9 +106,9 @@ def _build_factory() -> ConfigFactory:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _run() -> None:
+def _run(factory: ConfigFactory) -> None:
     """Собирает агент с полным стеком middleware и прогоняет один запрос."""
-    bundle = ConfigLoader(_build_factory()).load_bundle()
+    bundle = ConfigLoader(factory).load_bundle()
     app_config = bundle.app
     agent_config = bundle.agent
     run_cfg: AgentRunConfig = bundle.section(AgentRunSection)

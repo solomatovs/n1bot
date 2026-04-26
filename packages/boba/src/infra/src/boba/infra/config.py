@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar, TypeVar, cast
 
@@ -29,7 +29,8 @@ from boba.domain.core.config import (
     FieldSpec,
     ObjectSchema,
 )
-from boba.domain.core.patterns import StrId
+from boba.domain.core.declaration import FieldMissingError
+from boba.domain.core.patterns import ConverterInputError, StrId
 from boba.domain.core.validators import (
     ChainConverter,
     Default,
@@ -272,11 +273,84 @@ class ConfigFactory:
     CONFIG_SECTIONS_ENTRY_POINT (discover_extension_sections).
     Сборка бандла — build: каждая зарегистрированная секция строит
     свой DTO, результат складывается по id.
+
+    Использование: ``ConfigFactory()`` без аргументов; ``register(...)``
+    + ``discover_extension_sections()`` собирают набор секций;
+    ``attach_sources([...])`` принимает источники в порядке приоритета
+    (cli > env > toml). ``build()`` собирает полный набор
+    (ConfigKey, FieldSpec) пар по зарегистрированным секциям, дёргает
+    ``bind_schema`` на каждом источнике (даёт CLI-источнику построить
+    argparse, env/TOML — провалидировать ключи на опечатки), строит
+    резолвер и собирает DTO каждой секции.
     """
 
-    def __init__(self, resolver: ChainedConfigResolver) -> None:
-        self._resolver = resolver
+    def __init__(self) -> None:
+        self._sources: list[ConfigSource] = []
         self._sections: dict[StrId, ConfigSection[Any]] = {}
+        self._resolver: ChainedConfigResolver | None = None
+
+    def attach_sources(self, sources: Sequence[ConfigSource]) -> None:
+        """Подключить источники в порядке приоритета (cli > env > toml).
+        Повторный вызов заменяет предыдущий список (idempotent); сбрасывает
+        кеш резолвера, чтобы новые источники тоже получили bind_schema.
+        """
+        self._sources = list(sources)
+        self._resolver = None
+
+    def _iter_schema_items(self) -> Iterator[tuple[ConfigKey, FieldSpec[Any]]]:
+        """Полный набор (key, field) пар по всем зарегистрированным
+        секциям. Используется при сборке резолвера для bind_schema.
+        """
+        for section in self._sections.values():
+            for fld in section.schema.fields:
+                yield ConfigKey(*section.namespace, fld.name), fld
+
+    def resolver(self) -> ChainedConfigResolver:
+        """Лениво собранный резолвер; даёт каждому источнику увидеть
+        полный набор ожидаемых ключей через bind_schema до первого
+        resolve. Идемпотентен: повторные вызовы возвращают тот же
+        инстанс. attach_sources сбрасывает кеш.
+        """
+        if self._resolver is not None:
+            return self._resolver
+        if not self._sources:
+            raise ConfigError(
+                "ConfigFactory: no sources attached. "
+                "Call attach_sources([...]) before build()/resolver()."
+            )
+        items = list(self._iter_schema_items())
+        for src in self._sources:
+            src.bind_schema(items)
+        self._resolver = ChainedConfigResolver(self._sources)
+        return self._resolver
+
+    def describe_key(self, key: ConfigKey) -> list[str]:
+        """Operator-readable рецепты «как задать этот ключ» — по одному
+        на источник, который умеет адресовать ключ. Источники возвращают
+        пустую строку, если не умеют — те в выдачу не попадают.
+        """
+        out: list[str] = []
+        for src in self.resolver().sources:
+            d = src.describe(key)
+            if d:
+                out.append(d)
+        return out
+
+    def format_config_error(self, err: ConverterInputError) -> str:
+        """Operator-friendly текст ошибки конфига.
+
+        Для FieldMissingError со известным ConfigKey добавляет recipe
+        со списком способов задать значение, собранным из describe()
+        всех подключённых источников. Для прочих ошибок (OneOf, ParseInt,
+        cross-field invariants) — оставляет исходный message: значение
+        было предоставлено, проблема не в «где взять», а в «что
+        задано неверно».
+        """
+        if isinstance(err, FieldMissingError) and err.key is not None:
+            hints = self.describe_key(err.key)
+            if hints:
+                return f"{err}; задайте через: {' / '.join(hints)}"
+        return str(err)
 
     def register(self, section: ConfigSection[Any]) -> None:
         sid = section.id
@@ -325,9 +399,10 @@ class ConfigFactory:
                 )
 
     def build(self) -> ConfigBundle:
+        resolver = self.resolver()
         built: dict[StrId, object] = {}
         for sid, section in self._sections.items():
-            built[sid] = section.build(self._resolver)
+            built[sid] = section.build(resolver)
         return ConfigBundle(built)
 
 

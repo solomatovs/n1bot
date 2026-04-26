@@ -1,9 +1,11 @@
-"""argparse-парсер и dispatch для команд boba-cli-vector-index.
+"""Entry-point boba-cli-vector-index.
 
-Конфиг полностью идёт через ConfigSource-цепочку (Cli/Env/Toml — все
-автономны). argparse тут только для --help; все значения — поля
-:class:`VectorIndexSection`, читаемые через bundle. Имена флагов
-вычисляются из ConfigKey'ев (см. cli_flag_name).
+Конфиг полностью идёт через ConfigSource-цепочку, собранную фабрикой
+после регистрации секций. argparse-парсер строит CliSource на этапе
+``factory.build()`` — отсюда автогенерация ``--help`` и typo-detection
+для опечаток в флагах. Ошибки конфига (включая «значение не задано»
+для Required-полей) форматируются ``factory.format_config_error`` —
+рецепт «как задать» собирается из describe() всех источников.
 
 Доступные actions (значения поля ``vector_index.action``):
 
@@ -18,79 +20,63 @@
 
 from __future__ import annotations
 
-import argparse
 import logging
 import sys
 from collections.abc import Sequence
 
 from boba.cli.vector_index.config import (
+    ChromadbPersistSection,
     CliConfigError,
     VectorIndexConfig,
     VectorIndexSection,
-    build_resolver,
-    load_persist_path,
 )
 from boba.cli.vector_index.indexer import (
     IndexOptions,
     index_paths,
 )
 from boba.cli.vector_index.store import VectorStore
-from boba.infra import ConfigFactory, ConfigLoader
+from boba.config.cli import CliSource
+from boba.config.env import EnvFileSource, EnvSource
+from boba.config.toml import CONFIG_PATH_ENV, TomlFileSource, TomlSource
+from boba.domain.core.patterns import ConverterInputError
+from boba.infra import ConfigFactory
 
 logger = logging.getLogger("boba.cli.vector_index")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Entry-point. Возвращает exit-code (0 = успех)."""
-    # argv нужен только для --help/typo-validation. Источники внутри
-    # build_resolver() читают свои каналы (sys.argv/env/TOML) сами.
-    _build_parser().parse_known_args(argv)
-
-    resolver = build_resolver()
-    factory = ConfigFactory(resolver)
+    factory = ConfigFactory()
     factory.register(VectorIndexSection())
+    factory.register(ChromadbPersistSection())
     factory.discover_extension_sections()
+    factory.attach_sources(
+        [
+            CliSource(argv),
+            EnvFileSource(),
+            EnvSource(extra_known={CONFIG_PATH_ENV}),
+            TomlFileSource(),
+            TomlSource(),
+        ]
+    )
 
     try:
-        bundle = ConfigLoader(factory).load_bundle()
-        run_cfg = bundle.section(VectorIndexSection)
-        persist_path = load_persist_path(resolver)
-    except CliConfigError as e:
-        print(f"error: {e}", file=sys.stderr)
+        bundle = factory.build()
+    except ConverterInputError as e:
+        print(f"error: {factory.format_config_error(e)}", file=sys.stderr)
         return 2
-    except Exception as e:  # top-level CLI error reporter
-        print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
-        return 2
+
+    run_cfg = bundle.section(VectorIndexSection)
+    persist_path = bundle.section(ChromadbPersistSection).persist_path
 
     _setup_logging(run_cfg.verbose)
 
-    handler = _HANDLERS.get(run_cfg.action)
-    if handler is None:
-        # OneOf-валидатор уже отверг бы невалидный action — этот
-        # branch недостижим при корректной схеме, оставлен для
-        # type-checker'а.
-        print(f"error: unknown action {run_cfg.action!r}", file=sys.stderr)
-        return 2
+    handler = _HANDLERS[run_cfg.action]
     try:
         return handler(persist_path, run_cfg)
     except CliConfigError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-
-
-def _build_parser() -> argparse.ArgumentParser:
-    """argparse только для --help. Все значения — через source chain."""
-    return argparse.ArgumentParser(
-        prog="boba-cli-vector-index",
-        description=(
-            "Operator CLI: index/list/delete documents in the Boba "
-            "vector knowledge base (ChromaDB). Все значения — поля "
-            "VectorIndexSection, передаются через --vector-index-<field> "
-            "flags (см. cli_flag_name) или env/TOML. Обязательно "
-            "--vector-index-action; per-action входы (paths/collection) — "
-            "по таблице --help секции."
-        ),
-    )
 
 
 _VERBOSE_INFO = 1

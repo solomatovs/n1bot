@@ -14,10 +14,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any, ClassVar, Generic, TypeVar
 
 from boba.domain.core.declaration import (
+    FieldConverterError,
+    FieldMissingError,
     FieldSpec,
     ObjectSchema,
     validate_object,
@@ -105,7 +107,39 @@ class ConfigSource(ABC):
     плоскую конкретику (env-имя, TOML-путь и т.п.) — этим контракт
     декларации в домене и контракт читателя в инфре полностью
     разделены.
+
+    Опционально источник реализует bind_schema (единоразовое
+    уведомление о полном наборе ожидаемых ключей — позволяет построить
+    argparse, поймать typo в env/TOML) и describe (operator-readable
+    «как задать значение через этот источник»). Оба default — no-op /
+    пустая строка, source остаётся pull-only.
     """
+
+    def bind_schema(
+        self,
+        items: Iterable[tuple[ConfigKey, FieldSpec[Any]]],
+    ) -> None:
+        """Получить полный набор ожидаемых ключей со схемой полей.
+
+        Вызывается ConfigFactory.build один раз, после регистрации
+        всех секций (включая discovery extension'ов) и до первого
+        resolve. Default — no-op.
+        """
+        del items
+
+    def describe(self, key: ConfigKey) -> str:
+        """Вернуть operator-readable рецепт «как задать этот ключ
+        через этот источник»: ``--ext-chromadb-persist-path``,
+        ``env BOBA_EXT_CHROMADB_PERSIST_PATH``, ``[ext.chromadb]
+        persist_path в TOML`` и т.п.
+
+        Используется ConfigFactory.format_config_error для сборки
+        recipe-сообщения при FieldMissingError. Возврат пустой строки —
+        «этот источник не умеет адресовать данный ключ» (тогда не
+        попадёт в recipe).
+        """
+        del key
+        return ""
 
     @abstractmethod
     def resolve(self, key: ConfigKey) -> object | None: ...
@@ -116,6 +150,14 @@ class ChainedConfigResolver:
 
     def __init__(self, sources: Sequence[ConfigSource]) -> None:
         self._sources = list(sources)
+
+    @property
+    def sources(self) -> Sequence[ConfigSource]:
+        """Read-only view списка источников. Используется ConfigFactory
+        в legacy-режиме для вызова bind_schema на каждом источнике
+        после регистрации всех секций.
+        """
+        return tuple(self._sources)
 
     def resolve(self, key: ConfigKey) -> object | None:
         for source in self._sources:
@@ -183,6 +225,12 @@ class ConfigSection(ABC, Generic[T]):
         секции в полный ConfigKey. None от резолвера →
         MISSING на вход converter-цепочки (как в
         read_field).
+
+        Ошибки конвертации обогащаются ConfigKey — declaration.py
+        не знает, как адресовать поле во внешнем мире, а секция
+        знает (это и есть смысл namespace). После этого верхний
+        слой (ConfigFactory) умеет формировать operator-friendly
+        recipe «как задать значение».
         """
 
         def _read_raw(name: str) -> object:
@@ -190,4 +238,23 @@ class ConfigSection(ABC, Generic[T]):
             raw = resolver.resolve(key)
             return MISSING if raw is None else raw
 
-        return validate_object(self.schema, _read_raw)
+        try:
+            return validate_object(self.schema, _read_raw)
+        except FieldConverterError as exc:
+            raise self._attach_key(exc) from exc.__cause__
+
+    def _attach_key(self, exc: FieldConverterError) -> FieldConverterError:
+        """Дописать ConfigKey к ошибке валидации поля.
+
+        validate_object не знает namespace — оставляет ``exc.key=None``.
+        Секция знает namespace и собирает полный ConfigKey из
+        ``namespace + field.name``. Тип ошибки сохраняется (FieldMissingError
+        остаётся FieldMissingError) — для верхнего слоя важна возможность
+        отличить «значение не задано» от «значение невалидно».
+        """
+        if exc.key is not None:
+            return exc
+        full_key = ConfigKey(*self.namespace, exc.field.name)
+        if isinstance(exc, FieldMissingError):
+            return FieldMissingError(str(exc), field=exc.field, key=full_key)
+        return FieldConverterError(str(exc), field=exc.field, key=full_key)
