@@ -30,23 +30,31 @@ from boba.domain.core.workspace import (
     WorkspaceId,
 )
 from boba.domain.llm.models import RequestId
-from boba.infra.config import ConfigLoader, default_config_factory
-from boba.infra.container import (
+from boba.infra import (
     AgentComponents,
-    build_prompt_providers,
+    AgentSection,
+    AppCoreSection,
+    ConfigFactory,
+    ConfigLoader,
+    ExtensionContext,
+    ToolPluginLoader,
+    configure_logging,
     create_agent_source,
-    create_llm_source,
+    log_context,
 )
-from boba.infra.logging import configure_logging, log_context
-from boba.infra.prompt_loader import PromptLoader
-from boba.infra.tool_plugin_loader import ExtensionContext, ToolPluginLoader
 from boba_adapter_fs_workspace import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
     FsPromptWorkspaceRegistry,
+    WorkspacesSection,
 )
 from boba_adapter_messages import InMemoryMessageService
-from boba_adapter_openai import FileContentObserver
+from boba_adapter_openai import (
+    FileContentObserver,
+    LLMTransportSection,
+    create_llm_source,
+)
+from boba_adapter_prompt_providers import PromptLoader, PromptsSection
 from boba_chainlit.config import ChainlitConfig, ChainlitSection
 from boba_config_env import EnvFileSource, EnvSource
 from boba_config_toml import (
@@ -73,6 +81,22 @@ def _build_resolver() -> ChainedConfigResolver:
     )
 
 
+def _build_factory() -> ConfigFactory:
+    """Регистрирует встроенные секции (``app_core``/``agent``) и
+    adapter-секции выбранного стека (FS-workspace, OpenAI-транспорт,
+    file-prompt loader). Расширения через entry-point group
+    ``boba.config_sections`` подхватываются после.
+    """
+    factory = ConfigFactory(_build_resolver())
+    factory.register(AppCoreSection())
+    factory.register(AgentSection())
+    factory.register(WorkspacesSection())
+    factory.register(LLMTransportSection())
+    factory.register(PromptsSection())
+    factory.discover_extension_sections()
+    return factory
+
+
 class ChatSession:
     """One-shot обёртка: конфиг + workspace registry один раз, агент
     пересобирается на каждый :meth:`run`.
@@ -83,7 +107,7 @@ class ChatSession:
     """
 
     def __init__(self) -> None:
-        loader = ConfigLoader(default_config_factory(_build_resolver()))
+        loader = ConfigLoader(_build_factory())
         bundle = loader.load_bundle()
         self._app_config = bundle.app
         configure_logging(self._app_config.log_level, self._app_config.log_file)
@@ -104,7 +128,7 @@ class ChatSession:
             root=Path(self._app_config.prompts_dir),
         ).get_or_create(PromptWorkspaceId("prompts"))
         prompt_loader = PromptLoader(prompt_workspace)
-        self._prompt_providers = build_prompt_providers(prompt_loader)
+        self._prompt_providers = prompt_loader.prompt_providers()
 
         tool_loader = ToolPluginLoader(ExtensionContext(config=bundle))
         self._tools_service = tool_loader.tools_service()

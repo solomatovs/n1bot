@@ -16,6 +16,7 @@ dependencies = [
     "boba-adapter-fs-workspace",
     "boba-adapter-messages",
     "boba-adapter-openai",
+    "boba-adapter-prompt-providers",
     "boba-config-env",
     "boba-config-toml",
 ]

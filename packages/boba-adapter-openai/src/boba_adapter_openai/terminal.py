@@ -15,10 +15,6 @@ from openai import OpenAI
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 from boba.domain.config import LLMConfig
-from boba_adapter_openai._errors import OpenAIErrorConverter
-from boba_adapter_openai._raw_observer import RawLLMObserver, RequestOutcome
-from boba_adapter_openai._request import ToOpenAIRequestConverter
-from boba_adapter_openai._response import FromOpenAIChunkConverter
 from boba.domain.core.patterns import StreamSource
 from boba.domain.llm.errors import LLMError
 from boba.domain.llm.events import (
@@ -27,6 +23,10 @@ from boba.domain.llm.events import (
     LLMRequestStarted,
 )
 from boba.domain.llm.models import LLMContext
+from boba_adapter_openai.errors import OpenAIErrorConverter
+from boba_adapter_openai.raw_observer import RawLLMObserver, RequestOutcome
+from boba_adapter_openai.request import ToOpenAIRequestConverter
+from boba_adapter_openai.response import FromOpenAIChunkConverter
 
 
 def build_openai_client(config: LLMConfig) -> OpenAI:

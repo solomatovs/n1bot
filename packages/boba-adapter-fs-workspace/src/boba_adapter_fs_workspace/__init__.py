@@ -19,14 +19,15 @@
     )
 """
 
-from boba_adapter_fs_workspace._registry import (
+from boba_adapter_fs_workspace.config import WorkspacesSection
+from boba_adapter_fs_workspace.registry import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
     FsPromptWorkspaceRegistry,
     FsScratchWorkspaceRegistry,
     FsWorkspaceRegistry,
 )
-from boba_adapter_fs_workspace._shell import (
+from boba_adapter_fs_workspace.shell import (
     FsHistoryWorkspaceShell,
     FsProjectWorkspaceShell,
     FsPromptWorkspaceShell,
@@ -47,4 +48,5 @@ __all__ = [
     "FsWorkspaceRegistry",
     "FsWorkspaceShell",
     "WorkspacePath",
+    "WorkspacesSection",
 ]
