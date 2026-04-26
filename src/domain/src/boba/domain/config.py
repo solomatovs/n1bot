@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -51,3 +52,9 @@ class AppConfig:
     log_file: str | None = None
     llm: LLMConfig = field(default_factory=LLMConfig)
     extensions_dir: str = "./extensions"
+    # Namespaced bag для конфигов pip-installed extension-пакетов.
+    # Заполняется ConfigLoader из env (``BOBA_EXT_<NS>__<KEY>``) и TOML
+    # (``[extensions.<ns>]``). Каждое расширение читает только свой
+    # namespace — типизированные dataclass-конфиги остаются внутри
+    # самого расширения.
+    extensions: Mapping[str, Mapping[str, str]] = field(default_factory=dict)

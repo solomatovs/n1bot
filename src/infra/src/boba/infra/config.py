@@ -40,6 +40,7 @@ from boba.domain.core.config import (
     ConfigSource,
     FieldSpec,
     IntConverter,
+    MappingMappingConverter,
     StrConverter,
 )
 from boba.domain.core.patterns import FoldFactory, PrioritySource, StrId
@@ -60,6 +61,8 @@ __all__ = [
     "DefaultSource",
     "EnvFileSource",
     "EnvSource",
+    "ExtensionsBagSection",
+    "ExtensionsBagSource",
     "ExtensionsSection",
     "LLMTransportSection",
     "TomlFileSource",
@@ -120,6 +123,7 @@ class ConfigState:
     log_file: str | None = None
     agent: AgentConfig | None = None
     extensions_dir: str | None = None
+    extensions: Mapping[str, Mapping[str, str]] | None = None
 
 
 class ConfigError(Exception):
@@ -323,6 +327,90 @@ class ExtensionsSection(ConfigSectionBuilder):
         return state
 
 
+class ExtensionsBagSource(ConfigSource):
+    """Cобирает namespaced-конфиг расширений из env и TOML.
+
+    Конвенция:
+
+    * env: ``BOBA_EXT_<NAMESPACE>__<KEY>`` (двойной ``_`` — разделитель,
+      позволяет одиночные ``_`` в имени namespace, как в pydantic-settings).
+      Имена приводятся к lowercase.
+    * TOML: секция ``[extensions.<namespace>]`` со скалярными полями.
+
+    Cвязывается с :class:`ExtensionsBagSection` через единственный
+    специальный ключ :attr:`BAG_KEY` — на любые другие FieldSpec
+    источник возвращает ``None`` и не мешает остальной цепочке.
+
+    Env wins над TOML — единый precedence по всему проекту.
+    """
+
+    BAG_KEY: ClassVar[str] = "_BOBA_EXTENSIONS_BAG"
+    ENV_PREFIX: ClassVar[str] = "BOBA_EXT_"
+    ENV_SEPARATOR: ClassVar[str] = "__"
+
+    def __init__(self, toml_data: Mapping[str, Any]) -> None:
+        self._toml_data = toml_data
+
+    def resolve(self, spec: FieldSpec[Any]) -> object | None:
+        if spec.key != self.BAG_KEY:
+            return None
+        return self._collect()
+
+    def _collect(self) -> Mapping[str, Mapping[str, str]]:
+        result: dict[str, dict[str, str]] = {}
+        toml_section = self._toml_data.get("extensions")
+        if isinstance(toml_section, Mapping):
+            for ns, sub in toml_section.items():
+                if not isinstance(ns, str) or not isinstance(sub, Mapping):
+                    continue
+                bucket = result.setdefault(ns, {})
+                for k, v in sub.items():
+                    if not isinstance(k, str):
+                        continue
+                    bucket[k] = str(v)
+        for env_key, env_value in os.environ.items():
+            if not env_key.startswith(self.ENV_PREFIX):
+                continue
+            tail = env_key[len(self.ENV_PREFIX) :]
+            ns, sep, key = tail.partition(self.ENV_SEPARATOR)
+            if not sep or not ns or not key:
+                continue
+            result.setdefault(ns.lower(), {})[key.lower()] = env_value
+        return result
+
+
+class ExtensionsBagSection(ConfigSectionBuilder):
+    """Секция namespaced-конфига для pip-installed extension-пакетов.
+
+    Каждое расширение (``boba-ext-chromadb``, ``boba-ext-redis`` и
+    т.п.) читает только свой ``ctx.app_config.extensions[<namespace>]``
+    и валидирует поля своим собственным dataclass-конфигом. Платформа
+    лишь доставляет сырые строки до расширения и не знает их семантики.
+
+    Источники наполняются через :class:`ExtensionsBagSource`:
+
+    * env: ``BOBA_EXT_<NAMESPACE>__<KEY>`` (двойное подчёркивание
+      между namespace и key — позволяет одиночные ``_`` в имени
+      namespace, как в pydantic-settings).
+    * TOML: секция ``[extensions.<namespace>]`` со скалярными полями.
+
+    Env wins над TOML — единый precedence по всему проекту.
+    """
+
+    BAG = FieldSpec[Mapping[str, Mapping[str, str]]](
+        ExtensionsBagSource.BAG_KEY,
+        MappingMappingConverter(),
+        {},
+    )
+
+    def id(self) -> StrId:
+        return StrId("extensions_bag")
+
+    def apply(self, state: ConfigState) -> ConfigState:
+        state.extensions = self.BAG.read(state.resolver)
+        return state
+
+
 class ConfigFactory(FoldFactory[StrId, ConfigState, ConfigBundle]):
     """Фабрика конфиг-бандла. Обязательные слоты :class:`ConfigState`
     декларируются как class-level :class:`ConfigSlot`-константы (см.
@@ -336,6 +424,9 @@ class ConfigFactory(FoldFactory[StrId, ConfigState, ConfigBundle]):
     _SLOT_LOG_LEVEL = ConfigSlot[str]("log_level", "AppCoreSection (log_level)")
     _SLOT_LLM = ConfigSlot[LLMConfig]("llm_transport", "LLMTransportSection")
     _SLOT_EXTENSIONS_DIR = ConfigSlot[str]("extensions_dir", "ExtensionsSection")
+    _SLOT_EXTENSIONS_BAG = ConfigSlot[Mapping[str, Mapping[str, str]]](
+        "extensions", "ExtensionsBagSection"
+    )
     _SLOT_AGENT = ConfigSlot[AgentConfig]("agent", "AgentSection")
 
     def __init__(self, resolver: ChainedConfigResolver) -> None:
@@ -353,6 +444,7 @@ class ConfigFactory(FoldFactory[StrId, ConfigState, ConfigBundle]):
             log_file=state.log_file,
             llm=self._SLOT_LLM.read(state),
             extensions_dir=self._SLOT_EXTENSIONS_DIR.read(state),
+            extensions=self._SLOT_EXTENSIONS_BAG.read(state),
         )
         return ConfigBundle(
             app=app,
@@ -387,6 +479,7 @@ def default_resolver(
         EnvSource(),
         TomlFileSource(toml_data, path_map),
         TomlSource(toml_data, path_map),
+        ExtensionsBagSource(toml_data),
         *extra_sources,
     ]
     return ChainedConfigResolver(sources)
@@ -406,6 +499,7 @@ def default_config_factory(
     factory.register(LLMTransportSection(priority=30))
     factory.register(AgentSection(priority=40))
     factory.register(ExtensionsSection(priority=50))
+    factory.register(ExtensionsBagSection(priority=60))
     return factory
 
 
