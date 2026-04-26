@@ -13,7 +13,7 @@ from boba.domain.core.tools import (
     ToolContext,
     ToolDefinition,
     ToolId,
-    ToolInputSchema,
+    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )
@@ -64,7 +64,7 @@ class KbListCollectionsTool(Tool[KbListCollectionsArgs]):
                 "{name, description}. Используй перед kb_search чтобы "
                 "выбрать подходящую коллекцию."
             ),
-            input_schema=ToolInputSchema(params=[], invariants=Pass()),
+            input_schema=ObjectSchema(fields=[], invariants=Pass()),
         )
 
     def execute(

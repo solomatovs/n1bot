@@ -209,7 +209,7 @@ class SchemaArgsValidator(Converter[dict[str, Any], dict[str, Any]]):
     def __init__(self, schema: ToolInputSchema, tool_id: ToolId) -> None:
         self._schema = schema
         self._tool_id = tool_id
-        self._known: frozenset[str] = frozenset(p.name for p in schema.params)
+        self._known: frozenset[str] = frozenset(p.name for p in schema.fields)
 
     def convert(self, value: dict[str, Any]) -> dict[str, Any]:
         unknown = sorted(set(value.keys()) - self._known)
@@ -220,8 +220,10 @@ class SchemaArgsValidator(Converter[dict[str, Any], dict[str, Any]]):
                 f"неизвестный параметр (известные: {sorted(self._known)})",
             )
 
+        # Симметрично :func:`validate_object`, но с tool-специфичными
+        # обёртками ошибок (tool_id, имя параметра / признак invariants).
         result: dict[str, Any] = {}
-        for param in self._schema.params:
+        for param in self._schema.fields:
             raw = value.get(param.name, MISSING)
             try:
                 validated = param.converter.convert(raw)
@@ -233,6 +235,7 @@ class SchemaArgsValidator(Converter[dict[str, Any], dict[str, Any]]):
                 result[param.name] = validated
 
         try:
-            return self._schema.invariants.convert(result)
+            final = self._schema.invariants.convert(result)
         except ConverterInputError as e:
             raise InvalidSchemaInvariantError(self._tool_id, str(e)) from e
+        return self._schema.factory(**final)

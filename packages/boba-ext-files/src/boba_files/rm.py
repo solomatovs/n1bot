@@ -20,7 +20,7 @@ from boba.domain.core.tools import (
     ToolDefinition,
     ToolExecutionError,
     ToolId,
-    ToolInputSchema,
+    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )
@@ -62,8 +62,8 @@ class RmTool(Tool[RmArgs]):
                 "Удалить файл или директорию. Для директорий требуется "
                 "recursive=true. Безвозвратно."
             ),
-            input_schema=ToolInputSchema(
-                params=[
+            input_schema=ObjectSchema(
+                fields=[
                     FieldSpec(
                         name="path",
                         description="Путь к файлу или директории.",

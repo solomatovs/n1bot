@@ -12,7 +12,7 @@ from boba.domain.core.tools import (
     ToolContext,
     ToolDefinition,
     ToolId,
-    ToolInputSchema,
+    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )
@@ -46,7 +46,7 @@ class PwdTool(Tool[PwdArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description="Вернуть путь текущей директории.",
-            input_schema=ToolInputSchema(params=[], invariants=Pass()),
+            input_schema=ObjectSchema(fields=[], invariants=Pass()),
         )
 
     def execute(self, ctx: ToolContext, req: PwdArgs) -> ToolResult:

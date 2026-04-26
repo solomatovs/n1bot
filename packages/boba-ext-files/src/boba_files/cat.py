@@ -10,19 +10,19 @@ from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainConverter,
     Default,
+    FieldSpec,
     IsInt,
     IsString,
     MinValue,
     NonEmpty,
+    ObjectSchema,
     Ordered,
-    FieldSpec,
     Required,
     Tool,
     ToolContext,
     ToolDefinition,
     ToolExecutionError,
     ToolId,
-    ToolInputSchema,
     ToolOutputTooLargeError,
     ToolResult,
     ToolSourceId,
@@ -74,8 +74,8 @@ class CatTool(Tool[CatArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description="Прочитать строки [start_line; end_line] из текстового файла.",
-            input_schema=ToolInputSchema(
-                params=[
+            input_schema=ObjectSchema(
+                fields=[
                     FieldSpec(
                         name="path",
                         description="Путь к файлу.",
@@ -157,4 +157,3 @@ class CatTool(Tool[CatArgs]):
             collected.append(line.rstrip("\r\n"))
             last = i
         return "\n".join(collected), last
-

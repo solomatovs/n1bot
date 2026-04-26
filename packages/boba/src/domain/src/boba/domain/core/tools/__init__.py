@@ -5,7 +5,7 @@
 — деталь реализации.
 """
 
-from boba.domain.core.config import FieldSpec
+from boba.domain.core.config import FieldSpec, ObjectSchema, ObjectWireSchema
 from boba.domain.core.schema import ParamWireSchema, SchemaContributor
 from boba.domain.core.tools.errors import (
     InvalidSchemaInvariantError,
@@ -77,6 +77,8 @@ __all__ = [
     "MutuallyExclusive",
     "NonEmpty",
     "Nullable",
+    "ObjectSchema",
+    "ObjectWireSchema",
     "OneOf",
     "Ordered",
     "ParamWireSchema",

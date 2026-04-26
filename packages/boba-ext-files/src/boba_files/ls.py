@@ -21,7 +21,7 @@ from boba.domain.core.tools import (
     ToolDefinition,
     ToolExecutionError,
     ToolId,
-    ToolInputSchema,
+    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )
@@ -72,8 +72,8 @@ class LsTool(Tool[LsArgs]):
                 "При переполнении limit ответ обрезается с маркером "
                 "'(truncated at limit=N)'. Для рекурсии — tree."
             ),
-            input_schema=ToolInputSchema(
-                params=[
+            input_schema=ObjectSchema(
+                fields=[
                     FieldSpec(
                         name="path",
                         description="Путь директории. Без значения — корень workspace.",

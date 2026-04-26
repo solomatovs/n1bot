@@ -15,7 +15,10 @@ from boba.domain.core.config import (
     ConfigSection,
     ConfigSource,
     FieldSpec,
+    ObjectSchema,
+    ObjectWireSchema,
     read_field,
+    validate_object,
 )
 from boba.domain.core.errors import (
     LLMFeedbackError,
@@ -169,6 +172,8 @@ __all__ = [
     "MutuallyExclusive",
     "NonEmpty",
     "Nullable",
+    "ObjectSchema",
+    "ObjectWireSchema",
     "OneOf",
     "Ordered",
     "ParamWireSchema",
@@ -189,6 +194,7 @@ __all__ = [
     "Resolver",
     "RoutableError",
     "read_field",
+    "validate_object",
     "SchemaArgsValidator",
     "SchemaContributor",
     "ScratchWorkspaceRegistry",

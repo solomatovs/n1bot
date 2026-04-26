@@ -1,4 +1,4 @@
-"""Абстракции унифицированной работы с конфигурацией.
+"""Абстракции унифицированной работы с конфигурацией и описанием объектов.
 
 Декларативный контракт двух уровней:
 
@@ -7,15 +7,17 @@
   ``description``. Не несёт информации о своём «адресе» в глобальном
   namespace — поле умеет лишь сказать, как называется и как
   валидировать значение.
-- :class:`ConfigSection` группирует поля одной семантической области.
-  Намespace-секции (``("ext", "chromadb")`` и т.п.) — её ``ClassVar``;
-  при чтении секция сама собирает полный :class:`ConfigKey` из своего
-  namespace и имени поля.
+- :class:`ObjectSchema` — описание объекта: набор полей + cross-field
+  инварианты + фабрика для сборки финального DTO. Универсальный
+  примитив: то же самое для tool-input-схем (``factory=dict``) и
+  для config-секций (``factory=DTOClass``).
+- :class:`ConfigSection` — :class:`ObjectSchema` + namespace для
+  адресации полей в env/TOML. Полный :class:`ConfigKey` собирается
+  при чтении из ``namespace`` секции и ``field.name``.
 
-Тот же :class:`FieldSpec` используется для tool-параметров (см.
-:attr:`ToolInputSchema.params`) — там адресации нет, но форма
-декларации одна и та же. Единый wire-схема-протокол через
-:meth:`FieldSpec.build_wire_schema`.
+Тот же :class:`FieldSpec` и :class:`ObjectSchema` используются для
+tool-параметров (см. :data:`ToolInputSchema`). Различие — только в
+способе чтения сырых данных (``dict`` от LLM vs резолвер env/TOML).
 
 Конкретный мапинг ``ConfigKey`` на env-имена / TOML-пути / CLI-флаги
 лежит на :class:`ConfigSource`-источниках (см. ``boba.infra.config``):
@@ -31,13 +33,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from typing import Any, ClassVar, Generic, TypeVar
 
 from boba.domain.core.patterns import Converter, ConverterInputError, StrId
 from boba.domain.core.schema import ParamWireSchema, SchemaContributor
-from boba.domain.core.validators import MISSING
+from boba.domain.core.validators import MISSING, Pass
 
 __all__ = [
     "ChainedConfigResolver",
@@ -45,7 +47,10 @@ __all__ = [
     "ConfigSection",
     "ConfigSource",
     "FieldSpec",
+    "ObjectSchema",
+    "ObjectWireSchema",
     "read_field",
+    "validate_object",
 ]
 
 
@@ -118,7 +123,7 @@ class FieldSpec(Generic[T]):
     Самодостаточно: знает только своё локальное ``name``,
     :class:`Converter`-цепочку и человекочитаемое описание. Не несёт
     адреса в глобальном namespace — это задача владельца (для конфига
-    — :class:`ConfigSection`, для tool-схемы — :class:`ToolInputSchema`).
+    — :class:`ConfigSection`, для tool-схемы — :data:`ToolInputSchema`).
 
     Один и тот же класс используется и для config-полей, и для
     tool-параметров. Различие — только в том, кто складывает поля и
@@ -154,6 +159,110 @@ class FieldSpec(Generic[T]):
         if isinstance(self.converter, SchemaContributor):
             self.converter.contribute(schema)
         return schema
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  ObjectSchema — описание целого объекта (набор полей + invariants + factory)
+# ═════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class ObjectWireSchema:
+    """JSON-Schema-подобное описание объекта.
+
+    Аналог :class:`ParamWireSchema`, но для агрегата: ``description`` —
+    описание самого объекта/секции, ``properties`` — словарь wire-описаний
+    каждого поля, ``required`` — имена обязательных полей.
+    Сериализуется в OpenAI tool function schema или в operator-доку
+    конфига одним и тем же кодом.
+    """
+
+    description: str = ""
+    properties: dict[str, dict[str, Any]] = field(default_factory=dict)
+    required: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ObjectSchema(Generic[T]):
+    """Описание объекта с именованными полями, инвариантами и фабрикой.
+
+    Универсальный примитив для tool-input-схем и config-секций:
+    различие — только в способе чтения сырых данных (``dict`` от LLM vs
+    резолвер env/TOML), которое инкапсулируется в callable передаваемом
+    в :func:`validate_object`.
+
+    Поля:
+
+    - ``fields`` — независимые описания каждого слота (``FieldSpec``);
+    - ``invariants`` — cross-field конвертер, работающий над dict'ом
+      уже провалидированных полей. Проверяет инварианты, связывающие
+      несколько полей: взаимоисключения, совместность, порядок. По
+      умолчанию :class:`Pass` (no-op);
+    - ``factory`` — фабрика финального DTO из kwargs. Для tool-args
+      обычно ``dict`` (identity), для config — конкретный dataclass.
+
+    Wire-схему агрегата строит :meth:`build_wire_schema` — итерируется
+    по полям и собирает :class:`ObjectWireSchema`.
+    """
+
+    fields: Sequence[FieldSpec[Any]]
+    invariants: Converter[dict[str, Any], dict[str, Any]] = field(
+        default_factory=Pass,
+    )
+    factory: Callable[..., T] = dict  # type: ignore[assignment]
+    description: str = ""
+
+    def build_wire_schema(self) -> ObjectWireSchema:
+        """JSON-Schema-подобное описание объекта.
+
+        Каждое поле даёт ``ParamWireSchema`` через
+        :meth:`FieldSpec.build_wire_schema`; итог агрегируется в
+        ``{name → property-dict}`` + список ``required`` + ``description``
+        самого объекта.
+        """
+        schema = ObjectWireSchema(description=self.description)
+        for fld in self.fields:
+            wire = fld.build_wire_schema()
+            schema.properties[fld.name] = dict(wire.property)
+            if wire.required:
+                schema.required.append(fld.name)
+        return schema
+
+
+def validate_object(
+    schema: ObjectSchema[T],
+    read_raw: Callable[[str], object],
+) -> T:
+    """Прочитать каждое поле через ``read_raw``, прогнать converter,
+    отбросить :data:`MISSING`-значения, применить ``invariants``,
+    отдать результат в ``factory``.
+
+    Симметричный orchestrator для tool-args (источник —
+    ``dict[str, Any]`` от LLM) и для config-секций (источник —
+    :class:`ChainedConfigResolver`).
+
+    Семантика ошибок: :class:`ConverterInputError` от любого шага
+    пробрасывается наружу с обогащением имени поля. Caller (tools или
+    config) сам оборачивает в свою domain-ошибку с дополнительным
+    контекстом.
+    """
+    validated: dict[str, Any] = {}
+    for fld in schema.fields:
+        try:
+            value = fld.converter.convert(read_raw(fld.name))
+        except ConverterInputError as exc:
+            raise ConverterInputError(
+                f"field {fld.name!r}: {exc}"
+            ) from exc
+        if value is not MISSING:
+            validated[fld.name] = value
+    final = schema.invariants.convert(validated)
+    return schema.factory(**final)
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  Источники конфигурации и резолвер
+# ═════════════════════════════════════════════════════════════════════
 
 
 class ConfigSource(ABC):
@@ -208,19 +317,23 @@ def read_field(
         ) from exc
 
 
+# ═════════════════════════════════════════════════════════════════════
+#  ConfigSection
+# ═════════════════════════════════════════════════════════════════════
+
+
 class ConfigSection(ABC, Generic[T]):
     """Декларация одной секции конфига как самодостаточного модуля.
 
-    Секция объединяет:
+    Секция = ``ObjectSchema`` + namespace для адресации полей в env/TOML:
 
     - :attr:`id` — уникальный :class:`StrId` для регистрации в
       :class:`~boba.infra.config.ConfigFactory`;
     - :attr:`namespace` — кортеж частей префикса (``("ext", "chromadb")``,
       ``("app",)``, ...). Полный :class:`ConfigKey` для поля собирается
       как ``ConfigKey(*namespace, field.name)``.
-    - :attr:`fields` — все её :class:`FieldSpec`-и (фабрика читает их
-      для построения карт source'ов и для интроспекции);
-    - :meth:`build` — типизированный сборщик DTO из резолвера.
+    - :attr:`schema` — :class:`ObjectSchema` секции (поля + invariants +
+      factory). Сборка DTO в :meth:`build` — generic-через :func:`validate_object`.
 
     Один и тот же примитив используется и для core-секций (LLM,
     workspaces, agent, …), и для extension-секций — последние
@@ -230,26 +343,20 @@ class ConfigSection(ABC, Generic[T]):
 
     id: ClassVar[StrId]
     namespace: ClassVar[tuple[str, ...]]
-    fields: ClassVar[Sequence[FieldSpec[Any]]]
+    schema: ClassVar[ObjectSchema[Any]]
 
-    def _read(
-        self,
-        field: FieldSpec[U],
-        resolver: ChainedConfigResolver,
-    ) -> U:
-        """Прочитать значение поля через резолвер.
-
-        Собирает полный :class:`ConfigKey` из ``namespace`` секции и
-        ``field.name``, дальше — стандартный путь
-        :func:`read_field`.
-        """
-        return read_field(
-            ConfigKey(*self.namespace, field.name),
-            field,
-            resolver,
-        )
-
-    @abstractmethod
     def build(self, resolver: ChainedConfigResolver) -> T:
-        """Прочитать :attr:`fields` через резолвер и собрать DTO."""
-        ...
+        """Прочитать поля :attr:`schema` через резолвер и собрать DTO.
+
+        Адресация: каждое имя поля комбинируется с :attr:`namespace`
+        секции в полный :class:`ConfigKey`. ``None`` от резолвера →
+        :data:`MISSING` на вход converter-цепочки (как в
+        :func:`read_field`).
+        """
+
+        def _read_raw(name: str) -> object:
+            key = ConfigKey(*self.namespace, name)
+            raw = resolver.resolve(key)
+            return MISSING if raw is None else raw
+
+        return validate_object(self.schema, _read_raw)

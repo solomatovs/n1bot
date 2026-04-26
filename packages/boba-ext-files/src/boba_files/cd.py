@@ -18,7 +18,7 @@ from boba.domain.core.tools import (
     ToolDefinition,
     ToolExecutionError,
     ToolId,
-    ToolInputSchema,
+    ObjectSchema,
     ToolResult,
     ToolSourceId,
 )
@@ -56,8 +56,8 @@ class CdTool(Tool[CdArgs]):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             description="Сменить текущую директорию.",
-            input_schema=ToolInputSchema(
-                params=[
+            input_schema=ObjectSchema(
+                fields=[
                     FieldSpec(
                         name="path",
                         description="Путь директории.",

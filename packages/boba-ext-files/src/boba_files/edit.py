@@ -13,6 +13,7 @@ from boba.domain.core.tools import (
     IsBool,
     IsString,
     NonEmpty,
+    ObjectSchema,
     Pass,
     Required,
     Tool,
@@ -20,7 +21,6 @@ from boba.domain.core.tools import (
     ToolDefinition,
     ToolExecutionError,
     ToolId,
-    ToolInputSchema,
     ToolResult,
     ToolSourceId,
 )
@@ -73,8 +73,8 @@ class EditTool(Tool[EditArgs]):
                 "иначе ошибка. С replace_all=true заменяются все вхождения. "
                 "Совпадение точное, посимвольное."
             ),
-            input_schema=ToolInputSchema(
-                params=[
+            input_schema=ObjectSchema(
+                fields=[
                     FieldSpec(
                         name="path",
                         description="Путь к файлу.",
