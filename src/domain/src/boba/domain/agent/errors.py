@@ -8,9 +8,6 @@
 - :class:`~boba.domain.core.errors.TerminalError` — остановка цикла;
 
 Маркеры ортогональны — конкретная ошибка выбирает любую комбинацию.
-Generics привязываются прямо в объявлении класса:
-``UserFeedbackError[RequestId, AgentEvent]``,
-``LLMFeedbackError[LLMMessage]``.
 
 Политика:
 
@@ -31,6 +28,7 @@ from boba.domain.agent.events import (
     RepeatedFormatFailure,
     ToolCallFormatFailed,
 )
+from boba.domain.agent.payloads import ToolCallFormatFailure
 from boba.domain.core.errors import (
     LLMFeedbackError,
     TerminalError,
@@ -110,7 +108,6 @@ class LLMGenerationFailedError(TerminalError[RequestId, AgentEvent]):
         super().__init__(message)
         self.error_kind = error_kind
 
-
     def to_user_feedback(self, request_id: RequestId) -> GenerationFailed:
         return GenerationFailed(
             request_id=request_id,
@@ -128,7 +125,8 @@ class LLMToolCallFormatError(
 
     1. Пишет ``LLMMessage(role="user", content=<критика>)`` в
        :class:`MessageService` — на следующей итерации модель увидит
-       feedback как user-сообщение.
+       feedback как user-сообщение. Параллельно эмитится
+       :class:`FeedbackToLLMAdded` (снапшот записи).
     2. Эмитит :class:`~boba.domain.agent.events.ToolCallFormatFailed`.
 
     Поднимается парсером content-as-JSON
@@ -144,8 +142,11 @@ StrictJsonToolCallParser`), когда LLM эмитит JSON-объект с
     def to_user_feedback(self, request_id: RequestId) -> AgentEvent:
         return ToolCallFormatFailed(
             request_id=request_id,
-            error_kind=type(self).__name__,
-            message=str(self),
+            failure=ToolCallFormatFailure(
+                raw_content=self.raw_content,
+                error_kind=type(self).__name__,
+                message=str(self),
+            ),
         )
 
     def to_llm_feedback(self) -> LLMMessage:

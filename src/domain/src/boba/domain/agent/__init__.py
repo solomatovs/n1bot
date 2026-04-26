@@ -7,10 +7,6 @@ middleware-цепочку (см. :mod:`boba.domain.agent.meat`).
 
     from boba.domain.agent import Agent, AgentConfig, AgentContext
     from boba.domain.agent import AgentEvent, AnswerComplete, ToolResultReady
-
-Имена событий ``LLMRequestStarted``, ``LLMRequestSent`` принадлежат
-agent-слою и отличаются от одноимённых событий из
-:mod:`boba.domain.llm.events` — не смешивать.
 """
 
 from boba.domain.agent.dialogue_writer import DialogueWriter
@@ -21,41 +17,43 @@ from boba.domain.agent.errors import (
     RepeatedFormatFailureError,
 )
 from boba.domain.agent.events import (
+    Advisory,
     AgentEvent,
     AgentEventName,
     AnswerComplete,
-    AnswerDiscarded,
     AnswerStarted,
     AnswerToken,
     BaseAgentEvent,
-    DurableMessage,
+    ContentDelta,
+    ContentSnapshot,
+    FeedbackToLLMAdded,
     GenerationDone,
     GenerationFailed,
     GenerationRetried,
     GenerationStarted,
     IterationStarted,
-    LifecycleMarker,
     LLMRequestSent,
-    LLMRequestStarted,
+    LLMResponseStreamOpened,
     MaxIterationsReached,
     PersistenceFailed,
+    PhaseTransition,
     PromptFailed,
     RefusalComplete,
     RefusalToken,
     RepeatedFormatFailure,
-    StreamingDelta,
-    TerminalFailure,
+    Severity,
+    SlotKind,
+    Terminal,
     ThinkingComplete,
     ThinkingStarted,
     ThinkingToken,
     ToolCallArgumentDelta,
-    ToolCallBegin,
     ToolCallComplete,
     ToolCallFormatFailed,
+    ToolCallStreamStarted,
     ToolExecutionFailed,
     ToolExecutionStarted,
     ToolResultReady,
-    UserNotification,
     UserQueryReceived,
 )
 from boba.domain.agent.meat import (
@@ -68,7 +66,6 @@ from boba.domain.agent.meat import (
     JsonDepthScanner,
     JsonHeaderParser,
     JsonToolCallHeader,
-    LLMEventToAgentEventConverter,
     LLMInvokeMiddleware,
     ParsedJsonToolCall,
     RepeatedFormatFailureGuardMiddleware,
@@ -86,6 +83,11 @@ from boba.domain.agent.messages import (
     MessageStoreWriteError,
 )
 from boba.domain.agent.models import AgentConfig, AgentContext, AgentRequest
+from boba.domain.agent.payloads import (
+    ToolCallFailure,
+    ToolCallFormatFailure,
+    ToolCallResult,
+)
 from boba.domain.agent.prompt import (
     PermanentPromptError,
     PromptBlock,
@@ -107,6 +109,7 @@ from boba.domain.agent.turn.reducers import (
 from boba.domain.agent.turn.spec import TurnResolveContext, TurnSpec, TurnState
 
 __all__ = [
+    "Advisory",
     "Agent",
     "AgentConfig",
     "AgentContext",
@@ -117,13 +120,14 @@ __all__ = [
     "AgentRequest",
     "AgentRequestSamplingReducer",
     "AnswerComplete",
-    "AnswerDiscarded",
     "AnswerStarted",
     "AnswerToken",
     "AssistantMessagePersistenceMiddleware",
     "BaseAgentEvent",
+    "ContentDelta",
+    "ContentSnapshot",
     "DialogueWriter",
-    "DurableMessage",
+    "FeedbackToLLMAdded",
     "GenerationDone",
     "GenerationFailed",
     "GenerationRetried",
@@ -135,13 +139,11 @@ __all__ = [
     "JsonDepthScanner",
     "JsonHeaderParser",
     "JsonToolCallHeader",
-    "LLMEventToAgentEventConverter",
     "LLMGenerationFailedError",
     "LLMInvokeMiddleware",
     "LLMRequestSent",
-    "LLMRequestStarted",
+    "LLMResponseStreamOpened",
     "LLMToolCallFormatError",
-    "LifecycleMarker",
     "MaxIterationsExceededError",
     "MaxIterationsReached",
     "MessageService",
@@ -152,6 +154,7 @@ __all__ = [
     "ParsedJsonToolCall",
     "PermanentPromptError",
     "PersistenceFailed",
+    "PhaseTransition",
     "PromptBlock",
     "PromptError",
     "PromptFactory",
@@ -167,20 +170,24 @@ __all__ = [
     "RepeatedFormatFailureError",
     "RepeatedFormatFailureGuardMiddleware",
     "RepeatedToolCallGuardMiddleware",
+    "Severity",
+    "SlotKind",
     "StopOnAnyFailure",
     "StopOnFinished",
-    "StreamingDelta",
     "StrictJsonContentToolCallMiddleware",
     "StrictJsonToolCallParser",
     "SystemPromptReducer",
-    "TerminalFailure",
+    "Terminal",
     "ThinkingComplete",
     "ThinkingStarted",
     "ThinkingToken",
     "ToolCallArgumentDelta",
-    "ToolCallBegin",
     "ToolCallComplete",
+    "ToolCallFailure",
     "ToolCallFormatFailed",
+    "ToolCallFormatFailure",
+    "ToolCallResult",
+    "ToolCallStreamStarted",
     "ToolExecutionFailed",
     "ToolExecutionMiddleware",
     "ToolExecutionStarted",
@@ -189,6 +196,5 @@ __all__ = [
     "TurnResolveContext",
     "TurnSpec",
     "TurnState",
-    "UserNotification",
     "UserQueryReceived",
 ]

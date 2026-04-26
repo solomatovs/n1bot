@@ -6,20 +6,24 @@
 
 :class:`TerminalError` — специализация :class:`UserFeedbackError`,
 поэтому отдельной ветки не требует: «терминальность» кодируется
-типом возвращаемого события (наследник ``TerminalFailure``), который
+типом возвращаемого события (наследник ``Terminal``), который
 роутер просто yield-ит как любое user-событие.
 
 :class:`LLMFeedbackError` пишется в :class:`MessageService` через
 :class:`DialogueWriter` — на следующей итерации модель увидит
-feedback в истории.
+feedback в истории. Параллельно роутер эмитит
+:class:`FeedbackToLLMAdded` — это снапшот-событие, фиксирующее факт
+записи в диалог (инвариант «снапшот на каждую запись в MessageService»).
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
+from typing import Literal
 
 from boba.domain.agent.dialogue_writer import DialogueWriter
-from boba.domain.agent.events import AgentEvent
+from boba.domain.agent.errors import LLMToolCallFormatError
+from boba.domain.agent.events import AgentEvent, FeedbackToLLMAdded
 from boba.domain.agent.models import AgentContext
 from boba.domain.core.errors import (
     LLMFeedbackError,
@@ -27,6 +31,21 @@ from boba.domain.core.errors import (
     UserFeedbackError,
 )
 from boba.domain.core.patterns import StreamSource
+from boba.domain.llm.models import LLMMessage, RequestId
+
+
+def _cause_for_feedback_error(
+    err: LLMFeedbackError[LLMMessage],
+) -> Literal["tool_format", "other"]:
+    """Маппинг concrete-ошибки в ``cause`` для :class:`FeedbackToLLMAdded`.
+
+    Жестко заданный диспетчер: error_routing — agent-domain модуль,
+    ему позволено знать concrete agent-errors. Если появятся новые
+    feedback-ошибки — добавляются ветки.
+    """
+    if isinstance(err, LLMToolCallFormatError):
+        return "tool_format"
+    return "other"
 
 
 class AgentErrorRouter:
@@ -35,11 +54,12 @@ class AgentErrorRouter:
     Эффекты собираются независимо:
 
     1. :class:`LLMFeedbackError` — пишется в :class:`MessageService`
-       через :class:`DialogueWriter`. LLM увидит фидбек на
-       следующей итерации.
+       через :class:`DialogueWriter`; параллельно эмитится
+       :class:`FeedbackToLLMAdded` (снапшот для sink'а / history-
+       реконструкции). LLM увидит feedback на следующей итерации.
     2. :class:`UserFeedbackError` — ``to_user_feedback(request_id)``
        yield-ится в stream. Sink получает событие; если событие —
-       наследник ``TerminalFailure`` (как у :class:`TerminalError`-ошибок),
+       наследник ``Terminal`` (как у :class:`TerminalError`-ошибок),
        :class:`StopOnAnyFailure` остановит цикл.
     """
 
@@ -51,10 +71,16 @@ class AgentErrorRouter:
         ctx: AgentContext,
         err: RoutableError,
     ) -> Iterator[AgentEvent]:
-        rid = ctx.agent_request.request_id
+        rid: RequestId = ctx.agent_request.request_id
 
         if isinstance(err, LLMFeedbackError):
-            self._writer.append_llm_feedback(err.to_llm_feedback())
+            feedback = err.to_llm_feedback()
+            self._writer.append_llm_feedback(feedback)
+            yield FeedbackToLLMAdded(
+                request_id=rid,
+                content=feedback.content,
+                cause=_cause_for_feedback_error(err),
+            )
 
         if isinstance(err, UserFeedbackError):
             yield err.to_user_feedback(rid)

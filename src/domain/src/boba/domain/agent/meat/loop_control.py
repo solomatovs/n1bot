@@ -7,7 +7,7 @@ from boba.domain.agent.events import (
     AgentEvent,
     GenerationDone,
     IterationStarted,
-    TerminalFailure,
+    Terminal,
 )
 from boba.domain.agent.models import AgentContext
 from boba.domain.core.patterns import Specification, StreamSource
@@ -62,9 +62,9 @@ class StopOnFinished(Specification[tuple[AgentContext, AgentEvent]]):
 
 class StopOnAnyFailure(Specification[tuple[AgentContext, AgentEvent]]):
     """
-    Останавливает цикл при любом :class:`TerminalFailure`
+    Останавливает цикл при любом :class:`Terminal`
     """
 
     def check(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
         _ctx, event = candidate
-        return isinstance(event, TerminalFailure)
+        return isinstance(event, Terminal)

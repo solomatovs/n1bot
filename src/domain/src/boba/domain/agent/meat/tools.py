@@ -1,9 +1,12 @@
-"""
-Middleware для tools: исполнение + защита от лупов.
+"""Middleware для tools: исполнение + защита от лупов.
 
 Каталог tools собирается в :class:`TurnSpec` через
 :class:`~boba.domain.agent.turn.reducers.ToolsReducer` — отдельного
-``ToolsDefinitionMiddleware`` больше нет.
+``ToolsDefinitionMiddleware`` нет.
+
+События self-sufficient: каждое :class:`ToolResultReady` /
+:class:`ToolExecutionFailed` несёт исходный :class:`LLMToolCall` и
+результат/провал — sink не должен искать вызов в прошлых событиях.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from boba.domain.agent.dialogue_writer import DialogueWriter
 from boba.domain.agent.errors import RepeatedFormatFailureError
 from boba.domain.agent.events import (
     AgentEvent,
+    FeedbackToLLMAdded,
     ToolCallComplete,
     ToolCallFormatFailed,
     ToolExecutionFailed,
@@ -23,9 +27,12 @@ from boba.domain.agent.events import (
 )
 from boba.domain.agent.meat.error_routing import AgentErrorRouter
 from boba.domain.agent.models import AgentContext
+from boba.domain.agent.payloads import ToolCallFailure, ToolCallResult
 from boba.domain.core.patterns import StreamSource
 from boba.domain.core.tools import (
-    ToolCall,
+    ToolCall as DomainToolCall,
+)
+from boba.domain.core.tools import (
     ToolContext,
     ToolExecutionError,
     ToolId,
@@ -35,13 +42,16 @@ from boba.domain.llm.models import LLMMessage
 
 
 class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """
-    Исполняет tool_calls после завершения inner-стрима.
+    """Исполняет tool_calls после завершения inner-стрима.
 
     На каждый :class:`ToolCallComplete` пишет результат в историю
     через :class:`DialogueWriter` — и успех, и ошибка идут одним
-    путём ``role="tool"`` в следующий виток. Ошибки параллельно
-    yield'ят :class:`ToolExecutionFailed` для sink'ов.
+    путём ``role="tool"`` в следующий виток. Параллельно эмитятся:
+
+    - :class:`ToolExecutionStarted` (несёт исходный ``LLMToolCall``);
+    - :class:`ToolResultReady` (call + ``ToolCallResult``) — для успеха;
+    - :class:`ToolExecutionFailed` (call + ``ToolCallFailure``) — для
+      ошибки.
     """
 
     def __init__(
@@ -77,66 +87,69 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
         self,
         tc: ToolCallComplete,
     ) -> Iterable[AgentEvent]:
+        call = tc.call
         try:
-            arguments = json.loads(tc.arguments)
+            arguments = json.loads(call.arguments)
         except json.JSONDecodeError as e:
+            message = f"invalid JSON arguments: {e}"
             self._writer.append_tool_result(
-                tool_call_id=tc.tool_call_id,
-                content=f"invalid JSON arguments: {e}",
+                tool_call_id=call.id,
+                content=message,
             )
             yield ToolExecutionFailed(
                 request_id=tc.request_id,
-                tool_call_id=tc.tool_call_id,
-                tool_name=tc.tool_name,
-                error_kind=type(e).__name__,
-                message=f"invalid JSON arguments: {e}",
+                call=call,
+                failure=ToolCallFailure(
+                    error_kind=type(e).__name__,
+                    message=message,
+                ),
             )
             return
 
         yield ToolExecutionStarted(
             request_id=tc.request_id,
-            tool_call_id=tc.tool_call_id,
-            tool_name=tc.tool_name,
+            call=call,
         )
 
         try:
             result = self._tools_service.execute(
                 self._tool_ctx,
-                ToolCall(tool_id=ToolId(tc.tool_name), arguments=arguments),
+                DomainToolCall(tool_id=ToolId(call.name), arguments=arguments),
             )
         except ToolExecutionError as e:
             self._writer.append_tool_result(
-                tool_call_id=tc.tool_call_id,
+                tool_call_id=call.id,
                 content=e.message,
             )
             yield ToolExecutionFailed(
                 request_id=tc.request_id,
-                tool_call_id=tc.tool_call_id,
-                tool_name=tc.tool_name,
-                error_kind=type(e).__name__,
-                message=e.message,
+                call=call,
+                failure=ToolCallFailure(
+                    error_kind=type(e).__name__,
+                    message=e.message,
+                ),
             )
             return
 
         self._writer.append_tool_result(
-            tool_call_id=tc.tool_call_id,
+            tool_call_id=call.id,
             content=result.content,
         )
         yield ToolResultReady(
             request_id=tc.request_id,
-            tool_call_id=tc.tool_call_id,
-            tool_name=tc.tool_name,
-            content=result.content,
+            call=call,
+            result=ToolCallResult(content=result.content),
         )
 
 
 class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """
-    Подавляет ``(N+1)``-й подряд идентичный :class:`ToolCallComplete`.
+    """Подавляет ``(N+1)``-й подряд идентичный :class:`ToolCallComplete`.
 
     На подавлении пишет в историю через :class:`DialogueWriter`
     feedback с ``role="tool"`` — LLM на следующей итерации увидит
-    замечание вместо дублирующего вызова.
+    замечание вместо дублирующего вызова. Параллельно эмитится
+    :class:`FeedbackToLLMAdded` (снапшот записи) и
+    :class:`ToolExecutionFailed` (нотис для sink'а).
     """
 
     def __init__(
@@ -165,7 +178,8 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
                 yield event
                 continue
 
-            key = (event.tool_name, event.arguments)
+            call = event.call
+            key = (call.name, call.arguments)
             if self._last == key:
                 self._count += 1
             else:
@@ -175,8 +189,8 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
             if self._count > self._max_consecutive:
                 message = (
                     f"Обнаружен луп: {self._count}-й подряд "
-                    f"идентичный вызов '{event.tool_name}' с "
-                    f"arguments={event.arguments}. Результат уже "
+                    f"идентичный вызов '{call.name}' с "
+                    f"arguments={call.arguments}. Результат уже "
                     f"есть в предыдущих role='tool' сообщениях. "
                     f"Либо вызови инструмент с другими аргументами, "
                     f"либо сформулируй ответ пользователю обычным "
@@ -186,15 +200,21 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
                     LLMMessage(
                         role="tool",
                         content=message,
-                        tool_call_id=event.tool_call_id,
+                        tool_call_id=call.id,
                     ),
+                )
+                yield FeedbackToLLMAdded(
+                    request_id=event.request_id,
+                    content=message,
+                    cause="repeated_tool_call",
                 )
                 yield ToolExecutionFailed(
                     request_id=event.request_id,
-                    tool_call_id=event.tool_call_id,
-                    tool_name=event.tool_name,
-                    error_kind="RepeatedToolCallError",
-                    message=message,
+                    call=call,
+                    failure=ToolCallFailure(
+                        error_kind="RepeatedToolCallError",
+                        message=message,
+                    ),
                 )
                 continue
 
@@ -202,12 +222,12 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
 
 
 class RepeatedFormatFailureGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """
-    Защита от залипания модели на неверном формате tool call.
+    """Защита от залипания модели на неверном формате tool call.
 
     После N+1 подряд :class:`ToolCallFormatFailed` без
     :class:`ToolResultReady` между ними — поднимает
-    :class:`RepeatedFormatFailureError` (terminal), роутер останавливает цикл.
+    :class:`RepeatedFormatFailureError` (terminal), роутер останавливает
+    цикл.
     """
 
     def __init__(
