@@ -96,20 +96,20 @@ class CpTool(Tool[CpArgs]):
             ),
         )
 
-    def execute(self, ctx: ToolContext, args: CpArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, req: CpArgs) -> ToolResult:
         try:
-            ctx.project_workspace.copy(args.src, args.dst, recursive=args.recursive)
+            ctx.project_workspace.copy(req.src, req.dst, recursive=req.recursive)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
-                message=f"Источник не найден: {args.src}",
+                message=f"Источник не найден: {req.src}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
                 message=f"Ошибка копирования: {e}",
             ) from e
-        return ToolResult(content=f"Скопировано: {args.src} → {args.dst}")
+        return ToolResult(content=f"Скопировано: {req.src} → {req.dst}")
 
 def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
     yield StaticToolSource(

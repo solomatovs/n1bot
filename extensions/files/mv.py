@@ -83,20 +83,20 @@ class MvTool(Tool[MvArgs]):
             ),
         )
 
-    def execute(self, ctx: ToolContext, args: MvArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, req: MvArgs) -> ToolResult:
         try:
-            ctx.project_workspace.move(args.src, args.dst)
+            ctx.project_workspace.move(req.src, req.dst)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
-                message=f"Источник не найден: {args.src}",
+                message=f"Источник не найден: {req.src}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
                 message=f"Ошибка перемещения: {e}",
             ) from e
-        return ToolResult(content=f"Перемещено: {args.src} → {args.dst}")
+        return ToolResult(content=f"Перемещено: {req.src} → {req.dst}")
 
 def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
     yield StaticToolSource(

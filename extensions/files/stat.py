@@ -77,13 +77,13 @@ class StatTool(Tool[StatArgs]):
             ),
         )
 
-    def execute(self, ctx: ToolContext, args: StatArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, req: StatArgs) -> ToolResult:
         try:
-            meta = ctx.project_workspace.meta(args.path)
+            meta = ctx.project_workspace.meta(req.path)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
-                message=f"Не найдено: {args.path}",
+                message=f"Не найдено: {req.path}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(

@@ -93,27 +93,27 @@ class LsTool(Tool[LsArgs]):
             ),
         )
 
-    def execute(self, ctx: ToolContext, args: LsArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, req: LsArgs) -> ToolResult:
         try:
-            iterator = ctx.project_workspace.ls(args.path)
-            items = list(islice(iterator, args.limit + 1))
+            iterator = ctx.project_workspace.ls(req.path)
+            items = list(islice(iterator, req.limit + 1))
         except WorkspaceError as e:
             raise ToolExecutionError(
                 tool_id=self._ID, message=f"Ошибка обхода: {e}"
             ) from e
 
-        truncated = len(items) > args.limit
+        truncated = len(items) > req.limit
         if truncated:
-            items = items[: args.limit]
+            items = items[: req.limit]
 
-        location = args.path or "/"
+        location = req.path or "/"
 
         if not items:
             return ToolResult(content=f"{location} пуст.")
 
-        header = f"Элементы {location} ({len(items)}, лимит={args.limit}"
+        header = f"Элементы {location} ({len(items)}, лимит={req.limit}"
         if truncated:
-            header += f", truncated at limit={args.limit}"
+            header += f", truncated at limit={req.limit}"
         header += "):"
         body = "\n".join(f"- {p}" for p in items)
         return ToolResult(content=f"{header}\n{body}")

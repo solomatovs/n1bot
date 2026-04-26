@@ -86,20 +86,20 @@ class RmTool(Tool[RmArgs]):
             ),
         )
 
-    def execute(self, ctx: ToolContext, args: RmArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, req: RmArgs) -> ToolResult:
         try:
-            ctx.project_workspace.delete(args.path, recursive=args.recursive)
+            ctx.project_workspace.delete(req.path, recursive=req.recursive)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
-                message=f"Не найдено: {args.path}",
+                message=f"Не найдено: {req.path}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
                 message=f"Ошибка удаления: {e}",
             ) from e
-        return ToolResult(content=f"Удалено: {args.path}")
+        return ToolResult(content=f"Удалено: {req.path}")
 
 def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
     yield StaticToolSource(

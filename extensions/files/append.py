@@ -92,11 +92,11 @@ class AppendTool(Tool[AppendArgs]):
             ),
         )
 
-    def execute(self, ctx: ToolContext, args: AppendArgs) -> ToolResult:
-        existed = ctx.project_workspace.exists(args.path)
+    def execute(self, ctx: ToolContext, req: AppendArgs) -> ToolResult:
+        existed = ctx.project_workspace.exists(req.path)
         try:
-            with ctx.project_workspace.append_text(args.path, args.encoding) as f:
-                f.write(args.content)
+            with ctx.project_workspace.append_text(req.path, req.encoding) as f:
+                f.write(req.content)
         except WorkspaceError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
@@ -104,7 +104,7 @@ class AppendTool(Tool[AppendArgs]):
             ) from e
         action = "дозаписан" if existed else "создан"
         return ToolResult(
-            content=f"Файл {action}: {args.path} ({len(args.content)} символов)",
+            content=f"Файл {action}: {req.path} ({len(req.content)} символов)",
         )
 
 

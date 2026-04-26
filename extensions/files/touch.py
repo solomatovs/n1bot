@@ -75,15 +75,15 @@ class TouchTool(Tool[TouchArgs]):
             ),
         )
 
-    def execute(self, ctx: ToolContext, args: TouchArgs) -> ToolResult:
+    def execute(self, ctx: ToolContext, req: TouchArgs) -> ToolResult:
         try:
-            ctx.project_workspace.touch(args.path)
+            ctx.project_workspace.touch(req.path)
         except WorkspaceError as e:
             raise ToolExecutionError(
                 tool_id=self._ID,
                 message=f"Ошибка touch: {e}",
             ) from e
-        return ToolResult(content=f"touch: {args.path}")
+        return ToolResult(content=f"touch: {req.path}")
 
 def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
     yield StaticToolSource(
