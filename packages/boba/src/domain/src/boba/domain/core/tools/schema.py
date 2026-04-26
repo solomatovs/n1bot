@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Self
 
-from boba.domain.core.patterns import Id, Validator
+from boba.domain.core.patterns import Converter, Id
 from boba.domain.core.schema import ParamWireSchema, SchemaContributor
 
 
@@ -52,20 +52,20 @@ class ParamSchema:
 
     name: str
     description: str
-    validator: Validator[Any]
+    converter: Converter[Any, Any]
 
     def build_wire_schema(self) -> ParamWireSchema:
-        """Собрать wire-описание этого параметра, обходя валидатор.
+        """Собрать wire-описание этого параметра, обходя конвертер.
 
-        Стартует с ``description`` и даёт валидатору дозаполнить
+        Стартует с ``description`` и даёт конвертеру дозаполнить
         ``type``/``enum``/``default``/``required`` через
-        :meth:`SchemaContributor.contribute`. Если валидатор не
+        :meth:`SchemaContributor.contribute`. Если конвертер не
         реализует contributor-протокол — вернёт минимум: только
         описание.
         """
         schema = ParamWireSchema(property={"description": self.description})
-        if isinstance(self.validator, SchemaContributor):
-            self.validator.contribute(schema)
+        if isinstance(self.converter, SchemaContributor):
+            self.converter.contribute(schema)
         return schema
 
 
@@ -76,14 +76,14 @@ class ToolInputSchema:
     ``params`` — независимые описания каждого параметра (валидация +
     описание для LLM).
 
-    ``invariants`` — cross-field валидатор, работающий над dict'ом
+    ``invariants`` — cross-field конвертер, работающий над dict'ом
     уже провалидированных параметров. Проверяет инварианты, связывающие
     несколько полей: взаимоисключения, совместность, порядок. Обязателен
     даже при отсутствии таких связей — тогда передавай ``Pass``.
     """
 
     params: list[ParamSchema]
-    invariants: Validator[dict[str, Any]]
+    invariants: Converter[dict[str, Any], dict[str, Any]]
 
 
 @dataclass(frozen=True)
