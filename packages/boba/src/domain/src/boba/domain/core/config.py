@@ -3,13 +3,24 @@
 Декларативный контракт двух уровней:
 
 - :class:`FieldSpec` описывает одно поле через :class:`ConfigKey`
-  (source-agnostic иерархический идентификатор) и :class:`Converter`-парсер.
+  (source-agnostic иерархический идентификатор) и
+  :class:`~boba.domain.core.patterns.Converter`-цепочку, которая
+  превращает сырое значение источника в типизированный результат.
 - :class:`ConfigSection` группирует поля одной семантической области
   (LLM, workspaces, конфиг extension'а) и строит из них типизированный DTO.
 
 Конкретный мапинг ``ConfigKey`` на env-имена / TOML-пути / CLI-флаги
 лежит на :class:`ConfigSource`-источниках (см. ``boba.infra.config``):
 домен ничего не знает про окружение исполнения.
+
+Семантика ``MISSING`` — единая с tools-слоем:
+:class:`~boba.domain.core.validators.Required` бросает,
+:class:`~boba.domain.core.validators.Default` подставляет значение,
+:class:`~boba.domain.core.validators.ValueConverter`-наследники
+пропускают MISSING без проверки. Это и есть единственный способ
+объявить «обязательное поле» / «поле с дефолтом» — сентинел
+``REQUIRED`` и отдельное поле ``default`` у :class:`FieldSpec`
+больше не нужны.
 """
 
 from __future__ import annotations
@@ -17,23 +28,17 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar, Final, Generic, TypeVar
+from typing import Any, ClassVar, Generic, TypeVar
 
-from boba.domain.core.patterns import Converter, ConverterInputError, StrId, Validator
-from boba.domain.core.validators import ParamValidationError
+from boba.domain.core.patterns import Converter, ConverterInputError, StrId
+from boba.domain.core.validators import MISSING
 
 __all__ = [
-    "REQUIRED",
-    "BoolConverter",
     "ChainedConfigResolver",
     "ConfigKey",
     "ConfigSection",
     "ConfigSource",
-    "CsvListConverter",
     "FieldSpec",
-    "FloatConverter",
-    "IntConverter",
-    "StrConverter",
 ]
 
 
@@ -93,104 +98,54 @@ class ConfigKey:
         return f"ConfigKey({inside})"
 
 
-class _Required:
-    """Тип-маркер для :data:`REQUIRED`. Singleton — наружу экспортируется
-    только готовый инстанс, прямое инстанцирование не предполагается.
-    """
-
-    __slots__ = ()
-    _instance: ClassVar[_Required | None] = None
-
-    def __new__(cls) -> _Required:
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def __repr__(self) -> str:
-        return "REQUIRED"
-
-
-REQUIRED: Final[_Required] = _Required()
-"""Sentinel-значение для :attr:`FieldSpec.default`, обозначающее
-обязательное поле. Отличается от ``None``: ``None`` — это валидный
-nullable-дефолт, ``REQUIRED`` — поле обязано приехать из источника,
-иначе :meth:`FieldSpec.read` бросит :class:`ConverterInputError`.
-"""
-
-
 @dataclass(frozen=True)
 class FieldSpec(Generic[T]):
     """Декларация одного поля конфига.
 
     Source-agnostic: знает только свой иерархический ключ
-    (:class:`ConfigKey`) и тип (через :class:`Converter`). Конкретные
-    имена в env/TOML/CLI выводят источники.
+    (:class:`ConfigKey`) и :class:`Converter`-цепочку. Конкретные имена
+    в env/TOML/CLI выводят источники.
 
-    ``default``:
+    ``converter`` — цепочка трансформации сырого значения от источника
+    в типизированный ``T``. Типичный шаблон::
 
-    - конкретное значение типа ``T`` (включая ``None``, если ``T``
-      допускает nullable) — fallback, если ни один источник не дал
-      значения;
-    - :data:`REQUIRED` — поле обязано приехать из источника; иначе
-      :meth:`read` бросит :class:`ConverterInputError`.
+        ChainConverter(
+            Default(20),     # подставит, если источников молчат
+            ParseInt(),      # привести к int (str из env, int из TOML)
+            MinValue(1),     # семантическое ограничение
+        )
 
-    ``validator`` — опциональный пост-конверсионный валидатор
-    (:class:`Validator`) для семантических ограничений уже типизированного
-    значения: ``OneOf("default")``, ``MinValue(1)``, ``NonEmpty()`` и т.п.
-    Применяется **только** к значениям, пришедшим из источников: ``default``
-    декларируется программистом и считается доверенным, валидация его не
-    касается. Tools и config переиспользуют один и тот же набор валидаторов
-    из :mod:`boba.domain.core.validators`. Реализующие
-    :class:`~boba.domain.core.schema.SchemaContributor` валидаторы
-    дополняют автогенерируемую operator-доку (когда она появится),
-    как и в tool-схемах.
+    Реализующие :class:`~boba.domain.core.schema.SchemaContributor`
+    шаги цепочки дополняют автогенерируемую operator-доку (когда она
+    появится), как и в tool-схемах.
+
+    «Обязательность» поля декларируется в цепочке через
+    :class:`~boba.domain.core.validators.Required`; «дефолт» —
+    :class:`~boba.domain.core.validators.Default`. Это устраняет
+    дублирование сигналов о фолбэке.
 
     ``description`` — человекочитаемое описание поля для доки оператора.
-    Хук на будущее; сейчас не используется потребителями, но фиксируем
-    в декларации, чтобы не ломать сигнатуру при добавлении автогенерации.
     """
 
     key: ConfigKey
-    converter: Converter[object, T]
-    default: T | _Required
-    validator: Validator[T] | None = None
+    converter: Converter[Any, T]
     description: str = ""
 
     def read(self, resolver: ChainedConfigResolver) -> T:
-        value = resolver.resolve(self)
-        if value is None:
-            if isinstance(self.default, _Required):
-                raise ConverterInputError(
-                    f"Config field {self.key!r} is required but no "
-                    "source provided a value"
-                )
-            return self.default
-        return self._validate(self._convert(value))
+        """Прочитать значение через резолвер и прогнать его через цепочку.
 
-    def read_opt(self, resolver: ChainedConfigResolver) -> T | None:
-        """Аналогично :meth:`read`, но :data:`REQUIRED`-поле без значения
-        возвращает ``None`` вместо исключения. Для не-REQUIRED полей
-        семантика идентична :meth:`read`.
+        ``None`` от резолвера означает «никто не дал значения» — на
+        вход цепочки подаётся :data:`MISSING`. ``Required()`` в цепочке
+        бросит :class:`ConverterInputError`; ``Default(...)`` подставит
+        своё значение; иначе MISSING пройдёт насквозь — ``read`` вернёт
+        его, что для большинства использующих типов — баг (надо явно
+        ставить ``Default(...)`` или ``Required()``).
         """
-        value = resolver.resolve(self)
-        if value is None:
-            if isinstance(self.default, _Required):
-                return None
-            return self.default
-        return self._validate(self._convert(value))
-
-    def _convert(self, value: object) -> T:
+        raw: object = resolver.resolve(self)
+        value: Any = MISSING if raw is None else raw
         try:
             return self.converter.convert(value)
         except ConverterInputError as exc:
-            raise ConverterInputError(f"Config field {self.key!r}: {exc}") from exc
-
-    def _validate(self, value: T) -> T:
-        if self.validator is None:
-            return value
-        try:
-            return self.validator.validate(value)
-        except ParamValidationError as exc:
             raise ConverterInputError(
                 f"Config field {self.key!r}: {exc}"
             ) from exc
@@ -250,67 +205,3 @@ class ConfigSection(ABC, Generic[T]):
     def build(self, resolver: ChainedConfigResolver) -> T:
         """Прочитать :attr:`fields` через резолвер и собрать DTO."""
         ...
-
-
-class StrConverter(Converter[object, str]):
-    def convert(self, value: object) -> str:
-        if isinstance(value, str):
-            return value
-        return str(value)
-
-
-class IntConverter(Converter[object, int]):
-    def convert(self, value: object) -> int:
-        # bool — подкласс int в Python; для конфига это почти всегда ошибка.
-        if isinstance(value, bool):
-            raise ConverterInputError(f"expected int, got bool {value!r}")
-        if isinstance(value, int):
-            return value
-        if isinstance(value, str):
-            try:
-                return int(value.strip())
-            except ValueError as exc:
-                raise ConverterInputError(f"not a valid int: {value!r}") from exc
-        raise ConverterInputError(f"cannot convert {type(value).__name__} to int")
-
-
-class FloatConverter(Converter[object, float]):
-    def convert(self, value: object) -> float:
-        if isinstance(value, bool):
-            raise ConverterInputError(f"expected float, got bool {value!r}")
-        if isinstance(value, (int, float)):
-            return float(value)
-        if isinstance(value, str):
-            try:
-                return float(value.strip())
-            except ValueError as exc:
-                raise ConverterInputError(f"not a valid float: {value!r}") from exc
-        raise ConverterInputError(f"cannot convert {type(value).__name__} to float")
-
-
-class BoolConverter(Converter[object, bool]):
-    _TRUE = frozenset({"true", "1", "yes", "on"})
-    _FALSE = frozenset({"false", "0", "no", "off"})
-
-    def convert(self, value: object) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            normalized = value.strip().lower()
-            if normalized in self._TRUE:
-                return True
-            if normalized in self._FALSE:
-                return False
-            raise ConverterInputError(f"not a valid bool: {value!r}")
-        raise ConverterInputError(f"cannot convert {type(value).__name__} to bool")
-
-
-class CsvListConverter(Converter[object, list[str]]):
-    """``list`` из TOML — как есть; ``str`` из env — split по ``,``."""
-
-    def convert(self, value: object) -> list[str]:
-        if isinstance(value, list):
-            return [str(item) for item in value if item is not None and str(item) != ""]
-        if isinstance(value, str):
-            return [item.strip() for item in value.split(",") if item.strip()]
-        raise ConverterInputError(f"cannot convert {type(value).__name__} to list[str]")

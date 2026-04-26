@@ -1,4 +1,4 @@
-"""Tool framework: схема параметров, валидаторы, базовый Tool, реестр.
+"""Tool framework: схема параметров, конвертеры, базовый Tool, реестр.
 
 Публичный API пакета — все его символы реэкспортируются здесь и доступны
 как ``from boba.domain.core.tools import X``. Внутренняя структура файлов
@@ -29,34 +29,38 @@ from boba.domain.core.tools.schema import (
 )
 from boba.domain.core.tools.tool import Tool, ToolCall, ToolContext, ToolResult
 from boba.domain.core.tools.validators import (
-    MISSING,
-    Default,
     IsBool,
     IsInt,
     IsNumber,
     IsString,
     MutuallyExclusive,
     Ordered,
-    Required,
     RequiresTogether,
     SchemaArgsValidator,
-    ValueValidator,
 )
 from boba.domain.core.validators import (
-    ChainValidator,
+    MISSING,
+    ChainConverter,
+    Default,
     MaxLength,
     MaxValue,
     MinLength,
     MinValue,
     NonEmpty,
     OneOf,
-    ParamValidationError,
+    ParseBool,
+    ParseCsvList,
+    ParseFloat,
+    ParseInt,
+    ParseString,
     Pass,
+    Required,
+    ValueConverter,
 )
 
 __all__ = [
     "MISSING",
-    "ChainValidator",
+    "ChainConverter",
     "Default",
     "InvalidSchemaInvariantError",
     "InvalidToolArgumentError",
@@ -73,8 +77,12 @@ __all__ = [
     "OneOf",
     "Ordered",
     "ParamSchema",
-    "ParamValidationError",
     "ParamWireSchema",
+    "ParseBool",
+    "ParseCsvList",
+    "ParseFloat",
+    "ParseInt",
+    "ParseString",
     "Pass",
     "Required",
     "RequiresTogether",
@@ -96,5 +104,5 @@ __all__ = [
     "ToolSourceId",
     "ToolStore",
     "ToolsService",
-    "ValueValidator",
+    "ValueConverter",
 ]

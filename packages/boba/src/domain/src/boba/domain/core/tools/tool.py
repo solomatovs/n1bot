@@ -135,5 +135,5 @@ class _ToolArgsPipeline(Converter[dict[str, Any], TArgs], Generic[TArgs]):
         self._typed = typed
 
     def convert(self, value: dict[str, Any]) -> TArgs:
-        validated = self._validator.validate(value)
+        validated = self._validator.convert(value)
         return self._typed.convert(validated)

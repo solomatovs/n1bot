@@ -105,17 +105,6 @@ class StateFull(StateLess):
         pass
 
 
-class Validator(ABC, Generic[TValue]):
-    """
-    Валидатор + нормализатор.
-    Принимает значение, возвращает нормализованное.
-    Бросает исключение, если значение невалидно.
-    """
-
-    @abstractmethod
-    def validate(self, value: TValue) -> TValue: ...
-
-
 class ConverterError(Exception):
     """Базовая ошибка ``Converter.convert``.
 
