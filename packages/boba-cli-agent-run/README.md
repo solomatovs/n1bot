@@ -1,8 +1,9 @@
 # boba-cli-agent-run
 
 Operator CLI: собирает полный agent stack (prompts, tools, LLM-клиент,
-workspace) и прогоняет один пользовательский запрос с выводом всех
-событий в stdout/stderr через `ConsoleSink`.
+workspace) и прогоняет пользовательские запросы с выводом всех
+событий в stdout/stderr через `ConsoleSink`. Поддерживает два режима:
+один прогон по аргументу `query` либо интерактивный REPL.
 
 Использование — отладка/демонстрация локально, smoke-проверка при
 деплое. В UI (chainlit) агент собирается тем же `boba.infra.container`,
@@ -24,8 +25,20 @@ pip install -e ./packages/boba-cli-agent-run
 
 ## Запуск
 
+Один прогон:
 ```bash
-boba-cli-agent-run --model qwen2.5-14b "Прочитай файл X и расскажи о чём он"
+boba-cli-agent-run --model qwen2.5-14b --query "Прочитай файл X и расскажи о чём он"
+```
+
+REPL (интерактивный режим, история диалога сохраняется в памяти):
+```bash
+boba-cli-agent-run --model qwen2.5-14b
+» расскажи о репозитории
+... (ответ агента) ...
+» уточни про модуль X
+... (ответ с учётом предыдущего хода) ...
+» /clear      # сбросить историю
+» /exit       # или /quit, :q, Ctrl-D — выйти
 ```
 
 Опциональные sampling-параметры:
