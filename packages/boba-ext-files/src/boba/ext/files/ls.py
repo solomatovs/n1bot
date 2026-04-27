@@ -9,6 +9,7 @@ from typing import Any
 from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainConverter,
+    Default,
     FieldSpec,
     IsInt,
     IsString,
@@ -17,7 +18,6 @@ from boba.domain.core.tools import (
     Nullable,
     ObjectSchema,
     Pass,
-    Required,
     Tool,
     ToolContext,
     ToolExecutionError,
@@ -74,8 +74,8 @@ class LsTool(Tool[LsArgs]):
                     ),
                     FieldSpec(
                         name="limit",
-                        description="Максимум элементов в ответе.",
-                        converter=ChainConverter(Required(), IsInt(), MinValue(1)),
+                        description="Максимум элементов в ответе. По умолчанию 200.",
+                        converter=ChainConverter(Default(200), IsInt(), MinValue(1)),
                     ),
                 ],
                 invariants=Pass()
