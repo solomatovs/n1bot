@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeAlias, TypeVar
 
@@ -16,7 +16,7 @@ from boba.domain.core.schema import (
     ParamWireSchema,
     SchemaContributor,
 )
-from boba.domain.core.validators import MISSING, Pass
+from boba.domain.core.validators import MISSING, Pass, ValueConverter
 
 __all__ = [
     "FieldAddress",
@@ -24,6 +24,7 @@ __all__ = [
     "FieldMissingError",
     "FieldSpec",
     "ObjectSchema",
+    "ParseObject",
     "validate_object",
 ]
 
@@ -118,3 +119,35 @@ def _wrap_field_error(
     if isinstance(exc, MissingValueError):
         return FieldMissingError(message, field=fld)
     return FieldConverterError(message, field=fld)
+
+
+class ParseObject(ValueConverter, SchemaContributor):
+    """Конвертер для вложенного объекта по ObjectSchema; wire: type=object.
+
+    Принимает Mapping (dict из JSON-args / TOML-таблицы), валидирует через
+    validate_object и возвращает результат schema.factory(...). Удобно
+    оборачивать в ParseList для массивов объектов.
+    """
+
+    def __init__(self, schema: ObjectSchema[Any]) -> None:
+        self._schema = schema
+
+    def _convert_value(self, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            raise ConverterInputError(
+                f"expected object, got {type(value).__name__}"
+            )
+        return validate_object(
+            self._schema,
+            lambda name: value.get(name, MISSING),
+        )
+
+    def contribute(self, schema: ParamWireSchema) -> None:
+        wire = self._schema.build_wire_schema()
+        schema.property["type"] = "object"
+        if wire.properties:
+            schema.property["properties"] = wire.properties
+        if wire.required:
+            schema.property["required"] = list(wire.required)
+        if wire.description and "description" not in schema.property:
+            schema.property["description"] = wire.description
