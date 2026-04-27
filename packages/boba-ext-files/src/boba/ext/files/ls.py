@@ -36,12 +36,6 @@ class LsArgs:
 
 
 class LsArgsConverter(Converter[dict[str, Any], LsArgs]):
-    """Маппит провалидированный dict в LsArgs.
-
-    Все проверки (тип, длина, min) уже сделаны
-    SchemaArgsValidator — здесь только сборка dataclass.
-    """
-
     def convert(self, value: dict[str, Any]) -> LsArgs:
         return LsArgs(
             path=value.get("path"),

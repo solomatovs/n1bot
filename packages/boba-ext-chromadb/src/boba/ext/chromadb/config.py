@@ -1,12 +1,4 @@
-"""Конфигурация ChromaDB-extension.
-
-ChromadbSection регистрируется через entry-point boba.config_sections;
-внутри tool'ов конфиг достаётся ctx.config.section(ChromadbSection).
-
-embedding_model в v0.1 валидируется как OneOf("default") — встроенная
-ONNX-модель ChromaDB; поле оставлено как контракт на будущее
-(sentence-transformers через optional dep).
-"""
+"""Конфигурация ChromaDB-extension."""
 
 from __future__ import annotations
 
@@ -41,9 +33,7 @@ class ChromaExtConfig:
 
 
 class ChromadbSection(ConfigSection[ChromaExtConfig]):
-    """Секция конфига расширения chromadb. Регистрируется через
-    entry-point boba.config_sections.
-    """
+    """Секция конфига расширения chromadb."""
 
     id: ClassVar[StrId] = StrId("ext.chromadb")
     namespace: ClassVar[tuple[str, ...]] = ("ext", "chromadb")

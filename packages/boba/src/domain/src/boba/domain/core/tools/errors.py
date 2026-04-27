@@ -1,12 +1,4 @@
-"""Иерархия ошибок выполнения tool'ов.
-
-Все tool-ошибки — потомки ToolExecutionError. Agent-слой
-(ToolExecutionMiddleware) ловит
-родительский тип и декларирует \
-ToolResultEffect с текстом ошибки — LLM получает её как
-role="tool" сообщение на следующей итерации и может скорректировать
-поведение.
-"""
+"""Иерархия ошибок выполнения tool'ов."""
 
 from __future__ import annotations
 
@@ -14,13 +6,7 @@ from boba.domain.core.tools.ids import ToolId, ToolSourceId
 
 
 class ToolExecutionError(Exception):
-    """Ошибка выполнения инструмента.
-
-    Бросается из ToolsService.execute / Tool.execute вместо
-    возврата флагового результата. Обработка — на стороне caller-а:
-    agent ловит, обогащает tool_call_id-ом (который сервис не знает)
-    и превращает в feedback-сообщение для LLM.
-    """
+    """Ошибка выполнения инструмента."""
 
     def __init__(self, tool_id: ToolId, message: str) -> None:
         super().__init__(message)
@@ -29,12 +15,7 @@ class ToolExecutionError(Exception):
 
 
 class InvalidToolArgumentError(ToolExecutionError):
-    """Аргумент tool'а не прошёл per-param валидацию.
-
-    Бросается оркестратором SchemaArgsValidator при отсутствии
-    обязательного параметра, нарушении типа, выходе за enum, незнакомом
-    ключе и т.п. Хранит имя проблемного параметра в param.
-    """
+    """Аргумент tool'а не прошёл per-param валидацию."""
 
     def __init__(self, tool_id: ToolId, param: str, reason: str) -> None:
         super().__init__(tool_id, f"параметр {param!r}: {reason}")
@@ -43,17 +24,7 @@ class InvalidToolArgumentError(ToolExecutionError):
 
 
 class ToolOutputTooLargeError(ToolExecutionError):
-    """Tool отказался выдавать слишком большой результат.
-
-    Бросается tool'ом, когда объём ответа превышает встроенный лимит
-    (обязательный, не конфигурируемый LLM). LLM получает отдельный
-    error_kind и должна сузить запрос: использовать пагинацию
-    (start_line/end_line, offset/limit и т.п.) или
-    переключиться на более прицельный инструмент (grep, stat).
-
-    Полный файл целиком читать нельзя — это антипаттерн, именно ради
-    пресечения которого и существует этот класс.
-    """
+    """Tool отказался выдавать слишком большой результат."""
 
     def __init__(
         self,
@@ -73,13 +44,7 @@ class ToolOutputTooLargeError(ToolExecutionError):
 
 
 class InvalidSchemaInvariantError(ToolExecutionError):
-    """Cross-field инвариант схемы нарушен.
-
-    Отличается от InvalidToolArgumentError тем, что проблема не
-    в одном параметре, а в сочетании нескольких (взаимоисключение,
-    совместность, порядок). Для LLM это даёт отдельный error_kind,
-    чтобы фидбек отличался по формулировке.
-    """
+    """Cross-field инвариант схемы нарушен."""
 
     def __init__(self, tool_id: ToolId, reason: str) -> None:
         super().__init__(tool_id, f"нарушен инвариант схемы: {reason}")

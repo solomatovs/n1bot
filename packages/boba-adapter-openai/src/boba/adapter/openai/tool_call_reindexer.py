@@ -1,13 +1,4 @@
-"""Починка коллизии index у параллельных tool_calls в стриме.
-
-Workaround для openai-совместимых провайдеров (Ollama/LiteLLM), которые
-эмитят параллельные tool_call-дельты с одинаковым index, но разными id —
-downstream-агрегатор склеивает arguments в одну строку, JSON-парсер падает.
-
-StreamTransformer вклинивается до ToolCallSource: чанк с новым tool_call_id
-на занятом index получает первый свободный слот. Подключается опционально
-через OpenAIMiddleware.chunk_preprocessor_factory.
-"""
+"""Починка коллизии index у параллельных tool_calls в стриме."""
 
 from __future__ import annotations
 
@@ -22,13 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class DuplicateToolCallIndexReindexer(StreamTransformer[LLMContext, Choice, Choice]):
-    """Перемапливает tool_calls с коллизией по index на свободные слоты.
-
-    Работает в LLM-слое (ниже agent'а) — параметризован
-    LLMContext, а не AgentContext: препроцессор
-    сидит внутри OpenAITerminal's chunk-pipeline, до
-    любой agent-семантики.
-    """
+    """Перемапливает tool_calls с коллизией по index на свободные слоты."""
 
     def __init__(self) -> None:
         self._index_owner: dict[int, str] = {}

@@ -1,16 +1,4 @@
-"""Базовые reducer'ы для TurnSpec.
-
-По одному reducer'у на ось TurnState. Каждый изолирован:
-смотрит только на свою ось, не знает о других. Политики уровня
-"temp ниже при feedback" / "fallback-модель при retry" / "другой
-system prompt при каком-то теге" добавляются как отдельные
-reducer'ы с более высоким priority, мутирующие те же slot'ы
-поверх базовых.
-
-Все reducer'ы переиспользуют существующие доменные сервисы —
-PromptFactory, ToolsService, MessageService
-— никакой логики сборки не дублируется.
-"""
+"""Базовые reducer'ы для TurnSpec — по одному на ось TurnState."""
 
 from __future__ import annotations
 
@@ -35,14 +23,7 @@ _SAMPLING_ID = StrId("sampling")
 
 
 def _tool_to_schema(tool: Tool[Any]) -> LLMToolSchema:
-    """Конверсия доменного Tool в data-only LLMToolSchema.
-
-    Граница между tools-доменом и LLM-слоем: дальше в LLM едет только
-    name + description + JSON-schema, без execute-логики и валидаторов.
-    Tool.definition возвращает ObjectSchema напрямую —
-    тот же примитив, что описывает config-секцию. Текстовое описание
-    действия tool'а лежит на schema.description.
-    """
+    """Конверсия доменного Tool в data-only LLMToolSchema."""
     schema = tool.definition()
     wire = schema.build_wire_schema()
     return LLMToolSchema(
@@ -57,12 +38,7 @@ def _tool_to_schema(tool: Tool[Any]) -> LLMToolSchema:
 
 
 class ModelReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
-    """Берёт модель из ctx.agent.agent_request.model.
-
-    Для override'а (fallback на другую модель по тегу trigger'а)
-    регистрируй отдельный reducer с более высоким priority: он
-    получит уже заполненный slot и может заменить при условии.
-    """
+    """Берёт модель из ctx.agent.agent_request.model."""
 
     def __init__(self, priority: int = 10) -> None:
         self._priority = priority
@@ -79,15 +55,7 @@ class ModelReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
 
 
 class SystemPromptReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
-    """Собирает system-prompt через PromptFactory каждую итерацию.
-
-    Переиспользует существующих PromptProvider'ов:
-    содержимое пересобирается per-call, так что провайдеры могут
-    реагировать на ctx.agent (workspace, iteration, etc.).
-    Пустой результат (провайдеры ничего не вернули) →
-    state.system_message остаётся None, finalize упадёт с
-    LLMRequestSystemMessageNoneError.
-    """
+    """Собирает system-prompt через PromptFactory каждую итерацию."""
 
     def __init__(
         self,
@@ -115,14 +83,7 @@ class SystemPromptReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnS
 
 
 class HistoryReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
-    """Копирует весь диалог из MessageReader в state.
-
-    Все записи (user-query, assistant, tool_result, feedback) уже
-    зафиксированы в хранилище через DialogueWriter к моменту
-    вызова reducer'а — снапшот полный и свежий. Reducer'у достаётся
-    только read-side порт (MessageReader); написать в историю
-    отсюда нельзя.
-    """
+    """Копирует весь диалог из MessageReader в state."""
 
     def __init__(self, priority: int = 30) -> None:
         self._priority = priority
@@ -139,13 +100,7 @@ class HistoryReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]
 
 
 class ToolsReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
-    """Каталог tools из ToolsService.
-
-    Ничего не знает о конкретных тулах — просто подхватывает то,
-    что сервис отдаёт на момент вызова. Подмножества/фильтры (например,
-    "в режиме feedback прячем destructive-тулы") — отдельный reducer
-    поверх с более высоким priority.
-    """
+    """Каталог tools из ToolsService."""
 
     def __init__(
         self,
@@ -174,21 +129,7 @@ class ToolsReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
 class AgentRequestSamplingReducer(
     ContextPrioritySource[TurnResolveContext, StrId, TurnState]
 ):
-    """Берёт SamplingParams из ctx.agent.agent_request.sampling.
-
-    Семантика «передано — применяем, не передано — не трогаем»:
-    None в agent_request.sampling оставляет state.sampling
-    как есть (дефолтный SamplingParams со всеми None-полями
-    — провайдер ничего не подложит, см.
-    _apply_sampling).
-
-    Глобального дефолта sampling в системе нет: единственный источник —
-    AgentRequest. Для per-trigger
-    тюнинга (ниже temperature при tag="feedback") — отдельный
-    TagAwareSamplingReducer с большим priority, который читает
-    ctx.trigger.tags и патчит state.sampling уже поверх
-    выставленного здесь значения.
-    """
+    """Берёт SamplingParams из ctx.agent.agent_request.sampling."""
 
     def __init__(self, priority: int = 50) -> None:
         self._priority = priority

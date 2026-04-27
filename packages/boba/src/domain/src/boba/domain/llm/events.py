@@ -1,33 +1,4 @@
-"""События LLM-слоя.
-
-Поток наблюдений за обращением к LLM: от отправки запроса до finish_reason.
-На границе агент-слоя LLMEvent перекодируется в AgentEvent через
-StreamTransformer; до этого момента sink'и на LLMEvent не подписываются.
-
-Иерархия::
-
-    BaseLLMEvent (abstract, frozen dataclass)
-    │   request_id: RequestId
-    │   + classmethod name() -> Literal["..."]
-    │
-    ├── LLMLifecycleMarker (abstract)       границы фазы
-    │   ├── LLMRequestStarted                 model, messages_count, has_tools, ts
-    │   ├── LLMRequestSent                    monotonic_ns (парный — даёт длительность)
-    │   ├── LLMGenerationStarted              первый чанк пришёл
-    │   ├── LLMThinkingStarted
-    │   ├── LLMAnswerStarted
-    │   ├── LLMToolCallBegin                  index, tool_call_id, tool_name
-    │   ├── LLMRetryAttempt                   attempt, reason, status_code
-    │   └── LLMGenerationDone                 finish_reason
-    │
-    └── LLMStreamingDelta (abstract)        инкрементальные куски
-        ├── LLMThinkingToken
-        ├── LLMAnswerToken
-        ├── LLMRefusalToken
-        └── LLMToolCallArgumentDelta          index, arguments
-
-Семейства LLMFailure нет: ошибки — исключения (потомки LLMError).
-"""
+"""События LLM-слоя: от отправки запроса до finish_reason."""
 
 from __future__ import annotations
 
@@ -40,14 +11,7 @@ from boba.domain.llm.models import RequestId
 
 
 class FinishReason(StrEnum):
-    """Нормализованная причина завершения генерации LLM.
-
-    Значения совпадают со старым
-    FinishReason — wire-совместимость
-    на случай, если потребуется общий сериализатор. Семантика
-    is_terminal та же: TOOL_CALLS — не-терминальное (агент
-    делает следующую итерацию с результатом), остальные — терминальные.
-    """
+    """Нормализованная причина завершения генерации LLM."""
 
     STOP = "stop"
     LENGTH = "length"
@@ -88,15 +52,7 @@ class LLMStreamingDelta(BaseLLMEvent, ABC):
 
 @dataclass(frozen=True)
 class LLMRequestStarted(LLMLifecycleMarker):
-    """
-    HTTP-запрос к провайдеру вот-вот будет отправлен.
-
-    Парный к LLMRequestSent — даёт замер длительности
-    самого client.chat.completions.create. Поле monotonic_ns
-    — monotonic_ns на момент эмита. Разница с
-    monotonic_ns у LLMRequestSent = время до получения
-    stream-handle (включает сетевой round-trip и TTFB).
-    """
+    """HTTP-запрос к провайдеру вот-вот будет отправлен; парный к LLMRequestSent."""
 
     model: str
     messages_count: int
@@ -110,13 +66,7 @@ class LLMRequestStarted(LLMLifecycleMarker):
 
 @dataclass(frozen=True)
 class LLMRequestSent(LLMLifecycleMarker):
-    """
-    HTTP-запрос к провайдеру отправлен, stream-handle получен.
-
-    Парный к LLMRequestStarted. Метаданные запроса
-    (model, messages_count, has_tools) живут на Started —
-    здесь только закрывающий monotonic_ns для замера длительности.
-    """
+    """HTTP-запрос отправлен, stream-handle получен; парный к LLMRequestStarted."""
 
     monotonic_ns: int
 
@@ -212,9 +162,7 @@ class LLMToolCallArgumentDelta(LLMStreamingDelta):
 
 @dataclass(frozen=True)
 class LLMRetryAttempt(LLMLifecycleMarker):
-    """
-    Попытка запроса к LLM будет повторена
-    """
+    """Попытка запроса к LLM будет повторена."""
 
     attempt: int
     reason: str
@@ -273,9 +221,5 @@ LLMEventName: TypeAlias = Literal[
 
 
 def _verify_llm_event_names_exhaustive(e: LLMEvent) -> LLMEventName:
-    """
-    Вот это пихай в match-case последним звеном
-    Что бы ловить необработанные event'ы на этапе написания кода
-    А не в рантайме
-    """
+    """Exhaustiveness check для match-case над LLMEvent."""
     return e.name()

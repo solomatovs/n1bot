@@ -1,10 +1,4 @@
-"""Декодер потока OpenAI chunks в поток LLMEvent.
-
-Стадии-декодеры независимы (fan-out) и собраны через
-StreamTransformerPipeline.
-Каждая смотрит на «свою» часть Choice.delta
-и эмитит соответствующие LLM-события.
-"""
+"""Декодер потока OpenAI chunks в поток LLMEvent."""
 
 from __future__ import annotations
 
@@ -39,10 +33,7 @@ from openai.types.chat.chat_completion_chunk import (
 
 
 class ThinkingSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
-    """
-    Эмитит LLMThinkingStarted / LLMThinkingToken.
-    Извлечение reasoning-поля делегируется Converter'у
-    """
+    """Эмитит LLMThinkingStarted / LLMThinkingToken."""
 
     def __init__(
         self,
@@ -70,9 +61,7 @@ class ThinkingSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
 
 
 class RoleSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
-    """
-    Эмитит LLMGenerationStarted при первом появлении роли
-    """
+    """Эмитит LLMGenerationStarted при первом появлении роли."""
 
     def __init__(self, request_id: RequestId) -> None:
         self._request_id = request_id
@@ -85,16 +74,9 @@ class RoleSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
         self._started = False
 
     def stream(self, ctx: LLMContext, stream: Iterable[Choice]) -> Iterable[LLMEvent]:
-        # мы не хотим каждый раз обрабатывать role source
-        # поэтому проверяем роль только при первом проходе
+        # Роль проверяем только при первом проходе.
         if not self._started:
-            # choice'ы это варианты ответов, которые генерирует llm
-            # действительно их может быть несколько
-            # и здесь сейчас некорректная логика их обработки
-            # choice'ы просто последовательно генерируют события
-            # однако на практике модели редко генерируют более одного ответа
-            # поэтому когда появиться необходимость
-            # то сделаем обработку с выбором ответа
+            # TODO: несколько choice'ов сейчас обрабатываются последовательно.
             for choice in stream:
                 if choice.delta.role and not self._started:
                     self._started = True
@@ -102,9 +84,7 @@ class RoleSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
 
 
 class AnswerSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
-    """
-    Эмитит LLMAnswerStarted / LLMAnswerToken из content
-    """
+    """Эмитит LLMAnswerStarted / LLMAnswerToken из content."""
 
     def __init__(self, request_id: RequestId) -> None:
         self._request_id = request_id
@@ -128,9 +108,7 @@ class AnswerSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
 
 
 class RefusalSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
-    """
-    Эмитит LLMRefusalToken из refusal
-    """
+    """Эмитит LLMRefusalToken из refusal."""
 
     def __init__(self, request_id: RequestId) -> None:
         self._request_id = request_id
@@ -147,9 +125,7 @@ class RefusalSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
 
 
 class ToolCallSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
-    """
-    Эмитит LLMToolCallBegin / LLMToolCallArgumentDelta.
-    """
+    """Эмитит LLMToolCallBegin / LLMToolCallArgumentDelta."""
 
     def __init__(self, request_id: RequestId) -> None:
         self._request_id = request_id
@@ -188,9 +164,7 @@ class ToolCallSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
 
 
 class FinishSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
-    """
-    Эмитит LLMGenerationDone при появлении finish_reason
-    """
+    """Эмитит LLMGenerationDone при появлении finish_reason."""
 
     def __init__(self, request_id: RequestId) -> None:
         self._request_id = request_id
@@ -203,30 +177,20 @@ class FinishSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
         self._saw_tool_call = False
 
     def stream(self, ctx: LLMContext, stream: Iterable[Choice]) -> Iterable[LLMEvent]:
-        """
-        Учитывает что может прийти finish_reason=stop после native tool_calls
-        Поэтому подменяет на tool_calls вместо завершения
-        Это необходимо агенту для выполнения call tool
-        """
+        """Подменяет finish_reason=stop на tool_calls если были tool_calls."""
         for choice in stream:
             if choice.delta.tool_calls:
-                # запоминаем что прилетел вызов call_tool
                 self._saw_tool_call = True
 
             if choice.finish_reason:
                 try:
                     reason = FinishReason(choice.finish_reason)
                 except ValueError as e:
-                    # хз какой состояние может прислать api
                     raise LLMProtocolError(
                         f"unknown finish_reason from provider: {choice.finish_reason!r}"
                     ) from e
 
-                # если прилетел вызов call_tool
-                # но при этом reason не call_tool значит модель не умеет вызвать tools
-                # либо litellm проксирует некорректно вызовы
-                # поэтому здесь лайфхак, я просто назначаю call_tool принудительно
-                # насколько это петушинное решение, покажет время
+                # Lifehack: если были tool_calls, принудительно ставим TOOL_CALLS.
                 if self._saw_tool_call and reason is not FinishReason.TOOL_CALLS:
                     reason = FinishReason.TOOL_CALLS
 
@@ -239,33 +203,13 @@ class FinishSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
 class FromOpenAIChunkConverter(
     StreamTransformer[LLMContext, ChatCompletionChunk, LLMEvent]
 ):
-    """
-    Поток OpenAI chunks → поток LLMEvent.
-
-    Внутри — fan-out pipeline из независимых декодеров:
-    - role
-    - thinking
-    - answer
-    - refusal
-    - tool_call
-    - finish
-    Каждый смотрит на «свою» часть Choice.delta
-    эмитит соответствующие события.
-
-    preprocessor — pre-pipeline трансформер Choice → Choice,
-    выполняемый ДО fan-out pipeline. Обычно это
-    StreamTransformerChain из
-    нескольких нормализаторов/реиндексеров (например, для коллизий
-    index у параллельных tool_calls в Ollama/LiteLLM). Пустой
-    chain (StreamTransformerChain([])) работает как identity.
-    """
+    """Поток OpenAI chunks → поток LLMEvent."""
 
     def __init__(
         self,
         request_id: RequestId,
-        # preprocessor: StreamTransformer[LLMContext, Choice, Choice],
     ) -> None:
-        # тут строгая последовательность вызова!
+        # Строгая последовательность вызова.
         self._pipeline = StreamTransformerPipeline[LLMContext, Choice, LLMEvent](
             [
                 RoleSource(request_id),

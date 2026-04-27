@@ -1,17 +1,4 @@
-"""Сборка агента и запуск одного запроса с UI-sink'ом.
-
-В отличие от старой версии (на Dishka-контейнере и request_scope)
-эта реализация не тянет DI-инфраструктуру — boba её не использует.
-Собирается вручную: один раз в конструкторе — workspace registry и
-конфиг; на каждый run — свежий source через
-create_agent_source, Agent(source, UI-sink), синхронный
-прогон.
-
-Один инстанс на процесс Chainlit: конфиг приходит из bundle, который
-собирает __main__ ДО запуска chainlit-сервера
-и инжектит через set_bundle. Состояние сессии
-(WorkspaceId) живёт в cl.user_session.
-"""
+"""Сборка агента и запуск одного запроса с UI-sink'ом."""
 
 from __future__ import annotations
 
@@ -56,9 +43,7 @@ from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
 
 
 def _build_app_config(bundle: ConfigBundle) -> AppConfig:
-    """Composition AppConfig из плоских секций приложения. Знание про
-    конкретный набор адаптеров (workspaces/llm/prompts) живёт здесь, а
-    не в фреймворке (см. ``boba.infra.config``: ConfigBundle generic)."""
+    """Composition AppConfig из плоских секций приложения."""
     core = bundle.section(AppCoreSection)
     return AppConfig(
         workspaces=bundle.section(WorkspacesSection),
@@ -71,21 +56,13 @@ def _build_app_config(bundle: ConfigBundle) -> AppConfig:
 
 
 class ChatSession:
-    """One-shot обёртка: конфиг + workspace registry один раз, агент
-    пересобирается на каждый run.
-
-    Bundle инжектится из __main__ через
-    set_bundle ДО первого cl.on_chat_start (там chainlit
-    создаёт ChatSession() через functools.cache).
-    """
+    """One-shot обёртка: конфиг + workspace registry; агент пересобирается на каждый run."""
 
     _bundle: ConfigBundle | None = None
 
     @classmethod
     def set_bundle(cls, bundle: ConfigBundle) -> None:
-        """Инжектит application-level bundle. Должно быть вызвано до
-        первого ChatSession()-вызова — обычно из __main__.main().
-        """
+        """Инжектит application-level bundle до первого ChatSession()."""
         cls._bundle = bundle
 
     def __init__(self) -> None:
@@ -126,12 +103,7 @@ class ChatSession:
         return self._chainlit_config.models
 
     def project_workspace(self, workspace_id: WorkspaceId) -> ProjectWorkspaceShell:
-        """Project-workspace пользователя: тот же, куда смотрят file-tools агента.
-
-        Registry живёт в инстансе ChatSession (APP scope) —
-        shell доступен вне прогона агента, используется UI для
-        upload/list/delete независимо от состояния цикла.
-        """
+        """Project-workspace пользователя — тот же, куда смотрят file-tools агента."""
         shell = self._workspaces.get_or_create(workspace_id)
         if not isinstance(shell, ProjectWorkspaceShell):
             msg = (
@@ -149,22 +121,12 @@ class ChatSession:
         *,
         model: str,
     ) -> None:
-        """Запустить агентский цикл. model обязателен и определяется
-        только на стороне UI (ChatSettings) — конфиг в агентский луп не
-        просачивается.
-
-        extra_sink подмешивается к собранному source — это UI-мост
-        (ChainlitBridgeSink).
-        """
-        # workspace подтягивается/создаётся, чтобы последующий upload в
-        # тот же workspace_id работал; сам agent про него ничего не
-        # знает — AgentRequest в boba workspace_id не хранит.
+        """Запустить агентский цикл; model выбирается только на стороне UI."""
+        # workspace подтягивается заранее, чтобы последующий upload в тот же id работал.
         project_workspace = self._workspaces.get_or_create(workspace_id)
         request_id = RequestId.new()
 
-        # ToolContext — единственное per-request DI: прокидывает
-        # сессионный workspace в Tool.execute через ToolExecutionMiddleware.
-        # Сам ToolsService — application-singleton, собранный в __init__.
+        # ToolContext — per-request DI: прокидывает workspace в Tool.execute.
         tool_ctx = ToolContext(project_workspace=project_workspace)
 
         history_workspace = self._history_workspaces.get_or_create(workspace_id)

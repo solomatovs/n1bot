@@ -1,11 +1,4 @@
-"""Entry-point boba-cli-agent-run.
-
-Конфиг полностью идёт через ConfigSource-цепочку, собранную фабрикой
-после регистрации секций. argparse-парсер строит CliSource на этапе
-``factory.build()`` — отсюда автогенерация ``--help`` для всех
-зарегистрированных полей и typo-detection для опечаток в флагах.
-Локального argparse тут нет.
-"""
+"""Entry-point boba-cli-agent-run."""
 
 from __future__ import annotations
 
@@ -60,9 +53,6 @@ def main() -> int:
     try:
         _run(factory)
     except ConverterInputError as e:
-        # Фабрика форматирует FieldMissingError в operator-friendly
-        # recipe (CLI/env/TOML — describe() от каждого источника);
-        # прочие ошибки конвертера остаются как есть.
         print(f"error: {factory.format_config_error(e)}", file=sys.stderr)
         return 2
     return 0
@@ -74,13 +64,7 @@ def main() -> int:
 
 
 def _build_factory() -> ConfigFactory:
-    """Регистрация секций + источников.
-
-    Cli > env-file > env > toml-file > toml. Adapter-секции и
-    own-section (agent_run) регистрируются вручную; ext-секции —
-    через discovery. argparse-парсер строит CliSource на bind_schema
-    из FieldSpec'ов всех зарегистрированных секций.
-    """
+    """Регистрация секций и источников; приоритет cli > env-file > env > toml-file > toml."""
     factory = ConfigFactory()
     factory.register(AppCoreSection())
     factory.register(AgentSection())
@@ -107,10 +91,7 @@ def _build_factory() -> ConfigFactory:
 
 
 def _build_app_config(bundle: ConfigBundle) -> AppConfig:
-    """Composition AppConfig из плоских секций, зарегистрированных
-    выше в _build_factory. Знание про конкретный набор адаптеров
-    (workspaces/llm/prompts) живёт здесь, а не в фреймворке.
-    """
+    """Composition AppConfig из плоских секций."""
     core = bundle.section(AppCoreSection)
     return AppConfig(
         workspaces=bundle.section(WorkspacesSection),

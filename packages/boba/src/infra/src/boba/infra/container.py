@@ -1,11 +1,4 @@
-"""Сборка agent-source и Agent без привязки к LLM-адаптеру.
-
-LLM-source строит caller (через boba.adapter.openai.create_llm_source
-или альтернативный pip-пакет), сюда приходит уже готовый
-StreamSource[LLMContext, LLMEvent]. Все middleware/reducer
-агентского слоя — adapter-agnostic, поэтому модуль не тянет зависимостей
-на конкретные SDK.
-"""
+"""Сборка agent-source и Agent без привязки к LLM-адаптеру."""
 
 from __future__ import annotations
 

@@ -1,15 +1,4 @@
-"""Декларативные примитивы описания объекта.
-
-Общие блоки между tool-input-схемами и config-секциями:
-
-- FieldSpec — декларация одного поля (name + Converter + описание).
-- ObjectSchema — поля + cross-field инварианты + DTO-фабрика.
-- validate_object — orchestrator: читает поле, прогоняет через converter,
-  отбрасывает MISSING, применяет invariants, отдаёт в factory.
-
-Адресация в namespace — задача владельца коллекции (ConfigSection /
-ToolDefinition). Wire-схема живёт в schema.
-"""
+"""Декларативные примитивы описания объекта."""
 
 from __future__ import annotations
 
@@ -39,22 +28,12 @@ __all__ = [
 ]
 
 
-# declaration.py живёт ниже config.py — не должен знать про ConfigKey.
-# Но обязан хранить «адрес поля во внешнем namespace» для верхнего слоя
-# (ConfigSection.build кладёт сюда ConfigKey, ConfigFactory достаёт его
-# через isinstance(..., FieldConverterError)). Алиас object — этот слой
-# содержимое адреса не интерпретирует, только переносит.
+# Адрес поля во внешнем namespace (ConfigKey и т.п.); этот слой не интерпретирует.
 FieldAddress: TypeAlias = object
 
 
 class FieldConverterError(ConverterInputError):
-    """ConverterInputError, прокинутый через слой ObjectSchema.
-
-    Несёт FieldSpec, на котором отказала конвертер-цепочка, и
-    опциональный ``key`` — адрес поля во внешнем namespace (см.
-    :data:`FieldAddress`). Для tool-input ``key`` остаётся None;
-    для config-секций его наполняет ConfigSection.build.
-    """
+    """ConverterInputError со ссылкой на FieldSpec и адрес."""
 
     def __init__(
         self,
@@ -69,15 +48,7 @@ class FieldConverterError(ConverterInputError):
 
 
 class FieldMissingError(FieldConverterError, MissingValueError):
-    """FieldConverterError + MissingValueError-маркер.
-
-    Пустой подкласс с MRO-склейкой: позволяет ловить
-    ``except MissingValueError`` (диагностика «значение не задано»)
-    и ``except FieldConverterError`` (имеется поле-контекст) одинаково
-    — оба isinstance возвращают True. Конструктор унаследован от
-    FieldConverterError; MRO C3-линеаризация склеивает диамант на
-    общем предке ConverterInputError.
-    """
+    """FieldConverterError + MissingValueError-маркер."""
 
 
 T = TypeVar("T")
@@ -85,44 +56,14 @@ T = TypeVar("T")
 
 @dataclass(frozen=True)
 class FieldSpec(Generic[T]):
-    """Декларация одного поля.
-
-    Самодостаточно: знает только своё локальное name,
-    Converter-цепочку и человекочитаемое описание. Не несёт
-    адреса в глобальном namespace — это задача владельца (для конфига
-    — ConfigSection, для tool-схемы —
-    ToolInputSchema).
-
-    Один и тот же класс используется и для config-полей, и для
-    tool-параметров. Различие — только в том, кто складывает поля и
-    как читает значение.
-
-    converter — цепочка трансформации сырого значения в
-    типизированный T. Типичный шаблон::
-
-        ChainConverter(
-            Default(20),     # подставит, если источников молчат
-            ParseInt(),      # привести к int (str из env, int из TOML)
-            MinValue(1),     # семантическое ограничение
-        )
-
-    Реализующие SchemaContributor шаги цепочки наполняют
-    ParamWireSchema (тип, default, required, enum, …) — единый
-    источник правды для runtime-валидации и описания внешнему потребителю.
-    """
+    """Декларация одного поля (name + Converter-цепочка + description)."""
 
     name: str
     converter: Converter[Any, T]
     description: str = ""
 
     def build_wire_schema(self) -> ParamWireSchema:
-        """Собрать wire-описание поля через SchemaContributor.
-
-        Стартует с description и даёт каждому шагу конвертера
-        дозаполнить type / enum / default / required и
-        т.п. Если шаг не реализует contributor-протокол — пропускается;
-        итоговая схема содержит только то, что реально объявлено.
-        """
+        """Собрать wire-описание поля через SchemaContributor."""
         schema = ParamWireSchema(property={"description": self.description})
         if isinstance(self.converter, SchemaContributor):
             self.converter.contribute(schema)
@@ -131,28 +72,7 @@ class FieldSpec(Generic[T]):
 
 @dataclass(frozen=True)
 class ObjectSchema(Generic[T]):
-    """Описание объекта с именованными полями, инвариантами и фабрикой.
-
-    Универсальный примитив для tool-input-схем и config-секций:
-    различие — только в способе чтения сырых данных (dict от LLM vs
-    резолвер env/TOML), которое инкапсулируется в callable передаваемом
-    в validate_object.
-
-    Поля:
-
-    - fields — независимые описания каждого слота (FieldSpec);
-    - invariants — cross-field конвертер, работающий над dict'ом
-      уже провалидированных полей. Проверяет инварианты, связывающие
-      несколько полей: взаимоисключения, совместность, порядок. По
-      умолчанию Pass (no-op);
-    - factory — фабрика финального DTO из kwargs. Для tool-args
-      обычно dict (identity), для config — конкретный dataclass;
-    - description — описание самого объекта/секции (для autogen
-      operator-доки конфига и tool-schema'ы для LLM).
-
-    Wire-схему агрегата строит build_wire_schema — итерируется
-    по полям и собирает ObjectWireSchema.
-    """
+    """Описание объекта: поля + invariants + factory + description."""
 
     fields: Sequence[FieldSpec[Any]]
     invariants: Converter[dict[str, Any], dict[str, Any]] = field(
@@ -162,13 +82,7 @@ class ObjectSchema(Generic[T]):
     description: str = ""
 
     def build_wire_schema(self) -> ObjectWireSchema:
-        """JSON-Schema-подобное описание объекта.
-
-        Каждое поле даёт ParamWireSchema через
-        build_wire_schema; итог агрегируется в
-        {name → property-dict} + список required + description
-        самого объекта.
-        """
+        """JSON-Schema-подобное описание объекта."""
         schema = ObjectWireSchema(description=self.description)
         for fld in self.fields:
             wire = fld.build_wire_schema()
@@ -182,19 +96,7 @@ def validate_object(
     schema: ObjectSchema[T],
     read_raw: Callable[[str], object],
 ) -> T:
-    """Прочитать каждое поле через read_raw, прогнать converter,
-    отбросить MISSING-значения, применить invariants,
-    отдать результат в factory.
-
-    Симметричный orchestrator для tool-args (источник —
-    dict[str, Any] от LLM) и для config-секций (источник —
-    ChainedConfigResolver).
-
-    Семантика ошибок: ConverterInputError от любого шага оборачивается
-    в FieldConverterError (или FieldMissingError, если внутрь упал
-    MissingValueError-маркер) с привязкой FieldSpec — это даёт верхним
-    слоям возможность диагностировать без парсинга текста сообщения.
-    """
+    """Читает поля через read_raw, конвертирует, применяет invariants, factory."""
     validated: dict[str, Any] = {}
     for fld in schema.fields:
         try:
@@ -211,13 +113,7 @@ def _wrap_field_error(
     exc: ConverterInputError,
     fld: FieldSpec[Any],
 ) -> FieldConverterError:
-    """Завернуть ошибку конвертера в field-aware подкласс.
-
-    Сохраняет MissingValue-маркер: упал MissingValueError →
-    FieldMissingError; иначе — обычный FieldConverterError. Адрес
-    (``key``) не наследуется — он принадлежит верхнему слою (ConfigSection
-    знает namespace), здесь оставляем None.
-    """
+    """Завернуть ошибку конвертера в field-aware подкласс."""
     message = f"field {fld.name!r}: {exc}"
     if isinstance(exc, MissingValueError):
         return FieldMissingError(message, field=fld)

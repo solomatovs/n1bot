@@ -30,11 +30,7 @@ class KbListCollectionsArgsConverter(Converter[dict[str, Any], KbListCollections
 
 
 class KbListCollectionsTool(Tool[KbListCollectionsArgs]):
-    """Возвращает JSON со списком [{name, description}] коллекций.
-
-    Описание берётся из metadata["description"], который оператор
-    задаёт при создании коллекции (см. README).
-    """
+    """Возвращает JSON [{name, description}] доступных коллекций."""
 
     _ID = ToolId("kb_list_collections")
     _SOURCE = ToolSourceId("ext.chromadb")

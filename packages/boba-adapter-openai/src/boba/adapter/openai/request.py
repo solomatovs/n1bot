@@ -1,6 +1,4 @@
-"""
-Конвертация LLMRequest в kwargs для OpenAI-совместимого API
-"""
+"""Конвертация LLMRequest в kwargs для OpenAI-совместимого API."""
 
 from __future__ import annotations
 
@@ -34,9 +32,7 @@ class ToOpenAIToolConverter(Converter[LLMToolSchema, ChatCompletionToolParam]):
 
 
 class ToOpenAIMessageConverter(Converter[LLMMessage, ChatCompletionMessageParam]):
-    """
-    конверация LLMMessage -> OpenAI message param
-    """
+    """Конвертация LLMMessage → OpenAI message param."""
 
     def convert(self, value: LLMMessage) -> ChatCompletionMessageParam:
         match value.role:
@@ -77,19 +73,13 @@ class ToOpenAIMessageConverter(Converter[LLMMessage, ChatCompletionMessageParam]
 
 
 class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
-    """LLMRequest -> kwargs для
-    client.chat.completions.create
-    """
+    """LLMRequest → kwargs для client.chat.completions.create."""
 
     def __init__(self) -> None:
         self._to_message = ToOpenAIMessageConverter()
         self._to_tool = ToOpenAIToolConverter()
 
     def convert(self, value: LLMRequest) -> dict[str, Any]:
-        # использую stream вариант по умолчанию
-        # возвращает chunk'и, которые можноemit'ить в события
-        # и реактивно отображать в sink'ах
-
         kwargs: dict[str, Any] = {"stream": True}
         self._apply_model(kwargs, value)
         self._apply_messages(kwargs, value)
@@ -102,9 +92,7 @@ class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
         kwargs["model"] = r.model
 
     def _apply_messages(self, kwargs: dict[str, Any], r: LLMRequest) -> None:
-        """
-        Склеивает в OpenAI-порядок: system → messages.
-        """
+        """Склеивает в OpenAI-порядок: system → messages."""
         ordered: list[LLMMessage] = [r.system_message, *r.messages]
         kwargs["messages"] = list(self._convert_messages(ordered))
 

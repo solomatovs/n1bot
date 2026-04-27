@@ -1,15 +1,4 @@
-"""Сборка system-prompt из провайдеров (fold-factory).
-
-Провайдеры поставляют PromptBlock-и; PromptFactory агрегирует их по
-приоритету в PromptResult. Пересобирается каждой итерацией —
-провайдеры могут реагировать на ctx.agent.
-
-USER-сообщение через эту фабрику не идёт: обогащение пользовательского
-ввода (IDE selection, шаблоны) — ответственность frontend'а.
-
-PromptFactory.build() оборачивает OSError → PromptProviderError;
-PromptError из провайдеров пропускается как есть.
-"""
+"""Сборка system-prompt из провайдеров (fold-factory)."""
 
 from __future__ import annotations
 
@@ -27,13 +16,7 @@ TCtx = TypeVar("TCtx")
 
 
 class PromptError(TerminalError[RequestId, AgentEvent]):
-    """Базовая ошибка сборки промпта.
-
-    Адаптеры-провайдеры (файлы, workspace, git) оборачивают свои
-    I/O-исключения в потомков этого класса. Ошибки логики/валидации
-    (неверный тип, битая регистрация) — это баги и должны падать
-    напрямую, без конвертации в PromptError.
-    """
+    """Базовая ошибка сборки промпта."""
 
     def __init__(self, message: str, *, provider: str | None = None) -> None:
         super().__init__(message)
@@ -53,11 +36,7 @@ class PermanentPromptError(PromptError):
 
 
 class PromptProviderError(PermanentPromptError):
-    """Провайдер упал на чтении своего источника.
-
-    Автоматически поднимается build при
-    перехвате OSError от любого провайдера.
-    """
+    """Провайдер упал на чтении источника (OSError → этот тип)."""
 
 
 @dataclass(frozen=True)
@@ -80,11 +59,7 @@ class PromptId(Id[str]):
 
 
 class PromptState(Generic[TCtx]):
-    """Накапливаемое состояние сборки: список blocks + контекст.
-
-    Контекст передаётся провайдерам, чтобы они могли брать данные из
-    текущего запроса (workspace, iteration и т.д.).
-    """
+    """Накапливаемое состояние сборки: blocks + контекст."""
 
     def __init__(self, ctx: TCtx) -> None:
         self.ctx = ctx
@@ -104,19 +79,12 @@ class PromptResult:
         return list(self._blocks)
 
     def to_string(self) -> str:
-        """Конкатенация всех непустых блоков через двойной перенос строки."""
+        """Конкатенация непустых блоков через двойной перенос."""
         return "\n\n".join(b.content for b in self._blocks if b.content)
 
 
 class PromptProvider(PrioritySource[PromptId, PromptState]):
-    """Провайдер блоков system-prompt.
-
-    Реализации должны указывать:
-
-    - id — уникальный идентификатор (для замены/удаления);
-    - priority — меньше число → раньше в раскладке;
-    - blocks — один или больше PromptBlock.
-    """
+    """Провайдер блоков system-prompt."""
 
     @abstractmethod
     def blocks(self, state: PromptState) -> Iterable[PromptBlock]: ...
@@ -128,17 +96,7 @@ class PromptProvider(PrioritySource[PromptId, PromptState]):
 
 
 class PromptFactory(FoldFactory[PromptId, PromptState[TCtx], PromptResult]):
-    """Собирает PromptResult из зарегистрированных провайдеров.
-
-    Per-call экземпляр: PromptState строится на лету под
-    переданный ctx. Контракт ошибок в build:
-
-    - PromptError из провайдера пробрасывается как есть;
-    - OSError → PromptProviderError (узкий wrap для
-      адаптеров, которые не обернули свой I/O сами);
-    - любые другие исключения (логика, программный баг) — пропускаются
-      наружу и крашат процесс.
-    """
+    """Собирает PromptResult из зарегистрированных провайдеров."""
 
     def __init__(self, ctx: TCtx, providers: Iterable[PromptProvider]) -> None:
         super().__init__()

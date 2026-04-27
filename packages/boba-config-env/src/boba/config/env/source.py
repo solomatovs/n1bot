@@ -33,13 +33,7 @@ def env_name(key: ConfigKey) -> str:
 
 
 class _EnvSourceBase(ConfigSource):
-    """Общий каркас env-источников.
-
-    Знает префикс ``BOBA_`` и суффикс ``_FILE``, хранит strict +
-    extra_known, рапортует о найденных typo'ах. Наследники — EnvSource
-    (``BOBA_X``) и EnvFileSource (``BOBA_X_FILE``) — реализуют только
-    bind_schema/resolve/describe.
-    """
+    """Общий каркас env-источников: префикс BOBA_ и суффикс _FILE."""
 
     def __init__(
         self,
@@ -47,7 +41,6 @@ class _EnvSourceBase(ConfigSource):
         strict: bool = False,
         extra_known: Iterable[str] = (),
     ) -> None:
-        """Запомнить strict + extra_known."""
         self._strict = strict
         self._extra_known = frozenset(extra_known)
 
@@ -77,12 +70,7 @@ class _EnvSourceBase(ConfigSource):
 
 
 class EnvSource(_EnvSourceBase):
-    """Значение из ``os.environ[env_name(key)]``.
-
-    bind_schema проверяет ``BOBA_*`` env vars на соответствие схеме
-    (``BOBA_*_FILE`` пропускаются — это EnvFileSource). См.
-    :class:`_EnvSourceBase` про strict + extra_known.
-    """
+    """Значение из os.environ[env_name(key)]."""
 
     def bind_schema(
         self,
@@ -111,12 +99,7 @@ class EnvSource(_EnvSourceBase):
 
 
 class EnvFileSource(_EnvSourceBase):
-    """Значение из файла ``${env_name(key)}_FILE`` (Docker-style).
-
-    bind_schema проверяет ``BOBA_*_FILE`` env vars на соответствие схеме
-    (после strip ``_FILE``). См. :class:`_EnvSourceBase` про
-    strict + extra_known.
-    """
+    """Значение из файла ${env_name(key)}_FILE (Docker-style)."""
 
     def bind_schema(
         self,

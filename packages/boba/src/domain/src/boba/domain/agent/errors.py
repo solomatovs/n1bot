@@ -1,13 +1,4 @@
-"""Агент-специфичные ошибки, построенные на маркерах core.errors.
-
-Concrete-ошибка миксует ортогональные маркеры (UserFeedbackError /
-LLMFeedbackError / TerminalError) в любых комбинациях.
-
-Программные баги (KeyError/TypeError/ValueError/AssertionError) НЕ
-наследуют RoutableError — летят мимо роутера, крашат процесс.
-LLM-ошибки изолированы и тоже НЕ RoutableError — мост делает
-LLMInvokeMiddleware.
-"""
+"""Агент-специфичные ошибки на маркерах core.errors."""
 
 from __future__ import annotations
 
@@ -24,28 +15,11 @@ from boba.domain.llm.models import RequestId
 
 
 class AgentLLMFeedbackError(LLMFeedbackError[LLMFeedback], ABC):
-    """Agent-уровневая специализация LLMFeedbackError.
-
-    Фиксирует TFeedback = LLMFeedback — discriminated union из
-    LLMCritique / ToolCallRejection. Это даёт
-    типизированное narrowing в AgentErrorRouter (match-case
-    раскрывает union в конкретные варианты) и не пропускает «снаружи»
-    raw LLMMessage через writer: каждый вариант мапится в свой
-    узкий метод DialogueWriter.
-
-    Concrete-ошибки агента, которые хотят писать feedback в историю
-    через роутер, наследуются **от этого класса**, а не от
-    LLMFeedbackError напрямую, и реализуют to_llm_feedback
-    с возвратом одного из вариантов LLMFeedback.
-    """
+    """Agent-уровневая специализация LLMFeedbackError с TFeedback=LLMFeedback."""
 
 
 class MaxIterationsExceededError(TerminalError[RequestId, AgentEvent]):
-    """Цикл агента исчерпал лимит итераций без финального ответа.
-
-    Поднимается \
-IterationCounterMiddleware.
-    """
+    """Цикл агента исчерпал лимит итераций без финального ответа."""
 
     def __init__(self, message: str, *, limit: int, iteration: int) -> None:
         super().__init__(message)
@@ -63,19 +37,7 @@ IterationCounterMiddleware.
 
 
 class LLMGenerationFailedError(TerminalError[RequestId, AgentEvent]):
-    """Мост: исключение LLM-слоя, дошедшее до границы агента.
-
-    errors — изолированная иерархия, её типы
-    **не** RoutableError. Но агент-слой всё равно должен
-    пропустить отказ через AgentErrorRouter, чтобы цикл
-    остановился единообразно с остальными терминальными ошибками.
-
-    LLMInvokeMiddleware ловит
-    LLMError, снимает с него
-    error_kind-маркер и поднимает эту обёртку —
-    роутер маршрутизирует её стандартно и эмитит GenerationFailed
-    через to_user_feedback.
-    """
+    """Обёртка над LLMError для маршрутизации через AgentErrorRouter."""
 
     def __init__(
         self,

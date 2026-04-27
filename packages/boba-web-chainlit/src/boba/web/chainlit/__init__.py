@@ -1,13 +1,4 @@
-"""Chainlit-интеграция: sink-мост к UI, сессия, загрузки и конфиг.
-
-Короткие импорты::
-
-    from boba.web.chainlit import ChainlitBridgeSink, ChatSession
-    from boba.web.chainlit import ChainlitConfig, ChainlitSection
-
-Модули app и __main__ — точки
-входа приложения, их содержимое не реэкспортируется.
-"""
+"""Chainlit-интеграция: sink-мост к UI, сессия, загрузки и конфиг."""
 
 from boba.web.chainlit.bridge import ChainlitBridgeSink
 from boba.web.chainlit.config import ChainlitConfig, ChainlitSection

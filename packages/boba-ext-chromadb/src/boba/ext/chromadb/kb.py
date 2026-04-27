@@ -1,10 +1,4 @@
-"""Адаптер ChromaDB — единственное место в пакете, которое знает про
-chromadb-API. Tools работают только с ChromaKnowledgeBase
-и нашими value-objects/ошибками.
-
-Persistent-клиент Chroma живёт как process-singleton: один путь к БД =
-один SQLite. Несколько клиентов на тот же путь — путь к гонкам.
-"""
+"""Адаптер ChromaDB."""
 
 from __future__ import annotations
 
@@ -19,22 +13,10 @@ logger = logging.getLogger(__name__)
 
 
 class ChromaKnowledgeBase:
-    """Read-only обёртка над PersistentClient.
-
-    Открывает клиента в конструкторе. Все методы:
-
-    * принимают tool_id — чтобы доменные ошибки несли id вызвавшего
-      tool (нужно для ToolExecutionMiddleware и записи в
-      историю);
-    * перехватывают chromadb-исключения и оборачивают в
-      KnowledgeBaseError (или его подкласс) с понятным
-      сообщением.
-    """
+    """Read-only обёртка над PersistentClient."""
 
     def __init__(self, cfg: ChromaExtConfig) -> None:
-        # chromadb импортируем лениво внутри __init__, чтобы импорт
-        # _kb-модуля не падал, если chromadb не установлен (например,
-        # во время статического анализа без runtime-deps).
+        # Ленивый импорт chromadb — чтобы модуль импортировался без runtime-deps.
         import chromadb  # noqa: PLC0415
 
         self._cfg = cfg
@@ -44,10 +26,7 @@ class ChromaKnowledgeBase:
         )
 
     def list_collections(self) -> list[CollectionInfo]:
-        """Все коллекции, что видит клиент. description берётся из
-        metadata["description"] (как договорено с оператором при
-        индексации); пустой если не задан.
-        """
+        """Все коллекции; description берётся из metadata["description"]."""
         result: list[CollectionInfo] = []
         for c in self._client.list_collections():
             metadata = c.metadata or {}
@@ -65,14 +44,7 @@ class ChromaKnowledgeBase:
         query: str,
         top_k: int,
     ) -> list[SearchHit]:
-        """Semantic search по одной коллекции. Возвращает не больше
-        top_k результатов, упорядоченных по distance возрастанию
-        (ChromaDB-default).
-
-        Документы режутся до cfg.snippet_chars — полный текст в
-        первой версии не отдаётся (если понадобится — добавим
-        kb_get).
-        """
+        """Semantic search по одной коллекции; до top_k hits по возрастанию distance."""
         col = self._get_collection(tool_id, collection)
         try:
             raw = col.query(query_texts=[query], n_results=top_k)
@@ -83,8 +55,7 @@ class ChromaKnowledgeBase:
                 f"{type(e).__name__}: {e}",
             ) from e
 
-        # chromadb вернёт списки списков (по одному на каждый query_text).
-        # У нас один query → берём индекс 0; пустой список если нет hits.
+        # chromadb возвращает список списков (по одному на query_text); у нас один query.
         ids = (raw.get("ids") or [[]])[0]
         documents = (raw.get("documents") or [[]])[0]
         metadatas = (raw.get("metadatas") or [[]])[0]
@@ -110,9 +81,7 @@ class ChromaKnowledgeBase:
         try:
             return self._client.get_collection(name=name)
         except Exception as e:
-            # chromadb бросает специфичный InvalidCollectionException;
-            # всё равно превращаем в наш CollectionNotFoundError —
-            # любая «не нашли» = именованной ошибке для агента.
+            # Любая «не нашли» от chromadb → CollectionNotFoundError.
             if "does not exist" in str(e) or "not found" in str(e).lower():
                 raise CollectionNotFoundError(tool_id, name) from e
             raise KnowledgeBaseError(
@@ -135,21 +104,13 @@ def _truncate(text: str, limit: int) -> str:
 
 
 # --- Singleton-фабрика ---------------------------------------------------
-# Один Chroma persistent-клиент на процесс: SQLite не любит несколько
-# открытий одного пути из одного процесса, плюс держим warm cache
-# embedding-функции. Ключ — id(cfg): pyproject.toml каждого extension
-# создаёт ChromaExtConfig один раз в register_tools, так что id стабилен.
+# Один Chroma persistent-клиент на процесс (SQLite + warm embedding-cache).
 
 _KB_CACHE: dict[int, ChromaKnowledgeBase] = {}
 
 
 def get_knowledge_base(cfg: ChromaExtConfig) -> ChromaKnowledgeBase:
-    """Process-singleton ChromaKnowledgeBase под ключом id(cfg).
-
-    register_tools вызывается один раз на старте — cfg будет
-    стабильным dataclass-инстансом, и все Tool-инстансы получат тот же
-    KB.
-    """
+    """Process-singleton ChromaKnowledgeBase под ключом id(cfg)."""
     key = id(cfg)
     kb = _KB_CACHE.get(key)
     if kb is None:

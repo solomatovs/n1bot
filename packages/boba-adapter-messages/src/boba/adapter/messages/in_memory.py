@@ -9,12 +9,7 @@ from boba.domain.llm.models import LLMMessage
 
 
 class InMemoryMessageService(MessageService):
-    """Простейшая реализация — список в памяти.
-
-    Живёт в пределах одного прогона агента. Для persistent-варианта
-    (между процессами) появится отдельный адаптер при миграции
-    соответствующего куска из старого boba.adapters.
-    """
+    """In-memory реализация MessageService."""
 
     def __init__(self) -> None:
         self._messages: list[LLMMessage] = []

@@ -1,10 +1,4 @@
-"""Стенограмма OpenAI Chat Completions: накопленный человеко-читаемый
-markdown-лог запроса и собранного из chunk-ов ответа.
-
-Назначение — отладка контента: видно сразу всё рассуждение, ответ,
-отказ, tool-вызовы и финальные usage/finish_reason одной секцией —
-без пролистывания сотен сырых chunk-ов.
-"""
+"""Markdown-стенограмма OpenAI Chat Completions запроса/ответа."""
 
 from __future__ import annotations
 
@@ -20,23 +14,7 @@ from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 class TranscriptChatCompletionObserver(
     LLMRequestObserver[dict[str, Any], ChatCompletionChunk]
 ):
-    """Пишет читаемый markdown-лог запроса/ответа OpenAI Chat Completions.
-
-    Накапливает потоки ответа по семантическим каналам в переменные,
-    в on_request_end собирает их в один markdown-блок и пишет
-    в файл одной операцией. На каждый on_request state сбрасывается;
-    запросы аккумулируются в одном файле в режиме append.
-
-    Чтения чанка прямолинейные:
-
-    - delta.content → self._answer;
-    - delta.model_extra["reasoning_content"] → self._reasoning;
-    - delta.refusal → self._refusal;
-    - delta.tool_calls[].function.{name,arguments} per-index →
-      self._tool_calls[idx];
-    - choice.finish_reason → self._finish_reason;
-    - chunk.usage → self._usage.
-    """
+    """Пишет markdown-лог запроса/ответа OpenAI Chat Completions."""
 
     _REASONING_KEY = "reasoning_content"
 

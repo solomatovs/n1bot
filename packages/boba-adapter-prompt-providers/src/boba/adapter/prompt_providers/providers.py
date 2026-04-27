@@ -1,14 +1,4 @@
-"""Конкретные реализации PromptProvider (system-prompt).
-
-- Static — фиксированный текст из DI.
-- File — читает блок с диска.
-- Environment — информация о среде.
-- Git — состояние репо.
-- WorkspaceSystem — все файлы директории внутри HistoryWorkspaceShell.
-
-USER-сообщение через PromptFactory не идёт — приходит готовым в query
-от caller'а (frontend/CLI обогащает IDE-selection и шаблонами).
-"""
+"""Реализации PromptProvider (system-prompt)."""
 
 from __future__ import annotations
 
@@ -53,10 +43,7 @@ class StaticPromptProvider(PromptProvider):
 
 
 class FilePromptProvider(PromptProvider):
-    """Читает блок промпта из файла на диске.
-
-    Отсутствующий файл → default_prompt (по умолчанию — пусто).
-    """
+    """Читает блок промпта из файла; отсутствующий файл → default_prompt."""
 
     def __init__(
         self,
@@ -85,11 +72,7 @@ class FilePromptProvider(PromptProvider):
 
 
 class EnvironmentPromptProvider(PromptProvider):
-    """Блок с информацией о среде выполнения.
-
-    Включает платформу, shell, версию ОС и текущую дату — полезно для
-    моделей, у которых нет access к этим данным из обучения.
-    """
+    """Блок с информацией о среде выполнения (платформа, shell, ОС, дата)."""
 
     def __init__(self, priority: int = 60) -> None:
         self._id = PromptId("environment")
@@ -112,12 +95,7 @@ class EnvironmentPromptProvider(PromptProvider):
 
 
 class GitPromptProvider(PromptProvider):
-    """Блок с текущим состоянием git-репозитория.
-
-    Вне репозитория / при отсутствии git — "(unavailable)" в
-    соответствующих полях, но блок всё равно эмитится (решение
-    принято старым кодом, переносим семантику).
-    """
+    """Блок с текущим состоянием git-репозитория."""
 
     _GIT_TIMEOUT_SECONDS = 5
 
@@ -157,9 +135,7 @@ class GitPromptProvider(PromptProvider):
 
 
 class WorkspaceSystemPromptProvider(PromptProvider):
-    """
-    Собирает system-промпт из файлов внутри директории workspace'а.
-    """
+    """Собирает system-промпт из файлов директории workspace'а."""
 
     def __init__(
         self,

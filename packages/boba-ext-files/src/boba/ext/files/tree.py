@@ -36,8 +36,6 @@ class TreeArgs:
 
 
 class TreeArgsConverter(Converter[dict[str, Any], TreeArgs]):
-    """Маппит провалидированный dict в TreeArgs."""
-
     def convert(self, value: dict[str, Any]) -> TreeArgs:
         return TreeArgs(
             path=value.get("path"),

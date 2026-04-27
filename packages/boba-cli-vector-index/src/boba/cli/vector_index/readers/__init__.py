@@ -1,9 +1,4 @@
-"""Реестр reader'ов: file extension → Reader.
-
-Регистрируются здесь — extras-reader'ы (html, confluence)
-импортируются лениво в момент первого вызова, чтобы отсутствие
-optional dependency не ломало базовый импорт пакета.
-"""
+"""Реестр reader'ов: file extension → Reader."""
 
 from __future__ import annotations
 
@@ -17,7 +12,6 @@ from boba.cli.vector_index.readers.txt import TextReader
 __all__ = ["Document", "Reader", "UnsupportedFormatError", "reader_for"]
 
 
-# Базовые reader'ы (всегда доступны, без extras).
 _BUILTIN_READERS: tuple[Reader, ...] = (
     MarkdownReader(),
     TextReader(),
@@ -25,9 +19,7 @@ _BUILTIN_READERS: tuple[Reader, ...] = (
 
 
 class UnsupportedFormatError(Exception):
-    """Расширение файла не покрывается ни одним из зарегистрированных
-    reader'ов (учитывая установленные extras).
-    """
+    """Расширение файла не покрывается ни одним reader'ом."""
 
     def __init__(self, path: str) -> None:
         suffix = Path(path).suffix or "(no suffix)"
@@ -40,10 +32,7 @@ class UnsupportedFormatError(Exception):
 
 
 def reader_for(path: str) -> Reader:
-    """Найти reader для файла по его расширению. Бросает
-    UnsupportedFormatError, если ни один встроенный или
-    extras-reader не подходит.
-    """
+    """Найти reader по расширению; UnsupportedFormatError если нет подходящего."""
     suffix = Path(path).suffix.lower()
     for r in _BUILTIN_READERS:
         if suffix in r.extensions:
@@ -55,20 +44,11 @@ def reader_for(path: str) -> Reader:
 
 
 def _try_extras_reader(suffix: str) -> Reader | None:
-    """Лениво импортирует optional reader'ы. Если соответствующая
-    deps-группа не установлена — возвращает None (caller получит
-    UnsupportedFormatError с подсказкой про extras).
-
-    importlib.import_module вместо обычного import-statement —
-    чтобы статический анализатор не падал на отсутствующих опциональных
-    модулях (readers/html.py будет создан вместе с extras-deps).
-    """
+    """Лениво импортировать optional reader; None если deps не установлены."""
     if suffix in (".html", ".htm"):
         try:
             module = importlib.import_module("boba.cli.vector_index.readers.html")
         except ImportError:
             return None
         return module.HtmlReader()
-    # confluence пока без файлового расширения — будет отдельный
-    # boba-cli-vector-index index-confluence ... подпайплайн позже.
     return None

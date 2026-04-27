@@ -1,7 +1,4 @@
-"""Файловые реализации WorkspaceRegistry (base + concrete).
-
-Shell-классы — рядом в _shell.
-"""
+"""Файловые реализации WorkspaceRegistry."""
 
 from __future__ import annotations
 
@@ -35,16 +32,7 @@ TWs = TypeVar("TWs", bound=FsWorkspaceShell)
 
 
 class FsWorkspaceRegistry(WorkspaceRegistry[TWsId], Generic[TWs, TWsId]):
-    """Обобщённая файловая реализация реестра.
-
-    Параметризуется классом shell'а shell_cls, subdir — именем
-    подкаталога внутри id-директории, и id_factory — генератором
-    нового id для create (например, new
-    для UUID-namespace'а или фиксированный конструктор для строкового).
-    Маркерные реестры (FsProjectWorkspaceRegistry и т.п.) —
-    тонкие подклассы, фиксирующие эти параметры; больше в них логики
-    не должно быть.
-    """
+    """Обобщённая файловая реализация реестра."""
 
     def __init__(
         self,
@@ -130,14 +118,7 @@ class FsPromptWorkspaceRegistry(
     FsWorkspaceRegistry[FsPromptWorkspaceShell, PromptWorkspaceId],
     PromptWorkspaceRegistry,
 ):
-    """Singleton-registry prompt-namespace.
-
-    Корнем shell'а служит сам root (обычно
-    app_config.prompts_dir) — без id и subdir в пути, потому что
-    prompt workspace на всё приложение один. Конструктор принимает
-    только директорию; остальные параметры базового
-    FsWorkspaceRegistry фиксированы.
-    """
+    """Singleton-registry prompt-namespace; корень shell'а — сам root."""
 
     _SINGLETON_ID = PromptWorkspaceId("prompts")
 

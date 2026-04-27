@@ -1,14 +1,4 @@
-"""Граница между Agent и LLM-слоем.
-
-LLMInvokeMiddleware на каждой итерации: (1) собирает LLMRequest через
-TurnSpec из MessageReader; (2) стримит LLM-события и конвертирует их в
-AgentEvent.
-
-Маппинг stateful: LLMRequestSent на агенте = «round-trip отправлен»,
-stream-handle получен → LLMResponseStreamOpened. Для ToolCallArgumentDelta
-конвертер запоминает index → (tool_call_id, tool_name) из предшествующего
-LLMToolCallBegin, чтобы delta-события на агент-уровне были self-sufficient.
-"""
+"""Граница между Agent и LLM-слоем."""
 
 from __future__ import annotations
 
@@ -55,14 +45,7 @@ from boba.domain.llm.models import LLMContext, LLMRequest
 
 
 class _LLMToAgentConverter:
-    """Per-stream stateful конвертер LLM → Agent.
-
-    Состояние: index → (tool_call_id, tool_name) для обогащения
-    ToolCallArgumentDelta именем tool'а (на LLM-уровне у delta
-    есть только index; LLMToolCallBegin несёт id и name).
-    Состояние локально для одного round-trip'а — конвертер создаётся
-    заново на каждый stream().
-    """
+    """Per-stream stateful конвертер LLM → Agent."""
 
     def __init__(self, request: LLMRequest) -> None:
         self._request = request
@@ -137,18 +120,7 @@ class _LLMToAgentConverter:
 
 
 class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Терминал агентской цепочки: build request → invoke LLM.
-
-    Снапшот истории HistoryReducer читает напрямую из
-    MessageReader — все записи предыдущей итерации
-    (assistant, tool_results, feedback) уже зафиксированы через
-    DialogueWriter. Read-only порт по типу: middleware не
-    может писать в историю мимо writer'а.
-
-    LLMError из LLM-слоя оборачивается в
-    LLMGenerationFailedError (terminal + user-feedback) —
-    роутер остановит цикл и эмитит GenerationFailed.
-    """
+    """Терминал агентской цепочки: build request → invoke LLM."""
 
     def __init__(
         self,

@@ -1,16 +1,4 @@
-"""Полиморфная маршрутизация RoutableError по маркерам.
-
-Роутер не знает конкретных подклассов — читает маркеры независимо и
-суммирует эффекты.
-
-TerminalError — специализация UserFeedbackError; «терминальность»
-кодируется типом возвращаемого события (Terminal), роутер yield-ит его
-как обычное user-событие.
-
-AgentLLMFeedbackError — agent-уровневая специализация LLMFeedbackError
-с зафиксированным TFeedback=LLMMessage. Роутер пишет в MessageService
-через DialogueWriter и параллельно эмитит FeedbackToLLMAdded.
-"""
+"""Полиморфная маршрутизация RoutableError по маркерам."""
 
 from __future__ import annotations
 
@@ -28,20 +16,7 @@ from boba.domain.llm.models import RequestId
 
 
 class AgentErrorRouter:
-    """Маршрутизирует RoutableError по маркерам.
-
-    Эффекты собираются независимо:
-
-    1. AgentLLMFeedbackError — `to_llm_feedback()` отдаёт
-       LLMFeedback-union, который match-диспетчер раскрывает
-       в узкие методы DialogueWriter. Параллельно эмитится
-       FeedbackToLLMAdded (снапшот для sink'а / history-
-       реконструкции). LLM увидит feedback на следующей итерации.
-    2. UserFeedbackError — to_user_feedback(request_id)
-       yield-ится в stream. Sink получает событие; если событие —
-       наследник Terminal (как у TerminalError-ошибок),
-       StopOnAnyFailure остановит цикл.
-    """
+    """Маршрутизирует RoutableError по маркерам."""
 
     def __init__(self, writer: DialogueWriter) -> None:
         self._writer = writer
@@ -65,12 +40,7 @@ class AgentErrorRouter:
             yield err.to_user_feedback(rid)
 
     def _dispatch_feedback(self, feedback: LLMFeedback) -> None:
-        """Раскрывает LLMFeedback-union в узкие writer-методы.
-
-        assert_never в default-ветке гарантирует exhaustiveness:
-        при добавлении нового варианта в LLMFeedback pyright
-        потребует обработать его здесь.
-        """
+        """Раскрывает LLMFeedback-union в узкие writer-методы."""
         match feedback:
             case LLMCritique(content=c):
                 self._writer.append_llm_critique(c)
@@ -83,16 +53,7 @@ class AgentErrorRouter:
 
 
 class AgentErrorRouterMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Top-level try/except над всей агентской цепочкой.
-
-    Ставится самым внешним слоем. Любой middleware глубже может
-    raise подкласс RoutableError — этот middleware
-    ловит и делегирует AgentErrorRouter.
-
-    Всё, что не наследует RoutableError (KeyError,
-    TypeError и т.п.), проходит насквозь и крашит процесс — баги
-    не маскируем.
-    """
+    """Top-level try/except над агентской цепочкой; делегирует router."""
 
     def __init__(
         self,

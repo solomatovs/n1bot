@@ -121,41 +121,20 @@ async def _finalize_step(
     *,
     is_error: bool = False,
 ) -> None:
-    """Проставляет финальный output у step через streaming API.
-
-    stream_token(..., is_sequence=True) заменяет содержимое output
-    целиком — эквивалент step.output = content, но через публичный
-    streaming-канал. Прямое присваивание step.output = ...
-    некорректно типизировано в текущей версии chainlit (property +
-    setter + class-level annotation сбивают Pylance).
-    """
+    """Финальный output у step через streaming API (stream_token заменяет содержимое)."""
     if is_error:
         step.is_error = True
     await step.stream_token(content, is_sequence=True)
 
 
 class _EventRenderer:
-    """Рендерит AgentEvent'ы в Chainlit UI поверх семей событий.
-
-    Sink строится вокруг семей: ContentDelta → стримим в нужный слот
-    через slot() / chunk(); ContentSnapshot для streaming-
-    слотов закрывает сообщение, для tool-слотов рендерит результат;
-    PhaseTransition — статус-индикатор; Advisory/Terminal —
-    system-сообщения.
-
-    Concrete-типы используются точечно в двух местах: чтобы знать,
-    какой LLMToolCall сейчас исполняется (ToolExecutionStarted)
-    и для ToolExecutionFailed (нужен call.id для матчинга со
-    Step-ом). Это контролируемое нарушение «sink не знает concrete» —
-    chainlit делает rich-UI, ему нужны структурированные поля.
-    """
+    """Рендерит AgentEvent'ы в Chainlit UI поверх семей событий."""
 
     def __init__(self) -> None:
         self.answer_msg: cl.Message | None = None
         self.thinking_step: cl.Step | None = None
         self.status_msg: cl.Message | None = None
-        # tool_call_id → Step. index для нас не интересен —
-        # все события несут tool_call_id уже на уровне семей.
+        # tool_call_id → Step.
         self.tool_steps_by_id: dict[str, cl.Step] = {}
 
     async def handle(self, event: AgentEvent) -> None:
@@ -217,9 +196,7 @@ class _EventRenderer:
         slot = e.slot()
         match slot:
             case SlotKind.ANSWER | SlotKind.REFUSAL:
-                # Токены уже отрисованы потоково; перезапись content'а
-                # вызвала бы полную перерисовку (мигание). Просто
-                # закрываем активный message.
+                # Токены уже отрисованы потоково — просто закрываем сообщение.
                 self.answer_msg = None
             case SlotKind.THINKING:
                 self.thinking_step = None
@@ -228,12 +205,10 @@ class _EventRenderer:
                 if step is not None:
                     await _finalize_step(step, e.body())
             case SlotKind.TOOL_CALL:
-                # Step уже создан в ToolCallStreamStarted; args стримятся
-                # через ContentDelta. Здесь — нечего делать (всё уже в UI).
+                # Step создан в ToolCallStreamStarted, args стримятся через ContentDelta.
                 pass
             case SlotKind.USER_QUERY:
-                # Пользовательский ввод уже виден в чате — chainlit его сам
-                # отрисовал из cl.Message; повторное отображение не нужно.
+                # chainlit уже отрисовал ввод из cl.Message.
                 pass
             case SlotKind.FEEDBACK:
                 await cl.Message(
@@ -242,12 +217,7 @@ class _EventRenderer:
                 ).send()
 
     async def _on_phase(self, e: PhaseTransition) -> None:
-        # Большинство phase-событий — внутренний пульс агента, в UI их
-        # не показываем. Здесь — только те, у которых есть рендер-
-        # эффект; диспатч строго по классу, не по label() (label —
-        # human-readable текст для логов и status-bar, не discriminator).
-        # Не покрытые здесь GenerationRetried / LLMResponseStreamOpened /
-        # IterationStarted (первая итерация) — наблюдаемого эффекта нет.
+        # Диспатч по классу — рендерим только phase'ы с UI-эффектом.
         match e:
             case ToolCallStreamStarted():
                 await self._on_tool_call_stream_started(e)
@@ -260,8 +230,7 @@ class _EventRenderer:
                     f"(сообщений в контексте: {e.messages_count})",
                 )
             case IterationStarted() if e.iteration > 1:
-                # Первую итерацию не маркируем — пользователь только что
-                # отправил запрос. Дальнейшие — статус-строка.
+                # Первую итерацию не маркируем — пользователь только что отправил запрос.
                 await self._set_status(
                     f"Итерация: {e.iteration}/{e.max_iterations}…",
                 )
@@ -283,15 +252,14 @@ class _EventRenderer:
         self.tool_steps_by_id[e.tool_call_id] = step
 
     async def _on_tool_exec_started(self, e: ToolExecutionStarted) -> None:
-        # Без смены индикации медленные tools выглядят как зависший шаг.
+        # Меняем индикацию — иначе медленные tools выглядят как зависший шаг.
         step = self.tool_steps_by_id.get(e.call.id)
         if step is not None:
             await _finalize_step(step, "⏳ выполняется…")
 
     async def _on_advisory(self, e: Advisory) -> None:
         await self._clear_status()
-        # ToolExecutionFailed — особый случай: финализируем соответствующий
-        # tool-Step, чтобы пользователь увидел ошибку рядом с вызовом.
+        # ToolExecutionFailed — финализируем tool-Step, чтобы ошибка была рядом с вызовом.
         if isinstance(e, ToolExecutionFailed):
             step = self.tool_steps_by_id.pop(e.call.id, None)
             if step is not None:

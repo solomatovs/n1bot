@@ -1,17 +1,4 @@
-"""Конфиг boba-cli-agent-run как ConfigSection.
-
-Единая секция per-CLI: описывает один запуск (model + sampling-params).
-query — это вход, не конфиг; передаётся отдельно как позиционный
-argparse-аргумент.
-
-DTO имена == TOML/env-имена: [agent_run] model ↔
-BOBA_AGENT_RUN_MODEL ↔ AgentRunConfig.model. Никаких
-operator-side маппингов.
-
-CLI-флаги (--model, --temperature, ...) прокидываются в
-ChainedConfigResolver через CliArgsSource как
-highest-priority overlay — env/TOML работают как fallback'и/дефолты.
-"""
+"""Конфиг boba-cli-agent-run как ConfigSection."""
 
 from __future__ import annotations
 
@@ -40,19 +27,7 @@ __all__ = ["AgentRunConfig", "AgentRunSection"]
 
 @dataclass(frozen=True)
 class AgentRunConfig:
-    """Параметры одного запуска boba-cli-agent-run.
-
-    query — пользовательский запрос, тоже идёт через ConfigSource-цепочку
-    (как и весь конфиг). Обязательно, нет дефолта — оператор передаёт
-    его флагом ``--agent-run-query "..."`` (CLI), env'ом
-    ``BOBA_AGENT_RUN_QUERY`` или ``[agent_run] query`` в TOML.
-
-    model — обязательно, нет смыслового дефолта (выбор модели — это
-    выбор поведения).
-
-    Sampling-параметры опциональны: None означает «провайдеру
-    ничего не передаём, поведение модели — её собственный дефолт».
-    """
+    """Параметры одного запуска boba-cli-agent-run."""
 
     query: str
     model: str
@@ -65,10 +40,7 @@ class AgentRunConfig:
     presence_penalty: float | None
 
     def to_sampling_params(self) -> SamplingParams | None:
-        """Сборка SamplingParams из опциональных полей. None —
-        если ни одно из sampling-полей не задано (агенту параметры
-        вообще не передаются).
-        """
+        """SamplingParams из опциональных полей; None если все None."""
         fields = {
             "temperature": self.temperature,
             "top_p": self.top_p,
@@ -84,10 +56,7 @@ class AgentRunConfig:
 
 
 class AgentRunSection(ConfigSection[AgentRunConfig]):
-    """Секция agent_run. Регистрируется в ConfigFactory напрямую
-    в boba.cli.agent_run.cli (own-section CLI-приложения, не
-    third-party extension; entry-point не нужен).
-    """
+    """Секция agent_run."""
 
     id: ClassVar[StrId] = StrId("agent_run")
     namespace: ClassVar[tuple[str, ...]] = ("agent_run",)

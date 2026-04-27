@@ -1,9 +1,4 @@
-"""Tool framework: схема параметров, конвертеры, базовый Tool, реестр.
-
-Публичный API пакета — все его символы реэкспортируются здесь и доступны
-как from boba.domain.core.tools import X. Внутренняя структура файлов
-— деталь реализации.
-"""
+"""Tool framework: схема параметров, конвертеры, базовый Tool, реестр."""
 
 from boba.domain.core.declaration import FieldSpec, ObjectSchema, validate_object
 from boba.domain.core.schema import (

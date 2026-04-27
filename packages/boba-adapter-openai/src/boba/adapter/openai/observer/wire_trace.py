@@ -1,10 +1,4 @@
-"""Wire-trace дамп OpenAI Chat Completions: kwargs запроса и каждый
-chunk ответа в виде JSON-секций markdown-файла.
-
-Назначение — отладка SDK/прокси и сбор датасетов: видно ровно то, что
-ушло провайдеру и что приходит обратно по проводу, до любой доменной
-конверсии.
-"""
+"""Wire-trace дамп OpenAI Chat Completions в markdown-файл."""
 
 from __future__ import annotations
 
@@ -19,14 +13,7 @@ from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 class WireTraceChatCompletionObserver(
     LLMRequestObserver[dict[str, Any], ChatCompletionChunk]
 ):
-    """Пишет сырые kwargs запроса и каждый chunk ответа в markdown-файл
-    внутри workspace.
-
-    Каждый вызов — отдельная секция с заголовком (## Request /
-    ## Response chunk) и блоком json. Файл открывается на каждый
-    вызов в режиме append — состояние на уровне файловой системы,
-    между перезапусками агента накопление продолжается.
-    """
+    """Пишет сырые kwargs запроса и chunk-и ответа в markdown-файл."""
 
     def __init__(
         self,

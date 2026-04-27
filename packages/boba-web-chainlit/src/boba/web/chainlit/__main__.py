@@ -1,17 +1,4 @@
-"""Bootstrap chainlit-приложения.
-
-Единственное место в пакете, где собирается ConfigBundle. ChatSession
-получает готовый bundle через set_bundle() — без повторного похода в env/TOML.
-
-Шаги: ConfigBundle (CLI argparse строится из FieldSpec'ев на bind_schema,
-env/TOML читают свои каналы сами) → bridge_chainlit_env (server-поля в
-CHAINLIT_* env, app_root) → UIOverrideTomlConverter (UI-поля в
-app_root/.chainlit/config.toml) → run_chainlit(app.py).
-
-Имена CLI-флагов вычисляются из ConfigKey'ев секции (см. cli_flag_name);
-``--help`` автогенерируется через CliSource по всем зарегистрированным
-секциям, опечатки во флагах валятся argparse-ошибкой на bind_schema.
-"""
+"""Bootstrap chainlit-приложения."""
 
 from __future__ import annotations
 
@@ -42,17 +29,7 @@ from boba.web.chainlit.ui_overrides import UIOverrideTomlConverter
 
 
 def build_factory() -> ConfigFactory:
-    """Готовая ConfigFactory с зарегистрированными секциями и
-    подключёнными источниками. Bundle собирается через
-    ``factory.build()`` (идемпотентно, кеширует).
-
-    Цепочка источников: CLI > env-file > env > toml-file > toml.
-    Регистрирует встроенные секции (app_core/agent), adapter-секции
-    (FS-workspace, OpenAI, prompt-providers, chainlit) и поднимает
-    extension-секции через entry-point group boba.config_sections.
-    argparse-парсер строит CliSource из FieldSpec'ов всех зарегистри-
-    рованных секций на стадии ``factory.build()``.
-    """
+    """ConfigFactory с зарегистрированными секциями и источниками (CLI > env > TOML)."""
     factory = ConfigFactory()
     factory.register(AppCoreSection())
     factory.register(AgentSection())
@@ -74,9 +51,7 @@ def build_factory() -> ConfigFactory:
 
 
 def build_bundle() -> ConfigBundle:
-    """Тонкая обёртка над build_factory + factory.build(). Не ловит
-    ConverterInputError — caller'ы (main / тесты) сами решают, что с
-    ним делать."""
+    """Тонкая обёртка над build_factory + factory.build()."""
     return build_factory().build()
 
 
@@ -86,10 +61,7 @@ def build_bundle() -> ConfigBundle:
 
 
 def bridge_chainlit_env(cfg: ChainlitConfig) -> Path:
-    """Прокидывает поля ChainlitConfig в CHAINLIT_* env, что
-    chainlit-библиотека читает при импорте. Возвращает абсолютный
-    app_root — он же используется для записи UI-overrides.
-    """
+    """Прокидывает ChainlitConfig в CHAINLIT_* env; возвращает абсолютный app_root."""
     os.environ.setdefault("CHAINLIT_HOST", cfg.host)
     os.environ.setdefault("CHAINLIT_PORT", cfg.port)
     if cfg.root_path:
@@ -104,12 +76,7 @@ def bridge_chainlit_env(cfg: ChainlitConfig) -> Path:
 
 
 def write_ui_config_overrides(cfg: ChainlitConfig, app_root: Path) -> None:
-    """Рендерит app_root/.chainlit/config.toml из UI-полей конфига.
-
-    Chainlit смотрит TOML только при старте сервера, поэтому делается
-    до импорта chainlit. Пустая строка от конвертера → файл не пишется
-    (chainlit использует свои дефолты).
-    """
+    """Рендерит app_root/.chainlit/config.toml из UI-полей конфига."""
     content = UIOverrideTomlConverter().convert(cfg)
     if not content:
         return
@@ -134,11 +101,10 @@ def main() -> int:
     app_root = bridge_chainlit_env(chainlit_cfg)
     write_ui_config_overrides(chainlit_cfg, app_root)
 
-    # ChatSession будет создан лениво из bundle при первом cl.on_chat_start;
-    # сюда передаём bundle через app-level фабрику.
+    # ChatSession создаётся лениво при первом cl.on_chat_start.
     ChatSession.set_bundle(bundle)
 
-    # Импорт chainlit — только после bootstrap: модуль читает env при загрузке.
+    # chainlit импортируется только после bootstrap — он читает env при загрузке.
     from chainlit.cli import run_chainlit  # noqa: PLC0415
 
     app_path = Path(__file__).with_name("app.py")

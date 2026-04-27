@@ -22,20 +22,14 @@ from __future__ import annotations
 
 
 class LLMError(Exception):
-    """
-    Базовая ошибка обращения к LLM
-    """
+    """Базовая ошибка обращения к LLM."""
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
 
 
 class RetryableLLMError(LLMError):
-    """
-    Маркер «имеет смысл повторить»: сеть, таймаут, rate-limit, 5xx
-    Если подключен Middleware который обрабатывает эту ошибку
-    То он по своей доступной логике может повторить http request в openai api
-    """
+    """Маркер «имеет смысл повторить»: сеть, таймаут, rate-limit, 5xx."""
 
 
 class PermanentLLMError(LLMError):
@@ -67,14 +61,7 @@ class LLMProviderInternalError(RetryableLLMError):
 
 
 class LLMUnknownError(PermanentLLMError):
-    """
-    Нераспознанное исключение провайдера
-
-    Возвращается fallback-веткой OpenAIErrorConverter, когда
-    ни одна из известных спецификаций не сматчилась. Консервативно
-    помечаем как retryable — повторная попытка безопасна, а реальная
-    классификация должна быть добавлена в правила конвертера.
-    """
+    """Нераспознанное исключение провайдера."""
 
 
 class LLMAuthError(PermanentLLMError):
@@ -102,42 +89,29 @@ class LLMContextLengthError(PermanentLLMError):
 
 
 class LLMProtocolError(PermanentLLMError):
-    """
-    Провайдер вернул ответ вне ожидаемой схемы
-    """
+    """Провайдер вернул ответ вне ожидаемой схемы."""
 
 
 class LLMRequestValidationError(PermanentLLMError):
-    """
-    Клиентская валидация LLM-запроса упала
-
-    Запрос не отправляется провайдеру — проверка запускается в
-    finalize. HTTP-статуса у такой ошибки нет.
-    """
+    """Клиентская валидация LLM-запроса упала; HTTP-статуса нет."""
 
 
 class LLMRequestModelNoneError(LLMRequestValidationError):
-    """
-    LLM-запрос собран без model
-    """
+    """LLM-запрос собран без model."""
 
     def __init__(self) -> None:
         super().__init__("LLMRequest.model is None")
 
 
 class LLMRequestEmptyMessagesError(LLMRequestValidationError):
-    """
-    LLM-запрос собран с пустым списком сообщений
-    """
+    """LLM-запрос собран с пустым списком сообщений."""
 
     def __init__(self) -> None:
         super().__init__("LLMRequest.messages is empty")
 
 
 class LLMRequestSystemMessageNoneError(LLMRequestValidationError):
-    """
-    LLM-запрос собран без system_message
-    """
+    """LLM-запрос собран без system_message."""
 
     def __init__(self) -> None:
         super().__init__("LLMRequest.system_message is None")

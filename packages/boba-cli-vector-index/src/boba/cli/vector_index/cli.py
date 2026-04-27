@@ -1,22 +1,4 @@
-"""Entry-point boba-cli-vector-index.
-
-Конфиг полностью идёт через ConfigSource-цепочку, собранную фабрикой
-после регистрации секций. argparse-парсер строит CliSource на этапе
-``factory.build()`` — отсюда автогенерация ``--help`` и typo-detection
-для опечаток в флагах. Ошибки конфига (включая «значение не задано»
-для Required-полей) форматируются ``factory.format_config_error`` —
-рецепт «как задать» собирается из describe() всех источников.
-
-Доступные actions (значения поля ``vector_index.action``):
-
-* ``index``  — почанковать и upsert файлы в коллекцию (paths +
-  collection обязательны).
-* ``list``   — показать существующие коллекции с количеством чанков.
-* ``delete`` — удалить коллекцию целиком (collection обязателен;
-  ``confirm_skip=true`` пропускает интерактивное подтверждение).
-
-Точка входа: main. Также доступно как python -m boba.cli.vector_index.
-"""
+"""Entry-point boba-cli-vector-index. Actions: index/list/delete."""
 
 from __future__ import annotations
 
@@ -69,9 +51,6 @@ def main() -> int:
         handler = _HANDLERS[run_cfg.action]
         return handler(persist_path, run_cfg)
     except ConverterInputError as e:
-        # Покрывает и ошибки сборки бандла (Required в схеме, OneOf и
-        # т.п.), и per-action FieldMissingError из _require — обе ветки
-        # форматируются одной и той же recipe-машинерией фабрики.
         print(f"error: {factory.format_config_error(e)}", file=sys.stderr)
         return 2
 
@@ -103,11 +82,7 @@ def _require(
     field_name: str,
     action: str,
 ) -> None:
-    """Per-action обязательность: бросает FieldMissingError, который
-    main() форматирует через ``factory.format_config_error`` — recipe
-    «как задать» собирает фреймворк из describe() источников, никакого
-    ручного перечисления CLI/env/TOML тут нет.
-    """
+    """Per-action обязательность; бросает FieldMissingError."""
     if value not in (None, "", []):
         return
     spec = next(f for f in section.schema.fields if f.name == field_name)

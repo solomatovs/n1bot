@@ -46,13 +46,7 @@ class KbSearchArgsConverter(Converter[dict[str, Any], KbSearchArgs]):
 
 
 class KbSearchTool(Tool[KbSearchArgs]):
-    """Возвращает JSON-массив [{id, distance, metadata, snippet}] —
-    top-k ближайших по semantic similarity.
-
-    snippet урезан до ChromaExtConfig.snippet_chars символов;
-    полный текст не отдаётся (минимизирует контекст). Если потребуется
-    полный текст — добавим kb_get.
-    """
+    """Возвращает JSON [{id, distance, metadata, snippet}] top-k hits."""
 
     _ID = ToolId("kb_search")
     _SOURCE = ToolSourceId("ext.chromadb")

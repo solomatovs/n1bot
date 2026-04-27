@@ -7,23 +7,7 @@ from openai.types.chat.chat_completion_chunk import ChoiceDelta
 
 
 class MultiKeyReasoningExtractor(Converter[ChoiceDelta, str | None]):
-    """Извлекает reasoning-токен из delta.model_extra, перебирая
-    известные ключи по порядку.
-
-    Разные провайдеры кладут «рассуждения» модели в разные поля:
-
-    - reasoning_content — DeepSeek, xAI Grok, часть OpenAI-compat прокси;
-    - thinking — Anthropic через openai-compat, некоторые LiteLLM-маршруты;
-    - reasoning — Ollama native, Groq.
-
-    Дефолтный набор покрывает всех. Можно сузить/переопределить список,
-    передав свой кортеж в конструктор.
-
-    Провайдер-специфичный экстрактор — это просто другой
-    Converter[ChoiceDelta, str | None] в отдельном модуле,
-    подключается через DI параметром ThinkingSource /
-    MetricsChatCompletionObserver.
-    """
+    """Извлекает reasoning-токен из delta.model_extra по списку ключей."""
 
     DEFAULT_KEYS: tuple[str, ...] = (
         "reasoning_content",

@@ -1,11 +1,4 @@
-"""Реестр и диспетчер вызовов tool'ов.
-
-ToolStore и ToolCatalog — мутабельный/иммутабельный
-лукапы по ToolId. ToolSource — стадия наполнения
-store'а одного источника. ToolFactory — FoldFactory,
-собирающий каталог из всех источников. ToolsService —
-исполнитель ToolCall → ToolResult поверх каталога.
-"""
+"""Реестр и диспетчер вызовов tool'ов."""
 
 from __future__ import annotations
 
@@ -76,11 +69,7 @@ class ToolSource(
 
 
 class StaticToolSource(ToolSource):
-    """Фиксированный набор Tool, зашитый в код.
-
-    Подходит для builtin-инструментов: создаёшь список Tool-ов, оборачиваешь
-    в этот источник и регистрируешь в ToolFactory.
-    """
+    """Фиксированный набор Tool, зашитый в код."""
 
     def __init__(
         self,
@@ -117,19 +106,7 @@ class ToolFactory(
 
 
 class ToolsService(Executor[ToolContext, ToolCall, ToolResult]):
-    """Диспетчер tool-вызовов над ToolCatalog.
-
-    Маршрутизация встроена по call.tool_id: ищет Tool в
-    ToolCatalog и вызывает tool.execute(ctx, args). ctx —
-    per-request ToolContext, строится middleware'ом
-    (ToolExecutionMiddleware)
-    из per-session project_workspace.
-
-    Ошибка ToolExecutionError:
-    - неизвестный tool;
-    - ошибка парсинга/валидации аргументов;
-    - произвольное исключение тула.
-    """
+    """Диспетчер tool-вызовов над ToolCatalog; ошибки → ToolExecutionError."""
 
     def __init__(
         self,

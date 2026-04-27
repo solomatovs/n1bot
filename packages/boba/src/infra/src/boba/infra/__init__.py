@@ -1,10 +1,4 @@
-"""Инфраструктурный слой: framework конфигурации, DI-сборка agent-source,
-tool-plugin loader, настройка логирования.
-
-Adapter-зависимый wiring живёт в boba-adapter-*; конкретные ConfigSource —
-в boba-config-*. Bootstrap приложения сам собирает цепочку источников
-и регистрирует секции в ConfigFactory.
-"""
+"""Инфраструктурный слой: конфигурация, DI agent-source, tool-plugin loader, логирование."""
 
 from boba.infra.config import (
     CONFIG_SECTIONS_ENTRY_POINT,

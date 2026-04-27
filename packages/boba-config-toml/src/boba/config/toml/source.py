@@ -38,10 +38,7 @@ def toml_path(key: ConfigKey) -> tuple[tuple[str, ...], str]:
 
 @dataclass(frozen=True)
 class _TomlLeaf:
-    """Адрес одного листа в TOML-дереве:
-    путь до содержащей таблицы + имя ключа листа.
-    ``[a.b] leaf`` ↔``_TomlLeaf(section_path=('a','b'), leaf='leaf')``.
-    """
+    """Адрес одного листа в TOML-дереве: section_path + leaf."""
 
     section_path: tuple[str, ...]
     leaf: str
@@ -56,13 +53,7 @@ class _TomlLeaf:
 
 
 class _TomlSourceBase(ConfigSource):
-    """Общий каркас TOML-источников.
-
-    Загружает файл (по path-аргументу или env CONFIG_PATH_ENV), хранит
-    strict + extra_known, обходит leaf'ы, рапортует typo'ы. Наследники
-    — TomlSource (``[a.b] leaf``) и TomlFileSource (``[a.b]
-    leaf_file``) — реализуют только bind_schema/resolve/describe.
-    """
+    """Общий каркас TOML-источников; загружает файл по path или env CONFIG_PATH_ENV."""
 
     def __init__(
         self,
@@ -71,7 +62,6 @@ class _TomlSourceBase(ConfigSource):
         strict: bool = False,
         extra_known: Iterable[str] = (),
     ) -> None:
-        """Загрузить TOML по path/CONFIG_PATH_ENV; запомнить strict + extra_known."""
         self._data = load_toml(self._resolve_path(path))
         self._strict = strict
         self._extra_known = frozenset(extra_known)
@@ -107,7 +97,6 @@ class _TomlSourceBase(ConfigSource):
         path: tuple[str, ...] = (),
     ) -> Iterator[_TomlLeaf]:
         """Рекурсивный обход: yield _TomlLeaf для каждого не-Mapping значения."""
-        # Списки/array-of-tables — leaf'ы (схема не адресует внутрь list-элементов).
         for key, value in data.items():
             if isinstance(value, Mapping):
                 yield from cls._walk_leaves(value, (*path, key))
@@ -131,12 +120,7 @@ class _TomlSourceBase(ConfigSource):
 
 
 class TomlSource(_TomlSourceBase):
-    """Значение из TOML-файла; путь — параметр или env CONFIG_PATH_ENV.
-
-    bind_schema проверяет обычные TOML-leaf'ы на соответствие схеме
-    (leaf'ы с суффиксом ``_file`` пропускаются — это TomlFileSource).
-    См. :class:`_TomlSourceBase` про strict + extra_known.
-    """
+    """Значение из TOML-файла; путь — параметр или env CONFIG_PATH_ENV."""
 
     def bind_schema(
         self,
@@ -171,12 +155,7 @@ class TomlSource(_TomlSourceBase):
 
 
 class TomlFileSource(_TomlSourceBase):
-    """Значение из файла под ``[section] {leaf}_file`` (Docker-style).
-
-    bind_schema проверяет ``*_file``-leaf'ы на соответствие схеме
-    (после strip ``_file``). См. :class:`_TomlSourceBase` про
-    strict + extra_known.
-    """
+    """Значение из файла под [section] {leaf}_file (Docker-style)."""
 
     def bind_schema(
         self,

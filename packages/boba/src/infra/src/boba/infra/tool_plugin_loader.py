@@ -1,19 +1,4 @@
-"""Entry-points loader для tool-плагинов.
-
-Tools — pip-installable пакеты с entry-point в группе boba.tools::
-
-    [project.entry-points."boba.tools"]
-    chromadb = "boba.ext.chromadb:register_tools"
-
-register_tools(ctx: ExtensionContext) -> Iterable[ToolSource] регистрирует
-один или несколько ToolSource. Discovery в конструкторе ToolPluginLoader,
-результат кэшируется.
-
-Trust-модель: расширения — доверенный код (внутренний PyPI / git).
-ExtensionContext не содержит credentials и файлового workspace; конфиг
-расширения объявляется ConfigSection через entry-point group
-boba.config_sections и достаётся через ctx.config.section(MyExtSection).
-"""
+"""Entry-points loader для tool-плагинов (группа boba.tools)."""
 
 from __future__ import annotations
 
@@ -35,9 +20,7 @@ RegisterToolsFn = Callable[["ExtensionContext"], Iterable[ToolSource]]
 
 
 class ToolPluginError(Exception):
-    """Базовая ошибка tool-plugin инфры. Несёт entry_point_name —
-    имя entry-point, на котором произошёл сбой.
-    """
+    """Базовая ошибка tool-plugin инфры; несёт entry_point_name."""
 
     def __init__(self, entry_point_name: str, message: str) -> None:
         super().__init__(f"tool plugin {entry_point_name!r}: {message}")
@@ -45,47 +28,22 @@ class ToolPluginError(Exception):
 
 
 class ToolPluginLoadError(ToolPluginError):
-    """Ошибка загрузки entry-point: ep.load() упал или вернул
-    не callable.
-    """
+    """Ошибка загрузки entry-point: ep.load() упал или вернул не callable."""
 
 
 class ToolPluginRegisterError(ToolPluginError):
-    """Ошибка инстанцирования: register_tools(ctx) бросил исключение
-    или вернул что-то некорректное.
-    """
+    """Ошибка инстанцирования: register_tools(ctx) бросил или вернул некорректное."""
 
 
 @dataclass(frozen=True)
 class ExtensionContext:
-    """Контракт окружения для register_tools(ctx).
-
-    config — application-singleton ConfigBundle, строится один раз на
-    старте, передаётся в register-вызовы каждого плагина и дальше не
-    меняется. Per-request зависимости (project_workspace пользователя)
-    сюда не входят — tool-инстансы получают рабочий workspace через
-    ToolContext в execute.
-
-    Доступ к конфигу — типизированно через ``ctx.config.section(cls)``:
-    плагин достаёт DTO своей собственной ConfigSection (например,
-    ``ctx.config.section(ChromadbSection)``) или любой другой
-    зарегистрированной adapter-секции (``LLMTransportSection``,
-    ``WorkspacesSection`` и т.д.) — ConfigBundle generic, никаких
-    application-специфичных shortcuts.
-    """
+    """Контракт окружения для register_tools(ctx)."""
 
     config: ConfigBundle
 
 
 class ToolPluginLoader:
-    """Discovery tool-плагинов через Python entry-points группы
-    boba.tools и сборка ToolsService один раз на старте
-    процесса.
-
-    Discovery + register-вызовы происходят в конструкторе; результат
-    кэшируется. tools_service — просто отдаёт закэшированный
-    инстанс.
-    """
+    """Discovery tool-плагинов через entry-points boba.tools и сборка ToolsService."""
 
     def __init__(self, ctx: ExtensionContext) -> None:
         self._ctx = ctx
@@ -94,9 +52,7 @@ class ToolPluginLoader:
         self._tools_service = self._build_tools_service()
 
     def tools_service(self) -> ToolsService:
-        """Закэшированный ToolsService со всеми register_tools
-        зарегистрированных entry-point'ов.
-        """
+        """Закэшированный ToolsService со всеми зарегистрированными entry-point'ами."""
         return self._tools_service
 
     def _build_tools_service(self) -> ToolsService:
@@ -126,17 +82,11 @@ class ToolPluginLoader:
                 ep.name,
                 f"entry-point target is not callable: {type(obj).__name__}",
             )
-        # ep.load() returns object; статически сузить до
-        # RegisterToolsFn нельзя, runtime-проверка callable выше.
         register = cast("RegisterToolsFn", obj)
         try:
             for source in register(self._ctx):
                 self._tool_sources.append(source)
         except ConfigError:
-            # Реальная проблема конфига приложения (например, секция
-            # extension'а не зарегистрирована) — не plugin-баг. Пропускаем
-            # наружу, чтобы не глушить как «skipped plugin», а валить
-            # старт с понятной ошибкой про настоящую причину.
             raise
         except Exception as e:
             raise ToolPluginRegisterError(

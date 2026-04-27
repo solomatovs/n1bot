@@ -1,6 +1,4 @@
-"""
-Терминал LLM-слоя — обращение к OpenAI-совместимому API.
-"""
+"""Терминал LLM-слоя — обращение к OpenAI-совместимому API."""
 
 from __future__ import annotations
 
@@ -30,9 +28,7 @@ from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 
 def build_openai_client(config: LLMConfig) -> OpenAI:
-    """
-    Строит OpenAI из конфига
-    """
+    """Строит OpenAI-клиент из конфига."""
     return OpenAI(base_url=config.base_url, api_key=config.api_key)
 
 
@@ -41,13 +37,7 @@ def _observe_request(
     observer: LLMRequestObserver[dict[str, Any], ChatCompletionChunk],
     kwargs: dict[str, Any],
 ) -> Iterator[None]:
-    """Оборачивает тело request-стрима парой on_request / on_request_end.
-
-    Классифицирует исход по типу исключения (или его отсутствию) и
-    гарантирует единичный вызов on_request_end в любом случае —
-    нормальное завершение, GeneratorExit от consumer-а,
-    произвольное исключение из тела.
-    """
+    """Оборачивает тело стрима парой on_request / on_request_end."""
 
     observer.on_request(kwargs)
     try:
@@ -63,25 +53,7 @@ def _observe_request(
 
 
 class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
-    """
-    Terminal LLM-слоя, вызывающий OpenAI-совместимый API.
-
-    FromOpenAIChunkConverter держит внутри счетчики состояния.
-
-    observer — наблюдатель сырых запросов/ответов. Вызывается
-    до любой доменной конверсии: on_request(kwargs) перед HTTP-
-    вызовом, on_response_chunk(chunk) на каждый входящий chunk,
-    on_request_end(outcome, exception_name) при завершении стрима
-    (RequestOutcome OK/CANCELLED/RAISED; имя
-    класса исключения — только для RAISED).
-
-    preprocessor — pre-pipeline трансформер Choice → Choice,
-    выполняемый ДО fan-out в LLM-события. Обычно
-    StreamTransformerChain из
-    нескольких нормализаторов (reindexer коллизий index и т.п.).
-    Перед каждым stream вызывается preprocessor.reset() —
-    stateful-стадии получают чистое состояние per-request.
-    """
+    """Terminal LLM-слоя, вызывающий OpenAI-совместимый API."""
 
     def __init__(
         self,
@@ -97,12 +69,10 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
         return "OpenAITerminal"
 
     def stream(self, ctx: LLMContext) -> Iterable[LLMEvent]:
-        # превращаем LLMRequest в аргументы вызова openai api
-        # аргументов очень много и самый простой способ это собрать kwargs
         kwargs = self._to_request.convert(ctx.request)
 
         with _observe_request(self._observer, kwargs):
-            # парные события вокруг HTTP-вызова: Started/Sent
+            # Парные события вокруг HTTP-вызова: Started/Sent.
             yield LLMRequestStarted(
                 request_id=ctx.request_id,
                 model=ctx.request.model,
@@ -111,9 +81,7 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
                 monotonic_ns=time.monotonic_ns(),
             )
 
-            # ошибка обработки запроса здесь классифицируется!
-            # Terminal error - это всякие 401, 500, 502, которые нельзя повторить
-            # Retryible error - это всякие лимиты по контексту
+            # Классификация ошибок: Terminal (401/5xx) vs Retryable (лимиты).
             try:
                 response = self._client.chat.completions.create(**kwargs)
             except LLMError:

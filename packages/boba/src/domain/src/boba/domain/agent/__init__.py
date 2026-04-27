@@ -1,13 +1,4 @@
-"""Публичный API агент-слоя.
-
-Реэкспортирует ошибки, события, сообщения, модели, prompt-примитивы и
-middleware-цепочку (см. middleware).
-
-Короткие импорты::
-
-    from boba.domain.agent import Agent, AgentConfig, AgentContext
-    from boba.domain.agent import AgentEvent, AnswerComplete, ToolResultReady
-"""
+"""Публичный API агент-слоя."""
 
 from boba.domain.agent.dialogue_writer import DialogueWriter
 from boba.domain.agent.errors import (

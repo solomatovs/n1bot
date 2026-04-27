@@ -1,12 +1,4 @@
-"""Адаптер ChromaDB для CLI: write-операции (upsert, delete) и
-служебные (list, get-or-create, delete-by-source).
-
-Read-tools для агента живут в отдельном пакете boba-ext-chromadb
-и работают только на чтение. CLI намеренно не зависит на тот пакет —
-оператор может запустить CLI на машине, где extension не установлен.
-Backend client (chromadb.PersistentClient) общий, поэтому БД
-видят оба процесса.
-"""
+"""Адаптер ChromaDB для CLI: write-операции (upsert/delete) и служебные."""
 
 from __future__ import annotations
 
@@ -25,13 +17,10 @@ class CollectionSummary:
 
 
 class VectorStore:
-    """Тонкая обёртка над PersistentClient для
-    операций индексирования.
-    """
+    """Тонкая обёртка над PersistentClient для операций индексирования."""
 
     def __init__(self, persist_path: str) -> None:
-        # chromadb импортируем лениво, чтобы импорт пакета без deps
-        # (например для поиска CLI-команд через --help) не падал.
+        # ленивый импорт chromadb — не падать при импорте пакета без deps
         import chromadb  # noqa: PLC0415
 
         self._client = chromadb.PersistentClient(path=persist_path)
@@ -45,7 +34,6 @@ class VectorStore:
             try:
                 count = c.count()
             except Exception as e:
-                # битая коллекция не должна валить весь list
                 logger.warning("count() failed for %r: %s", c.name, e)
                 count = -1
             out.append(
@@ -62,13 +50,7 @@ class VectorStore:
         name: str,
         description: str | None,
     ):
-        """Возвращает существующую коллекцию или создаёт новую.
-
-        description записывается в metadata["description"]
-        **только при создании**. Для существующей коллекции описание
-        не перезаписывается, чтобы операторские правки не потерялись
-        при `index --description ...` повторно.
-        """
+        """Найти или создать коллекцию; description пишется только при создании."""
         existing = {c.name: c for c in self._client.list_collections()}
         if name in existing:
             return self._client.get_collection(name=name)
@@ -84,13 +66,7 @@ class VectorStore:
         self._client.delete_collection(name=name)
 
     def delete_by_source(self, collection_name: str, source_path: str) -> int:
-        """Удаляет все чанки, у которых metadata["source_path"]
-        совпадает с заданным. Возвращает кол-во удалённых.
-
-        Используется в `_indexer` для idempotent reindex: перед upsert
-        чанков файла стираем его старые чанки, чтобы исчезнувшие из
-        файла куски не оставались в БД.
-        """
+        """Удалить все чанки с metadata[source_path]==source_path; вернуть кол-во удалённых."""
         col = self._client.get_collection(name=collection_name)
         existing = col.get(where={"source_path": source_path})
         ids = existing.get("ids") or []
@@ -104,20 +80,13 @@ class VectorStore:
         collection_name: str,
         chunks: Sequence[tuple[str, str, Mapping[str, str]]],
     ) -> None:
-        """chunks — список (id, document_text, metadata).
-
-        Принимает уже подготовленные id'ы (см. _indexer._chunk_id),
-        чтобы повторный upsert был idempotent под одной и той же
-        парой (source_path, chunk_index).
-        """
+        """chunks — список (id, document_text, metadata)."""
         if not chunks:
             return
         col = self._client.get_collection(name=collection_name)
         ids = [c[0] for c in chunks]
         documents = [c[1] for c in chunks]
-        # chromadb Metadata = Mapping[str, str|int|float|bool|None|...].
-        # Наш dict[str, str] — частный случай, но list-инвариантность
-        # требует явного ignore: значения времени выполнения валидны.
+        # dict[str, str] ⊂ chromadb.Metadata, но list-инвариантность требует ignore
         metadatas = [dict(c[2]) for c in chunks]
         col.upsert(
             ids=ids,

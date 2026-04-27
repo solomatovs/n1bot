@@ -1,71 +1,4 @@
-"""События агент-слоя.
-
-Sink матчит по семьям (PhaseTransition / ContentDelta / ContentSnapshot /
-Advisory / Terminal) и дёргает интерфейс семьи. Каждое событие несёт
-только свой target — диалог восстанавливается из суммы ContentSnapshot'ов,
-поэтому LLMRequestSent/GenerationFailed не дублируют messages-список.
-
-Иерархия::
-
-    BaseAgentEvent (abstract, frozen dataclass)
-    │   request_id: RequestId
-    │   + classmethod name() -> str
-    │
-    ├── PhaseTransition (abstract)      граница фазы; могут нести метаданные round-trip
-    │   │   label() -> str
-    │   │   details() -> Mapping[str, str]
-    │   │   body() -> str | None
-    │   │   severity() -> Severity (INFO по умолчанию)
-    │   ├── IterationStarted              iteration, max_iterations
-    │   ├── LLMRequestSent                model, messages_count, has_tools, monotonic_ns
-    │   ├── LLMResponseStreamOpened       monotonic_ns (парный к LLMRequestSent)
-    │   ├── GenerationStarted
-    │   ├── ThinkingStarted
-    │   ├── AnswerStarted
-    │   ├── ToolCallStreamStarted         index, tool_call_id, tool_name
-    │   ├── ToolExecutionStarted          call: LLMToolCall
-    │   ├── GenerationRetried             attempt, reason, status_code (severity=WARN)
-    │   └── GenerationDone                finish_reason
-    │
-    ├── ContentDelta (abstract)           инкрементальный кусок в слот UI
-    │   │   slot() -> SlotKind
-    │   │   slot_id() -> str               — ключ слота (rid, tool_call_id, ...)
-    │   │   chunk() -> str
-    │   ├── ThinkingToken
-    │   ├── AnswerToken
-    │   ├── RefusalToken
-    │   └── ToolCallArgumentDelta           index, tool_call_id, tool_name
-    │
-    ├── ContentSnapshot (abstract)        завершённое сообщение в диалоге
-    │   │   slot() -> SlotKind
-    │   │   slot_id() -> str
-    │   │   headline() -> str | None
-    │   │   body() -> str
-    │   ├── UserQueryReceived               query
-    │   ├── ThinkingComplete                content
-    │   ├── AnswerComplete                  content
-    │   ├── RefusalComplete                 content
-    │   ├── ToolCallComplete                call: LLMToolCall
-    │   ├── ToolResultReady                 call: LLMToolCall, result: ToolCallResult
-    │   └── FeedbackToLLMAdded              content
-    │
-    ├── Advisory (abstract)               нефатальный нотис, цикл идёт
-    │   │   headline() -> str
-    │   │   details() -> Mapping[str, str]
-    │   │   body() -> str | None
-    │   │   severity() -> Severity (WARN по умолчанию)
-    │   └── ToolExecutionFailed             call, failure
-    │
-    └── Terminal (abstract)               цикл остановлен
-        │   headline() -> str
-        │   details() -> Mapping[str, str]
-        │   body() -> str | None
-        │   severity() -> Severity (ERROR по умолчанию)
-        ├── GenerationFailed                error_kind, message
-        ├── PromptFailed                    provider, error_kind, message
-        ├── MaxIterationsReached            limit, iteration
-        └── PersistenceFailed               target, error_kind, message
-"""
+"""События агент-слоя."""
 
 from __future__ import annotations
 
@@ -88,7 +21,7 @@ from boba.domain.llm.models import LLMToolCall, RequestId
 
 
 class Severity(StrEnum):
-    """Уровень события для sink'а — определяет канал и подсветку."""
+    """Уровень события для sink'а."""
 
     INFO = "info"
     WARN = "warn"
@@ -96,13 +29,7 @@ class Severity(StrEnum):
 
 
 class SlotKind(StrEnum):
-    """Идентификатор «слота» в UI/журнале — куда стримить контент.
-
-    Договорной словарь между ContentDelta / ContentSnapshot
-    и sink'ами. Sink, получивший событие с этим
-    кодом, знает, в какой UI-элемент его направить (chainlit-Step,
-    отдельный message, область thinking и т.п.).
-    """
+    """Идентификатор «слота» в UI/журнале — куда стримить контент."""
 
     USER_QUERY = "user_query"
     THINKING = "thinking"
@@ -137,13 +64,7 @@ class BaseAgentEvent(ABC):
 
 @dataclass(frozen=True)
 class PhaseTransition(BaseAgentEvent, ABC):
-    """Граница фазы в round-trip'е — sink рисует «пульс».
-
-    Может нести метаданные действия (LLMRequestSent —
-    параметры round-trip'а, ToolExecutionStarted — вызов).
-    Контент диалога (messages, history) сюда не попадает — он
-    объявляется ContentSnapshot-ами.
-    """
+    """Граница фазы в round-trip'е."""
 
     @abstractmethod
     def label(self) -> str: ...
@@ -160,12 +81,7 @@ class PhaseTransition(BaseAgentEvent, ABC):
 
 @dataclass(frozen=True)
 class ContentDelta(BaseAgentEvent, ABC):
-    """Инкрементальный кусок в «слот» UI.
-
-    Sink стримит chunk() в слот, идентифицируемый
-    slot() + slot_id(). Аккумуляция — задача sink'а; событие
-    ничего не помнит между вызовами.
-    """
+    """Инкрементальный кусок в «слот» UI."""
 
     @abstractmethod
     def slot(self) -> SlotKind: ...
@@ -179,13 +95,7 @@ class ContentDelta(BaseAgentEvent, ABC):
 
 @dataclass(frozen=True)
 class ContentSnapshot(BaseAgentEvent, ABC):
-    """Завершённое сообщение в диалоге.
-
-    Каждый снапшот соответствует ровно одной записи в
-    MessageService (или эквивалентному «целевому» содержимому,
-    если запись не идёт в историю — например, ThinkingComplete).
-    Сумма снапшотов за сессию реконструирует диалог.
-    """
+    """Завершённое сообщение в диалоге."""
 
     @abstractmethod
     def slot(self) -> SlotKind: ...
@@ -202,11 +112,7 @@ class ContentSnapshot(BaseAgentEvent, ABC):
 
 @dataclass(frozen=True)
 class Advisory(BaseAgentEvent, ABC):
-    """Нефатальный нотис: что-то пошло не так, цикл продолжается.
-
-    Sink выводит в WARN-канал; LLM получает feedback по отдельному
-    каналу через FeedbackToLLMAdded-снапшот.
-    """
+    """Нефатальный нотис: цикл продолжается."""
 
     @abstractmethod
     def headline(self) -> str: ...
@@ -223,10 +129,7 @@ class Advisory(BaseAgentEvent, ABC):
 
 @dataclass(frozen=True)
 class Terminal(BaseAgentEvent, ABC):
-    """Терминальный отказ: цикл остановлен.
-
-    StopOnAnyFailure ловит любого потомка этого класса.
-    """
+    """Терминальный отказ: цикл остановлен."""
 
     @abstractmethod
     def headline(self) -> str: ...
@@ -266,13 +169,7 @@ class IterationStarted(PhaseTransition):
 
 @dataclass(frozen=True)
 class LLMRequestSent(PhaseTransition):
-    """Round-trip к LLM начат. Несём только метаданные round-trip'а.
-
-    Сообщения, которые ушли, уже были эмитированы как
-    ContentSnapshot-события на предыдущих шагах (user-query,
-    tool-результаты, feedback). Здесь — только то, что описывает сам
-    вызов: model, сколько messages в payload, есть ли tools.
-    """
+    """Round-trip к LLM начат."""
 
     model: str
     messages_count: int
@@ -347,12 +244,7 @@ class AnswerStarted(PhaseTransition):
 
 @dataclass(frozen=True)
 class ToolCallStreamStarted(PhaseTransition):
-    """Tool call объявлен — id и имя пришли, args ещё стримятся.
-
-    index — порядковый номер вызова в рамках одной итерации
-    (OpenAI parallel_tool_calls). Полный вызов с args будет в
-    ToolCallComplete.
-    """
+    """Tool call объявлен — id и имя пришли, args ещё стримятся."""
 
     index: int
     tool_call_id: str
@@ -375,11 +267,7 @@ class ToolCallStreamStarted(PhaseTransition):
 
 @dataclass(frozen=True)
 class ToolExecutionStarted(PhaseTransition):
-    """Tool готов к исполнению — args разобраны, диспетчер сейчас стартует.
-
-    Несём полный LLMToolCall: sink, видя одно это событие,
-    знает, что именно сейчас исполняется (id, name, args).
-    """
+    """Tool готов к исполнению — args разобраны."""
 
     call: LLMToolCall
 
@@ -513,11 +401,7 @@ class RefusalToken(ContentDelta):
 
 @dataclass(frozen=True)
 class ToolCallArgumentDelta(ContentDelta):
-    """Chunk аргументов tool call (JSON-строка, может прийти частями).
-
-    Несём tool_name помимо id — sink не должен искать имя
-    в прошлых событиях, чтобы отрисовать «куда» льются args.
-    """
+    """Chunk аргументов tool call (JSON-строка, может прийти частями)."""
 
     index: int
     tool_call_id: str
@@ -625,10 +509,7 @@ class RefusalComplete(ContentSnapshot):
 
 @dataclass(frozen=True)
 class ToolCallComplete(ContentSnapshot):
-    """Завершённый tool call: id + имя + полные args (как часть assistant-сообщения).
-
-    ToolExecutionMiddleware слушает это событие и исполняет tool.
-    """
+    """Завершённый tool call (id + имя + args)."""
 
     call: LLMToolCall
 
@@ -651,12 +532,7 @@ class ToolCallComplete(ContentSnapshot):
 
 @dataclass(frozen=True)
 class ToolResultReady(ContentSnapshot):
-    """Результат успешного выполнения tool — несём И вызов, И результат.
-
-    Self-sufficient: sink, видя только это событие, знает name+args
-    исходного вызова и текст результата. Парный к
-    ToolExecutionFailed (один и тот же вызов, разный исход).
-    """
+    """Результат выполнения tool — вызов и результат."""
 
     call: LLMToolCall
     result: ToolCallResult
@@ -680,12 +556,7 @@ class ToolResultReady(ContentSnapshot):
 
 @dataclass(frozen=True)
 class FeedbackToLLMAdded(ContentSnapshot):
-    """Feedback от агента к LLM записан в MessageService.
-
-    Эмитится middleware-роутером ошибок и guard'ами луппинга — каждое
-    сообщение, попадающее в историю, должно иметь парный снапшот.
-    Без этого инвариант «снапшоты = диалог» нарушается.
-    """
+    """Feedback от агента к LLM записан в MessageService."""
 
     content: str
 
@@ -710,11 +581,7 @@ class FeedbackToLLMAdded(ContentSnapshot):
 
 @dataclass(frozen=True)
 class ToolExecutionFailed(Advisory):
-    """Tool упал — несём И вызов, И описание провала. Цикл продолжается.
-
-    Парный к ToolResultReady. Запись role="tool" с текстом
-    ошибки делает middleware параллельно — для LLM на следующей итерации.
-    """
+    """Tool упал — вызов и описание провала; цикл продолжается."""
 
     call: LLMToolCall
     failure: ToolCallFailure
@@ -765,11 +632,7 @@ class GenerationFailed(Terminal):
 
 @dataclass(frozen=True)
 class PromptFailed(Terminal):
-    """PromptFactory не смогла собрать system-prompt.
-
-    provider — имя упавшего провайдера, если известно; None для
-    ошибок общей логики.
-    """
+    """PromptFactory не смогла собрать system-prompt."""
 
     error_kind: str
     message: str
