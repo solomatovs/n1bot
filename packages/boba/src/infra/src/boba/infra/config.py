@@ -311,7 +311,15 @@ class ConfigFactory:
         было предоставлено, проблема не в «где взять», а в «что
         задано неверно».
         """
-        if isinstance(err, FieldMissingError) and err.key is not None:
+        # err.key типизирован как FieldAddress (=object) на уровне
+        # declaration.py — этот слой не знает про ConfigKey. Здесь, в
+        # infra, мы знаем: ConfigSection.build кладёт туда именно
+        # ConfigKey. isinstance-narrowing восстанавливает тип для
+        # type-checker'а и одновременно даёт runtime-проверку.
+        if (
+            isinstance(err, FieldMissingError)
+            and isinstance(err.key, ConfigKey)
+        ):
             hints = self.describe_key(err.key)
             if hints:
                 return f"{err}; задайте через: {' / '.join(hints)}"
