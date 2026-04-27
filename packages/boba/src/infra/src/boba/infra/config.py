@@ -18,7 +18,15 @@ from boba.domain.core.config import (
     ObjectSchema,
 )
 from boba.domain.core.declaration import FieldMissingError
-from boba.domain.core.patterns import ConverterInputError, StrId
+from boba.domain.core.patterns import (
+    Always,
+    ConverterInputError,
+    Never,
+    Specification,
+    StrId,
+)
+from boba.domain.core.tools.specs import ToolNameIn, ToolSourceIn
+from boba.domain.core.tools.tool import Tool
 from boba.domain.core.validators import (
     ChainConverter,
     Default,
@@ -26,6 +34,7 @@ from boba.domain.core.validators import (
     Nullable,
     ParseBool,
     ParseInt,
+    ParseList,
     ParseString,
 )
 
@@ -135,14 +144,43 @@ class AppCoreSection(ConfigSection[AppCoreConfig]):
     )
 
 
+def _build_agent_config(
+    max_iterations: int,
+    max_consecutive_tool_calls: int,
+    tools_enabled: bool,
+    tool_plugins: list[str],
+    tools_allow: list[str],
+    tools_deny: list[str],
+) -> AgentConfig:
+    """Свернуть TOML-поля в AgentConfig с одним tool_spec."""
+    if not tools_enabled:
+        return AgentConfig(
+            max_iterations=max_iterations,
+            max_consecutive_tool_calls=max_consecutive_tool_calls,
+            tool_spec=Never[Tool[Any]](),
+        )
+    spec: Specification[Tool[Any]] = Always[Tool[Any]]()
+    if tool_plugins:
+        spec = spec.and_(ToolSourceIn(tool_plugins))
+    if tools_allow:
+        spec = spec.and_(ToolNameIn(tools_allow))
+    if tools_deny:
+        spec = spec.and_(ToolNameIn(tools_deny).not_())
+    return AgentConfig(
+        max_iterations=max_iterations,
+        max_consecutive_tool_calls=max_consecutive_tool_calls,
+        tool_spec=spec,
+    )
+
+
 class AgentSection(ConfigSection[AgentConfig]):
-    """Лимиты агентского лупа."""
+    """Лимиты агентского лупа и фильтрация tool-плагинов."""
 
     id: ClassVar[StrId] = StrId("agent")
     namespace: ClassVar[tuple[str, ...]] = ("agent",)
 
     schema: ClassVar[ObjectSchema[AgentConfig]] = ObjectSchema(
-        description="Лимиты агентского лупа.",
+        description="Лимиты агентского лупа и фильтрация tool-плагинов.",
         fields=[
             FieldSpec(
                 name="max_iterations",
@@ -156,8 +194,31 @@ class AgentSection(ConfigSection[AgentConfig]):
                 description="Сколько раз подряд агент может звать tools "
                 "без LLM-ответа.",
             ),
+            FieldSpec(
+                name="tools_enabled",
+                converter=ChainConverter(Default(True), ParseBool()),
+                description="Подключать ли tool-плагины. "
+                "false — агент работает без инструментов.",
+            ),
+            FieldSpec(
+                name="tool_plugins",
+                converter=ChainConverter(Default([]), ParseList(ParseString())),
+                description="Whitelist по entry-point names "
+                "(boba.tools). Пусто — все плагины.",
+            ),
+            FieldSpec(
+                name="tools_allow",
+                converter=ChainConverter(Default([]), ParseList(ParseString())),
+                description="Whitelist по именам tools. Пусто — все.",
+            ),
+            FieldSpec(
+                name="tools_deny",
+                converter=ChainConverter(Default([]), ParseList(ParseString())),
+                description="Blacklist по именам tools. Применяется "
+                "поверх tools_allow.",
+            ),
         ],
-        factory=AgentConfig,
+        factory=_build_agent_config,
     )
 
 class ConfigFactory:

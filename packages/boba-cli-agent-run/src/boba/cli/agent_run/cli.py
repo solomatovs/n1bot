@@ -106,7 +106,10 @@ def _run(factory: ConfigFactory) -> None:
     ).get_or_create(PromptWorkspaceId("prompts"))
     prompt_loader = PromptLoader(prompt_workspace)
 
-    tool_loader = ToolPluginLoader(ExtensionContext(config=bundle))
+    tool_loader = ToolPluginLoader(
+        ExtensionContext(config=bundle),
+        tool_spec=agent_config.tool_spec,
+    )
 
     project_workspace = FsProjectWorkspaceRegistry(
         base_dir=Path(app_config.workspaces.base_dir),
