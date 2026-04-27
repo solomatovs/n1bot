@@ -15,11 +15,6 @@ from boba.domain.agent.payloads import (
 from boba.domain.llm.events import FinishReason
 from boba.domain.llm.models import LLMToolCall, RequestId
 
-# ═════════════════════════════════════════════════════════════════════
-#  Базовые классификаторы
-# ═════════════════════════════════════════════════════════════════════
-
-
 class Severity(StrEnum):
     """Уровень события для sink'а."""
 
@@ -40,12 +35,6 @@ class SlotKind(StrEnum):
     TOOL_RESULT = "tool_result"
     FEEDBACK = "feedback"
 
-
-# ═════════════════════════════════════════════════════════════════════
-#  Базовое событие
-# ═════════════════════════════════════════════════════════════════════
-
-
 @dataclass(frozen=True)
 class BaseAgentEvent(ABC):
     """Базовый класс для всех событий агента."""
@@ -55,12 +44,6 @@ class BaseAgentEvent(ABC):
     @classmethod
     @abstractmethod
     def name(cls) -> str: ...
-
-
-# ═════════════════════════════════════════════════════════════════════
-#  Семьи (интерфейсы для sink'ов)
-# ═════════════════════════════════════════════════════════════════════
-
 
 @dataclass(frozen=True)
 class PhaseTransition(BaseAgentEvent, ABC):
@@ -142,12 +125,6 @@ class Terminal(BaseAgentEvent, ABC):
 
     def severity(self) -> Severity:
         return Severity.ERROR
-
-
-# ═════════════════════════════════════════════════════════════════════
-#  Concrete: PhaseTransition
-# ═════════════════════════════════════════════════════════════════════
-
 
 @dataclass(frozen=True)
 class IterationStarted(PhaseTransition):
@@ -333,12 +310,6 @@ class GenerationDone(PhaseTransition):
     def details(self) -> Mapping[str, str]:
         return {"finish_reason": self.finish_reason.value}
 
-
-# ═════════════════════════════════════════════════════════════════════
-#  Concrete: ContentDelta
-# ═════════════════════════════════════════════════════════════════════
-
-
 @dataclass(frozen=True)
 class ThinkingToken(ContentDelta):
     """Chunk reasoning-токена."""
@@ -420,12 +391,6 @@ class ToolCallArgumentDelta(ContentDelta):
 
     def chunk(self) -> str:
         return self.arguments_chunk
-
-
-# ═════════════════════════════════════════════════════════════════════
-#  Concrete: ContentSnapshot
-# ═════════════════════════════════════════════════════════════════════
-
 
 @dataclass(frozen=True)
 class UserQueryReceived(ContentSnapshot):
@@ -573,12 +538,6 @@ class FeedbackToLLMAdded(ContentSnapshot):
     def body(self) -> str:
         return self.content
 
-
-# ═════════════════════════════════════════════════════════════════════
-#  Concrete: Advisory
-# ═════════════════════════════════════════════════════════════════════
-
-
 @dataclass(frozen=True)
 class ToolExecutionFailed(Advisory):
     """Tool упал — вызов и описание провала; цикл продолжается."""
@@ -602,12 +561,6 @@ class ToolExecutionFailed(Advisory):
 
     def body(self) -> str | None:
         return f"args: {self.call.arguments}\nerror: {self.failure.message}"
-
-
-# ═════════════════════════════════════════════════════════════════════
-#  Concrete: Terminal
-# ═════════════════════════════════════════════════════════════════════
-
 
 @dataclass(frozen=True)
 class GenerationFailed(Terminal):
@@ -701,12 +654,6 @@ class PersistenceFailed(Terminal):
 
     def body(self) -> str | None:
         return self.message
-
-
-# ═════════════════════════════════════════════════════════════════════
-#  Union + имена (compile-time exhaustiveness)
-# ═════════════════════════════════════════════════════════════════════
-
 
 AgentEvent = (
     # PhaseTransition

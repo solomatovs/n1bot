@@ -70,12 +70,6 @@ def _setup_logging(verbose: int) -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-
-# ──────────────────────────────────────────────────────────────────────
-# Action handlers
-# ──────────────────────────────────────────────────────────────────────
-
-
 def _require(
     value: object,
     section: type[ConfigSection[Any]],

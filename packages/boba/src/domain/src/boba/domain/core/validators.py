@@ -45,12 +45,6 @@ __all__ = [
 
 T = TypeVar("T")
 
-
-# ═════════════════════════════════════════════════════════════════════
-#  MISSING — sentinel для «значения не было»
-# ═════════════════════════════════════════════════════════════════════
-
-
 class _MissingType:
     """Singleton-sentinel «значения не было» (отдельно от None)."""
 
@@ -69,11 +63,6 @@ class _MissingType:
 
 
 MISSING: Final = _MissingType()
-
-
-# ═════════════════════════════════════════════════════════════════════
-#  Identity / composition
-# ═════════════════════════════════════════════════════════════════════
 
 
 class Pass(Converter[Any, Any]):
@@ -100,19 +89,12 @@ class ChainConverter(Converter[Any, T], SchemaContributor, Generic[T]):
                 c.contribute(schema)
 
 
-# ═════════════════════════════════════════════════════════════════════
-#  Missing-aware: Required / Default / ValueConverter
-# ═════════════════════════════════════════════════════════════════════
-
-
 class Required(Converter[Any, Any], SchemaContributor):
     """Параметр обязателен; MissingValueError на MISSING/None."""
 
     def convert(self, value: Any) -> Any:
         if value is MISSING:
-            raise MissingValueError(
-                "параметр обязателен — значение не передано"
-            )
+            raise MissingValueError("параметр обязателен — значение не передано")
         if value is None:
             raise MissingValueError("параметр обязателен — null недопустим")
         return value
@@ -163,12 +145,6 @@ class ValueConverter(Converter[Any, Any]):
     @abstractmethod
     def _convert_value(self, value: Any) -> Any: ...
 
-
-# ═════════════════════════════════════════════════════════════════════
-#  Parse* — coercion из object в типизированное (env / TOML / JSON)
-# ═════════════════════════════════════════════════════════════════════
-
-
 class ParseString(ValueConverter, SchemaContributor):
     """Привести любое значение к str через str(value); wire: type=string."""
 
@@ -193,12 +169,8 @@ class ParseInt(ValueConverter, SchemaContributor):
             try:
                 return int(value.strip())
             except ValueError as exc:
-                raise ConverterInputError(
-                    f"not a valid int: {value!r}"
-                ) from exc
-        raise ConverterInputError(
-            f"cannot convert {type(value).__name__} to int"
-        )
+                raise ConverterInputError(f"not a valid int: {value!r}") from exc
+        raise ConverterInputError(f"cannot convert {type(value).__name__} to int")
 
     def contribute(self, schema: ParamWireSchema) -> None:
         schema.property["type"] = "integer"
@@ -216,12 +188,8 @@ class ParseFloat(ValueConverter, SchemaContributor):
             try:
                 return float(value.strip())
             except ValueError as exc:
-                raise ConverterInputError(
-                    f"not a valid float: {value!r}"
-                ) from exc
-        raise ConverterInputError(
-            f"cannot convert {type(value).__name__} to float"
-        )
+                raise ConverterInputError(f"not a valid float: {value!r}") from exc
+        raise ConverterInputError(f"cannot convert {type(value).__name__} to float")
 
     def contribute(self, schema: ParamWireSchema) -> None:
         schema.property["type"] = "number"
@@ -243,9 +211,7 @@ class ParseBool(ValueConverter, SchemaContributor):
             if normalized in self._FALSE:
                 return False
             raise ConverterInputError(f"not a valid bool: {value!r}")
-        raise ConverterInputError(
-            f"cannot convert {type(value).__name__} to bool"
-        )
+        raise ConverterInputError(f"cannot convert {type(value).__name__} to bool")
 
     def contribute(self, schema: ParamWireSchema) -> None:
         schema.property["type"] = "boolean"
@@ -256,14 +222,10 @@ class ParseCsvList(ValueConverter, SchemaContributor):
 
     def _convert_value(self, value: Any) -> list[str]:
         if isinstance(value, list):
-            return [
-                str(item) for item in value if item is not None and str(item) != ""
-            ]
+            return [str(item) for item in value if item is not None and str(item) != ""]
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
-        raise ConverterInputError(
-            f"cannot convert {type(value).__name__} to list[str]"
-        )
+        raise ConverterInputError(f"cannot convert {type(value).__name__} to list[str]")
 
     def contribute(self, schema: ParamWireSchema) -> None:
         schema.property["type"] = "array"
@@ -285,9 +247,7 @@ class ParseList(ValueConverter, SchemaContributor):
         if isinstance(value, str):
             value = [v.strip() for v in value.split(",") if v.strip()]
         elif not isinstance(value, list):
-            raise ConverterInputError(
-                f"cannot convert {type(value).__name__} to list"
-            )
+            raise ConverterInputError(f"cannot convert {type(value).__name__} to list")
         result: list[Any] = []
         for i, raw in enumerate(value):
             try:
@@ -305,11 +265,6 @@ class ParseList(ValueConverter, SchemaContributor):
             self._item.contribute(sub)
         if sub.property:
             schema.property["items"] = dict(sub.property)
-
-
-# ═════════════════════════════════════════════════════════════════════
-#  File-include конвертеры (значение как путь → содержимое файла)
-# ═════════════════════════════════════════════════════════════════════
 
 
 class ReadTextFile(ValueConverter):
@@ -364,15 +319,7 @@ class ReadJsonFile(ValueConverter):
         try:
             return json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise ConverterInputError(
-                f"invalid JSON in {value!r}: {exc}"
-            ) from exc
-
-
-# ═════════════════════════════════════════════════════════════════════
-#  Constraints — identity Converter[T, T] с predicate-проверкой
-# ═════════════════════════════════════════════════════════════════════
-
+            raise ConverterInputError(f"invalid JSON in {value!r}: {exc}") from exc
 
 class OneOf(Converter[Any, Any], SchemaContributor):
     """Значение должно быть в фиксированном наборе. В wire-схеме: enum."""
@@ -431,9 +378,7 @@ class MinLength(Converter[Any, Any]):
 
     def convert(self, value: Any) -> Any:
         if not isinstance(value, Sized):
-            raise ConverterInputError(
-                f"длина не определена для {type(value).__name__}"
-            )
+            raise ConverterInputError(f"длина не определена для {type(value).__name__}")
         if len(value) < self._threshold:
             raise ConverterInputError(
                 f"длина должна быть >= {self._threshold}, получено {len(value)}"
@@ -449,9 +394,7 @@ class MaxLength(Converter[Any, Any]):
 
     def convert(self, value: Any) -> Any:
         if not isinstance(value, Sized):
-            raise ConverterInputError(
-                f"длина не определена для {type(value).__name__}"
-            )
+            raise ConverterInputError(f"длина не определена для {type(value).__name__}")
         if len(value) > self._threshold:
             raise ConverterInputError(
                 f"длина должна быть <= {self._threshold}, получено {len(value)}"
@@ -471,12 +414,6 @@ class NonEmpty(Converter[Any, Any]):
             raise ConverterInputError("значение не должно быть пустым")
 
         return value
-
-
-# ═════════════════════════════════════════════════════════════════════
-#  Strict type-checkers — Is* (без coercion, в отличие от Parse*)
-# ═════════════════════════════════════════════════════════════════════
-
 
 class IsString(ValueConverter, SchemaContributor):
     """Строго str (без coercion); wire: type=string."""
@@ -525,19 +462,11 @@ class IsBool(ValueConverter, SchemaContributor):
 
     def _convert_value(self, value: Any) -> bool:
         if not isinstance(value, bool):
-            raise ConverterInputError(
-                f"ожидался bool, получено {type(value).__name__}"
-            )
+            raise ConverterInputError(f"ожидался bool, получено {type(value).__name__}")
         return value
 
     def contribute(self, schema: ParamWireSchema) -> None:
         schema.property["type"] = "boolean"
-
-
-# ═════════════════════════════════════════════════════════════════════
-#  Cross-field инварианты (для ObjectSchema.invariants)
-# ═════════════════════════════════════════════════════════════════════
-
 
 class MutuallyExclusive(Converter[dict[str, Any], dict[str, Any]]):
     """Максимум один из перечисленных полей задан одновременно."""

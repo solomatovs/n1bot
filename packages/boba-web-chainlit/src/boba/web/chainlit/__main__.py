@@ -23,11 +23,6 @@ from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
 from boba.web.chainlit.session import ChatSession
 from boba.web.chainlit.ui_overrides import UIOverrideTomlConverter
 
-# ──────────────────────────────────────────────────────────────────────
-# Bundle assembly
-# ──────────────────────────────────────────────────────────────────────
-
-
 def build_factory() -> ConfigFactory:
     """ConfigFactory с зарегистрированными секциями и источниками (CLI > env > TOML)."""
     factory = ConfigFactory()
@@ -54,12 +49,6 @@ def build_bundle() -> ConfigBundle:
     """Тонкая обёртка над build_factory + factory.build()."""
     return build_factory().build()
 
-
-# ──────────────────────────────────────────────────────────────────────
-# Chainlit env bridge + UI overrides
-# ──────────────────────────────────────────────────────────────────────
-
-
 def bridge_chainlit_env(cfg: ChainlitConfig) -> Path:
     """Прокидывает ChainlitConfig в CHAINLIT_* env; возвращает абсолютный app_root."""
     os.environ.setdefault("CHAINLIT_HOST", cfg.host)
@@ -83,12 +72,6 @@ def write_ui_config_overrides(cfg: ChainlitConfig, app_root: Path) -> None:
     target = app_root / ".chainlit" / "config.toml"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Entry point
-# ──────────────────────────────────────────────────────────────────────
-
 
 def main() -> int:
     factory = build_factory()
