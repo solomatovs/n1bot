@@ -51,9 +51,16 @@ from boba.domain.llm.models import (
     RequestId,
     SamplingParams,
 )
+from boba.domain.llm.observer import (
+    CompositeLLMRequestObserver,
+    LLMRequestObserver,
+    RequestOutcome,
+    RequestOutcomeKind,
+)
 
 __all__ = [
     "BaseLLMEvent",
+    "CompositeLLMRequestObserver",
     "FinishReason",
     "LLMAnswerStarted",
     "LLMAnswerToken",
@@ -76,6 +83,7 @@ __all__ = [
     "LLMRequest",
     "LLMRequestEmptyMessagesError",
     "LLMRequestModelNoneError",
+    "LLMRequestObserver",
     "LLMRequestSent",
     "LLMRequestStarted",
     "LLMRequestSystemMessageNoneError",
@@ -93,6 +101,8 @@ __all__ = [
     "LLMUnknownError",
     "PermanentLLMError",
     "RequestId",
+    "RequestOutcome",
+    "RequestOutcomeKind",
     "RetryMiddleware",
     "RetryableLLMError",
     "SamplingParams",

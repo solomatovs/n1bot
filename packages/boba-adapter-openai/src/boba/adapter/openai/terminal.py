@@ -13,7 +13,6 @@ import httpx
 
 import openai
 from boba.adapter.openai.errors import OpenAIErrorConverter
-from boba.adapter.openai.raw_observer import RawLLMObserver, RequestOutcome
 from boba.adapter.openai.request import ToOpenAIRequestConverter
 from boba.adapter.openai.response import FromOpenAIChunkConverter
 from boba.domain.config import LLMConfig
@@ -25,6 +24,7 @@ from boba.domain.llm.events import (
     LLMRequestStarted,
 )
 from boba.domain.llm.models import LLMContext
+from boba.domain.llm.observer import LLMRequestObserver, RequestOutcome
 from openai import OpenAI
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
@@ -38,7 +38,8 @@ def build_openai_client(config: LLMConfig) -> OpenAI:
 
 @contextmanager
 def _observe_request(
-    observer: RawLLMObserver, kwargs: dict[str, Any]
+    observer: LLMRequestObserver[dict[str, Any], ChatCompletionChunk],
+    kwargs: dict[str, Any],
 ) -> Iterator[None]:
     """Оборачивает тело request-стрима парой on_request / on_request_end.
 
@@ -85,14 +86,12 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
     def __init__(
         self,
         client: OpenAI,
-        observer: RawLLMObserver,
-        # preprocessor: StreamTransformer[LLMContext, Choice, Choice],
+        observer: LLMRequestObserver[dict[str, Any], ChatCompletionChunk],
     ) -> None:
         self._client = client
         self._to_request = ToOpenAIRequestConverter()
         self._error_converter = OpenAIErrorConverter()
         self._observer = observer
-        # self._preprocessor = preprocessor
 
     def name(self) -> str:
         return "OpenAITerminal"
@@ -102,13 +101,8 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
         # аргументов очень много и самый простой способ это собрать kwargs
         kwargs = self._to_request.convert(ctx.request)
 
-        # observer-lifecycle вынесен в _observe_request: on_request до
-        # любых yield, on_request_end в любом исходе (OK / GeneratorExit
-        # от consumer-а / произвольное исключение).
         with _observe_request(self._observer, kwargs):
             # парные события вокруг HTTP-вызова: Started/Sent
-            # разница monotonic_ns даёт длительность провайдер-запроса
-            # (сетевой round-trip + TTFB до получения stream-handle)
             yield LLMRequestStarted(
                 request_id=ctx.request_id,
                 model=ctx.request.model,
