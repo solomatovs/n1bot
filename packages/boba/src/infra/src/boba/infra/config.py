@@ -144,7 +144,7 @@ class AppCoreSection(ConfigSection[AppCoreConfig]):
     )
 
 
-def _build_agent_config(
+def _build_agent_config(  # noqa: PLR0913 — kwargs приходят из ObjectSchema, число фиксировано полями секции
     max_iterations: int,
     max_consecutive_tool_calls: int,
     tools_enabled: bool,

@@ -27,9 +27,9 @@ __all__ = ["AgentRunConfig", "AgentRunSection"]
 
 @dataclass(frozen=True)
 class AgentRunConfig:
-    """Параметры одного запуска boba-cli-agent-run."""
+    """Параметры одного запуска boba-cli-agent-run; query=None → REPL."""
 
-    query: str
+    query: str | None
     model: str
     temperature: float | None
     top_p: float | None
@@ -66,8 +66,8 @@ class AgentRunSection(ConfigSection[AgentRunConfig]):
         fields=[
             FieldSpec(
                 name="query",
-                converter=ChainConverter(Required(), ParseString()),
-                description="Пользовательский запрос к агенту. Обязательно.",
+                converter=Nullable(ParseString()),
+                description="Запрос к агенту; если не задан — запускается REPL.",
             ),
             FieldSpec(
                 name="model",
