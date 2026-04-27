@@ -2,7 +2,9 @@
 
 - OpenAITerminal — StreamSource[LLMContext, LLMEvent] поверх openai-SDK;
 - build_openai_client — фабрика SDK-клиента из LLMConfig;
-- RawLLMObserver — наблюдатели сырых kwargs/chunks (file/content/metrics);
+- WireTraceChatCompletionObserver / TranscriptChatCompletionObserver /
+  MetricsChatCompletionObserver — биндинги доменного LLMRequestObserver
+  под OpenAI Chat Completions API;
 - DuplicateToolCallIndexReindexer — workaround для коллизии index у
   параллельных tool_calls.
 
@@ -10,31 +12,27 @@
 """
 
 from boba.adapter.openai.config import LLMTransportSection, create_llm_source
-from boba.adapter.openai.raw_observer import (
-    CompositeRawLLMObserver,
-    FileContentObserver,
-    FileRawLLMObserver,
-    MetricsRawLLMObserver,
+from boba.adapter.openai.observer import (
+    MetricsChatCompletionObserver,
     MultiKeyReasoningExtractor,
-    RawLLMObserver,
-    RequestOutcome,
+    TranscriptChatCompletionObserver,
+    WireTraceChatCompletionObserver,
 )
 from boba.adapter.openai.terminal import OpenAITerminal, build_openai_client
 from boba.adapter.openai.tool_call_reindexer import (
     DuplicateToolCallIndexReindexer,
 )
+from boba.domain.llm.observer import RequestOutcome
 
 __all__ = [
-    "CompositeRawLLMObserver",
     "DuplicateToolCallIndexReindexer",
-    "FileContentObserver",
-    "FileRawLLMObserver",
     "LLMTransportSection",
-    "MetricsRawLLMObserver",
+    "MetricsChatCompletionObserver",
     "MultiKeyReasoningExtractor",
     "OpenAITerminal",
-    "RawLLMObserver",
     "RequestOutcome",
+    "TranscriptChatCompletionObserver",
+    "WireTraceChatCompletionObserver",
     "build_openai_client",
     "create_llm_source",
 ]

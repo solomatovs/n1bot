@@ -25,8 +25,8 @@ from boba.adapter.fs_workspace import (
 )
 from boba.adapter.messages import InMemoryMessageService
 from boba.adapter.openai import (
-    FileContentObserver,
     LLMTransportSection,
+    TranscriptChatCompletionObserver,
     create_llm_source,
 )
 from boba.adapter.prompt_providers import PromptLoader, PromptsSection
@@ -168,7 +168,7 @@ class ChatSession:
         tool_ctx = ToolContext(project_workspace=project_workspace)
 
         history_workspace = self._history_workspaces.get_or_create(workspace_id)
-        observer = FileContentObserver(history_workspace)
+        observer = TranscriptChatCompletionObserver(history_workspace)
         llm_source = create_llm_source(self._app_config.llm, observer)
         agent = create_agent(
             llm_source=llm_source,

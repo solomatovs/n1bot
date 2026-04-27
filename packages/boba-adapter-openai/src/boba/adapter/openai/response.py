@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from boba.adapter.openai.raw_observer import MultiKeyReasoningExtractor
+from boba.adapter.openai.observer import MultiKeyReasoningExtractor
 from boba.domain.core.patterns import (
     Converter,
     StreamTransformer,

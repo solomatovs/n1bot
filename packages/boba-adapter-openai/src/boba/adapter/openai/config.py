@@ -8,14 +8,13 @@ create_llm_source — фабрика готового
 StreamSource[LLMContext, LLMEvent]: оборачивает
 OpenAITerminal в StreamSourceChainBuilder. Bootstrap
 приложения вызывает её с app_config.llm (DTO собран
-LLMTransportSection) и RawLLMObserver нужного типа.
+LLMTransportSection) и LLMRequestObserver под OpenAI-типы.
 """
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
-from boba.adapter.openai.raw_observer import RawLLMObserver
 from boba.adapter.openai.terminal import OpenAITerminal, build_openai_client
 from boba.domain.config import LLMConfig
 from boba.domain.core.config import ConfigSection, FieldSpec, ObjectSchema
@@ -27,6 +26,8 @@ from boba.domain.core.patterns import (
 from boba.domain.core.validators import ChainConverter, Default, ParseString
 from boba.domain.llm.events import LLMEvent
 from boba.domain.llm.models import LLMContext
+from boba.domain.llm.observer import LLMRequestObserver
+from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 
 class LLMTransportSection(ConfigSection[LLMConfig]):
@@ -59,7 +60,7 @@ class LLMTransportSection(ConfigSection[LLMConfig]):
 
 def create_llm_source(
     llm_config: LLMConfig,
-    observer: RawLLMObserver,
+    observer: LLMRequestObserver[dict[str, Any], ChatCompletionChunk],
 ) -> StreamSource[LLMContext, LLMEvent]:
     """Готовый StreamSource поверх openai-SDK с подключённым observer'ом."""
     return StreamSourceChainBuilder[LLMContext, LLMEvent]().terminal(

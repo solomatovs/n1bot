@@ -20,10 +20,9 @@ from boba.adapter.fs_workspace import (
 )
 from boba.adapter.messages import InMemoryMessageService
 from boba.adapter.openai import (
-    CompositeRawLLMObserver,
-    FileContentObserver,
-    FileRawLLMObserver,
     LLMTransportSection,
+    TranscriptChatCompletionObserver,
+    WireTraceChatCompletionObserver,
     create_llm_source,
 )
 from boba.adapter.prompt_providers import PromptLoader, PromptsSection
@@ -41,6 +40,7 @@ from boba.domain.core.workspace import (
     WorkspaceId,
 )
 from boba.domain.llm.models import RequestId
+from boba.domain.llm.observer import CompositeLLMRequestObserver
 from boba.infra import (
     AgentComponents,
     AgentSection,
@@ -149,10 +149,10 @@ def _run(factory: ConfigFactory) -> None:
         subdir=app_config.workspaces.system_subdir,
     ).get_or_create(workspace_id)
 
-    observer = CompositeRawLLMObserver(
+    observer = CompositeLLMRequestObserver(
         [
-            FileRawLLMObserver(history_workspace),
-            FileContentObserver(history_workspace),
+            WireTraceChatCompletionObserver(history_workspace),
+            TranscriptChatCompletionObserver(history_workspace),
         ]
     )
     llm_source = create_llm_source(app_config.llm, observer)
