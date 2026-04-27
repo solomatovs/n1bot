@@ -15,7 +15,7 @@ from boba.domain.agent import (
     AgentRequestSamplingReducer,
     AssistantMessagePersistenceMiddleware,
     DialogueWriter,
-    HistoryWithTaskAnchorReducer,
+    HistoryReducer,
     IterationCounterMiddleware,
     LLMInvokeMiddleware,
     MessageService,
@@ -51,7 +51,7 @@ def build_turn_spec(components: AgentComponents) -> TurnSpec:
     spec = TurnSpec()
     spec.register(ModelReducer())
     spec.register(SystemPromptReducer(components.prompt_providers))
-    spec.register(HistoryWithTaskAnchorReducer())
+    spec.register(HistoryReducer())
     spec.register(ToolsReducer(components.tools_service))
     spec.register(AgentRequestSamplingReducer())
     return spec
