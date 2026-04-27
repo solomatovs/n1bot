@@ -5,9 +5,9 @@
             "id": "model",
             "type": "pickString",
             "description": "LiteLLM модель",
-            "default": "qwen3.5-35b",
+            "default": "qwen3.5:9b",
             "options": [
-                "qwen3-0.6b",
+                "qwen3.5:9b",
                 "qwen3.5-35b",
                 "llama3.1:8b-instruct-fp16",
                 "llama3.1-8b",
@@ -63,9 +63,6 @@
                 "--agent-run-query", "${input:query}"
             ],
             "envFile": "${workspaceFolder}/local/.env",
-            "env": {
-                "BOBA_APP_LOG_FILE": "${workspaceFolder}/local/logs/agent-run.log"
-            }
         },
         {
             "name": "Vector Index: index path",
@@ -84,9 +81,6 @@
                 "--vector-index-verbose", "1"
             ],
             "envFile": "${workspaceFolder}/local/.env",
-            "env": {
-                "BOBA_APP_LOG_FILE": "${workspaceFolder}/local/logs/vector-index.log"
-            }
         },
         {
             "name": "Chainlit: Boba UI",
@@ -103,9 +97,6 @@
                 "--chainlit-root-path", "/boba-debug"
             ],
             "envFile": "${workspaceFolder}/local/.env",
-            "env": {
-                "BOBA_APP_LOG_FILE": "${workspaceFolder}/local/logs/chainlit.log"
-            }
         },
         {
             "name": "Pytest: current file",
@@ -121,9 +112,16 @@
                 "${file}"
             ],
             "envFile": "${workspaceFolder}/local/.env",
-            "env": {
-                "BOBA_APP_LOG_FILE": "${workspaceFolder}/local/logs/tests.log"
-            }
+        },
+        {
+            "name": "Python current file",
+            "type": "debugpy",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/docs",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "program": "${file}"
         },
     ]
 }
