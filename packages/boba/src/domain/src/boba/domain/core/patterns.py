@@ -325,6 +325,20 @@ class Specification(ABC, Generic[TValue]):
         return _NotSpec(self)
 
 
+class Always(Specification[TValue]):
+    """Specification, всегда возвращающая True."""
+
+    def check(self, candidate: TValue) -> bool:
+        return True
+
+
+class Never(Specification[TValue]):
+    """Specification, всегда возвращающая False."""
+
+    def check(self, candidate: TValue) -> bool:
+        return False
+
+
 class _AndSpec(Specification[TValue]):
     def __init__(
         self, left: Specification[TValue], right: Specification[TValue]

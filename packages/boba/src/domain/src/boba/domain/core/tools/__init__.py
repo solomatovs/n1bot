@@ -22,6 +22,7 @@ from boba.domain.core.tools.registry import (
     ToolsService,
     ToolStore,
 )
+from boba.domain.core.tools.specs import ToolNameIn, ToolSourceIn
 from boba.domain.core.tools.tool import (
     SchemaArgsValidator,
     Tool,
@@ -99,10 +100,12 @@ __all__ = [
     "ToolFactory",
     "ToolId",
     "ToolIdCollisionError",
+    "ToolNameIn",
     "ToolOutputTooLargeError",
     "ToolResult",
     "ToolSource",
     "ToolSourceId",
+    "ToolSourceIn",
     "ToolStore",
     "ToolsService",
     "ValueConverter",
