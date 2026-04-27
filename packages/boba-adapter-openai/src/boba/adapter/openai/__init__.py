@@ -15,11 +15,9 @@ from boba.adapter.openai.raw_observer import (
     FileContentObserver,
     FileRawLLMObserver,
     MetricsRawLLMObserver,
+    MultiKeyReasoningExtractor,
     RawLLMObserver,
     RequestOutcome,
-)
-from boba.adapter.openai.raw_observer import (
-    MultiKeyReasoningExtractor as RawObserverReasoningExtractor,
 )
 from boba.adapter.openai.terminal import OpenAITerminal, build_openai_client
 from boba.adapter.openai.tool_call_reindexer import (
@@ -33,9 +31,9 @@ __all__ = [
     "FileRawLLMObserver",
     "LLMTransportSection",
     "MetricsRawLLMObserver",
+    "MultiKeyReasoningExtractor",
     "OpenAITerminal",
     "RawLLMObserver",
-    "RawObserverReasoningExtractor",
     "RequestOutcome",
     "build_openai_client",
     "create_llm_source",

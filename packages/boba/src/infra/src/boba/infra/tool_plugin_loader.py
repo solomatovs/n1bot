@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from boba.domain.core.tools import ToolFactory, ToolSource, ToolsService
-from boba.infra.config import ConfigBundle
+from boba.infra.config import ConfigBundle, ConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +132,12 @@ class ToolPluginLoader:
         try:
             for source in register(self._ctx):
                 self._tool_sources.append(source)
+        except ConfigError:
+            # Реальная проблема конфига приложения (например, секция
+            # extension'а не зарегистрирована) — не plugin-баг. Пропускаем
+            # наружу, чтобы не глушить как «skipped plugin», а валить
+            # старт с понятной ошибкой про настоящую причину.
+            raise
         except Exception as e:
             raise ToolPluginRegisterError(
                 ep.name,

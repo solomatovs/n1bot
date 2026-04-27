@@ -46,7 +46,6 @@ __all__ = [
     "ACTIONS",
     "ChromadbPersistConfig",
     "ChromadbPersistSection",
-    "CliConfigError",
     "VectorIndexConfig",
     "VectorIndexSection",
 ]
@@ -211,7 +210,3 @@ class ChromadbPersistSection(ConfigSection[ChromadbPersistConfig]):
     )
 
 
-class CliConfigError(Exception):
-    """Ошибка конфига: невалидное состояние per-action или отсутствует
-    обязательное поле (например, persist_path).
-    """

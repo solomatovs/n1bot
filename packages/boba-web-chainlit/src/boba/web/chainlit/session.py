@@ -30,12 +30,10 @@ from boba.adapter.openai import (
     create_llm_source,
 )
 from boba.adapter.prompt_providers import PromptLoader, PromptsSection
-from boba.domain.agent import Agent
-from boba.domain.agent.dialogue_writer import DialogueWriter
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.models import AgentContext, AgentRequest
 from boba.domain.config import AppConfig
-from boba.domain.core.patterns import StreamSink, StreamSinkPipeline
+from boba.domain.core.patterns import StreamSink
 from boba.domain.core.tools import ToolContext
 from boba.domain.core.workspace import (
     ProjectWorkspaceShell,
@@ -51,7 +49,7 @@ from boba.infra import (
     ExtensionContext,
     ToolPluginLoader,
     configure_logging,
-    create_agent_source,
+    create_agent,
     log_context,
 )
 from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
@@ -171,22 +169,18 @@ class ChatSession:
 
         history_workspace = self._history_workspaces.get_or_create(workspace_id)
         observer = FileContentObserver(history_workspace)
-        message_service = InMemoryMessageService()
-        writer = DialogueWriter(message_service)
         llm_source = create_llm_source(self._app_config.llm, observer)
-        source = create_agent_source(
-            llm_source,
-            AgentComponents(
+        agent = create_agent(
+            llm_source=llm_source,
+            components=AgentComponents(
                 agent_config=self._agent_config,
                 prompt_providers=self._prompt_providers,
-                message_service=message_service,
+                message_service=InMemoryMessageService(),
                 tools_service=self._tools_service,
             ),
-            tool_ctx,
-            writer,
+            tool_ctx=tool_ctx,
+            sink=extra_sink,
         )
-        sink = StreamSinkPipeline([extra_sink])
-        agent = Agent(source=source, sink=sink, writer=writer)
 
         request = AgentRequest(
             model=model,

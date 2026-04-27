@@ -22,10 +22,10 @@ from __future__ import annotations
 
 import logging
 import sys
+from typing import Any
 
 from boba.cli.vector_index.config import (
     ChromadbPersistSection,
-    CliConfigError,
     VectorIndexConfig,
     VectorIndexSection,
 )
@@ -37,6 +37,8 @@ from boba.cli.vector_index.store import VectorStore
 from boba.config.cli import CliSource
 from boba.config.env import EnvFileSource, EnvSource
 from boba.config.toml import CONFIG_PATH_ENV, TomlFileSource, TomlSource
+from boba.domain.core.config import ConfigKey, ConfigSection
+from boba.domain.core.declaration import FieldMissingError
 from boba.domain.core.patterns import ConverterInputError
 from boba.infra import ConfigFactory
 
@@ -61,20 +63,16 @@ def main() -> int:
 
     try:
         bundle = factory.build()
-    except ConverterInputError as e:
-        print(f"error: {factory.format_config_error(e)}", file=sys.stderr)
-        return 2
-
-    run_cfg = bundle.section(VectorIndexSection)
-    persist_path = bundle.section(ChromadbPersistSection).persist_path
-
-    _setup_logging(run_cfg.verbose)
-
-    handler = _HANDLERS[run_cfg.action]
-    try:
+        run_cfg = bundle.section(VectorIndexSection)
+        persist_path = bundle.section(ChromadbPersistSection).persist_path
+        _setup_logging(run_cfg.verbose)
+        handler = _HANDLERS[run_cfg.action]
         return handler(persist_path, run_cfg)
-    except CliConfigError as e:
-        print(f"error: {e}", file=sys.stderr)
+    except ConverterInputError as e:
+        # Покрывает и ошибки сборки бандла (Required в схеме, OneOf и
+        # т.п.), и per-action FieldMissingError из _require — обе ветки
+        # форматируются одной и той же recipe-машинерией фабрики.
+        print(f"error: {factory.format_config_error(e)}", file=sys.stderr)
         return 2
 
 
@@ -99,19 +97,30 @@ def _setup_logging(verbose: int) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _require(value: object, name: str, action: str) -> None:
-    if value in (None, "", []):
-        raise CliConfigError(
-            f"action={action!r}: {name} is required "
-            f"(pass --vector-index-{name.replace('_', '-')}, "
-            f"set BOBA_VECTOR_INDEX_{name.upper()}, или укажи "
-            f"[vector_index] {name} в TOML)"
-        )
+def _require(
+    value: object,
+    section: type[ConfigSection[Any]],
+    field_name: str,
+    action: str,
+) -> None:
+    """Per-action обязательность: бросает FieldMissingError, который
+    main() форматирует через ``factory.format_config_error`` — recipe
+    «как задать» собирает фреймворк из describe() источников, никакого
+    ручного перечисления CLI/env/TOML тут нет.
+    """
+    if value not in (None, "", []):
+        return
+    spec = next(f for f in section.schema.fields if f.name == field_name)
+    raise FieldMissingError(
+        f"action={action!r}: field {field_name!r} is required",
+        field=spec,
+        key=ConfigKey(*section.namespace, field_name),
+    )
 
 
 def _handle_index(persist_path: str, cfg: VectorIndexConfig) -> int:
-    _require(cfg.paths, "paths", "index")
-    _require(cfg.collection, "collection", "index")
+    _require(cfg.paths, VectorIndexSection, "paths", "index")
+    _require(cfg.collection, VectorIndexSection, "collection", "index")
     paths = cfg.paths or []
     collection = cfg.collection or ""
 
@@ -151,7 +160,7 @@ def _handle_list(persist_path: str, cfg: VectorIndexConfig) -> int:
 
 
 def _handle_delete(persist_path: str, cfg: VectorIndexConfig) -> int:
-    _require(cfg.collection, "collection", "delete")
+    _require(cfg.collection, VectorIndexSection, "collection", "delete")
     collection = cfg.collection or ""
 
     if not cfg.confirm_skip:
