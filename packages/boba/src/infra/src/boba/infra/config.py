@@ -50,12 +50,6 @@ __all__ = [
 CONFIG_SECTIONS_ENTRY_POINT = "boba.config_sections"
 """Entry-point group для секций расширений."""
 
-
-# ──────────────────────────────────────────────────────────────────────
-# Generic-purpose source: static fallback dict (test/preset helper)
-# ──────────────────────────────────────────────────────────────────────
-
-
 class DefaultSource(ConfigSource):
     """Статический fallback-словарь ConfigKey → значение."""
 
@@ -64,12 +58,6 @@ class DefaultSource(ConfigSource):
 
     def resolve(self, key: ConfigKey) -> object | None:
         return self._defaults.get(key)
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Bundle and errors
-# ──────────────────────────────────────────────────────────────────────
-
 
 class ConfigError(Exception):
     """Базовая ошибка конфиг-инфры."""
@@ -115,12 +103,6 @@ class ConfigBundle:
         if sid not in self._sections:
             raise ConfigSectionMissingError(cls)
         return cast(T, self._sections[sid])
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Built-in sections
-# ──────────────────────────────────────────────────────────────────────
-
 
 class AppCoreSection(ConfigSection[AppCoreConfig]):
     """Кросс-слойные настройки приложения: SSL/логирование."""
@@ -177,12 +159,6 @@ class AgentSection(ConfigSection[AgentConfig]):
         ],
         factory=AgentConfig,
     )
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Factory and Loader
-# ──────────────────────────────────────────────────────────────────────
-
 
 class ConfigFactory:
     """Реестр секций и сборщик ConfigBundle."""

@@ -138,12 +138,6 @@ class VectorIndexSection(ConfigSection[VectorIndexConfig]):
         factory=VectorIndexConfig,
     )
 
-
-# ──────────────────────────────────────────────────────────────────────
-# Shared chromadb persist_path как мини-секция
-# ──────────────────────────────────────────────────────────────────────
-
-
 @dataclass(frozen=True)
 class ChromadbPersistConfig:
     """Минимальный DTO под shared ``ext.chromadb.persist_path``."""

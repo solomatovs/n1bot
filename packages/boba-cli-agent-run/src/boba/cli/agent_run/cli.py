@@ -57,12 +57,6 @@ def main() -> int:
         return 2
     return 0
 
-
-# ──────────────────────────────────────────────────────────────────────
-# Bundle assembly
-# ──────────────────────────────────────────────────────────────────────
-
-
 def _build_factory() -> ConfigFactory:
     """Регистрация секций и источников; приоритет cli > env-file > env > toml-file > toml."""
     factory = ConfigFactory()
@@ -83,12 +77,6 @@ def _build_factory() -> ConfigFactory:
         ]
     )
     return factory
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Run
-# ──────────────────────────────────────────────────────────────────────
-
 
 def _build_app_config(bundle: ConfigBundle) -> AppConfig:
     """Composition AppConfig из плоских секций."""

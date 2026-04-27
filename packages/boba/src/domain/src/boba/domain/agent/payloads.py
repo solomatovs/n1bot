@@ -20,12 +20,6 @@ class ToolCallFailure:
     error_kind: str
     message: str
 
-
-# ═════════════════════════════════════════════════════════════════════
-#  Feedback к LLM — discriminated union
-# ═════════════════════════════════════════════════════════════════════
-
-
 @dataclass(frozen=True)
 class LLMCritique:
     """Общая критика к LLM (role="user"), не привязана к tool_call."""
