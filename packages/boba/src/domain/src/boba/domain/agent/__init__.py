@@ -86,6 +86,7 @@ from boba.domain.agent.prompt import (
 from boba.domain.agent.turn.reducers import (
     AgentRequestSamplingReducer,
     HistoryReducer,
+    HistoryWithTaskAnchorReducer,
     ModelReducer,
     SystemPromptReducer,
     ToolsReducer,
@@ -118,6 +119,7 @@ __all__ = [
     "GenerationRetried",
     "GenerationStarted",
     "HistoryReducer",
+    "HistoryWithTaskAnchorReducer",
     "IterationCounterMiddleware",
     "IterationStarted",
     "LLMCritique",

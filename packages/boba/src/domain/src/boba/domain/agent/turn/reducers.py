@@ -99,6 +99,61 @@ class HistoryReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]
         return state
 
 
+class HistoryWithTaskAnchorReducer(
+    ContextPrioritySource[TurnResolveContext, StrId, TurnState],
+):
+    """История + ephemeral-reminder исходной задачи после tool_result."""
+
+    def __init__(
+        self,
+        priority: int = 30,
+        min_tool_content_chars: int = 0,
+    ) -> None:
+        self._priority = priority
+        self._min_tool_content_chars = min_tool_content_chars
+
+    def id(self) -> StrId:
+        return _HISTORY_ID
+
+    def priority(self) -> int:
+        return self._priority
+
+    def apply(self, ctx: TurnResolveContext, state: TurnState) -> TurnState:
+        history = list(ctx.message_reader.message_iter())
+        anchor = self._maybe_anchor(history)
+        if anchor is not None:
+            history.append(anchor)
+        state.messages = tuple(history)
+        return state
+
+    def _maybe_anchor(self, history: list[LLMMessage]) -> LLMMessage | None:
+        if not history:
+            return None
+        last = history[-1]
+        if last.role != "tool":
+            return None
+        if len(last.content) < self._min_tool_content_chars:
+            return None
+        original = self._last_user_query(history)
+        if original is None:
+            return None
+        return LLMMessage(
+            role="system",
+            content=(
+                f'Reminder: исходная задача пользователя — "{original}". '
+                f"Продолжай работу над ней, опираясь на результат "
+                f"последнего tool_call."
+            ),
+        )
+
+    @staticmethod
+    def _last_user_query(history: list[LLMMessage]) -> str | None:
+        for msg in reversed(history):
+            if msg.role == "user":
+                return msg.content
+        return None
+
+
 class ToolsReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
     """Каталог tools из ToolsService."""
 

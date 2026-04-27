@@ -408,7 +408,7 @@ class NonEmpty(Converter[Any, Any]):
     def convert(self, value: Any) -> Any:
         if not isinstance(value, Sized):
             raise ConverterInputError(
-                f"пустота не определена для {type(value).__name__}"
+                "пуст"
             )
         if len(value) == 0:
             raise ConverterInputError("значение не должно быть пустым")
