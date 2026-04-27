@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-ext-confluence"
+version = "0.1.0"
+description = "Boba Confluence-export navigation tools: outline + section reading via workspace files."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+]
+
+[project.entry-points."boba.tools"]
+confluence = "boba.ext.confluence:register_tools"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
