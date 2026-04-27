@@ -16,7 +16,7 @@ app_root/.chainlit/config.toml) → run_chainlit(app.py).
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
+import sys
 from pathlib import Path
 
 from boba.adapter.fs_workspace import WorkspacesSection
@@ -31,7 +31,6 @@ from boba.infra import (
     AppCoreSection,
     ConfigBundle,
     ConfigFactory,
-    ConfigLoader,
 )
 from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
 from boba.web.chainlit.session import ChatSession
@@ -42,10 +41,10 @@ from boba.web.chainlit.ui_overrides import UIOverrideTomlConverter
 # ──────────────────────────────────────────────────────────────────────
 
 
-def build_factory(argv: Sequence[str] | None = None) -> ConfigFactory:
+def build_factory() -> ConfigFactory:
     """Готовая ConfigFactory с зарегистрированными секциями и
-    подключёнными источниками. Bundle ещё не собран — вызови
-    ``ConfigLoader(factory).load_bundle()`` или ``factory.build()``.
+    подключёнными источниками. Bundle собирается через
+    ``factory.build()`` (идемпотентно, кеширует).
 
     Цепочка источников: CLI > env-file > env > toml-file > toml.
     Регистрирует встроенные секции (app_core/agent), adapter-секции
@@ -64,7 +63,7 @@ def build_factory(argv: Sequence[str] | None = None) -> ConfigFactory:
     factory.discover_extension_sections()
     factory.attach_sources(
         [
-            CliSource(argv),
+            CliSource(),
             EnvFileSource(),
             EnvSource(extra_known={CONFIG_PATH_ENV}),
             TomlFileSource(),
@@ -74,11 +73,11 @@ def build_factory(argv: Sequence[str] | None = None) -> ConfigFactory:
     return factory
 
 
-def build_bundle(argv: Sequence[str] | None = None) -> ConfigBundle:
-    """Тонкая обёртка над build_factory + load_bundle. Не ловит
+def build_bundle() -> ConfigBundle:
+    """Тонкая обёртка над build_factory + factory.build(). Не ловит
     ConverterInputError — caller'ы (main / тесты) сами решают, что с
     ним делать."""
-    return ConfigLoader(build_factory(argv)).load_bundle()
+    return build_factory().build()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -124,13 +123,10 @@ def write_ui_config_overrides(cfg: ChainlitConfig, app_root: Path) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    # argv пробрасывается в CliSource через build_factory. None →
-    # CliSource берёт sys.argv[1:] сам (совместимо с stdlib-конвенцией
-    # entry-point script / python -m).
-    factory = build_factory(argv)
+def main() -> int:
+    factory = build_factory()
     try:
-        bundle = ConfigLoader(factory).load_bundle()
+        bundle = factory.build()
     except ConverterInputError as e:
         print(f"error: {factory.format_config_error(e)}", file=sys.stderr)
         return 2

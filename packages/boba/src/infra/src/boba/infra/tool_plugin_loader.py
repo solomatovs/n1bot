@@ -60,22 +60,18 @@ class ToolPluginRegisterError(ToolPluginError):
 class ExtensionContext:
     """Контракт окружения для register_tools(ctx).
 
-    config — application-singleton, строится один раз на старте,
-    передаётся в register-вызовы каждого плагина и дальше не меняется.
-    Per-request зависимости (project_workspace пользователя) сюда не
-    входят — tool-инстансы получают рабочий workspace через
+    config — application-singleton ConfigBundle, строится один раз на
+    старте, передаётся в register-вызовы каждого плагина и дальше не
+    меняется. Per-request зависимости (project_workspace пользователя)
+    сюда не входят — tool-инстансы получают рабочий workspace через
     ToolContext в execute.
 
-    Через config плагин достаёт:
-
-    - ctx.config.section(MyExtSection) — типизированный DTO своей
-      ConfigSection;
-    - ctx.config.app — общий AppConfig (workspaces, llm, ...);
-    - ctx.config.agent — AgentConfig для лимитов.
-
-    LLM-credentials отдельно не передаются — они уже внутри
-    ctx.config.app.llm; читать их плагину не запрещено, но и
-    раздавать «на всякий случай» в дискретное поле смысла нет.
+    Доступ к конфигу — типизированно через ``ctx.config.section(cls)``:
+    плагин достаёт DTO своей собственной ConfigSection (например,
+    ``ctx.config.section(ChromadbSection)``) или любой другой
+    зарегистрированной adapter-секции (``LLMTransportSection``,
+    ``WorkspacesSection`` и т.д.) — ConfigBundle generic, никаких
+    application-специфичных shortcuts.
     """
 
     config: ConfigBundle

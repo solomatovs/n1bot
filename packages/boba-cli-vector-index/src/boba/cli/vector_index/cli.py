@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import logging
 import sys
-from collections.abc import Sequence
 
 from boba.cli.vector_index.config import (
     ChromadbPersistSection,
@@ -44,7 +43,7 @@ from boba.infra import ConfigFactory
 logger = logging.getLogger("boba.cli.vector_index")
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main() -> int:
     """Entry-point. Возвращает exit-code (0 = успех)."""
     factory = ConfigFactory()
     factory.register(VectorIndexSection())
@@ -52,7 +51,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     factory.discover_extension_sections()
     factory.attach_sources(
         [
-            CliSource(argv),
+            CliSource(),
             EnvFileSource(),
             EnvSource(extra_known={CONFIG_PATH_ENV}),
             TomlFileSource(),

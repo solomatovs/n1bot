@@ -21,17 +21,20 @@ from boba.adapter.fs_workspace import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
     FsPromptWorkspaceRegistry,
+    WorkspacesSection,
 )
 from boba.adapter.messages import InMemoryMessageService
 from boba.adapter.openai import (
     FileContentObserver,
+    LLMTransportSection,
     create_llm_source,
 )
-from boba.adapter.prompt_providers import PromptLoader
+from boba.adapter.prompt_providers import PromptLoader, PromptsSection
 from boba.domain.agent import Agent
 from boba.domain.agent.dialogue_writer import DialogueWriter
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.models import AgentContext, AgentRequest
+from boba.domain.config import AppConfig
 from boba.domain.core.patterns import StreamSink, StreamSinkPipeline
 from boba.domain.core.tools import ToolContext
 from boba.domain.core.workspace import (
@@ -42,6 +45,8 @@ from boba.domain.core.workspace import (
 from boba.domain.llm.models import RequestId
 from boba.infra import (
     AgentComponents,
+    AgentSection,
+    AppCoreSection,
     ConfigBundle,
     ExtensionContext,
     ToolPluginLoader,
@@ -50,6 +55,21 @@ from boba.infra import (
     log_context,
 )
 from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
+
+
+def _build_app_config(bundle: ConfigBundle) -> AppConfig:
+    """Composition AppConfig из плоских секций приложения. Знание про
+    конкретный набор адаптеров (workspaces/llm/prompts) живёт здесь, а
+    не в фреймворке (см. ``boba.infra.config``: ConfigBundle generic)."""
+    core = bundle.section(AppCoreSection)
+    return AppConfig(
+        workspaces=bundle.section(WorkspacesSection),
+        llm=bundle.section(LLMTransportSection),
+        prompts_dir=bundle.section(PromptsSection),
+        ssl_verify=core.ssl_verify,
+        log_level=core.log_level,
+        log_file=core.log_file,
+    )
 
 
 class ChatSession:
@@ -78,9 +98,9 @@ class ChatSession:
             )
             raise RuntimeError(msg)
         bundle = ChatSession._bundle
-        self._app_config = bundle.app
+        self._app_config = _build_app_config(bundle)
         configure_logging(self._app_config.log_level, self._app_config.log_file)
-        self._agent_config = bundle.agent
+        self._agent_config = bundle.section(AgentSection)
         self._chainlit_config: ChainlitConfig = bundle.section(ChainlitSection)
 
         self._workspaces = FsProjectWorkspaceRegistry(

@@ -1,13 +1,15 @@
 """Конфигурация приложения.
 
 AppConfig — кросс-слойные настройки приложения + LLMConfig.
-AgentConfig живёт в agent-слое и
-загружается ConfigLoader-ом отдельно —
-чтобы корневой AppConfig не тянул зависимость на agent/.
+AgentConfig живёт в agent-слое отдельно — чтобы корневой AppConfig не
+тянул зависимость на agent/. Composition AppConfig'а из плоских
+ConfigSection'ов делает consumer-bootstrap (он знает, какой набор
+adapter-секций зарегистрирован в фабрике); фреймворк лишь даёт
+``ConfigBundle.section(cls)`` для типизированного доступа.
 
 Конфиги расширений сюда не попадают: extension объявляет собственную
-ConfigSection, и её типизированный DTO
-достаётся через ConfigBundle.section(SectionCls).
+ConfigSection, и её типизированный DTO достаётся через
+``ConfigBundle.section(SectionCls)``.
 """
 
 from __future__ import annotations

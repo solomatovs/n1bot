@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Sequence
 from pathlib import Path
 
 from boba.adapter.fs_workspace import (
@@ -34,6 +33,7 @@ from boba.config.cli import CliSource
 from boba.config.env import EnvFileSource, EnvSource
 from boba.config.toml import CONFIG_PATH_ENV, TomlFileSource, TomlSource
 from boba.domain.agent.models import AgentRequest
+from boba.domain.config import AppConfig
 from boba.domain.core.patterns import ConverterInputError
 from boba.domain.core.tools import ToolContext
 from boba.domain.core.workspace import (
@@ -45,8 +45,8 @@ from boba.infra import (
     AgentComponents,
     AgentSection,
     AppCoreSection,
+    ConfigBundle,
     ConfigFactory,
-    ConfigLoader,
     ExtensionContext,
     ToolPluginLoader,
     configure_logging,
@@ -54,9 +54,9 @@ from boba.infra import (
 )
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main() -> int:
     """Entry-point. Возвращает exit-code (0 = успех)."""
-    factory = _build_factory(argv)
+    factory = _build_factory()
     try:
         _run(factory)
     except ConverterInputError as e:
@@ -73,7 +73,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _build_factory(argv: Sequence[str] | None) -> ConfigFactory:
+def _build_factory() -> ConfigFactory:
     """Регистрация секций + источников.
 
     Cli > env-file > env > toml-file > toml. Adapter-секции и
@@ -91,7 +91,7 @@ def _build_factory(argv: Sequence[str] | None) -> ConfigFactory:
     factory.discover_extension_sections()
     factory.attach_sources(
         [
-            CliSource(argv),
+            CliSource(),
             EnvFileSource(),
             EnvSource(extra_known={CONFIG_PATH_ENV}),
             TomlFileSource(),
@@ -106,11 +106,27 @@ def _build_factory(argv: Sequence[str] | None) -> ConfigFactory:
 # ──────────────────────────────────────────────────────────────────────
 
 
+def _build_app_config(bundle: ConfigBundle) -> AppConfig:
+    """Composition AppConfig из плоских секций, зарегистрированных
+    выше в _build_factory. Знание про конкретный набор адаптеров
+    (workspaces/llm/prompts) живёт здесь, а не в фреймворке.
+    """
+    core = bundle.section(AppCoreSection)
+    return AppConfig(
+        workspaces=bundle.section(WorkspacesSection),
+        llm=bundle.section(LLMTransportSection),
+        prompts_dir=bundle.section(PromptsSection),
+        ssl_verify=core.ssl_verify,
+        log_level=core.log_level,
+        log_file=core.log_file,
+    )
+
+
 def _run(factory: ConfigFactory) -> None:
     """Собирает агент с полным стеком middleware и прогоняет один запрос."""
-    bundle = ConfigLoader(factory).load_bundle()
-    app_config = bundle.app
-    agent_config = bundle.agent
+    bundle = factory.build()
+    app_config = _build_app_config(bundle)
+    agent_config = bundle.section(AgentSection)
     run_cfg: AgentRunConfig = bundle.section(AgentRunSection)
     configure_logging(app_config.log_level, app_config.log_file)
 
