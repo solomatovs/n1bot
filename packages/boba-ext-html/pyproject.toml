@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-ext-html"
+version = "0.1.0"
+description = "Boba HTML navigation tools: outline + section reading via workspace files."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+]
+
+[project.entry-points."boba.tools"]
+html = "boba.ext.html:register_tools"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
