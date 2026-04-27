@@ -11,13 +11,17 @@ import chainlit as cl
 from boba.domain.agent.events import (
     Advisory,
     AgentEvent,
+    AnswerStarted,
     ContentDelta,
     ContentSnapshot,
+    GenerationDone,
+    GenerationStarted,
     IterationStarted,
     LLMRequestSent,
     PhaseTransition,
     SlotKind,
     Terminal,
+    ThinkingStarted,
     ToolCallStreamStarted,
     ToolExecutionFailed,
     ToolExecutionStarted,
@@ -238,9 +242,12 @@ class _EventRenderer:
                 ).send()
 
     async def _on_phase(self, e: PhaseTransition) -> None:
-        # Все остальные phase-события — пульс, который мы не показываем
-        # в UI. Точечная обработка для двух concrete'ов — статус-строка
-        # и создание Step'ов для tools.
+        # Большинство phase-событий — внутренний пульс агента, в UI их
+        # не показываем. Здесь — только те, у которых есть рендер-
+        # эффект; диспатч строго по классу, не по label() (label —
+        # human-readable текст для логов и status-bar, не discriminator).
+        # Не покрытые здесь GenerationRetried / LLMResponseStreamOpened /
+        # IterationStarted (первая итерация) — наблюдаемого эффекта нет.
         match e:
             case ToolCallStreamStarted():
                 await self._on_tool_call_stream_started(e)
@@ -258,20 +265,16 @@ class _EventRenderer:
                 await self._set_status(
                     f"Итерация: {e.iteration}/{e.max_iterations}…",
                 )
-            case _:
-                # GenerationStarted, ThinkingStarted, AnswerStarted,
-                # GenerationDone, GenerationRetried, IterationStarted (1) —
-                # у этих рендер-эффект только в очистке статуса.
-                if e.label() == "answer":
-                    await self._open_answer()
-                elif e.label() == "thinking":
-                    await self._clear_status()
-                    self.thinking_step = cl.Step(name="thinking", type="run")
-                    await self.thinking_step.send()
-                elif e.label() == "generation":
-                    await self._set_status("Модель обрабатывает запрос…")
-                elif e.label().startswith("generation done"):
-                    await self._clear_status()
+            case AnswerStarted():
+                await self._open_answer()
+            case ThinkingStarted():
+                await self._clear_status()
+                self.thinking_step = cl.Step(name="thinking", type="run")
+                await self.thinking_step.send()
+            case GenerationStarted():
+                await self._set_status("Модель обрабатывает запрос…")
+            case GenerationDone():
+                await self._clear_status()
 
     async def _on_tool_call_stream_started(self, e: ToolCallStreamStarted) -> None:
         await self._clear_status()

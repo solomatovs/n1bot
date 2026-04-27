@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from boba.adapter.openai.raw_observer import MultiKeyReasoningExtractor
 from boba.domain.core.patterns import (
     Converter,
     StreamTransformer,
@@ -35,40 +36,6 @@ from openai.types.chat.chat_completion_chunk import (
     Choice,
     ChoiceDelta,
 )
-
-
-class MultiKeyReasoningExtractor(Converter[ChoiceDelta, str | None]):
-    """
-    Разные провайдеры кладут «рассуждения» модели в разные поля:
-
-    - reasoning_content — DeepSeek, xAI Grok, часть OpenAI-compat прокси;
-    - thinking — Anthropic через openai-compat, некоторые LiteLLM-маршруты;
-    - reasoning — Ollama native, Groq.
-
-    Этот конвертер позволяет извлекать reasoning-токен из delta.model_extra,
-    перебирая известные ключи по порядку.
-    """
-
-    DEFAULT_KEYS: tuple[str, ...] = (
-        "reasoning_content",
-        "thinking",
-        "reasoning",
-    )
-
-    def __init__(self) -> None:
-        # это ключи в которых я видел как возвращались thinking
-        # зачем разные модели эмитят thinking в разных ключах я не знаю
-        self._keys = self.DEFAULT_KEYS
-
-    def convert(self, value: ChoiceDelta) -> str | None:
-        extra = value.model_extra or {}
-        # перебираем ключи по порядку и если есть значение возвращаем
-        for k in self._keys:
-            v = extra.get(k)
-            if v:
-                return str(v)
-
-        return None
 
 
 class ThinkingSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
