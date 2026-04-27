@@ -31,7 +31,7 @@ class LLMTransportSection(ConfigSection[LLMConfig]):
             FieldSpec(
                 name="base_url",
                 converter=ChainConverter(
-                    Default("http://localhost:11434/v1"), ParseString(),
+                    Default("http://localhost:4000"), ParseString(),
                 ),
                 description="OpenAI-совместимый base URL LLM-сервера "
                 "(LiteLLM/Ollama/...).",
