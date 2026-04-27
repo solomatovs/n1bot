@@ -59,11 +59,14 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
         self,
         client: OpenAI,
         observer: LLMRequestObserver[dict[str, Any], ChatCompletionChunk],
+        *,
+        reindex_tool_calls: bool = True,
     ) -> None:
         self._client = client
         self._to_request = ToOpenAIRequestConverter()
         self._error_converter = OpenAIErrorConverter()
         self._observer = observer
+        self._reindex_tool_calls = reindex_tool_calls
 
     def name(self) -> str:
         return "OpenAITerminal"
@@ -95,9 +98,10 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
             )
 
             try:
-                yield from FromOpenAIChunkConverter(ctx.request_id).stream(
-                    ctx, self._observe_chunks(response)
-                )
+                yield from FromOpenAIChunkConverter(
+                    ctx.request_id,
+                    reindex_tool_calls=self._reindex_tool_calls,
+                ).stream(ctx, self._observe_chunks(response))
             except LLMError:
                 raise
             except (openai.APIError, httpx.HTTPError) as e:

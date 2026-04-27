@@ -50,11 +50,18 @@ class LLMTransportSection(ConfigSection[LLMConfig]):
 def create_llm_source(
     llm_config: LLMConfig,
     observer: LLMRequestObserver[dict[str, Any], ChatCompletionChunk],
+    *,
+    reindex_tool_calls: bool = True,
 ) -> StreamSource[LLMContext, LLMEvent]:
-    """Готовый StreamSource поверх openai-SDK с подключённым observer'ом."""
+    """Готовый StreamSource поверх openai-SDK с подключённым observer'ом.
+
+    reindex_tool_calls=False отключает починку коллизий index у параллельных
+    tool_calls в стриме — для случаев, когда провайдер уже корректен.
+    """
     return StreamSourceChainBuilder[LLMContext, LLMEvent]().terminal(
         OpenAITerminal(
             build_openai_client(llm_config),
             observer=observer,
+            reindex_tool_calls=reindex_tool_calls,
         )
     )

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from boba.adapter.openai.observer import MultiKeyReasoningExtractor
+from boba.adapter.openai.tool_call_reindexer import DuplicateToolCallIndexReindexer
 from boba.domain.core.patterns import (
     Converter,
     StreamTransformer,
@@ -208,7 +209,14 @@ class FromOpenAIChunkConverter(
     def __init__(
         self,
         request_id: RequestId,
+        *,
+        reindex_tool_calls: bool = True,
     ) -> None:
+        # Чинит коллизии index у параллельных tool_calls до их сборки;
+        # None — фича отключена, choices идут в pipeline без модификации.
+        self._reindexer: DuplicateToolCallIndexReindexer | None = (
+            DuplicateToolCallIndexReindexer() if reindex_tool_calls else None
+        )
         # Строгая последовательность вызова.
         self._pipeline = StreamTransformerPipeline[LLMContext, Choice, LLMEvent](
             [
@@ -225,10 +233,17 @@ class FromOpenAIChunkConverter(
         return f"FromOpenAIChunkConverter({self._pipeline.name()})"
 
     def reset(self) -> None:
+        if self._reindexer is not None:
+            self._reindexer.reset()
         self._pipeline.reset()
 
     def stream(
         self, ctx: LLMContext, stream: Iterable[ChatCompletionChunk]
     ) -> Iterable[LLMEvent]:
         for chunk in stream:
-            yield from self._pipeline.stream(ctx, chunk.choices)
+            choices: Iterable[Choice] = chunk.choices
+            if self._reindexer is not None:
+                # Reindexer мутирует tc.index in-place; материализация нужна,
+                # чтобы fan-out pipeline увидел уже исправленные choices.
+                choices = list(self._reindexer.stream(ctx, choices))
+            yield from self._pipeline.stream(ctx, choices)
