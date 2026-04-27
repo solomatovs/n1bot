@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from abc import abstractmethod
 from collections.abc import Sized
+from pathlib import Path
 from typing import Any, ClassVar, Final, Generic, TypeVar
 
 from boba.domain.core.patterns import Converter, ConverterInputError, MissingValueError
@@ -30,8 +32,11 @@ __all__ = [
     "ParseCsvList",
     "ParseFloat",
     "ParseInt",
+    "ParseList",
     "ParseString",
     "Pass",
+    "ReadJsonFile",
+    "ReadTextFile",
     "Required",
     "RequiresTogether",
     "ValueConverter",
@@ -263,6 +268,105 @@ class ParseCsvList(ValueConverter, SchemaContributor):
     def contribute(self, schema: ParamWireSchema) -> None:
         schema.property["type"] = "array"
         schema.property["items"] = {"type": "string"}
+
+
+class ParseList(ValueConverter, SchemaContributor):
+    """Привести значение к list[T] через item-конвертер; wire: type=array.
+
+    Принимает list (применяет item.convert к каждому) либо str
+    (split по запятой как у ParseCsvList — для env/CLI). Элементы,
+    после конвертации равные MISSING, в результат не попадают.
+    """
+
+    def __init__(self, item: Converter[Any, Any]) -> None:
+        self._item = item
+
+    def _convert_value(self, value: Any) -> list[Any]:
+        if isinstance(value, str):
+            value = [v.strip() for v in value.split(",") if v.strip()]
+        elif not isinstance(value, list):
+            raise ConverterInputError(
+                f"cannot convert {type(value).__name__} to list"
+            )
+        result: list[Any] = []
+        for i, raw in enumerate(value):
+            try:
+                converted = self._item.convert(raw)
+            except ConverterInputError as exc:
+                raise ConverterInputError(f"item[{i}]: {exc}") from exc
+            if converted is not MISSING:
+                result.append(converted)
+        return result
+
+    def contribute(self, schema: ParamWireSchema) -> None:
+        schema.property["type"] = "array"
+        sub = ParamWireSchema()
+        if isinstance(self._item, SchemaContributor):
+            self._item.contribute(sub)
+        if sub.property:
+            schema.property["items"] = dict(sub.property)
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  File-include конвертеры (значение как путь → содержимое файла)
+# ═════════════════════════════════════════════════════════════════════
+
+
+class ReadTextFile(ValueConverter):
+    """Трактует значение как путь к файлу; возвращает его содержимое.
+
+    Не контрибьютит wire-type: итоговый тип определяют соседние
+    конвертеры в ChainConverter (например, ParseList после JSON-парсинга).
+    Если файла нет или путь не строка — ConverterInputError.
+    """
+
+    def __init__(self, *, encoding: str = "utf-8", strip: bool = False) -> None:
+        self._encoding = encoding
+        self._strip = strip
+
+    def _convert_value(self, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ConverterInputError(
+                f"expected file path (str), got {type(value).__name__}"
+            )
+        path = Path(value)
+        if not path.is_file():
+            raise ConverterInputError(f"file not found: {value!r}")
+        try:
+            text = path.read_text(encoding=self._encoding)
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ConverterInputError(f"cannot read {value!r}: {exc}") from exc
+        return text.strip() if self._strip else text
+
+
+class ReadJsonFile(ValueConverter):
+    """Трактует значение как путь к JSON-файлу; возвращает распарсенное содержимое.
+
+    Не контрибьютит wire-type — см. ReadTextFile. Битый JSON или
+    отсутствующий файл — ConverterInputError.
+    """
+
+    def __init__(self, *, encoding: str = "utf-8") -> None:
+        self._encoding = encoding
+
+    def _convert_value(self, value: Any) -> Any:
+        if not isinstance(value, str):
+            raise ConverterInputError(
+                f"expected file path (str), got {type(value).__name__}"
+            )
+        path = Path(value)
+        if not path.is_file():
+            raise ConverterInputError(f"file not found: {value!r}")
+        try:
+            raw = path.read_text(encoding=self._encoding)
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ConverterInputError(f"cannot read {value!r}: {exc}") from exc
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ConverterInputError(
+                f"invalid JSON in {value!r}: {exc}"
+            ) from exc
 
 
 # ═════════════════════════════════════════════════════════════════════
