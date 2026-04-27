@@ -1,18 +1,4 @@
-"""Простой character-based text splitter.
-
-Логика:
-
-1. Если текст короче chunk_size — один чанк, без splitting.
-2. Иначе режем по фиксированному окну chunk_size с overlap chunk_overlap.
-3. Внутри окна стараемся резать по последнему \\n (или пробелу), чтобы
-   не рвать слова/строки посередине. Если разделителя нет — режем по
-   жёсткому offset.
-
-Без сторонних библиотек — ни langchain, ни tiktoken: для
-.md/.txt character-window работает достаточно хорошо, а для
-HTML/PDF мы потом добавим формат-специфичный pre-processing в
-reader'ах.
-"""
+"""Простой character-based text splitter."""
 
 from __future__ import annotations
 
@@ -58,15 +44,11 @@ def split_text(
 
 
 def _soft_break(text: str, start: int, end: int) -> int:
-    """Сдвигает end к ближайшему разделителю слева. Если ничего
-    приемлемого в окне [start, end) нет — возвращает end как
-    есть (hard break).
-    """
+    """Сдвинуть end к ближайшему разделителю слева; иначе hard break."""
     window = text[start:end]
     for sep in _SOFT_BREAKS:
         idx = window.rfind(sep)
-        # требуем чтобы break был хотя бы в середине окна, иначе
-        # чанки получатся слишком мелкими
+        # break должен быть хотя бы в середине окна
         if idx != -1 and idx >= len(window) // 2:
             return start + idx + len(sep)
     return end

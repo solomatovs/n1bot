@@ -1,8 +1,4 @@
-"""Конфиг-секция файлового discovery system-prompt'ов.
-
-Поле одно — обязательная директория BOBA_PROMPTS_DIR, откуда
-PromptLoader читает *.md/*.txt блоки на старте процесса.
-"""
+"""Конфиг-секция файлового discovery system-prompt'ов."""
 
 from __future__ import annotations
 
@@ -14,15 +10,7 @@ from boba.domain.core.validators import ChainConverter, ParseString, Required
 
 
 class PromptsSection(ConfigSection[str]):
-    """Путь к директории с системными prompt'ами.
-
-    DIR — обязательное поле: оператор должен явно указать, откуда
-    PromptLoader берёт system-prompt блоки при старте.
-
-    Поле в env-источнике маппится в BOBA_PROMPTS_DIR — секция
-    декларирует namespace ("prompts",) и имя поля "dir".
-    Factory разворачивает kwargs-dict в строку (поле одно).
-    """
+    """Путь к директории с системными prompt'ами."""
 
     id: ClassVar[StrId] = StrId("prompts")
     namespace: ClassVar[tuple[str, ...]] = ("prompts",)

@@ -1,9 +1,4 @@
-"""Конфиг-секция файлового workspace-адаптера.
-
-Описывает раскладку namespace'ов под base_dir —
-project/history/scratch — это деталь реализации FS-адаптера, в
-доменном WorkspaceShell её нет.
-"""
+"""Конфиг-секция файлового workspace-адаптера."""
 
 from __future__ import annotations
 

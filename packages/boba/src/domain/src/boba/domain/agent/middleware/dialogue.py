@@ -1,17 +1,4 @@
-"""AssistantMessagePersistenceMiddleware.
-
-Агрегирует стриминговые токены и tool-call-дельты в ContentSnapshot-события,
-коммитит assistant-сообщение через DialogueWriter:
-
-- GenerationStarted → сброс per-request_id буферов (корректность после retry);
-- AnswerToken/ThinkingToken → аккумуляция в буферы;
-- ToolCallStreamStarted/ToolCallArgumentDelta → регистрация и аккумуляция
-  arguments по index;
-- GenerationDone → flush AnswerComplete/ThinkingComplete + ToolCallComplete
-  (по index, в возрастающем порядке) ПЕРЕД самой GenerationDone, затем коммит.
-
-RefusalComplete пока не эмитится — RefusalToken не используется на агент-слое.
-"""
+"""AssistantMessagePersistenceMiddleware: токены → snapshots, commit."""
 
 from __future__ import annotations
 

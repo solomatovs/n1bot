@@ -1,6 +1,4 @@
-"""
-Классификация сырых openai/httpx исключений в LLMError
-"""
+"""Классификация сырых openai/httpx исключений в LLMError."""
 
 from __future__ import annotations
 
@@ -29,12 +27,7 @@ from boba.domain.llm.errors import (
 
 
 class IsContextLengthError(ExceptionSpecification):
-    """Матчит openai.BadRequestError с маркером context_length_exceeded.
-
-    Матчит по телу ответа (структурированный code) либо по
-    текстовому сообщению — OpenAI-совместимые бэкенды не всегда
-    возвращают структуру, но формулировки в тексте устойчивы.
-    """
+    """Матчит openai.BadRequestError с маркером context_length_exceeded."""
 
     def check(self, candidate: Exception) -> bool:
         if not isinstance(candidate, openai.BadRequestError):
@@ -98,13 +91,7 @@ class OpenAIErrorConverter(FirstMatchConverter[Exception, LLMError]):
 
     @staticmethod
     def status_code(exc: Exception) -> int:
-        """HTTP-статус из APIStatusError.
-
-        Вызывается только из lambda-правил, где IsInstance-спека уже
-        гарантировала APIStatusError-ветку. Проверка фиксирует
-        инвариант маршрутизации: если правило вызвано на другом типе —
-        это баг, а не runtime-ошибка.
-        """
+        """HTTP-статус из APIStatusError."""
         if not isinstance(exc, openai.APIStatusError):  # pragma: no cover — инвариант
             raise RuntimeError(
                 "OpenAIErrorConverter.status_code invariant broken: "

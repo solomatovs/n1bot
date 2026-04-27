@@ -1,7 +1,4 @@
-"""Файловые реализации WorkspaceShell / WorkspaceRegistry.
-
-Отдельный pip-пакет; core boba от него не зависит.
-"""
+"""Файловые реализации WorkspaceShell / WorkspaceRegistry."""
 
 from boba.adapter.fs_workspace.config import WorkspacesSection
 from boba.adapter.fs_workspace.registry import (

@@ -1,13 +1,4 @@
-"""Boba extension: builtin file-system tools.
-
-Регистрируется в боба через entry-point boba.tools (см. pyproject.toml).
-ToolPluginLoader при старте процесса вызывает register_tools —
-функция возвращает один StaticToolSource со всеми 15 файловыми
-tools (cat/ls/grep/edit/write/...) под общим ToolSourceId("builtin.files").
-
-Зависимостей кроме boba пакет не имеет: все tools работают через
-project_workspace.
-"""
+"""Boba extension: builtin file-system tools."""
 
 from __future__ import annotations
 
@@ -35,13 +26,7 @@ __all__ = ["register_tools"]
 
 
 def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
-    """Entry-point boba.tools: возвращает все файловые tools одним
-    источником.
-
-    ctx пока не используется — пакет не имеет конфига и не нуждается
-    в зависимостях из ConfigBundle. Параметр
-    сохранён для совместимости с RegisterToolsFn.
-    """
+    """Entry-point boba.tools: все файловые tools одним источником."""
     del ctx
     yield StaticToolSource(
         ToolSourceId("builtin.files"),

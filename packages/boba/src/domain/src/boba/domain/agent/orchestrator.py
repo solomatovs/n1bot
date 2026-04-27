@@ -1,12 +1,4 @@
-"""Оркестратор агента — связка source → sink.
-
-run() кладёт query в MessageService через DialogueWriter (единственная
-точка, где первый user-message появляется в истории — после записи он
-нигде в runtime-контексте не живёт), создаёт AgentContext и сливает
-source в sink.
-
-Loop/Boundary-обёртки навешиваются снаружи в контейнере.
-"""
+"""Оркестратор агента — связка source → sink."""
 
 from __future__ import annotations
 

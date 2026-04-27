@@ -35,7 +35,6 @@ class CliSource(ConfigSource):
     """Schema-driven argv-источник: bind_schema → argparse → resolve."""
 
     def __init__(self) -> None:
-        """Пустой source; реальная инициализация — в bind_schema."""
         self._values: dict[ConfigKey, object] = {}
         self._bound: bool = False
 
@@ -54,8 +53,6 @@ class CliSource(ConfigSource):
         items: Iterable[tuple[ConfigKey, FieldSpec[Any]]],
     ) -> tuple[argparse.ArgumentParser, dict[str, ConfigKey]]:
         """argparse + dest→ConfigKey reverse-индекс; дубли ConfigKey'ев игнорируются."""
-        # add_argument отверг бы повторный флаг — первый выигрывает,
-        # значение всё равно одно (ConfigKey идентичен).
         parser = argparse.ArgumentParser(
             description="Boba CLI config (флаги = cli_flag_name(ConfigKey))."
         )
@@ -78,8 +75,7 @@ class CliSource(ConfigSource):
         namespace: argparse.Namespace,
         dest_to_key: dict[str, ConfigKey],
     ) -> dict[ConfigKey, object]:
-        """Перевести argparse-namespace в ConfigKey-keyed словарь; None/`` `` пропускаем."""
-        # Пустая строка из launch.json input-бокса = «не задано».
+        """argparse-namespace → ConfigKey-keyed словарь; None/'' пропускаем."""
         parsed = vars(namespace)
         return {
             key: parsed[dest]

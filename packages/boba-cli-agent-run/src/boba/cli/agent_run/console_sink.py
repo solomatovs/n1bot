@@ -1,9 +1,4 @@
-"""Sink в stdout/stderr поверх семей событий.
-
-Sink матчит по семьям (PhaseTransition, ContentDelta, ContentSnapshot,
-Advisory, Terminal) и дёргает интерфейс семьи. Добавление нового
-concrete'а в семью не требует правок sink'а.
-"""
+"""Sink в stdout/stderr поверх семей событий."""
 
 from __future__ import annotations
 
@@ -26,27 +21,7 @@ from boba.domain.core.patterns import StreamSink
 
 
 class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
-    """AgentEvent → stdout/stderr.
-
-    Принимает любые TextIO — удобно для stdout/stderr и
-    для подмены в тестах.
-
-    use_color:
-      * None (по умолчанию) — авто: включаем, если оба потока —
-        TTY и не выставлена переменная окружения NO_COLOR.
-      * True / False — явный override.
-
-    verbose:
-      * False (по умолчанию) — для PhaseTransition показываем
-        только label(); body() пропускаем.
-      * True — показываем и body() (полные details, payload'ы
-        round-trip'а).
-
-    Streaming-токены идут inline без перевода строки. ContentSnapshot
-    для streaming-слотов (ANSWER/THINKING/REFUSAL) только закрывает
-    строку — токены уже выведены потоково. Остальные snapshot'ы
-    рисуются полностью с заголовком и body.
-    """
+    """AgentEvent → stdout/stderr; use_color=None — авто по TTY/NO_COLOR."""
 
     # ── Цвета ────────────────────────────────────────────────────────
     _RESET = "\x1b[0m"
@@ -60,7 +35,6 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
     _BOLD_CYAN = "\x1b[1;36m"
     _BOLD_GREEN = "\x1b[1;32m"
 
-    # Слоты, у которых snapshot — это просто закрытие streaming-строки.
     _STREAMING_SLOTS = frozenset({SlotKind.ANSWER, SlotKind.THINKING, SlotKind.REFUSAL})
 
     _MAX_PREVIEW = 200
@@ -112,7 +86,6 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
     # ── Per-family ───────────────────────────────────────────────────
 
     def _on_delta(self, e: ContentDelta) -> None:
-        # Inline-токен в slot — без перевода строки.
         chunk = e.chunk()
         if not chunk:
             return
@@ -121,7 +94,6 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
 
     def _on_snapshot(self, e: ContentSnapshot) -> None:
         slot = e.slot()
-        # Для streaming-слотов токены уже выведены — просто закрываем строку.
         if slot in self._STREAMING_SLOTS:
             self._line("")
             return
@@ -160,7 +132,6 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
     # ── helpers ──────────────────────────────────────────────────────
 
     def _color_for_slot(self, slot: SlotKind) -> str:
-        # ANSWER без подкраски — это основной текст ответа пользователю.
         return {
             SlotKind.ANSWER: "",
             SlotKind.THINKING: self._DIM,

@@ -14,11 +14,7 @@ from boba.domain.core.patterns import Specification, StreamSource
 
 
 class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """
-    Инкрементирует счётчик циклов
-    Выдает исключение если превышено кол-во циклов агента
-    Для маленьких моделей, которые часто зацикливаются это необходимость
-    """
+    """Инкрементирует счётчик итераций; MaxIterationsExceededError при превышении."""
 
     def __init__(self, inner: StreamSource[AgentContext, AgentEvent]) -> None:
         self._inner = inner
@@ -49,9 +45,7 @@ class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
 
 
 class StopOnFinished(Specification[tuple[AgentContext, AgentEvent]]):
-    """
-    Останавливает цикл, если от llm пришла комманда остановки
-    """
+    """Останавливает цикл при terminal finish_reason от LLM."""
 
     def check(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
         _ctx, event = candidate
@@ -61,9 +55,7 @@ class StopOnFinished(Specification[tuple[AgentContext, AgentEvent]]):
 
 
 class StopOnAnyFailure(Specification[tuple[AgentContext, AgentEvent]]):
-    """
-    Останавливает цикл при любом Terminal
-    """
+    """Останавливает цикл при любом Terminal-событии."""
 
     def check(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
         _ctx, event = candidate

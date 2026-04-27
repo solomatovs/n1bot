@@ -1,7 +1,4 @@
-"""Файловые реализации WorkspaceShell (base + concrete).
-
-Registry-классы — рядом в _registry.
-"""
+"""Файловые реализации WorkspaceShell."""
 
 from __future__ import annotations
 
@@ -48,14 +45,7 @@ def _contain_within_root(
     path: str,
     cwd_parts: tuple[str, ...] = (),
 ) -> str:
-    """Нормализует ввод к пути внутри workspace (containment ..).
-
-    Абсолютный путь (с ведущим /) разрешается от корня workspace —
-    cwd_parts игнорируется. Относительный — от cwd_parts. .
-    пропускается, .. обрабатывается по стеку: если стек пуст (вышли
-    бы выше корня) — компонент отбрасывается. Результат не содержит
-    ведущего /.
-    """
+    """Нормализует ввод к пути внутри workspace (containment ..)."""
     is_absolute = path.startswith("/")
     stack: list[str] = [] if is_absolute else list(cwd_parts)
     for part in path.replace("\\", "/").split("/"):
@@ -71,13 +61,7 @@ def _contain_within_root(
 
 @dataclass(frozen=True)
 class WorkspacePath:
-    """Три формы одного пути, обработанного _resolve.
-
-    * source — исходный ввод как есть (для логов и диагностики).
-    * relative — путь относительно корня workspace, безопасно
-      показывать пользователю в ошибках (не раскрывает реальный путь).
-    * absolute — физический путь на диске, для I/O и логов.
-    """
+    """Три формы одного пути: source, relative, absolute."""
 
     source: str
     relative: str
@@ -86,12 +70,7 @@ class WorkspacePath:
 
 @contextmanager
 def _translate_os_errors(resolved: WorkspacePath) -> Iterator[None]:
-    """Переводит низкоуровневые OSError в иерархию WorkspaceError.
-
-    В публичные ошибки кладётся resolved.relative (не раскрывает
-    реальный путь), а в debug-лог уходят source + absolute для
-    диагностики.
-    """
+    """Переводит OSError в иерархию WorkspaceError."""
     try:
         yield
     except WorkspaceError:
@@ -125,14 +104,7 @@ def _translate_os_errors(resolved: WorkspacePath) -> Iterator[None]:
 
 
 class _WorkspaceTextStream(TextIOBase):
-    """Текстовый stream внутри workspace.
-
-    Покрывает все I/O-вызовы (write, read, close, flush, seek, tell и т.п.):
-    любая низкоуровневая ошибка диска/прав наружу выходит единственно в
-    форме WorkspaceError (и потомков). Привязан к WorkspacePath,
-    чтобы отдавать пользователю относительный путь, а в логи — source +
-    абсолютный.
-    """
+    """Текстовый stream внутри workspace; OSError → WorkspaceError."""
 
     def __init__(self, inner: TextIOBase, resolved: WorkspacePath) -> None:
         super().__init__()
@@ -255,13 +227,7 @@ class _WorkspaceBinaryStream(BufferedIOBase):
 
 
 class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
-    """Файловый shell с фиксированным корнем root.
-
-    Все пути нормализуются через _resolve в WorkspacePath,
-    где хранится и исходный ввод (для логов), и путь относительно
-    workspace (для ошибок пользователю), и физический путь на диске
-    (для I/O и диагностики).
-    """
+    """Файловый shell с фиксированным корнем root."""
 
     def __init__(
         self,
@@ -295,7 +261,7 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
 
     @contextmanager
     def _map_errors(self, resolved: WorkspacePath) -> Iterator[None]:
-        """Мапит низкоуровневые исключения в иерархию WorkspaceError."""
+        """Мапит OSError в иерархию WorkspaceError."""
         with _translate_os_errors(resolved):
             yield
 
@@ -317,9 +283,7 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
     def _open_for_write(
         self, absolute: Path, mode: str, encoding: str | None = None
     ) -> TextIOBase:
-        """Открыть файл для записи; если parent-директории нет — создать её
-        и повторить ровно один раз. На happy-path никаких лишних syscalls.
-        """
+        """Открыть файл для записи; создаёт parent при FileNotFoundError."""
         try:
             return open(absolute, mode, encoding=encoding)  # type: ignore[return-value]
         except FileNotFoundError:
@@ -627,7 +591,7 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
 
     @staticmethod
     def _count_stream(src: Path, old: str, encoding: str) -> int:
-        """Потоковый подсчёт вхождений old с overlap-буфером."""
+        """Потоковый подсчёт вхождений old."""
         old_len = len(old)
         chunk_size = max(65536, old_len * 2)
         keep = old_len - 1
@@ -646,9 +610,7 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
                         break
                     count += 1
                     pos = idx + old_len
-                # Сохраняем хвост длиной keep: substring может пересечь
-                # границу чанков, следующая итерация найдёт его в
-                # конкатенации хвост+новый_чанк.
+                # Хвост длиной keep — для substring на границе чанков.
                 buffer = buffer[-keep:] if keep else ""
         return count
 
@@ -660,11 +622,7 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
         limit: int,
         encoding: str,
     ) -> None:
-        """Потоковая замена: src → temp → atomic rename.
-
-        limit — сколько вхождений заменить (для replace_all равен
-        уже подсчитанному count). Оригинал не модифицируется до rename.
-        """
+        """Потоковая замена: src → temp → atomic rename."""
         old_len = len(old)
         chunk_size = max(65536, old_len * 2)
         keep = old_len - 1
@@ -697,8 +655,7 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
                         dst.write(new)
                         pos = idx + old_len
                         replaced += 1
-                    # Пишем всё безопасное (до last keep символов), остаток
-                    # оставляем в buffer для следующей итерации.
+                    # Пишем безопасный префикс, хвост keep оставляем в buffer.
                     safe_end = max(pos, len(buffer) - keep)
                     if safe_end > pos:
                         dst.write(buffer[pos:safe_end])
@@ -750,8 +707,7 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
             if not src_resolved.absolute.exists():
                 raise WorkspaceNotFoundError(src_resolved.relative)
 
-            # cp-совместимая семантика: если dst — существующая
-            # директория, копия кладётся внутрь с именем src.
+            # cp-семантика: dst-директория → копия внутрь с именем src.
             if dst_resolved.absolute.is_dir():
                 final_dst = dst_resolved.absolute / src_resolved.absolute.name
             else:
@@ -820,14 +776,7 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
             )
 
     def _resolve(self, source: str) -> WorkspacePath:
-        """Единая точка сборки физического пути.
-
-        Абсолютный source (с ведущим /) резолвится от корня
-        workspace; относительный — от cwd. Клампит .., чтобы путь
-        не вышел за корень; после Path.resolve() проверяет, что
-        symlink не увёл наружу. В debug-лог пишет source → absolute для
-        диагностики.
-        """
+        """Сборка физического пути; защита от symlink-escape."""
         relative = _contain_within_root(source, self._cwd_parts)
         absolute = (self._root / relative).resolve()
         if not absolute.is_relative_to(self._root):

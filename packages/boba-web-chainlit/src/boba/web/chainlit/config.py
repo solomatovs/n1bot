@@ -1,12 +1,4 @@
-"""Конфиг chainlit-приложения как единая ConfigSection.
-
-Server-параметры, app_root, models, UI-overrides — все в одной секции
-namespace ("chainlit",). DTO-имена == TOML/env-имена.
-
-Bootstrap получает значения через bundle.section(ChainlitSection):
-bridge_chainlit_env прокидывает server-поля в CHAINLIT_* env;
-UIOverrideTomlConverter рендерит UI-поля в app_root/.chainlit/config.toml.
-"""
+"""Конфиг chainlit-приложения как единая ConfigSection."""
 
 from __future__ import annotations
 
@@ -34,26 +26,7 @@ __all__ = ["ChainlitConfig", "ChainlitSection"]
 
 @dataclass(frozen=True)
 class ChainlitConfig:
-    """Параметры chainlit-приложения.
-
-    host/port/root_path/auth_secret/headless —
-    server-параметры, прокидываются в одноимённые CHAINLIT_* env.
-    Хранятся строкой — chainlit-библиотека парсит сама.
-
-    app_root — директория chainlit runtime-state (.chainlit/,
-    chainlit.md, public/, translations/). Прокидывается в
-    CHAINLIT_APP_ROOT. Лежит вне исходников (по умолчанию —
-    ./local/chainlit).
-
-    models — список LLM-моделей для UI ChatSettings. Пустой список
-    — UI не сможет выбрать модель и кинет ошибку при старте сессии.
-
-    UI-overrides (ui_name, enable_telemetry,
-    upload_max_size_mb/upload_max_files/upload_accept) —
-    рендерятся в app_root/.chainlit/config.toml (chainlit для UI
-    env не смотрит, только TOML). None означает «не трогать
-    chainlit-дефолт».
-    """
+    """DTO chainlit-приложения; UI-поля = None означает chainlit-дефолт."""
 
     host: str
     port: str
@@ -71,9 +44,7 @@ class ChainlitConfig:
 
 
 class ChainlitSection(ConfigSection[ChainlitConfig]):
-    """Секция chainlit-приложения. Регистрируется через entry-point
-    boba.config_sections.
-    """
+    """Секция конфига chainlit-приложения."""
 
     id: ClassVar[StrId] = StrId("chainlit")
     namespace: ClassVar[tuple[str, ...]] = ("chainlit",)

@@ -1,23 +1,4 @@
-"""Generic-протокол наблюдения LLM-вызовов на wire-слое.
-
-Параметризуется типом запроса (то, что уходит провайдеру) и типом
-chunk-а ответного стрима. Конкретные адаптеры (OpenAI Chat Completions,
-Anthropic Messages, Gemini и т.п.) биндят эти параметры под свои
-SDK-типы — например, наследуясь от
-LLMRequestObserver[dict[str, Any], ChatCompletionChunk] в
-boba.adapter.openai.observer.
-
-Контракт жизненного цикла:
-- on_request — ровно один раз перед HTTP-вызовом, с уже собранным
-  payload запроса;
-- on_response_chunk — ноль или больше раз, по одному chunk-у потока;
-- on_request_end — ровно один раз в любом исходе (OK / CANCELLED /
-  RAISED), даже при отмене или исключении.
-
-RequestOutcome — дискриминированный итог запроса; инвариант
-exception_name проверяется в __post_init__, нелегальные
-комбинации непредставимы.
-"""
+"""Generic-протокол наблюдения LLM-вызовов на wire-слое."""
 
 from __future__ import annotations
 
@@ -41,13 +22,7 @@ class RequestOutcomeKind(Enum):
 
 @dataclass(frozen=True, slots=True)
 class RequestOutcome:
-    """Исход запроса LLM на wire-слое.
-
-    Инвариант: exception_name задан тогда и только тогда, когда
-    kind is RequestOutcomeKind.RAISED. Остальные комбинации
-    отвергаются в __post_init__ — нелегальные состояния
-    непредставимы.
-    """
+    """Исход запроса LLM на wire-слое; exception_name только при RAISED."""
 
     kind: RequestOutcomeKind
     exception_name: str | None = None
@@ -79,19 +54,7 @@ class RequestOutcome:
 
 
 class LLMRequestObserver(ABC, Generic[TRequest, TChunk]):
-    """Наблюдатель сырого LLM-вызова на границе адаптера.
-
-    Generic-параметры:
-    - TRequest — тип payload-а запроса в формате конкретного провайдера
-      (для OpenAI — dict[str, Any] с kwargs chat.completions.create,
-      для Anthropic — MessageCreateParams и т.д.);
-    - TChunk — тип элемента ответного стрима (ChatCompletionChunk,
-      MessageStreamEvent, ...).
-
-    Биндинги под конкретные SDK живут в адаптерах — например,
-    наблюдатели OpenAI Chat Completions в boba.adapter.openai.observer
-    наследуются от LLMRequestObserver[dict[str, Any], ChatCompletionChunk].
-    """
+    """Наблюдатель сырого LLM-вызова на границе адаптера."""
 
     @abstractmethod
     def on_request(self, request: TRequest) -> None:
@@ -110,14 +73,7 @@ class LLMRequestObserver(ABC, Generic[TRequest, TChunk]):
 
 
 class CompositeLLMRequestObserver(LLMRequestObserver[TRequest, TChunk]):
-    """Fan-out из нескольких LLMRequestObserver — вызывает каждого
-    последовательно в порядке регистрации.
-
-    Исключение в любом наблюдателе прерывает обход — оставшиеся
-    наблюдатели не получат текущее событие. Если нужна
-    exception-tolerant обвязка — заверните конкретного наблюдателя в
-    декоратор с локальным try/except.
-    """
+    """Fan-out из нескольких LLMRequestObserver в порядке регистрации."""
 
     def __init__(
         self, observers: Sequence[LLMRequestObserver[TRequest, TChunk]]

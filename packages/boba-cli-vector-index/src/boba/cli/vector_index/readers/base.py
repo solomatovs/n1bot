@@ -1,9 +1,4 @@
-"""Контракты для reader'ов разных форматов.
-
-Reader превращает источник (файл, URL, страница Confluence) в один или
-несколько Document. Reader'ам не положено знать о чанковании
-или векторном хранилище — это делает indexer.
-"""
+"""Контракты для reader'ов разных форматов."""
 
 from __future__ import annotations
 
@@ -14,16 +9,7 @@ from typing import Protocol
 
 @dataclass(frozen=True)
 class Document:
-    """Логическая единица для индексации до чанкования.
-
-    source_path — стабильный идентификатор источника, по которому
-    делается dedupe в indexer. Для файла
-    это абсолютный путь; для будущих HTML/Confluence — URL/page-id.
-
-    metadata — произвольные строковые поля, попадут в metadata
-    каждого чанка (вместе с автоматически добавляемыми chunk_index
-    и source_path).
-    """
+    """Логическая единица для индексации до чанкования."""
 
     source_path: str
     text: str

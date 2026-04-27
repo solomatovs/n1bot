@@ -10,9 +10,7 @@ LLMRole = Literal["system", "user", "assistant", "tool"]
 
 
 class RequestId(UuId):
-    """
-    Идентификатор запроса пользователя, проходящий через всю систему.
-    """
+    """Идентификатор запроса пользователя, проходящий через всю систему."""
 
 
 @dataclass(frozen=True)
@@ -43,19 +41,7 @@ class SamplingParams:
 
 @dataclass(frozen=True)
 class LLMToolSchema:
-    """Декларация тула для LLM-провайдера: имя, описание, JSON-schema.
-
-    Чистый DTO без связи с доменным Tool (последний живёт в
-    tools и несёт execute-логику, валидаторы,
-    типизированные args). LLM-слой работает только с этим типом —
-    каждый адаптер (OpenAI/Anthropic/...) мапит его в свой нативный
-    формат.
-
-    parameters_schema — JSON-Schema-объект (как правило
-    {"type": "object", "properties": {...}, "required": [...]}).
-    Конверсия Tool → LLMToolSchema — задача агентского слоя
-    (см. ToolsReducer).
-    """
+    """Декларация тула для LLM-провайдера: имя, описание, JSON-schema."""
 
     name: str
     description: str
@@ -79,7 +65,7 @@ class LLMRequest:
     response_format: Mapping[str, Any] | None = None
 
     def messages_count(self) -> int:
-        """Всего сообщений в запросе"""
+        """Всего сообщений в запросе."""
         return len(self.messages)
 
     def has_tools(self) -> bool:

@@ -1,15 +1,4 @@
-"""Конфиг-секция и LLM-source-фабрика OpenAI-адаптера.
-
-Секция мапит env/TOML-ключи в LLMConfig
-(base_url + api_key) — формат запроса OpenAI-совместимый,
-поэтому годится и для LiteLLM/Ollama/прочих прокси.
-
-create_llm_source — фабрика готового
-StreamSource[LLMContext, LLMEvent]: оборачивает
-OpenAITerminal в StreamSourceChainBuilder. Bootstrap
-приложения вызывает её с app_config.llm (DTO собран
-LLMTransportSection) и LLMRequestObserver под OpenAI-типы.
-"""
+"""Конфиг-секция и LLM-source-фабрика OpenAI-адаптера."""
 
 from __future__ import annotations
 

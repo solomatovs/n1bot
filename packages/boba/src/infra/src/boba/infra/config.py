@@ -1,16 +1,4 @@
-"""Сборка типизированной конфигурации приложения из секций.
-
-- ConfigSection декларирует поля через FieldSpec и строит DTO.
-- ConfigFactory регистрирует встроенные секции и подхватывает секции
-  расширений через entry-point group boba.config_sections; build()
-  идемпотентно возвращает ConfigBundle (внутренне кешируется).
-- ConfigBundle — generic-реестр DTO по StrId + типизированный section();
-  никаких app/agent shortcuts'ов — composition специфичных AppConfig/
-  AgentConfig'ов под каждое приложение делает consumer (он знает свои
-  адаптерные секции, infra про них не знает).
-
-LLM-sampling-параметров здесь нет — sampling прокидывается caller'ом per-request.
-"""
+"""Сборка типизированной конфигурации приложения из секций."""
 
 from __future__ import annotations
 
@@ -60,7 +48,7 @@ __all__ = [
 
 
 CONFIG_SECTIONS_ENTRY_POINT = "boba.config_sections"
-"""Entry-point group для discovery секций расширений."""
+"""Entry-point group для секций расширений."""
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -69,13 +57,7 @@ CONFIG_SECTIONS_ENTRY_POINT = "boba.config_sections"
 
 
 class DefaultSource(ConfigSource):
-    """Статический fallback-словарь — для тестов и кастомных пресетов.
-
-    Принимает ConfigKey → значение. Возвращает значение по точному
-    совпадению ключа; неизвестные ключи — None. Обычно ставят последним
-    в цепочке, чтобы он отрабатывал, только когда «настоящие» источники
-    промолчали.
-    """
+    """Статический fallback-словарь ConfigKey → значение."""
 
     def __init__(self, defaults: Mapping[ConfigKey, object]) -> None:
         self._defaults = dict(defaults)
@@ -90,13 +72,11 @@ class DefaultSource(ConfigSource):
 
 
 class ConfigError(Exception):
-    """Базовая ошибка конфиг-инфры — отделяет сбои фабрики/бандла от
-    ошибок-резолверов (ConverterInputError и потомков).
-    """
+    """Базовая ошибка конфиг-инфры."""
 
 
 class ConfigSectionAlreadyRegisteredError(ConfigError):
-    """Попытка зарегистрировать вторую секцию с тем же StrId."""
+    """Секция с таким StrId уже зарегистрирована."""
 
     def __init__(self, section_id: StrId) -> None:
         super().__init__(f"ConfigSection {section_id!r} is already registered")
@@ -104,13 +84,7 @@ class ConfigSectionAlreadyRegisteredError(ConfigError):
 
 
 class ConfigSectionMissingError(ConfigError):
-    """Запрошен bundle.section(SectionCls), но секция не зарегистрирована.
-
-    Это инвариант сборки фабрики: секция должна быть зарегистрирована до
-    build. Для встроенных секций гарантируется
-    default_config_factory; для секций расширений — discovery через
-    entry-point group boba.config_sections.
-    """
+    """Секция не зарегистрирована в фабрике."""
 
     def __init__(self, section_cls: type[ConfigSection[Any]]) -> None:
         super().__init__(
@@ -122,12 +96,7 @@ class ConfigSectionMissingError(ConfigError):
 
 @dataclass(frozen=True)
 class AppCoreConfig:
-    """Внутренний DTO AppCoreSection.
-
-    Не часть публичного API — AppConfig агрегирует поля плоско,
-    эта структура нужна только чтобы build имела
-    типизированный return-type, симметричный остальным секциям.
-    """
+    """DTO AppCoreSection."""
 
     ssl_verify: bool
     log_level: str
@@ -135,25 +104,13 @@ class AppCoreConfig:
 
 
 class ConfigBundle:
-    """Итог сборки: типизированный реестр DTO по StrId.
-
-    section() достаёт DTO нужной секции по её классу — type-checker
-    видит конкретный T_DTO. Generic-реестр: никакие приложение-
-    специфичные аггрегаты (AppConfig/AgentConfig) тут не живут —
-    каждое приложение собирает свой агрегат сам, потому что только
-    оно знает, какие adapter-секции зарегистрированы.
-
-    Бандл иммутабельный (внутренний dict копируется при создании).
-    """
+    """Иммутабельный реестр DTO по StrId."""
 
     def __init__(self, sections: Mapping[StrId, object]) -> None:
         self._sections: dict[StrId, object] = dict(sections)
 
     def section(self, cls: type[ConfigSection[T]]) -> T:
-        """Достать DTO секции cls. Бросает
-        ConfigSectionMissingError, если секция не была
-        зарегистрирована в фабрике.
-        """
+        """Достать DTO секции; ConfigSectionMissingError если не зарегистрирована."""
         sid = cls.id
         if sid not in self._sections:
             raise ConfigSectionMissingError(cls)
@@ -228,23 +185,7 @@ class AgentSection(ConfigSection[AgentConfig]):
 
 
 class ConfigFactory:
-    """Реестр секций + сборщик ConfigBundle.
-
-    Регистрация секций — императивная (register). Discovery
-    extension-секций — через entry-point group
-    CONFIG_SECTIONS_ENTRY_POINT (discover_extension_sections).
-    Сборка бандла — build: каждая зарегистрированная секция строит
-    свой DTO, результат складывается по id.
-
-    Использование: ``ConfigFactory()`` без аргументов; ``register(...)``
-    + ``discover_extension_sections()`` собирают набор секций;
-    ``attach_sources([...])`` принимает источники в порядке приоритета
-    (cli > env > toml). ``build()`` собирает полный набор
-    (ConfigKey, FieldSpec) пар по зарегистрированным секциям, дёргает
-    ``bind_schema`` на каждом источнике (даёт CLI-источнику построить
-    argparse, env/TOML — провалидировать ключи на опечатки), строит
-    резолвер и собирает DTO каждой секции.
-    """
+    """Реестр секций и сборщик ConfigBundle."""
 
     def __init__(self) -> None:
         self._sources: list[ConfigSource] = []
@@ -253,29 +194,19 @@ class ConfigFactory:
         self._bundle: ConfigBundle | None = None
 
     def attach_sources(self, sources: Sequence[ConfigSource]) -> None:
-        """Подключить источники в порядке приоритета (cli > env > toml).
-        Повторный вызов заменяет предыдущий список (idempotent);
-        сбрасывает кеш резолвера и бандла — новые источники получат
-        bind_schema, секции пересоберутся с новых данных.
-        """
+        """Подключить источники в порядке приоритета; сбрасывает кеш."""
         self._sources = list(sources)
         self._resolver = None
         self._bundle = None
 
     def _iter_schema_items(self) -> Iterator[tuple[ConfigKey, FieldSpec[Any]]]:
-        """Полный набор (key, field) пар по всем зарегистрированным
-        секциям. Используется при сборке резолвера для bind_schema.
-        """
+        """Все (key, field) пары по зарегистрированным секциям."""
         for section in self._sections.values():
             for fld in section.schema.fields:
                 yield ConfigKey(*section.namespace, fld.name), fld
 
     def resolver(self) -> ChainedConfigResolver:
-        """Лениво собранный резолвер; даёт каждому источнику увидеть
-        полный набор ожидаемых ключей через bind_schema до первого
-        resolve. Идемпотентен: повторные вызовы возвращают тот же
-        инстанс. attach_sources сбрасывает кеш.
-        """
+        """Лениво собранный резолвер; идемпотентен."""
         if self._resolver is not None:
             return self._resolver
         if not self._sources:
@@ -290,10 +221,7 @@ class ConfigFactory:
         return self._resolver
 
     def describe_key(self, key: ConfigKey) -> list[str]:
-        """Operator-readable рецепты «как задать этот ключ» — по одному
-        на источник, который умеет адресовать ключ. Источники возвращают
-        пустую строку, если не умеют — те в выдачу не попадают.
-        """
+        """Рецепты задания ключа — по одному на источник."""
         out: list[str] = []
         for src in self.resolver().sources:
             d = src.describe(key)
@@ -302,20 +230,7 @@ class ConfigFactory:
         return out
 
     def format_config_error(self, err: ConverterInputError) -> str:
-        """Operator-friendly текст ошибки конфига.
-
-        Для FieldMissingError со известным ConfigKey добавляет recipe
-        со списком способов задать значение, собранным из describe()
-        всех подключённых источников. Для прочих ошибок (OneOf, ParseInt,
-        cross-field invariants) — оставляет исходный message: значение
-        было предоставлено, проблема не в «где взять», а в «что
-        задано неверно».
-        """
-        # err.key типизирован как FieldAddress (=object) на уровне
-        # declaration.py — этот слой не знает про ConfigKey. Здесь, в
-        # infra, мы знаем: ConfigSection.build кладёт туда именно
-        # ConfigKey. isinstance-narrowing восстанавливает тип для
-        # type-checker'а и одновременно даёт runtime-проверку.
+        """Текст ошибки конфига с подсказкой источников."""
         if (
             isinstance(err, FieldMissingError)
             and isinstance(err.key, ConfigKey)
@@ -335,14 +250,7 @@ class ConfigFactory:
         return tuple(self._sections.values())
 
     def discover_extension_sections(self) -> None:
-        """Подхватывает секции расширений через entry-point group
-        boba.config_sections.
-
-        Контракт entry-point: target — класс-наследник
-        ConfigSection. Битые/некорректные entry-point'ы логируются
-        warning'ом и пропускаются, чтобы один сломанный плагин не валил
-        старт всего приложения.
-        """
+        """Подхватить секции через entry-point group boba.config_sections."""
         for ep in importlib.metadata.entry_points(group=CONFIG_SECTIONS_ENTRY_POINT):
             try:
                 obj = ep.load()
@@ -372,13 +280,7 @@ class ConfigFactory:
                 )
 
     def build(self) -> ConfigBundle:
-        """Собрать (или вернуть закешированный) ConfigBundle.
-
-        Идемпотентно: повторные вызовы возвращают тот же инстанс — это
-        важно потому что bind_schema источников имеет побочные эффекты
-        (CliSource на ``--help`` вызывает ``sys.exit(0)``), и пересборка
-        дала бы их повторно. Кеш сбрасывается при ``attach_sources``.
-        """
+        """Собрать (или вернуть закешированный) ConfigBundle; идемпотентно."""
         if self._bundle is None:
             resolver = self.resolver()
             built: dict[StrId, object] = {

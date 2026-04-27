@@ -1,13 +1,4 @@
-"""Middleware для tools: исполнение + защита от лупов.
-
-Каталог tools собирается в TurnSpec через
-ToolsReducer — отдельного
-ToolsDefinitionMiddleware нет.
-
-События self-sufficient: каждое ToolResultReady /
-ToolExecutionFailed несёт исходный LLMToolCall и
-результат/провал — sink не должен искать вызов в прошлых событиях.
-"""
+"""Middleware для tools: исполнение + защита от лупов."""
 
 from __future__ import annotations
 
@@ -38,17 +29,7 @@ from boba.domain.core.tools import (
 
 
 class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Исполняет tool_calls после завершения inner-стрима.
-
-    На каждый ToolCallComplete пишет результат в историю
-    через DialogueWriter — и успех, и ошибка идут одним
-    путём role="tool" в следующий виток. Параллельно эмитятся:
-
-    - ToolExecutionStarted (несёт исходный LLMToolCall);
-    - ToolResultReady (call + ToolCallResult) — для успеха;
-    - ToolExecutionFailed (call + ToolCallFailure) — для
-      ошибки.
-    """
+    """Исполняет tool_calls после завершения inner-стрима."""
 
     def __init__(
         self,
@@ -139,14 +120,7 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
 
 
 class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Подавляет (N+1)-й подряд идентичный ToolCallComplete.
-
-    На подавлении пишет в историю через DialogueWriter
-    feedback с role="tool" — LLM на следующей итерации увидит
-    замечание вместо дублирующего вызова. Параллельно эмитится
-    FeedbackToLLMAdded (снапшот записи) и
-    ToolExecutionFailed (нотис для sink'а).
-    """
+    """Подавляет (N+1)-й подряд идентичный ToolCallComplete."""
 
     def __init__(
         self,

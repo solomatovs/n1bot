@@ -13,23 +13,12 @@ TWsId = TypeVar("TWsId", bound=Id)
 
 
 class WorkspaceId(UuId):
-    """Идентификатор user-сессии — value object.
-
-    Шарится между namespace'ами одной сессии (project/history/scratch):
-    один и тот же `WorkspaceId` адресует три параллельных хранилища
-    через разные `WorkspaceRegistry`. Plugin-namespace использует
-    отдельный Id-тип (см. подклассы Id в plugin-инфраструктуре).
-    """
+    """Идентификатор user-сессии — value object."""
 
 
 @dataclass(frozen=True)
 class GrepMatch:
-    """Одно совпадение при поиске через grep.
-
-    path — относительный путь файла от корня workspace. line — 1-based
-    номер строки с совпадением, content — сама строка (без trailing
-    newline). before/after — строки контекста (могут быть пустыми).
-    """
+    """Одно совпадение при поиске через grep (line — 1-based)."""
 
     path: str
     line: int
@@ -40,11 +29,7 @@ class GrepMatch:
 
 @dataclass(frozen=True)
 class EntryMeta:
-    """Метаданные элемента внутри workspace (файл или директория).
-
-    path — относительный путь от корня workspace (безопасно показывать
-    пользователю). kind — "file" / "directory" / "other".
-    """
+    """Метаданные элемента внутри workspace (файл/директория)."""
 
     path: str
     size: int
@@ -53,14 +38,7 @@ class EntryMeta:
 
 
 class WorkspaceError(Exception):
-    """Базовая ошибка WorkspaceShell.
-
-    Абстрактна, не привязана к конкретной реализации хранилища. Хранит
-    контекст ресурса (path) в виде, безопасном для показа пользователю —
-    относительно корня workspace, реальный путь на диске наружу не
-    утекает. Исходное исключение (если было оборачивание) доступно через
-    __cause__.
-    """
+    """Базовая ошибка WorkspaceShell."""
 
     def __init__(self, message: str, *, path: str | None = None) -> None:
         super().__init__(message)
@@ -99,26 +77,7 @@ class WorkspaceDecodingError(WorkspaceError):
 
 
 class WorkspaceShell(ABC, Generic[TWsId]):
-    """Shell-сессия над изолированным workspace'ом.
-
-    Hold'ит состояние сессии (cwd) и предоставляет shell-подобный API
-    над ограниченной директорией: cd, ls, mkdir, touch,
-    cp, mv, rm, grep, чтение/запись файлов, find-and-replace
-    правки. Все пути нормализуются относительно корня workspace: абсолютный
-    /foo и относительный foo одинаково адресуют root/foo; ..
-    не выводит выше корня. Ошибки и логирование дают пользователю путь
-    относительно workspace, а не реальный путь на диске.
-
-    Один shell владеет одной директорией. Все остальные компоненты
-    должны делить один экземпляр — в будущем сюда попадёт локирование/
-    конкурентный доступ, которое требует единого владельца ресурса.
-    Дискриминация «какой workspace» делается в DI через маркерные
-    подклассы (ProjectWorkspaceShell и т.п.), а не runtime-
-    полем. Тип идентификатора фиксируется generic-параметром TWsId
-    в маркерном подклассе: user-namespace'ы (project/history/scratch)
-    используют WorkspaceId (UUID), plugin-namespace —
-    собственный строковый Id.
-    """
+    """Shell-сессия над изолированным workspace'ом (cwd, cd/ls/mkdir/grep/edit_text)."""
 
     @property
     @abstractmethod
@@ -127,29 +86,12 @@ class WorkspaceShell(ABC, Generic[TWsId]):
     @property
     @abstractmethod
     def cwd(self) -> str:
-        """Текущая директория относительно корня workspace.
-
-        Формат: / для корня, /docs/api для вложенной. Все методы
-        shell'а разрешают относительные пути от cwd; абсолютные (с
-        ведущим /) — от корня workspace.
-        """
+        """Текущая директория относительно корня workspace."""
         ...
 
     @abstractmethod
     def cd(self, path: str) -> None:
-        """Сменить текущую директорию.
-
-        Путь нормализуется теми же правилами, что и в остальных методах:
-        абсолютный — от корня workspace, относительный — от текущей
-        cwd. После успеха последующие обращения по относительным
-        путям разрешаются уже от новой cwd.
-
-        Raises:
-            WorkspaceNotFoundError: если путь не существует.
-            WorkspacePermissionError: если нет прав.
-            WorkspaceError: если путь существует, но не директория, или
-                при прочих I/O-ошибках.
-        """
+        """Сменить текущую директорию."""
         ...
 
     @abstractmethod
@@ -157,191 +99,78 @@ class WorkspaceShell(ABC, Generic[TWsId]):
 
     @abstractmethod
     def delete(self, path: str, *, recursive: bool = False) -> None:
-        """Удалить ресурс.
-
-        Файл удаляется всегда. Директория удаляется только при
-        recursive=True (со всем содержимым) — без флага на
-        непустой директории возвращается ошибка (аналог rm vs rm -r).
-
-        Raises:
-            WorkspaceNotFoundError: если ресурс не найден.
-            WorkspacePermissionError: если нет прав.
-            WorkspaceError: если это непустая директория без recursive,
-                или при прочих ошибках удаления.
-        """
+        """Удалить ресурс; директория — только при recursive=True."""
         ...
 
     @abstractmethod
     def move(self, src: str, dst: str) -> None:
-        """Переместить/переименовать ресурс.
-
-        Семантика mv: если dst — существующая директория, src
-        переносится внутрь с тем же именем; иначе src переименовывается
-        в dst. Существующий файл по пути dst перезаписывается.
-        Промежуточные директории не создаются — родитель dst должен
-        существовать.
-
-        Raises:
-            WorkspaceNotFoundError: если src не существует.
-            WorkspacePermissionError: если нет прав.
-            WorkspaceError: при прочих ошибках перемещения.
-        """
+        """Переместить/переименовать ресурс (семантика mv)."""
         ...
 
     @abstractmethod
     def touch(self, path: str) -> None:
-        """Создать пустой файл или обновить mtime существующего ресурса.
-
-        Если path не существует — создаётся пустой файл (промежуточные
-        директории создаются автоматически). Если существует — обновляется
-        время модификации (работает и для файла, и для директории).
-
-        Raises:
-            WorkspacePermissionError: если нет прав.
-            WorkspaceError: при прочих I/O-ошибках.
-        """
+        """Создать пустой файл или обновить mtime."""
         ...
 
     @abstractmethod
     def copy(self, src: str, dst: str, *, recursive: bool = False) -> None:
-        """Скопировать ресурс.
-
-        Для файла — байтовое копирование. Для директории требуется
-        recursive=True (аналог cp vs cp -r). Если dst —
-        существующая директория, копия кладётся внутрь с именем src;
-        иначе копируется прямо в dst. Существующий файл по dst
-        перезаписывается.
-
-        Raises:
-            WorkspaceNotFoundError: если src не существует.
-            WorkspacePermissionError: если нет прав.
-            WorkspaceError: если src — директория без recursive,
-                или при прочих I/O-ошибках.
-        """
+        """Скопировать ресурс; директория — только при recursive=True."""
         ...
 
     @abstractmethod
     def ls(
         self, path: str | None = None, spec: Specification[str] | None = None
     ) -> Iterator[str]:
-        """Список элементов в указанном пути (без вложенности).
-
-        Raises:
-            WorkspacePermissionError: если нет прав.
-            WorkspaceError: при прочих ошибках обхода.
-        """
+        """Список элементов в указанном пути (без вложенности)."""
         ...
 
     @abstractmethod
     def tree(
         self, path: str | None = None, spec: Specification[str] | None = None
     ) -> Iterator[str]:
-        """Рекурсивный обход всех элементов начиная с указанного пути.
-
-        Raises:
-            WorkspacePermissionError: если нет прав.
-            WorkspaceError: при прочих ошибках обхода.
-        """
+        """Рекурсивный обход всех элементов начиная с пути."""
         ...
 
     @abstractmethod
     def meta(self, path: str) -> EntryMeta:
-        """Метаданные ресурса.
-
-        Raises:
-            WorkspaceNotFoundError: если ресурс не найден.
-            WorkspacePermissionError: если нет прав.
-            WorkspaceError: при прочих ошибках.
-        """
+        """Метаданные ресурса."""
         ...
 
     @abstractmethod
     def mkdir(self, path: str) -> None:
-        """Создать директорию. Создаёт промежуточные директории при необходимости.
-
-        Raises:
-            WorkspacePermissionError: если нет прав.
-            WorkspaceError: при прочих ошибках.
-        """
+        """Создать директорию (с промежуточными)."""
         ...
 
     @abstractmethod
     def read_lines(
         self, path: str, *, reverse: bool = False, encoding: str = "utf-8"
     ) -> Iterator[str]:
-        """Построчное чтение файла.
-
-        reverse=True — строки от последней к первой, без загрузки
-        всего файла в память.
-
-        Raises:
-            WorkspaceNotFoundError: если ресурс не найден.
-            WorkspacePermissionError: если нет прав.
-            WorkspaceDecodingError: если содержимое не декодируется в
-                указанной кодировке.
-            WorkspaceError: при прочих ошибках чтения ресурса; исходное
-                низкоуровневое исключение — в __cause__.
-        """
+        """Построчное чтение; reverse=True — без загрузки всего файла в память."""
         ...
 
     @abstractmethod
     def read_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
-        """Открыть ресурс для чтения текста.
-
-        Raises:
-            WorkspaceNotFoundError: если ресурс не найден.
-            WorkspacePermissionError: если нет прав.
-            WorkspaceError: при прочих ошибках открытия.
-        """
+        """Открыть ресурс для чтения текста."""
         ...
 
     @abstractmethod
     def read_binary(self, path: str) -> BufferedIOBase:
-        """Открыть ресурс для чтения бинарных данных.
-
-        Raises:
-            WorkspaceNotFoundError: если ресурс не найден.
-            WorkspacePermissionError: если нет прав.
-            WorkspaceError: при прочих ошибках открытия.
-        """
+        """Открыть ресурс для чтения бинарных данных."""
         ...
 
     @abstractmethod
     def write_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
-        """Открыть/создать ресурс для записи (перезапись).
-
-        Создаёт родительские директории.
-
-        Raises:
-            WorkspacePermissionError: если нет прав.
-            WorkspaceError: при прочих ошибках открытия/создания.
-        """
+        """Открыть/создать ресурс для записи текста (перезапись)."""
         ...
 
     @abstractmethod
     def write_binary(self, path: str) -> BufferedIOBase:
-        """Открыть/создать ресурс для записи бинарных данных (перезапись).
-
-        Создаёт родительские директории. Нужен для файлов, которые не
-        раскладываются в текст по умолчанию — загрузки пользователя
-        (PDF, архивы, картинки), дампы, кэш-артефакты.
-
-        Raises:
-            WorkspacePermissionError: если нет прав.
-            WorkspaceError: при прочих ошибках открытия/создания.
-        """
+        """Открыть/создать ресурс для записи бинарных данных (перезапись)."""
         ...
 
     @abstractmethod
     def append_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
-        """Открыть/создать ресурс для дозаписи.
-
-        Создаёт родительские директории.
-
-        Raises:
-            WorkspacePermissionError: если нет прав.
-            WorkspaceError: при прочих ошибках открытия/создания.
-        """
+        """Открыть/создать ресурс для дозаписи."""
         ...
 
     @abstractmethod
@@ -358,23 +187,7 @@ class WorkspaceShell(ABC, Generic[TWsId]):
         fixed_string: bool = False,
         encoding: str = "utf-8",
     ) -> Iterator[GrepMatch]:
-        """Поиск по содержимому файлов (grep-подобный).
-
-        pattern — regex (Python-синтаксис); при fixed_string=True
-        трактуется как литеральная строка. path — старт поиска; если
-        файл — ищем только в нём, если директория — обход с учётом
-        recursive. include — fnmatch-glob по относительному пути
-        ("*.py" и т.п.). context — строк до/после каждого
-        совпадения. limit — потолок количества совпадений.
-
-        Бинарные файлы (по null-byte в первых 8 KB) и файлы, не
-        декодирующиеся в encoding, пропускаются молча.
-
-        Raises:
-            WorkspaceNotFoundError: если path не существует.
-            WorkspacePermissionError: нет прав.
-            WorkspaceError: невалидный regex или прочие I/O-ошибки.
-        """
+        """Grep-подобный поиск по содержимому файлов; бинарные пропускаются."""
         ...
 
     @abstractmethod
@@ -387,36 +200,12 @@ class WorkspaceShell(ABC, Generic[TWsId]):
         replace_all: bool = False,
         encoding: str = "utf-8",
     ) -> int:
-        """Find-and-replace редактирование текстового файла.
-
-        Подменяет old на new в содержимом файла. Если
-        replace_all=False (по умолчанию), old должен встречаться
-        ровно один раз — иначе WorkspaceError с явным сообщением
-        (LLM должна перечитать файл и уточнить контекст). Если
-        replace_all=True, заменяются все вхождения. old не должна
-        быть пустой. Возвращает число выполненных замен.
-
-        Raises:
-            WorkspaceNotFoundError: файла не существует.
-            WorkspacePermissionError: нет прав.
-            WorkspaceDecodingError: файл не декодируется в encoding.
-            WorkspaceError: old не найден / неуникален без
-                replace_all / прочие I/O-ошибки.
-        """
+        """Find-and-replace правка; без replace_all old должен быть уникален."""
         ...
 
 
 class WorkspaceRegistry(ABC, Generic[TWsId]):
-    """Реестр workspace'ов одного namespace.
-
-    Реестр фиксирует ровно один namespace: реализация знает свою
-    директорию, а ключ в DI — маркерный подкласс (например,
-    ProjectWorkspaceRegistry). Разделять namespace'ы через параметр
-    метода намеренно не стали — иначе пришлось бы тянуть дискриминатор
-    в сигнатуры tools и сервисов. Тип идентификатора (TWsId)
-    фиксируется маркерным подклассом и должен совпадать с типом,
-    параметризующим соответствующий WorkspaceShell.
-    """
+    """Реестр workspace'ов одного namespace."""
 
     @abstractmethod
     def create(self) -> WorkspaceShell[TWsId]:
@@ -425,21 +214,12 @@ class WorkspaceRegistry(ABC, Generic[TWsId]):
 
     @abstractmethod
     def get(self, workspace_id: TWsId) -> WorkspaceShell[TWsId]:
-        """Получить существующий workspace.
-
-        Raises:
-            WorkspaceNotFoundError: если workspace не существует.
-        """
+        """Получить существующий workspace; WorkspaceNotFoundError если нет."""
         ...
 
     @abstractmethod
     def get_or_create(self, workspace_id: TWsId) -> WorkspaceShell[TWsId]:
-        """Вернуть существующий workspace или создать новый по заданному id.
-
-        Используется для разделения одного id между несколькими реестрами
-        разных namespace'ов — каждый создаёт свой namespace под тем же id
-        при первом обращении.
-        """
+        """Вернуть существующий или создать новый по заданному id."""
         ...
 
     @abstractmethod
@@ -473,24 +253,11 @@ class ScratchWorkspaceRegistry(WorkspaceRegistry[WorkspaceId]):
 
 
 class PromptWorkspaceId(StrId):
-    """Строковый id prompt-namespace.
-
-    В отличие от WorkspaceId (UUID, генерится для каждой
-    user-сессии), prompt workspace — application-singleton, и id у него
-    единственный и стабильный. StrId даёт читаемое имя
-    ("prompts"), без UUID-балласта в путях и логах.
-    """
+    """Строковый id prompt-namespace (application-singleton)."""
 
 
 class PromptWorkspaceShell(WorkspaceShell[PromptWorkspaceId]):
-    """DI-маркер: workspace со статическими *.md/*.txt-промптами
-    (system-prompt блоки) — application-singleton.
-
-    Используется PromptLoader для
-    discovery (tree/read_text). Tool-расширения сюда не входят —
-    они подгружаются через Python entry-points pip-installed пакетов,
-    минуя файловый workspace.
-    """
+    """DI-маркер: workspace со статическими *.md/*.txt-промптами."""
 
 
 class PromptWorkspaceRegistry(WorkspaceRegistry[PromptWorkspaceId]):

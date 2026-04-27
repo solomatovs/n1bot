@@ -1,14 +1,4 @@
-"""Retry-middleware LLM-слоя.
-
-Повторяет inner при RetryableLLMError — только если до ошибки наверх
-не ушло ни одного события (иначе повтор склеивал бы разорванную
-генерацию).
-
-- attempt=0 — молчит;
-- перед attempt>=1 эмитится LLMRetryAttempt;
-- PermanentLLMError и не-RetryableLLMError пропускаются без обработки;
-- между попытками — линейный delay_seconds через инжектируемый sleep.
-"""
+"""Retry-middleware LLM-слоя для RetryableLLMError."""
 
 from __future__ import annotations
 
@@ -25,9 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class RetryMiddleware(StreamSource[LLMContext, LLMEvent]):
-    """Повторяет inner до max_attempts раз на
-    RetryableLLMError, пока стрим не начал выдавать события.
-    """
+    """Повторяет inner до max_attempts на RetryableLLMError, пока ничего не было yield."""
 
     def __init__(
         self,
@@ -54,8 +42,6 @@ class RetryMiddleware(StreamSource[LLMContext, LLMEvent]):
 
         for attempt in range(self._max_attempts):
             if attempt > 0:
-                # last_exc гарантированно не None: в цикл с attempt > 0 попали
-                # только через ветку `except RetryableLLMError` ниже.
                 if last_exc is None:  # pragma: no cover — инвариант
                     raise RuntimeError("retry invariant broken: last_exc is None")
                 ctx.attempt = attempt
@@ -67,9 +53,6 @@ class RetryMiddleware(StreamSource[LLMContext, LLMEvent]):
                 )
                 if self._delay_seconds > 0:
                     self._sleep(self._delay_seconds)
-                # Сбрасываем state stateful-стадий внутри inner (декодеры,
-                # счётчики): предыдущая попытка могла успеть что-то накопить,
-                # даже если ничего не вышло наружу.
                 self._inner.reset()
 
             yielded = False
@@ -80,7 +63,6 @@ class RetryMiddleware(StreamSource[LLMContext, LLMEvent]):
                 return
             except RetryableLLMError as e:
                 if yielded:
-                    # Стрим уже «заговорил» — повтор дал бы дубликат.
                     raise
                 logger.warning(
                     "LLM attempt %d/%d failed, will retry: %s: %s",
@@ -91,7 +73,6 @@ class RetryMiddleware(StreamSource[LLMContext, LLMEvent]):
                 )
                 last_exc = e
 
-        # Исчерпали попытки — пробрасываем последнюю ошибку.
         if last_exc is None:  # pragma: no cover — инвариант
             raise RuntimeError("retry invariant broken: no attempts made")
         raise last_exc

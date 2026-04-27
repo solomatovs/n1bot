@@ -1,12 +1,4 @@
-"""TurnSpec — fold-фабрика, собирающая LLMRequest из reducer'ов.
-
-build(resolve_ctx): initial → пустой TurnState → reducer'ы по возрастанию
-priority() заполняют slots (model/system/messages/tools/sampling) →
-finalize валидирует обязательные slot'ы и возвращает immutable LLMRequest.
-
-HistoryReducer читает свежий снапшот из MessageService: все записи
-предыдущей итерации уже зафиксированы через DialogueWriter.
-"""
+"""TurnSpec — fold-фабрика, собирающая LLMRequest из reducer'ов."""
 
 from __future__ import annotations
 

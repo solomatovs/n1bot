@@ -17,14 +17,7 @@ logger = logging.getLogger(__name__)
 class MetricsChatCompletionObserver(
     LLMRequestObserver[dict[str, Any], ChatCompletionChunk]
 ):
-    """Пишет одну строку-сводку в logger по завершении запроса.
-
-    Считает по сырым chunk-ам, а не по AgentEvent после
-    трансформаций — так цифры не искажаются StrictJsonContentToolCall и
-    подобными middleware, которые переупаковывают content в tool-calls.
-    Замеряет также elapsed и RequestOutcome (с именем
-    исключения для RAISED) на wire-слое.
-    """
+    """Пишет одну строку-сводку в logger по завершении запроса."""
 
     def __init__(
         self,

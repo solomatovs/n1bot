@@ -1,12 +1,4 @@
-"""JsonLines реализация MessageService — диалог в файле workspace.
-
-Персистит каждое сообщение одной строкой JSON. При создании инстанса
-восстанавливает диалог из файла в память, далее работает как in-memory
-список + append к файлу на каждое add. Замена схемы
-HistoryService + HistoryReplayMiddleware + HistoryPersistMiddleware
-одной реализацией сервиса сообщений: знание о межзапускной персистенции
-живёт в конкретной имплементации, а не в пайплайне middleware.
-"""
+"""JsonLines реализация MessageService — диалог в файле workspace."""
 
 from __future__ import annotations
 

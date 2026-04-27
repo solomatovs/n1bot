@@ -1,13 +1,4 @@
-"""Публичный API core-слоя.
-
-Реэкспортирует базовые доменные примитивы: маркеры маршрутизируемых
-ошибок, паттерны потоков/конвертеров, доменные модели tools и workspace.
-
-Импорты короткой формой::
-
-    from boba.domain.core import Converter, StreamSource, Specification
-    from boba.domain.core import RoutableError, TerminalError
-"""
+"""Публичный API core-слоя."""
 
 from boba.domain.core.config import (
     ChainedConfigResolver,

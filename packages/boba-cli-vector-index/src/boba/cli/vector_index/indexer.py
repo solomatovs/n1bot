@@ -1,18 +1,4 @@
-"""Высокоуровневая логика индексации: file → reader → chunks → upsert.
-
-Пайплайн на один файл:
-
-1. Подобрать reader по extension (см. readers).
-2. Reader → один или несколько Document (с logical
-   source_path и metadata).
-3. Для каждого Document:
-   a. Удалить старые чанки этого source_path из коллекции
-      (idempotent reindex — см. договорённость по dedupe);
-   b. Чанковать text через split_text;
-   c. Сгенерировать стабильный chunk id из (source_path, chunk_index);
-   d. Upsert в коллекцию с metadata
-      {source_path, chunk_index, file_mtime, ...reader_metadata}.
-"""
+"""Высокоуровневая логика индексации: file → reader → chunks → upsert."""
 
 from __future__ import annotations
 
@@ -60,13 +46,7 @@ def index_paths(
     description: str | None,
     options: IndexOptions,
 ) -> IndexStats:
-    """Главная функция CLI index. paths — смесь файлов и
-    директорий. Для директорий рекурсивно собираются файлы, чьи
-    расширения покрывает зарегистрированный reader.
-
-    Коллекция создаётся при отсутствии (с description в metadata),
-    иначе используется существующая (description не переписывается).
-    """
+    """Проиндексировать paths (файлы и/или директории) в коллекцию."""
     store.get_or_create_collection(collection_name, description)
 
     files_indexed = 0
@@ -130,15 +110,7 @@ def index_paths(
 
 
 def _walk_files(paths: list[str]) -> Iterator[str]:
-    """Раскрытие смеси файлов и директорий в плоский список файлов.
-
-    Для директорий — рекурсивно через Path.rglob('*'). Симлинки
-    игнорируются (Path.is_file идёт по симлинку, и он попадёт в выдачу
-    — для CLI это OK, оператор отвечает за то, что в `paths`).
-    Скрытые файлы (имя начинается с .) пропускаются — в .git и
-    других служебных директориях нет полезного контента для
-    индексации.
-    """
+    """Раскрыть смесь файлов и директорий в плоский список файлов; скрытые пропускаются."""
     for raw in paths:
         p = Path(raw)
         if p.is_file():
@@ -156,10 +128,7 @@ def _walk_files(paths: list[str]) -> Iterator[str]:
 
 
 def _chunk_id(source_path: str, chunk_index: int) -> str:
-    """Стабильный id чанка: SHA1 от пути + индекс. Делает upsert
-    идемпотентным — повторная индексация того же файла перепишет
-    чанки in-place.
-    """
+    """Стабильный id чанка: SHA1 от пути + индекс."""
     digest = hashlib.sha1(
         source_path.encode("utf-8"),
         usedforsecurity=False,

@@ -1,6 +1,4 @@
-"""
-Публичный API LLM-слоя.
-"""
+"""Публичный API LLM-слоя."""
 
 from boba.domain.llm.errors import (
     LLMAuthError,

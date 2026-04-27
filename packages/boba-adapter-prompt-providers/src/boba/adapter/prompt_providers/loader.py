@@ -1,17 +1,4 @@
-"""File-based loader статических system-prompt блоков.
-
-Читает *.md и *.txt из PromptWorkspaceShell (BOBA_PROMPTS_DIR) и
-собирает Sequence[PromptProvider] один раз на старте процесса.
-
-Discovery:
-* сегмент пути с префиксом _ — skip;
-* пустые файлы — skip с info-логом;
-* другие расширения — skip;
-* приоритет — \\d+- префикс в имени файла, иначе _DEFAULT_PRIORITY.
-
-Trust: prompts_dir должен быть read-only в runtime — writable директория
-= prompt-injection при перезапуске.
-"""
+"""File-based loader статических system-prompt блоков."""
 
 from __future__ import annotations
 
@@ -40,13 +27,7 @@ _TEXT_EXTENSIONS = (".md", ".txt")
 
 
 class PromptLoader:
-    """Discovery *.md/*.txt из PromptWorkspaceShell и
-    сборка Sequence[PromptProvider] один раз на старте процесса.
-
-    Discovery + чтение всех текстовых файлов происходит в конструкторе;
-    результат кэшируется. prompt_providers отдаёт закэшированный
-    список.
-    """
+    """Discovery *.md/*.txt из PromptWorkspaceShell в Sequence[PromptProvider]."""
 
     def __init__(self, workspace: PromptWorkspaceShell) -> None:
         self._workspace = workspace

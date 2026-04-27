@@ -1,11 +1,4 @@
-"""Доменные ошибки KB-tools.
-
-Все наследуются от ToolExecutionError core-API — это значит,
-ToolExecutionMiddleware поймает их по базовому типу, запишет
-message в историю как role="tool" и эмитит
-ToolExecutionFailed для observability. Никакого специального
-проброса не нужно.
-"""
+"""Доменные ошибки KB-tools."""
 
 from __future__ import annotations
 
@@ -13,15 +6,11 @@ from boba.domain.core.tools import ToolExecutionError, ToolId
 
 
 class KnowledgeBaseError(ToolExecutionError):
-    """База для всех ошибок ChromaKnowledgeBase. Используется для
-    обёртывания chromadb-исключений с понятным для агента сообщением.
-    """
+    """База для всех ошибок ChromaKnowledgeBase."""
 
 
 class CollectionNotFoundError(KnowledgeBaseError):
-    """Коллекция с таким именем не зарегистрирована в БД. Агент увидит
-    список доступных через kb_list_collections.
-    """
+    """Коллекция с таким именем не зарегистрирована в БД."""
 
     def __init__(self, tool_id: ToolId, name: str) -> None:
         super().__init__(
