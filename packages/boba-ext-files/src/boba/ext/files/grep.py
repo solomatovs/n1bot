@@ -16,6 +16,7 @@ from boba.domain.core.tools import (
     IsString,
     MinValue,
     NonEmpty,
+    Nullable,
     ObjectSchema,
     Pass,
     Required,
@@ -91,7 +92,7 @@ class GrepTool(Tool[GrepArgs]):
                     FieldSpec(
                         name="path",
                         description="Стартовый путь. Без значения — cwd.",
-                        converter=ChainConverter(IsString(), NonEmpty()),
+                        converter=Nullable(ChainConverter(IsString(), NonEmpty())),
                     ),
                     FieldSpec(
                         name="recursive",
@@ -104,7 +105,7 @@ class GrepTool(Tool[GrepArgs]):
                             "Fnmatch-glob по пути (например '*.py'). "
                             "Без значения — все файлы."
                         ),
-                        converter=ChainConverter(IsString(), NonEmpty()),
+                        converter=Nullable(ChainConverter(IsString(), NonEmpty())),
                     ),
                     FieldSpec(
                         name="case_insensitive",

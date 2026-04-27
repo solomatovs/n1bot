@@ -14,6 +14,7 @@ from boba.domain.core.tools import (
     IsString,
     MinValue,
     NonEmpty,
+    Nullable,
     ObjectSchema,
     Pass,
     Required,
@@ -69,7 +70,7 @@ class TreeTool(Tool[TreeArgs]):
                     FieldSpec(
                         name="path",
                         description="Корень обхода. Без значения — корень workspace.",
-                        converter=ChainConverter(IsString(), NonEmpty()),
+                        converter=Nullable(ChainConverter(IsString(), NonEmpty())),
                     ),
                     FieldSpec(
                         name="limit",
