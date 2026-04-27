@@ -1,16 +1,4 @@
-"""Env-variable ConfigSource-реализации.
-
-Алгоритм мапинга ConfigKey → env-имя:
-
-    "_".join([ENV_PREFIX, *key.parts]).upper()
-
-Например, ConfigKey("ext","chromadb","persist_path") →
-BOBA_EXT_CHROMADB_PERSIST_PATH. Никаких алиасов, никаких legacy-имён.
-
-EnvFileSource дополнительно ищет тот же ключ с суффиксом
-_FILE — Docker-style секрет: env указывает путь к файлу,
-содержимое читается и обрезается trailing-whitespace.
-"""
+"""env-источник конфига. Имя — env_name(key) = ``BOBA_<PARTS>``."""
 
 from __future__ import annotations
 
@@ -36,62 +24,21 @@ logger = logging.getLogger(__name__)
 
 
 ENV_PREFIX: Final[str] = "BOBA"
-"""Префикс всех env-имён, выводимых из ConfigKey."""
-
 ENV_FILE_SUFFIX: Final[str] = "_FILE"
-"""Суффикс env-имени для секрет-указателя на файл (Docker-style)."""
 
 
 def env_name(key: ConfigKey) -> str:
-    """ConfigKey → env-имя по единому алгоритму.
-
-    Чистая функция, доступна публично — пригодится для генерации
-    operator-доки и сообщений об ошибках («задайте через env-переменную
-    {env_name(key)}»).
-    """
+    """ConfigKey → ``BOBA_A_B_C``."""
     return "_".join((ENV_PREFIX, *key.parts)).upper()
 
 
-_BOBA_PREFIX_WITH_UNDERSCORE: Final[str] = ENV_PREFIX + "_"
+class _EnvSourceBase(ConfigSource):
+    """Общий каркас env-источников.
 
-
-def _is_boba_var(name: str) -> bool:
-    """Имя начинается с ``BOBA_`` — кандидат на конфиг-переменную."""
-    return name.startswith(_BOBA_PREFIX_WITH_UNDERSCORE)
-
-
-def _is_secret_pointer(name: str) -> bool:
-    """Имя оканчивается на ``_FILE`` — Docker-style pointer на секрет."""
-    return name.endswith(ENV_FILE_SUFFIX)
-
-
-def _strip_file_suffix(name: str) -> str:
-    """Убрать ``_FILE`` с конца имени; вызывать только для имён, для
-    которых :func:`_is_secret_pointer` вернул True."""
-    return name[: -len(ENV_FILE_SUFFIX)]
-
-
-class EnvSource(ConfigSource):
-    """Читает значение из os.environ по имени, выведенному из
-    ConfigKey через env_name.
-
-    На bind_schema опционально проверяет ``BOBA_*`` переменные на
-    опечатки — те, что не соответствуют ни одному
-    зарегистрированному ConfigKey. ``BOBA_*_FILE`` исключаются из
-    проверки — это территория EnvFileSource.
-
-    Параметр strict:
-
-    * False (default) — неизвестные ``BOBA_*`` логируются как warning
-      (logger ``boba.config.env.source``);
-    * True — неизвестные ``BOBA_*`` поднимают ValueError, останавливая
-      сборку конфига. Полезно в строгих pipeline'ах, где опечатка
-      должна валить деплой, а не уезжать в прод тихо.
-
-    Параметр ``extra_known`` — набор имён, которые ожидаются в
-    окружении, но не выводятся из схемы (например, bootstrap-мета
-    ``BOBA_CONFIG_PATH``, читаемая ``TomlSource`` до сборки бандла).
-    Bootstrap-код передаёт сюда константы соответствующих пакетов.
+    Знает префикс ``BOBA_`` и суффикс ``_FILE``, хранит strict +
+    extra_known, рапортует о найденных typo'ах. Наследники — EnvSource
+    (``BOBA_X``) и EnvFileSource (``BOBA_X_FILE``) — реализуют только
+    bind_schema/resolve/describe.
     """
 
     def __init__(
@@ -100,87 +47,96 @@ class EnvSource(ConfigSource):
         strict: bool = False,
         extra_known: Iterable[str] = (),
     ) -> None:
+        """Запомнить strict + extra_known."""
         self._strict = strict
         self._extra_known = frozenset(extra_known)
+
+    @staticmethod
+    def _is_boba_var(name: str) -> bool:
+        """Имя начинается с ``BOBA_`` — наша переменная."""
+        return name.startswith(ENV_PREFIX + "_")
+
+    @staticmethod
+    def _is_secret_pointer(name: str) -> bool:
+        """Имя оканчивается на ``_FILE`` — Docker-style указатель на секрет."""
+        return name.endswith(ENV_FILE_SUFFIX)
+
+    @staticmethod
+    def _strip_file_suffix(name: str) -> str:
+        """Убрать ``_FILE``; вызывать только после :meth:`_is_secret_pointer`."""
+        return name[: -len(ENV_FILE_SUFFIX)]
+
+    def _report_unknown(self, unknown: list[str], suffix: str = "") -> None:
+        """warning/ValueError (по strict) на найденные имена; suffix — после ``*``."""
+        if not unknown:
+            return
+        msg = f"unknown {ENV_PREFIX}_*{suffix} env vars: {sorted(unknown)}"
+        if self._strict:
+            raise ValueError(msg)
+        logger.warning(msg)
+
+
+class EnvSource(_EnvSourceBase):
+    """Значение из ``os.environ[env_name(key)]``.
+
+    bind_schema проверяет ``BOBA_*`` env vars на соответствие схеме
+    (``BOBA_*_FILE`` пропускаются — это EnvFileSource). См.
+    :class:`_EnvSourceBase` про strict + extra_known.
+    """
 
     def bind_schema(
         self,
         items: Iterable[tuple[ConfigKey, FieldSpec[Any]]],
     ) -> None:
+        """Сравнить ``BOBA_*`` (без ``_FILE``) с known_names; ругнуться на лишние."""
         known_names = {env_name(key) for key, _field in items} | self._extra_known
         unknown: list[str] = []
         for actual in os.environ:
-            if not _is_boba_var(actual):
+            if not self._is_boba_var(actual):
                 continue
-            if _is_secret_pointer(actual):
-                continue  # *_FILE — забота EnvFileSource
+            if self._is_secret_pointer(actual):
+                continue
             if actual in known_names:
                 continue
             unknown.append(actual)
-        if not unknown:
-            return
-        msg = (
-            f"unknown {ENV_PREFIX}_* env vars (typo? schema not registered?): "
-            f"{sorted(unknown)}"
-        )
-        if self._strict:
-            raise ValueError(msg)
-        logger.warning(msg)
+        self._report_unknown(unknown)
 
     def resolve(self, key: ConfigKey) -> object | None:
+        """Значение ``os.environ[BOBA_*]`` или None."""
         return os.environ.get(env_name(key))
 
     def describe(self, key: ConfigKey) -> str:
+        """Operator-readable hint: ``env BOBA_A_B``."""
         return f"env {env_name(key)}"
 
 
-class EnvFileSource(ConfigSource):
-    """Читает значение из файла, путь к которому хранит env-переменная
-    {env_name(key)}_FILE.
+class EnvFileSource(_EnvSourceBase):
+    """Значение из файла ``${env_name(key)}_FILE`` (Docker-style).
 
-    Если переменная не задана или файл не существует — None
-    (последующие источники продолжают). Содержимое возвращается с
-    обрезанным trailing-whitespace.
-
-    bind_schema симметричен EnvSource'у: проверяет ``BOBA_*_FILE``
-    переменные на соответствие схеме (после strip'а суффикса
-    ``_FILE``). См. описание strict / extra_known у :class:`EnvSource`.
+    bind_schema проверяет ``BOBA_*_FILE`` env vars на соответствие схеме
+    (после strip ``_FILE``). См. :class:`_EnvSourceBase` про
+    strict + extra_known.
     """
-
-    def __init__(
-        self,
-        *,
-        strict: bool = False,
-        extra_known: Iterable[str] = (),
-    ) -> None:
-        self._strict = strict
-        self._extra_known = frozenset(extra_known)
 
     def bind_schema(
         self,
         items: Iterable[tuple[ConfigKey, FieldSpec[Any]]],
     ) -> None:
+        """Сравнить ``BOBA_*_FILE`` со схемой (strip ``_FILE``); ругнуться на лишние."""
         known_names = {env_name(key) for key, _field in items} | self._extra_known
         unknown: list[str] = []
         for actual in os.environ:
-            if not _is_boba_var(actual):
+            if not self._is_boba_var(actual):
                 continue
-            if not _is_secret_pointer(actual):
-                continue  # обычные BOBA_* — забота EnvSource
-            if _strip_file_suffix(actual) in known_names:
+            if not self._is_secret_pointer(actual):
+                continue
+            if self._strip_file_suffix(actual) in known_names:
                 continue
             unknown.append(actual)
-        if not unknown:
-            return
-        msg = (
-            f"unknown {ENV_PREFIX}_*{ENV_FILE_SUFFIX} env vars "
-            f"(typo? schema not registered?): {sorted(unknown)}"
-        )
-        if self._strict:
-            raise ValueError(msg)
-        logger.warning(msg)
+        self._report_unknown(unknown, ENV_FILE_SUFFIX)
 
     def resolve(self, key: ConfigKey) -> object | None:
+        """Прочитать файл, путь к нему — в ``os.environ[BOBA_*_FILE]``."""
         path = os.environ.get(env_name(key) + ENV_FILE_SUFFIX)
         if not path:
             return None
@@ -190,4 +146,5 @@ class EnvFileSource(ConfigSource):
         return secret_file.read_text(encoding="utf-8").strip()
 
     def describe(self, key: ConfigKey) -> str:
+        """Operator-readable hint: ``env BOBA_A_B_FILE=<path>``."""
         return f"env {env_name(key)}{ENV_FILE_SUFFIX}=<path-to-secret-file>"

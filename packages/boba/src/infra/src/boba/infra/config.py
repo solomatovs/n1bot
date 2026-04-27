@@ -3,10 +3,11 @@
 - ConfigSection декларирует поля через FieldSpec и строит DTO.
 - ConfigFactory регистрирует встроенные секции и подхватывает секции
   расширений через entry-point group boba.config_sections; build()
-  возвращает ConfigBundle.
-- ConfigBundle — dict[StrId, T_DTO] + типизированный section();
-  свойства app/agent композируют AppConfig/AgentConfig.
-- ConfigLoader — ленивая обёртка с кэшем бандла.
+  идемпотентно возвращает ConfigBundle (внутренне кешируется).
+- ConfigBundle — generic-реестр DTO по StrId + типизированный section();
+  никаких app/agent shortcuts'ов — composition специфичных AppConfig/
+  AgentConfig'ов под каждое приложение делает consumer (он знает свои
+  адаптерные секции, infra про них не знает).
 
 LLM-sampling-параметров здесь нет — sampling прокидывается caller'ом per-request.
 """
@@ -20,7 +21,6 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, TypeVar, cast
 
 from boba.domain.agent.models import AgentConfig
-from boba.domain.config import AppConfig, LLMConfig, WorkspaceLayout
 from boba.domain.core.config import (
     ChainedConfigResolver,
     ConfigKey,
@@ -53,7 +53,6 @@ __all__ = [
     "ConfigBundle",
     "ConfigError",
     "ConfigFactory",
-    "ConfigLoader",
     "ConfigSectionAlreadyRegisteredError",
     "ConfigSectionMissingError",
     "DefaultSource",
@@ -135,19 +134,14 @@ class AppCoreConfig:
     log_file: str | None
 
 
-_WORKSPACES_ID = StrId("workspaces")
-_LLM_TRANSPORT_ID = StrId("llm_transport")
-_PROMPTS_ID = StrId("prompts")
-
-
 class ConfigBundle:
-    """Итог сборки: типизированный реестр секций по StrId.
+    """Итог сборки: типизированный реестр DTO по StrId.
 
-    section достаёт DTO нужной секции по её классу — type-checker
-    видит конкретный T_DTO. app / agent — удобные свойства
-    для типичного app-стека: первый собирает AppConfig из
-    app_core + adapter-секций (workspaces/llm_transport/
-    prompts), второй — DTO agent.
+    section() достаёт DTO нужной секции по её классу — type-checker
+    видит конкретный T_DTO. Generic-реестр: никакие приложение-
+    специфичные аггрегаты (AppConfig/AgentConfig) тут не живут —
+    каждое приложение собирает свой агрегат сам, потому что только
+    оно знает, какие adapter-секции зарегистрированы.
 
     Бандл иммутабельный (внутренний dict копируется при создании).
     """
@@ -164,38 +158,6 @@ class ConfigBundle:
         if sid not in self._sections:
             raise ConfigSectionMissingError(cls)
         return cast(T, self._sections[sid])
-
-    def _by_id(self, section_id: StrId) -> object:
-        """Сырой лукап по id — используется агрегатами app /
-        agent, чтобы не зависеть от классов секций (они живут в
-        adapter-пакетах). Если секции с таким id нет — ConfigError.
-        """
-        if section_id not in self._sections:
-            raise ConfigError(
-                f"ConfigSection with id {section_id!r} is not registered "
-                "in factory; required by ConfigBundle.app/agent aggregate"
-            )
-        return self._sections[section_id]
-
-    @property
-    def app(self) -> AppConfig:
-        """Композиция app_core + workspaces + llm_transport +
-        prompts в AppConfig. Adapter-секции должны быть
-        зарегистрированы в фабрике.
-        """
-        core = self.section(AppCoreSection)
-        return AppConfig(
-            workspaces=cast(WorkspaceLayout, self._by_id(_WORKSPACES_ID)),
-            ssl_verify=core.ssl_verify,
-            log_level=core.log_level,
-            log_file=core.log_file,
-            llm=cast(LLMConfig, self._by_id(_LLM_TRANSPORT_ID)),
-            prompts_dir=cast(str, self._by_id(_PROMPTS_ID)),
-        )
-
-    @property
-    def agent(self) -> AgentConfig:
-        return self.section(AgentSection)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -288,14 +250,17 @@ class ConfigFactory:
         self._sources: list[ConfigSource] = []
         self._sections: dict[StrId, ConfigSection[Any]] = {}
         self._resolver: ChainedConfigResolver | None = None
+        self._bundle: ConfigBundle | None = None
 
     def attach_sources(self, sources: Sequence[ConfigSource]) -> None:
         """Подключить источники в порядке приоритета (cli > env > toml).
-        Повторный вызов заменяет предыдущий список (idempotent); сбрасывает
-        кеш резолвера, чтобы новые источники тоже получили bind_schema.
+        Повторный вызов заменяет предыдущий список (idempotent);
+        сбрасывает кеш резолвера и бандла — новые источники получат
+        bind_schema, секции пересоберутся с новых данных.
         """
         self._sources = list(sources)
         self._resolver = None
+        self._bundle = None
 
     def _iter_schema_items(self) -> Iterator[tuple[ConfigKey, FieldSpec[Any]]]:
         """Полный набор (key, field) пар по всем зарегистрированным
@@ -399,37 +364,18 @@ class ConfigFactory:
                 )
 
     def build(self) -> ConfigBundle:
-        resolver = self.resolver()
-        built: dict[StrId, object] = {}
-        for sid, section in self._sections.items():
-            built[sid] = section.build(resolver)
-        return ConfigBundle(built)
+        """Собрать (или вернуть закешированный) ConfigBundle.
 
-
-class ConfigLoader:
-    """Ленивый фасад над ConfigFactory: кэширует бандл после
-    первой сборки.
-
-    Конструктор принимает уже собранную фабрику — у инфры нет своих
-    источников значений, цепочку резолвера собирает bootstrap приложения
-    из подключённых пакетов (например, env +
-    toml).
-    """
-
-    def __init__(self, factory: ConfigFactory) -> None:
-        self._factory = factory
-        self._bundle: ConfigBundle | None = None
-
-    def _ensure(self) -> ConfigBundle:
+        Идемпотентно: повторные вызовы возвращают тот же инстанс — это
+        важно потому что bind_schema источников имеет побочные эффекты
+        (CliSource на ``--help`` вызывает ``sys.exit(0)``), и пересборка
+        дала бы их повторно. Кеш сбрасывается при ``attach_sources``.
+        """
         if self._bundle is None:
-            self._bundle = self._factory.build()
+            resolver = self.resolver()
+            built: dict[StrId, object] = {
+                sid: section.build(resolver)
+                for sid, section in self._sections.items()
+            }
+            self._bundle = ConfigBundle(built)
         return self._bundle
-
-    def load_bundle(self) -> ConfigBundle:
-        return self._ensure()
-
-    def load_app(self) -> AppConfig:
-        return self._ensure().app
-
-    def load_agent(self) -> AgentConfig:
-        return self._ensure().agent
