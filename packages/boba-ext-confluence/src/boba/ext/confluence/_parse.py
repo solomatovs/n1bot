@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from bs4 import BeautifulSoup, NavigableString
-from bs4.element import Tag
+from bs4 import BeautifulSoup
+from bs4.element import NavigableString, Tag
 
 from boba.domain.core.workspace import WorkspaceShell
 
@@ -78,13 +78,9 @@ def resolve_anchor(headings: list[Heading], anchor: str) -> Heading | None:
 
 
 def strip_confluence_macros(html: str) -> str:
-    """Вырезать ac:*/ri:* теги из HTML-фрагмента (сами теги; текстовые children сохраняются)."""
+    """Вырезать ac:*/ri:* теги из HTML; текстовые children сохраняются."""
     soup = BeautifulSoup(html, "lxml")
     for el in list(soup.find_all(_is_confluence_macro)):
-        # decompose целиком — у анкер- и attachment-макросов внутри лишь служебные параметры,
-        # для контентных вроде code-block (ac:plain-text-body) тоже теряется тело,
-        # но это допустимо: структура страницы остаётся, контент кодовых блоков всё равно
-        # был бы непредсказуемым после strip'а атрибутов.
         el.decompose()
     body = soup.body
     if body is None:
@@ -94,7 +90,7 @@ def strip_confluence_macros(html: str) -> str:
 
 def _is_confluence_macro(tag: Tag) -> bool:
     name = getattr(tag, "name", None)
-    return bool(name and (name.startswith("ac:") or name.startswith("ri:")))
+    return bool(name and name.startswith(("ac:", "ri:")))
 
 
 def _heading_anchor(tag: Tag) -> str | None:
