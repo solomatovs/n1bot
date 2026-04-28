@@ -1,10 +1,19 @@
 [app]
 log_level = "DEBUG"
 ssl_verify = false
+# log_file = "./local/logs/boba.log"
+
+[llm]
+base_url = "http://localhost:4000"
+api_key = "ollama"
 
 [agent]
 max_iterations = 200
 max_consecutive_tool_calls = 30
+tools_enabled = true
+tool_plugins = []
+tools_allow = []
+tools_deny = []
 
 [workspaces]
 base_dir = "./local/workspaces"
@@ -19,6 +28,7 @@ dir = "./local/prompts"
 host = "0.0.0.0"
 port = "8502"
 root_path = "/boba-debug"
+headless = "true"
 app_root = "./local/chainlit"
 models = [
     "qwen3",
@@ -33,6 +43,39 @@ models = [
     "numarkdown-q4",
     "numarkdown-q8",
 ]
+# auth_secret = "..."
+# ui_name = "Boba"
+# enable_telemetry = false
+# upload_max_size_mb = 25
+# upload_max_files = 5
+# upload_accept = ["text/*", "application/pdf"]
 
 [ext.chromadb]
 persist_path = "./local/chroma"
+embedding_model = "default"
+max_top_k = 20
+snippet_chars = 300
+
+# ── CLI-секции (boba-cli-agent-run / boba-cli-vector-index): ──────────
+# Обычно задаются через CLI-аргументы; здесь можно зафиксировать дефолты.
+
+[agent_run]
+# model = "qwen3.5-35b"
+# query = "..."
+# temperature = 0.2
+# top_p = 0.9
+# max_tokens = 4096
+# seed = 42
+# stop = []
+# frequency_penalty = 0.0
+# presence_penalty = 0.0
+
+[vector_index]
+chunk_size = 1000
+chunk_overlap = 200
+confirm_skip = false
+verbose = 0
+# action = "index"
+# paths = ["./local/manual"]
+# collection = "manual"
+# description = "Confluence-export'ы"
