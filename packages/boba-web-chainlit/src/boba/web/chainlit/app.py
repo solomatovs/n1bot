@@ -42,7 +42,7 @@ def _get_session() -> ChatSession:
 
 @cl.on_chat_start
 async def on_chat_start() -> None:
-    workspace_id = WorkspaceId.new()
+    workspace_id = WorkspaceId.from_wire("00000000-0000-0000-0000-000000000001")
     cl.user_session.set("workspace_id", workspace_id)
 
     session = await asyncio.to_thread(_get_session)
