@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import Generic, TypeVar
@@ -71,6 +71,22 @@ class LLMRequestObserver(ABC, Generic[TRequest, TChunk]):
         """Вызывается ровно один раз по завершении потока (любой исход)."""
         ...
 
+    def on_http_request(
+        self,
+        method: str,
+        url: str,
+        headers: Mapping[str, str],
+        body: bytes,
+    ) -> None:
+        """Сырой исходящий HTTP-запрос на транспортном уровне; по умолчанию no-op."""
+
+    def on_http_response(
+        self,
+        status_code: int,
+        headers: Mapping[str, str],
+    ) -> None:
+        """Сырой входящий HTTP-ответ (без тела); по умолчанию no-op."""
+
 
 class CompositeLLMRequestObserver(LLMRequestObserver[TRequest, TChunk]):
     """Fan-out из нескольких LLMRequestObserver в порядке регистрации."""
@@ -91,3 +107,21 @@ class CompositeLLMRequestObserver(LLMRequestObserver[TRequest, TChunk]):
     def on_request_end(self, outcome: RequestOutcome) -> None:
         for o in self._observers:
             o.on_request_end(outcome)
+
+    def on_http_request(
+        self,
+        method: str,
+        url: str,
+        headers: Mapping[str, str],
+        body: bytes,
+    ) -> None:
+        for o in self._observers:
+            o.on_http_request(method, url, headers, body)
+
+    def on_http_response(
+        self,
+        status_code: int,
+        headers: Mapping[str, str],
+    ) -> None:
+        for o in self._observers:
+            o.on_http_response(status_code, headers)

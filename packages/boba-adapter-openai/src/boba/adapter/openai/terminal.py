@@ -27,9 +27,33 @@ from openai import OpenAI
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 
-def build_openai_client(config: LLMConfig) -> OpenAI:
-    """Строит OpenAI-клиент из конфига."""
-    return OpenAI(base_url=config.base_url, api_key=config.api_key)
+def build_openai_client(
+    config: LLMConfig,
+    observer: LLMRequestObserver[dict[str, Any], ChatCompletionChunk] | None = None,
+) -> OpenAI:
+    """Строит OpenAI-клиент из конфига; observer получает сырые HTTP req/resp."""
+    if observer is None:
+        return OpenAI(base_url=config.base_url, api_key=config.api_key)
+
+    def _on_request(req: httpx.Request) -> None:
+        observer.on_http_request(
+            req.method,
+            str(req.url),
+            dict(req.headers),
+            req.read(),
+        )
+
+    def _on_response(resp: httpx.Response) -> None:
+        observer.on_http_response(resp.status_code, dict(resp.headers))
+
+    http_client = httpx.Client(
+        event_hooks={"request": [_on_request], "response": [_on_response]},
+    )
+    return OpenAI(
+        base_url=config.base_url,
+        api_key=config.api_key,
+        http_client=http_client,
+    )
 
 
 @contextmanager

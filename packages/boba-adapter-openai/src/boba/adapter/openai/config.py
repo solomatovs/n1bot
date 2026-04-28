@@ -60,7 +60,7 @@ def create_llm_source(
     """
     return StreamSourceChainBuilder[LLMContext, LLMEvent]().terminal(
         OpenAITerminal(
-            build_openai_client(llm_config),
+            build_openai_client(llm_config, observer),
             observer=observer,
             reindex_tool_calls=reindex_tool_calls,
         )
