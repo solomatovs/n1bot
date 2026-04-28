@@ -7,9 +7,7 @@ name = "boba"
 version = "0.1.0"
 description = "Boba — RAG agent for knowledge base"
 requires-python = ">=3.11,<4"
-dependencies = [
-    "httpx",
-]
+dependencies = []
 
 [project.optional-dependencies]
 dev = [
