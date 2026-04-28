@@ -15,7 +15,7 @@ from boba.cli.vector_index.indexer import (
     IndexOptions,
     index_paths,
 )
-from boba.cli.vector_index.store import VectorStore
+from boba.cli.vector_index.store import CollectionSummary, VectorStore
 from boba.config.cli import CliSource
 from boba.config.env import EnvFileSource, EnvSource
 from boba.config.toml import CONFIG_PATH_ENV, TomlFileSource, TomlSource
@@ -112,6 +112,8 @@ def _handle_index(persist_path: str, cfg: VectorIndexConfig) -> int:
         f"chunks_upserted={stats.chunks_upserted} "
         f"chunks_deleted={stats.chunks_deleted}"
     )
+    summary = store.get_collection_summary(collection)
+    _print_collection_summary(summary)
     return 0
 
 
@@ -123,9 +125,13 @@ def _handle_list(persist_path: str, cfg: VectorIndexConfig) -> int:
         print("(no collections)")
         return 0
     for c in collections:
-        desc = f" — {c.description}" if c.description else ""
-        print(f"{c.name}\t{c.count} chunks{desc}")
+        _print_collection_summary(c)
     return 0
+
+
+def _print_collection_summary(c: CollectionSummary) -> None:
+    desc = f" — {c.description}" if c.description else ""
+    print(f"{c.name}\t{c.count} chunks{desc}")
 
 
 def _handle_delete(persist_path: str, cfg: VectorIndexConfig) -> int:
