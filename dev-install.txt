@@ -15,3 +15,5 @@
 -e ./packages/boba-config-toml
 -e ./packages/boba-ext-files
 -e ./packages/boba-ext-chromadb
+-e ./packages/boba-ext-confluence
+-e ./packages/boba-ext-html
