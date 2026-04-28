@@ -27,23 +27,24 @@ class VectorStore:
         logger.info("VectorStore opened persist_path=%r", persist_path)
 
     def list_collections(self) -> list[CollectionSummary]:
-        out: list[CollectionSummary] = []
-        for c in self._client.list_collections():
-            metadata = c.metadata or {}
-            description = metadata.get("description", "") if metadata else ""
-            try:
-                count = c.count()
-            except Exception as e:
-                logger.warning("count() failed for %r: %s", c.name, e)
-                count = -1
-            out.append(
-                CollectionSummary(
-                    name=c.name,
-                    description=description if isinstance(description, str) else "",
-                    count=count,
-                )
-            )
-        return out
+        return [self._summarize(c) for c in self._client.list_collections()]
+
+    def get_collection_summary(self, name: str) -> CollectionSummary:
+        return self._summarize(self._client.get_collection(name=name))
+
+    def _summarize(self, c) -> CollectionSummary:  # type: ignore[no-untyped-def]
+        metadata = c.metadata or {}
+        description = metadata.get("description", "") if metadata else ""
+        try:
+            count = c.count()
+        except Exception as e:
+            logger.warning("count() failed for %r: %s", c.name, e)
+            count = -1
+        return CollectionSummary(
+            name=c.name,
+            description=description if isinstance(description, str) else "",
+            count=count,
+        )
 
     def get_or_create_collection(
         self,
