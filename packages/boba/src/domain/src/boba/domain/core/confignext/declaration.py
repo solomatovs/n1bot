@@ -1,19 +1,19 @@
-"""Декларация структуры: FieldKind / FieldSpec / MappingField / ListField / ObjectSchema.
-
-Каждый FieldKind сам знает, как себя вычитать из FlatConfig
-(`read_from(space, prefix)`); ObjectSchema умеет материализовать себя
-целиком (`schema.materialize(space, prefix)`).
-"""
-
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
-from boba.domain.core.confignext.path import ConfigPath, NameSegment
-from boba.domain.core.confignext.space import ConfigSpace
+from boba.domain.core.confignext.path import (
+    ConfigLookup,
+    ConfigPath,
+    ConfigSpace,
+    Found,
+    NameSegment,
+    NotFound,
+    Segment,
+)
 from boba.domain.core.confignext.validators import MISSING
 from boba.domain.core.patterns import (
     Converter,
@@ -22,14 +22,21 @@ from boba.domain.core.patterns import (
 )
 
 __all__ = [
+    "CollectionField",
+    "CollectionShape",
     "FieldKind",
     "FieldPathError",
     "FieldPathMissingError",
     "FieldSpec",
+    "IndexedShape",
+    "ItemReader",
+    "KeyedShape",
     "ListField",
     "MappingField",
     "MappingScalarField",
+    "ObjectItem",
     "ObjectSchema",
+    "ScalarItem",
     "ScalarListField",
 ]
 
@@ -110,6 +117,8 @@ class FieldPathMissingError(FieldPathError, MissingValueError):
 
 T = TypeVar("T")
 V = TypeVar("V")
+K = TypeVar("K")
+R = TypeVar("R")
 
 
 class FieldKind(ABC):
@@ -142,118 +151,175 @@ class FieldSpec(FieldKind, Generic[T]):
         return self.converter.convert(raw)
 
 
+class ItemReader(ABC, Generic[V]):
+    """Чтение одного элемента коллекции по абсолютному пути."""
+
+    @abstractmethod
+    def read(self, space: ConfigSpace, path: ConfigPath) -> ConfigLookup[V]:
+        """Found(V) — есть значение; NotFound — пропустить элемент."""
+
+
+class CollectionShape(ABC, Generic[K, V, R]):
+    """Форма коллекции: какие сегменты считаются элементами и как собрать результат."""
+
+    @abstractmethod
+    def entries(
+        self,
+        space: ConfigSpace,
+        prefix: ConfigPath,
+    ) -> Iterator[tuple[K, Segment, str]]:
+        """yields (ключ, сегмент, label-для-ошибок); фильтрует «не свои» сегменты."""
+
+    @abstractmethod
+    def assemble(self, items: list[tuple[K, V]]) -> R:
+        """Собрать итог из накопленных пар (ключ, значение)."""
+
+
 @dataclass(frozen=True)
-class MappingField(FieldKind, Generic[V]):
-    """Динамическое поле: значение — Mapping[str, V]; ключи произвольны."""
+class ScalarItem(ItemReader[T], Generic[T]):
+    """Скаляр: lookup → converter."""
+
+    converter: Converter[Any, T]
+
+    def read(self, space: ConfigSpace, path: ConfigPath) -> ConfigLookup[T]:
+        lookup = space.lookup(path)
+        if not lookup.is_found():
+            return NotFound()
+        return Found(self.converter.convert(lookup.value()))
+
+
+@dataclass(frozen=True)
+class ObjectItem(ItemReader[V], Generic[V]):
+    """Объект: рекурсивный materialize по схеме."""
+
+    schema: ObjectSchema[V]
+
+    def read(self, space: ConfigSpace, path: ConfigPath) -> ConfigLookup[V]:
+        return Found(self.schema.materialize(space, path))
+
+
+@dataclass(frozen=True)
+class IndexedShape(CollectionShape[int, V, tuple[V, ...]], Generic[V]):
+    """tuple[V, ...] по `[i]`; результат отсортирован по индексу."""
+
+    def entries(
+        self,
+        space: ConfigSpace,
+        prefix: ConfigPath,
+    ) -> Iterator[tuple[int, Segment, str]]:
+        for seg in space.child_segments(prefix):
+            i = seg.list_index()
+            if i is None:
+                continue
+            yield i, seg, f"[{i}]"
+
+    def assemble(self, items: list[tuple[int, V]]) -> tuple[V, ...]:
+        return tuple(v for _, v in sorted(items, key=lambda kv: kv[0]))
+
+
+@dataclass(frozen=True)
+class KeyedShape(CollectionShape[str, V, dict[str, V]], Generic[V]):
+    """dict[str, V] по mapping-ключам."""
+
+    def entries(
+        self,
+        space: ConfigSpace,
+        prefix: ConfigPath,
+    ) -> Iterator[tuple[str, Segment, str]]:
+        for seg in space.child_segments(prefix):
+            k = seg.mapping_key()
+            if k is None:
+                continue
+            yield k, seg, k
+
+    def assemble(self, items: list[tuple[str, V]]) -> dict[str, V]:
+        return dict(items)
+
+
+@dataclass(frozen=True)
+class CollectionField(FieldKind, Generic[K, V, R]):
+    """Поле-коллекция: ItemReader (чтение элемента) × CollectionShape (сборка)."""
 
     name: str
-    value_schema: ObjectSchema[V]
+    reader: ItemReader[V]
+    shape: CollectionShape[K, V, R]
     description: str = ""
 
-    def read_from(self, space: ConfigSpace, prefix: ConfigPath) -> dict[str, V]:
+    def read_from(self, space: ConfigSpace, prefix: ConfigPath) -> R:
         sub_prefix = prefix.join(NameSegment(self.name))
-        result: dict[str, V] = {}
-        seen: set[str] = set()
-        for seg in space.child_segments(sub_prefix):
-            key = seg.mapping_key()
-            if key is None or key in seen:
+        items: list[tuple[K, V]] = []
+        seen: set[K] = set()
+        for key, seg, label in self.shape.entries(space, sub_prefix):
+            if key in seen:
                 continue
             seen.add(key)
             try:
-                result[key] = self.value_schema.materialize(space, sub_prefix.join(seg))
+                lookup = self.reader.read(space, sub_prefix.join(seg))
             except FieldPathError as exc:
-                raise exc.with_parent_location(self.name, key) from exc
-        return result
-
-
-@dataclass(frozen=True)
-class ListField(FieldKind, Generic[V]):
-    """Индексированное поле: значение — tuple[V, ...]; элементы — объекты."""
-
-    name: str
-    item_schema: ObjectSchema[V]
-    description: str = ""
-
-    def read_from(self, space: ConfigSpace, prefix: ConfigPath) -> tuple[V, ...]:
-        sub_prefix = prefix.join(NameSegment(self.name))
-        items_by_index: dict[int, V] = {}
-        for seg in space.child_segments(sub_prefix):
-            i = seg.list_index()
-            if i is None or i in items_by_index:
-                continue
-            try:
-                items_by_index[i] = self.item_schema.materialize(
-                    space, sub_prefix.join(seg)
-                )
-            except FieldPathError as exc:
-                raise exc.with_parent_location(self.name, f"[{i}]") from exc
-        return tuple(items_by_index[i] for i in sorted(items_by_index))
-
-
-@dataclass(frozen=True)
-class ScalarListField(FieldKind, Generic[T]):
-    """Индексированный список скаляров: значение — tuple[T, ...].
-
-    Параллель ListField для случая, когда элемент — примитив, а не объект:
-      [chainlit] models = ["qwen3", "gemini"]
-        → tuple[str, ...] через item_converter.
-    """
-
-    name: str
-    item_converter: Converter[Any, T]
-    description: str = ""
-
-    def read_from(self, space: ConfigSpace, prefix: ConfigPath) -> tuple[T, ...]:
-        sub_prefix = prefix.join(NameSegment(self.name))
-        items_by_index: dict[int, T] = {}
-        for seg in space.child_segments(sub_prefix):
-            i = seg.list_index()
-            if i is None or i in items_by_index:
-                continue
-            lookup = space.lookup(sub_prefix.join(seg))
-            if not lookup.is_found():
-                continue
-            try:
-                items_by_index[i] = self.item_converter.convert(lookup.value())
+                raise exc.with_parent_location(self.name, label) from exc
             except ConverterInputError as exc:
                 raise FieldPathError.from_cause(
-                    exc, self.name, location=(f"[{i}]",)
+                    exc, self.name, location=(label,)
                 ) from exc
-        return tuple(items_by_index[i] for i in sorted(items_by_index))
+            if lookup.is_found():
+                items.append((key, lookup.value()))
+        return self.shape.assemble(items)
 
 
-@dataclass(frozen=True)
-class MappingScalarField(FieldKind, Generic[T]):
-    """Динамический словарь скаляров: значение — Mapping[str, T].
+def MappingField(  # noqa: N802 — публичный API в PascalCase
+    name: str,
+    value_schema: ObjectSchema[V],
+    description: str = "",
+) -> CollectionField[str, V, dict[str, V]]:
+    """Динамический словарь объектов: ключи произвольны, значения — DTO по схеме."""
+    return CollectionField(
+        name=name,
+        reader=ObjectItem(value_schema),
+        shape=KeyedShape(),
+        description=description,
+    )
 
-    Параллель MappingField для случая, когда значение — примитив, а не объект:
-      [tool_descriptions]
-      kb_search = "..."
-      html_outline = "..."
-        → dict[str, str] через item_converter.
-    """
 
-    name: str
-    item_converter: Converter[Any, T]
-    description: str = ""
+def ListField(  # noqa: N802 — публичный API в PascalCase
+    name: str,
+    item_schema: ObjectSchema[V],
+    description: str = "",
+) -> CollectionField[int, V, tuple[V, ...]]:
+    """Индексированный список объектов: tuple[V, ...] по схеме элемента."""
+    return CollectionField(
+        name=name,
+        reader=ObjectItem(item_schema),
+        shape=IndexedShape(),
+        description=description,
+    )
 
-    def read_from(self, space: ConfigSpace, prefix: ConfigPath) -> dict[str, T]:
-        sub_prefix = prefix.join(NameSegment(self.name))
-        result: dict[str, T] = {}
-        for seg in space.child_segments(sub_prefix):
-            key = seg.mapping_key()
-            if key is None or key in result:
-                continue
-            lookup = space.lookup(sub_prefix.join(seg))
-            if not lookup.is_found():
-                continue
-            try:
-                result[key] = self.item_converter.convert(lookup.value())
-            except ConverterInputError as exc:
-                raise FieldPathError.from_cause(
-                    exc, self.name, location=(key,)
-                ) from exc
-        return result
+
+def ScalarListField(  # noqa: N802 — публичный API в PascalCase
+    name: str,
+    item_converter: Converter[Any, T],
+    description: str = "",
+) -> CollectionField[int, T, tuple[T, ...]]:
+    """Индексированный список скаляров: tuple[T, ...] через item_converter."""
+    return CollectionField(
+        name=name,
+        reader=ScalarItem(item_converter),
+        shape=IndexedShape(),
+        description=description,
+    )
+
+
+def MappingScalarField(  # noqa: N802 — публичный API в PascalCase
+    name: str,
+    item_converter: Converter[Any, T],
+    description: str = "",
+) -> CollectionField[str, T, dict[str, T]]:
+    """Динамический словарь скаляров: dict[str, T] через item_converter."""
+    return CollectionField(
+        name=name,
+        reader=ScalarItem(item_converter),
+        shape=KeyedShape(),
+        description=description,
+    )
 
 
 class _PassDict(Converter[dict[str, Any], dict[str, Any]]):
@@ -287,8 +353,10 @@ class ObjectSchema(Generic[T]):
                 value = f.read_from(space, prefix)
             except ConverterInputError as exc:
                 raise FieldPathError.from_cause(exc, f.name) from exc
+
             if value is MISSING:
                 continue
+
             validated[f.name] = value
 
         try:

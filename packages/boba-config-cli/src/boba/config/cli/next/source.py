@@ -6,6 +6,7 @@ import logging
 import sys
 from collections.abc import Mapping, Sequence
 
+from boba.domain.core.confignext import ConfigSource, ConfigValue, StringValue
 from boba.domain.core.confignext.path import (
     ConfigPath,
     ConfigPathParseError,
@@ -13,8 +14,6 @@ from boba.domain.core.confignext.path import (
     NameSegment,
     Segment,
 )
-from boba.domain.core.confignext.source import ConfigSource
-from boba.domain.core.confignext.value import ConfigValue, StringValue
 
 __all__ = ["CliSource", "parse_argv_path"]
 

@@ -30,6 +30,5 @@ class PythonValueFactory:
             wrapped = adapter.try_wrap(value)
             if wrapped is not None:
                 return wrapped
-        raise ConverterInputError(
-            f"cannot wrap {type(value).__name__} as ConfigValue"
-        )
+
+        raise ConverterInputError(f"cannot wrap {type(value).__name__} as ConfigValue")

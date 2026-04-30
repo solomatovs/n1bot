@@ -114,6 +114,21 @@
             "envFile": "${workspaceFolder}/local/.env",
         },
         {
+            "name": "Pytest: test_e2e_extension.py",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "-v",
+                "${workspaceFolder}/tests/confignext/test_e2e_extension.py"
+            ],
+            "envFile": "${workspaceFolder}/local/.env",
+        },
+        {
             "name": "Python current file",
             "type": "debugpy",
             "request": "launch",

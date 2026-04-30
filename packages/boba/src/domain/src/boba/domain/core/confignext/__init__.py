@@ -2,31 +2,36 @@
 
 from boba.domain.core.confignext.bundle import ConfigBundle, ConfigFactory
 from boba.domain.core.confignext.declaration import (
+    CollectionField,
+    CollectionShape,
     FieldKind,
     FieldPathError,
     FieldPathMissingError,
     FieldSpec,
+    IndexedShape,
+    ItemReader,
+    KeyedShape,
     ListField,
     MappingField,
     MappingScalarField,
+    ObjectItem,
     ObjectSchema,
+    ScalarItem,
     ScalarListField,
 )
 from boba.domain.core.confignext.flat import FlatConfig, FlatConfigBuilder
-from boba.domain.core.confignext.lookup import (
-    ConfigLookup,
-    Found,
-    NotFound,
-)
 from boba.domain.core.confignext.path import (
+    ConfigLookup,
     ConfigPath,
     ConfigPathParseError,
+    ConfigSource,
+    ConfigSpace,
+    Found,
     IndexSegment,
     NameSegment,
+    NotFound,
     Segment,
 )
-from boba.domain.core.confignext.source import ConfigSource
-from boba.domain.core.confignext.space import ConfigSpace
 from boba.domain.core.confignext.validators import (
     MISSING,
     ChainConverter,
@@ -80,6 +85,8 @@ __all__ = [
     "BoolAdapter",
     "BoolValue",
     "ChainConverter",
+    "CollectionField",
+    "CollectionShape",
     "ConfigBundle",
     "ConfigFactory",
     "ConfigLookup",
@@ -103,12 +110,15 @@ __all__ = [
     "FloatValue",
     "Found",
     "IndexSegment",
+    "IndexedShape",
     "IntAdapter",
     "IntValue",
     "IsBool",
     "IsInt",
     "IsNumber",
     "IsString",
+    "ItemReader",
+    "KeyedShape",
     "ListField",
     "MappingField",
     "MappingScalarField",
@@ -123,6 +133,7 @@ __all__ = [
     "NullAdapter",
     "NullValue",
     "Nullable",
+    "ObjectItem",
     "ObjectSchema",
     "OneOf",
     "Ordered",
@@ -135,6 +146,7 @@ __all__ = [
     "PythonValueFactory",
     "Required",
     "RequiresTogether",
+    "ScalarItem",
     "ScalarListField",
     "Segment",
     "StringAdapter",
