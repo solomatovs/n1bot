@@ -11,13 +11,14 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
-from boba.domain.core.confignext.lookup import (
+from boba.domain.core.confignext.path import (
     ConfigLookup,
+    ConfigPath,
+    ConfigSource,
     Found,
     NotFound,
+    Segment,
 )
-from boba.domain.core.confignext.path import ConfigPath, Segment
-from boba.domain.core.confignext.source import ConfigSource
 from boba.domain.core.confignext.value import ConfigValue
 from boba.domain.core.patterns import FoldFactory, PrioritySource, StrId
 

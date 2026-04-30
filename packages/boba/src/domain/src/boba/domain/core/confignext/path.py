@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import ClassVar, Self, overload
+from typing import ClassVar, Generic, Protocol, Self, TypeVar, overload
+
+from boba.domain.core.confignext.value import ConfigValue
 
 __all__ = [
     "ConfigPath",
@@ -192,7 +194,6 @@ class ConfigPath:
             segments.append(seg)
         return segments
 
-
     def __iter__(self) -> Iterator[Segment]:
         return iter(self._segments)
 
@@ -210,8 +211,6 @@ class ConfigPath:
         if isinstance(index, slice):
             return ConfigPath(self._segments[index])
         return self._segments[index]
-
-    # ── Доменные операции ─────────────────────────────────────────────────
 
     def render(self) -> str:
         parts = ["$"]
@@ -251,3 +250,94 @@ class ConfigPath:
 
     def __str__(self) -> str:
         return self.render()
+
+
+class ConfigSource(ABC):
+    """Источник конфига: имя, приоритет, плоский снимок."""
+
+    @abstractmethod
+    def name(self) -> str:
+        """Уникальное имя источника — для origin-трассировки."""
+        ...
+
+    @abstractmethod
+    def priority(self) -> int:
+        """Приоритет при мерже; больше = важнее (last-wins)."""
+        ...
+
+    @abstractmethod
+    def load(self) -> Mapping[ConfigPath, ConfigValue]:
+        """Eager-snapshot всех известных источнику значений."""
+        ...
+
+    def describe(self, path: ConfigPath) -> str:
+        """Operator-readable hint, как задать значение через этот источник."""
+        del path
+        return ""
+
+
+T = TypeVar("T")
+U = TypeVar("U")
+
+
+class ConfigLookup(ABC, Generic[T]):
+    """Результат поиска: Found(value) или NotFound."""
+
+    @abstractmethod
+    def is_found(self) -> bool: ...
+
+    @abstractmethod
+    def value(self) -> T:
+        """Достать значение; raises LookupError если NotFound."""
+        ...
+
+    @abstractmethod
+    def or_else(self, default: T) -> T:
+        """Значение либо default."""
+        ...
+
+
+@dataclass(frozen=True)
+class Found(ConfigLookup[T], Generic[T]):
+    """Значение найдено (в т.ч. может быть NullValue)."""
+
+    found: T
+
+    def is_found(self) -> bool:
+        return True
+
+    def value(self) -> T:
+        return self.found
+
+    def or_else(self, default: T) -> T:
+        return self.found
+
+
+class NotFound(ConfigLookup[T], Generic[T]):
+    """Значение отсутствует. Используй sentinel NOT_FOUND, а не создавай напрямую."""
+
+    __slots__ = ()
+
+    def is_found(self) -> bool:
+        return False
+
+    def value(self) -> T:
+        raise LookupError("value not found")
+
+    def or_else(self, default: T) -> T:
+        return default
+
+    def __repr__(self) -> str:
+        return "NotFound()"
+
+
+class ConfigSpace(Protocol):
+    """Минимальный контракт, нужный полям ObjectSchema для чтения значений."""
+
+    def lookup(self, path: ConfigPath) -> ConfigLookup[ConfigValue]:
+        """Найти значение в указанном пути."""
+        ...
+
+    def child_segments(self, prefix: ConfigPath) -> Sequence[Segment]:
+        """Уникальные первые сегменты непосредственно под prefix."""
+        ...

@@ -9,15 +9,9 @@ from typing import Any, Final
 
 import tomli
 
-from boba.domain.core.confignext.path import (
-    ConfigPath,
-    IndexSegment,
-    NameSegment,
-    Segment,
-)
-from boba.domain.core.confignext.source import ConfigSource
-from boba.domain.core.confignext.value import (
+from boba.domain.core.confignext import (
     BoolAdapter,
+    ConfigSource,
     ConfigValue,
     DateAdapter,
     DateTimeAdapter,
@@ -29,17 +23,81 @@ from boba.domain.core.confignext.value import (
     StringValue,
     TimeAdapter,
 )
+from boba.domain.core.confignext.path import (
+    ConfigPath,
+    IndexSegment,
+    NameSegment,
+    Segment,
+)
 
 __all__ = [
-    "CONFIG_PATH_ENV",
-    "TOML_FILE_SUFFIX",
     "TomlFileSource",
     "TomlSource",
 ]
 
 
-CONFIG_PATH_ENV: Final[str] = "BOBA_CONFIG_PATH"
-TOML_FILE_SUFFIX: Final[str] = "_file"
+class TomlSourceBaseHelper:
+    CONFIG_PATH_ENV: Final[str] = "BOBA_CONFIG_PATH"
+    TOML_FILE_SUFFIX: Final[str] = "_file"
+
+    @staticmethod
+    def resolve_path(
+        path: str | os.PathLike[str] | None,
+    ) -> str | os.PathLike[str] | None:
+        if path is not None:
+            return path
+
+        return os.environ.get(TomlSourceBaseHelper.CONFIG_PATH_ENV)
+
+    @staticmethod
+    def load_toml(path: str | os.PathLike[str] | None) -> dict[str, Any]:
+        if not path:
+            return {}
+
+        p = Path(path)
+        if not p.is_file():
+            return {}
+
+        with p.open("rb") as f:
+            return tomli.load(f)
+
+    @staticmethod
+    def walk(
+        node: Any,
+        segments: tuple[Segment, ...],
+    ) -> Iterable[tuple[ConfigPath, ConfigValue]]:
+        """Развернуть TOML-дерево в плоский поток (path, ConfigValue)."""
+        if isinstance(node, Mapping):
+            for key, value in node.items():
+                if not isinstance(key, str):
+                    continue
+
+                yield from TomlSourceBaseHelper.walk(
+                    value, (*segments, NameSegment(key))
+                )
+            return
+
+        if isinstance(node, list):
+            for i, item in enumerate(node):
+                yield from TomlSourceBaseHelper.walk(item, (*segments, IndexSegment(i)))
+
+            return
+
+        yield (
+            ConfigPath(segments),
+            PythonValueFactory(
+                (
+                    StringAdapter(),
+                    BoolAdapter(),
+                    IntAdapter(),
+                    FloatAdapter(),
+                    NullAdapter(),
+                    DateTimeAdapter(),
+                    DateAdapter(),
+                    TimeAdapter(),
+                )
+            ).from_python(node),
+        )
 
 
 class TomlSource(ConfigSource):
@@ -52,7 +110,9 @@ class TomlSource(ConfigSource):
         priority: int = 100,
         name: str | None = None,
     ) -> None:
-        self._raw = _load_toml(_resolve_path(path))
+        self._raw = TomlSourceBaseHelper.load_toml(
+            TomlSourceBaseHelper.resolve_path(path)
+        )
         self._priority = priority
         self._name = name or "toml"
 
@@ -63,10 +123,10 @@ class TomlSource(ConfigSource):
         return self._priority
 
     def load(self) -> Mapping[ConfigPath, ConfigValue]:
-        return dict(_walk(self._raw, ()))
+        return dict(TomlSourceBaseHelper.walk(self._raw, ()))
 
     def describe(self, path: ConfigPath) -> str:
-        return f"TOML {path.render()} (file: ${CONFIG_PATH_ENV})"
+        return f"TOML {path.render()} (file: ${TomlSourceBaseHelper.CONFIG_PATH_ENV})"
 
 
 class TomlFileSource(ConfigSource):
@@ -84,7 +144,9 @@ class TomlFileSource(ConfigSource):
         priority: int = 200,
         name: str | None = None,
     ) -> None:
-        self._raw = _load_toml(_resolve_path(path))
+        self._raw = TomlSourceBaseHelper.load_toml(
+            TomlSourceBaseHelper.resolve_path(path)
+        )
         self._priority = priority
         self._name = name or "toml_file"
 
@@ -96,17 +158,20 @@ class TomlFileSource(ConfigSource):
 
     def load(self) -> Mapping[ConfigPath, ConfigValue]:
         result: dict[ConfigPath, ConfigValue] = {}
-        for path, value in _walk(self._raw, ()):
+        for path, value in TomlSourceBaseHelper.walk(self._raw, ()):
             key = path.last().mapping_key()
-            if key is None or not key.endswith(TOML_FILE_SUFFIX):
+            if key is None or not key.endswith(TomlSourceBaseHelper.TOML_FILE_SUFFIX):
                 continue
+
             if not isinstance(value, StringValue):
                 continue
+
             secret_path = Path(value.text)
             if not secret_path.is_file():
                 continue
+
             content = secret_path.read_text(encoding="utf-8").rstrip("\n")
-            stripped = key[: -len(TOML_FILE_SUFFIX)]
+            stripped = key[: -len(TomlSourceBaseHelper.TOML_FILE_SUFFIX)]
             new_path = path.parent().join(NameSegment(stripped))
             result[new_path] = StringValue(content)
         return result
@@ -115,54 +180,6 @@ class TomlFileSource(ConfigSource):
         leaf = path.last().mapping_key() if path else None
         leaf_repr = leaf if leaf is not None else "<root>"
         return (
-            f"TOML {path.parent().render()}.{leaf_repr}{TOML_FILE_SUFFIX}"
-            f"=<path-to-secret-file> (file: ${CONFIG_PATH_ENV})"
+            f"TOML {path.parent().render()}.{leaf_repr}{TomlSourceBaseHelper.TOML_FILE_SUFFIX}"
+            f"=<path-to-secret-file> (file: ${TomlSourceBaseHelper.CONFIG_PATH_ENV})"
         )
-
-
-def _resolve_path(
-    path: str | os.PathLike[str] | None,
-) -> str | os.PathLike[str] | None:
-    if path is not None:
-        return path
-    return os.environ.get(CONFIG_PATH_ENV)
-
-
-def _load_toml(path: str | os.PathLike[str] | None) -> dict[str, Any]:
-    if not path:
-        return {}
-    p = Path(path)
-    if not p.is_file():
-        return {}
-    with p.open("rb") as f:
-        return tomli.load(f)
-
-
-def _walk(
-    node: Any,
-    segments: tuple[Segment, ...],
-) -> Iterable[tuple[ConfigPath, ConfigValue]]:
-    """Развернуть TOML-дерево в плоский поток (path, ConfigValue)."""
-    if isinstance(node, Mapping):
-        for key, value in node.items():
-            if not isinstance(key, str):
-                continue
-            yield from _walk(value, (*segments, NameSegment(key)))
-        return
-    if isinstance(node, list):
-        for i, item in enumerate(node):
-            yield from _walk(item, (*segments, IndexSegment(i)))
-        return
-
-    adapters = (
-        StringAdapter(),
-        BoolAdapter(),
-        IntAdapter(),
-        FloatAdapter(),
-        NullAdapter(),
-        DateTimeAdapter(),
-        DateAdapter(),
-        TimeAdapter(),
-    )
-
-    yield ConfigPath(segments), PythonValueFactory(adapters).from_python(node)

@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
 
+from boba.domain.core.confignext import ConfigSource, ConfigValue, StringValue
 from boba.domain.core.confignext.path import (
     ConfigPath,
     ConfigPathParseError,
@@ -15,8 +16,6 @@ from boba.domain.core.confignext.path import (
     NameSegment,
     Segment,
 )
-from boba.domain.core.confignext.source import ConfigSource
-from boba.domain.core.confignext.value import ConfigValue, StringValue
 
 __all__ = [
     "ENV_FILE_SUFFIX",

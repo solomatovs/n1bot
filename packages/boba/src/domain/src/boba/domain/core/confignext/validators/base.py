@@ -66,7 +66,8 @@ class ChainConverter(Converter[Any, T], Generic[T]):
     def convert(self, value: Any) -> T:
         for c in self._converters:
             value = c.convert(value)
-        return value  # type: ignore[no-any-return]
+
+        return value
 
 
 class ValueConverter(Converter[Any, Any]):
@@ -82,6 +83,7 @@ class ValueConverter(Converter[Any, Any]):
     def convert(self, value: Any) -> Any:
         if value is MISSING:
             return MISSING
+
         return self._convert_value(self.ensure(value))
 
     @abstractmethod
@@ -92,23 +94,27 @@ class ValueConverter(Converter[Any, Any]):
         """ConfigValue остаётся; primitive (после Default) оборачивается."""
         if isinstance(value, ConfigValue):
             return value
-        adapters = (
-            StringAdapter(),
-            BoolAdapter(),
-            IntAdapter(),
-            FloatAdapter(),
-            NullAdapter(),
-            DateTimeAdapter(),
-            DateAdapter(),
-            TimeAdapter(),
-        )
-        return PythonValueFactory(adapters).from_python(value)
+
+        return PythonValueFactory(
+            (
+                StringAdapter(),
+                BoolAdapter(),
+                IntAdapter(),
+                FloatAdapter(),
+                NullAdapter(),
+                DateTimeAdapter(),
+                DateAdapter(),
+                TimeAdapter(),
+            )
+        ).from_python(value)
 
     @classmethod
     def unwrap(cls, value: Any) -> Any:
         """MISSING → MISSING; ConfigValue → primitive; primitive → as is."""
         if value is MISSING:
             return MISSING
+
         if isinstance(value, ConfigValue):
             return value.unwrap()
+
         return value

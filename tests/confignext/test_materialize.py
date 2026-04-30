@@ -205,7 +205,9 @@ class _ChainlitBlock:
 
 
 _CHAINLIT_SCHEMA: ObjectSchema[_ChainlitBlock] = ObjectSchema(
-    fields=[ListField(name="models", item_schema=_MODEL_SCHEMA)],
+    fields=[
+        ListField(name="models", item_schema=_MODEL_SCHEMA),
+    ],
     factory=_ChainlitBlock,
 )
 

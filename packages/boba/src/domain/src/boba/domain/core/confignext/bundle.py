@@ -8,9 +8,7 @@ from typing import TypeVar
 
 from boba.domain.core.confignext.declaration import ObjectSchema
 from boba.domain.core.confignext.flat import FlatConfig, FlatConfigBuilder
-from boba.domain.core.confignext.lookup import ConfigLookup
-from boba.domain.core.confignext.path import ConfigPath
-from boba.domain.core.confignext.source import ConfigSource
+from boba.domain.core.confignext.path import ConfigLookup, ConfigPath, ConfigSource
 from boba.domain.core.confignext.value import ConfigValue
 
 __all__ = ["ConfigBundle", "ConfigFactory"]
