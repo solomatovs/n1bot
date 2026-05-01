@@ -22,7 +22,7 @@ from boba_next import (
     StringValue,
     TimeAdapter,
 )
-from boba_next.path import (
+from boba_next.config.path import (
     ConfigPath,
     IndexSegment,
     NameSegment,

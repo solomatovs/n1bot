@@ -7,7 +7,7 @@ import sys
 from collections.abc import Mapping, Sequence
 
 from boba_next import ConfigSource, ConfigValue, StringValue
-from boba_next.path import (
+from boba_next.config.path import (
     ConfigPath,
     ConfigPathParseError,
     IndexSegment,

@@ -19,8 +19,8 @@ from boba_next.declaration import (
     ObjectSchema,
     ScalarItem,
 )
-from boba_next.flat import FlatConfig, FlatConfigBuilder
-from boba_next.path import (
+from boba_next.config.flat import FlatConfig, FlatConfigBuilder
+from boba_next.config.path import (
     ConfigLookup,
     ConfigPath,
     ConfigSource,
