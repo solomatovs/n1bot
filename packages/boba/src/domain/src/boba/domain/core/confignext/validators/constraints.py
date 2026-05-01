@@ -71,9 +71,7 @@ class MinLength(Converter[Any, Any]):
 
     def convert(self, value: Any) -> Any:
         if not isinstance(value, Sized):
-            raise ConverterInputError(
-                f"длина не определена для {type(value).__name__}"
-            )
+            raise ConverterInputError(f"длина не определена для {type(value).__name__}")
         if len(value) < self._threshold:
             raise ConverterInputError(
                 f"длина должна быть >= {self._threshold}, получено {len(value)}"
@@ -89,9 +87,7 @@ class MaxLength(Converter[Any, Any]):
 
     def convert(self, value: Any) -> Any:
         if not isinstance(value, Sized):
-            raise ConverterInputError(
-                f"длина не определена для {type(value).__name__}"
-            )
+            raise ConverterInputError(f"длина не определена для {type(value).__name__}")
         if len(value) > self._threshold:
             raise ConverterInputError(
                 f"длина должна быть <= {self._threshold}, получено {len(value)}"
