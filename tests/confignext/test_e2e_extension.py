@@ -2,7 +2,7 @@
 
 Демонстрирует целевой сценарий новой архитектуры:
   - Extension объявляет dataclass + ObjectSchema со своими полями + enabled +
-    динамической секцией tools (через MappingField).
+    динамической секцией tools (через CollectionField + KeyedShape + ObjectItem).
   - Tool overlay (description tool'а и параметров) живёт прямо в TOML под
     [ext.<name>.tools.<id>].
   - Extension сам решает, какие tools включены и с какими descriptions.
@@ -21,15 +21,17 @@ from boba.config.env.next import EnvSource
 from boba.config.toml.next import TomlSource
 from boba.domain.core.confignext import (
     ChainConverter,
+    CollectionField,
     ConfigBundle,
     ConfigFactory,
     ConfigPath,
     Default,
     FieldSpec,
-    MappingField,
+    KeyedShape,
     MaxValue,
     MinValue,
     NonEmpty,
+    ObjectItem,
     ObjectSchema,
     ParseBool,
     ParseInt,
@@ -68,7 +70,11 @@ _TOOL_ENTRY_SCHEMA: ObjectSchema[ToolEntry] = ObjectSchema(
     fields=[
         FieldSpec("enabled", ChainConverter(Default(False), ParseBool())),
         FieldSpec("description", ChainConverter(Default(""), ParseString())),
-        MappingField(name="params", value_schema=_PARAM_OVERLAY_SCHEMA),
+        CollectionField(
+            name="params",
+            reader=ObjectItem(_PARAM_OVERLAY_SCHEMA),
+            shape=KeyedShape(),
+        ),
     ],
     factory=ToolEntry,
 )
@@ -93,7 +99,11 @@ _CHROMADB_SCHEMA: ObjectSchema[ChromadbConfig] = ObjectSchema(
             "max_top_k",
             ChainConverter(Default(20), ParseInt(), MinValue(1), MaxValue(100)),
         ),
-        MappingField(name="tools", value_schema=_TOOL_ENTRY_SCHEMA),
+        CollectionField(
+            name="tools",
+            reader=ObjectItem(_TOOL_ENTRY_SCHEMA),
+            shape=KeyedShape(),
+        ),
     ],
     factory=ChromadbConfig,
 )
