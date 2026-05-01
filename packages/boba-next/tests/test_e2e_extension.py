@@ -19,7 +19,7 @@ from pathlib import Path
 from boba.config.cli.next import CliSource
 from boba.config.env.next import EnvSource
 from boba.config.toml.next import TomlSource
-from boba.domain.core.confignext import (
+from boba_next import (
     ChainConverter,
     CollectionField,
     ConfigBundle,

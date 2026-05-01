@@ -8,8 +8,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import tomli
-
-from boba.domain.core.confignext import (
+from boba_next import (
     BoolAdapter,
     ConfigSource,
     ConfigValue,
@@ -23,7 +22,7 @@ from boba.domain.core.confignext import (
     StringValue,
     TimeAdapter,
 )
-from boba.domain.core.confignext.path import (
+from boba_next.path import (
     ConfigPath,
     IndexSegment,
     NameSegment,
