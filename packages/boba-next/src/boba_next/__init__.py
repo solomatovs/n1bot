@@ -1,6 +1,6 @@
 """confignext: альтернативная система конфигурирования (изолирована от текущей)."""
 
-from boba_next.bundle import (
+from boba_next.config.bundle import (
     ConfigBundle,
     ConfigFactory,
     ConfigMaterializer,
@@ -19,8 +19,8 @@ from boba_next.declaration import (
     ObjectSchema,
     ScalarItem,
 )
-from boba_next.flat import FlatConfig, FlatConfigBuilder
-from boba_next.path import (
+from boba_next.config.flat import FlatConfig, FlatConfigBuilder
+from boba_next.config.path import (
     ConfigLookup,
     ConfigPath,
     ConfigPathParseError,
@@ -32,7 +32,7 @@ from boba_next.path import (
     NotFound,
     Segment,
 )
-from boba_next.validate import ToolArgsValidator
+from boba_next.tools.validate import ToolArgsValidator
 from boba_next.validators import (
     MISSING,
     ChainConverter,
@@ -80,7 +80,7 @@ from boba_next.value import (
     TimeAdapter,
     TimeValue,
 )
-from boba_next.wire import ToolWireSchemaBuilder
+from boba_next.tools.wire import ToolWireSchemaBuilder
 
 __all__ = [
     "MISSING",
