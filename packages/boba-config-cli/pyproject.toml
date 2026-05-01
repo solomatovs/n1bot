@@ -7,7 +7,7 @@ name = "boba-config-cli"
 version = "0.1.0"
 description = "CLI-arguments ConfigSource implementation for Boba (argparse → ConfigKey mapping)."
 requires-python = ">=3.11,<4"
-dependencies = ["boba"]
+dependencies = ["boba", "boba-next"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

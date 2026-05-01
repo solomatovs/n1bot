@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from boba.config.toml.next import TomlFileSource, TomlSource
-from boba.domain.core.confignext import (
+from boba_next import (
     BoolValue,
     ConfigPath,
     IntValue,

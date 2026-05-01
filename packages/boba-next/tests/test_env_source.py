@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from boba.config.env.next import EnvFileSource, EnvSource
-from boba.domain.core.confignext import ConfigPath, StringValue
+from boba_next import ConfigPath, StringValue
 
 
 def test_simple_two_segments():

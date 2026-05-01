@@ -8,8 +8,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
 
-from boba.domain.core.confignext import ConfigSource, ConfigValue, StringValue
-from boba.domain.core.confignext.path import (
+from boba_next import ConfigSource, ConfigValue, StringValue
+from boba_next.path import (
     ConfigPath,
     ConfigPathParseError,
     IndexSegment,
