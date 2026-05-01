@@ -1,6 +1,10 @@
 """confignext: альтернативная система конфигурирования (изолирована от текущей)."""
 
-from boba.domain.core.confignext.bundle import ConfigBundle, ConfigFactory, Materializer
+from boba.domain.core.confignext.bundle import (
+    ConfigBundle,
+    ConfigFactory,
+    ConfigMaterializer,
+)
 from boba.domain.core.confignext.declaration import (
     CollectionField,
     CollectionShape,
@@ -28,7 +32,7 @@ from boba.domain.core.confignext.path import (
     NotFound,
     Segment,
 )
-from boba.domain.core.confignext.validate import Validator
+from boba.domain.core.confignext.validate import ToolArgsValidator
 from boba.domain.core.confignext.validators import (
     MISSING,
     ChainConverter,
@@ -76,7 +80,7 @@ from boba.domain.core.confignext.value import (
     TimeAdapter,
     TimeValue,
 )
-from boba.domain.core.confignext.wire import WireSchemaBuilder
+from boba.domain.core.confignext.wire import ToolWireSchemaBuilder
 
 __all__ = [
     "MISSING",
@@ -88,6 +92,7 @@ __all__ = [
     "ConfigBundle",
     "ConfigFactory",
     "ConfigLookup",
+    "ConfigMaterializer",
     "ConfigPath",
     "ConfigPathParseError",
     "ConfigSource",
@@ -117,7 +122,6 @@ __all__ = [
     "IsString",
     "ItemReader",
     "KeyedShape",
-    "Materializer",
     "MaxLength",
     "MaxValue",
     "MinLength",
@@ -148,7 +152,7 @@ __all__ = [
     "StringValue",
     "TimeAdapter",
     "TimeValue",
-    "Validator",
+    "ToolArgsValidator",
+    "ToolWireSchemaBuilder",
     "ValueConverter",
-    "WireSchemaBuilder",
 ]

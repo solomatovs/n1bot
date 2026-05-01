@@ -32,17 +32,13 @@ class StringValue(ConfigValue):
         try:
             return int(self.text.strip())
         except ValueError as exc:
-            raise ConverterInputError(
-                f"not a valid int: {self.text!r}"
-            ) from exc
+            raise ConverterInputError(f"not a valid int: {self.text!r}") from exc
 
     def as_float(self) -> float:
         try:
             return float(self.text.strip())
         except ValueError as exc:
-            raise ConverterInputError(
-                f"not a valid float: {self.text!r}"
-            ) from exc
+            raise ConverterInputError(f"not a valid float: {self.text!r}") from exc
 
     def as_bool(self) -> bool:
         normalized = self.text.strip().lower()

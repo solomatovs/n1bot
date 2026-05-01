@@ -1,6 +1,6 @@
 """Type-конвертеры:
-  - Parse* — coercion через полиморфные as_* на ConfigValue;
-  - Is*    — строгая проверка конкретного подтипа ConfigValue.
+- Parse* — coercion через полиморфные as_* на ConfigValue;
+- Is*    — строгая проверка конкретного подтипа ConfigValue.
 """
 
 from __future__ import annotations
@@ -99,7 +99,5 @@ class IsBool(ValueConverter):
 
     def _convert_value(self, value: ConfigValue) -> bool:
         if not isinstance(value, BoolValue):
-            raise ConverterInputError(
-                f"ожидался bool, получено {type(value).__name__}"
-            )
+            raise ConverterInputError(f"ожидался bool, получено {type(value).__name__}")
         return value.as_bool()

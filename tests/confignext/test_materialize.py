@@ -11,6 +11,7 @@ from boba.domain.core.confignext import (
     BoolValue,
     ChainConverter,
     CollectionField,
+    ConfigMaterializer,
     ConfigPath,
     ConfigSource,
     ConfigValue,
@@ -23,7 +24,6 @@ from boba.domain.core.confignext import (
     IndexedShape,
     IntValue,
     KeyedShape,
-    Materializer,
     MinValue,
     NameSegment,
     NonEmpty,
@@ -74,7 +74,9 @@ _AGENT_SCHEMA: ObjectSchema[_Agent] = ObjectSchema(
 
 def test_scalar_with_defaults():
     flat = FlatConfigBuilder.from_sources([_DictSource({})])
-    agent = Materializer(_AGENT_SCHEMA).materialize(flat, ConfigPath.parse("$agent"))
+    agent = ConfigMaterializer(_AGENT_SCHEMA).materialize(
+        flat, ConfigPath.parse("$agent")
+    )
     assert agent == _Agent(max_iterations=20, enabled=False)
 
 
@@ -89,7 +91,9 @@ def test_scalar_overridden():
             )
         ]
     )
-    agent = Materializer(_AGENT_SCHEMA).materialize(flat, ConfigPath.parse("$agent"))
+    agent = ConfigMaterializer(_AGENT_SCHEMA).materialize(
+        flat, ConfigPath.parse("$agent")
+    )
     assert agent == _Agent(max_iterations=200, enabled=True)
 
 
@@ -99,7 +103,7 @@ def test_required_missing_raises():
     )
     flat = FlatConfigBuilder.from_sources([_DictSource({})])
     with pytest.raises(FieldPathMissingError):
-        Materializer(schema).materialize(flat, ConfigPath.parse("$root"))
+        ConfigMaterializer(schema).materialize(flat, ConfigPath.parse("$root"))
 
 
 def test_validation_error_attaches_field():
@@ -115,7 +119,7 @@ def test_validation_error_attaches_field():
         [_DictSource({ConfigPath.parse("$root.max_iterations"): IntValue(0)})]
     )
     with pytest.raises(FieldPathError) as info:
-        Materializer(schema).materialize(flat, ConfigPath.parse("$root"))
+        ConfigMaterializer(schema).materialize(flat, ConfigPath.parse("$root"))
     assert info.value.field_name == "max_iterations"
 
 
@@ -162,9 +166,9 @@ def test_mapping_field_collects_dynamic_subsections():
             _DictSource(
                 {
                     ConfigPath.parse("$ext.html.enabled"): BoolValue(True),
-                    ConfigPath.parse(
-                        "$ext.html.tools.html_outline.enabled"
-                    ): BoolValue(True),
+                    ConfigPath.parse("$ext.html.tools.html_outline.enabled"): BoolValue(
+                        True
+                    ),
                     ConfigPath.parse(
                         "$ext.html.tools.html_outline.description"
                     ): StringValue("custom outline"),
@@ -175,7 +179,9 @@ def test_mapping_field_collects_dynamic_subsections():
             )
         ]
     )
-    block = Materializer(_EXT_SCHEMA).materialize(flat, ConfigPath.parse("$ext.html"))
+    block = ConfigMaterializer(_EXT_SCHEMA).materialize(
+        flat, ConfigPath.parse("$ext.html")
+    )
     assert block.enabled is True
     assert set(block.tools) == {"html_outline", "html_section"}
     assert block.tools["html_outline"].enabled is True
@@ -188,7 +194,9 @@ def test_mapping_field_empty_when_no_subsections():
     flat = FlatConfigBuilder.from_sources(
         [_DictSource({ConfigPath.parse("$ext.html.enabled"): BoolValue(True)})]
     )
-    block = Materializer(_EXT_SCHEMA).materialize(flat, ConfigPath.parse("$ext.html"))
+    block = ConfigMaterializer(_EXT_SCHEMA).materialize(
+        flat, ConfigPath.parse("$ext.html")
+    )
     assert block.tools == {}
 
 
@@ -237,7 +245,9 @@ def test_list_field_collects_indexed_subsections():
             )
         ]
     )
-    block = Materializer(_CHAINLIT_SCHEMA).materialize(flat, ConfigPath.parse("$chainlit"))
+    block = ConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
+        flat, ConfigPath.parse("$chainlit")
+    )
     assert tuple(m.name for m in block.models) == ("qwen3", "gemini", "deepseek")
 
 
@@ -253,7 +263,9 @@ def test_list_field_uses_segment_indices_in_sorted_order():
             )
         ]
     )
-    block = Materializer(_CHAINLIT_SCHEMA).materialize(flat, ConfigPath.parse("$chainlit"))
+    block = ConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
+        flat, ConfigPath.parse("$chainlit")
+    )
     assert tuple(m.name for m in block.models) == ("a", "b", "c")
 
 
@@ -270,7 +282,7 @@ def test_nested_field_error_propagates_with_location():
         ]
     )
     with pytest.raises(FieldPathError) as info:
-        Materializer(_EXT_SCHEMA).materialize(flat, ConfigPath.parse("$ext.html"))
+        ConfigMaterializer(_EXT_SCHEMA).materialize(flat, ConfigPath.parse("$ext.html"))
     assert "tools" in info.value.field_name or "tools" in str(info.value)
     assert "html_outline" in str(info.value)
 

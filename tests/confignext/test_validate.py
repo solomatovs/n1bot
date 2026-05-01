@@ -1,8 +1,8 @@
-"""Validator: ObjectSchema → DTO из готового Mapping[str, Any].
+"""ToolArgsValidator: ObjectSchema → DTO из готового Mapping[str, Any].
 
 Сценарии: dict от LLM tool-call, JSON / YAML / любой иерархический dict.
-В отличие от Materializer (читает плоский ConfigSpace через ConfigPath),
-Validator работает с нативными `dict` / `list`.
+В отличие от ConfigMaterializer (читает плоский ConfigSpace через ConfigPath),
+ToolArgsValidator работает с нативными `dict` / `list`.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from boba.domain.core.confignext import (
     ParseString,
     Required,
     ScalarItem,
-    Validator,
+    ToolArgsValidator,
 )
 
 # ──────────────────── Простой скалярный объект ────────────────────
@@ -57,12 +57,14 @@ _AGENT_SCHEMA: ObjectSchema[_Agent] = ObjectSchema(
 
 
 def test_scalar_with_defaults_when_keys_absent():
-    agent = Validator(_AGENT_SCHEMA).validate({})
+    agent = ToolArgsValidator(_AGENT_SCHEMA).validate({})
     assert agent == _Agent(max_iterations=20, enabled=False)
 
 
 def test_scalar_overridden_from_dict():
-    agent = Validator(_AGENT_SCHEMA).validate({"max_iterations": 200, "enabled": True})
+    agent = ToolArgsValidator(_AGENT_SCHEMA).validate(
+        {"max_iterations": 200, "enabled": True}
+    )
     assert agent == _Agent(max_iterations=200, enabled=True)
 
 
@@ -71,13 +73,15 @@ def test_required_missing_raises_path_missing():
         fields=[FieldSpec("x", ChainConverter(Required(), ParseString()))],
     )
     with pytest.raises(FieldPathMissingError) as info:
-        Validator(schema).validate({})
+        ToolArgsValidator(schema).validate({})
     assert info.value.field_name == "x"
 
 
 def test_field_validation_error_attaches_field_name():
     with pytest.raises(FieldPathError) as info:
-        Validator(_AGENT_SCHEMA).validate({"max_iterations": 0})  # MinValue(1) fails
+        ToolArgsValidator(_AGENT_SCHEMA).validate(
+            {"max_iterations": 0}
+        )  # MinValue(1) fails
     assert info.value.field_name == "max_iterations"
 
 
@@ -101,12 +105,14 @@ _RANGE_SCHEMA: ObjectSchema[_Range] = ObjectSchema(
 
 
 def test_invariant_passes_when_ordered():
-    assert Validator(_RANGE_SCHEMA).validate({"lo": 1, "hi": 10}) == _Range(1, 10)
+    assert ToolArgsValidator(_RANGE_SCHEMA).validate({"lo": 1, "hi": 10}) == _Range(
+        1, 10
+    )
 
 
 def test_invariant_violation_attaches_invariants_field_name():
     with pytest.raises(FieldPathError) as info:
-        Validator(_RANGE_SCHEMA).validate({"lo": 50, "hi": 10})
+        ToolArgsValidator(_RANGE_SCHEMA).validate({"lo": 50, "hi": 10})
     assert info.value.field_name == "<invariants>"
 
 
@@ -131,17 +137,17 @@ _CHAINLIT_SCHEMA: ObjectSchema[_Chainlit] = ObjectSchema(
 
 
 def test_scalar_list_from_native_list():
-    cfg = Validator(_CHAINLIT_SCHEMA).validate({"models": ["qwen3", "gemini"]})
+    cfg = ToolArgsValidator(_CHAINLIT_SCHEMA).validate({"models": ["qwen3", "gemini"]})
     assert cfg.models == ("qwen3", "gemini")
 
 
 def test_scalar_list_empty_when_key_absent():
-    assert Validator(_CHAINLIT_SCHEMA).validate({}).models == ()
+    assert ToolArgsValidator(_CHAINLIT_SCHEMA).validate({}).models == ()
 
 
 def test_scalar_list_wrong_container_type_raises():
     with pytest.raises(FieldPathError) as info:
-        Validator(_CHAINLIT_SCHEMA).validate({"models": {"not": "a list"}})
+        ToolArgsValidator(_CHAINLIT_SCHEMA).validate({"models": {"not": "a list"}})
     assert info.value.field_name == "models"
     assert "expected list" in str(info.value)
 
@@ -149,7 +155,7 @@ def test_scalar_list_wrong_container_type_raises():
 def test_scalar_list_item_validation_error_carries_index():
     with pytest.raises(FieldPathError) as info:
         # NonEmpty fails on second item:
-        Validator(_CHAINLIT_SCHEMA).validate({"models": ["qwen3", ""]})
+        ToolArgsValidator(_CHAINLIT_SCHEMA).validate({"models": ["qwen3", ""]})
     assert info.value.field_name == "models"
     assert "[1]" in info.value.location
 
@@ -175,24 +181,24 @@ _LIMITS_SCHEMA: ObjectSchema[_Limits] = ObjectSchema(
 
 
 def test_scalar_mapping_from_native_dict():
-    cfg = Validator(_LIMITS_SCHEMA).validate({"limits": {"a": 10, "b": 20}})
+    cfg = ToolArgsValidator(_LIMITS_SCHEMA).validate({"limits": {"a": 10, "b": 20}})
     assert cfg.limits == {"a": 10, "b": 20}
 
 
 def test_scalar_mapping_empty_when_key_absent():
-    assert Validator(_LIMITS_SCHEMA).validate({}).limits == {}
+    assert ToolArgsValidator(_LIMITS_SCHEMA).validate({}).limits == {}
 
 
 def test_scalar_mapping_wrong_container_type_raises():
     with pytest.raises(FieldPathError) as info:
-        Validator(_LIMITS_SCHEMA).validate({"limits": [1, 2, 3]})
+        ToolArgsValidator(_LIMITS_SCHEMA).validate({"limits": [1, 2, 3]})
     assert info.value.field_name == "limits"
     assert "expected mapping" in str(info.value)
 
 
 def test_scalar_mapping_item_validation_error_carries_key():
     with pytest.raises(FieldPathError) as info:
-        Validator(_LIMITS_SCHEMA).validate({"limits": {"good": 5, "bad": -1}})
+        ToolArgsValidator(_LIMITS_SCHEMA).validate({"limits": {"good": 5, "bad": -1}})
     assert info.value.field_name == "limits"
     assert "bad" in info.value.location
 
@@ -239,7 +245,7 @@ def test_object_mapping_recursive_validation():
             "html_outline": {"description": "Оглавление"},  # enabled = default False
         },
     }
-    cfg = Validator(_TOOLS_SCHEMA).validate(raw)
+    cfg = ToolArgsValidator(_TOOLS_SCHEMA).validate(raw)
     kb = cfg.tools["kb_search"]
     html = cfg.tools["html_outline"]
     assert kb == _ToolEntry(enabled=True, description="База знаний")
@@ -248,7 +254,7 @@ def test_object_mapping_recursive_validation():
 
 def test_object_mapping_item_must_be_mapping():
     with pytest.raises(FieldPathError) as info:
-        Validator(_TOOLS_SCHEMA).validate({"tools": {"kb": "not a dict"}})
+        ToolArgsValidator(_TOOLS_SCHEMA).validate({"tools": {"kb": "not a dict"}})
     assert info.value.field_name == "tools"
     assert "kb" in info.value.location
     assert "expected mapping" in str(info.value)
@@ -321,7 +327,7 @@ def test_llm_tool_call_full_payload():
             },
         },
     }
-    cfg = Validator(_CHROMADB_SCHEMA).validate(payload)
+    cfg = ToolArgsValidator(_CHROMADB_SCHEMA).validate(payload)
     assert cfg.enabled is True
     assert cfg.persist_path == "/var/lib/chromadb"
     assert cfg.min_top_k == 5
@@ -333,7 +339,7 @@ def test_llm_tool_call_full_payload():
 def test_llm_tool_call_invariant_violation_propagates():
     payload = {"persist_path": "/x", "min_top_k": 80, "max_top_k": 10}
     with pytest.raises(FieldPathError) as info:
-        Validator(_CHROMADB_SCHEMA).validate(payload)
+        ToolArgsValidator(_CHROMADB_SCHEMA).validate(payload)
     assert info.value.field_name == "<invariants>"
 
 
@@ -351,7 +357,7 @@ def test_llm_tool_call_nested_field_error_carries_full_location():
     }
     # Без строгого ParseString int приведётся к строке; проверим что вложенный path
     # хотя бы строится корректно для случая, когда description явно задан.
-    cfg = Validator(_CHROMADB_SCHEMA).validate(payload)
+    cfg = ToolArgsValidator(_CHROMADB_SCHEMA).validate(payload)
     assert "kb_search" in cfg.tools
     # Ключевое: рекурсия через ObjectItem отработала, params['query'] построен.
     assert "query" in cfg.tools["kb_search"].params

@@ -1,8 +1,8 @@
-"""WireSchemaBuilder: проецирует ObjectSchema в JSON-Schema (для LLM tools).
+"""ToolWireSchemaBuilder: ObjectSchema → JSON-Schema описание Tool для LLM.
 
 Диспатч по подвидам декларации — `match`. Чистые декларации живут в
 `declaration.py`; добавление нового FieldKind / ItemReader / CollectionShape
-требует нового case здесь (и в `materialize.py`).
+требует нового case здесь (и в `bundle.py`/`validate.py`).
 """
 
 from __future__ import annotations
@@ -21,13 +21,17 @@ from boba.domain.core.confignext.declaration import (
     ObjectSchema,
     ScalarItem,
 )
-from boba.domain.core.schema import ObjectWireSchema, ParamWireSchema, SchemaContributor
+from boba.domain.core.confignext.schema import (
+    ObjectWireSchema,
+    ParamWireSchema,
+    SchemaContributor,
+)
 
-__all__ = ["WireSchemaBuilder"]
+__all__ = ["ToolWireSchemaBuilder"]
 
 
-class WireSchemaBuilder:
-    """Проецирует ObjectSchema в JSON-Schema-подобное описание (для LLM tools)."""
+class ToolWireSchemaBuilder:
+    """Строит JSON-Schema описание Tool из ObjectSchema (для tool-definition LLM)."""
 
     def __init__(self, schema: ObjectSchema[Any]) -> None:
         self._schema = schema
@@ -69,7 +73,7 @@ class WireSchemaBuilder:
 
             case ObjectItem(schema=nested):
                 # Рекурсия: вложенная объектная схема как property "type": "object".
-                obj = WireSchemaBuilder(nested).build()
+                obj = ToolWireSchemaBuilder(nested).build()
                 prop: dict[str, Any] = {"type": "object"}
                 if obj.description:
                     prop["description"] = obj.description

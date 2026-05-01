@@ -1,7 +1,7 @@
 """CollectionField со ScalarItem: коллекции примитивов из конфига.
 
-  - IndexedShape × ScalarItem — `models = ["qwen3", "gemini"]` → tuple[str, ...].
-  - KeyedShape × ScalarItem    — `[descriptions] foo="..." bar="..."` → dict[str, str].
+- IndexedShape × ScalarItem — `models = ["qwen3", "gemini"]` → tuple[str, ...].
+- KeyedShape × ScalarItem    — `[descriptions] foo="..." bar="..."` → dict[str, str].
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from boba.config.toml.next import TomlSource
 from boba.domain.core.confignext import (
     ChainConverter,
     CollectionField,
+    ConfigMaterializer,
     ConfigPath,
     ConfigSource,
     ConfigValue,
@@ -26,7 +27,6 @@ from boba.domain.core.confignext import (
     IndexedShape,
     IntValue,
     KeyedShape,
-    Materializer,
     MaxValue,
     MinValue,
     NonEmpty,
@@ -98,14 +98,18 @@ def test_scalar_list_from_dict_source():
             )
         ]
     )
-    cfg = Materializer(_CHAINLIT_SCHEMA).materialize(flat, ConfigPath.parse("$chainlit"))
+    cfg = ConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
+        flat, ConfigPath.parse("$chainlit")
+    )
     assert cfg.models == ("qwen3", "gemini", "deepseek")
     assert cfg.ports == (8501, 8502)
 
 
 def test_scalar_list_empty_when_absent():
     flat = FlatConfigBuilder.from_sources([_DictSource({})])
-    cfg = Materializer(_CHAINLIT_SCHEMA).materialize(flat, ConfigPath.parse("$chainlit"))
+    cfg = ConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
+        flat, ConfigPath.parse("$chainlit")
+    )
     assert cfg.models == ()
     assert cfg.ports == ()
 
@@ -122,7 +126,9 @@ def test_scalar_list_sorted_by_index_regardless_of_order():
             )
         ]
     )
-    cfg = Materializer(_CHAINLIT_SCHEMA).materialize(flat, ConfigPath.parse("$chainlit"))
+    cfg = ConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
+        flat, ConfigPath.parse("$chainlit")
+    )
     assert cfg.models == ("a", "b", "c")
 
 
@@ -136,7 +142,9 @@ def test_scalar_list_from_toml(tmp_path: Path):
         """,
     )
     flat = FlatConfigBuilder.from_sources([TomlSource(cfg_file)])
-    cfg = Materializer(_CHAINLIT_SCHEMA).materialize(flat, ConfigPath.parse("$chainlit"))
+    cfg = ConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
+        flat, ConfigPath.parse("$chainlit")
+    )
     assert cfg.models == ("qwen3", "gemini", "deepseek")
     assert cfg.ports == (8501, 8502)
 
@@ -154,7 +162,9 @@ def test_scalar_list_item_validation_error_carries_index():
         ]
     )
     with pytest.raises(FieldPathError) as info:
-        Materializer(_CHAINLIT_SCHEMA).materialize(flat, ConfigPath.parse("$chainlit"))
+        ConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
+            flat, ConfigPath.parse("$chainlit")
+        )
     assert info.value.field_name == "models"
     assert "[0]" in info.value.location
 
@@ -201,14 +211,18 @@ def test_mapping_scalar_from_dict_source():
             )
         ]
     )
-    cfg = Materializer(_TOOLS_SCHEMA).materialize(flat, ConfigPath.parse("$tools"))
+    cfg = ConfigMaterializer(_TOOLS_SCHEMA).materialize(
+        flat, ConfigPath.parse("$tools")
+    )
     assert cfg.descriptions == {"kb_search": "Поиск", "html_outline": "Оглавление"}
     assert cfg.limits == {"kb_search": 20}
 
 
 def test_mapping_scalar_empty_when_absent():
     flat = FlatConfigBuilder.from_sources([_DictSource({})])
-    cfg = Materializer(_TOOLS_SCHEMA).materialize(flat, ConfigPath.parse("$tools"))
+    cfg = ConfigMaterializer(_TOOLS_SCHEMA).materialize(
+        flat, ConfigPath.parse("$tools")
+    )
     assert cfg.descriptions == {}
     assert cfg.limits == {}
 
@@ -227,7 +241,9 @@ def test_mapping_scalar_from_toml(tmp_path: Path):
         """,
     )
     flat = FlatConfigBuilder.from_sources([TomlSource(cfg_file)])
-    cfg = Materializer(_TOOLS_SCHEMA).materialize(flat, ConfigPath.parse("$tools"))
+    cfg = ConfigMaterializer(_TOOLS_SCHEMA).materialize(
+        flat, ConfigPath.parse("$tools")
+    )
     assert cfg.descriptions["kb_search"] == "Поиск по базе"
     assert cfg.descriptions["html_outline"] == "Оглавление HTML"
     assert cfg.limits == {"kb_search": 50, "html_outline": 200}
@@ -244,7 +260,9 @@ def test_mapping_scalar_inline_table_from_toml(tmp_path: Path):
         """,
     )
     flat = FlatConfigBuilder.from_sources([TomlSource(cfg_file)])
-    cfg = Materializer(_TOOLS_SCHEMA).materialize(flat, ConfigPath.parse("$tools"))
+    cfg = ConfigMaterializer(_TOOLS_SCHEMA).materialize(
+        flat, ConfigPath.parse("$tools")
+    )
     assert cfg.descriptions == {"kb_search": "x", "html_outline": "y"}
     assert cfg.limits == {"kb_search": 5}
 
@@ -262,7 +280,7 @@ def test_mapping_scalar_item_validation_error_carries_key():
         ]
     )
     with pytest.raises(FieldPathError) as info:
-        Materializer(_TOOLS_SCHEMA).materialize(flat, ConfigPath.parse("$tools"))
+        ConfigMaterializer(_TOOLS_SCHEMA).materialize(flat, ConfigPath.parse("$tools"))
     assert info.value.field_name == "limits"
     assert "kb_search" in info.value.location
 

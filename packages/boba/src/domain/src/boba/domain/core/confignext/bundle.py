@@ -32,12 +32,12 @@ from boba.domain.core.confignext.validators import MISSING
 from boba.domain.core.confignext.value import ConfigValue
 from boba.domain.core.patterns import ConverterInputError
 
-__all__ = ["ConfigBundle", "ConfigFactory", "Materializer"]
+__all__ = ["ConfigBundle", "ConfigFactory", "ConfigMaterializer"]
 
 T = TypeVar("T")
 
 
-class Materializer(Generic[T]):
+class ConfigMaterializer(Generic[T]):
     """Материализует ObjectSchema из ConfigSpace в DTO[T]."""
 
     def __init__(self, schema: ObjectSchema[T]) -> None:
@@ -169,8 +169,8 @@ class Materializer(Generic[T]):
                 return converter.convert(lookup.value())
 
             case ObjectItem(schema=nested):
-                # Рекурсия: сам Materializer для вложенной схемы.
-                return Materializer(nested).materialize(space, path)
+                # Рекурсия: сам ConfigMaterializer для вложенной схемы.
+                return ConfigMaterializer(nested).materialize(space, path)
 
             case _:
                 raise NotImplementedError(
@@ -195,7 +195,7 @@ class ConfigBundle:
         schema: ObjectSchema[T],
         prefix: ConfigPath,
     ) -> T:
-        return Materializer(schema).materialize(self.flat, prefix)
+        return ConfigMaterializer(schema).materialize(self.flat, prefix)
 
     def subtree(self, prefix: ConfigPath) -> Mapping[ConfigPath, ConfigValue]:
         return self.flat.subtree(prefix)
