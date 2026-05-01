@@ -1,20 +1,13 @@
+"""
+Декларативные объекты для описания структуры и их валидации
+"""
+
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
-from boba.domain.core.confignext.path import (
-    ConfigLookup,
-    ConfigPath,
-    ConfigSpace,
-    Found,
-    NameSegment,
-    NotFound,
-    Segment,
-)
-from boba.domain.core.confignext.validators import MISSING
 from boba.domain.core.patterns import (
     Converter,
     ConverterInputError,
@@ -31,13 +24,9 @@ __all__ = [
     "IndexedShape",
     "ItemReader",
     "KeyedShape",
-    "ListField",
-    "MappingField",
-    "MappingScalarField",
     "ObjectItem",
     "ObjectSchema",
     "ScalarItem",
-    "ScalarListField",
 ]
 
 
@@ -121,19 +110,11 @@ K = TypeVar("K")
 R = TypeVar("R")
 
 
-class FieldKind(ABC):
-    """Базовый класс полей ObjectSchema; знает, как себя вычитать."""
+class FieldKind:
+    """Базовая декларация поля. Конкретные виды: `FieldSpec`, `CollectionField`."""
 
     name: str
     description: str
-
-    @abstractmethod
-    def read_from(self, space: ConfigSpace, prefix: ConfigPath) -> Any:
-        """Прочитать значение поля из space относительно prefix.
-
-        Возвращает MISSING, если поле отсутствует и нет default'а.
-        Бросает FieldPathError при ошибке валидации.
-        """
 
 
 @dataclass(frozen=True)
@@ -143,97 +124,6 @@ class FieldSpec(FieldKind, Generic[T]):
     name: str
     converter: Converter[Any, T]
     description: str = ""
-
-    def read_from(self, space: ConfigSpace, prefix: ConfigPath) -> Any:
-        path = prefix.join(NameSegment(self.name))
-        lookup = space.lookup(path)
-        raw = lookup.value() if lookup.is_found() else MISSING
-        return self.converter.convert(raw)
-
-
-class ItemReader(ABC, Generic[V]):
-    """Чтение одного элемента коллекции по абсолютному пути."""
-
-    @abstractmethod
-    def read(self, space: ConfigSpace, path: ConfigPath) -> ConfigLookup[V]:
-        """Found(V) — есть значение; NotFound — пропустить элемент."""
-
-
-class CollectionShape(ABC, Generic[K, V, R]):
-    """Форма коллекции: какие сегменты считаются элементами и как собрать результат."""
-
-    @abstractmethod
-    def entries(
-        self,
-        space: ConfigSpace,
-        prefix: ConfigPath,
-    ) -> Iterator[tuple[K, Segment, str]]:
-        """yields (ключ, сегмент, label-для-ошибок); фильтрует «не свои» сегменты."""
-
-    @abstractmethod
-    def assemble(self, items: list[tuple[K, V]]) -> R:
-        """Собрать итог из накопленных пар (ключ, значение)."""
-
-
-@dataclass(frozen=True)
-class ScalarItem(ItemReader[T], Generic[T]):
-    """Скаляр: lookup → converter."""
-
-    converter: Converter[Any, T]
-
-    def read(self, space: ConfigSpace, path: ConfigPath) -> ConfigLookup[T]:
-        lookup = space.lookup(path)
-        if not lookup.is_found():
-            return NotFound()
-        return Found(self.converter.convert(lookup.value()))
-
-
-@dataclass(frozen=True)
-class ObjectItem(ItemReader[V], Generic[V]):
-    """Объект: рекурсивный materialize по схеме."""
-
-    schema: ObjectSchema[V]
-
-    def read(self, space: ConfigSpace, path: ConfigPath) -> ConfigLookup[V]:
-        return Found(self.schema.materialize(space, path))
-
-
-@dataclass(frozen=True)
-class IndexedShape(CollectionShape[int, V, tuple[V, ...]], Generic[V]):
-    """tuple[V, ...] по `[i]`; результат отсортирован по индексу."""
-
-    def entries(
-        self,
-        space: ConfigSpace,
-        prefix: ConfigPath,
-    ) -> Iterator[tuple[int, Segment, str]]:
-        for seg in space.child_segments(prefix):
-            i = seg.list_index()
-            if i is None:
-                continue
-            yield i, seg, f"[{i}]"
-
-    def assemble(self, items: list[tuple[int, V]]) -> tuple[V, ...]:
-        return tuple(v for _, v in sorted(items, key=lambda kv: kv[0]))
-
-
-@dataclass(frozen=True)
-class KeyedShape(CollectionShape[str, V, dict[str, V]], Generic[V]):
-    """dict[str, V] по mapping-ключам."""
-
-    def entries(
-        self,
-        space: ConfigSpace,
-        prefix: ConfigPath,
-    ) -> Iterator[tuple[str, Segment, str]]:
-        for seg in space.child_segments(prefix):
-            k = seg.mapping_key()
-            if k is None:
-                continue
-            yield k, seg, k
-
-    def assemble(self, items: list[tuple[str, V]]) -> dict[str, V]:
-        return dict(items)
 
 
 @dataclass(frozen=True)
@@ -245,81 +135,37 @@ class CollectionField(FieldKind, Generic[K, V, R]):
     shape: CollectionShape[K, V, R]
     description: str = ""
 
-    def read_from(self, space: ConfigSpace, prefix: ConfigPath) -> R:
-        sub_prefix = prefix.join(NameSegment(self.name))
-        items: list[tuple[K, V]] = []
-        seen: set[K] = set()
-        for key, seg, label in self.shape.entries(space, sub_prefix):
-            if key in seen:
-                continue
-            seen.add(key)
-            try:
-                lookup = self.reader.read(space, sub_prefix.join(seg))
-            except FieldPathError as exc:
-                raise exc.with_parent_location(self.name, label) from exc
-            except ConverterInputError as exc:
-                raise FieldPathError.from_cause(
-                    exc, self.name, location=(label,)
-                ) from exc
-            if lookup.is_found():
-                items.append((key, lookup.value()))
-        return self.shape.assemble(items)
+
+class ItemReader(Generic[V]):
+    """Чтение одного элемента коллекции. Виды: `ScalarItem`, `ObjectItem`."""
 
 
-def MappingField(  # noqa: N802 — публичный API в PascalCase
-    name: str,
-    value_schema: ObjectSchema[V],
-    description: str = "",
-) -> CollectionField[str, V, dict[str, V]]:
-    """Динамический словарь объектов: ключи произвольны, значения — DTO по схеме."""
-    return CollectionField(
-        name=name,
-        reader=ObjectItem(value_schema),
-        shape=KeyedShape(),
-        description=description,
-    )
+@dataclass(frozen=True)
+class ScalarItem(ItemReader[T], Generic[T]):
+    """Скаляр: lookup → converter."""
+
+    converter: Converter[Any, T]
 
 
-def ListField(  # noqa: N802 — публичный API в PascalCase
-    name: str,
-    item_schema: ObjectSchema[V],
-    description: str = "",
-) -> CollectionField[int, V, tuple[V, ...]]:
-    """Индексированный список объектов: tuple[V, ...] по схеме элемента."""
-    return CollectionField(
-        name=name,
-        reader=ObjectItem(item_schema),
-        shape=IndexedShape(),
-        description=description,
-    )
+@dataclass(frozen=True)
+class ObjectItem(ItemReader[V], Generic[V]):
+    """Вложенный объект: рекурсивный Materializer / WireSchemaBuilder по схеме."""
+
+    schema: ObjectSchema[V]
 
 
-def ScalarListField(  # noqa: N802 — публичный API в PascalCase
-    name: str,
-    item_converter: Converter[Any, T],
-    description: str = "",
-) -> CollectionField[int, T, tuple[T, ...]]:
-    """Индексированный список скаляров: tuple[T, ...] через item_converter."""
-    return CollectionField(
-        name=name,
-        reader=ScalarItem(item_converter),
-        shape=IndexedShape(),
-        description=description,
-    )
+class CollectionShape(Generic[K, V, R]):
+    """Форма коллекции. Виды: `IndexedShape` (tuple), `KeyedShape` (dict)."""
 
 
-def MappingScalarField(  # noqa: N802 — публичный API в PascalCase
-    name: str,
-    item_converter: Converter[Any, T],
-    description: str = "",
-) -> CollectionField[str, T, dict[str, T]]:
-    """Динамический словарь скаляров: dict[str, T] через item_converter."""
-    return CollectionField(
-        name=name,
-        reader=ScalarItem(item_converter),
-        shape=KeyedShape(),
-        description=description,
-    )
+@dataclass(frozen=True)
+class IndexedShape(CollectionShape[int, V, tuple[V, ...]], Generic[V]):
+    """tuple[V, ...] по `[i]`; результат отсортирован по индексу."""
+
+
+@dataclass(frozen=True)
+class KeyedShape(CollectionShape[str, V, dict[str, V]], Generic[V]):
+    """dict[str, V] по mapping-ключам."""
 
 
 class _PassDict(Converter[dict[str, Any], dict[str, Any]]):
@@ -331,37 +177,97 @@ class _PassDict(Converter[dict[str, Any], dict[str, Any]]):
 
 @dataclass(frozen=True)
 class ObjectSchema(Generic[T]):
-    """Схема объекта: упорядоченная коллекция полей + invariants + factory."""
+    """Декларация структуры конфига.
+
+    Используется для двух задач (тот же декларативный объект — два сервиса):
+      1) Materializer(SCHEMA).materialize(space, prefix) — типизированный DTO[T]
+         из плоского FlatConfig.
+      2) WireSchemaBuilder(SCHEMA).build() — JSON-Schema для tool-definition LLM.
+
+    ── Пример: extension с динамическими tools, вложенными params и cross-field-инвариантом ──
+
+        # ── DTO ──
+        @dataclass(frozen=True)
+        class ParamOverlay:
+            description: str = ""
+
+        @dataclass(frozen=True)
+        class ToolEntry:
+            enabled: bool
+            description: str
+            params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+
+        @dataclass(frozen=True)
+        class ChromadbConfig:
+            enabled: bool
+            persist_path: str
+            min_top_k: int
+            max_top_k: int
+            tools: Mapping[str, ToolEntry] = field(default_factory=dict)
+
+        # ── Схема ──
+        # Вложенная схема (значение для tools.<id>.params.<name>):
+        PARAM_OVERLAY_SCHEMA = ObjectSchema(
+            fields=[FieldSpec("description", ChainConverter(Default(""), ParseString()))],
+            factory=ParamOverlay,
+        )
+
+        # Tool overlay: содержит динамический map[str, ParamOverlay] на params:
+        TOOL_ENTRY_SCHEMA = ObjectSchema(
+            fields=[
+                FieldSpec("enabled", ChainConverter(Default(False), ParseBool())),
+                FieldSpec(
+                    "description",
+                    ChainConverter(Default(""), ParseString()),
+                    description="Перекрытие описания tool'а для LLM",
+                ),
+                # tools.<id>.params.<name> → dict[str, ParamOverlay]
+                CollectionField(
+                    name="params",
+                    reader=ObjectItem(PARAM_OVERLAY_SCHEMA),
+                    shape=KeyedShape(),
+                ),
+            ],
+            factory=ToolEntry,
+        )
+
+        # Корень extension'а: скаляры + cross-field-инвариант + динамические tools:
+        CHROMADB_SCHEMA = ObjectSchema(
+            fields=[
+                FieldSpec("enabled", ChainConverter(Default(False), ParseBool())),
+                FieldSpec("persist_path", ChainConverter(Required(), ParseString())),
+                FieldSpec(
+                    "min_top_k",
+                    ChainConverter(Default(1), ParseInt(), MinValue(1)),
+                ),
+                FieldSpec(
+                    "max_top_k",
+                    ChainConverter(Default(20), ParseInt(), MaxValue(100)),
+                ),
+                # ext.chromadb.tools.<id> → dict[str, ToolEntry]
+                CollectionField(
+                    name="tools",
+                    reader=ObjectItem(TOOL_ENTRY_SCHEMA),
+                    shape=KeyedShape(),
+                ),
+            ],
+            # Cross-field: гарантируем min_top_k ≤ max_top_k:
+            invariants=Ordered("min_top_k", "max_top_k"),
+            factory=ChromadbConfig,
+            description="Параметры подключения к ChromaDB и список включённых tools.",
+        )
+
+        # ── Использование ──
+        cfg = Materializer(CHROMADB_SCHEMA).materialize(
+            space, ConfigPath.parse("$ext.chromadb"),
+        )                                                # → ChromadbConfig (DTO)
+
+        wire = WireSchemaBuilder(CHROMADB_SCHEMA).build()  # → ObjectWireSchema (JSON-Schema)
+    """  # noqa: E501
 
     fields: Sequence[FieldKind]
     invariants: Converter[dict[str, Any], dict[str, Any]] = field(
-        default_factory=lambda: _PassDict(),
+        default_factory=_PassDict,
     )
     factory: Callable[..., T] = dict  # type: ignore[assignment]
     description: str = ""
-
-    def field_names(self) -> tuple[str, ...]:
-        return tuple(f.name for f in self.fields)
-
-    def materialize(self, space: ConfigSpace, prefix: ConfigPath) -> T:
-        """
-        Собрать DTO: каждое поле само вычитывает себя через read_from.
-        """
-        validated: dict[str, Any] = {}
-        for f in self.fields:
-            try:
-                value = f.read_from(space, prefix)
-            except ConverterInputError as exc:
-                raise FieldPathError.from_cause(exc, f.name) from exc
-
-            if value is MISSING:
-                continue
-
-            validated[f.name] = value
-
-        try:
-            final = self.invariants.convert(validated)
-        except ConverterInputError as exc:
-            raise FieldPathError.from_cause(exc, "<invariants>") from exc
-
-        return self.factory(**final)

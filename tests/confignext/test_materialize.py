@@ -1,4 +1,4 @@
-"""materialize: ObjectSchema + FieldSpec/MappingField/ListField → DTO."""
+"""materialize: ObjectSchema + FieldSpec / CollectionField → DTO."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import pytest
 from boba.domain.core.confignext import (
     BoolValue,
     ChainConverter,
+    CollectionField,
     ConfigPath,
     ConfigSource,
     ConfigValue,
@@ -19,12 +20,14 @@ from boba.domain.core.confignext import (
     FieldSpec,
     # FlatConfig,
     FlatConfigBuilder,
+    IndexedShape,
     IntValue,
-    ListField,
-    MappingField,
+    KeyedShape,
+    Materializer,
     MinValue,
     NameSegment,
     NonEmpty,
+    ObjectItem,
     ObjectSchema,
     ParseBool,
     ParseInt,
@@ -71,7 +74,7 @@ _AGENT_SCHEMA: ObjectSchema[_Agent] = ObjectSchema(
 
 def test_scalar_with_defaults():
     flat = FlatConfigBuilder.from_sources([_DictSource({})])
-    agent = _AGENT_SCHEMA.materialize(flat, ConfigPath.parse("$agent"))
+    agent = Materializer(_AGENT_SCHEMA).materialize(flat, ConfigPath.parse("$agent"))
     assert agent == _Agent(max_iterations=20, enabled=False)
 
 
@@ -86,7 +89,7 @@ def test_scalar_overridden():
             )
         ]
     )
-    agent = _AGENT_SCHEMA.materialize(flat, ConfigPath.parse("$agent"))
+    agent = Materializer(_AGENT_SCHEMA).materialize(flat, ConfigPath.parse("$agent"))
     assert agent == _Agent(max_iterations=200, enabled=True)
 
 
@@ -96,7 +99,7 @@ def test_required_missing_raises():
     )
     flat = FlatConfigBuilder.from_sources([_DictSource({})])
     with pytest.raises(FieldPathMissingError):
-        schema.materialize(flat, ConfigPath.parse("$root"))
+        Materializer(schema).materialize(flat, ConfigPath.parse("$root"))
 
 
 def test_validation_error_attaches_field():
@@ -112,11 +115,11 @@ def test_validation_error_attaches_field():
         [_DictSource({ConfigPath.parse("$root.max_iterations"): IntValue(0)})]
     )
     with pytest.raises(FieldPathError) as info:
-        schema.materialize(flat, ConfigPath.parse("$root"))
+        Materializer(schema).materialize(flat, ConfigPath.parse("$root"))
     assert info.value.field_name == "max_iterations"
 
 
-# ──────── MappingField (динамические подсекции, как tools.<id>) ────────
+# ──────── KeyedShape × ObjectItem (динамические подсекции, как tools.<id>) ────────
 
 
 @dataclass(frozen=True)
@@ -143,7 +146,11 @@ class _ExtBlock:
 _EXT_SCHEMA: ObjectSchema[_ExtBlock] = ObjectSchema(
     fields=[
         FieldSpec("enabled", ChainConverter(Default(False), ParseBool())),
-        MappingField(name="tools", value_schema=_TOOL_ENTRY_SCHEMA),
+        CollectionField(
+            name="tools",
+            reader=ObjectItem(_TOOL_ENTRY_SCHEMA),
+            shape=KeyedShape(),
+        ),
     ],
     factory=_ExtBlock,
 )
@@ -168,7 +175,7 @@ def test_mapping_field_collects_dynamic_subsections():
             )
         ]
     )
-    block = _EXT_SCHEMA.materialize(flat, ConfigPath.parse("$ext.html"))
+    block = Materializer(_EXT_SCHEMA).materialize(flat, ConfigPath.parse("$ext.html"))
     assert block.enabled is True
     assert set(block.tools) == {"html_outline", "html_section"}
     assert block.tools["html_outline"].enabled is True
@@ -181,11 +188,11 @@ def test_mapping_field_empty_when_no_subsections():
     flat = FlatConfigBuilder.from_sources(
         [_DictSource({ConfigPath.parse("$ext.html.enabled"): BoolValue(True)})]
     )
-    block = _EXT_SCHEMA.materialize(flat, ConfigPath.parse("$ext.html"))
+    block = Materializer(_EXT_SCHEMA).materialize(flat, ConfigPath.parse("$ext.html"))
     assert block.tools == {}
 
 
-# ──────── ListField (индексированные подсекции) ────────
+# ──────── IndexedShape × ObjectItem (индексированные подсекции) ────────
 
 
 @dataclass(frozen=True)
@@ -206,7 +213,11 @@ class _ChainlitBlock:
 
 _CHAINLIT_SCHEMA: ObjectSchema[_ChainlitBlock] = ObjectSchema(
     fields=[
-        ListField(name="models", item_schema=_MODEL_SCHEMA),
+        CollectionField(
+            name="models",
+            reader=ObjectItem(_MODEL_SCHEMA),
+            shape=IndexedShape(),
+        ),
     ],
     factory=_ChainlitBlock,
 )
@@ -226,7 +237,7 @@ def test_list_field_collects_indexed_subsections():
             )
         ]
     )
-    block = _CHAINLIT_SCHEMA.materialize(flat, ConfigPath.parse("$chainlit"))
+    block = Materializer(_CHAINLIT_SCHEMA).materialize(flat, ConfigPath.parse("$chainlit"))
     assert tuple(m.name for m in block.models) == ("qwen3", "gemini", "deepseek")
 
 
@@ -242,7 +253,7 @@ def test_list_field_uses_segment_indices_in_sorted_order():
             )
         ]
     )
-    block = _CHAINLIT_SCHEMA.materialize(flat, ConfigPath.parse("$chainlit"))
+    block = Materializer(_CHAINLIT_SCHEMA).materialize(flat, ConfigPath.parse("$chainlit"))
     assert tuple(m.name for m in block.models) == ("a", "b", "c")
 
 
@@ -259,7 +270,7 @@ def test_nested_field_error_propagates_with_location():
         ]
     )
     with pytest.raises(FieldPathError) as info:
-        _EXT_SCHEMA.materialize(flat, ConfigPath.parse("$ext.html"))
+        Materializer(_EXT_SCHEMA).materialize(flat, ConfigPath.parse("$ext.html"))
     assert "tools" in info.value.field_name or "tools" in str(info.value)
     assert "html_outline" in str(info.value)
 

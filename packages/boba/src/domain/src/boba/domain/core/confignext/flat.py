@@ -15,6 +15,7 @@ from boba.domain.core.confignext.path import (
     ConfigLookup,
     ConfigPath,
     ConfigSource,
+    ConfigSpace,
     Found,
     NotFound,
     Segment,
@@ -26,7 +27,7 @@ __all__ = ["FlatConfig", "FlatConfigBuilder"]
 
 
 @dataclass(frozen=True)
-class FlatConfig:
+class FlatConfig(ConfigSpace):
     """Единый плоский снимок конфига после мержа всех источников."""
 
     values: Mapping[ConfigPath, ConfigValue]
