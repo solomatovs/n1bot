@@ -97,7 +97,7 @@ def test_scalar_overridden():
 
 def test_required_missing_raises():
     schema: ObjectSchema[dict] = ObjectSchema(
-        fields=[FieldSpec("x", ChainConverter(Required(), ParseString()))],
+        fields=[FieldSpec("x", ChainConverter(ParseString()), required=True)],
     )
     flat = ConfigBundle.from_sources([_DictSource({})]).flat
     with pytest.raises(FieldPathMissingError):
@@ -109,8 +109,9 @@ def test_validation_error_attaches_field():
         fields=[
             FieldSpec(
                 "max_iterations",
-                ChainConverter(Required(), ParseInt(), MinValue(1)),
-            )
+                ChainConverter(ParseInt(), MinValue(1)),
+                required=True,
+            ),
         ],
     )
     flat = ConfigBundle.from_sources(
@@ -207,7 +208,7 @@ class _Model:
 
 
 _MODEL_SCHEMA: ObjectSchema[_Model] = ObjectSchema(
-    fields=[FieldSpec("name", ChainConverter(Required(), ParseString(), NonEmpty()))],
+    fields=[FieldSpec("name", ChainConverter(ParseString(), NonEmpty()), required=True)],
     factory=_Model,
 )
 

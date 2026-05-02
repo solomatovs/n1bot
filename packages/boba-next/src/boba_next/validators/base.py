@@ -1,8 +1,9 @@
-"""Базовая инфраструктура конвертеров: MISSING, Pass, ChainConverter, ValueConverter."""
+"""Базовая инфраструктура конвертеров: MISSING, Pass, ChainConverter, ValueConverter,
+SchemaContributor (mixin для wire-проекции)."""
 
 from __future__ import annotations
 
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from typing import Any, ClassVar, Final, Generic, TypeVar
 
 from boba.patterns import Converter
@@ -23,11 +24,23 @@ __all__ = [
     "MISSING",
     "ChainConverter",
     "Pass",
+    "SchemaContributor",
     "ValueConverter",
 ]
 
 
 T = TypeVar("T")
+
+
+class SchemaContributor(ABC):
+    """
+    Mixin для конвертеров, умеющих сообщать свою грань JSON-Schema.
+    """
+
+    @abstractmethod
+    def contribute(self, prop: dict[str, Any]) -> None:
+        """Дополнить JSON-Schema fragment этого converter'а."""
+        ...
 
 
 class _MissingType:
@@ -57,8 +70,8 @@ class Pass(Converter[Any, Any]):
         return value
 
 
-class ChainConverter(Converter[Any, T], Generic[T]):
-    """Последовательно применяет конвертеры."""
+class ChainConverter(Converter[Any, T], SchemaContributor, Generic[T]):
+    """Последовательно применяет конвертеры; SchemaContributor агрегирует fragments."""
 
     def __init__(self, *converters: Converter[Any, Any]) -> None:
         self._converters = converters
@@ -68,6 +81,12 @@ class ChainConverter(Converter[Any, T], Generic[T]):
             value = c.convert(value)
 
         return value
+
+    def contribute(self, prop: dict[str, Any]) -> None:
+        """Каждое звено-SchemaContributor дополняет общий fragment."""
+        for c in self._converters:
+            if isinstance(c, SchemaContributor):
+                c.contribute(prop)
 
 
 class ValueConverter(Converter[Any, Any]):

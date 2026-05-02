@@ -1,4 +1,9 @@
-"""ToolWireSchemaBuilder: ObjectSchema → JSON-Schema описание Tool для LLM.
+"""ToolWireSchemaBuilder: ObjectSchema → JSON-Schema (dict) описание Tool для LLM.
+
+Возвращает голый `dict[str, Any]` — JSON-Schema fragment. Поле `required` берётся
+из декларации `FieldSpec.required` (а не из converter'а). Конкретные converter'ы,
+наследующие `SchemaContributor`, дополняют свой fragment
+(`{"type":..., "minimum":..., ...}`).
 
 Диспатч по подвидам декларации — `match`. Чистые декларации живут в
 `declaration.py`; добавление нового FieldKind / ItemReader / CollectionShape
@@ -21,37 +26,41 @@ from boba_next.declaration import (
     ObjectSchema,
     ScalarItem,
 )
-from boba_next.schema import (
-    ObjectWireSchema,
-    ParamWireSchema,
-    SchemaContributor,
-)
+from boba_next.validators.base import SchemaContributor
 
 __all__ = ["ToolWireSchemaBuilder"]
 
 
 class ToolWireSchemaBuilder:
-    """Строит JSON-Schema описание Tool из ObjectSchema (для tool-definition LLM)."""
+    """Строит JSON-Schema (dict) описание Tool из ObjectSchema."""
 
     def __init__(self, schema: ObjectSchema[Any]) -> None:
         self._schema = schema
 
-    def build(self) -> ObjectWireSchema:
-        wire = ObjectWireSchema(description=self._schema.description)
+    def build(self) -> dict[str, Any]:
+        properties: dict[str, dict[str, Any]] = {}
+        required: list[str] = []
         for fld in self._schema.fields:
-            param = self._field_to_wire(fld)
-            wire.properties[fld.name] = dict(param.property)
-            if param.required:
-                wire.required.append(fld.name)
-        return wire
+            properties[fld.name] = self._field_to_wire(fld)
+            if isinstance(fld, FieldSpec) and fld.required:
+                required.append(fld.name)
 
-    def _field_to_wire(self, field: FieldKind) -> ParamWireSchema:
+        out: dict[str, Any] = {"type": "object"}
+        if self._schema.description:
+            out["description"] = self._schema.description
+        if properties:
+            out["properties"] = properties
+        if required:
+            out["required"] = required
+        return out
+
+    def _field_to_wire(self, field: FieldKind) -> dict[str, Any]:
         match field:
             case FieldSpec(description=desc, converter=converter):
-                wire = ParamWireSchema(property={"description": desc})
+                prop: dict[str, Any] = {"description": desc}
                 if isinstance(converter, SchemaContributor):
-                    converter.contribute(wire)
-                return wire
+                    converter.contribute(prop)
+                return prop
 
             case CollectionField(reader=reader, shape=shape, description=desc):
                 return self._wrap_collection(
@@ -63,25 +72,17 @@ class ToolWireSchemaBuilder:
             case _:
                 raise NotImplementedError(f"unknown FieldKind: {type(field).__name__}")
 
-    def _item_to_wire(self, reader: ItemReader[Any]) -> ParamWireSchema:
+    def _item_to_wire(self, reader: ItemReader[Any]) -> dict[str, Any]:
         match reader:
             case ScalarItem(converter=converter):
-                wire = ParamWireSchema()
+                prop: dict[str, Any] = {}
                 if isinstance(converter, SchemaContributor):
-                    converter.contribute(wire)
-                return wire
+                    converter.contribute(prop)
+                return prop
 
             case ObjectItem(schema=nested):
-                # Рекурсия: вложенная объектная схема как property "type": "object".
-                obj = ToolWireSchemaBuilder(nested).build()
-                prop: dict[str, Any] = {"type": "object"}
-                if obj.description:
-                    prop["description"] = obj.description
-                if obj.properties:
-                    prop["properties"] = obj.properties
-                if obj.required:
-                    prop["required"] = list(obj.required)
-                return ParamWireSchema(property=prop)
+                # Рекурсия: вложенная схема как property "type": "object".
+                return ToolWireSchemaBuilder(nested).build()
 
             case _:
                 raise NotImplementedError(
@@ -90,22 +91,22 @@ class ToolWireSchemaBuilder:
 
     def _wrap_collection(
         self,
-        item_wire: ParamWireSchema,
+        item_wire: dict[str, Any],
         shape: CollectionShape[Any, Any, Any],
         *,
         description: str,
-    ) -> ParamWireSchema:
+    ) -> dict[str, Any]:
         match shape:
             case IndexedShape():
                 prop: dict[str, Any] = {
                     "type": "array",
-                    "items": dict(item_wire.property),
+                    "items": dict(item_wire),
                 }
 
             case KeyedShape():
                 prop = {
                     "type": "object",
-                    "additionalProperties": dict(item_wire.property),
+                    "additionalProperties": dict(item_wire),
                 }
 
             case _:
@@ -115,4 +116,4 @@ class ToolWireSchemaBuilder:
 
         if description:
             prop["description"] = description
-        return ParamWireSchema(property=prop)
+        return prop

@@ -1,12 +1,16 @@
 """Type-конвертеры:
 - Parse* — coercion через полиморфные as_* на ConfigValue;
 - Is*    — строгая проверка конкретного подтипа ConfigValue.
+
+Каждый Parse*/Is* реализует SchemaContributor: пишет JSON-Schema `type` в prop.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 from boba.patterns import ConverterInputError
-from boba_next.validators.base import ValueConverter
+from boba_next.validators.base import SchemaContributor, ValueConverter
 from boba_next.value import (
     BoolValue,
     ConfigValue,
@@ -27,35 +31,47 @@ __all__ = [
 ]
 
 
-class ParseString(ValueConverter):
+class ParseString(ValueConverter, SchemaContributor):
     """Привести любое значение к str."""
 
     def _convert_value(self, value: ConfigValue) -> str:
         return value.as_string()
 
+    def contribute(self, prop: dict[str, Any]) -> None:
+        prop["type"] = "string"
 
-class ParseInt(ValueConverter):
+
+class ParseInt(ValueConverter, SchemaContributor):
     """Привести значение к int (bool отвергается)."""
 
     def _convert_value(self, value: ConfigValue) -> int:
         return value.as_int()
 
+    def contribute(self, prop: dict[str, Any]) -> None:
+        prop["type"] = "integer"
 
-class ParseFloat(ValueConverter):
+
+class ParseFloat(ValueConverter, SchemaContributor):
     """Привести значение к float (bool отвергается)."""
 
     def _convert_value(self, value: ConfigValue) -> float:
         return value.as_float()
 
+    def contribute(self, prop: dict[str, Any]) -> None:
+        prop["type"] = "number"
 
-class ParseBool(ValueConverter):
+
+class ParseBool(ValueConverter, SchemaContributor):
     """Привести значение к bool."""
 
     def _convert_value(self, value: ConfigValue) -> bool:
         return value.as_bool()
 
+    def contribute(self, prop: dict[str, Any]) -> None:
+        prop["type"] = "boolean"
 
-class IsString(ValueConverter):
+
+class IsString(ValueConverter, SchemaContributor):
     """Строго StringValue (без coercion)."""
 
     def _convert_value(self, value: ConfigValue) -> str:
@@ -65,8 +81,11 @@ class IsString(ValueConverter):
             )
         return value.as_string()
 
+    def contribute(self, prop: dict[str, Any]) -> None:
+        prop["type"] = "string"
 
-class IsInt(ValueConverter):
+
+class IsInt(ValueConverter, SchemaContributor):
     """Строго IntValue (без coercion; bool отвергается)."""
 
     def _convert_value(self, value: ConfigValue) -> int:
@@ -76,8 +95,11 @@ class IsInt(ValueConverter):
             )
         return value.as_int()
 
+    def contribute(self, prop: dict[str, Any]) -> None:
+        prop["type"] = "integer"
 
-class IsNumber(ValueConverter):
+
+class IsNumber(ValueConverter, SchemaContributor):
     """Строго IntValue или FloatValue (bool отвергается)."""
 
     def _convert_value(self, value: ConfigValue) -> int | float:
@@ -87,11 +109,17 @@ class IsNumber(ValueConverter):
             )
         return value.unwrap()
 
+    def contribute(self, prop: dict[str, Any]) -> None:
+        prop["type"] = "number"
 
-class IsBool(ValueConverter):
+
+class IsBool(ValueConverter, SchemaContributor):
     """Строго BoolValue."""
 
     def _convert_value(self, value: ConfigValue) -> bool:
         if not isinstance(value, BoolValue):
             raise ConverterInputError(f"ожидался bool, получено {type(value).__name__}")
         return value.as_bool()
+
+    def contribute(self, prop: dict[str, Any]) -> None:
+        prop["type"] = "boolean"

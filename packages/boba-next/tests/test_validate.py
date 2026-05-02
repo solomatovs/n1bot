@@ -67,7 +67,7 @@ def test_scalar_overridden_from_dict():
 
 def test_required_missing_raises_path_missing():
     schema: ObjectSchema[dict] = ObjectSchema(
-        fields=[FieldSpec("x", ChainConverter(Required(), ParseString()))],
+        fields=[FieldSpec("x", ChainConverter(ParseString()), required=True)],
     )
     with pytest.raises(FieldPathMissingError) as info:
         ToolArgsValidator(schema).validate({})
@@ -90,8 +90,8 @@ class _Range:
 
 _RANGE_SCHEMA: ObjectSchema[_Range] = ObjectSchema(
     fields=[
-        FieldSpec("lo", ChainConverter(Required(), ParseInt())),
-        FieldSpec("hi", ChainConverter(Required(), ParseInt())),
+        FieldSpec("lo", ChainConverter(ParseInt()), required=True),
+        FieldSpec("hi", ChainConverter(ParseInt()), required=True),
     ],
     invariants=Ordered("lo", "hi"),
     factory=_Range,
@@ -284,7 +284,7 @@ _TOOL_SCHEMA: ObjectSchema[_Tool] = ObjectSchema(
 _CHROMADB_SCHEMA: ObjectSchema[_Chromadb] = ObjectSchema(
     fields=[
         FieldSpec("enabled", ChainConverter(Default(False), ParseBool())),
-        FieldSpec("persist_path", ChainConverter(Required(), ParseString())),
+        FieldSpec("persist_path", ChainConverter(ParseString()), required=True),
         FieldSpec("min_top_k", ChainConverter(Default(1), ParseInt(), MinValue(1))),
         FieldSpec("max_top_k", ChainConverter(Default(20), ParseInt(), MaxValue(100))),
         CollectionField("tools", reader=ObjectItem(_TOOL_SCHEMA), shape=KeyedShape()),
