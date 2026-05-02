@@ -119,11 +119,17 @@ class FieldKind:
 
 @dataclass(frozen=True)
 class FieldSpec(FieldKind, Generic[T]):
-    """Скалярное поле: name + Converter-цепочка."""
+    """Скалярное поле: name + Converter-цепочка + декларативный required-флаг.
+
+    `required=True` означает: если значения нет (MISSING) — `Materializer`
+    бросает `FieldPathMissingError`, а `ToolWireSchemaBuilder` добавляет имя
+    поля в JSON-Schema `"required": [...]`. Default: `False`.
+    """
 
     name: str
     converter: Converter[Any, T]
     description: str = ""
+    required: bool = False
 
 
 @dataclass(frozen=True)
@@ -234,7 +240,7 @@ class ObjectSchema(Generic[T]):
         CHROMADB_SCHEMA = ObjectSchema(
             fields=[
                 FieldSpec("enabled", ChainConverter(Default(False), ParseBool())),
-                FieldSpec("persist_path", ChainConverter(Required(), ParseString())),
+                FieldSpec("persist_path", ChainConverter(ParseString()), required=True),
                 FieldSpec(
                     "min_top_k",
                     ChainConverter(Default(1), ParseInt(), MinValue(1)),
@@ -261,7 +267,7 @@ class ObjectSchema(Generic[T]):
             space, ConfigPath.parse("$ext.chromadb"),
         )                                                # → ChromadbConfig (DTO)
 
-        wire = ToolWireSchemaBuilder(CHROMADB_SCHEMA).build()  # → ObjectWireSchema (JSON-Schema)
+        wire = ToolWireSchemaBuilder(CHROMADB_SCHEMA).build()  # → dict (JSON-Schema)
     """  # noqa: E501
 
     fields: Sequence[FieldKind]

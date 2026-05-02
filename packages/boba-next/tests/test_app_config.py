@@ -209,7 +209,7 @@ def test_required_field_missing_propagates_error():
         id: ClassVar[StrId] = StrId("svc")
         namespace: ClassVar[tuple[str, ...]] = ("svc",)
         schema: ClassVar[ObjectSchema[_Cfg]] = ObjectSchema(
-            fields=[FieldSpec("token", ChainConverter(Required(), ParseString()))],
+            fields=[FieldSpec("token", ChainConverter(ParseString()), required=True)],
             factory=_Cfg,
         )
 
