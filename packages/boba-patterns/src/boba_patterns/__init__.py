@@ -626,7 +626,10 @@ class StreamSinkPipeline(StreamSink[TCtx, TIn]):
 
 
 class StreamTransformerPipeline(StreamTransformer[TCtx, TIn, TOut]):
-    """Sequential fan-out StreamTransformer-ов над одним входным потоком; stream должен быть re-iterable."""
+    """
+    Sequential fan-out StreamTransformer-ов над одним
+    входным потоком; stream должен быть re-iterable.
+    """
 
     def __init__(
         self,
@@ -687,7 +690,10 @@ class StreamTransformerChain(StreamTransformer[TCtx, TIn, TIn]):
 
 
 class StreamSourceLoop(StreamSource[TCtx, TOut]):
-    """Циклический запуск StreamSource до срабатывания stop_if (проверка после yield)."""
+    """
+    Циклический запуск StreamSource до срабатывания
+    stop_if (проверка после yield).
+    """
 
     def __init__(
         self,
@@ -767,7 +773,10 @@ class AllMatchesDispatcher(Generic[TIn, TOut]):
 
 
 class FoldingDispatcher(Generic[TValue]):
-    """Callable-диспетчер «условная цепочка трансформаций» (fold), мономорфный TValue → TValue."""
+    """
+    Callable-диспетчер «условная цепочка трансформаций» (fold),
+    мономорфный TValue → TValue.
+    """
 
     def __init__(
         self,

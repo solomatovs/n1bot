@@ -253,7 +253,7 @@ def test_subtree_returns_flat_under_prefix(tmp_path: Path):
         enabled = false
         """,
     )
-    sub = bundle.subtree(ConfigPath.parse("$ext.html"))
+    sub = bundle.flat.subtree(ConfigPath.parse("$ext.html"))
     assert ConfigPath.parse("$ext.html.enabled") in sub
     assert ConfigPath.parse("$ext.html.tools.html_outline.enabled") in sub
     assert ConfigPath.parse("$ext.chromadb.enabled") not in sub
@@ -270,8 +270,8 @@ def test_lookup_origin_traces_back_to_source(tmp_path: Path):
         ]
     )
     bundle = factory.build()
-    assert bundle.origin_of(ConfigPath.parse("$a.b")).value() == "main_toml"
-    assert bundle.origin_of(ConfigPath.parse("$a.c")).value() == "env"
+    assert bundle.flat.origin_of(ConfigPath.parse("$a.b")).value() == "main_toml"
+    assert bundle.flat.origin_of(ConfigPath.parse("$a.c")).value() == "env"
 
 
 # Re-export Required/NonEmpty чтобы pyright не считал их неиспользованными

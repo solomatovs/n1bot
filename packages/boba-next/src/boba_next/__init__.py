@@ -5,7 +5,6 @@ from boba_next.config.app import (
     AppConfig,
     AppConfigFactory,
     ConfigError,
-    SectionAlreadyRegisteredError,
     SectionMissingError,
 )
 from boba_next.config.bundle import (
@@ -160,7 +159,6 @@ __all__ = [
     "Required",
     "RequiresTogether",
     "ScalarItem",
-    "SectionAlreadyRegisteredError",
     "SectionMissingError",
     "Segment",
     "StringAdapter",

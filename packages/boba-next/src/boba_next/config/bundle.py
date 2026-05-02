@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
 from boba_next.config.flat import FlatConfig
 from boba_next.config.path import (
-    ConfigLookup,
     ConfigPath,
     ConfigSource,
     ConfigSpace,
@@ -210,14 +209,14 @@ class ConfigBundle:
     ) -> T:
         return FlatConfigMaterializer(schema).materialize(self.flat, prefix)
 
-    def subtree(self, prefix: ConfigPath) -> Mapping[ConfigPath, ConfigValue]:
-        return self.flat.subtree(prefix)
+    # def subtree(self, prefix: ConfigPath) -> Mapping[ConfigPath, ConfigValue]:
+    #     return self.flat.subtree(prefix)
 
-    def lookup(self, path: ConfigPath) -> ConfigLookup[ConfigValue]:
-        return self.flat.lookup(path)
+    # def lookup(self, path: ConfigPath) -> ConfigLookup[ConfigValue]:
+    #     return self.flat.lookup(path)
 
-    def origin_of(self, path: ConfigPath) -> ConfigLookup[str]:
-        return self.flat.origin_of(path)
+    # def origin_of(self, path: ConfigPath) -> ConfigLookup[str]:
+    #     return self.flat.origin_of(path)
 
 
 @dataclass

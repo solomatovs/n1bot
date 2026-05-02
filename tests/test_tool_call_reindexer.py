@@ -45,9 +45,7 @@ def _tc(
         if name is not None or args
         else None
     )
-    return ChoiceDeltaToolCall(
-        index=index, id=tc_id, type="function", function=fn
-    )
+    return ChoiceDeltaToolCall(index=index, id=tc_id, type="function", function=fn)
 
 
 def _choice(*tool_calls: ChoiceDeltaToolCall) -> Choice:
@@ -121,9 +119,9 @@ def test_continuation_without_id_keeps_index() -> None:
 def test_repeated_id_keeps_remapped_index() -> None:
     """Повторное появление того же id под коллидирующим index идёт на тот же слот."""
     rx = DuplicateToolCallIndexReindexer()
-    a1 = _tc(index=0, tc_id="A", name="t", args='{')
-    b1 = _tc(index=0, tc_id="B", name="t", args='{')
-    b2 = _tc(index=0, tc_id="B", args='}')
+    a1 = _tc(index=0, tc_id="A", name="t", args="{")
+    b1 = _tc(index=0, tc_id="B", name="t", args="{")
+    b2 = _tc(index=0, tc_id="B", args="}")
     list(rx.stream(_ctx(), [_choice(a1), _choice(b1), _choice(b2)]))
     assert (a1.index, b1.index, b2.index) == (0, 1, 1)
 
@@ -131,10 +129,15 @@ def test_repeated_id_keeps_remapped_index() -> None:
 def test_reset_clears_state() -> None:
     """После reset() реиндексер снова начинает со свежим состоянием."""
     rx = DuplicateToolCallIndexReindexer()
-    list(rx.stream(_ctx(), [
-        _choice(_tc(index=0, tc_id="A", name="t")),
-        _choice(_tc(index=0, tc_id="B", name="t")),
-    ]))
+    list(
+        rx.stream(
+            _ctx(),
+            [
+                _choice(_tc(index=0, tc_id="A", name="t")),
+                _choice(_tc(index=0, tc_id="B", name="t")),
+            ],
+        )
+    )
     rx.reset()
     tc_c = _tc(index=0, tc_id="C", name="t")
     tc_d = _tc(index=0, tc_id="D", name="t")
@@ -145,7 +148,9 @@ def test_reset_clears_state() -> None:
 # ── FromOpenAIChunkConverter (фича on/off) ────────────────────────────
 
 
-def _begins_and_args(events: list) -> tuple[list[LLMToolCallBegin], list[LLMToolCallArgumentDelta]]:
+def _begins_and_args(
+    events: list,
+) -> tuple[list[LLMToolCallBegin], list[LLMToolCallArgumentDelta]]:
     begins = [e for e in events if isinstance(e, LLMToolCallBegin)]
     deltas = [e for e in events if isinstance(e, LLMToolCallArgumentDelta)]
     return begins, deltas
@@ -156,14 +161,26 @@ def test_converter_on_separates_collision() -> None:
     ctx = _ctx()
     conv = FromOpenAIChunkConverter(ctx.request_id)
     chunks = [
-        _chunk(_choice(_tc(
-            index=0, tc_id="A", name="html_outline",
-            args='{"path":"a.html"}',
-        ))),
-        _chunk(_choice(_tc(
-            index=0, tc_id="B", name="html_outline",
-            args='{"path":"b.html"}',
-        ))),
+        _chunk(
+            _choice(
+                _tc(
+                    index=0,
+                    tc_id="A",
+                    name="html_outline",
+                    args='{"path":"a.html"}',
+                )
+            )
+        ),
+        _chunk(
+            _choice(
+                _tc(
+                    index=0,
+                    tc_id="B",
+                    name="html_outline",
+                    args='{"path":"b.html"}',
+                )
+            )
+        ),
     ]
     events = list(conv.stream(ctx, chunks))
     begins, deltas = _begins_and_args(events)
@@ -183,14 +200,26 @@ def test_converter_off_keeps_provider_collision() -> None:
     ctx = _ctx()
     conv = FromOpenAIChunkConverter(ctx.request_id, reindex_tool_calls=False)
     chunks = [
-        _chunk(_choice(_tc(
-            index=0, tc_id="A", name="html_outline",
-            args='{"path":"a.html"}',
-        ))),
-        _chunk(_choice(_tc(
-            index=0, tc_id="B", name="html_outline",
-            args='{"path":"b.html"}',
-        ))),
+        _chunk(
+            _choice(
+                _tc(
+                    index=0,
+                    tc_id="A",
+                    name="html_outline",
+                    args='{"path":"a.html"}',
+                )
+            )
+        ),
+        _chunk(
+            _choice(
+                _tc(
+                    index=0,
+                    tc_id="B",
+                    name="html_outline",
+                    args='{"path":"b.html"}',
+                )
+            )
+        ),
     ]
     events = list(conv.stream(ctx, chunks))
     begins, deltas = _begins_and_args(events)
@@ -206,12 +235,26 @@ def test_converter_on_keeps_well_formed_parallel() -> None:
     ctx = _ctx()
     conv = FromOpenAIChunkConverter(ctx.request_id)
     chunks = [
-        _chunk(_choice(_tc(
-            index=0, tc_id="A", name="t", args='{"a":1}',
-        ))),
-        _chunk(_choice(_tc(
-            index=1, tc_id="B", name="t", args='{"b":2}',
-        ))),
+        _chunk(
+            _choice(
+                _tc(
+                    index=0,
+                    tc_id="A",
+                    name="t",
+                    args='{"a":1}',
+                )
+            )
+        ),
+        _chunk(
+            _choice(
+                _tc(
+                    index=1,
+                    tc_id="B",
+                    name="t",
+                    args='{"b":2}',
+                )
+            )
+        ),
     ]
     events = list(conv.stream(ctx, chunks))
     begins, _ = _begins_and_args(events)

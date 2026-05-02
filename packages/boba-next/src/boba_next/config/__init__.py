@@ -5,7 +5,6 @@ from boba_next.config.app import (
     AppConfig,
     AppConfigFactory,
     ConfigError,
-    SectionAlreadyRegisteredError,
     SectionMissingError,
 )
 from boba_next.config.bundle import (
@@ -47,7 +46,6 @@ __all__ = [
     "IndexSegment",
     "NameSegment",
     "NotFound",
-    "SectionAlreadyRegisteredError",
     "SectionMissingError",
     "Segment",
 ]
