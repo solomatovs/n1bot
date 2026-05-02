@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from boba_next import Found, NotFound
 
 

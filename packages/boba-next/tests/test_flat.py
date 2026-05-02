@@ -5,11 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from boba_next import (
+    ConfigBundle,
     ConfigPath,
     ConfigSource,
     ConfigValue,
     FlatConfig,
-    FlatConfigBuilder,
     IntValue,
     NameSegment,
     StringValue,
@@ -50,7 +50,7 @@ def test_merge_priority_last_wins():
     p_a = ConfigPath.parse("$x")
     low = _DictSource("low", 100, {p_a: StringValue("from-low")})
     high = _DictSource("high", 200, {p_a: StringValue("from-high")})
-    flat = FlatConfigBuilder.from_sources([low, high])
+    flat = ConfigBundle.from_sources([low, high]).flat
     assert flat.lookup(p_a).value() == StringValue("from-high")
     assert flat.origin_of(p_a).value() == "high"
 
@@ -62,7 +62,7 @@ def test_keys_under_and_subtree():
         ConfigPath.parse("$ext.chromadb.enabled"): StringValue("false"),
     }
     src = _DictSource("toml", 100, paths)
-    flat = FlatConfigBuilder.from_sources([src])
+    flat = ConfigBundle.from_sources([src]).flat
     sub = flat.subtree(ConfigPath.parse("$ext.html"))
     assert ConfigPath.parse("$ext.html.enabled") in sub
     assert ConfigPath.parse("$ext.html.tools.html_outline.enabled") in sub
@@ -76,7 +76,7 @@ def test_child_segments_returns_unique_first_segments():
         ConfigPath.parse("$ext.html.tools.html_section.enabled"): StringValue("c"),
     }
     src = _DictSource("toml", 100, paths)
-    flat = FlatConfigBuilder.from_sources([src])
+    flat = ConfigBundle.from_sources([src]).flat
     children = list(flat.child_segments(ConfigPath.parse("$ext.html.tools")))
     assert NameSegment("html_outline") in children
     assert NameSegment("html_section") in children
