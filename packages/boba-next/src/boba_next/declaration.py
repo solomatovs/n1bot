@@ -261,7 +261,7 @@ class ObjectSchema(Generic[T]):
             space, ConfigPath.parse("$ext.chromadb"),
         )                                                # → ChromadbConfig (DTO)
 
-        wire = WireSchemaBuilder(CHROMADB_SCHEMA).build()  # → ObjectWireSchema (JSON-Schema)
+        wire = ToolWireSchemaBuilder(CHROMADB_SCHEMA).build()  # → ObjectWireSchema (JSON-Schema)
     """  # noqa: E501
 
     fields: Sequence[FieldKind]
