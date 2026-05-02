@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
+from boba_next.config.flat import FlatConfig
+from boba_next.config.path import (
+    ConfigLookup,
+    ConfigPath,
+    ConfigSource,
+    ConfigSpace,
+    NameSegment,
+    Segment,
+)
 from boba_next.declaration import (
     CollectionField,
     CollectionShape,
@@ -19,25 +28,21 @@ from boba_next.declaration import (
     ObjectSchema,
     ScalarItem,
 )
-from boba_next.config.flat import FlatConfig, FlatConfigBuilder
-from boba_next.config.path import (
-    ConfigLookup,
-    ConfigPath,
-    ConfigSource,
-    ConfigSpace,
-    NameSegment,
-    Segment,
+from boba_next.patterns import (
+    ConverterInputError,
+    FoldFactory,
+    PrioritySource,
+    StrId,
 )
 from boba_next.validators import MISSING
 from boba_next.value import ConfigValue
-from boba_next.patterns import ConverterInputError
 
-__all__ = ["ConfigBundle", "ConfigFactory", "ConfigMaterializer"]
+__all__ = ["ConfigBundle", "ConfigBundleFactory", "FlatConfigMaterializer"]
 
 T = TypeVar("T")
 
 
-class ConfigMaterializer(Generic[T]):
+class FlatConfigMaterializer(Generic[T]):
     """Материализует ObjectSchema из ConfigSpace в DTO[T]."""
 
     def __init__(self, schema: ObjectSchema[T]) -> None:
@@ -170,7 +175,7 @@ class ConfigMaterializer(Generic[T]):
 
             case ObjectItem(schema=nested):
                 # Рекурсия: сам ConfigMaterializer для вложенной схемы.
-                return ConfigMaterializer(nested).materialize(space, path)
+                return FlatConfigMaterializer(nested).materialize(space, path)
 
             case _:
                 raise NotImplementedError(
@@ -184,18 +189,26 @@ class ConfigBundle:
 
     Способы использования:
       - bundle.materialize(SCHEMA, ConfigPath.parse("$ext.chromadb")) → DTO.
-      - bundle.subtree(ConfigPath.parse("$ext.chromadb")) → плоский срез под префиксом.
+      - bundle.subtree(ConfigPath.parse("$ext.chromadb")) → плоский срез.
       - bundle.lookup(ConfigPath.parse("$agent.max_iterations")) → ConfigLookup.
+      - ConfigBundle.from_sources([...]) — удобный one-shot конструктор.
     """
 
     flat: FlatConfig
+
+    @classmethod
+    def from_sources(cls, sources: Iterable[ConfigSource]) -> ConfigBundle:
+        """Удобный one-shot: собрать ConfigBundle из набора источников."""
+        f = ConfigBundleFactory()
+        f.attach_sources(sources)
+        return f.build()
 
     def materialize(
         self,
         schema: ObjectSchema[T],
         prefix: ConfigPath,
     ) -> T:
-        return ConfigMaterializer(schema).materialize(self.flat, prefix)
+        return FlatConfigMaterializer(schema).materialize(self.flat, prefix)
 
     def subtree(self, prefix: ConfigPath) -> Mapping[ConfigPath, ConfigValue]:
         return self.flat.subtree(prefix)
@@ -207,14 +220,62 @@ class ConfigBundle:
         return self.flat.origin_of(path)
 
 
-class ConfigFactory:
-    """Сборщик ConfigBundle из набора источников."""
+@dataclass
+class _MergeState:
+    """Промежуточное состояние сборки: накопленные values + origins."""
 
-    def __init__(self) -> None:
-        self._sources: list[ConfigSource] = []
+    values: dict[ConfigPath, ConfigValue] = field(default_factory=dict)
+    origins: dict[ConfigPath, str] = field(default_factory=dict)
+
+
+class _SourceReducer(PrioritySource[StrId, _MergeState]):
+    """Адаптер: один ConfigSource как стадия FoldFactory."""
+
+    def __init__(self, source: ConfigSource) -> None:
+        self._src = source
+        self._id = StrId(source.name())
+
+    @property
+    def source(self) -> ConfigSource:
+        return self._src
+
+    def id(self) -> StrId:
+        return self._id
+
+    def priority(self) -> int:
+        return self._src.priority()
+
+    def apply(self, state: _MergeState) -> _MergeState:
+        name = self._src.name()
+        for path, value in self._src.load().items():
+            state.values[path] = value
+            state.origins[path] = name
+        return state
+
+
+class ConfigBundleFactory(FoldFactory[StrId, _MergeState, ConfigBundle]):
+    """Источники → ConfigBundle. FoldFactory: каждый source — стадия мержа.
+
+    Сборка: source'ы сортируются по priority и последовательно сливаются в
+    единый snapshot (last-wins), затем заворачиваются в FlatConfig + ConfigBundle.
+    Pure factory: build() каждый раз даёт свежий ConfigBundle.
+    """
+
+    def initial(self) -> _MergeState:
+        return _MergeState()
+
+    def finalize(self, state: _MergeState) -> ConfigBundle:
+        return ConfigBundle(
+            flat=FlatConfig(values=state.values, origins=state.origins),
+        )
 
     def attach_sources(self, sources: Iterable[ConfigSource]) -> None:
-        self._sources.extend(sources)
+        """Удобный helper: завернуть source'ы в reducer'ы и зарегистрировать."""
+        for src in sources:
+            self.register(_SourceReducer(src))
 
-    def build(self) -> ConfigBundle:
-        return ConfigBundle(flat=FlatConfigBuilder.from_sources(self._sources))
+    def sources(self) -> tuple[ConfigSource, ...]:
+        """Read-only view зарегистрированных источников (в порядке регистрации)."""
+        return tuple(
+            r.source for r in self.providers() if isinstance(r, _SourceReducer)
+        )

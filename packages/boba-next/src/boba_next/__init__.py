@@ -1,10 +1,32 @@
 """confignext: альтернативная система конфигурирования (изолирована от текущей)."""
 
+from boba_next.config.app import (
+    CONFIG_SECTIONS_ENTRY_POINT,
+    AppConfig,
+    AppConfigFactory,
+    ConfigError,
+    SectionAlreadyRegisteredError,
+    SectionMissingError,
+)
 from boba_next.config.bundle import (
     ConfigBundle,
-    ConfigFactory,
-    ConfigMaterializer,
+    ConfigBundleFactory,
+    FlatConfigMaterializer,
 )
+from boba_next.config.flat import FlatConfig
+from boba_next.config.path import (
+    ConfigLookup,
+    ConfigPath,
+    ConfigPathParseError,
+    ConfigSource,
+    ConfigSpace,
+    Found,
+    IndexSegment,
+    NameSegment,
+    NotFound,
+    Segment,
+)
+from boba_next.config.section import ConfigSection
 from boba_next.declaration import (
     CollectionField,
     CollectionShape,
@@ -19,20 +41,8 @@ from boba_next.declaration import (
     ObjectSchema,
     ScalarItem,
 )
-from boba_next.config.flat import FlatConfig, FlatConfigBuilder
-from boba_next.config.path import (
-    ConfigLookup,
-    ConfigPath,
-    ConfigPathParseError,
-    ConfigSource,
-    ConfigSpace,
-    Found,
-    IndexSegment,
-    NameSegment,
-    NotFound,
-    Segment,
-)
 from boba_next.tools.validate import ToolArgsValidator
+from boba_next.tools.wire import ToolWireSchemaBuilder
 from boba_next.validators import (
     MISSING,
     ChainConverter,
@@ -80,21 +90,24 @@ from boba_next.value import (
     TimeAdapter,
     TimeValue,
 )
-from boba_next.tools.wire import ToolWireSchemaBuilder
 
 __all__ = [
+    "CONFIG_SECTIONS_ENTRY_POINT",
     "MISSING",
+    "AppConfig",
+    "AppConfigFactory",
     "BoolAdapter",
     "BoolValue",
     "ChainConverter",
     "CollectionField",
     "CollectionShape",
     "ConfigBundle",
-    "ConfigFactory",
+    "ConfigBundleFactory",
+    "ConfigError",
     "ConfigLookup",
-    "ConfigMaterializer",
     "ConfigPath",
     "ConfigPathParseError",
+    "ConfigSection",
     "ConfigSource",
     "ConfigSpace",
     "ConfigValue",
@@ -108,7 +121,7 @@ __all__ = [
     "FieldPathMissingError",
     "FieldSpec",
     "FlatConfig",
-    "FlatConfigBuilder",
+    "FlatConfigMaterializer",
     "FloatAdapter",
     "FloatValue",
     "Found",
@@ -147,6 +160,8 @@ __all__ = [
     "Required",
     "RequiresTogether",
     "ScalarItem",
+    "SectionAlreadyRegisteredError",
+    "SectionMissingError",
     "Segment",
     "StringAdapter",
     "StringValue",

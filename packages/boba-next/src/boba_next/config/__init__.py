@@ -1,11 +1,19 @@
-"""Конфиг-runtime: ConfigPath / FlatConfig / ConfigBundle / ConfigMaterializer."""
+"""Конфиг-runtime + application-слой (секции и реестр DTO)."""
 
+from boba_next.config.app import (
+    CONFIG_SECTIONS_ENTRY_POINT,
+    AppConfig,
+    AppConfigFactory,
+    ConfigError,
+    SectionAlreadyRegisteredError,
+    SectionMissingError,
+)
 from boba_next.config.bundle import (
     ConfigBundle,
-    ConfigFactory,
-    ConfigMaterializer,
+    ConfigBundleFactory,
+    FlatConfigMaterializer,
 )
-from boba_next.config.flat import FlatConfig, FlatConfigBuilder
+from boba_next.config.flat import FlatConfig
 from boba_next.config.path import (
     ConfigLookup,
     ConfigPath,
@@ -18,21 +26,28 @@ from boba_next.config.path import (
     NotFound,
     Segment,
 )
+from boba_next.config.section import ConfigSection
 
 __all__ = [
+    "CONFIG_SECTIONS_ENTRY_POINT",
+    "AppConfig",
+    "AppConfigFactory",
     "ConfigBundle",
-    "ConfigFactory",
+    "ConfigBundleFactory",
+    "ConfigError",
     "ConfigLookup",
-    "ConfigMaterializer",
     "ConfigPath",
     "ConfigPathParseError",
+    "ConfigSection",
     "ConfigSource",
     "ConfigSpace",
     "FlatConfig",
-    "FlatConfigBuilder",
+    "FlatConfigMaterializer",
     "Found",
     "IndexSegment",
     "NameSegment",
     "NotFound",
+    "SectionAlreadyRegisteredError",
+    "SectionMissingError",
     "Segment",
 ]
