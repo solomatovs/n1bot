@@ -209,15 +209,6 @@ class ConfigBundle:
     ) -> T:
         return FlatConfigMaterializer(schema).materialize(self.flat, prefix)
 
-    # def subtree(self, prefix: ConfigPath) -> Mapping[ConfigPath, ConfigValue]:
-    #     return self.flat.subtree(prefix)
-
-    # def lookup(self, path: ConfigPath) -> ConfigLookup[ConfigValue]:
-    #     return self.flat.lookup(path)
-
-    # def origin_of(self, path: ConfigPath) -> ConfigLookup[str]:
-    #     return self.flat.origin_of(path)
-
 
 @dataclass
 class _MergeState:
