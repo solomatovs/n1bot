@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from itertools import islice
 from typing import Any
 
-from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainConverter,
     FieldSpec,
@@ -28,6 +27,7 @@ from boba.domain.core.tools import (
 from boba.domain.core.workspace import (
     WorkspaceError,
 )
+from boba.patterns import Converter
 
 
 @dataclass(frozen=True)

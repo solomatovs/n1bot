@@ -5,8 +5,7 @@ from __future__ import annotations
 from abc import ABC
 from typing import ClassVar, Generic, TypeVar
 
-from boba_patterns import StrId
-
+from boba.patterns import StrId
 from boba_next.config.path import ConfigPath, NameSegment
 from boba_next.declaration import ObjectSchema
 

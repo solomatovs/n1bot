@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from boba.patterns import Converter, MissingValueError
 from boba_next.validators.base import MISSING, ValueConverter
-from boba_next.patterns import Converter, MissingValueError
 
 __all__ = ["Default", "Nullable", "Required"]
 

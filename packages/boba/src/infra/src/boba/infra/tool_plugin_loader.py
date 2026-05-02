@@ -8,9 +8,9 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, cast
 
-from boba.domain.core.patterns import Always, Specification
 from boba.domain.core.tools import Tool, ToolFactory, ToolSource, ToolsService
 from boba.infra.config import ConfigBundle, ConfigError
+from boba.patterns import Always, Specification
 
 logger = logging.getLogger(__name__)
 

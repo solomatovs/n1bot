@@ -20,7 +20,6 @@ from boba.adapter.prompt_providers import PromptLoader, PromptsSection
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.models import AgentContext, AgentRequest
 from boba.domain.config import AppConfig
-from boba.domain.core.patterns import StreamSink
 from boba.domain.core.tools import ToolContext
 from boba.domain.core.workspace import (
     ProjectWorkspaceShell,
@@ -39,6 +38,7 @@ from boba.infra import (
     create_agent,
     log_context,
 )
+from boba.patterns import StreamSink
 from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
 
 

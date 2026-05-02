@@ -7,8 +7,8 @@ import time
 from typing import Any
 
 from boba.adapter.openai.observer.reasoning import MultiKeyReasoningExtractor
-from boba.domain.core.patterns import Converter
 from boba.domain.llm.observer import LLMRequestObserver, RequestOutcome
+from boba.patterns import Converter
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk, ChoiceDelta
 
 logger = logging.getLogger(__name__)

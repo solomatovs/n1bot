@@ -12,16 +12,17 @@ from boba.adapter.prompt_providers import PromptsSection
 from boba.config.cli import CliSource
 from boba.config.env import EnvFileSource, EnvSource
 from boba.config.toml import CONFIG_PATH_ENV, TomlFileSource, TomlSource
-from boba.domain.core.patterns import ConverterInputError
 from boba.infra import (
     AgentSection,
     AppCoreSection,
     ConfigBundle,
     ConfigFactory,
 )
+from boba.patterns import ConverterInputError
 from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
 from boba.web.chainlit.session import ChatSession
 from boba.web.chainlit.ui_overrides import UIOverrideTomlConverter
+
 
 def build_factory() -> ConfigFactory:
     """ConfigFactory с зарегистрированными секциями и источниками (CLI > env > TOML)."""

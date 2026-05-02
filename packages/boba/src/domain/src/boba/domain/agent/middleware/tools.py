@@ -16,7 +16,6 @@ from boba.domain.agent.events import (
 )
 from boba.domain.agent.models import AgentContext
 from boba.domain.agent.payloads import ToolCallFailure, ToolCallResult
-from boba.domain.core.patterns import StreamSource
 from boba.domain.core.tools import (
     ToolCall as DomainToolCall,
 )
@@ -26,6 +25,7 @@ from boba.domain.core.tools import (
     ToolId,
     ToolsService,
 )
+from boba.patterns import StreamSource
 
 
 class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):

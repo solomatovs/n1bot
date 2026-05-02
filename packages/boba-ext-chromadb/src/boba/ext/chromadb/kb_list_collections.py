@@ -6,7 +6,6 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ObjectSchema,
     Pass,
@@ -17,6 +16,7 @@ from boba.domain.core.tools import (
     ToolSourceId,
 )
 from boba.ext.chromadb.kb import ChromaKnowledgeBase
+from boba.patterns import Converter
 
 
 @dataclass(frozen=True)

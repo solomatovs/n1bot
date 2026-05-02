@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from boba.patterns import ConverterInputError
 from boba_next.validators.base import ValueConverter
 from boba_next.value import (
     BoolValue,
@@ -13,7 +14,6 @@ from boba_next.value import (
     IntValue,
     StringValue,
 )
-from boba_next.patterns import ConverterInputError
 
 __all__ = [
     "IsBool",

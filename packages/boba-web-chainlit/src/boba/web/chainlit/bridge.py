@@ -6,7 +6,7 @@ import asyncio
 
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.models import AgentContext
-from boba.domain.core.patterns import StreamSink
+from boba.patterns import StreamSink
 
 
 class ChainlitBridgeSink(StreamSink[AgentContext, AgentEvent]):

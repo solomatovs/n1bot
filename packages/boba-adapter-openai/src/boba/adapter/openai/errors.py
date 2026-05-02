@@ -7,12 +7,6 @@ from collections.abc import Callable
 import httpx
 
 import openai
-from boba.domain.core.patterns import (
-    ExceptionSpecification,
-    FirstMatchConverter,
-    IsInstance,
-    Specification,
-)
 from boba.domain.llm.errors import (
     LLMAuthError,
     LLMConnectionError,
@@ -23,6 +17,12 @@ from boba.domain.llm.errors import (
     LLMRateLimitError,
     LLMTimeoutError,
     LLMUnknownError,
+)
+from boba.patterns import (
+    ExceptionSpecification,
+    FirstMatchConverter,
+    IsInstance,
+    Specification,
 )
 
 

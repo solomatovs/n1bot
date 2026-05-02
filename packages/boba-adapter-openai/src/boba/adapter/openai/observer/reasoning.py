@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from boba.domain.core.patterns import Converter
+from boba.patterns import Converter
 from openai.types.chat.chat_completion_chunk import ChoiceDelta
 
 

@@ -6,11 +6,6 @@ from collections.abc import Iterable
 
 from boba.adapter.openai.observer import MultiKeyReasoningExtractor
 from boba.adapter.openai.tool_call_reindexer import DuplicateToolCallIndexReindexer
-from boba.domain.core.patterns import (
-    Converter,
-    StreamTransformer,
-    StreamTransformerPipeline,
-)
 from boba.domain.llm.errors import LLMProtocolError
 from boba.domain.llm.events import (
     FinishReason,
@@ -26,6 +21,11 @@ from boba.domain.llm.events import (
     LLMToolCallBegin,
 )
 from boba.domain.llm.models import LLMContext, RequestId
+from boba.patterns import (
+    Converter,
+    StreamTransformer,
+    StreamTransformerPipeline,
+)
 from openai.types.chat.chat_completion_chunk import (
     ChatCompletionChunk,
     Choice,

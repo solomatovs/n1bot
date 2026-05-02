@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from boba.domain.core.patterns import Converter
 from boba.domain.llm.models import LLMMessage, LLMRequest, LLMToolSchema
+from boba.patterns import Converter
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
     ChatCompletionMessageParam,

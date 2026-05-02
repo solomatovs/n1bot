@@ -7,7 +7,6 @@ from typing import Any
 
 from bs4.element import Tag
 
-from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainConverter,
     Default,
@@ -37,6 +36,7 @@ from boba.ext.html._parse import (
     load_soup,
     resolve_anchor,
 )
+from boba.patterns import Converter
 
 
 @dataclass(frozen=True)

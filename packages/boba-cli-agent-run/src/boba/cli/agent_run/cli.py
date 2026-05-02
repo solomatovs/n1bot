@@ -32,7 +32,6 @@ from boba.config.toml import CONFIG_PATH_ENV, TomlFileSource, TomlSource
 from boba.domain.agent import Agent, AgentConfig
 from boba.domain.agent.models import AgentRequest
 from boba.domain.config import AppConfig
-from boba.domain.core.patterns import ConverterInputError
 from boba.domain.core.tools import ToolContext
 from boba.domain.core.workspace import (
     PromptWorkspaceId,
@@ -51,6 +50,7 @@ from boba.infra import (
     configure_logging,
     create_agent,
 )
+from boba.patterns import ConverterInputError
 
 _REPL_EXIT_COMMANDS = frozenset({"/exit", "/quit", ":q"})
 

@@ -17,7 +17,7 @@ from boba.domain.agent.events import (
     Terminal,
 )
 from boba.domain.agent.models import AgentContext
-from boba.domain.core.patterns import StreamSink
+from boba.patterns import StreamSink
 
 
 class ConsoleSink(StreamSink[AgentContext, AgentEvent]):

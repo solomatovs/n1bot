@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sized
 from typing import Any, ClassVar
 
-from boba_next.patterns import Converter, ConverterInputError
+from boba.patterns import Converter, ConverterInputError
 
 __all__ = [
     "MaxLength",

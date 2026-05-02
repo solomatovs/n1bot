@@ -6,17 +6,17 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeAlias, TypeVar
 
-from boba.domain.core.patterns import (
-    Converter,
-    ConverterInputError,
-    MissingValueError,
-)
 from boba.domain.core.schema import (
     ObjectWireSchema,
     ParamWireSchema,
     SchemaContributor,
 )
 from boba.domain.core.validators import MISSING, Pass, ValueConverter
+from boba.patterns import (
+    Converter,
+    ConverterInputError,
+    MissingValueError,
+)
 
 __all__ = [
     "FieldAddress",

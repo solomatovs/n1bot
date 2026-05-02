@@ -7,12 +7,6 @@ from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
 from boba.domain.core.declaration import ObjectSchema
-from boba.domain.core.patterns import (
-    Converter,
-    ConverterInputError,
-    Definition,
-    Executor,
-)
 from boba.domain.core.tools.errors import (
     InvalidSchemaInvariantError,
     InvalidToolArgumentError,
@@ -20,6 +14,12 @@ from boba.domain.core.tools.errors import (
 from boba.domain.core.tools.ids import ToolId, ToolSourceId
 from boba.domain.core.validators import MISSING
 from boba.domain.core.workspace import ProjectWorkspaceShell
+from boba.patterns import (
+    Converter,
+    ConverterInputError,
+    Definition,
+    Executor,
+)
 
 TArgs = TypeVar("TArgs")
 

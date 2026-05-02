@@ -8,7 +8,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
-from boba_next.patterns import (
+from boba.patterns import (
     Converter,
     ConverterInputError,
     MissingValueError,
@@ -186,7 +186,6 @@ class ObjectSchema(Generic[T]):
 
     ── Пример: extension с динамическими tools, вложенными params и cross-field-инвариантом ──
 
-        # ── DTO ──
         @dataclass(frozen=True)
         class ParamOverlay:
             description: str = ""

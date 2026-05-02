@@ -6,8 +6,8 @@ from typing import ClassVar
 
 from boba.domain.config import WorkspaceLayout
 from boba.domain.core.config import ConfigSection, FieldSpec, ObjectSchema
-from boba.domain.core.patterns import StrId
 from boba.domain.core.validators import ChainConverter, Default, ParseString
+from boba.patterns import StrId
 
 
 class WorkspacesSection(ConfigSection[WorkspaceLayout]):

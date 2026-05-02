@@ -9,6 +9,7 @@ description = "Operator CLI: run a single agent query against the Boba runtime."
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba",
+    "boba-patterns",
     "boba-adapter-fs-workspace",
     "boba-adapter-messages",
     "boba-adapter-openai",

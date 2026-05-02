@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from boba.domain.core.patterns import Specification
 from boba.domain.core.tools.tool import Tool
+from boba.patterns import Specification
 
 
 class ToolNameIn(Specification[Tool[Any]]):

@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import Any, ClassVar, Final, Generic, TypeVar
 
+from boba.patterns import Converter
 from boba_next.value import (
     BoolAdapter,
     ConfigValue,
@@ -17,7 +18,6 @@ from boba_next.value import (
     StringAdapter,
     TimeAdapter,
 )
-from boba_next.patterns import Converter
 
 __all__ = [
     "MISSING",

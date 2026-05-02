@@ -8,8 +8,8 @@ from collections.abc import Sized
 from pathlib import Path
 from typing import Any, ClassVar, Final, Generic, TypeVar
 
-from boba.domain.core.patterns import Converter, ConverterInputError, MissingValueError
 from boba.domain.core.schema import ParamWireSchema, SchemaContributor
+from boba.patterns import Converter, ConverterInputError, MissingValueError
 
 __all__ = [
     "MISSING",

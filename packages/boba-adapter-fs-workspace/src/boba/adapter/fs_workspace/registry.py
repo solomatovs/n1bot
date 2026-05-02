@@ -15,7 +15,6 @@ from boba.adapter.fs_workspace.shell import (
     FsScratchWorkspaceShell,
     FsWorkspaceShell,
 )
-from boba.domain.core.patterns import Id
 from boba.domain.core.workspace import (
     HistoryWorkspaceRegistry,
     ProjectWorkspaceRegistry,
@@ -26,6 +25,7 @@ from boba.domain.core.workspace import (
     WorkspaceNotFoundError,
     WorkspaceRegistry,
 )
+from boba.patterns import Id
 
 TWsId = TypeVar("TWsId", bound=Id)
 TWs = TypeVar("TWs", bound=FsWorkspaceShell)

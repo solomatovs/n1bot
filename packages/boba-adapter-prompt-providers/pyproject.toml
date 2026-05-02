@@ -7,7 +7,7 @@ name = "boba-adapter-prompt-providers"
 version = "0.1.0"
 description = "Concrete PromptProvider implementations for Boba (static, file, env, git, workspace-system)."
 requires-python = ">=3.11,<4"
-dependencies = ["boba"]
+dependencies = ["boba", "boba-patterns"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

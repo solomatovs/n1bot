@@ -15,8 +15,7 @@ import logging
 from collections.abc import Mapping
 from typing import Any, TypeVar, cast
 
-from boba_patterns import ContextCatalogFactory, ContextItemProvider, StrId
-
+from boba.patterns import ContextCatalogFactory, ContextItemProvider, StrId
 from boba_next.config.bundle import ConfigBundle, FlatConfigMaterializer
 from boba_next.config.section import ConfigSection
 

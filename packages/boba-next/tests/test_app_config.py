@@ -29,7 +29,8 @@ from boba_next import (
     SectionMissingError,
     StringValue,
 )
-from boba_patterns import StrId
+
+from boba.patterns import StrId
 
 
 class _DictSource(ConfigSource):
