@@ -34,8 +34,6 @@ from boba_next import (
     ToolArgsValidator,
 )
 
-# ──────────────────── Простой скалярный объект ────────────────────
-
 
 @dataclass(frozen=True)
 class _Agent:
@@ -84,9 +82,6 @@ def test_field_validation_error_attaches_field_name():
     assert info.value.field_name == "max_iterations"
 
 
-# ──────────────────── Cross-field invariants ────────────────────
-
-
 @dataclass(frozen=True)
 class _Range:
     lo: int
@@ -113,9 +108,6 @@ def test_invariant_violation_attaches_invariants_field_name():
     with pytest.raises(FieldPathError) as info:
         ToolArgsValidator(_RANGE_SCHEMA).validate({"lo": 50, "hi": 10})
     assert info.value.field_name == "<invariants>"
-
-
-# ──────────────────── IndexedShape × ScalarItem (массив скаляров) ────────────────────
 
 
 @dataclass(frozen=True)
@@ -202,9 +194,6 @@ def test_scalar_mapping_item_validation_error_carries_key():
     assert "bad" in info.value.location
 
 
-# ──────────────────── KeyedShape × ObjectItem (вложенные объекты) ────────────────────
-
-
 @dataclass(frozen=True)
 class _ToolEntry:
     enabled: bool
@@ -257,9 +246,6 @@ def test_object_mapping_item_must_be_mapping():
     assert info.value.field_name == "tools"
     assert "kb" in info.value.location
     assert "expected mapping" in str(info.value)
-
-
-# ──────────────────── E2E: реалистичный LLM tool-call payload ────────────────────
 
 
 @dataclass(frozen=True)
