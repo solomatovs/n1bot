@@ -9,9 +9,12 @@ from uuid import UUID, uuid4
 __all__ = [
     "AllMatchesDispatcher",
     "Always",
+    "CatalogFactory",
+    "ContextCatalogFactory",
     "ContextConverter",
     "ContextFactoryMethod",
     "ContextFoldFactory",
+    "ContextItemProvider",
     "ContextPrioritySource",
     "Converter",
     "ConverterError",
@@ -27,6 +30,7 @@ __all__ = [
     "FoldingDispatcher",
     "Id",
     "IsInstance",
+    "ItemProvider",
     "Matcher",
     "MissingValueError",
     "Never",
@@ -124,6 +128,7 @@ TOut = TypeVar("TOut")
 TOut_co = TypeVar("TOut_co", covariant=True)
 TValue = TypeVar("TValue")
 TQuery = TypeVar("TQuery")
+TItem = TypeVar("TItem")
 
 
 class StateLess(ABC):
@@ -334,6 +339,82 @@ class ContextFoldFactory(
             state = p.apply(ctx, state)
 
         return self.finalize(ctx, state)
+
+
+class ItemProvider(ABC, Generic[TId, TItem]):
+    """Производит один элемент с известным id; используется CatalogFactory."""
+
+    @abstractmethod
+    def id(self) -> TId: ...
+
+    @abstractmethod
+    def produce(self) -> TItem: ...
+
+
+class CatalogFactory(FactoryMethod[TOut], Generic[TId, TItem, TOut]):
+    """FactoryMethod, собирающий каталог из независимых производителей.
+
+    Build вызывает `produce()` у каждого provider'а, складывает в dict[id, item]
+    и оборачивает через `finalize`. Без priority, без общего state — каждый item
+    собирается независимо. Под use-case «реестр объектов по id».
+    """
+
+    def __init__(self) -> None:
+        self._providers: dict[TId, ItemProvider[TId, TItem]] = {}
+
+    def register(self, provider: ItemProvider[TId, TItem]) -> None:
+        self._providers[provider.id()] = provider
+
+    def unregister(self, item_id: TId) -> None:
+        self._providers.pop(item_id, None)
+
+    def providers(self) -> Iterable[ItemProvider[TId, TItem]]:
+        return iter(self._providers.values())
+
+    @abstractmethod
+    def finalize(self, items: dict[TId, TItem]) -> TOut:
+        """Превратить накопленный dict[id, item] в результирующий объект."""
+        ...
+
+    def build(self) -> TOut:
+        items = {p.id(): p.produce() for p in self._providers.values()}
+        return self.finalize(items)
+
+
+class ContextItemProvider(ABC, Generic[TCtx, TId, TItem]):
+    """Context-aware variant ItemProvider: produce требует контекста."""
+
+    @abstractmethod
+    def id(self) -> TId: ...
+
+    @abstractmethod
+    def produce(self, ctx: TCtx) -> TItem: ...
+
+
+class ContextCatalogFactory(
+    ContextFactoryMethod[TCtx, TOut],
+    Generic[TCtx, TId, TItem, TOut],
+):
+    """ContextFactoryMethod-вариант CatalogFactory; produce принимает ctx."""
+
+    def __init__(self) -> None:
+        self._providers: dict[TId, ContextItemProvider[TCtx, TId, TItem]] = {}
+
+    def register(self, provider: ContextItemProvider[TCtx, TId, TItem]) -> None:
+        self._providers[provider.id()] = provider
+
+    def unregister(self, item_id: TId) -> None:
+        self._providers.pop(item_id, None)
+
+    def providers(self) -> Iterable[ContextItemProvider[TCtx, TId, TItem]]:
+        return iter(self._providers.values())
+
+    @abstractmethod
+    def finalize(self, ctx: TCtx, items: dict[TId, TItem]) -> TOut: ...
+
+    def build(self, ctx: TCtx) -> TOut:
+        items = {p.id(): p.produce(ctx) for p in self._providers.values()}
+        return self.finalize(ctx, items)
 
 
 class Serializer(Generic[TIn, TOut]):
