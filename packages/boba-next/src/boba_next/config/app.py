@@ -1,8 +1,11 @@
 """AppConfig (registry) + AppConfigFactory (сборщик секций приложения).
 
-AppConfig — иммутабельный реестр готовых DTO секций по StrId.
-AppConfigFactory — регистрирует секции, подключает источники, через
-`build()` материализует все секции в один AppConfig.
+AppConfigFactory — `ContextCatalogFactory[ConfigBundle, StrId, object, AppConfig]`:
+наследует контракт чисто. `build(bundle)` — нативный ContextFactoryMethod, без
+override. Двухступенчатая сборка явная на стороне caller'а:
+
+    bundle = bundle_factory.build()
+    app    = app_factory.build(bundle)
 """
 
 from __future__ import annotations
@@ -12,9 +15,9 @@ import logging
 from collections.abc import Mapping
 from typing import Any, TypeVar, cast
 
-from boba_patterns import FactoryMethod, StrId
+from boba_patterns import ContextCatalogFactory, ContextItemProvider, StrId
 
-from boba_next.config.bundle import ConfigBundleFactory, FlatConfigMaterializer
+from boba_next.config.bundle import ConfigBundle, FlatConfigMaterializer
 from boba_next.config.section import ConfigSection
 
 __all__ = [
@@ -22,7 +25,6 @@ __all__ = [
     "AppConfig",
     "AppConfigFactory",
     "ConfigError",
-    "SectionAlreadyRegisteredError",
     "SectionMissingError",
 ]
 
@@ -37,14 +39,6 @@ CONFIG_SECTIONS_ENTRY_POINT = "boba.config_sections"
 
 class ConfigError(Exception):
     """Базовая ошибка application-слоя конфига."""
-
-
-class SectionAlreadyRegisteredError(ConfigError):
-    """Секция с таким StrId уже зарегистрирована."""
-
-    def __init__(self, section_id: StrId) -> None:
-        super().__init__(f"ConfigSection {section_id!r} is already registered")
-        self.section_id = section_id
 
 
 class SectionMissingError(ConfigError):
@@ -66,38 +60,48 @@ class AppConfig:
 
     def section(self, cls: type[ConfigSection[T]]) -> T:
         """Достать DTO зарегистрированной секции; иначе SectionMissingError."""
-        sid = cls.id
-        if sid not in self._sections:
+        if cls.id not in self._sections:
             raise SectionMissingError(cls)
-        return cast(T, self._sections[sid])
+
+        return cast(T, self._sections[cls.id])
 
     def has(self, cls: type[ConfigSection[Any]]) -> bool:
         return cls.id in self._sections
 
 
-class AppConfigFactory(FactoryMethod[AppConfig]):
+class _SectionProvider(ContextItemProvider[ConfigBundle, StrId, object]):
+    """Адаптер: ConfigSection → ContextItemProvider для AppConfigFactory."""
+
+    def __init__(self, section: ConfigSection[Any]) -> None:
+        self._section = section
+
+    @property
+    def section(self) -> ConfigSection[Any]:
+        return self._section
+
+    def id(self) -> StrId:
+        return self._section.id
+
+    def produce(self, ctx: ConfigBundle) -> object:
+        return FlatConfigMaterializer(self._section.schema).materialize(
+            ctx.flat,
+            self._section.prefix(),
+        )
+
+
+class AppConfigFactory(
+    ContextCatalogFactory[ConfigBundle, StrId, object, AppConfig],
+):
+    """Сборщик секций приложения через ContextCatalogFactory.
+
+    Чистое наследование: `build(bundle) → AppConfig` — нативный контракт
+    `ContextFactoryMethod[ConfigBundle, AppConfig]`. Повторная регистрация
+    секции с тем же id — silent overwrite (last-wins).
     """
-    Сборщик секций приложения:
-    - регистрирует секции
-    - подключает источники
-    - материализует все секции в один AppConfig
-    """
 
-    def __init__(self, bundle_factory: ConfigBundleFactory) -> None:
-        self._bundle_factory = bundle_factory
-        self._sections: dict[StrId, ConfigSection[Any]] = {}
-
-    def register(self, section: ConfigSection[Any]) -> None:
-        sid = section.id
-        if sid in self._sections:
-            raise SectionAlreadyRegisteredError(sid)
-        self._sections[sid] = section
-
-    def unregister(self, section_id: StrId) -> None:
-        self._sections.pop(section_id, None)
-
-    def registered(self) -> tuple[ConfigSection[Any], ...]:
-        return tuple(self._sections.values())
+    def register_section(self, section: ConfigSection[Any]) -> None:
+        """Зарегистрировать секцию (оборачивается в провайдер для CatalogFactory)."""
+        self.register(_SectionProvider(section))
 
     def discover_extension_sections(
         self,
@@ -124,22 +128,14 @@ class AppConfigFactory(FactoryMethod[AppConfig]):
                     obj,
                 )
                 continue
-            try:
-                self.register(obj())
-            except SectionAlreadyRegisteredError as exc:
-                logger.warning(
-                    "config-section entry-point %r: %s; skipped",
-                    ep.name,
-                    exc,
-                )
+            self.register_section(obj())
 
-    def build(self) -> AppConfig:
-        """Собрать ConfigBundle через bundle_factory и материализовать все секции."""
-        bundle = self._bundle_factory.build()
-        built: dict[StrId, object] = {}
-        for sid, section in self._sections.items():
-            built[sid] = FlatConfigMaterializer(section.schema).materialize(
-                bundle.flat,
-                section.prefix(),
-            )
-        return AppConfig(built)
+    def finalize(
+        self,
+        ctx: ConfigBundle,
+        items: dict[StrId, object],
+    ) -> AppConfig:
+        # не используется, т.к. секции сами достают из него
+        # а фабрика просто собирает DTO в реестр.
+        del ctx
+        return AppConfig(items)
