@@ -6,10 +6,10 @@ import logging
 import time
 from collections.abc import Callable, Iterable
 
-from boba.domain.core.patterns import StreamSource
 from boba.domain.llm.errors import RetryableLLMError
 from boba.domain.llm.events import LLMEvent, LLMRetryAttempt
 from boba.domain.llm.models import LLMContext
+from boba.patterns import StreamSource
 
 logger = logging.getLogger(__name__)
 

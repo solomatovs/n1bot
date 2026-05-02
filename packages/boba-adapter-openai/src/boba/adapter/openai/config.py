@@ -7,15 +7,15 @@ from typing import Any, ClassVar
 from boba.adapter.openai.terminal import OpenAITerminal, build_openai_client
 from boba.domain.config import LLMConfig
 from boba.domain.core.config import ConfigSection, FieldSpec, ObjectSchema
-from boba.domain.core.patterns import (
-    StreamSource,
-    StreamSourceChainBuilder,
-    StrId,
-)
 from boba.domain.core.validators import ChainConverter, Default, ParseString
 from boba.domain.llm.events import LLMEvent
 from boba.domain.llm.models import LLMContext
 from boba.domain.llm.observer import LLMRequestObserver
+from boba.patterns import (
+    StreamSource,
+    StreamSourceChainBuilder,
+    StrId,
+)
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 

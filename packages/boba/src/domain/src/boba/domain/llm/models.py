@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from boba.domain.core.patterns import UuId
+from boba.patterns import UuId
 
 LLMRole = Literal["system", "user", "assistant", "tool"]
 

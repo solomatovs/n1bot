@@ -15,6 +15,7 @@ from boba.domain.agent.payloads import (
 from boba.domain.llm.events import FinishReason
 from boba.domain.llm.models import LLMToolCall, RequestId
 
+
 class Severity(StrEnum):
     """Уровень события для sink'а."""
 

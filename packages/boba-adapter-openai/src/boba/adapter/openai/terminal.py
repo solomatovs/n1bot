@@ -14,7 +14,6 @@ from boba.adapter.openai.errors import OpenAIErrorConverter
 from boba.adapter.openai.request import ToOpenAIRequestConverter
 from boba.adapter.openai.response import FromOpenAIChunkConverter
 from boba.domain.config import LLMConfig
-from boba.domain.core.patterns import StreamSource
 from boba.domain.llm.errors import LLMError
 from boba.domain.llm.events import (
     LLMEvent,
@@ -23,6 +22,7 @@ from boba.domain.llm.events import (
 )
 from boba.domain.llm.models import LLMContext
 from boba.domain.llm.observer import LLMRequestObserver, RequestOutcome
+from boba.patterns import StreamSource
 from openai import OpenAI
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 

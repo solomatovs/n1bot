@@ -11,4 +11,5 @@ dependencies = []
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["boba_patterns*"]
+include = ["boba*"]
+namespaces = true

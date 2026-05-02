@@ -13,8 +13,8 @@ from boba.domain.core.declaration import (
     ObjectSchema,
     validate_object,
 )
-from boba.domain.core.patterns import ConverterInputError, StrId
 from boba.domain.core.validators import MISSING
+from boba.patterns import ConverterInputError, StrId
 
 __all__ = [
     "ChainedConfigResolver",

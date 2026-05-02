@@ -10,7 +10,6 @@ from boba.domain.core.config import (
     FieldSpec,
     ObjectSchema,
 )
-from boba.domain.core.patterns import StrId
 from boba.domain.core.validators import (
     ChainConverter,
     Default,
@@ -20,6 +19,7 @@ from boba.domain.core.validators import (
     ParseString,
     Required,
 )
+from boba.patterns import StrId
 
 __all__ = ["ChromaExtConfig", "ChromadbSection"]
 

@@ -7,7 +7,6 @@ from typing import Any
 
 from bs4.element import Tag
 
-from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ChainConverter,
     Default,
@@ -38,6 +37,7 @@ from boba.ext.confluence._parse import (
     resolve_anchor,
     strip_confluence_macros,
 )
+from boba.patterns import Converter
 
 
 @dataclass(frozen=True)

@@ -8,7 +8,6 @@ from typing import Any
 
 from boba.domain.agent.messages import MessageReader
 from boba.domain.agent.models import AgentContext
-from boba.domain.core.patterns import ContextFoldFactory, StrId
 from boba.domain.llm.errors import (
     LLMRequestEmptyMessagesError,
     LLMRequestModelNoneError,
@@ -20,6 +19,7 @@ from boba.domain.llm.models import (
     LLMToolRequest,
     SamplingParams,
 )
+from boba.patterns import ContextFoldFactory, StrId
 
 
 @dataclass

@@ -9,7 +9,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from boba_next.patterns import ConverterInputError
+from boba.patterns import ConverterInputError
 
 __all__ = ["ConfigValue", "PythonValueAdapter"]
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from boba.domain.core.patterns import Converter
 from boba.domain.core.tools import (
     ObjectSchema,
     Pass,
@@ -15,6 +14,7 @@ from boba.domain.core.tools import (
     ToolResult,
     ToolSourceId,
 )
+from boba.patterns import Converter
 
 
 @dataclass(frozen=True)

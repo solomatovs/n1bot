@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Generic, TypeVar
 
 from boba.adapter.fs_workspace.growbuffer import GrowBuffer
-from boba.domain.core.patterns import Id, Specification
 from boba.domain.core.workspace import (
     EntryMeta,
     GrepMatch,
@@ -35,6 +34,7 @@ from boba.domain.core.workspace import (
     WorkspacePermissionError,
     WorkspaceShell,
 )
+from boba.patterns import Id, Specification
 
 TWsId = TypeVar("TWsId", bound=Id)
 

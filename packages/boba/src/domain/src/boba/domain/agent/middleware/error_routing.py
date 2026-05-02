@@ -11,8 +11,8 @@ from boba.domain.agent.events import AgentEvent, FeedbackToLLMAdded
 from boba.domain.agent.models import AgentContext
 from boba.domain.agent.payloads import LLMCritique, LLMFeedback, ToolCallRejection
 from boba.domain.core.errors import RoutableError, UserFeedbackError
-from boba.domain.core.patterns import StreamSource
 from boba.domain.llm.models import RequestId
+from boba.patterns import StreamSource
 
 
 class AgentErrorRouter:

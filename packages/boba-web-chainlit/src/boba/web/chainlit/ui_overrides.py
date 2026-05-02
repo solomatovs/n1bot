@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from boba.domain.core.patterns import (
+from boba.patterns import (
     AllMatchesDispatcher,
     Converter,
     Specification,

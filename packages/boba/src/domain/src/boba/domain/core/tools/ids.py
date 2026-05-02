@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Self
 
-from boba.domain.core.patterns import Id
+from boba.patterns import Id
 
 
 class ToolId(Id[str]):

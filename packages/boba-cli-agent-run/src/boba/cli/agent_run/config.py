@@ -10,7 +10,6 @@ from boba.domain.core.config import (
     FieldSpec,
     ObjectSchema,
 )
-from boba.domain.core.patterns import StrId
 from boba.domain.core.validators import (
     ChainConverter,
     Nullable,
@@ -21,6 +20,7 @@ from boba.domain.core.validators import (
     Required,
 )
 from boba.domain.llm.models import SamplingParams
+from boba.patterns import StrId
 
 __all__ = ["AgentRunConfig", "AgentRunSection"]
 

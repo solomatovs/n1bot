@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Generic, TypeVar
 
+from boba.patterns import ConverterInputError
 from boba_next.declaration import (
     CollectionField,
     CollectionShape,
@@ -28,7 +29,6 @@ from boba_next.declaration import (
     ScalarItem,
 )
 from boba_next.validators import MISSING
-from boba_next.patterns import ConverterInputError
 
 __all__ = ["ToolArgsValidator"]
 

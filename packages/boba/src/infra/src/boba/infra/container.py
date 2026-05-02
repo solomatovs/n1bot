@@ -28,15 +28,15 @@ from boba.domain.agent import (
     ToolsReducer,
     TurnSpec,
 )
-from boba.domain.core.patterns import (
+from boba.domain.core.tools import ToolContext, ToolsService
+from boba.domain.llm.events import LLMEvent
+from boba.domain.llm.models import LLMContext
+from boba.patterns import (
     StreamSink,
     StreamSource,
     StreamSourceChainBuilder,
     StreamSourceLoop,
 )
-from boba.domain.core.tools import ToolContext, ToolsService
-from boba.domain.llm.events import LLMEvent
-from boba.domain.llm.models import LLMContext
 
 
 @dataclass(frozen=True)

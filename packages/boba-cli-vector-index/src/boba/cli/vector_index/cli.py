@@ -21,8 +21,8 @@ from boba.config.env import EnvFileSource, EnvSource
 from boba.config.toml import CONFIG_PATH_ENV, TomlFileSource, TomlSource
 from boba.domain.core.config import ConfigKey, ConfigSection
 from boba.domain.core.declaration import FieldMissingError
-from boba.domain.core.patterns import ConverterInputError
 from boba.infra import ConfigFactory
+from boba.patterns import ConverterInputError
 
 logger = logging.getLogger("boba.cli.vector_index")
 

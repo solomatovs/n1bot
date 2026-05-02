@@ -7,7 +7,7 @@ from datetime import datetime
 from io import BufferedIOBase, TextIOBase
 from typing import Generic, TypeVar
 
-from boba.domain.core.patterns import Id, Specification, StrId, UuId
+from boba.patterns import Id, Specification, StrId, UuId
 
 TWsId = TypeVar("TWsId", bound=Id)
 

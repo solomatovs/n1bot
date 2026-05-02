@@ -9,8 +9,8 @@ from typing import Generic, Self, TypeVar
 
 from boba.domain.agent.events import AgentEvent, PromptFailed
 from boba.domain.core.errors import TerminalError
-from boba.domain.core.patterns import FoldFactory, Id, PrioritySource
 from boba.domain.llm.models import RequestId
+from boba.patterns import FoldFactory, Id, PrioritySource
 
 TCtx = TypeVar("TCtx")
 

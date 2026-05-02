@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from boba.domain.core.patterns import Always, Specification
 from boba.domain.core.tools.tool import Tool
 from boba.domain.llm.models import RequestId, SamplingParams
+from boba.patterns import Always, Specification
 
 
 @dataclass(frozen=True)

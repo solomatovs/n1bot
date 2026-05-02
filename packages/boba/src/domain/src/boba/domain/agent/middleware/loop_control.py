@@ -10,7 +10,7 @@ from boba.domain.agent.events import (
     Terminal,
 )
 from boba.domain.agent.models import AgentContext
-from boba.domain.core.patterns import Specification, StreamSource
+from boba.patterns import Specification, StreamSource
 
 
 class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):

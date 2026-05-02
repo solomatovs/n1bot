@@ -10,11 +10,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from boba.patterns import ConverterInputError
 from boba_next.value.base import (
     ConfigValue,
     PythonValueAdapter,
 )
-from boba_next.patterns import ConverterInputError
 
 __all__ = ["PythonValueFactory"]
 

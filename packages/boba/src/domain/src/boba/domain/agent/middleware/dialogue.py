@@ -19,8 +19,8 @@ from boba.domain.agent.events import (
     ToolCallStreamStarted,
 )
 from boba.domain.agent.models import AgentContext
-from boba.domain.core.patterns import StreamSource
 from boba.domain.llm.models import LLMToolCall, RequestId
+from boba.patterns import StreamSource
 
 
 class AssistantMessagePersistenceMiddleware(StreamSource[AgentContext, AgentEvent]):

@@ -5,7 +5,7 @@ from __future__ import annotations
 from boba.domain.agent.dialogue_writer import DialogueWriter
 from boba.domain.agent.events import AgentEvent
 from boba.domain.agent.models import AgentConfig, AgentContext, AgentRequest
-from boba.domain.core.patterns import StreamSink, StreamSource
+from boba.patterns import StreamSink, StreamSource
 
 
 class Agent:

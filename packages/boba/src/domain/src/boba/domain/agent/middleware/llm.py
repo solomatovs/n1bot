@@ -24,7 +24,6 @@ from boba.domain.agent.events import LLMRequestSent as AgentLLMRequestSent
 from boba.domain.agent.messages import MessageReader
 from boba.domain.agent.models import AgentContext
 from boba.domain.agent.turn.spec import TurnResolveContext, TurnSpec
-from boba.domain.core.patterns import StreamSource
 from boba.domain.llm.errors import LLMError
 from boba.domain.llm.events import (
     LLMAnswerStarted,
@@ -42,6 +41,7 @@ from boba.domain.llm.events import (
     LLMToolCallBegin,
 )
 from boba.domain.llm.models import LLMContext, LLMRequest
+from boba.patterns import StreamSource
 
 
 class _LLMToAgentConverter:

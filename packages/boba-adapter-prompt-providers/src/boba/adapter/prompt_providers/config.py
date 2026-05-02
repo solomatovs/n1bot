@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import ClassVar
 
 from boba.domain.core.config import ConfigSection, FieldSpec, ObjectSchema
-from boba.domain.core.patterns import StrId
 from boba.domain.core.validators import ChainConverter, ParseString, Required
+from boba.patterns import StrId
 
 
 class PromptsSection(ConfigSection[str]):
