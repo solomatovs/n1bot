@@ -27,9 +27,6 @@ __all__ = [
 ]
 
 
-# ──────────────────── Parse* — coercion через as_* ────────────────────
-
-
 class ParseString(ValueConverter):
     """Привести любое значение к str."""
 
@@ -56,9 +53,6 @@ class ParseBool(ValueConverter):
 
     def _convert_value(self, value: ConfigValue) -> bool:
         return value.as_bool()
-
-
-# ──────────────────── Is* — строгий type-guard ────────────────────
 
 
 class IsString(ValueConverter):
