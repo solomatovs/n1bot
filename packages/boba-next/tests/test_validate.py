@@ -11,7 +11,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 import pytest
-
 from boba_next import (
     ChainConverter,
     CollectionField,

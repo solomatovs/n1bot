@@ -16,14 +16,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from boba.config.cli.next import CliSource
-from boba.config.env.next import EnvSource
-from boba.config.toml.next import TomlSource
 from boba_next import (
     ChainConverter,
     CollectionField,
     ConfigBundle,
-    ConfigFactory,
+    ConfigBundleFactory,
     ConfigPath,
     Default,
     FieldSpec,
@@ -38,6 +35,10 @@ from boba_next import (
     ParseString,
     Required,
 )
+
+from boba.config.cli.next import CliSource
+from boba.config.env.next import EnvSource
+from boba.config.toml.next import TomlSource
 
 # ─────────── Описания DTO + схем (то, что extension'у хочется выразить) ───────────
 
@@ -125,7 +126,7 @@ def select_enabled_tool_ids(cfg: ChromadbConfig) -> list[str]:
 def _bundle_from_toml(tmp_path: Path, content: str) -> ConfigBundle:
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(content, encoding="utf-8")
-    factory = ConfigFactory()
+    factory = ConfigBundleFactory()
     factory.attach_sources([TomlSource(cfg_path)])
     return factory.build()
 
@@ -203,7 +204,7 @@ def test_env_overrides_toml_value(tmp_path: Path):
         """,
         encoding="utf-8",
     )
-    factory = ConfigFactory()
+    factory = ConfigBundleFactory()
     factory.attach_sources(
         [
             TomlSource(cfg_file),
@@ -225,7 +226,7 @@ def test_cli_overrides_env_and_toml(tmp_path: Path):
         """,
         encoding="utf-8",
     )
-    factory = ConfigFactory()
+    factory = ConfigBundleFactory()
     factory.attach_sources(
         [
             TomlSource(cfg_file),
@@ -261,7 +262,7 @@ def test_subtree_returns_flat_under_prefix(tmp_path: Path):
 def test_lookup_origin_traces_back_to_source(tmp_path: Path):
     cfg_file = tmp_path / "c.toml"
     cfg_file.write_text("[a]\nb = 1\n", encoding="utf-8")
-    factory = ConfigFactory()
+    factory = ConfigBundleFactory()
     factory.attach_sources(
         [
             TomlSource(cfg_file, name="main_toml"),

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from boba_next import (
     ConfigPath,
     ConfigPathParseError,
@@ -51,7 +50,7 @@ def test_startswith_and_relative_to():
 def test_relative_to_when_not_under_raises():
     a = ConfigPath.parse("$ext.html")
     b = ConfigPath.parse("$ext.chromadb")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not under prefix"):
         b.relative_to(a)
 
 

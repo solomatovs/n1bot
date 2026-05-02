@@ -10,18 +10,17 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 import pytest
-
 from boba_next import (
     ChainConverter,
     CollectionField,
-    ConfigMaterializer,
+    ConfigBundle,
     ConfigPath,
     ConfigSource,
     ConfigValue,
     Default,
     FieldPathError,
     FieldSpec,
-    FlatConfigBuilder,
+    FlatConfigMaterializer,
     IndexedShape,
     IntValue,
     KeyedShape,
@@ -77,7 +76,7 @@ _CHAINLIT_SCHEMA: ObjectSchema[_ChainlitConfig] = ObjectSchema(
 
 
 def test_scalar_list_from_dict_source():
-    flat = FlatConfigBuilder.from_sources(
+    flat = ConfigBundle.from_sources(
         [
             _DictSource(
                 {
@@ -89,8 +88,8 @@ def test_scalar_list_from_dict_source():
                 }
             )
         ]
-    )
-    cfg = ConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
+    ).flat
+    cfg = FlatConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
         flat, ConfigPath.parse("$chainlit")
     )
     assert cfg.models == ("qwen3", "gemini", "deepseek")
@@ -98,8 +97,8 @@ def test_scalar_list_from_dict_source():
 
 
 def test_scalar_list_empty_when_absent():
-    flat = FlatConfigBuilder.from_sources([_DictSource({})])
-    cfg = ConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
+    flat = ConfigBundle.from_sources([_DictSource({})]).flat
+    cfg = FlatConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
         flat, ConfigPath.parse("$chainlit")
     )
     assert cfg.models == ()
@@ -107,7 +106,7 @@ def test_scalar_list_empty_when_absent():
 
 
 def test_scalar_list_sorted_by_index_regardless_of_order():
-    flat = FlatConfigBuilder.from_sources(
+    flat = ConfigBundle.from_sources(
         [
             _DictSource(
                 {
@@ -117,15 +116,15 @@ def test_scalar_list_sorted_by_index_regardless_of_order():
                 }
             )
         ]
-    )
-    cfg = ConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
+    ).flat
+    cfg = FlatConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
         flat, ConfigPath.parse("$chainlit")
     )
     assert cfg.models == ("a", "b", "c")
 
 
 def test_scalar_list_item_validation_error_carries_index():
-    flat = FlatConfigBuilder.from_sources(
+    flat = ConfigBundle.from_sources(
         [
             _DictSource(
                 {
@@ -135,9 +134,9 @@ def test_scalar_list_item_validation_error_carries_index():
                 }
             )
         ]
-    )
+    ).flat
     with pytest.raises(FieldPathError) as info:
-        ConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
+        FlatConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
             flat, ConfigPath.parse("$chainlit")
         )
     assert info.value.field_name == "models"
@@ -171,7 +170,7 @@ _TOOLS_SCHEMA: ObjectSchema[_ToolDescriptions] = ObjectSchema(
 
 
 def test_mapping_scalar_from_dict_source():
-    flat = FlatConfigBuilder.from_sources(
+    flat = ConfigBundle.from_sources(
         [
             _DictSource(
                 {
@@ -185,8 +184,8 @@ def test_mapping_scalar_from_dict_source():
                 }
             )
         ]
-    )
-    cfg = ConfigMaterializer(_TOOLS_SCHEMA).materialize(
+    ).flat
+    cfg = FlatConfigMaterializer(_TOOLS_SCHEMA).materialize(
         flat, ConfigPath.parse("$tools")
     )
     assert cfg.descriptions == {"kb_search": "Поиск", "html_outline": "Оглавление"}
@@ -194,8 +193,8 @@ def test_mapping_scalar_from_dict_source():
 
 
 def test_mapping_scalar_empty_when_absent():
-    flat = FlatConfigBuilder.from_sources([_DictSource({})])
-    cfg = ConfigMaterializer(_TOOLS_SCHEMA).materialize(
+    flat = ConfigBundle.from_sources([_DictSource({})]).flat
+    cfg = FlatConfigMaterializer(_TOOLS_SCHEMA).materialize(
         flat, ConfigPath.parse("$tools")
     )
     assert cfg.descriptions == {}
@@ -203,7 +202,7 @@ def test_mapping_scalar_empty_when_absent():
 
 
 def test_mapping_scalar_item_validation_error_carries_key():
-    flat = FlatConfigBuilder.from_sources(
+    flat = ConfigBundle.from_sources(
         [
             _DictSource(
                 {
@@ -213,9 +212,11 @@ def test_mapping_scalar_item_validation_error_carries_key():
                 }
             )
         ]
-    )
+    ).flat
     with pytest.raises(FieldPathError) as info:
-        ConfigMaterializer(_TOOLS_SCHEMA).materialize(flat, ConfigPath.parse("$tools"))
+        FlatConfigMaterializer(_TOOLS_SCHEMA).materialize(
+            flat, ConfigPath.parse("$tools")
+        )
     assert info.value.field_name == "limits"
     assert "kb_search" in info.value.location
 

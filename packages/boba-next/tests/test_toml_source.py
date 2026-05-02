@@ -5,14 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
-from boba.config.toml.next import TomlFileSource, TomlSource
 from boba_next import (
     BoolValue,
     ConfigPath,
     IntValue,
     StringValue,
 )
+
+from boba.config.toml.next import TomlFileSource, TomlSource
 
 
 def _write(tmp_path: Path, content: str) -> Path:
@@ -124,7 +124,7 @@ def test_toml_file_source_higher_priority_than_main():
 
 
 @pytest.mark.parametrize(
-    "section,expected_value",
+    ("section", "expected_value"),
     [
         ("[a.b.c]\nleaf = 1", (ConfigPath.parse("$a.b.c.leaf"), IntValue(1))),
         ("[a]\n[a.b]\nleaf = 2", (ConfigPath.parse("$a.b.leaf"), IntValue(2))),

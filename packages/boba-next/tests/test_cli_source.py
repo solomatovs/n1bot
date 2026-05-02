@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from boba.config.cli.next import CliSource, parse_argv_path
 from boba_next import ConfigPath, StringValue
+
+from boba.config.cli.next import CliSource, parse_argv_path
 
 
 def test_equals_form():
