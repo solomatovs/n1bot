@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
-
-from boba.config.app import AppConfig
-from boba.config.bootstrap import AppConfigBootstrap
 
 from boba.adapter.fs_workspace import WorkspacesSection
 from boba.adapter.openai import LLMTransportSection
 from boba.adapter.prompt_providers import PromptsSection
+from boba.config.app import AppConfig
+from boba.config.bootstrap import AppConfigBootstrap
 from boba.config.source.cli import CliSource
 from boba.config.source.env import EnvFileSource, EnvSource
 from boba.config.source.toml import TomlFileSource, TomlSource
@@ -72,8 +70,7 @@ def write_ui_config_overrides(cfg: ChainlitConfig, app_root: Path) -> None:
 def main() -> int:
     try:
         app = build_app_config()
-    except ConverterInputError as e:
-        print(f"error: {e}", file=sys.stderr)
+    except ConverterInputError as _e:
         return 2
     chainlit_cfg = app.section(ChainlitSection)
     app_root = bridge_chainlit_env(chainlit_cfg)
