@@ -14,6 +14,21 @@ files = "boba.ext.files:register_tools"
 
 [project.entry-points."boba.config_sections"]
 files = "boba.ext.files.config:FilesSection"
+files_append = "boba.ext.files.append:AppendToolSection"
+files_cat = "boba.ext.files.cat:CatToolSection"
+files_cd = "boba.ext.files.cd:CdToolSection"
+files_cp = "boba.ext.files.cp:CpToolSection"
+files_edit = "boba.ext.files.edit:EditToolSection"
+files_grep = "boba.ext.files.grep:GrepToolSection"
+files_ls = "boba.ext.files.ls:LsToolSection"
+files_mkdir = "boba.ext.files.mkdir:MkdirToolSection"
+files_mv = "boba.ext.files.mv:MvToolSection"
+files_pwd = "boba.ext.files.pwd:PwdToolSection"
+files_rm = "boba.ext.files.rm:RmToolSection"
+files_stat = "boba.ext.files.stat:StatToolSection"
+files_touch = "boba.ext.files.touch:TouchToolSection"
+files_tree = "boba.ext.files.tree:TreeToolSection"
+files_write = "boba.ext.files.write:WriteToolSection"
 
 [tool.setuptools.packages.find]
 where = ["src"]

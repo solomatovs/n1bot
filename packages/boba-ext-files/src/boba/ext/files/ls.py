@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from itertools import islice
+from typing import ClassVar
 
+from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.patterns import StrId
 from boba.tools import (
+    ParamOverlay,
     Tool,
     ToolContext,
     ToolExecutionError,
     ToolId,
     ToolResult,
     ToolSourceId,
+    param_desc,
+    params_field,
 )
 from boba.validators import (
     ChainConverter,
@@ -22,6 +29,7 @@ from boba.validators import (
     MinValue,
     NonEmpty,
     Nullable,
+    ParseString,
 )
 from boba.workspace import (
     WorkspaceError,
@@ -34,11 +42,34 @@ class LsArgs:
     limit: int
 
 
+@dataclass(frozen=True)
+class LsToolConfig:
+    """DTO секции [ext.files.tools.ls]."""
+
+    description: str
+    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+
+
 class LsTool(Tool[LsArgs]):
     """Плоский список элементов workspace (без рекурсии)."""
 
     _ID = ToolId("ls")
     _SOURCE = ToolSourceId("builtin.files")
+
+    DEFAULT_DESCRIPTION: ClassVar[str] = (
+        "Перечислить содержимое директории на одном уровне без рекурсии. "
+        "При переполнении limit ответ обрезается с маркером "
+        "'(truncated at limit=N)'. Для рекурсии — tree."
+    )
+    DEFAULT_PATH_DESC: ClassVar[str] = (
+        "Путь директории. Без значения — корень workspace."
+    )
+    DEFAULT_LIMIT_DESC: ClassVar[str] = (
+        "Максимум элементов в ответе. По умолчанию 200."
+    )
+
+    def __init__(self, cfg: LsToolConfig) -> None:
+        self._cfg = cfg
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -47,21 +78,18 @@ class LsTool(Tool[LsArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[LsArgs]:
+        p = self._cfg.params
         return ObjectSchema(
-            description=(
-                "Перечислить содержимое директории на одном уровне без рекурсии. "
-                "При переполнении limit ответ обрезается с маркером "
-                "'(truncated at limit=N)'. Для рекурсии — tree."
-            ),
+            description=self._cfg.description,
             fields=[
                 FieldSpec(
                     name="path",
-                    description="Путь директории. Без значения — корень workspace.",
+                    description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
                     converter=Nullable(ChainConverter(IsString(), NonEmpty())),
                 ),
                 FieldSpec(
                     name="limit",
-                    description="Максимум элементов в ответе. По умолчанию 200.",
+                    description=param_desc(p, "limit", self.DEFAULT_LIMIT_DESC),
                     converter=ChainConverter(Default(200), IsInt(), MinValue(1)),
                 ),
             ],
@@ -92,3 +120,25 @@ class LsTool(Tool[LsArgs]):
         header += "):"
         body = "\n".join(f"- {p}" for p in items)
         return ToolResult(content=f"{header}\n{body}")
+
+
+class LsToolSection(ConfigSection[LsToolConfig]):
+    """Секция [ext.files.tools.ls]."""
+
+    id: ClassVar[StrId] = StrId("ext.files.tools.ls")
+    namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "ls")
+
+    schema: ClassVar[ObjectSchema[LsToolConfig]] = ObjectSchema(
+        description="Конфиг tool 'ls'.",
+        fields=[
+            FieldSpec(
+                name="description",
+                converter=ChainConverter(
+                    Default(LsTool.DEFAULT_DESCRIPTION), ParseString()
+                ),
+                description="Override описания tool'а; пусто — дефолт из кода.",
+            ),
+            params_field("params"),
+        ],
+        factory=LsToolConfig,
+    )

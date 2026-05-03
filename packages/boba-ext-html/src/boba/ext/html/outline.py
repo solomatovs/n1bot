@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import ClassVar
 
+from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.ext.html._parse import Heading, anchor_for, collect_headings, load_soup
+from boba.patterns import StrId
 from boba.tools import (
+    ParamOverlay,
     Tool,
     ToolContext,
     ToolExecutionError,
     ToolId,
     ToolResult,
     ToolSourceId,
+    param_desc,
+    params_field,
 )
 from boba.validators import (
     ChainConverter,
@@ -22,13 +30,12 @@ from boba.validators import (
     MinValue,
     NonEmpty,
     Nullable,
+    ParseString,
 )
 from boba.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
-
-from boba.ext.html._parse import Heading, anchor_for, collect_headings, load_soup
 
 
 @dataclass(frozen=True)
@@ -38,11 +45,33 @@ class OutlineArgs:
     limit: int
 
 
+@dataclass(frozen=True)
+class HtmlOutlineToolConfig:
+    """DTO секции [ext.html.tools.html_outline]."""
+
+    description: str
+    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+
+
 class HtmlOutlineTool(Tool[OutlineArgs]):
     """Иерархия <h1>..<h6> HTML-документа с anchor'ами для html_section."""
 
     _ID = ToolId("html_outline")
     _SOURCE = ToolSourceId("builtin.html")
+
+    DEFAULT_DESCRIPTION: ClassVar[str] = (
+        "Оглавление HTML-файла: иерархия <h1>..<h6> с anchor'ами. "
+        "Anchor — либо #<id> атрибута заголовка, либо #idx:N "
+        "(порядковый номер). Используется как вход в html_section."
+    )
+    DEFAULT_PATH_DESC: ClassVar[str] = "Путь к HTML-файлу в workspace."
+    DEFAULT_MAX_DEPTH_DESC: ClassVar[str] = (
+        "Максимальный уровень заголовков (1=h1..6=h6). Без значения — все 6."
+    )
+    DEFAULT_LIMIT_DESC: ClassVar[str] = "Максимум заголовков в ответе."
+
+    def __init__(self, cfg: HtmlOutlineToolConfig) -> None:
+        self._cfg = cfg
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -51,32 +80,26 @@ class HtmlOutlineTool(Tool[OutlineArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[OutlineArgs]:
+        p = self._cfg.params
         return ObjectSchema(
-            description=(
-                "Оглавление HTML-файла: иерархия <h1>..<h6> с anchor'ами. "
-                "Anchor — либо #<id> атрибута заголовка, либо #idx:N "
-                "(порядковый номер). Используется как вход в html_section."
-            ),
+            description=self._cfg.description,
             fields=[
                 FieldSpec(
                     name="path",
-                    description="Путь к HTML-файлу в workspace.",
+                    description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
                     converter=ChainConverter(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
                     name="max_depth",
-                    description=(
-                        "Максимальный уровень заголовков (1=h1..6=h6). "
-                        "Без значения — все 6."
-                    ),
+                    description=param_desc(p, "max_depth", self.DEFAULT_MAX_DEPTH_DESC),
                     converter=Nullable(
                         ChainConverter(IsInt(), MinValue(1), MaxValue(6))
                     ),
                 ),
                 FieldSpec(
                     name="limit",
-                    description="Максимум заголовков в ответе.",
+                    description=param_desc(p, "limit", self.DEFAULT_LIMIT_DESC),
                     converter=ChainConverter(Default(200), IsInt(), MinValue(1)),
                 ),
             ],
@@ -122,3 +145,30 @@ class HtmlOutlineTool(Tool[OutlineArgs]):
 def _render_line(h: Heading) -> str:
     indent = "  " * (h.level - 1)
     return f"{h.index:>3}. {indent}h{h.level} {h.text}  #{anchor_for(h)}"
+
+
+class HtmlOutlineToolSection(ConfigSection[HtmlOutlineToolConfig]):
+    """Секция [ext.html.tools.html_outline]."""
+
+    id: ClassVar[StrId] = StrId("ext.html.tools.html_outline")
+    namespace: ClassVar[tuple[str, ...]] = (
+        "ext",
+        "html",
+        "tools",
+        "html_outline",
+    )
+
+    schema: ClassVar[ObjectSchema[HtmlOutlineToolConfig]] = ObjectSchema(
+        description="Конфиг tool 'html_outline'.",
+        fields=[
+            FieldSpec(
+                name="description",
+                converter=ChainConverter(
+                    Default(HtmlOutlineTool.DEFAULT_DESCRIPTION), ParseString()
+                ),
+                description="Override описания tool'а; пусто — дефолт из кода.",
+            ),
+            params_field("params"),
+        ],
+        factory=HtmlOutlineToolConfig,
+    )

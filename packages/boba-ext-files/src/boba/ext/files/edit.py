@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import ClassVar
 
+from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.patterns import StrId
 from boba.tools import (
+    ParamOverlay,
     Tool,
     ToolContext,
     ToolExecutionError,
     ToolId,
     ToolResult,
     ToolSourceId,
+    param_desc,
+    params_field,
 )
 from boba.validators import (
     ChainConverter,
@@ -19,6 +26,7 @@ from boba.validators import (
     IsBool,
     IsString,
     NonEmpty,
+    ParseString,
 )
 from boba.workspace import (
     WorkspaceError,
@@ -35,11 +43,36 @@ class EditArgs:
     encoding: str
 
 
+@dataclass(frozen=True)
+class EditToolConfig:
+    """DTO секции [ext.files.tools.edit]."""
+
+    description: str
+    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+
+
 class EditTool(Tool[EditArgs]):
     """Find-and-replace редактирование текстового файла."""
 
     _ID = ToolId("edit")
     _SOURCE = ToolSourceId("builtin.files")
+
+    DEFAULT_DESCRIPTION: ClassVar[str] = (
+        "Заменить подстроку old_string на new_string. По умолчанию "
+        "old_string должна встречаться в файле ровно один раз — "
+        "иначе ошибка. С replace_all=true заменяются все вхождения. "
+        "Совпадение точное, посимвольное."
+    )
+    DEFAULT_PATH_DESC: ClassVar[str] = "Путь к файлу."
+    DEFAULT_OLD_STRING_DESC: ClassVar[str] = "Подстрока для замены. Совпадение точное."
+    DEFAULT_NEW_STRING_DESC: ClassVar[str] = "Заменяющий текст. Пустая строка = удаление."
+    DEFAULT_REPLACE_ALL_DESC: ClassVar[str] = (
+        "Заменить все вхождения. По умолчанию false."
+    )
+    DEFAULT_ENCODING_DESC: ClassVar[str] = "Кодировка файла. По умолчанию 'utf-8'."
+
+    def __init__(self, cfg: EditToolConfig) -> None:
+        self._cfg = cfg
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -48,40 +81,44 @@ class EditTool(Tool[EditArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[EditArgs]:
+        p = self._cfg.params
         return ObjectSchema(
-            description=(
-                "Заменить подстроку old_string на new_string. По умолчанию "
-                "old_string должна встречаться в файле ровно один раз — "
-                "иначе ошибка. С replace_all=true заменяются все вхождения. "
-                "Совпадение точное, посимвольное."
-            ),
+            description=self._cfg.description,
             fields=[
                 FieldSpec(
                     name="path",
-                    description="Путь к файлу.",
+                    description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
                     converter=ChainConverter(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
                     name="old_string",
-                    description="Подстрока для замены. Совпадение точное.",
+                    description=param_desc(
+                        p, "old_string", self.DEFAULT_OLD_STRING_DESC
+                    ),
                     converter=ChainConverter(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
                     name="new_string",
-                    description="Заменяющий текст. Пустая строка = удаление.",
+                    description=param_desc(
+                        p, "new_string", self.DEFAULT_NEW_STRING_DESC
+                    ),
                     converter=ChainConverter(IsString()),
                     required=True,
                 ),
                 FieldSpec(
                     name="replace_all",
-                    description="Заменить все вхождения. По умолчанию false.",
+                    description=param_desc(
+                        p, "replace_all", self.DEFAULT_REPLACE_ALL_DESC
+                    ),
                     converter=ChainConverter(Default(False), IsBool()),
                 ),
                 FieldSpec(
                     name="encoding",
-                    description="Кодировка файла. По умолчанию 'utf-8'.",
+                    description=param_desc(
+                        p, "encoding", self.DEFAULT_ENCODING_DESC
+                    ),
                     converter=ChainConverter(
                         Default("utf-8"),
                         IsString(),
@@ -114,3 +151,25 @@ class EditTool(Tool[EditArgs]):
         return ToolResult(
             content=f"Заменено в {req.path}: {applied} вхождение(й).",
         )
+
+
+class EditToolSection(ConfigSection[EditToolConfig]):
+    """Секция [ext.files.tools.edit]."""
+
+    id: ClassVar[StrId] = StrId("ext.files.tools.edit")
+    namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "edit")
+
+    schema: ClassVar[ObjectSchema[EditToolConfig]] = ObjectSchema(
+        description="Конфиг tool 'edit'.",
+        fields=[
+            FieldSpec(
+                name="description",
+                converter=ChainConverter(
+                    Default(EditTool.DEFAULT_DESCRIPTION), ParseString()
+                ),
+                description="Override описания tool'а; пусто — дефолт из кода.",
+            ),
+            params_field("params"),
+        ],
+        factory=EditToolConfig,
+    )

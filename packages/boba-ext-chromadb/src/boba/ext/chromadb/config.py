@@ -28,7 +28,6 @@ class ChromaExtConfig:
     tools_allow: list[str] = field(default_factory=list)
     persist_path: str = ""
     embedding_model: str = "default"
-    max_top_k: int = 20
     snippet_chars: int = 300
 
 
@@ -78,12 +77,6 @@ class ChromadbSection(ConfigSection[ChromaExtConfig]):
                     "Модель эмбеддингов. v0.1: только 'default' (built-in ONNX). "
                     "Расширим, когда добавим sentence-transformers как optional dep."
                 ),
-            ),
-            FieldSpec(
-                name="max_top_k",
-                converter=ChainConverter(Default(20), ParseInt(), MinValue(1)),
-                description="Жёсткий потолок top_k для kb_search "
-                "(защита от дикого LLM).",
             ),
             FieldSpec(
                 name="snippet_chars",

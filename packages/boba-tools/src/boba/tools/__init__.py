@@ -1,6 +1,7 @@
 """Tools-домен: Tool ABC, диспетчер вызовов, валидация args, wire-схемы."""
 
 from boba.tools.args import ToolArgsBuilder
+from boba.tools.descriptions import ParamOverlay, param_desc, params_field
 from boba.tools.errors import (
     InvalidSchemaInvariantError,
     InvalidToolArgumentError,
@@ -38,6 +39,7 @@ __all__ = [
     "ExtensionContext",
     "InvalidSchemaInvariantError",
     "InvalidToolArgumentError",
+    "ParamOverlay",
     "StaticToolSource",
     "Tool",
     "ToolArgsBuilder",
@@ -59,4 +61,6 @@ __all__ = [
     "ToolStore",
     "ToolWireSchemaBuilder",
     "ToolsService",
+    "param_desc",
+    "params_field",
 ]

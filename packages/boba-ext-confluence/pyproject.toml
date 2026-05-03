@@ -19,6 +19,8 @@ confluence = "boba.ext.confluence:register_tools"
 
 [project.entry-points."boba.config_sections"]
 confluence = "boba.ext.confluence.config:ConfluenceSection"
+confluence_outline = "boba.ext.confluence.outline:ConfluenceOutlineToolSection"
+confluence_section = "boba.ext.confluence.section:ConfluenceSectionToolSection"
 
 [tool.setuptools.packages.find]
 where = ["src"]

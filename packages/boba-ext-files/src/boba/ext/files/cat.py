@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from io import TextIOBase
+from typing import ClassVar
 
+from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.patterns import StrId
 from boba.tools import (
+    ParamOverlay,
     Tool,
     ToolContext,
     ToolExecutionError,
@@ -14,6 +19,8 @@ from boba.tools import (
     ToolOutputTooLargeError,
     ToolResult,
     ToolSourceId,
+    param_desc,
+    params_field,
 )
 from boba.validators import (
     ChainConverter,
@@ -23,6 +30,8 @@ from boba.validators import (
     MinValue,
     NonEmpty,
     Ordered,
+    ParseInt,
+    ParseString,
 )
 from boba.workspace import (
     WorkspaceError,
@@ -38,7 +47,13 @@ class CatArgs:
     end_line: int
 
 
-_MAX_LINES = 2000
+@dataclass(frozen=True)
+class CatToolConfig:
+    """DTO секции [ext.files.tools.cat]."""
+
+    description: str
+    max_lines: int
+    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
 
 
 class CatTool(Tool[CatArgs]):
@@ -47,6 +62,20 @@ class CatTool(Tool[CatArgs]):
     _ID = ToolId("cat")
     _SOURCE = ToolSourceId("builtin.files")
 
+    DEFAULT_DESCRIPTION: ClassVar[str] = (
+        "Прочитать строки [start_line; end_line] из текстового файла."
+    )
+    DEFAULT_PATH_DESC: ClassVar[str] = "Путь к файлу."
+    DEFAULT_ENCODING_DESC: ClassVar[str] = "Кодировка файла. По умолчанию 'utf-8'."
+    DEFAULT_START_LINE_DESC: ClassVar[str] = "Первая строка окна. 1 = начало файла."
+    DEFAULT_END_LINE_DESC: ClassVar[str] = (
+        "Последняя строка окна, включительно. >= start_line."
+    )
+    DEFAULT_MAX_LINES: ClassVar[int] = 2000
+
+    def __init__(self, cfg: CatToolConfig) -> None:
+        self._cfg = cfg
+
     def tool_id(self) -> ToolId:
         return self._ID
 
@@ -54,29 +83,38 @@ class CatTool(Tool[CatArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[CatArgs]:
+        p = self._cfg.params
         return ObjectSchema(
-            description="Прочитать строки [start_line; end_line] из текстового файла.",
+            description=self._cfg.description,
             fields=[
                 FieldSpec(
                     name="path",
-                    description="Путь к файлу.",
+                    description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
                     converter=ChainConverter(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
                     name="encoding",
-                    description="Кодировка файла. По умолчанию 'utf-8'.",
-                    converter=ChainConverter(Default("utf-8"), IsString(), NonEmpty()),
+                    description=param_desc(
+                        p, "encoding", self.DEFAULT_ENCODING_DESC
+                    ),
+                    converter=ChainConverter(
+                        Default("utf-8"), IsString(), NonEmpty()
+                    ),
                 ),
                 FieldSpec(
                     name="start_line",
-                    description="Первая строка окна. 1 = начало файла.",
+                    description=param_desc(
+                        p, "start_line", self.DEFAULT_START_LINE_DESC
+                    ),
                     converter=ChainConverter(IsInt(), MinValue(1)),
                     required=True,
                 ),
                 FieldSpec(
                     name="end_line",
-                    description=("Последняя строка окна, включительно. >= start_line."),
+                    description=param_desc(
+                        p, "end_line", self.DEFAULT_END_LINE_DESC
+                    ),
                     converter=ChainConverter(IsInt(), MinValue(1)),
                     required=True,
                 ),
@@ -86,17 +124,18 @@ class CatTool(Tool[CatArgs]):
         )
 
     def execute(self, ctx: ToolContext, req: CatArgs) -> ToolResult:
-        if req.end_line - req.start_line + 1 > _MAX_LINES:
+        max_lines = self._cfg.max_lines
+        if req.end_line - req.start_line + 1 > max_lines:
             raise ToolOutputTooLargeError(
                 tool_id=self._ID,
-                limit=_MAX_LINES,
+                limit=max_lines,
                 unit="строк",
                 hint=(
                     f"Запрошенный диапазон "
                     f"{req.start_line}-{req.end_line} шире лимита. "
-                    f"Читай окнами ≤ {_MAX_LINES} строк: "
+                    f"Читай окнами ≤ {max_lines} строк: "
                     f"start_line={req.start_line}, "
-                    f"end_line={req.start_line + _MAX_LINES - 1}."
+                    f"end_line={req.start_line + max_lines - 1}."
                 ),
             )
 
@@ -132,3 +171,35 @@ class CatTool(Tool[CatArgs]):
             collected.append(line.rstrip("\r\n"))
             last = i
         return "\n".join(collected), last
+
+
+class CatToolSection(ConfigSection[CatToolConfig]):
+    """Секция [ext.files.tools.cat]: описания + лимиты cat-tool'а."""
+
+    id: ClassVar[StrId] = StrId("ext.files.tools.cat")
+    namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "cat")
+
+    schema: ClassVar[ObjectSchema[CatToolConfig]] = ObjectSchema(
+        description="Конфиг tool 'cat': описания + потолок строк.",
+        fields=[
+            FieldSpec(
+                name="description",
+                converter=ChainConverter(
+                    Default(CatTool.DEFAULT_DESCRIPTION), ParseString()
+                ),
+                description="Override описания tool'а; пусто — дефолт из кода.",
+            ),
+            FieldSpec(
+                name="max_lines",
+                converter=ChainConverter(
+                    Default(CatTool.DEFAULT_MAX_LINES), ParseInt(), MinValue(1)
+                ),
+                description=(
+                    "Максимум строк в одном вызове cat (защита от "
+                    "переполнения ответа)."
+                ),
+            ),
+            params_field("params"),
+        ],
+        factory=CatToolConfig,
+    )

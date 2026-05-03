@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import ClassVar
 
+from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.patterns import StrId
 from boba.tools import (
+    ParamOverlay,
     Tool,
     ToolContext,
     ToolExecutionError,
     ToolId,
     ToolResult,
     ToolSourceId,
+    param_desc,
+    params_field,
 )
-from boba.validators import ChainConverter, IsString, NonEmpty
+from boba.validators import ChainConverter, Default, IsString, NonEmpty, ParseString
 from boba.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
@@ -25,11 +32,30 @@ class StatArgs:
     path: str
 
 
+@dataclass(frozen=True)
+class StatToolConfig:
+    """DTO секции [ext.files.tools.stat]."""
+
+    description: str
+    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+
+
 class StatTool(Tool[StatArgs]):
     """Метаданные файла или директории."""
 
     _ID = ToolId("stat")
     _SOURCE = ToolSourceId("builtin.files")
+
+    DEFAULT_DESCRIPTION: ClassVar[str] = (
+        "Вернуть метаданные ресурса: тип (file/directory/other), "
+        "размер в байтах, время модификации. Если ресурса нет — "
+        "ошибка. Для директорий size — размер inode-блока ФС, не "
+        "количество файлов; для содержимого директории — ls/tree."
+    )
+    DEFAULT_PATH_DESC: ClassVar[str] = "Путь к файлу или директории."
+
+    def __init__(self, cfg: StatToolConfig) -> None:
+        self._cfg = cfg
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -38,17 +64,13 @@ class StatTool(Tool[StatArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[StatArgs]:
+        p = self._cfg.params
         return ObjectSchema(
-            description=(
-                "Вернуть метаданные ресурса: тип (file/directory/other), "
-                "размер в байтах, время модификации. Если ресурса нет — "
-                "ошибка. Для директорий size — размер inode-блока ФС, не "
-                "количество файлов; для содержимого директории — ls/tree."
-            ),
+            description=self._cfg.description,
             fields=[
                 FieldSpec(
                     name="path",
-                    description="Путь к файлу или директории.",
+                    description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
                     converter=ChainConverter(IsString(), NonEmpty()),
                     required=True,
                 ),
@@ -77,3 +99,25 @@ class StatTool(Tool[StatArgs]):
             f"modified: {meta.modified.isoformat()}"
         )
         return ToolResult(content=body)
+
+
+class StatToolSection(ConfigSection[StatToolConfig]):
+    """Секция [ext.files.tools.stat]."""
+
+    id: ClassVar[StrId] = StrId("ext.files.tools.stat")
+    namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "stat")
+
+    schema: ClassVar[ObjectSchema[StatToolConfig]] = ObjectSchema(
+        description="Конфиг tool 'stat'.",
+        fields=[
+            FieldSpec(
+                name="description",
+                converter=ChainConverter(
+                    Default(StatTool.DEFAULT_DESCRIPTION), ParseString()
+                ),
+                description="Override описания tool'а; пусто — дефолт из кода.",
+            ),
+            params_field("params"),
+        ],
+        factory=StatToolConfig,
+    )

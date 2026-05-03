@@ -19,6 +19,8 @@ html = "boba.ext.html:register_tools"
 
 [project.entry-points."boba.config_sections"]
 html = "boba.ext.html.config:HtmlSection"
+html_outline = "boba.ext.html.outline:HtmlOutlineToolSection"
+html_section = "boba.ext.html.section:HtmlSectionToolSection"
 
 [tool.setuptools.packages.find]
 where = ["src"]

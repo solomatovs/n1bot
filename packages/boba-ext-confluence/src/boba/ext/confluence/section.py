@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import ClassVar
 
+from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.patterns import StrId
 from boba.tools import (
+    ParamOverlay,
     Tool,
     ToolContext,
     ToolExecutionError,
     ToolId,
     ToolResult,
     ToolSourceId,
+    param_desc,
+    params_field,
 )
 from boba.validators import (
     ChainConverter,
@@ -21,6 +28,7 @@ from boba.validators import (
     IsString,
     MinValue,
     NonEmpty,
+    ParseString,
 )
 from boba.workspace import (
     WorkspaceError,
@@ -46,11 +54,45 @@ class SectionArgs:
     max_chars: int
 
 
+@dataclass(frozen=True)
+class ConfluenceSectionToolConfig:
+    """DTO секции [ext.confluence.tools.confluence_section]."""
+
+    description: str
+    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+
+
 class ConfluenceSectionTool(Tool[SectionArgs]):
     """HTML фрагмент раздела Confluence-страницы от заголовка до следующего."""
 
     _ID = ToolId("confluence_section")
     _SOURCE = ToolSourceId("builtin.confluence")
+
+    DEFAULT_DESCRIPTION: ClassVar[str] = (
+        "Раздел Confluence-страницы по anchor (scroll-bookmark-N или idx:N "
+        "из confluence_outline; ведущий # необязателен). По умолчанию "
+        "вырезает ac:*/ri:* макросы — модели достаётся чистый HTML."
+    )
+    DEFAULT_PATH_DESC: ClassVar[str] = (
+        "Путь к HTML-файлу Confluence-export'а в workspace."
+    )
+    DEFAULT_ANCHOR_DESC: ClassVar[str] = (
+        "Anchor заголовка из confluence_outline "
+        "(scroll-bookmark-N или idx:N). Ведущий '#' необязателен."
+    )
+    DEFAULT_INCLUDE_SUBSECTIONS_DESC: ClassVar[str] = (
+        "true — включать вложенные подзаголовки (стоп на "
+        "следующем заголовке того же или меньшего уровня); "
+        "false — стоп на любом следующем заголовке."
+    )
+    DEFAULT_STRIP_MACROS_DESC: ClassVar[str] = (
+        "true (default) — вырезать confluence-макросы "
+        "(ac:*/ri:*) из ответа; false — отдать HTML как есть."
+    )
+    DEFAULT_MAX_CHARS_DESC: ClassVar[str] = "Лимит длины ответа в символах."
+
+    def __init__(self, cfg: ConfluenceSectionToolConfig) -> None:
+        self._cfg = cfg
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -59,48 +101,45 @@ class ConfluenceSectionTool(Tool[SectionArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[SectionArgs]:
+        p = self._cfg.params
         return ObjectSchema(
-            description=(
-                "Раздел Confluence-страницы по anchor (scroll-bookmark-N или idx:N "
-                "из confluence_outline; ведущий # необязателен). По умолчанию "
-                "вырезает ac:*/ri:* макросы — модели достаётся чистый HTML."
-            ),
+            description=self._cfg.description,
             fields=[
                 FieldSpec(
                     name="path",
-                    description="Путь к HTML-файлу Confluence-export'а в workspace.",
+                    description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
                     converter=ChainConverter(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
                     name="anchor",
-                    description=(
-                        "Anchor заголовка из confluence_outline "
-                        "(scroll-bookmark-N или idx:N). Ведущий '#' необязателен."
+                    description=param_desc(
+                        p, "anchor", self.DEFAULT_ANCHOR_DESC
                     ),
                     converter=ChainConverter(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
                     name="include_subsections",
-                    description=(
-                        "true — включать вложенные подзаголовки (стоп на "
-                        "следующем заголовке того же или меньшего уровня); "
-                        "false — стоп на любом следующем заголовке."
+                    description=param_desc(
+                        p,
+                        "include_subsections",
+                        self.DEFAULT_INCLUDE_SUBSECTIONS_DESC,
                     ),
                     converter=ChainConverter(Default(True), IsBool()),
                 ),
                 FieldSpec(
                     name="strip_macros",
-                    description=(
-                        "true (default) — вырезать confluence-макросы "
-                        "(ac:*/ri:*) из ответа; false — отдать HTML как есть."
+                    description=param_desc(
+                        p, "strip_macros", self.DEFAULT_STRIP_MACROS_DESC
                     ),
                     converter=ChainConverter(Default(True), IsBool()),
                 ),
                 FieldSpec(
                     name="max_chars",
-                    description="Лимит длины ответа в символах.",
+                    description=param_desc(
+                        p, "max_chars", self.DEFAULT_MAX_CHARS_DESC
+                    ),
                     converter=ChainConverter(Default(8000), IsInt(), MinValue(100)),
                 ),
             ],
@@ -175,3 +214,28 @@ def _collect_section_html(start: Tag, stop: Tag | None) -> str:
             break
         parts.append(str(sib))
     return "".join(parts)
+
+
+class ConfluenceSectionToolSection(ConfigSection[ConfluenceSectionToolConfig]):
+    """Секция [ext.confluence.tools.confluence_section]."""
+
+    id: ClassVar[StrId] = StrId("ext.confluence.tools.confluence_section")
+    namespace: ClassVar[tuple[str, ...]] = (
+        "ext", "confluence", "tools", "confluence_section",
+    )
+
+    schema: ClassVar[ObjectSchema[ConfluenceSectionToolConfig]] = ObjectSchema(
+        description="Конфиг tool 'confluence_section'.",
+        fields=[
+            FieldSpec(
+                name="description",
+                converter=ChainConverter(
+                    Default(ConfluenceSectionTool.DEFAULT_DESCRIPTION),
+                    ParseString(),
+                ),
+                description="Override описания tool'а; пусто — дефолт из кода.",
+            ),
+            params_field("params"),
+        ],
+        factory=ConfluenceSectionToolConfig,
+    )

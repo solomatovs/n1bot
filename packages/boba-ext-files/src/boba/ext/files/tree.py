@@ -2,25 +2,34 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from itertools import islice
+from typing import ClassVar
 
+from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.patterns import StrId
 from boba.tools import (
+    ParamOverlay,
     Tool,
     ToolContext,
     ToolExecutionError,
     ToolId,
     ToolResult,
     ToolSourceId,
+    param_desc,
+    params_field,
 )
 from boba.validators import (
     ChainConverter,
+    Default,
     IsInt,
     IsString,
     MinValue,
     NonEmpty,
     Nullable,
+    ParseString,
 )
 from boba.workspace import (
     WorkspaceError,
@@ -33,11 +42,32 @@ class TreeArgs:
     limit: int
 
 
+@dataclass(frozen=True)
+class TreeToolConfig:
+    """DTO секции [ext.files.tools.tree]."""
+
+    description: str
+    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+
+
 class TreeTool(Tool[TreeArgs]):
     """Рекурсивный обход всех файлов workspace."""
 
     _ID = ToolId("tree")
     _SOURCE = ToolSourceId("builtin.files")
+
+    DEFAULT_DESCRIPTION: ClassVar[str] = (
+        "Рекурсивно перечислить все файлы под директорией. Плоский "
+        "список путей. При переполнении limit ответ обрезается с "
+        "маркером '(truncated at limit=N)'. Для одного уровня — ls."
+    )
+    DEFAULT_PATH_DESC: ClassVar[str] = (
+        "Корень обхода. Без значения — корень workspace."
+    )
+    DEFAULT_LIMIT_DESC: ClassVar[str] = "Максимум путей в ответе."
+
+    def __init__(self, cfg: TreeToolConfig) -> None:
+        self._cfg = cfg
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -46,21 +76,18 @@ class TreeTool(Tool[TreeArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[TreeArgs]:
+        p = self._cfg.params
         return ObjectSchema(
-            description=(
-                "Рекурсивно перечислить все файлы под директорией. Плоский "
-                "список путей. При переполнении limit ответ обрезается с "
-                "маркером '(truncated at limit=N)'. Для одного уровня — ls."
-            ),
+            description=self._cfg.description,
             fields=[
                 FieldSpec(
                     name="path",
-                    description="Корень обхода. Без значения — корень workspace.",
+                    description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
                     converter=Nullable(ChainConverter(IsString(), NonEmpty())),
                 ),
                 FieldSpec(
                     name="limit",
-                    description="Максимум путей в ответе.",
+                    description=param_desc(p, "limit", self.DEFAULT_LIMIT_DESC),
                     converter=ChainConverter(IsInt(), MinValue(1)),
                     required=True,
                 ),
@@ -92,3 +119,25 @@ class TreeTool(Tool[TreeArgs]):
         header += "):"
         body = "\n".join(f"- {p}" for p in items)
         return ToolResult(content=f"{header}\n{body}")
+
+
+class TreeToolSection(ConfigSection[TreeToolConfig]):
+    """Секция [ext.files.tools.tree]."""
+
+    id: ClassVar[StrId] = StrId("ext.files.tools.tree")
+    namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "tree")
+
+    schema: ClassVar[ObjectSchema[TreeToolConfig]] = ObjectSchema(
+        description="Конфиг tool 'tree'.",
+        fields=[
+            FieldSpec(
+                name="description",
+                converter=ChainConverter(
+                    Default(TreeTool.DEFAULT_DESCRIPTION), ParseString()
+                ),
+                description="Override описания tool'а; пусто — дефолт из кода.",
+            ),
+            params_field("params"),
+        ],
+        factory=TreeToolConfig,
+    )
