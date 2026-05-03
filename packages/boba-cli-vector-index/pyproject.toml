@@ -9,7 +9,7 @@ description = "Operator CLI: index documents into a vector database (ChromaDB) f
 requires-python = ">=3.11,<4"
 # На ``boba-ext-chromadb`` намеренно не зависит: контракт ключа — через ConfigKey.
 dependencies = [
-    "boba",
+
     "boba-patterns",
     "boba-config-cli",
     "boba-config-env",
