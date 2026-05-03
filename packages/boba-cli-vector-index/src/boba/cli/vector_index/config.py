@@ -20,7 +20,7 @@ from boba.declaration import FieldSpec, ObjectSchema
 __all__ = ["ACTIONS", "VectorIndexConfig", "VectorIndexSection"]
 
 
-ACTIONS: frozenset[str] = frozenset({"index", "list", "delete"})
+ACTIONS: frozenset[str] = frozenset({"index", "list", "delete", "sync"})
 
 
 @dataclass(frozen=True)

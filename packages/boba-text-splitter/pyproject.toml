@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-text-splitter"
+version = "0.1.0"
+description = "Character-based text splitter (Converter[str, list[str]]) с soft-breaks."
+requires-python = ">=3.11,<4"
+dependencies = ["boba-patterns"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

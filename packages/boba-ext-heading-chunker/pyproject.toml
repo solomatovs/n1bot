@@ -3,17 +3,17 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "boba-ext-sliding-chunker"
+name = "boba-ext-heading-chunker"
 version = "0.1.0"
-description = "Boba indexing chunker: character-based sliding window with soft breaks."
+description = "Boba indexing chunker: per-Section split (anchor-preserving), без пересечения границ heading'ов."
 requires-python = ">=3.11,<4"
 dependencies = ["boba-config", "boba-foundation", "boba-indexing", "boba-text-splitter"]
 
 [project.entry-points."boba.indexing.chunkers"]
-sliding = "boba.ext.sliding_chunker:register_chunkers"
+heading = "boba.ext.heading_chunker:register_chunkers"
 
 [project.entry-points."boba.config_sections"]
-sliding_chunker = "boba.ext.sliding_chunker.config:SlidingChunkerConfigSection"
+heading_chunker = "boba.ext.heading_chunker.config:HeadingChunkerConfigSection"
 
 [tool.setuptools.packages.find]
 where = ["src"]

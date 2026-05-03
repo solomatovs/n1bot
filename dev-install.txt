@@ -5,6 +5,7 @@
 # core/foundation
 -e ./packages/boba-patterns
 -e ./packages/boba-foundation
+-e ./packages/boba-text-splitter
 -e ./packages/boba-config
 -e ./packages/boba-config-source-cli
 -e ./packages/boba-config-source-env
@@ -35,6 +36,7 @@
 # tool extensions (boba.tools entry-point)
 -e ./packages/boba-ext-files-tools
 -e ./packages/boba-ext-html-tools
+-e ./packages/boba-ext-confluence-shared
 -e ./packages/boba-ext-confluence-tools
 -e ./packages/boba-ext-chromadb-shared
 -e ./packages/boba-ext-chromadb-tools
@@ -44,5 +46,8 @@
 -e ./packages/boba-ext-text-reader
 -e ./packages/boba-ext-markdown-reader
 -e ./packages/boba-ext-html-reader
+-e ./packages/boba-ext-confluence-reader
+-e ./packages/boba-ext-confluence-source
 -e ./packages/boba-ext-fs-source
 -e ./packages/boba-ext-sliding-chunker
+-e ./packages/boba-ext-heading-chunker

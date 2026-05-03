@@ -202,8 +202,39 @@ def _print_collection_info(c: CollectionInfo) -> None:
     print(f"{c.name}\t{c.count} chunks{desc}")
 
 
+def _handle_sync(cfg: VectorIndexConfig, app: AppConfig) -> int:
+    """Удалить из Store чанки, source_id'ы которых отсутствуют у Source."""
+    _require(cfg.collection, VectorIndexSection, "collection", "sync")
+    collection = cfg.collection or ""
+
+    ctx = IndexerExtensionContext(config=app)
+    source = _build_source(ctx, cfg.source)
+    store = _build_store(ctx, cfg.store)
+    icx = IndexingContext(
+        pipeline_id=PipelineId(f"cli-sync:{collection}"),
+        collection=collection,
+    )
+
+    in_source = set(source.list_source_ids())
+    in_store = set(store.list_source_ids(icx))
+    orphans = sorted(in_store - in_source)
+
+    deleted = 0
+    for orphan in orphans:
+        deleted += store.delete_by_source(icx, orphan)
+    print(
+        f"collection={collection!r} "
+        f"in_source={len(in_source)} "
+        f"in_store={len(in_store)} "
+        f"orphans={len(orphans)} "
+        f"chunks_deleted={deleted}"
+    )
+    return 0
+
+
 _HANDLERS = {
     "index": _handle_index,
     "list": _handle_list,
     "delete": _handle_delete,
+    "sync": _handle_sync,
 }
