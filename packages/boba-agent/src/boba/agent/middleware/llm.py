@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from typing import assert_never
 
-from boba.patterns import StreamSource
 from boba.agent.errors import LLMGenerationFailedError
 from boba.agent.events import (
     AgentEvent,
@@ -42,6 +41,7 @@ from boba.llm.events import (
     LLMToolCallBegin,
 )
 from boba.llm.models import LLMContext, LLMRequest
+from boba.patterns import StreamSource
 
 
 class _LLMToAgentConverter:

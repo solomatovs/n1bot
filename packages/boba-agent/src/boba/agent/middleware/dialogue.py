@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable, Iterator
 
-from boba.patterns import StreamSource
 from boba.agent.dialogue_writer import DialogueWriter
 from boba.agent.events import (
     AgentEvent,
@@ -21,6 +20,7 @@ from boba.agent.events import (
 )
 from boba.agent.models import AgentContext
 from boba.llm.models import LLMToolCall, RequestId
+from boba.patterns import StreamSource
 
 
 class AssistantMessagePersistenceMiddleware(StreamSource[AgentContext, AgentEvent]):

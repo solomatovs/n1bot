@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from boba.patterns import Specification, StreamSource
 from boba.agent.errors import MaxIterationsExceededError
 from boba.agent.events import (
     AgentEvent,
@@ -11,6 +10,7 @@ from boba.agent.events import (
     Terminal,
 )
 from boba.agent.models import AgentContext
+from boba.patterns import Specification, StreamSource
 
 
 class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
