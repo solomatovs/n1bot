@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from boba.domain.core.config import ConfigSection, FieldSpec, ObjectSchema
-from boba.domain.core.validators import ChainConverter, ParseString, Required
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.config import ConfigSection
+from boba_next.validators import ChainConverter, ParseString
 from boba.patterns import StrId
 
 
@@ -20,9 +21,9 @@ class PromptsSection(ConfigSection[str]):
         fields=[
             FieldSpec(
                 name="dir",
-                converter=ChainConverter(Required(), ParseString()),
-                description="Корневая директория .md/.txt-файлов "
-                "с system-prompt'ами.",
+                converter=ChainConverter(ParseString()),
+                description="Корневая директория .md/.txt-файлов с system-prompt'ами.",
+                required=True,
             ),
         ],
         factory=lambda **kw: kw["dir"],

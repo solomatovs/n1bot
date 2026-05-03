@@ -3,16 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
-from boba.domain.core.tools import (
-    ChainConverter,
-    FieldSpec,
-    IsString,
-    NonEmpty,
-    ObjectSchema,
-    Pass,
-    Required,
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.tools import (
     Tool,
     ToolContext,
     ToolExecutionError,
@@ -20,22 +13,17 @@ from boba.domain.core.tools import (
     ToolResult,
     ToolSourceId,
 )
-from boba.domain.core.workspace import (
+from boba_next.validators import ChainConverter, IsString, NonEmpty
+from boba_next.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
-from boba.patterns import Converter
 
 
 @dataclass(frozen=True)
 class MvArgs:
     src: str
     dst: str
-
-
-class MvArgsConverter(Converter[dict[str, Any], MvArgs]):
-    def convert(self, value: dict[str, Any]) -> MvArgs:
-        return MvArgs(src=value["src"], dst=value["dst"])
 
 
 class MvTool(Tool[MvArgs]):
@@ -50,10 +38,7 @@ class MvTool(Tool[MvArgs]):
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
 
-    def typed_args_converter(self) -> Converter[dict[str, Any], MvArgs]:
-        return MvArgsConverter()
-
-    def definition(self) -> ObjectSchema[dict[str, Any]]:
+    def definition(self) -> ObjectSchema[MvArgs]:
         return ObjectSchema(
             description=(
                 "Переместить или переименовать файл/директорию. Если dst — "
@@ -62,18 +47,20 @@ class MvTool(Tool[MvArgs]):
                 "создаются."
             ),
             fields=[
-                    FieldSpec(
-                        name="src",
-                        description="Путь источника.",
-                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
-                    ),
-                    FieldSpec(
-                        name="dst",
-                        description="Путь назначения.",
-                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
-                    ),
-                ],
-                invariants=Pass()
+                FieldSpec(
+                    name="src",
+                    description="Путь источника.",
+                    converter=ChainConverter(IsString(), NonEmpty()),
+                    required=True,
+                ),
+                FieldSpec(
+                    name="dst",
+                    description="Путь назначения.",
+                    converter=ChainConverter(IsString(), NonEmpty()),
+                    required=True,
+                ),
+            ],
+            factory=MvArgs,
         )
 
     def execute(self, ctx: ToolContext, req: MvArgs) -> ToolResult:
@@ -90,4 +77,3 @@ class MvTool(Tool[MvArgs]):
                 message=f"Ошибка перемещения: {e}",
             ) from e
         return ToolResult(content=f"Перемещено: {req.src} → {req.dst}")
-

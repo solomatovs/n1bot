@@ -15,7 +15,7 @@ from boba.adapter.fs_workspace.shell import (
     FsScratchWorkspaceShell,
     FsWorkspaceShell,
 )
-from boba.domain.core.workspace import (
+from boba_next.workspace import (
     HistoryWorkspaceRegistry,
     ProjectWorkspaceRegistry,
     PromptWorkspaceId,

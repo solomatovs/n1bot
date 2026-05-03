@@ -6,13 +6,13 @@ import json
 from collections.abc import Iterator
 from dataclasses import asdict
 
-from boba.domain.agent.messages import (
+from boba_next.agent.messages import (
     MessageService,
     MessageStoreReadError,
     MessageStoreWriteError,
 )
-from boba.domain.core.workspace import HistoryWorkspaceShell, WorkspaceError
-from boba.domain.llm.models import LLMMessage, LLMToolCall
+from boba_next.workspace import HistoryWorkspaceShell, WorkspaceError
+from boba_next.llm.models import LLMMessage, LLMToolCall
 
 
 class JsonLinesMessageService(MessageService):

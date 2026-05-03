@@ -25,6 +25,7 @@ __all__ = [
     "IsNumber",
     "IsString",
     "ParseBool",
+    "ParseCsvList",
     "ParseFloat",
     "ParseInt",
     "ParseString",
@@ -123,3 +124,21 @@ class IsBool(ValueConverter, SchemaContributor):
 
     def contribute(self, prop: dict[str, Any]) -> None:
         prop["type"] = "boolean"
+
+
+class ParseCsvList(ValueConverter, SchemaContributor):
+    """Привести значение к list[str] (split по запятой); wire: type=array."""
+
+    def _convert_value(self, value: ConfigValue) -> list[str]:
+        raw = value.unwrap()
+        if isinstance(raw, list):
+            return [str(item) for item in raw if item is not None and str(item) != ""]
+        if isinstance(raw, str):
+            return [item.strip() for item in raw.split(",") if item.strip()]
+        raise ConverterInputError(
+            f"cannot convert {type(raw).__name__} to list[str]",
+        )
+
+    def contribute(self, prop: dict[str, Any]) -> None:
+        prop["type"] = "array"
+        prop["items"] = {"type": "string"}

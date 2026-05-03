@@ -5,12 +5,13 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from boba.adapter.openai.terminal import OpenAITerminal, build_openai_client
-from boba.domain.config import LLMConfig
-from boba.domain.core.config import ConfigSection, FieldSpec, ObjectSchema
-from boba.domain.core.validators import ChainConverter, Default, ParseString
-from boba.domain.llm.events import LLMEvent
-from boba.domain.llm.models import LLMContext
-from boba.domain.llm.observer import LLMRequestObserver
+from boba_next.infra import LLMConfig
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.config import ConfigSection
+from boba_next.validators import ChainConverter, Default, ParseString
+from boba_next.llm.events import LLMEvent
+from boba_next.llm.models import LLMContext
+from boba_next.llm.observer import LLMRequestObserver
 from boba.patterns import (
     StreamSource,
     StreamSourceChainBuilder,
@@ -31,7 +32,8 @@ class LLMTransportSection(ConfigSection[LLMConfig]):
             FieldSpec(
                 name="base_url",
                 converter=ChainConverter(
-                    Default("http://localhost:4000"), ParseString(),
+                    Default("http://localhost:4000"),
+                    ParseString(),
                 ),
                 description="OpenAI-совместимый base URL LLM-сервера "
                 "(LiteLLM/Ollama/...).",

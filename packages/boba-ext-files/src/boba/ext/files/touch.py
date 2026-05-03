@@ -3,16 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
-from boba.domain.core.tools import (
-    ChainConverter,
-    FieldSpec,
-    IsString,
-    NonEmpty,
-    ObjectSchema,
-    Pass,
-    Required,
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.tools import (
     Tool,
     ToolContext,
     ToolExecutionError,
@@ -20,20 +13,15 @@ from boba.domain.core.tools import (
     ToolResult,
     ToolSourceId,
 )
-from boba.domain.core.workspace import (
+from boba_next.validators import ChainConverter, IsString, NonEmpty
+from boba_next.workspace import (
     WorkspaceError,
 )
-from boba.patterns import Converter
 
 
 @dataclass(frozen=True)
 class TouchArgs:
     path: str
-
-
-class TouchArgsConverter(Converter[dict[str, Any], TouchArgs]):
-    def convert(self, value: dict[str, Any]) -> TouchArgs:
-        return TouchArgs(path=value["path"])
 
 
 class TouchTool(Tool[TouchArgs]):
@@ -48,10 +36,7 @@ class TouchTool(Tool[TouchArgs]):
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
 
-    def typed_args_converter(self) -> Converter[dict[str, Any], TouchArgs]:
-        return TouchArgsConverter()
-
-    def definition(self) -> ObjectSchema[dict[str, Any]]:
+    def definition(self) -> ObjectSchema[TouchArgs]:
         return ObjectSchema(
             description=(
                 "Создать пустой файл (включая промежуточные директории). "
@@ -59,13 +44,14 @@ class TouchTool(Tool[TouchArgs]):
                 "содержимое не трогать."
             ),
             fields=[
-                    FieldSpec(
-                        name="path",
-                        description="Путь к файлу.",
-                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
-                    ),
-                ],
-                invariants=Pass()
+                FieldSpec(
+                    name="path",
+                    description="Путь к файлу.",
+                    converter=ChainConverter(IsString(), NonEmpty()),
+                    required=True,
+                ),
+            ],
+            factory=TouchArgs,
         )
 
     def execute(self, ctx: ToolContext, req: TouchArgs) -> ToolResult:
@@ -77,4 +63,3 @@ class TouchTool(Tool[TouchArgs]):
                 message=f"Ошибка touch: {e}",
             ) from e
         return ToolResult(content=f"touch: {req.path}")
-

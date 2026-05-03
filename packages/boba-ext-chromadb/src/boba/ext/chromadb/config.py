@@ -5,19 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.domain.core.config import (
-    ConfigSection,
-    FieldSpec,
-    ObjectSchema,
-)
-from boba.domain.core.validators import (
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.config import ConfigSection
+from boba_next.validators import (
     ChainConverter,
     Default,
     MinValue,
     OneOf,
     ParseInt,
     ParseString,
-    Required,
 )
 from boba.patterns import StrId
 
@@ -44,16 +40,19 @@ class ChromadbSection(ConfigSection[ChromaExtConfig]):
         fields=[
             FieldSpec(
                 name="persist_path",
-                converter=ChainConverter(Required(), ParseString()),
+                converter=ChainConverter(ParseString()),
                 description=(
                     "Путь к persistent ChromaDB (общий с boba-cli-vector-index, "
                     "чтобы агент видел свежепроиндексированные коллекции)."
                 ),
+                required=True,
             ),
             FieldSpec(
                 name="embedding_model",
                 converter=ChainConverter(
-                    Default("default"), ParseString(), OneOf("default"),
+                    Default("default"),
+                    ParseString(),
+                    OneOf("default"),
                 ),
                 description=(
                     "Модель эмбеддингов. v0.1: только 'default' (built-in ONNX). "

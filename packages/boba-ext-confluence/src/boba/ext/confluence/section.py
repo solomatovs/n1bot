@@ -3,22 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
-from bs4.element import Tag
-
-from boba.domain.core.tools import (
-    ChainConverter,
-    Default,
-    FieldSpec,
-    IsBool,
-    IsInt,
-    IsString,
-    MinValue,
-    NonEmpty,
-    ObjectSchema,
-    Pass,
-    Required,
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.tools import (
     Tool,
     ToolContext,
     ToolExecutionError,
@@ -26,10 +13,21 @@ from boba.domain.core.tools import (
     ToolResult,
     ToolSourceId,
 )
-from boba.domain.core.workspace import (
+from boba_next.validators import (
+    ChainConverter,
+    Default,
+    IsBool,
+    IsInt,
+    IsString,
+    MinValue,
+    NonEmpty,
+)
+from boba_next.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
+from bs4.element import Tag
+
 from boba.ext.confluence._parse import (
     Heading,
     collect_headings,
@@ -37,7 +35,6 @@ from boba.ext.confluence._parse import (
     resolve_anchor,
     strip_confluence_macros,
 )
-from boba.patterns import Converter
 
 
 @dataclass(frozen=True)
@@ -47,17 +44,6 @@ class SectionArgs:
     include_subsections: bool
     strip_macros: bool
     max_chars: int
-
-
-class SectionArgsConverter(Converter[dict[str, Any], SectionArgs]):
-    def convert(self, value: dict[str, Any]) -> SectionArgs:
-        return SectionArgs(
-            path=value["path"],
-            anchor=value["anchor"],
-            include_subsections=value["include_subsections"],
-            strip_macros=value["strip_macros"],
-            max_chars=value["max_chars"],
-        )
 
 
 class ConfluenceSectionTool(Tool[SectionArgs]):
@@ -72,10 +58,7 @@ class ConfluenceSectionTool(Tool[SectionArgs]):
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
 
-    def typed_args_converter(self) -> Converter[dict[str, Any], SectionArgs]:
-        return SectionArgsConverter()
-
-    def definition(self) -> ObjectSchema[dict[str, Any]]:
+    def definition(self) -> ObjectSchema[SectionArgs]:
         return ObjectSchema(
             description=(
                 "Раздел Confluence-страницы по anchor (scroll-bookmark-N или idx:N "
@@ -86,7 +69,8 @@ class ConfluenceSectionTool(Tool[SectionArgs]):
                 FieldSpec(
                     name="path",
                     description="Путь к HTML-файлу Confluence-export'а в workspace.",
-                    converter=ChainConverter(Required(), IsString(), NonEmpty()),
+                    converter=ChainConverter(IsString(), NonEmpty()),
+                    required=True,
                 ),
                 FieldSpec(
                     name="anchor",
@@ -94,7 +78,8 @@ class ConfluenceSectionTool(Tool[SectionArgs]):
                         "Anchor заголовка из confluence_outline "
                         "(scroll-bookmark-N или idx:N). Ведущий '#' необязателен."
                     ),
-                    converter=ChainConverter(Required(), IsString(), NonEmpty()),
+                    converter=ChainConverter(IsString(), NonEmpty()),
+                    required=True,
                 ),
                 FieldSpec(
                     name="include_subsections",
@@ -116,12 +101,10 @@ class ConfluenceSectionTool(Tool[SectionArgs]):
                 FieldSpec(
                     name="max_chars",
                     description="Лимит длины ответа в символах.",
-                    converter=ChainConverter(
-                        Default(8000), IsInt(), MinValue(100)
-                    ),
+                    converter=ChainConverter(Default(8000), IsInt(), MinValue(100)),
                 ),
             ],
-            invariants=Pass(),
+            factory=SectionArgs,
         )
 
     def execute(self, ctx: ToolContext, req: SectionArgs) -> ToolResult:

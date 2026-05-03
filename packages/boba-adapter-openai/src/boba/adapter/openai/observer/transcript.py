@@ -6,8 +6,8 @@ import json
 from collections.abc import Iterable
 from typing import Any
 
-from boba.domain.core.workspace import HistoryWorkspaceShell
-from boba.domain.llm.observer import LLMRequestObserver, RequestOutcome
+from boba_next.workspace import HistoryWorkspaceShell
+from boba_next.llm.observer import LLMRequestObserver, RequestOutcome
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 

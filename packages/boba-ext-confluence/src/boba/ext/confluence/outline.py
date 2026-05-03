@@ -3,21 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
-from boba.domain.core.tools import (
-    ChainConverter,
-    Default,
-    FieldSpec,
-    IsInt,
-    IsString,
-    MaxValue,
-    MinValue,
-    NonEmpty,
-    Nullable,
-    ObjectSchema,
-    Pass,
-    Required,
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.tools import (
     Tool,
     ToolContext,
     ToolExecutionError,
@@ -25,17 +13,27 @@ from boba.domain.core.tools import (
     ToolResult,
     ToolSourceId,
 )
-from boba.domain.core.workspace import (
+from boba_next.validators import (
+    ChainConverter,
+    Default,
+    IsInt,
+    IsString,
+    MaxValue,
+    MinValue,
+    NonEmpty,
+    Nullable,
+)
+from boba_next.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
+
 from boba.ext.confluence._parse import (
     Heading,
     anchor_for,
     collect_headings,
     load_soup,
 )
-from boba.patterns import Converter
 
 
 @dataclass(frozen=True)
@@ -43,15 +41,6 @@ class OutlineArgs:
     path: str
     max_depth: int | None
     limit: int
-
-
-class OutlineArgsConverter(Converter[dict[str, Any], OutlineArgs]):
-    def convert(self, value: dict[str, Any]) -> OutlineArgs:
-        return OutlineArgs(
-            path=value["path"],
-            max_depth=value.get("max_depth"),
-            limit=value["limit"],
-        )
 
 
 class ConfluenceOutlineTool(Tool[OutlineArgs]):
@@ -66,10 +55,7 @@ class ConfluenceOutlineTool(Tool[OutlineArgs]):
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
 
-    def typed_args_converter(self) -> Converter[dict[str, Any], OutlineArgs]:
-        return OutlineArgsConverter()
-
-    def definition(self) -> ObjectSchema[dict[str, Any]]:
+    def definition(self) -> ObjectSchema[OutlineArgs]:
         return ObjectSchema(
             description=(
                 "Оглавление Confluence-export'а: иерархия <h1>..<h6> с "
@@ -80,7 +66,8 @@ class ConfluenceOutlineTool(Tool[OutlineArgs]):
                 FieldSpec(
                     name="path",
                     description="Путь к HTML-файлу Confluence-export'а в workspace.",
-                    converter=ChainConverter(Required(), IsString(), NonEmpty()),
+                    converter=ChainConverter(IsString(), NonEmpty()),
+                    required=True,
                 ),
                 FieldSpec(
                     name="max_depth",
@@ -98,7 +85,7 @@ class ConfluenceOutlineTool(Tool[OutlineArgs]):
                     converter=ChainConverter(Default(200), IsInt(), MinValue(1)),
                 ),
             ],
-            invariants=Pass(),
+            factory=OutlineArgs,
         )
 
     def execute(self, ctx: ToolContext, req: OutlineArgs) -> ToolResult:

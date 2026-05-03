@@ -9,12 +9,9 @@ from boba.cli.vector_index.chunking import (
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SIZE,
 )
-from boba.domain.core.config import (
-    ConfigSection,
-    FieldSpec,
-    ObjectSchema,
-)
-from boba.domain.core.validators import (
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.config import ConfigSection
+from boba_next.validators import (
     ChainConverter,
     Default,
     Nullable,
@@ -23,7 +20,6 @@ from boba.domain.core.validators import (
     ParseCsvList,
     ParseInt,
     ParseString,
-    Required,
 )
 from boba.patterns import StrId
 
@@ -69,11 +65,11 @@ class VectorIndexSection(ConfigSection[VectorIndexConfig]):
             FieldSpec(
                 name="action",
                 converter=ChainConverter(
-                    Required(), ParseString(), OneOf(*sorted(ACTIONS)),
+                    ParseString(),
+                    OneOf(*sorted(ACTIONS)),
                 ),
-                description=(
-                    f"Что делать: один из {sorted(ACTIONS)}. Обязательно."
-                ),
+                required=True,
+                description=(f"Что делать: один из {sorted(ACTIONS)}. Обязательно."),
             ),
             FieldSpec(
                 name="paths",
@@ -87,8 +83,7 @@ class VectorIndexSection(ConfigSection[VectorIndexConfig]):
                 name="collection",
                 converter=Nullable(ParseString()),
                 description=(
-                    "Имя коллекции в ChromaDB. Обязательно для "
-                    "action=index/delete."
+                    "Имя коллекции в ChromaDB. Обязательно для action=index/delete."
                 ),
             ),
             FieldSpec(
@@ -103,7 +98,8 @@ class VectorIndexSection(ConfigSection[VectorIndexConfig]):
             FieldSpec(
                 name="chunk_size",
                 converter=ChainConverter(
-                    Default(DEFAULT_CHUNK_SIZE), ParseInt(),
+                    Default(DEFAULT_CHUNK_SIZE),
+                    ParseInt(),
                 ),
                 description=(
                     f"Размер чанка в символах (default {DEFAULT_CHUNK_SIZE})."
@@ -112,31 +108,27 @@ class VectorIndexSection(ConfigSection[VectorIndexConfig]):
             FieldSpec(
                 name="chunk_overlap",
                 converter=ChainConverter(
-                    Default(DEFAULT_CHUNK_OVERLAP), ParseInt(),
+                    Default(DEFAULT_CHUNK_OVERLAP),
+                    ParseInt(),
                 ),
                 description=(
-                    f"Перекрытие чанков в символах "
-                    f"(default {DEFAULT_CHUNK_OVERLAP})."
+                    f"Перекрытие чанков в символах (default {DEFAULT_CHUNK_OVERLAP})."
                 ),
             ),
             FieldSpec(
                 name="confirm_skip",
                 converter=ChainConverter(Default(False), ParseBool()),
-                description=(
-                    "Пропустить интерактивное подтверждение "
-                    "(action=delete)."
-                ),
+                description=("Пропустить интерактивное подтверждение (action=delete)."),
             ),
             FieldSpec(
                 name="verbose",
                 converter=ChainConverter(Default(0), ParseInt()),
-                description=(
-                    "Verbosity logging: 0=WARN, 1=INFO, 2=DEBUG."
-                ),
+                description=("Verbosity logging: 0=WARN, 1=INFO, 2=DEBUG."),
             ),
         ],
         factory=VectorIndexConfig,
     )
+
 
 @dataclass(frozen=True)
 class ChromadbPersistConfig:
@@ -161,14 +153,13 @@ class ChromadbPersistSection(ConfigSection[ChromadbPersistConfig]):
         fields=[
             FieldSpec(
                 name="persist_path",
-                converter=ChainConverter(Required(), ParseString()),
+                converter=ChainConverter(ParseString()),
                 description=(
                     "Путь к persistent ChromaDB store. Общий с "
                     "boba-ext-chromadb (если установлен)."
                 ),
+                required=True,
             ),
         ],
         factory=ChromadbPersistConfig,
     )
-
-

@@ -3,17 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
-from boba.domain.core.tools import (
-    ChainConverter,
-    Default,
-    FieldSpec,
-    IsString,
-    NonEmpty,
-    ObjectSchema,
-    Pass,
-    Required,
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.tools import (
     Tool,
     ToolContext,
     ToolExecutionError,
@@ -21,10 +13,10 @@ from boba.domain.core.tools import (
     ToolResult,
     ToolSourceId,
 )
-from boba.domain.core.workspace import (
+from boba_next.validators import ChainConverter, Default, IsString, NonEmpty
+from boba_next.workspace import (
     WorkspaceError,
 )
-from boba.patterns import Converter
 
 
 @dataclass(frozen=True)
@@ -32,15 +24,6 @@ class WriteArgs:
     path: str
     content: str
     encoding: str
-
-
-class WriteArgsConverter(Converter[dict[str, Any], WriteArgs]):
-    def convert(self, value: dict[str, Any]) -> WriteArgs:
-        return WriteArgs(
-            path=value["path"],
-            content=value["content"],
-            encoding=value["encoding"],
-        )
 
 
 class WriteTool(Tool[WriteArgs]):
@@ -55,37 +38,36 @@ class WriteTool(Tool[WriteArgs]):
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
 
-    def typed_args_converter(self) -> Converter[dict[str, Any], WriteArgs]:
-        return WriteArgsConverter()
-
-    def definition(self) -> ObjectSchema[dict[str, Any]]:
+    def definition(self) -> ObjectSchema[WriteArgs]:
         return ObjectSchema(
             description=(
                 "Перезаписать файл указанным содержимым. Если файла или "
                 "промежуточных директорий нет — создать."
             ),
             fields=[
-                    FieldSpec(
-                        name="path",
-                        description="Путь к файлу.",
-                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
+                FieldSpec(
+                    name="path",
+                    description="Путь к файлу.",
+                    converter=ChainConverter(IsString(), NonEmpty()),
+                    required=True,
+                ),
+                FieldSpec(
+                    name="content",
+                    description="Новое содержимое файла.",
+                    converter=ChainConverter(IsString()),
+                    required=True,
+                ),
+                FieldSpec(
+                    name="encoding",
+                    description="Кодировка файла. По умолчанию 'utf-8'.",
+                    converter=ChainConverter(
+                        Default("utf-8"),
+                        IsString(),
+                        NonEmpty(),
                     ),
-                    FieldSpec(
-                        name="content",
-                        description="Новое содержимое файла.",
-                        converter=ChainConverter(Required(), IsString()),
-                    ),
-                    FieldSpec(
-                        name="encoding",
-                        description="Кодировка файла. По умолчанию 'utf-8'.",
-                        converter=ChainConverter(
-                            Default("utf-8"),
-                            IsString(),
-                            NonEmpty(),
-                        ),
-                    ),
-                ],
-                invariants=Pass()
+                ),
+            ],
+            factory=WriteArgs,
         )
 
     def execute(self, ctx: ToolContext, req: WriteArgs) -> ToolResult:
@@ -102,4 +84,3 @@ class WriteTool(Tool[WriteArgs]):
         return ToolResult(
             content=f"Файл {action}: {req.path} ({len(req.content)} символов)",
         )
-

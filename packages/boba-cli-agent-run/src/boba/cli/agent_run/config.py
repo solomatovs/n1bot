@@ -5,21 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.domain.core.config import (
-    ConfigSection,
-    FieldSpec,
-    ObjectSchema,
-)
-from boba.domain.core.validators import (
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.config import ConfigSection
+from boba_next.validators import (
     ChainConverter,
     Nullable,
     ParseCsvList,
     ParseFloat,
     ParseInt,
     ParseString,
-    Required,
 )
-from boba.domain.llm.models import SamplingParams
+from boba_next.llm.models import SamplingParams
 from boba.patterns import StrId
 
 __all__ = ["AgentRunConfig", "AgentRunSection"]
@@ -71,8 +67,9 @@ class AgentRunSection(ConfigSection[AgentRunConfig]):
             ),
             FieldSpec(
                 name="model",
-                converter=ChainConverter(Required(), ParseString()),
+                converter=ChainConverter(ParseString()),
                 description="LLM-модель (напр. qwen3.5-35b). Обязательно.",
+                required=True,
             ),
             FieldSpec(
                 name="temperature",

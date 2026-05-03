@@ -21,9 +21,7 @@ class ChromaKnowledgeBase:
 
         self._cfg = cfg
         self._client = chromadb.PersistentClient(path=cfg.persist_path)
-        logger.info(
-            "ChromaKnowledgeBase opened persist_path=%r", cfg.persist_path
-        )
+        logger.info("ChromaKnowledgeBase opened persist_path=%r", cfg.persist_path)
 
     def list_collections(self) -> list[CollectionInfo]:
         """Все коллекции; description берётся из metadata["description"]."""
@@ -86,8 +84,7 @@ class ChromaKnowledgeBase:
                 raise CollectionNotFoundError(tool_id, name) from e
             raise KnowledgeBaseError(
                 tool_id,
-                f"chromadb get_collection({name!r}) failed: "
-                f"{type(e).__name__}: {e}",
+                f"chromadb get_collection({name!r}) failed: {type(e).__name__}: {e}",
             ) from e
 
 

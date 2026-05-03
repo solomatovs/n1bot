@@ -4,29 +4,21 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
 
-from boba.domain.core.tools import (
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.tools import Tool, ToolContext, ToolId, ToolResult, ToolSourceId
+from boba_next.validators import (
     ChainConverter,
     Default,
-    FieldSpec,
     IsInt,
     IsString,
     MaxValue,
     MinLength,
     MinValue,
-    ObjectSchema,
-    Pass,
-    Required,
-    Tool,
-    ToolContext,
-    ToolId,
-    ToolResult,
-    ToolSourceId,
 )
+
 from boba.ext.chromadb.config import ChromaExtConfig
 from boba.ext.chromadb.kb import ChromaKnowledgeBase
-from boba.patterns import Converter
 
 
 @dataclass(frozen=True)
@@ -34,15 +26,6 @@ class KbSearchArgs:
     collection: str
     query: str
     top_k: int
-
-
-class KbSearchArgsConverter(Converter[dict[str, Any], KbSearchArgs]):
-    def convert(self, value: dict[str, Any]) -> KbSearchArgs:
-        return KbSearchArgs(
-            collection=value["collection"],
-            query=value["query"],
-            top_k=value["top_k"],
-        )
 
 
 class KbSearchTool(Tool[KbSearchArgs]):
@@ -61,10 +44,7 @@ class KbSearchTool(Tool[KbSearchArgs]):
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
 
-    def typed_args_converter(self) -> Converter[dict[str, Any], KbSearchArgs]:
-        return KbSearchArgsConverter()
-
-    def definition(self) -> ObjectSchema[dict[str, Any]]:
+    def definition(self) -> ObjectSchema[KbSearchArgs]:
         return ObjectSchema(
             description=(
                 "Semantic search по KB-коллекции ChromaDB. Возвращает "
@@ -77,7 +57,8 @@ class KbSearchTool(Tool[KbSearchArgs]):
                 FieldSpec(
                     name="collection",
                     description="Имя коллекции из kb_list_collections.",
-                    converter=ChainConverter(Required(), IsString(), MinLength(1)),
+                    converter=ChainConverter(IsString(), MinLength(1)),
+                    required=True,
                 ),
                 FieldSpec(
                     name="query",
@@ -86,7 +67,8 @@ class KbSearchTool(Tool[KbSearchArgs]):
                         "будет преобразован в embedding и сопоставлен "
                         "с документами коллекции."
                     ),
-                    converter=ChainConverter(Required(), IsString(), MinLength(1)),
+                    converter=ChainConverter(IsString(), MinLength(1)),
+                    required=True,
                 ),
                 FieldSpec(
                     name="top_k",
@@ -102,7 +84,7 @@ class KbSearchTool(Tool[KbSearchArgs]):
                     ),
                 ),
             ],
-            invariants=Pass(),
+            factory=KbSearchArgs,
         )
 
     def execute(self, ctx: ToolContext, req: KbSearchArgs) -> ToolResult:

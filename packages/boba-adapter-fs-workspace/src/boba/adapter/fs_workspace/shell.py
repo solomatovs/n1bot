@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Generic, TypeVar
 
 from boba.adapter.fs_workspace.growbuffer import GrowBuffer
-from boba.domain.core.workspace import (
+from boba_next.workspace import (
     EntryMeta,
     GrepMatch,
     HistoryWorkspaceShell,
@@ -814,8 +814,5 @@ class FsScratchWorkspaceShell(FsWorkspaceShell[WorkspaceId], ScratchWorkspaceShe
     """Файловый ScratchWorkspaceShell."""
 
 
-class FsPromptWorkspaceShell(
-    FsWorkspaceShell[PromptWorkspaceId], PromptWorkspaceShell
-):
+class FsPromptWorkspaceShell(FsWorkspaceShell[PromptWorkspaceId], PromptWorkspaceShell):
     """Файловый PromptWorkspaceShell."""
-

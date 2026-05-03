@@ -3,18 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
-from boba.domain.core.tools import (
-    ChainConverter,
-    Default,
-    FieldSpec,
-    IsBool,
-    IsString,
-    NonEmpty,
-    ObjectSchema,
-    Pass,
-    Required,
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.tools import (
     Tool,
     ToolContext,
     ToolExecutionError,
@@ -22,11 +13,17 @@ from boba.domain.core.tools import (
     ToolResult,
     ToolSourceId,
 )
-from boba.domain.core.workspace import (
+from boba_next.validators import (
+    ChainConverter,
+    Default,
+    IsBool,
+    IsString,
+    NonEmpty,
+)
+from boba_next.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
-from boba.patterns import Converter
 
 
 @dataclass(frozen=True)
@@ -36,17 +33,6 @@ class EditArgs:
     new_string: str
     replace_all: bool
     encoding: str
-
-
-class EditArgsConverter(Converter[dict[str, Any], EditArgs]):
-    def convert(self, value: dict[str, Any]) -> EditArgs:
-        return EditArgs(
-            path=value["path"],
-            old_string=value["old_string"],
-            new_string=value["new_string"],
-            replace_all=value["replace_all"],
-            encoding=value["encoding"],
-        )
 
 
 class EditTool(Tool[EditArgs]):
@@ -61,10 +47,7 @@ class EditTool(Tool[EditArgs]):
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
 
-    def typed_args_converter(self) -> Converter[dict[str, Any], EditArgs]:
-        return EditArgsConverter()
-
-    def definition(self) -> ObjectSchema[dict[str, Any]]:
+    def definition(self) -> ObjectSchema[EditArgs]:
         return ObjectSchema(
             description=(
                 "Заменить подстроку old_string на new_string. По умолчанию "
@@ -73,37 +56,40 @@ class EditTool(Tool[EditArgs]):
                 "Совпадение точное, посимвольное."
             ),
             fields=[
-                    FieldSpec(
-                        name="path",
-                        description="Путь к файлу.",
-                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
+                FieldSpec(
+                    name="path",
+                    description="Путь к файлу.",
+                    converter=ChainConverter(IsString(), NonEmpty()),
+                    required=True,
+                ),
+                FieldSpec(
+                    name="old_string",
+                    description="Подстрока для замены. Совпадение точное.",
+                    converter=ChainConverter(IsString(), NonEmpty()),
+                    required=True,
+                ),
+                FieldSpec(
+                    name="new_string",
+                    description="Заменяющий текст. Пустая строка = удаление.",
+                    converter=ChainConverter(IsString()),
+                    required=True,
+                ),
+                FieldSpec(
+                    name="replace_all",
+                    description="Заменить все вхождения. По умолчанию false.",
+                    converter=ChainConverter(Default(False), IsBool()),
+                ),
+                FieldSpec(
+                    name="encoding",
+                    description="Кодировка файла. По умолчанию 'utf-8'.",
+                    converter=ChainConverter(
+                        Default("utf-8"),
+                        IsString(),
+                        NonEmpty(),
                     ),
-                    FieldSpec(
-                        name="old_string",
-                        description="Подстрока для замены. Совпадение точное.",
-                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
-                    ),
-                    FieldSpec(
-                        name="new_string",
-                        description="Заменяющий текст. Пустая строка = удаление.",
-                        converter=ChainConverter(Required(), IsString()),
-                    ),
-                    FieldSpec(
-                        name="replace_all",
-                        description="Заменить все вхождения. По умолчанию false.",
-                        converter=ChainConverter(Default(False), IsBool()),
-                    ),
-                    FieldSpec(
-                        name="encoding",
-                        description="Кодировка файла. По умолчанию 'utf-8'.",
-                        converter=ChainConverter(
-                            Default("utf-8"),
-                            IsString(),
-                            NonEmpty(),
-                        ),
-                    ),
-                ],
-                invariants=Pass()
+                ),
+            ],
+            factory=EditArgs,
         )
 
     def execute(self, ctx: ToolContext, req: EditArgs) -> ToolResult:

@@ -6,8 +6,8 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from boba.domain.core.workspace import HistoryWorkspaceShell
-from boba.domain.llm.observer import LLMRequestObserver, RequestOutcome
+from boba_next.workspace import HistoryWorkspaceShell
+from boba_next.llm.observer import LLMRequestObserver, RequestOutcome
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 _SENSITIVE_HEADERS = frozenset(
@@ -74,9 +74,7 @@ class WireTraceChatCompletionObserver(
         headers: Mapping[str, str],
         body: bytes,
     ) -> None:
-        headers_json = json.dumps(
-            _mask_headers(headers), ensure_ascii=False, indent=2
-        )
+        headers_json = json.dumps(_mask_headers(headers), ensure_ascii=False, indent=2)
         body_str = _format_body(body)
         self._append(
             f"## HTTP Request\n\n"
@@ -90,9 +88,7 @@ class WireTraceChatCompletionObserver(
         status_code: int,
         headers: Mapping[str, str],
     ) -> None:
-        headers_json = json.dumps(
-            _mask_headers(headers), ensure_ascii=False, indent=2
-        )
+        headers_json = json.dumps(_mask_headers(headers), ensure_ascii=False, indent=2)
         self._append(
             f"## HTTP Response {status_code}\n\n"
             f"Headers:\n\n`json\n{headers_json}\n`\n\n"
