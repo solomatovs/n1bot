@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from boba.patterns import ContextPrioritySource, StrId
 from boba.agent.prompt import PromptFactory, PromptProvider
 from boba.agent.turn.spec import TurnResolveContext, TurnState
 from boba.llm.models import (
@@ -13,6 +12,7 @@ from boba.llm.models import (
     LLMToolRequest,
     LLMToolSchema,
 )
+from boba.patterns import ContextPrioritySource, StrId
 from boba.tools import Tool, ToolsService, ToolWireSchemaBuilder
 
 _MODEL_ID = StrId("model")
@@ -72,11 +72,7 @@ class SystemPromptReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnS
         return self._priority
 
     def apply(self, ctx: TurnResolveContext, state: TurnState) -> TurnState:
-        content = (
-            PromptFactory(ctx.agent, self._providers)
-            .build()
-            .to_string()
-        )
+        content = PromptFactory(ctx.agent, self._providers).build().to_string()
         if content:
             state.system_message = LLMMessage(role="system", content=content)
         return state

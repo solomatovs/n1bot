@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from typing import assert_never
 
-from boba.patterns import StreamSource
 from boba.agent.dialogue_writer import DialogueWriter
 from boba.agent.errors import AgentLLMFeedbackError
 from boba.agent.events import AgentEvent, FeedbackToLLMAdded
@@ -13,6 +12,7 @@ from boba.agent.models import AgentContext
 from boba.agent.payloads import LLMCritique, LLMFeedback, ToolCallRejection
 from boba.errors import RoutableError, UserFeedbackError
 from boba.llm.models import RequestId
+from boba.patterns import StreamSource
 
 
 class AgentErrorRouter:
@@ -46,7 +46,8 @@ class AgentErrorRouter:
                 self._writer.append_llm_critique(c)
             case ToolCallRejection(tool_call_id=tid, content=c):
                 self._writer.append_tool_call_rejection(
-                    tool_call_id=tid, content=c,
+                    tool_call_id=tid,
+                    content=c,
                 )
             case _:
                 assert_never(feedback)

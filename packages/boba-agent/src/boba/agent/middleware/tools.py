@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 
-from boba.patterns import StreamSource
 from boba.agent.dialogue_writer import DialogueWriter
 from boba.agent.events import (
     AgentEvent,
@@ -17,6 +16,7 @@ from boba.agent.events import (
 )
 from boba.agent.models import AgentContext
 from boba.agent.payloads import ToolCallFailure, ToolCallResult
+from boba.patterns import StreamSource
 from boba.tools import (
     ToolCall as DomainToolCall,
 )
@@ -185,5 +185,3 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
                 continue
 
             yield event
-
-
