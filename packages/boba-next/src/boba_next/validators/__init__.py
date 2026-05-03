@@ -1,7 +1,7 @@
 """confignext.validators: конвертеры/валидаторы по группам.
 
 - base.py            — MISSING, Pass, ChainConverter, ValueConverter (база).
-- preconditions.py   — Required, Default, Nullable (наличие значения).
+- preconditions.py   — NotNull, Default, Nullable (наличие значения).
 - types.py           — Parse* (coercion) и Is* (строгий type-guard).
 - constraints.py     — OneOf / Min*/Max* / NonEmpty (ограничения).
 - invariants.py      — MutuallyExclusive / RequiresTogether / Ordered (object-level).
@@ -28,8 +28,8 @@ from boba_next.validators.invariants import (
 )
 from boba_next.validators.preconditions import (
     Default,
+    NotNull,
     Nullable,
-    Required,
 )
 from boba_next.validators.types import (
     IsBool,
@@ -64,7 +64,7 @@ __all__ = [
     "ParseInt",
     "ParseString",
     "Pass",
-    "Required",
+    "NotNull",
     "RequiresTogether",
     "ValueConverter",
 ]

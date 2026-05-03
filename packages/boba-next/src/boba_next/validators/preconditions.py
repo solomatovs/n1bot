@@ -1,4 +1,4 @@
-"""Предусловия наличия значения: Required, Default, Nullable."""
+"""Предусловия наличия значения: NotNull, Default, Nullable."""
 
 from __future__ import annotations
 
@@ -7,17 +7,22 @@ from typing import Any
 from boba.patterns import Converter, MissingValueError
 from boba_next.validators.base import MISSING, ValueConverter
 
-__all__ = ["Default", "Nullable", "Required"]
+__all__ = ["Default", "NotNull", "Nullable"]
 
 
-class Required(Converter[Any, Any]):
-    """Параметр обязателен; MISSING/None/NullValue → MissingValueError."""
+class NotNull(Converter[Any, Any]):
+    """Item-level non-null: MISSING/None/NullValue → MissingValueError.
+
+    Используется внутри `ScalarItem.converter` для коллекций — отвергает
+    null-элементы массивов/словарей. Для root-level «поле обязательно в
+    объекте» используй декларативный `FieldSpec(..., required=True)`.
+    """
 
     def convert(self, value: Any) -> Any:
         if value is MISSING:
-            raise MissingValueError("параметр обязателен — значение не передано")
+            raise MissingValueError("значение отсутствует")
         if ValueConverter.unwrap(value) is None:
-            raise MissingValueError("параметр обязателен — null недопустим")
+            raise MissingValueError("null недопустим")
         return value
 
 

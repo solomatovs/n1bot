@@ -33,7 +33,7 @@ from boba_next import (
     ParseBool,
     ParseInt,
     ParseString,
-    Required,
+    NotNull,
 )
 
 from boba.config.cli.next import CliSource
@@ -274,7 +274,7 @@ def test_lookup_origin_traces_back_to_source(tmp_path: Path):
     assert bundle.flat.origin_of(ConfigPath.parse("$a.c")).value() == "env"
 
 
-# Re-export Required/NonEmpty чтобы pyright не считал их неиспользованными
+# Re-export NotNull/NonEmpty чтобы pyright не считал их неиспользованными
 # (они используются в схеме параметров, см. _PARAM_OVERLAY_SCHEMA выше).
-_ = Required
+_ = NotNull
 _ = NonEmpty

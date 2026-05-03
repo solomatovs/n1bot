@@ -29,7 +29,7 @@ from boba_next import (
     ParseBool,
     ParseInt,
     ParseString,
-    Required,
+    NotNull,
     ScalarItem,
     ToolArgsValidator,
 )
@@ -119,7 +119,7 @@ _CHAINLIT_SCHEMA: ObjectSchema[_Chainlit] = ObjectSchema(
     fields=[
         CollectionField(
             name="models",
-            reader=ScalarItem(ChainConverter(Required(), ParseString(), NonEmpty())),
+            reader=ScalarItem(ChainConverter(NotNull(), ParseString(), NonEmpty())),
             shape=IndexedShape(),
         ),
     ],
@@ -163,7 +163,7 @@ _LIMITS_SCHEMA: ObjectSchema[_Limits] = ObjectSchema(
     fields=[
         CollectionField(
             name="limits",
-            reader=ScalarItem(ChainConverter(Required(), ParseInt(), MinValue(0))),
+            reader=ScalarItem(ChainConverter(NotNull(), ParseInt(), MinValue(0))),
             shape=KeyedShape(),
         ),
     ],

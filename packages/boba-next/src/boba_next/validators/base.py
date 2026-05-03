@@ -96,7 +96,7 @@ class ValueConverter(Converter[Any, Any]):
       - `unwrap(value)` — MISSING/ConfigValue/primitive → primitive (или MISSING).
       - `ensure(value)` — primitive (после Default) оборачивается через
         свежую PythonValueFactory; ConfigValue остаётся как есть.
-    Используются и подклассами, и Required/Nullable снаружи.
+    Используются и подклассами, и NotNull/Nullable снаружи.
     """
 
     def convert(self, value: Any) -> Any:

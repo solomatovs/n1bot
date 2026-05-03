@@ -30,7 +30,7 @@ from boba_next import (
     ParseBool,
     ParseInt,
     ParseString,
-    Required,
+    NotNull,
     StringValue,
 )
 
