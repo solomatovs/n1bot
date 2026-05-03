@@ -13,6 +13,7 @@ from boba.adapter.fs_workspace import (
 from boba.adapter.messages import InMemoryMessageService
 from boba.adapter.openai import (
     LLMTransportSection,
+    OpenAIChatVisitor,
     TranscriptChatCompletionObserver,
     create_llm_source,
 )
@@ -86,6 +87,7 @@ class ChatSession:
 
         tool_loader = ToolPluginLoader(ExtensionContext(config=app))
         self._tools_service = tool_loader.tools_service()
+        self._tool_result_visitor = OpenAIChatVisitor()
 
     @property
     def models(self) -> list[str]:
@@ -129,6 +131,7 @@ class ChatSession:
                 prompt_providers=self._prompt_providers,
                 message_service=InMemoryMessageService(),
                 tools_service=self._tools_service,
+                tool_result_visitor=self._tool_result_visitor,
             ),
             tool_ctx=tool_ctx,
             sink=extra_sink,

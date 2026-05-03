@@ -36,6 +36,7 @@ from boba.patterns import (
     StreamSourceChainBuilder,
     StreamSourceLoop,
 )
+from boba.rendering import ToolResultVisitor
 from boba.tools import ToolContext, ToolsService
 
 
@@ -45,6 +46,7 @@ class AgentComponents:
     prompt_providers: Sequence[PromptProvider]
     message_service: MessageService
     tools_service: ToolsService
+    tool_result_visitor: ToolResultVisitor[str]
 
 
 def build_turn_spec(components: AgentComponents) -> TurnSpec:
@@ -73,7 +75,11 @@ def create_agent_source(
     chain_builder.use(IterationCounterMiddleware)
     chain_builder.use(
         lambda inner: ToolExecutionMiddleware(
-            inner, components.tools_service, tool_ctx, writer
+            inner,
+            components.tools_service,
+            tool_ctx,
+            writer,
+            components.tool_result_visitor,
         )
     )
     chain_builder.use(

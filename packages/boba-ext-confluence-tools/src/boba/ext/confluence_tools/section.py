@@ -27,6 +27,7 @@ from boba.ext.confluence_tools._parse import (
     resolve_anchor,
     strip_confluence_macros,
 )
+from boba.rendering import TextResult
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -181,7 +182,7 @@ class ConfluenceSectionTool(Tool[SectionArgs]):
                 + f"\n... (truncated at max_chars={req.max_chars})"
             )
 
-        return ToolResult(content=html)
+        return TextResult(text=html)
 
 
 def _find_stop_heading(

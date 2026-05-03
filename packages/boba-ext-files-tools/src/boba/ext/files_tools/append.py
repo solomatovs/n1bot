@@ -15,6 +15,7 @@ from boba.coercion import (
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.rendering import TextResult
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -113,8 +114,7 @@ class AppendTool(Tool[AppendArgs]):
                 message=f"Ошибка записи: {e}",
             ) from e
         action = "дозаписан" if existed else "создан"
-        return ToolResult(
-            content=f"Файл {action}: {req.path} ({len(req.content)} символов)",
+        return TextResult(text=f"Файл {action}: {req.path} ({len(req.content)} символов)",
         )
 
 

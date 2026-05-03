@@ -26,6 +26,7 @@ from boba.ext.html_tools._parse import (
     load_soup,
     resolve_anchor,
 )
+from boba.rendering import TextResult
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -164,7 +165,7 @@ class HtmlSectionTool(Tool[SectionArgs]):
                 + f"\n... (truncated at max_chars={req.max_chars})"
             )
 
-        return ToolResult(content=html)
+        return TextResult(text=html)
 
 
 def _find_stop_heading(

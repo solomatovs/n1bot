@@ -16,6 +16,7 @@ from boba.coercion import (
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.rendering import TextResult
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -114,7 +115,7 @@ class CpTool(Tool[CpArgs]):
                 tool_id=self._ID,
                 message=f"Ошибка копирования: {e}",
             ) from e
-        return ToolResult(content=f"Скопировано: {req.src} → {req.dst}")
+        return TextResult(text=f"Скопировано: {req.src} → {req.dst}")
 
 
 class CpToolSection(ConfigSection[CpToolConfig]):

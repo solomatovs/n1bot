@@ -11,6 +11,7 @@ from boba.adapter.openai.terminal import OpenAITerminal, build_openai_client
 from boba.adapter.openai.tool_call_reindexer import (
     DuplicateToolCallIndexReindexer,
 )
+from boba.adapter.openai.visitor import OpenAIChatVisitor
 from boba.llm.observer import RequestOutcome
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "LLMTransportSection",
     "MetricsChatCompletionObserver",
     "MultiKeyReasoningExtractor",
+    "OpenAIChatVisitor",
     "OpenAITerminal",
     "RequestOutcome",
     "TranscriptChatCompletionObserver",

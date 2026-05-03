@@ -9,6 +9,7 @@ from typing import ClassVar
 from boba.coercion import ChainCoercer, Default, IsString, NonEmpty, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.rendering import TextResult
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -97,7 +98,7 @@ class StatTool(Tool[StatArgs]):
             f"size: {meta.size}\n"
             f"modified: {meta.modified.isoformat()}"
         )
-        return ToolResult(content=body)
+        return TextResult(text=body)
 
 
 class StatToolSection(ConfigSection[StatToolConfig]):

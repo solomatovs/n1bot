@@ -16,6 +16,7 @@ from boba.coercion import (
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.rendering import TextResult
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -106,7 +107,7 @@ class RmTool(Tool[RmArgs]):
                 tool_id=self._ID,
                 message=f"Ошибка удаления: {e}",
             ) from e
-        return ToolResult(content=f"Удалено: {req.path}")
+        return TextResult(text=f"Удалено: {req.path}")
 
 
 class RmToolSection(ConfigSection[RmToolConfig]):

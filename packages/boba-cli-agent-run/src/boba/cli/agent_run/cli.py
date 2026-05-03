@@ -19,6 +19,7 @@ from boba.adapter.fs_workspace import (
 from boba.adapter.messages import InMemoryMessageService
 from boba.adapter.openai import (
     LLMTransportSection,
+    OpenAIChatVisitor,
     TranscriptChatCompletionObserver,
     WireTraceChatCompletionObserver,
     create_llm_source,
@@ -60,6 +61,8 @@ def main() -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
     return _run(app)
+
+
 
 
 def _build_app() -> AppConfig:
@@ -132,6 +135,7 @@ def _run(app: AppConfig) -> int:
             prompt_providers=prompt_loader.prompt_providers(),
             message_service=message_service,
             tools_service=tool_loader.tools_service(),
+            tool_result_visitor=OpenAIChatVisitor(),
         ),
         tool_ctx=ToolContext(project_workspace=project_workspace),
         sink=ConsoleSink(sys.stdout, sys.stderr),

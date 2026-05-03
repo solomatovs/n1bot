@@ -16,6 +16,7 @@ from boba.coercion import (
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.rendering import TextResult
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -147,8 +148,7 @@ class EditTool(Tool[EditArgs]):
                 tool_id=self._ID,
                 message=f"Ошибка edit: {e}",
             ) from e
-        return ToolResult(
-            content=f"Заменено в {req.path}: {applied} вхождение(й).",
+        return TextResult(text=f"Заменено в {req.path}: {applied} вхождение(й).",
         )
 
 

@@ -3,11 +3,11 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "boba-agent"
+name = "boba-rendering"
 version = "0.1.0"
-description = "Boba agent runtime: Agent orchestrator, turn reducers, middleware, dialogue/messages."
+description = "Boba rendering protocols: ToolResult subtypes + Renderer for LLM tool-message serialization."
 requires-python = ">=3.11,<4"
-dependencies = ["boba-llm", "boba-tools", "boba-foundation", "boba-patterns", "boba-rendering"]
+dependencies = []
 
 [tool.setuptools.packages.find]
 where = ["src"]
