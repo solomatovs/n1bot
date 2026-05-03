@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-ext-chromadb-tools"
+version = "0.1.0"
+description = "Read-only ChromaDB knowledge-base tools (kb_search, kb_list_collections) for the Boba agent."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-config",
+    "boba-ext-chromadb-shared",
+    "boba-foundation",
+    "boba-patterns",
+    "boba-tools",
+    "chromadb>=0.5",
+]
+
+[project.entry-points."boba.tools"]
+chromadb_tools = "boba.ext.chromadb_tools:register_tools"
+
+[project.entry-points."boba.config_sections"]
+chromadb_tools = "boba.ext.chromadb_tools.config:ChromadbToolsSection"
+chromadb_kb_list_collections = "boba.ext.chromadb_tools.kb_list_collections:KbListCollectionsToolSection"
+chromadb_kb_search = "boba.ext.chromadb_tools.kb_search:KbSearchToolSection"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

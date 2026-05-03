@@ -10,7 +10,7 @@ from typing import ClassVar
 from boba.coercion import ChainCoercer, Default, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.ext.chromadb.kb import ChromaKnowledgeBase
+from boba.ext.chromadb_tools.kb import ChromaKnowledgeBase
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -39,7 +39,7 @@ class KbListCollectionsTool(Tool[KbListCollectionsArgs]):
     """Возвращает JSON [{name, description}] доступных коллекций."""
 
     _ID = ToolId("kb_list_collections")
-    _SOURCE = ToolSourceId("ext.chromadb")
+    _SOURCE = ToolSourceId("ext.chromadb_tools")
 
     DEFAULT_DESCRIPTION: ClassVar[str] = (
         "Список доступных knowledge-base коллекций ChromaDB. "

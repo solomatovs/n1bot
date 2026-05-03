@@ -1,12 +1,14 @@
-"""Адаптер ChromaDB."""
+"""Read-only адаптер ChromaDB для KB-tools."""
 
 from __future__ import annotations
 
 import logging
 
-from boba.ext.chromadb.config import ChromaExtConfig
-from boba.ext.chromadb.errors import CollectionNotFoundError, KnowledgeBaseError
-from boba.ext.chromadb.models import CollectionInfo, SearchHit
+from boba.ext.chromadb_tools.errors import (
+    CollectionNotFoundError,
+    KnowledgeBaseError,
+)
+from boba.ext.chromadb_tools.models import CollectionInfo, SearchHit
 from boba.tools import ToolId
 
 logger = logging.getLogger(__name__)
@@ -15,16 +17,15 @@ logger = logging.getLogger(__name__)
 class ChromaKnowledgeBase:
     """Read-only обёртка над PersistentClient."""
 
-    def __init__(self, cfg: ChromaExtConfig) -> None:
-        # Ленивый импорт chromadb — чтобы модуль импортировался без runtime-deps.
+    def __init__(self, persist_path: str, snippet_chars: int) -> None:
+        # Ленивый импорт chromadb — модуль грузится без runtime-deps.
         import chromadb  # noqa: PLC0415
 
-        self._cfg = cfg
-        self._client = chromadb.PersistentClient(path=cfg.persist_path)
-        logger.info("ChromaKnowledgeBase opened persist_path=%r", cfg.persist_path)
+        self._snippet_chars = snippet_chars
+        self._client = chromadb.PersistentClient(path=persist_path)
+        logger.info("ChromaKnowledgeBase opened persist_path=%r", persist_path)
 
     def list_collections(self) -> list[CollectionInfo]:
-        """Все коллекции; description берётся из metadata["description"]."""
         result: list[CollectionInfo] = []
         for c in self._client.list_collections():
             metadata = c.metadata or {}
@@ -42,7 +43,6 @@ class ChromaKnowledgeBase:
         query: str,
         top_k: int,
     ) -> list[SearchHit]:
-        """Semantic search по одной коллекции; до top_k hits по возрастанию distance."""
         col = self._get_collection(tool_id, collection)
         try:
             raw = col.query(query_texts=[query], n_results=top_k)
@@ -53,13 +53,11 @@ class ChromaKnowledgeBase:
                 f"{type(e).__name__}: {e}",
             ) from e
 
-        # chromadb возвращает список списков (по одному на query_text); у нас один query.
         ids = (raw.get("ids") or [[]])[0]
         documents = (raw.get("documents") or [[]])[0]
         metadatas = (raw.get("metadatas") or [[]])[0]
         distances = (raw.get("distances") or [[]])[0]
 
-        snippet_chars = self._cfg.snippet_chars
         hits: list[SearchHit] = []
         for i, doc_id in enumerate(ids):
             doc = documents[i] if i < len(documents) else ""
@@ -70,7 +68,7 @@ class ChromaKnowledgeBase:
                     id=str(doc_id),
                     distance=float(dist),
                     metadata=_normalize_metadata(md),
-                    snippet=_truncate(doc or "", snippet_chars),
+                    snippet=_truncate(doc or "", self._snippet_chars),
                 )
             )
         return hits
@@ -79,7 +77,6 @@ class ChromaKnowledgeBase:
         try:
             return self._client.get_collection(name=name)
         except Exception as e:
-            # Любая «не нашли» от chromadb → CollectionNotFoundError.
             if "does not exist" in str(e) or "not found" in str(e).lower():
                 raise CollectionNotFoundError(tool_id, name) from e
             raise KnowledgeBaseError(
@@ -100,17 +97,15 @@ def _truncate(text: str, limit: int) -> str:
     return text[:limit].rstrip() + "…"
 
 
-# --- Singleton-фабрика ---------------------------------------------------
-# Один Chroma persistent-клиент на процесс (SQLite + warm embedding-cache).
-
-_KB_CACHE: dict[int, ChromaKnowledgeBase] = {}
+# Process-singleton по persist_path (один Chroma-клиент на путь).
+_KB_CACHE: dict[tuple[str, int], ChromaKnowledgeBase] = {}
 
 
-def get_knowledge_base(cfg: ChromaExtConfig) -> ChromaKnowledgeBase:
-    """Process-singleton ChromaKnowledgeBase под ключом id(cfg)."""
-    key = id(cfg)
+def get_knowledge_base(persist_path: str, snippet_chars: int) -> ChromaKnowledgeBase:
+    """Process-singleton ChromaKnowledgeBase по (persist_path, snippet_chars)."""
+    key = (persist_path, snippet_chars)
     kb = _KB_CACHE.get(key)
     if kb is None:
-        kb = ChromaKnowledgeBase(cfg)
+        kb = ChromaKnowledgeBase(persist_path, snippet_chars)
         _KB_CACHE[key] = kb
     return kb

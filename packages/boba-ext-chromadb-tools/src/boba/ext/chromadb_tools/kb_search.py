@@ -20,7 +20,7 @@ from boba.coercion import (
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.ext.chromadb.kb import ChromaKnowledgeBase
+from boba.ext.chromadb_tools.kb import ChromaKnowledgeBase
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -53,7 +53,7 @@ class KbSearchTool(Tool[KbSearchArgs]):
     """Возвращает JSON [{id, distance, metadata, snippet}] top-k hits."""
 
     _ID = ToolId("kb_search")
-    _SOURCE = ToolSourceId("ext.chromadb")
+    _SOURCE = ToolSourceId("ext.chromadb_tools")
 
     DEFAULT_DESCRIPTION: ClassVar[str] = (
         "Semantic search по KB-коллекции ChromaDB. Возвращает "
