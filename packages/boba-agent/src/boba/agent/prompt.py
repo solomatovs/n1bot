@@ -7,10 +7,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Generic, Self, TypeVar
 
-from boba.patterns import FoldFactory, Id, PrioritySource
 from boba.agent.events import AgentEvent, PromptFailed
 from boba.errors import TerminalError
 from boba.llm.models import RequestId
+from boba.patterns import FoldFactory, Id, PrioritySource
 
 TCtx = TypeVar("TCtx")
 

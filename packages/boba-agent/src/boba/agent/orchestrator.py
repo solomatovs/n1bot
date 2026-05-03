@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from boba.patterns import StreamSink, StreamSource
 from boba.agent.dialogue_writer import DialogueWriter
 from boba.agent.events import AgentEvent
 from boba.agent.models import AgentConfig, AgentContext, AgentRequest
+from boba.patterns import StreamSink, StreamSource
 
 
 class Agent:
