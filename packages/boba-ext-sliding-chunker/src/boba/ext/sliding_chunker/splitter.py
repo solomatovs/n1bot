@@ -1,9 +1,9 @@
-"""Простой character-based text splitter."""
+"""Character-based text splitter с soft-break'ами."""
 
 from __future__ import annotations
 
-DEFAULT_CHUNK_SIZE = 1000
-DEFAULT_CHUNK_OVERLAP = 200
+__all__ = ["split_text"]
+
 
 _SOFT_BREAKS = ("\n\n", "\n", ". ", " ")
 
@@ -11,16 +11,18 @@ _SOFT_BREAKS = ("\n\n", "\n", ". ", " ")
 def split_text(
     text: str,
     *,
-    chunk_size: int = DEFAULT_CHUNK_SIZE,
-    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+    chunk_size: int,
+    chunk_overlap: int,
 ) -> list[str]:
     if chunk_size <= 0:
-        raise ValueError(f"chunk_size must be > 0, got {chunk_size}")
+        msg = f"chunk_size must be > 0, got {chunk_size}"
+        raise ValueError(msg)
     if chunk_overlap < 0 or chunk_overlap >= chunk_size:
-        raise ValueError(
+        msg = (
             f"chunk_overlap must be in [0, chunk_size), got "
             f"{chunk_overlap} for chunk_size={chunk_size}"
         )
+        raise ValueError(msg)
 
     text = text.strip()
     if not text:
@@ -48,7 +50,6 @@ def _soft_break(text: str, start: int, end: int) -> int:
     window = text[start:end]
     for sep in _SOFT_BREAKS:
         idx = window.rfind(sep)
-        # break должен быть хотя бы в середине окна
         if idx != -1 and idx >= len(window) // 2:
             return start + idx + len(sep)
     return end

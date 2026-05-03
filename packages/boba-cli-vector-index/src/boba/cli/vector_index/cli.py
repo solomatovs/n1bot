@@ -1,4 +1,4 @@
-"""Entry-point boba-cli-vector-index. Actions: index/list/delete."""
+"""Entry-point boba-cli-vector-index. Pure runner поверх IndexPipeline."""
 
 from __future__ import annotations
 
@@ -6,22 +6,34 @@ import logging
 import sys
 from typing import Any
 
-from boba.cli.vector_index.config import (
-    ChromadbPersistSection,
-    VectorIndexConfig,
-    VectorIndexSection,
+from boba.cli.vector_index.config import VectorIndexConfig, VectorIndexSection
+from boba.cli.vector_index.plugin_loader import (
+    ChunkerPluginLoader,
+    ReaderPluginLoader,
+    SourcePluginLoader,
+    StorePluginLoader,
 )
-from boba.cli.vector_index.indexer import (
-    IndexOptions,
-    index_paths,
-)
-from boba.cli.vector_index.store import CollectionSummary, VectorStore
+from boba.config.app import AppConfig
 from boba.config.bootstrap import AppConfigBootstrap
 from boba.config.section import ConfigSection
 from boba.config.source.cli import CliSource
 from boba.config.source.env import EnvFileSource, EnvSource
 from boba.config.source.toml import TomlFileSource, TomlSource
 from boba.declaration import FieldPathMissingError
+from boba.indexing import (
+    Chunker,
+    ChunkerId,
+    CollectionInfo,
+    IndexerExtensionContext,
+    IndexingContext,
+    IndexPipeline,
+    PipelineId,
+    ReaderDispatcher,
+    Source,
+    SourceId,
+    Store,
+    StoreId,
+)
 from boba.patterns import ConverterInputError
 
 logger = logging.getLogger("boba.cli.vector_index")
@@ -31,7 +43,6 @@ def main() -> int:
     """Entry-point. Возвращает exit-code (0 = успех)."""
     boot = AppConfigBootstrap()
     boot.register_section(VectorIndexSection())
-    boot.register_section(ChromadbPersistSection())
     boot.discover_extension_sections()
     boot.attach_sources(
         [
@@ -46,10 +57,9 @@ def main() -> int:
     try:
         app = boot.build()
         run_cfg = app.section(VectorIndexSection)
-        persist_path = app.section(ChromadbPersistSection).persist_path
         _setup_logging(run_cfg.verbose)
         handler = _HANDLERS[run_cfg.action]
-        return handler(persist_path, run_cfg)
+        return handler(run_cfg, app)
     except ConverterInputError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -80,61 +90,53 @@ def _require(
     """Per-action обязательность; бросает FieldPathMissingError."""
     if value not in (None, "", []):
         return
-    del section  # signature kept for API; FieldPathMissingError несёт field_name
+    del section
     raise FieldPathMissingError(
         f"action={action!r}: field {field_name!r} is required",
         field_name=field_name,
     )
 
 
-def _handle_index(persist_path: str, cfg: VectorIndexConfig) -> int:
-    _require(cfg.paths, VectorIndexSection, "paths", "index")
+def _handle_index(cfg: VectorIndexConfig, app: AppConfig) -> int:
     _require(cfg.collection, VectorIndexSection, "collection", "index")
-    paths = cfg.paths or []
     collection = cfg.collection or ""
 
-    store = VectorStore(persist_path)
-    options = IndexOptions(
-        chunk_size=cfg.chunk_size,
-        chunk_overlap=cfg.chunk_overlap,
+    ctx = IndexerExtensionContext(config=app)
+    pipeline = IndexPipeline(
+        source=_build_source(ctx, cfg.source),
+        reader=_build_reader_dispatcher(ctx),
+        chunker=_build_chunker(ctx, cfg.chunker),
+        store=_build_store(ctx, cfg.store),
     )
-    stats = index_paths(
-        store,
-        collection_name=collection,
-        paths=list(paths),
-        description=cfg.description,
-        options=options,
+    icx = IndexingContext(
+        pipeline_id=PipelineId(f"cli:{collection}"),
+        collection=collection,
     )
+    stats = pipeline.run(icx, description=cfg.description)
     print(
         f"collection={collection!r} "
-        f"files_indexed={stats.files_indexed} "
-        f"files_skipped={stats.files_skipped} "
+        f"sources_processed={stats.sources_processed} "
+        f"sections_emitted={stats.sections_emitted} "
         f"chunks_upserted={stats.chunks_upserted} "
         f"chunks_deleted={stats.chunks_deleted}"
     )
-    summary = store.get_collection_summary(collection)
-    _print_collection_summary(summary)
     return 0
 
 
-def _handle_list(persist_path: str, cfg: VectorIndexConfig) -> int:
+def _handle_list(cfg: VectorIndexConfig, app: AppConfig) -> int:
     del cfg
-    store = VectorStore(persist_path)
-    collections = store.list_collections()
+    ctx = IndexerExtensionContext(config=app)
+    store = _build_store(ctx, app.section(VectorIndexSection).store)
+    collections = list(store.list_collections())
     if not collections:
         print("(no collections)")
         return 0
     for c in collections:
-        _print_collection_summary(c)
+        _print_collection_info(c)
     return 0
 
 
-def _print_collection_summary(c: CollectionSummary) -> None:
-    desc = f" — {c.description}" if c.description else ""
-    print(f"{c.name}\t{c.count} chunks{desc}")
-
-
-def _handle_delete(persist_path: str, cfg: VectorIndexConfig) -> int:
+def _handle_delete(cfg: VectorIndexConfig, app: AppConfig) -> int:
     _require(cfg.collection, VectorIndexSection, "collection", "delete")
     collection = cfg.collection or ""
 
@@ -143,10 +145,61 @@ def _handle_delete(persist_path: str, cfg: VectorIndexConfig) -> int:
         if input(prompt).strip().lower() != "yes":
             print("aborted", file=sys.stderr)
             return 1
-    store = VectorStore(persist_path)
+    ctx = IndexerExtensionContext(config=app)
+    store = _build_store(ctx, cfg.store)
     store.delete_collection(collection)
     print(f"collection={collection!r} deleted")
     return 0
+
+
+def _build_source(ctx: IndexerExtensionContext, source_id: str) -> Source:
+    catalog = SourcePluginLoader(ctx).registry().build(ctx)
+    sid = SourceId(source_id)
+    if sid not in catalog:
+        available = ", ".join(s.to_wire() for s in catalog)
+        msg = (
+            f"unknown source {source_id!r}. "
+            f"available: {available or '(none — install boba-ext-*-source)'}"
+        )
+        raise ConverterInputError(msg)
+    return catalog[sid]
+
+
+def _build_reader_dispatcher(
+    ctx: IndexerExtensionContext,
+) -> ReaderDispatcher:
+    return ReaderPluginLoader(ctx).registry().build()
+
+
+def _build_chunker(ctx: IndexerExtensionContext, chunker_id: str) -> Chunker:
+    catalog = ChunkerPluginLoader(ctx).registry().build(ctx)
+    cid = ChunkerId(chunker_id)
+    if cid not in catalog:
+        available = ", ".join(c.to_wire() for c in catalog)
+        msg = (
+            f"unknown chunker {chunker_id!r}. "
+            f"available: {available or '(none — install boba-ext-*-chunker)'}"
+        )
+        raise ConverterInputError(msg)
+    return catalog[cid]
+
+
+def _build_store(ctx: IndexerExtensionContext, store_id: str) -> Store:
+    catalog = StorePluginLoader(ctx).registry().build(ctx)
+    sid = StoreId(store_id)
+    if sid not in catalog:
+        available = ", ".join(s.to_wire() for s in catalog)
+        msg = (
+            f"unknown store {store_id!r}. "
+            f"available: {available or '(none — install boba-ext-*-store)'}"
+        )
+        raise ConverterInputError(msg)
+    return catalog[sid]
+
+
+def _print_collection_info(c: CollectionInfo) -> None:
+    desc = f" — {c.description}" if c.description else ""
+    print(f"{c.name}\t{c.count} chunks{desc}")
 
 
 _HANDLERS = {
