@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-config-source-env"
+version = "0.1.0"
+description = "Env-variable ConfigSource implementations for Boba (BOBA_<...> + BOBA_<...>_FILE)."
+requires-python = ">=3.11,<4"
+dependencies = ["boba-config", "boba-foundation"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

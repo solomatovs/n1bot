@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from boba.agent.models import AgentConfig
-from boba.config import ConfigSection
+from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.tools import Tool, ToolNameIn, ToolSourceIn
 from boba.validators import (

@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-config-source-toml"
+version = "0.1.0"
+description = "TOML ConfigSource implementations for Boba ([section] field, [section] field_file)."
+requires-python = ">=3.11,<4"
+dependencies = ["boba-config", "boba-foundation", "tomli"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

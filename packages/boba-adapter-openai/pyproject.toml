@@ -7,7 +7,7 @@ name = "boba-adapter-openai"
 version = "0.1.0"
 description = "OpenAI-compatible LLM adapter for the Boba agent: terminal, chunk-stream converter, raw-observer."
 requires-python = ">=3.11,<4"
-dependencies = ["boba", "boba-patterns", "openai>=1.40", "httpx"]
+dependencies = ["boba-config", "boba-llm", "boba-foundation", "boba-patterns", "openai>=1.40", "httpx"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

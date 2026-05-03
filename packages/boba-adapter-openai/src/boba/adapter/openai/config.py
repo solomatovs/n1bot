@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from boba.config import ConfigSection
+from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.llm.events import LLMEvent
 from boba.llm.models import LLMContext

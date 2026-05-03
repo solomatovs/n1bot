@@ -12,7 +12,8 @@ with contextlib.suppress(ImportError):
 
 from boba.agent import Agent, AgentConfig
 from boba.agent.models import AgentRequest
-from boba.config import AppConfig, AppConfigBootstrap
+from boba.config.app import AppConfig
+from boba.config.bootstrap import AppConfigBootstrap
 from boba.llm.models import RequestId
 from boba.llm.observer import CompositeLLMRequestObserver
 from boba.tools import ExtensionContext, ToolContext, ToolPluginLoader
@@ -44,9 +45,9 @@ from boba.cli.agent_run.infra import (
     configure_logging,
     create_agent,
 )
-from boba.confsource.cli import CliSource
-from boba.confsource.env import EnvFileSource, EnvSource
-from boba.confsource.toml import TomlFileSource, TomlSource
+from boba.config.source.cli import CliSource
+from boba.config.source.env import EnvFileSource, EnvSource
+from boba.config.source.toml import TomlFileSource, TomlSource
 from boba.patterns import ConverterInputError
 
 _REPL_EXIT_COMMANDS = frozenset({"/exit", "/quit", ":q"})
