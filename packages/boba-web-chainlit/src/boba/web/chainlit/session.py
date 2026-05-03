@@ -4,17 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from boba.agent.events import AgentEvent
-from boba.agent.models import AgentContext, AgentRequest
-from boba.config.app import AppConfig
-from boba.llm.models import RequestId
-from boba.tools import ExtensionContext, ToolContext, ToolPluginLoader
-from boba.workspace import (
-    ProjectWorkspaceShell,
-    PromptWorkspaceId,
-    WorkspaceId,
-)
-
 from boba.adapter.fs_workspace import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
@@ -28,7 +17,12 @@ from boba.adapter.openai import (
     create_llm_source,
 )
 from boba.adapter.prompt_providers import PromptLoader, PromptsSection
+from boba.agent.events import AgentEvent
+from boba.agent.models import AgentContext, AgentRequest
+from boba.config.app import AppConfig
+from boba.llm.models import RequestId
 from boba.patterns import StreamSink
+from boba.tools import ExtensionContext, ToolContext, ToolPluginLoader
 from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
 from boba.web.chainlit.infra import (
     AgentComponents,
@@ -37,6 +31,11 @@ from boba.web.chainlit.infra import (
     configure_logging,
     create_agent,
     log_context,
+)
+from boba.workspace import (
+    ProjectWorkspaceShell,
+    PromptWorkspaceId,
+    WorkspaceId,
 )
 
 

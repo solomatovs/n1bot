@@ -10,18 +10,6 @@ with contextlib.suppress(ImportError):
     import readline  # noqa: F401  # pyright: ignore[reportUnusedImport]
     # side-effect: подключает редактирование строки и историю в input().
 
-from boba.agent import Agent, AgentConfig
-from boba.agent.models import AgentRequest
-from boba.config.app import AppConfig
-from boba.config.bootstrap import AppConfigBootstrap
-from boba.llm.models import RequestId
-from boba.llm.observer import CompositeLLMRequestObserver
-from boba.tools import ExtensionContext, ToolContext, ToolPluginLoader
-from boba.workspace import (
-    PromptWorkspaceId,
-    WorkspaceId,
-)
-
 from boba.adapter.fs_workspace import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
@@ -36,6 +24,8 @@ from boba.adapter.openai import (
     create_llm_source,
 )
 from boba.adapter.prompt_providers import PromptLoader, PromptsSection
+from boba.agent import Agent, AgentConfig
+from boba.agent.models import AgentRequest
 from boba.cli.agent_run.config import AgentRunConfig, AgentRunSection
 from boba.cli.agent_run.console_sink import ConsoleSink
 from boba.cli.agent_run.infra import (
@@ -45,10 +35,19 @@ from boba.cli.agent_run.infra import (
     configure_logging,
     create_agent,
 )
+from boba.config.app import AppConfig
+from boba.config.bootstrap import AppConfigBootstrap
 from boba.config.source.cli import CliSource
 from boba.config.source.env import EnvFileSource, EnvSource
 from boba.config.source.toml import TomlFileSource, TomlSource
+from boba.llm.models import RequestId
+from boba.llm.observer import CompositeLLMRequestObserver
 from boba.patterns import ConverterInputError
+from boba.tools import ExtensionContext, ToolContext, ToolPluginLoader
+from boba.workspace import (
+    PromptWorkspaceId,
+    WorkspaceId,
+)
 
 _REPL_EXIT_COMMANDS = frozenset({"/exit", "/quit", ":q"})
 
