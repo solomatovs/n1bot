@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from boba.tools import ExtensionContext, StaticToolSource, ToolSource, ToolSourceId
-
 from boba.ext.files.append import AppendTool
 from boba.ext.files.cat import CatTool
 from boba.ext.files.cd import CdTool
@@ -22,6 +20,7 @@ from boba.ext.files.stat import StatTool
 from boba.ext.files.touch import TouchTool
 from boba.ext.files.tree import TreeTool
 from boba.ext.files.write import WriteTool
+from boba.tools import ExtensionContext, StaticToolSource, ToolSource, ToolSourceId
 
 __all__ = ["register_tools"]
 

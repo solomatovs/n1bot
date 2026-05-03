@@ -6,10 +6,6 @@ import logging
 import sys
 from typing import Any
 
-from boba.config.bootstrap import AppConfigBootstrap
-from boba.config.section import ConfigSection
-from boba.declaration import FieldPathMissingError
-
 from boba.cli.vector_index.config import (
     ChromadbPersistSection,
     VectorIndexConfig,
@@ -20,9 +16,12 @@ from boba.cli.vector_index.indexer import (
     index_paths,
 )
 from boba.cli.vector_index.store import CollectionSummary, VectorStore
+from boba.config.bootstrap import AppConfigBootstrap
+from boba.config.section import ConfigSection
 from boba.config.source.cli import CliSource
 from boba.config.source.env import EnvFileSource, EnvSource
 from boba.config.source.toml import TomlFileSource, TomlSource
+from boba.declaration import FieldPathMissingError
 from boba.patterns import ConverterInputError
 
 logger = logging.getLogger("boba.cli.vector_index")

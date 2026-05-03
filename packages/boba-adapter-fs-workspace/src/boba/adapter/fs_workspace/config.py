@@ -8,9 +8,8 @@ from typing import ClassVar
 
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.validators import ChainConverter, Default, ParseString
-
 from boba.patterns import StrId
+from boba.validators import ChainConverter, Default, ParseString
 
 
 @dataclass(frozen=True)
