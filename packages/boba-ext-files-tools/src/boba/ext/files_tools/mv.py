@@ -9,6 +9,7 @@ from typing import ClassVar
 from boba.coercion import ChainCoercer, Default, IsString, NonEmpty, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.rendering import TextResult
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -98,7 +99,7 @@ class MvTool(Tool[MvArgs]):
                 tool_id=self._ID,
                 message=f"Ошибка перемещения: {e}",
             ) from e
-        return ToolResult(content=f"Перемещено: {req.src} → {req.dst}")
+        return TextResult(text=f"Перемещено: {req.src} → {req.dst}")
 
 
 class MvToolSection(ConfigSection[MvToolConfig]):

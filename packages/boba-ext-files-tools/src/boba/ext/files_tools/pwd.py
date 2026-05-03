@@ -8,6 +8,7 @@ from typing import ClassVar
 from boba.coercion import ChainCoercer, Default, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.rendering import TextResult
 from boba.tools import Tool, ToolContext, ToolId, ToolResult, ToolSourceId
 
 
@@ -49,7 +50,7 @@ class PwdTool(Tool[PwdArgs]):
 
     def execute(self, ctx: ToolContext, req: PwdArgs) -> ToolResult:
         del req
-        return ToolResult(content=ctx.project_workspace.cwd)
+        return TextResult(text=ctx.project_workspace.cwd)
 
 
 class PwdToolSection(ConfigSection[PwdToolConfig]):

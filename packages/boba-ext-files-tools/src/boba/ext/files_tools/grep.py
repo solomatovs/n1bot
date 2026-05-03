@@ -20,6 +20,7 @@ from boba.coercion import (
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.rendering import TextResult
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -199,13 +200,13 @@ class GrepTool(Tool[GrepArgs]):
             matches = matches[: req.limit]
 
         if not matches:
-            return ToolResult(content="Совпадений не найдено.")
+            return TextResult(text="Совпадений не найдено.")
 
         body = self._format_matches(matches, req.context)
         footer = f"\n\n{len(matches)} совпадение(й)"
         if truncated:
             footer += f" (truncated at limit={req.limit})"
-        return ToolResult(content=body + footer)
+        return TextResult(text=body + footer)
 
     @staticmethod
     def _format_matches(matches: list[GrepMatch], context: int) -> str:

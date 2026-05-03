@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import ClassVar
@@ -21,6 +20,7 @@ from boba.coercion import (
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.chromadb_tools.kb import ChromaKnowledgeBase
+from boba.rendering import JsonResult
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -136,7 +136,7 @@ class KbSearchTool(Tool[KbSearchArgs]):
             }
             for h in hits
         ]
-        return ToolResult(content=json.dumps(payload, ensure_ascii=False))
+        return JsonResult(payload=payload)
 
 
 class KbSearchToolSection(ConfigSection[KbSearchToolConfig]):

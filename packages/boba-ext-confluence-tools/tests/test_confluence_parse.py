@@ -23,6 +23,7 @@ from boba.ext.confluence_tools.section import (
     ConfluenceSectionTool,
     ConfluenceSectionToolConfig,
 )
+from boba.rendering import TextResult
 from boba.tools import ToolContext, ToolExecutionError
 from boba.workspace import WorkspaceId
 
@@ -149,10 +150,11 @@ def test_outline_tool_renders_full_doc(ctx: ToolContext) -> None:
         {"path": _FIXTURE_FILE, "limit": 200}
     )
     res = tool.execute(ctx, args)
-    assert "Заголовков: 36" in res.content
-    assert "scroll-bookmark-2" in res.content
-    assert "#idx:1" in res.content
-    assert "  1. h1 Правила именования" in res.content
+    assert isinstance(res, TextResult)
+    assert "Заголовков: 36" in res.text
+    assert "scroll-bookmark-2" in res.text
+    assert "#idx:1" in res.text
+    assert "  1. h1 Правила именования" in res.text
 
 
 def test_outline_tool_max_depth(ctx: ToolContext) -> None:
@@ -162,8 +164,9 @@ def test_outline_tool_max_depth(ctx: ToolContext) -> None:
         {"path": _FIXTURE_FILE, "max_depth": 1, "limit": 200}
     )
     res = tool.execute(ctx, args)
-    assert "Заголовков: 4" in res.content
-    assert "h2 " not in res.content
+    assert isinstance(res, TextResult)
+    assert "Заголовков: 4" in res.text
+    assert "h2 " not in res.text
 
 
 def test_outline_tool_limit_truncates(ctx: ToolContext) -> None:
@@ -173,7 +176,8 @@ def test_outline_tool_limit_truncates(ctx: ToolContext) -> None:
         {"path": _FIXTURE_FILE, "limit": 5}
     )
     res = tool.execute(ctx, args)
-    assert "truncated at limit=5" in res.content
+    assert isinstance(res, TextResult)
+    assert "truncated at limit=5" in res.text
 
 
 def test_outline_tool_missing_file(ctx: ToolContext) -> None:
@@ -199,12 +203,13 @@ def test_section_tool_returns_section(ctx: ToolContext) -> None:
         }
     )
     res = tool.execute(ctx, args)
-    assert res.content.lstrip().startswith("<h1>")
-    assert "Правила именования AD групп" in res.content
+    assert isinstance(res, TextResult)
+    assert res.text.lstrip().startswith("<h1>")
+    assert "Правила именования AD групп" in res.text
     # strip_macros=True → реальных ac:*/ri:* тегов в HTML не остаётся
     # (escaped &lt;ac:..&gt; внутри текста кодовых блоков — это контент, не тег).
-    assert "<ac:" not in res.content
-    assert "<ri:" not in res.content
+    assert "<ac:" not in res.text
+    assert "<ri:" not in res.text
 
 
 def test_section_tool_include_subsections_stops_at_same_level(
@@ -222,11 +227,12 @@ def test_section_tool_include_subsections_stops_at_same_level(
         }
     )
     res = tool.execute(ctx, args)
+    assert isinstance(res, TextResult)
     # h2-подразделы scroll-bookmark-5/-6 относятся к этому h1 → внутри секции.
-    assert "scroll-bookmark-5" in res.content
-    assert "scroll-bookmark-6" in res.content
+    assert "scroll-bookmark-5" in res.text
+    assert "scroll-bookmark-6" in res.text
     # Следующий h1 (scroll-bookmark-3) не должен попасть в секцию.
-    assert "scroll-bookmark-3" not in res.content
+    assert "scroll-bookmark-3" not in res.text
 
 
 def test_section_tool_no_subsections_stops_at_first_heading(
@@ -242,16 +248,18 @@ def test_section_tool_no_subsections_stops_at_first_heading(
         "max_chars": 200000,
     }
     no_subs = tool.execute(ctx, tool.args_converter().convert(base_args))
+    assert isinstance(no_subs, TextResult)
     with_subs = tool.execute(
         ctx,
         tool.args_converter().convert(
             {**base_args, "include_subsections": True}
         ),
     )
+    assert isinstance(with_subs, TextResult)
     # без subsections внутри только сам h1; в варианте с subsections — плюс h2.
-    assert no_subs.content.count("<h2>") == 0
-    assert with_subs.content.count("<h2>") >= 2
-    assert len(no_subs.content) < len(with_subs.content)
+    assert no_subs.text.count("<h2>") == 0
+    assert with_subs.text.count("<h2>") >= 2
+    assert len(no_subs.text) < len(with_subs.text)
 
 
 def test_section_tool_idx_anchor_works(ctx: ToolContext) -> None:
@@ -267,7 +275,8 @@ def test_section_tool_idx_anchor_works(ctx: ToolContext) -> None:
         }
     )
     res = tool.execute(ctx, args)
-    assert "Правила именования" in res.content
+    assert isinstance(res, TextResult)
+    assert "Правила именования" in res.text
 
 
 def test_section_tool_unknown_anchor_raises(ctx: ToolContext) -> None:
@@ -299,7 +308,8 @@ def test_section_tool_max_chars_truncates(ctx: ToolContext) -> None:
         }
     )
     res = tool.execute(ctx, args)
-    assert "truncated at max_chars=200" in res.content
+    assert isinstance(res, TextResult)
+    assert "truncated at max_chars=200" in res.text
 
 
 def test_tool_ids() -> None:

@@ -12,6 +12,7 @@ from boba.declaration import (
     ObjectSchema,
 )
 from boba.patterns import Converter, Definition, Executor
+from boba.rendering import ToolResult
 from boba.tools.args import ToolArgsBuilder
 from boba.tools.errors import (
     InvalidSchemaInvariantError,
@@ -40,13 +41,6 @@ class ToolCall:
     arguments: dict[str, Any]
 
 
-@dataclass(frozen=True)
-class ToolResult:
-    """Результат успешного выполнения инструмента."""
-
-    content: str
-
-
 class Tool(
     Executor[ToolContext, TArgs, ToolResult],
     Definition[ObjectSchema[TArgs]],
@@ -72,9 +66,12 @@ class Tool(
 
 
 class _ToolArgsAdapter(Converter[dict[str, Any], TArgs], Generic[TArgs]):
-    """Адаптер ToolArgsBuilder под Tool: проверяет unknown keys и
-    переоборачивает FieldPathError в InvalidToolArgumentError / InvalidSchemaInvariantError.
-    """  # noqa: E501
+    """
+    Адаптер ToolArgsBuilder для Tool:
+    - проверяет unknown keys и
+    - переоборачивает FieldPathError в
+        InvalidToolArgumentError / InvalidSchemaInvariantError.
+    """
 
     def __init__(self, schema: ObjectSchema[TArgs], tool_id: ToolId) -> None:
         self._builder: ToolArgsBuilder[TArgs] = ToolArgsBuilder(schema)

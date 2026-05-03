@@ -9,6 +9,7 @@ from typing import ClassVar
 from boba.coercion import ChainCoercer, Default, IsString, NonEmpty, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.rendering import TextResult
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -85,7 +86,7 @@ class CdTool(Tool[CdArgs]):
                 tool_id=self._ID,
                 message=f"Ошибка cd: {e}",
             ) from e
-        return ToolResult(content=f"Текущая директория: {ctx.project_workspace.cwd}")
+        return TextResult(text=f"Текущая директория: {ctx.project_workspace.cwd}")
 
 
 class CdToolSection(ConfigSection[CdToolConfig]):

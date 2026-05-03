@@ -20,6 +20,7 @@ from boba.coercion import (
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.html_tools._parse import Heading, anchor_for, collect_headings, load_soup
+from boba.rendering import TextResult
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -132,12 +133,11 @@ class HtmlOutlineTool(Tool[OutlineArgs]):
             head += f"  charset={charset}"
 
         if not headings:
-            return ToolResult(content=f"{head}\nЗаголовков: 0")
+            return TextResult(text=f"{head}\nЗаголовков: 0")
 
         body = "\n".join(_render_line(h) for h in headings)
         suffix = f", truncated at limit={req.limit}" if truncated else ""
-        return ToolResult(
-            content=f"{head}\nЗаголовков: {len(headings)}{suffix}\n\n{body}",
+        return TextResult(text=f"{head}\nЗаголовков: {len(headings)}{suffix}\n\n{body}",
         )
 
 

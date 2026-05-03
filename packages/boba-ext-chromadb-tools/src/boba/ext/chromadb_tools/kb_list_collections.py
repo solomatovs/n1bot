@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import ClassVar
@@ -11,6 +10,7 @@ from boba.coercion import ChainCoercer, Default, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.chromadb_tools.kb import ChromaKnowledgeBase
+from boba.rendering import JsonResult
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -75,7 +75,7 @@ class KbListCollectionsTool(Tool[KbListCollectionsArgs]):
             {"name": c.name, "description": c.description}
             for c in self._kb.list_collections()
         ]
-        return ToolResult(content=json.dumps(items, ensure_ascii=False))
+        return JsonResult(payload=items)
 
 
 class KbListCollectionsToolSection(ConfigSection[KbListCollectionsToolConfig]):

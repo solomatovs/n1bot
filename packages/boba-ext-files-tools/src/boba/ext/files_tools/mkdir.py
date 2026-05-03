@@ -9,6 +9,7 @@ from typing import ClassVar
 from boba.coercion import ChainCoercer, Default, IsString, NonEmpty, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.rendering import TextResult
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -82,7 +83,7 @@ class MkdirTool(Tool[MkdirArgs]):
                 tool_id=self._ID,
                 message=f"Ошибка mkdir: {e}",
             ) from e
-        return ToolResult(content=f"Директория создана: {req.path}")
+        return TextResult(text=f"Директория создана: {req.path}")
 
 
 class MkdirToolSection(ConfigSection[MkdirToolConfig]):

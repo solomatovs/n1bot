@@ -20,6 +20,7 @@ from boba.coercion import (
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.rendering import TextResult
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -151,7 +152,7 @@ class CatTool(Tool[CatArgs]):
             ) from e
 
         label = f"{req.path}:{req.start_line}-{last}"
-        return ToolResult(content=f"### {label}\n\n{text}")
+        return TextResult(text=f"### {label}\n\n{text}")
 
     @staticmethod
     def _read_range(

@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-rendering"
+version = "0.1.0"
+description = "Boba rendering protocols: ToolResult subtypes + Renderer for LLM tool-message serialization."
+requires-python = ">=3.11,<4"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

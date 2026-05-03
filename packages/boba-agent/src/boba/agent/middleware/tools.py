@@ -17,6 +17,7 @@ from boba.agent.events import (
 from boba.agent.models import AgentContext
 from boba.agent.payloads import ToolCallFailure, ToolCallResult
 from boba.patterns import StreamSource
+from boba.rendering import ToolResultVisitor
 from boba.tools import (
     ToolCall as DomainToolCall,
 )
@@ -37,11 +38,13 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
         tools_service: ToolsService,
         tool_ctx: ToolContext,
         writer: DialogueWriter,
+        visitor: ToolResultVisitor[str],
     ) -> None:
         self._inner = inner
         self._tools_service = tools_service
         self._tool_ctx = tool_ctx
         self._writer = writer
+        self._visitor = visitor
 
     def name(self) -> str:
         return "ToolExecution"
@@ -108,14 +111,15 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
             )
             return
 
+        rendered = result.accept(self._visitor)
         self._writer.append_tool_result(
             tool_call_id=call.id,
-            content=result.content,
+            content=rendered,
         )
         yield ToolResultReady(
             request_id=tc.request_id,
             call=call,
-            result=ToolCallResult(content=result.content),
+            result=ToolCallResult(content=rendered),
         )
 
 

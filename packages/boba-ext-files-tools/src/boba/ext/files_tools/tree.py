@@ -19,6 +19,7 @@ from boba.coercion import (
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.rendering import TextResult
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -110,14 +111,14 @@ class TreeTool(Tool[TreeArgs]):
         location = req.path or "/"
 
         if not items:
-            return ToolResult(content=f"{location} пуст.")
+            return TextResult(text=f"{location} пуст.")
 
         header = f"Файлы {location} ({len(items)}, лимит={req.limit}"
         if truncated:
             header += f", truncated at limit={req.limit}"
         header += "):"
         body = "\n".join(f"- {p}" for p in items)
-        return ToolResult(content=f"{header}\n{body}")
+        return TextResult(text=f"{header}\n{body}")
 
 
 class TreeToolSection(ConfigSection[TreeToolConfig]):
