@@ -54,8 +54,8 @@ __all__ = [
     "SourceItem",
     "SourceRegistry",
     "Store",
-    "SyncUnsupportedError",
     "StoreFactory",
     "StoreId",
     "StoreRegistry",
+    "SyncUnsupportedError",
 ]
