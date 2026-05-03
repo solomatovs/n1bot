@@ -269,9 +269,3 @@ class ConfigBundleFactory(FoldFactory[StrId, _MergeState, ConfigBundle]):
         """Удобный helper: завернуть source'ы в reducer'ы и зарегистрировать."""
         for src in sources:
             self.register(_SourceReducer(src))
-
-    def sources(self) -> tuple[ConfigSource, ...]:
-        """Read-only view зарегистрированных источников (в порядке регистрации)."""
-        return tuple(
-            r.source for r in self.providers() if isinstance(r, _SourceReducer)
-        )

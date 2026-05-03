@@ -30,7 +30,6 @@ from boba_next import (
     ParseBool,
     ParseInt,
     ParseString,
-    NotNull,
     StringValue,
 )
 
@@ -208,7 +207,9 @@ class _Model:
 
 
 _MODEL_SCHEMA: ObjectSchema[_Model] = ObjectSchema(
-    fields=[FieldSpec("name", ChainConverter(ParseString(), NonEmpty()), required=True)],
+    fields=[
+        FieldSpec("name", ChainConverter(ParseString(), NonEmpty()), required=True)
+    ],
     factory=_Model,
 )
 

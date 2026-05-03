@@ -40,7 +40,7 @@ from boba_next.declaration import (
     ObjectSchema,
     ScalarItem,
 )
-from boba_next.tools.validate import ToolArgsValidator
+from boba_next.tools.tool import ToolArgsBuilder
 from boba_next.tools.wire import ToolWireSchemaBuilder
 from boba_next.validators import (
     MISSING,
@@ -142,6 +142,7 @@ __all__ = [
     "NameSegment",
     "NonEmpty",
     "NotFound",
+    "NotNull",
     "NullAdapter",
     "NullValue",
     "Nullable",
@@ -156,7 +157,6 @@ __all__ = [
     "Pass",
     "PythonValueAdapter",
     "PythonValueFactory",
-    "NotNull",
     "RequiresTogether",
     "ScalarItem",
     "SectionMissingError",
@@ -165,7 +165,7 @@ __all__ = [
     "StringValue",
     "TimeAdapter",
     "TimeValue",
-    "ToolArgsValidator",
+    "ToolArgsBuilder",
     "ToolWireSchemaBuilder",
     "ValueConverter",
 ]

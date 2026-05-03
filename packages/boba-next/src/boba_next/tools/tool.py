@@ -1,12 +1,8 @@
-"""ToolArgsValidator: валидирует готовый Mapping[str, Any] через ObjectSchema → DTO[T].
-
-Сценарии: JSON-args от LLM tool-call, любой уже-распаршенный dict (YAML/JSON/etc.).
-В отличие от ConfigMaterializer (читает плоский ConfigSpace),
-ToolArgsValidator работает с иерархическим Mapping; коллекции — нативные list / dict.
-
-Диспатч по подвидам декларации — `match`. Чистые декларации живут в
-`declaration.py`; добавление нового FieldKind / ItemReader / CollectionShape
-требует нового case здесь (и в `materialize`, `wire`).
+"""
+ToolArgsBuilder выполняет роль конвертера аргументов, которые передает LLM
+при вызове инструмента, в типизированный DTO, который может использоваться
+    1. валидирует Mapping[str, Any] (переданный от llm)
+    2. создает DTO из Mapping[str, Any]
 """
 
 from __future__ import annotations
@@ -31,19 +27,19 @@ from boba_next.declaration import (
 )
 from boba_next.validators import MISSING
 
-__all__ = ["ToolArgsValidator"]
+__all__ = ["ToolArgsBuilder"]
 
 
 T = TypeVar("T")
 
 
-class ToolArgsValidator(Generic[T]):
+class ToolArgsBuilder(Generic[T]):
     """Валидирует Mapping[str, Any] через ObjectSchema в типизированный DTO[T]."""
 
     def __init__(self, schema: ObjectSchema[T]) -> None:
         self._schema = schema
 
-    def validate(self, raw: Mapping[str, Any]) -> T:
+    def build(self, raw: Mapping[str, Any]) -> T:
         validated: dict[str, Any] = {}
         for f in self._schema.fields:
             try:
@@ -157,7 +153,7 @@ class ToolArgsValidator(Generic[T]):
                     raise ConverterInputError(
                         f"expected mapping, got {type(raw).__name__}"
                     )
-                return ToolArgsValidator(nested).validate(raw)
+                return ToolArgsBuilder(nested).build(raw)
 
             case _:
                 raise NotImplementedError(
