@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Boba Confluence-export navigation tools: outline + section reading via workspace files."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-tools",
+    "boba-tools-framework",
     "boba-foundation",
     "beautifulsoup4>=4.12",
     "lxml>=5.0",

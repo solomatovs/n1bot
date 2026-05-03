@@ -9,7 +9,7 @@ from boba.ext.chromadb_tools.errors import (
     KnowledgeBaseError,
 )
 from boba.ext.chromadb_tools.models import CollectionInfo, SearchHit
-from boba.tools import ToolId
+from boba.tools.domain import ToolId
 
 logger = logging.getLogger(__name__)
 

@@ -13,7 +13,7 @@ from boba.config.path import (
 )
 from boba.ext.confluence_tools import register_tools as confluence_register_tools
 from boba.patterns import StrId
-from boba.tools import ExtensionContext
+from boba.tools.framework import ExtensionContext
 from boba.value import StringValue
 
 

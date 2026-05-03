@@ -35,7 +35,7 @@ from boba.declaration import (
     ObjectSchema,
     ScalarItem,
 )
-from boba.tools import ToolArgsBuilder
+from boba.tools.domain import ToolArgsBuilder
 
 
 @dataclass(frozen=True)

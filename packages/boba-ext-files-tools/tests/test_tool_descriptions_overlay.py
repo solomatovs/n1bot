@@ -20,7 +20,8 @@ from boba.config.path import (
 from boba.ext.files_tools import register_tools as files_register_tools
 from boba.ext.files_tools.cat import CatTool, CatToolConfig
 from boba.patterns import StrId
-from boba.tools import ExtensionContext, ParamOverlay
+from boba.tools.domain import ParamOverlay
+from boba.tools.framework import ExtensionContext
 from boba.value import StringValue
 
 

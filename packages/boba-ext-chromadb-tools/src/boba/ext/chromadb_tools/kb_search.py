@@ -20,8 +20,8 @@ from boba.coercion import (
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.chromadb_tools.kb import ChromaKnowledgeBase
-from boba.rendering import JsonResult
-from boba.tools import (
+from boba.tools.domain import JsonResult
+from boba.tools.domain import (
     ParamOverlay,
     Tool,
     ToolContext,
@@ -31,8 +31,6 @@ from boba.tools import (
     param_desc,
     params_field,
 )
-
-
 @dataclass(frozen=True)
 class KbSearchArgs:
     collection: str

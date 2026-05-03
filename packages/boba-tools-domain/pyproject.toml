@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-tools-domain"
+version = "0.1.0"
+description = "Boba tool domain: Tool ABC, ToolResult sealed family + Visitor, IDs, args/wire builders, errors. Contract layer between tools framework and LLM adapters."
+requires-python = ">=3.11,<4"
+dependencies = ["boba-foundation", "boba-patterns"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

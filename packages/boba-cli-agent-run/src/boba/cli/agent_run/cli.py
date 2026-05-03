@@ -44,7 +44,11 @@ from boba.config.source.toml import TomlFileSource, TomlSource
 from boba.llm.models import RequestId
 from boba.llm.observer import CompositeLLMRequestObserver
 from boba.patterns import ConverterInputError
-from boba.tools import ExtensionContext, ToolContext, ToolPluginLoader
+from boba.tools.domain import ToolContext
+from boba.tools.framework import (
+    ExtensionContext,
+    ToolPluginLoader,
+)
 from boba.workspace import (
     PromptWorkspaceId,
     WorkspaceId,

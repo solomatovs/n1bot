@@ -12,13 +12,13 @@ from boba.declaration import (
     ObjectSchema,
 )
 from boba.patterns import Converter, Definition, Executor
-from boba.rendering import ToolResult
-from boba.tools.args import ToolArgsBuilder
-from boba.tools.errors import (
+from boba.tools.domain.args import ToolArgsBuilder
+from boba.tools.domain.result import ToolResult
+from boba.tools.domain.errors import (
     InvalidSchemaInvariantError,
     InvalidToolArgumentError,
 )
-from boba.tools.ids import ToolId, ToolSourceId
+from boba.tools.domain.ids import ToolId, ToolSourceId
 from boba.workspace import ProjectWorkspaceShell
 
 __all__ = ["Tool", "ToolCall", "ToolContext", "ToolResult"]

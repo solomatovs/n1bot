@@ -20,7 +20,12 @@ from boba.ext.files_tools.stat import StatTool, StatToolSection
 from boba.ext.files_tools.touch import TouchTool, TouchToolSection
 from boba.ext.files_tools.tree import TreeTool, TreeToolSection
 from boba.ext.files_tools.write import WriteTool, WriteToolSection
-from boba.tools import ExtensionContext, StaticToolSource, ToolSource, ToolSourceId
+from boba.tools.domain import ToolSourceId
+from boba.tools.framework import (
+    ExtensionContext,
+    StaticToolSource,
+    ToolSource,
+)
 
 __all__ = ["register_tools"]
 

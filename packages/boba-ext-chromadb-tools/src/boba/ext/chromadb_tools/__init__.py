@@ -13,7 +13,12 @@ from boba.ext.chromadb_tools.kb_list_collections import (
     KbListCollectionsToolSection,
 )
 from boba.ext.chromadb_tools.kb_search import KbSearchTool, KbSearchToolSection
-from boba.tools import ExtensionContext, StaticToolSource, ToolSource, ToolSourceId
+from boba.tools.domain import ToolSourceId
+from boba.tools.framework import (
+    ExtensionContext,
+    StaticToolSource,
+    ToolSource,
+)
 
 __all__ = ["register_tools"]
 

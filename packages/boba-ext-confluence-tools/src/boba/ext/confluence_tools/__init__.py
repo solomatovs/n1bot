@@ -13,7 +13,12 @@ from boba.ext.confluence_tools.section import (
     ConfluenceSectionTool,
     ConfluenceSectionToolSection,
 )
-from boba.tools import ExtensionContext, StaticToolSource, ToolSource, ToolSourceId
+from boba.tools.domain import ToolSourceId
+from boba.tools.framework import (
+    ExtensionContext,
+    StaticToolSource,
+    ToolSource,
+)
 
 __all__ = ["register_tools"]
 

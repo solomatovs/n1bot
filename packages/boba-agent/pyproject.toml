@@ -7,7 +7,7 @@ name = "boba-agent"
 version = "0.1.0"
 description = "Boba agent runtime: Agent orchestrator, turn reducers, middleware, dialogue/messages."
 requires-python = ">=3.11,<4"
-dependencies = ["boba-llm", "boba-tools", "boba-foundation", "boba-patterns", "boba-rendering"]
+dependencies = ["boba-llm", "boba-tools-framework", "boba-tools-domain", "boba-foundation", "boba-patterns"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
