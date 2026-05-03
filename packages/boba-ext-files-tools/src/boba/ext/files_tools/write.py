@@ -15,9 +15,9 @@ from boba.coercion import (
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.tools.domain import TextResult
 from boba.tools.domain import (
     ParamOverlay,
+    TextResult,
     Tool,
     ToolContext,
     ToolExecutionError,

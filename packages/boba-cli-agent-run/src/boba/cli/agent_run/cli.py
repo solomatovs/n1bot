@@ -18,7 +18,7 @@ from boba.adapter.fs_workspace import (
 )
 from boba.adapter.messages import InMemoryMessageService
 from boba.adapter.openai import (
-    LLMTransportSection,
+    OpenAIAdapterSection,
     OpenAIChatVisitor,
     TranscriptChatCompletionObserver,
     WireTraceChatCompletionObserver,
@@ -78,7 +78,7 @@ def _build_app() -> AppConfig:
     boot.register_section(AppCoreSection())
     boot.register_section(AgentSection())
     boot.register_section(WorkspacesSection())
-    boot.register_section(LLMTransportSection())
+    boot.register_section(OpenAIAdapterSection())
     boot.register_section(PromptsSection())
     boot.register_section(AgentRunSection())
     boot.discover_extension_sections()
@@ -98,7 +98,7 @@ def _run(app: AppConfig) -> int:
     """Собирает агента и либо прогоняет один запрос, либо запускает REPL."""
     core = app.section(AppCoreSection)
     workspaces = app.section(WorkspacesSection)
-    llm_cfg = app.section(LLMTransportSection)
+    llm_cfg = app.section(OpenAIAdapterSection)
     prompts_dir = app.section(PromptsSection)
     agent_config = app.section(AgentSection)
     run_cfg: AgentRunConfig = app.section(AgentRunSection)

@@ -26,9 +26,9 @@ from boba.ext.html_tools._parse import (
     load_soup,
     resolve_anchor,
 )
-from boba.tools.domain import TextResult
 from boba.tools.domain import (
     ParamOverlay,
+    TextResult,
     Tool,
     ToolContext,
     ToolExecutionError,

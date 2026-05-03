@@ -23,8 +23,8 @@ from boba.ext.confluence_tools.section import (
     ConfluenceSectionTool,
     ConfluenceSectionToolConfig,
 )
-from boba.tools.domain import TextResult
 from boba.tools.domain import (
+    TextResult,
     ToolContext,
     ToolExecutionError,
 )

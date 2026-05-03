@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from boba.adapter.fs_workspace import WorkspacesSection
-from boba.adapter.openai import LLMTransportSection
+from boba.adapter.openai import OpenAIAdapterSection
 from boba.adapter.prompt_providers import PromptsSection
 from boba.config.app import AppConfig
 from boba.config.bootstrap import AppConfigBootstrap
@@ -26,7 +26,7 @@ def build_app_config() -> AppConfig:
     boot.register_section(AppCoreSection())
     boot.register_section(AgentSection())
     boot.register_section(WorkspacesSection())
-    boot.register_section(LLMTransportSection())
+    boot.register_section(OpenAIAdapterSection())
     boot.register_section(PromptsSection())
     boot.register_section(ChainlitSection())
     boot.discover_extension_sections()

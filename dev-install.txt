@@ -2,18 +2,47 @@
 # командой:
 #     pip install -r dev-install.txt
 
--e ./packages/boba
+# core/foundation
+-e ./packages/boba-patterns
+-e ./packages/boba-foundation
+-e ./packages/boba-config
+-e ./packages/boba-config-source-cli
+-e ./packages/boba-config-source-env
+-e ./packages/boba-config-source-toml
+-e ./packages/boba-llm
+
+# tools framework + domain
+-e ./packages/boba-tools-domain
+-e ./packages/boba-tools-framework
+
+# indexing domain
+-e ./packages/boba-indexing
+
+# agent runtime
+-e ./packages/boba-agent
+
+# adapters
 -e ./packages/boba-adapter-fs-workspace
 -e ./packages/boba-adapter-messages
 -e ./packages/boba-adapter-openai
 -e ./packages/boba-adapter-prompt-providers
--e ./packages/boba-web-chainlit
+
+# entry-point apps
 -e ./packages/boba-cli-agent-run
 -e ./packages/boba-cli-vector-index
--e ./packages/boba-config-cli
--e ./packages/boba-config-env
--e ./packages/boba-config-toml
--e ./packages/boba-ext-files
--e ./packages/boba-ext-chromadb
--e ./packages/boba-ext-confluence
--e ./packages/boba-ext-html
+-e ./packages/boba-web-chainlit
+
+# tool extensions (boba.tools entry-point)
+-e ./packages/boba-ext-files-tools
+-e ./packages/boba-ext-html-tools
+-e ./packages/boba-ext-confluence-tools
+-e ./packages/boba-ext-chromadb-shared
+-e ./packages/boba-ext-chromadb-tools
+
+# indexing extensions
+-e ./packages/boba-ext-chromadb-store
+-e ./packages/boba-ext-text-reader
+-e ./packages/boba-ext-markdown-reader
+-e ./packages/boba-ext-html-reader
+-e ./packages/boba-ext-fs-source
+-e ./packages/boba-ext-sliding-chunker

@@ -12,7 +12,7 @@ from boba.adapter.fs_workspace import (
 )
 from boba.adapter.messages import InMemoryMessageService
 from boba.adapter.openai import (
-    LLMTransportSection,
+    OpenAIAdapterSection,
     OpenAIChatVisitor,
     TranscriptChatCompletionObserver,
     create_llm_source,
@@ -68,7 +68,7 @@ class ChatSession:
 
         self._app = app
         self._workspaces_cfg = app.section(WorkspacesSection)
-        self._llm_cfg = app.section(LLMTransportSection)
+        self._llm_cfg = app.section(OpenAIAdapterSection)
         self._prompts_dir = app.section(PromptsSection)
         self._agent_config = app.section(AgentSection)
         self._chainlit_config: ChainlitConfig = app.section(ChainlitSection)

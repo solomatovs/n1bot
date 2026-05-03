@@ -3,7 +3,7 @@ log_level = "DEBUG"
 ssl_verify = false
 # log_file = "./local/logs/boba.log"
 
-[llm]
+[adapter.openai]
 base_url = "http://localhost:4000"
 api_key = "ollama"
 
@@ -46,10 +46,9 @@ models = [
 # upload_max_files = 5
 # upload_accept = ["text/*", "application/pdf"]
 
-# ── Расширения (per-ext секции): ────────────────────────────────────
-# Каждое расширение подключается явно — секцией [ext.<name>] enable=true.
-# tools_allow внутри секции — опциональный whitelist по именам tools
-# (пусто = все tools этого расширения).
+# Tool-расширения подключаются явно — секцией [ext.<name>] enable=true
+# (для html/confluence/files) или [ext.<name>.tools] enable=true (chromadb).
+# tools_allow внутри секции — опциональный whitelist по именам tools.
 
 [ext.files]
 enable = false
@@ -61,15 +60,25 @@ enable = false
 [ext.confluence]
 enable = false
 
+# ChromaDB разделён на два слоя:
+#   [ext.chromadb]       — общий backend (persist_path, embedding_model)
+#                          для read-tools и write-store.
+#   [ext.chromadb.tools] — гейт + параметры read-only KB tools для агента.
 [ext.chromadb]
-enable = false
 persist_path = "./local/chroma"
 embedding_model = "default"
-max_top_k = 20
+
+[ext.chromadb.tools]
+enable = false
+tools_allow = []  # ["kb_search", "kb_list_collections"]
 snippet_chars = 300
 
-# ── CLI-секции (boba-cli-agent-run / boba-cli-vector-index): ──────────
-# Обычно задаются через CLI-аргументы; здесь можно зафиксировать дефолты.
+# Per-tool секции — необязательные overrides описаний/лимитов.
+# [ext.chromadb.tools.kb_search]
+# max_top_k = 20
+
+# CLI-секции (boba-cli-agent-run / boba-cli-vector-index).
+# Обычно задаются через CLI-аргументы; здесь — дефолты.
 
 [agent_run]
 # model = "qwen3.5-35b"
@@ -82,12 +91,25 @@ snippet_chars = 300
 # frequency_penalty = 0.0
 # presence_penalty = 0.0
 
+# CLI-индексатор: action + выбор pluggable Source/Chunker/Store по id.
 [vector_index]
-chunk_size = 1000
-chunk_overlap = 200
 confirm_skip = false
 verbose = 0
-# action = "index"
-# paths = ["./local/manual"]
+source = "ext.fs"           # boba-ext-fs-source
+chunker = "ext.sliding"     # boba-ext-sliding-chunker
+store = "ext.chromadb_persist"  # boba-ext-chromadb-store
+# action = "index"          # index | list | delete
 # collection = "manual"
 # description = "Confluence-export'ы"
+
+# Параметры FsSource (paths/include/exclude).
+[indexer.sources.fs]
+# paths = ["./local/manual"]
+# include = []              # ["*.md", "*.html"]
+# exclude = []
+# follow_symlinks = false
+
+# Параметры sliding chunker'а.
+[indexer.chunkers.sliding]
+chunk_size = 1000
+chunk_overlap = 200

@@ -1,6 +1,6 @@
 """OpenAI-совместимый LLM-адаптер."""
 
-from boba.adapter.openai.config import LLMTransportSection, create_llm_source
+from boba.adapter.openai.config import OpenAIAdapterSection, create_llm_source
 from boba.adapter.openai.observer import (
     MetricsChatCompletionObserver,
     MultiKeyReasoningExtractor,
@@ -16,9 +16,9 @@ from boba.llm.observer import RequestOutcome
 
 __all__ = [
     "DuplicateToolCallIndexReindexer",
-    "LLMTransportSection",
     "MetricsChatCompletionObserver",
     "MultiKeyReasoningExtractor",
+    "OpenAIAdapterSection",
     "OpenAIChatVisitor",
     "OpenAITerminal",
     "RequestOutcome",
