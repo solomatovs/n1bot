@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from boba.coercion.base import SchemaContributor
 from boba.declaration import (
     CollectionField,
     CollectionShape,
@@ -26,7 +27,6 @@ from boba.declaration import (
     ObjectSchema,
     ScalarItem,
 )
-from boba.coercion.base import SchemaContributor
 
 __all__ = ["ToolWireSchemaBuilder"]
 

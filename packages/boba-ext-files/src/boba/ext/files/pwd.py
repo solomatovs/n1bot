@@ -5,11 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
+from boba.coercion import ChainCoercer, Default, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.patterns import StrId
 from boba.tools import Tool, ToolContext, ToolId, ToolResult, ToolSourceId
-from boba.coercion import ChainCoercer, Default, ParseString
 
 
 @dataclass(frozen=True)

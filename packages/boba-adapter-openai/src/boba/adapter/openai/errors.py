@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import httpx
+
+import openai
 from boba.llm.errors import (
     LLMAuthError,
     LLMConnectionError,
@@ -16,8 +18,6 @@ from boba.llm.errors import (
     LLMTimeoutError,
     LLMUnknownError,
 )
-
-import openai
 from boba.patterns import (
     ExceptionSpecification,
     FirstMatchConverter,

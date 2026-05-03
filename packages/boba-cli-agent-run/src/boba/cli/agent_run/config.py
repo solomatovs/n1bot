@@ -5,9 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.config.section import ConfigSection
-from boba.declaration import FieldSpec, ObjectSchema
-from boba.llm.models import SamplingParams
 from boba.coercion import (
     ChainCoercer,
     Nullable,
@@ -16,7 +13,9 @@ from boba.coercion import (
     ParseInt,
     ParseString,
 )
-
+from boba.config.section import ConfigSection
+from boba.declaration import FieldSpec, ObjectSchema
+from boba.llm.models import SamplingParams
 from boba.patterns import StrId
 
 __all__ = ["AgentRunConfig", "AgentRunSection"]

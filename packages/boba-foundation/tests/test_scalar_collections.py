@@ -10,6 +10,17 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 import pytest
+
+from boba.coercion import (
+    ChainCoercer,
+    Default,
+    MaxValue,
+    MinValue,
+    NonEmpty,
+    NotNull,
+    ParseInt,
+    ParseString,
+)
 from boba.config.bundle import ConfigBundle, FlatConfigMaterializer
 from boba.config.path import ConfigPath, ConfigSource
 from boba.declaration import (
@@ -20,16 +31,6 @@ from boba.declaration import (
     KeyedShape,
     ObjectSchema,
     ScalarItem,
-)
-from boba.coercion import (
-    ChainCoercer,
-    Default,
-    MaxValue,
-    MinValue,
-    NonEmpty,
-    NotNull,
-    ParseInt,
-    ParseString,
 )
 from boba.value import ConfigValue, IntValue, StringValue
 

@@ -8,8 +8,6 @@ import pytest
 from bs4 import BeautifulSoup
 
 from boba.adapter.fs_workspace.shell import FsProjectWorkspaceShell
-from boba.tools import ToolContext, ToolExecutionError
-from boba.workspace import WorkspaceId
 from boba.ext.confluence._parse import (
     anchor_for,
     collect_headings,
@@ -17,8 +15,16 @@ from boba.ext.confluence._parse import (
     resolve_anchor,
     strip_confluence_macros,
 )
-from boba.ext.confluence.outline import ConfluenceOutlineTool, ConfluenceOutlineToolConfig
-from boba.ext.confluence.section import ConfluenceSectionTool, ConfluenceSectionToolConfig
+from boba.ext.confluence.outline import (
+    ConfluenceOutlineTool,
+    ConfluenceOutlineToolConfig,
+)
+from boba.ext.confluence.section import (
+    ConfluenceSectionTool,
+    ConfluenceSectionToolConfig,
+)
+from boba.tools import ToolContext, ToolExecutionError
+from boba.workspace import WorkspaceId
 
 _FIXTURE_DIR = Path("/app/docker/compose/boba/local/manual")
 _FIXTURE_FILE = "950276.html"

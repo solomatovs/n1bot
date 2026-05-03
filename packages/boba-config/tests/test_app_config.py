@@ -7,11 +7,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 import pytest
-from boba.config.app import AppConfig, AppConfigFactory, SectionMissingError
-from boba.config.bundle import ConfigBundle, ConfigBundleFactory
-from boba.config.path import ConfigPath, ConfigSource
-from boba.config.section import ConfigSection
-from boba.declaration import FieldSpec, ObjectSchema
+
 from boba.coercion import (
     ChainCoercer,
     Default,
@@ -20,9 +16,13 @@ from boba.coercion import (
     ParseInt,
     ParseString,
 )
-from boba.value import ConfigValue, IntValue, StringValue
-
+from boba.config.app import AppConfig, AppConfigFactory, SectionMissingError
+from boba.config.bundle import ConfigBundle, ConfigBundleFactory
+from boba.config.path import ConfigPath, ConfigSource
+from boba.config.section import ConfigSection
+from boba.declaration import FieldSpec, ObjectSchema
 from boba.patterns import StrId
+from boba.value import ConfigValue, IntValue, StringValue
 
 
 class _DictSource(ConfigSource):

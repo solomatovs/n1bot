@@ -6,6 +6,17 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import ClassVar
 
+from boba.coercion import (
+    ChainCoercer,
+    Default,
+    IsInt,
+    IsString,
+    MaxValue,
+    MinValue,
+    NonEmpty,
+    Nullable,
+    ParseString,
+)
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.html._parse import Heading, anchor_for, collect_headings, load_soup
@@ -20,17 +31,6 @@ from boba.tools import (
     ToolSourceId,
     param_desc,
     params_field,
-)
-from boba.coercion import (
-    ChainCoercer,
-    Default,
-    IsInt,
-    IsString,
-    MaxValue,
-    MinValue,
-    NonEmpty,
-    Nullable,
-    ParseString,
 )
 from boba.workspace import (
     WorkspaceError,

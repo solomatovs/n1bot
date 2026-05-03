@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import logging
 
-from boba.tools import ToolId
-
 from boba.ext.chromadb.config import ChromaExtConfig
 from boba.ext.chromadb.errors import CollectionNotFoundError, KnowledgeBaseError
 from boba.ext.chromadb.models import CollectionInfo, SearchHit
+from boba.tools import ToolId
 
 logger = logging.getLogger(__name__)
 

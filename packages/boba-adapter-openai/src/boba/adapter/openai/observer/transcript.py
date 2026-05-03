@@ -8,7 +8,6 @@ from typing import Any
 
 from boba.llm.observer import LLMRequestObserver, RequestOutcome
 from boba.workspace import HistoryWorkspaceShell
-
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 

@@ -32,6 +32,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from boba.coercion import ChainCoercer, Default, ParseString
 from boba.declaration import (
     CollectionField,
     FieldSpec,
@@ -39,7 +40,6 @@ from boba.declaration import (
     ObjectItem,
     ObjectSchema,
 )
-from boba.coercion import ChainCoercer, Default, ParseString
 
 __all__ = [
     "ParamOverlay",

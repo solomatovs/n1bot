@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import ClassVar
 
+from boba.coercion import ChainCoercer, Default, IsString, NonEmpty, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.patterns import StrId
@@ -20,7 +21,6 @@ from boba.tools import (
     param_desc,
     params_field,
 )
-from boba.coercion import ChainCoercer, Default, IsString, NonEmpty, ParseString
 from boba.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,

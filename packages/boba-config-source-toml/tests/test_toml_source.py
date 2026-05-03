@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from boba.config.path import ConfigPath
-from boba.value import BoolValue, IntValue, StringValue
 
+from boba.config.path import ConfigPath
 from boba.config.source.toml import TomlFileSource, TomlSource
+from boba.value import BoolValue, IntValue, StringValue
 
 
 def _write(tmp_path: Path, content: str) -> Path:

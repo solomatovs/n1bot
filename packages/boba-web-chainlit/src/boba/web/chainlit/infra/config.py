@@ -9,9 +9,6 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from boba.agent.models import AgentConfig
-from boba.config.section import ConfigSection
-from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 from boba.coercion import (
     ChainCoercer,
     Default,
@@ -21,6 +18,9 @@ from boba.coercion import (
     ParseInt,
     ParseString,
 )
+from boba.config.section import ConfigSection
+from boba.declaration import FieldSpec, ObjectSchema
+from boba.patterns import StrId
 
 __all__ = [
     "AgentSection",

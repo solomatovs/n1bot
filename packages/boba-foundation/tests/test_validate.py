@@ -11,18 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 import pytest
-from boba.declaration import (
-    CollectionField,
-    FieldPathError,
-    FieldPathMissingError,
-    FieldSpec,
-    IndexedShape,
-    KeyedShape,
-    ObjectItem,
-    ObjectSchema,
-    ScalarItem,
-)
-from boba.tools import ToolArgsBuilder
+
 from boba.coercion import (
     ChainCoercer,
     Default,
@@ -35,6 +24,18 @@ from boba.coercion import (
     ParseInt,
     ParseString,
 )
+from boba.declaration import (
+    CollectionField,
+    FieldPathError,
+    FieldPathMissingError,
+    FieldSpec,
+    IndexedShape,
+    KeyedShape,
+    ObjectItem,
+    ObjectSchema,
+    ScalarItem,
+)
+from boba.tools import ToolArgsBuilder
 
 
 @dataclass(frozen=True)

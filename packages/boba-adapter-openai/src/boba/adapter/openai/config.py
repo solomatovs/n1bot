@@ -4,15 +4,14 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+from boba.adapter.openai.dto import OpenAIConfig
+from boba.adapter.openai.terminal import OpenAITerminal, build_openai_client
+from boba.coercion import ChainCoercer, Default, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.llm.events import LLMEvent
 from boba.llm.models import LLMContext
 from boba.llm.observer import LLMRequestObserver
-from boba.coercion import ChainCoercer, Default, ParseString
-
-from boba.adapter.openai.dto import OpenAIConfig
-from boba.adapter.openai.terminal import OpenAITerminal, build_openai_client
 from boba.patterns import (
     StreamSource,
     StreamSourceChainBuilder,

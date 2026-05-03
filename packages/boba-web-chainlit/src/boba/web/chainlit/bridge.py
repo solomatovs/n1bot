@@ -6,7 +6,6 @@ import asyncio
 
 from boba.agent.events import AgentEvent
 from boba.agent.models import AgentContext
-
 from boba.patterns import StreamSink
 
 

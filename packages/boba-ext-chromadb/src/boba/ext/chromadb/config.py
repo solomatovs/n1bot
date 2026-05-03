@@ -5,9 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import ClassVar
 
-from boba.config.section import ConfigSection
-from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 from boba.coercion import (
     ChainCoercer,
     Default,
@@ -18,6 +15,9 @@ from boba.coercion import (
     ParseInt,
     ParseString,
 )
+from boba.config.section import ConfigSection
+from boba.declaration import FieldSpec, ObjectSchema
+from boba.patterns import StrId
 
 __all__ = ["ChromaExtConfig", "ChromadbSection"]
 

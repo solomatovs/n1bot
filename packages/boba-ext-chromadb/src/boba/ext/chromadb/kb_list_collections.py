@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import ClassVar
 
+from boba.coercion import ChainCoercer, Default, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.chromadb.kb import ChromaKnowledgeBase
@@ -20,7 +21,6 @@ from boba.tools import (
     ToolSourceId,
     params_field,
 )
-from boba.coercion import ChainCoercer, Default, ParseString
 
 
 @dataclass(frozen=True)

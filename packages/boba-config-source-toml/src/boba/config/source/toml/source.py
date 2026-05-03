@@ -8,7 +8,14 @@ from pathlib import Path
 from typing import Any, Final
 
 import tomli
-from boba.config.path import ConfigSource
+
+from boba.config.path import (
+    ConfigPath,
+    ConfigSource,
+    IndexSegment,
+    NameSegment,
+    Segment,
+)
 from boba.value import (
     BoolAdapter,
     ConfigValue,
@@ -21,12 +28,6 @@ from boba.value import (
     StringAdapter,
     StringValue,
     TimeAdapter,
-)
-from boba.config.path import (
-    ConfigPath,
-    IndexSegment,
-    NameSegment,
-    Segment,
 )
 
 __all__ = [

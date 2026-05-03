@@ -7,6 +7,17 @@ from dataclasses import dataclass, field
 from io import TextIOBase
 from typing import ClassVar
 
+from boba.coercion import (
+    ChainCoercer,
+    Default,
+    IsInt,
+    IsString,
+    MinValue,
+    NonEmpty,
+    Ordered,
+    ParseInt,
+    ParseString,
+)
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.patterns import StrId
@@ -21,17 +32,6 @@ from boba.tools import (
     ToolSourceId,
     param_desc,
     params_field,
-)
-from boba.coercion import (
-    ChainCoercer,
-    Default,
-    IsInt,
-    IsString,
-    MinValue,
-    NonEmpty,
-    Ordered,
-    ParseInt,
-    ParseString,
 )
 from boba.workspace import (
     WorkspaceError,
