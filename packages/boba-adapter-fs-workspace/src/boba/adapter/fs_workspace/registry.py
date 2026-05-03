@@ -8,7 +8,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Generic, TypeVar
 
-from boba_next.workspace import (
+from boba.workspace import (
     HistoryWorkspaceRegistry,
     ProjectWorkspaceRegistry,
     PromptWorkspaceId,

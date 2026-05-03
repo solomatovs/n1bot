@@ -1,6 +1,6 @@
 """Базовые секции приложения: AppCoreSection, AgentSection.
 
-`AppConfigBootstrap` — в `boba_next.config.bootstrap`.
+`AppConfigBootstrap` — в `boba.config.bootstrap`.
 """
 
 from __future__ import annotations
@@ -8,11 +8,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-from boba_next.agent.models import AgentConfig
-from boba_next.config import ConfigSection
-from boba_next.declaration import FieldSpec, ObjectSchema
-from boba_next.tools import Tool, ToolNameIn, ToolSourceIn
-from boba_next.validators import (
+from boba.agent.models import AgentConfig
+from boba.config import ConfigSection
+from boba.declaration import FieldSpec, ObjectSchema
+from boba.tools import Tool, ToolNameIn, ToolSourceIn
+from boba.validators import (
     ChainConverter,
     Default,
     MinValue,

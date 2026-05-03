@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from boba_next.tools import ToolId
+from boba.tools import ToolId
 
 from boba.ext.chromadb.config import ChromaExtConfig
 from boba.ext.chromadb.errors import CollectionNotFoundError, KnowledgeBaseError

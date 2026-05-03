@@ -6,8 +6,8 @@ import logging
 import re
 from collections.abc import Sequence
 
-from boba_next.agent.prompt import PromptId, PromptProvider
-from boba_next.workspace import PromptWorkspaceShell, WorkspaceError
+from boba.agent.prompt import PromptId, PromptProvider
+from boba.workspace import PromptWorkspaceShell, WorkspaceError
 
 from boba.adapter.prompt_providers.providers import StaticPromptProvider
 

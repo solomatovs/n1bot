@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from boba_next.llm.models import LLMMessage, LLMRequest, LLMToolSchema
+from boba.llm.models import LLMMessage, LLMRequest, LLMToolSchema
 
 from boba.patterns import Converter
 from openai.types.chat import (

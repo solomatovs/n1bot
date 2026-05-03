@@ -7,7 +7,7 @@ import functools
 import logging
 from typing import cast
 
-from boba_next.agent.events import (
+from boba.agent.events import (
     Advisory,
     AgentEvent,
     AnswerStarted,
@@ -25,7 +25,7 @@ from boba_next.agent.events import (
     ToolExecutionFailed,
     ToolExecutionStarted,
 )
-from boba_next.workspace import WorkspaceId
+from boba.workspace import WorkspaceId
 
 import chainlit as cl
 from boba.web.chainlit.bridge import ChainlitBridgeSink

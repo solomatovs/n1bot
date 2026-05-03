@@ -8,8 +8,8 @@ import pytest
 from bs4 import BeautifulSoup
 
 from boba.adapter.fs_workspace.shell import FsProjectWorkspaceShell
-from boba_next.tools import ToolContext, ToolExecutionError
-from boba_next.workspace import WorkspaceId
+from boba.tools import ToolContext, ToolExecutionError
+from boba.workspace import WorkspaceId
 from boba.ext.confluence._parse import (
     anchor_for,
     collect_headings,

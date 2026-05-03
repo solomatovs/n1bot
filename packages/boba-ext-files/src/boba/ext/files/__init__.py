@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from boba_next.tools import ExtensionContext, StaticToolSource, ToolSource, ToolSourceId
+from boba.tools import ExtensionContext, StaticToolSource, ToolSource, ToolSourceId
 
 from boba.ext.files.append import AppendTool
 from boba.ext.files.cat import CatTool

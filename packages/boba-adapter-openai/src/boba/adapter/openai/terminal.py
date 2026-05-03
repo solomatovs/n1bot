@@ -8,14 +8,14 @@ from contextlib import contextmanager
 from typing import Any
 
 import httpx
-from boba_next.llm.errors import LLMError
-from boba_next.llm.events import (
+from boba.llm.errors import LLMError
+from boba.llm.events import (
     LLMEvent,
     LLMRequestSent,
     LLMRequestStarted,
 )
-from boba_next.llm.models import LLMContext
-from boba_next.llm.observer import LLMRequestObserver, RequestOutcome
+from boba.llm.models import LLMContext
+from boba.llm.observer import LLMRequestObserver, RequestOutcome
 
 import openai
 from boba.adapter.openai.dto import OpenAIConfig

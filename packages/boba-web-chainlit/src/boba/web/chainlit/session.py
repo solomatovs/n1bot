@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from boba_next.agent.events import AgentEvent
-from boba_next.agent.models import AgentContext, AgentRequest
-from boba_next.config import AppConfig
-from boba_next.llm.models import RequestId
-from boba_next.tools import ExtensionContext, ToolContext, ToolPluginLoader
-from boba_next.workspace import (
+from boba.agent.events import AgentEvent
+from boba.agent.models import AgentContext, AgentRequest
+from boba.config import AppConfig
+from boba.llm.models import RequestId
+from boba.tools import ExtensionContext, ToolContext, ToolPluginLoader
+from boba.workspace import (
     ProjectWorkspaceShell,
     PromptWorkspaceId,
     WorkspaceId,

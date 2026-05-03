@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import httpx
-from boba_next.llm.errors import (
+from boba.llm.errors import (
     LLMAuthError,
     LLMConnectionError,
     LLMContextLengthError,

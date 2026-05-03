@@ -18,7 +18,7 @@ from io import BufferedIOBase, TextIOBase
 from pathlib import Path
 from typing import Generic, TypeVar
 
-from boba_next.workspace import (
+from boba.workspace import (
     EntryMeta,
     GrepMatch,
     HistoryWorkspaceShell,

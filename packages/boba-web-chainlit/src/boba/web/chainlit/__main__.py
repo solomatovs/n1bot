@@ -6,14 +6,14 @@ import os
 import sys
 from pathlib import Path
 
-from boba_next.config import AppConfig, AppConfigBootstrap
+from boba.config import AppConfig, AppConfigBootstrap
 
 from boba.adapter.fs_workspace import WorkspacesSection
 from boba.adapter.openai import LLMTransportSection
 from boba.adapter.prompt_providers import PromptsSection
-from boba.config.cli import CliSource
-from boba.config.env import EnvFileSource, EnvSource
-from boba.config.toml import TomlFileSource, TomlSource
+from boba.confsource.cli import CliSource
+from boba.confsource.env import EnvFileSource, EnvSource
+from boba.confsource.toml import TomlFileSource, TomlSource
 from boba.patterns import ConverterInputError
 from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
 from boba.web.chainlit.infra import AgentSection, AppCoreSection

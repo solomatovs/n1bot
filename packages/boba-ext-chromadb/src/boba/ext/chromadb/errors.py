@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from boba_next.tools import ToolExecutionError, ToolId
+from boba.tools import ToolExecutionError, ToolId
 
 
 class KnowledgeBaseError(ToolExecutionError):

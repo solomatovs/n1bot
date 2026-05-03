@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from boba_next.llm.errors import LLMProtocolError
-from boba_next.llm.events import (
+from boba.llm.errors import LLMProtocolError
+from boba.llm.events import (
     FinishReason,
     LLMAnswerStarted,
     LLMAnswerToken,
@@ -18,7 +18,7 @@ from boba_next.llm.events import (
     LLMToolCallArgumentDelta,
     LLMToolCallBegin,
 )
-from boba_next.llm.models import LLMContext, RequestId
+from boba.llm.models import LLMContext, RequestId
 
 from boba.adapter.openai.observer import MultiKeyReasoningExtractor
 from boba.adapter.openai.tool_call_reindexer import DuplicateToolCallIndexReindexer
