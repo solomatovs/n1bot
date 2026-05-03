@@ -70,7 +70,6 @@ def _chunk(*choices: Choice) -> ChatCompletionChunk:
     )
 
 
-# ── DuplicateToolCallIndexReindexer ───────────────────────────────────
 
 
 def test_one_tool_call_index_unchanged() -> None:
@@ -145,7 +144,6 @@ def test_reset_clears_state() -> None:
     assert (tc_c.index, tc_d.index) == (0, 1)
 
 
-# ── FromOpenAIChunkConverter (фича on/off) ────────────────────────────
 
 
 def _begins_and_args(

@@ -23,7 +23,6 @@ from boba.patterns import StreamSink
 class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
     """AgentEvent → stdout/stderr; use_color=None — авто по TTY/NO_COLOR."""
 
-    # ── Цвета ────────────────────────────────────────────────────────
     _RESET = "\x1b[0m"
     _DIM = "\x1b[2m"
     _GREEN = "\x1b[32m"
@@ -65,7 +64,6 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
     def name(self) -> str:
         return "ConsoleSink"
 
-    # ── Главный диспетчер по семьям ──────────────────────────────────
 
     def handle(self, ctx: AgentContext, event: AgentEvent) -> None:
         del ctx
@@ -81,7 +79,6 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
             case Terminal():
                 self._on_terminal(event)
 
-    # ── Per-family ───────────────────────────────────────────────────
 
     def _on_delta(self, e: ContentDelta) -> None:
         chunk = e.chunk()
@@ -127,7 +124,6 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
         if body:
             self._err(self._paint(self._truncate(body), self._DIM))
 
-    # ── helpers ──────────────────────────────────────────────────────
 
     def _color_for_slot(self, slot: SlotKind) -> str:
         return {

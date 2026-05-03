@@ -40,7 +40,6 @@ from boba.declaration import (
     ObjectSchema,
 )
 
-# ─────────── Описания DTO + схем (то, что extension'у хочется выразить) ───────────
 
 
 @dataclass(frozen=True)
@@ -110,7 +109,6 @@ _CHROMADB_SCHEMA: ObjectSchema[ChromadbConfig] = ObjectSchema(
 )
 
 
-# ─────────── Helpers, имитирующие то, что будет в extension'е ───────────
 
 
 def select_enabled_tool_ids(cfg: ChromadbConfig) -> list[str]:
@@ -120,7 +118,6 @@ def select_enabled_tool_ids(cfg: ChromadbConfig) -> list[str]:
     return [tool_id for tool_id, entry in cfg.tools.items() if entry.enabled]
 
 
-# ─────────── Сценарии ───────────
 
 
 def _bundle_from_toml(tmp_path: Path, content: str) -> ConfigBundle:
