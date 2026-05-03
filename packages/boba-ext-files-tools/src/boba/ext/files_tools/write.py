@@ -15,8 +15,8 @@ from boba.coercion import (
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.rendering import TextResult
-from boba.tools import (
+from boba.tools.domain import TextResult
+from boba.tools.domain import (
     ParamOverlay,
     Tool,
     ToolContext,

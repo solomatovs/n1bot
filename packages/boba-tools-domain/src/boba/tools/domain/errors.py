@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from boba.tools.ids import ToolId, ToolSourceId
+from boba.tools.domain.ids import ToolId, ToolSourceId
 
 __all__ = [
     "InvalidSchemaInvariantError",

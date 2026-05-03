@@ -12,7 +12,7 @@ dependencies = [
     "boba-ext-chromadb-shared",
     "boba-foundation",
     "boba-patterns",
-    "boba-tools",
+    "boba-tools-framework",
     "chromadb>=0.5",
 ]
 

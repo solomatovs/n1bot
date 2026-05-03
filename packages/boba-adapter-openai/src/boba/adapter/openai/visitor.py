@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from boba.rendering import JsonResult, TextResult, ToolResultVisitor
+from boba.tools.domain import JsonResult, TextResult, ToolResultVisitor
 
 __all__ = ["OpenAIChatVisitor"]
 

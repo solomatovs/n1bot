@@ -13,7 +13,11 @@ from boba.llm.models import (
     LLMToolSchema,
 )
 from boba.patterns import ContextPrioritySource, StrId
-from boba.tools import Tool, ToolsService, ToolWireSchemaBuilder
+from boba.tools.domain import (
+    Tool,
+    ToolWireSchemaBuilder,
+)
+from boba.tools.framework import ToolsService
 
 _MODEL_ID = StrId("model")
 _SYSTEM_ID = StrId("system")

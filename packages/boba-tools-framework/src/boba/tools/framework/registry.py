@@ -8,9 +8,9 @@ from typing import Any
 
 from boba.declaration import ObjectSchema
 from boba.patterns import Executor, FoldFactory, PrioritySource
-from boba.tools.errors import ToolExecutionError, ToolIdCollisionError
-from boba.tools.ids import ToolId, ToolSourceId
-from boba.tools.tool import Tool, ToolCall, ToolContext, ToolResult
+from boba.tools.domain.errors import ToolExecutionError, ToolIdCollisionError
+from boba.tools.domain.ids import ToolId, ToolSourceId
+from boba.tools.domain.tool import Tool, ToolCall, ToolContext, ToolResult
 
 __all__ = [
     "StaticToolSource",

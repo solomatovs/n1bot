@@ -10,8 +10,8 @@ from boba.coercion import ChainCoercer, Default, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.chromadb_tools.kb import ChromaKnowledgeBase
-from boba.rendering import JsonResult
-from boba.tools import (
+from boba.tools.domain import JsonResult
+from boba.tools.domain import (
     ParamOverlay,
     Tool,
     ToolContext,
@@ -20,8 +20,6 @@ from boba.tools import (
     ToolSourceId,
     params_field,
 )
-
-
 @dataclass(frozen=True)
 class KbListCollectionsArgs:
     """Без параметров — kb_list_collections аргументов не принимает."""

@@ -23,7 +23,11 @@ from boba.agent.models import AgentContext, AgentRequest
 from boba.config.app import AppConfig
 from boba.llm.models import RequestId
 from boba.patterns import StreamSink
-from boba.tools import ExtensionContext, ToolContext, ToolPluginLoader
+from boba.tools.domain import ToolContext
+from boba.tools.framework import (
+    ExtensionContext,
+    ToolPluginLoader,
+)
 from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
 from boba.web.chainlit.infra import (
     AgentComponents,

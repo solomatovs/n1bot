@@ -36,8 +36,9 @@ from boba.patterns import (
     StreamSourceChainBuilder,
     StreamSourceLoop,
 )
-from boba.rendering import ToolResultVisitor
-from boba.tools import ToolContext, ToolsService
+from boba.tools.domain import ToolResultVisitor
+from boba.tools.domain import ToolContext
+from boba.tools.framework import ToolsService
 
 
 @dataclass(frozen=True)

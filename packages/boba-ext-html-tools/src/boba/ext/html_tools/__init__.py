@@ -7,7 +7,12 @@ from collections.abc import Iterable
 from boba.ext.html_tools.config import HtmlSection
 from boba.ext.html_tools.outline import HtmlOutlineTool, HtmlOutlineToolSection
 from boba.ext.html_tools.section import HtmlSectionTool, HtmlSectionToolSection
-from boba.tools import ExtensionContext, StaticToolSource, ToolSource, ToolSourceId
+from boba.tools.domain import ToolSourceId
+from boba.tools.framework import (
+    ExtensionContext,
+    StaticToolSource,
+    ToolSource,
+)
 
 __all__ = ["register_tools"]
 

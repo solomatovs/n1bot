@@ -8,8 +8,14 @@ from typing import ClassVar
 from boba.coercion import ChainCoercer, Default, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.rendering import TextResult
-from boba.tools import Tool, ToolContext, ToolId, ToolResult, ToolSourceId
+from boba.tools.domain import TextResult
+from boba.tools.domain import (
+    Tool,
+    ToolContext,
+    ToolId,
+    ToolResult,
+    ToolSourceId,
+)
 
 
 @dataclass(frozen=True)

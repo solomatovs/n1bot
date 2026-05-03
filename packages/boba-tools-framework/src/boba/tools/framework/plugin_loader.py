@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from boba.config.app import AppConfig, ConfigError
-from boba.tools.registry import ToolFactory, ToolSource, ToolsService
+from boba.tools.framework.registry import ToolFactory, ToolSource, ToolsService
 
 __all__ = [
     "ENTRY_POINTS_GROUP",

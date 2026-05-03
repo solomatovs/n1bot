@@ -27,8 +27,8 @@ from boba.ext.confluence_tools._parse import (
     resolve_anchor,
     strip_confluence_macros,
 )
-from boba.rendering import TextResult
-from boba.tools import (
+from boba.tools.domain import TextResult
+from boba.tools.domain import (
     ParamOverlay,
     Tool,
     ToolContext,

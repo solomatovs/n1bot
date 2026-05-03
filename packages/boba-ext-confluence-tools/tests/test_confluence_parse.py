@@ -23,8 +23,11 @@ from boba.ext.confluence_tools.section import (
     ConfluenceSectionTool,
     ConfluenceSectionToolConfig,
 )
-from boba.rendering import TextResult
-from boba.tools import ToolContext, ToolExecutionError
+from boba.tools.domain import TextResult
+from boba.tools.domain import (
+    ToolContext,
+    ToolExecutionError,
+)
 from boba.workspace import WorkspaceId
 
 _FIXTURE_DIR = Path("/app/docker/compose/boba/local/manual")

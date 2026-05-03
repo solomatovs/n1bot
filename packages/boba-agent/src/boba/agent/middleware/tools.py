@@ -17,16 +17,14 @@ from boba.agent.events import (
 from boba.agent.models import AgentContext
 from boba.agent.payloads import ToolCallFailure, ToolCallResult
 from boba.patterns import StreamSource
-from boba.rendering import ToolResultVisitor
-from boba.tools import (
-    ToolCall as DomainToolCall,
-)
-from boba.tools import (
+from boba.tools.domain import ToolResultVisitor
+from boba.tools.domain import ToolCall as DomainToolCall
+from boba.tools.domain import (
     ToolContext,
     ToolExecutionError,
     ToolId,
-    ToolsService,
 )
+from boba.tools.framework import ToolsService
 
 
 class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
