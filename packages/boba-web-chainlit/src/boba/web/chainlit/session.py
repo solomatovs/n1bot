@@ -6,7 +6,7 @@ from pathlib import Path
 
 from boba.agent.events import AgentEvent
 from boba.agent.models import AgentContext, AgentRequest
-from boba.config import AppConfig
+from boba.config.app import AppConfig
 from boba.llm.models import RequestId
 from boba.tools import ExtensionContext, ToolContext, ToolPluginLoader
 from boba.workspace import (

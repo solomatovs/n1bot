@@ -8,16 +8,19 @@ version = "0.1.0"
 description = "Chainlit web UI app for the Boba agent."
 requires-python = ">=3.11,<4"
 dependencies = [
-
-    "boba",
+    "boba-agent",
+    "boba-tools",
+    "boba-config",
+    "boba-llm",
+    "boba-foundation",
     "boba-patterns",
     "boba-adapter-fs-workspace",
     "boba-adapter-messages",
     "boba-adapter-openai",
     "boba-adapter-prompt-providers",
-    "boba-config-cli",
-    "boba-config-env",
-    "boba-config-toml",
+    "boba-config-source-cli",
+    "boba-config-source-env",
+    "boba-config-source-toml",
     "chainlit>=2.11,<3",
     # chainlit 2.11+ ломает ForwardRef-резолв на pydantic 2.11+
     # ("CodeSettings is not fully defined"). Держим 2.10.x до апдейта chainlit.

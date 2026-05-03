@@ -8,9 +8,8 @@ version = "0.1.0"
 description = "Boba HTML navigation tools: outline + section reading via workspace files."
 requires-python = ">=3.11,<4"
 dependencies = [
-
-    "boba",
-    "boba-patterns",
+    "boba-tools",
+    "boba-foundation",
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
 ]

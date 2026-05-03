@@ -7,7 +7,7 @@ name = "boba-adapter-fs-workspace"
 version = "0.1.0"
 description = "Filesystem WorkspaceShell/Registry adapter for the Boba agent."
 requires-python = ">=3.11,<4"
-dependencies = ["boba", "boba-patterns"]
+dependencies = ["boba-config", "boba-foundation", "boba-patterns"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

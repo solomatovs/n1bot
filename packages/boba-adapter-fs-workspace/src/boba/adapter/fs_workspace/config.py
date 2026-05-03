@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
-from boba.config import ConfigSection
+from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.validators import ChainConverter, Default, ParseString
 
