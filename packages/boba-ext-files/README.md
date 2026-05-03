@@ -23,6 +23,16 @@ pip install -e ./packages/boba-ext-files
 
 ## Конфиг
 
-Пакет не имеет своего конфига и не читает
-`AppConfig.extensions["files"]` — все параметры (например, лимит строк
-для `cat`) захардкожены в Tool-классах.
+Расширение подключается явно — секцией `[ext.files]`:
+
+```toml
+[ext.files]
+enable = true
+# tools_allow = ["cat", "ls", "grep"]   # пусто = все tools пакета
+```
+
+Без `enable = true` (или без секции вовсе) — tools пакета не
+регистрируются. `tools_allow` опционален: пустой список — все tools,
+заполненный — whitelist по именам tools (`cat`, `ls`, `grep`,
+`pwd`, `cd`, `edit`, `write`, `append`, `mv`, `cp`, `rm`, `mkdir`,
+`touch`, `stat`, `tree`).

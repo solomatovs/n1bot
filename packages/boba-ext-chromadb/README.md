@@ -45,20 +45,26 @@ entry-point не зарегистрирован, агент tools не види�
 
 ## Конфиг
 
-`persist_path` — через общую env-переменную (тот же путь читает
-`boba-cli-vector-index`):
+Расширение подключается явно — секцией `[ext.chromadb]`:
 
-| Поле | Источник | По умолчанию | Назначение |
-|---|---|---|---|
-| `persist_path` | `CHROMA_PERSIST_PATH` (env) | — (обязательно) | Путь к persistent-БД ChromaDB |
+```toml
+[ext.chromadb]
+enable = true
+persist_path = "./local/chroma"     # обязателен при enable=true
+embedding_model = "default"
+max_top_k = 20
+snippet_chars = 300
+# tools_allow = ["kb_search"]       # пусто = все tools пакета
+```
 
-Остальные поля — через namespaced extension bag (см. `AppConfig.extensions`):
-
-| Поле | Источник | По умолчанию | Назначение |
-|---|---|---|---|
-| `embedding_model` | `BOBA_EXT_CHROMADB__EMBEDDING_MODEL` | `default` | Имя модели embeddings. В v0.1 поддерживается только `default` (bundled ONNX). |
-| `max_top_k` | `BOBA_EXT_CHROMADB__MAX_TOP_K` | `20` | Потолок параметра `top_k` для `kb_search` |
-| `snippet_chars` | `BOBA_EXT_CHROMADB__SNIPPET_CHARS` | `300` | Длина превью документа в результатах `kb_search` |
+| Поле | По умолчанию | Назначение |
+|---|---|---|
+| `enable` | `false` | Подключить tools пакета. |
+| `tools_allow` | `[]` | Whitelist по именам tools (`kb_search`, `kb_list_collections`); пусто — все. |
+| `persist_path` | `""` | Путь к persistent-БД ChromaDB (общий с `boba-cli-vector-index`). Обязателен при `enable=true`. |
+| `embedding_model` | `"default"` | Имя модели embeddings. В v0.1 — только `default` (bundled ONNX). |
+| `max_top_k` | `20` | Потолок параметра `top_k` для `kb_search`. |
+| `snippet_chars` | `300` | Длина превью документа в результатах `kb_search`. |
 
 ## Подготовка коллекций (оператор)
 

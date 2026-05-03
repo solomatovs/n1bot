@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
-from boba.patterns import Always, Specification
 from boba.llm.models import RequestId, SamplingParams
-from boba.tools.tool import Tool
 
 
 @dataclass(frozen=True)
@@ -25,7 +22,6 @@ class AgentConfig:
 
     max_iterations: int = 20
     max_consecutive_tool_calls: int = 3
-    tool_spec: Specification[Tool[Any]] = field(default_factory=Always)
 
 
 @dataclass

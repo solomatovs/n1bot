@@ -6,24 +6,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from boba.agent.models import AgentConfig
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.tools import Tool, ToolNameIn, ToolSourceIn
+from boba.patterns import StrId
 from boba.validators import (
     ChainConverter,
     Default,
     MinValue,
     Nullable,
     ParseBool,
-    ParseCsvList,
     ParseInt,
     ParseString,
 )
-
-from boba.patterns import Always, Never, Specification, StrId
 
 __all__ = [
     "AgentSection",
@@ -76,43 +73,14 @@ class AppCoreSection(ConfigSection[AppCoreConfig]):
 # ─────────────── AgentSection ───────────────
 
 
-def _build_agent_config(  # noqa: PLR0913 — kwargs приходят из ObjectSchema
-    max_iterations: int,
-    max_consecutive_tool_calls: int,
-    tools_enabled: bool,
-    tool_plugins: list[str],
-    tools_allow: list[str],
-    tools_deny: list[str],
-) -> AgentConfig:
-    """Свернуть TOML-поля в AgentConfig с одним tool_spec."""
-    if not tools_enabled:
-        return AgentConfig(
-            max_iterations=max_iterations,
-            max_consecutive_tool_calls=max_consecutive_tool_calls,
-            tool_spec=Never[Tool[Any]](),
-        )
-    spec: Specification[Tool[Any]] = Always[Tool[Any]]()
-    if tool_plugins:
-        spec = spec.and_(ToolSourceIn(tool_plugins))
-    if tools_allow:
-        spec = spec.and_(ToolNameIn(tools_allow))
-    if tools_deny:
-        spec = spec.and_(ToolNameIn(tools_deny).not_())
-    return AgentConfig(
-        max_iterations=max_iterations,
-        max_consecutive_tool_calls=max_consecutive_tool_calls,
-        tool_spec=spec,
-    )
-
-
 class AgentSection(ConfigSection[AgentConfig]):
-    """Лимиты агентского лупа и фильтрация tool-плагинов."""
+    """Лимиты агентского лупа. Фильтрация tools — per-ext в [ext.<name>]."""
 
     id: ClassVar[StrId] = StrId("agent")
     namespace: ClassVar[tuple[str, ...]] = ("agent",)
 
     schema: ClassVar[ObjectSchema[AgentConfig]] = ObjectSchema(
-        description="Лимиты агентского лупа и фильтрация tool-плагинов.",
+        description="Лимиты агентского лупа.",
         fields=[
             FieldSpec(
                 name="max_iterations",
@@ -126,28 +94,6 @@ class AgentSection(ConfigSection[AgentConfig]):
                     "Сколько раз подряд агент может звать tools без LLM-ответа."
                 ),
             ),
-            FieldSpec(
-                name="tools_enabled",
-                converter=ChainConverter(Default(True), ParseBool()),
-                description="Подключать ли tool-плагины.",
-            ),
-            FieldSpec(
-                name="tool_plugins",
-                converter=ChainConverter(Default([]), ParseCsvList()),
-                description="Whitelist по entry-point names (boba.tools).",
-            ),
-            FieldSpec(
-                name="tools_allow",
-                converter=ChainConverter(Default([]), ParseCsvList()),
-                description="Whitelist по именам tools. Пусто — все.",
-            ),
-            FieldSpec(
-                name="tools_deny",
-                converter=ChainConverter(Default([]), ParseCsvList()),
-                description="Blacklist по именам tools (поверх tools_allow).",
-            ),
         ],
-        factory=_build_agent_config,
+        factory=AgentConfig,
     )
-
-

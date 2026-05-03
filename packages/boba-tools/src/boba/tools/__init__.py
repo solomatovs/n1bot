@@ -25,7 +25,6 @@ from boba.tools.registry import (
     ToolsService,
     ToolStore,
 )
-from boba.tools.specs import ToolNameIn, ToolSourceIn
 from boba.tools.tool import (
     Tool,
     ToolCall,
@@ -49,7 +48,6 @@ __all__ = [
     "ToolFactory",
     "ToolId",
     "ToolIdCollisionError",
-    "ToolNameIn",
     "ToolOutputTooLargeError",
     "ToolPluginError",
     "ToolPluginLoadError",
@@ -58,7 +56,6 @@ __all__ = [
     "ToolResult",
     "ToolSource",
     "ToolSourceId",
-    "ToolSourceIn",
     "ToolStore",
     "ToolWireSchemaBuilder",
     "ToolsService",

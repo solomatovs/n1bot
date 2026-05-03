@@ -9,6 +9,7 @@ from boba.tools import ExtensionContext, StaticToolSource, ToolSource, ToolSourc
 from boba.ext.files.append import AppendTool
 from boba.ext.files.cat import CatTool
 from boba.ext.files.cd import CdTool
+from boba.ext.files.config import FilesSection
 from boba.ext.files.cp import CpTool
 from boba.ext.files.edit import EditTool
 from boba.ext.files.grep import GrepTool
@@ -26,26 +27,32 @@ __all__ = ["register_tools"]
 
 
 def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
-    """Entry-point boba.tools: все файловые tools одним источником."""
-    del ctx
+    """Entry-point boba.tools: файловые tools, гейт по [ext.files] enable."""
+    cfg = ctx.config.section(FilesSection)
+    if not cfg.enable:
+        return
+    tools = [
+        AppendTool(),
+        CatTool(),
+        CdTool(),
+        CpTool(),
+        EditTool(),
+        GrepTool(),
+        LsTool(),
+        MkdirTool(),
+        MvTool(),
+        PwdTool(),
+        RmTool(),
+        StatTool(),
+        TouchTool(),
+        TreeTool(),
+        WriteTool(),
+    ]
+    if cfg.tools_allow:
+        allow = set(cfg.tools_allow)
+        tools = [t for t in tools if t.tool_id().to_wire() in allow]
     yield StaticToolSource(
         ToolSourceId("builtin.files"),
         priority=0,
-        tools=[
-            AppendTool(),
-            CatTool(),
-            CdTool(),
-            CpTool(),
-            EditTool(),
-            GrepTool(),
-            LsTool(),
-            MkdirTool(),
-            MvTool(),
-            PwdTool(),
-            RmTool(),
-            StatTool(),
-            TouchTool(),
-            TreeTool(),
-            WriteTool(),
-        ],
+        tools=tools,
     )

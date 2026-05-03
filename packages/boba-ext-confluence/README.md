@@ -26,16 +26,15 @@ pip install -e ./packages/boba-ext-confluence
 
 ## Доступ
 
-В TOML агента:
+Расширение подключается явно — секцией `[ext.confluence]`:
 
 ```toml
-[agent]
-tools_enabled = true
-tools_allow = [
-    "ls", "cat", "grep",
-    "confluence_outline", "confluence_section",
-]
+[ext.confluence]
+enable = true
+# tools_allow = ["confluence_outline"]   # пусто = все tools пакета
 ```
+
+Без `enable = true` (или без секции) — tools не регистрируются.
 
 ## confluence_outline
 

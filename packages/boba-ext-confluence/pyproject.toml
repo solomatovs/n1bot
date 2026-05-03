@@ -17,6 +17,9 @@ dependencies = [
 [project.entry-points."boba.tools"]
 confluence = "boba.ext.confluence:register_tools"
 
+[project.entry-points."boba.config_sections"]
+confluence = "boba.ext.confluence.config:ConfluenceSection"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["boba*"]

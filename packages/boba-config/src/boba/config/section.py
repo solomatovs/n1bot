@@ -5,9 +5,9 @@ from __future__ import annotations
 from abc import ABC
 from typing import ClassVar, Generic, TypeVar
 
-from boba.patterns import StrId
 from boba.config.path import ConfigPath, NameSegment
 from boba.declaration import ObjectSchema
+from boba.patterns import StrId
 
 __all__ = ["ConfigSection"]
 

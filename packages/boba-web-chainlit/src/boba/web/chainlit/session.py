@@ -85,10 +85,7 @@ class ChatSession:
         prompt_loader = PromptLoader(prompt_workspace)
         self._prompt_providers = prompt_loader.prompt_providers()
 
-        tool_loader = ToolPluginLoader(
-            ExtensionContext(config=app),
-            tool_spec=self._agent_config.tool_spec,
-        )
+        tool_loader = ToolPluginLoader(ExtensionContext(config=app))
         self._tools_service = tool_loader.tools_service()
 
     @property
