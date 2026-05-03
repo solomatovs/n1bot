@@ -1,5 +1,6 @@
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["packages"]
+python_files = ["test_*.py"]
 pythonpath = [
     "packages/boba-patterns/src",
     "packages/boba-foundation/src",
@@ -25,7 +26,7 @@ pythonpath = [
 addopts = ["--strict-markers"]
 
 [tool.pyright]
-include = ["packages", "tests"]
+include = ["packages"]
 exclude = [
     ".venv",
     "**/node_modules",
