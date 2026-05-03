@@ -6,7 +6,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from boba.patterns import ContextFoldFactory, StrId
 from boba.agent.messages import MessageReader
 from boba.agent.models import AgentContext
 from boba.llm.errors import (
@@ -20,6 +19,7 @@ from boba.llm.models import (
     LLMToolRequest,
     SamplingParams,
 )
+from boba.patterns import ContextFoldFactory, StrId
 
 
 @dataclass
