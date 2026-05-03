@@ -29,7 +29,6 @@ __all__ = [
 ]
 
 
-# ─────────────── AppCoreSection ───────────────
 
 
 @dataclass(frozen=True)
@@ -70,7 +69,6 @@ class AppCoreSection(ConfigSection[AppCoreConfig]):
     )
 
 
-# ─────────────── AgentSection ───────────────
 
 
 class AgentSection(ConfigSection[AgentConfig]):

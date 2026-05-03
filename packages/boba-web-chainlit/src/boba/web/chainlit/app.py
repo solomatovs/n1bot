@@ -150,7 +150,6 @@ class _EventRenderer:
             case PhaseTransition():
                 await self._on_phase(event)
 
-    # ── Status helpers ───────────────────────────────────────────────
 
     async def _set_status(self, text: str) -> None:
         if self.status_msg is None:
@@ -172,7 +171,6 @@ class _EventRenderer:
             await self.answer_msg.send()
         return self.answer_msg
 
-    # ── Family handlers ──────────────────────────────────────────────
 
     async def _on_delta(self, e: ContentDelta) -> None:
         chunk = e.chunk()

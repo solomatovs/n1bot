@@ -48,7 +48,6 @@ class ChainlitSection(ConfigSection[ChainlitConfig]):
         description="Параметры chainlit-приложения: server, runtime-root, "
         "список моделей, UI-overrides.",
         fields=[
-            # ── server ─────────────────────────────────────────────
             FieldSpec(
                 name="host",
                 coercer=ChainCoercer(Default("127.0.0.1"), ParseString()),
@@ -92,7 +91,6 @@ class ChainlitSection(ConfigSection[ChainlitConfig]):
                 description="CSV/TOML-list LLM-моделей, выбираемых "
                 "пользователем в ChatSettings.",
             ),
-            # ── UI overrides (None = не трогать chainlit-дефолт) ───
             FieldSpec(
                 name="ui_name",
                 coercer=Nullable(ParseString()),

@@ -150,7 +150,6 @@ def test_scalar_list_item_validation_error_carries_index():
     assert "[1]" in info.value.location
 
 
-# ──────────────────── KeyedShape × ScalarItem (словарь скаляров) ────────────────────
 
 
 @dataclass(frozen=True)

@@ -215,7 +215,6 @@ class ObjectSchema(Generic[T]):
             max_top_k: int
             tools: Mapping[str, ToolEntry] = field(default_factory=dict)
 
-        # ── Схема ──
         # Вложенная схема (значение для tools.<id>.params.<name>):
         PARAM_OVERLAY_SCHEMA = ObjectSchema(
             fields=[FieldSpec("description", ChainCoercer(Default(""), ParseString()))],
@@ -267,7 +266,6 @@ class ObjectSchema(Generic[T]):
             description="Параметры подключения к ChromaDB и список включённых tools.",
         )
 
-        # ── Использование ──
         cfg = Materializer(CHROMADB_SCHEMA).materialize(
             space, ConfigPath.parse("$ext.chromadb"),
         )                                                # → ChromadbConfig (DTO)

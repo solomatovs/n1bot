@@ -123,7 +123,6 @@ def test_validation_error_attaches_field():
     assert info.value.field_name == "max_iterations"
 
 
-# ──────── KeyedShape × ObjectItem (динамические подсекции, как tools.<id>) ────────
 
 
 @dataclass(frozen=True)
@@ -200,7 +199,6 @@ def test_mapping_field_empty_when_no_subsections():
     assert block.tools == {}
 
 
-# ──────── IndexedShape × ObjectItem (индексированные подсекции) ────────
 
 
 @dataclass(frozen=True)
