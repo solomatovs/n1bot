@@ -1,7 +1,4 @@
-"""Reader для индексации HTML-файлов: full-text extraction.
-
-v0.1: HTML → одна Section с plain text. Heading-aware вариант — этап 4.
-"""
+"""HtmlReader: HTML → одна Section (full-text)."""
 
 from __future__ import annotations
 

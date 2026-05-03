@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-ext-chromadb-store"
+version = "0.1.0"
+description = "ChromaDB store for boba indexer (write-side: upsert/delete chunks)."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-config",
+    "boba-ext-chromadb-shared",
+    "boba-foundation",
+    "boba-indexing",
+    "boba-patterns",
+    "chromadb>=0.5",
+]
+
+[project.entry-points."boba.indexing.stores"]
+chromadb_persist = "boba.ext.chromadb_store:register_stores"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

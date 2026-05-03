@@ -5,27 +5,26 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 
-from boba.ext.chromadb.config import ChromaExtConfig
 from boba.indexing import (
     Chunk,
     CollectionInfo,
-    IndexerExtensionContext,
     IndexingContext,
     Store,
-    StoreFactory,
     StoreId,
 )
 
-__all__ = ["ChromadbPersistStore", "ChromadbPersistStoreFactory"]
+__all__ = ["ChromadbPersistStore"]
 
 logger = logging.getLogger(__name__)
+
+_BATCH_SIZE = 256
 
 
 class ChromadbPersistStore(Store):
     """Локальный persistent ChromaDB store.
 
-    Буферизирует Chunk'и и сбрасывает в `flush()`. Per-collection кеш
-    Chroma-collection объектов внутри одного экземпляра Store.
+    Буферизирует Chunk'и per-collection и сбрасывает batched-upsert'ом
+    при заполнении или явном `flush()`.
     """
 
     def __init__(self, persist_path: str) -> None:
@@ -33,7 +32,6 @@ class ChromadbPersistStore(Store):
         import chromadb  # noqa: PLC0415
 
         self._client = chromadb.PersistentClient(path=persist_path)
-        # buffer: per-collection, чтобы flush мог группировать upsert.
         self._buffer: dict[str, list[Chunk]] = {}
         logger.info("ChromadbPersistStore opened persist_path=%r", persist_path)
 
@@ -130,9 +128,6 @@ class ChromadbPersistStore(Store):
         )
 
 
-_BATCH_SIZE = 256
-
-
 def _meta(c: Chunk) -> dict[str, str]:
     """Build metadata dict с source_id/anchor/chunk_index."""
     out: dict[str, str] = {
@@ -143,19 +138,3 @@ def _meta(c: Chunk) -> dict[str, str]:
     if c.anchor:
         out["anchor"] = c.anchor
     return out
-
-
-class ChromadbPersistStoreFactory(StoreFactory):
-    """Читает [ext.chromadb] и собирает ChromadbPersistStore."""
-
-    def id(self) -> StoreId:
-        return StoreId("ext.chromadb_persist")
-
-    def produce(self, ctx: IndexerExtensionContext) -> Store:
-        from boba.ext.chromadb.config import ChromadbSection  # noqa: PLC0415
-
-        cfg: ChromaExtConfig = ctx.config.section(ChromadbSection)
-        if not cfg.persist_path:
-            msg = "ext.chromadb.persist_path is required for ChromadbPersistStore"
-            raise ValueError(msg)
-        return ChromadbPersistStore(cfg.persist_path)
