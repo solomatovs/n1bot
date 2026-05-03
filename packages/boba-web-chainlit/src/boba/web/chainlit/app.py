@@ -7,6 +7,7 @@ import functools
 import logging
 from typing import cast
 
+import chainlit as cl
 from boba.agent.events import (
     Advisory,
     AgentEvent,
@@ -25,12 +26,10 @@ from boba.agent.events import (
     ToolExecutionFailed,
     ToolExecutionStarted,
 )
-from boba.workspace import WorkspaceId
-
-import chainlit as cl
 from boba.web.chainlit.bridge import ChainlitBridgeSink
 from boba.web.chainlit.files import save_upload
 from boba.web.chainlit.session import ChatSession
+from boba.workspace import WorkspaceId
 from chainlit.input_widget import Select
 
 logger = logging.getLogger(__name__)

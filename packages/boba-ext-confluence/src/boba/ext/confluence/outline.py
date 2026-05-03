@@ -5,6 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.ext.confluence._parse import (
+    Heading,
+    anchor_for,
+    collect_headings,
+    load_soup,
+)
 from boba.tools import (
     Tool,
     ToolContext,
@@ -26,13 +32,6 @@ from boba.validators import (
 from boba.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
-)
-
-from boba.ext.confluence._parse import (
-    Heading,
-    anchor_for,
-    collect_headings,
-    load_soup,
 )
 
 

@@ -5,8 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
+from boba.cli.vector_index.chunking import (
+    DEFAULT_CHUNK_OVERLAP,
+    DEFAULT_CHUNK_SIZE,
+)
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.patterns import StrId
 from boba.validators import (
     ChainConverter,
     Default,
@@ -17,12 +22,6 @@ from boba.validators import (
     ParseInt,
     ParseString,
 )
-
-from boba.cli.vector_index.chunking import (
-    DEFAULT_CHUNK_OVERLAP,
-    DEFAULT_CHUNK_SIZE,
-)
-from boba.patterns import StrId
 
 __all__ = [
     "ACTIONS",
