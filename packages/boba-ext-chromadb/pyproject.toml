@@ -14,6 +14,8 @@ chromadb = "boba.ext.chromadb:register_tools"
 
 [project.entry-points."boba.config_sections"]
 chromadb = "boba.ext.chromadb.config:ChromadbSection"
+chromadb_kb_list_collections = "boba.ext.chromadb.kb_list_collections:KbListCollectionsToolSection"
+chromadb_kb_search = "boba.ext.chromadb.kb_search:KbSearchToolSection"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import ClassVar
 
+from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.patterns import StrId
 from boba.tools import (
+    ParamOverlay,
     Tool,
     ToolContext,
     ToolExecutionError,
     ToolId,
     ToolResult,
     ToolSourceId,
+    param_desc,
+    params_field,
 )
-from boba.validators import ChainConverter, IsString, NonEmpty
+from boba.validators import ChainConverter, Default, IsString, NonEmpty, ParseString
 from boba.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
@@ -25,11 +32,25 @@ class CdArgs:
     path: str
 
 
+@dataclass(frozen=True)
+class CdToolConfig:
+    """DTO секции [ext.files.tools.cd]."""
+
+    description: str
+    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+
+
 class CdTool(Tool[CdArgs]):
     """Сменить текущую директорию."""
 
     _ID = ToolId("cd")
     _SOURCE = ToolSourceId("builtin.files")
+
+    DEFAULT_DESCRIPTION: ClassVar[str] = "Сменить текущую директорию."
+    DEFAULT_PATH_DESC: ClassVar[str] = "Путь директории."
+
+    def __init__(self, cfg: CdToolConfig) -> None:
+        self._cfg = cfg
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -38,12 +59,13 @@ class CdTool(Tool[CdArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[CdArgs]:
+        p = self._cfg.params
         return ObjectSchema(
-            description="Сменить текущую директорию.",
+            description=self._cfg.description,
             fields=[
                 FieldSpec(
                     name="path",
-                    description="Путь директории.",
+                    description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
                     converter=ChainConverter(IsString(), NonEmpty()),
                     required=True,
                 ),
@@ -65,3 +87,25 @@ class CdTool(Tool[CdArgs]):
                 message=f"Ошибка cd: {e}",
             ) from e
         return ToolResult(content=f"Текущая директория: {ctx.project_workspace.cwd}")
+
+
+class CdToolSection(ConfigSection[CdToolConfig]):
+    """Секция [ext.files.tools.cd]."""
+
+    id: ClassVar[StrId] = StrId("ext.files.tools.cd")
+    namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "cd")
+
+    schema: ClassVar[ObjectSchema[CdToolConfig]] = ObjectSchema(
+        description="Конфиг tool 'cd'.",
+        fields=[
+            FieldSpec(
+                name="description",
+                converter=ChainConverter(
+                    Default(CdTool.DEFAULT_DESCRIPTION), ParseString()
+                ),
+                description="Override описания tool'а; пусто — дефолт из кода.",
+            ),
+            params_field("params"),
+        ],
+        factory=CdToolConfig,
+    )

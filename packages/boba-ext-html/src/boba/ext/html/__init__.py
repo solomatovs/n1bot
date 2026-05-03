@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from boba.ext.html.config import HtmlSection
-from boba.ext.html.outline import HtmlOutlineTool
-from boba.ext.html.section import HtmlSectionTool
+from boba.ext.html.outline import HtmlOutlineTool, HtmlOutlineToolSection
+from boba.ext.html.section import HtmlSectionTool, HtmlSectionToolSection
 from boba.tools import ExtensionContext, StaticToolSource, ToolSource, ToolSourceId
 
 __all__ = ["register_tools"]
@@ -17,7 +17,11 @@ def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
     cfg = ctx.config.section(HtmlSection)
     if not cfg.enable:
         return
-    tools = [HtmlOutlineTool(), HtmlSectionTool()]
+    s = ctx.config.section
+    tools = [
+        HtmlOutlineTool(s(HtmlOutlineToolSection)),
+        HtmlSectionTool(s(HtmlSectionToolSection)),
+    ]
     if cfg.tools_allow:
         allow = set(cfg.tools_allow)
         tools = [t for t in tools if t.tool_id().to_wire() in allow]

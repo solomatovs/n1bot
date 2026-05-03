@@ -10,11 +10,8 @@ from __future__ import annotations
 from boba.config.app import AppConfigFactory
 from boba.config.bundle import ConfigBundle
 from boba.ext.confluence import register_tools as confluence_register_tools
-from boba.ext.confluence.config import ConfluenceSection
 from boba.ext.files import register_tools as files_register_tools
-from boba.ext.files.config import FilesSection
 from boba.ext.html import register_tools as html_register_tools
-from boba.ext.html.config import HtmlSection
 from boba.tools import ExtensionContext
 
 
@@ -59,9 +56,8 @@ def _make_app(values: dict[str, str | bool | list[str]]) -> object:
 
     bundle = ConfigBundle.from_sources([InlineSource(values)])
     factory = AppConfigFactory()
-    factory.register_section(FilesSection())
-    factory.register_section(HtmlSection())
-    factory.register_section(ConfluenceSection())
+    # Подхватываем все секции (ext + per-tool) через entry-points.
+    factory.discover_extension_sections()
     return factory.build(bundle)
 
 

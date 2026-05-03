@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from itertools import islice
+from typing import ClassVar
 
+from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.patterns import StrId
 from boba.tools import (
+    ParamOverlay,
     Tool,
     ToolContext,
     ToolExecutionError,
     ToolId,
     ToolResult,
     ToolSourceId,
+    param_desc,
+    params_field,
 )
 from boba.validators import (
     ChainConverter,
@@ -23,6 +30,7 @@ from boba.validators import (
     MinValue,
     NonEmpty,
     Nullable,
+    ParseString,
 )
 from boba.workspace import (
     GrepMatch,
@@ -43,11 +51,49 @@ class GrepArgs:
     fixed_string: bool
 
 
+@dataclass(frozen=True)
+class GrepToolConfig:
+    """DTO секции [ext.files.tools.grep]."""
+
+    description: str
+    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+
+
 class GrepTool(Tool[GrepArgs]):
     """Поиск подстроки/regex по содержимому файлов."""
 
     _ID = ToolId("grep")
     _SOURCE = ToolSourceId("builtin.files")
+
+    DEFAULT_DESCRIPTION: ClassVar[str] = (
+        "Найти совпадения pattern в текстовых файлах. Формат "
+        "результата: 'path:line: content'. Бинарные и недекодируемые "
+        "файлы пропускаются. При переполнении limit ответ обрезается "
+        "с маркером."
+    )
+    DEFAULT_PATTERN_DESC: ClassVar[str] = "Python-regex; литерал при fixed_string=true."
+    DEFAULT_PATH_DESC: ClassVar[str] = "Стартовый путь. Без значения — cwd."
+    DEFAULT_RECURSIVE_DESC: ClassVar[str] = (
+        "Рекурсивный обход директории. По умолчанию true."
+    )
+    DEFAULT_INCLUDE_DESC: ClassVar[str] = (
+        "Fnmatch-glob по пути (например '*.py'). Без значения — все файлы."
+    )
+    DEFAULT_CASE_INSENSITIVE_DESC: ClassVar[str] = (
+        "Игнорировать регистр. По умолчанию false."
+    )
+    DEFAULT_CONTEXT_DESC: ClassVar[str] = (
+        "Строк контекста до и после каждого совпадения. По умолчанию 0."
+    )
+    DEFAULT_LIMIT_DESC: ClassVar[str] = (
+        "Максимум совпадений в ответе. По умолчанию 100."
+    )
+    DEFAULT_FIXED_STRING_DESC: ClassVar[str] = (
+        "Литеральный поиск без regex. По умолчанию false."
+    )
+
+    def __init__(self, cfg: GrepToolConfig) -> None:
+        self._cfg = cfg
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -56,47 +102,48 @@ class GrepTool(Tool[GrepArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[GrepArgs]:
+        p = self._cfg.params
         return ObjectSchema(
-            description=(
-                "Найти совпадения pattern в текстовых файлах. Формат "
-                "результата: 'path:line: content'. Бинарные и недекодируемые "
-                "файлы пропускаются. При переполнении limit ответ обрезается "
-                "с маркером."
-            ),
+            description=self._cfg.description,
             fields=[
                 FieldSpec(
                     name="pattern",
-                    description="Python-regex; литерал при fixed_string=true.",
+                    description=param_desc(
+                        p, "pattern", self.DEFAULT_PATTERN_DESC
+                    ),
                     converter=ChainConverter(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
                     name="path",
-                    description="Стартовый путь. Без значения — cwd.",
+                    description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
                     converter=Nullable(ChainConverter(IsString(), NonEmpty())),
                 ),
                 FieldSpec(
                     name="recursive",
-                    description="Рекурсивный обход директории. По умолчанию true.",
+                    description=param_desc(
+                        p, "recursive", self.DEFAULT_RECURSIVE_DESC
+                    ),
                     converter=ChainConverter(Default(True), IsBool()),
                 ),
                 FieldSpec(
                     name="include",
-                    description=(
-                        "Fnmatch-glob по пути (например '*.py'). "
-                        "Без значения — все файлы."
+                    description=param_desc(
+                        p, "include", self.DEFAULT_INCLUDE_DESC
                     ),
                     converter=Nullable(ChainConverter(IsString(), NonEmpty())),
                 ),
                 FieldSpec(
                     name="case_insensitive",
-                    description="Игнорировать регистр. По умолчанию false.",
+                    description=param_desc(
+                        p, "case_insensitive", self.DEFAULT_CASE_INSENSITIVE_DESC
+                    ),
                     converter=ChainConverter(Default(False), IsBool()),
                 ),
                 FieldSpec(
                     name="context",
-                    description=(
-                        "Строк контекста до и после каждого совпадения. По умолчанию 0."
+                    description=param_desc(
+                        p, "context", self.DEFAULT_CONTEXT_DESC
                     ),
                     converter=ChainConverter(
                         Default(0),
@@ -106,7 +153,7 @@ class GrepTool(Tool[GrepArgs]):
                 ),
                 FieldSpec(
                     name="limit",
-                    description="Максимум совпадений в ответе. По умолчанию 100.",
+                    description=param_desc(p, "limit", self.DEFAULT_LIMIT_DESC),
                     converter=ChainConverter(
                         Default(100),
                         IsInt(),
@@ -115,7 +162,9 @@ class GrepTool(Tool[GrepArgs]):
                 ),
                 FieldSpec(
                     name="fixed_string",
-                    description="Литеральный поиск без regex. По умолчанию false.",
+                    description=param_desc(
+                        p, "fixed_string", self.DEFAULT_FIXED_STRING_DESC
+                    ),
                     converter=ChainConverter(Default(False), IsBool()),
                 ),
             ],
@@ -173,3 +222,25 @@ class GrepTool(Tool[GrepArgs]):
                 n = m.line + 1 + j
                 parts.append(f"{m.path}:{n}- {ctx_line}")
         return "\n".join(parts)
+
+
+class GrepToolSection(ConfigSection[GrepToolConfig]):
+    """Секция [ext.files.tools.grep]."""
+
+    id: ClassVar[StrId] = StrId("ext.files.tools.grep")
+    namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "grep")
+
+    schema: ClassVar[ObjectSchema[GrepToolConfig]] = ObjectSchema(
+        description="Конфиг tool 'grep'.",
+        fields=[
+            FieldSpec(
+                name="description",
+                converter=ChainConverter(
+                    Default(GrepTool.DEFAULT_DESCRIPTION), ParseString()
+                ),
+                description="Override описания tool'а; пусто — дефолт из кода.",
+            ),
+            params_field("params"),
+        ],
+        factory=GrepToolConfig,
+    )
