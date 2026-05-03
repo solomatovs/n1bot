@@ -41,7 +41,6 @@ from boba.declaration import (
 )
 
 
-
 @dataclass(frozen=True)
 class ParamOverlay:
     """Перекрытие описания одного параметра tool'а."""
