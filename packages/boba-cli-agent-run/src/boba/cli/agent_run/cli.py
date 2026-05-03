@@ -10,6 +10,24 @@ with contextlib.suppress(ImportError):
     import readline  # noqa: F401  # pyright: ignore[reportUnusedImport]
     # side-effect: подключает редактирование строки и историю в input().
 
+from boba_next.agent import Agent, AgentConfig
+from boba_next.agent.models import AgentRequest
+from boba_next.config import AppConfig, AppConfigBootstrap
+from boba_next.infra import (
+    AgentComponents,
+    AgentSection,
+    AppCoreSection,
+    configure_logging,
+    create_agent,
+)
+from boba_next.llm.models import RequestId
+from boba_next.llm.observer import CompositeLLMRequestObserver
+from boba_next.tools import ExtensionContext, ToolContext, ToolPluginLoader
+from boba_next.workspace import (
+    PromptWorkspaceId,
+    WorkspaceId,
+)
+
 from boba.adapter.fs_workspace import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
@@ -28,28 +46,7 @@ from boba.cli.agent_run.config import AgentRunConfig, AgentRunSection
 from boba.cli.agent_run.console_sink import ConsoleSink
 from boba.config.cli import CliSource
 from boba.config.env import EnvFileSource, EnvSource
-from boba.config.toml import CONFIG_PATH_ENV, TomlFileSource, TomlSource
-from boba_next.agent import Agent, AgentConfig
-from boba_next.agent.models import AgentRequest
-from boba.domain.config import AppConfig
-from boba_next.tools import ToolContext
-from boba_next.workspace import (
-    PromptWorkspaceId,
-    WorkspaceId,
-)
-from boba_next.llm.models import RequestId
-from boba_next.llm.observer import CompositeLLMRequestObserver
-from boba_next.infra import (
-    AgentComponents,
-    AgentSection,
-    AppCoreSection,
-    ConfigBundle,
-    ConfigFactory,
-    ExtensionContext,
-    ToolPluginLoader,
-    configure_logging,
-    create_agent,
-)
+from boba.config.toml import TomlFileSource, TomlSource
 from boba.patterns import ConverterInputError
 
 _REPL_EXIT_COMMANDS = frozenset({"/exit", "/quit", ":q"})
@@ -57,80 +54,69 @@ _REPL_EXIT_COMMANDS = frozenset({"/exit", "/quit", ":q"})
 
 def main() -> int:
     """Entry-point. Возвращает exit-code (0 = успех)."""
-    factory = _build_factory()
     try:
-        return _run(factory)
+        app = _build_app()
     except ConverterInputError as e:
-        print(f"error: {factory.format_config_error(e)}", file=sys.stderr)
+        print(f"error: {e}", file=sys.stderr)
         return 2
+    return _run(app)
 
 
-def _build_factory() -> ConfigFactory:
-    """Регистрация секций и источников.
+def _build_app() -> AppConfig:
+    """Регистрация секций и источников; собирает AppConfig.
 
     Приоритет: cli > env-file > env > toml-file > toml.
     """
-    factory = ConfigFactory()
-    factory.register(AppCoreSection())
-    factory.register(AgentSection())
-    factory.register(WorkspacesSection())
-    factory.register(LLMTransportSection())
-    factory.register(PromptsSection())
-    factory.register(AgentRunSection())
-    factory.discover_extension_sections()
-    factory.attach_sources(
+    boot = AppConfigBootstrap()
+    boot.register_section(AppCoreSection())
+    boot.register_section(AgentSection())
+    boot.register_section(WorkspacesSection())
+    boot.register_section(LLMTransportSection())
+    boot.register_section(PromptsSection())
+    boot.register_section(AgentRunSection())
+    boot.discover_extension_sections()
+    boot.attach_sources(
         [
             CliSource(),
             EnvFileSource(),
-            EnvSource(extra_known={CONFIG_PATH_ENV}),
+            EnvSource(),
             TomlFileSource(),
             TomlSource(),
         ]
     )
-    return factory
+    return boot.build()
 
 
-def _build_app_config(bundle: ConfigBundle) -> AppConfig:
-    """Composition AppConfig из плоских секций."""
-    core = bundle.section(AppCoreSection)
-    return AppConfig(
-        workspaces=bundle.section(WorkspacesSection),
-        llm=bundle.section(LLMTransportSection),
-        prompts_dir=bundle.section(PromptsSection),
-        ssl_verify=core.ssl_verify,
-        log_level=core.log_level,
-        log_file=core.log_file,
-    )
-
-
-def _run(factory: ConfigFactory) -> int:
+def _run(app: AppConfig) -> int:
     """Собирает агента и либо прогоняет один запрос, либо запускает REPL."""
-    bundle = factory.build()
-    app_config = _build_app_config(bundle)
-    agent_config = bundle.section(AgentSection)
-    run_cfg: AgentRunConfig = bundle.section(AgentRunSection)
-    configure_logging(app_config.log_level, app_config.log_file)
+    core = app.section(AppCoreSection)
+    workspaces = app.section(WorkspacesSection)
+    llm_cfg = app.section(LLMTransportSection)
+    prompts_dir = app.section(PromptsSection)
+    agent_config = app.section(AgentSection)
+    run_cfg: AgentRunConfig = app.section(AgentRunSection)
+    configure_logging(core.log_level, core.log_file)
 
     workspace_id = WorkspaceId.from_wire("00000000-0000-0000-0000-000000000001")
 
     prompt_workspace = FsPromptWorkspaceRegistry(
-        root=Path(app_config.prompts_dir),
+        root=Path(prompts_dir),
     ).get_or_create(PromptWorkspaceId("prompts"))
     prompt_loader = PromptLoader(prompt_workspace)
 
     tool_loader = ToolPluginLoader(
-        ExtensionContext(config=bundle),
+        ExtensionContext(config=app),
         tool_spec=agent_config.tool_spec,
     )
 
     project_workspace = FsProjectWorkspaceRegistry(
-        base_dir=Path(app_config.workspaces.base_dir),
-        subdir=app_config.workspaces.user_subdir,
+        base_dir=Path(workspaces.base_dir),
+        subdir=workspaces.user_subdir,
     ).get_or_create(workspace_id)
 
     history_workspace = FsHistoryWorkspaceRegistry(
-        base_dir=Path(app_config.workspaces.base_dir),
-        subdir=app_config.workspaces.system_subdir,
+        base_dir=Path(workspaces.base_dir),
+        subdir=workspaces.system_subdir,
     ).get_or_create(workspace_id)
 
     observer = CompositeLLMRequestObserver(
@@ -139,7 +125,7 @@ def _run(factory: ConfigFactory) -> int:
             TranscriptChatCompletionObserver(history_workspace),
         ]
     )
-    llm_source = create_llm_source(app_config.llm, observer)
+    llm_source = create_llm_source(llm_cfg, observer)
 
     message_service = InMemoryMessageService()
     agent = create_agent(

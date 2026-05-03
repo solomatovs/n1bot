@@ -8,13 +8,6 @@ from pathlib import Path
 from threading import Lock
 from typing import Generic, TypeVar
 
-from boba.adapter.fs_workspace.shell import (
-    FsHistoryWorkspaceShell,
-    FsProjectWorkspaceShell,
-    FsPromptWorkspaceShell,
-    FsScratchWorkspaceShell,
-    FsWorkspaceShell,
-)
 from boba_next.workspace import (
     HistoryWorkspaceRegistry,
     ProjectWorkspaceRegistry,
@@ -24,6 +17,14 @@ from boba_next.workspace import (
     WorkspaceId,
     WorkspaceNotFoundError,
     WorkspaceRegistry,
+)
+
+from boba.adapter.fs_workspace.shell import (
+    FsHistoryWorkspaceShell,
+    FsProjectWorkspaceShell,
+    FsPromptWorkspaceShell,
+    FsScratchWorkspaceShell,
+    FsWorkspaceShell,
 )
 from boba.patterns import Id
 

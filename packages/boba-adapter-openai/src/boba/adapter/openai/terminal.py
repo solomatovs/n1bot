@@ -8,11 +8,6 @@ from contextlib import contextmanager
 from typing import Any
 
 import httpx
-
-import openai
-from boba.adapter.openai.errors import OpenAIErrorConverter
-from boba.adapter.openai.request import ToOpenAIRequestConverter
-from boba.adapter.openai.response import FromOpenAIChunkConverter
 from boba_next.infra import LLMConfig
 from boba_next.llm.errors import LLMError
 from boba_next.llm.events import (
@@ -22,6 +17,11 @@ from boba_next.llm.events import (
 )
 from boba_next.llm.models import LLMContext
 from boba_next.llm.observer import LLMRequestObserver, RequestOutcome
+
+import openai
+from boba.adapter.openai.errors import OpenAIErrorConverter
+from boba.adapter.openai.request import ToOpenAIRequestConverter
+from boba.adapter.openai.response import FromOpenAIChunkConverter
 from boba.patterns import StreamSource
 from openai import OpenAI
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk

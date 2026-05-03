@@ -27,10 +27,10 @@ from boba_next import (
     MaxValue,
     MinValue,
     NonEmpty,
+    NotNull,
     ObjectSchema,
     ParseInt,
     ParseString,
-    NotNull,
     ScalarItem,
     StringValue,
 )

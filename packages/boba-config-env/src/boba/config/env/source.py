@@ -1,133 +1,155 @@
-"""env-источник конфига. Имя — env_name(key) = ``BOBA_<PARTS>``."""
+"""env-источник под confignext: BOBA_<SEG>__<SEG>__<INDEX> → $seg.seg[index]."""
 
 from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Iterable
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Final
+from typing import Final
 
-from boba.domain.core.config import ConfigKey, ConfigSource
-from boba.domain.core.declaration import FieldSpec
+from boba_next import ConfigSource, ConfigValue, StringValue
+from boba_next.config.path import (
+    ConfigPath,
+    ConfigPathParseError,
+    IndexSegment,
+    NameSegment,
+    Segment,
+)
 
 __all__ = [
     "ENV_FILE_SUFFIX",
     "ENV_PREFIX",
+    "ENV_SEPARATOR",
     "EnvFileSource",
     "EnvSource",
-    "env_name",
 ]
-
 
 logger = logging.getLogger(__name__)
 
 
 ENV_PREFIX: Final[str] = "BOBA"
+ENV_SEPARATOR: Final[str] = "__"
 ENV_FILE_SUFFIX: Final[str] = "_FILE"
 
 
-def env_name(key: ConfigKey) -> str:
-    """ConfigKey → ``BOBA_A_B_C``."""
-    return "_".join((ENV_PREFIX, *key.parts)).upper()
+class EnvSource(ConfigSource):
+    """Плоский snapshot из process env.
 
-
-class _EnvSourceBase(ConfigSource):
-    """Общий каркас env-источников: префикс BOBA_ и суффикс _FILE."""
+    Convention: `BOBA_<SEG>__<SEG>__...`, разделитель сегментов — `__`.
+    Сегмент из одних цифр → IndexSegment(int(seg)).
+    Иначе → NameSegment(seg.lower()).
+    Все значения отдаются как StringValue (env-варсы — всегда строки).
+    """
 
     def __init__(
         self,
+        env: Mapping[str, str] | None = None,
         *,
-        strict: bool = False,
-        extra_known: Iterable[str] = (),
+        priority: int = 300,
+        name: str | None = None,
     ) -> None:
-        self._strict = strict
-        self._extra_known = frozenset(extra_known)
+        self._env = dict(env) if env is not None else dict(os.environ)
+        self._priority = priority
+        self._name = name or "env"
 
-    @staticmethod
-    def _is_boba_var(name: str) -> bool:
-        """Имя начинается с ``BOBA_`` — наша переменная."""
-        return name.startswith(ENV_PREFIX + "_")
+    def name(self) -> str:
+        return self._name
 
-    @staticmethod
-    def _is_secret_pointer(name: str) -> bool:
-        """Имя оканчивается на ``_FILE`` — Docker-style указатель на секрет."""
-        return name.endswith(ENV_FILE_SUFFIX)
+    def priority(self) -> int:
+        return self._priority
 
-    @staticmethod
-    def _strip_file_suffix(name: str) -> str:
-        """Убрать ``_FILE``; вызывать только после :meth:`_is_secret_pointer`."""
-        return name[: -len(ENV_FILE_SUFFIX)]
+    def load(self) -> Mapping[ConfigPath, ConfigValue]:
+        result: dict[ConfigPath, ConfigValue] = {}
+        for key, value in self._env.items():
+            if not key.startswith(ENV_PREFIX + "_"):
+                continue
+            if key.endswith(ENV_FILE_SUFFIX):
+                continue
+            path = _decode_env_key(key)
+            if path is None:
+                continue
+            result[path] = StringValue(value)
+        return result
 
-    def _report_unknown(self, unknown: list[str], suffix: str = "") -> None:
-        """warning/ValueError (по strict) на найденные имена; suffix — после ``*``."""
-        if not unknown:
-            return
-        msg = f"unknown {ENV_PREFIX}_*{suffix} env vars: {sorted(unknown)}"
-        if self._strict:
-            raise ValueError(msg)
-        logger.warning(msg)
+    def describe(self, path: ConfigPath) -> str:
+        return f"env {_encode_env_key(path)}=<value>"
 
 
-class EnvSource(_EnvSourceBase):
-    """Значение из os.environ[env_name(key)]."""
+class EnvFileSource(ConfigSource):
+    """env-варианты вида `BOBA_<...>_FILE=/path/to/secret`: значение — содержимое файла."""
 
-    def bind_schema(
+    def __init__(
         self,
-        items: Iterable[tuple[ConfigKey, FieldSpec[Any]]],
+        env: Mapping[str, str] | None = None,
+        *,
+        priority: int = 400,
+        name: str | None = None,
     ) -> None:
-        """Сравнить ``BOBA_*`` (без ``_FILE``) с known_names; ругнуться на лишние."""
-        known_names = {env_name(key) for key, _field in items} | self._extra_known
-        unknown: list[str] = []
-        for actual in os.environ:
-            if not self._is_boba_var(actual):
-                continue
-            if self._is_secret_pointer(actual):
-                continue
-            if actual in known_names:
-                continue
-            unknown.append(actual)
-        self._report_unknown(unknown)
+        self._env = dict(env) if env is not None else dict(os.environ)
+        self._priority = priority
+        self._name = name or "env_file"
 
-    def resolve(self, key: ConfigKey) -> object | None:
-        """Значение ``os.environ[BOBA_*]`` или None."""
-        return os.environ.get(env_name(key))
+    def name(self) -> str:
+        return self._name
 
-    def describe(self, key: ConfigKey) -> str:
-        """Operator-readable hint: ``env BOBA_A_B``."""
-        return f"env {env_name(key)}"
+    def priority(self) -> int:
+        return self._priority
 
-
-class EnvFileSource(_EnvSourceBase):
-    """Значение из файла ${env_name(key)}_FILE (Docker-style)."""
-
-    def bind_schema(
-        self,
-        items: Iterable[tuple[ConfigKey, FieldSpec[Any]]],
-    ) -> None:
-        """Сравнить ``BOBA_*_FILE`` со схемой (strip ``_FILE``); ругнуться на лишние."""
-        known_names = {env_name(key) for key, _field in items} | self._extra_known
-        unknown: list[str] = []
-        for actual in os.environ:
-            if not self._is_boba_var(actual):
+    def load(self) -> Mapping[ConfigPath, ConfigValue]:
+        result: dict[ConfigPath, ConfigValue] = {}
+        for key, raw_path in self._env.items():
+            if not key.startswith(ENV_PREFIX + "_"):
                 continue
-            if not self._is_secret_pointer(actual):
+            if not key.endswith(ENV_FILE_SUFFIX):
                 continue
-            if self._strip_file_suffix(actual) in known_names:
+            base = key[: -len(ENV_FILE_SUFFIX)]
+            path = _decode_env_key(base)
+            if path is None:
                 continue
-            unknown.append(actual)
-        self._report_unknown(unknown, ENV_FILE_SUFFIX)
+            secret_path = Path(raw_path)
+            if not secret_path.is_file():
+                continue
+            content = secret_path.read_text(encoding="utf-8").rstrip("\n")
+            result[path] = StringValue(content)
+        return result
 
-    def resolve(self, key: ConfigKey) -> object | None:
-        """Прочитать файл, путь к нему — в ``os.environ[BOBA_*_FILE]``."""
-        path = os.environ.get(env_name(key) + ENV_FILE_SUFFIX)
-        if not path:
+    def describe(self, path: ConfigPath) -> str:
+        return f"env {_encode_env_key(path)}{ENV_FILE_SUFFIX}=<path-to-secret-file>"
+
+
+def _decode_env_key(env_key: str) -> ConfigPath | None:
+    """`BOBA_AGENT__MAX_ITERATIONS` → ConfigPath('$agent.max_iterations')."""
+    body = env_key[len(ENV_PREFIX) + 1 :]
+    if not body:
+        return None
+    parts = body.split(ENV_SEPARATOR)
+    segments: list[Segment] = []
+    for part in parts:
+        if not part:
             return None
-        secret_file = Path(path)
-        if not secret_file.is_file():
+        if part.isdigit():
+            segments.append(IndexSegment(int(part)))
+            continue
+        try:
+            segments.append(NameSegment(part.lower()))
+        except ConfigPathParseError:
             return None
-        return secret_file.read_text(encoding="utf-8").strip()
+    return ConfigPath(tuple(segments))
 
-    def describe(self, key: ConfigKey) -> str:
-        """Operator-readable hint: ``env BOBA_A_B_FILE=<path>``."""
-        return f"env {env_name(key)}{ENV_FILE_SUFFIX}=<path-to-secret-file>"
+
+def _encode_env_key(path: ConfigPath) -> str:
+    parts: list[str] = [ENV_PREFIX]
+    for seg in path:
+        key = seg.mapping_key()
+        if key is not None:
+            parts.append(key.upper())
+            continue
+        index = seg.list_index()
+        if index is not None:
+            parts.append(str(index))
+            continue
+        raise ValueError(f"cannot encode segment for env: {seg!r}")
+    head = parts[0]
+    rest = ENV_SEPARATOR.join(parts[1:])
+    return f"{head}_{rest}" if rest else head

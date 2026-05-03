@@ -4,6 +4,25 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from boba_next.agent.events import AgentEvent
+from boba_next.agent.models import AgentContext, AgentRequest
+from boba_next.config import AppConfig
+from boba_next.infra import (
+    AgentComponents,
+    AgentSection,
+    AppCoreSection,
+    configure_logging,
+    create_agent,
+    log_context,
+)
+from boba_next.llm.models import RequestId
+from boba_next.tools import ExtensionContext, ToolContext, ToolPluginLoader
+from boba_next.workspace import (
+    ProjectWorkspaceShell,
+    PromptWorkspaceId,
+    WorkspaceId,
+)
+
 from boba.adapter.fs_workspace import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
@@ -17,85 +36,57 @@ from boba.adapter.openai import (
     create_llm_source,
 )
 from boba.adapter.prompt_providers import PromptLoader, PromptsSection
-from boba.domain.agent.events import AgentEvent
-from boba.domain.agent.models import AgentContext, AgentRequest
-from boba.domain.config import AppConfig
-from boba.domain.core.tools import ToolContext
-from boba.domain.core.workspace import (
-    ProjectWorkspaceShell,
-    PromptWorkspaceId,
-    WorkspaceId,
-)
-from boba.domain.llm.models import RequestId
-from boba.infra import (
-    AgentComponents,
-    AgentSection,
-    AppCoreSection,
-    ConfigBundle,
-    ExtensionContext,
-    ToolPluginLoader,
-    configure_logging,
-    create_agent,
-    log_context,
-)
 from boba.patterns import StreamSink
 from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
 
 
-def _build_app_config(bundle: ConfigBundle) -> AppConfig:
-    """Composition AppConfig из плоских секций приложения."""
-    core = bundle.section(AppCoreSection)
-    return AppConfig(
-        workspaces=bundle.section(WorkspacesSection),
-        llm=bundle.section(LLMTransportSection),
-        prompts_dir=bundle.section(PromptsSection),
-        ssl_verify=core.ssl_verify,
-        log_level=core.log_level,
-        log_file=core.log_file,
-    )
-
-
 class ChatSession:
-    """One-shot обёртка: конфиг + workspace registry; агент пересобирается на каждый run."""
+    """One-shot обёртка: конфиг + workspace registry; агент пересобирается на каждый run."""  # noqa: E501
 
-    _bundle: ConfigBundle | None = None
+    _app: AppConfig | None = None
 
     @classmethod
-    def set_bundle(cls, bundle: ConfigBundle) -> None:
-        """Инжектит application-level bundle до первого ChatSession()."""
-        cls._bundle = bundle
+    def set_app(cls, app: AppConfig) -> None:
+        """Инжектит application-level AppConfig до первого ChatSession()."""
+        cls._app = app
 
     def __init__(self) -> None:
-        if ChatSession._bundle is None:
+        if ChatSession._app is None:
             msg = (
-                "ChatSession instantiated before ChatSession.set_bundle() — "
-                "bootstrap must call set_bundle() in __main__.main()."
+                "ChatSession instantiated before ChatSession.set_app() — "
+                "bootstrap must call set_app() in __main__.main()."
             )
             raise RuntimeError(msg)
-        bundle = ChatSession._bundle
-        self._app_config = _build_app_config(bundle)
-        configure_logging(self._app_config.log_level, self._app_config.log_file)
-        self._agent_config = bundle.section(AgentSection)
-        self._chainlit_config: ChainlitConfig = bundle.section(ChainlitSection)
+        app = ChatSession._app
+
+        core = app.section(AppCoreSection)
+        configure_logging(core.log_level, core.log_file)
+
+        self._app = app
+        self._workspaces_cfg = app.section(WorkspacesSection)
+        self._llm_cfg = app.section(LLMTransportSection)
+        self._prompts_dir = app.section(PromptsSection)
+        self._agent_config = app.section(AgentSection)
+        self._chainlit_config: ChainlitConfig = app.section(ChainlitSection)
 
         self._workspaces = FsProjectWorkspaceRegistry(
-            base_dir=Path(self._app_config.workspaces.base_dir),
-            subdir=self._app_config.workspaces.user_subdir,
+            base_dir=Path(self._workspaces_cfg.base_dir),
+            subdir=self._workspaces_cfg.user_subdir,
         )
 
         self._history_workspaces = FsHistoryWorkspaceRegistry(
-            base_dir=Path(self._app_config.workspaces.base_dir),
-            subdir=self._app_config.workspaces.system_subdir,
+            base_dir=Path(self._workspaces_cfg.base_dir),
+            subdir=self._workspaces_cfg.system_subdir,
         )
 
         prompt_workspace = FsPromptWorkspaceRegistry(
-            root=Path(self._app_config.prompts_dir),
+            root=Path(self._prompts_dir),
         ).get_or_create(PromptWorkspaceId("prompts"))
         prompt_loader = PromptLoader(prompt_workspace)
         self._prompt_providers = prompt_loader.prompt_providers()
 
         tool_loader = ToolPluginLoader(
-            ExtensionContext(config=bundle),
+            ExtensionContext(config=app),
             tool_spec=self._agent_config.tool_spec,
         )
         self._tools_service = tool_loader.tools_service()
@@ -134,7 +125,7 @@ class ChatSession:
 
         history_workspace = self._history_workspaces.get_or_create(workspace_id)
         observer = TranscriptChatCompletionObserver(history_workspace)
-        llm_source = create_llm_source(self._app_config.llm, observer)
+        llm_source = create_llm_source(self._llm_cfg, observer)
         agent = create_agent(
             llm_source=llm_source,
             components=AgentComponents(

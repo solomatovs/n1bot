@@ -10,7 +10,17 @@ from typing import Any, cast
 
 from boba.patterns import Always, Specification
 from boba_next.config import AppConfig, ConfigError
-from boba_next.tools import Tool, ToolFactory, ToolSource, ToolsService
+from boba_next.tools.registry import ToolFactory, ToolSource, ToolsService
+from boba_next.tools.tool import Tool
+
+__all__ = [
+    "ENTRY_POINTS_GROUP",
+    "ExtensionContext",
+    "ToolPluginError",
+    "ToolPluginLoadError",
+    "ToolPluginLoader",
+    "ToolPluginRegisterError",
+]
 
 logger = logging.getLogger(__name__)
 

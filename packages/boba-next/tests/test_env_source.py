@@ -6,7 +6,7 @@ from pathlib import Path
 
 from boba_next import ConfigPath, StringValue
 
-from boba.config.env.next import EnvFileSource, EnvSource
+from boba.config.env import EnvFileSource, EnvSource
 
 
 def test_simple_two_segments():

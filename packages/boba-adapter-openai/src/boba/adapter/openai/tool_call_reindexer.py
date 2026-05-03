@@ -6,6 +6,7 @@ import logging
 from collections.abc import Iterable
 
 from boba_next.llm.models import LLMContext
+
 from boba.patterns import StreamTransformer
 from openai.types.chat.chat_completion_chunk import Choice, ChoiceDeltaToolCall
 

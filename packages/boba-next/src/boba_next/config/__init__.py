@@ -7,6 +7,7 @@ from boba_next.config.app import (
     ConfigError,
     SectionMissingError,
 )
+from boba_next.config.bootstrap import AppConfigBootstrap
 from boba_next.config.bundle import (
     ConfigBundle,
     ConfigBundleFactory,
@@ -30,6 +31,7 @@ from boba_next.config.section import ConfigSection
 __all__ = [
     "CONFIG_SECTIONS_ENTRY_POINT",
     "AppConfig",
+    "AppConfigBootstrap",
     "AppConfigFactory",
     "ConfigBundle",
     "ConfigBundleFactory",

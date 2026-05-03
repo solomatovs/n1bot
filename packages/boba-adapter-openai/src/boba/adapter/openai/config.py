@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from boba.adapter.openai.terminal import OpenAITerminal, build_openai_client
-from boba_next.infra import LLMConfig
-from boba_next.declaration import FieldSpec, ObjectSchema
 from boba_next.config import ConfigSection
-from boba_next.validators import ChainConverter, Default, ParseString
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.infra import LLMConfig
 from boba_next.llm.events import LLMEvent
 from boba_next.llm.models import LLMContext
 from boba_next.llm.observer import LLMRequestObserver
+from boba_next.validators import ChainConverter, Default, ParseString
+
+from boba.adapter.openai.terminal import OpenAITerminal, build_openai_client
 from boba.patterns import (
     StreamSource,
     StreamSourceChainBuilder,

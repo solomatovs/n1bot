@@ -1,15 +1,5 @@
-"""CLI-arguments ConfigSource для Boba."""
+"""CLI-arguments ConfigSource для Boba (boba_next.config-совместимый)."""
 
-from boba.config.cli.source import (
-    FLAG_PREFIX,
-    CliSource,
-    cli_dest,
-    cli_flag_name,
-)
+from boba.config.cli.source import CliSource, parse_argv_path
 
-__all__ = [
-    "FLAG_PREFIX",
-    "CliSource",
-    "cli_dest",
-    "cli_flag_name",
-]
+__all__ = ["CliSource", "parse_argv_path"]

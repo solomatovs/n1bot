@@ -6,9 +6,10 @@ import logging
 import re
 from collections.abc import Sequence
 
-from boba.adapter.prompt_providers.providers import StaticPromptProvider
 from boba_next.agent.prompt import PromptId, PromptProvider
 from boba_next.workspace import PromptWorkspaceShell, WorkspaceError
+
+from boba.adapter.prompt_providers.providers import StaticPromptProvider
 
 logger = logging.getLogger(__name__)
 

@@ -28,17 +28,17 @@ from boba_next import (
     MaxValue,
     MinValue,
     NonEmpty,
+    NotNull,
     ObjectItem,
     ObjectSchema,
     ParseBool,
     ParseInt,
     ParseString,
-    NotNull,
 )
 
-from boba.config.cli.next import CliSource
-from boba.config.env.next import EnvSource
-from boba.config.toml.next import TomlSource
+from boba.config.cli import CliSource
+from boba.config.env import EnvSource
+from boba.config.toml import TomlSource
 
 # ─────────── Описания DTO + схем (то, что extension'у хочется выразить) ───────────
 

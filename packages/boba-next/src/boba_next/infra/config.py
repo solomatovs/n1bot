@@ -1,31 +1,16 @@
-"""Application-bootstrap конфигурации поверх boba_next.config.
+"""Базовые секции приложения: AppCoreSection, AgentSection.
 
-Содержит:
-  * `AppCoreConfig` / `AppCoreSection` — кросс-слойные настройки приложения.
-  * `AgentSection` — лимиты агента + tool-фильтры; factory строит DTO `AgentConfig`.
-  * `AppConfigBootstrap` — удобный one-shot композитор `ConfigBundleFactory`
-    + `AppConfigFactory` для запуска приложения.
-
-Не содержит legacy-обёрток `ChainedConfigResolver`/`ConfigKey`/`DefaultSource` —
-конфиг читается через `ConfigPath` + `FlatConfig` (boba_next.config).
+`AppConfigBootstrap` — в `boba_next.config.bootstrap`.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from boba.patterns import Always, Never, Specification, StrId
 from boba_next.agent.models import AgentConfig
-from boba_next.config import (
-    AppConfig,
-    AppConfigFactory,
-    ConfigBundle,
-    ConfigBundleFactory,
-    ConfigSection,
-    ConfigSource,
-)
+from boba_next.config import ConfigSection
 from boba_next.declaration import FieldSpec, ObjectSchema
 from boba_next.tools import Tool, ToolNameIn, ToolSourceIn
 from boba_next.validators import (
@@ -41,7 +26,6 @@ from boba_next.validators import (
 
 __all__ = [
     "AgentSection",
-    "AppConfigBootstrap",
     "AppCoreConfig",
     "AppCoreSection",
 ]
@@ -166,49 +150,3 @@ class AgentSection(ConfigSection[AgentConfig]):
     )
 
 
-# ─────────────── AppConfigBootstrap (one-shot композитор) ───────────────
-
-
-class AppConfigBootstrap:
-    """Удобная one-shot обёртка: накопить sources + секций → AppConfig.
-
-    Композирует две foundation-фабрики:
-      * `ConfigBundleFactory` — sources → ConfigBundle (FoldFactory).
-      * `AppConfigFactory`    — sections → AppConfig (ContextCatalogFactory).
-
-    Использование при старте приложения:
-
-        boot = AppConfigBootstrap()
-        boot.attach_sources([toml_source, env_source, cli_source])
-        boot.register_section(AppCoreSection())
-        boot.register_section(AgentSection())
-        boot.discover_extension_sections()
-        app: AppConfig = boot.build()
-    """
-
-    def __init__(self) -> None:
-        self._bundle_factory = ConfigBundleFactory()
-        self._app_factory = AppConfigFactory()
-
-    def attach_sources(self, sources: Iterable[ConfigSource]) -> None:
-        self._bundle_factory.attach_sources(sources)
-
-    def register_section(self, section: ConfigSection[Any]) -> None:
-        self._app_factory.register_section(section)
-
-    def discover_extension_sections(self) -> None:
-        self._app_factory.discover_extension_sections()
-
-    def bundle_factory(self) -> ConfigBundleFactory:
-        return self._bundle_factory
-
-    def app_factory(self) -> AppConfigFactory:
-        return self._app_factory
-
-    def build_bundle(self) -> ConfigBundle:
-        """Собрать только foundation-bundle (без секций)."""
-        return self._bundle_factory.build()
-
-    def build(self) -> AppConfig:
-        """Собрать готовый AppConfig: sources → bundle → секции в реестр."""
-        return self._app_factory.build(self._bundle_factory.build())
