@@ -9,7 +9,6 @@ from typing import ClassVar
 from boba.coercion import ChainCoercer, Default, IsString, NonEmpty, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -89,7 +88,6 @@ class MkdirTool(Tool[MkdirArgs]):
 class MkdirToolSection(ConfigSection[MkdirToolConfig]):
     """Секция [ext.files.tools.mkdir]."""
 
-    id: ClassVar[StrId] = StrId("ext.files.tools.mkdir")
     namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "mkdir")
 
     schema: ClassVar[ObjectSchema[MkdirToolConfig]] = ObjectSchema(

@@ -9,7 +9,6 @@ from typing import ClassVar
 from boba.coercion import ChainCoercer, Default, IsString, NonEmpty, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -104,7 +103,6 @@ class StatTool(Tool[StatArgs]):
 class StatToolSection(ConfigSection[StatToolConfig]):
     """Секция [ext.files.tools.stat]."""
 
-    id: ClassVar[StrId] = StrId("ext.files.tools.stat")
     namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "stat")
 
     schema: ClassVar[ObjectSchema[StatToolConfig]] = ObjectSchema(

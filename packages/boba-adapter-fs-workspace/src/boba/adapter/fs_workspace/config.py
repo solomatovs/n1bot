@@ -9,7 +9,6 @@ from typing import ClassVar
 from boba.coercion import ChainCoercer, Default, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 
 
 @dataclass(frozen=True)
@@ -28,7 +27,6 @@ class WorkspaceLayout:
 class WorkspacesSection(ConfigSection[WorkspaceLayout]):
     """Раскладка namespace'ов workspace'а относительно base_dir."""
 
-    id: ClassVar[StrId] = StrId("workspaces")
     namespace: ClassVar[tuple[str, ...]] = ("workspaces",)
 
     schema: ClassVar[ObjectSchema[WorkspaceLayout]] = ObjectSchema(

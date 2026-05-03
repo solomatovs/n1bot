@@ -9,7 +9,6 @@ from typing import ClassVar
 from boba.coercion import ChainCoercer, Default, IsString, NonEmpty, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -90,7 +89,6 @@ class TouchTool(Tool[TouchArgs]):
 class TouchToolSection(ConfigSection[TouchToolConfig]):
     """Секция [ext.files.tools.touch]."""
 
-    id: ClassVar[StrId] = StrId("ext.files.tools.touch")
     namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "touch")
 
     schema: ClassVar[ObjectSchema[TouchToolConfig]] = ObjectSchema(

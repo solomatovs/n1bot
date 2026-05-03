@@ -25,7 +25,6 @@ from boba.ext.confluence._parse import (
     collect_headings,
     load_soup,
 )
-from boba.patterns import StrId
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -159,7 +158,6 @@ def _render_line(h: Heading) -> str:
 class ConfluenceOutlineToolSection(ConfigSection[ConfluenceOutlineToolConfig]):
     """Секция [ext.confluence.tools.confluence_outline]."""
 
-    id: ClassVar[StrId] = StrId("ext.confluence.tools.confluence_outline")
     namespace: ClassVar[tuple[str, ...]] = (
         "ext", "confluence", "tools", "confluence_outline",
     )

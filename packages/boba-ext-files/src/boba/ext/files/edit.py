@@ -16,7 +16,6 @@ from boba.coercion import (
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -156,7 +155,6 @@ class EditTool(Tool[EditArgs]):
 class EditToolSection(ConfigSection[EditToolConfig]):
     """Секция [ext.files.tools.edit]."""
 
-    id: ClassVar[StrId] = StrId("ext.files.tools.edit")
     namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "edit")
 
     schema: ClassVar[ObjectSchema[EditToolConfig]] = ObjectSchema(

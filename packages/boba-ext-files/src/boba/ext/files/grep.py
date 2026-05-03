@@ -20,7 +20,6 @@ from boba.coercion import (
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -227,7 +226,6 @@ class GrepTool(Tool[GrepArgs]):
 class GrepToolSection(ConfigSection[GrepToolConfig]):
     """Секция [ext.files.tools.grep]."""
 
-    id: ClassVar[StrId] = StrId("ext.files.tools.grep")
     namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "grep")
 
     schema: ClassVar[ObjectSchema[GrepToolConfig]] = ObjectSchema(

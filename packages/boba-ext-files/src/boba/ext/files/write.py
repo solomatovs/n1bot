@@ -15,7 +15,6 @@ from boba.coercion import (
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -123,7 +122,6 @@ class WriteTool(Tool[WriteArgs]):
 class WriteToolSection(ConfigSection[WriteToolConfig]):
     """Секция [ext.files.tools.write]."""
 
-    id: ClassVar[StrId] = StrId("ext.files.tools.write")
     namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "write")
 
     schema: ClassVar[ObjectSchema[WriteToolConfig]] = ObjectSchema(

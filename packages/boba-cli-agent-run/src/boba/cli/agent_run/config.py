@@ -16,7 +16,6 @@ from boba.coercion import (
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.llm.models import SamplingParams
-from boba.patterns import StrId
 
 __all__ = ["AgentRunConfig", "AgentRunSection"]
 
@@ -54,7 +53,6 @@ class AgentRunConfig:
 class AgentRunSection(ConfigSection[AgentRunConfig]):
     """Секция agent_run."""
 
-    id: ClassVar[StrId] = StrId("agent_run")
     namespace: ClassVar[tuple[str, ...]] = ("agent_run",)
 
     schema: ClassVar[ObjectSchema[AgentRunConfig]] = ObjectSchema(

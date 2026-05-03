@@ -52,7 +52,6 @@ class VectorIndexConfig:
 class VectorIndexSection(ConfigSection[VectorIndexConfig]):
     """Секция vector_index."""
 
-    id: ClassVar[StrId] = StrId("vector_index")
     namespace: ClassVar[tuple[str, ...]] = ("vector_index",)
 
     schema: ClassVar[ObjectSchema[VectorIndexConfig]] = ObjectSchema(

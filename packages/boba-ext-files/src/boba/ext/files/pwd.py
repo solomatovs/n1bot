@@ -8,7 +8,6 @@ from typing import ClassVar
 from boba.coercion import ChainCoercer, Default, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 from boba.tools import Tool, ToolContext, ToolId, ToolResult, ToolSourceId
 
 
@@ -56,7 +55,6 @@ class PwdTool(Tool[PwdArgs]):
 class PwdToolSection(ConfigSection[PwdToolConfig]):
     """Секция [ext.files.tools.pwd]."""
 
-    id: ClassVar[StrId] = StrId("ext.files.tools.pwd")
     namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "pwd")
 
     schema: ClassVar[ObjectSchema[PwdToolConfig]] = ObjectSchema(

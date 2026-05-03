@@ -16,7 +16,6 @@ from boba.coercion import (
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 
 __all__ = ["ChainlitConfig", "ChainlitSection"]
 
@@ -43,7 +42,6 @@ class ChainlitConfig:
 class ChainlitSection(ConfigSection[ChainlitConfig]):
     """Секция конфига chainlit-приложения."""
 
-    id: ClassVar[StrId] = StrId("chainlit")
     namespace: ClassVar[tuple[str, ...]] = ("chainlit",)
 
     schema: ClassVar[ObjectSchema[ChainlitConfig]] = ObjectSchema(

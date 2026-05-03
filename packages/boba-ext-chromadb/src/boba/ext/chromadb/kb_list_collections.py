@@ -11,7 +11,6 @@ from boba.coercion import ChainCoercer, Default, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.chromadb.kb import ChromaKnowledgeBase
-from boba.patterns import StrId
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -82,7 +81,6 @@ class KbListCollectionsTool(Tool[KbListCollectionsArgs]):
 class KbListCollectionsToolSection(ConfigSection[KbListCollectionsToolConfig]):
     """Секция [ext.chromadb.tools.kb_list_collections]."""
 
-    id: ClassVar[StrId] = StrId("ext.chromadb.tools.kb_list_collections")
     namespace: ClassVar[tuple[str, ...]] = (
         "ext",
         "chromadb",

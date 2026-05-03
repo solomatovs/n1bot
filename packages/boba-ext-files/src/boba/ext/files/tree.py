@@ -19,7 +19,6 @@ from boba.coercion import (
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -124,7 +123,6 @@ class TreeTool(Tool[TreeArgs]):
 class TreeToolSection(ConfigSection[TreeToolConfig]):
     """Секция [ext.files.tools.tree]."""
 
-    id: ClassVar[StrId] = StrId("ext.files.tools.tree")
     namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "tree")
 
     schema: ClassVar[ObjectSchema[TreeToolConfig]] = ObjectSchema(

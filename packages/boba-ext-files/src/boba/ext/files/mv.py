@@ -9,7 +9,6 @@ from typing import ClassVar
 from boba.coercion import ChainCoercer, Default, IsString, NonEmpty, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -105,7 +104,6 @@ class MvTool(Tool[MvArgs]):
 class MvToolSection(ConfigSection[MvToolConfig]):
     """Секция [ext.files.tools.mv]."""
 
-    id: ClassVar[StrId] = StrId("ext.files.tools.mv")
     namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "mv")
 
     schema: ClassVar[ObjectSchema[MvToolConfig]] = ObjectSchema(

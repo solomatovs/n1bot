@@ -17,7 +17,6 @@ from boba.coercion import (
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 
 __all__ = ["ChromaExtConfig", "ChromadbSection"]
 
@@ -34,7 +33,6 @@ class ChromaExtConfig:
 class ChromadbSection(ConfigSection[ChromaExtConfig]):
     """Секция конфига расширения chromadb."""
 
-    id: ClassVar[StrId] = StrId("ext.chromadb")
     namespace: ClassVar[tuple[str, ...]] = ("ext", "chromadb")
 
     schema: ClassVar[ObjectSchema[ChromaExtConfig]] = ObjectSchema(

@@ -8,7 +8,6 @@ from typing import ClassVar
 from boba.coercion import ChainCoercer, Default, ParseBool, ParseCsvList
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 
 __all__ = ["FilesExtConfig", "FilesSection"]
 
@@ -22,7 +21,6 @@ class FilesExtConfig:
 class FilesSection(ConfigSection[FilesExtConfig]):
     """Секция конфига files-extension."""
 
-    id: ClassVar[StrId] = StrId("ext.files")
     namespace: ClassVar[tuple[str, ...]] = ("ext", "files")
 
     schema: ClassVar[ObjectSchema[FilesExtConfig]] = ObjectSchema(

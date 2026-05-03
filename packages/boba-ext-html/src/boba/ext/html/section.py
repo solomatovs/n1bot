@@ -26,7 +26,6 @@ from boba.ext.html._parse import (
     load_soup,
     resolve_anchor,
 )
-from boba.patterns import StrId
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -202,7 +201,6 @@ def _collect_section_html(start: Tag, stop: Tag | None) -> str:
 class HtmlSectionToolSection(ConfigSection[HtmlSectionToolConfig]):
     """Секция [ext.html.tools.html_section]."""
 
-    id: ClassVar[StrId] = StrId("ext.html.tools.html_section")
     namespace: ClassVar[tuple[str, ...]] = (
         "ext", "html", "tools", "html_section",
     )

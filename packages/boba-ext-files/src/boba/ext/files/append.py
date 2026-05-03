@@ -15,7 +15,6 @@ from boba.coercion import (
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -122,7 +121,6 @@ class AppendTool(Tool[AppendArgs]):
 class AppendToolSection(ConfigSection[AppendToolConfig]):
     """Секция [ext.files.tools.append]."""
 
-    id: ClassVar[StrId] = StrId("ext.files.tools.append")
     namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "append")
 
     schema: ClassVar[ObjectSchema[AppendToolConfig]] = ObjectSchema(

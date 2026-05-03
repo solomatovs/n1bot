@@ -76,7 +76,6 @@ class AppCoreSection(ConfigSection[AppCoreConfig]):
 class AgentSection(ConfigSection[AgentConfig]):
     """Лимиты агентского лупа. Фильтрация tools — per-ext в [ext.<name>]."""
 
-    id: ClassVar[StrId] = StrId("agent")
     namespace: ClassVar[tuple[str, ...]] = ("agent",)
 
     schema: ClassVar[ObjectSchema[AgentConfig]] = ObjectSchema(
