@@ -5,12 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.cli.vector_index.chunking import (
-    DEFAULT_CHUNK_OVERLAP,
-    DEFAULT_CHUNK_SIZE,
-)
-from boba_next.declaration import FieldSpec, ObjectSchema
 from boba_next.config import ConfigSection
+from boba_next.declaration import FieldSpec, ObjectSchema
 from boba_next.validators import (
     ChainConverter,
     Default,
@@ -20,6 +16,11 @@ from boba_next.validators import (
     ParseCsvList,
     ParseInt,
     ParseString,
+)
+
+from boba.cli.vector_index.chunking import (
+    DEFAULT_CHUNK_OVERLAP,
+    DEFAULT_CHUNK_SIZE,
 )
 from boba.patterns import StrId
 

@@ -6,6 +6,9 @@ import logging
 import sys
 from typing import Any
 
+from boba_next.config import AppConfigBootstrap, ConfigSection
+from boba_next.declaration import FieldPathMissingError
+
 from boba.cli.vector_index.config import (
     ChromadbPersistSection,
     VectorIndexConfig,
@@ -18,10 +21,7 @@ from boba.cli.vector_index.indexer import (
 from boba.cli.vector_index.store import CollectionSummary, VectorStore
 from boba.config.cli import CliSource
 from boba.config.env import EnvFileSource, EnvSource
-from boba.config.toml import CONFIG_PATH_ENV, TomlFileSource, TomlSource
-from boba_next.config import ConfigSection
-from boba.domain.core.declaration import FieldMissingError
-from boba_next.infra import ConfigFactory
+from boba.config.toml import TomlFileSource, TomlSource
 from boba.patterns import ConverterInputError
 
 logger = logging.getLogger("boba.cli.vector_index")
@@ -29,29 +29,29 @@ logger = logging.getLogger("boba.cli.vector_index")
 
 def main() -> int:
     """Entry-point. Возвращает exit-code (0 = успех)."""
-    factory = ConfigFactory()
-    factory.register(VectorIndexSection())
-    factory.register(ChromadbPersistSection())
-    factory.discover_extension_sections()
-    factory.attach_sources(
+    boot = AppConfigBootstrap()
+    boot.register_section(VectorIndexSection())
+    boot.register_section(ChromadbPersistSection())
+    boot.discover_extension_sections()
+    boot.attach_sources(
         [
             CliSource(),
             EnvFileSource(),
-            EnvSource(extra_known={CONFIG_PATH_ENV}),
+            EnvSource(),
             TomlFileSource(),
             TomlSource(),
         ]
     )
 
     try:
-        bundle = factory.build()
-        run_cfg = bundle.section(VectorIndexSection)
-        persist_path = bundle.section(ChromadbPersistSection).persist_path
+        app = boot.build()
+        run_cfg = app.section(VectorIndexSection)
+        persist_path = app.section(ChromadbPersistSection).persist_path
         _setup_logging(run_cfg.verbose)
         handler = _HANDLERS[run_cfg.action]
         return handler(persist_path, run_cfg)
     except ConverterInputError as e:
-        print(f"error: {factory.format_config_error(e)}", file=sys.stderr)
+        print(f"error: {e}", file=sys.stderr)
         return 2
 
 
@@ -77,14 +77,13 @@ def _require(
     field_name: str,
     action: str,
 ) -> None:
-    """Per-action обязательность; бросает FieldMissingError."""
+    """Per-action обязательность; бросает FieldPathMissingError."""
     if value not in (None, "", []):
         return
-    spec = next(f for f in section.schema.fields if f.name == field_name)
-    raise FieldMissingError(
+    del section  # signature kept for API; FieldPathMissingError несёт field_name
+    raise FieldPathMissingError(
         f"action={action!r}: field {field_name!r} is required",
-        field=spec,
-        key=ConfigKey(*section.namespace, field_name),
+        field_name=field_name,
     )
 
 

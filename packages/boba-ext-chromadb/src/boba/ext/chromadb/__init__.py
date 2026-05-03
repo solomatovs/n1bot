@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from boba.domain.core.tools import StaticToolSource, ToolSource, ToolSourceId
+from boba_next.tools import ExtensionContext, StaticToolSource, ToolSource, ToolSourceId
+
 from boba.ext.chromadb.config import ChromadbSection
 from boba.ext.chromadb.kb import get_knowledge_base
 from boba.ext.chromadb.kb_list_collections import KbListCollectionsTool
 from boba.ext.chromadb.kb_search import KbSearchTool
-from boba.infra.tool_plugin_loader import ExtensionContext
 
 __all__ = ["register_tools"]
 

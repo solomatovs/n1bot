@@ -9,6 +9,14 @@ from boba_next.tools.errors import (
     ToolOutputTooLargeError,
 )
 from boba_next.tools.ids import ToolId, ToolSourceId
+from boba_next.tools.plugin_loader import (
+    ENTRY_POINTS_GROUP,
+    ExtensionContext,
+    ToolPluginError,
+    ToolPluginLoader,
+    ToolPluginLoadError,
+    ToolPluginRegisterError,
+)
 from boba_next.tools.registry import (
     StaticToolSource,
     ToolCatalog,
@@ -27,6 +35,8 @@ from boba_next.tools.tool import (
 from boba_next.tools.wire import ToolWireSchemaBuilder
 
 __all__ = [
+    "ENTRY_POINTS_GROUP",
+    "ExtensionContext",
     "InvalidSchemaInvariantError",
     "InvalidToolArgumentError",
     "StaticToolSource",
@@ -41,6 +51,10 @@ __all__ = [
     "ToolIdCollisionError",
     "ToolNameIn",
     "ToolOutputTooLargeError",
+    "ToolPluginError",
+    "ToolPluginLoadError",
+    "ToolPluginLoader",
+    "ToolPluginRegisterError",
     "ToolResult",
     "ToolSource",
     "ToolSourceId",

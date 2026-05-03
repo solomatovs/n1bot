@@ -1,97 +1,143 @@
-"""argv-источник конфига. Имя флага — cli_flag_name(key)."""
+"""argv-источник под confignext: --ext.chromadb.tools.kb_search.enabled=true."""
 
 from __future__ import annotations
 
-import argparse
+import logging
 import sys
-from collections.abc import Iterable
-from typing import Any, Final
+from collections.abc import Mapping, Sequence
 
-from boba.domain.core.config import ConfigKey, ConfigSource
-from boba.domain.core.declaration import FieldSpec
+from boba_next import ConfigSource, ConfigValue, StringValue
+from boba_next.config.path import (
+    ConfigPath,
+    ConfigPathParseError,
+    IndexSegment,
+    NameSegment,
+    Segment,
+)
 
-__all__ = [
-    "FLAG_PREFIX",
-    "CliSource",
-    "cli_dest",
-    "cli_flag_name",
-]
+__all__ = ["CliSource", "parse_argv_path"]
 
-
-FLAG_PREFIX: Final[str] = "--"
-
-
-def cli_flag_name(key: ConfigKey) -> str:
-    """ConfigKey → ``--a-b-c`` (mirror of env_name/toml_path)."""
-    return FLAG_PREFIX + "-".join(p.replace("_", "-") for p in key.parts)
-
-
-def cli_dest(key: ConfigKey) -> str:
-    """ConfigKey → ``a_b_c`` (argparse default из cli_flag_name)."""
-    return "_".join(key.parts).replace("-", "_")
+logger = logging.getLogger(__name__)
 
 
 class CliSource(ConfigSource):
-    """Schema-driven argv-источник: bind_schema → argparse → resolve."""
+    """argv-источник.
 
-    def __init__(self) -> None:
-        self._values: dict[ConfigKey, object] = {}
-        self._bound: bool = False
+    Convention:
+      --<dotted-path>=<value>           # `--ext.chromadb.enabled=true`
+      --<dotted-path> <value>           # `--ext.chromadb.enabled true`
+      --<dotted-path>                   # bare flag → "true"
+      Индексы: --models[0]=... либо --models.0=...
+      Тире в сегментах конвертируются в подчёркивания (--max-iterations == max_iterations).
 
-    def bind_schema(
+    Все значения — StringValue.
+    """
+
+    def __init__(
         self,
-        items: Iterable[tuple[ConfigKey, FieldSpec[Any]]],
+        argv: Sequence[str] | None = None,
+        *,
+        priority: int = 500,
+        name: str | None = None,
     ) -> None:
-        """Построить argparse из схемы, распарсить ``sys.argv``, заполнить ``_values``."""
-        parser, dest_to_key = self._build_parser(items)
-        namespace = parser.parse_args(sys.argv[1:])
-        self._values = self._collect_values(namespace, dest_to_key)
-        self._bound = True
+        self._argv = list(argv) if argv is not None else list(sys.argv[1:])
+        self._priority = priority
+        self._name = name or "cli"
 
-    @staticmethod
-    def _build_parser(
-        items: Iterable[tuple[ConfigKey, FieldSpec[Any]]],
-    ) -> tuple[argparse.ArgumentParser, dict[str, ConfigKey]]:
-        """argparse + dest→ConfigKey reverse-индекс; дубли ConfigKey'ев игнорируются."""
-        parser = argparse.ArgumentParser(
-            description="Boba CLI config (флаги = cli_flag_name(ConfigKey))."
-        )
-        dest_to_key: dict[str, ConfigKey] = {}
-        for key, fld in items:
-            dest = cli_dest(key)
-            if dest in dest_to_key:
+    def name(self) -> str:
+        return self._name
+
+    def priority(self) -> int:
+        return self._priority
+
+    def load(self) -> Mapping[ConfigPath, ConfigValue]:
+        result: dict[ConfigPath, ConfigValue] = {}
+        i = 0
+        while i < len(self._argv):
+            token = self._argv[i]
+            if not token.startswith("--"):
+                i += 1
                 continue
-            parser.add_argument(
-                cli_flag_name(key),
-                dest=dest,
-                default=None,
-                help=fld.description or None,
-            )
-            dest_to_key[dest] = key
-        return parser, dest_to_key
+            body = token[2:]
+            if not body:
+                i += 1
+                continue
+            if "=" in body:
+                key_str, value = body.split("=", 1)
+                path = parse_argv_path(key_str)
+                if path is not None:
+                    result[path] = StringValue(value)
+                i += 1
+                continue
+            path = parse_argv_path(body)
+            if path is None:
+                i += 1
+                continue
+            next_token = self._argv[i + 1] if i + 1 < len(self._argv) else None
+            if next_token is None or next_token.startswith("--"):
+                result[path] = StringValue("true")
+                i += 1
+            else:
+                result[path] = StringValue(next_token)
+                i += 2
+        return result
 
-    @staticmethod
-    def _collect_values(
-        namespace: argparse.Namespace,
-        dest_to_key: dict[str, ConfigKey],
-    ) -> dict[ConfigKey, object]:
-        """argparse-namespace → ConfigKey-keyed словарь; None/'' пропускаем."""
-        parsed = vars(namespace)
-        return {
-            key: parsed[dest]
-            for dest, key in dest_to_key.items()
-            if parsed[dest] not in (None, "")
-        }
+    def describe(self, path: ConfigPath) -> str:
+        return f"cli --{_render_argv_path(path)}=<value>"
 
-    def resolve(self, key: ConfigKey) -> object | None:
-        """Lookup в ``_values``; падает RuntimeError, если bind_schema не вызван."""
-        if not self._bound:
-            raise RuntimeError(
-                "CliSource.resolve() before bind_schema(); "
-                "пройди через ConfigFactory.attach_sources(...) + build()."
-            )
-        return self._values.get(key)
 
-    def describe(self, key: ConfigKey) -> str:
-        """Operator-readable hint: ``CLI --a-b-c``."""
-        return f"CLI {cli_flag_name(key)}"
+def parse_argv_path(text: str) -> ConfigPath | None:
+    """`ext.chromadb.tools.kb_search.enabled` или `models[0]` → ConfigPath."""
+    if not text:
+        return None
+    normalized = text.replace("-", "_")
+    segments: list[Segment] = []
+    i = 0
+    while i < len(normalized):
+        ch = normalized[i]
+        if ch == ".":
+            i += 1
+            continue
+        if ch == "[":
+            end = normalized.find("]", i + 1)
+            if end == -1:
+                return None
+            digits = normalized[i + 1 : end]
+            if not digits.isdigit():
+                return None
+            segments.append(IndexSegment(int(digits)))
+            i = end + 1
+            continue
+        # Накапливаем имя до следующего "." или "["
+        j = i
+        while j < len(normalized) and normalized[j] not in ".[":
+            j += 1
+        token = normalized[i:j]
+        if not token:
+            return None
+        if token.isdigit():
+            segments.append(IndexSegment(int(token)))
+        else:
+            try:
+                segments.append(NameSegment(token))
+            except ConfigPathParseError:
+                return None
+        i = j
+    if not segments:
+        return None
+    return ConfigPath(tuple(segments))
+
+
+def _render_argv_path(path: ConfigPath) -> str:
+    parts: list[str] = []
+    for i, seg in enumerate(path):
+        key = seg.mapping_key()
+        if key is not None:
+            parts.append(key if i == 0 else f".{key}")
+            continue
+        index = seg.list_index()
+        if index is not None:
+            parts.append(f"[{index}]")
+            continue
+        raise ValueError(f"cannot render segment for cli: {seg!r}")
+    return "".join(parts)

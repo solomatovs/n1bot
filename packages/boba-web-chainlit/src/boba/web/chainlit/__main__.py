@@ -6,49 +6,42 @@ import os
 import sys
 from pathlib import Path
 
+from boba_next.config import AppConfig, AppConfigBootstrap
+from boba_next.infra import AgentSection, AppCoreSection
+
 from boba.adapter.fs_workspace import WorkspacesSection
 from boba.adapter.openai import LLMTransportSection
 from boba.adapter.prompt_providers import PromptsSection
 from boba.config.cli import CliSource
 from boba.config.env import EnvFileSource, EnvSource
-from boba.config.toml import CONFIG_PATH_ENV, TomlFileSource, TomlSource
-from boba.infra import (
-    AgentSection,
-    AppCoreSection,
-    ConfigBundle,
-    ConfigFactory,
-)
+from boba.config.toml import TomlFileSource, TomlSource
 from boba.patterns import ConverterInputError
 from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
 from boba.web.chainlit.session import ChatSession
 from boba.web.chainlit.ui_overrides import UIOverrideTomlConverter
 
 
-def build_factory() -> ConfigFactory:
-    """ConfigFactory с зарегистрированными секциями и источниками (CLI > env > TOML)."""
-    factory = ConfigFactory()
-    factory.register(AppCoreSection())
-    factory.register(AgentSection())
-    factory.register(WorkspacesSection())
-    factory.register(LLMTransportSection())
-    factory.register(PromptsSection())
-    factory.register(ChainlitSection())
-    factory.discover_extension_sections()
-    factory.attach_sources(
+def build_app_config() -> AppConfig:
+    """AppConfig с зарегистрированными секциями и источниками (CLI > env > TOML)."""
+    boot = AppConfigBootstrap()
+    boot.register_section(AppCoreSection())
+    boot.register_section(AgentSection())
+    boot.register_section(WorkspacesSection())
+    boot.register_section(LLMTransportSection())
+    boot.register_section(PromptsSection())
+    boot.register_section(ChainlitSection())
+    boot.discover_extension_sections()
+    boot.attach_sources(
         [
             CliSource(),
             EnvFileSource(),
-            EnvSource(extra_known={CONFIG_PATH_ENV}),
+            EnvSource(),
             TomlFileSource(),
             TomlSource(),
         ]
     )
-    return factory
+    return boot.build()
 
-
-def build_bundle() -> ConfigBundle:
-    """Тонкая обёртка над build_factory + factory.build()."""
-    return build_factory().build()
 
 def bridge_chainlit_env(cfg: ChainlitConfig) -> Path:
     """Прокидывает ChainlitConfig в CHAINLIT_* env; возвращает абсолютный app_root."""
@@ -74,19 +67,19 @@ def write_ui_config_overrides(cfg: ChainlitConfig, app_root: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
 
+
 def main() -> int:
-    factory = build_factory()
     try:
-        bundle = factory.build()
+        app = build_app_config()
     except ConverterInputError as e:
-        print(f"error: {factory.format_config_error(e)}", file=sys.stderr)
+        print(f"error: {e}", file=sys.stderr)
         return 2
-    chainlit_cfg = bundle.section(ChainlitSection)
+    chainlit_cfg = app.section(ChainlitSection)
     app_root = bridge_chainlit_env(chainlit_cfg)
     write_ui_config_overrides(chainlit_cfg, app_root)
 
     # ChatSession создаётся лениво при первом cl.on_chat_start.
-    ChatSession.set_bundle(bundle)
+    ChatSession.set_app(app)
 
     # chainlit импортируется только после bootstrap — он читает env при загрузке.
     from chainlit.cli import run_chainlit  # noqa: PLC0415

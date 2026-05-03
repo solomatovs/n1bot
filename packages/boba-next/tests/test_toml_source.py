@@ -12,7 +12,7 @@ from boba_next import (
     StringValue,
 )
 
-from boba.config.toml.next import TomlFileSource, TomlSource
+from boba.config.toml import TomlFileSource, TomlSource
 
 
 def _write(tmp_path: Path, content: str) -> Path:

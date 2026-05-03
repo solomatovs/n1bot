@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from boba_next.workspace import WorkspaceShell
 from bs4 import BeautifulSoup
 from bs4.element import Tag
-
-from boba.domain.core.workspace import WorkspaceShell
 
 _HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
 

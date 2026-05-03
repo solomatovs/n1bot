@@ -18,7 +18,6 @@ from io import BufferedIOBase, TextIOBase
 from pathlib import Path
 from typing import Generic, TypeVar
 
-from boba.adapter.fs_workspace.growbuffer import GrowBuffer
 from boba_next.workspace import (
     EntryMeta,
     GrepMatch,
@@ -34,6 +33,8 @@ from boba_next.workspace import (
     WorkspacePermissionError,
     WorkspaceShell,
 )
+
+from boba.adapter.fs_workspace.growbuffer import GrowBuffer
 from boba.patterns import Id, Specification
 
 TWsId = TypeVar("TWsId", bound=Id)

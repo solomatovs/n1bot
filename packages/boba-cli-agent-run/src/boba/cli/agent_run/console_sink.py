@@ -17,6 +17,7 @@ from boba_next.agent.events import (
     Terminal,
 )
 from boba_next.agent.models import AgentContext
+
 from boba.patterns import StreamSink
 
 

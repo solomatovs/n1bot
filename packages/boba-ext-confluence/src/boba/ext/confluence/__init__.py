@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from boba.domain.core.tools import StaticToolSource, ToolSource, ToolSourceId
+from boba_next.tools import ExtensionContext, StaticToolSource, ToolSource, ToolSourceId
+
 from boba.ext.confluence.outline import ConfluenceOutlineTool
 from boba.ext.confluence.section import ConfluenceSectionTool
-from boba.infra.tool_plugin_loader import ExtensionContext
 
 __all__ = ["register_tools"]
 

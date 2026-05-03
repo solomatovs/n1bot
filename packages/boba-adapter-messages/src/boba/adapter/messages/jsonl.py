@@ -11,8 +11,8 @@ from boba_next.agent.messages import (
     MessageStoreReadError,
     MessageStoreWriteError,
 )
-from boba_next.workspace import HistoryWorkspaceShell, WorkspaceError
 from boba_next.llm.models import LLMMessage, LLMToolCall
+from boba_next.workspace import HistoryWorkspaceShell, WorkspaceError
 
 
 class JsonLinesMessageService(MessageService):
