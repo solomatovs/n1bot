@@ -4,22 +4,25 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from boba.tools import ExtensionContext, StaticToolSource, ToolSource, ToolSourceId
-
+from boba.ext.confluence.config import ConfluenceSection
 from boba.ext.confluence.outline import ConfluenceOutlineTool
 from boba.ext.confluence.section import ConfluenceSectionTool
+from boba.tools import ExtensionContext, StaticToolSource, ToolSource, ToolSourceId
 
 __all__ = ["register_tools"]
 
 
 def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
-    """Entry-point boba.tools: Confluence-tools одним источником."""
-    del ctx
+    """Entry-point boba.tools: Confluence-tools, гейт по [ext.confluence] enable."""
+    cfg = ctx.config.section(ConfluenceSection)
+    if not cfg.enable:
+        return
+    tools = [ConfluenceOutlineTool(), ConfluenceSectionTool()]
+    if cfg.tools_allow:
+        allow = set(cfg.tools_allow)
+        tools = [t for t in tools if t.tool_id().to_wire() in allow]
     yield StaticToolSource(
         ToolSourceId("builtin.confluence"),
         priority=0,
-        tools=[
-            ConfluenceOutlineTool(),
-            ConfluenceSectionTool(),
-        ],
+        tools=tools,
     )

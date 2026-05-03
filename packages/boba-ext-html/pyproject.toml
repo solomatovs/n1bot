@@ -17,6 +17,9 @@ dependencies = [
 [project.entry-points."boba.tools"]
 html = "boba.ext.html:register_tools"
 
+[project.entry-points."boba.config_sections"]
+html = "boba.ext.html.config:HtmlSection"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["boba*"]

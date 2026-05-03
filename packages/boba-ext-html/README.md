@@ -18,13 +18,15 @@ Tool'ы регистрируются через entry-point `boba.tools` под 
 
 ## Доступ
 
-В TOML агента включить и допустить tool'ы:
+Расширение подключается явно — секцией `[ext.html]`:
 
 ```toml
-[agent]
-tools_enabled = true
-tools_allow = ["html_outline", "html_section"]
+[ext.html]
+enable = true
+# tools_allow = ["html_outline"]   # пусто = все tools пакета
 ```
+
+Без `enable = true` (или без секции) — tools не регистрируются.
 
 ## html_outline
 

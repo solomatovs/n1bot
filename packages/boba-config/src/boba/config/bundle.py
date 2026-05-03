@@ -6,12 +6,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
-from boba.patterns import (
-    ConverterInputError,
-    FoldFactory,
-    PrioritySource,
-    StrId,
-)
 from boba.config.flat import FlatConfig
 from boba.config.path import (
     ConfigPath,
@@ -33,6 +27,12 @@ from boba.declaration import (
     ObjectItem,
     ObjectSchema,
     ScalarItem,
+)
+from boba.patterns import (
+    ConverterInputError,
+    FoldFactory,
+    PrioritySource,
+    StrId,
 )
 from boba.validators import MISSING
 from boba.value import ConfigValue

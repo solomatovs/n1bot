@@ -105,10 +105,7 @@ def _run(app: AppConfig) -> int:
     ).get_or_create(PromptWorkspaceId("prompts"))
     prompt_loader = PromptLoader(prompt_workspace)
 
-    tool_loader = ToolPluginLoader(
-        ExtensionContext(config=app),
-        tool_spec=agent_config.tool_spec,
-    )
+    tool_loader = ToolPluginLoader(ExtensionContext(config=app))
 
     project_workspace = FsProjectWorkspaceRegistry(
         base_dir=Path(workspaces.base_dir),

@@ -7,12 +7,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from boba.declaration import ObjectSchema
-from boba.patterns import (
-    Executor,
-    FoldFactory,
-    PrioritySource,
-    Specification,
-)
+from boba.patterns import Executor, FoldFactory, PrioritySource
 from boba.tools.errors import ToolExecutionError, ToolIdCollisionError
 from boba.tools.ids import ToolId, ToolSourceId
 from boba.tools.tool import Tool, ToolCall, ToolContext, ToolResult
@@ -132,10 +127,6 @@ class ToolsService(Executor[ToolContext, ToolCall, ToolResult]):
     def rebuild_catalog(self) -> None:
         """Пересобрать каталог из источников фабрики."""
         self._catalog = self._factory.build()
-
-    def filter(self, spec: Specification[Tool[Any]]) -> None:
-        """Сжать каталог по спецификации; не сбрасывает фабрику."""
-        self._catalog = ToolCatalog(t for t in self._catalog.tools() if spec.check(t))
 
     def tools(self) -> Iterable[Tool[Any]]:
         """Все собранные инструменты — если нужны и id, и definition."""

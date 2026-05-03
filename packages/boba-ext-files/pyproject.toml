@@ -12,6 +12,9 @@ dependencies = ["boba-tools", "boba-foundation"]
 [project.entry-points."boba.tools"]
 files = "boba.ext.files:register_tools"
 
+[project.entry-points."boba.config_sections"]
+files = "boba.ext.files.config:FilesSection"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["boba*"]

@@ -10,10 +10,6 @@ api_key = "ollama"
 [agent]
 max_iterations = 200
 max_consecutive_tool_calls = 30
-tools_enabled = true
-tool_plugins = []
-tools_allow = []
-tools_deny = []
 
 [workspaces]
 base_dir = "./local/workspaces"
@@ -50,7 +46,23 @@ models = [
 # upload_max_files = 5
 # upload_accept = ["text/*", "application/pdf"]
 
+# ── Расширения (per-ext секции): ────────────────────────────────────
+# Каждое расширение подключается явно — секцией [ext.<name>] enable=true.
+# tools_allow внутри секции — опциональный whitelist по именам tools
+# (пусто = все tools этого расширения).
+
+[ext.files]
+enable = false
+tools_allow = []  # ["cat", "ls", "grep", ...]
+
+[ext.html]
+enable = false
+
+[ext.confluence]
+enable = false
+
 [ext.chromadb]
+enable = false
 persist_path = "./local/chroma"
 embedding_model = "default"
 max_top_k = 20

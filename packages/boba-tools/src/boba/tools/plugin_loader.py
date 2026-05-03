@@ -6,12 +6,10 @@ import importlib.metadata
 import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import cast
 
 from boba.config.app import AppConfig, ConfigError
-from boba.patterns import Always, Specification
 from boba.tools.registry import ToolFactory, ToolSource, ToolsService
-from boba.tools.tool import Tool
 
 __all__ = [
     "ENTRY_POINTS_GROUP",
@@ -56,15 +54,8 @@ class ExtensionContext:
 class ToolPluginLoader:
     """Discovery tool-плагинов через entry-points boba.tools и сборка ToolsService."""
 
-    def __init__(
-        self,
-        ctx: ExtensionContext,
-        tool_spec: Specification[Tool[Any]] | None = None,
-    ) -> None:
+    def __init__(self, ctx: ExtensionContext) -> None:
         self._ctx = ctx
-        self._tool_spec: Specification[Tool[Any]] = (
-            tool_spec if tool_spec is not None else Always[Tool[Any]]()
-        )
         self._tool_sources: list[ToolSource] = []
         self._discover()
         self._tools_service = self._build_tools_service()
@@ -79,7 +70,6 @@ class ToolPluginLoader:
             factory.register(source)
         service = ToolsService(factory)
         service.rebuild_catalog()
-        service.filter(self._tool_spec)
         return service
 
     def _discover(self) -> None:

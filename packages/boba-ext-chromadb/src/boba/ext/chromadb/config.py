@@ -2,31 +2,34 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar
 
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.patterns import StrId
 from boba.validators import (
     ChainConverter,
     Default,
     MinValue,
     OneOf,
+    ParseBool,
+    ParseCsvList,
     ParseInt,
     ParseString,
 )
-
-from boba.patterns import StrId
 
 __all__ = ["ChromaExtConfig", "ChromadbSection"]
 
 
 @dataclass(frozen=True)
 class ChromaExtConfig:
-    persist_path: str
-    embedding_model: str
-    max_top_k: int
-    snippet_chars: int
+    enable: bool = False
+    tools_allow: list[str] = field(default_factory=list)
+    persist_path: str = ""
+    embedding_model: str = "default"
+    max_top_k: int = 20
+    snippet_chars: int = 300
 
 
 class ChromadbSection(ConfigSection[ChromaExtConfig]):
@@ -36,17 +39,33 @@ class ChromadbSection(ConfigSection[ChromaExtConfig]):
     namespace: ClassVar[tuple[str, ...]] = ("ext", "chromadb")
 
     schema: ClassVar[ObjectSchema[ChromaExtConfig]] = ObjectSchema(
-        description="Конфигурация ChromaDB-extension: путь к persistent "
-        "store, embedding-модель, лимиты kb_search.",
+        description=(
+            "Конфигурация ChromaDB-extension: enable + путь к persistent store, "
+            "embedding-модель, лимиты kb_search. "
+            "Включается явно через enable=true; при включении persist_path обязателен."
+        ),
         fields=[
             FieldSpec(
+                name="enable",
+                converter=ChainConverter(Default(False), ParseBool()),
+                description="Подключить ChromaDB kb_search/kb_list_collections.",
+            ),
+            FieldSpec(
+                name="tools_allow",
+                converter=ParseCsvList(),
+                description=(
+                    "Whitelist по именам tools (kb_search, kb_list_collections). "
+                    "Пусто — регистрируются все."
+                ),
+            ),
+            FieldSpec(
                 name="persist_path",
-                converter=ChainConverter(ParseString()),
+                converter=ChainConverter(Default(""), ParseString()),
                 description=(
                     "Путь к persistent ChromaDB (общий с boba-cli-vector-index, "
-                    "чтобы агент видел свежепроиндексированные коллекции)."
+                    "чтобы агент видел свежепроиндексированные коллекции). "
+                    "Обязателен при enable=true."
                 ),
-                required=True,
             ),
             FieldSpec(
                 name="embedding_model",
