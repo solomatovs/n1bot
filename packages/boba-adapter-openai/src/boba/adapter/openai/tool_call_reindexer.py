@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 
-from boba.domain.llm.models import LLMContext
+from boba_next.llm.models import LLMContext
 from boba.patterns import StreamTransformer
 from openai.types.chat.chat_completion_chunk import Choice, ChoiceDeltaToolCall
 

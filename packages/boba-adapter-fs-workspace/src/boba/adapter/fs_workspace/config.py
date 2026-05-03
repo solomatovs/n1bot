@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from boba.domain.config import WorkspaceLayout
-from boba.domain.core.config import ConfigSection, FieldSpec, ObjectSchema
-from boba.domain.core.validators import ChainConverter, Default, ParseString
+from boba_next.infra import WorkspaceLayout
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.config import ConfigSection
+from boba_next.validators import ChainConverter, Default, ParseString
 from boba.patterns import StrId
 
 
@@ -17,8 +18,7 @@ class WorkspacesSection(ConfigSection[WorkspaceLayout]):
     namespace: ClassVar[tuple[str, ...]] = ("workspaces",)
 
     schema: ClassVar[ObjectSchema[WorkspaceLayout]] = ObjectSchema(
-        description="Раскладка namespace'ов workspace'а относительно "
-        "base_dir.",
+        description="Раскладка namespace'ов workspace'а относительно base_dir.",
         fields=[
             FieldSpec(
                 name="base_dir",

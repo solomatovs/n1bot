@@ -3,16 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
-from boba.domain.core.tools import (
-    ChainConverter,
-    FieldSpec,
-    IsString,
-    NonEmpty,
-    ObjectSchema,
-    Pass,
-    Required,
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.tools import (
     Tool,
     ToolContext,
     ToolExecutionError,
@@ -20,21 +13,16 @@ from boba.domain.core.tools import (
     ToolResult,
     ToolSourceId,
 )
-from boba.domain.core.workspace import (
+from boba_next.validators import ChainConverter, IsString, NonEmpty
+from boba_next.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
-from boba.patterns import Converter
 
 
 @dataclass(frozen=True)
 class CdArgs:
     path: str
-
-
-class CdArgsConverter(Converter[dict[str, Any], CdArgs]):
-    def convert(self, value: dict[str, Any]) -> CdArgs:
-        return CdArgs(path=value["path"])
 
 
 class CdTool(Tool[CdArgs]):
@@ -49,21 +37,19 @@ class CdTool(Tool[CdArgs]):
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
 
-    def typed_args_converter(self) -> Converter[dict[str, Any], CdArgs]:
-        return CdArgsConverter()
-
-    def definition(self) -> ObjectSchema[dict[str, Any]]:
+    def definition(self) -> ObjectSchema[CdArgs]:
         return ObjectSchema(
             description="Сменить текущую директорию.",
             fields=[
                 FieldSpec(
                     name="path",
                     description="Путь директории.",
-                    converter=ChainConverter(Required(), IsString(), NonEmpty()),
+                    converter=ChainConverter(IsString(), NonEmpty()),
+                    required=True,
                 ),
             ],
-            invariants=Pass(),
-            )
+            factory=CdArgs,
+        )
 
     def execute(self, ctx: ToolContext, req: CdArgs) -> ToolResult:
         try:
@@ -79,4 +65,3 @@ class CdTool(Tool[CdArgs]):
                 message=f"Ошибка cd: {e}",
             ) from e
         return ToolResult(content=f"Текущая директория: {ctx.project_workspace.cwd}")
-

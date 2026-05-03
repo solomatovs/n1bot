@@ -8,8 +8,8 @@ import pytest
 from bs4 import BeautifulSoup
 
 from boba.adapter.fs_workspace.shell import FsProjectWorkspaceShell
-from boba.domain.core.tools import ToolContext, ToolExecutionError
-from boba.domain.core.workspace import WorkspaceId
+from boba_next.tools import ToolContext, ToolExecutionError
+from boba_next.workspace import WorkspaceId
 from boba.ext.confluence._parse import (
     anchor_for,
     collect_headings,
@@ -139,7 +139,7 @@ def test_strip_confluence_macros_keeps_plain_html() -> None:
 def test_outline_tool_renders_full_doc(ctx: ToolContext) -> None:
     """confluence_outline возвращает все 36 заголовков с anchor'ами."""
     tool = ConfluenceOutlineTool()
-    args = tool.typed_args_converter().convert(
+    args = tool.args_converter().convert(
         {"path": _FIXTURE_FILE, "limit": 200}
     )
     res = tool.execute(ctx, args)
@@ -152,7 +152,7 @@ def test_outline_tool_renders_full_doc(ctx: ToolContext) -> None:
 def test_outline_tool_max_depth(ctx: ToolContext) -> None:
     """max_depth=1 в outline-tool ограничивает выдачу до h1."""
     tool = ConfluenceOutlineTool()
-    args = tool.typed_args_converter().convert(
+    args = tool.args_converter().convert(
         {"path": _FIXTURE_FILE, "max_depth": 1, "limit": 200}
     )
     res = tool.execute(ctx, args)
@@ -163,7 +163,7 @@ def test_outline_tool_max_depth(ctx: ToolContext) -> None:
 def test_outline_tool_limit_truncates(ctx: ToolContext) -> None:
     """Если headings больше limit — добавляется суффикс truncated."""
     tool = ConfluenceOutlineTool()
-    args = tool.typed_args_converter().convert(
+    args = tool.args_converter().convert(
         {"path": _FIXTURE_FILE, "limit": 5}
     )
     res = tool.execute(ctx, args)
@@ -173,7 +173,7 @@ def test_outline_tool_limit_truncates(ctx: ToolContext) -> None:
 def test_outline_tool_missing_file(ctx: ToolContext) -> None:
     """Отсутствующий файл — ToolExecutionError, не CRASH."""
     tool = ConfluenceOutlineTool()
-    args = tool.typed_args_converter().convert(
+    args = tool.args_converter().convert(
         {"path": "no-such-file.html", "limit": 200}
     )
     with pytest.raises(ToolExecutionError):
@@ -183,7 +183,7 @@ def test_outline_tool_missing_file(ctx: ToolContext) -> None:
 def test_section_tool_returns_section(ctx: ToolContext) -> None:
     """Раздел по anchor возвращает HTML начиная с заголовка."""
     tool = ConfluenceSectionTool()
-    args = tool.typed_args_converter().convert(
+    args = tool.args_converter().convert(
         {
             "path": _FIXTURE_FILE,
             "anchor": "scroll-bookmark-2",
@@ -206,7 +206,7 @@ def test_section_tool_include_subsections_stops_at_same_level(
 ) -> None:
     """include_subsections=True: для h1 stop — на следующем h1, h2-подразделы внутри."""
     tool = ConfluenceSectionTool()
-    args = tool.typed_args_converter().convert(
+    args = tool.args_converter().convert(
         {
             "path": _FIXTURE_FILE,
             "anchor": "scroll-bookmark-2",
@@ -235,10 +235,10 @@ def test_section_tool_no_subsections_stops_at_first_heading(
         "strip_macros": False,
         "max_chars": 200000,
     }
-    no_subs = tool.execute(ctx, tool.typed_args_converter().convert(base_args))
+    no_subs = tool.execute(ctx, tool.args_converter().convert(base_args))
     with_subs = tool.execute(
         ctx,
-        tool.typed_args_converter().convert(
+        tool.args_converter().convert(
             {**base_args, "include_subsections": True}
         ),
     )
@@ -251,7 +251,7 @@ def test_section_tool_no_subsections_stops_at_first_heading(
 def test_section_tool_idx_anchor_works(ctx: ToolContext) -> None:
     """idx:N тоже валидный anchor для secsion-tool."""
     tool = ConfluenceSectionTool()
-    args = tool.typed_args_converter().convert(
+    args = tool.args_converter().convert(
         {
             "path": _FIXTURE_FILE,
             "anchor": "idx:1",
@@ -267,7 +267,7 @@ def test_section_tool_idx_anchor_works(ctx: ToolContext) -> None:
 def test_section_tool_unknown_anchor_raises(ctx: ToolContext) -> None:
     """Несуществующий anchor — ToolExecutionError."""
     tool = ConfluenceSectionTool()
-    args = tool.typed_args_converter().convert(
+    args = tool.args_converter().convert(
         {
             "path": _FIXTURE_FILE,
             "anchor": "scroll-bookmark-does-not-exist",
@@ -283,7 +283,7 @@ def test_section_tool_unknown_anchor_raises(ctx: ToolContext) -> None:
 def test_section_tool_max_chars_truncates(ctx: ToolContext) -> None:
     """При превышении max_chars в конец добавляется суффикс truncated."""
     tool = ConfluenceSectionTool()
-    args = tool.typed_args_converter().convert(
+    args = tool.args_converter().convert(
         {
             "path": _FIXTURE_FILE,
             "anchor": "scroll-bookmark-2",

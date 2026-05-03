@@ -5,12 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.domain.core.config import (
-    ConfigSection,
-    FieldSpec,
-    ObjectSchema,
-)
-from boba.domain.core.validators import (
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.config import ConfigSection
+from boba_next.validators import (
     ChainConverter,
     Default,
     Nullable,
@@ -106,8 +103,7 @@ class ChainlitSection(ConfigSection[ChainlitConfig]):
             FieldSpec(
                 name="enable_telemetry",
                 converter=Nullable(ParseBool()),
-                description="Опт-аут chainlit-телеметрии "
-                "([project] enable_telemetry).",
+                description="Опт-аут chainlit-телеметрии ([project] enable_telemetry).",
             ),
             FieldSpec(
                 name="upload_max_size_mb",

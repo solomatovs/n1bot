@@ -6,8 +6,8 @@ from collections.abc import Iterable
 
 from boba.adapter.openai.observer import MultiKeyReasoningExtractor
 from boba.adapter.openai.tool_call_reindexer import DuplicateToolCallIndexReindexer
-from boba.domain.llm.errors import LLMProtocolError
-from boba.domain.llm.events import (
+from boba_next.llm.errors import LLMProtocolError
+from boba_next.llm.events import (
     FinishReason,
     LLMAnswerStarted,
     LLMAnswerToken,
@@ -20,7 +20,7 @@ from boba.domain.llm.events import (
     LLMToolCallArgumentDelta,
     LLMToolCallBegin,
 )
-from boba.domain.llm.models import LLMContext, RequestId
+from boba_next.llm.models import LLMContext, RequestId
 from boba.patterns import (
     Converter,
     StreamTransformer,

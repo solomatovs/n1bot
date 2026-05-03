@@ -6,7 +6,7 @@ import os
 from collections.abc import Mapping
 from typing import TextIO
 
-from boba.domain.agent.events import (
+from boba_next.agent.events import (
     Advisory,
     AgentEvent,
     ContentDelta,
@@ -16,7 +16,7 @@ from boba.domain.agent.events import (
     SlotKind,
     Terminal,
 )
-from boba.domain.agent.models import AgentContext
+from boba_next.agent.models import AgentContext
 from boba.patterns import StreamSink
 
 
@@ -52,9 +52,7 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
         self._verbose = verbose
 
     @staticmethod
-    def _resolve_color(
-        stdout: TextIO, stderr: TextIO, use_color: bool | None
-    ) -> bool:
+    def _resolve_color(stdout: TextIO, stderr: TextIO, use_color: bool | None) -> bool:
         if use_color is not None:
             return use_color
         if os.environ.get("NO_COLOR"):

@@ -3,18 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
-from boba.domain.core.tools import (
-    ChainConverter,
-    Default,
-    FieldSpec,
-    IsBool,
-    IsString,
-    NonEmpty,
-    ObjectSchema,
-    Pass,
-    Required,
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.tools import (
     Tool,
     ToolContext,
     ToolExecutionError,
@@ -22,22 +13,23 @@ from boba.domain.core.tools import (
     ToolResult,
     ToolSourceId,
 )
-from boba.domain.core.workspace import (
+from boba_next.validators import (
+    ChainConverter,
+    Default,
+    IsBool,
+    IsString,
+    NonEmpty,
+)
+from boba_next.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
-from boba.patterns import Converter
 
 
 @dataclass(frozen=True)
 class RmArgs:
     path: str
     recursive: bool
-
-
-class RmArgsConverter(Converter[dict[str, Any], RmArgs]):
-    def convert(self, value: dict[str, Any]) -> RmArgs:
-        return RmArgs(path=value["path"], recursive=value["recursive"])
 
 
 class RmTool(Tool[RmArgs]):
@@ -52,31 +44,28 @@ class RmTool(Tool[RmArgs]):
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
 
-    def typed_args_converter(self) -> Converter[dict[str, Any], RmArgs]:
-        return RmArgsConverter()
-
-    def definition(self) -> ObjectSchema[dict[str, Any]]:
+    def definition(self) -> ObjectSchema[RmArgs]:
         return ObjectSchema(
             description=(
                 "Удалить файл или директорию. Для директорий требуется "
                 "recursive=true. Безвозвратно."
             ),
             fields=[
-                    FieldSpec(
-                        name="path",
-                        description="Путь к файлу или директории.",
-                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
+                FieldSpec(
+                    name="path",
+                    description="Путь к файлу или директории.",
+                    converter=ChainConverter(IsString(), NonEmpty()),
+                    required=True,
+                ),
+                FieldSpec(
+                    name="recursive",
+                    description=(
+                        "Удалить директорию со всем содержимым. По умолчанию false."
                     ),
-                    FieldSpec(
-                        name="recursive",
-                        description=(
-                            "Удалить директорию со всем содержимым. "
-                            "По умолчанию false."
-                        ),
-                        converter=ChainConverter(Default(False), IsBool()),
-                    ),
-                ],
-                invariants=Pass()
+                    converter=ChainConverter(Default(False), IsBool()),
+                ),
+            ],
+            factory=RmArgs,
         )
 
     def execute(self, ctx: ToolContext, req: RmArgs) -> ToolResult:
@@ -93,4 +82,3 @@ class RmTool(Tool[RmArgs]):
                 message=f"Ошибка удаления: {e}",
             ) from e
         return ToolResult(content=f"Удалено: {req.path}")
-

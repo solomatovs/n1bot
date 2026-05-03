@@ -7,8 +7,8 @@ import re
 from collections.abc import Sequence
 
 from boba.adapter.prompt_providers.providers import StaticPromptProvider
-from boba.domain.agent.prompt import PromptId, PromptProvider
-from boba.domain.core.workspace import PromptWorkspaceShell, WorkspaceError
+from boba_next.agent.prompt import PromptId, PromptProvider
+from boba_next.workspace import PromptWorkspaceShell, WorkspaceError
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +58,7 @@ class PromptLoader:
         if not content.strip():
             logger.info("prompt %r: empty content; skipped", rel_path)
             return
-        prompt_id = PromptId(
-            rel_path.removesuffix(".md").removesuffix(".txt")
-        )
+        prompt_id = PromptId(rel_path.removesuffix(".md").removesuffix(".txt"))
         self._providers.append(
             StaticPromptProvider(
                 prompt_id=prompt_id,

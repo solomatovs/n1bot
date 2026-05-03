@@ -29,17 +29,17 @@ from boba.cli.agent_run.console_sink import ConsoleSink
 from boba.config.cli import CliSource
 from boba.config.env import EnvFileSource, EnvSource
 from boba.config.toml import CONFIG_PATH_ENV, TomlFileSource, TomlSource
-from boba.domain.agent import Agent, AgentConfig
-from boba.domain.agent.models import AgentRequest
+from boba_next.agent import Agent, AgentConfig
+from boba_next.agent.models import AgentRequest
 from boba.domain.config import AppConfig
-from boba.domain.core.tools import ToolContext
-from boba.domain.core.workspace import (
+from boba_next.tools import ToolContext
+from boba_next.workspace import (
     PromptWorkspaceId,
     WorkspaceId,
 )
-from boba.domain.llm.models import RequestId
-from boba.domain.llm.observer import CompositeLLMRequestObserver
-from boba.infra import (
+from boba_next.llm.models import RequestId
+from boba_next.llm.observer import CompositeLLMRequestObserver
+from boba_next.infra import (
     AgentComponents,
     AgentSection,
     AppCoreSection,

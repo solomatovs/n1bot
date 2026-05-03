@@ -7,7 +7,7 @@ from collections.abc import Callable
 import httpx
 
 import openai
-from boba.domain.llm.errors import (
+from boba_next.llm.errors import (
     LLMAuthError,
     LLMConnectionError,
     LLMContextLengthError,

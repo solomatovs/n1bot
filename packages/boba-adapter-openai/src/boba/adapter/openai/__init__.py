@@ -11,7 +11,7 @@ from boba.adapter.openai.terminal import OpenAITerminal, build_openai_client
 from boba.adapter.openai.tool_call_reindexer import (
     DuplicateToolCallIndexReindexer,
 )
-from boba.domain.llm.observer import RequestOutcome
+from boba_next.llm.observer import RequestOutcome
 
 __all__ = [
     "DuplicateToolCallIndexReindexer",

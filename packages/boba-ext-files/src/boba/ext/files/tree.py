@@ -4,19 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import islice
-from typing import Any
 
-from boba.domain.core.tools import (
-    ChainConverter,
-    FieldSpec,
-    IsInt,
-    IsString,
-    MinValue,
-    NonEmpty,
-    Nullable,
-    ObjectSchema,
-    Pass,
-    Required,
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.tools import (
     Tool,
     ToolContext,
     ToolExecutionError,
@@ -24,24 +14,23 @@ from boba.domain.core.tools import (
     ToolResult,
     ToolSourceId,
 )
-from boba.domain.core.workspace import (
+from boba_next.validators import (
+    ChainConverter,
+    IsInt,
+    IsString,
+    MinValue,
+    NonEmpty,
+    Nullable,
+)
+from boba_next.workspace import (
     WorkspaceError,
 )
-from boba.patterns import Converter
 
 
 @dataclass(frozen=True)
 class TreeArgs:
     path: str | None
     limit: int
-
-
-class TreeArgsConverter(Converter[dict[str, Any], TreeArgs]):
-    def convert(self, value: dict[str, Any]) -> TreeArgs:
-        return TreeArgs(
-            path=value.get("path"),
-            limit=value["limit"],
-        )
 
 
 class TreeTool(Tool[TreeArgs]):
@@ -56,10 +45,7 @@ class TreeTool(Tool[TreeArgs]):
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
 
-    def typed_args_converter(self) -> Converter[dict[str, Any], TreeArgs]:
-        return TreeArgsConverter()
-
-    def definition(self) -> ObjectSchema[dict[str, Any]]:
+    def definition(self) -> ObjectSchema[TreeArgs]:
         return ObjectSchema(
             description=(
                 "Рекурсивно перечислить все файлы под директорией. Плоский "
@@ -67,18 +53,19 @@ class TreeTool(Tool[TreeArgs]):
                 "маркером '(truncated at limit=N)'. Для одного уровня — ls."
             ),
             fields=[
-                    FieldSpec(
-                        name="path",
-                        description="Корень обхода. Без значения — корень workspace.",
-                        converter=Nullable(ChainConverter(IsString(), NonEmpty())),
-                    ),
-                    FieldSpec(
-                        name="limit",
-                        description="Максимум путей в ответе.",
-                        converter=ChainConverter(Required(), IsInt(), MinValue(1)),
-                    ),
-                ],
-                invariants=Pass()
+                FieldSpec(
+                    name="path",
+                    description="Корень обхода. Без значения — корень workspace.",
+                    converter=Nullable(ChainConverter(IsString(), NonEmpty())),
+                ),
+                FieldSpec(
+                    name="limit",
+                    description="Максимум путей в ответе.",
+                    converter=ChainConverter(IsInt(), MinValue(1)),
+                    required=True,
+                ),
+            ],
+            factory=TreeArgs,
         )
 
     def execute(self, ctx: ToolContext, req: TreeArgs) -> ToolResult:
@@ -105,4 +92,3 @@ class TreeTool(Tool[TreeArgs]):
         header += "):"
         body = "\n".join(f"- {p}" for p in items)
         return ToolResult(content=f"{header}\n{body}")
-

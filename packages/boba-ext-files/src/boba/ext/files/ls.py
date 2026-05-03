@@ -4,19 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import islice
-from typing import Any
 
-from boba.domain.core.tools import (
-    ChainConverter,
-    Default,
-    FieldSpec,
-    IsInt,
-    IsString,
-    MinValue,
-    NonEmpty,
-    Nullable,
-    ObjectSchema,
-    Pass,
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.tools import (
     Tool,
     ToolContext,
     ToolExecutionError,
@@ -24,24 +14,24 @@ from boba.domain.core.tools import (
     ToolResult,
     ToolSourceId,
 )
-from boba.domain.core.workspace import (
+from boba_next.validators import (
+    ChainConverter,
+    Default,
+    IsInt,
+    IsString,
+    MinValue,
+    NonEmpty,
+    Nullable,
+)
+from boba_next.workspace import (
     WorkspaceError,
 )
-from boba.patterns import Converter
 
 
 @dataclass(frozen=True)
 class LsArgs:
     path: str | None
     limit: int
-
-
-class LsArgsConverter(Converter[dict[str, Any], LsArgs]):
-    def convert(self, value: dict[str, Any]) -> LsArgs:
-        return LsArgs(
-            path=value.get("path"),
-            limit=value["limit"],
-        )
 
 
 class LsTool(Tool[LsArgs]):
@@ -56,10 +46,7 @@ class LsTool(Tool[LsArgs]):
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
 
-    def typed_args_converter(self) -> Converter[dict[str, Any], LsArgs]:
-        return LsArgsConverter()
-
-    def definition(self) -> ObjectSchema[dict[str, Any]]:
+    def definition(self) -> ObjectSchema[LsArgs]:
         return ObjectSchema(
             description=(
                 "Перечислить содержимое директории на одном уровне без рекурсии. "
@@ -67,18 +54,18 @@ class LsTool(Tool[LsArgs]):
                 "'(truncated at limit=N)'. Для рекурсии — tree."
             ),
             fields=[
-                    FieldSpec(
-                        name="path",
-                        description="Путь директории. Без значения — корень workspace.",
-                        converter=Nullable(ChainConverter(IsString(), NonEmpty())),
-                    ),
-                    FieldSpec(
-                        name="limit",
-                        description="Максимум элементов в ответе. По умолчанию 200.",
-                        converter=ChainConverter(Default(200), IsInt(), MinValue(1)),
-                    ),
-                ],
-                invariants=Pass()
+                FieldSpec(
+                    name="path",
+                    description="Путь директории. Без значения — корень workspace.",
+                    converter=Nullable(ChainConverter(IsString(), NonEmpty())),
+                ),
+                FieldSpec(
+                    name="limit",
+                    description="Максимум элементов в ответе. По умолчанию 200.",
+                    converter=ChainConverter(Default(200), IsInt(), MinValue(1)),
+                ),
+            ],
+            factory=LsArgs,
         )
 
     def execute(self, ctx: ToolContext, req: LsArgs) -> ToolResult:
@@ -105,4 +92,3 @@ class LsTool(Tool[LsArgs]):
         header += "):"
         body = "\n".join(f"- {p}" for p in items)
         return ToolResult(content=f"{header}\n{body}")
-

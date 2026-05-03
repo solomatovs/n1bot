@@ -11,9 +11,7 @@ class GrowBuffer:
 
     _INITIAL_CAPACITY = 4096
 
-    def __init__(
-        self, fd: BufferedReader, *, max_capacity: int | None = None
-    ) -> None:
+    def __init__(self, fd: BufferedReader, *, max_capacity: int | None = None) -> None:
         """Создать буфер поверх fd; max_capacity — верхняя граница ёмкости."""
         if max_capacity is not None and max_capacity <= 0:
             raise ValueError(f"max_capacity must be positive, got {max_capacity}")

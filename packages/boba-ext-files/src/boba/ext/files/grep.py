@@ -4,21 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import islice
-from typing import Any
 
-from boba.domain.core.tools import (
-    ChainConverter,
-    Default,
-    FieldSpec,
-    IsBool,
-    IsInt,
-    IsString,
-    MinValue,
-    NonEmpty,
-    Nullable,
-    ObjectSchema,
-    Pass,
-    Required,
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.tools import (
     Tool,
     ToolContext,
     ToolExecutionError,
@@ -26,12 +14,21 @@ from boba.domain.core.tools import (
     ToolResult,
     ToolSourceId,
 )
-from boba.domain.core.workspace import (
+from boba_next.validators import (
+    ChainConverter,
+    Default,
+    IsBool,
+    IsInt,
+    IsString,
+    MinValue,
+    NonEmpty,
+    Nullable,
+)
+from boba_next.workspace import (
     GrepMatch,
     WorkspaceError,
     WorkspaceNotFoundError,
 )
-from boba.patterns import Converter
 
 
 @dataclass(frozen=True)
@@ -46,20 +43,6 @@ class GrepArgs:
     fixed_string: bool
 
 
-class GrepArgsConverter(Converter[dict[str, Any], GrepArgs]):
-    def convert(self, value: dict[str, Any]) -> GrepArgs:
-        return GrepArgs(
-            pattern=value["pattern"],
-            path=value.get("path"),
-            recursive=value["recursive"],
-            include=value.get("include"),
-            case_insensitive=value["case_insensitive"],
-            context=value["context"],
-            limit=value["limit"],
-            fixed_string=value["fixed_string"],
-        )
-
-
 class GrepTool(Tool[GrepArgs]):
     """Поиск подстроки/regex по содержимому файлов."""
 
@@ -72,10 +55,7 @@ class GrepTool(Tool[GrepArgs]):
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
 
-    def typed_args_converter(self) -> Converter[dict[str, Any], GrepArgs]:
-        return GrepArgsConverter()
-
-    def definition(self) -> ObjectSchema[dict[str, Any]]:
+    def definition(self) -> ObjectSchema[GrepArgs]:
         return ObjectSchema(
             description=(
                 "Найти совпадения pattern в текстовых файлах. Формат "
@@ -84,62 +64,62 @@ class GrepTool(Tool[GrepArgs]):
                 "с маркером."
             ),
             fields=[
-                    FieldSpec(
-                        name="pattern",
-                        description="Python-regex; литерал при fixed_string=true.",
-                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
+                FieldSpec(
+                    name="pattern",
+                    description="Python-regex; литерал при fixed_string=true.",
+                    converter=ChainConverter(IsString(), NonEmpty()),
+                    required=True,
+                ),
+                FieldSpec(
+                    name="path",
+                    description="Стартовый путь. Без значения — cwd.",
+                    converter=Nullable(ChainConverter(IsString(), NonEmpty())),
+                ),
+                FieldSpec(
+                    name="recursive",
+                    description="Рекурсивный обход директории. По умолчанию true.",
+                    converter=ChainConverter(Default(True), IsBool()),
+                ),
+                FieldSpec(
+                    name="include",
+                    description=(
+                        "Fnmatch-glob по пути (например '*.py'). "
+                        "Без значения — все файлы."
                     ),
-                    FieldSpec(
-                        name="path",
-                        description="Стартовый путь. Без значения — cwd.",
-                        converter=Nullable(ChainConverter(IsString(), NonEmpty())),
+                    converter=Nullable(ChainConverter(IsString(), NonEmpty())),
+                ),
+                FieldSpec(
+                    name="case_insensitive",
+                    description="Игнорировать регистр. По умолчанию false.",
+                    converter=ChainConverter(Default(False), IsBool()),
+                ),
+                FieldSpec(
+                    name="context",
+                    description=(
+                        "Строк контекста до и после каждого совпадения. По умолчанию 0."
                     ),
-                    FieldSpec(
-                        name="recursive",
-                        description="Рекурсивный обход директории. По умолчанию true.",
-                        converter=ChainConverter(Default(True), IsBool()),
+                    converter=ChainConverter(
+                        Default(0),
+                        IsInt(),
+                        MinValue(0),
                     ),
-                    FieldSpec(
-                        name="include",
-                        description=(
-                            "Fnmatch-glob по пути (например '*.py'). "
-                            "Без значения — все файлы."
-                        ),
-                        converter=Nullable(ChainConverter(IsString(), NonEmpty())),
+                ),
+                FieldSpec(
+                    name="limit",
+                    description="Максимум совпадений в ответе. По умолчанию 100.",
+                    converter=ChainConverter(
+                        Default(100),
+                        IsInt(),
+                        MinValue(1),
                     ),
-                    FieldSpec(
-                        name="case_insensitive",
-                        description="Игнорировать регистр. По умолчанию false.",
-                        converter=ChainConverter(Default(False), IsBool()),
-                    ),
-                    FieldSpec(
-                        name="context",
-                        description=(
-                            "Строк контекста до и после каждого совпадения. "
-                            "По умолчанию 0."
-                        ),
-                        converter=ChainConverter(
-                            Default(0),
-                            IsInt(),
-                            MinValue(0),
-                        ),
-                    ),
-                    FieldSpec(
-                        name="limit",
-                        description="Максимум совпадений в ответе. По умолчанию 100.",
-                        converter=ChainConverter(
-                            Default(100),
-                            IsInt(),
-                            MinValue(1),
-                        ),
-                    ),
-                    FieldSpec(
-                        name="fixed_string",
-                        description="Литеральный поиск без regex. По умолчанию false.",
-                        converter=ChainConverter(Default(False), IsBool()),
-                    ),
-                ],
-                invariants=Pass()
+                ),
+                FieldSpec(
+                    name="fixed_string",
+                    description="Литеральный поиск без regex. По умолчанию false.",
+                    converter=ChainConverter(Default(False), IsBool()),
+                ),
+            ],
+            factory=GrepArgs,
         )
 
     def execute(self, ctx: ToolContext, req: GrepArgs) -> ToolResult:
@@ -193,4 +173,3 @@ class GrepTool(Tool[GrepArgs]):
                 n = m.line + 1 + j
                 parts.append(f"{m.path}:{n}- {ctx_line}")
         return "\n".join(parts)
-

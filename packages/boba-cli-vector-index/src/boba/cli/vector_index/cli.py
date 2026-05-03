@@ -19,9 +19,9 @@ from boba.cli.vector_index.store import CollectionSummary, VectorStore
 from boba.config.cli import CliSource
 from boba.config.env import EnvFileSource, EnvSource
 from boba.config.toml import CONFIG_PATH_ENV, TomlFileSource, TomlSource
-from boba.domain.core.config import ConfigKey, ConfigSection
+from boba_next.config import ConfigSection
 from boba.domain.core.declaration import FieldMissingError
-from boba.infra import ConfigFactory
+from boba_next.infra import ConfigFactory
 from boba.patterns import ConverterInputError
 
 logger = logging.getLogger("boba.cli.vector_index")
@@ -69,6 +69,7 @@ def _setup_logging(verbose: int) -> None:
         level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
 
 def _require(
     value: object,

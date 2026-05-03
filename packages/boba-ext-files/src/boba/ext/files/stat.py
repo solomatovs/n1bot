@@ -3,16 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
-from boba.domain.core.tools import (
-    ChainConverter,
-    FieldSpec,
-    IsString,
-    NonEmpty,
-    ObjectSchema,
-    Pass,
-    Required,
+from boba_next.declaration import FieldSpec, ObjectSchema
+from boba_next.tools import (
     Tool,
     ToolContext,
     ToolExecutionError,
@@ -20,21 +13,16 @@ from boba.domain.core.tools import (
     ToolResult,
     ToolSourceId,
 )
-from boba.domain.core.workspace import (
+from boba_next.validators import ChainConverter, IsString, NonEmpty
+from boba_next.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
-from boba.patterns import Converter
 
 
 @dataclass(frozen=True)
 class StatArgs:
     path: str
-
-
-class StatArgsConverter(Converter[dict[str, Any], StatArgs]):
-    def convert(self, value: dict[str, Any]) -> StatArgs:
-        return StatArgs(path=value["path"])
 
 
 class StatTool(Tool[StatArgs]):
@@ -49,10 +37,7 @@ class StatTool(Tool[StatArgs]):
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
 
-    def typed_args_converter(self) -> Converter[dict[str, Any], StatArgs]:
-        return StatArgsConverter()
-
-    def definition(self) -> ObjectSchema[dict[str, Any]]:
+    def definition(self) -> ObjectSchema[StatArgs]:
         return ObjectSchema(
             description=(
                 "Вернуть метаданные ресурса: тип (file/directory/other), "
@@ -61,13 +46,14 @@ class StatTool(Tool[StatArgs]):
                 "количество файлов; для содержимого директории — ls/tree."
             ),
             fields=[
-                    FieldSpec(
-                        name="path",
-                        description="Путь к файлу или директории.",
-                        converter=ChainConverter(Required(), IsString(), NonEmpty()),
-                    ),
-                ],
-                invariants=Pass()
+                FieldSpec(
+                    name="path",
+                    description="Путь к файлу или директории.",
+                    converter=ChainConverter(IsString(), NonEmpty()),
+                    required=True,
+                ),
+            ],
+            factory=StatArgs,
         )
 
     def execute(self, ctx: ToolContext, req: StatArgs) -> ToolResult:
@@ -91,4 +77,3 @@ class StatTool(Tool[StatArgs]):
             f"modified: {meta.modified.isoformat()}"
         )
         return ToolResult(content=body)
-

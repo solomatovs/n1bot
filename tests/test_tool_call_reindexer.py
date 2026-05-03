@@ -14,8 +14,8 @@ from boba.adapter.openai.response import FromOpenAIChunkConverter
 from boba.adapter.openai.tool_call_reindexer import (
     DuplicateToolCallIndexReindexer,
 )
-from boba.domain.llm.events import LLMToolCallArgumentDelta, LLMToolCallBegin
-from boba.domain.llm.models import (
+from boba_next.llm.events import LLMToolCallArgumentDelta, LLMToolCallBegin
+from boba_next.llm.models import (
     LLMContext,
     LLMMessage,
     LLMRequest,

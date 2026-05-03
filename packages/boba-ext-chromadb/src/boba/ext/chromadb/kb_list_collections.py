@@ -4,29 +4,16 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
 
-from boba.domain.core.tools import (
-    ObjectSchema,
-    Pass,
-    Tool,
-    ToolContext,
-    ToolId,
-    ToolResult,
-    ToolSourceId,
-)
+from boba_next.declaration import ObjectSchema
+from boba_next.tools import Tool, ToolContext, ToolId, ToolResult, ToolSourceId
+
 from boba.ext.chromadb.kb import ChromaKnowledgeBase
-from boba.patterns import Converter
 
 
 @dataclass(frozen=True)
 class KbListCollectionsArgs:
     """Без параметров — kb_list_collections аргументов не принимает."""
-
-
-class KbListCollectionsArgsConverter(Converter[dict[str, Any], KbListCollectionsArgs]):
-    def convert(self, value: dict[str, Any]) -> KbListCollectionsArgs:
-        return KbListCollectionsArgs()
 
 
 class KbListCollectionsTool(Tool[KbListCollectionsArgs]):
@@ -44,12 +31,7 @@ class KbListCollectionsTool(Tool[KbListCollectionsArgs]):
     def tool_source_id(self) -> ToolSourceId:
         return self._SOURCE
 
-    def typed_args_converter(
-        self,
-    ) -> Converter[dict[str, Any], KbListCollectionsArgs]:
-        return KbListCollectionsArgsConverter()
-
-    def definition(self) -> ObjectSchema[dict[str, Any]]:
+    def definition(self) -> ObjectSchema[KbListCollectionsArgs]:
         return ObjectSchema(
             description=(
                 "Список доступных knowledge-base коллекций ChromaDB. "
@@ -58,7 +40,7 @@ class KbListCollectionsTool(Tool[KbListCollectionsArgs]):
                 "выбрать подходящую коллекцию."
             ),
             fields=[],
-            invariants=Pass(),
+            factory=KbListCollectionsArgs,
         )
 
     def execute(self, ctx: ToolContext, req: KbListCollectionsArgs) -> ToolResult:
