@@ -40,9 +40,7 @@ class FsSource(Source):
     def stream(self, ctx: IndexingContext) -> Iterable[SourceItem]:
         del ctx
         for file_path in self._walk():
-            item = self._path_to_item(file_path)
-            if item is not None:
-                yield item
+            yield from self._emit_item(file_path)
 
     def list_source_ids(self) -> Iterable[str]:
         return (f"fs:{Path(p).resolve()}" for p in self._walk())
@@ -84,16 +82,17 @@ class FsSource(Source):
             for pat in self._config.include
         )
 
-    def _path_to_item(self, file_path: str) -> SourceItem | None:
+    def _emit_item(self, file_path: str) -> Iterator[SourceItem]:
+        """Yield 0..1 SourceItem; 0 — если read/stat упал."""
         p = Path(file_path)
         try:
             payload = p.read_bytes()
             mtime = str(int(p.stat().st_mtime))
         except OSError as e:
             logger.warning("read failed for %r: %s; skipped", file_path, e)
-            return None
+            return
         suffix = p.suffix.lstrip(".").lower() or "bin"
-        return SourceItem(
+        yield SourceItem(
             source_id=f"fs:{p.resolve()}",
             content_hint=suffix,
             payload=payload,
