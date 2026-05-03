@@ -25,7 +25,7 @@ from boba.declaration import (
     ScalarItem,
 )
 from boba.patterns import ConverterInputError
-from boba.validators import MISSING
+from boba.coercion import MISSING
 
 __all__ = ["ToolArgsBuilder"]
 
@@ -57,7 +57,7 @@ class ToolArgsBuilder(Generic[T]):
             validated[f.name] = value
 
         try:
-            final = self._schema.invariants.convert(validated)
+            final = self._schema.invariants.apply(validated)
         except ConverterInputError as exc:
             raise FieldPathError.from_cause(exc, "<invariants>") from exc
 
@@ -65,8 +65,8 @@ class ToolArgsBuilder(Generic[T]):
 
     def _read_field(self, field: FieldKind, raw: Mapping[str, Any]) -> Any:
         match field:
-            case FieldSpec(name=name, converter=converter):
-                return converter.convert(raw.get(name, MISSING))
+            case FieldSpec(name=name, coercer=coercer):
+                return coercer.apply(raw.get(name, MISSING))
 
             case CollectionField(name=name, reader=reader, shape=shape):
                 return self._read_collection(name, reader, shape, raw)
@@ -143,10 +143,10 @@ class ToolArgsBuilder(Generic[T]):
 
     def _read_item(self, reader: ItemReader[Any], raw: Any) -> Any:
         match reader:
-            case ScalarItem(converter=converter):
+            case ScalarItem(coercer=coercer):
                 if raw is MISSING:
                     return MISSING
-                return converter.convert(raw)
+                return coercer.apply(raw)
 
             case ObjectItem(schema=nested):
                 if not isinstance(raw, Mapping):

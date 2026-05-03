@@ -8,8 +8,8 @@ from typing import ClassVar
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.llm.models import SamplingParams
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Nullable,
     ParseCsvList,
     ParseFloat,
@@ -63,48 +63,48 @@ class AgentRunSection(ConfigSection[AgentRunConfig]):
         fields=[
             FieldSpec(
                 name="query",
-                converter=Nullable(ParseString()),
+                coercer=Nullable(ParseString()),
                 description="Запрос к агенту; если не задан — запускается REPL.",
             ),
             FieldSpec(
                 name="model",
-                converter=ChainConverter(ParseString()),
+                coercer=ChainCoercer(ParseString()),
                 description="LLM-модель (напр. qwen3.5-35b). Обязательно.",
                 required=True,
             ),
             FieldSpec(
                 name="temperature",
-                converter=Nullable(ParseFloat()),
+                coercer=Nullable(ParseFloat()),
                 description="Температура sampling'а (0.0–2.0).",
             ),
             FieldSpec(
                 name="top_p",
-                converter=Nullable(ParseFloat()),
+                coercer=Nullable(ParseFloat()),
                 description="Nucleus sampling threshold (0.0–1.0).",
             ),
             FieldSpec(
                 name="max_tokens",
-                converter=Nullable(ParseInt()),
+                coercer=Nullable(ParseInt()),
                 description="Максимум токенов в ответе.",
             ),
             FieldSpec(
                 name="seed",
-                converter=Nullable(ParseInt()),
+                coercer=Nullable(ParseInt()),
                 description="Seed для детерминистичного sampling'а.",
             ),
             FieldSpec(
                 name="stop",
-                converter=Nullable(ParseCsvList()),
+                coercer=Nullable(ParseCsvList()),
                 description="Stop-последовательности (CSV в env, TOML-array).",
             ),
             FieldSpec(
                 name="frequency_penalty",
-                converter=Nullable(ParseFloat()),
+                coercer=Nullable(ParseFloat()),
                 description="Frequency penalty (-2.0–2.0).",
             ),
             FieldSpec(
                 name="presence_penalty",
-                converter=Nullable(ParseFloat()),
+                coercer=Nullable(ParseFloat()),
                 description="Presence penalty (-2.0–2.0).",
             ),
         ],

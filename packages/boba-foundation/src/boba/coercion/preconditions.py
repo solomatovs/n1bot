@@ -4,47 +4,47 @@ from __future__ import annotations
 
 from typing import Any
 
-from boba.patterns import Converter, MissingValueError
-from boba.validators.base import MISSING, ValueConverter
+from boba.coercion.base import MISSING, Coercer, ValueCoercer
+from boba.patterns import MissingValueError
 
 __all__ = ["Default", "NotNull", "Nullable"]
 
 
-class NotNull(Converter[Any, Any]):
+class NotNull(Coercer[Any, Any]):
     """Item-level non-null: MISSING/None/NullValue → MissingValueError.
 
-    Используется внутри `ScalarItem.converter` для коллекций — отвергает
+    Используется внутри `ScalarItem.coercer` для коллекций — отвергает
     null-элементы массивов/словарей. Для root-level «поле обязательно в
     объекте» используй декларативный `FieldSpec(..., required=True)`.
     """
 
-    def convert(self, value: Any) -> Any:
+    def apply(self, value: Any) -> Any:
         if value is MISSING:
             raise MissingValueError("значение отсутствует")
-        if ValueConverter.unwrap(value) is None:
+        if ValueCoercer.unwrap(value) is None:
             raise MissingValueError("null недопустим")
         return value
 
 
-class Default(Converter[Any, Any]):
+class Default(Coercer[Any, Any]):
     """Подставить default при MISSING."""
 
     def __init__(self, value: Any) -> None:
         self._value = value
 
-    def convert(self, value: Any) -> Any:
+    def apply(self, value: Any) -> Any:
         if value is MISSING:
             return self._value
         return value
 
 
-class Nullable(Converter[Any, Any]):
+class Nullable(Coercer[Any, Any]):
     """MISSING/None/NullValue → None; иначе делегирует во внутренний."""
 
-    def __init__(self, inner: Converter[Any, Any]) -> None:
+    def __init__(self, inner: Coercer[Any, Any]) -> None:
         self._inner = inner
 
-    def convert(self, value: Any) -> Any:
-        if value is MISSING or ValueConverter.unwrap(value) is None:
+    def apply(self, value: Any) -> Any:
+        if value is MISSING or ValueCoercer.unwrap(value) is None:
             return None
-        return self._inner.convert(value)
+        return self._inner.apply(value)

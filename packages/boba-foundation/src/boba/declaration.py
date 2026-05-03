@@ -8,8 +8,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
+from boba.coercion.base import Coercer
 from boba.patterns import (
-    Converter,
     ConverterInputError,
     MissingValueError,
 )
@@ -119,7 +119,12 @@ class FieldKind:
 
 @dataclass(frozen=True)
 class FieldSpec(FieldKind, Generic[T]):
-    """Скалярное поле: name + Converter-цепочка + декларативный required-флаг.
+    """Скалярное поле: name + coercer-цепочка + декларативный required-флаг.
+
+    `coercer` — пайплайн обработки значения (defaulting, parsing, валидация
+    диапазонов и т.п.). Технически — `Coercer[Any, T]`-цепочка, обычно
+    собираемая через `ChainCoercer(Default(...), ParseInt(), MinValue(1))`.
+    Также участвует в построении wire-схемы через `SchemaContributor`.
 
     `required=True` означает: если значения нет (MISSING) — `Materializer`
     бросает `FieldPathMissingError`, а `ToolWireSchemaBuilder` добавляет имя
@@ -127,7 +132,7 @@ class FieldSpec(FieldKind, Generic[T]):
     """
 
     name: str
-    converter: Converter[Any, T]
+    coercer: Coercer[Any, T]
     description: str = ""
     required: bool = False
 
@@ -148,9 +153,9 @@ class ItemReader(Generic[V]):
 
 @dataclass(frozen=True)
 class ScalarItem(ItemReader[T], Generic[T]):
-    """Скаляр: lookup → converter."""
+    """Скаляр: lookup → coercer (пайплайн defaulting/parsing/валидации)."""
 
-    converter: Converter[Any, T]
+    coercer: Coercer[Any, T]
 
 
 @dataclass(frozen=True)
@@ -174,10 +179,10 @@ class KeyedShape(CollectionShape[str, V, dict[str, V]], Generic[V]):
     """dict[str, V] по mapping-ключам."""
 
 
-class _PassDict(Converter[dict[str, Any], dict[str, Any]]):
+class _PassDictCoercer(Coercer[dict[str, Any], dict[str, Any]]):
     """No-op invariants по умолчанию для ObjectSchema."""
 
-    def convert(self, value: dict[str, Any]) -> dict[str, Any]:
+    def apply(self, value: dict[str, Any]) -> dict[str, Any]:
         return value
 
 
@@ -213,17 +218,17 @@ class ObjectSchema(Generic[T]):
         # ── Схема ──
         # Вложенная схема (значение для tools.<id>.params.<name>):
         PARAM_OVERLAY_SCHEMA = ObjectSchema(
-            fields=[FieldSpec("description", ChainConverter(Default(""), ParseString()))],
+            fields=[FieldSpec("description", ChainCoercer(Default(""), ParseString()))],
             factory=ParamOverlay,
         )
 
         # Tool overlay: содержит динамический map[str, ParamOverlay] на params:
         TOOL_ENTRY_SCHEMA = ObjectSchema(
             fields=[
-                FieldSpec("enabled", ChainConverter(Default(False), ParseBool())),
+                FieldSpec("enabled", ChainCoercer(Default(False), ParseBool())),
                 FieldSpec(
                     "description",
-                    ChainConverter(Default(""), ParseString()),
+                    ChainCoercer(Default(""), ParseString()),
                     description="Перекрытие описания tool'а для LLM",
                 ),
                 # tools.<id>.params.<name> → dict[str, ParamOverlay]
@@ -239,15 +244,15 @@ class ObjectSchema(Generic[T]):
         # Корень extension'а: скаляры + cross-field-инвариант + динамические tools:
         CHROMADB_SCHEMA = ObjectSchema(
             fields=[
-                FieldSpec("enabled", ChainConverter(Default(False), ParseBool())),
-                FieldSpec("persist_path", ChainConverter(ParseString()), required=True),
+                FieldSpec("enabled", ChainCoercer(Default(False), ParseBool())),
+                FieldSpec("persist_path", ChainCoercer(ParseString()), required=True),
                 FieldSpec(
                     "min_top_k",
-                    ChainConverter(Default(1), ParseInt(), MinValue(1)),
+                    ChainCoercer(Default(1), ParseInt(), MinValue(1)),
                 ),
                 FieldSpec(
                     "max_top_k",
-                    ChainConverter(Default(20), ParseInt(), MaxValue(100)),
+                    ChainCoercer(Default(20), ParseInt(), MaxValue(100)),
                 ),
                 # ext.chromadb.tools.<id> → dict[str, ToolEntry]
                 CollectionField(
@@ -271,8 +276,8 @@ class ObjectSchema(Generic[T]):
     """  # noqa: E501
 
     fields: Sequence[FieldKind]
-    invariants: Converter[dict[str, Any], dict[str, Any]] = field(
-        default_factory=_PassDict,
+    invariants: Coercer[dict[str, Any], dict[str, Any]] = field(
+        default_factory=_PassDictCoercer,
     )
     factory: Callable[..., T] = dict  # type: ignore[assignment]
     description: str = ""

@@ -23,8 +23,8 @@ from boba.declaration import (
     ScalarItem,
 )
 from boba.tools import ToolArgsBuilder
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Default,
     MaxValue,
     MinValue,
@@ -47,9 +47,9 @@ _AGENT_SCHEMA: ObjectSchema[_Agent] = ObjectSchema(
     fields=[
         FieldSpec(
             "max_iterations",
-            ChainConverter(Default(20), ParseInt(), MinValue(1)),
+            ChainCoercer(Default(20), ParseInt(), MinValue(1)),
         ),
-        FieldSpec("enabled", ChainConverter(Default(False), ParseBool())),
+        FieldSpec("enabled", ChainCoercer(Default(False), ParseBool())),
     ],
     factory=_Agent,
 )
@@ -69,7 +69,7 @@ def test_scalar_overridden_from_dict():
 
 def test_required_missing_raises_path_missing():
     schema: ObjectSchema[dict] = ObjectSchema(
-        fields=[FieldSpec("x", ChainConverter(ParseString()), required=True)],
+        fields=[FieldSpec("x", ChainCoercer(ParseString()), required=True)],
     )
     with pytest.raises(FieldPathMissingError) as info:
         ToolArgsBuilder(schema).build({})
@@ -90,8 +90,8 @@ class _Range:
 
 _RANGE_SCHEMA: ObjectSchema[_Range] = ObjectSchema(
     fields=[
-        FieldSpec("lo", ChainConverter(ParseInt()), required=True),
-        FieldSpec("hi", ChainConverter(ParseInt()), required=True),
+        FieldSpec("lo", ChainCoercer(ParseInt()), required=True),
+        FieldSpec("hi", ChainCoercer(ParseInt()), required=True),
     ],
     invariants=Ordered("lo", "hi"),
     factory=_Range,
@@ -117,7 +117,7 @@ _CHAINLIT_SCHEMA: ObjectSchema[_Chainlit] = ObjectSchema(
     fields=[
         CollectionField(
             name="models",
-            reader=ScalarItem(ChainConverter(NotNull(), ParseString(), NonEmpty())),
+            reader=ScalarItem(ChainCoercer(NotNull(), ParseString(), NonEmpty())),
             shape=IndexedShape(),
         ),
     ],
@@ -161,7 +161,7 @@ _LIMITS_SCHEMA: ObjectSchema[_Limits] = ObjectSchema(
     fields=[
         CollectionField(
             name="limits",
-            reader=ScalarItem(ChainConverter(NotNull(), ParseInt(), MinValue(0))),
+            reader=ScalarItem(ChainCoercer(NotNull(), ParseInt(), MinValue(0))),
             shape=KeyedShape(),
         ),
     ],
@@ -200,8 +200,8 @@ class _ToolEntry:
 
 _TOOL_ENTRY_SCHEMA: ObjectSchema[_ToolEntry] = ObjectSchema(
     fields=[
-        FieldSpec("enabled", ChainConverter(Default(False), ParseBool())),
-        FieldSpec("description", ChainConverter(Default(""), ParseString())),
+        FieldSpec("enabled", ChainCoercer(Default(False), ParseBool())),
+        FieldSpec("description", ChainCoercer(Default(""), ParseString())),
     ],
     factory=_ToolEntry,
 )
@@ -268,23 +268,23 @@ class _Chromadb:
 
 
 _PARAM_SCHEMA: ObjectSchema[_ParamOverlay] = ObjectSchema(
-    fields=[FieldSpec("description", ChainConverter(Default(""), ParseString()))],
+    fields=[FieldSpec("description", ChainCoercer(Default(""), ParseString()))],
     factory=_ParamOverlay,
 )
 _TOOL_SCHEMA: ObjectSchema[_Tool] = ObjectSchema(
     fields=[
-        FieldSpec("enabled", ChainConverter(Default(False), ParseBool())),
-        FieldSpec("description", ChainConverter(Default(""), ParseString())),
+        FieldSpec("enabled", ChainCoercer(Default(False), ParseBool())),
+        FieldSpec("description", ChainCoercer(Default(""), ParseString())),
         CollectionField("params", reader=ObjectItem(_PARAM_SCHEMA), shape=KeyedShape()),
     ],
     factory=_Tool,
 )
 _CHROMADB_SCHEMA: ObjectSchema[_Chromadb] = ObjectSchema(
     fields=[
-        FieldSpec("enabled", ChainConverter(Default(False), ParseBool())),
-        FieldSpec("persist_path", ChainConverter(ParseString()), required=True),
-        FieldSpec("min_top_k", ChainConverter(Default(1), ParseInt(), MinValue(1))),
-        FieldSpec("max_top_k", ChainConverter(Default(20), ParseInt(), MaxValue(100))),
+        FieldSpec("enabled", ChainCoercer(Default(False), ParseBool())),
+        FieldSpec("persist_path", ChainCoercer(ParseString()), required=True),
+        FieldSpec("min_top_k", ChainCoercer(Default(1), ParseInt(), MinValue(1))),
+        FieldSpec("max_top_k", ChainCoercer(Default(20), ParseInt(), MaxValue(100))),
         CollectionField("tools", reader=ObjectItem(_TOOL_SCHEMA), shape=KeyedShape()),
     ],
     invariants=Ordered("min_top_k", "max_top_k"),

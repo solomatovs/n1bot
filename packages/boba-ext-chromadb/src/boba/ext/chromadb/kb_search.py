@@ -21,8 +21,8 @@ from boba.tools import (
     param_desc,
     params_field,
 )
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Default,
     IsInt,
     IsString,
@@ -97,19 +97,19 @@ class KbSearchTool(Tool[KbSearchArgs]):
                     description=param_desc(
                         p, "collection", self.DEFAULT_COLLECTION_DESC
                     ),
-                    converter=ChainConverter(IsString(), MinLength(1)),
+                    coercer=ChainCoercer(IsString(), MinLength(1)),
                     required=True,
                 ),
                 FieldSpec(
                     name="query",
                     description=param_desc(p, "query", self.DEFAULT_QUERY_DESC),
-                    converter=ChainConverter(IsString(), MinLength(1)),
+                    coercer=ChainCoercer(IsString(), MinLength(1)),
                     required=True,
                 ),
                 FieldSpec(
                     name="top_k",
                     description=param_desc(p, "top_k", default_top_k_desc),
-                    converter=ChainConverter(
+                    coercer=ChainCoercer(
                         Default(5),
                         IsInt(),
                         MinValue(1),
@@ -156,14 +156,14 @@ class KbSearchToolSection(ConfigSection[KbSearchToolConfig]):
         fields=[
             FieldSpec(
                 name="description",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     Default(KbSearchTool.DEFAULT_DESCRIPTION), ParseString()
                 ),
                 description="Override описания tool'а; пусто — дефолт из кода.",
             ),
             FieldSpec(
                 name="max_top_k",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     Default(KbSearchTool.DEFAULT_MAX_TOP_K),
                     ParseInt(),
                     MinValue(1),

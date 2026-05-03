@@ -6,12 +6,13 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from boba.patterns import Converter, ConverterInputError
+from boba.coercion.base import Coercer
+from boba.patterns import ConverterInputError
 
 __all__ = ["MutuallyExclusive", "Ordered", "RequiresTogether"]
 
 
-class MutuallyExclusive(Converter[dict[str, Any], dict[str, Any]]):
+class MutuallyExclusive(Coercer[dict[str, Any], dict[str, Any]]):
     """Максимум один из перечисленных полей задан одновременно."""
 
     _MIN_NAMES: ClassVar[int] = 2
@@ -23,7 +24,7 @@ class MutuallyExclusive(Converter[dict[str, Any], dict[str, Any]]):
             )
         self._names = names
 
-    def convert(self, value: dict[str, Any]) -> dict[str, Any]:
+    def apply(self, value: dict[str, Any]) -> dict[str, Any]:
         present = [n for n in self._names if n in value]
         if len(present) > 1:
             raise ConverterInputError(
@@ -32,7 +33,7 @@ class MutuallyExclusive(Converter[dict[str, Any], dict[str, Any]]):
         return value
 
 
-class RequiresTogether(Converter[dict[str, Any], dict[str, Any]]):
+class RequiresTogether(Coercer[dict[str, Any], dict[str, Any]]):
     """Перечисленные поля — либо все, либо ни одного."""
 
     _MIN_NAMES: ClassVar[int] = 2
@@ -44,7 +45,7 @@ class RequiresTogether(Converter[dict[str, Any], dict[str, Any]]):
             )
         self._names = names
 
-    def convert(self, value: dict[str, Any]) -> dict[str, Any]:
+    def apply(self, value: dict[str, Any]) -> dict[str, Any]:
         present = [n for n in self._names if n in value]
         if present and len(present) != len(self._names):
             missing = [n for n in self._names if n not in value]
@@ -55,14 +56,14 @@ class RequiresTogether(Converter[dict[str, Any], dict[str, Any]]):
         return value
 
 
-class Ordered(Converter[dict[str, Any], dict[str, Any]]):
+class Ordered(Coercer[dict[str, Any], dict[str, Any]]):
     """value[first] <= value[second], когда оба заданы."""
 
     def __init__(self, first: str, second: str) -> None:
         self._first = first
         self._second = second
 
-    def convert(self, value: dict[str, Any]) -> dict[str, Any]:
+    def apply(self, value: dict[str, Any]) -> dict[str, Any]:
         if (
             self._first in value
             and self._second in value

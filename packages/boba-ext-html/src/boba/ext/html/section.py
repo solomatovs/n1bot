@@ -20,8 +20,8 @@ from boba.tools import (
     param_desc,
     params_field,
 )
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Default,
     IsBool,
     IsInt,
@@ -101,7 +101,7 @@ class HtmlSectionTool(Tool[SectionArgs]):
                 FieldSpec(
                     name="path",
                     description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
-                    converter=ChainConverter(IsString(), NonEmpty()),
+                    coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
@@ -109,7 +109,7 @@ class HtmlSectionTool(Tool[SectionArgs]):
                     description=param_desc(
                         p, "anchor", self.DEFAULT_ANCHOR_DESC
                     ),
-                    converter=ChainConverter(IsString(), NonEmpty()),
+                    coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
@@ -119,14 +119,14 @@ class HtmlSectionTool(Tool[SectionArgs]):
                         "include_subsections",
                         self.DEFAULT_INCLUDE_SUBSECTIONS_DESC,
                     ),
-                    converter=ChainConverter(Default(True), IsBool()),
+                    coercer=ChainCoercer(Default(True), IsBool()),
                 ),
                 FieldSpec(
                     name="max_chars",
                     description=param_desc(
                         p, "max_chars", self.DEFAULT_MAX_CHARS_DESC
                     ),
-                    converter=ChainConverter(Default(8000), IsInt(), MinValue(100)),
+                    coercer=ChainCoercer(Default(8000), IsInt(), MinValue(100)),
                 ),
             ],
             factory=SectionArgs,
@@ -212,7 +212,7 @@ class HtmlSectionToolSection(ConfigSection[HtmlSectionToolConfig]):
         fields=[
             FieldSpec(
                 name="description",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     Default(HtmlSectionTool.DEFAULT_DESCRIPTION), ParseString()
                 ),
                 description="Override описания tool'а; пусто — дефолт из кода.",

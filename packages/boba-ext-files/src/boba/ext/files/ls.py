@@ -21,8 +21,8 @@ from boba.tools import (
     param_desc,
     params_field,
 )
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Default,
     IsInt,
     IsString,
@@ -85,12 +85,12 @@ class LsTool(Tool[LsArgs]):
                 FieldSpec(
                     name="path",
                     description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
-                    converter=Nullable(ChainConverter(IsString(), NonEmpty())),
+                    coercer=Nullable(ChainCoercer(IsString(), NonEmpty())),
                 ),
                 FieldSpec(
                     name="limit",
                     description=param_desc(p, "limit", self.DEFAULT_LIMIT_DESC),
-                    converter=ChainConverter(Default(200), IsInt(), MinValue(1)),
+                    coercer=ChainCoercer(Default(200), IsInt(), MinValue(1)),
                 ),
             ],
             factory=LsArgs,
@@ -133,7 +133,7 @@ class LsToolSection(ConfigSection[LsToolConfig]):
         fields=[
             FieldSpec(
                 name="description",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     Default(LsTool.DEFAULT_DESCRIPTION), ParseString()
                 ),
                 description="Override описания tool'а; пусто — дефолт из кода.",

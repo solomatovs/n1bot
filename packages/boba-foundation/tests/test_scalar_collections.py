@@ -21,8 +21,8 @@ from boba.declaration import (
     ObjectSchema,
     ScalarItem,
 )
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Default,
     MaxValue,
     MinValue,
@@ -58,13 +58,13 @@ _CHAINLIT_SCHEMA: ObjectSchema[_ChainlitConfig] = ObjectSchema(
     fields=[
         CollectionField(
             name="models",
-            reader=ScalarItem(ChainConverter(NotNull(), ParseString(), NonEmpty())),
+            reader=ScalarItem(ChainCoercer(NotNull(), ParseString(), NonEmpty())),
             shape=IndexedShape(),
         ),
         CollectionField(
             name="ports",
             reader=ScalarItem(
-                ChainConverter(NotNull(), ParseInt(), MinValue(1), MaxValue(65535))
+                ChainCoercer(NotNull(), ParseInt(), MinValue(1), MaxValue(65535))
             ),
             shape=IndexedShape(),
         ),
@@ -154,12 +154,12 @@ _TOOLS_SCHEMA: ObjectSchema[_ToolDescriptions] = ObjectSchema(
     fields=[
         CollectionField(
             name="descriptions",
-            reader=ScalarItem(ChainConverter(Default(""), ParseString())),
+            reader=ScalarItem(ChainCoercer(Default(""), ParseString())),
             shape=KeyedShape(),
         ),
         CollectionField(
             name="limits",
-            reader=ScalarItem(ChainConverter(Default(0), ParseInt(), MinValue(0))),
+            reader=ScalarItem(ChainCoercer(Default(0), ParseInt(), MinValue(0))),
             shape=KeyedShape(),
         ),
     ],

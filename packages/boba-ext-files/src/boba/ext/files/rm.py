@@ -20,8 +20,8 @@ from boba.tools import (
     param_desc,
     params_field,
 )
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Default,
     IsBool,
     IsString,
@@ -80,7 +80,7 @@ class RmTool(Tool[RmArgs]):
                 FieldSpec(
                     name="path",
                     description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
-                    converter=ChainConverter(IsString(), NonEmpty()),
+                    coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
@@ -88,7 +88,7 @@ class RmTool(Tool[RmArgs]):
                     description=param_desc(
                         p, "recursive", self.DEFAULT_RECURSIVE_DESC
                     ),
-                    converter=ChainConverter(Default(False), IsBool()),
+                    coercer=ChainCoercer(Default(False), IsBool()),
                 ),
             ],
             factory=RmArgs,
@@ -121,7 +121,7 @@ class RmToolSection(ConfigSection[RmToolConfig]):
         fields=[
             FieldSpec(
                 name="description",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     Default(RmTool.DEFAULT_DESCRIPTION), ParseString()
                 ),
                 description="Override описания tool'а; пусто — дефолт из кода.",

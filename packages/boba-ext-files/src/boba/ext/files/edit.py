@@ -20,8 +20,8 @@ from boba.tools import (
     param_desc,
     params_field,
 )
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Default,
     IsBool,
     IsString,
@@ -88,7 +88,7 @@ class EditTool(Tool[EditArgs]):
                 FieldSpec(
                     name="path",
                     description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
-                    converter=ChainConverter(IsString(), NonEmpty()),
+                    coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
@@ -96,7 +96,7 @@ class EditTool(Tool[EditArgs]):
                     description=param_desc(
                         p, "old_string", self.DEFAULT_OLD_STRING_DESC
                     ),
-                    converter=ChainConverter(IsString(), NonEmpty()),
+                    coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
@@ -104,7 +104,7 @@ class EditTool(Tool[EditArgs]):
                     description=param_desc(
                         p, "new_string", self.DEFAULT_NEW_STRING_DESC
                     ),
-                    converter=ChainConverter(IsString()),
+                    coercer=ChainCoercer(IsString()),
                     required=True,
                 ),
                 FieldSpec(
@@ -112,14 +112,14 @@ class EditTool(Tool[EditArgs]):
                     description=param_desc(
                         p, "replace_all", self.DEFAULT_REPLACE_ALL_DESC
                     ),
-                    converter=ChainConverter(Default(False), IsBool()),
+                    coercer=ChainCoercer(Default(False), IsBool()),
                 ),
                 FieldSpec(
                     name="encoding",
                     description=param_desc(
                         p, "encoding", self.DEFAULT_ENCODING_DESC
                     ),
-                    converter=ChainConverter(
+                    coercer=ChainCoercer(
                         Default("utf-8"),
                         IsString(),
                         NonEmpty(),
@@ -164,7 +164,7 @@ class EditToolSection(ConfigSection[EditToolConfig]):
         fields=[
             FieldSpec(
                 name="description",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     Default(EditTool.DEFAULT_DESCRIPTION), ParseString()
                 ),
                 description="Override описания tool'а; пусто — дефолт из кода.",

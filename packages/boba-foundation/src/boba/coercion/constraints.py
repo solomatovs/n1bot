@@ -8,8 +8,8 @@ from __future__ import annotations
 from collections.abc import Sized
 from typing import Any, ClassVar
 
-from boba.patterns import Converter, ConverterInputError
-from boba.validators.base import SchemaContributor
+from boba.coercion.base import Coercer, SchemaContributor
+from boba.patterns import ConverterInputError
 
 __all__ = [
     "MaxLength",
@@ -21,7 +21,7 @@ __all__ = [
 ]
 
 
-class OneOf(Converter[Any, Any], SchemaContributor):
+class OneOf(Coercer[Any, Any], SchemaContributor):
     """Значение должно быть в фиксированном наборе."""
 
     _MIN_OPTIONS: ClassVar[int] = 1
@@ -31,7 +31,7 @@ class OneOf(Converter[Any, Any], SchemaContributor):
             raise ValueError(f"OneOf требует минимум {self._MIN_OPTIONS} вариант")
         self._options = options
 
-    def convert(self, value: Any) -> Any:
+    def apply(self, value: Any) -> Any:
         if value not in self._options:
             raise ConverterInputError(
                 f"должно быть одно из {list(self._options)}, получено {value!r}"
@@ -42,13 +42,13 @@ class OneOf(Converter[Any, Any], SchemaContributor):
         prop["enum"] = list(self._options)
 
 
-class MinValue(Converter[Any, Any], SchemaContributor):
+class MinValue(Coercer[Any, Any], SchemaContributor):
     """Значение >= threshold."""
 
     def __init__(self, threshold: int | float) -> None:
         self._threshold = threshold
 
-    def convert(self, value: Any) -> Any:
+    def apply(self, value: Any) -> Any:
         if value < self._threshold:
             raise ConverterInputError(
                 f"должно быть >= {self._threshold}, получено {value}"
@@ -59,13 +59,13 @@ class MinValue(Converter[Any, Any], SchemaContributor):
         prop["minimum"] = self._threshold
 
 
-class MaxValue(Converter[Any, Any], SchemaContributor):
+class MaxValue(Coercer[Any, Any], SchemaContributor):
     """Значение <= threshold."""
 
     def __init__(self, threshold: int | float) -> None:
         self._threshold = threshold
 
-    def convert(self, value: Any) -> Any:
+    def apply(self, value: Any) -> Any:
         if value > self._threshold:
             raise ConverterInputError(
                 f"должно быть <= {self._threshold}, получено {value}"
@@ -76,13 +76,13 @@ class MaxValue(Converter[Any, Any], SchemaContributor):
         prop["maximum"] = self._threshold
 
 
-class MinLength(Converter[Any, Any], SchemaContributor):
+class MinLength(Coercer[Any, Any], SchemaContributor):
     """Длина >= threshold."""
 
     def __init__(self, threshold: int) -> None:
         self._threshold = threshold
 
-    def convert(self, value: Any) -> Any:
+    def apply(self, value: Any) -> Any:
         if not isinstance(value, Sized):
             raise ConverterInputError(f"длина не определена для {type(value).__name__}")
         if len(value) < self._threshold:
@@ -95,13 +95,13 @@ class MinLength(Converter[Any, Any], SchemaContributor):
         prop["minLength"] = self._threshold
 
 
-class MaxLength(Converter[Any, Any], SchemaContributor):
+class MaxLength(Coercer[Any, Any], SchemaContributor):
     """Длина <= threshold."""
 
     def __init__(self, threshold: int) -> None:
         self._threshold = threshold
 
-    def convert(self, value: Any) -> Any:
+    def apply(self, value: Any) -> Any:
         if not isinstance(value, Sized):
             raise ConverterInputError(f"длина не определена для {type(value).__name__}")
         if len(value) > self._threshold:
@@ -114,10 +114,10 @@ class MaxLength(Converter[Any, Any], SchemaContributor):
         prop["maxLength"] = self._threshold
 
 
-class NonEmpty(Converter[Any, Any], SchemaContributor):
+class NonEmpty(Coercer[Any, Any], SchemaContributor):
     """Длина > 0."""
 
-    def convert(self, value: Any) -> Any:
+    def apply(self, value: Any) -> Any:
         if not isinstance(value, Sized):
             raise ConverterInputError("длина не определена")
         if len(value) == 0:

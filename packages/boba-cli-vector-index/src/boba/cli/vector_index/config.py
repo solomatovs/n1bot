@@ -12,8 +12,8 @@ from boba.cli.vector_index.chunking import (
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.patterns import StrId
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Default,
     Nullable,
     OneOf,
@@ -64,7 +64,7 @@ class VectorIndexSection(ConfigSection[VectorIndexConfig]):
         fields=[
             FieldSpec(
                 name="action",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     ParseString(),
                     OneOf(*sorted(ACTIONS)),
                 ),
@@ -73,7 +73,7 @@ class VectorIndexSection(ConfigSection[VectorIndexConfig]):
             ),
             FieldSpec(
                 name="paths",
-                converter=Nullable(ParseCsvList()),
+                coercer=Nullable(ParseCsvList()),
                 description=(
                     "Файлы/директории для индексации (CSV в env, "
                     "TOML-array). Обязательно для action=index."
@@ -81,14 +81,14 @@ class VectorIndexSection(ConfigSection[VectorIndexConfig]):
             ),
             FieldSpec(
                 name="collection",
-                converter=Nullable(ParseString()),
+                coercer=Nullable(ParseString()),
                 description=(
                     "Имя коллекции в ChromaDB. Обязательно для action=index/delete."
                 ),
             ),
             FieldSpec(
                 name="description",
-                converter=Nullable(ParseString()),
+                coercer=Nullable(ParseString()),
                 description=(
                     "Описание коллекции (видно агенту через "
                     "kb_list_collections). Применяется только при "
@@ -97,7 +97,7 @@ class VectorIndexSection(ConfigSection[VectorIndexConfig]):
             ),
             FieldSpec(
                 name="chunk_size",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     Default(DEFAULT_CHUNK_SIZE),
                     ParseInt(),
                 ),
@@ -107,7 +107,7 @@ class VectorIndexSection(ConfigSection[VectorIndexConfig]):
             ),
             FieldSpec(
                 name="chunk_overlap",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     Default(DEFAULT_CHUNK_OVERLAP),
                     ParseInt(),
                 ),
@@ -117,12 +117,12 @@ class VectorIndexSection(ConfigSection[VectorIndexConfig]):
             ),
             FieldSpec(
                 name="confirm_skip",
-                converter=ChainConverter(Default(False), ParseBool()),
+                coercer=ChainCoercer(Default(False), ParseBool()),
                 description=("Пропустить интерактивное подтверждение (action=delete)."),
             ),
             FieldSpec(
                 name="verbose",
-                converter=ChainConverter(Default(0), ParseInt()),
+                coercer=ChainCoercer(Default(0), ParseInt()),
                 description=("Verbosity logging: 0=WARN, 1=INFO, 2=DEBUG."),
             ),
         ],
@@ -153,7 +153,7 @@ class ChromadbPersistSection(ConfigSection[ChromadbPersistConfig]):
         fields=[
             FieldSpec(
                 name="persist_path",
-                converter=ChainConverter(ParseString()),
+                coercer=ChainCoercer(ParseString()),
                 description=(
                     "Путь к persistent ChromaDB store. Общий с "
                     "boba-ext-chromadb (если установлен)."

@@ -9,7 +9,7 @@ from typing import ClassVar
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.patterns import StrId
-from boba.validators import ChainConverter, Default, ParseString
+from boba.coercion import ChainCoercer, Default, ParseString
 
 
 @dataclass(frozen=True)
@@ -36,22 +36,22 @@ class WorkspacesSection(ConfigSection[WorkspaceLayout]):
         fields=[
             FieldSpec(
                 name="base_dir",
-                converter=ChainConverter(Default("./workspaces"), ParseString()),
+                coercer=ChainCoercer(Default("./workspaces"), ParseString()),
                 description="Корневая директория всех workspace-namespace'ов.",
             ),
             FieldSpec(
                 name="user_subdir",
-                converter=ChainConverter(Default("user"), ParseString()),
+                coercer=ChainCoercer(Default("user"), ParseString()),
                 description="Имя поддиректории user-workspace'а внутри base_dir.",
             ),
             FieldSpec(
                 name="system_subdir",
-                converter=ChainConverter(Default("system"), ParseString()),
+                coercer=ChainCoercer(Default("system"), ParseString()),
                 description="Имя поддиректории system-workspace'а внутри base_dir.",
             ),
             FieldSpec(
                 name="tmp_subdir",
-                converter=ChainConverter(Default("tmp"), ParseString()),
+                coercer=ChainCoercer(Default("tmp"), ParseString()),
                 description="Имя поддиректории tmp-workspace'а внутри base_dir.",
             ),
         ],

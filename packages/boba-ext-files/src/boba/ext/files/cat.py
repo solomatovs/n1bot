@@ -22,8 +22,8 @@ from boba.tools import (
     param_desc,
     params_field,
 )
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Default,
     IsInt,
     IsString,
@@ -90,7 +90,7 @@ class CatTool(Tool[CatArgs]):
                 FieldSpec(
                     name="path",
                     description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
-                    converter=ChainConverter(IsString(), NonEmpty()),
+                    coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
@@ -98,7 +98,7 @@ class CatTool(Tool[CatArgs]):
                     description=param_desc(
                         p, "encoding", self.DEFAULT_ENCODING_DESC
                     ),
-                    converter=ChainConverter(
+                    coercer=ChainCoercer(
                         Default("utf-8"), IsString(), NonEmpty()
                     ),
                 ),
@@ -107,7 +107,7 @@ class CatTool(Tool[CatArgs]):
                     description=param_desc(
                         p, "start_line", self.DEFAULT_START_LINE_DESC
                     ),
-                    converter=ChainConverter(IsInt(), MinValue(1)),
+                    coercer=ChainCoercer(IsInt(), MinValue(1)),
                     required=True,
                 ),
                 FieldSpec(
@@ -115,7 +115,7 @@ class CatTool(Tool[CatArgs]):
                     description=param_desc(
                         p, "end_line", self.DEFAULT_END_LINE_DESC
                     ),
-                    converter=ChainConverter(IsInt(), MinValue(1)),
+                    coercer=ChainCoercer(IsInt(), MinValue(1)),
                     required=True,
                 ),
             ],
@@ -184,14 +184,14 @@ class CatToolSection(ConfigSection[CatToolConfig]):
         fields=[
             FieldSpec(
                 name="description",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     Default(CatTool.DEFAULT_DESCRIPTION), ParseString()
                 ),
                 description="Override описания tool'а; пусто — дефолт из кода.",
             ),
             FieldSpec(
                 name="max_lines",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     Default(CatTool.DEFAULT_MAX_LINES), ParseInt(), MinValue(1)
                 ),
                 description=(

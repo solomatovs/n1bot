@@ -20,7 +20,7 @@ from boba.tools import (
     param_desc,
     params_field,
 )
-from boba.validators import ChainConverter, Default, IsString, NonEmpty, ParseString
+from boba.coercion import ChainCoercer, Default, IsString, NonEmpty, ParseString
 from boba.workspace import (
     WorkspaceError,
 )
@@ -68,7 +68,7 @@ class MkdirTool(Tool[MkdirArgs]):
                 FieldSpec(
                     name="path",
                     description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
-                    converter=ChainConverter(IsString(), NonEmpty()),
+                    coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
             ],
@@ -97,7 +97,7 @@ class MkdirToolSection(ConfigSection[MkdirToolConfig]):
         fields=[
             FieldSpec(
                 name="description",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     Default(MkdirTool.DEFAULT_DESCRIPTION), ParseString()
                 ),
                 description="Override описания tool'а; пусто — дефолт из кода.",

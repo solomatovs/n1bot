@@ -7,8 +7,8 @@ from typing import ClassVar
 
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Default,
     Nullable,
     ParseBool,
@@ -54,35 +54,35 @@ class ChainlitSection(ConfigSection[ChainlitConfig]):
             # ── server ─────────────────────────────────────────────
             FieldSpec(
                 name="host",
-                converter=ChainConverter(Default("127.0.0.1"), ParseString()),
+                coercer=ChainCoercer(Default("127.0.0.1"), ParseString()),
                 description="Адрес, на котором слушает chainlit-сервер.",
             ),
             FieldSpec(
                 name="port",
-                converter=ChainConverter(Default("8501"), ParseString()),
+                coercer=ChainCoercer(Default("8501"), ParseString()),
                 description="Порт chainlit-сервера. Хранится строкой — bridge "
                 "пишет напрямую в CHAINLIT_PORT env.",
             ),
             FieldSpec(
                 name="root_path",
-                converter=ChainConverter(Default(""), ParseString()),
+                coercer=ChainCoercer(Default(""), ParseString()),
                 description="HTTP root path под reverse-proxy. Пусто — "
                 "chainlit на корне.",
             ),
             FieldSpec(
                 name="auth_secret",
-                converter=Nullable(ParseString()),
+                coercer=Nullable(ParseString()),
                 description="Секрет для подписи user-session cookie. "
                 "Если не задан — chainlit генерит сам.",
             ),
             FieldSpec(
                 name="headless",
-                converter=ChainConverter(Default("true"), ParseString()),
+                coercer=ChainCoercer(Default("true"), ParseString()),
                 description="true — не пытаться открыть браузер при старте.",
             ),
             FieldSpec(
                 name="app_root",
-                converter=ChainConverter(Default("./local/chainlit"), ParseString()),
+                coercer=ChainCoercer(Default("./local/chainlit"), ParseString()),
                 description="Директория chainlit runtime-state: "
                 ".chainlit/config.toml, chainlit.md, public/, "
                 "translations/. Не лежит в исходниках — вынесена в "
@@ -91,36 +91,36 @@ class ChainlitSection(ConfigSection[ChainlitConfig]):
             ),
             FieldSpec(
                 name="models",
-                converter=ChainConverter(Default([]), ParseCsvList()),
+                coercer=ChainCoercer(Default([]), ParseCsvList()),
                 description="CSV/TOML-list LLM-моделей, выбираемых "
                 "пользователем в ChatSettings.",
             ),
             # ── UI overrides (None = не трогать chainlit-дефолт) ───
             FieldSpec(
                 name="ui_name",
-                converter=Nullable(ParseString()),
+                coercer=Nullable(ParseString()),
                 description="Заголовок чата в UI (chainlit [UI] name).",
             ),
             FieldSpec(
                 name="enable_telemetry",
-                converter=Nullable(ParseBool()),
+                coercer=Nullable(ParseBool()),
                 description="Опт-аут chainlit-телеметрии ([project] enable_telemetry).",
             ),
             FieldSpec(
                 name="upload_max_size_mb",
-                converter=Nullable(ParseInt()),
+                coercer=Nullable(ParseInt()),
                 description="Лимит размера загружаемого файла, MB "
                 "([features.spontaneous_file_upload] max_size_mb).",
             ),
             FieldSpec(
                 name="upload_max_files",
-                converter=Nullable(ParseInt()),
+                coercer=Nullable(ParseInt()),
                 description="Максимум файлов в одном сообщении "
                 "([features.spontaneous_file_upload] max_files).",
             ),
             FieldSpec(
                 name="upload_accept",
-                converter=Nullable(ParseCsvList()),
+                coercer=Nullable(ParseCsvList()),
                 description="MIME-типы/расширения, разрешённые к загрузке "
                 "([features.spontaneous_file_upload] accept).",
             ),
