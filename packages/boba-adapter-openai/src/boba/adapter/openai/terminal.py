@@ -8,7 +8,6 @@ from contextlib import contextmanager
 from typing import Any
 
 import httpx
-from boba_next.infra import LLMConfig
 from boba_next.llm.errors import LLMError
 from boba_next.llm.events import (
     LLMEvent,
@@ -19,6 +18,7 @@ from boba_next.llm.models import LLMContext
 from boba_next.llm.observer import LLMRequestObserver, RequestOutcome
 
 import openai
+from boba.adapter.openai.dto import OpenAIConfig
 from boba.adapter.openai.errors import OpenAIErrorConverter
 from boba.adapter.openai.request import ToOpenAIRequestConverter
 from boba.adapter.openai.response import FromOpenAIChunkConverter
@@ -28,7 +28,7 @@ from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 
 def build_openai_client(
-    config: LLMConfig,
+    config: OpenAIConfig,
     observer: LLMRequestObserver[dict[str, Any], ChatCompletionChunk] | None = None,
 ) -> OpenAI:
     """Строит OpenAI-клиент из конфига; observer получает сырые HTTP req/resp."""

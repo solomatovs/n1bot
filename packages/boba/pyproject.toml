@@ -19,7 +19,6 @@ dev = [
 # При добавлении нового sub-пакета — дописать в ``[tool.setuptools] packages``.
 [tool.setuptools.package-dir]
 "boba.domain" = "src/domain/src/boba/domain"
-"boba.infra" = "src/infra/src/boba/infra"
 
 [tool.setuptools]
 packages = [
@@ -31,5 +30,4 @@ packages = [
     "boba.domain.core.tools",
     "boba.domain.llm",
     "boba.domain.llm.middleware",
-    "boba.infra",
 ]

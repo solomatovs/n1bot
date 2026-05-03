@@ -8,7 +8,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-from boba.patterns import Always, Never, Specification, StrId
 from boba_next.agent.models import AgentConfig
 from boba_next.config import ConfigSection
 from boba_next.declaration import FieldSpec, ObjectSchema
@@ -23,6 +22,8 @@ from boba_next.validators import (
     ParseInt,
     ParseString,
 )
+
+from boba.patterns import Always, Never, Specification, StrId
 
 __all__ = [
     "AgentSection",

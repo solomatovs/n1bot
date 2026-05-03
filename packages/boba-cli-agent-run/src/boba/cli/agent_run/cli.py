@@ -13,13 +13,6 @@ with contextlib.suppress(ImportError):
 from boba_next.agent import Agent, AgentConfig
 from boba_next.agent.models import AgentRequest
 from boba_next.config import AppConfig, AppConfigBootstrap
-from boba_next.infra import (
-    AgentComponents,
-    AgentSection,
-    AppCoreSection,
-    configure_logging,
-    create_agent,
-)
 from boba_next.llm.models import RequestId
 from boba_next.llm.observer import CompositeLLMRequestObserver
 from boba_next.tools import ExtensionContext, ToolContext, ToolPluginLoader
@@ -44,6 +37,13 @@ from boba.adapter.openai import (
 from boba.adapter.prompt_providers import PromptLoader, PromptsSection
 from boba.cli.agent_run.config import AgentRunConfig, AgentRunSection
 from boba.cli.agent_run.console_sink import ConsoleSink
+from boba.cli.agent_run.infra import (
+    AgentComponents,
+    AgentSection,
+    AppCoreSection,
+    configure_logging,
+    create_agent,
+)
 from boba.config.cli import CliSource
 from boba.config.env import EnvFileSource, EnvSource
 from boba.config.toml import TomlFileSource, TomlSource

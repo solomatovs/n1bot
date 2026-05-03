@@ -6,12 +6,12 @@ from typing import Any, ClassVar
 
 from boba_next.config import ConfigSection
 from boba_next.declaration import FieldSpec, ObjectSchema
-from boba_next.infra import LLMConfig
 from boba_next.llm.events import LLMEvent
 from boba_next.llm.models import LLMContext
 from boba_next.llm.observer import LLMRequestObserver
 from boba_next.validators import ChainConverter, Default, ParseString
 
+from boba.adapter.openai.dto import OpenAIConfig
 from boba.adapter.openai.terminal import OpenAITerminal, build_openai_client
 from boba.patterns import (
     StreamSource,
@@ -21,13 +21,13 @@ from boba.patterns import (
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 
-class LLMTransportSection(ConfigSection[LLMConfig]):
+class LLMTransportSection(ConfigSection[OpenAIConfig]):
     """Транспорт LLM-клиента: base_url + api_key."""
 
     id: ClassVar[StrId] = StrId("llm_transport")
     namespace: ClassVar[tuple[str, ...]] = ("llm",)
 
-    schema: ClassVar[ObjectSchema[LLMConfig]] = ObjectSchema(
+    schema: ClassVar[ObjectSchema[OpenAIConfig]] = ObjectSchema(
         description="Транспорт LLM-клиента: base_url + api_key.",
         fields=[
             FieldSpec(
@@ -46,12 +46,12 @@ class LLMTransportSection(ConfigSection[LLMConfig]):
                 "Для локального Ollama — любой непустой.",
             ),
         ],
-        factory=LLMConfig,
+        factory=OpenAIConfig,
     )
 
 
 def create_llm_source(
-    llm_config: LLMConfig,
+    llm_config: OpenAIConfig,
     observer: LLMRequestObserver[dict[str, Any], ChatCompletionChunk],
     *,
     reindex_tool_calls: bool = True,

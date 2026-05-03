@@ -7,14 +7,6 @@ from pathlib import Path
 from boba_next.agent.events import AgentEvent
 from boba_next.agent.models import AgentContext, AgentRequest
 from boba_next.config import AppConfig
-from boba_next.infra import (
-    AgentComponents,
-    AgentSection,
-    AppCoreSection,
-    configure_logging,
-    create_agent,
-    log_context,
-)
 from boba_next.llm.models import RequestId
 from boba_next.tools import ExtensionContext, ToolContext, ToolPluginLoader
 from boba_next.workspace import (
@@ -38,6 +30,14 @@ from boba.adapter.openai import (
 from boba.adapter.prompt_providers import PromptLoader, PromptsSection
 from boba.patterns import StreamSink
 from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
+from boba.web.chainlit.infra import (
+    AgentComponents,
+    AgentSection,
+    AppCoreSection,
+    configure_logging,
+    create_agent,
+    log_context,
+)
 
 
 class ChatSession:

@@ -2,14 +2,28 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
 from typing import ClassVar
 
 from boba_next.config import ConfigSection
 from boba_next.declaration import FieldSpec, ObjectSchema
-from boba_next.infra import WorkspaceLayout
 from boba_next.validators import ChainConverter, Default, ParseString
 
 from boba.patterns import StrId
+
+
+@dataclass(frozen=True)
+class WorkspaceLayout:
+    """Раскладка namespace'ов workspace'а относительно base_dir."""
+
+    base_dir: str = "./workspaces"
+    user_subdir: str = "user"
+    system_subdir: str = "system"
+    tmp_subdir: str = "tmp"
+
+    def root(self) -> Path:
+        return Path(self.base_dir)
 
 
 class WorkspacesSection(ConfigSection[WorkspaceLayout]):

@@ -5,12 +5,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from boba.patterns import (
-    StreamSink,
-    StreamSource,
-    StreamSourceChainBuilder,
-    StreamSourceLoop,
-)
 from boba_next.agent import (
     Agent,
     AgentConfig,
@@ -37,6 +31,13 @@ from boba_next.agent import (
 from boba_next.llm.events import LLMEvent
 from boba_next.llm.models import LLMContext
 from boba_next.tools import ToolContext, ToolsService
+
+from boba.patterns import (
+    StreamSink,
+    StreamSource,
+    StreamSourceChainBuilder,
+    StreamSourceLoop,
+)
 
 
 @dataclass(frozen=True)

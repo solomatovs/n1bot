@@ -13,7 +13,7 @@ from boba_next.llm.models import (
     LLMToolRequest,
     LLMToolSchema,
 )
-from boba_next.tools import Tool, ToolsService
+from boba_next.tools import Tool, ToolsService, ToolWireSchemaBuilder
 
 _MODEL_ID = StrId("model")
 _SYSTEM_ID = StrId("system")
@@ -25,14 +25,14 @@ _SAMPLING_ID = StrId("sampling")
 def _tool_to_schema(tool: Tool[Any]) -> LLMToolSchema:
     """Конверсия доменного Tool в data-only LLMToolSchema."""
     schema = tool.definition()
-    wire = schema.build_wire_schema()
+    wire = ToolWireSchemaBuilder(schema).build()
     return LLMToolSchema(
         name=tool.tool_id().to_wire(),
         description=schema.description,
         parameters_schema={
             "type": "object",
-            "properties": wire.properties,
-            "required": wire.required,
+            "properties": wire.get("properties", {}),
+            "required": wire.get("required", []),
         },
     )
 

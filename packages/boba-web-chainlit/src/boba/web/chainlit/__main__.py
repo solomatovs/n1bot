@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 
 from boba_next.config import AppConfig, AppConfigBootstrap
-from boba_next.infra import AgentSection, AppCoreSection
 
 from boba.adapter.fs_workspace import WorkspacesSection
 from boba.adapter.openai import LLMTransportSection
@@ -17,6 +16,7 @@ from boba.config.env import EnvFileSource, EnvSource
 from boba.config.toml import TomlFileSource, TomlSource
 from boba.patterns import ConverterInputError
 from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
+from boba.web.chainlit.infra import AgentSection, AppCoreSection
 from boba.web.chainlit.session import ChatSession
 from boba.web.chainlit.ui_overrides import UIOverrideTomlConverter
 
