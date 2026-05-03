@@ -9,7 +9,7 @@ from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.patterns import StrId
 from boba.tools import Tool, ToolContext, ToolId, ToolResult, ToolSourceId
-from boba.validators import ChainConverter, Default, ParseString
+from boba.coercion import ChainCoercer, Default, ParseString
 
 
 @dataclass(frozen=True)
@@ -64,7 +64,7 @@ class PwdToolSection(ConfigSection[PwdToolConfig]):
         fields=[
             FieldSpec(
                 name="description",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     Default(PwdTool.DEFAULT_DESCRIPTION), ParseString()
                 ),
                 description="Override описания tool'а; пусто — дефолт из кода.",

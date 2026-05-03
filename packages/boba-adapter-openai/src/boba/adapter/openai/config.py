@@ -9,7 +9,7 @@ from boba.declaration import FieldSpec, ObjectSchema
 from boba.llm.events import LLMEvent
 from boba.llm.models import LLMContext
 from boba.llm.observer import LLMRequestObserver
-from boba.validators import ChainConverter, Default, ParseString
+from boba.coercion import ChainCoercer, Default, ParseString
 
 from boba.adapter.openai.dto import OpenAIConfig
 from boba.adapter.openai.terminal import OpenAITerminal, build_openai_client
@@ -32,7 +32,7 @@ class LLMTransportSection(ConfigSection[OpenAIConfig]):
         fields=[
             FieldSpec(
                 name="base_url",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     Default("http://localhost:4000"),
                     ParseString(),
                 ),
@@ -41,7 +41,7 @@ class LLMTransportSection(ConfigSection[OpenAIConfig]):
             ),
             FieldSpec(
                 name="api_key",
-                converter=ChainConverter(Default("ollama"), ParseString()),
+                coercer=ChainCoercer(Default("ollama"), ParseString()),
                 description="API-ключ LLM-сервера. "
                 "Для локального Ollama — любой непустой.",
             ),

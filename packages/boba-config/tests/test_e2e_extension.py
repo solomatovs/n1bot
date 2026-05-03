@@ -25,8 +25,8 @@ from boba.declaration import (
     ObjectItem,
     ObjectSchema,
 )
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Default,
     MaxValue,
     MinValue,
@@ -53,7 +53,7 @@ class ParamOverlay:
 
 _PARAM_OVERLAY_SCHEMA: ObjectSchema[ParamOverlay] = ObjectSchema(
     fields=[
-        FieldSpec("description", ChainConverter(Default(""), ParseString())),
+        FieldSpec("description", ChainCoercer(Default(""), ParseString())),
     ],
     factory=ParamOverlay,
 )
@@ -70,8 +70,8 @@ class ToolEntry:
 
 _TOOL_ENTRY_SCHEMA: ObjectSchema[ToolEntry] = ObjectSchema(
     fields=[
-        FieldSpec("enabled", ChainConverter(Default(False), ParseBool())),
-        FieldSpec("description", ChainConverter(Default(""), ParseString())),
+        FieldSpec("enabled", ChainCoercer(Default(False), ParseBool())),
+        FieldSpec("description", ChainCoercer(Default(""), ParseString())),
         CollectionField(
             name="params",
             reader=ObjectItem(_PARAM_OVERLAY_SCHEMA),
@@ -92,14 +92,14 @@ class ChromadbConfig:
 
 _CHROMADB_SCHEMA: ObjectSchema[ChromadbConfig] = ObjectSchema(
     fields=[
-        FieldSpec("enabled", ChainConverter(Default(False), ParseBool())),
+        FieldSpec("enabled", ChainCoercer(Default(False), ParseBool())),
         FieldSpec(
             "persist_path",
-            ChainConverter(Default(""), ParseString()),
+            ChainCoercer(Default(""), ParseString()),
         ),
         FieldSpec(
             "max_top_k",
-            ChainConverter(Default(20), ParseInt(), MinValue(1), MaxValue(100)),
+            ChainCoercer(Default(20), ParseInt(), MinValue(1), MaxValue(100)),
         ),
         CollectionField(
             name="tools",

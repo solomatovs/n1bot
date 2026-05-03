@@ -8,7 +8,7 @@ from typing import ClassVar
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.patterns import StrId
-from boba.validators import ChainConverter, Default, ParseBool, ParseCsvList
+from boba.coercion import ChainCoercer, Default, ParseBool, ParseCsvList
 
 __all__ = ["FilesExtConfig", "FilesSection"]
 
@@ -34,12 +34,12 @@ class FilesSection(ConfigSection[FilesExtConfig]):
         fields=[
             FieldSpec(
                 name="enable",
-                converter=ChainConverter(Default(False), ParseBool()),
+                coercer=ChainCoercer(Default(False), ParseBool()),
                 description="Подключить файловые tools.",
             ),
             FieldSpec(
                 name="tools_allow",
-                converter=ParseCsvList(),
+                coercer=ParseCsvList(),
                 description=(
                     "Whitelist по именам tools (cat, ls, grep, ...). "
                     "Пусто — регистрируются все."

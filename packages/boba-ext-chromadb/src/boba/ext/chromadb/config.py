@@ -8,8 +8,8 @@ from typing import ClassVar
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.patterns import StrId
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Default,
     MinValue,
     OneOf,
@@ -46,12 +46,12 @@ class ChromadbSection(ConfigSection[ChromaExtConfig]):
         fields=[
             FieldSpec(
                 name="enable",
-                converter=ChainConverter(Default(False), ParseBool()),
+                coercer=ChainCoercer(Default(False), ParseBool()),
                 description="Подключить ChromaDB kb_search/kb_list_collections.",
             ),
             FieldSpec(
                 name="tools_allow",
-                converter=ParseCsvList(),
+                coercer=ParseCsvList(),
                 description=(
                     "Whitelist по именам tools (kb_search, kb_list_collections). "
                     "Пусто — регистрируются все."
@@ -59,7 +59,7 @@ class ChromadbSection(ConfigSection[ChromaExtConfig]):
             ),
             FieldSpec(
                 name="persist_path",
-                converter=ChainConverter(Default(""), ParseString()),
+                coercer=ChainCoercer(Default(""), ParseString()),
                 description=(
                     "Путь к persistent ChromaDB (общий с boba-cli-vector-index, "
                     "чтобы агент видел свежепроиндексированные коллекции). "
@@ -68,7 +68,7 @@ class ChromadbSection(ConfigSection[ChromaExtConfig]):
             ),
             FieldSpec(
                 name="embedding_model",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     Default("default"),
                     ParseString(),
                     OneOf("default"),
@@ -80,7 +80,7 @@ class ChromadbSection(ConfigSection[ChromaExtConfig]):
             ),
             FieldSpec(
                 name="snippet_chars",
-                converter=ChainConverter(Default(300), ParseInt(), MinValue(1)),
+                coercer=ChainCoercer(Default(300), ParseInt(), MinValue(1)),
                 description="Максимальная длина сниппета документа "
                 "в результате kb_search.",
             ),

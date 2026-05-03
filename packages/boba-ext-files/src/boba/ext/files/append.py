@@ -20,8 +20,8 @@ from boba.tools import (
     param_desc,
     params_field,
 )
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Default,
     IsString,
     NonEmpty,
@@ -77,7 +77,7 @@ class AppendTool(Tool[AppendArgs]):
                 FieldSpec(
                     name="path",
                     description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
-                    converter=ChainConverter(IsString(), NonEmpty()),
+                    coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
@@ -85,7 +85,7 @@ class AppendTool(Tool[AppendArgs]):
                     description=param_desc(
                         p, "content", self.DEFAULT_CONTENT_DESC
                     ),
-                    converter=ChainConverter(IsString()),
+                    coercer=ChainCoercer(IsString()),
                     required=True,
                 ),
                 FieldSpec(
@@ -93,7 +93,7 @@ class AppendTool(Tool[AppendArgs]):
                     description=param_desc(
                         p, "encoding", self.DEFAULT_ENCODING_DESC
                     ),
-                    converter=ChainConverter(
+                    coercer=ChainCoercer(
                         Default("utf-8"),
                         IsString(),
                         NonEmpty(),
@@ -130,7 +130,7 @@ class AppendToolSection(ConfigSection[AppendToolConfig]):
         fields=[
             FieldSpec(
                 name="description",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     Default(AppendTool.DEFAULT_DESCRIPTION), ParseString()
                 ),
                 description="Override описания tool'а; пусто — дефолт из кода.",

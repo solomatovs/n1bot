@@ -39,7 +39,7 @@ from boba.declaration import (
     ObjectItem,
     ObjectSchema,
 )
-from boba.validators import ChainConverter, Default, ParseString
+from boba.coercion import ChainCoercer, Default, ParseString
 
 __all__ = [
     "ParamOverlay",
@@ -63,7 +63,7 @@ _PARAM_OVERLAY_SCHEMA: ObjectSchema[ParamOverlay] = ObjectSchema(
     fields=[
         FieldSpec(
             name="description",
-            converter=ChainConverter(Default(""), ParseString()),
+            coercer=ChainCoercer(Default(""), ParseString()),
             description=(
                 "Override описания параметра; пусто — оставить из кода."
             ),

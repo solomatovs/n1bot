@@ -1,19 +1,21 @@
-"""confignext.validators: конвертеры/валидаторы по группам.
+"""boba.coercion: пайплайн обработки значения для FieldSpec.coercer.
 
-- base.py            — MISSING, Pass, ChainConverter, ValueConverter (база).
+- base.py            — Coercer ABC, MISSING, Pass, ChainCoercer, ValueCoercer.
 - preconditions.py   — NotNull, Default, Nullable (наличие значения).
-- types.py           — Parse* (coercion) и Is* (строгий type-guard).
+- types.py           — Parse* (приведение типа) и Is* (строгий type-guard).
 - constraints.py     — OneOf / Min*/Max* / NonEmpty (ограничения).
 - invariants.py      — MutuallyExclusive / RequiresTogether / Ordered (object-level).
 """
 
-from boba.validators.base import (
+from boba.coercion.base import (
     MISSING,
-    ChainConverter,
+    ChainCoercer,
+    Coercer,
     Pass,
-    ValueConverter,
+    SchemaContributor,
+    ValueCoercer,
 )
-from boba.validators.constraints import (
+from boba.coercion.constraints import (
     MaxLength,
     MaxValue,
     MinLength,
@@ -21,17 +23,17 @@ from boba.validators.constraints import (
     NonEmpty,
     OneOf,
 )
-from boba.validators.invariants import (
+from boba.coercion.invariants import (
     MutuallyExclusive,
     Ordered,
     RequiresTogether,
 )
-from boba.validators.preconditions import (
+from boba.coercion.preconditions import (
     Default,
     NotNull,
     Nullable,
 )
-from boba.validators.types import (
+from boba.coercion.types import (
     IsBool,
     IsInt,
     IsNumber,
@@ -45,7 +47,8 @@ from boba.validators.types import (
 
 __all__ = [
     "MISSING",
-    "ChainConverter",
+    "ChainCoercer",
+    "Coercer",
     "Default",
     "IsBool",
     "IsInt",
@@ -68,5 +71,6 @@ __all__ = [
     "ParseString",
     "Pass",
     "RequiresTogether",
-    "ValueConverter",
+    "SchemaContributor",
+    "ValueCoercer",
 ]

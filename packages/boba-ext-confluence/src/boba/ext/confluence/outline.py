@@ -26,8 +26,8 @@ from boba.tools import (
     param_desc,
     params_field,
 )
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Default,
     IsInt,
     IsString,
@@ -94,7 +94,7 @@ class ConfluenceOutlineTool(Tool[OutlineArgs]):
                 FieldSpec(
                     name="path",
                     description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
-                    converter=ChainConverter(IsString(), NonEmpty()),
+                    coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
@@ -102,14 +102,14 @@ class ConfluenceOutlineTool(Tool[OutlineArgs]):
                     description=param_desc(
                         p, "max_depth", self.DEFAULT_MAX_DEPTH_DESC
                     ),
-                    converter=Nullable(
-                        ChainConverter(IsInt(), MinValue(1), MaxValue(6))
+                    coercer=Nullable(
+                        ChainCoercer(IsInt(), MinValue(1), MaxValue(6))
                     ),
                 ),
                 FieldSpec(
                     name="limit",
                     description=param_desc(p, "limit", self.DEFAULT_LIMIT_DESC),
-                    converter=ChainConverter(Default(200), IsInt(), MinValue(1)),
+                    coercer=ChainCoercer(Default(200), IsInt(), MinValue(1)),
                 ),
             ],
             factory=OutlineArgs,
@@ -169,7 +169,7 @@ class ConfluenceOutlineToolSection(ConfigSection[ConfluenceOutlineToolConfig]):
         fields=[
             FieldSpec(
                 name="description",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     Default(ConfluenceOutlineTool.DEFAULT_DESCRIPTION),
                     ParseString(),
                 ),

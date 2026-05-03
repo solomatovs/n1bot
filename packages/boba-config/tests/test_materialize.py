@@ -18,8 +18,8 @@ from boba.declaration import (
     ObjectItem,
     ObjectSchema,
 )
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Default,
     MinValue,
     NonEmpty,
@@ -59,11 +59,11 @@ _AGENT_SCHEMA: ObjectSchema[_Agent] = ObjectSchema(
     fields=[
         FieldSpec(
             name="max_iterations",
-            converter=ChainConverter(Default(20), ParseInt(), MinValue(1)),
+            coercer=ChainCoercer(Default(20), ParseInt(), MinValue(1)),
         ),
         FieldSpec(
             name="enabled",
-            converter=ChainConverter(Default(False), ParseBool()),
+            coercer=ChainCoercer(Default(False), ParseBool()),
         ),
     ],
     factory=_Agent,
@@ -97,7 +97,7 @@ def test_scalar_overridden():
 
 def test_required_missing_raises():
     schema: ObjectSchema[dict] = ObjectSchema(
-        fields=[FieldSpec("x", ChainConverter(ParseString()), required=True)],
+        fields=[FieldSpec("x", ChainCoercer(ParseString()), required=True)],
     )
     flat = ConfigBundle.from_sources([_DictSource({})]).flat
     with pytest.raises(FieldPathMissingError):
@@ -109,7 +109,7 @@ def test_validation_error_attaches_field():
         fields=[
             FieldSpec(
                 "max_iterations",
-                ChainConverter(ParseInt(), MinValue(1)),
+                ChainCoercer(ParseInt(), MinValue(1)),
                 required=True,
             ),
         ],
@@ -133,8 +133,8 @@ class _ToolEntry:
 
 _TOOL_ENTRY_SCHEMA: ObjectSchema[_ToolEntry] = ObjectSchema(
     fields=[
-        FieldSpec("enabled", ChainConverter(Default(False), ParseBool())),
-        FieldSpec("description", ChainConverter(Default(""), ParseString())),
+        FieldSpec("enabled", ChainCoercer(Default(False), ParseBool())),
+        FieldSpec("description", ChainCoercer(Default(""), ParseString())),
     ],
     factory=_ToolEntry,
 )
@@ -148,7 +148,7 @@ class _ExtBlock:
 
 _EXT_SCHEMA: ObjectSchema[_ExtBlock] = ObjectSchema(
     fields=[
-        FieldSpec("enabled", ChainConverter(Default(False), ParseBool())),
+        FieldSpec("enabled", ChainCoercer(Default(False), ParseBool())),
         CollectionField(
             name="tools",
             reader=ObjectItem(_TOOL_ENTRY_SCHEMA),
@@ -209,7 +209,7 @@ class _Model:
 
 _MODEL_SCHEMA: ObjectSchema[_Model] = ObjectSchema(
     fields=[
-        FieldSpec("name", ChainConverter(ParseString(), NonEmpty()), required=True)
+        FieldSpec("name", ChainCoercer(ParseString(), NonEmpty()), required=True)
     ],
     factory=_Model,
 )

@@ -12,8 +12,8 @@ from boba.agent.models import AgentConfig
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.patterns import StrId
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Default,
     MinValue,
     Nullable,
@@ -52,17 +52,17 @@ class AppCoreSection(ConfigSection[AppCoreConfig]):
         fields=[
             FieldSpec(
                 name="ssl_verify",
-                converter=ChainConverter(Default(False), ParseBool()),
+                coercer=ChainCoercer(Default(False), ParseBool()),
                 description="Проверять ли TLS-сертификат у HTTPS-запросов.",
             ),
             FieldSpec(
                 name="log_level",
-                converter=ChainConverter(Default("INFO"), ParseString()),
+                coercer=ChainCoercer(Default("INFO"), ParseString()),
                 description="Уровень корневого логгера.",
             ),
             FieldSpec(
                 name="log_file",
-                converter=Nullable(ParseString()),
+                coercer=Nullable(ParseString()),
                 description="Путь к log-файлу. Пусто — логи в stderr.",
             ),
         ],
@@ -84,12 +84,12 @@ class AgentSection(ConfigSection[AgentConfig]):
         fields=[
             FieldSpec(
                 name="max_iterations",
-                converter=ChainConverter(Default(20), ParseInt(), MinValue(1)),
+                coercer=ChainCoercer(Default(20), ParseInt(), MinValue(1)),
                 description="Жёсткий потолок числа итераций агента в одной сессии.",
             ),
             FieldSpec(
                 name="max_consecutive_tool_calls",
-                converter=ChainConverter(Default(3), ParseInt(), MinValue(1)),
+                coercer=ChainCoercer(Default(3), ParseInt(), MinValue(1)),
                 description=(
                     "Сколько раз подряд агент может звать tools без LLM-ответа."
                 ),

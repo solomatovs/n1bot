@@ -21,8 +21,8 @@ from boba.tools import (
     param_desc,
     params_field,
 )
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Default,
     IsBool,
     IsInt,
@@ -111,41 +111,41 @@ class GrepTool(Tool[GrepArgs]):
                     description=param_desc(
                         p, "pattern", self.DEFAULT_PATTERN_DESC
                     ),
-                    converter=ChainConverter(IsString(), NonEmpty()),
+                    coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
                     name="path",
                     description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
-                    converter=Nullable(ChainConverter(IsString(), NonEmpty())),
+                    coercer=Nullable(ChainCoercer(IsString(), NonEmpty())),
                 ),
                 FieldSpec(
                     name="recursive",
                     description=param_desc(
                         p, "recursive", self.DEFAULT_RECURSIVE_DESC
                     ),
-                    converter=ChainConverter(Default(True), IsBool()),
+                    coercer=ChainCoercer(Default(True), IsBool()),
                 ),
                 FieldSpec(
                     name="include",
                     description=param_desc(
                         p, "include", self.DEFAULT_INCLUDE_DESC
                     ),
-                    converter=Nullable(ChainConverter(IsString(), NonEmpty())),
+                    coercer=Nullable(ChainCoercer(IsString(), NonEmpty())),
                 ),
                 FieldSpec(
                     name="case_insensitive",
                     description=param_desc(
                         p, "case_insensitive", self.DEFAULT_CASE_INSENSITIVE_DESC
                     ),
-                    converter=ChainConverter(Default(False), IsBool()),
+                    coercer=ChainCoercer(Default(False), IsBool()),
                 ),
                 FieldSpec(
                     name="context",
                     description=param_desc(
                         p, "context", self.DEFAULT_CONTEXT_DESC
                     ),
-                    converter=ChainConverter(
+                    coercer=ChainCoercer(
                         Default(0),
                         IsInt(),
                         MinValue(0),
@@ -154,7 +154,7 @@ class GrepTool(Tool[GrepArgs]):
                 FieldSpec(
                     name="limit",
                     description=param_desc(p, "limit", self.DEFAULT_LIMIT_DESC),
-                    converter=ChainConverter(
+                    coercer=ChainCoercer(
                         Default(100),
                         IsInt(),
                         MinValue(1),
@@ -165,7 +165,7 @@ class GrepTool(Tool[GrepArgs]):
                     description=param_desc(
                         p, "fixed_string", self.DEFAULT_FIXED_STRING_DESC
                     ),
-                    converter=ChainConverter(Default(False), IsBool()),
+                    coercer=ChainCoercer(Default(False), IsBool()),
                 ),
             ],
             factory=GrepArgs,
@@ -235,7 +235,7 @@ class GrepToolSection(ConfigSection[GrepToolConfig]):
         fields=[
             FieldSpec(
                 name="description",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     Default(GrepTool.DEFAULT_DESCRIPTION), ParseString()
                 ),
                 description="Override описания tool'а; пусто — дефолт из кода.",

@@ -12,8 +12,8 @@ from boba.config.bundle import ConfigBundle, ConfigBundleFactory
 from boba.config.path import ConfigPath, ConfigSource
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Default,
     MinValue,
     ParseBool,
@@ -59,8 +59,8 @@ class AppCoreSection(ConfigSection[_AppCoreCfg]):
     namespace: ClassVar[tuple[str, ...]] = ("app",)
     schema: ClassVar[ObjectSchema[_AppCoreCfg]] = ObjectSchema(
         fields=[
-            FieldSpec("log_level", ChainConverter(Default("INFO"), ParseString())),
-            FieldSpec("ssl_verify", ChainConverter(Default(False), ParseBool())),
+            FieldSpec("log_level", ChainCoercer(Default("INFO"), ParseString())),
+            FieldSpec("ssl_verify", ChainCoercer(Default(False), ParseBool())),
         ],
         factory=_AppCoreCfg,
     )
@@ -78,7 +78,7 @@ class AgentSection(ConfigSection[_AgentCfg]):
         fields=[
             FieldSpec(
                 "max_iterations",
-                ChainConverter(Default(20), ParseInt(), MinValue(1)),
+                ChainCoercer(Default(20), ParseInt(), MinValue(1)),
             ),
         ],
         factory=_AgentCfg,
@@ -147,8 +147,8 @@ def test_register_twice_silent_overwrites_last_wins():
         namespace: ClassVar[tuple[str, ...]] = ("app",)
         schema: ClassVar[ObjectSchema[_Cfg]] = ObjectSchema(
             fields=[
-                FieldSpec("log_level", ChainConverter(Default("DEBUG"), ParseString())),
-                FieldSpec("ssl_verify", ChainConverter(Default(True), ParseBool())),
+                FieldSpec("log_level", ChainCoercer(Default("DEBUG"), ParseString())),
+                FieldSpec("ssl_verify", ChainCoercer(Default(True), ParseBool())),
             ],
             factory=_Cfg,
         )
@@ -201,7 +201,7 @@ def test_required_field_missing_propagates_error():
         id: ClassVar[StrId] = StrId("svc")
         namespace: ClassVar[tuple[str, ...]] = ("svc",)
         schema: ClassVar[ObjectSchema[_Cfg]] = ObjectSchema(
-            fields=[FieldSpec("token", ChainConverter(ParseString()), required=True)],
+            fields=[FieldSpec("token", ChainCoercer(ParseString()), required=True)],
             factory=_Cfg,
         )
 

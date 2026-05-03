@@ -20,7 +20,7 @@ from boba.tools import (
     ToolSourceId,
     params_field,
 )
-from boba.validators import ChainConverter, Default, ParseString
+from boba.coercion import ChainCoercer, Default, ParseString
 
 
 @dataclass(frozen=True)
@@ -95,7 +95,7 @@ class KbListCollectionsToolSection(ConfigSection[KbListCollectionsToolConfig]):
         fields=[
             FieldSpec(
                 name="description",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     Default(KbListCollectionsTool.DEFAULT_DESCRIPTION),
                     ParseString(),
                 ),

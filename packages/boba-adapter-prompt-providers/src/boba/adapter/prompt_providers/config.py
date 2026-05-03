@@ -6,7 +6,7 @@ from typing import ClassVar
 
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.validators import ChainConverter, ParseString
+from boba.coercion import ChainCoercer, ParseString
 
 from boba.patterns import StrId
 
@@ -22,7 +22,7 @@ class PromptsSection(ConfigSection[str]):
         fields=[
             FieldSpec(
                 name="dir",
-                converter=ChainConverter(ParseString()),
+                coercer=ChainCoercer(ParseString()),
                 description="Корневая директория .md/.txt-файлов с system-prompt'ами.",
                 required=True,
             ),

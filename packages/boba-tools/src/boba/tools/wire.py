@@ -1,7 +1,7 @@
 """ToolWireSchemaBuilder: ObjectSchema → JSON-Schema (dict) описание Tool для LLM.
 
 Возвращает голый `dict[str, Any]` — JSON-Schema fragment. Поле `required` берётся
-из декларации `FieldSpec.required` (а не из converter'а). Конкретные converter'ы,
+из декларации `FieldSpec.required` (а не из coercer'а). Конкретные coercer'ы,
 наследующие `SchemaContributor`, дополняют свой fragment
 (`{"type":..., "minimum":..., ...}`).
 
@@ -26,7 +26,7 @@ from boba.declaration import (
     ObjectSchema,
     ScalarItem,
 )
-from boba.validators.base import SchemaContributor
+from boba.coercion.base import SchemaContributor
 
 __all__ = ["ToolWireSchemaBuilder"]
 
@@ -56,10 +56,10 @@ class ToolWireSchemaBuilder:
 
     def _field_to_wire(self, field: FieldKind) -> dict[str, Any]:
         match field:
-            case FieldSpec(description=desc, converter=converter):
+            case FieldSpec(description=desc, coercer=coercer):
                 prop: dict[str, Any] = {"description": desc}
-                if isinstance(converter, SchemaContributor):
-                    converter.contribute(prop)
+                if isinstance(coercer, SchemaContributor):
+                    coercer.contribute(prop)
                 return prop
 
             case CollectionField(reader=reader, shape=shape, description=desc):
@@ -74,10 +74,10 @@ class ToolWireSchemaBuilder:
 
     def _item_to_wire(self, reader: ItemReader[Any]) -> dict[str, Any]:
         match reader:
-            case ScalarItem(converter=converter):
+            case ScalarItem(coercer=coercer):
                 prop: dict[str, Any] = {}
-                if isinstance(converter, SchemaContributor):
-                    converter.contribute(prop)
+                if isinstance(coercer, SchemaContributor):
+                    coercer.contribute(prop)
                 return prop
 
             case ObjectItem(schema=nested):

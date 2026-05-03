@@ -20,8 +20,8 @@ from boba.tools import (
     param_desc,
     params_field,
 )
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Default,
     IsBool,
     IsInt,
@@ -108,7 +108,7 @@ class ConfluenceSectionTool(Tool[SectionArgs]):
                 FieldSpec(
                     name="path",
                     description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
-                    converter=ChainConverter(IsString(), NonEmpty()),
+                    coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
@@ -116,7 +116,7 @@ class ConfluenceSectionTool(Tool[SectionArgs]):
                     description=param_desc(
                         p, "anchor", self.DEFAULT_ANCHOR_DESC
                     ),
-                    converter=ChainConverter(IsString(), NonEmpty()),
+                    coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
@@ -126,21 +126,21 @@ class ConfluenceSectionTool(Tool[SectionArgs]):
                         "include_subsections",
                         self.DEFAULT_INCLUDE_SUBSECTIONS_DESC,
                     ),
-                    converter=ChainConverter(Default(True), IsBool()),
+                    coercer=ChainCoercer(Default(True), IsBool()),
                 ),
                 FieldSpec(
                     name="strip_macros",
                     description=param_desc(
                         p, "strip_macros", self.DEFAULT_STRIP_MACROS_DESC
                     ),
-                    converter=ChainConverter(Default(True), IsBool()),
+                    coercer=ChainCoercer(Default(True), IsBool()),
                 ),
                 FieldSpec(
                     name="max_chars",
                     description=param_desc(
                         p, "max_chars", self.DEFAULT_MAX_CHARS_DESC
                     ),
-                    converter=ChainConverter(Default(8000), IsInt(), MinValue(100)),
+                    coercer=ChainCoercer(Default(8000), IsInt(), MinValue(100)),
                 ),
             ],
             factory=SectionArgs,
@@ -229,7 +229,7 @@ class ConfluenceSectionToolSection(ConfigSection[ConfluenceSectionToolConfig]):
         fields=[
             FieldSpec(
                 name="description",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     Default(ConfluenceSectionTool.DEFAULT_DESCRIPTION),
                     ParseString(),
                 ),

@@ -20,8 +20,8 @@ from boba.tools import (
     param_desc,
     params_field,
 )
-from boba.validators import (
-    ChainConverter,
+from boba.coercion import (
+    ChainCoercer,
     Default,
     IsBool,
     IsString,
@@ -82,13 +82,13 @@ class CpTool(Tool[CpArgs]):
                 FieldSpec(
                     name="src",
                     description=param_desc(p, "src", self.DEFAULT_SRC_DESC),
-                    converter=ChainConverter(IsString(), NonEmpty()),
+                    coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
                     name="dst",
                     description=param_desc(p, "dst", self.DEFAULT_DST_DESC),
-                    converter=ChainConverter(IsString(), NonEmpty()),
+                    coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
@@ -96,7 +96,7 @@ class CpTool(Tool[CpArgs]):
                     description=param_desc(
                         p, "recursive", self.DEFAULT_RECURSIVE_DESC
                     ),
-                    converter=ChainConverter(Default(False), IsBool()),
+                    coercer=ChainCoercer(Default(False), IsBool()),
                 ),
             ],
             factory=CpArgs,
@@ -129,7 +129,7 @@ class CpToolSection(ConfigSection[CpToolConfig]):
         fields=[
             FieldSpec(
                 name="description",
-                converter=ChainConverter(
+                coercer=ChainCoercer(
                     Default(CpTool.DEFAULT_DESCRIPTION), ParseString()
                 ),
                 description="Override описания tool'а; пусто — дефолт из кода.",

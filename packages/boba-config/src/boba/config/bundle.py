@@ -34,7 +34,7 @@ from boba.patterns import (
     PrioritySource,
     StrId,
 )
-from boba.validators import MISSING
+from boba.coercion import MISSING
 from boba.value import ConfigValue
 
 __all__ = ["ConfigBundle", "ConfigBundleFactory", "FlatConfigMaterializer"]
@@ -66,7 +66,7 @@ class FlatConfigMaterializer(Generic[T]):
             validated[f.name] = value
 
         try:
-            final = self._schema.invariants.convert(validated)
+            final = self._schema.invariants.apply(validated)
         except ConverterInputError as exc:
             raise FieldPathError.from_cause(exc, "<invariants>") from exc
 
@@ -79,11 +79,11 @@ class FlatConfigMaterializer(Generic[T]):
         prefix: ConfigPath,
     ) -> Any:
         match field:
-            case FieldSpec(name=name, converter=converter):
+            case FieldSpec(name=name, coercer=coercer):
                 path = prefix.join(NameSegment(name))
                 lookup = space.lookup(path)
                 raw = lookup.value() if lookup.is_found() else MISSING
-                return converter.convert(raw)
+                return coercer.apply(raw)
 
             case CollectionField(name=name, reader=reader, shape=shape):
                 return self._read_collection(name, reader, shape, space, prefix)
@@ -172,11 +172,11 @@ class FlatConfigMaterializer(Generic[T]):
         path: ConfigPath,
     ) -> Any:
         match reader:
-            case ScalarItem(converter=converter):
+            case ScalarItem(coercer=coercer):
                 lookup = space.lookup(path)
                 if not lookup.is_found():
                     return MISSING
-                return converter.convert(lookup.value())
+                return coercer.apply(lookup.value())
 
             case ObjectItem(schema=nested):
                 # Рекурсия: сам ConfigMaterializer для вложенной схемы.
