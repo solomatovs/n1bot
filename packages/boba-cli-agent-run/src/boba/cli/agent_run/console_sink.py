@@ -6,7 +6,7 @@ import os
 from collections.abc import Mapping
 from typing import TextIO
 
-from boba_next.agent.events import (
+from boba.agent.events import (
     Advisory,
     AgentEvent,
     ContentDelta,
@@ -16,7 +16,7 @@ from boba_next.agent.events import (
     SlotKind,
     Terminal,
 )
-from boba_next.agent.models import AgentContext
+from boba.agent.models import AgentContext
 
 from boba.patterns import StreamSink
 

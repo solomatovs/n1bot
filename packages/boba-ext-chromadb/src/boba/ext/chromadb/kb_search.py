@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from boba_next.declaration import FieldSpec, ObjectSchema
-from boba_next.tools import Tool, ToolContext, ToolId, ToolResult, ToolSourceId
-from boba_next.validators import (
+from boba.declaration import FieldSpec, ObjectSchema
+from boba.tools import Tool, ToolContext, ToolId, ToolResult, ToolSourceId
+from boba.validators import (
     ChainConverter,
     Default,
     IsInt,

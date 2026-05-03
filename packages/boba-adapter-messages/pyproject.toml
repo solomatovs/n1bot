@@ -7,7 +7,7 @@ name = "boba-adapter-messages"
 version = "0.1.0"
 description = "MessageService implementations for Boba: in-memory and JSONL-on-workspace."
 requires-python = ">=3.11,<4"
-dependencies = ["boba-next"]
+dependencies = ["boba"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

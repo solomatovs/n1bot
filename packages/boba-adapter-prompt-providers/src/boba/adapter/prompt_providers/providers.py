@@ -9,14 +9,14 @@ from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
-from boba_next.agent.models import AgentContext
-from boba_next.agent.prompt import (
+from boba.agent.models import AgentContext
+from boba.agent.prompt import (
     PromptBlock,
     PromptId,
     PromptProvider,
     PromptState,
 )
-from boba_next.workspace import HistoryWorkspaceShell
+from boba.workspace import HistoryWorkspaceShell
 
 
 class StaticPromptProvider(PromptProvider):

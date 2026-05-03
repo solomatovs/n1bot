@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Any
 
-from boba_next.llm.observer import LLMRequestObserver, RequestOutcome
+from boba.llm.observer import LLMRequestObserver, RequestOutcome
 
 from boba.adapter.openai.observer.reasoning import MultiKeyReasoningExtractor
 from boba.patterns import Converter

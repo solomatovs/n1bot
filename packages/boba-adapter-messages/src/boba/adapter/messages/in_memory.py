@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from boba_next.agent.messages import MessageService
-from boba_next.llm.models import LLMMessage
+from boba.agent.messages import MessageService
+from boba.llm.models import LLMMessage
 
 
 class InMemoryMessageService(MessageService):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from boba_next.workspace import WorkspaceShell
+from boba.workspace import WorkspaceShell
 from bs4 import BeautifulSoup
 from bs4.element import NavigableString, Tag
 

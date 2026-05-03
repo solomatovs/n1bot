@@ -10,13 +10,13 @@ with contextlib.suppress(ImportError):
     import readline  # noqa: F401  # pyright: ignore[reportUnusedImport]
     # side-effect: подключает редактирование строки и историю в input().
 
-from boba_next.agent import Agent, AgentConfig
-from boba_next.agent.models import AgentRequest
-from boba_next.config import AppConfig, AppConfigBootstrap
-from boba_next.llm.models import RequestId
-from boba_next.llm.observer import CompositeLLMRequestObserver
-from boba_next.tools import ExtensionContext, ToolContext, ToolPluginLoader
-from boba_next.workspace import (
+from boba.agent import Agent, AgentConfig
+from boba.agent.models import AgentRequest
+from boba.config import AppConfig, AppConfigBootstrap
+from boba.llm.models import RequestId
+from boba.llm.observer import CompositeLLMRequestObserver
+from boba.tools import ExtensionContext, ToolContext, ToolPluginLoader
+from boba.workspace import (
     PromptWorkspaceId,
     WorkspaceId,
 )
@@ -44,9 +44,9 @@ from boba.cli.agent_run.infra import (
     configure_logging,
     create_agent,
 )
-from boba.config.cli import CliSource
-from boba.config.env import EnvFileSource, EnvSource
-from boba.config.toml import TomlFileSource, TomlSource
+from boba.confsource.cli import CliSource
+from boba.confsource.env import EnvFileSource, EnvSource
+from boba.confsource.toml import TomlFileSource, TomlSource
 from boba.patterns import ConverterInputError
 
 _REPL_EXIT_COMMANDS = frozenset({"/exit", "/quit", ":q"})

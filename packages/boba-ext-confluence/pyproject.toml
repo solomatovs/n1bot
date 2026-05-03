@@ -9,6 +9,7 @@ description = "Boba Confluence-export navigation tools: outline + section readin
 requires-python = ">=3.11,<4"
 dependencies = [
 
+    "boba",
     "boba-patterns",
     "beautifulsoup4>=4.12",
     "lxml>=5.0",

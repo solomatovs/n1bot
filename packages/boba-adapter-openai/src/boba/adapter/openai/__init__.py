@@ -1,6 +1,6 @@
 """OpenAI-совместимый LLM-адаптер."""
 
-from boba_next.llm.observer import RequestOutcome
+from boba.llm.observer import RequestOutcome
 
 from boba.adapter.openai.config import LLMTransportSection, create_llm_source
 from boba.adapter.openai.observer import (

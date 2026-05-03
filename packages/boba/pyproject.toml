@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba"
+version = "0.1.0"
+description = "Boba core: domain, agent runtime, llm/tools/validators/value/workspace primitives."
+requires-python = ">=3.11,<4"
+dependencies = ["boba-patterns"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

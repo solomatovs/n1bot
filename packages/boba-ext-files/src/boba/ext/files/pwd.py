@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from boba_next.declaration import ObjectSchema
-from boba_next.tools import Tool, ToolContext, ToolId, ToolResult, ToolSourceId
+from boba.declaration import ObjectSchema
+from boba.tools import Tool, ToolContext, ToolId, ToolResult, ToolSourceId
 
 
 @dataclass(frozen=True)

@@ -6,9 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
-from boba_next.config import ConfigSection
-from boba_next.declaration import FieldSpec, ObjectSchema
-from boba_next.validators import ChainConverter, Default, ParseString
+from boba.config import ConfigSection
+from boba.declaration import FieldSpec, ObjectSchema
+from boba.validators import ChainConverter, Default, ParseString
 
 from boba.patterns import StrId
 

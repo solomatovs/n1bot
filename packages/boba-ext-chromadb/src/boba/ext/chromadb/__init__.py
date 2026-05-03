@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from boba_next.tools import ExtensionContext, StaticToolSource, ToolSource, ToolSourceId
+from boba.tools import ExtensionContext, StaticToolSource, ToolSource, ToolSourceId
 
 from boba.ext.chromadb.config import ChromadbSection
 from boba.ext.chromadb.kb import get_knowledge_base

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
-from boba_next.agent.events import AgentEvent
-from boba_next.agent.models import AgentContext
+from boba.agent.events import AgentEvent
+from boba.agent.models import AgentContext
 
 from boba.patterns import StreamSink
 

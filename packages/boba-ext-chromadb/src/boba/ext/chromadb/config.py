@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from boba_next.config import ConfigSection
-from boba_next.declaration import FieldSpec, ObjectSchema
-from boba_next.validators import (
+from boba.config import ConfigSection
+from boba.declaration import FieldSpec, ObjectSchema
+from boba.validators import (
     ChainConverter,
     Default,
     MinValue,

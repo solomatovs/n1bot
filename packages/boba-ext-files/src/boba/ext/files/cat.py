@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from io import TextIOBase
 
-from boba_next.declaration import FieldSpec, ObjectSchema
-from boba_next.tools import (
+from boba.declaration import FieldSpec, ObjectSchema
+from boba.tools import (
     Tool,
     ToolContext,
     ToolExecutionError,
@@ -15,7 +15,7 @@ from boba_next.tools import (
     ToolResult,
     ToolSourceId,
 )
-from boba_next.validators import (
+from boba.validators import (
     ChainConverter,
     Default,
     IsInt,
@@ -24,7 +24,7 @@ from boba_next.validators import (
     NonEmpty,
     Ordered,
 )
-from boba_next.workspace import (
+from boba.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
