@@ -30,7 +30,7 @@ from boba_next import (
     ObjectSchema,
     ParseInt,
     ParseString,
-    Required,
+    NotNull,
     ScalarItem,
     StringValue,
 )
@@ -60,13 +60,13 @@ _CHAINLIT_SCHEMA: ObjectSchema[_ChainlitConfig] = ObjectSchema(
     fields=[
         CollectionField(
             name="models",
-            reader=ScalarItem(ChainConverter(Required(), ParseString(), NonEmpty())),
+            reader=ScalarItem(ChainConverter(NotNull(), ParseString(), NonEmpty())),
             shape=IndexedShape(),
         ),
         CollectionField(
             name="ports",
             reader=ScalarItem(
-                ChainConverter(Required(), ParseInt(), MinValue(1), MaxValue(65535))
+                ChainConverter(NotNull(), ParseInt(), MinValue(1), MaxValue(65535))
             ),
             shape=IndexedShape(),
         ),
