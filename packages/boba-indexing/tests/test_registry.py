@@ -55,6 +55,9 @@ class _StubSource(Source):
         del ctx
         yield from ()
 
+    def list_source_ids(self) -> Iterable[str]:
+        return ()
+
 
 class _StubSourceFactory(SourceFactory):
     def __init__(self, sid: str) -> None:

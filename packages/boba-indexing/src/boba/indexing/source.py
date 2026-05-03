@@ -24,21 +24,22 @@ class Source(StreamSource[IndexingContext, SourceItem], ABC):
     `StateLess`), `reset()` — опционален. Stream должен быть re-iterable
     в рамках одного экземпляра между `reset()`-ами (для retry-логики).
 
-    Дополнительно знает свой `SourceId` — для discovery и сообщений об
-    ошибках. Метод `list_source_ids()` опциональный — нужен только тем
-    Source'ам, которые поддерживают `sync` (удаление осиротевших чанков).
+    Знает свой `SourceId` — для discovery и сообщений об ошибках.
+    Знает все свои `source_id` через `list_source_ids()` — нужно для sync
+    (удаление осиротевших чанков). Source без перечисления (стрим вроде
+    Kafka-topic) реализует через `raise SyncUnsupportedError`.
     """
 
     @abstractmethod
     def source_factory_id(self) -> SourceId: ...
 
-    def list_source_ids(self) -> Iterable[str] | None:
+    @abstractmethod
+    def list_source_ids(self) -> Iterable[str]:
         """Все source_id, которые этот Source может произвести.
 
-        None — Source не поддерживает sync (например стрим-источник без
-        конечного перечисления).
+        Бросает `SyncUnsupportedError`, если Source — бесконечный стрим.
         """
-        return None
+        ...
 
 
 class SourceFactory(

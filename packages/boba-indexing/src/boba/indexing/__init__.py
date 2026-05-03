@@ -6,7 +6,11 @@ from boba.indexing.chunker import Chunker, ChunkerFactory, ChunkerId
 from boba.indexing.chunks import Chunk
 from boba.indexing.collections import CollectionInfo
 from boba.indexing.context import IndexingContext, PipelineId
-from boba.indexing.errors import IndexingError, NoMatchingReaderError
+from boba.indexing.errors import (
+    IndexingError,
+    NoMatchingReaderError,
+    SyncUnsupportedError,
+)
 from boba.indexing.extension import IndexerExtensionContext
 from boba.indexing.items import SourceItem
 from boba.indexing.pipeline import IndexPipeline
@@ -50,6 +54,7 @@ __all__ = [
     "SourceItem",
     "SourceRegistry",
     "Store",
+    "SyncUnsupportedError",
     "StoreFactory",
     "StoreId",
     "StoreRegistry",
