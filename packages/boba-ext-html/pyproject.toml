@@ -8,14 +8,18 @@ version = "0.1.0"
 description = "Boba HTML navigation tools: outline + section reading via workspace files."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-tools",
     "boba-foundation",
+    "boba-indexing",
+    "boba-tools",
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
 ]
 
 [project.entry-points."boba.tools"]
 html = "boba.ext.html:register_tools"
+
+[project.entry-points."boba.indexing.readers"]
+html = "boba.ext.html:register_readers"
 
 [project.entry-points."boba.config_sections"]
 html = "boba.ext.html.config:HtmlSection"

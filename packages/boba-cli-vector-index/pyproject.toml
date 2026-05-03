@@ -5,22 +5,18 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-cli-vector-index"
 version = "0.1.0"
-description = "Operator CLI: index documents into a vector database (ChromaDB) for the Boba agent."
+description = "Operator CLI: pure runner поверх IndexPipeline; Source/Reader/Chunker/Store — отдельные ext-плагины."
 requires-python = ">=3.11,<4"
-# На ``boba-ext-chromadb`` намеренно не зависит: контракт ключа — через ConfigKey.
+# Runner ничего не знает про конкретные backend'ы — всё через entry-points.
 dependencies = [
     "boba-config",
-    "boba-foundation",
-    "boba-patterns",
     "boba-config-source-cli",
     "boba-config-source-env",
     "boba-config-source-toml",
-    "chromadb>=0.5",
+    "boba-foundation",
+    "boba-indexing",
+    "boba-patterns",
 ]
-
-[project.optional-dependencies]
-html = ["beautifulsoup4>=4.12", "lxml>=5.0"]
-confluence = ["atlassian-python-api>=3.41"]
 
 [project.scripts]
 boba-cli-vector-index = "boba.cli.vector_index.cli:main"

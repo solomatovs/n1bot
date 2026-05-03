@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-ext-fs-source"
+version = "0.1.0"
+description = "Boba indexing source: filesystem walk → SourceItem stream."
+requires-python = ">=3.11,<4"
+dependencies = ["boba-config", "boba-foundation", "boba-indexing"]
+
+[project.entry-points."boba.indexing.sources"]
+fs = "boba.ext.fs_source:register_sources"
+
+[project.entry-points."boba.config_sections"]
+fs_source = "boba.ext.fs_source.config:FsSourceConfigSection"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
