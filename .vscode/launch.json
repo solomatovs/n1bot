@@ -155,6 +155,23 @@
             "envFile": "${workspaceFolder}/local/.env",
         },
         {
+            "name": "Vector Index: Sync Confluence space",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.cli.vector_index",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "--vector_index.action=sync",
+                "--vector_index.collection=${input:indexCollection}",
+                "--vector_index.source=ext.confluence_space",
+                "--indexer.sources.confluence.space.space_key=${input:confluenceSpaceKey}"
+            ],
+            "envFile": "${workspaceFolder}/local/.env",
+        },
+        {
             "name": "Chainlit: Boba UI",
             "type": "debugpy",
             "request": "launch",

@@ -131,12 +131,22 @@ class KbSearchTool(Tool[KbSearchArgs]):
             {
                 "id": h.id,
                 "distance": h.distance,
+                "link": self._build_link(h.metadata),
                 "metadata": dict(h.metadata),
                 "snippet": h.snippet,
             }
             for h in hits
         ]
         return JsonResult(payload=payload)
+
+    @staticmethod
+    def _build_link(metadata: Mapping[str, str]) -> str:
+        """source_url[#anchor] — готовый deep-link, чтобы агент не склеивал сам."""
+        url = str(metadata.get("source_url") or "")
+        if not url:
+            return ""
+        anchor = str(metadata.get("anchor") or "")
+        return f"{url}#{anchor}" if anchor else url
 
 
 class KbSearchToolSection(ConfigSection[KbSearchToolConfig]):

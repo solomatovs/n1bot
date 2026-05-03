@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable, Iterator
 
 from boba.indexing.chunks import Chunk
@@ -14,6 +15,8 @@ from boba.indexing.store import Store
 from boba.patterns import StateFull, StreamTransformer
 
 __all__ = ["IndexPipeline"]
+
+logger = logging.getLogger(__name__)
 
 
 class IndexPipeline(StateFull):
@@ -62,21 +65,57 @@ class IndexPipeline(StateFull):
         self._store.ensure_target(ctx, description)
         stats = IndexStatsBuilder()
         for item in self._source.stream(ctx):
-            stats.source_seen(item.source_id)
-            stats.chunks_deleted_add(
-                self._store.delete_by_source(ctx, item.source_id)
-            )
-
-            sections = _tap(
-                self._reader.stream(ctx, [item]),
-                stats.section_emitted,
-            )
-            for chunk in self._chunker.stream(ctx, sections):
-                self._store.handle(ctx, chunk)
-                stats.chunk_upserted()
+            try:
+                self._process_item(ctx, item, stats)
+            except Exception as e:
+                # Один упавший item не должен ронять весь прогон —
+                # логируем и идём дальше, чтобы остальные страницы доехали.
+                logger.warning(
+                    "indexing failed for source_id=%r: %s: %s",
+                    item.source_id,
+                    type(e).__name__,
+                    e,
+                )
+                stats.source_failed()
 
         self._store.flush(ctx)
         return stats.build()
+
+    def _process_item(
+        self,
+        ctx: IndexingContext,
+        item: SourceItem,
+        stats: IndexStatsBuilder,
+    ) -> None:
+        """Один item: skip-if-unchanged → delete → upsert. Success → source_seen.
+
+        Партиция per-item: ровно одна из стат-категорий инкрементится —
+        `sources_skipped_unchanged` / `sources_failed` (через caller catch) /
+        `sources_processed` (success в самом конце).
+        """
+        # Incremental: если item.content_hash совпадает с тем, что уже в Store
+        # для этого source_id, повторная обработка не нужна.
+        if item.content_hash:
+            existing_hash = self._store.content_hash_for(ctx, item.source_id)
+            if existing_hash and existing_hash == item.content_hash:
+                stats.source_skipped_unchanged()
+                return
+
+        stats.chunks_deleted_add(
+            self._store.delete_by_source(ctx, item.source_id)
+        )
+
+        sections = _tap(
+            self._reader.stream(ctx, [item]),
+            stats.section_emitted,
+        )
+        for chunk in self._chunker.stream(ctx, sections):
+            self._store.handle(ctx, chunk)
+            stats.chunk_upserted()
+
+        # source_seen в самом конце — попадёт в processed только если
+        # вся цепочка отработала без исключений.
+        stats.source_seen(item.source_id)
 
 
 def _tap(stream: Iterable[Section], on_emit: Callable[[], None]) -> Iterator[Section]:

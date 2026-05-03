@@ -56,12 +56,13 @@ class HtmlReader(Reader):
         if not text:
             return
 
-        metadata: dict[str, str] = {"format": "html"}
+        metadata: dict[str, str] = {**value.metadata, "format": "html"}
         if title:
             metadata["title"] = title
 
         yield Section(
             source_id=value.source_id,
             text=text,
+            content_hash=value.content_hash,
             metadata=metadata,
         )

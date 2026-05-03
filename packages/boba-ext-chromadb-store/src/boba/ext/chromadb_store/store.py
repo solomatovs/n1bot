@@ -93,6 +93,29 @@ class ChromadbPersistStore(Store):
                 out.add(sid)
         return out
 
+    def content_hash_for(
+        self, ctx: IndexingContext, source_id: str
+    ) -> str:
+        """Достать content_hash из metadata любого чанка этого source_id.
+
+        Все чанки одного source_id пишутся одной транзакцией с одним hash'ом,
+        поэтому достаточно прочитать один.
+        """
+        try:
+            col = self._client.get_collection(name=ctx.collection)
+        except Exception:
+            return ""
+        result = col.get(
+            where={"source_id": source_id},
+            include=["metadatas"],
+            limit=1,
+        )
+        metas = result.get("metadatas") or []
+        if not metas:
+            return ""
+        h = metas[0].get("content_hash")
+        return str(h) if isinstance(h, (str, int)) else ""
+
     def list_collections(self) -> Iterable[CollectionInfo]:
         return [self._summarize(c) for c in self._client.list_collections()]
 
@@ -129,7 +152,7 @@ class ChromadbPersistStore(Store):
 
 
 def _meta(c: Chunk) -> dict[str, str]:
-    """Build metadata dict с source_id/anchor/chunk_index."""
+    """Build metadata dict с source_id/anchor/chunk_index/content_hash."""
     out: dict[str, str] = {
         **c.metadata,
         "source_id": c.source_id,
@@ -137,4 +160,6 @@ def _meta(c: Chunk) -> dict[str, str]:
     }
     if c.anchor:
         out["anchor"] = c.anchor
+    if c.content_hash:
+        out["content_hash"] = c.content_hash
     return out

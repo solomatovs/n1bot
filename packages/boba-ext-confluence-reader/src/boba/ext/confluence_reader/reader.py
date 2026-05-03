@@ -71,7 +71,8 @@ class ConfluenceReader(Reader):
                 text=text.strip(),
                 anchor=anchor_for(h),
                 order=h.index,
-                metadata=_section_metadata(h),
+                content_hash=value.content_hash,
+                metadata={**value.metadata, **_section_metadata(h)},
             )
 
     def _fallback_section(
@@ -87,7 +88,12 @@ class ConfluenceReader(Reader):
             text=composed,
             anchor=None,
             order=0,
-            metadata={"format": "confluence_html", "heading_text": title},
+            content_hash=value.content_hash,
+            metadata={
+                **value.metadata,
+                "format": "confluence_html",
+                "heading_text": title,
+            },
         )
 
 

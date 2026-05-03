@@ -49,6 +49,7 @@ class SlidingChunker(Chunker):
                     text=piece,
                     anchor=section.anchor,
                     chunk_index=idx,
+                    content_hash=section.content_hash,
                     metadata=dict(section.metadata),
                 )
 
