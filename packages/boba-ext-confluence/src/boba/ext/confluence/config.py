@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import ClassVar
 
+from boba.coercion import ChainCoercer, Default, ParseBool, ParseCsvList
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.patterns import StrId
-from boba.coercion import ChainCoercer, Default, ParseBool, ParseCsvList
 
 __all__ = ["ConfluenceExtConfig", "ConfluenceSection"]
 

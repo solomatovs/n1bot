@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from boba.patterns import ConverterInputError
 from boba.coercion.base import SchemaContributor, ValueCoercer
+from boba.patterns import ConverterInputError
 from boba.value import (
     BoolValue,
     ConfigValue,

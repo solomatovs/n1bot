@@ -15,9 +15,9 @@ import logging
 from collections.abc import Mapping
 from typing import Any, TypeVar, cast
 
-from boba.patterns import ContextCatalogFactory, ContextItemProvider, StrId
 from boba.config.bundle import ConfigBundle, FlatConfigMaterializer
 from boba.config.section import ConfigSection
+from boba.patterns import ContextCatalogFactory, ContextItemProvider, StrId
 
 __all__ = [
     "CONFIG_SECTIONS_ENTRY_POINT",

@@ -16,15 +16,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from boba.config.bundle import ConfigBundle, ConfigBundleFactory
-from boba.config.path import ConfigPath
-from boba.declaration import (
-    CollectionField,
-    FieldSpec,
-    KeyedShape,
-    ObjectItem,
-    ObjectSchema,
-)
 from boba.coercion import (
     ChainCoercer,
     Default,
@@ -36,10 +27,18 @@ from boba.coercion import (
     ParseInt,
     ParseString,
 )
-
+from boba.config.bundle import ConfigBundle, ConfigBundleFactory
+from boba.config.path import ConfigPath
 from boba.config.source.cli import CliSource
 from boba.config.source.env import EnvSource
 from boba.config.source.toml import TomlSource
+from boba.declaration import (
+    CollectionField,
+    FieldSpec,
+    KeyedShape,
+    ObjectItem,
+    ObjectSchema,
+)
 
 # ─────────── Описания DTO + схем (то, что extension'у хочется выразить) ───────────
 

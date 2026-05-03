@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Generic, TypeVar
 
+from boba.coercion import MISSING
 from boba.declaration import (
     CollectionField,
     CollectionShape,
@@ -25,7 +26,6 @@ from boba.declaration import (
     ScalarItem,
 )
 from boba.patterns import ConverterInputError
-from boba.coercion import MISSING
 
 __all__ = ["ToolArgsBuilder"]
 

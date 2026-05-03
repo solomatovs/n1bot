@@ -7,6 +7,17 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import ClassVar
 
+from boba.coercion import (
+    ChainCoercer,
+    Default,
+    IsInt,
+    IsString,
+    MaxValue,
+    MinLength,
+    MinValue,
+    ParseInt,
+    ParseString,
+)
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.chromadb.kb import ChromaKnowledgeBase
@@ -20,17 +31,6 @@ from boba.tools import (
     ToolSourceId,
     param_desc,
     params_field,
-)
-from boba.coercion import (
-    ChainCoercer,
-    Default,
-    IsInt,
-    IsString,
-    MaxValue,
-    MinLength,
-    MinValue,
-    ParseInt,
-    ParseString,
 )
 
 

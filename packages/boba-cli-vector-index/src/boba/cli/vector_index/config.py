@@ -9,9 +9,6 @@ from boba.cli.vector_index.chunking import (
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SIZE,
 )
-from boba.config.section import ConfigSection
-from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 from boba.coercion import (
     ChainCoercer,
     Default,
@@ -22,6 +19,9 @@ from boba.coercion import (
     ParseInt,
     ParseString,
 )
+from boba.config.section import ConfigSection
+from boba.declaration import FieldSpec, ObjectSchema
+from boba.patterns import StrId
 
 __all__ = [
     "ACTIONS",

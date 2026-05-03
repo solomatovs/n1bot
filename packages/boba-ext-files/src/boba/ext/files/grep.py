@@ -7,6 +7,17 @@ from dataclasses import dataclass, field
 from itertools import islice
 from typing import ClassVar
 
+from boba.coercion import (
+    ChainCoercer,
+    Default,
+    IsBool,
+    IsInt,
+    IsString,
+    MinValue,
+    NonEmpty,
+    Nullable,
+    ParseString,
+)
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.patterns import StrId
@@ -20,17 +31,6 @@ from boba.tools import (
     ToolSourceId,
     param_desc,
     params_field,
-)
-from boba.coercion import (
-    ChainCoercer,
-    Default,
-    IsBool,
-    IsInt,
-    IsString,
-    MinValue,
-    NonEmpty,
-    Nullable,
-    ParseString,
 )
 from boba.workspace import (
     GrepMatch,

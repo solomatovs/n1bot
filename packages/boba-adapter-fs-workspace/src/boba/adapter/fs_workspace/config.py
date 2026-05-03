@@ -6,10 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
+from boba.coercion import ChainCoercer, Default, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.patterns import StrId
-from boba.coercion import ChainCoercer, Default, ParseString
 
 
 @dataclass(frozen=True)

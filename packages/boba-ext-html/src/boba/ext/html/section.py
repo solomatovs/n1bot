@@ -6,8 +6,26 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import ClassVar
 
+from bs4.element import Tag
+
+from boba.coercion import (
+    ChainCoercer,
+    Default,
+    IsBool,
+    IsInt,
+    IsString,
+    MinValue,
+    NonEmpty,
+    ParseString,
+)
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.ext.html._parse import (
+    Heading,
+    collect_headings,
+    load_soup,
+    resolve_anchor,
+)
 from boba.patterns import StrId
 from boba.tools import (
     ParamOverlay,
@@ -20,27 +38,9 @@ from boba.tools import (
     param_desc,
     params_field,
 )
-from boba.coercion import (
-    ChainCoercer,
-    Default,
-    IsBool,
-    IsInt,
-    IsString,
-    MinValue,
-    NonEmpty,
-    ParseString,
-)
 from boba.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
-)
-from bs4.element import Tag
-
-from boba.ext.html._parse import (
-    Heading,
-    collect_headings,
-    load_soup,
-    resolve_anchor,
 )
 
 

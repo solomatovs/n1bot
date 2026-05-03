@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from boba.config.path import ConfigPath
-from boba.value import StringValue
-
 from boba.config.source.env import EnvFileSource, EnvSource
+from boba.value import StringValue
 
 
 def test_simple_two_segments():

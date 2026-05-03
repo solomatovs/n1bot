@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from boba.workspace import WorkspaceShell
 from bs4 import BeautifulSoup
 from bs4.element import NavigableString, Tag
+
+from boba.workspace import WorkspaceShell
 
 _HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
 # Служебный браузерный anchor; никогда не бывает осмысленной целью навигации.

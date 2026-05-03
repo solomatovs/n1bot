@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
+from boba.coercion import MISSING
 from boba.config.flat import FlatConfig
 from boba.config.path import (
     ConfigPath,
@@ -34,7 +35,6 @@ from boba.patterns import (
     PrioritySource,
     StrId,
 )
-from boba.coercion import MISSING
 from boba.value import ConfigValue
 
 __all__ = ["ConfigBundle", "ConfigBundleFactory", "FlatConfigMaterializer"]

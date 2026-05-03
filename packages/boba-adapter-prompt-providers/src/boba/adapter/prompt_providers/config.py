@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from typing import ClassVar
 
+from boba.coercion import ChainCoercer, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.coercion import ChainCoercer, ParseString
-
 from boba.patterns import StrId
 
 

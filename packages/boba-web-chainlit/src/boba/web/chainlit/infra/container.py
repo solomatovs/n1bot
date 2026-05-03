@@ -30,14 +30,13 @@ from boba.agent import (
 )
 from boba.llm.events import LLMEvent
 from boba.llm.models import LLMContext
-from boba.tools import ToolContext, ToolsService
-
 from boba.patterns import (
     StreamSink,
     StreamSource,
     StreamSourceChainBuilder,
     StreamSourceLoop,
 )
+from boba.tools import ToolContext, ToolsService
 
 
 @dataclass(frozen=True)
