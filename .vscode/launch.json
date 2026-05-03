@@ -42,6 +42,24 @@
             "type": "promptString",
             "description": "Описание коллекции (применяется только при создании)",
             "default": "Документы, проиндексированные оператором"
+        },
+        {
+            "id": "confluencePageIds",
+            "type": "promptString",
+            "description": "Confluence page-id(s) через запятую",
+            "default": "98305"
+        },
+        {
+            "id": "confluenceSpaceKey",
+            "type": "promptString",
+            "description": "Confluence space key (например DOCS, ds)",
+            "default": "ds"
+        },
+        {
+            "id": "confluenceCql",
+            "type": "promptString",
+            "description": "Confluence CQL-запрос",
+            "default": "space = ds AND type = page"
         }
     ],
     "configurations": [
@@ -65,7 +83,7 @@
             "envFile": "${workspaceFolder}/local/.env",
         },
         {
-            "name": "Vector Index: index path",
+            "name": "Vector Index: index FS path",
             "type": "debugpy",
             "request": "launch",
             "module": "boba.cli.vector_index",
@@ -74,11 +92,65 @@
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "args": [
-                "--vector-index-action", "index",
-                "--vector-index-paths", "${input:indexPath}",
-                "--vector-index-collection", "${input:indexCollection}",
-                "--vector-index-description", "${input:indexDescription}",
-                "--vector-index-verbose", "1"
+                "--vector_index.action=index",
+                "--vector_index.collection=${input:indexCollection}",
+                "--vector_index.description=${input:indexDescription}",
+                "--vector_index.source=ext.fs",
+                "--indexer.sources.fs.paths=${input:indexPath}"
+            ],
+            "envFile": "${workspaceFolder}/local/.env",
+        },
+        {
+            "name": "Vector Index: Confluence (pages)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.cli.vector_index",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "--vector_index.action=index",
+                "--vector_index.collection=${input:indexCollection}",
+                "--vector_index.description=${input:indexDescription}",
+                "--vector_index.source=ext.confluence_pages",
+                "--indexer.sources.confluence.pages.page_ids=${input:confluencePageIds}"
+            ],
+            "envFile": "${workspaceFolder}/local/.env",
+        },
+        {
+            "name": "Vector Index: Confluence (space)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.cli.vector_index",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "--vector_index.action=index",
+                "--vector_index.collection=${input:indexCollection}",
+                "--vector_index.description=${input:indexDescription}",
+                "--vector_index.source=ext.confluence_space",
+                "--indexer.sources.confluence.space.space_key=${input:confluenceSpaceKey}"
+            ],
+            "envFile": "${workspaceFolder}/local/.env",
+        },
+        {
+            "name": "Vector Index: Confluence (CQL)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.cli.vector_index",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "--vector_index.action=index",
+                "--vector_index.collection=${input:indexCollection}",
+                "--vector_index.description=${input:indexDescription}",
+                "--vector_index.source=ext.confluence_cql",
+                "--indexer.sources.confluence.cql.cql=${input:confluenceCql}"
             ],
             "envFile": "${workspaceFolder}/local/.env",
         },

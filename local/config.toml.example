@@ -92,12 +92,15 @@ snippet_chars = 300
 # presence_penalty = 0.0
 
 # CLI-индексатор: action + выбор pluggable Source/Chunker/Store по id.
+# Source обычно меняется per-launch (FS / Confluence / ...) и задаётся через
+# CLI/launch.json. Chunker/Store фиксируются в TOML — они общие для всех
+# launch-конфигов.
 [vector_index]
 confirm_skip = false
-verbose = 0
-source = "ext.fs"           # boba-ext-fs-source
-chunker = "ext.sliding"     # boba-ext-sliding-chunker
-store = "ext.chromadb_persist"  # boba-ext-chromadb-store
+verbose = 1
+source = "ext.fs"                   # default; override через --vector_index.source=...
+chunker = "ext.heading"             # heading-aware: anchor сохраняется, без cross-section bleed
+store = "ext.chromadb_persist"
 # action = "index"          # index | list | delete
 # collection = "manual"
 # description = "Confluence-export'ы"
@@ -113,3 +116,28 @@ store = "ext.chromadb_persist"  # boba-ext-chromadb-store
 [indexer.chunkers.sliding]
 chunk_size = 1000
 chunk_overlap = 200
+
+# Heading-aware chunker (анкоры наследуются, без cross-section bleed).
+[indexer.chunkers.heading]
+chunk_size = 1500
+chunk_overlap = 150
+
+# Confluence-source: общие параметры backend + auth.
+# Чувствительные значения задаются через env (не TOML):
+#   BOBA_INDEXER__SOURCES__CONFLUENCE__BASE_URL=https://confl.example.com
+#   BOBA_INDEXER__SOURCES__CONFLUENCE__AUTH_TOKEN=<PAT-или-password>
+[indexer.sources.confluence]
+# auth_method = "pat"          # "pat" | "basic"
+# auth_user = ""               # для basic; PAT — игнорируется
+# body_format = "export_view"  # "export_view" | "view" | "storage"
+# timeout_sec = 30.0
+
+# Per-mode параметры:
+[indexer.sources.confluence.space]
+# space_key = "DOCS"
+
+[indexer.sources.confluence.pages]
+# page_ids = ["12345", "67890"]
+
+[indexer.sources.confluence.cql]
+# cql = "space = DOCS AND lastModified > '2024-01-01'"

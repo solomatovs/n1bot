@@ -6,7 +6,6 @@ import hashlib
 from collections.abc import Iterable
 
 from boba.ext.sliding_chunker.config import SlidingChunkerConfig
-from boba.ext.sliding_chunker.splitter import split_text
 from boba.indexing import (
     Chunk,
     Chunker,
@@ -14,6 +13,7 @@ from boba.indexing import (
     IndexingContext,
     Section,
 )
+from boba.text_splitter import TextSplitter
 
 __all__ = ["SlidingChunker"]
 
@@ -22,10 +22,14 @@ class SlidingChunker(Chunker):
     """Per-Section sliding chunker. Чанки одного source_id перенумерованы подряд."""
 
     def __init__(self, config: SlidingChunkerConfig) -> None:
-        self._config = config
+        self._splitter = TextSplitter(
+            chunk_size=config.chunk_size,
+            chunk_overlap=config.chunk_overlap,
+        )
+        self._size = config.chunk_size
 
     def name(self) -> str:
-        return f"SlidingChunker(size={self._config.chunk_size})"
+        return f"SlidingChunker(size={self._size})"
 
     def chunker_id(self) -> ChunkerId:
         return ChunkerId("ext.sliding")
@@ -36,12 +40,7 @@ class SlidingChunker(Chunker):
         del ctx
         per_source_index: dict[str, int] = {}
         for section in stream:
-            pieces = split_text(
-                section.text,
-                chunk_size=self._config.chunk_size,
-                chunk_overlap=self._config.chunk_overlap,
-            )
-            for piece in pieces:
+            for piece in self._splitter.convert(section.text):
                 idx = per_source_index.get(section.source_id, 0)
                 per_source_index[section.source_id] = idx + 1
                 yield Chunk(
