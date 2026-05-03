@@ -15,19 +15,17 @@ from boba.llm.observer import LLMRequestObserver
 from boba.patterns import (
     StreamSource,
     StreamSourceChainBuilder,
-    StrId,
 )
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 
-class LLMTransportSection(ConfigSection[OpenAIConfig]):
-    """Транспорт LLM-клиента: base_url + api_key."""
+class OpenAIAdapterSection(ConfigSection[OpenAIConfig]):
+    """OpenAI-совместимый LLM-адаптер: base_url + api_key."""
 
-    id: ClassVar[StrId] = StrId("llm_transport")
-    namespace: ClassVar[tuple[str, ...]] = ("llm",)
+    namespace: ClassVar[tuple[str, ...]] = ("adapter", "openai")
 
     schema: ClassVar[ObjectSchema[OpenAIConfig]] = ObjectSchema(
-        description="Транспорт LLM-клиента: base_url + api_key.",
+        description="OpenAI-совместимый LLM-адаптер: base_url + api_key.",
         fields=[
             FieldSpec(
                 name="base_url",

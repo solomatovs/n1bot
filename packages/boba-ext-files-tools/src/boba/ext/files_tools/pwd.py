@@ -8,8 +8,8 @@ from typing import ClassVar
 from boba.coercion import ChainCoercer, Default, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.tools.domain import TextResult
 from boba.tools.domain import (
+    TextResult,
     Tool,
     ToolContext,
     ToolId,

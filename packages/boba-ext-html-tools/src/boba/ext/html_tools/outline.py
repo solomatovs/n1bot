@@ -20,9 +20,9 @@ from boba.coercion import (
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.html_tools._parse import Heading, anchor_for, collect_headings, load_soup
-from boba.tools.domain import TextResult
 from boba.tools.domain import (
     ParamOverlay,
+    TextResult,
     Tool,
     ToolContext,
     ToolExecutionError,
