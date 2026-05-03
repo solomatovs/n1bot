@@ -43,6 +43,9 @@ class _MemSource(Source):
         del ctx
         yield from self._items
 
+    def list_source_ids(self) -> Iterable[str]:
+        return [i.source_id for i in self._items]
+
 
 class _OneToOneReader(Reader):
     """Reader, который принимает один hint и выдаёт ровно одну Section."""
