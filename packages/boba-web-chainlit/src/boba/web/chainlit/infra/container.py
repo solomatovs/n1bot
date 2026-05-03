@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from boba.domain.agent import (
+from boba_next.agent import (
     Agent,
     AgentConfig,
     AgentContext,
@@ -28,9 +28,10 @@ from boba.domain.agent import (
     ToolsReducer,
     TurnSpec,
 )
-from boba.domain.core.tools import ToolContext, ToolsService
-from boba.domain.llm.events import LLMEvent
-from boba.domain.llm.models import LLMContext
+from boba_next.llm.events import LLMEvent
+from boba_next.llm.models import LLMContext
+from boba_next.tools import ToolContext, ToolsService
+
 from boba.patterns import (
     StreamSink,
     StreamSource,
