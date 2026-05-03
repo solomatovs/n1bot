@@ -40,5 +40,6 @@ class TextReader(Reader):
         yield Section(
             source_id=value.source_id,
             text=text,
-            metadata={"format": "text"},
+            content_hash=value.content_hash,
+            metadata={**value.metadata, "format": "text"},
         )

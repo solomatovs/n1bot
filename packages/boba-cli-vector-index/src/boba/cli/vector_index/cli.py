@@ -116,11 +116,13 @@ def _handle_index(cfg: VectorIndexConfig, app: AppConfig) -> int:
     print(
         f"collection={collection!r} "
         f"sources_processed={stats.sources_processed} "
+        f"sources_skipped_unchanged={stats.sources_skipped_unchanged} "
+        f"sources_failed={stats.sources_failed} "
         f"sections_emitted={stats.sections_emitted} "
         f"chunks_upserted={stats.chunks_upserted} "
         f"chunks_deleted={stats.chunks_deleted}"
     )
-    return 0
+    return 0 if stats.sources_failed == 0 else 1
 
 
 def _handle_list(cfg: VectorIndexConfig, app: AppConfig) -> int:

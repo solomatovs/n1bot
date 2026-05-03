@@ -14,6 +14,10 @@ class Chunk:
 
     `chunk_id` — стабильный составной id, обычно `f"{source_id}#{anchor}:{idx}"`,
     чтобы re-index был идемпотентен (тот же текст → тот же id).
+
+    `content_hash` — версия источника (например `version.number` страницы).
+    Store пишет это в metadata, Pipeline сравнивает на следующем прогоне для
+    skip-if-unchanged.
     """
 
     chunk_id: str
@@ -21,4 +25,5 @@ class Chunk:
     text: str
     anchor: str | None = None
     chunk_index: int = 0
+    content_hash: str = ""
     metadata: Mapping[str, str] = field(default_factory=dict)

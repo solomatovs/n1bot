@@ -56,6 +56,20 @@ class Store(StreamSink[IndexingContext, Chunk], ABC):
         """Все source_id, известные Store'у в текущем контексте."""
         ...
 
+    def content_hash_for(
+        self, ctx: IndexingContext, source_id: str
+    ) -> str:
+        """Текущий content_hash чанков этого source_id; пусто = неизвестно/нет.
+
+        Используется Pipeline для skip-if-unchanged: если новый item.content_hash
+        равен этому, переиндексация пропускается.
+
+        Default-реализация — пустая строка (не поддерживает incremental;
+        Pipeline всегда сделает delete+upsert).
+        """
+        del ctx, source_id
+        return ""
+
     @abstractmethod
     def list_collections(self) -> Iterable[CollectionInfo]:
         """Все коллекции в Store. Admin-операция — без IndexingContext."""

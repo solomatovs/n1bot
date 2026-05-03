@@ -17,10 +17,14 @@ class Section:
     чтобы не пересекать границы секций.
 
     `order` — порядок в исходном документе; нужен для детерминизма chunk_id.
+
+    `content_hash` — копия `SourceItem.content_hash`, протекает через всю
+    цепочку до Store для skip-if-unchanged логики Pipeline.
     """
 
     source_id: str
     text: str
     anchor: str | None = None
     order: int = 0
+    content_hash: str = ""
     metadata: Mapping[str, str] = field(default_factory=dict)
