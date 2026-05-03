@@ -8,7 +8,6 @@ from typing import ClassVar
 from boba.coercion import ChainCoercer, Default, ParseBool, ParseCsvList
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 
 __all__ = ["ConfluenceExtConfig", "ConfluenceSection"]
 
@@ -22,7 +21,6 @@ class ConfluenceExtConfig:
 class ConfluenceSection(ConfigSection[ConfluenceExtConfig]):
     """Секция конфига confluence-extension."""
 
-    id: ClassVar[StrId] = StrId("ext.confluence")
     namespace: ClassVar[tuple[str, ...]] = ("ext", "confluence")
 
     schema: ClassVar[ObjectSchema[ConfluenceExtConfig]] = ObjectSchema(

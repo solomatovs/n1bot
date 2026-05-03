@@ -20,7 +20,6 @@ from boba.coercion import (
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.html._parse import Heading, anchor_for, collect_headings, load_soup
-from boba.patterns import StrId
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -150,7 +149,6 @@ def _render_line(h: Heading) -> str:
 class HtmlOutlineToolSection(ConfigSection[HtmlOutlineToolConfig]):
     """Секция [ext.html.tools.html_outline]."""
 
-    id: ClassVar[StrId] = StrId("ext.html.tools.html_outline")
     namespace: ClassVar[tuple[str, ...]] = (
         "ext",
         "html",

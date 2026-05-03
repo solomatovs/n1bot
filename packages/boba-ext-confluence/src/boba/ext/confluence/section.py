@@ -27,7 +27,6 @@ from boba.ext.confluence._parse import (
     resolve_anchor,
     strip_confluence_macros,
 )
-from boba.patterns import StrId
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -219,7 +218,6 @@ def _collect_section_html(start: Tag, stop: Tag | None) -> str:
 class ConfluenceSectionToolSection(ConfigSection[ConfluenceSectionToolConfig]):
     """Секция [ext.confluence.tools.confluence_section]."""
 
-    id: ClassVar[StrId] = StrId("ext.confluence.tools.confluence_section")
     namespace: ClassVar[tuple[str, ...]] = (
         "ext", "confluence", "tools", "confluence_section",
     )

@@ -8,7 +8,6 @@ from typing import ClassVar
 from boba.coercion import ChainCoercer, Default, ParseBool, ParseCsvList
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 
 __all__ = ["HtmlExtConfig", "HtmlSection"]
 
@@ -22,7 +21,6 @@ class HtmlExtConfig:
 class HtmlSection(ConfigSection[HtmlExtConfig]):
     """Секция конфига html-extension."""
 
-    id: ClassVar[StrId] = StrId("ext.html")
     namespace: ClassVar[tuple[str, ...]] = ("ext", "html")
 
     schema: ClassVar[ObjectSchema[HtmlExtConfig]] = ObjectSchema(

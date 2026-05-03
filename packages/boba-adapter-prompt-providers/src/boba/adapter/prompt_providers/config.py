@@ -7,13 +7,11 @@ from typing import ClassVar
 from boba.coercion import ChainCoercer, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 
 
 class PromptsSection(ConfigSection[str]):
     """Путь к директории с системными prompt'ами."""
 
-    id: ClassVar[StrId] = StrId("prompts")
     namespace: ClassVar[tuple[str, ...]] = ("prompts",)
 
     schema: ClassVar[ObjectSchema[str]] = ObjectSchema(

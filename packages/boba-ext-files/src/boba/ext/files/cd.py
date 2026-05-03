@@ -9,7 +9,6 @@ from typing import ClassVar
 from boba.coercion import ChainCoercer, Default, IsString, NonEmpty, ParseString
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -92,7 +91,6 @@ class CdTool(Tool[CdArgs]):
 class CdToolSection(ConfigSection[CdToolConfig]):
     """Секция [ext.files.tools.cd]."""
 
-    id: ClassVar[StrId] = StrId("ext.files.tools.cd")
     namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "cd")
 
     schema: ClassVar[ObjectSchema[CdToolConfig]] = ObjectSchema(

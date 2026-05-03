@@ -16,7 +16,6 @@ from boba.coercion import (
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -113,7 +112,6 @@ class RmTool(Tool[RmArgs]):
 class RmToolSection(ConfigSection[RmToolConfig]):
     """Секция [ext.files.tools.rm]."""
 
-    id: ClassVar[StrId] = StrId("ext.files.tools.rm")
     namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "rm")
 
     schema: ClassVar[ObjectSchema[RmToolConfig]] = ObjectSchema(

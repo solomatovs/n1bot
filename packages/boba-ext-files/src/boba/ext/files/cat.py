@@ -20,7 +20,6 @@ from boba.coercion import (
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -176,7 +175,6 @@ class CatTool(Tool[CatArgs]):
 class CatToolSection(ConfigSection[CatToolConfig]):
     """Секция [ext.files.tools.cat]: описания + лимиты cat-tool'а."""
 
-    id: ClassVar[StrId] = StrId("ext.files.tools.cat")
     namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "cat")
 
     schema: ClassVar[ObjectSchema[CatToolConfig]] = ObjectSchema(

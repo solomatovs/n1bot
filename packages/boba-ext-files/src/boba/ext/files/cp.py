@@ -16,7 +16,6 @@ from boba.coercion import (
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.patterns import StrId
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -121,7 +120,6 @@ class CpTool(Tool[CpArgs]):
 class CpToolSection(ConfigSection[CpToolConfig]):
     """Секция [ext.files.tools.cp]."""
 
-    id: ClassVar[StrId] = StrId("ext.files.tools.cp")
     namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "cp")
 
     schema: ClassVar[ObjectSchema[CpToolConfig]] = ObjectSchema(

@@ -21,7 +21,6 @@ from boba.coercion import (
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.chromadb.kb import ChromaKnowledgeBase
-from boba.patterns import StrId
 from boba.tools import (
     ParamOverlay,
     Tool,
@@ -143,7 +142,6 @@ class KbSearchTool(Tool[KbSearchArgs]):
 class KbSearchToolSection(ConfigSection[KbSearchToolConfig]):
     """Секция [ext.chromadb.tools.kb_search]."""
 
-    id: ClassVar[StrId] = StrId("ext.chromadb.tools.kb_search")
     namespace: ClassVar[tuple[str, ...]] = (
         "ext",
         "chromadb",

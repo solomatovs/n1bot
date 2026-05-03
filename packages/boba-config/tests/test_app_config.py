@@ -72,7 +72,6 @@ class _AgentCfg:
 
 
 class AgentSection(ConfigSection[_AgentCfg]):
-    id: ClassVar[StrId] = StrId("agent")
     namespace: ClassVar[tuple[str, ...]] = ("agent",)
     schema: ClassVar[ObjectSchema[_AgentCfg]] = ObjectSchema(
         fields=[
@@ -198,7 +197,6 @@ def test_required_field_missing_propagates_error():
         token: str
 
     class _Section(ConfigSection[_Cfg]):
-        id: ClassVar[StrId] = StrId("svc")
         namespace: ClassVar[tuple[str, ...]] = ("svc",)
         schema: ClassVar[ObjectSchema[_Cfg]] = ObjectSchema(
             fields=[FieldSpec("token", ChainCoercer(ParseString()), required=True)],
@@ -214,6 +212,27 @@ def test_required_field_missing_propagates_error():
 def test_section_prefix_matches_namespace():
     sec = AgentSection()
     assert sec.prefix() == ConfigPath.parse("$agent")
+
+
+def test_section_id_defaults_to_joined_namespace():
+    """Если id не задан явно, он выводится как '.'.join(namespace)."""
+
+    class _AutoIdSection(ConfigSection[_AgentCfg]):
+        namespace: ClassVar[tuple[str, ...]] = ("ext", "foo", "bar")
+        schema: ClassVar[ObjectSchema[_AgentCfg]] = AgentSection.schema
+
+    assert _AutoIdSection.id == StrId("ext.foo.bar")
+
+
+def test_section_explicit_id_overrides_default():
+    """Явный id побеждает дефолт из namespace."""
+
+    class _AliasSection(ConfigSection[_AgentCfg]):
+        id: ClassVar[StrId] = StrId("agent_alias")
+        namespace: ClassVar[tuple[str, ...]] = ("agent",)
+        schema: ClassVar[ObjectSchema[_AgentCfg]] = AgentSection.schema
+
+    assert _AliasSection.id == StrId("agent_alias")
 
 
 def test_app_config_constructor_directly():
