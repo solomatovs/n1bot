@@ -8,6 +8,7 @@ from boba.indexing import (
     Chunk,
     Chunker,
     ChunkerId,
+    ChunkSummary,
     CollectionInfo,
     IndexingContext,
     IndexPipeline,
@@ -122,6 +123,29 @@ class _MemStore(Store):
     def list_source_ids(self, ctx: IndexingContext) -> Iterable[str]:
         del ctx
         return {c.source_id for c in self.chunks.values()}
+
+    def peek_chunks(
+        self,
+        ctx: IndexingContext,
+        *,
+        source_id: str | None = None,
+        limit: int = 20,
+        snippet_chars: int = 200,
+    ) -> Iterable[ChunkSummary]:
+        del ctx, snippet_chars
+        items = list(self.chunks.values())
+        if source_id:
+            items = [c for c in items if c.source_id == source_id]
+        items.sort(key=lambda c: c.chunk_index)
+        for c in items[:limit]:
+            yield ChunkSummary(
+                chunk_id=c.chunk_id,
+                source_id=c.source_id,
+                anchor=c.anchor,
+                chunk_index=c.chunk_index,
+                snippet=c.text,
+                metadata=dict(c.metadata),
+            )
 
     def content_hash_for(self, ctx: IndexingContext, source_id: str) -> str:
         del ctx

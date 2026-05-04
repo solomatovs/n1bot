@@ -20,7 +20,7 @@ from boba.declaration import FieldSpec, ObjectSchema
 __all__ = ["ACTIONS", "VectorIndexConfig", "VectorIndexSection"]
 
 
-ACTIONS: frozenset[str] = frozenset({"index", "list", "delete", "sync"})
+ACTIONS: frozenset[str] = frozenset({"index", "list", "delete", "sync", "show"})
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,9 @@ class VectorIndexConfig:
     source: str
     chunker: str
     store: str
+    show_source_id: str | None
+    show_limit: int
+    show_snippet_chars: int
 
 
 class VectorIndexSection(ConfigSection[VectorIndexConfig]):
@@ -101,6 +104,27 @@ class VectorIndexSection(ConfigSection[VectorIndexConfig]):
                 description=(
                     "StoreId плагина (entry-point boba.indexing.stores). "
                     "Default 'ext.chromadb_persist'."
+                ),
+            ),
+            FieldSpec(
+                name="show_source_id",
+                coercer=Nullable(ParseString()),
+                description=(
+                    "action=show: фильтр по source_id (например fs:/abs/path "
+                    "или confluence://host/page/123). Пусто — все чанки коллекции."
+                ),
+            ),
+            FieldSpec(
+                name="show_limit",
+                coercer=ChainCoercer(Default(20), ParseInt()),
+                description="action=show: сколько чанков выводить (default 20).",
+            ),
+            FieldSpec(
+                name="show_snippet_chars",
+                coercer=ChainCoercer(Default(200), ParseInt()),
+                description=(
+                    "action=show: длина text-preview каждого чанка в символах "
+                    "(default 200)."
                 ),
             ),
         ],

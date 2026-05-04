@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from boba.indexing.chunker import Chunker, ChunkerFactory, ChunkerId
-from boba.indexing.chunks import Chunk
+from boba.indexing.chunks import Chunk, ChunkSummary
 from boba.indexing.collections import CollectionInfo
 from boba.indexing.context import IndexingContext, PipelineId
 from boba.indexing.errors import (
@@ -29,6 +29,7 @@ from boba.indexing.store import Store, StoreFactory, StoreId
 
 __all__ = [
     "Chunk",
+    "ChunkSummary",
     "Chunker",
     "ChunkerFactory",
     "ChunkerId",
