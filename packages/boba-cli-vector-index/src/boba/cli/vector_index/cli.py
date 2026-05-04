@@ -234,9 +234,58 @@ def _handle_sync(cfg: VectorIndexConfig, app: AppConfig) -> int:
     return 0
 
 
+def _handle_show(cfg: VectorIndexConfig, app: AppConfig) -> int:
+    """Read-only: показать содержимое коллекции (id, anchor, snippet чанков)."""
+    _require(cfg.collection, VectorIndexSection, "collection", "show")
+    collection = cfg.collection or ""
+
+    ctx = IndexerExtensionContext(config=app)
+    store = _build_store(ctx, cfg.store)
+    icx = IndexingContext(
+        pipeline_id=PipelineId(f"cli-show:{collection}"),
+        collection=collection,
+    )
+
+    rows = list(
+        store.peek_chunks(
+            icx,
+            source_id=cfg.show_source_id,
+            limit=cfg.show_limit,
+            snippet_chars=cfg.show_snippet_chars,
+        )
+    )
+    if not rows:
+        scope = (
+            f" source_id={cfg.show_source_id!r}" if cfg.show_source_id else ""
+        )
+        print(f"collection={collection!r}{scope}: (empty)")
+        return 0
+
+    by_source: dict[str, int] = {}
+    for r in rows:
+        by_source[r.source_id] = by_source.get(r.source_id, 0) + 1
+
+    print(
+        f"collection={collection!r} shown={len(rows)} "
+        f"unique_sources={len(by_source)}"
+    )
+    print()
+    for r in rows:
+        title = r.metadata.get("title") or r.metadata.get("heading_text") or ""
+        anchor = f"#{r.anchor}" if r.anchor else ""
+        head = f"[{r.chunk_index:>3}] {r.source_id}{anchor}"
+        if title:
+            head += f"  ({title})"
+        print(head)
+        print(f"      {r.snippet}")
+        print()
+    return 0
+
+
 _HANDLERS = {
     "index": _handle_index,
     "list": _handle_list,
     "delete": _handle_delete,
     "sync": _handle_sync,
+    "show": _handle_show,
 }

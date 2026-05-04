@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 
-from boba.indexing.chunks import Chunk
+from boba.indexing.chunks import Chunk, ChunkSummary
 from boba.indexing.collections import CollectionInfo
 from boba.indexing.context import IndexingContext
 from boba.indexing.extension import IndexerExtensionContext
@@ -54,6 +54,26 @@ class Store(StreamSink[IndexingContext, Chunk], ABC):
     @abstractmethod
     def list_source_ids(self, ctx: IndexingContext) -> Iterable[str]:
         """Все source_id, известные Store'у в текущем контексте."""
+        ...
+
+    @abstractmethod
+    def peek_chunks(
+        self,
+        ctx: IndexingContext,
+        *,
+        source_id: str | None = None,
+        limit: int = 20,
+        snippet_chars: int = 200,
+    ) -> Iterable[ChunkSummary]:
+        """Read-only inspect: вернуть до `limit` ChunkSummary из коллекции.
+
+        `source_id=None` — без фильтра, все чанки коллекции (упорядочивание
+        не гарантировано). С `source_id` — только чанки этого документа,
+        упорядочены по `chunk_index`.
+
+        Метод используется операторским CLI (action=show). Не для агента
+        и не для индексации.
+        """
         ...
 
     def content_hash_for(

@@ -7,6 +7,7 @@ from collections.abc import Iterable
 
 from boba.indexing import (
     Chunk,
+    ChunkSummary,
     CollectionInfo,
     IndexingContext,
     Store,
@@ -83,6 +84,43 @@ class ChromadbPersistStore(Store):
         col.delete(ids=ids)
         return len(ids)
 
+    def peek_chunks(
+        self,
+        ctx: IndexingContext,
+        *,
+        source_id: str | None = None,
+        limit: int = 20,
+        snippet_chars: int = 200,
+    ) -> Iterable[ChunkSummary]:
+        try:
+            col = self._client.get_collection(name=ctx.collection)
+        except Exception as e:
+            logger.warning("peek_chunks: collection not found: %s", e)
+            return
+        kwargs: dict[str, object] = {
+            "include": ["metadatas", "documents"],
+            "limit": limit,
+        }
+        if source_id:
+            kwargs["where"] = {"source_id": source_id}
+        result = col.get(**kwargs)  # type: ignore[arg-type]
+        ids = result.get("ids") or []
+        metas = result.get("metadatas") or []
+        docs = result.get("documents") or []
+        items = list(zip(ids, metas, docs, strict=False))
+        if source_id:
+            items.sort(key=lambda t: _meta_int(t[1], "chunk_index"))
+        for cid, raw_meta, doc in items:
+            meta = raw_meta or {}
+            yield ChunkSummary(
+                chunk_id=str(cid),
+                source_id=str(meta.get("source_id") or ""),
+                anchor=_meta_str_or_none(meta, "anchor"),
+                chunk_index=_meta_int(meta, "chunk_index"),
+                snippet=_truncate(str(doc or ""), snippet_chars),
+                metadata={k: str(v) for k, v in meta.items()},
+            )
+
     def list_source_ids(self, ctx: IndexingContext) -> Iterable[str]:
         col = self._client.get_collection(name=ctx.collection)
         existing = col.get(include=["metadatas"])
@@ -149,6 +187,30 @@ class ChromadbPersistStore(Store):
             documents=documents,
             metadatas=metadatas,  # pyright: ignore[reportArgumentType]
         )
+
+
+def _meta_int(meta: object, key: str) -> int:
+    if not isinstance(meta, dict):
+        return 0
+    raw = meta.get(key)
+    try:
+        return int(raw) if raw is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _meta_str_or_none(meta: object, key: str) -> str | None:
+    if not isinstance(meta, dict):
+        return None
+    v = meta.get(key)
+    return str(v) if v else None
+
+
+def _truncate(text: str, max_chars: int) -> str:
+    text = text.strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "…"
 
 
 def _meta(c: Chunk) -> dict[str, str]:
