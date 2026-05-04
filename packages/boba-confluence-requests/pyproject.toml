@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-confluence-requests"
+version = "0.1.0"
+description = "RequestSource'ы для Confluence Server REST: space / pages / cql; генерируют HttpRequest."
+requires-python = ">=3.11,<4"
+dependencies = ["boba-indexing", "boba-http-transport", "httpx>=0.27"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

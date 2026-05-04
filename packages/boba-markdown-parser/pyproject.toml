@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-markdown-parser"
+version = "0.1.0"
+description = "Generic heading-aware Markdown parser: ATX headings (#) → Headings + anchor utilities."
+requires-python = ">=3.11,<4"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

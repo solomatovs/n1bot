@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from bs4 import BeautifulSoup
 
-from boba.ext.confluence_shared import (
+from boba.confluence_shared import (
     Heading,
     anchor_for,
     collect_headings,
