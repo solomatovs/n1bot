@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-sliding-chunker"
+version = "0.1.0"
+description = "Boba indexing chunker: character-based sliding window with soft breaks."
+requires-python = ">=3.11,<4"
+dependencies = ["boba-config", "boba-foundation", "boba-indexing", "boba-text-splitter"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

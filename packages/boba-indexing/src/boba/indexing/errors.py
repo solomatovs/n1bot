@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 __all__ = [
+    "IncompatibleContentError",
     "IndexingError",
-    "NoMatchingReaderError",
     "SyncUnsupportedError",
 ]
 
@@ -13,22 +13,28 @@ class IndexingError(Exception):
     """База ошибок indexing-домена."""
 
 
-class NoMatchingReaderError(IndexingError):
-    """Ни один Reader не принимает SourceItem (по content_hint)."""
+class IncompatibleContentError(IndexingError):
+    """Reader получил RawDocument, который он не может распарсить.
 
-    def __init__(self, source_id: str, content_hint: str) -> None:
+    Сигнализирует ошибку сборки pipeline (transport отдал не тот content,
+    или RequestSource генерит неверные URL'ы). Не fallback, не recovery —
+    pipeline должен упасть, оператор должен исправить конфигурацию.
+    """
+
+    def __init__(self, reader_id: str, canonical_id: str, reason: str) -> None:
         super().__init__(
-            f"no Reader accepts source_id={source_id!r} hint={content_hint!r}"
+            f"reader {reader_id!r} cannot parse canonical_id={canonical_id!r}: {reason}"
         )
-        self.source_id = source_id
-        self.content_hint = content_hint
+        self.reader_id = reader_id
+        self.canonical_id = canonical_id
+        self.reason = reason
 
 
 class SyncUnsupportedError(IndexingError):
-    """Source не умеет перечислять source_id (бесконечный стрим)."""
+    """RequestSource не умеет перечислять canonical_id'ы (бесконечный стрим)."""
 
-    def __init__(self, source_factory_id: str) -> None:
+    def __init__(self, source_name: str) -> None:
         super().__init__(
-            f"source {source_factory_id!r} does not support listing source_ids"
+            f"request source {source_name!r} does not support listing canonical_ids"
         )
-        self.source_factory_id = source_factory_id
+        self.source_name = source_name

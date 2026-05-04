@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-html-parser"
+version = "0.1.0"
+description = "Generic heading-aware HTML parser: BeautifulSoup → Headings + anchor utilities."
+requires-python = ">=3.11,<4"
+dependencies = ["beautifulsoup4>=4.12", "lxml>=5.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-confluence-reader"
+version = "0.1.0"
+description = "Boba indexing reader: Confluence-export HTML → heading-aware Section[]."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-indexing",
+    "boba-confluence-shared",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

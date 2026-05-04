@@ -1,54 +1,74 @@
-"""IndexPipeline: оркестратор Source → Reader → Chunker → Store (полностью lazy)."""
+"""IndexPipeline: RequestSource → Transport → Reader → Chunker → Store.
+
+Полностью streaming: каждое звено — generator, ни секции, ни чанки не
+накапливаются в list'ы. Память — O(один документ + buffer Store'а).
+"""
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable, Iterator
+from typing import Generic, TypeVar
 
-from boba.indexing.chunks import Chunk
+from boba.indexing.chunker import Chunker
 from boba.indexing.context import IndexingContext
-from boba.indexing.items import SourceItem
-from boba.indexing.sections import Section
-from boba.indexing.source import Source
+from boba.indexing.raw_document import RawDocument
+from boba.indexing.reader import Reader
+from boba.indexing.request import Request
+from boba.indexing.request_source import RequestSource
 from boba.indexing.stats import IndexStats, IndexStatsBuilder
 from boba.indexing.store import Store
-from boba.patterns import StateFull, StreamTransformer
+from boba.indexing.transport import Transport
+from boba.patterns import StateFull
 
 __all__ = ["IndexPipeline"]
 
 logger = logging.getLogger(__name__)
 
+ReqT = TypeVar("ReqT", bound=Request)
 
-class IndexPipeline(StateFull):
-    """Оркестратор одного прогона индексации.
+_HASH_KEYS = ("etag", "version", "mtime", "last_modified")
 
-    Per-item инвариант: для каждого `item.source_id` сначала
-    `Store.delete_by_source(...)`, затем upsert новых чанков. Это даёт
-    idempotent re-index — повторный запуск с тем же контентом приводит
-    к тому же состоянию Store.
+
+class IndexPipeline(StateFull, Generic[ReqT]):
+    """Оркестратор одного прогона индексации, generic по типу Request.
+
+    Per-document инвариант:
+    - Skip-if-unchanged: Pipeline ищет в `RawDocument.metadata` ключи
+      `etag` / `version` / `mtime` / `last_modified` (в порядке приоритета),
+      сравнивает с тем что в Store через `Store.content_hash_for(source_id)`.
+      Если совпадает — документ пропускается.
+    - Иначе: `Store.delete_by_source(source_id)` → reader → chunker →
+      `Store.handle(chunk)` для каждого чанка.
+
+    Per-document error isolation: try/except per item с инкрементом
+    `sources_failed` в stats — одна сломанная страница не валит прогон.
     """
 
     def __init__(
         self,
         *,
-        source: Source,
-        reader: StreamTransformer[IndexingContext, SourceItem, Section],
-        chunker: StreamTransformer[IndexingContext, Section, Chunk],
+        request_source: RequestSource[ReqT],
+        transport: Transport[ReqT],
+        reader: Reader,
+        chunker: Chunker,
         store: Store,
     ) -> None:
-        self._source = source
+        self._request_source = request_source
+        self._transport = transport
         self._reader = reader
         self._chunker = chunker
         self._store = store
 
     def name(self) -> str:
         return (
-            f"IndexPipeline({self._source.name()} → {self._reader.name()}"
-            f" → {self._chunker.name()} → {self._store.name()})"
+            f"IndexPipeline({self._request_source.name()} → "
+            f"{self._transport.name()} → {self._reader.name()} → "
+            f"{self._chunker.name()} → {self._store.name()})"
         )
 
     def reset(self) -> None:
-        self._source.reset()
+        self._request_source.reset()
+        self._transport.reset()
         self._reader.reset()
         self._chunker.reset()
         self._store.reset()
@@ -56,70 +76,62 @@ class IndexPipeline(StateFull):
     def run(
         self, ctx: IndexingContext, *, description: str | None = None
     ) -> IndexStats:
-        """Полностью lazy: Source.yield → Reader.yield → Chunker.yield → Store.handle.
-
-        Память — O(1) per chunk: ни sections, ни chunks не накапливаются в
-        промежуточные list'ы. Только Store держит batch-буфер фиксированного
-        размера (упсёрт батчами для производительности).
-        """
         self._store.ensure_target(ctx, description)
         stats = IndexStatsBuilder()
-        for item in self._source.stream(ctx):
+        requests = self._request_source.stream(ctx)
+        for raw_doc in self._transport.stream(ctx, requests):
             try:
-                self._process_item(ctx, item, stats)
+                self._process_one(ctx, raw_doc, stats)
             except Exception as e:
-                # Один упавший item не должен ронять весь прогон —
-                # логируем и идём дальше, чтобы остальные страницы доехали.
                 logger.warning(
                     "indexing failed for source_id=%r: %s: %s",
-                    item.source_id,
+                    raw_doc.source_id,
                     type(e).__name__,
                     e,
                 )
                 stats.source_failed()
-
         self._store.flush(ctx)
         return stats.build()
 
-    def _process_item(
+    def _process_one(
         self,
         ctx: IndexingContext,
-        item: SourceItem,
+        raw_doc: RawDocument,
         stats: IndexStatsBuilder,
     ) -> None:
-        """Один item: skip-if-unchanged → delete → upsert. Success → source_seen.
-
-        Партиция per-item: ровно одна из стат-категорий инкрементится —
-        `sources_skipped_unchanged` / `sources_failed` (через caller catch) /
-        `sources_processed` (success в самом конце).
-        """
-        # Incremental: если item.content_hash совпадает с тем, что уже в Store
-        # для этого source_id, повторная обработка не нужна.
-        if item.content_hash:
-            existing_hash = self._store.content_hash_for(ctx, item.source_id)
-            if existing_hash and existing_hash == item.content_hash:
+        new_hash = _content_hash_of(raw_doc)
+        if new_hash:
+            existing = self._store.content_hash_for(ctx, raw_doc.source_id)
+            if existing and existing == new_hash:
                 stats.source_skipped_unchanged()
                 return
 
+        stats.source_seen(raw_doc.source_id)
         stats.chunks_deleted_add(
-            self._store.delete_by_source(ctx, item.source_id)
+            self._store.delete_by_source(ctx, raw_doc.source_id)
         )
 
-        sections = _tap(
-            self._reader.stream(ctx, [item]),
-            stats.section_emitted,
-        )
-        for chunk in self._chunker.stream(ctx, sections):
+        sections = self._reader.convert(ctx, raw_doc)
+        # tap для подсчёта sections без list-накопления
+        from collections.abc import Iterator  # noqa: PLC0415
+
+        from boba.indexing.sections import Section  # noqa: PLC0415
+
+        def _tap() -> Iterator[Section]:
+            for s in sections:
+                stats.section_emitted()
+                yield s
+
+        for chunk in self._chunker.stream(ctx, _tap()):
             self._store.handle(ctx, chunk)
             stats.chunk_upserted()
 
-        # source_seen в самом конце — попадёт в processed только если
-        # вся цепочка отработала без исключений.
-        stats.source_seen(item.source_id)
 
-
-def _tap(stream: Iterable[Section], on_emit: Callable[[], None]) -> Iterator[Section]:
-    """Pass-through итератор + side-effect счётчика. Lazy, без накопления."""
-    for section in stream:
-        on_emit()
-        yield section
+def _content_hash_of(raw_doc: RawDocument) -> str:
+    """Извлечь skip-hash из `RawDocument.metadata` по приоритету ключей."""
+    md = raw_doc.metadata
+    for key in _HASH_KEYS:
+        v = md.get(key)
+        if v:
+            return str(v)
+    return ""

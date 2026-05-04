@@ -1,62 +1,54 @@
-"""boba-indexing: контракты Source/Reader/Chunker/Store + IndexPipeline."""
+"""boba-indexing: контракты RequestSource/Transport/Reader/Chunker/Store + Pipeline."""
 
 from __future__ import annotations
 
+from boba.indexing.auth import AuthApplier
 from boba.indexing.chunker import Chunker, ChunkerFactory, ChunkerId
 from boba.indexing.chunks import Chunk, ChunkSummary
 from boba.indexing.collections import CollectionInfo
 from boba.indexing.context import IndexingContext, PipelineId
 from boba.indexing.errors import (
+    IncompatibleContentError,
     IndexingError,
-    NoMatchingReaderError,
     SyncUnsupportedError,
 )
 from boba.indexing.extension import IndexerExtensionContext
-from boba.indexing.items import SourceItem
 from boba.indexing.pipeline import IndexPipeline
-from boba.indexing.reader import Reader, ReaderDispatcher, ReaderId
-from boba.indexing.registry import (
-    ChunkerRegistry,
-    ReaderProvider,
-    ReaderRegistry,
-    SourceRegistry,
-    StoreRegistry,
-)
+from boba.indexing.raw_document import BinaryStream, RawDocument
+from boba.indexing.reader import Reader, ReaderId
+from boba.indexing.request import Request
+from boba.indexing.request_source import RequestSource
 from boba.indexing.sections import Section
-from boba.indexing.source import Source, SourceFactory, SourceId
 from boba.indexing.stats import IndexStats, IndexStatsBuilder
 from boba.indexing.store import Store, StoreFactory, StoreId
+from boba.indexing.transport import Transport
 
 __all__ = [
+    "AuthApplier",
+    "BinaryStream",
     "Chunk",
     "ChunkSummary",
     "Chunker",
     "ChunkerFactory",
     "ChunkerId",
-    "ChunkerRegistry",
     "CollectionInfo",
+    "IncompatibleContentError",
     "IndexPipeline",
     "IndexStats",
     "IndexStatsBuilder",
     "IndexerExtensionContext",
     "IndexingContext",
     "IndexingError",
-    "NoMatchingReaderError",
     "PipelineId",
+    "RawDocument",
     "Reader",
-    "ReaderDispatcher",
     "ReaderId",
-    "ReaderProvider",
-    "ReaderRegistry",
+    "Request",
+    "RequestSource",
     "Section",
-    "Source",
-    "SourceFactory",
-    "SourceId",
-    "SourceItem",
-    "SourceRegistry",
     "Store",
     "StoreFactory",
     "StoreId",
-    "StoreRegistry",
     "SyncUnsupportedError",
+    "Transport",
 ]
