@@ -5,9 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-ext-markdown-reader"
 version = "0.1.0"
-description = "Boba indexing reader: markdown → Section."
+description = "Boba indexing reader: markdown → heading-aware Section'ы."
 requires-python = ">=3.11,<4"
-dependencies = ["boba-indexing"]
+dependencies = ["boba-indexing", "boba-ext-markdown-parser"]
 
 [project.entry-points."boba.indexing.readers"]
 markdown = "boba.ext.markdown_reader:register_readers"

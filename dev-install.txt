@@ -33,10 +33,14 @@
 -e ./packages/boba-cli-vector-index
 -e ./packages/boba-web-chainlit
 
+# shared parsers (используются и tool-extensions, и indexing-readers)
+-e ./packages/boba-ext-html-parser
+-e ./packages/boba-ext-markdown-parser
+-e ./packages/boba-ext-confluence-shared
+
 # tool extensions (boba.tools entry-point)
 -e ./packages/boba-ext-files-tools
 -e ./packages/boba-ext-html-tools
--e ./packages/boba-ext-confluence-shared
 -e ./packages/boba-ext-confluence-tools
 -e ./packages/boba-ext-chromadb-shared
 -e ./packages/boba-ext-chromadb-tools
