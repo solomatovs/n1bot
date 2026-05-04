@@ -1,96 +1,89 @@
-"""Pure parser: BeautifulSoup → Headings + anchor utilities + macro stripping.
+"""Confluence-specific HTML parser: ac:*/ri:* macros + scroll-bookmark anchors.
 
-Без I/O — работает с готовыми bytes/str/BeautifulSoup. Confluence-export
-содержит ac:* / ri:* теги, anchor хранится в `<ac:structured-macro
-ac:name="anchor">`.
+Поверх generic `boba-ext-html-parser`: переопределяет извлечение текста и
+anchor'а, чтобы знать про Confluence-специфику:
+
+- `_heading_anchor`: предпочитает `<ac:structured-macro ac:name="anchor">
+  <ac:parameter>scroll-bookmark-N</ac:parameter></ac:structured-macro>`,
+  иначе fallback на html `id`.
+- Текст heading'ов и текст между ними не включает содержимое ac:*/ri:* тегов
+  (служебная разметка экспорта, не контент).
+- `strip_confluence_macros` вырезает всё ac:*/ri:* поддерево.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from bs4 import BeautifulSoup
 from bs4.element import NavigableString, Tag
+
+from boba.ext.html_parser import (
+    Heading,
+    anchor_for,
+    extract_html_id,
+    heading_default_text_skip,
+    parse_html,
+    resolve_anchor,
+)
+from boba.ext.html_parser import (
+    collect_headings as _collect_headings_generic,
+)
+from boba.ext.html_parser import (
+    plain_text as _plain_text_generic,
+)
+from boba.ext.html_parser import (
+    text_between as _text_between_generic,
+)
 
 __all__ = [
     "Heading",
     "anchor_for",
     "collect_headings",
+    "is_confluence_macro",
     "parse_html",
+    "plain_text",
     "resolve_anchor",
     "strip_confluence_macros",
+    "text_between",
 ]
 
-_HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
 # Служебный браузерный anchor; никогда не бывает осмысленной целью навигации.
 _GOBACK = "_GoBack"
 
 
-@dataclass(frozen=True)
-class Heading:
-    """Заголовок Confluence-страницы; index 1-based, anchor — scroll-bookmark-N."""
-
-    index: int
-    level: int
-    text: str
-    anchor: str | None
-    tag: Tag
-
-
-def parse_html(data: bytes | str) -> BeautifulSoup:
-    """BeautifulSoup поверх lxml — терпит ac:/ri: namespace'ы Confluence."""
-    return BeautifulSoup(data, "lxml")
+def is_confluence_macro(tag: object) -> bool:
+    """True если тег принадлежит Confluence-расширениям (ac:* / ri:*)."""
+    name = getattr(tag, "name", None)
+    return bool(name and name.startswith(("ac:", "ri:")))
 
 
 def collect_headings(
-    soup: BeautifulSoup,
-    max_depth: int | None = None,
+    soup: BeautifulSoup, max_depth: int | None = None
 ) -> list[Heading]:
-    """Все <h1>..<h6> в document order; max_depth ограничивает уровень."""
-    cap = max_depth if max_depth is not None else 6
-    tags = soup.find_all(list(_HEADING_TAGS[:cap]))
-    headings: list[Heading] = []
-    for i, tag in enumerate(tags, start=1):
-        level = int(tag.name[1])
-        headings.append(
-            Heading(
-                index=i,
-                level=level,
-                text=_heading_text(tag),
-                anchor=_heading_anchor(tag),
-                tag=tag,
-            )
-        )
-    return headings
+    """Heading'и Confluence-страницы; anchor — scroll-bookmark или html-id."""
+    return _collect_headings_generic(
+        soup,
+        max_depth=max_depth,
+        text_extractor=_heading_text,
+        anchor_extractor=_heading_anchor,
+    )
 
 
-def anchor_for(h: Heading) -> str:
-    """Канонический anchor: scroll-bookmark-N или idx:N если нет confluence-anchor'а."""
-    return h.anchor if h.anchor else f"idx:{h.index}"
+def text_between(start_tag: Tag, end_tag: Tag | None) -> str:
+    """text_between с пропуском содержимого ac:*/ri:* макросов."""
+    return _text_between_generic(
+        start_tag, end_tag, skip_string=_inside_macro,
+    )
 
 
-def resolve_anchor(headings: list[Heading], anchor: str) -> Heading | None:
-    """Найти heading по anchor: confluence-имя или idx:N (с/без ведущего #)."""
-    key = anchor.lstrip("#").strip()
-    if key.startswith("idx:"):
-        try:
-            idx = int(key[4:])
-        except ValueError:
-            return None
-        for h in headings:
-            if h.index == idx:
-                return h
-        return None
-    for h in headings:
-        if h.anchor == key:
-            return h
-    return None
+def plain_text(node: Tag) -> str:
+    """plain_text поддерева с пропуском ac:*/ri:* содержимого."""
+    return _plain_text_generic(node, skip_string=_inside_macro)
 
 
 def strip_confluence_macros(html: str) -> str:
-    """Вырезать ac:*/ri:* теги из HTML; текстовые children сохраняются."""
+    """Вырезать ac:*/ri:* теги из HTML; текстовые children НЕ сохраняются."""
     soup = parse_html(html)
-    for el in list(soup.find_all(_is_confluence_macro)):
+    for el in list(soup.find_all(is_confluence_macro)):
         el.decompose()
     body = soup.body
     if body is None:
@@ -98,13 +91,8 @@ def strip_confluence_macros(html: str) -> str:
     return body.decode_contents()
 
 
-def _is_confluence_macro(tag: Tag) -> bool:
-    name = getattr(tag, "name", None)
-    return bool(name and name.startswith(("ac:", "ri:")))
-
-
 def _heading_anchor(tag: Tag) -> str | None:
-    """Первый осмысленный confluence-anchor внутри heading; fallback — html id."""
+    """Confluence scroll-bookmark внутри heading; fallback — html id."""
     for sm in tag.find_all(
         lambda t: t.name == "ac:structured-macro" and t.get("ac:name") == "anchor"
     ):
@@ -114,19 +102,15 @@ def _heading_anchor(tag: Tag) -> str | None:
         name = param.get_text(strip=True)
         if name and name != _GOBACK:
             return name
-    raw = tag.get("id")
-    if isinstance(raw, list):
-        return raw[0] if raw else None
-    return str(raw) if raw else None
+    return extract_html_id(tag)
 
 
 def _heading_text(tag: Tag) -> str:
-    """Текст heading без содержимого confluence-макросов."""
-    parts: list[str] = []
-    for el in tag.descendants:
-        if not isinstance(el, NavigableString):
-            continue
-        if any(_is_confluence_macro(p) for p in el.parents):
-            continue
-        parts.append(str(el))
-    return " ".join(" ".join(parts).split())
+    """Текст heading'а без содержимого Confluence-макросов."""
+    return heading_default_text_skip(tag, skip_when=is_confluence_macro)
+
+
+def _inside_macro(el: NavigableString) -> bool:
+    return any(
+        isinstance(p, Tag) and is_confluence_macro(p) for p in el.parents
+    )
