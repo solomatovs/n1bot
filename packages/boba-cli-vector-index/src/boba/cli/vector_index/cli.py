@@ -10,11 +10,9 @@ from boba.cli.vector_index.config import VectorIndexConfig, VectorIndexSection
 from boba.cli.vector_index.plugin_loader import PipelinePluginLoader
 from boba.config.app import AppConfig
 from boba.config.bootstrap import AppConfigBootstrap
-from boba.config.section import ConfigSection
 from boba.config.source.cli import CliSource
 from boba.config.source.env import EnvFileSource, EnvSource
 from boba.config.source.toml import TomlFileSource, TomlSource
-from boba.declaration import FieldPathMissingError
 from boba.ext.chromadb_shared import ChromadbSharedSection
 from boba.indexing import (
     CollectionInfo,
@@ -51,8 +49,6 @@ def main() -> int:
 # ---- index / sync: требуют pipeline-плагин ----
 
 def _handle_index(cfg: VectorIndexConfig, app: AppConfig) -> int:
-    _require(cfg.collection, VectorIndexSection, "collection", "index")
-    _require(cfg.pipeline, VectorIndexSection, "pipeline", "index")
     pipeline = _resolve_pipeline(app, cfg.pipeline)
     icx = IndexingContext(
         pipeline_id=PipelineId(f"cli:{cfg.collection}"),
@@ -73,8 +69,6 @@ def _handle_index(cfg: VectorIndexConfig, app: AppConfig) -> int:
 
 def _handle_sync(cfg: VectorIndexConfig, app: AppConfig) -> int:
     """sync = diff between RequestSource canonical ids vs Store, удалить orphans."""
-    _require(cfg.collection, VectorIndexSection, "collection", "sync")
-    _require(cfg.pipeline, VectorIndexSection, "pipeline", "sync")
     pipeline = _resolve_pipeline(app, cfg.pipeline)
     icx = IndexingContext(
         pipeline_id=PipelineId(f"cli-sync:{cfg.collection}"),
@@ -110,7 +104,6 @@ def _handle_list(cfg: VectorIndexConfig, app: AppConfig) -> int:
 
 
 def _handle_show(cfg: VectorIndexConfig, app: AppConfig) -> int:
-    _require(cfg.collection, VectorIndexSection, "collection", "show")
     store = _resolve_store(app)
     icx = IndexingContext(
         pipeline_id=PipelineId(f"cli-show:{cfg.collection}"),
@@ -153,7 +146,6 @@ def _handle_show(cfg: VectorIndexConfig, app: AppConfig) -> int:
 
 
 def _handle_delete(cfg: VectorIndexConfig, app: AppConfig) -> int:
-    _require(cfg.collection, VectorIndexSection, "collection", "delete")
     store = _resolve_store(app)
     if not cfg.confirm_skip:
         prompt = (
@@ -205,20 +197,6 @@ def _resolve_store(app: AppConfig) -> Store:
 def _print_collection_info(c: CollectionInfo) -> None:
     desc = f" — {c.description}" if c.description else ""
     print(f"{c.name}\t{c.count} chunks{desc}")
-
-
-def _require(
-    value: object,
-    section_cls: type[ConfigSection],
-    field_name: str,
-    action_label: str,
-) -> None:
-    if not value:
-        raise FieldPathMissingError(
-            f"field {field_name!r} обязательно для action={action_label!r} "
-            f"(секция {section_cls.__name__})",
-            field_name=field_name,
-        )
 
 
 def _setup_logging(verbose: int) -> None:

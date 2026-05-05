@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-ext-confluence-cql-pipeline"
+version = "0.1.0"
+description = "Pipeline-плагин: ConfluenceCql → HttpTransport → ConfluenceReader → HeadingChunker → ChromadbStore."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-config",
+    "boba-foundation",
+    "boba-indexing",
+    "boba-confluence-requests",
+    "boba-confluence-reader",
+    "boba-http-transport",
+    "boba-heading-chunker",
+    "boba-chromadb-store",
+    "boba-ext-chromadb-shared",
+]
+
+[project.entry-points."boba.indexing.pipelines"]
+confluence_cql = "boba.ext.confluence_cql_pipeline:register_pipelines"
+
+[project.entry-points."boba.config_sections"]
+confluence_cql_pipeline = "boba.ext.confluence_cql_pipeline.config:ConfluenceCqlPipelineConfigSection"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

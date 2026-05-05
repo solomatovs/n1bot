@@ -9,7 +9,7 @@ from typing import Any, ClassVar
 from boba.coercion.base import Coercer
 from boba.patterns import ConverterInputError
 
-__all__ = ["MutuallyExclusive", "Ordered", "RequiresTogether"]
+__all__ = ["MutuallyExclusive", "Ordered", "RequiredWhen", "RequiresTogether"]
 
 
 class MutuallyExclusive(Coercer[dict[str, Any], dict[str, Any]]):
@@ -52,6 +52,40 @@ class RequiresTogether(Coercer[dict[str, Any], dict[str, Any]]):
             raise ConverterInputError(
                 f"параметры {list(self._names)} должны быть заданы вместе; "
                 f"отсутствуют: {missing}"
+            )
+        return value
+
+
+class RequiredWhen(Coercer[dict[str, Any], dict[str, Any]]):
+    """Conditional-required: если `trigger`-поле равно `trigger_value`, то
+    перечисленные `required`-поля обязаны быть заданы (truthy).
+
+    Поле «не задано» = falsy после coerce'а: `""`, `None`, `[]`, `0`, etc.
+    Удобно когда поле помечено как `required=False` с дефолтом, а
+    реальная обязательность зависит от значения discriminator-поля.
+
+    Пример: `RequiredWhen("auth_method", "basic", "auth_user")` —
+    при `auth_method=basic` нужен `auth_user`.
+    """
+
+    def __init__(
+        self, trigger: str, trigger_value: Any, *required: str,
+    ) -> None:
+        if not required:
+            msg = "RequiredWhen требует минимум одно required-имя"
+            raise ValueError(msg)
+        self._trigger = trigger
+        self._trigger_value = trigger_value
+        self._required = required
+
+    def apply(self, value: dict[str, Any]) -> dict[str, Any]:
+        if value.get(self._trigger) != self._trigger_value:
+            return value
+        missing = [n for n in self._required if not value.get(n)]
+        if missing:
+            raise ConverterInputError(
+                f"при {self._trigger}={self._trigger_value!r} "
+                f"обязательны поля: {missing}"
             )
         return value
 

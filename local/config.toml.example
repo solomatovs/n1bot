@@ -102,7 +102,9 @@ verbose = 1
 # pipeline = "ext.fs_markdown"   # выбор плагина; обязателен для index/sync
 # description = "Documents collection"
 
-# Pipeline-плагин: ext.fs_markdown — обход .md из ФС → heading chunker → Chroma.
+# --- FS-pipelines: индексация локальных файлов ---
+
+# ext.fs_markdown — обход .md → heading-aware chunker → Chroma
 [indexer.pipelines.fs_markdown]
 # paths = ["./local/manual"]
 # include = ["*.md", "*.markdown"]
@@ -111,15 +113,49 @@ verbose = 1
 chunk_size = 1500
 chunk_overlap = 150
 
-# Pipeline-плагин: ext.confluence_space — целый space через REST → Chroma.
+# ext.fs_html — обход .html → heading-aware chunker → Chroma
+[indexer.pipelines.fs_html]
+# paths = ["./local/manual"]
+# include = ["*.html", "*.htm"]
+chunk_size = 1500
+chunk_overlap = 150
+
+# ext.fs_text — обход .txt/.log → sliding chunker (без структуры) → Chroma
+[indexer.pipelines.fs_text]
+# paths = ["./local/logs"]
+# include = ["*.txt", "*.log"]
+chunk_size = 1000
+chunk_overlap = 200
+
+# --- Confluence-pipelines: REST API → Chroma ---
 # Чувствительные поля (base_url, auth_token) задавать env, не TOML:
-#   BOBA_INDEXER__PIPELINES__CONFLUENCE_SPACE__BASE_URL=https://confl.example.com
-#   BOBA_INDEXER__PIPELINES__CONFLUENCE_SPACE__AUTH_TOKEN=<PAT-или-password>
+#   BOBA_INDEXER__PIPELINES__CONFLUENCE_<SPACE|PAGES|CQL>__BASE_URL=...
+#   BOBA_INDEXER__PIPELINES__CONFLUENCE_<SPACE|PAGES|CQL>__AUTH_TOKEN=...
+
+# ext.confluence_space — целый space (`/rest/api/space/<key>/content`)
 [indexer.pipelines.confluence_space]
 auth_method = "pat"            # "pat" | "basic"
 # auth_user = ""               # только для basic
 # space_key = "DOCS"
 body_format = "export_view"    # "export_view" | "view" | "storage"
+timeout_sec = 30.0
+chunk_size = 1500
+chunk_overlap = 150
+
+# ext.confluence_pages — явный список page-id'ов
+[indexer.pipelines.confluence_pages]
+auth_method = "pat"
+# page_ids = ["12345", "67890"]
+body_format = "export_view"
+timeout_sec = 30.0
+chunk_size = 1500
+chunk_overlap = 150
+
+# ext.confluence_cql — CQL-запрос (`/rest/api/content/search?cql=...`)
+[indexer.pipelines.confluence_cql]
+auth_method = "pat"
+# cql = "space = DOCS AND ancestor = 12345"
+body_format = "export_view"
 timeout_sec = 30.0
 chunk_size = 1500
 chunk_overlap = 150

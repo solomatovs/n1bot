@@ -4,7 +4,8 @@
 - preconditions.py   — NotNull, Default, Nullable (наличие значения).
 - types.py           — Parse* (приведение типа) и Is* (строгий type-guard).
 - constraints.py     — OneOf / Min*/Max* / NonEmpty (ограничения).
-- invariants.py      — MutuallyExclusive / RequiresTogether / Ordered (object-level).
+- invariants.py      — Ordered / MutuallyExclusive / RequiresTogether
+                       / RequiredWhen (object-level).
 """
 
 from boba.coercion.base import (
@@ -26,6 +27,7 @@ from boba.coercion.constraints import (
 from boba.coercion.invariants import (
     MutuallyExclusive,
     Ordered,
+    RequiredWhen,
     RequiresTogether,
 )
 from boba.coercion.preconditions import (
@@ -70,6 +72,7 @@ __all__ = [
     "ParseInt",
     "ParseString",
     "Pass",
+    "RequiredWhen",
     "RequiresTogether",
     "SchemaContributor",
     "ValueCoercer",

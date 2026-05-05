@@ -11,7 +11,7 @@
                 "qwen3.5-35b",
                 "llama3.1:8b-instruct-fp16",
                 "llama3.1-8b",
-                "qwen2.5-14b",
+                "qwen2.5-14b"
             ]
         },
         {
@@ -22,14 +22,8 @@
             "options": [
                 "Прочитай список файлов на файловой системе и объясни о чем в них говориться?",
                 "Как именовать таблицы в adqm? прочитай это в файлах и объясни простым языком",
-                "Прочитай файл 950276.html и расскажи как именовать таблицы в adqm на основе его содержимого?",
+                "Прочитай файл 950276.html и расскажи как именовать таблицы в adqm на основе его содержимого?"
             ]
-        },
-        {
-            "id": "indexPath",
-            "type": "promptString",
-            "description": "Путь к файлу или директории для индексации",
-            "default": "${workspaceFolder}/local/docs"
         },
         {
             "id": "indexCollection",
@@ -44,6 +38,18 @@
             "default": "Документы, проиндексированные оператором"
         },
         {
+            "id": "fsPaths",
+            "type": "promptString",
+            "description": "Путь к файлу или директории для индексации (через запятую)",
+            "default": "${workspaceFolder}/local/manual"
+        },
+        {
+            "id": "fsInclude",
+            "type": "promptString",
+            "description": "Glob-фильтры включения через запятую (пусто = все)",
+            "default": ""
+        },
+        {
             "id": "confluencePageIds",
             "type": "promptString",
             "description": "Confluence page-id(s) через запятую",
@@ -52,14 +58,20 @@
         {
             "id": "confluenceSpaceKey",
             "type": "promptString",
-            "description": "Confluence space key (например DOCS, ds)",
-            "default": "ds"
+            "description": "Confluence space key (например DOCS, paas)",
+            "default": "paas"
         },
         {
             "id": "confluenceCql",
             "type": "promptString",
             "description": "Confluence CQL-запрос",
-            "default": "space = ds AND type = page"
+            "default": "space = paas AND type = page"
+        },
+        {
+            "id": "showSourceId",
+            "type": "promptString",
+            "description": "Фильтр по source_id (пусто = все чанки коллекции)",
+            "default": ""
         }
     ],
     "configurations": [
@@ -80,96 +92,7 @@
                 "--agent-run-frequency-penalty", "0.0",
                 "--agent-run-query", "${input:query}"
             ],
-            "envFile": "${workspaceFolder}/local/.env",
-        },
-        {
-            "name": "Vector Index: index FS path",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.cli.vector_index",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "args": [
-                "--vector_index.action=index",
-                "--vector_index.collection=${input:indexCollection}",
-                "--vector_index.description=${input:indexDescription}",
-                "--vector_index.source=ext.fs",
-                "--indexer.sources.fs.paths=${input:indexPath}"
-            ],
-            "envFile": "${workspaceFolder}/local/.env",
-        },
-        {
-            "name": "Vector Index: Confluence (pages)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.cli.vector_index",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "args": [
-                "--vector_index.action=index",
-                "--vector_index.collection=${input:indexCollection}",
-                "--vector_index.description=${input:indexDescription}",
-                "--vector_index.source=ext.confluence_pages",
-                "--indexer.sources.confluence.pages.page_ids=${input:confluencePageIds}"
-            ],
-            "envFile": "${workspaceFolder}/local/.env",
-        },
-        {
-            "name": "Vector Index: Confluence (space)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.cli.vector_index",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "args": [
-                "--vector_index.action=index",
-                "--vector_index.collection=${input:indexCollection}",
-                "--vector_index.description=${input:indexDescription}",
-                "--vector_index.source=ext.confluence_space",
-                "--indexer.sources.confluence.space.space_key=${input:confluenceSpaceKey}"
-            ],
-            "envFile": "${workspaceFolder}/local/.env",
-        },
-        {
-            "name": "Vector Index: Confluence (CQL)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.cli.vector_index",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "args": [
-                "--vector_index.action=index",
-                "--vector_index.collection=${input:indexCollection}",
-                "--vector_index.description=${input:indexDescription}",
-                "--vector_index.source=ext.confluence_cql",
-                "--indexer.sources.confluence.cql.cql=${input:confluenceCql}"
-            ],
-            "envFile": "${workspaceFolder}/local/.env",
-        },
-        {
-            "name": "Vector Index: Sync Confluence space",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.cli.vector_index",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "args": [
-                "--vector_index.action=sync",
-                "--vector_index.collection=${input:indexCollection}",
-                "--vector_index.source=ext.confluence_space",
-                "--indexer.sources.confluence.space.space_key=${input:confluenceSpaceKey}"
-            ],
-            "envFile": "${workspaceFolder}/local/.env",
+            "envFile": "${workspaceFolder}/local/.env"
         },
         {
             "name": "Chainlit: Boba UI",
@@ -185,7 +108,189 @@
                 "--chainlit-port", "8502",
                 "--chainlit-root-path", "/boba-debug"
             ],
-            "envFile": "${workspaceFolder}/local/.env",
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "Vector Index: index FS .md (ext.fs_markdown)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.cli.vector_index",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "--vector_index.action=index",
+                "--vector_index.collection=${input:indexCollection}",
+                "--vector_index.description=${input:indexDescription}",
+                "--vector_index.pipeline=ext.fs_markdown",
+                "--indexer.pipelines.fs_markdown.paths=${input:fsPaths}",
+                "--indexer.pipelines.fs_markdown.include=${input:fsInclude}",
+                "--vector_index.verbose=1"
+            ],
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "Vector Index: index FS .html (ext.fs_html)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.cli.vector_index",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "--vector_index.action=index",
+                "--vector_index.collection=${input:indexCollection}",
+                "--vector_index.description=${input:indexDescription}",
+                "--vector_index.pipeline=ext.fs_html",
+                "--indexer.pipelines.fs_html.paths=${input:fsPaths}",
+                "--indexer.pipelines.fs_html.include=${input:fsInclude}",
+                "--vector_index.verbose=1"
+            ],
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "Vector Index: index FS .txt/.log (ext.fs_text)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.cli.vector_index",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "--vector_index.action=index",
+                "--vector_index.collection=${input:indexCollection}",
+                "--vector_index.description=${input:indexDescription}",
+                "--vector_index.pipeline=ext.fs_text",
+                "--indexer.pipelines.fs_text.paths=${input:fsPaths}",
+                "--indexer.pipelines.fs_text.include=${input:fsInclude}",
+                "--vector_index.verbose=1"
+            ],
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "Vector Index: index Confluence space (ext.confluence_space)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.cli.vector_index",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "--vector_index.action=index",
+                "--vector_index.collection=${input:indexCollection}",
+                "--vector_index.description=${input:indexDescription}",
+                "--vector_index.pipeline=ext.confluence_space",
+                "--indexer.pipelines.confluence_space.space_key=${input:confluenceSpaceKey}",
+                "--vector_index.verbose=1"
+            ],
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "Vector Index: index Confluence pages (ext.confluence_pages)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.cli.vector_index",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "--vector_index.action=index",
+                "--vector_index.collection=${input:indexCollection}",
+                "--vector_index.description=${input:indexDescription}",
+                "--vector_index.pipeline=ext.confluence_pages",
+                "--indexer.pipelines.confluence_pages.page_ids=${input:confluencePageIds}",
+                "--vector_index.verbose=1"
+            ],
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "Vector Index: index Confluence CQL (ext.confluence_cql)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.cli.vector_index",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "--vector_index.action=index",
+                "--vector_index.collection=${input:indexCollection}",
+                "--vector_index.description=${input:indexDescription}",
+                "--vector_index.pipeline=ext.confluence_cql",
+                "--indexer.pipelines.confluence_cql.cql=${input:confluenceCql}",
+                "--vector_index.verbose=1"
+            ],
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "Vector Index: sync Confluence space (orphans)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.cli.vector_index",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "--vector_index.action=sync",
+                "--vector_index.collection=${input:indexCollection}",
+                "--vector_index.pipeline=ext.confluence_space",
+                "--indexer.pipelines.confluence_space.space_key=${input:confluenceSpaceKey}",
+                "--vector_index.verbose=1"
+            ],
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "Vector Index: list collections",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.cli.vector_index",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "--vector_index.action=list"
+            ],
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "Vector Index: show collection",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.cli.vector_index",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "--vector_index.action=show",
+                "--vector_index.collection=${input:indexCollection}",
+                "--vector_index.show_source_id=${input:showSourceId}",
+                "--vector_index.show_limit=20",
+                "--vector_index.show_snippet_chars=200"
+            ],
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "Vector Index: delete collection",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.cli.vector_index",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "--vector_index.action=delete",
+                "--vector_index.collection=${input:indexCollection}"
+            ],
+            "envFile": "${workspaceFolder}/local/.env"
         },
         {
             "name": "Pytest: current file",
@@ -200,10 +305,10 @@
                 "-v",
                 "${file}"
             ],
-            "envFile": "${workspaceFolder}/local/.env",
+            "envFile": "${workspaceFolder}/local/.env"
         },
         {
-            "name": "Pytest: test_e2e_extension.py",
+            "name": "Pytest: all packages",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -213,19 +318,19 @@
             "justMyCode": false,
             "args": [
                 "-v",
-                "${workspaceFolder}/tests/confignext/test_e2e_extension.py"
+                "${workspaceFolder}/packages"
             ],
-            "envFile": "${workspaceFolder}/local/.env",
+            "envFile": "${workspaceFolder}/local/.env"
         },
         {
             "name": "Python current file",
             "type": "debugpy",
             "request": "launch",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/docs",
+            "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "program": "${file}"
-        },
+        }
     ]
 }
