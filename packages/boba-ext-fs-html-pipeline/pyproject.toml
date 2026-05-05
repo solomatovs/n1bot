@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-ext-fs-html-pipeline"
+version = "0.1.0"
+description = "Pipeline-плагин: FsWalk → FsTransport → HtmlReader → HeadingChunker → ChromadbStore."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-config",
+    "boba-foundation",
+    "boba-indexing",
+    "boba-fs-transport",
+    "boba-html-reader",
+    "boba-heading-chunker",
+    "boba-chromadb-store",
+    "boba-ext-chromadb-shared",
+]
+
+[project.entry-points."boba.indexing.pipelines"]
+fs_html = "boba.ext.fs_html_pipeline:register_pipelines"
+
+[project.entry-points."boba.config_sections"]
+fs_html_pipeline = "boba.ext.fs_html_pipeline.config:FsHtmlPipelineConfigSection"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

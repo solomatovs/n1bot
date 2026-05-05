@@ -114,9 +114,77 @@ auth_method = "pat"   # или "basic"
 
 | Ключ | Значение |
 |---|---|
-| `--vector_index.pipeline=ext.fs_markdown` | Pipeline-плагин «обход .md из ФС → heading-aware Section'ы → Chroma». |
+| `--vector_index.pipeline=ext.fs_markdown` | Pipeline-плагин «обход .md → heading-aware Section'ы → heading chunker → Chroma». |
 | `--indexer.pipelines.fs_markdown.paths=./path/to/dir` | Список путей через запятую (файлы или директории). |
 | `--indexer.pipelines.fs_markdown.include="*.md"` | Glob-фильтры включения (через запятую). Пусто — без фильтра. |
+
+### Индексация .html из файловой системы
+
+```bash
+.venv/bin/boba-cli-vector-index \
+  --vector_index.action=index \
+  --vector_index.collection=local_html \
+  --vector_index.pipeline=ext.fs_html \
+  --indexer.pipelines.fs_html.paths=./local/docs \
+  --indexer.pipelines.fs_html.include="*.html,*.htm" \
+  --ext.chromadb.persist_path=./local/chroma
+```
+
+| Ключ | Значение |
+|---|---|
+| `--vector_index.pipeline=ext.fs_html` | Pipeline-плагин «обход .html → heading-aware (по `<h1>..<h6>` + `id`) → heading chunker → Chroma». |
+
+### Индексация .txt/.log из файловой системы
+
+```bash
+.venv/bin/boba-cli-vector-index \
+  --vector_index.action=index \
+  --vector_index.collection=local_logs \
+  --vector_index.pipeline=ext.fs_text \
+  --indexer.pipelines.fs_text.paths=./local/logs \
+  --indexer.pipelines.fs_text.include="*.txt,*.log" \
+  --ext.chromadb.persist_path=./local/chroma
+```
+
+| Ключ | Значение |
+|---|---|
+| `--vector_index.pipeline=ext.fs_text` | Pipeline-плагин «UTF-8 plain-text → одна Section на файл → sliding chunker → Chroma». |
+
+### Индексация явного списка Confluence-страниц
+
+```bash
+.venv/bin/boba-cli-vector-index \
+  --vector_index.action=index \
+  --vector_index.collection=confl_pilot \
+  --vector_index.pipeline=ext.confluence_pages \
+  --indexer.pipelines.confluence_pages.page_ids=12345,67890 \
+  --ext.chromadb.persist_path=./local/chroma
+```
+
+| Ключ | Значение |
+|---|---|
+| `--vector_index.pipeline=ext.confluence_pages` | Pipeline-плагин «явный список page-id'ов». |
+| `--indexer.pipelines.confluence_pages.page_ids=12345,67890` | Page-id'ы через запятую. Page-id виден в URL: `?pageId=12345`. |
+
+Для этого pipeline'а используются те же env: `BOBA_INDEXER__PIPELINES__CONFLUENCE_PAGES__BASE_URL` и `__AUTH_TOKEN`.
+
+### Индексация по CQL-запросу
+
+```bash
+.venv/bin/boba-cli-vector-index \
+  --vector_index.action=index \
+  --vector_index.collection=confl_recent \
+  --vector_index.pipeline=ext.confluence_cql \
+  --indexer.pipelines.confluence_cql.cql="space = DOCS AND lastModified > '2024-01-01'" \
+  --ext.chromadb.persist_path=./local/chroma
+```
+
+| Ключ | Значение |
+|---|---|
+| `--vector_index.pipeline=ext.confluence_cql` | Pipeline-плагин «CQL-запрос». |
+| `--indexer.pipelines.confluence_cql.cql="..."` | Любой валидный CQL. Примеры: `space = DOCS AND ancestor = 12345` (поддерево от страницы), `label = "api" AND space = DOCS` (по тегу), `space = DOCS AND lastModified > '2024-01-01'` (за период). |
+
+env: `BOBA_INDEXER__PIPELINES__CONFLUENCE_CQL__BASE_URL` и `__AUTH_TOKEN`.
 
 ### Список коллекций
 

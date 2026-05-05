@@ -13,6 +13,7 @@ from boba.coercion import (
     ParseBool,
     ParseInt,
     ParseString,
+    RequiredWhen,
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
@@ -117,5 +118,12 @@ class VectorIndexSection(ConfigSection[VectorIndexConfig]):
                 ),
             ),
         ],
+        # Conditional-required по action — declarative, без runtime-helper'ов:
+        invariants=ChainCoercer(
+            RequiredWhen("action", "index", "collection", "pipeline"),
+            RequiredWhen("action", "sync", "collection", "pipeline"),
+            RequiredWhen("action", "show", "collection"),
+            RequiredWhen("action", "delete", "collection"),
+        ),
         factory=VectorIndexConfig,
     )
