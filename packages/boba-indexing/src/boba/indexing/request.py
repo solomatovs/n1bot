@@ -27,11 +27,13 @@ class Request(Protocol):
 
     @property
     def source_id(self) -> str: ...
-    """Canonical id итогового документа (например `confluence://host/page/12345`).
+    """Canonical id итогового документа.
 
-    RequestSource ставит сюда canonical, который попадёт в `Section.source_id`
-    каждого чанка. Если RequestSource не знает — использует transport-уровень
-    (URL для HTTP, `fs:/path` для FS)."""
+    RequestSource обязан установить — Transport не fallback'ит. Обычно это
+    стабильный URL по которому документ доступен (для Confluence — viewpage
+    URL `https://host/pages/viewpage.action?pageId=12345`, для FS —
+    `fs:/abs/path`). НЕ обязан совпадать с URL HTTP-запроса (например, REST
+    endpoint с expand-параметрами — отдельно от viewpage URL)."""
 
     @property
     def metadata(self) -> Mapping[str, str]: ...

@@ -7,7 +7,7 @@ name = "boba-heading-chunker"
 version = "0.1.0"
 description = "Boba indexing chunker: per-Section split (anchor-preserving), без пересечения границ heading'ов."
 requires-python = ">=3.11,<4"
-dependencies = ["boba-config", "boba-foundation", "boba-indexing", "boba-text-splitter"]
+dependencies = ["boba-indexing", "boba-text-splitter"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

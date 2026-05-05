@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from boba.indexing.auth import AuthApplier
-from boba.indexing.chunker import Chunker, ChunkerFactory, ChunkerId
+from boba.indexing.chunker import Chunker, ChunkerId
 from boba.indexing.chunks import Chunk, ChunkSummary
 from boba.indexing.collections import CollectionInfo
 from boba.indexing.context import IndexingContext, PipelineId
@@ -21,7 +21,7 @@ from boba.indexing.request import Request
 from boba.indexing.request_source import RequestSource
 from boba.indexing.sections import Section
 from boba.indexing.stats import IndexStats, IndexStatsBuilder
-from boba.indexing.store import Store, StoreFactory, StoreId
+from boba.indexing.store import Store, StoreId
 from boba.indexing.transport import Transport
 
 __all__ = [
@@ -30,7 +30,6 @@ __all__ = [
     "Chunk",
     "ChunkSummary",
     "Chunker",
-    "ChunkerFactory",
     "ChunkerId",
     "CollectionInfo",
     "IncompatibleContentError",
@@ -50,7 +49,6 @@ __all__ = [
     "RequestSource",
     "Section",
     "Store",
-    "StoreFactory",
     "StoreId",
     "SyncUnsupportedError",
     "Transport",
