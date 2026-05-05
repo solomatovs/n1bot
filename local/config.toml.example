@@ -164,7 +164,7 @@ description = ""
 collection = ""
 pipeline = ""
 
-[vector_index.show]
+[vector_index.print]
 collection = ""
 source_id = ""
 limit = 20
