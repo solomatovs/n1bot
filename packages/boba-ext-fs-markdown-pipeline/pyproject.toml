@@ -19,10 +19,7 @@ dependencies = [
 ]
 
 [project.entry-points."boba.indexing.pipelines"]
-fs_markdown = "boba.ext.fs_markdown_pipeline:register_pipelines"
-
-[project.entry-points."boba.config_sections"]
-fs_markdown_pipeline = "boba.ext.fs_markdown_pipeline.config:FsMarkdownPipelineConfigSection"
+"ext.fs_markdown" = "boba.ext.fs_markdown_pipeline:PIPELINE"
 
 [tool.setuptools.packages.find]
 where = ["src"]

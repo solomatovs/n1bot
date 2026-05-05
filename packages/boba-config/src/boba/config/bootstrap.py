@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from boba.config.app import AppConfig, AppConfigFactory
+from boba.config.app import AppConfig, ConfigSectionFactory
 from boba.config.bundle import ConfigBundle, ConfigBundleFactory
 from boba.config.path import ConfigSource
 from boba.config.section import ConfigSection
@@ -32,22 +32,22 @@ class AppConfigBootstrap:
 
     def __init__(self) -> None:
         self._bundle_factory = ConfigBundleFactory()
-        self._app_factory = AppConfigFactory()
+        self._section_factory = ConfigSectionFactory()
 
     def attach_sources(self, sources: Iterable[ConfigSource]) -> None:
         self._bundle_factory.attach_sources(sources)
 
     def register_section(self, section: ConfigSection[Any]) -> None:
-        self._app_factory.register_section(section)
+        self._section_factory.register_section(section)
 
     def discover_extension_sections(self) -> None:
-        self._app_factory.discover_extension_sections()
+        self._section_factory.discover_extension_sections()
 
     def bundle_factory(self) -> ConfigBundleFactory:
         return self._bundle_factory
 
-    def app_factory(self) -> AppConfigFactory:
-        return self._app_factory
+    def app_factory(self) -> ConfigSectionFactory:
+        return self._section_factory
 
     def build_bundle(self) -> ConfigBundle:
         """Собрать только foundation-bundle (без секций)."""
@@ -55,4 +55,4 @@ class AppConfigBootstrap:
 
     def build(self) -> AppConfig:
         """Собрать готовый AppConfig: sources → bundle → секции в реестр."""
-        return self._app_factory.build(self._bundle_factory.build())
+        return self._section_factory.build(self._bundle_factory.build())

@@ -16,7 +16,7 @@ from boba.coercion import (
     ParseInt,
     ParseString,
 )
-from boba.config.app import AppConfig, AppConfigFactory, SectionMissingError
+from boba.config.app import AppConfig, ConfigSectionFactory, SectionMissingError
 from boba.config.bundle import ConfigBundle, ConfigBundleFactory
 from boba.config.path import ConfigPath, ConfigSource
 from boba.config.section import ConfigSection
@@ -91,9 +91,9 @@ def _make_bundle(*sources: ConfigSource) -> ConfigBundle:
     return bf.build()
 
 
-def _make_factory() -> AppConfigFactory:
+def _make_factory() -> ConfigSectionFactory:
     """Helper: новая пустая AppConfigFactory."""
-    return AppConfigFactory()
+    return ConfigSectionFactory()
 
 
 def test_factory_build_with_defaults_when_no_sources():
@@ -142,6 +142,7 @@ def test_register_twice_silent_overwrites_last_wins():
 
     class _OtherAppCoreSection(ConfigSection[_Cfg]):
         """Альтернативная декларация той же секции с другим default."""
+
         id: ClassVar[StrId] = StrId("app_core")
         namespace: ClassVar[tuple[str, ...]] = ("app",)
         schema: ClassVar[ObjectSchema[_Cfg]] = ObjectSchema(
@@ -154,7 +155,7 @@ def test_register_twice_silent_overwrites_last_wins():
 
     factory = _make_factory()
     factory.register_section(AppCoreSection())
-    factory.register_section(_OtherAppCoreSection())            # перезаписывает
+    factory.register_section(_OtherAppCoreSection())  # перезаписывает
     app = factory.build(_make_bundle())
     assert app.section(AppCoreSection) == _Cfg(log_level="DEBUG", ssl_verify=True)
 

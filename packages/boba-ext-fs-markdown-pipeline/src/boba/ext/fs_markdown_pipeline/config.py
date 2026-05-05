@@ -9,6 +9,7 @@ from boba.coercion import (
     ChainCoercer,
     Default,
     MinValue,
+    NonEmpty,
     ParseBool,
     ParseCsvList,
     ParseInt,
@@ -35,29 +36,17 @@ class FsMarkdownPipelineConfigSection(ConfigSection[FsMarkdownPipelineConfig]):
     namespace: ClassVar[tuple[str, ...]] = ("indexer", "pipelines", "fs_markdown")
 
     schema: ClassVar[ObjectSchema[FsMarkdownPipelineConfig]] = ObjectSchema(
-        description=(
-            "Параметры pipeline'а 'ext.fs_markdown': обход директорий + парсинг "
-            ".md → heading-aware Section'ы → heading chunker → ChromaDB store."
-        ),
         fields=[
             FieldSpec(
                 name="paths",
-                coercer=ParseCsvList(),
-                description=(
-                    "Файлы и/или директории для обхода. Директории обходятся "
-                    "рекурсивно (rglob). Скрытые `.dot`-пути пропускаются. "
-                    "Обязателен для запуска pipeline'а; default — пусто, "
-                    "чтобы установка пакета не валила приложение, не "
-                    "использующее этот pipeline."
-                ),
+                coercer=ChainCoercer(ParseCsvList(), NonEmpty()),
+                required=True,
+                description="Файлы и/или директории для обхода (rglob).",
             ),
             FieldSpec(
                 name="include",
                 coercer=ParseCsvList(),
-                description=(
-                    "Glob-паттерны включения (по имени и относительному пути). "
-                    "Пусто — без фильтра. Пример: '*.md,*.markdown'."
-                ),
+                description="Glob-паттерны включения. Пример: '*.md,*.markdown'.",
             ),
             FieldSpec(
                 name="exclude",
@@ -67,7 +56,7 @@ class FsMarkdownPipelineConfigSection(ConfigSection[FsMarkdownPipelineConfig]):
             FieldSpec(
                 name="follow_symlinks",
                 coercer=ChainCoercer(Default(False), ParseBool()),
-                description="Следовать за symlink-ами (риск циклов).",
+                description="Следовать за symlink-ами.",
             ),
             FieldSpec(
                 name="chunk_size",

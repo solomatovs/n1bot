@@ -13,6 +13,7 @@ from boba.coercion import (
     ParseFloat,
     ParseInt,
     ParseString,
+    RequiredWhen,
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
@@ -25,11 +26,11 @@ __all__ = [
 
 @dataclass(frozen=True)
 class ConfluenceCqlPipelineConfig:
-    base_url: str = ""
-    auth_method: str = "pat"
-    auth_user: str = ""
-    auth_token: str = ""
-    cql: str = ""
+    base_url: str
+    auth_method: str
+    auth_user: str
+    auth_token: str
+    cql: str
     body_format: str = "export_view"
     timeout_sec: float = 30.0
     chunk_size: int = 1500
@@ -46,19 +47,12 @@ class ConfluenceCqlPipelineConfigSection(
     )
 
     schema: ClassVar[ObjectSchema[ConfluenceCqlPipelineConfig]] = ObjectSchema(
-        description=(
-            "Pipeline 'ext.confluence_cql': произвольный CQL-запрос → "
-            "REST `/rest/api/content/search?cql=...` → ConfluenceReader → "
-            "heading chunker → ChromaDB."
-        ),
         fields=[
             FieldSpec(
                 name="base_url",
-                coercer=ChainCoercer(Default(""), ParseString()),
-                description=(
-                    "URL Confluence (env: "
-                    "BOBA_INDEXER__PIPELINES__CONFLUENCE_CQL__BASE_URL)."
-                ),
+                coercer=ParseString(),
+                required=True,
+                description="URL Confluence (env: ...__BASE_URL).",
             ),
             FieldSpec(
                 name="auth_method",
@@ -74,20 +68,17 @@ class ConfluenceCqlPipelineConfigSection(
             ),
             FieldSpec(
                 name="auth_token",
-                coercer=ChainCoercer(Default(""), ParseString()),
-                description=(
-                    "Токен (env: "
-                    "BOBA_INDEXER__PIPELINES__CONFLUENCE_CQL__AUTH_TOKEN)."
-                ),
+                coercer=ParseString(),
+                required=True,
+                description="Токен (env: ...__AUTH_TOKEN).",
             ),
             FieldSpec(
                 name="cql",
-                coercer=ChainCoercer(Default(""), ParseString()),
+                coercer=ParseString(),
+                required=True,
                 description=(
-                    "CQL-запрос. Примеры: "
-                    "'space = DOCS AND ancestor = 12345' (поддерево), "
-                    "'label = api AND space = DOCS' (по тегу), "
-                    "'space = DOCS AND lastModified > \\'2024-01-01\\''."
+                    "CQL-запрос. Примеры: 'space = DOCS AND ancestor = 12345', "
+                    "'label = api AND space = DOCS'."
                 ),
             ),
             FieldSpec(
@@ -112,8 +103,9 @@ class ConfluenceCqlPipelineConfigSection(
             FieldSpec(
                 name="chunk_overlap",
                 coercer=ChainCoercer(Default(150), ParseInt()),
-                description="Перекрытие sub-чанков внутри одной Section.",
+                description="Перекрытие sub-чанков.",
             ),
         ],
+        invariants=RequiredWhen("auth_method", "basic", "auth_user"),
         factory=ConfluenceCqlPipelineConfig,
     )

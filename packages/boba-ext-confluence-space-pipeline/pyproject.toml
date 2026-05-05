@@ -20,10 +20,7 @@ dependencies = [
 ]
 
 [project.entry-points."boba.indexing.pipelines"]
-confluence_space = "boba.ext.confluence_space_pipeline:register_pipelines"
-
-[project.entry-points."boba.config_sections"]
-confluence_space_pipeline = "boba.ext.confluence_space_pipeline.config:ConfluenceSpacePipelineConfigSection"
+"ext.confluence_space" = "boba.ext.confluence_space_pipeline:PIPELINE"
 
 [tool.setuptools.packages.find]
 where = ["src"]

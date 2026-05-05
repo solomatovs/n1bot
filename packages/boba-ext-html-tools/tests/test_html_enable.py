@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from boba.config.app import AppConfigFactory
+from boba.config.app import ConfigSectionFactory
 from boba.config.bundle import ConfigBundle
 from boba.config.path import (
     ConfigLookup,
@@ -47,7 +47,7 @@ class _InlineSource(ConfigSource):
 
 def _make_app(values: dict[str, str]):
     bundle = ConfigBundle.from_sources([_InlineSource(values)])
-    factory = AppConfigFactory()
+    factory = ConfigSectionFactory()
     factory.discover_extension_sections()
     return factory.build(bundle)
 

@@ -1,4 +1,4 @@
-"""IndexPipeline: RequestSource → Transport → Reader → Chunker → Store.
+"""IndexPipeline: RequestSource → Transport → Decoder → Reader → Chunker → Store.
 
 Полностью streaming: каждое звено — generator, ни секции, ни чанки не
 накапливаются в list'ы. Память — O(один документ + buffer Store'а).
@@ -7,15 +7,18 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from dataclasses import replace
 from typing import Generic, TypeVar
 
 from boba.indexing.chunker import Chunker
 from boba.indexing.context import IndexingContext
+from boba.indexing.decoder import Decoder, IdentityDecoder
 from boba.indexing.raw_document import RawDocument
 from boba.indexing.reader import Reader
 from boba.indexing.request import Request
 from boba.indexing.request_source import RequestSource
+from boba.indexing.sections import Section
 from boba.indexing.stats import IndexStats, IndexStatsBuilder
 from boba.indexing.store import Store
 from boba.indexing.transport import Transport
@@ -33,19 +36,16 @@ _HASH_KEYS = ("etag", "version", "mtime", "last_modified")
 class IndexPipeline(StateFull, Generic[ReqT]):
     """Оркестратор одного прогона индексации, generic по типу Request.
 
-    Per-document инвариант:
+    Per-document:
     - Skip-if-unchanged: Pipeline ищет в `RawDocument.metadata` ключи
       `etag` / `version` / `mtime` / `last_modified` (в порядке приоритета),
       сравнивает с тем что в Store через `Store.content_hash_for(source_id)`.
       Если совпадает — документ пропускается.
     - Иначе: `Store.delete_by_source(source_id)` → reader → chunker →
       `Store.handle(chunk)` для каждого чанка.
-
-    Per-document error isolation: try/except per item с инкрементом
-    `sources_failed` в stats — одна сломанная страница не валит прогон.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         request_source: RequestSource[ReqT],
@@ -53,9 +53,11 @@ class IndexPipeline(StateFull, Generic[ReqT]):
         reader: Reader,
         chunker: Chunker,
         store: Store,
+        decoder: Decoder | None = None,
     ) -> None:
         self._request_source = request_source
         self._transport = transport
+        self._decoder = decoder if decoder is not None else IdentityDecoder()
         self._reader = reader
         self._chunker = chunker
         self._store = store
@@ -63,8 +65,9 @@ class IndexPipeline(StateFull, Generic[ReqT]):
     def name(self) -> str:
         return (
             f"IndexPipeline({self._request_source.name()} → "
-            f"{self._transport.name()} → {self._reader.name()} → "
-            f"{self._chunker.name()} → {self._store.name()})"
+            f"{self._transport.name()} → {self._decoder.name()} → "
+            f"{self._reader.name()} → {self._chunker.name()} → "
+            f"{self._store.name()})"
         )
 
     @property
@@ -80,6 +83,7 @@ class IndexPipeline(StateFull, Generic[ReqT]):
     def reset(self) -> None:
         self._request_source.reset()
         self._transport.reset()
+        self._decoder.reset()
         self._reader.reset()
         self._chunker.reset()
         self._store.reset()
@@ -118,15 +122,10 @@ class IndexPipeline(StateFull, Generic[ReqT]):
                 return
 
         stats.source_seen(raw_doc.source_id)
-        stats.chunks_deleted_add(
-            self._store.delete_by_source(ctx, raw_doc.source_id)
-        )
+        stats.chunks_deleted_add(self._store.delete_by_source(ctx, raw_doc.source_id))
 
-        sections = self._reader.convert(ctx, raw_doc)
-        # tap для подсчёта sections без list-накопления
-        from collections.abc import Iterator  # noqa: PLC0415
-
-        from boba.indexing.sections import Section  # noqa: PLC0415
+        decoded = self._decoder.convert(ctx, raw_doc)
+        sections = self._reader.convert(ctx, decoded)
 
         def _tap() -> Iterator[Section]:
             for s in sections:

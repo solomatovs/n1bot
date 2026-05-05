@@ -8,7 +8,7 @@ Operator задаёт `[ext.files.tools.cat] description = "..."` и
 
 from __future__ import annotations
 
-from boba.config.app import AppConfigFactory
+from boba.config.app import ConfigSectionFactory
 from boba.config.bundle import ConfigBundle
 from boba.config.path import (
     ConfigLookup,
@@ -55,14 +55,16 @@ class _InlineSource(ConfigSource):
 
 def _make_app(values: dict[str, str]):
     bundle = ConfigBundle.from_sources([_InlineSource(values)])
-    factory = AppConfigFactory()
+    factory = ConfigSectionFactory()
     factory.discover_extension_sections()
     return factory.build(bundle)
 
 
 def _cat_tool(app):
     sources = list(files_register_tools(ExtensionContext(config=app)))
-    return next(t for src in sources for t in src.tools() if t.tool_id().to_wire() == "cat")
+    return next(
+        t for src in sources for t in src.tools() if t.tool_id().to_wire() == "cat"
+    )
 
 
 def test_tool_description_default_when_no_overlay():

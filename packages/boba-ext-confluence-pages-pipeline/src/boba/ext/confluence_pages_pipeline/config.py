@@ -9,11 +9,13 @@ from boba.coercion import (
     ChainCoercer,
     Default,
     MinValue,
+    NonEmpty,
     OneOf,
     ParseCsvList,
     ParseFloat,
     ParseInt,
     ParseString,
+    RequiredWhen,
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
@@ -26,10 +28,10 @@ __all__ = [
 
 @dataclass(frozen=True)
 class ConfluencePagesPipelineConfig:
-    base_url: str = ""
-    auth_method: str = "pat"
-    auth_user: str = ""
-    auth_token: str = ""
+    base_url: str
+    auth_method: str
+    auth_user: str
+    auth_token: str
     page_ids: list[str] = field(default_factory=list)
     body_format: str = "export_view"
     timeout_sec: float = 30.0
@@ -47,19 +49,12 @@ class ConfluencePagesPipelineConfigSection(
     )
 
     schema: ClassVar[ObjectSchema[ConfluencePagesPipelineConfig]] = ObjectSchema(
-        description=(
-            "Pipeline 'ext.confluence_pages': явный список page-id'ов → "
-            "REST `/rest/api/content/{id}` → ConfluenceReader → heading "
-            "chunker → ChromaDB."
-        ),
         fields=[
             FieldSpec(
                 name="base_url",
-                coercer=ChainCoercer(Default(""), ParseString()),
-                description=(
-                    "URL Confluence (env: "
-                    "BOBA_INDEXER__PIPELINES__CONFLUENCE_PAGES__BASE_URL)."
-                ),
+                coercer=ParseString(),
+                required=True,
+                description="URL Confluence (env: ...__BASE_URL).",
             ),
             FieldSpec(
                 name="auth_method",
@@ -75,19 +70,15 @@ class ConfluencePagesPipelineConfigSection(
             ),
             FieldSpec(
                 name="auth_token",
-                coercer=ChainCoercer(Default(""), ParseString()),
-                description=(
-                    "Токен (env: "
-                    "BOBA_INDEXER__PIPELINES__CONFLUENCE_PAGES__AUTH_TOKEN)."
-                ),
+                coercer=ParseString(),
+                required=True,
+                description="Токен (env: ...__AUTH_TOKEN).",
             ),
             FieldSpec(
                 name="page_ids",
-                coercer=ParseCsvList(),
-                description=(
-                    "Page-id'ы через запятую (виден в URL Confluence: "
-                    "`?pageId=12345`)."
-                ),
+                coercer=ChainCoercer(ParseCsvList(), NonEmpty()),
+                required=True,
+                description="Page-id'ы через запятую.",
             ),
             FieldSpec(
                 name="body_format",
@@ -111,8 +102,9 @@ class ConfluencePagesPipelineConfigSection(
             FieldSpec(
                 name="chunk_overlap",
                 coercer=ChainCoercer(Default(150), ParseInt()),
-                description="Перекрытие sub-чанков внутри одной Section.",
+                description="Перекрытие sub-чанков.",
             ),
         ],
+        invariants=RequiredWhen("auth_method", "basic", "auth_user"),
         factory=ConfluencePagesPipelineConfig,
     )
