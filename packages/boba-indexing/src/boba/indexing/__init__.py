@@ -14,6 +14,7 @@ from boba.indexing.errors import (
 )
 from boba.indexing.extension import IndexerExtensionContext
 from boba.indexing.pipeline import IndexPipeline
+from boba.indexing.pipeline_factory import PipelineFactory, PipelineRegistry
 from boba.indexing.raw_document import BinaryStream, RawDocument
 from boba.indexing.reader import Reader, ReaderId
 from boba.indexing.request import Request
@@ -39,7 +40,9 @@ __all__ = [
     "IndexerExtensionContext",
     "IndexingContext",
     "IndexingError",
+    "PipelineFactory",
     "PipelineId",
+    "PipelineRegistry",
     "RawDocument",
     "Reader",
     "ReaderId",

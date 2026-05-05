@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import Generic, TypeVar
 
 from boba.indexing.chunker import Chunker
@@ -66,6 +67,16 @@ class IndexPipeline(StateFull, Generic[ReqT]):
             f"{self._chunker.name()} → {self._store.name()})"
         )
 
+    @property
+    def request_source(self) -> RequestSource[ReqT]:
+        """Доступ к RequestSource — для sync-операций (list_source_ids)."""
+        return self._request_source
+
+    @property
+    def store(self) -> Store:
+        """Доступ к Store — для list/show/sync-операций CLI."""
+        return self._store
+
     def reset(self) -> None:
         self._request_source.reset()
         self._transport.reset()
@@ -123,7 +134,10 @@ class IndexPipeline(StateFull, Generic[ReqT]):
                 yield s
 
         for chunk in self._chunker.stream(ctx, _tap()):
-            self._store.handle(ctx, chunk)
+            # Pipeline кладёт hash из raw_doc.metadata в Chunk.content_hash —
+            # Reader/Chunker про hash не знают, это политика Pipeline'а.
+            stamped = replace(chunk, content_hash=new_hash) if new_hash else chunk
+            self._store.handle(ctx, stamped)
             stats.chunk_upserted()
 
 
