@@ -18,9 +18,10 @@ class HttpRequest:
     Authorization-header или auth-tuple). Transport не знает про PAT/Basic/
     OAuth — просто вызывает callback.
 
-    `source_id` ставится RequestSource'ом — canonical id итогового документа
-    (например `confluence://host/page/12345`). Если RequestSource не знает —
-    можно использовать `url` как fallback.
+    `source_id` ставится RequestSource'ом — стабильный URL по которому
+    документ доступен (для Confluence — viewpage URL, отдельный от REST URL
+    запроса). HttpTransport не fallback'ит — пустой source_id это ошибка
+    сборки RequestSource'а.
 
     `metadata` — обогащение для Section.metadata: page_id, space_key и т.п.
     """

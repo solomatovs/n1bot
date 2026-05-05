@@ -18,13 +18,13 @@ class Section:
 
     `order` — порядок в исходном документе; нужен для детерминизма chunk_id.
 
-    `content_hash` — копия `SourceItem.content_hash`, протекает через всю
-    цепочку до Store для skip-if-unchanged логики Pipeline.
+    `content_hash` для skip-if-unchanged живёт в `RawDocument.metadata` и
+    проставляется Pipeline'ом в Chunk перед Store — Reader/Chunker про него
+    не знают.
     """
 
     source_id: str
     text: str
     anchor: str | None = None
     order: int = 0
-    content_hash: str = ""
     metadata: Mapping[str, str] = field(default_factory=dict)

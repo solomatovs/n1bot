@@ -16,7 +16,7 @@ def _doc(
     html: str,
     *,
     title: str = "",
-    source_id: str = "confluence://x/page/1",
+    source_id: str = "https://confl.test/pages/viewpage.action?pageId=1",
 ) -> RawDocument:
     metadata = {"title": title} if title else {}
     return RawDocument(
@@ -146,7 +146,7 @@ def test_metadata_merge_from_raw_document():
     html = "<html><body><h1>T</h1><p>x</p></body></html>"
     doc = RawDocument(
         handle=BytesIO(html.encode("utf-8")),
-        source_id="confluence://x/page/777",
+        source_id="https://confl.test/pages/viewpage.action?pageId=777",
         content_hint="confluence_html",
         metadata={
             "title": "Page",

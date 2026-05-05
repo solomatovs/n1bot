@@ -1,4 +1,4 @@
-"""Store: StreamSink[IndexingContext, Chunk] + sync-операции + Factory."""
+"""Store: StreamSink[IndexingContext, Chunk] + sync/admin операции."""
 
 from __future__ import annotations
 
@@ -8,10 +8,9 @@ from collections.abc import Iterable
 from boba.indexing.chunks import Chunk, ChunkSummary
 from boba.indexing.collections import CollectionInfo
 from boba.indexing.context import IndexingContext
-from boba.indexing.extension import IndexerExtensionContext
-from boba.patterns import ContextItemProvider, StreamSink, StrId
+from boba.patterns import StreamSink, StrId
 
-__all__ = ["Store", "StoreFactory", "StoreId"]
+__all__ = ["Store", "StoreId"]
 
 
 class StoreId(StrId):
@@ -104,16 +103,3 @@ class Store(StreamSink[IndexingContext, Chunk], ABC):
     def delete_collection(self, name: str) -> None:
         """Удалить коллекцию целиком."""
         ...
-
-
-class StoreFactory(
-    ContextItemProvider[IndexerExtensionContext, StoreId, Store],
-    ABC,
-):
-    """Фабрика Store: AppConfig → готовый параметризованный Store."""
-
-    @abstractmethod
-    def id(self) -> StoreId: ...
-
-    @abstractmethod
-    def produce(self, ctx: IndexerExtensionContext) -> Store: ...
