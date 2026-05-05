@@ -1,4 +1,4 @@
-"""Конфиг runner'а boba-cli-vector-index — выбор pipeline по id + общие поля."""
+"""ConfigSection'ы CLI-runner'а — per-handle DTO с своими required-полями."""
 
 from __future__ import annotations
 
@@ -10,15 +10,31 @@ from boba.coercion import (
     Default,
     Nullable,
     OneOf,
-    ParseBool,
     ParseInt,
     ParseString,
-    RequiredWhen,
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.patterns import StrId
 
-__all__ = ["ACTIONS", "VectorIndexConfig", "VectorIndexSection"]
+__all__ = [
+    "ACTIONS",
+    "DeleteCommandConfig",
+    "DeleteCommandSection",
+    "IndexCommandConfig",
+    "IndexCommandSection",
+    "ShowCommandConfig",
+    "ShowCommandSection",
+    "SyncCommandConfig",
+    "SyncCommandSection",
+    "VectorIndexActionConfig",
+    "VectorIndexActionSection",
+    "VectorIndexChromadbConfig",
+    "VectorIndexChromadbSection",
+    "VectorIndexCommonConfig",
+    "VectorIndexCommonSection",
+    "command_section_for",
+]
 
 
 ACTIONS: frozenset[str] = frozenset(
@@ -27,103 +43,208 @@ ACTIONS: frozenset[str] = frozenset(
 
 
 @dataclass(frozen=True)
-class VectorIndexConfig:
-    """Параметры одного запуска CLI-runner'а."""
-
+class VectorIndexActionConfig:
     action: str
-    collection: str
-    description: str | None
-    confirm_skip: bool
-    verbose: int
-    pipeline: str
-    show_source_id: str | None
-    show_limit: int
-    show_snippet_chars: int
 
 
-class VectorIndexSection(ConfigSection[VectorIndexConfig]):
-    """Секция [vector_index] — runner CLI."""
+class VectorIndexActionSection(ConfigSection[VectorIndexActionConfig]):
+    """Discriminator-секция: только `action`. Используется first-stage bootstrap'ом
+    чтобы выбрать какую CommandSection регистрировать на second stage."""
 
+    id: ClassVar[StrId] = StrId("vector_index_action")
     namespace: ClassVar[tuple[str, ...]] = ("vector_index",)
 
-    schema: ClassVar[ObjectSchema[VectorIndexConfig]] = ObjectSchema(
-        description=(
-            "Параметры одного запуска CLI: action + collection + pipeline-id. "
-            "Параметры самого pipeline'а — в его собственной секции "
-            "[indexer.pipelines.<pipeline_id>]."
-        ),
+    schema: ClassVar[ObjectSchema[VectorIndexActionConfig]] = ObjectSchema(
         fields=[
             FieldSpec(
                 name="action",
                 coercer=ChainCoercer(ParseString(), OneOf(*sorted(ACTIONS))),
                 required=True,
-                description=(
-                    f"Что делать: один из {sorted(ACTIONS)}. Обязательно."
-                ),
             ),
-            FieldSpec(
-                name="collection",
-                coercer=ChainCoercer(Default(""), ParseString()),
-                description=(
-                    "Имя коллекции в Store. Обязательно для "
-                    "index/sync/delete/show."
-                ),
-            ),
-            FieldSpec(
-                name="description",
-                coercer=Nullable(ParseString()),
-                description=(
-                    "Описание коллекции (создаётся при первом index)."
-                ),
-            ),
-            FieldSpec(
-                name="confirm_skip",
-                coercer=ChainCoercer(Default(False), ParseBool()),
-                description=(
-                    "Пропустить интерактивное подтверждение (action=delete)."
-                ),
-            ),
+        ],
+        factory=VectorIndexActionConfig,
+    )
+
+
+@dataclass(frozen=True)
+class VectorIndexCommonConfig:
+    verbose: int
+
+
+class VectorIndexCommonSection(ConfigSection[VectorIndexCommonConfig]):
+    """Общие поля runner'а (verbose). Регистрируется всегда."""
+
+    id: ClassVar[StrId] = StrId("vector_index_common")
+    namespace: ClassVar[tuple[str, ...]] = ("vector_index",)
+
+    schema: ClassVar[ObjectSchema[VectorIndexCommonConfig]] = ObjectSchema(
+        fields=[
             FieldSpec(
                 name="verbose",
                 coercer=ChainCoercer(Default(0), ParseInt()),
                 description="0=WARN, 1=INFO, 2=DEBUG.",
             ),
+        ],
+        factory=VectorIndexCommonConfig,
+    )
+
+
+@dataclass(frozen=True)
+class IndexCommandConfig:
+    collection: str
+    pipeline: str
+    description: str | None
+
+
+class IndexCommandSection(ConfigSection[IndexCommandConfig]):
+    """[vector_index.index] — параметры action=index."""
+
+    namespace: ClassVar[tuple[str, ...]] = ("vector_index", "index")
+
+    schema: ClassVar[ObjectSchema[IndexCommandConfig]] = ObjectSchema(
+        fields=[
+            FieldSpec(
+                name="collection",
+                coercer=ParseString(),
+                required=True,
+                description="Имя коллекции в Store.",
+            ),
             FieldSpec(
                 name="pipeline",
-                coercer=ChainCoercer(Default(""), ParseString()),
-                description=(
-                    "PipelineId плагина (entry-point boba.indexing.pipelines). "
-                    "Обязательно для index/sync. Например: ext.fs_markdown, "
-                    "ext.confluence_space."
-                ),
+                coercer=ParseString(),
+                required=True,
+                description="PipelineId (entry-point boba.indexing.pipelines).",
             ),
             FieldSpec(
-                name="show_source_id",
+                name="description",
                 coercer=Nullable(ParseString()),
-                description=(
-                    "action=show: фильтр по конкретному source_id. Пусто — "
-                    "все чанки коллекции."
-                ),
-            ),
-            FieldSpec(
-                name="show_limit",
-                coercer=ChainCoercer(Default(20), ParseInt()),
-                description="action=show: сколько чанков выводить (default 20).",
-            ),
-            FieldSpec(
-                name="show_snippet_chars",
-                coercer=ChainCoercer(Default(200), ParseInt()),
-                description=(
-                    "action=show: длина text-preview каждого чанка (default 200)."
-                ),
+                description="Описание коллекции (создаётся при первом index).",
             ),
         ],
-        # Conditional-required по action — declarative, без runtime-helper'ов:
-        invariants=ChainCoercer(
-            RequiredWhen("action", "index", "collection", "pipeline"),
-            RequiredWhen("action", "sync", "collection", "pipeline"),
-            RequiredWhen("action", "show", "collection"),
-            RequiredWhen("action", "delete", "collection"),
-        ),
-        factory=VectorIndexConfig,
+        factory=IndexCommandConfig,
     )
+
+
+@dataclass(frozen=True)
+class SyncCommandConfig:
+    collection: str
+    pipeline: str
+
+
+class SyncCommandSection(ConfigSection[SyncCommandConfig]):
+    """[vector_index.sync] — параметры action=sync."""
+
+    namespace: ClassVar[tuple[str, ...]] = ("vector_index", "sync")
+
+    schema: ClassVar[ObjectSchema[SyncCommandConfig]] = ObjectSchema(
+        fields=[
+            FieldSpec(
+                name="collection",
+                coercer=ParseString(),
+                required=True,
+            ),
+            FieldSpec(
+                name="pipeline",
+                coercer=ParseString(),
+                required=True,
+            ),
+        ],
+        factory=SyncCommandConfig,
+    )
+
+
+@dataclass(frozen=True)
+class ShowCommandConfig:
+    collection: str
+    source_id: str
+    limit: int
+    snippet_chars: int
+
+
+class ShowCommandSection(ConfigSection[ShowCommandConfig]):
+    """[vector_index.show] — параметры action=show."""
+
+    namespace: ClassVar[tuple[str, ...]] = ("vector_index", "show")
+
+    schema: ClassVar[ObjectSchema[ShowCommandConfig]] = ObjectSchema(
+        fields=[
+            FieldSpec(
+                name="collection",
+                coercer=ParseString(),
+                required=True,
+            ),
+            FieldSpec(
+                name="source_id",
+                coercer=ChainCoercer(Default(""), ParseString()),
+                description="Фильтр по source_id; пусто — все чанки.",
+            ),
+            FieldSpec(
+                name="limit",
+                coercer=ChainCoercer(Default(20), ParseInt()),
+            ),
+            FieldSpec(
+                name="snippet_chars",
+                coercer=ChainCoercer(Default(200), ParseInt()),
+            ),
+        ],
+        factory=ShowCommandConfig,
+    )
+
+
+@dataclass(frozen=True)
+class DeleteCommandConfig:
+    collection: str
+
+
+class DeleteCommandSection(ConfigSection[DeleteCommandConfig]):
+    """[vector_index.delete] — параметры action=delete."""
+
+    namespace: ClassVar[tuple[str, ...]] = ("vector_index", "delete")
+
+    schema: ClassVar[ObjectSchema[DeleteCommandConfig]] = ObjectSchema(
+        fields=[
+            FieldSpec(
+                name="collection",
+                coercer=ParseString(),
+                required=True,
+            ),
+        ],
+        factory=DeleteCommandConfig,
+    )
+
+
+@dataclass(frozen=True)
+class VectorIndexChromadbConfig:
+    persist_path: str
+
+
+class VectorIndexChromadbSection(ConfigSection[VectorIndexChromadbConfig]):
+    """[ext.chromadb] — `persist_path` обязателен для CLI.
+
+    Явный `id` отличается от ChromadbSharedSection (та же namespace, разная DTO).
+    """
+
+    id: ClassVar[StrId] = StrId("vector_index_chromadb")
+    namespace: ClassVar[tuple[str, ...]] = ("ext", "chromadb")
+
+    schema: ClassVar[ObjectSchema[VectorIndexChromadbConfig]] = ObjectSchema(
+        fields=[
+            FieldSpec(
+                name="persist_path",
+                coercer=ParseString(),
+                required=True,
+            ),
+        ],
+        factory=VectorIndexChromadbConfig,
+    )
+
+
+def command_section_for(action: str) -> ConfigSection | None:
+    """ConfigSection для конкретного action; `None` для action без полей (list)."""
+    mapping: dict[str, ConfigSection] = {
+        "index": IndexCommandSection(),
+        "sync": SyncCommandSection(),
+        "show": ShowCommandSection(),
+        "delete": DeleteCommandSection(),
+    }
+    return mapping.get(action)
