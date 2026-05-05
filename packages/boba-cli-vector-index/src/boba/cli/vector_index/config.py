@@ -8,6 +8,7 @@ from typing import ClassVar
 from boba.coercion import (
     ChainCoercer,
     Default,
+    MinValue,
     Nullable,
     OneOf,
     ParseInt,
@@ -21,6 +22,8 @@ __all__ = [
     "ALL_ACTIONS",
     "IndexCommandConfig",
     "IndexCommandSection",
+    "PrintCommandConfig",
+    "PrintCommandSection",
     "VectorIndexActionConfig",
     "VectorIndexActionSection",
     "VectorIndexChromadbConfig",
@@ -30,17 +33,17 @@ __all__ = [
 ]
 
 
-ALL_ACTIONS: frozenset[str] = frozenset({"index"})
+ALL_ACTIONS: frozenset[str] = frozenset({"index", "print"})
 
 
 @dataclass(frozen=True)
 class VectorIndexActionConfig:
     action: str
-    pipeline: str
+    pipeline: str | None
 
 
 class VectorIndexActionSection(ConfigSection[VectorIndexActionConfig]):
-    """`[vector_index]` action+pipeline discriminator."""
+    """`[vector_index]` action+pipeline discriminator (pipeline только для index)."""
 
     namespace: ClassVar[tuple[str, ...]] = ("vector_index",)
 
@@ -56,8 +59,8 @@ class VectorIndexActionSection(ConfigSection[VectorIndexActionConfig]):
             ),
             FieldSpec(
                 name="pipeline",
-                coercer=ParseString(),
-                required=True,
+                coercer=Nullable(ParseString()),
+                description="ID pipeline-плагина (обязателен для action=index).",
             ),
         ],
         factory=VectorIndexActionConfig,
@@ -108,6 +111,42 @@ class IndexCommandSection(ConfigSection[IndexCommandConfig]):
             ),
         ],
         factory=IndexCommandConfig,
+    )
+
+
+@dataclass(frozen=True)
+class PrintCommandConfig:
+    collection: str
+    source_id: str | None
+    limit: int
+    snippet_chars: int
+
+
+class PrintCommandSection(ConfigSection[PrintCommandConfig]):
+    """`[vector_index.print]` — параметры action=print."""
+
+    namespace: ClassVar[tuple[str, ...]] = ("vector_index", "print")
+
+    schema: ClassVar[ObjectSchema[PrintCommandConfig]] = ObjectSchema(
+        fields=[
+            FieldSpec(name="collection", coercer=ParseString(), required=True),
+            FieldSpec(
+                name="source_id",
+                coercer=Nullable(ParseString()),
+                description="Фильтр по конкретному source_id; пусто = все чанки.",
+            ),
+            FieldSpec(
+                name="limit",
+                coercer=ChainCoercer(Default(20), ParseInt(), MinValue(1)),
+                description="Сколько чанков показать максимум.",
+            ),
+            FieldSpec(
+                name="snippet_chars",
+                coercer=ChainCoercer(Default(200), ParseInt(), MinValue(1)),
+                description="Длина preview-строки чанка в символах.",
+            ),
+        ],
+        factory=PrintCommandConfig,
     )
 
 

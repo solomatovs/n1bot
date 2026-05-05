@@ -66,6 +66,18 @@
             "type": "promptString",
             "description": "Confluence CQL-запрос",
             "default": "space = paas AND type = page"
+        },
+        {
+            "id": "printSourceId",
+            "type": "promptString",
+            "description": "Фильтр по source_id (пусто = все чанки)",
+            "default": ""
+        },
+        {
+            "id": "printLimit",
+            "type": "promptString",
+            "description": "Сколько чанков показать (max)",
+            "default": "20"
         }
     ],
     "configurations": [
@@ -217,6 +229,24 @@
                 "--vector_index.index.collection=${input:indexCollection}",
                 "--vector_index.index.description=${input:indexDescription}",
                 "--indexer.pipelines.confluence_cql.cql=${input:confluenceCql}",
+                "--vector_index.verbose=1"
+            ],
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "Vector Index: print collection",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.cli.vector_index",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "args": [
+                "--vector_index.action=print",
+                "--vector_index.print.collection=${input:indexCollection}",
+                "--vector_index.print.source_id=${input:printSourceId}",
+                "--vector_index.print.limit=${input:printLimit}",
                 "--vector_index.verbose=1"
             ],
             "envFile": "${workspaceFolder}/local/.env"

@@ -1,4 +1,4 @@
-"""VectorIndexCli: единый CLI для action=index.
+"""VectorIndexCli: CLI для action=index | print.
 
 Поток:
   stage 1 — `_get_action()` строит mini-AppConfig с одной только
@@ -6,10 +6,12 @@
   stage 2 — `_handle_index` собирает `AppConfigBootstrap` (свои секции +
             `discover_extension_sections()` + `PipelineSpec.section`
             выбранного плагина), вызывает `boot.build()` и зовёт
-            `spec.build(app)` для сборки `IndexPipeline`.
+            `spec.build(app)` для сборки `IndexPipeline`;
+            `_handle_print` собирает `PrintPipeline` поверх Store
+            (без plugin-discovery — это admin-операция Store-уровня).
 
-Sync/list/show/delete вырезаны: будут переделаны через отдельные
-pipeline-абстракции, чтобы оркестрация жила вне CLI.
+Sync/list/delete вырезаны: будут переделаны через отдельные pipeline-
+абстракции, чтобы оркестрация жила вне CLI.
 """
 
 from __future__ import annotations
@@ -17,8 +19,10 @@ from __future__ import annotations
 import logging
 import sys
 
+from boba.chromadb_store import ChromadbPersistStore
 from boba.cli.vector_index.config import (
     IndexCommandSection,
+    PrintCommandSection,
     VectorIndexActionConfig,
     VectorIndexActionSection,
     VectorIndexChromadbSection,
@@ -34,6 +38,7 @@ from boba.config.source.env import EnvFileSource, EnvSource
 from boba.config.source.toml import TomlFileSource, TomlSource
 from boba.indexing import IndexingContext, IndexingError, PipelineId
 from boba.patterns import ConverterInputError
+from boba.print_pipeline import PrintPipeline
 
 __all__ = ["VectorIndexCli"]
 
@@ -44,8 +49,10 @@ class VectorIndexCli:
     def main(self) -> int:
         try:
             match self._get_action():
-                case VectorIndexActionConfig(action="index", pipeline=pid):
+                case VectorIndexActionConfig(action="index", pipeline=pid) if pid:
                     return self._handle_index(pid)
+                case VectorIndexActionConfig(action="print"):
+                    return self._handle_print()
                 case other:
                     msg = f"unsupported action {other.action!r}"
                     raise ValueError(msg)
@@ -116,5 +123,31 @@ class VectorIndexCli:
             f"sections_emitted={stats.sections_emitted} "
             f"chunks_upserted={stats.chunks_upserted} "
             f"chunks_deleted={stats.chunks_deleted}"
+        )
+        return 0
+
+    def _handle_print(self) -> int:
+        boot = self._make_boot()
+        boot.register_section(VectorIndexCommonSection())
+        boot.register_section(VectorIndexChromadbSection())
+        boot.register_section(PrintCommandSection())
+        app = boot.build()
+
+        self._setup_logging(app.section(VectorIndexCommonSection).verbose)
+        cfg = app.section(PrintCommandSection)
+        shared = app.section(VectorIndexChromadbSection)
+        pipeline = PrintPipeline(
+            store=ChromadbPersistStore(persist_path=shared.persist_path),
+            collection=cfg.collection,
+            source_id=cfg.source_id,
+            limit=cfg.limit,
+            snippet_chars=cfg.snippet_chars,
+        )
+        stats = pipeline.run()
+        print()
+        print(
+            f"collection={cfg.collection!r} "
+            f"chunks_printed={stats.chunks_printed} "
+            f"sources_seen={stats.sources_seen}"
         )
         return 0
