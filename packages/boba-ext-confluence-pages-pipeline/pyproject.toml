@@ -20,10 +20,7 @@ dependencies = [
 ]
 
 [project.entry-points."boba.indexing.pipelines"]
-confluence_pages = "boba.ext.confluence_pages_pipeline:register_pipelines"
-
-[project.entry-points."boba.config_sections"]
-confluence_pages_pipeline = "boba.ext.confluence_pages_pipeline.config:ConfluencePagesPipelineConfigSection"
+"ext.confluence_pages" = "boba.ext.confluence_pages_pipeline:PIPELINE"
 
 [tool.setuptools.packages.find]
 where = ["src"]

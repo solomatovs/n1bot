@@ -9,6 +9,7 @@ from boba.coercion import (
     ChainCoercer,
     Default,
     MinValue,
+    NonEmpty,
     ParseBool,
     ParseCsvList,
     ParseInt,
@@ -35,15 +36,11 @@ class FsTextPipelineConfigSection(ConfigSection[FsTextPipelineConfig]):
     namespace: ClassVar[tuple[str, ...]] = ("indexer", "pipelines", "fs_text")
 
     schema: ClassVar[ObjectSchema[FsTextPipelineConfig]] = ObjectSchema(
-        description=(
-            "Pipeline 'ext.fs_text': обход директорий + чтение .txt/.log как "
-            "UTF-8 → одна Section на файл (без heading-структуры) → sliding "
-            "chunker → ChromaDB."
-        ),
         fields=[
             FieldSpec(
                 name="paths",
-                coercer=ParseCsvList(),
+                coercer=ChainCoercer(ParseCsvList(), NonEmpty()),
+                required=True,
                 description="Файлы и/или директории для обхода.",
             ),
             FieldSpec(

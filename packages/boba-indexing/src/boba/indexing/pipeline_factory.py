@@ -1,63 +1,48 @@
-"""PipelineFactory + PipelineRegistry: сборка готовых IndexPipeline'ов.
-
-Pipeline-плагин экспортирует `PipelineFactory` через entry-point
-`boba.indexing.pipelines`. Внутри фабрика **явно** импортирует все нужные
-компоненты (RequestSource / Transport / Reader / Chunker / Store) и
-собирает `IndexPipeline`. Сами компоненты — обычные библиотеки,
-не плагинизированы.
-"""
+"""PipelineSpec + PipelineRegistry: декларативные фабрики IndexPipeline."""
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
+from boba.config.app import AppConfig
+from boba.config.section import ConfigSection
 from boba.indexing.context import PipelineId
-from boba.indexing.extension import IndexerExtensionContext
+from boba.indexing.errors import UnknownPipelineError
 from boba.indexing.pipeline import IndexPipeline
-from boba.patterns import ContextItemProvider
 
-__all__ = ["PipelineFactory", "PipelineRegistry"]
+__all__ = ["PipelineRegistry", "PipelineSpec"]
 
 
-class PipelineFactory(
-    ContextItemProvider[IndexerExtensionContext, PipelineId, IndexPipeline[Any]],
-    ABC,
-):
-    """Фабрика готового IndexPipeline для CLI-плагина.
+@dataclass(frozen=True)
+class PipelineSpec:
+    """Декларативная фабрика IndexPipeline: секция конфига + сборщик из AppConfig."""
 
-    `id()` — `PipelineId` (например `ext.fs_markdown`, `ext.confluence_space`).
-    `produce(ctx)` — читает свою ConfigSection через `ctx.config.section(...)`
-    и собирает конкретный IndexPipeline.
-    """
-
-    @abstractmethod
-    def id(self) -> PipelineId: ...
-
-    @abstractmethod
-    def produce(self, ctx: IndexerExtensionContext) -> IndexPipeline[Any]: ...
+    section: ConfigSection[Any]
+    build: Callable[[AppConfig], IndexPipeline[Any]]
 
 
 class PipelineRegistry:
-    """Каталог зарегистрированных PipelineFactory.
-
-    Lazy: pipeline'ы НЕ собираются при регистрации (`produce()` валидирует
-    конфиг, и валидация одного pipeline-плагина не должна валить остальные).
-    Caller выбирает нужный id и сам вызывает `factory.produce(ctx)`.
-    """
+    """Каталог pipeline-плагинов по `PipelineId`."""
 
     def __init__(self) -> None:
-        self._factories: dict[PipelineId, PipelineFactory] = {}
+        self._entries: dict[PipelineId, PipelineSpec] = {}
 
-    def register_factory(self, factory: PipelineFactory) -> None:
-        self._factories[factory.id()] = factory
+    def register(self, pipeline_id: PipelineId, spec: PipelineSpec) -> None:
+        self._entries[pipeline_id] = spec
 
-    def factories(self) -> dict[PipelineId, PipelineFactory]:
-        """Все зарегистрированные фабрики; caller дёргает produce() при нужде."""
-        return dict(self._factories)
+    def entries(self) -> dict[PipelineId, PipelineSpec]:
+        return dict(self._entries)
 
-    def get(self, pipeline_id: PipelineId) -> PipelineFactory | None:
-        return self._factories.get(pipeline_id)
+    def get(self, pipeline_id: PipelineId) -> PipelineSpec:
+        spec = self._entries.get(pipeline_id)
+        if spec is None:
+            raise UnknownPipelineError(
+                f"unknown pipeline_id={pipeline_id.to_wire()!r}; "
+                f"registered={[i.to_wire() for i in self._entries]}",
+            )
+        return spec
 
     def __contains__(self, pipeline_id: object) -> bool:
-        return pipeline_id in self._factories
+        return pipeline_id in self._entries

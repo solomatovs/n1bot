@@ -66,12 +66,6 @@
             "type": "promptString",
             "description": "Confluence CQL-запрос",
             "default": "space = paas AND type = page"
-        },
-        {
-            "id": "showSourceId",
-            "type": "promptString",
-            "description": "Фильтр по source_id (пусто = все чанки коллекции)",
-            "default": ""
         }
     ],
     "configurations": [
@@ -121,9 +115,9 @@
             "justMyCode": false,
             "args": [
                 "--vector_index.action=index",
+                "--vector_index.pipeline=ext.fs_markdown",
                 "--vector_index.index.collection=${input:indexCollection}",
                 "--vector_index.index.description=${input:indexDescription}",
-                "--vector_index.index.pipeline=ext.fs_markdown",
                 "--indexer.pipelines.fs_markdown.paths=${input:fsPaths}",
                 "--indexer.pipelines.fs_markdown.include=${input:fsInclude}",
                 "--vector_index.verbose=1"
@@ -141,9 +135,9 @@
             "justMyCode": false,
             "args": [
                 "--vector_index.action=index",
+                "--vector_index.pipeline=ext.fs_html",
                 "--vector_index.index.collection=${input:indexCollection}",
                 "--vector_index.index.description=${input:indexDescription}",
-                "--vector_index.index.pipeline=ext.fs_html",
                 "--indexer.pipelines.fs_html.paths=${input:fsPaths}",
                 "--indexer.pipelines.fs_html.include=${input:fsInclude}",
                 "--vector_index.verbose=1"
@@ -161,9 +155,9 @@
             "justMyCode": false,
             "args": [
                 "--vector_index.action=index",
+                "--vector_index.pipeline=ext.fs_text",
                 "--vector_index.index.collection=${input:indexCollection}",
                 "--vector_index.index.description=${input:indexDescription}",
-                "--vector_index.index.pipeline=ext.fs_text",
                 "--indexer.pipelines.fs_text.paths=${input:fsPaths}",
                 "--indexer.pipelines.fs_text.include=${input:fsInclude}",
                 "--vector_index.verbose=1"
@@ -181,9 +175,9 @@
             "justMyCode": false,
             "args": [
                 "--vector_index.action=index",
+                "--vector_index.pipeline=ext.confluence_space",
                 "--vector_index.index.collection=${input:indexCollection}",
                 "--vector_index.index.description=${input:indexDescription}",
-                "--vector_index.index.pipeline=ext.confluence_space",
                 "--indexer.pipelines.confluence_space.space_key=${input:confluenceSpaceKey}",
                 "--vector_index.verbose=1"
             ],
@@ -200,9 +194,9 @@
             "justMyCode": false,
             "args": [
                 "--vector_index.action=index",
+                "--vector_index.pipeline=ext.confluence_pages",
                 "--vector_index.index.collection=${input:indexCollection}",
                 "--vector_index.index.description=${input:indexDescription}",
-                "--vector_index.index.pipeline=ext.confluence_pages",
                 "--indexer.pipelines.confluence_pages.page_ids=${input:confluencePageIds}",
                 "--vector_index.verbose=1"
             ],
@@ -219,76 +213,11 @@
             "justMyCode": false,
             "args": [
                 "--vector_index.action=index",
+                "--vector_index.pipeline=ext.confluence_cql",
                 "--vector_index.index.collection=${input:indexCollection}",
                 "--vector_index.index.description=${input:indexDescription}",
-                "--vector_index.index.pipeline=ext.confluence_cql",
                 "--indexer.pipelines.confluence_cql.cql=${input:confluenceCql}",
                 "--vector_index.verbose=1"
-            ],
-            "envFile": "${workspaceFolder}/local/.env"
-        },
-        {
-            "name": "Vector Index: sync Confluence space (orphans)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.cli.vector_index",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "args": [
-                "--vector_index.action=sync",
-                "--vector_index.sync.collection=${input:indexCollection}",
-                "--vector_index.sync.pipeline=ext.confluence_space",
-                "--indexer.pipelines.confluence_space.space_key=${input:confluenceSpaceKey}",
-                "--vector_index.verbose=1"
-            ],
-            "envFile": "${workspaceFolder}/local/.env"
-        },
-        {
-            "name": "Vector Index: list collections",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.cli.vector_index",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "args": [
-                "--vector_index.action=list"
-            ],
-            "envFile": "${workspaceFolder}/local/.env"
-        },
-        {
-            "name": "Vector Index: show collection",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.cli.vector_index",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "args": [
-                "--vector_index.action=show",
-                "--vector_index.show.collection=${input:indexCollection}",
-                "--vector_index.show.source_id=${input:showSourceId}",
-                "--vector_index.show.limit=20",
-                "--vector_index.show.snippet_chars=200"
-            ],
-            "envFile": "${workspaceFolder}/local/.env"
-        },
-        {
-            "name": "Vector Index: delete collection",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.cli.vector_index",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "args": [
-                "--vector_index.action=delete",
-                "--vector_index.delete.collection=${input:indexCollection}"
             ],
             "envFile": "${workspaceFolder}/local/.env"
         },

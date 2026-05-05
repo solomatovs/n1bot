@@ -6,6 +6,7 @@ __all__ = [
     "IncompatibleContentError",
     "IndexingError",
     "SyncUnsupportedError",
+    "UnknownPipelineError",
 ]
 
 
@@ -38,3 +39,7 @@ class SyncUnsupportedError(IndexingError):
             f"request source {source_name!r} does not support listing canonical_ids"
         )
         self.source_name = source_name
+
+
+class UnknownPipelineError(IndexingError):
+    """Pipeline-id не зарегистрирован в `PipelineRegistry`."""

@@ -13,6 +13,7 @@ from boba.coercion import (
     ParseFloat,
     ParseInt,
     ParseString,
+    RequiredWhen,
 )
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
@@ -25,11 +26,11 @@ __all__ = [
 
 @dataclass(frozen=True)
 class ConfluenceSpacePipelineConfig:
-    base_url: str = ""
-    auth_method: str = "pat"
-    auth_user: str = ""
-    auth_token: str = ""
-    space_key: str = ""
+    base_url: str
+    auth_method: str
+    auth_user: str
+    auth_token: str
+    space_key: str
     body_format: str = "export_view"
     timeout_sec: float = 30.0
     chunk_size: int = 1500
@@ -46,19 +47,12 @@ class ConfluenceSpacePipelineConfigSection(
     )
 
     schema: ClassVar[ObjectSchema[ConfluenceSpacePipelineConfig]] = ObjectSchema(
-        description=(
-            "Pipeline 'ext.confluence_space': REST `/rest/api/space/<key>/content`"
-            " → HttpTransport → ConfluenceReader → heading chunker → ChromaDB."
-            " Чувствительные поля (base_url/auth_token) задаются env, не TOML."
-        ),
         fields=[
             FieldSpec(
                 name="base_url",
-                coercer=ChainCoercer(Default(""), ParseString()),
-                description=(
-                    "URL Confluence Server, например `https://confl.x.com`. "
-                    "Задаётся env: BOBA_INDEXER__PIPELINES__CONFLUENCE_SPACE__BASE_URL."
-                ),
+                coercer=ParseString(),
+                required=True,
+                description="URL Confluence Server (env: ...__BASE_URL).",
             ),
             FieldSpec(
                 name="auth_method",
@@ -74,18 +68,15 @@ class ConfluenceSpacePipelineConfigSection(
             ),
             FieldSpec(
                 name="auth_token",
-                coercer=ChainCoercer(Default(""), ParseString()),
-                description=(
-                    "PAT или пароль; задаётся env: "
-                    "BOBA_INDEXER__PIPELINES__CONFLUENCE_SPACE__AUTH_TOKEN."
-                ),
+                coercer=ParseString(),
+                required=True,
+                description="PAT или пароль (env: ...__AUTH_TOKEN).",
             ),
             FieldSpec(
                 name="space_key",
-                coercer=ChainCoercer(Default(""), ParseString()),
-                description=(
-                    "Ключ space'а (виден в URL `/display/<KEY>/...`)."
-                ),
+                coercer=ParseString(),
+                required=True,
+                description="Ключ space'а (виден в URL `/display/<KEY>/...`).",
             ),
             FieldSpec(
                 name="body_format",
@@ -94,15 +85,12 @@ class ConfluenceSpacePipelineConfigSection(
                     ParseString(),
                     OneOf("export_view", "view", "storage"),
                 ),
-                description=(
-                    "Формат тела страницы: `export_view` (рекомендуется), "
-                    "`view`, `storage`."
-                ),
+                description="Формат тела страницы.",
             ),
             FieldSpec(
                 name="timeout_sec",
                 coercer=ChainCoercer(Default(30.0), ParseFloat()),
-                description="HTTP-таймаут (сек) для discovery + fetch.",
+                description="HTTP-таймаут (сек).",
             ),
             FieldSpec(
                 name="chunk_size",
@@ -112,8 +100,9 @@ class ConfluenceSpacePipelineConfigSection(
             FieldSpec(
                 name="chunk_overlap",
                 coercer=ChainCoercer(Default(150), ParseInt()),
-                description="Перекрытие sub-чанков внутри одной Section.",
+                description="Перекрытие sub-чанков.",
             ),
         ],
+        invariants=RequiredWhen("auth_method", "basic", "auth_user"),
         factory=ConfluenceSpacePipelineConfig,
     )

@@ -9,6 +9,7 @@ from boba.coercion import (
     ChainCoercer,
     Default,
     MinValue,
+    NonEmpty,
     ParseBool,
     ParseCsvList,
     ParseInt,
@@ -35,18 +36,12 @@ class FsHtmlPipelineConfigSection(ConfigSection[FsHtmlPipelineConfig]):
     namespace: ClassVar[tuple[str, ...]] = ("indexer", "pipelines", "fs_html")
 
     schema: ClassVar[ObjectSchema[FsHtmlPipelineConfig]] = ObjectSchema(
-        description=(
-            "Pipeline 'ext.fs_html': обход директорий + парсинг .html → "
-            "heading-aware Section'ы → heading chunker → ChromaDB."
-        ),
         fields=[
             FieldSpec(
                 name="paths",
-                coercer=ParseCsvList(),
-                description=(
-                    "Файлы и/или директории для обхода. Пусто — pipeline не "
-                    "запустится."
-                ),
+                coercer=ChainCoercer(ParseCsvList(), NonEmpty()),
+                required=True,
+                description="Файлы и/или директории для обхода.",
             ),
             FieldSpec(
                 name="include",
@@ -61,7 +56,7 @@ class FsHtmlPipelineConfigSection(ConfigSection[FsHtmlPipelineConfig]):
             FieldSpec(
                 name="follow_symlinks",
                 coercer=ChainCoercer(Default(False), ParseBool()),
-                description="Следовать за symlink-ами (риск циклов).",
+                description="Следовать за symlink-ами.",
             ),
             FieldSpec(
                 name="chunk_size",

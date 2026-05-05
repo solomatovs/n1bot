@@ -1,6 +1,6 @@
-"""AppConfig (registry) + AppConfigFactory (сборщик секций приложения).
+"""AppConfig (registry) + ConfigSectionFactory (сборщик секций приложения).
 
-AppConfigFactory — `ContextCatalogFactory[ConfigBundle, StrId, object, AppConfig]`:
+ConfigSectionFactory — `ContextCatalogFactory[ConfigBundle, StrId, object, AppConfig]`:
 наследует контракт чисто. `build(bundle)` — нативный ContextFactoryMethod, без
 override. Двухступенчатая сборка явная на стороне caller'а:
 
@@ -22,8 +22,8 @@ from boba.patterns import ContextCatalogFactory, ContextItemProvider, StrId
 __all__ = [
     "CONFIG_SECTIONS_ENTRY_POINT",
     "AppConfig",
-    "AppConfigFactory",
     "ConfigError",
+    "ConfigSectionFactory",
     "SectionMissingError",
 ]
 
@@ -69,7 +69,7 @@ class AppConfig:
 
 
 class _SectionProvider(ContextItemProvider[ConfigBundle, StrId, object]):
-    """Адаптер: ConfigSection → ContextItemProvider для AppConfigFactory."""
+    """Адаптер: ConfigSection → ContextItemProvider для ConfigSectionFactory."""
 
     def __init__(self, section: ConfigSection[Any]) -> None:
         self._section = section
@@ -88,7 +88,7 @@ class _SectionProvider(ContextItemProvider[ConfigBundle, StrId, object]):
         )
 
 
-class AppConfigFactory(
+class ConfigSectionFactory(
     ContextCatalogFactory[ConfigBundle, StrId, object, AppConfig],
 ):
     """Сборщик секций приложения через ContextCatalogFactory.

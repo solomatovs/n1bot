@@ -7,14 +7,16 @@ from boba.indexing.chunker import Chunker, ChunkerId
 from boba.indexing.chunks import Chunk, ChunkSummary
 from boba.indexing.collections import CollectionInfo
 from boba.indexing.context import IndexingContext, PipelineId
+from boba.indexing.decoder import Decoder, DecoderId, IdentityDecoder
 from boba.indexing.errors import (
     IncompatibleContentError,
     IndexingError,
     SyncUnsupportedError,
+    UnknownPipelineError,
 )
 from boba.indexing.extension import IndexerExtensionContext
 from boba.indexing.pipeline import IndexPipeline
-from boba.indexing.pipeline_factory import PipelineFactory, PipelineRegistry
+from boba.indexing.pipeline_factory import PipelineRegistry, PipelineSpec
 from boba.indexing.raw_document import BinaryStream, RawDocument
 from boba.indexing.reader import Reader, ReaderId
 from boba.indexing.request import Request
@@ -32,6 +34,9 @@ __all__ = [
     "Chunker",
     "ChunkerId",
     "CollectionInfo",
+    "Decoder",
+    "DecoderId",
+    "IdentityDecoder",
     "IncompatibleContentError",
     "IndexPipeline",
     "IndexStats",
@@ -39,9 +44,9 @@ __all__ = [
     "IndexerExtensionContext",
     "IndexingContext",
     "IndexingError",
-    "PipelineFactory",
     "PipelineId",
     "PipelineRegistry",
+    "PipelineSpec",
     "RawDocument",
     "Reader",
     "ReaderId",
@@ -52,4 +57,5 @@ __all__ = [
     "StoreId",
     "SyncUnsupportedError",
     "Transport",
+    "UnknownPipelineError",
 ]

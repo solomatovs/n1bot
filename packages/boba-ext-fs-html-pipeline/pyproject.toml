@@ -19,10 +19,7 @@ dependencies = [
 ]
 
 [project.entry-points."boba.indexing.pipelines"]
-fs_html = "boba.ext.fs_html_pipeline:register_pipelines"
-
-[project.entry-points."boba.config_sections"]
-fs_html_pipeline = "boba.ext.fs_html_pipeline.config:FsHtmlPipelineConfigSection"
+"ext.fs_html" = "boba.ext.fs_html_pipeline:PIPELINE"
 
 [tool.setuptools.packages.find]
 where = ["src"]
