@@ -7,14 +7,22 @@ import sys
 from collections.abc import Callable
 
 from boba.chromadb_store import ChromadbPersistStore
-from boba.cli.vector_index.config import VectorIndexConfig, VectorIndexSection
+from boba.cli.vector_index.config import (
+    DeleteCommandSection,
+    IndexCommandSection,
+    ShowCommandSection,
+    SyncCommandSection,
+    VectorIndexActionSection,
+    VectorIndexChromadbSection,
+    VectorIndexCommonSection,
+    command_section_for,
+)
 from boba.cli.vector_index.plugin_loader import PipelinePluginLoader
 from boba.config.app import AppConfig
 from boba.config.bootstrap import AppConfigBootstrap
 from boba.config.source.cli import CliSource
 from boba.config.source.env import EnvFileSource, EnvSource
 from boba.config.source.toml import TomlFileSource, TomlSource
-from boba.ext.chromadb_shared import ChromadbSharedSection
 from boba.indexing import (
     CollectionInfo,
     IndexerExtensionContext,
@@ -29,17 +37,16 @@ __all__ = ["VectorIndexCli", "main"]
 
 
 class VectorIndexCli:
-    """
-    CLI для управления векторными индексами:
-        - запуск pipeline
-        - синхронизация
-        - просмотр
-        - удаление коллекций
+    """CLI для управления векторными индексами.
+
+    Принимает уже собранный AppConfig (после two-stage bootstrap'а) и action.
+    Каждый handler читает свой CommandSection с required-валидацией.
     """
 
-    def __init__(self, app: AppConfig) -> None:
+    def __init__(self, app: AppConfig, action: str) -> None:
         self._app = app
-        self._cfg: VectorIndexConfig = app.section(VectorIndexSection)
+        self._action = action
+        self._common = app.section(VectorIndexCommonSection)
         self._handlers: dict[str, Callable[[], int]] = {
             "index": self._handle_index,
             "list": self._handle_list,
@@ -50,7 +57,7 @@ class VectorIndexCli:
 
     def setup_logging(self) -> None:
         levels = {0: logging.WARNING, 1: logging.INFO, 2: logging.DEBUG}
-        level = levels.get(self._cfg.verbose, logging.DEBUG)
+        level = levels.get(self._common.verbose, logging.DEBUG)
         logging.basicConfig(
             level=level,
             format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -58,10 +65,10 @@ class VectorIndexCli:
         )
 
     def run(self) -> int:
-        return self._handlers[self._cfg.action]()
+        return self._handlers[self._action]()
 
     def _handle_index(self) -> int:
-        cfg = self._cfg
+        cfg = self._app.section(IndexCommandSection)
         pipeline = self._resolve_pipeline(cfg.pipeline)
         icx = IndexingContext(
             pipeline_id=PipelineId(f"cli:{cfg.collection}"),
@@ -80,20 +87,18 @@ class VectorIndexCli:
         return 0
 
     def _handle_sync(self) -> int:
-        """sync = diff RequestSource canonical ids vs Store, удалить orphans."""
-        cfg = self._cfg
+        cfg = self._app.section(SyncCommandSection)
         pipeline = self._resolve_pipeline(cfg.pipeline)
         icx = IndexingContext(
             pipeline_id=PipelineId(f"cli-sync:{cfg.collection}"),
             collection=cfg.collection,
         )
-        rs = pipeline.request_source
-        store = pipeline.store
-
-        in_source = set(rs.list_source_ids(icx))
-        in_store = set(store.list_source_ids(icx))
+        in_source = set(pipeline.request_source.list_source_ids(icx))
+        in_store = set(pipeline.store.list_source_ids(icx))
         orphans = sorted(in_store - in_source)
-        deleted = sum(store.delete_by_source(icx, sid) for sid in orphans)
+        deleted = sum(
+            pipeline.store.delete_by_source(icx, sid) for sid in orphans
+        )
         print(
             f"collection={cfg.collection!r} "
             f"in_source={len(in_source)} in_store={len(in_store)} "
@@ -112,7 +117,7 @@ class VectorIndexCli:
         return 0
 
     def _handle_show(self) -> int:
-        cfg = self._cfg
+        cfg = self._app.section(ShowCommandSection)
         store = self._resolve_store()
         icx = IndexingContext(
             pipeline_id=PipelineId(f"cli-show:{cfg.collection}"),
@@ -121,17 +126,13 @@ class VectorIndexCli:
         rows = list(
             store.peek_chunks(
                 icx,
-                source_id=cfg.show_source_id,
-                limit=cfg.show_limit,
-                snippet_chars=cfg.show_snippet_chars,
+                source_id=cfg.source_id or None,
+                limit=cfg.limit,
+                snippet_chars=cfg.snippet_chars,
             )
         )
         if not rows:
-            scope = (
-                f" source_id={cfg.show_source_id!r}"
-                if cfg.show_source_id
-                else ""
-            )
+            scope = f" source_id={cfg.source_id!r}" if cfg.source_id else ""
             print(f"collection={cfg.collection!r}{scope}: (empty)")
             return 0
         by_source: dict[str, int] = {}
@@ -158,22 +159,13 @@ class VectorIndexCli:
         return 0
 
     def _handle_delete(self) -> int:
-        cfg = self._cfg
+        cfg = self._app.section(DeleteCommandSection)
         store = self._resolve_store()
-        if not cfg.confirm_skip:
-            prompt = (
-                f"Delete collection {cfg.collection!r}? "
-                f"Type 'yes' to confirm: "
-            )
-            if input(prompt).strip().lower() != "yes":
-                print("aborted", file=sys.stderr)
-                return 1
         store.delete_collection(cfg.collection)
         print(f"collection={cfg.collection!r} deleted")
         return 0
 
     def _resolve_pipeline(self, pipeline_id: str) -> IndexPipeline:
-        """Lazy: ищем factory по id и строим только этот pipeline."""
         ctx = IndexerExtensionContext(config=self._app)
         registry = PipelinePluginLoader(ctx).registry()
         pid = PipelineId(pipeline_id)
@@ -188,20 +180,8 @@ class VectorIndexCli:
         return factory.produce(ctx)
 
     def _resolve_store(self) -> Store:
-        """list/show/delete — admin-операции над Store; pipeline не нужен.
-
-        Store создаётся напрямую из `[ext.chromadb] persist_path`. Все
-        pipeline'ы в системе используют общий ChromaDB; admin-команды
-        смотрят в него независимо от того, какие pipeline-плагины установлены.
-        """
-        shared = self._app.section(ChromadbSharedSection)
-        if not shared.persist_path:
-            msg = (
-                "[ext.chromadb] persist_path пуст — задайте в TOML или env "
-                "BOBA_EXT__CHROMADB__PERSIST_PATH."
-            )
-            raise ConverterInputError(msg)
-        return ChromadbPersistStore(persist_path=shared.persist_path)
+        cfg = self._app.section(VectorIndexChromadbSection)
+        return ChromadbPersistStore(persist_path=cfg.persist_path)
 
     @staticmethod
     def _print_collection_info(c: CollectionInfo) -> None:
@@ -209,17 +189,34 @@ class VectorIndexCli:
         print(f"{c.name}\t{c.count} chunks{desc}")
 
 
-def main() -> int:
-    """Entry-point CLI."""
-    boot = AppConfigBootstrap()
-    boot.register_section(VectorIndexSection())
-    boot.discover_extension_sections()
+def _attach_sources(boot: AppConfigBootstrap) -> None:
     boot.attach_sources(
         [CliSource(), EnvFileSource(), EnvSource(), TomlFileSource(), TomlSource()]
     )
+
+
+def main() -> int:
+    """Two-stage bootstrap: stage-1 — узнать action; stage-2 — собрать всё нужное."""
     try:
-        app = boot.build()
-        cli = VectorIndexCli(app)
+        # stage 1: только action — для дискриминации
+        boot1 = AppConfigBootstrap()
+        boot1.register_section(VectorIndexActionSection())
+        _attach_sources(boot1)
+        action = boot1.build().section(VectorIndexActionSection).action
+
+        # stage 2: action-specific CommandSection + общее + extensions
+        boot2 = AppConfigBootstrap()
+        boot2.register_section(VectorIndexActionSection())
+        boot2.register_section(VectorIndexCommonSection())
+        boot2.register_section(VectorIndexChromadbSection())
+        cmd = command_section_for(action)
+        if cmd is not None:
+            boot2.register_section(cmd)
+        boot2.discover_extension_sections()
+        _attach_sources(boot2)
+        app = boot2.build()
+
+        cli = VectorIndexCli(app, action)
         cli.setup_logging()
         return cli.run()
     except (ConverterInputError, ValueError) as e:

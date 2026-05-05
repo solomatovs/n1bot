@@ -121,9 +121,9 @@
             "justMyCode": false,
             "args": [
                 "--vector_index.action=index",
-                "--vector_index.collection=${input:indexCollection}",
-                "--vector_index.description=${input:indexDescription}",
-                "--vector_index.pipeline=ext.fs_markdown",
+                "--vector_index.index.collection=${input:indexCollection}",
+                "--vector_index.index.description=${input:indexDescription}",
+                "--vector_index.index.pipeline=ext.fs_markdown",
                 "--indexer.pipelines.fs_markdown.paths=${input:fsPaths}",
                 "--indexer.pipelines.fs_markdown.include=${input:fsInclude}",
                 "--vector_index.verbose=1"
@@ -141,9 +141,9 @@
             "justMyCode": false,
             "args": [
                 "--vector_index.action=index",
-                "--vector_index.collection=${input:indexCollection}",
-                "--vector_index.description=${input:indexDescription}",
-                "--vector_index.pipeline=ext.fs_html",
+                "--vector_index.index.collection=${input:indexCollection}",
+                "--vector_index.index.description=${input:indexDescription}",
+                "--vector_index.index.pipeline=ext.fs_html",
                 "--indexer.pipelines.fs_html.paths=${input:fsPaths}",
                 "--indexer.pipelines.fs_html.include=${input:fsInclude}",
                 "--vector_index.verbose=1"
@@ -161,9 +161,9 @@
             "justMyCode": false,
             "args": [
                 "--vector_index.action=index",
-                "--vector_index.collection=${input:indexCollection}",
-                "--vector_index.description=${input:indexDescription}",
-                "--vector_index.pipeline=ext.fs_text",
+                "--vector_index.index.collection=${input:indexCollection}",
+                "--vector_index.index.description=${input:indexDescription}",
+                "--vector_index.index.pipeline=ext.fs_text",
                 "--indexer.pipelines.fs_text.paths=${input:fsPaths}",
                 "--indexer.pipelines.fs_text.include=${input:fsInclude}",
                 "--vector_index.verbose=1"
@@ -181,9 +181,9 @@
             "justMyCode": false,
             "args": [
                 "--vector_index.action=index",
-                "--vector_index.collection=${input:indexCollection}",
-                "--vector_index.description=${input:indexDescription}",
-                "--vector_index.pipeline=ext.confluence_space",
+                "--vector_index.index.collection=${input:indexCollection}",
+                "--vector_index.index.description=${input:indexDescription}",
+                "--vector_index.index.pipeline=ext.confluence_space",
                 "--indexer.pipelines.confluence_space.space_key=${input:confluenceSpaceKey}",
                 "--vector_index.verbose=1"
             ],
@@ -200,9 +200,9 @@
             "justMyCode": false,
             "args": [
                 "--vector_index.action=index",
-                "--vector_index.collection=${input:indexCollection}",
-                "--vector_index.description=${input:indexDescription}",
-                "--vector_index.pipeline=ext.confluence_pages",
+                "--vector_index.index.collection=${input:indexCollection}",
+                "--vector_index.index.description=${input:indexDescription}",
+                "--vector_index.index.pipeline=ext.confluence_pages",
                 "--indexer.pipelines.confluence_pages.page_ids=${input:confluencePageIds}",
                 "--vector_index.verbose=1"
             ],
@@ -219,9 +219,9 @@
             "justMyCode": false,
             "args": [
                 "--vector_index.action=index",
-                "--vector_index.collection=${input:indexCollection}",
-                "--vector_index.description=${input:indexDescription}",
-                "--vector_index.pipeline=ext.confluence_cql",
+                "--vector_index.index.collection=${input:indexCollection}",
+                "--vector_index.index.description=${input:indexDescription}",
+                "--vector_index.index.pipeline=ext.confluence_cql",
                 "--indexer.pipelines.confluence_cql.cql=${input:confluenceCql}",
                 "--vector_index.verbose=1"
             ],
@@ -238,8 +238,8 @@
             "justMyCode": false,
             "args": [
                 "--vector_index.action=sync",
-                "--vector_index.collection=${input:indexCollection}",
-                "--vector_index.pipeline=ext.confluence_space",
+                "--vector_index.sync.collection=${input:indexCollection}",
+                "--vector_index.sync.pipeline=ext.confluence_space",
                 "--indexer.pipelines.confluence_space.space_key=${input:confluenceSpaceKey}",
                 "--vector_index.verbose=1"
             ],
@@ -270,10 +270,10 @@
             "justMyCode": false,
             "args": [
                 "--vector_index.action=show",
-                "--vector_index.collection=${input:indexCollection}",
-                "--vector_index.show_source_id=${input:showSourceId}",
-                "--vector_index.show_limit=20",
-                "--vector_index.show_snippet_chars=200"
+                "--vector_index.show.collection=${input:indexCollection}",
+                "--vector_index.show.source_id=${input:showSourceId}",
+                "--vector_index.show.limit=20",
+                "--vector_index.show.snippet_chars=200"
             ],
             "envFile": "${workspaceFolder}/local/.env"
         },
@@ -288,7 +288,7 @@
             "justMyCode": false,
             "args": [
                 "--vector_index.action=delete",
-                "--vector_index.collection=${input:indexCollection}"
+                "--vector_index.delete.collection=${input:indexCollection}"
             ],
             "envFile": "${workspaceFolder}/local/.env"
         },

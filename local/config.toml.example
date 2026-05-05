@@ -1,15 +1,15 @@
 [app]
-log_level = "DEBUG"
+log_level = "INFO"
 ssl_verify = false
-# log_file = "./local/logs/boba.log"
+log_file = "./local/logs/boba.log"
+
+[agent]
+max_iterations = 20
+max_consecutive_tool_calls = 3
 
 [adapter.openai]
 base_url = "http://localhost:4000"
 api_key = "ollama"
-
-[agent]
-max_iterations = 200
-max_consecutive_tool_calls = 30
 
 [workspaces]
 base_dir = "./local/workspaces"
@@ -22,139 +22,210 @@ dir = "./local/prompts"
 
 [chainlit]
 host = "0.0.0.0"
-port = "8502"
-root_path = "/boba-debug"
+port = "8501"
+root_path = ""
+auth_secret = ""
 headless = "true"
 app_root = "./local/chainlit"
-models = [
-    "qwen3",
-    "qwen3-0.6b",
-    "qwen3-235b",
-    "qwen3.5-35b",
-    "qwen3.5-122b",
-    "deepseek-coder-v2-16b",
-    "qwen2.5-coder-1.5b",
-    "llama3.1-8b",
-    "gemini",
-    "numarkdown-q4",
-    "numarkdown-q8",
-]
-# auth_secret = "..."
-# ui_name = "Boba"
-# enable_telemetry = false
-# upload_max_size_mb = 25
-# upload_max_files = 5
-# upload_accept = ["text/*", "application/pdf"]
+models = []
+ui_name = ""
+enable_telemetry = ""
+upload_max_size_mb = ""
+upload_max_files = ""
+upload_accept = ""
 
-# Tool-расширения подключаются явно — секцией [ext.<name>] enable=true
-# (для html/confluence/files) или [ext.<name>.tools] enable=true (chromadb).
-# tools_allow внутри секции — опциональный whitelist по именам tools.
-
-[ext.files]
-enable = false
-tools_allow = []  # ["cat", "ls", "grep", ...]
-
-[ext.html]
-enable = false
-
-[ext.confluence]
-enable = false
-
-# ChromaDB разделён на два слоя:
-#   [ext.chromadb]       — общий backend (persist_path, embedding_model)
-#                          для read-tools и write-store.
-#   [ext.chromadb.tools] — гейт + параметры read-only KB tools для агента.
 [ext.chromadb]
 persist_path = "./local/chroma"
 embedding_model = "default"
 
 [ext.chromadb.tools]
 enable = false
-tools_allow = []  # ["kb_search", "kb_list_collections"]
+tools_allow = []
 snippet_chars = 300
 
-# Per-tool секции — необязательные overrides описаний/лимитов.
-# [ext.chromadb.tools.kb_search]
-# max_top_k = 20
+[ext.chromadb.tools.kb_search]
+description = ""
+max_top_k = 20
+params = {}
 
-# CLI-секции (boba-cli-agent-run / boba-cli-vector-index).
-# Обычно задаются через CLI-аргументы; здесь — дефолты.
+[ext.chromadb.tools.kb_list_collections]
+description = ""
+params = {}
+
+[ext.files]
+enable = false
+tools_allow = []
+
+[ext.files.tools.cat]
+description = ""
+max_lines = 2000
+params = {}
+
+[ext.files.tools.ls]
+description = ""
+params = {}
+
+[ext.files.tools.grep]
+description = ""
+params = {}
+
+[ext.files.tools.edit]
+description = ""
+params = {}
+
+[ext.files.tools.write]
+description = ""
+params = {}
+
+[ext.files.tools.cp]
+description = ""
+params = {}
+
+[ext.files.tools.mv]
+description = ""
+params = {}
+
+[ext.files.tools.rm]
+description = ""
+params = {}
+
+[ext.files.tools.mkdir]
+description = ""
+params = {}
+
+[ext.files.tools.touch]
+description = ""
+params = {}
+
+[ext.files.tools.stat]
+description = ""
+params = {}
+
+[ext.files.tools.pwd]
+description = ""
+
+[ext.files.tools.cd]
+description = ""
+params = {}
+
+[ext.files.tools.tree]
+description = ""
+params = {}
+
+[ext.files.tools.append]
+description = ""
+params = {}
+
+[ext.html]
+enable = false
+tools_allow = []
+
+[ext.html.tools.html_outline]
+description = ""
+params = {}
+
+[ext.html.tools.html_section]
+description = ""
+params = {}
+
+[ext.confluence]
+enable = false
+tools_allow = []
+
+[ext.confluence.tools.confluence_outline]
+description = ""
+params = {}
+
+[ext.confluence.tools.confluence_section]
+description = ""
+params = {}
 
 [agent_run]
-# model = "qwen3.5-35b"
-# query = "..."
-# temperature = 0.2
-# top_p = 0.9
-# max_tokens = 4096
-# seed = 42
-# stop = []
-# frequency_penalty = 0.0
-# presence_penalty = 0.0
+query = ""
+model = ""
+temperature = ""
+top_p = ""
+max_tokens = ""
+seed = ""
+stop = ""
+frequency_penalty = ""
+presence_penalty = ""
 
-# CLI-индексатор: action + выбор pipeline-плагина по id.
-# Pipeline — готовая сборка (RequestSource + Transport + Reader + Chunker + Store).
-# Параметры конкретного pipeline'а живут в `[indexer.pipelines.<id>]`.
+# action ставится только per-launch (CLI/env), в TOML обычно не хранится.
 [vector_index]
-confirm_skip = false
-verbose = 1
-# action = "index"          # index | list | delete | sync | show
-# collection = "manual"
-# pipeline = "ext.fs_markdown"   # выбор плагина; обязателен для index/sync
-# description = "Documents collection"
+verbose = 0
 
-# --- FS-pipelines: индексация локальных файлов ---
+[vector_index.index]
+collection = ""
+pipeline = ""                # ext.fs_markdown | ext.fs_html | ext.fs_text | ext.confluence_space | ext.confluence_pages | ext.confluence_cql
+description = ""
 
-# ext.fs_markdown — обход .md → heading-aware chunker → Chroma
+[vector_index.sync]
+collection = ""
+pipeline = ""
+
+[vector_index.show]
+collection = ""
+source_id = ""
+limit = 20
+snippet_chars = 200
+
+[vector_index.delete]
+collection = ""
+
 [indexer.pipelines.fs_markdown]
-# paths = ["./local/manual"]
-# include = ["*.md", "*.markdown"]
-# exclude = []
-# follow_symlinks = false
+paths = []
+include = []
+exclude = []
+follow_symlinks = false
 chunk_size = 1500
 chunk_overlap = 150
 
-# ext.fs_html — обход .html → heading-aware chunker → Chroma
 [indexer.pipelines.fs_html]
-# paths = ["./local/manual"]
-# include = ["*.html", "*.htm"]
+paths = []
+include = []
+exclude = []
+follow_symlinks = false
 chunk_size = 1500
 chunk_overlap = 150
 
-# ext.fs_text — обход .txt/.log → sliding chunker (без структуры) → Chroma
 [indexer.pipelines.fs_text]
-# paths = ["./local/logs"]
-# include = ["*.txt", "*.log"]
+paths = []
+include = []
+exclude = []
+follow_symlinks = false
 chunk_size = 1000
 chunk_overlap = 200
 
-# --- Confluence-pipelines: REST API → Chroma ---
-# Чувствительные поля (base_url, auth_token) задавать env, не TOML:
-#   BOBA_INDEXER__PIPELINES__CONFLUENCE_<SPACE|PAGES|CQL>__BASE_URL=...
-#   BOBA_INDEXER__PIPELINES__CONFLUENCE_<SPACE|PAGES|CQL>__AUTH_TOKEN=...
-
-# ext.confluence_space — целый space (`/rest/api/space/<key>/content`)
+# base_url + auth_token задавать через env (BOBA_INDEXER__PIPELINES__CONFLUENCE_<MODE>__BASE_URL/__AUTH_TOKEN)
 [indexer.pipelines.confluence_space]
-auth_method = "pat"            # "pat" | "basic"
-# auth_user = ""               # только для basic
-# space_key = "DOCS"
-body_format = "export_view"    # "export_view" | "view" | "storage"
+base_url = ""
+auth_method = "pat"          # pat | basic
+auth_user = ""
+auth_token = ""
+space_key = ""
+body_format = "export_view"  # export_view | view | storage
 timeout_sec = 30.0
 chunk_size = 1500
 chunk_overlap = 150
 
-# ext.confluence_pages — явный список page-id'ов
 [indexer.pipelines.confluence_pages]
+base_url = ""
 auth_method = "pat"
-# page_ids = ["12345", "67890"]
+auth_user = ""
+auth_token = ""
+page_ids = []
 body_format = "export_view"
 timeout_sec = 30.0
 chunk_size = 1500
 chunk_overlap = 150
 
-# ext.confluence_cql — CQL-запрос (`/rest/api/content/search?cql=...`)
 [indexer.pipelines.confluence_cql]
+base_url = ""
 auth_method = "pat"
-# cql = "space = DOCS AND ancestor = 12345"
+auth_user = ""
+auth_token = ""
+cql = ""
 body_format = "export_view"
 timeout_sec = 30.0
 chunk_size = 1500
