@@ -36,7 +36,11 @@ upload_accept = ""
 
 [ext.chromadb]
 persist_path = "./local/chroma"
+# "default" = built-in ONNX all-MiniLM-L6-v2 (локально, без сети).
+# Любое другое — модель LiteLLM/Ollama-style endpoint'а embeddings.
 embedding_model = "default"
+embedding_base_url = ""        # OpenAI-совместимый endpoint (LiteLLM/Ollama)
+embedding_api_key = ""
 
 [ext.chromadb.tools]
 enable = false
@@ -168,6 +172,12 @@ pipeline = ""
 collection = ""
 source_id = ""
 limit = 20
+snippet_chars = 200
+
+[vector_index.search]
+collection = ""
+query = ""
+top_k = 5
 snippet_chars = 200
 
 [vector_index.delete]

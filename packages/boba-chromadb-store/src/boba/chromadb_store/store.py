@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from typing import Any
 
 from boba.indexing import (
     Chunk,
     ChunkSummary,
     CollectionInfo,
     IndexingContext,
+    SearchHit,
     Store,
     StoreId,
 )
@@ -28,13 +30,23 @@ class ChromadbPersistStore(Store):
     при заполнении или явном `flush()`.
     """
 
-    def __init__(self, persist_path: str) -> None:
+    def __init__(
+        self,
+        persist_path: str,
+        *,
+        embedding_function: Any = None,
+    ) -> None:
         # ленивый импорт chromadb — не падать при импорте пакета без deps
         import chromadb  # noqa: PLC0415
 
         self._client = chromadb.PersistentClient(path=persist_path)
+        self._embedding_function = embedding_function
         self._buffer: dict[str, list[Chunk]] = {}
-        logger.info("ChromadbPersistStore opened persist_path=%r", persist_path)
+        logger.info(
+            "ChromadbPersistStore opened persist_path=%r ef=%s",
+            persist_path,
+            type(embedding_function).__name__ if embedding_function else "default",
+        )
 
     def name(self) -> str:
         return "ChromadbPersistStore"
@@ -57,6 +69,13 @@ class ChromadbPersistStore(Store):
         self._client.create_collection(
             name=ctx.collection,
             metadata=metadata or None,
+            embedding_function=self._embedding_function,
+        )
+
+    def _get_collection(self, name: str):  # type: ignore[no-untyped-def]
+        return self._client.get_collection(
+            name=name,
+            embedding_function=self._embedding_function,
         )
 
     def handle(self, ctx: IndexingContext, event: Chunk) -> None:
@@ -76,7 +95,7 @@ class ChromadbPersistStore(Store):
     def delete_by_source(
         self, ctx: IndexingContext, source_id: str
     ) -> int:
-        col = self._client.get_collection(name=ctx.collection)
+        col = self._get_collection(ctx.collection)
         existing = col.get(where={"source_id": source_id})
         ids = existing.get("ids") or []
         if not ids:
@@ -93,7 +112,7 @@ class ChromadbPersistStore(Store):
         snippet_chars: int = 200,
     ) -> Iterable[ChunkSummary]:
         try:
-            col = self._client.get_collection(name=ctx.collection)
+            col = self._get_collection(ctx.collection)
         except Exception as e:
             logger.warning("peek_chunks: collection not found: %s", e)
             return
@@ -121,8 +140,51 @@ class ChromadbPersistStore(Store):
                 metadata={k: str(v) for k, v in meta.items()},
             )
 
+    def search(
+        self,
+        ctx: IndexingContext,
+        *,
+        query: str,
+        top_k: int = 5,
+        snippet_chars: int = 200,
+    ) -> Iterable[SearchHit]:
+        try:
+            col = self._get_collection(ctx.collection)
+        except Exception as e:
+            logger.warning("search: collection not found: %s", e)
+            return
+        raw = col.query(query_texts=[query], n_results=top_k)
+        ids = (raw.get("ids") or [[]])[0]
+        documents = (raw.get("documents") or [[]])[0]
+        metadatas = (raw.get("metadatas") or [[]])[0]
+        distances = (raw.get("distances") or [[]])[0]
+        for i, doc_id in enumerate(ids):
+            doc = documents[i] if i < len(documents) else ""
+            md = metadatas[i] if i < len(metadatas) else None
+            dist = distances[i] if i < len(distances) else 0.0
+            yield SearchHit(
+                id=str(doc_id),
+                distance=float(dist),
+                snippet=_truncate(str(doc or ""), snippet_chars),
+                metadata={k: str(v) for k, v in (md or {}).items()},
+            )
+
+    def embedding_dim(self, ctx: IndexingContext) -> int:
+        try:
+            col = self._get_collection(ctx.collection)
+        except Exception:
+            return 0
+        result = col.get(limit=1, include=["embeddings"])
+        embs = result.get("embeddings")
+        if embs is None or len(embs) == 0:
+            return 0
+        first = embs[0]
+        if first is None:
+            return 0
+        return len(first)
+
     def list_source_ids(self, ctx: IndexingContext) -> Iterable[str]:
-        col = self._client.get_collection(name=ctx.collection)
+        col = self._get_collection(ctx.collection)
         existing = col.get(include=["metadatas"])
         out: set[str] = set()
         for m in existing.get("metadatas") or []:
@@ -140,7 +202,7 @@ class ChromadbPersistStore(Store):
         поэтому достаточно прочитать один.
         """
         try:
-            col = self._client.get_collection(name=ctx.collection)
+            col = self._get_collection(ctx.collection)
         except Exception:
             return ""
         result = col.get(
@@ -158,7 +220,7 @@ class ChromadbPersistStore(Store):
         return [self._summarize(c) for c in self._client.list_collections()]
 
     def collection_info(self, name: str) -> CollectionInfo:
-        return self._summarize(self._client.get_collection(name=name))
+        return self._summarize(self._get_collection(name))
 
     def delete_collection(self, name: str) -> None:
         self._client.delete_collection(name=name)
@@ -178,7 +240,7 @@ class ChromadbPersistStore(Store):
         )
 
     def _upsert_to(self, collection_name: str, chunks: list[Chunk]) -> None:
-        col = self._client.get_collection(name=collection_name)
+        col = self._get_collection(collection_name)
         ids = [c.chunk_id for c in chunks]
         documents = [c.text for c in chunks]
         metadatas = [_meta(c) for c in chunks]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from boba.ext.chromadb_tools.errors import (
     CollectionNotFoundError,
@@ -17,13 +18,24 @@ logger = logging.getLogger(__name__)
 class ChromaKnowledgeBase:
     """Read-only обёртка над PersistentClient."""
 
-    def __init__(self, persist_path: str, snippet_chars: int) -> None:
+    def __init__(
+        self,
+        persist_path: str,
+        snippet_chars: int,
+        *,
+        embedding_function: Any = None,
+    ) -> None:
         # Ленивый импорт chromadb — модуль грузится без runtime-deps.
         import chromadb  # noqa: PLC0415
 
         self._snippet_chars = snippet_chars
         self._client = chromadb.PersistentClient(path=persist_path)
-        logger.info("ChromaKnowledgeBase opened persist_path=%r", persist_path)
+        self._embedding_function = embedding_function
+        logger.info(
+            "ChromaKnowledgeBase opened persist_path=%r ef=%s",
+            persist_path,
+            type(embedding_function).__name__ if embedding_function else "default",
+        )
 
     def list_collections(self) -> list[CollectionInfo]:
         result: list[CollectionInfo] = []
@@ -75,7 +87,10 @@ class ChromaKnowledgeBase:
 
     def _get_collection(self, tool_id: ToolId, name: str):
         try:
-            return self._client.get_collection(name=name)
+            return self._client.get_collection(
+                name=name,
+                embedding_function=self._embedding_function,
+            )
         except Exception as e:
             if "does not exist" in str(e) or "not found" in str(e).lower():
                 raise CollectionNotFoundError(tool_id, name) from e
@@ -97,15 +112,22 @@ def _truncate(text: str, limit: int) -> str:
     return text[:limit].rstrip() + "…"
 
 
-# Process-singleton по persist_path (один Chroma-клиент на путь).
-_KB_CACHE: dict[tuple[str, int], ChromaKnowledgeBase] = {}
+# Process-singleton по (persist_path, snippet_chars, ef-id).
+_KB_CACHE: dict[tuple[str, int, int], ChromaKnowledgeBase] = {}
 
 
-def get_knowledge_base(persist_path: str, snippet_chars: int) -> ChromaKnowledgeBase:
-    """Process-singleton ChromaKnowledgeBase по (persist_path, snippet_chars)."""
-    key = (persist_path, snippet_chars)
+def get_knowledge_base(
+    persist_path: str,
+    snippet_chars: int,
+    *,
+    embedding_function: Any = None,
+) -> ChromaKnowledgeBase:
+    """Process-singleton ChromaKnowledgeBase по (persist_path, snippet_chars, ef)."""
+    key = (persist_path, snippet_chars, id(embedding_function))
     kb = _KB_CACHE.get(key)
     if kb is None:
-        kb = ChromaKnowledgeBase(persist_path, snippet_chars)
+        kb = ChromaKnowledgeBase(
+            persist_path, snippet_chars, embedding_function=embedding_function,
+        )
         _KB_CACHE[key] = kb
     return kb

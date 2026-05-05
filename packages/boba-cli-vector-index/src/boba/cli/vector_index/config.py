@@ -24,6 +24,8 @@ __all__ = [
     "IndexCommandSection",
     "PrintCommandConfig",
     "PrintCommandSection",
+    "SearchCommandConfig",
+    "SearchCommandSection",
     "VectorIndexActionConfig",
     "VectorIndexActionSection",
     "VectorIndexChromadbConfig",
@@ -33,7 +35,7 @@ __all__ = [
 ]
 
 
-ALL_ACTIONS: frozenset[str] = frozenset({"index", "print"})
+ALL_ACTIONS: frozenset[str] = frozenset({"index", "print", "search"})
 
 
 @dataclass(frozen=True)
@@ -147,6 +149,38 @@ class PrintCommandSection(ConfigSection[PrintCommandConfig]):
             ),
         ],
         factory=PrintCommandConfig,
+    )
+
+
+@dataclass(frozen=True)
+class SearchCommandConfig:
+    collection: str
+    query: str
+    top_k: int
+    snippet_chars: int
+
+
+class SearchCommandSection(ConfigSection[SearchCommandConfig]):
+    """`[vector_index.search]` — параметры action=search (эмуляция kb_search)."""
+
+    namespace: ClassVar[tuple[str, ...]] = ("vector_index", "search")
+
+    schema: ClassVar[ObjectSchema[SearchCommandConfig]] = ObjectSchema(
+        fields=[
+            FieldSpec(name="collection", coercer=ParseString(), required=True),
+            FieldSpec(name="query", coercer=ParseString(), required=True),
+            FieldSpec(
+                name="top_k",
+                coercer=ChainCoercer(Default(5), ParseInt(), MinValue(1)),
+                description="Сколько hits вернуть.",
+            ),
+            FieldSpec(
+                name="snippet_chars",
+                coercer=ChainCoercer(Default(200), ParseInt(), MinValue(1)),
+                description="Длина preview-строки чанка в символах.",
+            ),
+        ],
+        factory=SearchCommandConfig,
     )
 
 

@@ -5,7 +5,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from boba.config.app import ConfigError
-from boba.ext.chromadb_shared import ChromadbSharedSection
+from boba.ext.chromadb_shared import (
+    ChromadbSharedSection,
+    make_embedding_function,
+)
 from boba.ext.chromadb_tools.config import ChromadbToolsSection
 from boba.ext.chromadb_tools.kb import get_knowledge_base
 from boba.ext.chromadb_tools.kb_list_collections import (
@@ -35,7 +38,11 @@ def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
             "[ext.chromadb.tools] enable=true"
         )
         raise ConfigError(msg)
-    kb = get_knowledge_base(shared.persist_path, tools_cfg.snippet_chars)
+    kb = get_knowledge_base(
+        shared.persist_path,
+        tools_cfg.snippet_chars,
+        embedding_function=make_embedding_function(shared),
+    )
     s = ctx.config.section
     tools = [
         KbListCollectionsTool(kb, s(KbListCollectionsToolSection)),
