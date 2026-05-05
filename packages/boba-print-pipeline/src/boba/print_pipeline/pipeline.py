@@ -55,6 +55,7 @@ class PrintPipeline(StateFull):
             pipeline_id=PipelineId(f"cli:print:{self._collection}"),
             collection=self._collection,
         )
+        embedding_dim = self._store.embedding_dim(ctx)
         seen_sources: set[str] = set()
         chunks_printed = 0
         for summary in self._store.peek_chunks(
@@ -69,6 +70,7 @@ class PrintPipeline(StateFull):
         return PrintStats(
             chunks_printed=chunks_printed,
             sources_seen=len(seen_sources),
+            embedding_dim=embedding_dim,
         )
 
 

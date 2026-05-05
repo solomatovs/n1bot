@@ -7,7 +7,7 @@ name = "boba-ext-chromadb-shared"
 version = "0.1.0"
 description = "Shared ChromaDB config (persist_path, embedding_model) for tools and store packages."
 requires-python = ">=3.11,<4"
-dependencies = ["boba-config", "boba-foundation"]
+dependencies = ["boba-config", "boba-foundation", "chromadb>=0.5"]
 
 [project.entry-points."boba.config_sections"]
 chromadb_shared = "boba.ext.chromadb_shared:ChromadbSharedSection"

@@ -6,7 +6,7 @@ from boba.chromadb_store import ChromadbPersistStore
 from boba.config.app import AppConfig
 from boba.confluence_reader import ConfluenceJsonDecoder, ConfluenceReader
 from boba.confluence_requests import ConfluenceSpaceRequestSource
-from boba.ext.chromadb_shared import ChromadbSharedSection
+from boba.ext.chromadb_shared import ChromadbSharedSection, make_embedding_function
 from boba.ext.confluence_space_pipeline.config import (
     ConfluenceSpacePipelineConfig,
     ConfluenceSpacePipelineConfigSection,
@@ -53,7 +53,10 @@ def _build(app: AppConfig) -> IndexPipeline:
                 chunk_overlap=cfg.chunk_overlap,
             )
         ),
-        store=ChromadbPersistStore(persist_path=shared.persist_path),
+        store=ChromadbPersistStore(
+            persist_path=shared.persist_path,
+            embedding_function=make_embedding_function(shared),
+        ),
     )
 
 

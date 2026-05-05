@@ -23,6 +23,7 @@ from boba.chromadb_store import ChromadbPersistStore
 from boba.cli.vector_index.config import (
     IndexCommandSection,
     PrintCommandSection,
+    SearchCommandSection,
     VectorIndexActionConfig,
     VectorIndexActionSection,
     VectorIndexChromadbSection,
@@ -36,9 +37,14 @@ from boba.config.bootstrap import AppConfigBootstrap
 from boba.config.source.cli import CliSource
 from boba.config.source.env import EnvFileSource, EnvSource
 from boba.config.source.toml import TomlFileSource, TomlSource
+from boba.ext.chromadb_shared import (
+    ChromadbSharedSection,
+    make_embedding_function,
+)
 from boba.indexing import IndexingContext, IndexingError, PipelineId
 from boba.patterns import ConverterInputError
 from boba.print_pipeline import PrintPipeline
+from boba.search_pipeline import SearchPipeline
 
 __all__ = ["VectorIndexCli"]
 
@@ -53,6 +59,8 @@ class VectorIndexCli:
                     return self._handle_index(pid)
                 case VectorIndexActionConfig(action="print"):
                     return self._handle_print()
+                case VectorIndexActionConfig(action="search"):
+                    return self._handle_search()
                 case other:
                     msg = f"unsupported action {other.action!r}"
                     raise ValueError(msg)
@@ -130,14 +138,19 @@ class VectorIndexCli:
         boot = self._make_boot()
         boot.register_section(VectorIndexCommonSection())
         boot.register_section(VectorIndexChromadbSection())
+        boot.register_section(ChromadbSharedSection())
         boot.register_section(PrintCommandSection())
         app = boot.build()
 
         self._setup_logging(app.section(VectorIndexCommonSection).verbose)
         cfg = app.section(PrintCommandSection)
         shared = app.section(VectorIndexChromadbSection)
+        ef_cfg = app.section(ChromadbSharedSection)
         pipeline = PrintPipeline(
-            store=ChromadbPersistStore(persist_path=shared.persist_path),
+            store=ChromadbPersistStore(
+                persist_path=shared.persist_path,
+                embedding_function=make_embedding_function(ef_cfg),
+            ),
             collection=cfg.collection,
             source_id=cfg.source_id,
             limit=cfg.limit,
@@ -147,7 +160,40 @@ class VectorIndexCli:
         print()
         print(
             f"collection={cfg.collection!r} "
+            f"embedding_dim={stats.embedding_dim} "
             f"chunks_printed={stats.chunks_printed} "
             f"sources_seen={stats.sources_seen}"
+        )
+        return 0
+
+    def _handle_search(self) -> int:
+        boot = self._make_boot()
+        boot.register_section(VectorIndexCommonSection())
+        boot.register_section(VectorIndexChromadbSection())
+        boot.register_section(ChromadbSharedSection())
+        boot.register_section(SearchCommandSection())
+        app = boot.build()
+
+        self._setup_logging(app.section(VectorIndexCommonSection).verbose)
+        cfg = app.section(SearchCommandSection)
+        shared = app.section(VectorIndexChromadbSection)
+        ef_cfg = app.section(ChromadbSharedSection)
+        pipeline = SearchPipeline(
+            store=ChromadbPersistStore(
+                persist_path=shared.persist_path,
+                embedding_function=make_embedding_function(ef_cfg),
+            ),
+            collection=cfg.collection,
+            query=cfg.query,
+            top_k=cfg.top_k,
+            snippet_chars=cfg.snippet_chars,
+        )
+        stats = pipeline.run()
+        print()
+        print(
+            f"collection={cfg.collection!r} "
+            f"embedding_dim={stats.embedding_dim} "
+            f"query={cfg.query!r} "
+            f"hits_returned={stats.hits_returned}"
         )
         return 0

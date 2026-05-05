@@ -3,14 +3,25 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 
 from boba.indexing.chunks import Chunk, ChunkSummary
 from boba.indexing.collections import CollectionInfo
 from boba.indexing.context import IndexingContext
 from boba.patterns import StreamSink, StrId
 
-__all__ = ["Store", "StoreId"]
+__all__ = ["SearchHit", "Store", "StoreId"]
+
+
+@dataclass(frozen=True)
+class SearchHit:
+    """Результат семантического поиска: distance — нативный (меньше = ближе)."""
+
+    id: str
+    distance: float
+    snippet: str
+    metadata: Mapping[str, str] = field(default_factory=dict)
 
 
 class StoreId(StrId):
@@ -74,6 +85,33 @@ class Store(StreamSink[IndexingContext, Chunk], ABC):
         и не для индексации.
         """
         ...
+
+    def search(
+        self,
+        ctx: IndexingContext,
+        *,
+        query: str,
+        top_k: int = 5,
+        snippet_chars: int = 200,
+    ) -> Iterable[SearchHit]:
+        """Семантический поиск: query → top_k ближайших чанков по embedding.
+
+        Default — пустой результат (Store без поиска). Используется операторским
+        CLI (action=search) для эмуляции kb_search-tool агента.
+        """
+        del ctx, query, top_k, snippet_chars
+        return iter([])
+
+    def embedding_dim(self, ctx: IndexingContext) -> int:
+        """Размерность embedding'а коллекции; 0 = неизвестно/коллекция пуста.
+
+        Используется операторскими CLI (action=print) для проверки, какой
+        моделью реально проиндексирована коллекция (модели → размерности
+        отличаются: 384 у MiniLM, 1024 у bge-m3, 1536 у text-embedding-3).
+        Default — 0.
+        """
+        del ctx
+        return 0
 
     def content_hash_for(
         self, ctx: IndexingContext, source_id: str

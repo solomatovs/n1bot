@@ -9,7 +9,8 @@ __all__ = ["PrintStats"]
 
 @dataclass(frozen=True)
 class PrintStats:
-    """Сводка прогона PrintPipeline: сколько чанков и уникальных source_id выведено."""
+    """Сводка прогона PrintPipeline: счётчики + размерность embedding'а коллекции."""
 
     chunks_printed: int
     sources_seen: int
+    embedding_dim: int = 0

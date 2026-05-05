@@ -23,7 +23,7 @@ from boba.indexing.request import Request
 from boba.indexing.request_source import RequestSource
 from boba.indexing.sections import Section
 from boba.indexing.stats import IndexStats, IndexStatsBuilder
-from boba.indexing.store import Store, StoreId
+from boba.indexing.store import SearchHit, Store, StoreId
 from boba.indexing.transport import Transport
 
 __all__ = [
@@ -52,6 +52,7 @@ __all__ = [
     "ReaderId",
     "Request",
     "RequestSource",
+    "SearchHit",
     "Section",
     "Store",
     "StoreId",
