@@ -51,22 +51,27 @@ cp -r local/prompts.example local/prompts
 `boba-cli-vector-index` пишет документы в Chroma. Агент потом читает их
 через `kb_search` / `kb_list_collections` (read-only).
 
+CLI выбирает **pipeline-плагин** по id (`--vector_index.pipeline=<id>`).
+Pipeline — готовая сборка из RequestSource, Transport, Reader, Chunker и
+Store. Параметры конкретного pipeline'а живут в его секции
+`[indexer.pipelines.<id>]`.
+
 ### Confluence — URL и токен через env
 
 ```bash
-export BOBA_INDEXER__SOURCES__CONFLUENCE__BASE_URL=https://confl.loshara.com
-export BOBA_INDEXER__SOURCES__CONFLUENCE__AUTH_TOKEN=<PAT или пароль>
+export BOBA_INDEXER__PIPELINES__CONFLUENCE_SPACE__BASE_URL=https://confl.loshara.com
+export BOBA_INDEXER__PIPELINES__CONFLUENCE_SPACE__AUTH_TOKEN=<PAT или пароль>
 ```
 
 | Ключ | Значение |
 |---|---|
-| `BOBA_INDEXER__SOURCES__CONFLUENCE__BASE_URL` | URL твоего Confluence без trailing slash. |
-| `BOBA_INDEXER__SOURCES__CONFLUENCE__AUTH_TOKEN` | PAT (Atlassian) или пароль (для basic). |
+| `BOBA_INDEXER__PIPELINES__CONFLUENCE_SPACE__BASE_URL` | URL Confluence без trailing slash. |
+| `BOBA_INDEXER__PIPELINES__CONFLUENCE_SPACE__AUTH_TOKEN` | PAT (Atlassian) или пароль (для basic). |
 
 В `local/config.toml`:
 
 ```toml
-[indexer.sources.confluence]
+[indexer.pipelines.confluence_space]
 auth_method = "pat"   # или "basic"
 # auth_user = "alice" # только для basic
 ```
@@ -76,56 +81,42 @@ auth_method = "pat"   # или "basic"
 | `auth_method` | `"pat"` — Bearer-токен. `"basic"` — login+password. |
 | `auth_user` | Логин для `basic`; пустой при `pat`. |
 
-### Индексация всего space
+### Индексация всего Confluence space
 
 ```bash
 .venv/bin/boba-cli-vector-index \
   --vector_index.action=index \
   --vector_index.collection=confl_docs \
-  --vector_index.source=ext.confluence_space \
-  --indexer.sources.confluence.space.space_key=PAAS \
-  --ext.chromadb.persist_path=./local/paas
+  --vector_index.pipeline=ext.confluence_space \
+  --indexer.pipelines.confluence_space.space_key=DOCS \
+  --ext.chromadb.persist_path=./local/chroma
 ```
 
 | Ключ | Значение |
 |---|---|
 | `--vector_index.action=index` | Записать в коллекцию. |
 | `--vector_index.collection=confl_docs` | Имя коллекции в Chroma. Произвольное; создаётся при первом запуске. |
-| `--vector_index.source=ext.confluence_space` | Использовать Source-плагин «весь space». |
-| `--indexer.sources.confluence.space.space_key=DOCS` | Ключ space'а в Confluence (часть URL `/display/DOCS/...`). |
+| `--vector_index.pipeline=ext.confluence_space` | Pipeline-плагин «индексация целого space». |
+| `--indexer.pipelines.confluence_space.space_key=DOCS` | Ключ space'а в Confluence (часть URL `/display/DOCS/...`). |
 | `--ext.chromadb.persist_path=./local/chroma` | Директория Chroma-store на диске. |
 
-### Индексация одной/нескольких страниц
+### Индексация .md из файловой системы
 
 ```bash
 .venv/bin/boba-cli-vector-index \
   --vector_index.action=index \
-  --vector_index.collection=confl_pages \
-  --vector_index.source=ext.confluence_pages \
-  --indexer.sources.confluence.pages.page_ids=12345,67890 \
+  --vector_index.collection=local_docs \
+  --vector_index.pipeline=ext.fs_markdown \
+  --indexer.pipelines.fs_markdown.paths=./local/manual \
+  --indexer.pipelines.fs_markdown.include="*.md" \
   --ext.chromadb.persist_path=./local/chroma
 ```
 
 | Ключ | Значение |
 |---|---|
-| `--vector_index.source=ext.confluence_pages` | Source-плагин «явный список страниц». |
-| `--indexer.sources.confluence.pages.page_ids=12345,67890` | Page-id'ы через запятую. Page-id виден в URL Confluence: `?pageId=12345`. |
-
-### Индексация по CQL-запросу
-
-```bash
-.venv/bin/boba-cli-vector-index \
-  --vector_index.action=index \
-  --vector_index.collection=confl_recent \
-  --vector_index.source=ext.confluence_cql \
-  --indexer.sources.confluence.cql.cql="space = DOCS AND lastModified > '2024-01-01'" \
-  --ext.chromadb.persist_path=./local/chroma
-```
-
-| Ключ | Значение |
-|---|---|
-| `--vector_index.source=ext.confluence_cql` | Source-плагин «по CQL-запросу». |
-| `--indexer.sources.confluence.cql.cql="..."` | CQL — Confluence Query Language. Примеры: `space = DOCS AND ancestor = 12345` (поддерево от страницы), `label = "api" AND space = DOCS` (по тегу), `space = DOCS AND lastModified > '2024-01-01'` (за период). |
+| `--vector_index.pipeline=ext.fs_markdown` | Pipeline-плагин «обход .md из ФС → heading-aware Section'ы → Chroma». |
+| `--indexer.pipelines.fs_markdown.paths=./path/to/dir` | Список путей через запятую (файлы или директории). |
+| `--indexer.pipelines.fs_markdown.include="*.md"` | Glob-фильтры включения (через запятую). Пусто — без фильтра. |
 
 ### Список коллекций
 
@@ -138,6 +129,8 @@ auth_method = "pat"   # или "basic"
 | Ключ | Значение |
 |---|---|
 | `--vector_index.action=list` | Показать все коллекции в `persist_path`. |
+
+`list/show/delete` не требуют `pipeline` — это admin-команды над Store.
 
 ### Просмотр содержимого коллекции
 
@@ -162,28 +155,28 @@ auth_method = "pat"   # или "basic"
 .venv/bin/boba-cli-vector-index \
   --vector_index.action=show \
   --vector_index.collection=confl_docs \
-  --vector_index.show_source_id="confluence://confl.loshara.com/page/12345" \
+  --vector_index.show_source_id="https://confl.loshara.com/pages/viewpage.action?pageId=12345" \
   --ext.chromadb.persist_path=./local/chroma
 ```
 
 | Ключ | Значение |
 |---|---|
-| `--vector_index.show_source_id="..."` | Фильтр по полному `source_id`. Для Confluence: `confluence://<host>/page/<page_id>`. Для FS: `fs:/abs/path`. С фильтром чанки выводятся в порядке `chunk_index`. |
+| `--vector_index.show_source_id="..."` | Фильтр по полному `source_id`. Для Confluence: viewpage URL (`https://<host>/pages/viewpage.action?pageId=<id>`). Для FS: `fs:/abs/path`. С фильтром чанки выводятся в порядке `chunk_index`. |
 
-### Sync — удалить чанки страниц, которых больше нет в Confluence
+### Sync — удалить чанки документов, исчезнувших из источника
 
 ```bash
 .venv/bin/boba-cli-vector-index \
   --vector_index.action=sync \
   --vector_index.collection=confl_docs \
-  --vector_index.source=ext.confluence_space \
-  --indexer.sources.confluence.space.space_key=DOCS \
+  --vector_index.pipeline=ext.confluence_space \
+  --indexer.pipelines.confluence_space.space_key=DOCS \
   --ext.chromadb.persist_path=./local/chroma
 ```
 
 | Ключ | Значение |
 |---|---|
-| `--vector_index.action=sync` | Сравнить page-id'ы из Source с теми, что в Store; удалить чанки тех, которых нет в Source. |
+| `--vector_index.action=sync` | Сравнить source_id'ы из RequestSource с теми, что в Store; удалить чанки тех, которых уже нет в источнике. Требует `pipeline` (тот же, что использовался при index). |
 
 ### Удалить коллекцию целиком
 
@@ -209,5 +202,24 @@ auth_method = "pat"   # или "basic"
 | Значение | Что логируется |
 |---|---|
 | `0` (default) | WARN: только ошибки и пропуски. |
-| `1` | INFO: одна строка на страницу. |
+| `1` | INFO: одна строка на документ + summary stats. |
 | `2` | DEBUG: HTTP-запросы, парсинг heading'ов. |
+
+### Output stats
+
+После `index`:
+
+```
+collection='confl_docs' pipeline='ext.confluence_space'
+sources_processed=42 sources_failed=0 sources_skipped_unchanged=128
+sections_emitted=350 chunks_upserted=350 chunks_deleted=212
+```
+
+| Поле | Значение |
+|---|---|
+| `sources_processed` | Сколько новых/изменённых документов обработано. |
+| `sources_failed` | Сколько упали с ошибкой (timeout, 404, parse-error); остальные доехали. |
+| `sources_skipped_unchanged` | Сколько пропущено по incremental-skip (etag/version/mtime совпали). |
+| `sections_emitted` | Всего Section'ов на выходе Reader'а. |
+| `chunks_upserted` | Сколько чанков записано в Store. |
+| `chunks_deleted` | Сколько старых чанков удалено перед upsert (idempotent re-index). |

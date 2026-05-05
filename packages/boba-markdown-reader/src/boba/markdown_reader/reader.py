@@ -12,19 +12,19 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from boba.markdown_parser import (
-    Section as MdSection,
-)
-from boba.markdown_parser import (
-    anchor_for,
-    split_sections,
-)
 from boba.indexing import (
     IndexingContext,
     RawDocument,
     Reader,
     ReaderId,
     Section,
+)
+from boba.markdown_parser import (
+    Section as MdSection,
+)
+from boba.markdown_parser import (
+    anchor_for,
+    split_sections,
 )
 
 __all__ = ["MarkdownReader"]

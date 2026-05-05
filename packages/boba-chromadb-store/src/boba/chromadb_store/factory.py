@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from boba.ext.chromadb_shared import ChromadbSharedSection
 from boba.chromadb_store.store import ChromadbPersistStore
+from boba.ext.chromadb_shared import ChromadbSharedSection
 from boba.indexing import (
     IndexerExtensionContext,
     Store,

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from boba.sliding_chunker.chunker import SlidingChunker
-from boba.sliding_chunker.config import SlidingChunkerConfigSection
 from boba.indexing import (
     Chunker,
     ChunkerFactory,
     ChunkerId,
     IndexerExtensionContext,
 )
+from boba.sliding_chunker.chunker import SlidingChunker
+from boba.sliding_chunker.config import SlidingChunkerConfigSection
 
 __all__ = ["SlidingChunkerFactory"]
 

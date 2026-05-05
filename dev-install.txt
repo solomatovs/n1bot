@@ -33,10 +33,30 @@
 -e ./packages/boba-cli-vector-index
 -e ./packages/boba-web-chainlit
 
-# shared parsers (используются и tool-extensions, и indexing-readers)
--e ./packages/boba-ext-html-parser
--e ./packages/boba-ext-markdown-parser
--e ./packages/boba-ext-confluence-shared
+# shared parsers (libs)
+-e ./packages/boba-html-parser
+-e ./packages/boba-markdown-parser
+-e ./packages/boba-confluence-shared
+
+# transports (libs)
+-e ./packages/boba-http-transport
+-e ./packages/boba-fs-transport
+
+# request sources (libs)
+-e ./packages/boba-confluence-requests
+
+# readers (libs)
+-e ./packages/boba-text-reader
+-e ./packages/boba-markdown-reader
+-e ./packages/boba-html-reader
+-e ./packages/boba-confluence-reader
+
+# chunkers (libs)
+-e ./packages/boba-sliding-chunker
+-e ./packages/boba-heading-chunker
+
+# stores (libs)
+-e ./packages/boba-chromadb-store
 
 # tool extensions (boba.tools entry-point)
 -e ./packages/boba-ext-files-tools
@@ -45,13 +65,6 @@
 -e ./packages/boba-ext-chromadb-shared
 -e ./packages/boba-ext-chromadb-tools
 
-# indexing extensions
--e ./packages/boba-ext-chromadb-store
--e ./packages/boba-ext-text-reader
--e ./packages/boba-ext-markdown-reader
--e ./packages/boba-ext-html-reader
--e ./packages/boba-ext-confluence-reader
--e ./packages/boba-ext-confluence-source
--e ./packages/boba-ext-fs-source
--e ./packages/boba-ext-sliding-chunker
--e ./packages/boba-ext-heading-chunker
+# pipeline extensions (boba.indexing.pipelines entry-point)
+-e ./packages/boba-ext-fs-markdown-pipeline
+-e ./packages/boba-ext-confluence-space-pipeline
