@@ -12,9 +12,9 @@ from boba.adapter.fs_workspace import (
 )
 from boba.adapter.messages import InMemoryMessageService
 from boba.adapter.openai import (
+    CurlTraceChatCompletionObserver,
     OpenAIAdapterSection,
     OpenAIChatVisitor,
-    TranscriptChatCompletionObserver,
     create_llm_source,
 )
 from boba.adapter.prompt_providers import PromptLoader, PromptsSection
@@ -126,7 +126,7 @@ class ChatSession:
         tool_ctx = ToolContext(project_workspace=project_workspace)
 
         history_workspace = self._history_workspaces.get_or_create(workspace_id)
-        observer = TranscriptChatCompletionObserver(history_workspace)
+        observer = CurlTraceChatCompletionObserver(history_workspace)
         llm_source = create_llm_source(self._llm_cfg, observer)
         agent = create_agent(
             llm_source=llm_source,

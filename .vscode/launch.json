@@ -129,11 +129,6 @@
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "args": [
-                // "--agent_run.model=${input:model}",
-                // "--agent_run.temperature=0.2",
-                // "--agent_run.top_p=0.95",
-                // "--agent_run.presence_penalty=0.0",
-                // "--agent_run.frequency_penalty=0.0",
                 // "--agent_run.query=${input:query}"
             ],
             "envFile": "${workspaceFolder}/local/.env"
