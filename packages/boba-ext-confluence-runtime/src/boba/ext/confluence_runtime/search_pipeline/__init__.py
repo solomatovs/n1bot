@@ -8,7 +8,9 @@ from boba.ext.confluence_runtime.search_pipeline.errors import (
     ConfluenceSearchResponseError,
 )
 from boba.ext.confluence_runtime.search_pipeline.models import ConfluenceSearchHit
-from boba.ext.confluence_runtime.search_pipeline.pipeline import ConfluenceSearchPipeline
+from boba.ext.confluence_runtime.search_pipeline.pipeline import (
+    ConfluenceSearchPipeline,
+)
 from boba.ext.confluence_runtime.search_pipeline.stats import ConfluenceSearchStats
 
 __all__ = [

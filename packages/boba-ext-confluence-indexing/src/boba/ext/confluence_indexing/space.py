@@ -52,7 +52,9 @@ class ConfluenceSpacePipelineConfigSection(
     """Pipeline индексации целого Confluence space (REST + heading chunker)."""
 
     namespace: ClassVar[tuple[str, ...]] = (
-        "indexer", "pipelines", "confluence_space",
+        "indexer",
+        "pipelines",
+        "confluence_space",
     )
 
     schema: ClassVar[ObjectSchema[ConfluenceSpacePipelineConfig]] = ObjectSchema(
