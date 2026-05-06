@@ -10,9 +10,11 @@ requires-python = ">=3.11,<4"
 dependencies = [
     "boba-tools-framework",
     "boba-foundation",
+    "boba-confluence-search-pipeline",
     "boba-confluence-shared",
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
+    "httpx",
 ]
 
 [project.entry-points."boba.tools"]
@@ -21,6 +23,8 @@ confluence = "boba.ext.confluence_tools:register_tools"
 [project.entry-points."boba.config_sections"]
 confluence = "boba.ext.confluence_tools.config:ConfluenceSection"
 confluence_outline = "boba.ext.confluence_tools.outline:ConfluenceOutlineToolSection"
+confluence_search = "boba.ext.confluence_tools.search:ConfluenceSearchToolSection"
+confluence_search_runtime = "boba.ext.confluence_tools.search:ConfluenceSearchSection"
 confluence_section = "boba.ext.confluence_tools.section:ConfluenceSectionToolSection"
 
 [tool.setuptools.packages.find]

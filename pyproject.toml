@@ -46,7 +46,10 @@ pythonpath = [
     "packages/boba-cli-vector-index/src",
     "packages/boba-web-chainlit/src",
 ]
-addopts = ["--strict-markers"]
+addopts = ["--strict-markers", "-m", "not integration"]
+markers = [
+    "integration: тест ходит во внешние сервисы (Confluence/Ollama/...). Запускать вручную: `pytest -m integration`. По умолчанию исключаются.",
+]
 
 [tool.pyright]
 include = ["packages"]

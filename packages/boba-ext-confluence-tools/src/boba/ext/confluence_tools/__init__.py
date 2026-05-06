@@ -9,6 +9,11 @@ from boba.ext.confluence_tools.outline import (
     ConfluenceOutlineTool,
     ConfluenceOutlineToolSection,
 )
+from boba.ext.confluence_tools.search import (
+    ConfluenceSearchSection,
+    ConfluenceSearchTool,
+    ConfluenceSearchToolSection,
+)
 from boba.ext.confluence_tools.section import (
     ConfluenceSectionTool,
     ConfluenceSectionToolSection,
@@ -32,6 +37,10 @@ def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
     tools = [
         ConfluenceOutlineTool(s(ConfluenceOutlineToolSection)),
         ConfluenceSectionTool(s(ConfluenceSectionToolSection)),
+        ConfluenceSearchTool(
+            s(ConfluenceSearchToolSection),
+            s(ConfluenceSearchSection),
+        ),
     ]
     if cfg.tools_allow:
         allow = set(cfg.tools_allow)

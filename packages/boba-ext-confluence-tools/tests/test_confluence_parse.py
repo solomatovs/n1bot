@@ -148,10 +148,12 @@ def test_strip_confluence_macros_keeps_plain_html() -> None:
 
 def test_outline_tool_renders_full_doc(ctx: ToolContext) -> None:
     """confluence_outline возвращает все 36 заголовков с anchor'ами."""
-    tool = ConfluenceOutlineTool(ConfluenceOutlineToolConfig(description=ConfluenceOutlineTool.DEFAULT_DESCRIPTION))
-    args = tool.args_converter().convert(
-        {"path": _FIXTURE_FILE, "limit": 200}
+    tool = ConfluenceOutlineTool(
+        ConfluenceOutlineToolConfig(
+            description=ConfluenceOutlineTool.DEFAULT_DESCRIPTION
+        )
     )
+    args = tool.args_converter().convert({"path": _FIXTURE_FILE, "limit": 200})
     res = tool.execute(ctx, args)
     assert isinstance(res, TextResult)
     assert "Заголовков: 36" in res.text
@@ -162,7 +164,11 @@ def test_outline_tool_renders_full_doc(ctx: ToolContext) -> None:
 
 def test_outline_tool_max_depth(ctx: ToolContext) -> None:
     """max_depth=1 в outline-tool ограничивает выдачу до h1."""
-    tool = ConfluenceOutlineTool(ConfluenceOutlineToolConfig(description=ConfluenceOutlineTool.DEFAULT_DESCRIPTION))
+    tool = ConfluenceOutlineTool(
+        ConfluenceOutlineToolConfig(
+            description=ConfluenceOutlineTool.DEFAULT_DESCRIPTION
+        )
+    )
     args = tool.args_converter().convert(
         {"path": _FIXTURE_FILE, "max_depth": 1, "limit": 200}
     )
@@ -174,10 +180,12 @@ def test_outline_tool_max_depth(ctx: ToolContext) -> None:
 
 def test_outline_tool_limit_truncates(ctx: ToolContext) -> None:
     """Если headings больше limit — добавляется суффикс truncated."""
-    tool = ConfluenceOutlineTool(ConfluenceOutlineToolConfig(description=ConfluenceOutlineTool.DEFAULT_DESCRIPTION))
-    args = tool.args_converter().convert(
-        {"path": _FIXTURE_FILE, "limit": 5}
+    tool = ConfluenceOutlineTool(
+        ConfluenceOutlineToolConfig(
+            description=ConfluenceOutlineTool.DEFAULT_DESCRIPTION
+        )
     )
+    args = tool.args_converter().convert({"path": _FIXTURE_FILE, "limit": 5})
     res = tool.execute(ctx, args)
     assert isinstance(res, TextResult)
     assert "truncated at limit=5" in res.text
@@ -185,17 +193,23 @@ def test_outline_tool_limit_truncates(ctx: ToolContext) -> None:
 
 def test_outline_tool_missing_file(ctx: ToolContext) -> None:
     """Отсутствующий файл — ToolExecutionError, не CRASH."""
-    tool = ConfluenceOutlineTool(ConfluenceOutlineToolConfig(description=ConfluenceOutlineTool.DEFAULT_DESCRIPTION))
-    args = tool.args_converter().convert(
-        {"path": "no-such-file.html", "limit": 200}
+    tool = ConfluenceOutlineTool(
+        ConfluenceOutlineToolConfig(
+            description=ConfluenceOutlineTool.DEFAULT_DESCRIPTION
+        )
     )
+    args = tool.args_converter().convert({"path": "no-such-file.html", "limit": 200})
     with pytest.raises(ToolExecutionError):
         tool.execute(ctx, args)
 
 
 def test_section_tool_returns_section(ctx: ToolContext) -> None:
     """Раздел по anchor возвращает HTML начиная с заголовка."""
-    tool = ConfluenceSectionTool(ConfluenceSectionToolConfig(description=ConfluenceSectionTool.DEFAULT_DESCRIPTION))
+    tool = ConfluenceSectionTool(
+        ConfluenceSectionToolConfig(
+            description=ConfluenceSectionTool.DEFAULT_DESCRIPTION
+        )
+    )
     args = tool.args_converter().convert(
         {
             "path": _FIXTURE_FILE,
@@ -219,7 +233,11 @@ def test_section_tool_include_subsections_stops_at_same_level(
     ctx: ToolContext,
 ) -> None:
     """include_subsections=True: для h1 stop — на следующем h1, h2-подразделы внутри."""
-    tool = ConfluenceSectionTool(ConfluenceSectionToolConfig(description=ConfluenceSectionTool.DEFAULT_DESCRIPTION))
+    tool = ConfluenceSectionTool(
+        ConfluenceSectionToolConfig(
+            description=ConfluenceSectionTool.DEFAULT_DESCRIPTION
+        )
+    )
     args = tool.args_converter().convert(
         {
             "path": _FIXTURE_FILE,
@@ -242,7 +260,11 @@ def test_section_tool_no_subsections_stops_at_first_heading(
     ctx: ToolContext,
 ) -> None:
     """include_subsections=False: stop на первом же следующем heading'е (любого уровня)."""
-    tool = ConfluenceSectionTool(ConfluenceSectionToolConfig(description=ConfluenceSectionTool.DEFAULT_DESCRIPTION))
+    tool = ConfluenceSectionTool(
+        ConfluenceSectionToolConfig(
+            description=ConfluenceSectionTool.DEFAULT_DESCRIPTION
+        )
+    )
     base_args = {
         "path": _FIXTURE_FILE,
         "anchor": "scroll-bookmark-2",
@@ -254,9 +276,7 @@ def test_section_tool_no_subsections_stops_at_first_heading(
     assert isinstance(no_subs, TextResult)
     with_subs = tool.execute(
         ctx,
-        tool.args_converter().convert(
-            {**base_args, "include_subsections": True}
-        ),
+        tool.args_converter().convert({**base_args, "include_subsections": True}),
     )
     assert isinstance(with_subs, TextResult)
     # без subsections внутри только сам h1; в варианте с subsections — плюс h2.
@@ -267,7 +287,11 @@ def test_section_tool_no_subsections_stops_at_first_heading(
 
 def test_section_tool_idx_anchor_works(ctx: ToolContext) -> None:
     """idx:N тоже валидный anchor для secsion-tool."""
-    tool = ConfluenceSectionTool(ConfluenceSectionToolConfig(description=ConfluenceSectionTool.DEFAULT_DESCRIPTION))
+    tool = ConfluenceSectionTool(
+        ConfluenceSectionToolConfig(
+            description=ConfluenceSectionTool.DEFAULT_DESCRIPTION
+        )
+    )
     args = tool.args_converter().convert(
         {
             "path": _FIXTURE_FILE,
@@ -284,7 +308,11 @@ def test_section_tool_idx_anchor_works(ctx: ToolContext) -> None:
 
 def test_section_tool_unknown_anchor_raises(ctx: ToolContext) -> None:
     """Несуществующий anchor — ToolExecutionError."""
-    tool = ConfluenceSectionTool(ConfluenceSectionToolConfig(description=ConfluenceSectionTool.DEFAULT_DESCRIPTION))
+    tool = ConfluenceSectionTool(
+        ConfluenceSectionToolConfig(
+            description=ConfluenceSectionTool.DEFAULT_DESCRIPTION
+        )
+    )
     args = tool.args_converter().convert(
         {
             "path": _FIXTURE_FILE,
@@ -300,7 +328,11 @@ def test_section_tool_unknown_anchor_raises(ctx: ToolContext) -> None:
 
 def test_section_tool_max_chars_truncates(ctx: ToolContext) -> None:
     """При превышении max_chars в конец добавляется суффикс truncated."""
-    tool = ConfluenceSectionTool(ConfluenceSectionToolConfig(description=ConfluenceSectionTool.DEFAULT_DESCRIPTION))
+    tool = ConfluenceSectionTool(
+        ConfluenceSectionToolConfig(
+            description=ConfluenceSectionTool.DEFAULT_DESCRIPTION
+        )
+    )
     args = tool.args_converter().convert(
         {
             "path": _FIXTURE_FILE,
@@ -317,5 +349,23 @@ def test_section_tool_max_chars_truncates(ctx: ToolContext) -> None:
 
 def test_tool_ids() -> None:
     """ToolId.name отражает имя инструмента."""
-    assert ConfluenceOutlineTool(ConfluenceOutlineToolConfig(description=ConfluenceOutlineTool.DEFAULT_DESCRIPTION)).tool_id().name == "confluence_outline"
-    assert ConfluenceSectionTool(ConfluenceSectionToolConfig(description=ConfluenceSectionTool.DEFAULT_DESCRIPTION)).tool_id().name == "confluence_section"
+    assert (
+        ConfluenceOutlineTool(
+            ConfluenceOutlineToolConfig(
+                description=ConfluenceOutlineTool.DEFAULT_DESCRIPTION
+            )
+        )
+        .tool_id()
+        .name
+        == "confluence_outline"
+    )
+    assert (
+        ConfluenceSectionTool(
+            ConfluenceSectionToolConfig(
+                description=ConfluenceSectionTool.DEFAULT_DESCRIPTION
+            )
+        )
+        .tool_id()
+        .name
+        == "confluence_section"
+    )

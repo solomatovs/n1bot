@@ -46,7 +46,13 @@ class _InlineSource(ConfigSource):
 
 
 def _make_app(values: dict[str, str]):
-    bundle = ConfigBundle.from_sources([_InlineSource(values)])
+    # ConfluenceSearchSection требует base_url/auth_token; auto-discovery
+    # материализует все registered-секции, поэтому фоном задаём минимум.
+    base_values = {
+        "$ext.confluence.search.base_url": "https://example.test",
+        "$ext.confluence.search.auth_token": "test-token",
+    }
+    bundle = ConfigBundle.from_sources([_InlineSource({**base_values, **values})])
     factory = ConfigSectionFactory()
     factory.discover_extension_sections()
     return factory.build(bundle)
@@ -61,6 +67,10 @@ def test_disabled_by_default():
     assert _tool_names(_make_app({})) == []
 
 
-def test_enabled_yields_both_tools():
+def test_enabled_yields_all_tools():
     names = _tool_names(_make_app({"$ext.confluence.enable": "true"}))
-    assert set(names) == {"confluence_outline", "confluence_section"}
+    assert set(names) == {
+        "confluence_outline",
+        "confluence_search",
+        "confluence_section",
+    }

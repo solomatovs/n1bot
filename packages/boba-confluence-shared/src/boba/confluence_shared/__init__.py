@@ -9,6 +9,10 @@ Pure functions без I/O — работают с готовым `BeautifulSoup`
 
 from __future__ import annotations
 
+from boba.confluence_shared.connection import (
+    ConfluenceConnection,
+    ConfluenceConnectionConfig,
+)
 from boba.confluence_shared.parse import (
     Heading,
     anchor_for,
@@ -21,6 +25,8 @@ from boba.confluence_shared.parse import (
 )
 
 __all__ = [
+    "ConfluenceConnection",
+    "ConfluenceConnectionConfig",
     "Heading",
     "anchor_for",
     "collect_headings",

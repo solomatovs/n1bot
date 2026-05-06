@@ -3,17 +3,14 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "boba-confluence-shared"
+name = "boba-confluence-search-pipeline"
 version = "0.1.0"
-description = "Shared Confluence-export HTML parser: heading collection + anchor resolution + macro stripping."
+description = "Pipeline-оркестратор: поиск страниц Confluence по CQL через REST API."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-foundation",
-    "boba-html-parser",
-    "boba-http-transport",
-    "beautifulsoup4>=4.12",
+    "boba-confluence-shared",
+    "boba-patterns",
     "httpx",
-    "lxml>=5.0",
 ]
 
 [tool.setuptools.packages.find]
