@@ -3,11 +3,11 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "boba-heading-chunker"
+name = "boba-chunking"
 version = "0.1.0"
-description = "Boba indexing chunker: per-Section split (anchor-preserving), без пересечения границ heading'ов."
+description = "Boba text-chunking: TextSplitter (str→Iterable[str]) + Chunker'ы (sliding / heading)."
 requires-python = ">=3.11,<4"
-dependencies = ["boba-indexing", "boba-text-splitter"]
+dependencies = ["boba-indexing", "boba-patterns"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

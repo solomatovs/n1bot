@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from boba.heading_chunker.chunker import HeadingChunker
-from boba.heading_chunker.config import HeadingChunkerConfig
+from boba.chunking.heading import HeadingChunker
+from boba.chunking.heading import HeadingChunkerConfig
 from boba.indexing import ChunkerId
 from boba.processing import IndexingContext, PipelineId, Section
 

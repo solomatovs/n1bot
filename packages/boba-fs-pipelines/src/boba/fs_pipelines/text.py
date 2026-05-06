@@ -21,7 +21,7 @@ from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.chromadb_shared import ChromadbSharedSection, make_embedding_function
 from boba.fs_transport import FsTransport, FsWalkRequestSource
 from boba.indexing import IndexPipeline, PipelineSpec
-from boba.sliding_chunker import SlidingChunker, SlidingChunkerConfig
+from boba.chunking.sliding import SlidingChunker, SlidingChunkerConfig
 from boba.text_reader import TextReader
 
 __all__ = [

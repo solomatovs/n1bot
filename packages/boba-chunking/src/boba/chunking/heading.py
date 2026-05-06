@@ -13,13 +13,28 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable
+from dataclasses import dataclass
 
-from boba.heading_chunker.config import HeadingChunkerConfig
+from boba.chunking.splitter import TextSplitter
 from boba.indexing import Chunk, Chunker, ChunkerId
 from boba.processing import IndexingContext, Section
-from boba.text_splitter import TextSplitter
 
-__all__ = ["HeadingChunker"]
+__all__ = [
+    "DEFAULT_CHUNK_OVERLAP",
+    "DEFAULT_CHUNK_SIZE",
+    "HeadingChunker",
+    "HeadingChunkerConfig",
+]
+
+
+DEFAULT_CHUNK_SIZE = 1500
+DEFAULT_CHUNK_OVERLAP = 150
+
+
+@dataclass(frozen=True)
+class HeadingChunkerConfig:
+    chunk_size: int = DEFAULT_CHUNK_SIZE
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
 
 
 class HeadingChunker(Chunker):
@@ -49,7 +64,7 @@ class HeadingChunker(Chunker):
                 idx = per_source_index.get(section.source_id, 0)
                 per_source_index[section.source_id] = idx + 1
                 yield Chunk(
-                    chunk_id=_chunk_id(section.source_id, section.anchor, idx),
+                    chunk_id=self._chunk_id(section.source_id, section.anchor, idx),
                     source_id=section.source_id,
                     text=piece,
                     anchor=section.anchor,
@@ -57,9 +72,9 @@ class HeadingChunker(Chunker):
                     metadata=dict(section.metadata),
                 )
 
-
-def _chunk_id(source_id: str, anchor: str | None, chunk_index: int) -> str:
-    """Стабильный id чанка: SHA1 от (source_id, anchor) + индекс."""
-    key = f"{source_id}#{anchor or ''}".encode()
-    digest = hashlib.sha1(key, usedforsecurity=False).hexdigest()
-    return f"{digest[:16]}:{chunk_index}"
+    @staticmethod
+    def _chunk_id(source_id: str, anchor: str | None, chunk_index: int) -> str:
+        """Стабильный id чанка: SHA1 от (source_id, anchor) + индекс."""
+        key = f"{source_id}#{anchor or ''}".encode()
+        digest = hashlib.sha1(key, usedforsecurity=False).hexdigest()
+        return f"{digest[:16]}:{chunk_index}"

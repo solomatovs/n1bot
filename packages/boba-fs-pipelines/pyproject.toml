@@ -15,8 +15,7 @@ dependencies = [
     "boba-html-reader",
     "boba-markdown-reader",
     "boba-text-reader",
-    "boba-heading-chunker",
-    "boba-sliding-chunker",
+    "boba-chunking",
     "boba-chromadb-store",
     "boba-ext-chromadb-shared",
 ]

@@ -4,13 +4,28 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable
+from dataclasses import dataclass
 
+from boba.chunking.splitter import TextSplitter
 from boba.indexing import Chunk, Chunker, ChunkerId
 from boba.processing import IndexingContext, Section
-from boba.sliding_chunker.config import SlidingChunkerConfig
-from boba.text_splitter import TextSplitter
 
-__all__ = ["SlidingChunker"]
+__all__ = [
+    "DEFAULT_CHUNK_OVERLAP",
+    "DEFAULT_CHUNK_SIZE",
+    "SlidingChunker",
+    "SlidingChunkerConfig",
+]
+
+
+DEFAULT_CHUNK_SIZE = 1000
+DEFAULT_CHUNK_OVERLAP = 200
+
+
+@dataclass(frozen=True)
+class SlidingChunkerConfig:
+    chunk_size: int = DEFAULT_CHUNK_SIZE
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
 
 
 class SlidingChunker(Chunker):
@@ -39,7 +54,7 @@ class SlidingChunker(Chunker):
                 idx = per_source_index.get(section.source_id, 0)
                 per_source_index[section.source_id] = idx + 1
                 yield Chunk(
-                    chunk_id=_chunk_id(section.source_id, idx),
+                    chunk_id=self._chunk_id(section.source_id, idx),
                     source_id=section.source_id,
                     text=piece,
                     anchor=section.anchor,
@@ -47,11 +62,11 @@ class SlidingChunker(Chunker):
                     metadata=dict(section.metadata),
                 )
 
-
-def _chunk_id(source_id: str, chunk_index: int) -> str:
-    """Стабильный id чанка: SHA1 от source_id + индекс."""
-    digest = hashlib.sha1(
-        source_id.encode("utf-8"),
-        usedforsecurity=False,
-    ).hexdigest()
-    return f"{digest[:16]}:{chunk_index}"
+    @staticmethod
+    def _chunk_id(source_id: str, chunk_index: int) -> str:
+        """Стабильный id чанка: SHA1 от source_id + индекс."""
+        digest = hashlib.sha1(
+            source_id.encode("utf-8"),
+            usedforsecurity=False,
+        ).hexdigest()
+        return f"{digest[:16]}:{chunk_index}"

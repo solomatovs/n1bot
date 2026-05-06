@@ -5,7 +5,7 @@
 # core/foundation
 -e ./packages/boba-patterns
 -e ./packages/boba-foundation
--e ./packages/boba-text-splitter
+-e ./packages/boba-chunking
 -e ./packages/boba-config
 -e ./packages/boba-config-sources
 -e ./packages/boba-llm
@@ -48,10 +48,6 @@
 -e ./packages/boba-markdown-reader
 -e ./packages/boba-html-reader
 -e ./packages/boba-confluence-reader
-
-# chunkers (libs)
--e ./packages/boba-sliding-chunker
--e ./packages/boba-heading-chunker
 
 # stores (libs)
 -e ./packages/boba-chromadb-store

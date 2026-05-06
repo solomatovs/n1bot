@@ -13,13 +13,22 @@ from __future__ import annotations
 
 import builtins
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from boba.indexing import Store
 from boba.patterns import StateFull
-from boba.print_pipeline.stats import PrintStats
 from boba.processing import IndexingContext, PipelineId
 
-__all__ = ["PrintPipeline"]
+__all__ = ["PrintPipeline", "PrintStats"]
+
+
+@dataclass(frozen=True)
+class PrintStats:
+    """Сводка прогона PrintPipeline: счётчики + размерность embedding'а коллекции."""
+
+    chunks_printed: int
+    sources_seen: int
+    embedding_dim: int = 0
 
 
 class PrintPipeline(StateFull):
@@ -67,20 +76,20 @@ class PrintPipeline(StateFull):
         ):
             seen_sources.add(summary.source_id)
             chunks_printed += 1
-            self._sink(_format_chunk(summary))
+            self._sink(self._format_chunk(summary))
         return PrintStats(
             chunks_printed=chunks_printed,
             sources_seen=len(seen_sources),
             embedding_dim=embedding_dim,
         )
 
-
-def _format_chunk(s: object) -> str:
-    """Однострочный формат: source_id#anchor:idx — snippet."""
-    chunk_id = getattr(s, "chunk_id", "")
-    source_id = getattr(s, "source_id", "")
-    anchor = getattr(s, "anchor", None) or "-"
-    idx = getattr(s, "chunk_index", 0)
-    snippet = getattr(s, "snippet", "")
-    head = f"{source_id}#{anchor}:{idx}"
-    return f"{head}  [{chunk_id}]\n  {snippet}"
+    @staticmethod
+    def _format_chunk(s: object) -> str:
+        """Однострочный формат: source_id#anchor:idx — snippet."""
+        chunk_id = getattr(s, "chunk_id", "")
+        source_id = getattr(s, "source_id", "")
+        anchor = getattr(s, "anchor", None) or "-"
+        idx = getattr(s, "chunk_index", 0)
+        snippet = getattr(s, "snippet", "")
+        head = f"{source_id}#{anchor}:{idx}"
+        return f"{head}  [{chunk_id}]\n  {snippet}"
