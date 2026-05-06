@@ -1,18 +1,96 @@
-"""FsWalkRequestSource: обход путей (file/dir) → поток FsRequest."""
+"""FS transport stage: FsRequest + FsTransport + FsWalkRequestSource.
+
+Три тесно связанные сущности одной FS-стадии pipeline'а:
+- `FsRequest` — DTO (path + canonical source_id + metadata).
+- `FsWalkRequestSource` — обходит paths и порождает поток FsRequest.
+- `FsTransport` — открывает файл, отдаёт RawDocument.
+"""
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 
-from boba.fs_transport.request import FsRequest
-from boba.processing import IndexingContext, RequestSource
+from boba.processing import (
+    IndexingContext,
+    RawDocument,
+    RequestSource,
+    Transport,
+)
 
-__all__ = ["FsWalkRequestSource"]
+__all__ = ["FsRequest", "FsTransport", "FsWalkRequestSource"]
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class FsRequest:
+    """План open(file). Только path; auth/headers неприменимы для FS.
+
+    `source_id` — RequestSource ставит canonical (например `fs:/abs/path`
+    или другой схемой, если файл — это нечто known-канонически). Если пуст,
+    Transport заполнит как `fs:/abs/path` (resolve'ит path).
+
+    `metadata` — обогащение для Section.metadata (например relative_path,
+    space_key для FS-export Confluence и т.п.).
+    """
+
+    path: str
+    source_id: str = ""
+    metadata: Mapping[str, str] = field(default_factory=dict)
+
+
+class FsTransport(Transport[FsRequest]):
+    """Открывает файлы файловой системы для индексации.
+
+    Lifecycle handle: `with open(path, 'rb') as fp: yield RawDocument(...)`.
+    Reader должен прочитать handle ДО следующей итерации generator'а —
+    после возврата control'а with-блок закроет file.
+    """
+
+    def name(self) -> str:
+        return "FsTransport"
+
+    def stream(
+        self,
+        ctx: IndexingContext,
+        stream: Iterable[FsRequest],
+    ) -> Iterable[RawDocument]:
+        del ctx
+        for req in stream:
+            yield from self._open_one(req)
+
+    @staticmethod
+    def _open_one(req: FsRequest) -> Iterable[RawDocument]:
+        if not req.source_id:
+            msg = (
+                "FsRequest.source_id must be set by RequestSource — "
+                "Transport не формирует identity, только исполняет open(). "
+                f"path={req.path!r}"
+            )
+            raise ValueError(msg)
+        p = Path(req.path)
+        try:
+            stat = p.stat()
+        except OSError:
+            # Файл исчез между листингом и open — пропускаем; не раним прогон.
+            return
+        suffix = p.suffix.lstrip(".").lower() or "bin"
+        merged_meta: dict[str, str] = {
+            **req.metadata,
+            "mtime": str(int(stat.st_mtime)),
+            "size": str(stat.st_size),
+        }
+        with p.open("rb") as fp:
+            yield RawDocument(
+                handle=fp,
+                source_id=req.source_id,
+                content_hint=suffix,
+                metadata=merged_meta,
+            )
 
 
 class FsWalkRequestSource(RequestSource[FsRequest]):

@@ -21,7 +21,7 @@ from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.chromadb_shared import ChromadbSharedSection, make_embedding_function
 from boba.fs_pipelines.text_reader import TextReader
-from boba.fs_transport import FsTransport, FsWalkRequestSource
+from boba.fs_pipelines.fs_transport import FsTransport, FsWalkRequestSource
 from boba.indexing import IndexPipeline, PipelineSpec
 
 __all__ = [
