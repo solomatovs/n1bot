@@ -63,10 +63,6 @@
 -e ./packages/boba-ext-chromadb-shared
 -e ./packages/boba-ext-chromadb-tools
 
-# pipeline extensions (boba.indexing.pipelines entry-point)
--e ./packages/boba-ext-fs-text-pipeline
--e ./packages/boba-ext-fs-markdown-pipeline
--e ./packages/boba-ext-fs-html-pipeline
--e ./packages/boba-ext-confluence-space-pipeline
--e ./packages/boba-ext-confluence-pages-pipeline
--e ./packages/boba-ext-confluence-cql-pipeline
+# indexing pipelines (libs)
+-e ./packages/boba-fs-pipelines
+-e ./packages/boba-confluence-pipelines

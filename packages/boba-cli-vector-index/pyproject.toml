@@ -5,9 +5,8 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-cli-vector-index"
 version = "0.1.0"
-description = "Operator CLI: pure runner поверх IndexPipeline; Source/Reader/Chunker/Store — отдельные ext-плагины."
+description = "Operator CLI: единый CLI поверх IndexPipeline + Print/Search-pipeline'ов."
 requires-python = ">=3.11,<4"
-# Runner ничего не знает про конкретные backend'ы — всё через entry-points.
 dependencies = [
     "boba-chromadb-store",
     "boba-ext-chromadb-shared",
@@ -18,6 +17,8 @@ dependencies = [
     "boba-patterns",
     "boba-print-pipeline",
     "boba-search-pipeline",
+    "boba-fs-pipelines",
+    "boba-confluence-pipelines",
 ]
 
 [project.scripts]

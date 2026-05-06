@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-fs-pipelines"
+version = "0.1.0"
+description = "FS-индексирующие pipeline'ы Boba: html / markdown / text (FsWalk → Reader → Chunker → Store)."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-config",
+    "boba-foundation",
+    "boba-indexing",
+    "boba-fs-transport",
+    "boba-html-reader",
+    "boba-markdown-reader",
+    "boba-text-reader",
+    "boba-heading-chunker",
+    "boba-sliding-chunker",
+    "boba-chromadb-store",
+    "boba-ext-chromadb-shared",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

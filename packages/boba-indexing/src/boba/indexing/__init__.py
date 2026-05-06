@@ -1,4 +1,4 @@
-"""boba-indexing: Chunker/Chunk/Store/IndexPipeline + плагин-механизм.
+"""boba-indexing: Chunker/Chunk/Store/IndexPipeline + декларативная фабрика.
 
 Generic-стадии (RequestSource/Transport/Reader/Decoder/Section/RawDocument/
 IndexingContext/PipelineId/AuthApplier/IndexingError/IncompatibleContentError/
@@ -10,10 +10,9 @@ from __future__ import annotations
 from boba.indexing.chunker import Chunker, ChunkerId
 from boba.indexing.chunks import Chunk, ChunkSummary
 from boba.indexing.collections import CollectionInfo
-from boba.indexing.errors import UnknownPipelineError
 from boba.indexing.extension import IndexerExtensionContext
 from boba.indexing.pipeline import IndexPipeline
-from boba.indexing.pipeline_factory import PipelineRegistry, PipelineSpec
+from boba.indexing.pipeline_factory import PipelineSpec
 from boba.indexing.stats import IndexStats, IndexStatsBuilder
 from boba.indexing.store import SearchHit, Store, StoreId
 
@@ -27,10 +26,8 @@ __all__ = [
     "IndexStats",
     "IndexStatsBuilder",
     "IndexerExtensionContext",
-    "PipelineRegistry",
     "PipelineSpec",
     "SearchHit",
     "Store",
     "StoreId",
-    "UnknownPipelineError",
 ]

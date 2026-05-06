@@ -1,23 +1,26 @@
-"""VectorIndexCli: CLI для action=index | print.
+"""VectorIndexCli: CLI для action=index | print | search.
 
 Поток:
   stage 1 — `_get_action()` строит mini-AppConfig с одной только
             `VectorIndexActionSection` и читает (action, pipeline);
   stage 2 — `_handle_index` собирает `AppConfigBootstrap` (свои секции +
             `discover_extension_sections()` + `PipelineSpec.section`
-            выбранного плагина), вызывает `boot.build()` и зовёт
+            выбранного pipeline'а), вызывает `boot.build()` и зовёт
             `spec.build(app)` для сборки `IndexPipeline`;
             `_handle_print` собирает `PrintPipeline` поверх Store
-            (без plugin-discovery — это admin-операция Store-уровня).
+            (без plugin-discovery — это admin-операция Store-уровня);
+            `_handle_search` — `SearchPipeline` поверх Store.
 
-Sync/list/delete вырезаны: будут переделаны через отдельные pipeline-
-абстракции, чтобы оркестрация жила вне CLI.
+Pipeline'ы подключены статически (см. `_PIPELINES`): больше не plugin-
+discovery через entry-points, а обычная зависимость + словарь по
+`PipelineId`.
 """
 
 from __future__ import annotations
 
 import logging
 import sys
+from typing import ClassVar
 
 from boba.chromadb_store import ChromadbPersistStore
 from boba.cli.vector_index.config import (
@@ -29,10 +32,6 @@ from boba.cli.vector_index.config import (
     VectorIndexChromadbSection,
     VectorIndexCommonSection,
 )
-from boba.cli.vector_index.plugin_loader import (
-    PipelinePluginError,
-    PipelinePluginLoader,
-)
 from boba.config.bootstrap import AppConfigBootstrap
 from boba.config.source.cli import CliSource
 from boba.config.source.env import EnvFileSource, EnvSource
@@ -41,16 +40,32 @@ from boba.ext.chromadb_shared import (
     ChromadbSharedSection,
     make_embedding_function,
 )
-from boba.processing import IndexingContext, IndexingError, PipelineId
+from boba.confluence_pipelines.cql import PIPELINE as CONFLUENCE_CQL_PIPELINE
+from boba.confluence_pipelines.pages import PIPELINE as CONFLUENCE_PAGES_PIPELINE
+from boba.confluence_pipelines.space import PIPELINE as CONFLUENCE_SPACE_PIPELINE
+from boba.fs_pipelines.html import PIPELINE as FS_HTML_PIPELINE
+from boba.fs_pipelines.markdown import PIPELINE as FS_MARKDOWN_PIPELINE
+from boba.fs_pipelines.text import PIPELINE as FS_TEXT_PIPELINE
+from boba.indexing import PipelineSpec
 from boba.patterns import ConverterInputError
 from boba.print_pipeline import PrintPipeline
+from boba.processing import IndexingContext, IndexingError, PipelineId
 from boba.search_pipeline import SearchPipeline
 
 __all__ = ["VectorIndexCli"]
 
 
 class VectorIndexCli:
-    """CLI для action=index."""
+    """CLI для action=index | print | search."""
+
+    _PIPELINES: ClassVar[dict[PipelineId, PipelineSpec]] = {
+        PipelineId("ext.fs_html"): FS_HTML_PIPELINE,
+        PipelineId("ext.fs_markdown"): FS_MARKDOWN_PIPELINE,
+        PipelineId("ext.fs_text"): FS_TEXT_PIPELINE,
+        PipelineId("ext.confluence_cql"): CONFLUENCE_CQL_PIPELINE,
+        PipelineId("ext.confluence_pages"): CONFLUENCE_PAGES_PIPELINE,
+        PipelineId("ext.confluence_space"): CONFLUENCE_SPACE_PIPELINE,
+    }
 
     def main(self) -> int:
         try:
@@ -64,12 +79,7 @@ class VectorIndexCli:
                 case other:
                     msg = f"unsupported action {other.action!r}"
                     raise ValueError(msg)
-        except (
-            ConverterInputError,
-            IndexingError,
-            PipelinePluginError,
-            ValueError,
-        ) as e:
+        except (ConverterInputError, IndexingError, ValueError) as e:
             print(f"error: {e}", file=sys.stderr)
             return 2
 
@@ -102,6 +112,18 @@ class VectorIndexCli:
             datefmt="%H:%M:%S",
         )
 
+    def _resolve_pipeline(self, pipeline_id: str) -> tuple[PipelineId, PipelineSpec]:
+        pid = PipelineId.from_wire(pipeline_id)
+        spec = self._PIPELINES.get(pid)
+        if spec is None:
+            known = sorted(p.to_wire() for p in self._PIPELINES)
+            msg = (
+                f"unknown pipeline_id={pid.to_wire()!r}; "
+                f"registered={known}"
+            )
+            raise ValueError(msg)
+        return pid, spec
+
     def _handle_index(self, pipeline_id: str) -> int:
         boot = self._make_boot()
         boot.register_section(VectorIndexCommonSection())
@@ -109,8 +131,7 @@ class VectorIndexCli:
         boot.register_section(IndexCommandSection())
         boot.discover_extension_sections()
 
-        pid = PipelineId.from_wire(pipeline_id)
-        spec = PipelinePluginLoader().registry().get(pid)
+        pid, spec = self._resolve_pipeline(pipeline_id)
         boot.register_section(spec.section)
         app = boot.build()
         pipeline = spec.build(app)
