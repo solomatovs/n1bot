@@ -44,7 +44,6 @@
 -e ./packages/boba-confluence-requests
 
 # readers (libs)
--e ./packages/boba-text-reader
 -e ./packages/boba-markdown-reader
 -e ./packages/boba-html-reader
 -e ./packages/boba-confluence-reader

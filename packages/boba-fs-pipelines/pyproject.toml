@@ -14,7 +14,6 @@ dependencies = [
     "boba-fs-transport",
     "boba-html-reader",
     "boba-markdown-reader",
-    "boba-text-reader",
     "boba-chunking",
     "boba-chromadb-store",
     "boba-ext-chromadb-shared",
