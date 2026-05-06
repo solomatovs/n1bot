@@ -19,9 +19,7 @@ dependencies = [
     "boba-adapter-messages",
     "boba-adapter-openai",
     "boba-adapter-prompt-providers",
-    "boba-config-source-cli",
-    "boba-config-source-env",
-    "boba-config-source-toml",
+    "boba-config-sources",
 ]
 
 [project.scripts]
