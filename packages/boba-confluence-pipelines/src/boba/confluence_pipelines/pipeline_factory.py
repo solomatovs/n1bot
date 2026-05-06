@@ -21,7 +21,7 @@ from boba.confluence import (
     ConfluenceReader,
 )
 from boba.ext.chromadb_shared import ChromadbSharedSection, make_embedding_function
-from boba.heading_chunker import HeadingChunker, HeadingChunkerConfig
+from boba.chunking.heading import HeadingChunker, HeadingChunkerConfig
 from boba.http_transport import HttpRequest
 from boba.indexing import IndexPipeline, PipelineSpec
 from boba.processing import RequestSource

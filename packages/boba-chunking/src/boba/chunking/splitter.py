@@ -8,17 +8,17 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
+from typing import ClassVar
 
 from boba.patterns import Converter, ConverterInputError
 
 __all__ = ["TextSplitter"]
 
 
-_SOFT_BREAKS = ("\n\n", "\n", ". ", " ")
-
-
 class TextSplitter(Converter[str, Iterable[str]]):
     """str → Iterable[str]: chunk_size-based split с soft-break (lazy)."""
+
+    _SOFT_BREAKS: ClassVar[tuple[str, ...]] = ("\n\n", "\n", ". ", " ")
 
     def __init__(self, *, chunk_size: int, chunk_overlap: int) -> None:
         if chunk_size <= 0:
@@ -44,7 +44,7 @@ class TextSplitter(Converter[str, Iterable[str]]):
         while start < len(text):
             end = min(start + self._chunk_size, len(text))
             if end < len(text):
-                end = _soft_break(text, start, end)
+                end = self._soft_break(text, start, end)
             piece = text[start:end].strip()
             if piece:
                 yield piece
@@ -52,12 +52,12 @@ class TextSplitter(Converter[str, Iterable[str]]):
                 break
             start = max(end - self._chunk_overlap, start + 1)
 
-
-def _soft_break(text: str, start: int, end: int) -> int:
-    """Сдвинуть end к ближайшему разделителю слева; иначе hard break."""
-    window = text[start:end]
-    for sep in _SOFT_BREAKS:
-        idx = window.rfind(sep)
-        if idx != -1 and idx >= len(window) // 2:
-            return start + idx + len(sep)
-    return end
+    @classmethod
+    def _soft_break(cls, text: str, start: int, end: int) -> int:
+        """Сдвинуть end к ближайшему разделителю слева; иначе hard break."""
+        window = text[start:end]
+        for sep in cls._SOFT_BREAKS:
+            idx = window.rfind(sep)
+            if idx != -1 and idx >= len(window) // 2:
+                return start + idx + len(sep)
+        return end

@@ -48,7 +48,7 @@ from boba.fs_pipelines.markdown import PIPELINE as FS_MARKDOWN_PIPELINE
 from boba.fs_pipelines.text import PIPELINE as FS_TEXT_PIPELINE
 from boba.indexing import PipelineSpec
 from boba.patterns import ConverterInputError
-from boba.print_pipeline import PrintPipeline
+from boba.cli.vector_index.print_pipeline import PrintPipeline
 from boba.processing import IndexingContext, IndexingError, PipelineId
 from boba.search_pipeline import SearchPipeline
 

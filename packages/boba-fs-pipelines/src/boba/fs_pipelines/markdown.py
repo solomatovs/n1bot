@@ -20,7 +20,7 @@ from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.chromadb_shared import ChromadbSharedSection, make_embedding_function
 from boba.fs_transport import FsTransport, FsWalkRequestSource
-from boba.heading_chunker import HeadingChunker, HeadingChunkerConfig
+from boba.chunking.heading import HeadingChunker, HeadingChunkerConfig
 from boba.indexing import IndexPipeline, PipelineSpec
 from boba.markdown_reader import MarkdownReader
 

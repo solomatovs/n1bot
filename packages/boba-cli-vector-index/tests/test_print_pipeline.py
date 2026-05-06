@@ -6,7 +6,7 @@ from collections.abc import Iterable
 
 from boba.indexing import Chunk, ChunkSummary, CollectionInfo, Store, StoreId
 from boba.processing import IndexingContext
-from boba.print_pipeline import PrintPipeline
+from boba.cli.vector_index.print_pipeline import PrintPipeline
 
 
 class _FakeStore(Store):

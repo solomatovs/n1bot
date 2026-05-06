@@ -13,7 +13,7 @@ dependencies = [
     "boba-indexing",
     "boba-confluence-core",
     "boba-http-transport",
-    "boba-heading-chunker",
+    "boba-chunking",
     "boba-chromadb-store",
     "boba-ext-chromadb-shared",
     "httpx>=0.27",
