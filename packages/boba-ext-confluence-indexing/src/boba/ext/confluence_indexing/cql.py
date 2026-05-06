@@ -46,13 +46,13 @@ class ConfluenceCqlPipelineConfig:
     chunk_overlap: int = 150
 
 
-class ConfluenceCqlPipelineConfigSection(
-    ConfigSection[ConfluenceCqlPipelineConfig]
-):
+class ConfluenceCqlPipelineConfigSection(ConfigSection[ConfluenceCqlPipelineConfig]):
     """Pipeline индексации по CQL (Confluence Query Language)."""
 
     namespace: ClassVar[tuple[str, ...]] = (
-        "indexer", "pipelines", "confluence_cql",
+        "indexer",
+        "pipelines",
+        "confluence_cql",
     )
 
     schema: ClassVar[ObjectSchema[ConfluenceCqlPipelineConfig]] = ObjectSchema(

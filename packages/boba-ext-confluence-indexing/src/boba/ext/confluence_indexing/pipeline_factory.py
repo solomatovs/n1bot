@@ -30,7 +30,9 @@ __all__ = ["ConfluenceIndexingPipelineFactory"]
 
 
 class _IndexingPipelineConfig(ConfluenceConnectionConfig, Protocol):
-    """Контракт config'а для indexing-pipeline: connection + body_format + chunk-параметры."""
+    """Контракт config'а для indexing-pipeline:
+    connection + body_format + chunk-параметры.
+    """
 
     @property
     def body_format(self) -> str: ...
@@ -42,7 +44,7 @@ class _IndexingPipelineConfig(ConfluenceConnectionConfig, Protocol):
 
 _T = TypeVar("_T", bound=_IndexingPipelineConfig)
 
-
+# PipelineFactory для Confluence indexing-pipeline'ов. Собирает конвейер из
 class ConfluenceIndexingPipelineFactory:
     """Factory для Confluence indexing-pipeline'ов."""
 
