@@ -338,7 +338,7 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
-            "name": "Pytest: all packages",
+            "name": "Pytest: integration (current file)",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -348,7 +348,9 @@
             "justMyCode": false,
             "args": [
                 "-v",
-                "${workspaceFolder}/packages"
+                "-rs",
+                "-m", "integration",
+                "${file}"
             ],
             "envFile": "${workspaceFolder}/local/.env"
         },
