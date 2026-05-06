@@ -12,17 +12,20 @@ from dataclasses import replace
 from typing import Generic, TypeVar
 
 from boba.indexing.chunker import Chunker
-from boba.indexing.context import IndexingContext
-from boba.indexing.decoder import Decoder, IdentityDecoder
-from boba.indexing.raw_document import RawDocument
-from boba.indexing.reader import Reader
-from boba.indexing.request import Request
-from boba.indexing.request_source import RequestSource
-from boba.indexing.sections import Section
 from boba.indexing.stats import IndexStats, IndexStatsBuilder
 from boba.indexing.store import Store
-from boba.indexing.transport import Transport
 from boba.patterns import StateFull
+from boba.processing import (
+    Decoder,
+    IdentityDecoder,
+    IndexingContext,
+    RawDocument,
+    Reader,
+    Request,
+    RequestSource,
+    Section,
+    Transport,
+)
 
 __all__ = ["IndexPipeline"]
 

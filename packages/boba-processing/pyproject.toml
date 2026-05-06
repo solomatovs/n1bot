@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-processing"
+version = "0.1.0"
+description = "Boba generic streaming-processing primitives: Request/RequestSource/Transport/Decoder/Reader/RawDocument/Section. Без привязки к индексации/store/chunking."
+requires-python = ">=3.11,<4"
+dependencies = ["boba-foundation", "boba-patterns"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

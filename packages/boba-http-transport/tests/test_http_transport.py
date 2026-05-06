@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from boba.http_transport import HttpRequest, HttpTransport, PatAuth
-from boba.indexing import IndexingContext, PipelineId
+from boba.processing import IndexingContext, PipelineId
 
 
 def _ctx() -> IndexingContext:

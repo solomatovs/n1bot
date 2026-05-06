@@ -8,11 +8,11 @@ from boba.indexing import (
     Chunk,
     ChunkSummary,
     CollectionInfo,
-    IndexingContext,
     SearchHit,
     Store,
     StoreId,
 )
+from boba.processing import IndexingContext
 from boba.search_pipeline import SearchPipeline
 
 

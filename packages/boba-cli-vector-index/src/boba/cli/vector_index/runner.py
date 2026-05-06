@@ -41,7 +41,7 @@ from boba.ext.chromadb_shared import (
     ChromadbSharedSection,
     make_embedding_function,
 )
-from boba.indexing import IndexingContext, IndexingError, PipelineId
+from boba.processing import IndexingContext, IndexingError, PipelineId
 from boba.patterns import ConverterInputError
 from boba.print_pipeline import PrintPipeline
 from boba.search_pipeline import SearchPipeline

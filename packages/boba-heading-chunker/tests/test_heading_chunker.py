@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from boba.heading_chunker.chunker import HeadingChunker
 from boba.heading_chunker.config import HeadingChunkerConfig
-from boba.indexing import ChunkerId, IndexingContext, PipelineId, Section
+from boba.indexing import ChunkerId
+from boba.processing import IndexingContext, PipelineId, Section
 
 
 def _ctx() -> IndexingContext:

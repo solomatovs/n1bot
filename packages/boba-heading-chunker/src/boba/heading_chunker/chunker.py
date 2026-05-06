@@ -15,13 +15,8 @@ import hashlib
 from collections.abc import Iterable
 
 from boba.heading_chunker.config import HeadingChunkerConfig
-from boba.indexing import (
-    Chunk,
-    Chunker,
-    ChunkerId,
-    IndexingContext,
-    Section,
-)
+from boba.indexing import Chunk, Chunker, ChunkerId
+from boba.processing import IndexingContext, Section
 from boba.text_splitter import TextSplitter
 
 __all__ = ["HeadingChunker"]

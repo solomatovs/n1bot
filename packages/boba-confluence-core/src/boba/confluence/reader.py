@@ -23,7 +23,7 @@ from boba.confluence.parse import (
     plain_text,
     text_between,
 )
-from boba.indexing import (
+from boba.processing import (
     IndexingContext,
     RawDocument,
     Reader,

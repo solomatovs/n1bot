@@ -5,13 +5,8 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterable
 
-from boba.indexing import (
-    Chunk,
-    Chunker,
-    ChunkerId,
-    IndexingContext,
-    Section,
-)
+from boba.indexing import Chunk, Chunker, ChunkerId
+from boba.processing import IndexingContext, Section
 from boba.sliding_chunker.config import SlidingChunkerConfig
 from boba.text_splitter import TextSplitter
 

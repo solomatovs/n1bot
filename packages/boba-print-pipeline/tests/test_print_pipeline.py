@@ -4,14 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from boba.indexing import (
-    Chunk,
-    ChunkSummary,
-    CollectionInfo,
-    IndexingContext,
-    Store,
-    StoreId,
-)
+from boba.indexing import Chunk, ChunkSummary, CollectionInfo, Store, StoreId
+from boba.processing import IndexingContext
 from boba.print_pipeline import PrintPipeline
 
 

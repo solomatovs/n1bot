@@ -20,7 +20,7 @@ from typing import Any
 import httpx
 
 from boba.http_transport.request import HttpRequest
-from boba.indexing import IndexingContext, RawDocument, Transport
+from boba.processing import IndexingContext, RawDocument, Transport
 
 __all__ = ["HttpTransport"]
 

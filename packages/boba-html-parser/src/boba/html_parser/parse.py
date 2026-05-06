@@ -143,10 +143,7 @@ def heading_default_text_skip(
 
 def is_inside_heading(el: NavigableString) -> bool:
     """True если NavigableString находится внутри h1..h6."""
-    return any(
-        isinstance(p, Tag) and p.name in _HEADING_TAG_NAMES
-        for p in el.parents
-    )
+    return any(isinstance(p, Tag) and p.name in _HEADING_TAG_NAMES for p in el.parents)
 
 
 def text_between(

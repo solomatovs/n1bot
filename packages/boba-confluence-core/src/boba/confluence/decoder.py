@@ -22,7 +22,7 @@ from dataclasses import replace
 from io import BytesIO
 from typing import Any
 
-from boba.indexing import Decoder, DecoderId, IndexingContext, RawDocument
+from boba.processing import Decoder, DecoderId, IndexingContext, RawDocument
 
 __all__ = ["ConfluenceJsonDecoder"]
 

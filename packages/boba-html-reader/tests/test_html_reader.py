@@ -5,7 +5,7 @@ from __future__ import annotations
 from io import BytesIO
 
 from boba.html_reader import HtmlReader
-from boba.indexing import IndexingContext, PipelineId, RawDocument, ReaderId
+from boba.processing import IndexingContext, PipelineId, RawDocument, ReaderId
 
 
 def _ctx() -> IndexingContext:

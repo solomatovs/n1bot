@@ -13,7 +13,7 @@ from boba.ext.confluence_indexing.request_sources._common import (
     viewpage_url,
 )
 from boba.http_transport import HttpRequest
-from boba.indexing import AuthApplier, IndexingContext, RequestSource
+from boba.processing import AuthApplier, IndexingContext, RequestSource
 
 __all__ = ["ConfluenceCqlRequestSource"]
 

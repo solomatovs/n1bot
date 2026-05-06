@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from boba.fs_transport import FsRequest, FsTransport, FsWalkRequestSource
-from boba.indexing import IndexingContext, PipelineId
+from boba.processing import IndexingContext, PipelineId
 
 
 def _ctx() -> IndexingContext:

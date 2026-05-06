@@ -13,7 +13,7 @@ from boba.ext.confluence_indexing.request_sources import (
     ConfluenceSpaceRequestSource,
 )
 from boba.http_transport import PatAuth
-from boba.indexing import IndexingContext, PipelineId
+from boba.processing import IndexingContext, PipelineId
 
 
 def _ctx() -> IndexingContext:

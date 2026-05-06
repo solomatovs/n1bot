@@ -8,7 +8,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 from boba.fs_transport.request import FsRequest
-from boba.indexing import IndexingContext, RequestSource
+from boba.processing import IndexingContext, RequestSource
 
 __all__ = ["FsWalkRequestSource"]
 
