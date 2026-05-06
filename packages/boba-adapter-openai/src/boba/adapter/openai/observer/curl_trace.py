@@ -111,7 +111,7 @@ class CurlTraceChatCompletionObserver(
             parts.append(f"```json\n{args_text}\n```\n\n")
         meta: list[str] = []
         if self._finish_reason:
-            meta.append(f"finish_reason={self._finish_reason}")
+            pass
         if self._usage is not None:
             p, c, t = self._usage
             meta.append(f"usage prompt={p} completion={c} total={t}")
