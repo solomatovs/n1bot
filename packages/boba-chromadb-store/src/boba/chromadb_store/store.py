@@ -10,11 +10,11 @@ from boba.indexing import (
     Chunk,
     ChunkSummary,
     CollectionInfo,
-    IndexingContext,
     SearchHit,
     Store,
     StoreId,
 )
+from boba.processing import IndexingContext
 
 __all__ = ["ChromadbPersistStore"]
 

@@ -8,8 +8,8 @@ from dataclasses import dataclass, field
 
 from boba.indexing.chunks import Chunk, ChunkSummary
 from boba.indexing.collections import CollectionInfo
-from boba.indexing.context import IndexingContext
 from boba.patterns import StreamSink, StrId
+from boba.processing import IndexingContext
 
 __all__ = ["SearchHit", "Store", "StoreId"]
 

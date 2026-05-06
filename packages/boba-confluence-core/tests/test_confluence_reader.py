@@ -5,7 +5,7 @@ from __future__ import annotations
 from io import BytesIO
 
 from boba.confluence import ConfluenceReader
-from boba.indexing import IndexingContext, PipelineId, RawDocument, ReaderId
+from boba.processing import IndexingContext, PipelineId, RawDocument, ReaderId
 
 
 def _ctx() -> IndexingContext:

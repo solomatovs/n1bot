@@ -10,8 +10,9 @@ from __future__ import annotations
 import builtins
 from collections.abc import Callable
 
-from boba.indexing import IndexingContext, PipelineId, SearchHit, Store
+from boba.indexing import SearchHit, Store
 from boba.patterns import StateFull
+from boba.processing import IndexingContext, PipelineId
 from boba.search_pipeline.stats import SearchStats
 
 __all__ = ["SearchPipeline"]
@@ -53,12 +54,14 @@ class SearchPipeline(StateFull):
         )
         embedding_dim = self._store.embedding_dim(ctx)
         hits_returned = 0
-        for i, hit in enumerate(self._store.search(
-            ctx,
-            query=self._query,
-            top_k=self._top_k,
-            snippet_chars=self._snippet_chars,
-        )):
+        for i, hit in enumerate(
+            self._store.search(
+                ctx,
+                query=self._query,
+                top_k=self._top_k,
+                snippet_chars=self._snippet_chars,
+            )
+        ):
             hits_returned += 1
             self._sink(_format_hit(i, hit))
         return SearchStats(
@@ -72,8 +75,4 @@ def _format_hit(rank: int, h: SearchHit) -> str:
     source = h.metadata.get("source_id") or h.metadata.get("source_url") or ""
     anchor = h.metadata.get("anchor") or ""
     link = f"{source}#{anchor}" if source and anchor else source
-    return (
-        f"#{rank + 1}  distance={h.distance:.4f}  [{h.id}]\n"
-        f"  {link}\n"
-        f"  {h.snippet}"
-    )
+    return f"#{rank + 1}  distance={h.distance:.4f}  [{h.id}]\n  {link}\n  {h.snippet}"

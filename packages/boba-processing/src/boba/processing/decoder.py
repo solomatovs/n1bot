@@ -13,9 +13,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from boba.indexing.context import IndexingContext
-from boba.indexing.raw_document import RawDocument
 from boba.patterns import ContextConverter, StateFull, StrId
+from boba.processing.context import IndexingContext
+from boba.processing.raw_document import RawDocument
 
 __all__ = ["Decoder", "DecoderId", "IdentityDecoder"]
 

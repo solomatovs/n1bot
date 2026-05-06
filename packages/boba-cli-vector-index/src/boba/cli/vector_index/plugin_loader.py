@@ -9,7 +9,8 @@ from __future__ import annotations
 import importlib.metadata
 import logging
 
-from boba.indexing import PipelineId, PipelineRegistry, PipelineSpec
+from boba.indexing import PipelineRegistry, PipelineSpec
+from boba.processing import PipelineId
 
 __all__ = [
     "PIPELINES_ENTRY_POINT_GROUP",

@@ -20,7 +20,7 @@ from boba.html_parser import (
     plain_text,
     text_between,
 )
-from boba.indexing import (
+from boba.processing import (
     IndexingContext,
     RawDocument,
     Reader,

@@ -6,7 +6,7 @@ import json
 from io import BytesIO
 
 from boba.confluence import ConfluenceJsonDecoder
-from boba.indexing import DecoderId, IndexingContext, PipelineId, RawDocument
+from boba.processing import DecoderId, IndexingContext, PipelineId, RawDocument
 
 
 def _ctx() -> IndexingContext:

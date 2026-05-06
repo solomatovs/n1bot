@@ -14,10 +14,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 
-from boba.indexing.context import IndexingContext
-from boba.indexing.raw_document import RawDocument
-from boba.indexing.sections import Section
 from boba.patterns import ContextConverter, StateFull, StrId
+from boba.processing.context import IndexingContext
+from boba.processing.raw_document import RawDocument
+from boba.processing.sections import Section
 
 __all__ = ["Reader", "ReaderId"]
 

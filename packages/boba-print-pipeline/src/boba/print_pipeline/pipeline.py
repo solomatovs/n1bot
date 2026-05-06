@@ -14,9 +14,10 @@ from __future__ import annotations
 import builtins
 from collections.abc import Callable
 
-from boba.indexing import IndexingContext, PipelineId, Store
+from boba.indexing import Store
 from boba.patterns import StateFull
 from boba.print_pipeline.stats import PrintStats
+from boba.processing import IndexingContext, PipelineId
 
 __all__ = ["PrintPipeline"]
 

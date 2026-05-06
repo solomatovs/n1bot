@@ -1,4 +1,4 @@
-"""Section: что Reader выдаёт в Chunker."""
+"""Section: что Reader выдаёт следующей стадии (Chunker / Sink / Collector)."""
 
 from __future__ import annotations
 

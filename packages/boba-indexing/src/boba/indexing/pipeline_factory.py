@@ -8,9 +8,9 @@ from typing import Any
 
 from boba.config.app import AppConfig
 from boba.config.section import ConfigSection
-from boba.indexing.context import PipelineId
 from boba.indexing.errors import UnknownPipelineError
 from boba.indexing.pipeline import IndexPipeline
+from boba.processing import PipelineId
 
 __all__ = ["PipelineRegistry", "PipelineSpec"]
 

@@ -5,9 +5,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from boba.indexing.chunks import Chunk
-from boba.indexing.context import IndexingContext
-from boba.indexing.sections import Section
 from boba.patterns import StreamTransformer, StrId
+from boba.processing import IndexingContext, Section
 
 __all__ = ["Chunker", "ChunkerId"]
 

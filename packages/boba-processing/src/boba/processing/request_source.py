@@ -15,10 +15,10 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from typing import Generic, TypeVar
 
-from boba.indexing.context import IndexingContext
-from boba.indexing.errors import SyncUnsupportedError
-from boba.indexing.request import Request
 from boba.patterns import StreamSource
+from boba.processing.context import IndexingContext
+from boba.processing.errors import SyncUnsupportedError
+from boba.processing.request import Request
 
 __all__ = ["RequestSource"]
 

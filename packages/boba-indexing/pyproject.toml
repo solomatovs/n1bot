@@ -7,7 +7,7 @@ name = "boba-indexing"
 version = "0.1.0"
 description = "Boba indexing protocols: Source/Reader/Chunker/Store + IndexPipeline."
 requires-python = ">=3.11,<4"
-dependencies = ["boba-config", "boba-foundation", "boba-patterns"]
+dependencies = ["boba-config", "boba-foundation", "boba-patterns", "boba-processing"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

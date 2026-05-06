@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 import httpx
 
 from boba.http_transport import HttpRequest
-from boba.indexing import AuthApplier
+from boba.processing import AuthApplier
 
 __all__ = [
     "extract_host",

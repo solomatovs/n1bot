@@ -1,4 +1,9 @@
-"""Контекст одного запуска IndexPipeline."""
+"""Контекст одного запуска processing-pipeline.
+
+Имена `IndexingContext` и `PipelineId` сохранены ради совместимости с большим
+количеством внешних импортёров; смысл шире индексации (любой streaming-flow
+с финальной стадией Store/Sink/Collector).
+"""
 
 from __future__ import annotations
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from boba.indexing import AuthApplier
+from boba.processing import AuthApplier
 
 __all__ = ["HttpRequest"]
 

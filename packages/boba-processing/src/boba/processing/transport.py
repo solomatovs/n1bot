@@ -16,10 +16,10 @@ from __future__ import annotations
 from abc import ABC
 from typing import Generic, TypeVar
 
-from boba.indexing.context import IndexingContext
-from boba.indexing.raw_document import RawDocument
-from boba.indexing.request import Request
 from boba.patterns import StreamTransformer
+from boba.processing.context import IndexingContext
+from boba.processing.raw_document import RawDocument
+from boba.processing.request import Request
 
 __all__ = ["Transport"]
 

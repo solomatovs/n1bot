@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from boba.indexing import (
+from boba.processing import (
     IndexingContext,
     RawDocument,
     Reader,
