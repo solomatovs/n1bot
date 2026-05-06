@@ -1,22 +1,23 @@
-"""Boba extension: Confluence-export navigation tools."""
+"""Boba extension: онлайн-tools для Confluence (search + page outline/section)."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 
 from boba.ext.confluence_tools.config import ConfluenceSection
-from boba.ext.confluence_tools.outline import (
-    ConfluenceOutlineTool,
-    ConfluenceOutlineToolSection,
+from boba.ext.confluence_tools.page import ConfluencePageSection
+from boba.ext.confluence_tools.page_outline import (
+    ConfluencePageOutlineTool,
+    ConfluencePageOutlineToolSection,
+)
+from boba.ext.confluence_tools.page_section import (
+    ConfluencePageSectionTool,
+    ConfluencePageSectionToolSection,
 )
 from boba.ext.confluence_tools.search import (
     ConfluenceSearchSection,
     ConfluenceSearchTool,
     ConfluenceSearchToolSection,
-)
-from boba.ext.confluence_tools.section import (
-    ConfluenceSectionTool,
-    ConfluenceSectionToolSection,
 )
 from boba.tools.domain import ToolSourceId
 from boba.tools.framework import (
@@ -35,11 +36,17 @@ def register_tools(ctx: ExtensionContext) -> Iterable[ToolSource]:
         return
     s = ctx.config.section
     tools = [
-        ConfluenceOutlineTool(s(ConfluenceOutlineToolSection)),
-        ConfluenceSectionTool(s(ConfluenceSectionToolSection)),
         ConfluenceSearchTool(
             s(ConfluenceSearchToolSection),
             s(ConfluenceSearchSection),
+        ),
+        ConfluencePageOutlineTool(
+            s(ConfluencePageOutlineToolSection),
+            s(ConfluencePageSection),
+        ),
+        ConfluencePageSectionTool(
+            s(ConfluencePageSectionToolSection),
+            s(ConfluencePageSection),
         ),
     ]
     if cfg.tools_allow:

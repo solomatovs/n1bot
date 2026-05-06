@@ -46,11 +46,13 @@ class _InlineSource(ConfigSource):
 
 
 def _make_app(values: dict[str, str]):
-    # ConfluenceSearchSection требует base_url/auth_token; auto-discovery
-    # материализует все registered-секции, поэтому фоном задаём минимум.
+    # ConfluenceSearchSection / ConfluencePageSection требуют base_url+auth_token.
+    # auto-discovery материализует все registered-секции — задаём фоновый минимум.
     base_values = {
         "$ext.confluence.search.base_url": "https://example.test",
         "$ext.confluence.search.auth_token": "test-token",
+        "$ext.confluence.page.base_url": "https://example.test",
+        "$ext.confluence.page.auth_token": "test-token",
     }
     bundle = ConfigBundle.from_sources([_InlineSource({**base_values, **values})])
     factory = ConfigSectionFactory()
@@ -70,7 +72,7 @@ def test_disabled_by_default():
 def test_enabled_yields_all_tools():
     names = _tool_names(_make_app({"$ext.confluence.enable": "true"}))
     assert set(names) == {
-        "confluence_outline",
         "confluence_search",
-        "confluence_section",
+        "confluence_page_outline",
+        "confluence_page_section",
     }

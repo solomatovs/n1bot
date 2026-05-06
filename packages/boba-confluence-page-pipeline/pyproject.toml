@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-confluence-page-pipeline"
+version = "0.1.0"
+description = "Pipeline-оркестратор для чтения одной страницы Confluence: REST → ConfluencePageContent."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-confluence-shared",
+    "httpx",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
