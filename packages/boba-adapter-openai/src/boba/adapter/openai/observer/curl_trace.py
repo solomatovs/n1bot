@@ -28,10 +28,12 @@ class CurlTraceChatCompletionObserver(
     def __init__(
         self,
         workspace: HistoryWorkspaceShell,
+        response_chunks: bool = True,
         path: str = "curl_trace.md",
     ) -> None:
         self._workspace = workspace
         self._path = path
+        self._response_chunk = response_chunks
         self._reset_state()
 
     def _reset_state(self) -> None:
@@ -68,7 +70,9 @@ class CurlTraceChatCompletionObserver(
         self._append(f"## Response\n\n```\n{head}\n```\n\n```jsonl\n")
 
     def on_response_chunk(self, chunk: ChatCompletionChunk) -> None:
-        self._append(chunk.model_dump_json() + "\n")
+        if self._response_chunk:
+            self._append(chunk.model_dump_json() + "\n")
+
         for choice in chunk.choices:
             delta = choice.delta
             r = (delta.model_extra or {}).get(self._REASONING_KEY)
@@ -82,6 +86,7 @@ class CurlTraceChatCompletionObserver(
                 self._absorb_tool_calls(delta.tool_calls)
             if choice.finish_reason and self._finish_reason is None:
                 self._finish_reason = choice.finish_reason
+
         if chunk.usage is not None and self._usage is None:
             u = chunk.usage
             self._usage = (u.prompt_tokens, u.completion_tokens, u.total_tokens)

@@ -68,8 +68,6 @@ def main() -> int:
     return _run(app)
 
 
-
-
 def _build_app() -> AppConfig:
     """Регистрация секций и источников; собирает AppConfig.
 
@@ -127,7 +125,7 @@ def _run(app: AppConfig) -> int:
     observer = CompositeLLMRequestObserver(
         [
             # WireTraceChatCompletionObserver(history_workspace),
-            CurlTraceChatCompletionObserver(history_workspace),
+            CurlTraceChatCompletionObserver(history_workspace, response_chunks=False),
             # TranscriptChatCompletionObserver(history_workspace),
         ]
     )
