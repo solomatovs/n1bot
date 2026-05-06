@@ -99,7 +99,7 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
         kwargs = self._to_request.convert(ctx.request)
 
         with _observe_request(self._observer, kwargs):
-            # Парные события вокруг HTTP-вызова: Started/Sent.
+            # event перед запросом
             yield LLMRequestStarted(
                 request_id=ctx.request_id,
                 model=ctx.request.model,
@@ -108,7 +108,6 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
                 monotonic_ns=time.monotonic_ns(),
             )
 
-            # Классификация ошибок: Terminal (401/5xx) vs Retryable (лимиты).
             try:
                 response = self._client.chat.completions.create(**kwargs)
             except LLMError:
@@ -116,12 +115,14 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
             except (openai.APIError, httpx.HTTPError) as e:
                 raise self._error_converter.convert(e) from e
 
+            # event после запроса и перед получением ответа
             yield LLMRequestSent(
                 request_id=ctx.request_id,
                 monotonic_ns=time.monotonic_ns(),
             )
 
             try:
+                # стримим чанки из ответа, конвертируя их в LLM-события на лету
                 yield from FromOpenAIChunkConverter(
                     ctx.request_id,
                     reindex_tool_calls=self._reindex_tool_calls,
