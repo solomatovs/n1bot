@@ -5,27 +5,15 @@
 # core/foundation
 -e ./packages/boba-core
 -e ./packages/boba-chunking
--e ./packages/boba-llm
-
-# tools framework + domain
--e ./packages/boba-tools-domain
--e ./packages/boba-tools-framework
 
 # indexing domain
 -e ./packages/boba-indexing
 
-# agent runtime
+# agent runtime (LLM contracts + tools framework + adapters)
 -e ./packages/boba-agent
-
-# adapters
--e ./packages/boba-adapter-fs-workspace
--e ./packages/boba-adapter-messages
--e ./packages/boba-adapter-openai
--e ./packages/boba-adapter-prompt-providers
 
 # entry-point apps
 -e ./packages/boba-cli-agent-run
--e ./packages/boba-cli-vector-index
 -e ./packages/boba-web-chainlit
 
 # shared parsers (libs)

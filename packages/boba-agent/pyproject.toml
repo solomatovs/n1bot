@@ -5,9 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-agent"
 version = "0.1.0"
-description = "Boba agent runtime: Agent orchestrator, turn reducers, middleware, dialogue/messages."
+description = "Boba agent: orchestrator + LLM contracts + tools framework + adapters (fs-workspace, messages, openai, prompt-providers)."
 requires-python = ">=3.11,<4"
-dependencies = ["boba-llm", "boba-tools-framework", "boba-tools-domain", "boba-core"]
+dependencies = ["boba-core"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

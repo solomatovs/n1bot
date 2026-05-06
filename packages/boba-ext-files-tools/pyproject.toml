@@ -7,7 +7,7 @@ name = "boba-ext-files-tools"
 version = "0.1.0"
 description = "Builtin file-system tools for the Boba agent (cat/ls/grep/edit/write/...)."
 requires-python = ">=3.11,<4"
-dependencies = ["boba-tools-framework", "boba-core"]
+dependencies = ["boba-agent", "boba-core"]
 
 [project.entry-points."boba.tools"]
 files = "boba.ext.files_tools:register_tools"

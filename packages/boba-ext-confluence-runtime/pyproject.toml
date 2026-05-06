@@ -9,10 +9,10 @@ description = "Boba runtime-extension для Confluence: онлайн-tools (sea
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-core",
-    "boba-tools-framework",
-    "boba-tools-domain",
+    "boba-agent",
     "boba-confluence-core",
-    "httpx",]
+    "httpx",
+]
 
 [project.entry-points."boba.tools"]
 confluence = "boba.ext.confluence_runtime:register_tools"
