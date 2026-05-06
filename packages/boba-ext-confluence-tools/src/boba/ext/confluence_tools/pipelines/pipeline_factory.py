@@ -11,11 +11,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Protocol, TypeVar
 
-from boba.chromadb_store import ChromadbPersistStore
 from boba.chunking.heading import HeadingChunker, HeadingChunkerConfig
 from boba.config.app import AppConfig
 from boba.config.section import ConfigSection
-from boba.ext.chromadb_shared import ChromadbSharedSection, make_embedding_function
+from boba.ext.chromadb_tools.shared import (
+    ChromadbSharedSection,
+    make_embedding_function,
+)
+from boba.ext.chromadb_tools.store import ChromadbPersistStore
 from boba.ext.confluence_tools.connection import (
     ConfluenceConnection,
     ConfluenceConnectionConfig,

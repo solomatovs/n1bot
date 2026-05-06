@@ -22,14 +22,10 @@
 # readers (libs)
 -e ./packages/boba-html-reader
 
-# stores (libs)
--e ./packages/boba-chromadb-store
-
 # tool extensions (boba.tools entry-point)
 -e ./packages/boba-ext-files-tools
 -e ./packages/boba-ext-html-tools
 -e ./packages/boba-ext-confluence-tools
--e ./packages/boba-ext-chromadb-shared
 -e ./packages/boba-ext-chromadb-tools
 
 # indexing pipelines (libs)

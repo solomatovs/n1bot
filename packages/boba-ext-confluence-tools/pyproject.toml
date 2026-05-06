@@ -12,14 +12,12 @@ dependencies = [
     "boba-agent",
     "boba-indexing",
     "boba-chunking",
-    "boba-chromadb-store",
-    "boba-ext-chromadb-shared",
+    "boba-ext-chromadb-tools",
     "boba-html-parser",
     "boba-http-transport",
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
-    "httpx>=0.27",
-]
+    "httpx>=0.27",]
 
 [project.entry-points."boba.tools"]
 confluence = "boba.ext.confluence_tools:register_tools"
