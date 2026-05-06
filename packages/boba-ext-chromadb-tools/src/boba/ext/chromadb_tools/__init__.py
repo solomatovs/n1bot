@@ -5,10 +5,6 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from boba.config.app import ConfigError
-from boba.ext.chromadb_shared import (
-    ChromadbSharedSection,
-    make_embedding_function,
-)
 from boba.ext.chromadb_tools.config import ChromadbToolsSection
 from boba.ext.chromadb_tools.kb import get_knowledge_base
 from boba.ext.chromadb_tools.kb_list_collections import (
@@ -16,6 +12,10 @@ from boba.ext.chromadb_tools.kb_list_collections import (
     KbListCollectionsToolSection,
 )
 from boba.ext.chromadb_tools.kb_search import KbSearchTool, KbSearchToolSection
+from boba.ext.chromadb_tools.shared import (
+    ChromadbSharedSection,
+    make_embedding_function,
+)
 from boba.tools.domain import ToolSourceId
 from boba.tools.framework import (
     ExtensionContext,

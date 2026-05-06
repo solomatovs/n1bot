@@ -12,8 +12,7 @@ dependencies = [
     "boba-indexing",
     "boba-html-reader",
     "boba-chunking",
-    "boba-chromadb-store",
-    "boba-ext-chromadb-shared",]
+    "boba-ext-chromadb-tools",]
 
 [tool.setuptools.packages.find]
 where = ["src"]

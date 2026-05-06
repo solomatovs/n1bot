@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import ClassVar
 
-from boba.chromadb_store import ChromadbPersistStore
 from boba.chunking.sliding import SlidingChunker, SlidingChunkerConfig
 from boba.coercion import (
     ChainCoercer,
@@ -19,9 +18,13 @@ from boba.coercion import (
 from boba.config.app import AppConfig
 from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.ext.chromadb_shared import ChromadbSharedSection, make_embedding_function
-from boba.fs_pipelines.text_reader import TextReader
+from boba.ext.chromadb_tools.shared import (
+    ChromadbSharedSection,
+    make_embedding_function,
+)
+from boba.ext.chromadb_tools.store import ChromadbPersistStore
 from boba.fs_pipelines.fs_transport import FsTransport, FsWalkRequestSource
+from boba.fs_pipelines.text_reader import TextReader
 from boba.indexing import IndexPipeline, PipelineSpec
 
 __all__ = [
