@@ -1,8 +1,4 @@
-"""Generic ошибки processing-слоя.
-
-`UnknownPipelineError` остался в `boba-indexing.errors` — это ошибка
-PipelineRegistry, не processing-стадий.
-"""
+"""Generic ошибки processing-слоя."""
 
 from __future__ import annotations
 

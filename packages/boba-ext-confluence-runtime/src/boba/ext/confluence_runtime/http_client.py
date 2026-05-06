@@ -2,7 +2,7 @@
 
 Раньше жил в `boba-confluence-shared` как `ConfluenceConnection.make_discovery_client`.
 По правилу domain-rule httpx убран из домена; фабрика теперь — в ext-пакете.
-Дублируется в `boba-ext-confluence-indexing.http_client` (~30 строк, граница чище
+Дублируется в `boba-confluence-pipelines.http_client` (~30 строк, граница чище
 чем общий микропакет).
 """
 

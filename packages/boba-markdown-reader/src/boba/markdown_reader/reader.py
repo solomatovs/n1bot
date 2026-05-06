@@ -12,19 +12,19 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from boba.processing import (
-    IndexingContext,
-    RawDocument,
-    Reader,
-    ReaderId,
-    Section,
-)
 from boba.markdown_parser import (
     Section as MdSection,
 )
 from boba.markdown_parser import (
     anchor_for,
     split_sections,
+)
+from boba.processing import (
+    IndexingContext,
+    RawDocument,
+    Reader,
+    ReaderId,
+    Section,
 )
 
 __all__ = ["MarkdownReader"]
@@ -40,9 +40,7 @@ class MarkdownReader(Reader):
     def reader_id(self) -> ReaderId:
         return ReaderId("ext.markdown")
 
-    def convert(
-        self, ctx: IndexingContext, value: RawDocument
-    ) -> Iterable[Section]:
+    def convert(self, ctx: IndexingContext, value: RawDocument) -> Iterable[Section]:
         del ctx
         text = value.handle.read().decode("utf-8", errors="replace")
         for md_sec in split_sections(text):
@@ -50,9 +48,7 @@ class MarkdownReader(Reader):
             if section is not None:
                 yield section
 
-    def _build_section(
-        self, value: RawDocument, md_sec: MdSection
-    ) -> Section | None:
+    def _build_section(self, value: RawDocument, md_sec: MdSection) -> Section | None:
         h = md_sec.heading
         if h is None:
             body = md_sec.body.strip()

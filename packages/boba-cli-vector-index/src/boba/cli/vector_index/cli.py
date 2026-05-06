@@ -1,4 +1,4 @@
-"""boba-cli-vector-index: единый CLI поверх PipelineRegistry + admin."""
+"""boba-cli-vector-index: единый CLI поверх IndexPipeline + Print/Search."""
 
 from __future__ import annotations
 
