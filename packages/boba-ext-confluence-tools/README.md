@@ -1,82 +1,52 @@
-# boba-ext-confluence
+# boba-ext-confluence-tools
 
-Навигация по экспортам Confluence-страниц (HTML-формат) внутри workspace.
+Online-tools для работы с Confluence через REST API. Все tools идут к
+живой инстанции Confluence — workspace и локальные файлы не используются.
 
-В отличие от [boba-ext-html](../boba-ext-html), этот пакет понимает специфику
-Confluence-разметки:
-
-- **Anchor'ы** извлекаются из `<ac:structured-macro ac:name="anchor">/<ac:parameter>`
-  (например `scroll-bookmark-22`), а не только из html-атрибута `id`. Служебный
-  `_GoBack` пропускается.
-- **Текст заголовков** очищается от содержимого `ac:*`/`ri:*`-макросов — без
-  префиксов вида `scroll-bookmark-2Правила именования`.
-- **`confluence_section`** по умолчанию вырезает `ac:*`/`ri:*` теги из ответа —
-  модели достаётся чистый HTML без шума.
-
-Источник — только локальные файлы workspace (через `ToolContext.project_workspace`),
-сетевого доступа к Confluence API нет.
+| tool | назначение |
+|---|---|
+| `confluence_search` | поиск страниц по тексту (CQL `text ~ "..."`) |
+| `confluence_page_outline` | структура заголовков конкретной страницы |
+| `confluence_page_section` | текст одной секции страницы по anchor |
 
 ## Установка
 
 ```bash
-pip install -e ./packages/boba-ext-confluence
+pip install -e ./packages/boba-ext-confluence-tools
 ```
 
 Регистрируется через entry-point `boba.tools` под id `builtin.confluence`.
 
-## Доступ
-
-Расширение подключается явно — секцией `[ext.confluence]`:
+## Подключение
 
 ```toml
 [ext.confluence]
 enable = true
-# tools_allow = ["confluence_outline"]   # пусто = все tools пакета
+# tools_allow = ["confluence_search"]   # пусто = все tools пакета
+
+[ext.confluence.search]
+base_url = "https://confluence.example.com"
+auth_method = "pat"
+auth_token = "..."
+
+[ext.confluence.page]
+base_url = "https://confluence.example.com"
+auth_method = "pat"
+auth_token = "..."
+body_format = "view"   # или export_view / storage
 ```
 
-Без `enable = true` (или без секции) — tools не регистрируются.
+Секреты лучше держать в `.env`:
 
-## confluence_outline
-
-| поле | обяз. | тип | описание |
-|---|---|---|---|
-| `path` | ✓ | str | HTML-файл Confluence-export'а |
-| `max_depth` |  | int (1..6) | До какого уровня заголовков; пусто — все 6 |
-| `limit` |  | int | Потолок количества заголовков (default 200) |
-
-Ответ:
-```
-Документ: 950276.html  charset=utf-8
-Заголовков: 36
-
-  1. h1 Правила именования  #scroll-bookmark-1
-  2. h1 Правила именования AD групп  #scroll-bookmark-2
-  3.   h2 Группы доступа домены данных УпД  #scroll-bookmark-5
-  ...
+```bash
+BOBA_EXT__CONFLUENCE__SEARCH__BASE_URL=https://confluence.example.com
+BOBA_EXT__CONFLUENCE__SEARCH__AUTH_TOKEN=...
+BOBA_EXT__CONFLUENCE__PAGE__BASE_URL=https://confluence.example.com
+BOBA_EXT__CONFLUENCE__PAGE__AUTH_TOKEN=...
 ```
 
-Если у заголовка нет confluence-anchor'а и нет `id` — fallback `#idx:N`.
+## Workflow для агента
 
-## confluence_section
-
-| поле | обяз. | тип | описание |
-|---|---|---|---|
-| `path` | ✓ | str | HTML-файл |
-| `anchor` | ✓ | str | `scroll-bookmark-N` или `idx:N` (с/без `#`) |
-| `include_subsections` |  | bool | true (default) — включать подзаголовки до следующего ≤-уровня |
-| `strip_macros` |  | bool | true (default) — вырезать `ac:*`/`ri:*` теги из вывода |
-| `max_chars` |  | int | Лимит длины (default 8000) |
-
-При `strip_macros=true` (по умолчанию):
-- удаляются макросы вида `<ac:structured-macro>`, `<ac:link>`, `<ac:image>`,
-  `<ri:attachment>`, `<ac:emoticon>` целиком вместе с их содержимым;
-- остальная разметка (`<p>`, `<ul>`, `<table>`, и т.п.) остаётся как есть.
-
-При `strip_macros=false` — HTML возвращается дословно.
-
-## Известное ограничение
-
-Раздел собирается обходом sibling'ов от заголовка. Если у документа разметка
-ставит заголовки на разной глубине дерева (редко в Confluence-export'ах),
-section может остановиться раньше границы. Для обычных постранично-плоских
-Confluence-страниц это не проявляется.
+1. `confluence_search(query="...", limit=5)` → массив hits с `page_id`/`url`/`excerpt`.
+2. `confluence_page_outline(page_id="...", max_headings=50)` → структура секций c `anchor`.
+3. `confluence_page_section(page_id="...", anchor="...", max_chars=5000)` → текст одной секции.

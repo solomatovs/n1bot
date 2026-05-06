@@ -25,7 +25,7 @@ class ConfluenceSection(ConfigSection[ConfluenceExtConfig]):
 
     schema: ClassVar[ObjectSchema[ConfluenceExtConfig]] = ObjectSchema(
         description=(
-            "Confluence-export tools (outline + section). "
+            "Online-tools для Confluence (search, page_outline, page_section). "
             "Включаются явно через enable=true."
         ),
         fields=[
@@ -38,8 +38,9 @@ class ConfluenceSection(ConfigSection[ConfluenceExtConfig]):
                 name="tools_allow",
                 coercer=ParseCsvList(),
                 description=(
-                    "Whitelist по именам tools (confluence_outline, "
-                    "confluence_section). Пусто — регистрируются все."
+                    "Whitelist по именам tools (confluence_search, "
+                    "confluence_page_outline, confluence_page_section). "
+                    "Пусто — регистрируются все."
                 ),
             ),
         ],
