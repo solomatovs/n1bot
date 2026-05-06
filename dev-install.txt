@@ -8,27 +8,19 @@
 
 # indexing domain
 -e ./packages/boba-indexing
+-e ./packages/boba-processing
 
 # agent runtime (LLM contracts + tools framework + adapters)
 -e ./packages/boba-agent
 
-# entry-point apps
--e ./packages/boba-cli-agent-run
--e ./packages/boba-web-chainlit
-
 # shared parsers (libs)
 -e ./packages/boba-html-parser
--e ./packages/boba-confluence-shared
 
 # transports (libs)
 -e ./packages/boba-http-transport
 
-# request sources (libs)
--e ./packages/boba-confluence-requests
-
 # readers (libs)
 -e ./packages/boba-html-reader
--e ./packages/boba-confluence-reader
 
 # stores (libs)
 -e ./packages/boba-chromadb-store
@@ -42,4 +34,7 @@
 
 # indexing pipelines (libs)
 -e ./packages/boba-fs-pipelines
--e ./packages/boba-confluence-pipelines
+
+# entry-point apps
+-e ./packages/boba-cli-agent-run
+-e ./packages/boba-web-chainlit

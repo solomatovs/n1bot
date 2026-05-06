@@ -110,7 +110,8 @@ class GrowBuffer:
             self._size += n
 
     def _grow(self) -> None:
-        """Удвоить ёмкость in-place; BufferError при достижении max_capacity или живых memoryview."""
+        """Удвоить ёмкость in-place;
+        BufferError при достижении max_capacity или живых memoryview."""
         cur = len(self._buf)
         target = cur * 2
         if self._max_capacity is not None:
