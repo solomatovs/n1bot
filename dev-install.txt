@@ -33,18 +33,15 @@
 
 # shared parsers (libs)
 -e ./packages/boba-html-parser
--e ./packages/boba-markdown-parser
 -e ./packages/boba-confluence-shared
 
 # transports (libs)
 -e ./packages/boba-http-transport
--e ./packages/boba-fs-transport
 
 # request sources (libs)
 -e ./packages/boba-confluence-requests
 
 # readers (libs)
--e ./packages/boba-markdown-reader
 -e ./packages/boba-html-reader
 -e ./packages/boba-confluence-reader
 

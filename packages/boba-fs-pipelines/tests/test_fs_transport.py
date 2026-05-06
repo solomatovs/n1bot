@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from boba.fs_transport import FsRequest, FsTransport, FsWalkRequestSource
+from boba.fs_pipelines.fs_transport import FsRequest, FsTransport, FsWalkRequestSource
 from boba.processing import IndexingContext, PipelineId
 
 

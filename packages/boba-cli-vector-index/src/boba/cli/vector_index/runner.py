@@ -50,7 +50,7 @@ from boba.indexing import PipelineSpec
 from boba.patterns import ConverterInputError
 from boba.cli.vector_index.print_pipeline import PrintPipeline
 from boba.processing import IndexingContext, IndexingError, PipelineId
-from boba.search_pipeline import SearchPipeline
+from boba.cli.vector_index.search_pipeline import SearchPipeline
 
 __all__ = ["VectorIndexCli"]
 

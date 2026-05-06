@@ -13,7 +13,7 @@ from boba.indexing import (
     StoreId,
 )
 from boba.processing import IndexingContext
-from boba.search_pipeline import SearchPipeline
+from boba.cli.vector_index.search_pipeline import SearchPipeline
 
 
 class _FakeStore(Store):

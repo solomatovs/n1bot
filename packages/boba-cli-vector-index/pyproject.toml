@@ -15,7 +15,6 @@ dependencies = [
     "boba-foundation",
     "boba-indexing",
     "boba-patterns",
-    "boba-search-pipeline",
     "boba-fs-pipelines",
     "boba-confluence-pipelines",
 ]

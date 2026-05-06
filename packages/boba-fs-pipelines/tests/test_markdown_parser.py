@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from boba.markdown_parser import (
+from boba.fs_pipelines.markdown_parser import (
     anchor_for,
     collect_headings,
     resolve_anchor,

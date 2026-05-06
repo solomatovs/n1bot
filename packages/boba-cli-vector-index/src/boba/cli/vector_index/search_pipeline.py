@@ -9,13 +9,21 @@ from __future__ import annotations
 
 import builtins
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from boba.indexing import SearchHit, Store
 from boba.patterns import StateFull
 from boba.processing import IndexingContext, PipelineId
-from boba.search_pipeline.stats import SearchStats
 
-__all__ = ["SearchPipeline"]
+__all__ = ["SearchPipeline", "SearchStats"]
+
+
+@dataclass(frozen=True)
+class SearchStats:
+    """Сводка прогона: число hits + размерность embedding'а коллекции."""
+
+    hits_returned: int
+    embedding_dim: int = 0
 
 
 class SearchPipeline(StateFull):
@@ -63,16 +71,19 @@ class SearchPipeline(StateFull):
             )
         ):
             hits_returned += 1
-            self._sink(_format_hit(i, hit))
+            self._sink(self._format_hit(i, hit))
         return SearchStats(
             hits_returned=hits_returned,
             embedding_dim=embedding_dim,
         )
 
-
-def _format_hit(rank: int, h: SearchHit) -> str:
-    """Многострочный формат: rank, distance, source, snippet."""
-    source = h.metadata.get("source_id") or h.metadata.get("source_url") or ""
-    anchor = h.metadata.get("anchor") or ""
-    link = f"{source}#{anchor}" if source and anchor else source
-    return f"#{rank + 1}  distance={h.distance:.4f}  [{h.id}]\n  {link}\n  {h.snippet}"
+    @staticmethod
+    def _format_hit(rank: int, h: SearchHit) -> str:
+        """Многострочный формат: rank, distance, source, snippet."""
+        source = h.metadata.get("source_id") or h.metadata.get("source_url") or ""
+        anchor = h.metadata.get("anchor") or ""
+        link = f"{source}#{anchor}" if source and anchor else source
+        return (
+            f"#{rank + 1}  distance={h.distance:.4f}  [{h.id}]\n"
+            f"  {link}\n  {h.snippet}"
+        )
