@@ -21,7 +21,7 @@ __all__ = ["Decoder", "DecoderId", "IdentityDecoder"]
 
 
 class DecoderId(StrId):
-    """Идентификатор Decoder-реализации (например 'ext.confluence_json')."""
+    """Идентификатор Decoder-реализации"""
 
 
 class Decoder(

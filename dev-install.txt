@@ -7,9 +7,7 @@
 -e ./packages/boba-foundation
 -e ./packages/boba-text-splitter
 -e ./packages/boba-config
--e ./packages/boba-config-source-cli
--e ./packages/boba-config-source-env
--e ./packages/boba-config-source-toml
+-e ./packages/boba-config-sources
 -e ./packages/boba-llm
 
 # tools framework + domain
