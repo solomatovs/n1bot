@@ -10,14 +10,10 @@ requires-python = ">=3.11,<4"
 dependencies = [
     "boba-chromadb-store",
     "boba-ext-chromadb-shared",
-    "boba-config",
-    "boba-config-sources",
-    "boba-foundation",
+    "boba-core",
     "boba-indexing",
-    "boba-patterns",
     "boba-fs-pipelines",
-    "boba-confluence-pipelines",
-]
+    "boba-confluence-pipelines",]
 
 [project.scripts]
 boba-cli-vector-index = "boba.cli.vector_index.cli:main"

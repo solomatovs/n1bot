@@ -2,9 +2,7 @@
 testpaths = ["packages"]
 python_files = ["test_*.py"]
 pythonpath = [
-    "packages/boba-patterns/src",
-    "packages/boba-foundation/src",
-    "packages/boba-config/src",
+    "packages/boba-core/src",
     "packages/boba-processing/src",
     "packages/boba-indexing/src",
     "packages/boba-llm/src",
@@ -12,7 +10,6 @@ pythonpath = [
     "packages/boba-tools-domain/src",
     "packages/boba-chunking/src",
     "packages/boba-agent/src",
-    "packages/boba-config-sources/src",
     "packages/boba-adapter-fs-workspace/src",
     "packages/boba-adapter-messages/src",
     "packages/boba-adapter-openai/src",
@@ -47,9 +44,7 @@ exclude = [
     "**/.*",
 ]
 extraPaths = [
-    "packages/boba-patterns/src",
-    "packages/boba-foundation/src",
-    "packages/boba-config/src",
+    "packages/boba-core/src",
     "packages/boba-processing/src",
     "packages/boba-indexing/src",
     "packages/boba-llm/src",
@@ -57,7 +52,6 @@ extraPaths = [
     "packages/boba-tools-domain/src",
     "packages/boba-chunking/src",
     "packages/boba-agent/src",
-    "packages/boba-config-sources/src",
     "packages/boba-adapter-fs-workspace/src",
     "packages/boba-adapter-messages/src",
     "packages/boba-adapter-openai/src",

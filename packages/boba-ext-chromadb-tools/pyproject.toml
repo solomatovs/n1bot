@@ -8,13 +8,10 @@ version = "0.1.0"
 description = "Read-only ChromaDB knowledge-base tools (kb_search, kb_list_collections) for the Boba agent."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-config",
+    "boba-core",
     "boba-ext-chromadb-shared",
-    "boba-foundation",
-    "boba-patterns",
     "boba-tools-framework",
-    "chromadb>=0.5",
-]
+    "chromadb>=0.5",]
 
 [project.entry-points."boba.tools"]
 chromadb_tools = "boba.ext.chromadb_tools:register_tools"

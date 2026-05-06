@@ -8,13 +8,12 @@ version = "0.1.0"
 description = "Boba Confluence домен: HTML-парсер (heading-aware), connection-конфиг, JSON-decoder, heading-aware Reader. Без I/O-зависимостей."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-foundation",
+    "boba-core",
     "boba-html-parser",
     "boba-http-transport",
     "boba-indexing",
     "beautifulsoup4>=4.12",
-    "lxml>=5.0",
-]
+    "lxml>=5.0",]
 
 [tool.setuptools.packages.find]
 where = ["src"]

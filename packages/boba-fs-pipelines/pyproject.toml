@@ -8,14 +8,12 @@ version = "0.1.0"
 description = "FS-индексирующие pipeline'ы Boba: html / markdown / text (FsWalk → Reader → Chunker → Store)."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-config",
-    "boba-foundation",
+    "boba-core",
     "boba-indexing",
     "boba-html-reader",
     "boba-chunking",
     "boba-chromadb-store",
-    "boba-ext-chromadb-shared",
-]
+    "boba-ext-chromadb-shared",]
 
 [tool.setuptools.packages.find]
 where = ["src"]
