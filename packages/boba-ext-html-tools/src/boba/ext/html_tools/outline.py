@@ -137,7 +137,8 @@ class HtmlOutlineTool(Tool[OutlineArgs]):
 
         body = "\n".join(_render_line(h) for h in headings)
         suffix = f", truncated at limit={req.limit}" if truncated else ""
-        return TextResult(text=f"{head}\nЗаголовков: {len(headings)}{suffix}\n\n{body}",
+        return TextResult(
+            text=f"{head}\nЗаголовков: {len(headings)}{suffix}\n\n{body}",
         )
 
 

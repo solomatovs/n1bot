@@ -3,11 +3,8 @@
 #     pip install -r dev-install.txt
 
 # core/foundation
--e ./packages/boba-patterns
--e ./packages/boba-foundation
+-e ./packages/boba-core
 -e ./packages/boba-chunking
--e ./packages/boba-config
--e ./packages/boba-config-sources
 -e ./packages/boba-llm
 
 # tools framework + domain

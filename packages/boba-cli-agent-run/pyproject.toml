@@ -11,16 +11,12 @@ dependencies = [
     "boba-agent",
     "boba-tools-framework",
     "boba-tools-domain",
-    "boba-config",
+    "boba-core",
     "boba-llm",
-    "boba-foundation",
-    "boba-patterns",
     "boba-adapter-fs-workspace",
     "boba-adapter-messages",
     "boba-adapter-openai",
-    "boba-adapter-prompt-providers",
-    "boba-config-sources",
-]
+    "boba-adapter-prompt-providers",]
 
 [project.scripts]
 boba-cli-agent-run = "boba.cli.agent_run.cli:main"

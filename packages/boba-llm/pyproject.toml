@@ -7,7 +7,7 @@ name = "boba-llm"
 version = "0.1.0"
 description = "Boba LLM contracts: models, events, errors, observer, retry middleware."
 requires-python = ">=3.11,<4"
-dependencies = ["boba-patterns"]
+dependencies = ["boba-core",]
 
 [tool.setuptools.packages.find]
 where = ["src"]

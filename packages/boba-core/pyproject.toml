@@ -3,11 +3,11 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "boba-config-sources"
+name = "boba-core"
 version = "0.1.0"
-description = "ConfigSource implementations for Boba: CLI argv, env vars (+_FILE), TOML (+_file)."
+description = "Boba core: patterns + foundation (errors, declaration, value, coercion, workspace) + config + config-sources (cli/env/toml)."
 requires-python = ">=3.11,<4"
-dependencies = ["boba-config", "boba-foundation", "tomli"]
+dependencies = ["tomli"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

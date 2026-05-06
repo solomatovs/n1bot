@@ -32,25 +32,25 @@ from boba.cli.vector_index.config import (
     VectorIndexChromadbSection,
     VectorIndexCommonSection,
 )
+from boba.cli.vector_index.print_pipeline import PrintPipeline
+from boba.cli.vector_index.search_pipeline import SearchPipeline
 from boba.config.bootstrap import AppConfigBootstrap
 from boba.config.source.cli import CliSource
 from boba.config.source.env import EnvFileSource, EnvSource
 from boba.config.source.toml import TomlFileSource, TomlSource
+from boba.confluence_pipelines.cql import PIPELINE as CONFLUENCE_CQL_PIPELINE
+from boba.confluence_pipelines.pages import PIPELINE as CONFLUENCE_PAGES_PIPELINE
+from boba.confluence_pipelines.space import PIPELINE as CONFLUENCE_SPACE_PIPELINE
 from boba.ext.chromadb_shared import (
     ChromadbSharedSection,
     make_embedding_function,
 )
-from boba.confluence_pipelines.cql import PIPELINE as CONFLUENCE_CQL_PIPELINE
-from boba.confluence_pipelines.pages import PIPELINE as CONFLUENCE_PAGES_PIPELINE
-from boba.confluence_pipelines.space import PIPELINE as CONFLUENCE_SPACE_PIPELINE
 from boba.fs_pipelines.html import PIPELINE as FS_HTML_PIPELINE
 from boba.fs_pipelines.markdown import PIPELINE as FS_MARKDOWN_PIPELINE
 from boba.fs_pipelines.text import PIPELINE as FS_TEXT_PIPELINE
 from boba.indexing import PipelineSpec
 from boba.patterns import ConverterInputError
-from boba.cli.vector_index.print_pipeline import PrintPipeline
 from boba.processing import IndexingContext, IndexingError, PipelineId
-from boba.cli.vector_index.search_pipeline import SearchPipeline
 
 __all__ = ["VectorIndexCli"]
 
@@ -117,10 +117,7 @@ class VectorIndexCli:
         spec = self._PIPELINES.get(pid)
         if spec is None:
             known = sorted(p.to_wire() for p in self._PIPELINES)
-            msg = (
-                f"unknown pipeline_id={pid.to_wire()!r}; "
-                f"registered={known}"
-            )
+            msg = f"unknown pipeline_id={pid.to_wire()!r}; registered={known}"
             raise ValueError(msg)
         return pid, spec
 
