@@ -18,10 +18,11 @@ from boba.adapter.fs_workspace import (
 )
 from boba.adapter.messages import InMemoryMessageService
 from boba.adapter.openai import (
+    CurlTraceChatCompletionObserver,
     OpenAIAdapterSection,
     OpenAIChatVisitor,
-    TranscriptChatCompletionObserver,
-    WireTraceChatCompletionObserver,
+    # TranscriptChatCompletionObserver,
+    # WireTraceChatCompletionObserver,
     create_llm_source,
 )
 from boba.adapter.prompt_providers import PromptLoader, PromptsSection
@@ -125,8 +126,9 @@ def _run(app: AppConfig) -> int:
 
     observer = CompositeLLMRequestObserver(
         [
-            WireTraceChatCompletionObserver(history_workspace),
-            TranscriptChatCompletionObserver(history_workspace),
+            # WireTraceChatCompletionObserver(history_workspace),
+            CurlTraceChatCompletionObserver(history_workspace),
+            # TranscriptChatCompletionObserver(history_workspace),
         ]
     )
     llm_source = create_llm_source(llm_cfg, observer)
