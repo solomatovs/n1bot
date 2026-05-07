@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from boba.adapter.openai.observer import MultiKeyReasoningExtractor
-from boba.adapter.openai.tool_call_reindexer import DuplicateToolCallIndexReindexer
+from boba.provider.openai.observer import MultiKeyReasoningExtractor
+from boba.provider.openai.tool_call_reindexer import DuplicateToolCallIndexReindexer
 from boba.llm.errors import LLMProtocolError
 from boba.llm.events import (
     FinishReason,

@@ -1,17 +1,17 @@
 """OpenAI-совместимый LLM-адаптер."""
 
-from boba.adapter.openai.config import create_llm_source
-from boba.adapter.openai.dto import OpenAIConfig
-from boba.adapter.openai.observer import (
+from boba.provider.openai.config import create_llm_source
+from boba.provider.openai.dto import OpenAIConfig
+from boba.provider.openai.observer import (
     CurlTraceChatCompletionObserver,
     MetricsChatCompletionObserver,
     MultiKeyReasoningExtractor,
 )
-from boba.adapter.openai.terminal import OpenAITerminal, build_openai_client
-from boba.adapter.openai.tool_call_reindexer import (
+from boba.provider.openai.terminal import OpenAITerminal, build_openai_client
+from boba.provider.openai.tool_call_reindexer import (
     DuplicateToolCallIndexReindexer,
 )
-from boba.adapter.openai.visitor import OpenAIChatVisitor
+from boba.provider.openai.visitor import OpenAIChatVisitor
 from boba.llm.observer import RequestOutcome
 
 __all__ = [

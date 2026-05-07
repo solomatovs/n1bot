@@ -10,8 +10,8 @@ from openai.types.chat.chat_completion_chunk import (
     ChoiceDeltaToolCallFunction,
 )
 
-from boba.adapter.openai.response import FromOpenAIChunkConverter
-from boba.adapter.openai.tool_call_reindexer import (
+from boba.provider.openai.response import FromOpenAIChunkConverter
+from boba.provider.openai.tool_call_reindexer import (
     DuplicateToolCallIndexReindexer,
 )
 from boba.llm.events import LLMToolCallArgumentDelta, LLMToolCallBegin

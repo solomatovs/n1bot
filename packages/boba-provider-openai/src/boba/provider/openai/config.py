@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from boba.adapter.openai.dto import OpenAIConfig
-from boba.adapter.openai.terminal import OpenAITerminal, build_openai_client
+from boba.provider.openai.dto import OpenAIConfig
+from boba.provider.openai.terminal import OpenAITerminal, build_openai_client
 from boba.llm.events import LLMEvent
 from boba.llm.models import LLMContext
 from boba.llm.observer import LLMRequestObserver
