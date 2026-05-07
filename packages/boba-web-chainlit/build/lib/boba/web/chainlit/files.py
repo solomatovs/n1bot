@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shutil
 
-from boba.workspace import ProjectWorkspaceShell
+from boba.workspace.contract import ProjectWorkspaceShell
 
 
 def save_upload(shell: ProjectWorkspaceShell, src_path: str, name: str) -> str:

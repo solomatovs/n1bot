@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from boba.adapter.fs_workspace import (
+from boba.workspace.fs import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
     FsPromptWorkspaceRegistry,
@@ -34,7 +34,7 @@ from boba.web.chainlit.infra import (
     configure_logging,
     log_context,
 )
-from boba.workspace import (
+from boba.workspace.contract import (
     ProjectWorkspaceShell,
     PromptWorkspaceId,
     WorkspaceId,
@@ -64,7 +64,7 @@ class ChatSession:
         configure_logging(core.log_level, core.log_file)
 
         self._workspaces_cfg = bundle.get(WorkspaceLayout, "workspaces")
-        self._llm_cfg = bundle.get(OpenAIConfig, "adapter.openai")
+        self._llm_cfg = bundle.get(OpenAIConfig, "provider.openai")
         self._prompts = bundle.get(PromptsConfig, "prompts")
         self._agent_config = bundle.get(AgentConfig, "agent")
         self._chainlit_config = bundle.get(ChainlitConfig, "chainlit")

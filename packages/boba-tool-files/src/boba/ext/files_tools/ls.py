@@ -28,7 +28,7 @@ from boba.tools.domain import (
     ToolSourceId,
     ToolResult,
 )
-from boba.workspace import WorkspaceError
+from boba.workspace.contract import WorkspaceError
 
 __all__ = ["LsTool", "LsToolConfig"]
 

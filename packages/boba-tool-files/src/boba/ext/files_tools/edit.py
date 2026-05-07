@@ -19,7 +19,7 @@ from boba.tools.domain import (
     ToolSourceId,
     ToolResult,
 )
-from boba.workspace import WorkspaceError, WorkspaceNotFoundError
+from boba.workspace.contract import WorkspaceError, WorkspaceNotFoundError
 
 __all__ = ["EditTool", "EditToolConfig"]
 

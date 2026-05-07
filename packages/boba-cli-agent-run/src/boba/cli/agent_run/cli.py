@@ -10,7 +10,7 @@ with contextlib.suppress(ImportError):
     import readline  # noqa: F401  # pyright: ignore[reportUnusedImport]
     # side-effect: подключает редактирование строки и историю в input().
 
-from boba.adapter.fs_workspace import (
+from boba.workspace.fs import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
     FsPromptWorkspaceRegistry,
@@ -43,7 +43,7 @@ from boba.plugin import install_plugins
 from boba.plugin.discovery import discover_plugins
 from boba.tools.domain import ToolContext
 from boba.tools.framework import ToolsService
-from boba.workspace import (
+from boba.workspace.contract import (
     PromptWorkspaceId,
     WorkspaceId,
 )
@@ -76,7 +76,7 @@ def _run(bundle: ConfigBundle) -> int:
     """Собирает агента и либо прогоняет один запрос, либо запускает REPL."""
     core = bundle.get(AppCoreConfig, "app")
     workspaces = bundle.get(WorkspaceLayout, "workspaces")
-    llm_cfg = bundle.get(OpenAIConfig, "adapter.openai")
+    llm_cfg = bundle.get(OpenAIConfig, "provider.openai")
     prompts = bundle.get(PromptsConfig, "prompts")
     agent_config = bundle.get(AgentConfig, "agent")
     run_cfg = bundle.get(AgentRunConfig, "agent_run")

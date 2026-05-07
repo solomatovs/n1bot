@@ -16,30 +16,7 @@ from boba.agent.prompt import (
     PromptProvider,
     PromptState,
 )
-from boba.workspace import HistoryWorkspaceShell
-
-
-class StaticPromptProvider(PromptProvider):
-    """Фиксированный текст, зашитый в конфигурацию DI."""
-
-    def __init__(
-        self,
-        prompt_id: PromptId,
-        priority: int,
-        content: str,
-    ) -> None:
-        self._id = prompt_id
-        self._priority = priority
-        self._content = content
-
-    def id(self) -> PromptId:
-        return self._id
-
-    def priority(self) -> int:
-        return self._priority
-
-    def blocks(self, state: PromptState[AgentContext]) -> Iterable[PromptBlock]:
-        yield PromptBlock(name=self._id.name, content=self._content)
+from boba.workspace.contract import HistoryWorkspaceShell
 
 
 class FilePromptProvider(PromptProvider):

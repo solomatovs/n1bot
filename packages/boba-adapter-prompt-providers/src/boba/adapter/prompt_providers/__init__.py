@@ -1,4 +1,4 @@
-"""Реализации PromptProvider и file-based loader."""
+"""I/O-реализации PromptProvider (file/git/env/workspace) и file-based loader."""
 
 from boba.adapter.prompt_providers.config import PromptsConfig
 from boba.adapter.prompt_providers.loader import PromptLoader, PromptLoadError
@@ -6,7 +6,6 @@ from boba.adapter.prompt_providers.providers import (
     EnvironmentPromptProvider,
     FilePromptProvider,
     GitPromptProvider,
-    StaticPromptProvider,
     WorkspaceSystemPromptProvider,
 )
 
@@ -17,6 +16,5 @@ __all__ = [
     "PromptLoadError",
     "PromptLoader",
     "PromptsConfig",
-    "StaticPromptProvider",
     "WorkspaceSystemPromptProvider",
 ]

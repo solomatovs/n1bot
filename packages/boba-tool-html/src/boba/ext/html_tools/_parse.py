@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
-from boba.workspace import WorkspaceShell
+from boba.workspace.contract import WorkspaceShell
 
 _HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
 
