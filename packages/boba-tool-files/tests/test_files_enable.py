@@ -12,9 +12,45 @@ from boba.config.path import (
     NotFound,
 )
 from boba.ext.files_tools import register_tools as files_register_tools
+from boba.ext.files_tools.append import AppendToolSection
+from boba.ext.files_tools.cat import CatToolSection
+from boba.ext.files_tools.cd import CdToolSection
+from boba.ext.files_tools.config import FilesSection
+from boba.ext.files_tools.cp import CpToolSection
+from boba.ext.files_tools.edit import EditToolSection
+from boba.ext.files_tools.grep import GrepToolSection
+from boba.ext.files_tools.ls import LsToolSection
+from boba.ext.files_tools.mkdir import MkdirToolSection
+from boba.ext.files_tools.mv import MvToolSection
+from boba.ext.files_tools.pwd import PwdToolSection
+from boba.ext.files_tools.rm import RmToolSection
+from boba.ext.files_tools.stat import StatToolSection
+from boba.ext.files_tools.touch import TouchToolSection
+from boba.ext.files_tools.tree import TreeToolSection
+from boba.ext.files_tools.write import WriteToolSection
 from boba.patterns import StrId
 from boba.tools.framework import ExtensionContext
 from boba.value import StringValue
+
+
+_FILES_SECTIONS = (
+    FilesSection(),
+    AppendToolSection(),
+    CatToolSection(),
+    CdToolSection(),
+    CpToolSection(),
+    EditToolSection(),
+    GrepToolSection(),
+    LsToolSection(),
+    MkdirToolSection(),
+    MvToolSection(),
+    PwdToolSection(),
+    RmToolSection(),
+    StatToolSection(),
+    TouchToolSection(),
+    TreeToolSection(),
+    WriteToolSection(),
+)
 
 
 class _InlineSource(ConfigSource):
@@ -48,7 +84,11 @@ class _InlineSource(ConfigSource):
 def _make_app(values: dict[str, str]):
     bundle = ConfigBundle.from_sources([_InlineSource(values)])
     factory = ConfigSectionFactory()
-    factory.discover_extension_sections()
+    # Регистрируем только files-секции явно, чтобы тест не зависел от того,
+    # какие посторонние плагины установлены в окружении (их required-поля
+    # упали бы при build из-за пустого bundle).
+    for section in _FILES_SECTIONS:
+        factory.register_section(section)
     return factory.build(bundle)
 
 

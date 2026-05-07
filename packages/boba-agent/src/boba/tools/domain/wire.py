@@ -23,6 +23,7 @@ from boba.declaration import (
     IndexedShape,
     ItemReader,
     KeyedShape,
+    NestedField,
     ObjectItem,
     ObjectSchema,
     ScalarItem,
@@ -68,6 +69,12 @@ class ToolWireSchemaBuilder:
                     shape,
                     description=desc,
                 )
+
+            case NestedField(schema=nested, description=desc):
+                inner = ToolWireSchemaBuilder(nested).build()
+                if desc:
+                    inner["description"] = desc
+                return inner
 
             case _:
                 raise NotImplementedError(f"unknown FieldKind: {type(field).__name__}")

@@ -21,6 +21,7 @@ from boba.declaration import (
     IndexedShape,
     ItemReader,
     KeyedShape,
+    NestedField,
     ObjectItem,
     ObjectSchema,
     ScalarItem,
@@ -70,6 +71,16 @@ class ToolArgsBuilder(Generic[T]):
 
             case CollectionField(name=name, reader=reader, shape=shape):
                 return self._read_collection(name, reader, shape, raw)
+
+            case NestedField(name=name, schema=nested):
+                sub = raw.get(name, MISSING)
+                if sub is MISSING:
+                    return MISSING
+                if not isinstance(sub, Mapping):
+                    raise ConverterInputError(
+                        f"expected mapping, got {type(sub).__name__}"
+                    )
+                return ToolArgsBuilder(nested).build(sub)
 
             case _:
                 raise NotImplementedError(f"unknown FieldKind: {type(field).__name__}")
