@@ -93,7 +93,7 @@ def _run(bundle: ConfigBundle) -> int:
     prompt_loader = PromptLoader(prompt_workspace)
 
     tools_service = ToolsService.from_sources(
-        install_plugins(bundle, list(discover_plugins()), PluginCtx()),
+        install_plugins(bundle, discover_plugins(), PluginCtx()),
     )
 
     project_workspace = FsProjectWorkspaceRegistry(

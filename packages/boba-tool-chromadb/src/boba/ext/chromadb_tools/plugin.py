@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -20,7 +21,7 @@ from boba.ext.chromadb_tools.kb_list_collections import (
 )
 from boba.ext.chromadb_tools.kb_search import KbSearchTool, KbSearchToolConfig
 from boba.patterns import StrId
-from boba.plugin import ExtensionContext
+from boba.plugin import ExtensionContext, Plugin
 from boba.plugin.prompt import PromptOverlay, prompt_field
 from boba.tools.domain import ToolSourceId
 from boba.tools.framework import StaticToolSource, ToolSource
@@ -42,7 +43,7 @@ class ChromadbPluginConfig:
     kb_list_collections: PromptOverlay
 
 
-class ChromadbPlugin:
+class ChromadbPlugin(Plugin[ChromadbPluginConfig, ToolSource]):
     """Plugin ChromaDB read-tools: kb_search + kb_list_collections."""
 
     NAME: ClassVar[StrId] = StrId("chromadb")
@@ -102,14 +103,16 @@ class ChromadbPlugin:
 
     @classmethod
     def build(
-        cls, cfg: ChromadbPluginConfig, ctx: ExtensionContext,
-    ) -> ToolSource:
+        cls,
+        cfg: ChromadbPluginConfig,
+        ctx: ExtensionContext,
+    ) -> Iterable[ToolSource]:
         kb = get_knowledge_base(
             cfg.persist_path,
             cfg.snippet_chars,
             embedding_function=cls._embedding_function(cfg),
         )
-        return StaticToolSource(
+        yield StaticToolSource(
             source_id=cls.SOURCE_ID,
             priority=0,
             tools=[

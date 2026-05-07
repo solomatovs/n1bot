@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -9,7 +10,7 @@ from boba.declaration import ObjectSchema
 from boba.ext.html_tools.outline import HtmlOutlineTool, HtmlOutlineToolConfig
 from boba.ext.html_tools.section import HtmlSectionTool, HtmlSectionToolConfig
 from boba.patterns import StrId
-from boba.plugin import ExtensionContext
+from boba.plugin import ExtensionContext, Plugin
 from boba.plugin.prompt import PromptOverlay, prompt_field
 from boba.tools.domain import ToolSourceId
 from boba.tools.framework import StaticToolSource, ToolSource
@@ -25,7 +26,7 @@ class HtmlPluginConfig:
     html_section: PromptOverlay
 
 
-class HtmlPlugin:
+class HtmlPlugin(Plugin[HtmlPluginConfig, ToolSource]):
     """Plugin HTML-tools: outline + section."""
 
     NAME: ClassVar[StrId] = StrId("html")
@@ -46,16 +47,22 @@ class HtmlPlugin:
         )
 
     @classmethod
-    def build(cls, cfg: HtmlPluginConfig, ctx: ExtensionContext) -> ToolSource:
-        return StaticToolSource(
+    def build(
+        cls,
+        cfg: HtmlPluginConfig,
+        ctx: ExtensionContext,
+    ) -> Iterable[ToolSource]:
+        yield StaticToolSource(
             source_id=cls.SOURCE_ID,
             priority=0,
             tools=[
                 HtmlOutlineTool(
-                    HtmlOutlineToolConfig(prompt=cfg.html_outline), ctx,
+                    HtmlOutlineToolConfig(prompt=cfg.html_outline),
+                    ctx,
                 ),
                 HtmlSectionTool(
-                    HtmlSectionToolConfig(prompt=cfg.html_section), ctx,
+                    HtmlSectionToolConfig(prompt=cfg.html_section),
+                    ctx,
                 ),
             ],
         )

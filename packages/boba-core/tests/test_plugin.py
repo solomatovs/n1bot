@@ -2,41 +2,24 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import ClassVar
 
 from boba.coercion import ChainCoercer, Default, ParseBool, ParseInt, ParseString
 from boba.config.bundle import ConfigBundle
-from boba.config.path import ConfigPath, ConfigSource
+from boba.config.path import ConfigPath
+from boba.config.source import DictSource
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.patterns import StrId
 from boba.plugin import (
     ExtensionContext,
     Plugin,
+    config_path,
     install_plugins,
     is_enabled,
-    mount_path_for,
 )
-from boba.value import BoolValue, ConfigValue, IntValue, StringValue
-
-
-class _DictSource(ConfigSource):
-    def __init__(self, values: Mapping[ConfigPath, ConfigValue]) -> None:
-        self._v = values
-
-    def name(self) -> str:
-        return "dict"
-
-    def priority(self) -> int:
-        return 100
-
-    def load(self) -> Mapping[ConfigPath, ConfigValue]:
-        return dict(self._v)
-
-
-def _path(s: str) -> ConfigPath:
-    return ConfigPath.parse(s)
+from boba.value import BoolValue, IntValue, StringValue
 
 
 @dataclass(frozen=True)
@@ -60,7 +43,7 @@ class _BuiltSearch:
     ctx: ExtensionContext
 
 
-class _SearchPlugin:
+class _SearchPlugin(Plugin[_SearchCfg, _BuiltSearch]):
     NAME: ClassVar[StrId] = StrId("search")
 
     @classmethod
@@ -68,53 +51,57 @@ class _SearchPlugin:
         return _SEARCH_SCHEMA
 
     @classmethod
-    def build(cls, cfg: _SearchCfg, ctx: ExtensionContext) -> _BuiltSearch:
-        return _BuiltSearch(cfg=cfg, ctx=ctx)
+    def build(
+        cls,
+        cfg: _SearchCfg,
+        ctx: ExtensionContext,
+    ) -> Iterable[_BuiltSearch]:
+        yield _BuiltSearch(cfg=cfg, ctx=ctx)
 
 
 def test_mount_path_for_uses_tool_prefix():
-    assert mount_path_for(StrId("search")) == _path("tool.search")
-    assert mount_path_for(StrId("confluence_page")) == _path("tool.confluence_page")
+    assert config_path(StrId("search")) == ConfigPath.parse("tool.search")
+    assert config_path(StrId("confluence_page")) == ConfigPath.parse("tool.confluence_page")
 
 
 def test_is_enabled_default_false_when_absent():
-    bundle = ConfigBundle.from_sources([_DictSource({})])
-    assert is_enabled(bundle, _path("tool.search")) is False
+    bundle = ConfigBundle.from_sources([DictSource({})])
+    assert is_enabled(bundle, ConfigPath.parse("tool.search")) is False
 
 
 def test_is_enabled_true_when_explicit_true():
     bundle = ConfigBundle.from_sources(
-        [_DictSource({_path("tool.search.enable"): BoolValue(True)})]
+        [DictSource({ConfigPath.parse("tool.search.enable"): BoolValue(True)})]
     )
-    assert is_enabled(bundle, _path("tool.search")) is True
+    assert is_enabled(bundle, ConfigPath.parse("tool.search")) is True
 
 
 def test_is_enabled_false_when_explicit_false():
     bundle = ConfigBundle.from_sources(
-        [_DictSource({_path("tool.search.enable"): BoolValue(False)})]
+        [DictSource({ConfigPath.parse("tool.search.enable"): BoolValue(False)})]
     )
-    assert is_enabled(bundle, _path("tool.search")) is False
+    assert is_enabled(bundle, ConfigPath.parse("tool.search")) is False
 
 
 def test_is_enabled_parses_string_true():
     bundle = ConfigBundle.from_sources(
-        [_DictSource({_path("tool.search.enable"): StringValue("true")})]
+        [DictSource({ConfigPath.parse("tool.search.enable"): StringValue("true")})]
     )
-    assert is_enabled(bundle, _path("tool.search")) is True
+    assert is_enabled(bundle, ConfigPath.parse("tool.search")) is True
 
 
 def test_is_enabled_garbage_string_treated_as_false():
     bundle = ConfigBundle.from_sources(
-        [_DictSource({_path("tool.search.enable"): StringValue("not-a-bool")})]
+        [DictSource({ConfigPath.parse("tool.search.enable"): StringValue("not-a-bool")})]
     )
-    assert is_enabled(bundle, _path("tool.search")) is False
+    assert is_enabled(bundle, ConfigPath.parse("tool.search")) is False
 
 
 # --- install_plugins ---
 
 
 def test_install_plugins_skips_disabled():
-    bundle = ConfigBundle.from_sources([_DictSource({})])
+    bundle = ConfigBundle.from_sources([DictSource({})])
     ctx = ExtensionContext()
     artifacts = list(install_plugins(bundle, [_SearchPlugin], ctx))
     assert artifacts == []
@@ -123,11 +110,11 @@ def test_install_plugins_skips_disabled():
 def test_install_plugins_materializes_and_builds_when_enabled():
     bundle = ConfigBundle.from_sources(
         [
-            _DictSource(
+            DictSource(
                 {
-                    _path("tool.search.enable"): BoolValue(True),
-                    _path("tool.search.base_url"): StringValue("https://example.com"),
-                    _path("tool.search.limit"): IntValue(50),
+                    ConfigPath.parse("tool.search.enable"): BoolValue(True),
+                    ConfigPath.parse("tool.search.base_url"): StringValue("https://example.com"),
+                    ConfigPath.parse("tool.search.limit"): IntValue(50),
                 }
             )
         ]
@@ -146,14 +133,14 @@ def test_install_plugins_disabled_plugin_dto_is_not_materialized():
     # Никакого base_url в bundle, плагин выключен → не должна подниматься
     # FieldPathMissingError, плагин просто пропускается.
     bundle = ConfigBundle.from_sources(
-        [_DictSource({_path("tool.search.enable"): BoolValue(False)})]
+        [DictSource({ConfigPath.parse("tool.search.enable"): BoolValue(False)})]
     )
     ctx = ExtensionContext()
     assert list(install_plugins(bundle, [_SearchPlugin], ctx)) == []
 
 
 def test_install_plugins_iterates_multiple():
-    class _OtherPlugin:
+    class _OtherPlugin(Plugin[_SearchCfg, _BuiltSearch]):
         NAME: ClassVar[StrId] = StrId("other")
 
         @classmethod
@@ -161,17 +148,21 @@ def test_install_plugins_iterates_multiple():
             return _SEARCH_SCHEMA
 
         @classmethod
-        def build(cls, cfg: _SearchCfg, ctx: ExtensionContext) -> _BuiltSearch:
-            return _BuiltSearch(cfg=cfg, ctx=ctx)
+        def build(
+            cls,
+            cfg: _SearchCfg,
+            ctx: ExtensionContext,
+        ) -> Iterable[_BuiltSearch]:
+            yield _BuiltSearch(cfg=cfg, ctx=ctx)
 
     bundle = ConfigBundle.from_sources(
         [
-            _DictSource(
+            DictSource(
                 {
-                    _path("tool.search.enable"): BoolValue(True),
-                    _path("tool.search.base_url"): StringValue("https://search"),
-                    _path("tool.other.enable"): BoolValue(True),
-                    _path("tool.other.base_url"): StringValue("https://other"),
+                    ConfigPath.parse("tool.search.enable"): BoolValue(True),
+                    ConfigPath.parse("tool.search.base_url"): StringValue("https://search"),
+                    ConfigPath.parse("tool.other.enable"): BoolValue(True),
+                    ConfigPath.parse("tool.other.base_url"): StringValue("https://other"),
                 }
             )
         ]

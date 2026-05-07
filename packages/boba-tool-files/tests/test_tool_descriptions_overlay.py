@@ -57,9 +57,11 @@ _BASE = {"tool.files.enable": "true"}
 def _cat_tool(values: dict[str, str]) -> CatTool:
     bundle = ConfigBundle.from_sources([_InlineSource({**_BASE, **values})])
     sources = list(install_plugins(bundle, [FilesPlugin], ExtensionContext()))
-    return next(
+    found = next(
         t for src in sources for t in src.tools() if t.tool_id().to_wire() == "cat"
     )
+    assert isinstance(found, CatTool)
+    return found
 
 
 def test_tool_description_default_when_no_overlay():

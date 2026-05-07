@@ -22,7 +22,8 @@ from boba.coercion import (
     ParseString,
 )
 from boba.config.bundle import ConfigBundle, FlatConfigMaterializer
-from boba.config.path import ConfigPath, ConfigSource
+from boba.config.path import ConfigPath
+from boba.config.source import DictSource
 from boba.declaration import (
     CollectionField,
     FieldPathError,
@@ -32,21 +33,7 @@ from boba.declaration import (
     ObjectSchema,
     ScalarItem,
 )
-from boba.value import ConfigValue, IntValue, StringValue
-
-
-class _DictSource(ConfigSource):
-    def __init__(self, values: Mapping[ConfigPath, ConfigValue]) -> None:
-        self._v = values
-
-    def name(self) -> str:
-        return "dict"
-
-    def priority(self) -> int:
-        return 100
-
-    def load(self) -> Mapping[ConfigPath, ConfigValue]:
-        return dict(self._v)
+from boba.value import IntValue, StringValue
 
 
 @dataclass(frozen=True)
@@ -77,7 +64,7 @@ _CHAINLIT_SCHEMA: ObjectSchema[_ChainlitConfig] = ObjectSchema(
 def test_scalar_list_from_dict_source():
     flat = ConfigBundle.from_sources(
         [
-            _DictSource(
+            DictSource(
                 {
                     ConfigPath.parse("chainlit.models[0]"): StringValue("qwen3"),
                     ConfigPath.parse("chainlit.models[1]"): StringValue("gemini"),
@@ -96,7 +83,7 @@ def test_scalar_list_from_dict_source():
 
 
 def test_scalar_list_empty_when_absent():
-    flat = ConfigBundle.from_sources([_DictSource({})]).flat
+    flat = ConfigBundle.from_sources([DictSource({})]).flat
     cfg = FlatConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
         flat, ConfigPath.parse("chainlit")
     )
@@ -107,7 +94,7 @@ def test_scalar_list_empty_when_absent():
 def test_scalar_list_sorted_by_index_regardless_of_order():
     flat = ConfigBundle.from_sources(
         [
-            _DictSource(
+            DictSource(
                 {
                     ConfigPath.parse("chainlit.models[2]"): StringValue("c"),
                     ConfigPath.parse("chainlit.models[0]"): StringValue("a"),
@@ -125,7 +112,7 @@ def test_scalar_list_sorted_by_index_regardless_of_order():
 def test_scalar_list_item_validation_error_carries_index():
     flat = ConfigBundle.from_sources(
         [
-            _DictSource(
+            DictSource(
                 {
                     ConfigPath.parse("chainlit.models[0]"): StringValue(
                         ""
@@ -170,7 +157,7 @@ _TOOLS_SCHEMA: ObjectSchema[_ToolDescriptions] = ObjectSchema(
 def test_mapping_scalar_from_dict_source():
     flat = ConfigBundle.from_sources(
         [
-            _DictSource(
+            DictSource(
                 {
                     ConfigPath.parse("tools.descriptions.kb_search"): StringValue(
                         "Поиск"
@@ -191,7 +178,7 @@ def test_mapping_scalar_from_dict_source():
 
 
 def test_mapping_scalar_empty_when_absent():
-    flat = ConfigBundle.from_sources([_DictSource({})]).flat
+    flat = ConfigBundle.from_sources([DictSource({})]).flat
     cfg = FlatConfigMaterializer(_TOOLS_SCHEMA).materialize(
         flat, ConfigPath.parse("tools")
     )
@@ -202,7 +189,7 @@ def test_mapping_scalar_empty_when_absent():
 def test_mapping_scalar_item_validation_error_carries_key():
     flat = ConfigBundle.from_sources(
         [
-            _DictSource(
+            DictSource(
                 {
                     ConfigPath.parse("tools.limits.kb_search"): IntValue(
                         -1
