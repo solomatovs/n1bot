@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -31,7 +32,7 @@ from boba.ext.confluence_tools.search import (
     ConfluenceSearchToolConfig,
 )
 from boba.patterns import StrId
-from boba.plugin import ExtensionContext
+from boba.plugin import ExtensionContext, Plugin
 from boba.plugin.prompt import PromptOverlay, prompt_field
 from boba.tools.domain import ToolSourceId
 from boba.tools.framework import StaticToolSource, ToolSource
@@ -54,7 +55,7 @@ class ConfluencePluginConfig:
     confluence_page_section: PromptOverlay
 
 
-class ConfluencePlugin:
+class ConfluencePlugin(Plugin[ConfluencePluginConfig, ToolSource]):
     """Plugin Confluence-tools: search + page_outline + page_section."""
 
     NAME: ClassVar[StrId] = StrId("confluence")
@@ -92,9 +93,11 @@ class ConfluencePlugin:
 
     @classmethod
     def build(
-        cls, cfg: ConfluencePluginConfig, ctx: ExtensionContext,
-    ) -> ToolSource:
-        return StaticToolSource(
+        cls,
+        cfg: ConfluencePluginConfig,
+        ctx: ExtensionContext,
+    ) -> Iterable[ToolSource]:
+        yield StaticToolSource(
             source_id=cls.SOURCE_ID,
             priority=0,
             tools=[

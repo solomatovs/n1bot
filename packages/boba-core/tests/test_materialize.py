@@ -17,7 +17,8 @@ from boba.coercion import (
     ParseString,
 )
 from boba.config.bundle import ConfigBundle, FlatConfigMaterializer
-from boba.config.path import ConfigPath, ConfigSource, NameSegment
+from boba.config.path import ConfigPath, NameSegment
+from boba.config.source import DictSource
 from boba.declaration import (
     CollectionField,
     FieldPathError,
@@ -31,24 +32,9 @@ from boba.declaration import (
 )
 from boba.value import (
     BoolValue,
-    ConfigValue,
     IntValue,
     StringValue,
 )
-
-
-class _DictSource(ConfigSource):
-    def __init__(self, values: Mapping[ConfigPath, ConfigValue]) -> None:
-        self._v = values
-
-    def name(self) -> str:
-        return "dict"
-
-    def priority(self) -> int:
-        return 100
-
-    def load(self) -> Mapping[ConfigPath, ConfigValue]:
-        return dict(self._v)
 
 
 @dataclass(frozen=True)
@@ -73,7 +59,7 @@ _AGENT_SCHEMA: ObjectSchema[_Agent] = ObjectSchema(
 
 
 def test_scalar_with_defaults():
-    flat = ConfigBundle.from_sources([_DictSource({})]).flat
+    flat = ConfigBundle.from_sources([DictSource({})]).flat
     agent = FlatConfigMaterializer(_AGENT_SCHEMA).materialize(
         flat, ConfigPath.parse("agent")
     )
@@ -83,7 +69,7 @@ def test_scalar_with_defaults():
 def test_scalar_overridden():
     flat = ConfigBundle.from_sources(
         [
-            _DictSource(
+            DictSource(
                 {
                     ConfigPath.parse("agent.max_iterations"): IntValue(200),
                     ConfigPath.parse("agent.enabled"): BoolValue(True),
@@ -101,7 +87,7 @@ def test_required_missing_raises():
     schema: ObjectSchema[dict] = ObjectSchema(
         fields=[FieldSpec("x", ChainCoercer(ParseString()), required=True)],
     )
-    flat = ConfigBundle.from_sources([_DictSource({})]).flat
+    flat = ConfigBundle.from_sources([DictSource({})]).flat
     with pytest.raises(FieldPathMissingError):
         FlatConfigMaterializer(schema).materialize(flat, ConfigPath.parse("root"))
 
@@ -117,7 +103,7 @@ def test_validation_error_attaches_field():
         ],
     )
     flat = ConfigBundle.from_sources(
-        [_DictSource({ConfigPath.parse("root.max_iterations"): IntValue(0)})]
+        [DictSource({ConfigPath.parse("root.max_iterations"): IntValue(0)})]
     ).flat
     with pytest.raises(FieldPathError) as info:
         FlatConfigMaterializer(schema).materialize(flat, ConfigPath.parse("root"))
@@ -163,7 +149,7 @@ _EXT_SCHEMA: ObjectSchema[_ExtBlock] = ObjectSchema(
 def test_mapping_field_collects_dynamic_subsections():
     flat = ConfigBundle.from_sources(
         [
-            _DictSource(
+            DictSource(
                 {
                     ConfigPath.parse("ext.html.enabled"): BoolValue(True),
                     ConfigPath.parse("ext.html.tools.html_outline.enabled"): BoolValue(
@@ -192,7 +178,7 @@ def test_mapping_field_collects_dynamic_subsections():
 
 def test_mapping_field_empty_when_no_subsections():
     flat = ConfigBundle.from_sources(
-        [_DictSource({ConfigPath.parse("ext.html.enabled"): BoolValue(True)})]
+        [DictSource({ConfigPath.parse("ext.html.enabled"): BoolValue(True)})]
     ).flat
     block = FlatConfigMaterializer(_EXT_SCHEMA).materialize(
         flat, ConfigPath.parse("ext.html")
@@ -235,7 +221,7 @@ _CHAINLIT_SCHEMA: ObjectSchema[_ChainlitBlock] = ObjectSchema(
 def test_list_field_collects_indexed_subsections():
     flat = ConfigBundle.from_sources(
         [
-            _DictSource(
+            DictSource(
                 {
                     ConfigPath.parse("chainlit.models[0].name"): StringValue("qwen3"),
                     ConfigPath.parse("chainlit.models[1].name"): StringValue("gemini"),
@@ -255,7 +241,7 @@ def test_list_field_collects_indexed_subsections():
 def test_list_field_uses_segment_indices_in_sorted_order():
     flat = ConfigBundle.from_sources(
         [
-            _DictSource(
+            DictSource(
                 {
                     ConfigPath.parse("chainlit.models[2].name"): StringValue("c"),
                     ConfigPath.parse("chainlit.models[0].name"): StringValue("a"),
@@ -273,7 +259,7 @@ def test_list_field_uses_segment_indices_in_sorted_order():
 def test_nested_field_error_propagates_with_location():
     flat = ConfigBundle.from_sources(
         [
-            _DictSource(
+            DictSource(
                 {
                     ConfigPath.parse("ext.html.tools.html_outline.enabled"): IntValue(
                         42
@@ -333,7 +319,7 @@ _SERVICE_SCHEMA: ObjectSchema[_Service] = ObjectSchema(
 def test_nested_field_materializes_inner_object():
     flat = ConfigBundle.from_sources(
         [
-            _DictSource(
+            DictSource(
                 {
                     ConfigPath.parse("svc.name"): StringValue("api"),
                     ConfigPath.parse("svc.connection.base_url"): StringValue("https://example.com"),
@@ -354,7 +340,7 @@ def test_nested_field_materializes_inner_object():
 def test_nested_field_uses_defaults_for_missing_inner():
     flat = ConfigBundle.from_sources(
         [
-            _DictSource(
+            DictSource(
                 {
                     ConfigPath.parse("svc.connection.base_url"): StringValue("https://example.com"),
                 }
@@ -372,7 +358,7 @@ def test_nested_field_uses_defaults_for_missing_inner():
 
 def test_nested_field_propagates_required_error():
     flat = ConfigBundle.from_sources(
-        [_DictSource({ConfigPath.parse("svc.name"): StringValue("api")})]
+        [DictSource({ConfigPath.parse("svc.name"): StringValue("api")})]
     ).flat
     with pytest.raises(FieldPathMissingError):
         FlatConfigMaterializer(_SERVICE_SCHEMA).materialize(
@@ -392,7 +378,7 @@ def test_nested_field_two_levels_deep():
 
     flat = ConfigBundle.from_sources(
         [
-            _DictSource(
+            DictSource(
                 {
                     ConfigPath.parse("root.svc.name"): StringValue("api"),
                     ConfigPath.parse("root.svc.connection.base_url"): StringValue(

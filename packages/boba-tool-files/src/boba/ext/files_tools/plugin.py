@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -23,7 +24,7 @@ from boba.ext.files_tools.touch import TouchTool, TouchToolConfig
 from boba.ext.files_tools.tree import TreeTool, TreeToolConfig
 from boba.ext.files_tools.write import WriteTool, WriteToolConfig
 from boba.patterns import StrId
-from boba.plugin import ExtensionContext
+from boba.plugin import ExtensionContext, Plugin
 from boba.plugin.prompt import PromptOverlay, prompt_field
 from boba.tools.domain import ToolSourceId
 from boba.tools.framework import StaticToolSource, ToolSource
@@ -66,7 +67,7 @@ _CAT_SCHEMA: ObjectSchema[CatToolConfig] = ObjectSchema(
 )
 
 
-class FilesPlugin:
+class FilesPlugin(Plugin[FilesPluginConfig, ToolSource]):
     """Plugin файловых tools: 15 tools, без connection."""
 
     NAME: ClassVar[StrId] = StrId("files")
@@ -101,9 +102,11 @@ class FilesPlugin:
 
     @classmethod
     def build(
-        cls, cfg: FilesPluginConfig, ctx: ExtensionContext,
-    ) -> ToolSource:
-        return StaticToolSource(
+        cls,
+        cfg: FilesPluginConfig,
+        ctx: ExtensionContext,
+    ) -> Iterable[ToolSource]:
+        yield StaticToolSource(
             source_id=cls.SOURCE_ID,
             priority=0,
             tools=[
