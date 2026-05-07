@@ -2,22 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.coercion import (
-    ChainCoercer,
-    Default,
-    IsBool,
-    IsString,
-    NonEmpty,
-    ParseString,
-)
-from boba.config.section import ConfigSection
+from boba.coercion import ChainCoercer, Default, IsBool, IsString, NonEmpty
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.plugin import ExtensionContext
+from boba.plugin.prompt import PromptOverlay
 from boba.tools.domain import (
-    ParamOverlay,
     TextResult,
     Tool,
     ToolContext,
@@ -25,13 +17,10 @@ from boba.tools.domain import (
     ToolId,
     ToolResult,
     ToolSourceId,
-    param_desc,
-    params_field,
 )
-from boba.workspace import (
-    WorkspaceError,
-    WorkspaceNotFoundError,
-)
+from boba.workspace import WorkspaceError, WorkspaceNotFoundError
+
+__all__ = ["RmTool", "RmToolConfig"]
 
 
 @dataclass(frozen=True)
@@ -42,29 +31,18 @@ class RmArgs:
 
 @dataclass(frozen=True)
 class RmToolConfig:
-    """DTO секции [ext.files.tools.rm]."""
-
-    description: str
-    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+    prompt: PromptOverlay
 
 
 class RmTool(Tool[RmArgs]):
     """Удалить файл или директорию."""
 
-    _ID = ToolId("rm")
-    _SOURCE = ToolSourceId("builtin.files")
+    _ID: ClassVar[ToolId] = ToolId("rm")
+    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.files")
 
-    DEFAULT_DESCRIPTION: ClassVar[str] = (
-        "Удалить файл или директорию. Для директорий требуется "
-        "recursive=true. Безвозвратно."
-    )
-    DEFAULT_PATH_DESC: ClassVar[str] = "Путь к файлу или директории."
-    DEFAULT_RECURSIVE_DESC: ClassVar[str] = (
-        "Удалить директорию со всем содержимым. По умолчанию false."
-    )
-
-    def __init__(self, cfg: RmToolConfig) -> None:
+    def __init__(self, cfg: RmToolConfig, ctx: ExtensionContext) -> None:
         self._cfg = cfg
+        self._ctx = ctx
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -73,26 +51,28 @@ class RmTool(Tool[RmArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[RmArgs]:
-        p = self._cfg.params
-        return ObjectSchema(
-            description=self._cfg.description,
+        return self._cfg.prompt.apply(ObjectSchema(
+            description=(
+                "Удалить файл или директорию. Для директорий требуется "
+                "recursive=true. Безвозвратно."
+            ),
             fields=[
                 FieldSpec(
                     name="path",
-                    description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
+                    description="Путь к файлу или директории.",
                     coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
                     name="recursive",
-                    description=param_desc(
-                        p, "recursive", self.DEFAULT_RECURSIVE_DESC
+                    description=(
+                        "Удалить директорию со всем содержимым. По умолчанию false."
                     ),
                     coercer=ChainCoercer(Default(False), IsBool()),
                 ),
             ],
             factory=RmArgs,
-        )
+        ))
 
     def execute(self, ctx: ToolContext, req: RmArgs) -> ToolResult:
         try:
@@ -108,24 +88,3 @@ class RmTool(Tool[RmArgs]):
                 message=f"Ошибка удаления: {e}",
             ) from e
         return TextResult(text=f"Удалено: {req.path}")
-
-
-class RmToolSection(ConfigSection[RmToolConfig]):
-    """Секция [ext.files.tools.rm]."""
-
-    namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "rm")
-
-    schema: ClassVar[ObjectSchema[RmToolConfig]] = ObjectSchema(
-        description="Конфиг tool 'rm'.",
-        fields=[
-            FieldSpec(
-                name="description",
-                coercer=ChainCoercer(
-                    Default(RmTool.DEFAULT_DESCRIPTION), ParseString()
-                ),
-                description="Override описания tool'а; пусто — дефолт из кода.",
-            ),
-            params_field("params"),
-        ],
-        factory=RmToolConfig,
-    )

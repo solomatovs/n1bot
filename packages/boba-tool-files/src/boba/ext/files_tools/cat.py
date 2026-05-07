@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from io import TextIOBase
 from typing import ClassVar
 
@@ -15,13 +14,11 @@ from boba.coercion import (
     MinValue,
     NonEmpty,
     Ordered,
-    ParseInt,
-    ParseString,
 )
-from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.plugin import ExtensionContext
+from boba.plugin.prompt import PromptOverlay
 from boba.tools.domain import (
-    ParamOverlay,
     TextResult,
     Tool,
     ToolContext,
@@ -30,13 +27,10 @@ from boba.tools.domain import (
     ToolOutputTooLargeError,
     ToolResult,
     ToolSourceId,
-    param_desc,
-    params_field,
 )
-from boba.workspace import (
-    WorkspaceError,
-    WorkspaceNotFoundError,
-)
+from boba.workspace import WorkspaceError, WorkspaceNotFoundError
+
+__all__ = ["CatTool", "CatToolConfig"]
 
 
 @dataclass(frozen=True)
@@ -49,32 +43,21 @@ class CatArgs:
 
 @dataclass(frozen=True)
 class CatToolConfig:
-    """DTO секции [ext.files.tools.cat]."""
+    """DTO tool'а: runtime-лимит max_lines + prompt overlay."""
 
-    description: str
     max_lines: int
-    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+    prompt: PromptOverlay
 
 
 class CatTool(Tool[CatArgs]):
     """Чтение содержимого файла (целиком или диапазон строк 1-based)."""
 
-    _ID = ToolId("cat")
-    _SOURCE = ToolSourceId("builtin.files")
+    _ID: ClassVar[ToolId] = ToolId("cat")
+    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.files")
 
-    DEFAULT_DESCRIPTION: ClassVar[str] = (
-        "Прочитать строки [start_line; end_line] из текстового файла."
-    )
-    DEFAULT_PATH_DESC: ClassVar[str] = "Путь к файлу."
-    DEFAULT_ENCODING_DESC: ClassVar[str] = "Кодировка файла. По умолчанию 'utf-8'."
-    DEFAULT_START_LINE_DESC: ClassVar[str] = "Первая строка окна. 1 = начало файла."
-    DEFAULT_END_LINE_DESC: ClassVar[str] = (
-        "Последняя строка окна, включительно. >= start_line."
-    )
-    DEFAULT_MAX_LINES: ClassVar[int] = 2000
-
-    def __init__(self, cfg: CatToolConfig) -> None:
+    def __init__(self, cfg: CatToolConfig, ctx: ExtensionContext) -> None:
         self._cfg = cfg
+        self._ctx = ctx
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -83,45 +66,38 @@ class CatTool(Tool[CatArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[CatArgs]:
-        p = self._cfg.params
-        return ObjectSchema(
-            description=self._cfg.description,
+        return self._cfg.prompt.apply(ObjectSchema(
+            description=(
+                "Прочитать строки [start_line; end_line] из текстового файла."
+            ),
             fields=[
                 FieldSpec(
                     name="path",
-                    description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
+                    description="Путь к файлу.",
                     coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
                     name="encoding",
-                    description=param_desc(
-                        p, "encoding", self.DEFAULT_ENCODING_DESC
-                    ),
-                    coercer=ChainCoercer(
-                        Default("utf-8"), IsString(), NonEmpty()
-                    ),
+                    description="Кодировка файла. По умолчанию 'utf-8'.",
+                    coercer=ChainCoercer(Default("utf-8"), IsString(), NonEmpty()),
                 ),
                 FieldSpec(
                     name="start_line",
-                    description=param_desc(
-                        p, "start_line", self.DEFAULT_START_LINE_DESC
-                    ),
+                    description="Первая строка окна. 1 = начало файла.",
                     coercer=ChainCoercer(IsInt(), MinValue(1)),
                     required=True,
                 ),
                 FieldSpec(
                     name="end_line",
-                    description=param_desc(
-                        p, "end_line", self.DEFAULT_END_LINE_DESC
-                    ),
+                    description="Последняя строка окна, включительно. >= start_line.",
                     coercer=ChainCoercer(IsInt(), MinValue(1)),
                     required=True,
                 ),
             ],
             invariants=Ordered("start_line", "end_line"),
             factory=CatArgs,
-        )
+        ))
 
     def execute(self, ctx: ToolContext, req: CatArgs) -> ToolResult:
         max_lines = self._cfg.max_lines
@@ -144,11 +120,11 @@ class CatTool(Tool[CatArgs]):
                 text, last = self._read_range(f, req.start_line, req.end_line)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Файл не найден: {req.path}"
+                tool_id=self._ID, message=f"Файл не найден: {req.path}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Ошибка чтения: {e}"
+                tool_id=self._ID, message=f"Ошибка чтения: {e}",
             ) from e
 
         label = f"{req.path}:{req.start_line}-{last}"
@@ -171,34 +147,3 @@ class CatTool(Tool[CatArgs]):
             collected.append(line.rstrip("\r\n"))
             last = i
         return "\n".join(collected), last
-
-
-class CatToolSection(ConfigSection[CatToolConfig]):
-    """Секция [ext.files.tools.cat]: описания + лимиты cat-tool'а."""
-
-    namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "cat")
-
-    schema: ClassVar[ObjectSchema[CatToolConfig]] = ObjectSchema(
-        description="Конфиг tool 'cat': описания + потолок строк.",
-        fields=[
-            FieldSpec(
-                name="description",
-                coercer=ChainCoercer(
-                    Default(CatTool.DEFAULT_DESCRIPTION), ParseString()
-                ),
-                description="Override описания tool'а; пусто — дефолт из кода.",
-            ),
-            FieldSpec(
-                name="max_lines",
-                coercer=ChainCoercer(
-                    Default(CatTool.DEFAULT_MAX_LINES), ParseInt(), MinValue(1)
-                ),
-                description=(
-                    "Максимум строк в одном вызове cat (защита от "
-                    "переполнения ответа)."
-                ),
-            ),
-            params_field("params"),
-        ],
-        factory=CatToolConfig,
-    )

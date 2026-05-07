@@ -14,42 +14,38 @@ from boba.adapter.fs_workspace import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
     FsPromptWorkspaceRegistry,
-    WorkspacesSection,
+    WorkspaceLayout,
 )
 from boba.adapter.messages import InMemoryMessageService
 from boba.adapter.openai import (
     CurlTraceChatCompletionObserver,
-    OpenAIAdapterSection,
     OpenAIChatVisitor,
-    # TranscriptChatCompletionObserver,
-    # WireTraceChatCompletionObserver,
+    OpenAIConfig,
     create_llm_source,
 )
-from boba.adapter.prompt_providers import PromptLoader, PromptsSection
+from boba.adapter.prompt_providers import PromptLoader, PromptsConfig
 from boba.agent import Agent, AgentConfig
 from boba.agent.models import AgentRequest
-from boba.cli.agent_run.config import AgentRunConfig, AgentRunSection
+from boba.cli.agent_run.config import AgentRunConfig
 from boba.cli.agent_run.console_sink import ConsoleSink
 from boba.cli.agent_run.infra import (
     AgentComponents,
-    AgentSection,
-    AppCoreSection,
+    AppCoreConfig,
     configure_logging,
     create_agent,
 )
-from boba.config.app import AppConfig
-from boba.config.bootstrap import AppConfigBootstrap
+from boba.config.bundle import ConfigBundle
 from boba.config.source.cli import CliSource
 from boba.config.source.env import EnvFileSource, EnvSource
 from boba.config.source.toml import TomlFileSource, TomlSource
 from boba.llm.models import RequestId
 from boba.llm.observer import CompositeLLMRequestObserver
 from boba.patterns import ConverterInputError
+from boba.plugin import ExtensionContext as PluginCtx
+from boba.plugin import install_plugins
+from boba.plugin.discovery import discover_plugins
 from boba.tools.domain import ToolContext
-from boba.tools.framework import (
-    ExtensionContext,
-    ToolPluginLoader,
-)
+from boba.tools.framework import ToolsService
 from boba.workspace import (
     PromptWorkspaceId,
     WorkspaceId,
@@ -61,56 +57,44 @@ _REPL_EXIT_COMMANDS = frozenset({"/exit", "/quit", ":q"})
 def main() -> int:
     """Entry-point. Возвращает exit-code (0 = успех)."""
     try:
-        app = _build_app()
+        bundle = _build_bundle()
     except ConverterInputError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    return _run(app)
+    return _run(bundle)
 
 
-def _build_app() -> AppConfig:
-    """Регистрация секций и источников; собирает AppConfig.
-
-    Приоритет: cli > env-file > env > toml-file > toml.
-    """
-    boot = AppConfigBootstrap()
-    boot.register_section(AppCoreSection())
-    boot.register_section(AgentSection())
-    boot.register_section(WorkspacesSection())
-    boot.register_section(OpenAIAdapterSection())
-    boot.register_section(PromptsSection())
-    boot.register_section(AgentRunSection())
-    boot.discover_extension_sections()
-    boot.attach_sources(
-        [
-            CliSource(),
-            EnvFileSource(),
-            EnvSource(),
-            TomlFileSource(),
-            TomlSource(),
-        ]
-    )
-    return boot.build()
+def _build_bundle() -> ConfigBundle:
+    """ConfigBundle для всего: core-DTO + Plugin-протокол."""
+    return ConfigBundle.from_sources([
+        CliSource(),
+        EnvFileSource(),
+        EnvSource(),
+        TomlFileSource(),
+        TomlSource(),
+    ])
 
 
-def _run(app: AppConfig) -> int:
+def _run(bundle: ConfigBundle) -> int:
     """Собирает агента и либо прогоняет один запрос, либо запускает REPL."""
-    core = app.section(AppCoreSection)
-    workspaces = app.section(WorkspacesSection)
-    llm_cfg = app.section(OpenAIAdapterSection)
-    prompts_dir = app.section(PromptsSection)
-    agent_config = app.section(AgentSection)
-    run_cfg: AgentRunConfig = app.section(AgentRunSection)
+    core = bundle.get(AppCoreConfig, "app")
+    workspaces = bundle.get(WorkspaceLayout, "workspaces")
+    llm_cfg = bundle.get(OpenAIConfig, "adapter.openai")
+    prompts = bundle.get(PromptsConfig, "prompts")
+    agent_config = bundle.get(AgentConfig, "agent")
+    run_cfg = bundle.get(AgentRunConfig, "agent_run")
     configure_logging(core.log_level, core.log_file)
 
     workspace_id = WorkspaceId.from_wire("00000000-0000-0000-0000-000000000001")
 
     prompt_workspace = FsPromptWorkspaceRegistry(
-        root=Path(prompts_dir),
+        root=Path(prompts.dir),
     ).get_or_create(PromptWorkspaceId("prompts"))
     prompt_loader = PromptLoader(prompt_workspace)
 
-    tool_loader = ToolPluginLoader(ExtensionContext(config=app))
+    tools_service = ToolsService.from_sources(
+        install_plugins(bundle, list(discover_plugins()), PluginCtx()),
+    )
 
     project_workspace = FsProjectWorkspaceRegistry(
         base_dir=Path(workspaces.base_dir),
@@ -138,7 +122,7 @@ def _run(app: AppConfig) -> int:
             agent_config=agent_config,
             prompt_providers=prompt_loader.prompt_providers(),
             message_service=message_service,
-            tools_service=tool_loader.tools_service(),
+            tools_service=tools_service,
             tool_result_visitor=OpenAIChatVisitor(),
         ),
         tool_ctx=ToolContext(project_workspace=project_workspace),

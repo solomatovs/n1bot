@@ -1,8 +1,7 @@
-"""Тесты механики [ext.html] enable / tools_allow."""
+"""Тесты enable-конвенции и сборки HtmlPlugin."""
 
 from __future__ import annotations
 
-from boba.config.app import ConfigSectionFactory
 from boba.config.bundle import ConfigBundle
 from boba.config.path import (
     ConfigLookup,
@@ -11,12 +10,9 @@ from boba.config.path import (
     Found,
     NotFound,
 )
-from boba.ext.html_tools import register_tools as html_register_tools
-from boba.ext.html_tools.config import HtmlSection
-from boba.ext.html_tools.outline import HtmlOutlineToolSection
-from boba.ext.html_tools.section import HtmlSectionToolSection
+from boba.ext.html_tools import HtmlPlugin
 from boba.patterns import StrId
-from boba.tools.framework import ExtensionContext
+from boba.plugin import ExtensionContext, install_plugins
 from boba.value import StringValue
 
 
@@ -48,34 +44,20 @@ class _InlineSource(ConfigSource):
         return StrId("inline")
 
 
-def _make_app(values: dict[str, str]):
+def _tool_names(values: dict[str, str]) -> list[str]:
     bundle = ConfigBundle.from_sources([_InlineSource(values)])
-    factory = ConfigSectionFactory()
-    # Регистрируем только html-секции явно, чтобы тест не зависел от того,
-    # какие посторонние плагины установлены в окружении (их required-поля
-    # упали бы при build из-за пустого bundle).
-    factory.register_section(HtmlSection())
-    factory.register_section(HtmlOutlineToolSection())
-    factory.register_section(HtmlSectionToolSection())
-    return factory.build(bundle)
-
-
-def _tool_names(app) -> list[str]:
-    sources = list(html_register_tools(ExtensionContext(config=app)))
+    sources = list(install_plugins(bundle, [HtmlPlugin], ExtensionContext()))
     return [t.tool_id().to_wire() for src in sources for t in src.tools()]
 
 
 def test_disabled_by_default():
-    assert _tool_names(_make_app({})) == []
+    assert _tool_names({}) == []
+
+
+def test_disabled_explicit():
+    assert _tool_names({"tool.html.enable": "false"}) == []
 
 
 def test_enabled_yields_both_tools():
-    names = _tool_names(_make_app({"$ext.html.enable": "true"}))
+    names = _tool_names({"tool.html.enable": "true"})
     assert set(names) == {"html_outline", "html_section"}
-
-
-def test_tools_allow_single():
-    app = _make_app(
-        {"$ext.html.enable": "true", "$ext.html.tools_allow": "html_outline"}
-    )
-    assert _tool_names(app) == ["html_outline"]

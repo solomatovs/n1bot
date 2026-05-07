@@ -15,7 +15,6 @@ target-формат (str, multi-part, structured-output).
 from __future__ import annotations
 
 from boba.tools.domain.args import ToolArgsBuilder
-from boba.tools.domain.descriptions import ParamOverlay, param_desc, params_field
 from boba.tools.domain.errors import (
     InvalidSchemaInvariantError,
     InvalidToolArgumentError,
@@ -37,7 +36,6 @@ __all__ = [
     "InvalidSchemaInvariantError",
     "InvalidToolArgumentError",
     "JsonResult",
-    "ParamOverlay",
     "TextResult",
     "Tool",
     "ToolArgsBuilder",
@@ -51,6 +49,4 @@ __all__ = [
     "ToolResultVisitor",
     "ToolSourceId",
     "ToolWireSchemaBuilder",
-    "param_desc",
-    "params_field",
 ]

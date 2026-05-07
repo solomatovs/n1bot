@@ -5,41 +5,30 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from boba.adapter.fs_workspace import WorkspacesSection
-from boba.adapter.openai import OpenAIAdapterSection
-from boba.adapter.prompt_providers import PromptsSection
-from boba.config.app import AppConfig
-from boba.config.bootstrap import AppConfigBootstrap
+from boba.config.bundle import ConfigBundle
+from boba.config.path import ConfigSource
 from boba.config.source.cli import CliSource
 from boba.config.source.env import EnvFileSource, EnvSource
 from boba.config.source.toml import TomlFileSource, TomlSource
 from boba.patterns import ConverterInputError
-from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
-from boba.web.chainlit.infra import AgentSection, AppCoreSection
+from boba.web.chainlit.config import ChainlitConfig
 from boba.web.chainlit.session import ChatSession
 from boba.web.chainlit.ui_overrides import UIOverrideTomlConverter
 
 
-def build_app_config() -> AppConfig:
-    """AppConfig с зарегистрированными секциями и источниками (CLI > env > TOML)."""
-    boot = AppConfigBootstrap()
-    boot.register_section(AppCoreSection())
-    boot.register_section(AgentSection())
-    boot.register_section(WorkspacesSection())
-    boot.register_section(OpenAIAdapterSection())
-    boot.register_section(PromptsSection())
-    boot.register_section(ChainlitSection())
-    boot.discover_extension_sections()
-    boot.attach_sources(
-        [
-            CliSource(),
-            EnvFileSource(),
-            EnvSource(),
-            TomlFileSource(),
-            TomlSource(),
-        ]
-    )
-    return boot.build()
+def _config_sources() -> list[ConfigSource]:
+    return [
+        CliSource(),
+        EnvFileSource(),
+        EnvSource(),
+        TomlFileSource(),
+        TomlSource(),
+    ]
+
+
+def build_app_config() -> ConfigBundle:
+    """ConfigBundle для core-DTO + Plugin-протокола."""
+    return ConfigBundle.from_sources(_config_sources())
 
 
 def bridge_chainlit_env(cfg: ChainlitConfig) -> Path:
@@ -69,15 +58,15 @@ def write_ui_config_overrides(cfg: ChainlitConfig, app_root: Path) -> None:
 
 def main() -> int:
     try:
-        app = build_app_config()
+        bundle = build_app_config()
     except ConverterInputError as _e:
         return 2
-    chainlit_cfg = app.section(ChainlitSection)
+    chainlit_cfg = bundle.get(ChainlitConfig, "chainlit")
     app_root = bridge_chainlit_env(chainlit_cfg)
     write_ui_config_overrides(chainlit_cfg, app_root)
 
     # ChatSession создаётся лениво при первом cl.on_chat_start.
-    ChatSession.set_app(app)
+    ChatSession.set_bundle(bundle)
 
     # chainlit импортируется только после bootstrap — он читает env при загрузке.
     from chainlit.cli import run_chainlit  # noqa: PLC0415

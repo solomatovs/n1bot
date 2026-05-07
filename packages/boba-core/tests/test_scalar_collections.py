@@ -79,17 +79,17 @@ def test_scalar_list_from_dict_source():
         [
             _DictSource(
                 {
-                    ConfigPath.parse("$chainlit.models[0]"): StringValue("qwen3"),
-                    ConfigPath.parse("$chainlit.models[1]"): StringValue("gemini"),
-                    ConfigPath.parse("$chainlit.models[2]"): StringValue("deepseek"),
-                    ConfigPath.parse("$chainlit.ports[0]"): IntValue(8501),
-                    ConfigPath.parse("$chainlit.ports[1]"): IntValue(8502),
+                    ConfigPath.parse("chainlit.models[0]"): StringValue("qwen3"),
+                    ConfigPath.parse("chainlit.models[1]"): StringValue("gemini"),
+                    ConfigPath.parse("chainlit.models[2]"): StringValue("deepseek"),
+                    ConfigPath.parse("chainlit.ports[0]"): IntValue(8501),
+                    ConfigPath.parse("chainlit.ports[1]"): IntValue(8502),
                 }
             )
         ]
     ).flat
     cfg = FlatConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
-        flat, ConfigPath.parse("$chainlit")
+        flat, ConfigPath.parse("chainlit")
     )
     assert cfg.models == ("qwen3", "gemini", "deepseek")
     assert cfg.ports == (8501, 8502)
@@ -98,7 +98,7 @@ def test_scalar_list_from_dict_source():
 def test_scalar_list_empty_when_absent():
     flat = ConfigBundle.from_sources([_DictSource({})]).flat
     cfg = FlatConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
-        flat, ConfigPath.parse("$chainlit")
+        flat, ConfigPath.parse("chainlit")
     )
     assert cfg.models == ()
     assert cfg.ports == ()
@@ -109,15 +109,15 @@ def test_scalar_list_sorted_by_index_regardless_of_order():
         [
             _DictSource(
                 {
-                    ConfigPath.parse("$chainlit.models[2]"): StringValue("c"),
-                    ConfigPath.parse("$chainlit.models[0]"): StringValue("a"),
-                    ConfigPath.parse("$chainlit.models[1]"): StringValue("b"),
+                    ConfigPath.parse("chainlit.models[2]"): StringValue("c"),
+                    ConfigPath.parse("chainlit.models[0]"): StringValue("a"),
+                    ConfigPath.parse("chainlit.models[1]"): StringValue("b"),
                 }
             )
         ]
     ).flat
     cfg = FlatConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
-        flat, ConfigPath.parse("$chainlit")
+        flat, ConfigPath.parse("chainlit")
     )
     assert cfg.models == ("a", "b", "c")
 
@@ -127,7 +127,7 @@ def test_scalar_list_item_validation_error_carries_index():
         [
             _DictSource(
                 {
-                    ConfigPath.parse("$chainlit.models[0]"): StringValue(
+                    ConfigPath.parse("chainlit.models[0]"): StringValue(
                         ""
                     ),  # NonEmpty fails
                 }
@@ -136,7 +136,7 @@ def test_scalar_list_item_validation_error_carries_index():
     ).flat
     with pytest.raises(FieldPathError) as info:
         FlatConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
-            flat, ConfigPath.parse("$chainlit")
+            flat, ConfigPath.parse("chainlit")
         )
     assert info.value.field_name == "models"
     assert "[0]" in info.value.location
@@ -172,19 +172,19 @@ def test_mapping_scalar_from_dict_source():
         [
             _DictSource(
                 {
-                    ConfigPath.parse("$tools.descriptions.kb_search"): StringValue(
+                    ConfigPath.parse("tools.descriptions.kb_search"): StringValue(
                         "Поиск"
                     ),
-                    ConfigPath.parse("$tools.descriptions.html_outline"): StringValue(
+                    ConfigPath.parse("tools.descriptions.html_outline"): StringValue(
                         "Оглавление"
                     ),
-                    ConfigPath.parse("$tools.limits.kb_search"): IntValue(20),
+                    ConfigPath.parse("tools.limits.kb_search"): IntValue(20),
                 }
             )
         ]
     ).flat
     cfg = FlatConfigMaterializer(_TOOLS_SCHEMA).materialize(
-        flat, ConfigPath.parse("$tools")
+        flat, ConfigPath.parse("tools")
     )
     assert cfg.descriptions == {"kb_search": "Поиск", "html_outline": "Оглавление"}
     assert cfg.limits == {"kb_search": 20}
@@ -193,7 +193,7 @@ def test_mapping_scalar_from_dict_source():
 def test_mapping_scalar_empty_when_absent():
     flat = ConfigBundle.from_sources([_DictSource({})]).flat
     cfg = FlatConfigMaterializer(_TOOLS_SCHEMA).materialize(
-        flat, ConfigPath.parse("$tools")
+        flat, ConfigPath.parse("tools")
     )
     assert cfg.descriptions == {}
     assert cfg.limits == {}
@@ -204,7 +204,7 @@ def test_mapping_scalar_item_validation_error_carries_key():
         [
             _DictSource(
                 {
-                    ConfigPath.parse("$tools.limits.kb_search"): IntValue(
+                    ConfigPath.parse("tools.limits.kb_search"): IntValue(
                         -1
                     ),  # MinValue(0) fails
                 }
@@ -213,7 +213,7 @@ def test_mapping_scalar_item_validation_error_carries_key():
     ).flat
     with pytest.raises(FieldPathError) as info:
         FlatConfigMaterializer(_TOOLS_SCHEMA).materialize(
-            flat, ConfigPath.parse("$tools")
+            flat, ConfigPath.parse("tools")
         )
     assert info.value.field_name == "limits"
     assert "kb_search" in info.value.location

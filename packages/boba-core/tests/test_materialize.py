@@ -75,7 +75,7 @@ _AGENT_SCHEMA: ObjectSchema[_Agent] = ObjectSchema(
 def test_scalar_with_defaults():
     flat = ConfigBundle.from_sources([_DictSource({})]).flat
     agent = FlatConfigMaterializer(_AGENT_SCHEMA).materialize(
-        flat, ConfigPath.parse("$agent")
+        flat, ConfigPath.parse("agent")
     )
     assert agent == _Agent(max_iterations=20, enabled=False)
 
@@ -85,14 +85,14 @@ def test_scalar_overridden():
         [
             _DictSource(
                 {
-                    ConfigPath.parse("$agent.max_iterations"): IntValue(200),
-                    ConfigPath.parse("$agent.enabled"): BoolValue(True),
+                    ConfigPath.parse("agent.max_iterations"): IntValue(200),
+                    ConfigPath.parse("agent.enabled"): BoolValue(True),
                 }
             )
         ]
     ).flat
     agent = FlatConfigMaterializer(_AGENT_SCHEMA).materialize(
-        flat, ConfigPath.parse("$agent")
+        flat, ConfigPath.parse("agent")
     )
     assert agent == _Agent(max_iterations=200, enabled=True)
 
@@ -103,7 +103,7 @@ def test_required_missing_raises():
     )
     flat = ConfigBundle.from_sources([_DictSource({})]).flat
     with pytest.raises(FieldPathMissingError):
-        FlatConfigMaterializer(schema).materialize(flat, ConfigPath.parse("$root"))
+        FlatConfigMaterializer(schema).materialize(flat, ConfigPath.parse("root"))
 
 
 def test_validation_error_attaches_field():
@@ -117,10 +117,10 @@ def test_validation_error_attaches_field():
         ],
     )
     flat = ConfigBundle.from_sources(
-        [_DictSource({ConfigPath.parse("$root.max_iterations"): IntValue(0)})]
+        [_DictSource({ConfigPath.parse("root.max_iterations"): IntValue(0)})]
     ).flat
     with pytest.raises(FieldPathError) as info:
-        FlatConfigMaterializer(schema).materialize(flat, ConfigPath.parse("$root"))
+        FlatConfigMaterializer(schema).materialize(flat, ConfigPath.parse("root"))
     assert info.value.field_name == "max_iterations"
 
 
@@ -165,22 +165,22 @@ def test_mapping_field_collects_dynamic_subsections():
         [
             _DictSource(
                 {
-                    ConfigPath.parse("$ext.html.enabled"): BoolValue(True),
-                    ConfigPath.parse("$ext.html.tools.html_outline.enabled"): BoolValue(
+                    ConfigPath.parse("ext.html.enabled"): BoolValue(True),
+                    ConfigPath.parse("ext.html.tools.html_outline.enabled"): BoolValue(
                         True
                     ),
                     ConfigPath.parse(
-                        "$ext.html.tools.html_outline.description"
+                        "ext.html.tools.html_outline.description"
                     ): StringValue("custom outline"),
                     ConfigPath.parse(
-                        "$ext.html.tools.html_section.description"
+                        "ext.html.tools.html_section.description"
                     ): StringValue("custom section"),
                 }
             )
         ]
     ).flat
     block = FlatConfigMaterializer(_EXT_SCHEMA).materialize(
-        flat, ConfigPath.parse("$ext.html")
+        flat, ConfigPath.parse("ext.html")
     )
     assert block.enabled is True
     assert set(block.tools) == {"html_outline", "html_section"}
@@ -192,10 +192,10 @@ def test_mapping_field_collects_dynamic_subsections():
 
 def test_mapping_field_empty_when_no_subsections():
     flat = ConfigBundle.from_sources(
-        [_DictSource({ConfigPath.parse("$ext.html.enabled"): BoolValue(True)})]
+        [_DictSource({ConfigPath.parse("ext.html.enabled"): BoolValue(True)})]
     ).flat
     block = FlatConfigMaterializer(_EXT_SCHEMA).materialize(
-        flat, ConfigPath.parse("$ext.html")
+        flat, ConfigPath.parse("ext.html")
     )
     assert block.tools == {}
 
@@ -237,9 +237,9 @@ def test_list_field_collects_indexed_subsections():
         [
             _DictSource(
                 {
-                    ConfigPath.parse("$chainlit.models[0].name"): StringValue("qwen3"),
-                    ConfigPath.parse("$chainlit.models[1].name"): StringValue("gemini"),
-                    ConfigPath.parse("$chainlit.models[2].name"): StringValue(
+                    ConfigPath.parse("chainlit.models[0].name"): StringValue("qwen3"),
+                    ConfigPath.parse("chainlit.models[1].name"): StringValue("gemini"),
+                    ConfigPath.parse("chainlit.models[2].name"): StringValue(
                         "deepseek"
                     ),
                 }
@@ -247,7 +247,7 @@ def test_list_field_collects_indexed_subsections():
         ]
     ).flat
     block = FlatConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
-        flat, ConfigPath.parse("$chainlit")
+        flat, ConfigPath.parse("chainlit")
     )
     assert tuple(m.name for m in block.models) == ("qwen3", "gemini", "deepseek")
 
@@ -257,15 +257,15 @@ def test_list_field_uses_segment_indices_in_sorted_order():
         [
             _DictSource(
                 {
-                    ConfigPath.parse("$chainlit.models[2].name"): StringValue("c"),
-                    ConfigPath.parse("$chainlit.models[0].name"): StringValue("a"),
-                    ConfigPath.parse("$chainlit.models[1].name"): StringValue("b"),
+                    ConfigPath.parse("chainlit.models[2].name"): StringValue("c"),
+                    ConfigPath.parse("chainlit.models[0].name"): StringValue("a"),
+                    ConfigPath.parse("chainlit.models[1].name"): StringValue("b"),
                 }
             )
         ]
     ).flat
     block = FlatConfigMaterializer(_CHAINLIT_SCHEMA).materialize(
-        flat, ConfigPath.parse("$chainlit")
+        flat, ConfigPath.parse("chainlit")
     )
     assert tuple(m.name for m in block.models) == ("a", "b", "c")
 
@@ -275,7 +275,7 @@ def test_nested_field_error_propagates_with_location():
         [
             _DictSource(
                 {
-                    ConfigPath.parse("$ext.html.tools.html_outline.enabled"): IntValue(
+                    ConfigPath.parse("ext.html.tools.html_outline.enabled"): IntValue(
                         42
                     )  # bool ожидался
                 }
@@ -284,7 +284,7 @@ def test_nested_field_error_propagates_with_location():
     ).flat
     with pytest.raises(FieldPathError) as info:
         FlatConfigMaterializer(_EXT_SCHEMA).materialize(
-            flat, ConfigPath.parse("$ext.html")
+            flat, ConfigPath.parse("ext.html")
         )
     assert "tools" in info.value.field_name or "tools" in str(info.value)
     assert "html_outline" in str(info.value)
@@ -335,15 +335,15 @@ def test_nested_field_materializes_inner_object():
         [
             _DictSource(
                 {
-                    ConfigPath.parse("$svc.name"): StringValue("api"),
-                    ConfigPath.parse("$svc.connection.base_url"): StringValue("https://example.com"),
-                    ConfigPath.parse("$svc.connection.timeout_sec"): IntValue(60),
+                    ConfigPath.parse("svc.name"): StringValue("api"),
+                    ConfigPath.parse("svc.connection.base_url"): StringValue("https://example.com"),
+                    ConfigPath.parse("svc.connection.timeout_sec"): IntValue(60),
                 }
             )
         ]
     ).flat
     svc = FlatConfigMaterializer(_SERVICE_SCHEMA).materialize(
-        flat, ConfigPath.parse("$svc")
+        flat, ConfigPath.parse("svc")
     )
     assert svc == _Service(
         name="api",
@@ -356,13 +356,13 @@ def test_nested_field_uses_defaults_for_missing_inner():
         [
             _DictSource(
                 {
-                    ConfigPath.parse("$svc.connection.base_url"): StringValue("https://example.com"),
+                    ConfigPath.parse("svc.connection.base_url"): StringValue("https://example.com"),
                 }
             )
         ]
     ).flat
     svc = FlatConfigMaterializer(_SERVICE_SCHEMA).materialize(
-        flat, ConfigPath.parse("$svc")
+        flat, ConfigPath.parse("svc")
     )
     assert svc == _Service(
         name="svc",
@@ -372,11 +372,11 @@ def test_nested_field_uses_defaults_for_missing_inner():
 
 def test_nested_field_propagates_required_error():
     flat = ConfigBundle.from_sources(
-        [_DictSource({ConfigPath.parse("$svc.name"): StringValue("api")})]
+        [_DictSource({ConfigPath.parse("svc.name"): StringValue("api")})]
     ).flat
     with pytest.raises(FieldPathMissingError):
         FlatConfigMaterializer(_SERVICE_SCHEMA).materialize(
-            flat, ConfigPath.parse("$svc")
+            flat, ConfigPath.parse("svc")
         )
 
 
@@ -394,8 +394,8 @@ def test_nested_field_two_levels_deep():
         [
             _DictSource(
                 {
-                    ConfigPath.parse("$root.svc.name"): StringValue("api"),
-                    ConfigPath.parse("$root.svc.connection.base_url"): StringValue(
+                    ConfigPath.parse("root.svc.name"): StringValue("api"),
+                    ConfigPath.parse("root.svc.connection.base_url"): StringValue(
                         "https://example.com"
                     ),
                 }
@@ -403,7 +403,7 @@ def test_nested_field_two_levels_deep():
         ]
     ).flat
     outer = FlatConfigMaterializer(outer_schema).materialize(
-        flat, ConfigPath.parse("$root")
+        flat, ConfigPath.parse("root")
     )
     assert outer == _Outer(
         svc=_Service(

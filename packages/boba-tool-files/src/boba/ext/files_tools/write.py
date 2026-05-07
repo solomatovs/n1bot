@@ -2,21 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.coercion import (
-    ChainCoercer,
-    Default,
-    IsString,
-    NonEmpty,
-    ParseString,
-)
-from boba.config.section import ConfigSection
+from boba.coercion import ChainCoercer, Default, IsString, NonEmpty
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.plugin import ExtensionContext
+from boba.plugin.prompt import PromptOverlay
 from boba.tools.domain import (
-    ParamOverlay,
     TextResult,
     Tool,
     ToolContext,
@@ -24,12 +17,10 @@ from boba.tools.domain import (
     ToolId,
     ToolResult,
     ToolSourceId,
-    param_desc,
-    params_field,
 )
-from boba.workspace import (
-    WorkspaceError,
-)
+from boba.workspace import WorkspaceError
+
+__all__ = ["WriteTool", "WriteToolConfig"]
 
 
 @dataclass(frozen=True)
@@ -41,28 +32,18 @@ class WriteArgs:
 
 @dataclass(frozen=True)
 class WriteToolConfig:
-    """DTO секции [ext.files.tools.write]."""
-
-    description: str
-    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+    prompt: PromptOverlay
 
 
 class WriteTool(Tool[WriteArgs]):
     """Полностью перезаписать файл содержимым."""
 
-    _ID = ToolId("write")
-    _SOURCE = ToolSourceId("builtin.files")
+    _ID: ClassVar[ToolId] = ToolId("write")
+    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.files")
 
-    DEFAULT_DESCRIPTION: ClassVar[str] = (
-        "Перезаписать файл указанным содержимым. Если файла или "
-        "промежуточных директорий нет — создать."
-    )
-    DEFAULT_PATH_DESC: ClassVar[str] = "Путь к файлу."
-    DEFAULT_CONTENT_DESC: ClassVar[str] = "Новое содержимое файла."
-    DEFAULT_ENCODING_DESC: ClassVar[str] = "Кодировка файла. По умолчанию 'utf-8'."
-
-    def __init__(self, cfg: WriteToolConfig) -> None:
+    def __init__(self, cfg: WriteToolConfig, ctx: ExtensionContext) -> None:
         self._cfg = cfg
+        self._ctx = ctx
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -71,38 +52,32 @@ class WriteTool(Tool[WriteArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[WriteArgs]:
-        p = self._cfg.params
-        return ObjectSchema(
-            description=self._cfg.description,
+        return self._cfg.prompt.apply(ObjectSchema(
+            description=(
+                "Перезаписать файл указанным содержимым. Если файла или "
+                "промежуточных директорий нет — создать."
+            ),
             fields=[
                 FieldSpec(
                     name="path",
-                    description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
+                    description="Путь к файлу.",
                     coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
                     name="content",
-                    description=param_desc(
-                        p, "content", self.DEFAULT_CONTENT_DESC
-                    ),
+                    description="Новое содержимое файла.",
                     coercer=ChainCoercer(IsString()),
                     required=True,
                 ),
                 FieldSpec(
                     name="encoding",
-                    description=param_desc(
-                        p, "encoding", self.DEFAULT_ENCODING_DESC
-                    ),
-                    coercer=ChainCoercer(
-                        Default("utf-8"),
-                        IsString(),
-                        NonEmpty(),
-                    ),
+                    description="Кодировка файла. По умолчанию 'utf-8'.",
+                    coercer=ChainCoercer(Default("utf-8"), IsString(), NonEmpty()),
                 ),
             ],
             factory=WriteArgs,
-        )
+        ))
 
     def execute(self, ctx: ToolContext, req: WriteArgs) -> ToolResult:
         existed = ctx.project_workspace.exists(req.path)
@@ -115,26 +90,6 @@ class WriteTool(Tool[WriteArgs]):
                 message=f"Ошибка записи: {e}",
             ) from e
         action = "обновлён" if existed else "создан"
-        return TextResult(text=f"Файл {action}: {req.path} ({len(req.content)} символов)",
+        return TextResult(
+            text=f"Файл {action}: {req.path} ({len(req.content)} символов)",
         )
-
-
-class WriteToolSection(ConfigSection[WriteToolConfig]):
-    """Секция [ext.files.tools.write]."""
-
-    namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "write")
-
-    schema: ClassVar[ObjectSchema[WriteToolConfig]] = ObjectSchema(
-        description="Конфиг tool 'write'.",
-        fields=[
-            FieldSpec(
-                name="description",
-                coercer=ChainCoercer(
-                    Default(WriteTool.DEFAULT_DESCRIPTION), ParseString()
-                ),
-                description="Override описания tool'а; пусто — дефолт из кода.",
-            ),
-            params_field("params"),
-        ],
-        factory=WriteToolConfig,
-    )

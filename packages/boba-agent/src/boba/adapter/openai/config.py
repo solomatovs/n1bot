@@ -1,14 +1,11 @@
-"""Конфиг-секция и LLM-source-фабрика OpenAI-адаптера."""
+"""LLM-source-фабрика OpenAI-адаптера."""
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any
 
 from boba.adapter.openai.dto import OpenAIConfig
 from boba.adapter.openai.terminal import OpenAITerminal, build_openai_client
-from boba.coercion import ChainCoercer, Default, ParseString
-from boba.config.section import ConfigSection
-from boba.declaration import FieldSpec, ObjectSchema
 from boba.llm.events import LLMEvent
 from boba.llm.models import LLMContext
 from boba.llm.observer import LLMRequestObserver
@@ -17,34 +14,6 @@ from boba.patterns import (
     StreamSourceChainBuilder,
 )
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
-
-
-class OpenAIAdapterSection(ConfigSection[OpenAIConfig]):
-    """OpenAI-совместимый LLM-адаптер: base_url + api_key."""
-
-    namespace: ClassVar[tuple[str, ...]] = ("adapter", "openai")
-
-    schema: ClassVar[ObjectSchema[OpenAIConfig]] = ObjectSchema(
-        description="OpenAI-совместимый LLM-адаптер: base_url + api_key.",
-        fields=[
-            FieldSpec(
-                name="base_url",
-                coercer=ChainCoercer(
-                    Default("http://localhost:4000"),
-                    ParseString(),
-                ),
-                description="OpenAI-совместимый base URL LLM-сервера "
-                "(LiteLLM/Ollama/...).",
-            ),
-            FieldSpec(
-                name="api_key",
-                coercer=ChainCoercer(Default("ollama"), ParseString()),
-                description="API-ключ LLM-сервера. "
-                "Для локального Ollama — любой непустой.",
-            ),
-        ],
-        factory=OpenAIConfig,
-    )
 
 
 def create_llm_source(

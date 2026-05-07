@@ -39,9 +39,16 @@ from boba.patterns import (
 )
 from boba.value import ConfigValue
 
-__all__ = ["ConfigBundle", "ConfigBundleFactory", "FlatConfigMaterializer"]
+__all__ = ["ConfigBundle", "ConfigBundleFactory", "FlatConfigMaterializer", "PathLike"]
 
 T = TypeVar("T")
+
+PathLike = str | ConfigPath
+"""Аргумент-путь в публичном API: либо текст ('app.core'), либо ConfigPath."""
+
+
+def _as_path(p: PathLike) -> ConfigPath:
+    return p if isinstance(p, ConfigPath) else ConfigPath.parse(p)
 
 
 class FlatConfigMaterializer(Generic[T]):
@@ -199,10 +206,13 @@ class FlatConfigMaterializer(Generic[T]):
 class ConfigBundle:
     """Публичный фасад над собранным FlatConfig.
 
+    Пути принимаются как строкой ('ext.chromadb'), так и `ConfigPath` —
+    нормализация прячется внутри. В composition root импортировать
+    `ConfigPath` не требуется.
+
     Способы использования:
-      - bundle.materialize(SCHEMA, ConfigPath.parse("$ext.chromadb")) → DTO.
-      - bundle.subtree(ConfigPath.parse("$ext.chromadb")) → плоский срез.
-      - bundle.lookup(ConfigPath.parse("$agent.max_iterations")) → ConfigLookup.
+      - bundle.get(MyConfig, "ext.chromadb") → DTO (DTO.SCHEMA).
+      - bundle.materialize("ext.chromadb", SCHEMA) → DTO (low-level).
       - ConfigBundle.from_sources([...]) — удобный one-shot конструктор.
     """
 
@@ -217,10 +227,27 @@ class ConfigBundle:
 
     def materialize(
         self,
+        prefix: PathLike,
         schema: ObjectSchema[T],
-        prefix: ConfigPath,
     ) -> T:
-        return FlatConfigMaterializer(schema).materialize(self.flat, prefix)
+        return FlatConfigMaterializer(schema).materialize(self.flat, _as_path(prefix))
+
+    def get(self, dto_cls: type[T], prefix: PathLike) -> T:
+        """Материализовать DTO по его `ClassVar SCHEMA`.
+
+        Соглашение: каждый config-DTO объявляет
+        ``SCHEMA: ClassVar[ObjectSchema[Self]]``. Это делает DTO
+        самодостаточным — пользователь импортирует только класс, без
+        отдельного `*_SCHEMA`-имени.
+        """
+        schema = getattr(dto_cls, "SCHEMA", None)
+        if not isinstance(schema, ObjectSchema):
+            msg = (
+                f"{dto_cls.__name__} must declare "
+                f"`SCHEMA: ClassVar[ObjectSchema[{dto_cls.__name__}]]`"
+            )
+            raise TypeError(msg)
+        return self.materialize(prefix, schema)
 
 
 @dataclass

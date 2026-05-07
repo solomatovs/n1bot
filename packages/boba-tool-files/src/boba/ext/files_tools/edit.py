@@ -2,22 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.coercion import (
-    ChainCoercer,
-    Default,
-    IsBool,
-    IsString,
-    NonEmpty,
-    ParseString,
-)
-from boba.config.section import ConfigSection
+from boba.coercion import ChainCoercer, Default, IsBool, IsString, NonEmpty
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.plugin import ExtensionContext
+from boba.plugin.prompt import PromptOverlay
 from boba.tools.domain import (
-    ParamOverlay,
     TextResult,
     Tool,
     ToolContext,
@@ -25,13 +17,10 @@ from boba.tools.domain import (
     ToolId,
     ToolResult,
     ToolSourceId,
-    param_desc,
-    params_field,
 )
-from boba.workspace import (
-    WorkspaceError,
-    WorkspaceNotFoundError,
-)
+from boba.workspace import WorkspaceError, WorkspaceNotFoundError
+
+__all__ = ["EditTool", "EditToolConfig"]
 
 
 @dataclass(frozen=True)
@@ -45,34 +34,18 @@ class EditArgs:
 
 @dataclass(frozen=True)
 class EditToolConfig:
-    """DTO секции [ext.files.tools.edit]."""
-
-    description: str
-    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+    prompt: PromptOverlay
 
 
 class EditTool(Tool[EditArgs]):
     """Find-and-replace редактирование текстового файла."""
 
-    _ID = ToolId("edit")
-    _SOURCE = ToolSourceId("builtin.files")
+    _ID: ClassVar[ToolId] = ToolId("edit")
+    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.files")
 
-    DEFAULT_DESCRIPTION: ClassVar[str] = (
-        "Заменить подстроку old_string на new_string. По умолчанию "
-        "old_string должна встречаться в файле ровно один раз — "
-        "иначе ошибка. С replace_all=true заменяются все вхождения. "
-        "Совпадение точное, посимвольное."
-    )
-    DEFAULT_PATH_DESC: ClassVar[str] = "Путь к файлу."
-    DEFAULT_OLD_STRING_DESC: ClassVar[str] = "Подстрока для замены. Совпадение точное."
-    DEFAULT_NEW_STRING_DESC: ClassVar[str] = "Заменяющий текст. Пустая строка = удаление."
-    DEFAULT_REPLACE_ALL_DESC: ClassVar[str] = (
-        "Заменить все вхождения. По умолчанию false."
-    )
-    DEFAULT_ENCODING_DESC: ClassVar[str] = "Кодировка файла. По умолчанию 'utf-8'."
-
-    def __init__(self, cfg: EditToolConfig) -> None:
+    def __init__(self, cfg: EditToolConfig, ctx: ExtensionContext) -> None:
         self._cfg = cfg
+        self._ctx = ctx
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -81,53 +54,45 @@ class EditTool(Tool[EditArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[EditArgs]:
-        p = self._cfg.params
-        return ObjectSchema(
-            description=self._cfg.description,
+        return self._cfg.prompt.apply(ObjectSchema(
+            description=(
+                "Заменить подстроку old_string на new_string. По умолчанию "
+                "old_string должна встречаться в файле ровно один раз — "
+                "иначе ошибка. С replace_all=true заменяются все вхождения. "
+                "Совпадение точное, посимвольное."
+            ),
             fields=[
                 FieldSpec(
                     name="path",
-                    description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
+                    description="Путь к файлу.",
                     coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
                     name="old_string",
-                    description=param_desc(
-                        p, "old_string", self.DEFAULT_OLD_STRING_DESC
-                    ),
+                    description="Подстрока для замены. Совпадение точное.",
                     coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
                     name="new_string",
-                    description=param_desc(
-                        p, "new_string", self.DEFAULT_NEW_STRING_DESC
-                    ),
+                    description="Заменяющий текст. Пустая строка = удаление.",
                     coercer=ChainCoercer(IsString()),
                     required=True,
                 ),
                 FieldSpec(
                     name="replace_all",
-                    description=param_desc(
-                        p, "replace_all", self.DEFAULT_REPLACE_ALL_DESC
-                    ),
+                    description="Заменить все вхождения. По умолчанию false.",
                     coercer=ChainCoercer(Default(False), IsBool()),
                 ),
                 FieldSpec(
                     name="encoding",
-                    description=param_desc(
-                        p, "encoding", self.DEFAULT_ENCODING_DESC
-                    ),
-                    coercer=ChainCoercer(
-                        Default("utf-8"),
-                        IsString(),
-                        NonEmpty(),
-                    ),
+                    description="Кодировка файла. По умолчанию 'utf-8'.",
+                    coercer=ChainCoercer(Default("utf-8"), IsString(), NonEmpty()),
                 ),
             ],
             factory=EditArgs,
-        )
+        ))
 
     def execute(self, ctx: ToolContext, req: EditArgs) -> ToolResult:
         try:
@@ -148,26 +113,6 @@ class EditTool(Tool[EditArgs]):
                 tool_id=self._ID,
                 message=f"Ошибка edit: {e}",
             ) from e
-        return TextResult(text=f"Заменено в {req.path}: {applied} вхождение(й).",
+        return TextResult(
+            text=f"Заменено в {req.path}: {applied} вхождение(й).",
         )
-
-
-class EditToolSection(ConfigSection[EditToolConfig]):
-    """Секция [ext.files.tools.edit]."""
-
-    namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "edit")
-
-    schema: ClassVar[ObjectSchema[EditToolConfig]] = ObjectSchema(
-        description="Конфиг tool 'edit'.",
-        fields=[
-            FieldSpec(
-                name="description",
-                coercer=ChainCoercer(
-                    Default(EditTool.DEFAULT_DESCRIPTION), ParseString()
-                ),
-                description="Override описания tool'а; пусто — дефолт из кода.",
-            ),
-            params_field("params"),
-        ],
-        factory=EditToolConfig,
-    )

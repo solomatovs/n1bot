@@ -2,22 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.coercion import (
-    ChainCoercer,
-    Default,
-    IsBool,
-    IsString,
-    NonEmpty,
-    ParseString,
-)
-from boba.config.section import ConfigSection
+from boba.coercion import ChainCoercer, Default, IsBool, IsString, NonEmpty
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.plugin import ExtensionContext
+from boba.plugin.prompt import PromptOverlay
 from boba.tools.domain import (
-    ParamOverlay,
     TextResult,
     Tool,
     ToolContext,
@@ -25,13 +17,10 @@ from boba.tools.domain import (
     ToolId,
     ToolResult,
     ToolSourceId,
-    param_desc,
-    params_field,
 )
-from boba.workspace import (
-    WorkspaceError,
-    WorkspaceNotFoundError,
-)
+from boba.workspace import WorkspaceError, WorkspaceNotFoundError
+
+__all__ = ["CpTool", "CpToolConfig"]
 
 
 @dataclass(frozen=True)
@@ -43,30 +32,18 @@ class CpArgs:
 
 @dataclass(frozen=True)
 class CpToolConfig:
-    """DTO секции [ext.files.tools.cp]."""
-
-    description: str
-    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+    prompt: PromptOverlay
 
 
 class CpTool(Tool[CpArgs]):
     """Скопировать файл или директорию."""
 
-    _ID = ToolId("cp")
-    _SOURCE = ToolSourceId("builtin.files")
+    _ID: ClassVar[ToolId] = ToolId("cp")
+    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.files")
 
-    DEFAULT_DESCRIPTION: ClassVar[str] = (
-        "Скопировать файл или директорию. Для директорий "
-        "требуется recursive=true."
-    )
-    DEFAULT_SRC_DESC: ClassVar[str] = "Путь источника."
-    DEFAULT_DST_DESC: ClassVar[str] = "Путь назначения."
-    DEFAULT_RECURSIVE_DESC: ClassVar[str] = (
-        "Рекурсивное копирование директории. По умолчанию false."
-    )
-
-    def __init__(self, cfg: CpToolConfig) -> None:
+    def __init__(self, cfg: CpToolConfig, ctx: ExtensionContext) -> None:
         self._cfg = cfg
+        self._ctx = ctx
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -75,32 +52,34 @@ class CpTool(Tool[CpArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[CpArgs]:
-        p = self._cfg.params
-        return ObjectSchema(
-            description=self._cfg.description,
+        return self._cfg.prompt.apply(ObjectSchema(
+            description=(
+                "Скопировать файл или директорию. Для директорий "
+                "требуется recursive=true."
+            ),
             fields=[
                 FieldSpec(
                     name="src",
-                    description=param_desc(p, "src", self.DEFAULT_SRC_DESC),
+                    description="Путь источника.",
                     coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
                     name="dst",
-                    description=param_desc(p, "dst", self.DEFAULT_DST_DESC),
+                    description="Путь назначения.",
                     coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
                     name="recursive",
-                    description=param_desc(
-                        p, "recursive", self.DEFAULT_RECURSIVE_DESC
+                    description=(
+                        "Рекурсивное копирование директории. По умолчанию false."
                     ),
                     coercer=ChainCoercer(Default(False), IsBool()),
                 ),
             ],
             factory=CpArgs,
-        )
+        ))
 
     def execute(self, ctx: ToolContext, req: CpArgs) -> ToolResult:
         try:
@@ -116,24 +95,3 @@ class CpTool(Tool[CpArgs]):
                 message=f"Ошибка копирования: {e}",
             ) from e
         return TextResult(text=f"Скопировано: {req.src} → {req.dst}")
-
-
-class CpToolSection(ConfigSection[CpToolConfig]):
-    """Секция [ext.files.tools.cp]."""
-
-    namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "cp")
-
-    schema: ClassVar[ObjectSchema[CpToolConfig]] = ObjectSchema(
-        description="Конфиг tool 'cp'.",
-        fields=[
-            FieldSpec(
-                name="description",
-                coercer=ChainCoercer(
-                    Default(CpTool.DEFAULT_DESCRIPTION), ParseString()
-                ),
-                description="Override описания tool'а; пусто — дефолт из кода.",
-            ),
-            params_field("params"),
-        ],
-        factory=CpToolConfig,
-    )

@@ -2,52 +2,42 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import ClassVar
 
 from boba.coercion import (
     ChainCoercer,
-    Default,
     IsInt,
     IsString,
     MaxValue,
     MinValue,
     NonEmpty,
-    ParseString,
 )
-from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.confluence_tools._http_client import ConfluenceHttpClient
 from boba.ext.confluence_tools._page_pipeline import (
     ConfluencePagePipeline,
     ConfluencePagePipelineError,
 )
-from boba.ext.confluence_tools.page import ConfluencePageConfig
 from boba.ext.confluence_tools.parse import (
     anchor_for,
     collect_headings,
     parse_html,
     text_between,
 )
+from boba.plugin import ExtensionContext
+from boba.plugin.prompt import PromptOverlay
 from boba.tools.domain import (
     JsonResult,
-    ParamOverlay,
     Tool,
     ToolContext,
     ToolExecutionError,
     ToolId,
     ToolResult,
     ToolSourceId,
-    param_desc,
-    params_field,
 )
 
-__all__ = [
-    "ConfluencePageSectionTool",
-    "ConfluencePageSectionToolConfig",
-    "ConfluencePageSectionToolSection",
-]
+__all__ = ["ConfluencePageSectionTool", "ConfluencePageSectionToolConfig"]
 
 
 @dataclass(frozen=True)
@@ -59,38 +49,28 @@ class PageSectionArgs:
 
 @dataclass(frozen=True)
 class ConfluencePageSectionToolConfig:
-    description: str
-    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+    """DTO tool'а: connection + body_format + prompt overlay."""
+
+    base_url: str
+    auth_method: str
+    auth_user: str
+    auth_token: str
+    timeout_sec: float
+    body_format: str
+    prompt: PromptOverlay
 
 
 class ConfluencePageSectionTool(Tool[PageSectionArgs]):
     """Online-чтение одной секции страницы Confluence по anchor."""
 
-    _ID = ToolId("confluence_page_section")
-    _SOURCE = ToolSourceId("builtin.confluence")
-
-    DEFAULT_DESCRIPTION: ClassVar[str] = (
-        "Читает текст одной секции страницы Confluence (от заголовка до "
-        "следующего того же или большего уровня). page_id и anchor берутся "
-        "из ответа confluence_page_outline."
-    )
-    DEFAULT_PAGE_ID_DESC: ClassVar[str] = (
-        "ID страницы Confluence (как в confluence_page_outline)."
-    )
-    DEFAULT_ANCHOR_DESC: ClassVar[str] = (
-        "Anchor нужного раздела (поле `anchor` из confluence_page_outline)."
-    )
-    DEFAULT_MAX_CHARS_DESC: ClassVar[str] = (
-        "Максимум символов в text-поле ответа (обрезка после)."
-    )
+    _ID: ClassVar[ToolId] = ToolId("confluence_page_section")
+    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.confluence")
 
     def __init__(
-        self,
-        tool_cfg: ConfluencePageSectionToolConfig,
-        runtime_cfg: ConfluencePageConfig,
+        self, cfg: ConfluencePageSectionToolConfig, ctx: ExtensionContext,
     ) -> None:
-        self._cfg = tool_cfg
-        self._runtime = runtime_cfg
+        self._cfg = cfg
+        self._ctx = ctx
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -99,44 +79,48 @@ class ConfluencePageSectionTool(Tool[PageSectionArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[PageSectionArgs]:
-        p = self._cfg.params
-        return ObjectSchema(
-            description=self._cfg.description,
+        return self._cfg.prompt.apply(ObjectSchema(
+            description=(
+                "Читает текст одной секции страницы Confluence (от заголовка до "
+                "следующего того же или большего уровня). page_id и anchor "
+                "берутся из ответа confluence_page_outline."
+            ),
             fields=[
                 FieldSpec(
                     name="page_id",
-                    description=param_desc(p, "page_id", self.DEFAULT_PAGE_ID_DESC),
+                    description=(
+                        "ID страницы Confluence (как в confluence_page_outline)."
+                    ),
                     coercer=ChainCoercer(NonEmpty(), IsString()),
                     required=True,
                 ),
                 FieldSpec(
                     name="anchor",
-                    description=param_desc(p, "anchor", self.DEFAULT_ANCHOR_DESC),
+                    description=(
+                        "Anchor нужного раздела (поле `anchor` из "
+                        "confluence_page_outline)."
+                    ),
                     coercer=ChainCoercer(NonEmpty(), IsString()),
                     required=True,
                 ),
                 FieldSpec(
                     name="max_chars",
-                    description=param_desc(
-                        p,
-                        "max_chars",
-                        self.DEFAULT_MAX_CHARS_DESC,
-                    ),
+                    description="Максимум символов в text-поле ответа (обрезка после).",
                     coercer=ChainCoercer(IsInt(), MinValue(1), MaxValue(5000000)),
                     required=True,
                 ),
             ],
             factory=PageSectionArgs,
-        )
+        ))
 
     def execute(self, ctx: ToolContext, req: PageSectionArgs) -> ToolResult:
         del ctx
         try:
-            with ConfluenceHttpClient.make(self._runtime) as c:
+            with ConfluenceHttpClient.make(self._cfg) as c:
                 pipeline = ConfluencePagePipeline(
                     client=c,
-                    base_url=self._runtime.base_url,
-                    body_format=self._runtime.body_format,
+                    base_url=self._cfg.base_url,
+                    body_format=self._cfg.body_format,
                 )
                 content = pipeline.fetch(req.page_id)
         except ConfluencePagePipelineError as e:
@@ -192,32 +176,3 @@ class ConfluencePageSectionTool(Tool[PageSectionArgs]):
         between = text_between(target.tag, stop.tag if stop else None)
         head = target.text.strip()
         return f"{head}\n\n{between}".rstrip() if between else head
-
-
-class ConfluencePageSectionToolSection(
-    ConfigSection[ConfluencePageSectionToolConfig],
-):
-    """Секция [ext.confluence.tools.confluence_page_section]."""
-
-    namespace: ClassVar[tuple[str, ...]] = (
-        "ext",
-        "confluence",
-        "tools",
-        "confluence_page_section",
-    )
-
-    schema: ClassVar[ObjectSchema[ConfluencePageSectionToolConfig]] = ObjectSchema(
-        description="Конфиг tool 'confluence_page_section'.",
-        fields=[
-            FieldSpec(
-                name="description",
-                coercer=ChainCoercer(
-                    Default(ConfluencePageSectionTool.DEFAULT_DESCRIPTION),
-                    ParseString(),
-                ),
-                description="Override описания tool'а; пусто — дефолт из кода.",
-            ),
-            params_field("params"),
-        ],
-        factory=ConfluencePageSectionToolConfig,
-    )

@@ -17,16 +17,8 @@ dependencies = [
     "httpx>=0.27",
 ]
 
-[project.entry-points."boba.tools"]
-confluence = "boba.ext.confluence_tools:register_tools"
-
-[project.entry-points."boba.config_sections"]
-confluence = "boba.ext.confluence_tools.config:ConfluenceSection"
-confluence_page = "boba.ext.confluence_tools.page:ConfluencePageSection"
-confluence_page_outline = "boba.ext.confluence_tools.page_outline:ConfluencePageOutlineToolSection"
-confluence_page_section = "boba.ext.confluence_tools.page_section:ConfluencePageSectionToolSection"
-confluence_search = "boba.ext.confluence_tools.search:ConfluenceSearchToolSection"
-confluence_search_runtime = "boba.ext.confluence_tools.search:ConfluenceSearchSection"
+[project.entry-points."boba.plugins"]
+confluence = "boba.ext.confluence_tools.plugin:ConfluencePlugin"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,4 +1,4 @@
-"""Конфиг boba-cli-agent-run как ConfigSection."""
+"""DTO boba-cli-agent-run: AgentRunConfig + SCHEMA."""
 
 from __future__ import annotations
 
@@ -13,11 +13,10 @@ from boba.coercion import (
     ParseInt,
     ParseString,
 )
-from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.llm.models import SamplingParams
 
-__all__ = ["AgentRunConfig", "AgentRunSection"]
+__all__ = ["AgentRunConfig"]
 
 
 @dataclass(frozen=True)
@@ -33,6 +32,8 @@ class AgentRunConfig:
     stop: list[str] | None
     frequency_penalty: float | None
     presence_penalty: float | None
+
+    SCHEMA: ClassVar[ObjectSchema[AgentRunConfig]]
 
     def to_sampling_params(self) -> SamplingParams | None:
         """SamplingParams из опциональных полей; None если все None."""
@@ -50,60 +51,55 @@ class AgentRunConfig:
         return SamplingParams(**fields)
 
 
-class AgentRunSection(ConfigSection[AgentRunConfig]):
-    """Секция agent_run."""
-
-    namespace: ClassVar[tuple[str, ...]] = ("agent_run",)
-
-    schema: ClassVar[ObjectSchema[AgentRunConfig]] = ObjectSchema(
-        description="Параметры одного запуска CLI-агента: model + sampling.",
-        fields=[
-            FieldSpec(
-                name="query",
-                coercer=Nullable(ParseString()),
-                description="Запрос к агенту; если не задан — запускается REPL.",
-            ),
-            FieldSpec(
-                name="model",
-                coercer=ChainCoercer(ParseString()),
-                description="LLM-модель (напр. qwen3.5-35b). Обязательно.",
-                required=True,
-            ),
-            FieldSpec(
-                name="temperature",
-                coercer=Nullable(ParseFloat()),
-                description="Температура sampling'а (0.0–2.0).",
-            ),
-            FieldSpec(
-                name="top_p",
-                coercer=Nullable(ParseFloat()),
-                description="Nucleus sampling threshold (0.0–1.0).",
-            ),
-            FieldSpec(
-                name="max_tokens",
-                coercer=Nullable(ParseInt()),
-                description="Максимум токенов в ответе.",
-            ),
-            FieldSpec(
-                name="seed",
-                coercer=Nullable(ParseInt()),
-                description="Seed для детерминистичного sampling'а.",
-            ),
-            FieldSpec(
-                name="stop",
-                coercer=Nullable(ParseCsvList()),
-                description="Stop-последовательности (CSV в env, TOML-array).",
-            ),
-            FieldSpec(
-                name="frequency_penalty",
-                coercer=Nullable(ParseFloat()),
-                description="Frequency penalty (-2.0–2.0).",
-            ),
-            FieldSpec(
-                name="presence_penalty",
-                coercer=Nullable(ParseFloat()),
-                description="Presence penalty (-2.0–2.0).",
-            ),
-        ],
-        factory=AgentRunConfig,
-    )
+AgentRunConfig.SCHEMA = ObjectSchema(
+    description="Параметры одного запуска CLI-агента: model + sampling.",
+    fields=[
+        FieldSpec(
+            name="query",
+            coercer=Nullable(ParseString()),
+            description="Запрос к агенту; если не задан — запускается REPL.",
+        ),
+        FieldSpec(
+            name="model",
+            coercer=ChainCoercer(ParseString()),
+            description="LLM-модель (напр. qwen3.5-35b). Обязательно.",
+            required=True,
+        ),
+        FieldSpec(
+            name="temperature",
+            coercer=Nullable(ParseFloat()),
+            description="Температура sampling'а (0.0–2.0).",
+        ),
+        FieldSpec(
+            name="top_p",
+            coercer=Nullable(ParseFloat()),
+            description="Nucleus sampling threshold (0.0–1.0).",
+        ),
+        FieldSpec(
+            name="max_tokens",
+            coercer=Nullable(ParseInt()),
+            description="Максимум токенов в ответе.",
+        ),
+        FieldSpec(
+            name="seed",
+            coercer=Nullable(ParseInt()),
+            description="Seed для детерминистичного sampling'а.",
+        ),
+        FieldSpec(
+            name="stop",
+            coercer=Nullable(ParseCsvList()),
+            description="Stop-последовательности (CSV в env, TOML-array).",
+        ),
+        FieldSpec(
+            name="frequency_penalty",
+            coercer=Nullable(ParseFloat()),
+            description="Frequency penalty (-2.0–2.0).",
+        ),
+        FieldSpec(
+            name="presence_penalty",
+            coercer=Nullable(ParseFloat()),
+            description="Presence penalty (-2.0–2.0).",
+        ),
+    ],
+    factory=AgentRunConfig,
+)

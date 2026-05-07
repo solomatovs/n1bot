@@ -73,41 +73,41 @@ class _SearchPlugin:
 
 
 def test_mount_path_for_uses_tool_prefix():
-    assert mount_path_for(StrId("search")) == _path("$tool.search")
-    assert mount_path_for(StrId("confluence_page")) == _path("$tool.confluence_page")
+    assert mount_path_for(StrId("search")) == _path("tool.search")
+    assert mount_path_for(StrId("confluence_page")) == _path("tool.confluence_page")
 
 
 def test_is_enabled_default_false_when_absent():
     bundle = ConfigBundle.from_sources([_DictSource({})])
-    assert is_enabled(bundle, _path("$tool.search")) is False
+    assert is_enabled(bundle, _path("tool.search")) is False
 
 
 def test_is_enabled_true_when_explicit_true():
     bundle = ConfigBundle.from_sources(
-        [_DictSource({_path("$tool.search.enable"): BoolValue(True)})]
+        [_DictSource({_path("tool.search.enable"): BoolValue(True)})]
     )
-    assert is_enabled(bundle, _path("$tool.search")) is True
+    assert is_enabled(bundle, _path("tool.search")) is True
 
 
 def test_is_enabled_false_when_explicit_false():
     bundle = ConfigBundle.from_sources(
-        [_DictSource({_path("$tool.search.enable"): BoolValue(False)})]
+        [_DictSource({_path("tool.search.enable"): BoolValue(False)})]
     )
-    assert is_enabled(bundle, _path("$tool.search")) is False
+    assert is_enabled(bundle, _path("tool.search")) is False
 
 
 def test_is_enabled_parses_string_true():
     bundle = ConfigBundle.from_sources(
-        [_DictSource({_path("$tool.search.enable"): StringValue("true")})]
+        [_DictSource({_path("tool.search.enable"): StringValue("true")})]
     )
-    assert is_enabled(bundle, _path("$tool.search")) is True
+    assert is_enabled(bundle, _path("tool.search")) is True
 
 
 def test_is_enabled_garbage_string_treated_as_false():
     bundle = ConfigBundle.from_sources(
-        [_DictSource({_path("$tool.search.enable"): StringValue("not-a-bool")})]
+        [_DictSource({_path("tool.search.enable"): StringValue("not-a-bool")})]
     )
-    assert is_enabled(bundle, _path("$tool.search")) is False
+    assert is_enabled(bundle, _path("tool.search")) is False
 
 
 # --- install_plugins ---
@@ -125,9 +125,9 @@ def test_install_plugins_materializes_and_builds_when_enabled():
         [
             _DictSource(
                 {
-                    _path("$tool.search.enable"): BoolValue(True),
-                    _path("$tool.search.base_url"): StringValue("https://example.com"),
-                    _path("$tool.search.limit"): IntValue(50),
+                    _path("tool.search.enable"): BoolValue(True),
+                    _path("tool.search.base_url"): StringValue("https://example.com"),
+                    _path("tool.search.limit"): IntValue(50),
                 }
             )
         ]
@@ -146,7 +146,7 @@ def test_install_plugins_disabled_plugin_dto_is_not_materialized():
     # Никакого base_url в bundle, плагин выключен → не должна подниматься
     # FieldPathMissingError, плагин просто пропускается.
     bundle = ConfigBundle.from_sources(
-        [_DictSource({_path("$tool.search.enable"): BoolValue(False)})]
+        [_DictSource({_path("tool.search.enable"): BoolValue(False)})]
     )
     ctx = ExtensionContext()
     assert list(install_plugins(bundle, [_SearchPlugin], ctx)) == []
@@ -168,10 +168,10 @@ def test_install_plugins_iterates_multiple():
         [
             _DictSource(
                 {
-                    _path("$tool.search.enable"): BoolValue(True),
-                    _path("$tool.search.base_url"): StringValue("https://search"),
-                    _path("$tool.other.enable"): BoolValue(True),
-                    _path("$tool.other.base_url"): StringValue("https://other"),
+                    _path("tool.search.enable"): BoolValue(True),
+                    _path("tool.search.base_url"): StringValue("https://search"),
+                    _path("tool.other.enable"): BoolValue(True),
+                    _path("tool.other.base_url"): StringValue("https://other"),
                 }
             )
         ]

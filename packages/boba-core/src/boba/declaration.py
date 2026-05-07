@@ -282,7 +282,7 @@ class ObjectSchema(Generic[T]):
         )
 
         cfg = Materializer(CHROMADB_SCHEMA).materialize(
-            space, ConfigPath.parse("$ext.chromadb"),
+            space, ConfigPath.parse("ext.chromadb"),
         )                                                # → ChromadbConfig (DTO)
 
         wire = ToolWireSchemaBuilder(CHROMADB_SCHEMA).build()  # → dict (JSON-Schema)

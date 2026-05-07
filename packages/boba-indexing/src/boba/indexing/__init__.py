@@ -10,9 +10,7 @@ from __future__ import annotations
 from boba.indexing.chunker import Chunker, ChunkerId
 from boba.indexing.chunks import Chunk, ChunkSummary
 from boba.indexing.collections import CollectionInfo
-from boba.indexing.extension import IndexerExtensionContext
 from boba.indexing.pipeline import IndexPipeline
-from boba.indexing.pipeline_factory import PipelineSpec
 from boba.indexing.stats import IndexStats, IndexStatsBuilder
 from boba.indexing.store import SearchHit, Store, StoreId
 
@@ -25,8 +23,6 @@ __all__ = [
     "IndexPipeline",
     "IndexStats",
     "IndexStatsBuilder",
-    "IndexerExtensionContext",
-    "PipelineSpec",
     "SearchHit",
     "Store",
     "StoreId",

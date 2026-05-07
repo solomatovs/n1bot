@@ -32,16 +32,19 @@ class _DictSource(ConfigSource):
 
 
 def test_lookup_found_and_not_found():
+    from boba.config.refs import OriginStep  # noqa: PLC0415
+
+    p = ConfigPath.parse("a")
     flat = FlatConfig(
-        values={ConfigPath.parse("$a"): IntValue(1)},
-        origins={ConfigPath.parse("$a"): "test"},
+        values={p: IntValue(1)},
+        origins={p: (OriginStep(path=p, source="test"),)},
     )
-    assert flat.lookup(ConfigPath.parse("$a")).value() == IntValue(1)
-    assert not flat.lookup(ConfigPath.parse("$missing")).is_found()
+    assert flat.lookup(p).value() == IntValue(1)
+    assert not flat.lookup(ConfigPath.parse("missing")).is_found()
 
 
 def test_merge_priority_last_wins():
-    p_a = ConfigPath.parse("$x")
+    p_a = ConfigPath.parse("x")
     low = _DictSource("low", 100, {p_a: StringValue("from-low")})
     high = _DictSource("high", 200, {p_a: StringValue("from-high")})
     flat = ConfigBundle.from_sources([low, high]).flat
@@ -51,27 +54,27 @@ def test_merge_priority_last_wins():
 
 def test_keys_under_and_subtree():
     paths = {
-        ConfigPath.parse("$ext.html.enabled"): StringValue("true"),
-        ConfigPath.parse("$ext.html.tools.html_outline.enabled"): StringValue("true"),
-        ConfigPath.parse("$ext.chromadb.enabled"): StringValue("false"),
+        ConfigPath.parse("ext.html.enabled"): StringValue("true"),
+        ConfigPath.parse("ext.html.tools.html_outline.enabled"): StringValue("true"),
+        ConfigPath.parse("ext.chromadb.enabled"): StringValue("false"),
     }
     src = _DictSource("toml", 100, paths)
     flat = ConfigBundle.from_sources([src]).flat
-    sub = flat.subtree(ConfigPath.parse("$ext.html"))
-    assert ConfigPath.parse("$ext.html.enabled") in sub
-    assert ConfigPath.parse("$ext.html.tools.html_outline.enabled") in sub
-    assert ConfigPath.parse("$ext.chromadb.enabled") not in sub
+    sub = flat.subtree(ConfigPath.parse("ext.html"))
+    assert ConfigPath.parse("ext.html.enabled") in sub
+    assert ConfigPath.parse("ext.html.tools.html_outline.enabled") in sub
+    assert ConfigPath.parse("ext.chromadb.enabled") not in sub
 
 
 def test_child_segments_returns_unique_first_segments():
     paths = {
-        ConfigPath.parse("$ext.html.tools.html_outline.enabled"): StringValue("a"),
-        ConfigPath.parse("$ext.html.tools.html_outline.description"): StringValue("b"),
-        ConfigPath.parse("$ext.html.tools.html_section.enabled"): StringValue("c"),
+        ConfigPath.parse("ext.html.tools.html_outline.enabled"): StringValue("a"),
+        ConfigPath.parse("ext.html.tools.html_outline.description"): StringValue("b"),
+        ConfigPath.parse("ext.html.tools.html_section.enabled"): StringValue("c"),
     }
     src = _DictSource("toml", 100, paths)
     flat = ConfigBundle.from_sources([src]).flat
-    children = list(flat.child_segments(ConfigPath.parse("$ext.html.tools")))
+    children = list(flat.child_segments(ConfigPath.parse("ext.html.tools")))
     assert NameSegment("html_outline") in children
     assert NameSegment("html_section") in children
     assert len(children) == 2

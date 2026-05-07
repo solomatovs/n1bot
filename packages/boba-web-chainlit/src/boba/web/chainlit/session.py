@@ -8,31 +8,30 @@ from boba.adapter.fs_workspace import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
     FsPromptWorkspaceRegistry,
-    WorkspacesSection,
+    WorkspaceLayout,
 )
 from boba.adapter.messages import InMemoryMessageService
 from boba.adapter.openai import (
     CurlTraceChatCompletionObserver,
-    OpenAIAdapterSection,
     OpenAIChatVisitor,
+    OpenAIConfig,
     create_llm_source,
 )
-from boba.adapter.prompt_providers import PromptLoader, PromptsSection
+from boba.adapter.prompt_providers import PromptLoader, PromptsConfig
 from boba.agent.events import AgentEvent
-from boba.agent.models import AgentContext, AgentRequest
-from boba.config.app import AppConfig
+from boba.agent.models import AgentConfig, AgentContext, AgentRequest
+from boba.config.bundle import ConfigBundle
 from boba.llm.models import RequestId
 from boba.patterns import StreamSink
+from boba.plugin import ExtensionContext as PluginCtx
+from boba.plugin import install_plugins
+from boba.plugin.discovery import discover_plugins
 from boba.tools.domain import ToolContext
-from boba.tools.framework import (
-    ExtensionContext,
-    ToolPluginLoader,
-)
-from boba.web.chainlit.config import ChainlitConfig, ChainlitSection
+from boba.tools.framework import ToolsService
+from boba.web.chainlit.config import ChainlitConfig
 from boba.web.chainlit.infra import (
     AgentComponents,
-    AgentSection,
-    AppCoreSection,
+    AppCoreConfig,
     configure_logging,
     create_agent,
     log_context,
@@ -47,31 +46,30 @@ from boba.workspace import (
 class ChatSession:
     """One-shot обёртка: конфиг + workspace registry; агент пересобирается на каждый run."""  # noqa: E501
 
-    _app: AppConfig | None = None
+    _bundle: ConfigBundle | None = None
 
     @classmethod
-    def set_app(cls, app: AppConfig) -> None:
-        """Инжектит application-level AppConfig до первого ChatSession()."""
-        cls._app = app
+    def set_bundle(cls, bundle: ConfigBundle) -> None:
+        """Инжектит application-level ConfigBundle до первого ChatSession()."""
+        cls._bundle = bundle
 
     def __init__(self) -> None:
-        if ChatSession._app is None:
+        if ChatSession._bundle is None:
             msg = (
-                "ChatSession instantiated before ChatSession.set_app() — "
-                "bootstrap must call set_app() in __main__.main()."
+                "ChatSession instantiated before ChatSession.set_bundle() — "
+                "bootstrap must call set_bundle() in __main__.main()."
             )
             raise RuntimeError(msg)
-        app = ChatSession._app
+        bundle = ChatSession._bundle
 
-        core = app.section(AppCoreSection)
+        core = bundle.get(AppCoreConfig, "app")
         configure_logging(core.log_level, core.log_file)
 
-        self._app = app
-        self._workspaces_cfg = app.section(WorkspacesSection)
-        self._llm_cfg = app.section(OpenAIAdapterSection)
-        self._prompts_dir = app.section(PromptsSection)
-        self._agent_config = app.section(AgentSection)
-        self._chainlit_config: ChainlitConfig = app.section(ChainlitSection)
+        self._workspaces_cfg = bundle.get(WorkspaceLayout, "workspaces")
+        self._llm_cfg = bundle.get(OpenAIConfig, "adapter.openai")
+        self._prompts = bundle.get(PromptsConfig, "prompts")
+        self._agent_config = bundle.get(AgentConfig, "agent")
+        self._chainlit_config = bundle.get(ChainlitConfig, "chainlit")
 
         self._workspaces = FsProjectWorkspaceRegistry(
             base_dir=Path(self._workspaces_cfg.base_dir),
@@ -84,13 +82,14 @@ class ChatSession:
         )
 
         prompt_workspace = FsPromptWorkspaceRegistry(
-            root=Path(self._prompts_dir),
+            root=Path(self._prompts.dir),
         ).get_or_create(PromptWorkspaceId("prompts"))
         prompt_loader = PromptLoader(prompt_workspace)
         self._prompt_providers = prompt_loader.prompt_providers()
 
-        tool_loader = ToolPluginLoader(ExtensionContext(config=app))
-        self._tools_service = tool_loader.tools_service()
+        self._tools_service = ToolsService.from_sources(
+            install_plugins(bundle, list(discover_plugins()), PluginCtx()),
+        )
         self._tool_result_visitor = OpenAIChatVisitor()
 
     @property

@@ -28,9 +28,9 @@ def test_scalars(tmp_path: Path):
         """,
     )
     snap = TomlSource(cfg).load()
-    assert snap[ConfigPath.parse("$agent.max_iterations")] == IntValue(200)
-    assert snap[ConfigPath.parse("$agent.enabled")] == BoolValue(True)
-    assert snap[ConfigPath.parse("$agent.name")] == StringValue("boba")
+    assert snap[ConfigPath.parse("agent.max_iterations")] == IntValue(200)
+    assert snap[ConfigPath.parse("agent.enabled")] == BoolValue(True)
+    assert snap[ConfigPath.parse("agent.name")] == StringValue("boba")
 
 
 def test_nested_subsections(tmp_path: Path):
@@ -49,12 +49,12 @@ def test_nested_subsections(tmp_path: Path):
         """,
     )
     snap = TomlSource(cfg).load()
-    assert snap[ConfigPath.parse("$ext.chromadb.enabled")] == BoolValue(True)
+    assert snap[ConfigPath.parse("ext.chromadb.enabled")] == BoolValue(True)
     assert snap[
-        ConfigPath.parse("$ext.chromadb.tools.kb_search.description")
+        ConfigPath.parse("ext.chromadb.tools.kb_search.description")
     ] == StringValue("Поиск")
     assert snap[
-        ConfigPath.parse("$ext.chromadb.tools.kb_search.params.top_k.description")
+        ConfigPath.parse("ext.chromadb.tools.kb_search.params.top_k.description")
     ] == StringValue("Сколько")
 
 
@@ -67,9 +67,9 @@ def test_arrays_as_indexed_paths(tmp_path: Path):
         """,
     )
     snap = TomlSource(cfg).load()
-    assert snap[ConfigPath.parse("$chainlit.models[0]")] == StringValue("qwen3")
-    assert snap[ConfigPath.parse("$chainlit.models[1]")] == StringValue("gemini")
-    assert snap[ConfigPath.parse("$chainlit.models[2]")] == StringValue("deepseek")
+    assert snap[ConfigPath.parse("chainlit.models[0]")] == StringValue("qwen3")
+    assert snap[ConfigPath.parse("chainlit.models[1]")] == StringValue("gemini")
+    assert snap[ConfigPath.parse("chainlit.models[2]")] == StringValue("deepseek")
 
 
 def test_array_of_tables(tmp_path: Path):
@@ -84,8 +84,8 @@ def test_array_of_tables(tmp_path: Path):
         """,
     )
     snap = TomlSource(cfg).load()
-    assert snap[ConfigPath.parse("$chainlit.models[0].name")] == StringValue("qwen3")
-    assert snap[ConfigPath.parse("$chainlit.models[1].name")] == StringValue("gemini")
+    assert snap[ConfigPath.parse("chainlit.models[0].name")] == StringValue("qwen3")
+    assert snap[ConfigPath.parse("chainlit.models[1].name")] == StringValue("gemini")
 
 
 def test_empty_when_file_missing(tmp_path: Path):
@@ -104,7 +104,7 @@ def test_toml_file_source_reads_secret(tmp_path: Path):
         """,
     )
     snap = TomlFileSource(cfg).load()
-    assert snap[ConfigPath.parse("$llm.api_key")] == StringValue("super-secret-value")
+    assert snap[ConfigPath.parse("llm.api_key")] == StringValue("super-secret-value")
 
 
 def test_toml_source_priority_default():
@@ -122,8 +122,8 @@ def test_toml_file_source_higher_priority_than_main():
 @pytest.mark.parametrize(
     ("section", "expected_value"),
     [
-        ("[a.b.c]\nleaf = 1", (ConfigPath.parse("$a.b.c.leaf"), IntValue(1))),
-        ("[a]\n[a.b]\nleaf = 2", (ConfigPath.parse("$a.b.leaf"), IntValue(2))),
+        ("[a.b.c]\nleaf = 1", (ConfigPath.parse("a.b.c.leaf"), IntValue(1))),
+        ("[a]\n[a.b]\nleaf = 2", (ConfigPath.parse("a.b.leaf"), IntValue(2))),
     ],
 )
 def test_table_paths_normalize(tmp_path: Path, section: str, expected_value):
