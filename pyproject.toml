@@ -3,6 +3,7 @@ testpaths = ["packages"]
 python_files = ["test_*.py"]
 pythonpath = [
     "packages/boba-core/src",
+    "packages/boba-config-source-toml/src",
     "packages/boba-processing/src",
     "packages/boba-indexing/src",
     "packages/boba-chunking/src",
@@ -33,6 +34,7 @@ exclude = [
 ]
 extraPaths = [
     "packages/boba-core/src",
+    "packages/boba-config-source-toml/src",
     "packages/boba-processing/src",
     "packages/boba-indexing/src",
     "packages/boba-chunking/src",

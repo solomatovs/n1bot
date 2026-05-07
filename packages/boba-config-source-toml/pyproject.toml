@@ -3,11 +3,14 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "boba-core"
+name = "boba-config-source-toml"
 version = "0.1.0"
-description = "Boba core: patterns + foundation (errors, declaration, value, coercion, workspace) + config + builtin config-sources (cli/env/dict). TOML живёт в boba-config-source-toml."
+description = "Boba ConfigSource: TOML — TomlSource + TomlFileSource (Docker-secrets via *_file)."
 requires-python = ">=3.11,<4"
-dependencies = []
+dependencies = [
+    "boba-core",
+    "tomli",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
