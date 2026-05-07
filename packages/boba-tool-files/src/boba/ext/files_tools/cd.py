@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.coercion import ChainCoercer, IsString, NonEmpty
+from boba.coercion import ChainCoercer, IsString, NonEmpty, Required
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.plugin import ExtensionContext
 from boba.plugin.prompt import PromptOverlay
@@ -55,8 +55,7 @@ class CdTool(Tool[CdArgs]):
                 FieldSpec(
                     name="path",
                     description="Путь директории.",
-                    coercer=ChainCoercer(IsString(), NonEmpty()),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsString(), NonEmpty()),
                 ),
             ],
             factory=CdArgs,

@@ -21,7 +21,6 @@ from boba.declaration import (
     CollectionShape,
     FieldKind,
     FieldPathError,
-    FieldPathMissingError,
     FieldSpec,
     IndexedShape,
     ItemReader,
@@ -66,11 +65,7 @@ class FlatConfigMaterializer(Generic[T]):
                 raise FieldPathError.from_cause(exc, f.name) from exc
 
             if value is MISSING:
-                if isinstance(f, FieldSpec) and f.required:
-                    raise FieldPathMissingError(
-                        f"field {f.name!r}: required value is missing",
-                        field_name=f.name,
-                    )
+                # Required/Default — забота coercer'а; MISSING здесь = optional.
                 continue
             validated[f.name] = value
 

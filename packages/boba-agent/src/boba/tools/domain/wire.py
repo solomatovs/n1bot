@@ -1,9 +1,12 @@
 """ToolWireSchemaBuilder: ObjectSchema → JSON-Schema (dict) описание Tool для LLM.
 
-Возвращает голый `dict[str, Any]` — JSON-Schema fragment. Поле `required` берётся
-из декларации `FieldSpec.required` (а не из coercer'а). Конкретные coercer'ы,
-наследующие `SchemaContributor`, дополняют свой fragment
-(`{"type":..., "minimum":..., ...}`).
+Возвращает голый `dict[str, Any]` — JSON-Schema fragment. Поле `required[]`
+собирается из marker'а `Required._MARKER`, который пишет coercer `Required()`
+через `SchemaContributor`. Marker удаляется из per-property fragment'а перед
+эмитом наружу.
+
+Конкретные coercer'ы, наследующие `SchemaContributor`, дополняют свой fragment
+(`{"type":..., "minimum":..., "default":..., ...}`).
 
 Диспатч по подвидам декларации — `match`. Чистые декларации живут в
 `declaration.py`; добавление нового FieldKind / ItemReader / CollectionShape
@@ -15,6 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from boba.coercion.base import SchemaContributor
+from boba.coercion.preconditions import Required
 from boba.declaration import (
     CollectionField,
     CollectionShape,
@@ -42,9 +46,12 @@ class ToolWireSchemaBuilder:
         properties: dict[str, dict[str, Any]] = {}
         required: list[str] = []
         for fld in self._schema.fields:
-            properties[fld.name] = self._field_to_wire(fld)
-            if isinstance(fld, FieldSpec) and fld.required:
+            wire = self._field_to_wire(fld)
+            # `Required()` coercer ставит marker в свой fragment;
+            # поднимаем его в parent.required[] и стираем из property.
+            if wire.pop(Required._MARKER, False):  # noqa: SLF001
                 required.append(fld.name)
+            properties[fld.name] = wire
 
         out: dict[str, Any] = {"type": "object"}
         if self._schema.description:

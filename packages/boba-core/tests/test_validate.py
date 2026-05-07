@@ -23,6 +23,7 @@ from boba.coercion import (
     ParseBool,
     ParseInt,
     ParseString,
+    Required,
 )
 from boba.declaration import (
     CollectionField,
@@ -71,7 +72,7 @@ def test_scalar_overridden_from_dict():
 
 def test_required_missing_raises_path_missing():
     schema: ObjectSchema[dict] = ObjectSchema(
-        fields=[FieldSpec("x", ChainCoercer(ParseString()), required=True)],
+        fields=[FieldSpec("x", ChainCoercer(Required(), ParseString()), )],
     )
     with pytest.raises(FieldPathMissingError) as info:
         ToolArgsBuilder(schema).build({})
@@ -92,8 +93,8 @@ class _Range:
 
 _RANGE_SCHEMA: ObjectSchema[_Range] = ObjectSchema(
     fields=[
-        FieldSpec("lo", ChainCoercer(ParseInt()), required=True),
-        FieldSpec("hi", ChainCoercer(ParseInt()), required=True),
+        FieldSpec("lo", ChainCoercer(Required(), ParseInt()), ),
+        FieldSpec("hi", ChainCoercer(Required(), ParseInt()), ),
     ],
     invariants=Ordered("lo", "hi"),
     factory=_Range,
@@ -283,7 +284,7 @@ _TOOL_SCHEMA: ObjectSchema[_Tool] = ObjectSchema(
 _CHROMADB_SCHEMA: ObjectSchema[_Chromadb] = ObjectSchema(
     fields=[
         FieldSpec("enabled", ChainCoercer(Default(False), ParseBool())),
-        FieldSpec("persist_path", ChainCoercer(ParseString()), required=True),
+        FieldSpec("persist_path", ChainCoercer(Required(), ParseString()), ),
         FieldSpec("min_top_k", ChainCoercer(Default(1), ParseInt(), MinValue(1))),
         FieldSpec("max_top_k", ChainCoercer(Default(20), ParseInt(), MaxValue(100))),
         CollectionField("tools", reader=ObjectItem(_TOOL_SCHEMA), shape=KeyedShape()),
@@ -364,7 +365,7 @@ class _Service:
 
 _CONNECTION_ARGS_SCHEMA: ObjectSchema[_Connection] = ObjectSchema(
     fields=[
-        FieldSpec("base_url", ChainCoercer(ParseString()), required=True),
+        FieldSpec("base_url", ChainCoercer(Required(), ParseString()), ),
         FieldSpec("timeout_sec", ChainCoercer(Default(30), ParseInt(), MinValue(1))),
     ],
     factory=_Connection,

@@ -12,6 +12,7 @@ from boba.coercion import (
     ParseFloat,
     ParseInt,
     ParseString,
+    Required,
 )
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.llm.models import SamplingParams
@@ -61,9 +62,8 @@ AgentRunConfig.SCHEMA = ObjectSchema(
         ),
         FieldSpec(
             name="model",
-            coercer=ChainCoercer(ParseString()),
+            coercer=ChainCoercer(Required(), ParseString()),
             description="LLM-модель (напр. qwen3.5-35b). Обязательно.",
-            required=True,
         ),
         FieldSpec(
             name="temperature",

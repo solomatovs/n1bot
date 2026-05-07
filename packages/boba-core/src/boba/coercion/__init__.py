@@ -1,7 +1,7 @@
 """boba.coercion: пайплайн обработки значения для FieldSpec.coercer.
 
 - base.py            — Coercer ABC, MISSING, Pass, ChainCoercer, ValueCoercer.
-- preconditions.py   — NotNull, Default, Nullable (наличие значения).
+- preconditions.py   — NotNull, Required, Default, Nullable (наличие значения).
 - types.py           — Parse* (приведение типа) и Is* (строгий type-guard).
 - constraints.py     — OneOf / Min*/Max* / NonEmpty (ограничения).
 - invariants.py      — Ordered / MutuallyExclusive / RequiresTogether
@@ -34,6 +34,7 @@ from boba.coercion.preconditions import (
     Default,
     NotNull,
     Nullable,
+    Required,
 )
 from boba.coercion.types import (
     IsBool,
@@ -72,6 +73,7 @@ __all__ = [
     "ParseInt",
     "ParseString",
     "Pass",
+    "Required",
     "RequiredWhen",
     "RequiresTogether",
     "SchemaContributor",

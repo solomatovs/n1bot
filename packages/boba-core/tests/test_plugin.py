@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.coercion import ChainCoercer, Default, ParseBool, ParseInt, ParseString
+from boba.coercion import ChainCoercer, Default, ParseBool, ParseInt, ParseString, Required
 from boba.config.bundle import ConfigBundle
 from boba.config.path import ConfigPath
 from boba.config.source import DictSource
@@ -30,7 +30,7 @@ class _SearchCfg:
 
 _SEARCH_SCHEMA: ObjectSchema[_SearchCfg] = ObjectSchema(
     fields=[
-        FieldSpec("base_url", ChainCoercer(ParseString()), required=True),
+        FieldSpec("base_url", ChainCoercer(Required(), ParseString()), ),
         FieldSpec("limit", ChainCoercer(Default(10), ParseInt())),
     ],
     factory=_SearchCfg,

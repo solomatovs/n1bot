@@ -14,6 +14,7 @@ from boba.coercion import (
     MinValue,
     NonEmpty,
     Nullable,
+    Required,
 )
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.html_tools._parse import Heading, anchor_for, collect_headings, load_soup
@@ -76,8 +77,7 @@ class HtmlOutlineTool(Tool[OutlineArgs]):
                 FieldSpec(
                     name="path",
                     description="Путь к HTML-файлу в workspace.",
-                    coercer=ChainCoercer(IsString(), NonEmpty()),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsString(), NonEmpty()),
                 ),
                 FieldSpec(
                     name="max_depth",

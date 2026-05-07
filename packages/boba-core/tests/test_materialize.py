@@ -15,6 +15,7 @@ from boba.coercion import (
     ParseBool,
     ParseInt,
     ParseString,
+    Required,
 )
 from boba.config.bundle import ConfigBundle, FlatConfigMaterializer
 from boba.config.path import ConfigPath, NameSegment
@@ -85,7 +86,7 @@ def test_scalar_overridden():
 
 def test_required_missing_raises():
     schema: ObjectSchema[dict] = ObjectSchema(
-        fields=[FieldSpec("x", ChainCoercer(ParseString()), required=True)],
+        fields=[FieldSpec("x", ChainCoercer(Required(), ParseString()), )],
     )
     flat = ConfigBundle.from_sources([DictSource({})]).flat
     with pytest.raises(FieldPathMissingError):
@@ -97,8 +98,7 @@ def test_validation_error_attaches_field():
         fields=[
             FieldSpec(
                 "max_iterations",
-                ChainCoercer(ParseInt(), MinValue(1)),
-                required=True,
+                ChainCoercer(Required(), ParseInt(), MinValue(1)),
             ),
         ],
     )
@@ -195,7 +195,7 @@ class _Model:
 
 _MODEL_SCHEMA: ObjectSchema[_Model] = ObjectSchema(
     fields=[
-        FieldSpec("name", ChainCoercer(ParseString(), NonEmpty()), required=True)
+        FieldSpec("name", ChainCoercer(Required(), ParseString(), NonEmpty()), )
     ],
     factory=_Model,
 )
@@ -295,8 +295,7 @@ _CONNECTION_SCHEMA: ObjectSchema[_Connection] = ObjectSchema(
     fields=[
         FieldSpec(
             name="base_url",
-            coercer=ChainCoercer(ParseString()),
-            required=True,
+            coercer=ChainCoercer(Required(), ParseString()),
         ),
         FieldSpec(
             name="timeout_sec",

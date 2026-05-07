@@ -12,6 +12,7 @@ from boba.coercion import (
     MinValue,
     ParseInt,
     ParseString,
+    Required,
 )
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.chromadb_tools.kb import get_knowledge_base
@@ -60,8 +61,7 @@ class ChromadbPlugin(Plugin[ChromadbPluginConfig, ToolSource]):
             fields=[
                 FieldSpec(
                     name="persist_path",
-                    coercer=ParseString(),
-                    required=True,
+                    coercer=ChainCoercer(Required(), ParseString()),
                     description="Путь к persistent ChromaDB.",
                 ),
                 FieldSpec(

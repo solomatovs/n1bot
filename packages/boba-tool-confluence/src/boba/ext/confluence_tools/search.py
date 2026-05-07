@@ -12,6 +12,7 @@ from boba.coercion import (
     MaxValue,
     MinValue,
     NonEmpty,
+    Required,
 )
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.confluence_tools._http_client import ConfluenceHttpClient
@@ -82,14 +83,12 @@ class ConfluenceSearchTool(Tool[SearchArgs]):
                 FieldSpec(
                     name="query",
                     description="Поисковый запрос (обычный текст).",
-                    coercer=ChainCoercer(NonEmpty(), IsString()),
-                    required=True,
+                    coercer=ChainCoercer(Required(), NonEmpty(), IsString()),
                 ),
                 FieldSpec(
                     name="limit",
                     description="Максимум hits в ответе.",
-                    coercer=ChainCoercer(IsInt(), MinValue(1), MaxValue(50)),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsInt(), MinValue(1), MaxValue(50)),
                 ),
             ],
             factory=SearchArgs,

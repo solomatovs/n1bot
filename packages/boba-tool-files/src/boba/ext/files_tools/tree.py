@@ -13,6 +13,7 @@ from boba.coercion import (
     MinValue,
     NonEmpty,
     Nullable,
+    Required,
 )
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.plugin import ExtensionContext
@@ -73,8 +74,7 @@ class TreeTool(Tool[TreeArgs]):
                 FieldSpec(
                     name="limit",
                     description="Максимум путей в ответе.",
-                    coercer=ChainCoercer(IsInt(), MinValue(1)),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsInt(), MinValue(1)),
                 ),
             ],
             factory=TreeArgs,
