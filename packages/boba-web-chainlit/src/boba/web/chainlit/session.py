@@ -10,7 +10,6 @@ from boba.adapter.fs_workspace import (
     FsPromptWorkspaceRegistry,
     WorkspaceLayout,
 )
-from boba.adapter.messages import InMemoryMessageService
 from boba.adapter.openai import (
     CurlTraceChatCompletionObserver,
     OpenAIChatVisitor,
@@ -18,6 +17,7 @@ from boba.adapter.openai import (
     create_llm_source,
 )
 from boba.adapter.prompt_providers import PromptLoader, PromptsConfig
+from boba.agent import AgentBuilder, InMemoryMessageService
 from boba.agent.events import AgentEvent
 from boba.agent.models import AgentConfig, AgentContext, AgentRequest
 from boba.config.bundle import ConfigBundle
@@ -30,10 +30,8 @@ from boba.tools.domain import ToolContext
 from boba.tools.framework import ToolsService
 from boba.web.chainlit.config import ChainlitConfig
 from boba.web.chainlit.infra import (
-    AgentComponents,
     AppCoreConfig,
     configure_logging,
-    create_agent,
     log_context,
 )
 from boba.workspace import (
@@ -127,17 +125,15 @@ class ChatSession:
         history_workspace = self._history_workspaces.get_or_create(workspace_id)
         observer = CurlTraceChatCompletionObserver(history_workspace)
         llm_source = create_llm_source(self._llm_cfg, observer)
-        agent = create_agent(
-            llm_source=llm_source,
-            components=AgentComponents(
-                agent_config=self._agent_config,
-                prompt_providers=self._prompt_providers,
-                message_service=InMemoryMessageService(),
-                tools_service=self._tools_service,
-                tool_result_visitor=self._tool_result_visitor,
-            ),
-            tool_ctx=tool_ctx,
-            sink=extra_sink,
+        agent = (
+            AgentBuilder()
+            .with_llm(llm_source)
+            .with_tools(self._tools_service)
+            .with_tool_result_visitor(self._tool_result_visitor)
+            .with_messages(InMemoryMessageService())
+            .with_prompts(self._prompt_providers)
+            .with_config(self._agent_config)
+            .build(sink=extra_sink, tool_ctx=tool_ctx)
         )
 
         request = AgentRequest(

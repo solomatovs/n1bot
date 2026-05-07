@@ -47,9 +47,8 @@ class ToolWireSchemaBuilder:
         required: list[str] = []
         for fld in self._schema.fields:
             wire = self._field_to_wire(fld)
-            # `Required()` coercer ставит marker в свой fragment;
-            # поднимаем его в parent.required[] и стираем из property.
-            if wire.pop(Required._MARKER, False):  # noqa: SLF001
+
+            if wire.pop(Required._MARKER, False):
                 required.append(fld.name)
             properties[fld.name] = wire
 

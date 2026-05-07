@@ -9,7 +9,7 @@ description = "Boba Confluence: онлайн-tools (search, page outline/section
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-core",
-    "boba-agent",
+    "boba-tools",
     "boba-indexing",
     "boba-tool-chromadb",
     "beautifulsoup4>=4.12",

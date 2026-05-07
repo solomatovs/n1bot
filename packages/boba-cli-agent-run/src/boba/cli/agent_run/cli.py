@@ -16,7 +16,6 @@ from boba.adapter.fs_workspace import (
     FsPromptWorkspaceRegistry,
     WorkspaceLayout,
 )
-from boba.adapter.messages import InMemoryMessageService
 from boba.adapter.openai import (
     CurlTraceChatCompletionObserver,
     OpenAIChatVisitor,
@@ -24,15 +23,13 @@ from boba.adapter.openai import (
     create_llm_source,
 )
 from boba.adapter.prompt_providers import PromptLoader, PromptsConfig
-from boba.agent import Agent, AgentConfig
+from boba.agent import Agent, AgentBuilder, AgentConfig, InMemoryMessageService
 from boba.agent.models import AgentRequest
 from boba.cli.agent_run.config import AgentRunConfig
 from boba.cli.agent_run.console_sink import ConsoleSink
 from boba.cli.agent_run.infra import (
-    AgentComponents,
     AppCoreConfig,
     configure_logging,
-    create_agent,
 )
 from boba.config.bundle import ConfigBundle
 from boba.config.source.cli import CliSource
@@ -117,17 +114,18 @@ def _run(bundle: ConfigBundle) -> int:
         llm_source = create_llm_source(llm_cfg, observer)
 
         message_service = InMemoryMessageService()
-        agent = create_agent(
-            llm_source=llm_source,
-            components=AgentComponents(
-                agent_config=agent_config,
-                prompt_providers=prompt_loader.prompt_providers(),
-                message_service=message_service,
-                tools_service=tools_service,
-                tool_result_visitor=OpenAIChatVisitor(),
-            ),
-            tool_ctx=ToolContext(project_workspace=project_workspace),
-            sink=ConsoleSink(sys.stdout, sys.stderr),
+        agent = (
+            AgentBuilder()
+            .with_llm(llm_source)
+            .with_tools(tools_service)
+            .with_tool_result_visitor(OpenAIChatVisitor())
+            .with_messages(message_service)
+            .with_prompts(prompt_loader.prompt_providers())
+            .with_config(agent_config)
+            .build(
+                sink=ConsoleSink(sys.stdout, sys.stderr),
+                tool_ctx=ToolContext(project_workspace=project_workspace),
+            )
         )
 
         if run_cfg.query is not None:

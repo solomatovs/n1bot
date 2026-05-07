@@ -9,7 +9,7 @@ description = "Boba ChromaDB: read-only kb-tools (kb_search, kb_list_collections
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-core",
-    "boba-agent",
+    "boba-tools",
     "boba-indexing",
     "chromadb>=0.5",
 ]

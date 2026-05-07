@@ -1,5 +1,6 @@
 """Публичный API агент-слоя."""
 
+from boba.agent.builder import AgentBuilder
 from boba.agent.dialogue_writer import DialogueWriter
 from boba.agent.errors import (
     AgentLLMFeedbackError,
@@ -44,6 +45,7 @@ from boba.agent.events import (
     ToolResultReady,
     UserQueryReceived,
 )
+from boba.agent.in_memory import InMemoryMessageService
 from boba.agent.messages import (
     MessageReader,
     MessageService,
@@ -96,6 +98,7 @@ from boba.agent.turn.spec import TurnResolveContext, TurnSpec, TurnState
 __all__ = [
     "Advisory",
     "Agent",
+    "AgentBuilder",
     "AgentConfig",
     "AgentContext",
     "AgentErrorRouter",
@@ -120,6 +123,7 @@ __all__ = [
     "GenerationStarted",
     "HistoryReducer",
     "HistoryWithTaskAnchorReducer",
+    "InMemoryMessageService",
     "IterationCounterMiddleware",
     "IterationStarted",
     "LLMCritique",
