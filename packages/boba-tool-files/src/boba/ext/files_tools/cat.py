@@ -24,9 +24,10 @@ from boba.tools.domain import (
     ToolContext,
     ToolExecutionError,
     ToolId,
+    ToolName,
+    ToolSourceId,
     ToolOutputTooLargeError,
     ToolResult,
-    ToolSourceId,
 )
 from boba.workspace import WorkspaceError, WorkspaceNotFoundError
 
@@ -52,18 +53,16 @@ class CatToolConfig:
 class CatTool(Tool[CatArgs]):
     """Чтение содержимого файла (целиком или диапазон строк 1-based)."""
 
-    _ID: ClassVar[ToolId] = ToolId("cat")
-    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.files")
+    _NAME: ClassVar[ToolName] = ToolName("cat")
 
-    def __init__(self, cfg: CatToolConfig, ctx: ExtensionContext) -> None:
+    def __init__(self, cfg: CatToolConfig, ctx: ExtensionContext, source_id: ToolSourceId) -> None:
         self._cfg = cfg
         self._ctx = ctx
+        self._tool_id = ToolId.compose(source_id, self._NAME)
 
     def tool_id(self) -> ToolId:
-        return self._ID
+        return self._tool_id
 
-    def tool_source_id(self) -> ToolSourceId:
-        return self._SOURCE
 
     def definition(self) -> ObjectSchema[CatArgs]:
         return self._cfg.prompt.apply(ObjectSchema(
@@ -103,7 +102,7 @@ class CatTool(Tool[CatArgs]):
         max_lines = self._cfg.max_lines
         if req.end_line - req.start_line + 1 > max_lines:
             raise ToolOutputTooLargeError(
-                tool_id=self._ID,
+                tool_id=self._tool_id,
                 limit=max_lines,
                 unit="строк",
                 hint=(
@@ -120,11 +119,11 @@ class CatTool(Tool[CatArgs]):
                 text, last = self._read_range(f, req.start_line, req.end_line)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Файл не найден: {req.path}",
+                tool_id=self._tool_id, message=f"Файл не найден: {req.path}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Ошибка чтения: {e}",
+                tool_id=self._tool_id, message=f"Ошибка чтения: {e}",
             ) from e
 
         label = f"{req.path}:{req.start_line}-{last}"

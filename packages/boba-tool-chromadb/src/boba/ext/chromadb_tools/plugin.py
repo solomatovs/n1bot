@@ -112,9 +112,9 @@ class ChromadbPlugin(Plugin[ChromadbPluginConfig, ToolSource]):
             cfg.snippet_chars,
             embedding_function=cls._embedding_function(cfg),
         )
+        sid = cls.SOURCE_ID
         yield StaticToolSource(
-            source_id=cls.SOURCE_ID,
-            priority=0,
+            source_id=sid,
             tools=[
                 KbSearchTool(
                     kb,
@@ -122,11 +122,13 @@ class ChromadbPlugin(Plugin[ChromadbPluginConfig, ToolSource]):
                         max_top_k=cfg.max_top_k, prompt=cfg.kb_search,
                     ),
                     ctx,
+                    sid,
                 ),
                 KbListCollectionsTool(
                     kb,
                     KbListCollectionsToolConfig(prompt=cfg.kb_list_collections),
                     ctx,
+                    sid,
                 ),
             ],
         )

@@ -14,8 +14,9 @@ from boba.tools.domain import (
     Tool,
     ToolContext,
     ToolId,
-    ToolResult,
+    ToolName,
     ToolSourceId,
+    ToolResult,
 )
 
 __all__ = ["KbListCollectionsTool", "KbListCollectionsToolConfig"]
@@ -36,24 +37,23 @@ class KbListCollectionsToolConfig:
 class KbListCollectionsTool(Tool[KbListCollectionsArgs]):
     """Возвращает JSON [{name, description}] доступных коллекций."""
 
-    _ID: ClassVar[ToolId] = ToolId("kb_list_collections")
-    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.chromadb")
+    _NAME: ClassVar[ToolName] = ToolName("kb_list_collections")
 
     def __init__(
         self,
         kb: ChromaKnowledgeBase,
         cfg: KbListCollectionsToolConfig,
         ctx: ExtensionContext,
+        source_id: ToolSourceId,
     ) -> None:
         self._kb = kb
         self._cfg = cfg
         self._ctx = ctx
+        self._tool_id = ToolId.compose(source_id, self._NAME)
 
     def tool_id(self) -> ToolId:
-        return self._ID
+        return self._tool_id
 
-    def tool_source_id(self) -> ToolSourceId:
-        return self._SOURCE
 
     def definition(self) -> ObjectSchema[KbListCollectionsArgs]:
         return self._cfg.prompt.apply(ObjectSchema(

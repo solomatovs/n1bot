@@ -97,9 +97,9 @@ class ConfluencePlugin(Plugin[ConfluencePluginConfig, ToolSource]):
         cfg: ConfluencePluginConfig,
         ctx: ExtensionContext,
     ) -> Iterable[ToolSource]:
+        sid = cls.SOURCE_ID
         yield StaticToolSource(
-            source_id=cls.SOURCE_ID,
-            priority=0,
+            source_id=sid,
             tools=[
                 ConfluenceSearchTool(
                     ConfluenceSearchToolConfig(
@@ -111,6 +111,7 @@ class ConfluencePlugin(Plugin[ConfluencePluginConfig, ToolSource]):
                         prompt=cfg.confluence_search,
                     ),
                     ctx,
+                    sid,
                 ),
                 ConfluencePageOutlineTool(
                     ConfluencePageOutlineToolConfig(
@@ -123,6 +124,7 @@ class ConfluencePlugin(Plugin[ConfluencePluginConfig, ToolSource]):
                         prompt=cfg.confluence_page_outline,
                     ),
                     ctx,
+                    sid,
                 ),
                 ConfluencePageSectionTool(
                     ConfluencePageSectionToolConfig(
@@ -135,6 +137,7 @@ class ConfluencePlugin(Plugin[ConfluencePluginConfig, ToolSource]):
                         prompt=cfg.confluence_page_section,
                     ),
                     ctx,
+                    sid,
                 ),
             ],
         )

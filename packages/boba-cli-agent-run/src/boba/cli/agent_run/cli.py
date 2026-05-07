@@ -92,48 +92,49 @@ def _run(bundle: ConfigBundle) -> int:
     ).get_or_create(PromptWorkspaceId("prompts"))
     prompt_loader = PromptLoader(prompt_workspace)
 
-    tools_service = ToolsService.from_sources(
+    with ToolsService.from_sources(
         install_plugins(bundle, discover_plugins(), PluginCtx()),
-    )
+    ) as tools_service:
+        project_workspace = FsProjectWorkspaceRegistry(
+            base_dir=Path(workspaces.base_dir),
+            subdir=workspaces.user_subdir,
+        ).get_or_create(workspace_id)
 
-    project_workspace = FsProjectWorkspaceRegistry(
-        base_dir=Path(workspaces.base_dir),
-        subdir=workspaces.user_subdir,
-    ).get_or_create(workspace_id)
+        history_workspace = FsHistoryWorkspaceRegistry(
+            base_dir=Path(workspaces.base_dir),
+            subdir=workspaces.system_subdir,
+        ).get_or_create(workspace_id)
 
-    history_workspace = FsHistoryWorkspaceRegistry(
-        base_dir=Path(workspaces.base_dir),
-        subdir=workspaces.system_subdir,
-    ).get_or_create(workspace_id)
+        observer = CompositeLLMRequestObserver(
+            [
+                # WireTraceChatCompletionObserver(history_workspace),
+                CurlTraceChatCompletionObserver(
+                    history_workspace, response_chunks=False,
+                ),
+                # TranscriptChatCompletionObserver(history_workspace),
+            ]
+        )
+        llm_source = create_llm_source(llm_cfg, observer)
 
-    observer = CompositeLLMRequestObserver(
-        [
-            # WireTraceChatCompletionObserver(history_workspace),
-            CurlTraceChatCompletionObserver(history_workspace, response_chunks=False),
-            # TranscriptChatCompletionObserver(history_workspace),
-        ]
-    )
-    llm_source = create_llm_source(llm_cfg, observer)
+        message_service = InMemoryMessageService()
+        agent = create_agent(
+            llm_source=llm_source,
+            components=AgentComponents(
+                agent_config=agent_config,
+                prompt_providers=prompt_loader.prompt_providers(),
+                message_service=message_service,
+                tools_service=tools_service,
+                tool_result_visitor=OpenAIChatVisitor(),
+            ),
+            tool_ctx=ToolContext(project_workspace=project_workspace),
+            sink=ConsoleSink(sys.stdout, sys.stderr),
+        )
 
-    message_service = InMemoryMessageService()
-    agent = create_agent(
-        llm_source=llm_source,
-        components=AgentComponents(
-            agent_config=agent_config,
-            prompt_providers=prompt_loader.prompt_providers(),
-            message_service=message_service,
-            tools_service=tools_service,
-            tool_result_visitor=OpenAIChatVisitor(),
-        ),
-        tool_ctx=ToolContext(project_workspace=project_workspace),
-        sink=ConsoleSink(sys.stdout, sys.stderr),
-    )
+        if run_cfg.query is not None:
+            _run_turn(agent, agent_config, run_cfg, run_cfg.query)
+            return 0
 
-    if run_cfg.query is not None:
-        _run_turn(agent, agent_config, run_cfg, run_cfg.query)
-        return 0
-
-    return _run_repl(agent, agent_config, run_cfg, message_service)
+        return _run_repl(agent, agent_config, run_cfg, message_service)
 
 
 def _run_turn(

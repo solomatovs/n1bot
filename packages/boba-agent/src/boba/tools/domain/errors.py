@@ -1,8 +1,12 @@
-"""Иерархия ошибок выполнения tool'ов."""
+"""Иерархия ошибок выполнения tool'ов.
+
+Все ошибки выполнения держат `tool_id: ToolId` — qualified wire-id
+(`<source>/<name>`). Tool сам владеет своим `ToolId` через ctor.
+"""
 
 from __future__ import annotations
 
-from boba.tools.domain.ids import ToolId, ToolSourceId
+from boba.tools.domain.ids import ToolId, ToolName, ToolSourceId
 
 __all__ = [
     "InvalidSchemaInvariantError",
@@ -10,11 +14,12 @@ __all__ = [
     "ToolExecutionError",
     "ToolIdCollisionError",
     "ToolOutputTooLargeError",
+    "ToolSourceCollisionError",
 ]
 
 
 class ToolExecutionError(Exception):
-    """Ошибка выполнения инструмента."""
+    """Ошибка выполнения инструмента (включая dispatch-фейлы вроде not-found)."""
 
     def __init__(self, tool_id: ToolId, message: str) -> None:
         super().__init__(message)
@@ -60,19 +65,22 @@ class InvalidSchemaInvariantError(ToolExecutionError):
 
 
 class ToolIdCollisionError(Exception):
-    """Два источника пытаются зарегистрировать tool с одним ToolId."""
+    """Внутри одного source — два tool'а с одинаковым `ToolName`."""
 
-    def __init__(
-        self,
-        tool_id: ToolId,
-        existing_source: ToolSourceId,
-        new_source: ToolSourceId,
-    ) -> None:
+    def __init__(self, source_id: ToolSourceId, name: ToolName) -> None:
         super().__init__(
-            f"tool id {tool_id.to_wire()!r} already registered "
-            f"by source {existing_source.to_wire()!r}; "
-            f"rejected new source {new_source.to_wire()!r}"
+            f"source {source_id.to_wire()!r} declares tool "
+            f"{name.to_wire()!r} more than once"
         )
-        self.tool_id = tool_id
-        self.existing_source = existing_source
-        self.new_source = new_source
+        self.source_id = source_id
+        self.name = name
+
+
+class ToolSourceCollisionError(Exception):
+    """Два source'а с одинаковым `ToolSourceId` в одном `ToolsService`."""
+
+    def __init__(self, source_id: ToolSourceId) -> None:
+        super().__init__(
+            f"duplicate tool source {source_id.to_wire()!r}",
+        )
+        self.source_id = source_id

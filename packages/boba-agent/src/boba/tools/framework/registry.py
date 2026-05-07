@@ -1,158 +1,171 @@
-"""Реестр и диспетчер вызовов tool'ов."""
+"""ToolSource + ToolsService.
+
+Минимальная схема:
+- `ToolSource` — владеет своими `Tool`'ами (и любыми shared-ресурсами:
+  MCP-сессией, БД-коннектом, child process'ом). На shutdown'е `close()`
+  каскадит вниз. Уникальность tool-имён — забота source'а; глобальной
+  коллизии между source'ами нет, потому что dispatch — двуступенчатый
+  (`source_id` → `name`).
+- `ToolsService` — runtime-контейнер: владеет source'ами, парсит wire-id
+  `<source>/<name>` при dispatch'е, отдаёт definitions для LLM, на
+  `close()` закрывает все source'ы.
+"""
 
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Iterable
-from typing import Any
+from collections.abc import Iterable, Iterator, Mapping
+from typing import Any, Self
 
 from boba.declaration import ObjectSchema
-from boba.patterns import Executor, FoldFactory, PrioritySource
-from boba.tools.domain.errors import ToolExecutionError, ToolIdCollisionError
-from boba.tools.domain.ids import ToolId, ToolSourceId
+from boba.patterns import Executor
+from boba.tools.domain.errors import (
+    ToolExecutionError,
+    ToolIdCollisionError,
+    ToolSourceCollisionError,
+)
+from boba.tools.domain.ids import ToolId, ToolName, ToolSourceId
 from boba.tools.domain.tool import Tool, ToolCall, ToolContext, ToolResult
 
 __all__ = [
     "StaticToolSource",
-    "ToolCatalog",
-    "ToolFactory",
     "ToolSource",
-    "ToolStore",
     "ToolsService",
 ]
 
 
-class ToolStore:
-    def __init__(self) -> None:
-        self._items: dict[ToolId, Tool[Any]] = {}
+class ToolSource:
+    """Источник Tool'ов: владелец инструментов и связанных ресурсов.
 
-    def get(self, tool_id: ToolId) -> Tool[Any] | None:
-        return self._items.get(tool_id)
+    Один source = одно пространство имён. Tool, попадающий в source,
+    обязан иметь `tool.source_id() == self.id()`. Внутри уникальность
+    `ToolName` проверяется самим source'ом при `__init__`.
 
-    def add(self, tool: Tool[Any]) -> None:
-        self._items[tool.tool_id()] = tool
+    `close()` — точка освобождения долгоживущих ресурсов; default no-op.
+    Идемпотентен: повторный вызов не должен ронять.
+    """
 
-    def tools(self) -> Iterable[Tool[Any]]:
-        return iter(self._items.values())
+    @abstractmethod
+    def id(self) -> ToolSourceId: ...
 
-
-class ToolCatalog:
-    def __init__(self, tools: Iterable[Tool[Any]]) -> None:
-        self._items: dict[ToolId, Tool[Any]] = {tool.tool_id(): tool for tool in tools}
-
-    def get(self, tool_id: ToolId) -> Tool[Any] | None:
-        return self._items.get(tool_id)
-
-    def __contains__(self, tool_id: object) -> bool:
-        return tool_id in self._items
-
-    def tools(self) -> Iterable[Tool[Any]]:
-        return iter(self._items.values())
-
-    def definitions(self) -> Iterable[ObjectSchema[dict[str, Any]]]:
-        """Описания всех инструментов — для передачи потребителю."""
-        return (tool.definition() for tool in self._items.values())
-
-
-class ToolSource(
-    PrioritySource[ToolSourceId, ToolStore],
-):
     @abstractmethod
     def tools(self) -> Iterable[Tool[Any]]: ...
 
-    def apply(self, state: ToolStore) -> ToolStore:
-        for tool in self.tools():
-            tool_id = tool.tool_id()
-            existing = state.get(tool_id)
+    @abstractmethod
+    def find(self, name: ToolName) -> Tool[Any] | None: ...
 
-            if existing:
-                raise ToolIdCollisionError(
-                    tool_id,
-                    existing.tool_source_id(),
-                    tool.tool_source_id(),
-                )
-
-            state.add(tool)
-
-        return state
+    def close(self) -> None:
+        """Освободить долгоживущие ресурсы. Default no-op."""
 
 
 class StaticToolSource(ToolSource):
-    """Фиксированный набор Tool, зашитый в код."""
+    """Фиксированный набор Tool'ов, зашитый в код. Без shared-ресурсов."""
 
     def __init__(
         self,
         source_id: ToolSourceId,
-        priority: int,
         tools: Iterable[Tool[Any]],
     ) -> None:
         self._id = source_id
-        self._priority = priority
-        self._tools = list(tools)
+        self._index: dict[ToolName, Tool[Any]] = {}
+        for tool in tools:
+            tid_source, tid_name = tool.tool_id().parse()
+            if tid_source != source_id:
+                msg = (
+                    f"tool {tool.tool_id().to_wire()!r} attached to source "
+                    f"{source_id.to_wire()!r} but claims source "
+                    f"{tid_source.to_wire()!r}"
+                )
+                raise ValueError(msg)
+            if tid_name in self._index:
+                raise ToolIdCollisionError(source_id, tid_name)
+            self._index[tid_name] = tool
 
     def id(self) -> ToolSourceId:
         return self._id
 
-    def priority(self) -> int:
-        return self._priority
-
     def tools(self) -> Iterable[Tool[Any]]:
-        return iter(self._tools)
+        return iter(self._index.values())
 
-
-class ToolFactory(
-    FoldFactory[
-        ToolSourceId,
-        ToolStore,
-        ToolCatalog,
-    ],
-):
-    def initial(self) -> ToolStore:
-        return ToolStore()
-
-    def finalize(self, state: ToolStore) -> ToolCatalog:
-        return ToolCatalog(state.tools())
+    def find(self, name: ToolName) -> Tool[Any] | None:
+        return self._index.get(name)
 
 
 class ToolsService(Executor[ToolContext, ToolCall, ToolResult]):
-    """Диспетчер tool-вызовов над ToolCatalog; ошибки → ToolExecutionError."""
+    """Диспетчер вызовов поверх набора `ToolSource`'ов.
 
-    def __init__(self, catalog: ToolCatalog) -> None:
-        self._catalog = catalog
+    Owns sources; парсит qualified wire-id `<source>/<name>` при dispatch'е.
+    Контекст-менеджер: на `__exit__` закрывает все source'ы.
+    """
+
+    def __init__(self, sources: Iterable[ToolSource]) -> None:
+        self._sources: dict[ToolSourceId, ToolSource] = {}
+        for src in sources:
+            sid = src.id()
+            if sid in self._sources:
+                raise ToolSourceCollisionError(sid)
+            self._sources[sid] = src
 
     @classmethod
-    def from_sources(cls, sources: Iterable[ToolSource]) -> ToolsService:
-        """Удобный one-shot: собрать ToolsService из набора ToolSource'ов."""
-        factory = ToolFactory()
-        for source in sources:
-            factory.register(source)
-        return cls(factory.build())
+    def from_sources(cls, sources: Iterable[ToolSource]) -> Self:
+        return cls(sources)
 
-    def tools(self) -> Iterable[Tool[Any]]:
-        """Все собранные инструменты — если нужны и id, и definition."""
-        return self._catalog.tools()
+    @property
+    def sources(self) -> Mapping[ToolSourceId, ToolSource]:
+        return self._sources
 
-    def definitions(self) -> Iterable[ObjectSchema[dict[str, Any]]]:
-        """Описания всех собранных инструментов — для передачи потребителю."""
-        return self._catalog.definitions()
+    def tools(self) -> Iterator[Tool[Any]]:
+        for src in self._sources.values():
+            yield from src.tools()
+
+    def definitions(self) -> Iterator[tuple[ToolId, ObjectSchema[dict[str, Any]]]]:
+        """Описания tool'ов для LLM: пары (qualified-id, schema)."""
+        for tool in self.tools():
+            yield tool.tool_id(), tool.definition()
 
     def execute(self, ctx: ToolContext, req: ToolCall) -> ToolResult:
-        tool = self._catalog.get(req.tool_id)
+        try:
+            source_id, name = req.tool_id.parse()
+        except ValueError as e:
+            raise self._unknown_tool(req.tool_id) from e
+
+        source = self._sources.get(source_id)
+        if source is None:
+            raise self._unknown_tool(req.tool_id)
+
+        tool = source.find(name)
         if tool is None:
             raise self._unknown_tool(req.tool_id)
+
         try:
-            args = tool.args_converter().convert(req.arguments)
-            return tool.execute(ctx, args)
+            return tool.invoke(ctx, req.arguments)
         except ToolExecutionError:
             raise
         except Exception as e:
             raise ToolExecutionError(
-                tool_id=req.tool_id,
-                message=f"{type(e).__name__}: {e}",
+                tool.tool_id(),
+                f"{type(e).__name__}: {e}",
             ) from e
 
+    def close(self) -> None:
+        """Закрыть все source'ы. Идемпотентно: ошибки одного не блокируют остальные."""
+        errors: list[Exception] = []
+        for src in self._sources.values():
+            try:
+                src.close()
+            except Exception as e:
+                errors.append(e)
+        if errors:
+            raise ExceptionGroup("errors during ToolsService.close", errors)
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
     def _unknown_tool(self, tool_id: ToolId) -> ToolExecutionError:
-        available = [t.tool_id().to_wire() for t in self._catalog.tools()]
+        available = sorted(t.tool_id().to_wire() for t in self.tools())
         if not available:
             msg = f"tool {tool_id.to_wire()!r} not found; no tools are registered"
         else:
@@ -160,4 +173,4 @@ class ToolsService(Executor[ToolContext, ToolCall, ToolResult]):
                 f"tool {tool_id.to_wire()!r} not found. "
                 f"available: {', '.join(repr(a) for a in available)}"
             )
-        return ToolExecutionError(tool_id=tool_id, message=msg)
+        return ToolExecutionError(tool_id, msg)

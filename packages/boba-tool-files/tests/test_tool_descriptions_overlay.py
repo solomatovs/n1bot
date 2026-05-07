@@ -20,6 +20,7 @@ from boba.ext.files_tools.cat import CatTool, CatToolConfig
 from boba.patterns import StrId
 from boba.plugin import ExtensionContext, install_plugins
 from boba.plugin.prompt import PromptOverlay
+from boba.tools.domain import ToolSourceId
 from boba.value import StringValue
 
 
@@ -58,7 +59,7 @@ def _cat_tool(values: dict[str, str]) -> CatTool:
     bundle = ConfigBundle.from_sources([_InlineSource({**_BASE, **values})])
     sources = list(install_plugins(bundle, [FilesPlugin], ExtensionContext()))
     found = next(
-        t for src in sources for t in src.tools() if t.tool_id().to_wire() == "cat"
+        t for src in sources for t in src.tools() if t.name().to_wire() == "cat"
     )
     assert isinstance(found, CatTool)
     return found
@@ -104,7 +105,7 @@ def test_cat_tool_can_be_instantiated_directly():
             fields={"path": "test path"},
         ),
     )
-    cat = CatTool(cfg, ExtensionContext())
+    cat = CatTool(cfg, ExtensionContext(), ToolSourceId("test"))
     schema = cat.definition()
     assert schema.description == "test"
     path_field = next(f for f in schema.fields if f.name == "path")

@@ -33,8 +33,9 @@ from boba.tools.domain import (
     ToolContext,
     ToolExecutionError,
     ToolId,
-    ToolResult,
+    ToolName,
     ToolSourceId,
+    ToolResult,
 )
 
 __all__ = ["ConfluencePageSectionTool", "ConfluencePageSectionToolConfig"]
@@ -63,20 +64,21 @@ class ConfluencePageSectionToolConfig:
 class ConfluencePageSectionTool(Tool[PageSectionArgs]):
     """Online-чтение одной секции страницы Confluence по anchor."""
 
-    _ID: ClassVar[ToolId] = ToolId("confluence_page_section")
-    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.confluence")
+    _NAME: ClassVar[ToolName] = ToolName("confluence_page_section")
 
     def __init__(
-        self, cfg: ConfluencePageSectionToolConfig, ctx: ExtensionContext,
+        self,
+        cfg: ConfluencePageSectionToolConfig,
+        ctx: ExtensionContext,
+        source_id: ToolSourceId,
     ) -> None:
         self._cfg = cfg
         self._ctx = ctx
+        self._tool_id = ToolId.compose(source_id, self._NAME)
 
     def tool_id(self) -> ToolId:
-        return self._ID
+        return self._tool_id
 
-    def tool_source_id(self) -> ToolSourceId:
-        return self._SOURCE
 
     def definition(self) -> ObjectSchema[PageSectionArgs]:
         return self._cfg.prompt.apply(ObjectSchema(
@@ -125,14 +127,14 @@ class ConfluencePageSectionTool(Tool[PageSectionArgs]):
                 content = pipeline.fetch(req.page_id)
         except ConfluencePagePipelineError as e:
             raise ToolExecutionError(
-                tool_id=self._ID,
+                tool_id=self._tool_id,
                 message=f"Confluence page fetch failed: {type(e).__name__}: {e}",
             ) from e
 
         text = self._extract_section_text(content.body_html, req.anchor)
         if text is None:
             raise ToolExecutionError(
-                tool_id=self._ID,
+                tool_id=self._tool_id,
                 message=(
                     f"anchor={req.anchor!r} не найден на странице "
                     f"page_id={req.page_id!r}; вызовите confluence_page_outline "

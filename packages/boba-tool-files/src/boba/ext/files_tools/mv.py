@@ -15,8 +15,9 @@ from boba.tools.domain import (
     ToolContext,
     ToolExecutionError,
     ToolId,
-    ToolResult,
+    ToolName,
     ToolSourceId,
+    ToolResult,
 )
 from boba.workspace import WorkspaceError, WorkspaceNotFoundError
 
@@ -37,18 +38,16 @@ class MvToolConfig:
 class MvTool(Tool[MvArgs]):
     """Переместить/переименовать файл или директорию."""
 
-    _ID: ClassVar[ToolId] = ToolId("mv")
-    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.files")
+    _NAME: ClassVar[ToolName] = ToolName("mv")
 
-    def __init__(self, cfg: MvToolConfig, ctx: ExtensionContext) -> None:
+    def __init__(self, cfg: MvToolConfig, ctx: ExtensionContext, source_id: ToolSourceId) -> None:
         self._cfg = cfg
         self._ctx = ctx
+        self._tool_id = ToolId.compose(source_id, self._NAME)
 
     def tool_id(self) -> ToolId:
-        return self._ID
+        return self._tool_id
 
-    def tool_source_id(self) -> ToolSourceId:
-        return self._SOURCE
 
     def definition(self) -> ObjectSchema[MvArgs]:
         return self._cfg.prompt.apply(ObjectSchema(
@@ -80,12 +79,12 @@ class MvTool(Tool[MvArgs]):
             ctx.project_workspace.move(req.src, req.dst)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._ID,
+                tool_id=self._tool_id,
                 message=f"Источник не найден: {req.src}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID,
+                tool_id=self._tool_id,
                 message=f"Ошибка перемещения: {e}",
             ) from e
         return TextResult(text=f"Перемещено: {req.src} → {req.dst}")

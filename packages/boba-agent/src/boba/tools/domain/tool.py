@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any, Generic, TypeVar
 
 from boba.declaration import (
@@ -17,7 +18,7 @@ from boba.tools.domain.errors import (
     InvalidSchemaInvariantError,
     InvalidToolArgumentError,
 )
-from boba.tools.domain.ids import ToolId, ToolSourceId
+from boba.tools.domain.ids import ToolId, ToolName, ToolSourceId
 from boba.tools.domain.result import ToolResult
 from boba.workspace import ProjectWorkspaceShell
 
@@ -35,7 +36,7 @@ class ToolContext:
 
 @dataclass(frozen=True)
 class ToolCall:
-    """Запрос на вызов инструмента."""
+    """Запрос на вызов инструмента (qualified wire-id `<source>/<name>`)."""
 
     tool_id: ToolId
     arguments: dict[str, Any]
@@ -48,20 +49,34 @@ class Tool(
 ):
     """Базовый класс tool'а; application-singleton.
 
-    `definition()` возвращает `ObjectSchema[TArgs]` — схема **сама** строит
-    типизированный DTO через `factory=TArgs` (dataclass-класс или ctor).
-    Tool НЕ нуждается в ручном `typed_args_converter` — `args_converter()`
-    использует `ToolArgsBuilder` поверх `definition()`.
+    Identity: каждый Tool владеет своим qualified `ToolId` (`<source>/<name>`).
+    `name()` и `source_id()` — derived из `tool_id()`.
+
+    Два публичных слоя вызова:
+    - `execute(ctx, args: TArgs)` — типизированное тело; implementor пишет это.
+    - `invoke(ctx, raw: dict)` — boundary entry: парсит `raw` через `definition()`
+      и зовёт `execute`. Это то, что зовёт `ToolsService` после dispatch'а.
+
+    Adapter (`_ToolArgsAdapter`) кэшируется в `cached_property` — schema
+    строится через `definition()` один раз на инстанс.
     """
 
     @abstractmethod
     def tool_id(self) -> ToolId: ...
 
-    @abstractmethod
-    def tool_source_id(self) -> ToolSourceId: ...
+    def name(self) -> ToolName:
+        return self.tool_id().parse()[1]
 
-    def args_converter(self) -> Converter[dict[str, Any], TArgs]:
-        """Tool-specific обёртка ToolArgsBuilder с unknown-keys-check."""
+    def source_id(self) -> ToolSourceId:
+        return self.tool_id().parse()[0]
+
+    def invoke(self, ctx: ToolContext, raw: dict[str, Any]) -> ToolResult:
+        """Распарсить `raw` через `definition()` и делегировать в `execute`."""
+        args = self._args_adapter.convert(raw)
+        return self.execute(ctx, args)
+
+    @cached_property
+    def _args_adapter(self) -> _ToolArgsAdapter[TArgs]:
         return _ToolArgsAdapter(self.definition(), self.tool_id())
 
 
@@ -89,8 +104,12 @@ class _ToolArgsAdapter(Converter[dict[str, Any], TArgs], Generic[TArgs]):
         try:
             return self._builder.build(value)
         except FieldPathMissingError as e:
-            raise InvalidToolArgumentError(self._tool_id, e.field_name, str(e)) from e
+            raise InvalidToolArgumentError(
+                self._tool_id, e.field_name, str(e),
+            ) from e
         except FieldPathError as e:
             if e.field_name == "<invariants>":
                 raise InvalidSchemaInvariantError(self._tool_id, str(e)) from e
-            raise InvalidToolArgumentError(self._tool_id, e.field_name, str(e)) from e
+            raise InvalidToolArgumentError(
+                self._tool_id, e.field_name, str(e),
+            ) from e

@@ -15,8 +15,9 @@ from boba.tools.domain import (
     ToolContext,
     ToolExecutionError,
     ToolId,
-    ToolResult,
+    ToolName,
     ToolSourceId,
+    ToolResult,
 )
 from boba.workspace import WorkspaceError
 
@@ -36,18 +37,16 @@ class TouchToolConfig:
 class TouchTool(Tool[TouchArgs]):
     """Создать пустой файл или обновить mtime существующего."""
 
-    _ID: ClassVar[ToolId] = ToolId("touch")
-    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.files")
+    _NAME: ClassVar[ToolName] = ToolName("touch")
 
-    def __init__(self, cfg: TouchToolConfig, ctx: ExtensionContext) -> None:
+    def __init__(self, cfg: TouchToolConfig, ctx: ExtensionContext, source_id: ToolSourceId) -> None:
         self._cfg = cfg
         self._ctx = ctx
+        self._tool_id = ToolId.compose(source_id, self._NAME)
 
     def tool_id(self) -> ToolId:
-        return self._ID
+        return self._tool_id
 
-    def tool_source_id(self) -> ToolSourceId:
-        return self._SOURCE
 
     def definition(self) -> ObjectSchema[TouchArgs]:
         return self._cfg.prompt.apply(ObjectSchema(
@@ -72,7 +71,7 @@ class TouchTool(Tool[TouchArgs]):
             ctx.project_workspace.touch(req.path)
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID,
+                tool_id=self._tool_id,
                 message=f"Ошибка touch: {e}",
             ) from e
         return TextResult(text=f"touch: {req.path}")
