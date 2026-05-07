@@ -25,6 +25,7 @@ from boba.declaration import (
     FieldSpec,
     IndexedShape,
     KeyedShape,
+    NestedField,
     ObjectItem,
     ObjectSchema,
 )
@@ -287,6 +288,129 @@ def test_nested_field_error_propagates_with_location():
         )
     assert "tools" in info.value.field_name or "tools" in str(info.value)
     assert "html_outline" in str(info.value)
+
+
+# --- NestedField ---
+
+
+@dataclass(frozen=True)
+class _Connection:
+    base_url: str
+    timeout_sec: int
+
+
+@dataclass(frozen=True)
+class _Service:
+    name: str
+    connection: _Connection
+
+
+_CONNECTION_SCHEMA: ObjectSchema[_Connection] = ObjectSchema(
+    fields=[
+        FieldSpec(
+            name="base_url",
+            coercer=ChainCoercer(ParseString()),
+            required=True,
+        ),
+        FieldSpec(
+            name="timeout_sec",
+            coercer=ChainCoercer(Default(30), ParseInt(), MinValue(1)),
+        ),
+    ],
+    factory=_Connection,
+)
+
+
+_SERVICE_SCHEMA: ObjectSchema[_Service] = ObjectSchema(
+    fields=[
+        FieldSpec(name="name", coercer=ChainCoercer(Default("svc"), ParseString())),
+        NestedField(name="connection", schema=_CONNECTION_SCHEMA),
+    ],
+    factory=_Service,
+)
+
+
+def test_nested_field_materializes_inner_object():
+    flat = ConfigBundle.from_sources(
+        [
+            _DictSource(
+                {
+                    ConfigPath.parse("$svc.name"): StringValue("api"),
+                    ConfigPath.parse("$svc.connection.base_url"): StringValue("https://example.com"),
+                    ConfigPath.parse("$svc.connection.timeout_sec"): IntValue(60),
+                }
+            )
+        ]
+    ).flat
+    svc = FlatConfigMaterializer(_SERVICE_SCHEMA).materialize(
+        flat, ConfigPath.parse("$svc")
+    )
+    assert svc == _Service(
+        name="api",
+        connection=_Connection(base_url="https://example.com", timeout_sec=60),
+    )
+
+
+def test_nested_field_uses_defaults_for_missing_inner():
+    flat = ConfigBundle.from_sources(
+        [
+            _DictSource(
+                {
+                    ConfigPath.parse("$svc.connection.base_url"): StringValue("https://example.com"),
+                }
+            )
+        ]
+    ).flat
+    svc = FlatConfigMaterializer(_SERVICE_SCHEMA).materialize(
+        flat, ConfigPath.parse("$svc")
+    )
+    assert svc == _Service(
+        name="svc",
+        connection=_Connection(base_url="https://example.com", timeout_sec=30),
+    )
+
+
+def test_nested_field_propagates_required_error():
+    flat = ConfigBundle.from_sources(
+        [_DictSource({ConfigPath.parse("$svc.name"): StringValue("api")})]
+    ).flat
+    with pytest.raises(FieldPathMissingError):
+        FlatConfigMaterializer(_SERVICE_SCHEMA).materialize(
+            flat, ConfigPath.parse("$svc")
+        )
+
+
+def test_nested_field_two_levels_deep():
+    @dataclass(frozen=True)
+    class _Outer:
+        svc: _Service
+
+    outer_schema: ObjectSchema[_Outer] = ObjectSchema(
+        fields=[NestedField(name="svc", schema=_SERVICE_SCHEMA)],
+        factory=_Outer,
+    )
+
+    flat = ConfigBundle.from_sources(
+        [
+            _DictSource(
+                {
+                    ConfigPath.parse("$root.svc.name"): StringValue("api"),
+                    ConfigPath.parse("$root.svc.connection.base_url"): StringValue(
+                        "https://example.com"
+                    ),
+                }
+            )
+        ]
+    ).flat
+    outer = FlatConfigMaterializer(outer_schema).materialize(
+        flat, ConfigPath.parse("$root")
+    )
+    assert outer == _Outer(
+        svc=_Service(
+            name="api",
+            connection=_Connection(base_url="https://example.com", timeout_sec=30),
+        ),
+    )
 
 
 # Re-export NameSegment чтобы pyright не считал импорт неиспользованным.

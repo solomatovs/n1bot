@@ -31,6 +31,7 @@ from boba.declaration import (
     FieldSpec,
     IndexedShape,
     KeyedShape,
+    NestedField,
     ObjectItem,
     ObjectSchema,
     ScalarItem,
@@ -344,3 +345,74 @@ def test_llm_tool_call_nested_field_error_carries_full_location():
     assert "kb_search" in cfg.tools
     # Ключевое: рекурсия через ObjectItem отработала, params['query'] построен.
     assert "query" in cfg.tools["kb_search"].params
+
+
+# --- NestedField ---
+
+
+@dataclass(frozen=True)
+class _Connection:
+    base_url: str
+    timeout_sec: int
+
+
+@dataclass(frozen=True)
+class _Service:
+    name: str
+    connection: _Connection
+
+
+_CONNECTION_ARGS_SCHEMA: ObjectSchema[_Connection] = ObjectSchema(
+    fields=[
+        FieldSpec("base_url", ChainCoercer(ParseString()), required=True),
+        FieldSpec("timeout_sec", ChainCoercer(Default(30), ParseInt(), MinValue(1))),
+    ],
+    factory=_Connection,
+)
+
+
+_SERVICE_ARGS_SCHEMA: ObjectSchema[_Service] = ObjectSchema(
+    fields=[
+        FieldSpec("name", ChainCoercer(Default("svc"), ParseString())),
+        NestedField(name="connection", schema=_CONNECTION_ARGS_SCHEMA),
+    ],
+    factory=_Service,
+)
+
+
+def test_nested_field_builds_inner_dto():
+    raw = {
+        "name": "api",
+        "connection": {"base_url": "https://example.com", "timeout_sec": 60},
+    }
+    svc = ToolArgsBuilder(_SERVICE_ARGS_SCHEMA).build(raw)
+    assert svc == _Service(
+        name="api",
+        connection=_Connection(base_url="https://example.com", timeout_sec=60),
+    )
+
+
+def test_nested_field_uses_defaults_for_inner_keys():
+    raw = {"connection": {"base_url": "https://example.com"}}
+    svc = ToolArgsBuilder(_SERVICE_ARGS_SCHEMA).build(raw)
+    assert svc == _Service(
+        name="svc",
+        connection=_Connection(base_url="https://example.com", timeout_sec=30),
+    )
+
+
+def test_nested_field_required_inner_missing_raises():
+    with pytest.raises(FieldPathMissingError):
+        ToolArgsBuilder(_SERVICE_ARGS_SCHEMA).build({"connection": {}})
+
+
+def test_nested_field_must_be_mapping():
+    with pytest.raises(FieldPathError):
+        ToolArgsBuilder(_SERVICE_ARGS_SCHEMA).build({"connection": "not a dict"})
+
+
+def test_nested_field_missing_uses_inner_defaults_only_when_inner_required_absent():
+    # connection вообще отсутствует → MISSING пробрасывается, factory _Service
+    # упадёт с TypeError из-за required dataclass-аргумента.
+    with pytest.raises(TypeError):
+        ToolArgsBuilder(_SERVICE_ARGS_SCHEMA).build({"name": "api"})

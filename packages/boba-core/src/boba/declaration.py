@@ -24,6 +24,7 @@ __all__ = [
     "IndexedShape",
     "ItemReader",
     "KeyedShape",
+    "NestedField",
     "ObjectItem",
     "ObjectSchema",
     "ScalarItem",
@@ -144,6 +145,20 @@ class CollectionField(FieldKind, Generic[K, V, R]):
     name: str
     reader: ItemReader[V]
     shape: CollectionShape[K, V, R]
+    description: str = ""
+
+
+@dataclass(frozen=True)
+class NestedField(FieldKind, Generic[V]):
+    """Поле — одиночный вложенный объект: рекурсивная схема под sub-prefix'ом.
+
+    В отличие от CollectionField + ObjectItem (даёт Mapping или tuple),
+    NestedField даёт ровно один вложенный DTO. Используется для составных
+    конфигов, где один объект логически вкладывается в другой.
+    """
+
+    name: str
+    schema: ObjectSchema[V]
     description: str = ""
 
 

@@ -25,6 +25,7 @@ from boba.declaration import (
     IndexedShape,
     ItemReader,
     KeyedShape,
+    NestedField,
     ObjectItem,
     ObjectSchema,
     ScalarItem,
@@ -87,6 +88,11 @@ class FlatConfigMaterializer(Generic[T]):
 
             case CollectionField(name=name, reader=reader, shape=shape):
                 return self._read_collection(name, reader, shape, space, prefix)
+
+            case NestedField(name=name, schema=nested):
+                return FlatConfigMaterializer(nested).materialize(
+                    space, prefix.join(NameSegment(name)),
+                )
 
             case _:
                 raise NotImplementedError(f"unknown FieldKind: {type(field).__name__}")

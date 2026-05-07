@@ -12,6 +12,9 @@ from boba.config.path import (
     NotFound,
 )
 from boba.ext.html_tools import register_tools as html_register_tools
+from boba.ext.html_tools.config import HtmlSection
+from boba.ext.html_tools.outline import HtmlOutlineToolSection
+from boba.ext.html_tools.section import HtmlSectionToolSection
 from boba.patterns import StrId
 from boba.tools.framework import ExtensionContext
 from boba.value import StringValue
@@ -48,7 +51,12 @@ class _InlineSource(ConfigSource):
 def _make_app(values: dict[str, str]):
     bundle = ConfigBundle.from_sources([_InlineSource(values)])
     factory = ConfigSectionFactory()
-    factory.discover_extension_sections()
+    # Регистрируем только html-секции явно, чтобы тест не зависел от того,
+    # какие посторонние плагины установлены в окружении (их required-поля
+    # упали бы при build из-за пустого bundle).
+    factory.register_section(HtmlSection())
+    factory.register_section(HtmlOutlineToolSection())
+    factory.register_section(HtmlSectionToolSection())
     return factory.build(bundle)
 
 
