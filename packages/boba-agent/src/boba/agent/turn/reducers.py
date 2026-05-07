@@ -13,8 +13,9 @@ from boba.llm.models import (
     LLMToolSchema,
 )
 from boba.patterns import ContextPrioritySource, StrId
+from boba.declaration import ObjectSchema
 from boba.tools.domain import (
-    Tool,
+    ToolId,
     ToolWireSchemaBuilder,
 )
 from boba.tools.framework import ToolsService
@@ -26,12 +27,14 @@ _TOOLS_ID = StrId("tools")
 _SAMPLING_ID = StrId("sampling")
 
 
-def _tool_to_schema(tool: Tool[Any]) -> LLMToolSchema:
-    """Конверсия доменного Tool в data-only LLMToolSchema."""
-    schema = tool.definition()
+def _tool_to_schema(
+    tool_id: ToolId,
+    schema: ObjectSchema[Any],
+) -> LLMToolSchema:
+    """Конверсия (qualified-id, ObjectSchema) в data-only LLMToolSchema."""
     wire = ToolWireSchemaBuilder(schema).build()
     return LLMToolSchema(
-        name=tool.tool_id().to_wire(),
+        name=tool_id.to_wire(),
         description=schema.description,
         parameters_schema={
             "type": "object",
@@ -175,7 +178,10 @@ class ToolsReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
 
     def apply(self, ctx: TurnResolveContext, state: TurnState) -> TurnState:
         state.tools = LLMToolRequest(
-            tools=tuple(_tool_to_schema(t) for t in self._tools_service.tools()),
+            tools=tuple(
+                _tool_to_schema(tid, schema)
+                for tid, schema in self._tools_service.definitions()
+            ),
             parallel_tool_calls=self._parallel,
         )
         return state

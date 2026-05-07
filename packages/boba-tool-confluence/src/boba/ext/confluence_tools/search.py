@@ -27,8 +27,9 @@ from boba.tools.domain import (
     ToolContext,
     ToolExecutionError,
     ToolId,
-    ToolResult,
+    ToolName,
     ToolSourceId,
+    ToolResult,
 )
 
 __all__ = ["ConfluenceSearchTool", "ConfluenceSearchToolConfig"]
@@ -55,20 +56,21 @@ class ConfluenceSearchToolConfig:
 class ConfluenceSearchTool(Tool[SearchArgs]):
     """Поиск страниц Confluence по тексту."""
 
-    _ID: ClassVar[ToolId] = ToolId("confluence_search")
-    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.confluence")
+    _NAME: ClassVar[ToolName] = ToolName("confluence_search")
 
     def __init__(
-        self, cfg: ConfluenceSearchToolConfig, ctx: ExtensionContext,
+        self,
+        cfg: ConfluenceSearchToolConfig,
+        ctx: ExtensionContext,
+        source_id: ToolSourceId,
     ) -> None:
         self._cfg = cfg
         self._ctx = ctx
+        self._tool_id = ToolId.compose(source_id, self._NAME)
 
     def tool_id(self) -> ToolId:
-        return self._ID
+        return self._tool_id
 
-    def tool_source_id(self) -> ToolSourceId:
-        return self._SOURCE
 
     def definition(self) -> ObjectSchema[SearchArgs]:
         return self._cfg.prompt.apply(ObjectSchema(
@@ -106,7 +108,7 @@ class ConfluenceSearchTool(Tool[SearchArgs]):
                 stats = pipeline.run()
         except ConfluenceSearchPipelineError as e:
             raise ToolExecutionError(
-                tool_id=self._ID,
+                tool_id=self._tool_id,
                 message=f"Confluence search failed: {type(e).__name__}: {e}",
             ) from e
 

@@ -24,8 +24,9 @@ from boba.tools.domain import (
     Tool,
     ToolContext,
     ToolId,
-    ToolResult,
+    ToolName,
     ToolSourceId,
+    ToolResult,
 )
 
 __all__ = ["KbSearchTool", "KbSearchToolConfig"]
@@ -49,24 +50,23 @@ class KbSearchToolConfig:
 class KbSearchTool(Tool[KbSearchArgs]):
     """Возвращает JSON [{id, distance, metadata, snippet}] top-k hits."""
 
-    _ID: ClassVar[ToolId] = ToolId("kb_search")
-    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.chromadb")
+    _NAME: ClassVar[ToolName] = ToolName("kb_search")
 
     def __init__(
         self,
         kb: ChromaKnowledgeBase,
         cfg: KbSearchToolConfig,
         ctx: ExtensionContext,
+        source_id: ToolSourceId,
     ) -> None:
         self._kb = kb
         self._cfg = cfg
         self._ctx = ctx
+        self._tool_id = ToolId.compose(source_id, self._NAME)
 
     def tool_id(self) -> ToolId:
-        return self._ID
+        return self._tool_id
 
-    def tool_source_id(self) -> ToolSourceId:
-        return self._SOURCE
 
     def definition(self) -> ObjectSchema[KbSearchArgs]:
         max_top_k = self._cfg.max_top_k
@@ -114,7 +114,7 @@ class KbSearchTool(Tool[KbSearchArgs]):
     def execute(self, ctx: ToolContext, req: KbSearchArgs) -> ToolResult:
         del ctx
         hits = self._kb.search(
-            tool_id=self._ID,
+            tool_id=self._tool_id,
             collection=req.collection,
             query=req.query,
             top_k=req.top_k,

@@ -15,8 +15,9 @@ from boba.tools.domain import (
     ToolContext,
     ToolExecutionError,
     ToolId,
-    ToolResult,
+    ToolName,
     ToolSourceId,
+    ToolResult,
 )
 from boba.workspace import WorkspaceError, WorkspaceNotFoundError
 
@@ -38,18 +39,16 @@ class CpToolConfig:
 class CpTool(Tool[CpArgs]):
     """Скопировать файл или директорию."""
 
-    _ID: ClassVar[ToolId] = ToolId("cp")
-    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.files")
+    _NAME: ClassVar[ToolName] = ToolName("cp")
 
-    def __init__(self, cfg: CpToolConfig, ctx: ExtensionContext) -> None:
+    def __init__(self, cfg: CpToolConfig, ctx: ExtensionContext, source_id: ToolSourceId) -> None:
         self._cfg = cfg
         self._ctx = ctx
+        self._tool_id = ToolId.compose(source_id, self._NAME)
 
     def tool_id(self) -> ToolId:
-        return self._ID
+        return self._tool_id
 
-    def tool_source_id(self) -> ToolSourceId:
-        return self._SOURCE
 
     def definition(self) -> ObjectSchema[CpArgs]:
         return self._cfg.prompt.apply(ObjectSchema(
@@ -86,12 +85,12 @@ class CpTool(Tool[CpArgs]):
             ctx.project_workspace.copy(req.src, req.dst, recursive=req.recursive)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._ID,
+                tool_id=self._tool_id,
                 message=f"Источник не найден: {req.src}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID,
+                tool_id=self._tool_id,
                 message=f"Ошибка копирования: {e}",
             ) from e
         return TextResult(text=f"Скопировано: {req.src} → {req.dst}")

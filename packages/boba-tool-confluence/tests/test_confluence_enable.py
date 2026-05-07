@@ -58,7 +58,7 @@ _BASE_VALUES = {
 def _tool_names(values: dict[str, str]) -> list[str]:
     bundle = ConfigBundle.from_sources([_InlineSource({**_BASE_VALUES, **values})])
     sources = list(install_plugins(bundle, [ConfluencePlugin], ExtensionContext()))
-    return [t.tool_id().to_wire() for src in sources for t in src.tools()]
+    return [t.name().to_wire() for src in sources for t in src.tools()]
 
 
 def test_disabled_by_default():

@@ -24,8 +24,9 @@ from boba.tools.domain import (
     ToolContext,
     ToolExecutionError,
     ToolId,
-    ToolResult,
+    ToolName,
     ToolSourceId,
+    ToolResult,
 )
 from boba.workspace import WorkspaceError
 
@@ -46,18 +47,16 @@ class LsToolConfig:
 class LsTool(Tool[LsArgs]):
     """Плоский список элементов workspace (без рекурсии)."""
 
-    _ID: ClassVar[ToolId] = ToolId("ls")
-    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.files")
+    _NAME: ClassVar[ToolName] = ToolName("ls")
 
-    def __init__(self, cfg: LsToolConfig, ctx: ExtensionContext) -> None:
+    def __init__(self, cfg: LsToolConfig, ctx: ExtensionContext, source_id: ToolSourceId) -> None:
         self._cfg = cfg
         self._ctx = ctx
+        self._tool_id = ToolId.compose(source_id, self._NAME)
 
     def tool_id(self) -> ToolId:
-        return self._ID
+        return self._tool_id
 
-    def tool_source_id(self) -> ToolSourceId:
-        return self._SOURCE
 
     def definition(self) -> ObjectSchema[LsArgs]:
         return self._cfg.prompt.apply(ObjectSchema(
@@ -89,7 +88,7 @@ class LsTool(Tool[LsArgs]):
             items = list(islice(iterator, req.limit + 1))
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Ошибка обхода: {e}",
+                tool_id=self._tool_id, message=f"Ошибка обхода: {e}",
             ) from e
 
         truncated = len(items) > req.limit

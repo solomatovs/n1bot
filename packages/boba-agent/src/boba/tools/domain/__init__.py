@@ -1,11 +1,11 @@
 """Boba tool domain: contract layer для tools framework и LLM-adapter'ов.
 
 Содержит:
-- Sealed identity: ToolId, ToolSourceId.
+- Identity: ToolName (локальное), ToolSourceId, ToolId (qualified wire).
 - Tool ABC + ToolCall, ToolContext.
 - ToolResult sealed family + ToolResultVisitor (double-dispatch).
 - args/wire builders: типизация tool-arguments + JSON-Schema export.
-- doменные ошибки: ToolExecutionError, InvalidToolArgumentError, etc.
+- доменные ошибки: ToolExecutionError, InvalidToolArgumentError, etc.
 
 Application-фреймворк (registry, ToolsService, plugin_loader) — в `boba-tools`.
 LLM-adapter'ы (`boba-adapter-*`) реализуют `ToolResultVisitor` под свой
@@ -21,8 +21,9 @@ from boba.tools.domain.errors import (
     ToolExecutionError,
     ToolIdCollisionError,
     ToolOutputTooLargeError,
+    ToolSourceCollisionError,
 )
-from boba.tools.domain.ids import ToolId, ToolSourceId
+from boba.tools.domain.ids import ToolId, ToolName, ToolSourceId
 from boba.tools.domain.result import (
     JsonResult,
     TextResult,
@@ -44,9 +45,11 @@ __all__ = [
     "ToolExecutionError",
     "ToolId",
     "ToolIdCollisionError",
+    "ToolName",
     "ToolOutputTooLargeError",
     "ToolResult",
     "ToolResultVisitor",
+    "ToolSourceCollisionError",
     "ToolSourceId",
     "ToolWireSchemaBuilder",
 ]

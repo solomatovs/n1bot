@@ -27,8 +27,9 @@ from boba.tools.domain import (
     ToolContext,
     ToolExecutionError,
     ToolId,
-    ToolResult,
+    ToolName,
     ToolSourceId,
+    ToolResult,
 )
 
 __all__ = ["ConfluencePageOutlineTool", "ConfluencePageOutlineToolConfig"]
@@ -56,20 +57,21 @@ class ConfluencePageOutlineToolConfig:
 class ConfluencePageOutlineTool(Tool[PageOutlineArgs]):
     """Online-outline страницы Confluence: page_id → структура заголовков."""
 
-    _ID: ClassVar[ToolId] = ToolId("confluence_page_outline")
-    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.confluence")
+    _NAME: ClassVar[ToolName] = ToolName("confluence_page_outline")
 
     def __init__(
-        self, cfg: ConfluencePageOutlineToolConfig, ctx: ExtensionContext,
+        self,
+        cfg: ConfluencePageOutlineToolConfig,
+        ctx: ExtensionContext,
+        source_id: ToolSourceId,
     ) -> None:
         self._cfg = cfg
         self._ctx = ctx
+        self._tool_id = ToolId.compose(source_id, self._NAME)
 
     def tool_id(self) -> ToolId:
-        return self._ID
+        return self._tool_id
 
-    def tool_source_id(self) -> ToolSourceId:
-        return self._SOURCE
 
     def definition(self) -> ObjectSchema[PageOutlineArgs]:
         return self._cfg.prompt.apply(ObjectSchema(
@@ -112,7 +114,7 @@ class ConfluencePageOutlineTool(Tool[PageOutlineArgs]):
                 content = pipeline.fetch(req.page_id)
         except ConfluencePagePipelineError as e:
             raise ToolExecutionError(
-                tool_id=self._ID,
+                tool_id=self._tool_id,
                 message=f"Confluence page outline failed: {type(e).__name__}: {e}",
             ) from e
 

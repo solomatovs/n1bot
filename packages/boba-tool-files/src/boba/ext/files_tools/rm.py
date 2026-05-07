@@ -15,8 +15,9 @@ from boba.tools.domain import (
     ToolContext,
     ToolExecutionError,
     ToolId,
-    ToolResult,
+    ToolName,
     ToolSourceId,
+    ToolResult,
 )
 from boba.workspace import WorkspaceError, WorkspaceNotFoundError
 
@@ -37,18 +38,16 @@ class RmToolConfig:
 class RmTool(Tool[RmArgs]):
     """Удалить файл или директорию."""
 
-    _ID: ClassVar[ToolId] = ToolId("rm")
-    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.files")
+    _NAME: ClassVar[ToolName] = ToolName("rm")
 
-    def __init__(self, cfg: RmToolConfig, ctx: ExtensionContext) -> None:
+    def __init__(self, cfg: RmToolConfig, ctx: ExtensionContext, source_id: ToolSourceId) -> None:
         self._cfg = cfg
         self._ctx = ctx
+        self._tool_id = ToolId.compose(source_id, self._NAME)
 
     def tool_id(self) -> ToolId:
-        return self._ID
+        return self._tool_id
 
-    def tool_source_id(self) -> ToolSourceId:
-        return self._SOURCE
 
     def definition(self) -> ObjectSchema[RmArgs]:
         return self._cfg.prompt.apply(ObjectSchema(
@@ -79,12 +78,12 @@ class RmTool(Tool[RmArgs]):
             ctx.project_workspace.delete(req.path, recursive=req.recursive)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._ID,
+                tool_id=self._tool_id,
                 message=f"Не найдено: {req.path}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID,
+                tool_id=self._tool_id,
                 message=f"Ошибка удаления: {e}",
             ) from e
         return TextResult(text=f"Удалено: {req.path}")

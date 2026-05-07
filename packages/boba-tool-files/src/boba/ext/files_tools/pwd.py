@@ -13,8 +13,9 @@ from boba.tools.domain import (
     Tool,
     ToolContext,
     ToolId,
-    ToolResult,
+    ToolName,
     ToolSourceId,
+    ToolResult,
 )
 
 __all__ = ["PwdTool", "PwdToolConfig"]
@@ -33,18 +34,16 @@ class PwdToolConfig:
 class PwdTool(Tool[PwdArgs]):
     """Возвращает путь текущей директории."""
 
-    _ID: ClassVar[ToolId] = ToolId("pwd")
-    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.files")
+    _NAME: ClassVar[ToolName] = ToolName("pwd")
 
-    def __init__(self, cfg: PwdToolConfig, ctx: ExtensionContext) -> None:
+    def __init__(self, cfg: PwdToolConfig, ctx: ExtensionContext, source_id: ToolSourceId) -> None:
         self._cfg = cfg
         self._ctx = ctx
+        self._tool_id = ToolId.compose(source_id, self._NAME)
 
     def tool_id(self) -> ToolId:
-        return self._ID
+        return self._tool_id
 
-    def tool_source_id(self) -> ToolSourceId:
-        return self._SOURCE
 
     def definition(self) -> ObjectSchema[PwdArgs]:
         return self._cfg.prompt.apply(ObjectSchema(

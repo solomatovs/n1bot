@@ -15,8 +15,9 @@ from boba.tools.domain import (
     ToolContext,
     ToolExecutionError,
     ToolId,
-    ToolResult,
+    ToolName,
     ToolSourceId,
+    ToolResult,
 )
 from boba.workspace import WorkspaceError
 
@@ -36,18 +37,16 @@ class MkdirToolConfig:
 class MkdirTool(Tool[MkdirArgs]):
     """Создать директорию."""
 
-    _ID: ClassVar[ToolId] = ToolId("mkdir")
-    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.files")
+    _NAME: ClassVar[ToolName] = ToolName("mkdir")
 
-    def __init__(self, cfg: MkdirToolConfig, ctx: ExtensionContext) -> None:
+    def __init__(self, cfg: MkdirToolConfig, ctx: ExtensionContext, source_id: ToolSourceId) -> None:
         self._cfg = cfg
         self._ctx = ctx
+        self._tool_id = ToolId.compose(source_id, self._NAME)
 
     def tool_id(self) -> ToolId:
-        return self._ID
+        return self._tool_id
 
-    def tool_source_id(self) -> ToolSourceId:
-        return self._SOURCE
 
     def definition(self) -> ObjectSchema[MkdirArgs]:
         return self._cfg.prompt.apply(ObjectSchema(
@@ -71,7 +70,7 @@ class MkdirTool(Tool[MkdirArgs]):
             ctx.project_workspace.mkdir(req.path)
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID,
+                tool_id=self._tool_id,
                 message=f"Ошибка mkdir: {e}",
             ) from e
         return TextResult(text=f"Директория создана: {req.path}")

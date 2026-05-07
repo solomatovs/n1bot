@@ -31,8 +31,9 @@ from boba.tools.domain import (
     ToolContext,
     ToolExecutionError,
     ToolId,
-    ToolResult,
+    ToolName,
     ToolSourceId,
+    ToolResult,
 )
 from boba.workspace import (
     WorkspaceError,
@@ -60,18 +61,16 @@ class HtmlSectionToolConfig:
 class HtmlSectionTool(Tool[SectionArgs]):
     """HTML фрагмент раздела от заголовка до следующего заголовка."""
 
-    _ID: ClassVar[ToolId] = ToolId("html_section")
-    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.html")
+    _NAME: ClassVar[ToolName] = ToolName("html_section")
 
-    def __init__(self, cfg: HtmlSectionToolConfig, ctx: ExtensionContext) -> None:
+    def __init__(self, cfg: HtmlSectionToolConfig, ctx: ExtensionContext, source_id: ToolSourceId) -> None:
         self._cfg = cfg
         self._ctx = ctx
+        self._tool_id = ToolId.compose(source_id, self._NAME)
 
     def tool_id(self) -> ToolId:
-        return self._ID
+        return self._tool_id
 
-    def tool_source_id(self) -> ToolSourceId:
-        return self._SOURCE
 
     def definition(self) -> ObjectSchema[SectionArgs]:
         return self._cfg.prompt.apply(ObjectSchema(
@@ -120,18 +119,18 @@ class HtmlSectionTool(Tool[SectionArgs]):
             soup = load_soup(ctx.project_workspace, req.path)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Файл не найден: {req.path}"
+                tool_id=self._tool_id, message=f"Файл не найден: {req.path}"
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._ID, message=f"Ошибка чтения: {e}"
+                tool_id=self._tool_id, message=f"Ошибка чтения: {e}"
             ) from e
 
         headings = collect_headings(soup)
         target = resolve_anchor(headings, req.anchor)
         if target is None:
             raise ToolExecutionError(
-                tool_id=self._ID,
+                tool_id=self._tool_id,
                 message=(
                     f"Заголовок с anchor={req.anchor!r} не найден; "
                     "получи актуальные anchor'ы через html_outline."

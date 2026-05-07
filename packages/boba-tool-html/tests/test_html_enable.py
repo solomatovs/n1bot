@@ -47,7 +47,7 @@ class _InlineSource(ConfigSource):
 def _tool_names(values: dict[str, str]) -> list[str]:
     bundle = ConfigBundle.from_sources([_InlineSource(values)])
     sources = list(install_plugins(bundle, [HtmlPlugin], ExtensionContext()))
-    return [t.tool_id().to_wire() for src in sources for t in src.tools()]
+    return [t.name().to_wire() for src in sources for t in src.tools()]
 
 
 def test_disabled_by_default():

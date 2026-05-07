@@ -52,17 +52,15 @@ class HtmlPlugin(Plugin[HtmlPluginConfig, ToolSource]):
         cfg: HtmlPluginConfig,
         ctx: ExtensionContext,
     ) -> Iterable[ToolSource]:
+        sid = cls.SOURCE_ID
         yield StaticToolSource(
-            source_id=cls.SOURCE_ID,
-            priority=0,
+            source_id=sid,
             tools=[
                 HtmlOutlineTool(
-                    HtmlOutlineToolConfig(prompt=cfg.html_outline),
-                    ctx,
+                    HtmlOutlineToolConfig(prompt=cfg.html_outline), ctx, sid,
                 ),
                 HtmlSectionTool(
-                    HtmlSectionToolConfig(prompt=cfg.html_section),
-                    ctx,
+                    HtmlSectionToolConfig(prompt=cfg.html_section), ctx, sid,
                 ),
             ],
         )

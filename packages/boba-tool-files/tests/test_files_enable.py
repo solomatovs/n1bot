@@ -53,7 +53,7 @@ _FILES_TOOL_NAMES = {
 def _tool_names(values: dict[str, str]) -> list[str]:
     bundle = ConfigBundle.from_sources([_InlineSource(values)])
     sources = list(install_plugins(bundle, [FilesPlugin], ExtensionContext()))
-    return [t.tool_id().to_wire() for src in sources for t in src.tools()]
+    return [t.name().to_wire() for src in sources for t in src.tools()]
 
 
 def test_disabled_by_default():
