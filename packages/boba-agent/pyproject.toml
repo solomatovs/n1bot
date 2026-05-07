@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-agent"
 version = "0.1.0"
-description = "Boba agent: orchestrator + adapters (fs-workspace, messages, openai, prompt-providers)."
+description = "Boba agent: orchestrator + builder + middleware + turn-spec + prompt/messages контракты + InMemoryMessageService. Pure-домен, без I/O и LLM-провайдеров."
 requires-python = ">=3.11,<4"
 dependencies = ["boba-core", "boba-llm", "boba-tools"]
 

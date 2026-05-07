@@ -29,7 +29,7 @@ from boba.agent.events import (
 from boba.web.chainlit.bridge import ChainlitBridgeSink
 from boba.web.chainlit.files import save_upload
 from boba.web.chainlit.session import ChatSession
-from boba.workspace import WorkspaceId
+from boba.workspace.contract import WorkspaceId
 from chainlit.input_widget import Select
 
 logger = logging.getLogger(__name__)

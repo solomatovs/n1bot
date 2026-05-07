@@ -12,7 +12,7 @@ from boba.agent.messages import (
     MessageStoreWriteError,
 )
 from boba.llm.models import LLMMessage, LLMToolCall
-from boba.workspace import HistoryWorkspaceShell, WorkspaceError
+from boba.workspace.contract import HistoryWorkspaceShell, WorkspaceError
 
 
 class JsonLinesMessageService(MessageService):

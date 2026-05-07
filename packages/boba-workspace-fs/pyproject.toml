@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-workspace-fs"
+version = "0.1.0"
+description = "Boba: filesystem-реализация WorkspaceShell/WorkspaceRegistry (Project/History/Prompt/Scratch)."
+requires-python = ">=3.11,<4"
+dependencies = ["boba-core"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

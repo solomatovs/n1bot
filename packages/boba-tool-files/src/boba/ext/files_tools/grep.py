@@ -30,7 +30,7 @@ from boba.tools.domain import (
     ToolSourceId,
     ToolResult,
 )
-from boba.workspace import GrepMatch, WorkspaceError, WorkspaceNotFoundError
+from boba.workspace.contract import GrepMatch, WorkspaceError, WorkspaceNotFoundError
 
 __all__ = ["GrepTool", "GrepToolConfig"]
 

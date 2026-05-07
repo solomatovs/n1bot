@@ -18,9 +18,9 @@ from io import BufferedIOBase, TextIOBase
 from pathlib import Path
 from typing import Generic, TypeVar
 
-from boba.adapter.fs_workspace.growbuffer import GrowBuffer
+from boba.workspace.fs.growbuffer import GrowBuffer
 from boba.patterns import Id, Specification
-from boba.workspace import (
+from boba.workspace.contract import (
     EntryMeta,
     GrepMatch,
     HistoryWorkspaceShell,

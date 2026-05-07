@@ -30,7 +30,7 @@ from boba.tools.domain import (
     ToolSourceId,
     ToolResult,
 )
-from boba.workspace import (
+from boba.workspace.contract import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )

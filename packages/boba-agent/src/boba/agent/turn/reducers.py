@@ -7,13 +7,13 @@ from typing import Any
 
 from boba.agent.prompt import PromptFactory, PromptProvider
 from boba.agent.turn.spec import TurnResolveContext, TurnState
+from boba.declaration import ObjectSchema
 from boba.llm.models import (
     LLMMessage,
     LLMToolRequest,
     LLMToolSchema,
 )
 from boba.patterns import ContextPrioritySource, StrId
-from boba.declaration import ObjectSchema
 from boba.tools.domain import (
     ToolId,
     ToolWireSchemaBuilder,

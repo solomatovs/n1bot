@@ -20,7 +20,7 @@ from boba.tools.domain.errors import (
 )
 from boba.tools.domain.ids import ToolId, ToolName, ToolSourceId
 from boba.tools.domain.result import ToolResult
-from boba.workspace import ProjectWorkspaceShell
+from boba.workspace.contract import ProjectWorkspaceShell
 
 __all__ = ["Tool", "ToolCall", "ToolContext", "ToolResult"]
 

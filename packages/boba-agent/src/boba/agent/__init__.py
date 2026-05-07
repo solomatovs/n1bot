@@ -84,6 +84,7 @@ from boba.agent.prompt import (
     PromptProviderError,
     PromptResult,
     PromptState,
+    StaticPromptProvider,
 )
 from boba.agent.turn.reducers import (
     AgentRequestSamplingReducer,
@@ -158,6 +159,7 @@ __all__ = [
     "RepeatedToolCallGuardMiddleware",
     "Severity",
     "SlotKind",
+    "StaticPromptProvider",
     "StopOnAnyFailure",
     "StopOnFinished",
     "SystemPromptReducer",

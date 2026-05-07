@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from boba.adapter.fs_workspace import (
+from boba.workspace.fs import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
     FsPromptWorkspaceRegistry,
@@ -34,7 +34,7 @@ from boba.web.chainlit.infra import (
     configure_logging,
     log_context,
 )
-from boba.workspace import (
+from boba.workspace.contract import (
     ProjectWorkspaceShell,
     PromptWorkspaceId,
     WorkspaceId,

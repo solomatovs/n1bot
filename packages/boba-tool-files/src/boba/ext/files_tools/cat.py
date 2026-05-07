@@ -30,7 +30,7 @@ from boba.tools.domain import (
     ToolOutputTooLargeError,
     ToolResult,
 )
-from boba.workspace import WorkspaceError, WorkspaceNotFoundError
+from boba.workspace.contract import WorkspaceError, WorkspaceNotFoundError
 
 __all__ = ["CatTool", "CatToolConfig"]
 
