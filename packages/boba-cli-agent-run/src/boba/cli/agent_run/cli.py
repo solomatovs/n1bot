@@ -22,7 +22,7 @@ from boba.provider.openai import (
     OpenAIConfig,
     create_llm_source,
 )
-from boba.adapter.prompt_providers import PromptLoader, PromptsConfig
+from boba.prompt.providers import PromptLoader, PromptsConfig
 from boba.agent import Agent, AgentBuilder, AgentConfig, InMemoryMessageService
 from boba.agent.models import AgentRequest
 from boba.cli.agent_run.config import AgentRunConfig

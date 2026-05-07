@@ -1,8 +1,8 @@
 """I/O-реализации PromptProvider (file/git/env/workspace) и file-based loader."""
 
-from boba.adapter.prompt_providers.config import PromptsConfig
-from boba.adapter.prompt_providers.loader import PromptLoader, PromptLoadError
-from boba.adapter.prompt_providers.providers import (
+from boba.prompt.providers.config import PromptsConfig
+from boba.prompt.providers.loader import PromptLoader, PromptLoadError
+from boba.prompt.providers.providers import (
     EnvironmentPromptProvider,
     FilePromptProvider,
     GitPromptProvider,

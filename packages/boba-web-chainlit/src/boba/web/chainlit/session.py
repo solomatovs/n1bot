@@ -16,7 +16,7 @@ from boba.provider.openai import (
     OpenAIConfig,
     create_llm_source,
 )
-from boba.adapter.prompt_providers import PromptLoader, PromptsConfig
+from boba.prompt.providers import PromptLoader, PromptsConfig
 from boba.agent import AgentBuilder, InMemoryMessageService
 from boba.agent.events import AgentEvent
 from boba.agent.models import AgentConfig, AgentContext, AgentRequest
