@@ -16,7 +16,7 @@ from boba.provider.openai import (
     OpenAIConfig,
     create_llm_source,
 )
-from boba.adapter.prompt_providers import PromptLoader, PromptsConfig
+from boba.prompt.providers import PromptLoader, PromptsConfig
 from boba.agent import AgentBuilder, InMemoryMessageService
 from boba.agent.events import AgentEvent
 from boba.agent.models import AgentConfig, AgentContext, AgentRequest
@@ -64,7 +64,7 @@ class ChatSession:
         configure_logging(core.log_level, core.log_file)
 
         self._workspaces_cfg = bundle.get(WorkspaceLayout, "workspaces")
-        self._llm_cfg = bundle.get(OpenAIConfig, "adapter.openai")
+        self._llm_cfg = bundle.get(OpenAIConfig, "provider.openai")
         self._prompts = bundle.get(PromptsConfig, "prompts")
         self._agent_config = bundle.get(AgentConfig, "agent")
         self._chainlit_config = bundle.get(ChainlitConfig, "chainlit")
