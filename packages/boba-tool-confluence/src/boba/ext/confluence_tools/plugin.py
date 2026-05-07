@@ -16,7 +16,14 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.coercion import ChainCoercer, Default, OneOf, ParseFloat, ParseString, Required
+from boba.coercion import (
+    ChainCoercer,
+    Default,
+    OneOf,
+    ParseFloat,
+    ParseString,
+    Required,
+)
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.confluence_tools.connection import ConfluenceConnection
 from boba.ext.confluence_tools.page_outline import (

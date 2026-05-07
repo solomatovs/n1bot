@@ -5,7 +5,7 @@ from __future__ import annotations
 from boba.config.bundle import ConfigBundle
 from boba.config.flat import FlatConfig
 from boba.config.path import ConfigPath, NameSegment
-from boba.config.source import DictSource
+from boba.config.source.dict_source import DictSource
 from boba.value import IntValue, StringValue
 
 

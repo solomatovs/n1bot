@@ -9,7 +9,7 @@ from typing import ClassVar
 from boba.coercion import ChainCoercer, Default, ParseBool, ParseInt, ParseString, Required
 from boba.config.bundle import ConfigBundle
 from boba.config.path import ConfigPath
-from boba.config.source import DictSource
+from boba.config.source.dict_source import DictSource
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.patterns import StrId
 from boba.plugin import (

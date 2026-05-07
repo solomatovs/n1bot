@@ -1,4 +1,4 @@
-"""Готовые ConfigSource-реализации (env, cli, toml, dict)."""
+"""In-memory ConfigSource поверх готового {ConfigPath: ConfigValue}."""
 
 from __future__ import annotations
 
