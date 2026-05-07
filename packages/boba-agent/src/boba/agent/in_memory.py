@@ -1,4 +1,4 @@
-"""In-memory реализация MessageService."""
+"""In-memory реализация MessageService — дефолт AgentBuilder'а."""
 
 from __future__ import annotations
 

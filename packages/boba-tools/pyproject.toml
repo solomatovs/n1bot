@@ -3,11 +3,11 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "boba-agent"
+name = "boba-tools"
 version = "0.1.0"
-description = "Boba agent: orchestrator + LLM contracts + adapters (fs-workspace, messages, openai, prompt-providers)."
+description = "Boba tools: contract layer (Tool ABC, ToolResult, ToolContext) + ToolsService framework. Pure-domain, без I/O и LLM-провайдеров."
 requires-python = ">=3.11,<4"
-dependencies = ["boba-core", "boba-tools"]
+dependencies = ["boba-core"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
