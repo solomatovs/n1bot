@@ -16,7 +16,7 @@ from boba.adapter.fs_workspace import (
     FsPromptWorkspaceRegistry,
     WorkspaceLayout,
 )
-from boba.adapter.openai import (
+from boba.provider.openai import (
     CurlTraceChatCompletionObserver,
     OpenAIChatVisitor,
     OpenAIConfig,
