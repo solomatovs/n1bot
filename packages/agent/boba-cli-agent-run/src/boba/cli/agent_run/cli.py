@@ -10,19 +10,6 @@ with contextlib.suppress(ImportError):
     import readline  # noqa: F401  # pyright: ignore[reportUnusedImport]
     # side-effect: подключает редактирование строки и историю в input().
 
-from boba.workspace.fs import (
-    FsHistoryWorkspaceRegistry,
-    FsProjectWorkspaceRegistry,
-    FsPromptWorkspaceRegistry,
-    WorkspaceLayout,
-)
-from boba.provider.openai import (
-    CurlTraceChatCompletionObserver,
-    OpenAIChatVisitor,
-    OpenAIConfig,
-    create_llm_source,
-)
-from boba.prompt.providers import PromptLoader, PromptsConfig
 from boba.agent import Agent, AgentBuilder, AgentConfig, InMemoryMessageService
 from boba.agent.models import AgentRequest
 from boba.cli.agent_run.config import AgentRunConfig
@@ -41,11 +28,24 @@ from boba.patterns import ConverterInputError
 from boba.plugin import ExtensionContext as PluginCtx
 from boba.plugin import install_plugins
 from boba.plugin.discovery import discover_plugins
+from boba.prompt.providers import PromptLoader, PromptsConfig
+from boba.provider.openai import (
+    CurlTraceChatCompletionObserver,
+    OpenAIChatVisitor,
+    OpenAIConfig,
+    create_llm_source,
+)
 from boba.tools.domain import ToolContext
 from boba.tools.framework import ToolsService
 from boba.workspace.contract import (
     PromptWorkspaceId,
     WorkspaceId,
+)
+from boba.workspace.fs import (
+    FsHistoryWorkspaceRegistry,
+    FsProjectWorkspaceRegistry,
+    FsPromptWorkspaceRegistry,
+    WorkspaceLayout,
 )
 
 _REPL_EXIT_COMMANDS = frozenset({"/exit", "/quit", ":q"})
@@ -63,13 +63,15 @@ def main() -> int:
 
 def _build_bundle() -> ConfigBundle:
     """ConfigBundle для всего: core-DTO + Plugin-протокол."""
-    return ConfigBundle.from_sources([
-        CliSource(),
-        EnvFileSource(),
-        EnvSource(),
-        TomlFileSource(),
-        TomlSource(),
-    ])
+    return ConfigBundle.from_sources(
+        [
+            CliSource(),
+            EnvFileSource(),
+            EnvSource(),
+            TomlFileSource(),
+            TomlSource(),
+        ]
+    )
 
 
 def _run(bundle: ConfigBundle) -> int:
@@ -106,7 +108,8 @@ def _run(bundle: ConfigBundle) -> int:
             [
                 # WireTraceChatCompletionObserver(history_workspace),
                 CurlTraceChatCompletionObserver(
-                    history_workspace, response_chunks=False,
+                    history_workspace,
+                    response_chunks=False,
                 ),
                 # TranscriptChatCompletionObserver(history_workspace),
             ]
