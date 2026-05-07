@@ -4,19 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from boba.workspace.fs import (
-    FsHistoryWorkspaceRegistry,
-    FsProjectWorkspaceRegistry,
-    FsPromptWorkspaceRegistry,
-    WorkspaceLayout,
-)
-from boba.provider.openai import (
-    CurlTraceChatCompletionObserver,
-    OpenAIChatVisitor,
-    OpenAIConfig,
-    create_llm_source,
-)
-from boba.prompt.providers import PromptLoader, PromptsConfig
 from boba.agent import AgentBuilder, InMemoryMessageService
 from boba.agent.events import AgentEvent
 from boba.agent.models import AgentConfig, AgentContext, AgentRequest
@@ -26,6 +13,13 @@ from boba.patterns import StreamSink
 from boba.plugin import ExtensionContext as PluginCtx
 from boba.plugin import install_plugins
 from boba.plugin.discovery import discover_plugins
+from boba.prompt.providers import PromptLoader, PromptsConfig
+from boba.provider.openai import (
+    CurlTraceChatCompletionObserver,
+    OpenAIChatVisitor,
+    OpenAIConfig,
+    create_llm_source,
+)
 from boba.tools.domain import ToolContext
 from boba.tools.framework import ToolsService
 from boba.web.chainlit.config import ChainlitConfig
@@ -38,6 +32,12 @@ from boba.workspace.contract import (
     ProjectWorkspaceShell,
     PromptWorkspaceId,
     WorkspaceId,
+)
+from boba.workspace.fs import (
+    FsHistoryWorkspaceRegistry,
+    FsProjectWorkspaceRegistry,
+    FsPromptWorkspaceRegistry,
+    WorkspaceLayout,
 )
 
 
