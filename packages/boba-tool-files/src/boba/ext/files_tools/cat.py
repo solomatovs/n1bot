@@ -14,6 +14,7 @@ from boba.coercion import (
     MinValue,
     NonEmpty,
     Ordered,
+    Required,
 )
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.plugin import ExtensionContext
@@ -73,8 +74,7 @@ class CatTool(Tool[CatArgs]):
                 FieldSpec(
                     name="path",
                     description="Путь к файлу.",
-                    coercer=ChainCoercer(IsString(), NonEmpty()),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsString(), NonEmpty()),
                 ),
                 FieldSpec(
                     name="encoding",
@@ -84,14 +84,12 @@ class CatTool(Tool[CatArgs]):
                 FieldSpec(
                     name="start_line",
                     description="Первая строка окна. 1 = начало файла.",
-                    coercer=ChainCoercer(IsInt(), MinValue(1)),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsInt(), MinValue(1)),
                 ),
                 FieldSpec(
                     name="end_line",
                     description="Последняя строка окна, включительно. >= start_line.",
-                    coercer=ChainCoercer(IsInt(), MinValue(1)),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsInt(), MinValue(1)),
                 ),
             ],
             invariants=Ordered("start_line", "end_line"),

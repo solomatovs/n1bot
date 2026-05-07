@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.coercion import ChainCoercer, Default, IsBool, IsString, NonEmpty
+from boba.coercion import ChainCoercer, Default, IsBool, IsString, NonEmpty, Required
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.plugin import ExtensionContext
 from boba.plugin.prompt import PromptOverlay
@@ -60,14 +60,12 @@ class CpTool(Tool[CpArgs]):
                 FieldSpec(
                     name="src",
                     description="Путь источника.",
-                    coercer=ChainCoercer(IsString(), NonEmpty()),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsString(), NonEmpty()),
                 ),
                 FieldSpec(
                     name="dst",
                     description="Путь назначения.",
-                    coercer=ChainCoercer(IsString(), NonEmpty()),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsString(), NonEmpty()),
                 ),
                 FieldSpec(
                     name="recursive",

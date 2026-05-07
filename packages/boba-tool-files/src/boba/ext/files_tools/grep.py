@@ -15,6 +15,7 @@ from boba.coercion import (
     MinValue,
     NonEmpty,
     Nullable,
+    Required,
 )
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.plugin import ExtensionContext
@@ -77,8 +78,7 @@ class GrepTool(Tool[GrepArgs]):
                 FieldSpec(
                     name="pattern",
                     description="Python-regex; литерал при fixed_string=true.",
-                    coercer=ChainCoercer(IsString(), NonEmpty()),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsString(), NonEmpty()),
                 ),
                 FieldSpec(
                     name="path",

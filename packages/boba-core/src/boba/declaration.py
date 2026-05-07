@@ -120,22 +120,23 @@ class FieldKind:
 
 @dataclass(frozen=True)
 class FieldSpec(FieldKind, Generic[T]):
-    """Скалярное поле: name + coercer-цепочка + декларативный required-флаг.
+    """Скалярное поле: name + coercer-цепочка.
 
     `coercer` — пайплайн обработки значения (defaulting, parsing, валидация
     диапазонов и т.п.). Технически — `Coercer[Any, T]`-цепочка, обычно
     собираемая через `ChainCoercer(Default(...), ParseInt(), MinValue(1))`.
     Также участвует в построении wire-схемы через `SchemaContributor`.
 
-    `required=True` означает: если значения нет (MISSING) — `Materializer`
-    бросает `FieldPathMissingError`, а `ToolWireSchemaBuilder` добавляет имя
-    поля в JSON-Schema `"required": [...]`. Default: `False`.
+    Обязательность поля выражается в самой цепочке через coercer'ы:
+      * `Required()` (или `NotNull()` для item-level) — если MISSING →
+        `MissingValueError`. `Required()` дополнительно эмитит маркер,
+        который `ToolWireSchemaBuilder` поднимает в `required[]`.
+      * `Default(...)` — substitute MISSING; в JSON-Schema эмитится `default`.
     """
 
     name: str
     coercer: Coercer[Any, T]
     description: str = ""
-    required: bool = False
 
 
 @dataclass(frozen=True)

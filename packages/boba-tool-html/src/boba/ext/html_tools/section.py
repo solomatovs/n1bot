@@ -15,6 +15,7 @@ from boba.coercion import (
     IsString,
     MinValue,
     NonEmpty,
+    Required,
 )
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.html_tools._parse import (
@@ -84,8 +85,7 @@ class HtmlSectionTool(Tool[SectionArgs]):
                 FieldSpec(
                     name="path",
                     description="Путь к HTML-файлу в workspace.",
-                    coercer=ChainCoercer(IsString(), NonEmpty()),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsString(), NonEmpty()),
                 ),
                 FieldSpec(
                     name="anchor",
@@ -93,8 +93,7 @@ class HtmlSectionTool(Tool[SectionArgs]):
                         "Anchor заголовка из html_outline (idx:N или html id). "
                         "Ведущий '#' необязателен."
                     ),
-                    coercer=ChainCoercer(IsString(), NonEmpty()),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsString(), NonEmpty()),
                 ),
                 FieldSpec(
                     name="include_subsections",

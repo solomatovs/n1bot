@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.coercion import ChainCoercer, Default, IsString, NonEmpty
+from boba.coercion import ChainCoercer, Default, IsString, NonEmpty, Required
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.plugin import ExtensionContext
 from boba.plugin.prompt import PromptOverlay
@@ -60,14 +60,12 @@ class WriteTool(Tool[WriteArgs]):
                 FieldSpec(
                     name="path",
                     description="Путь к файлу.",
-                    coercer=ChainCoercer(IsString(), NonEmpty()),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsString(), NonEmpty()),
                 ),
                 FieldSpec(
                     name="content",
                     description="Новое содержимое файла.",
-                    coercer=ChainCoercer(IsString()),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsString()),
                 ),
                 FieldSpec(
                     name="encoding",

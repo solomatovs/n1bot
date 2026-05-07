@@ -16,7 +16,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.coercion import ChainCoercer, Default, OneOf, ParseString
+from boba.coercion import ChainCoercer, Default, OneOf, ParseFloat, ParseString, Required
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.confluence_tools.connection import ConfluenceConnection
 from boba.ext.confluence_tools.page_outline import (
@@ -69,7 +69,35 @@ class ConfluencePlugin(Plugin[ConfluencePluginConfig, ToolSource]):
                 "page_section. Connection — на корне, описания — в overlay'ях."
             ),
             fields=[
-                *ConfluenceConnection.fields(),
+                FieldSpec(
+                    name="base_url",
+                    coercer=ChainCoercer(Required(), ParseString()),
+                    description="URL Confluence (env: ...__BASE_URL).",
+                ),
+                FieldSpec(
+                    name="auth_method",
+                    coercer=ChainCoercer(
+                        Default("pat"),
+                        ParseString(),
+                        OneOf("pat", "basic"),
+                    ),
+                    description="`pat` — Bearer-токен; `basic` — login+password.",
+                ),
+                FieldSpec(
+                    name="auth_user",
+                    coercer=ChainCoercer(Default(""), ParseString()),
+                    description="Логин для basic-auth; для PAT — пусто.",
+                ),
+                FieldSpec(
+                    name="auth_token",
+                    coercer=ChainCoercer(Required(), ParseString()),
+                    description="PAT или пароль (env: ...__AUTH_TOKEN).",
+                ),
+                FieldSpec(
+                    name="timeout_sec",
+                    coercer=ChainCoercer(Default(30.0), ParseFloat()),
+                    description="HTTP-таймаут (сек).",
+                ),
                 FieldSpec(
                     name="body_format",
                     coercer=ChainCoercer(

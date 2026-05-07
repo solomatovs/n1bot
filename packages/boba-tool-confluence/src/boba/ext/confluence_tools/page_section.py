@@ -12,6 +12,7 @@ from boba.coercion import (
     MaxValue,
     MinValue,
     NonEmpty,
+    Required,
 )
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.confluence_tools._http_client import ConfluenceHttpClient
@@ -93,8 +94,7 @@ class ConfluencePageSectionTool(Tool[PageSectionArgs]):
                     description=(
                         "ID страницы Confluence (как в confluence_page_outline)."
                     ),
-                    coercer=ChainCoercer(NonEmpty(), IsString()),
-                    required=True,
+                    coercer=ChainCoercer(Required(), NonEmpty(), IsString()),
                 ),
                 FieldSpec(
                     name="anchor",
@@ -102,14 +102,12 @@ class ConfluencePageSectionTool(Tool[PageSectionArgs]):
                         "Anchor нужного раздела (поле `anchor` из "
                         "confluence_page_outline)."
                     ),
-                    coercer=ChainCoercer(NonEmpty(), IsString()),
-                    required=True,
+                    coercer=ChainCoercer(Required(), NonEmpty(), IsString()),
                 ),
                 FieldSpec(
                     name="max_chars",
                     description="Максимум символов в text-поле ответа (обрезка после).",
-                    coercer=ChainCoercer(IsInt(), MinValue(1), MaxValue(5000000)),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsInt(), MinValue(1), MaxValue(5000000)),
                 ),
             ],
             factory=PageSectionArgs,

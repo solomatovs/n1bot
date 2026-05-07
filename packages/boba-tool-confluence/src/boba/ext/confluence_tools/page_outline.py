@@ -12,6 +12,7 @@ from boba.coercion import (
     MaxValue,
     MinValue,
     NonEmpty,
+    Required,
 )
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.confluence_tools._http_client import ConfluenceHttpClient
@@ -87,16 +88,14 @@ class ConfluencePageOutlineTool(Tool[PageOutlineArgs]):
                         "ID страницы Confluence (число; виден в URL "
                         "viewpage.action?pageId=...)."
                     ),
-                    coercer=ChainCoercer(NonEmpty(), IsString()),
-                    required=True,
+                    coercer=ChainCoercer(Required(), NonEmpty(), IsString()),
                 ),
                 FieldSpec(
                     name="max_headings",
                     description=(
                         "Максимум заголовков в ответе (защита от длинных страниц)."
                     ),
-                    coercer=ChainCoercer(IsInt(), MinValue(1), MaxValue(500)),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsInt(), MinValue(1), MaxValue(500)),
                 ),
             ],
             factory=PageOutlineArgs,

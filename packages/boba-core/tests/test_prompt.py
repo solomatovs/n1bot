@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from boba.coercion import ChainCoercer, NonEmpty, ParseInt, ParseString
+from boba.coercion import ChainCoercer, NonEmpty, ParseInt, ParseString, Required
 from boba.config.bundle import ConfigBundle, FlatConfigMaterializer
 from boba.config.path import ConfigPath
 from boba.config.source import DictSource
@@ -33,15 +33,13 @@ _CANONICAL: ObjectSchema[_SearchArgs] = ObjectSchema(
     fields=[
         FieldSpec(
             name="query",
-            coercer=ChainCoercer(ParseString(), NonEmpty()),
+            coercer=ChainCoercer(Required(), ParseString(), NonEmpty()),
             description="Поисковый запрос.",
-            required=True,
         ),
         FieldSpec(
             name="limit",
-            coercer=ChainCoercer(ParseInt()),
+            coercer=ChainCoercer(Required(), ParseInt()),
             description="Максимум hits.",
-            required=True,
         ),
     ],
     factory=_SearchArgs,
@@ -125,14 +123,15 @@ def test_apply_unknown_field_in_overlay_is_ignored():
     )
 
 
-def test_apply_preserves_field_required_flag_and_coercer():
+def test_apply_preserves_coercer_chain_unchanged():
+    """Overlay меняет только description; coercer-цепочка (включая Required)
+    остаётся той же ссылкой — required-поведение сохраняется."""
     overlay = PromptOverlay(fields={"query": "Q."})
     applied = overlay.apply(_CANONICAL)
     query_f = next(f for f in applied.fields if f.name == "query")
     canonical_query = _CANONICAL.fields[0]
     assert isinstance(query_f, FieldSpec)
     assert isinstance(canonical_query, FieldSpec)
-    assert query_f.required is True
     assert query_f.coercer is canonical_query.coercer
 
 

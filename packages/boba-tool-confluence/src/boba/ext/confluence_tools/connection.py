@@ -6,18 +6,11 @@ httpx-фабрики живут в ext-пакетах (`http_client.py` в runti
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from typing import Protocol
 
 from boba.coercion import (
-    ChainCoercer,
-    Default,
-    OneOf,
-    ParseFloat,
-    ParseString,
     RequiredWhen,
 )
-from boba.declaration import FieldSpec
 from boba.http_transport import BasicAuth, HttpTransport, PatAuth
 
 __all__ = [
@@ -54,41 +47,6 @@ class ConfluenceConnection:
     """Helpers поверх `ConfluenceConnectionConfig`: схема + auth/transport."""
 
     @staticmethod
-    def fields() -> list[FieldSpec]:
-        """5 готовых FieldSpec для встраивания в `ObjectSchema(fields=[...])`."""
-        return [
-            FieldSpec(
-                name="base_url",
-                coercer=ParseString(),
-                required=True,
-                description="URL Confluence (env: ...__BASE_URL).",
-            ),
-            FieldSpec(
-                name="auth_method",
-                coercer=ChainCoercer(
-                    Default("pat"), ParseString(), OneOf("pat", "basic"),
-                ),
-                description="`pat` — Bearer-токен; `basic` — login+password.",
-            ),
-            FieldSpec(
-                name="auth_user",
-                coercer=ChainCoercer(Default(""), ParseString()),
-                description="Логин для basic-auth; для PAT — пусто.",
-            ),
-            FieldSpec(
-                name="auth_token",
-                coercer=ParseString(),
-                required=True,
-                description="PAT или пароль (env: ...__AUTH_TOKEN).",
-            ),
-            FieldSpec(
-                name="timeout_sec",
-                coercer=ChainCoercer(Default(30.0), ParseFloat()),
-                description="HTTP-таймаут (сек).",
-            ),
-        ]
-
-    @staticmethod
     def invariant() -> RequiredWhen:
         """Object-level invariant: при `auth_method=basic` обязателен `auth_user`."""
         return RequiredWhen("auth_method", "basic", "auth_user")
@@ -107,8 +65,3 @@ class ConfluenceConnection:
     @staticmethod
     def make_transport(cfg: ConfluenceConnectionConfig) -> HttpTransport:
         return HttpTransport(timeout_sec=cfg.timeout_sec)
-
-    @classmethod
-    def all_field_names(cls) -> Iterable[str]:
-        """Имена 5 connection-полей — для DTO factory introspection."""
-        return (f.name for f in cls.fields())

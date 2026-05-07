@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.coercion import ChainCoercer, Default, IsBool, IsString, NonEmpty
+from boba.coercion import ChainCoercer, Default, IsBool, IsString, NonEmpty, Required
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.plugin import ExtensionContext
 from boba.plugin.prompt import PromptOverlay
@@ -64,20 +64,17 @@ class EditTool(Tool[EditArgs]):
                 FieldSpec(
                     name="path",
                     description="Путь к файлу.",
-                    coercer=ChainCoercer(IsString(), NonEmpty()),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsString(), NonEmpty()),
                 ),
                 FieldSpec(
                     name="old_string",
                     description="Подстрока для замены. Совпадение точное.",
-                    coercer=ChainCoercer(IsString(), NonEmpty()),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsString(), NonEmpty()),
                 ),
                 FieldSpec(
                     name="new_string",
                     description="Заменяющий текст. Пустая строка = удаление.",
-                    coercer=ChainCoercer(IsString()),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsString()),
                 ),
                 FieldSpec(
                     name="replace_all",

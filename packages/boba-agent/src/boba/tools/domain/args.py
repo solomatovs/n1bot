@@ -16,7 +16,6 @@ from boba.declaration import (
     CollectionShape,
     FieldKind,
     FieldPathError,
-    FieldPathMissingError,
     FieldSpec,
     IndexedShape,
     ItemReader,
@@ -49,11 +48,8 @@ class ToolArgsBuilder(Generic[T]):
                 raise FieldPathError.from_cause(exc, f.name) from exc
 
             if value is MISSING:
-                if isinstance(f, FieldSpec) and f.required:
-                    raise FieldPathMissingError(
-                        f"field {f.name!r}: required value is missing",
-                        field_name=f.name,
-                    )
+                # Поле опциональное (нет ни Default, ни Required в цепочке)
+                # либо ушло в None через Nullable — пропускаем.
                 continue
             validated[f.name] = value
 

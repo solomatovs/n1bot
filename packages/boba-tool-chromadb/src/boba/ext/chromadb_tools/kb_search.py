@@ -14,6 +14,7 @@ from boba.coercion import (
     MaxValue,
     MinLength,
     MinValue,
+    Required,
 )
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.chromadb_tools.kb import ChromaKnowledgeBase
@@ -82,8 +83,7 @@ class KbSearchTool(Tool[KbSearchArgs]):
                 FieldSpec(
                     name="collection",
                     description="Имя коллекции из kb_list_collections.",
-                    coercer=ChainCoercer(IsString(), MinLength(1)),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsString(), MinLength(1)),
                 ),
                 FieldSpec(
                     name="query",
@@ -92,8 +92,7 @@ class KbSearchTool(Tool[KbSearchArgs]):
                         "будет преобразован в embedding и сопоставлен с "
                         "документами коллекции."
                     ),
-                    coercer=ChainCoercer(IsString(), MinLength(1)),
-                    required=True,
+                    coercer=ChainCoercer(Required(), IsString(), MinLength(1)),
                 ),
                 FieldSpec(
                     name="top_k",
