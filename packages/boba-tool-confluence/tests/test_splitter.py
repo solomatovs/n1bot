@@ -6,8 +6,8 @@ import inspect
 
 import pytest
 
-from boba.patterns import ConverterInputError
 from boba.chunking.splitter import TextSplitter
+from boba.patterns import ConverterInputError
 
 
 def test_short_text_yields_single_chunk():
