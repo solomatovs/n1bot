@@ -17,6 +17,7 @@ from boba.config.path import (
     NotFound,
     Segment,
 )
+from boba.config.refs import OriginChain
 from boba.value import ConfigValue
 
 __all__ = ["FlatConfig"]
@@ -24,10 +25,15 @@ __all__ = ["FlatConfig"]
 
 @dataclass(frozen=True)
 class FlatConfig(ConfigSpace):
-    """Единый плоский снимок конфига после мержа всех источников."""
+    """Единый плоский снимок конфига после мержа всех источников.
+
+    `origins` хранит цепочку шагов `OriginChain` для каждого пути:
+    длина 1 — значение из источника напрямую; >1 — цепочка разрешения
+    `@{...}`-ссылок (см. `boba.config.refs`).
+    """
 
     values: Mapping[ConfigPath, ConfigValue]
-    origins: Mapping[ConfigPath, str]
+    origins: Mapping[ConfigPath, OriginChain]
 
     def lookup(self, path: ConfigPath) -> ConfigLookup[ConfigValue]:
         if path in self.values:
@@ -35,9 +41,18 @@ class FlatConfig(ConfigSpace):
         return NotFound()
 
     def origin_of(self, path: ConfigPath) -> ConfigLookup[str]:
-        if path in self.origins:
-            return Found(self.origins[path])
-        return NotFound()
+        """Имя источника, из которого взято финальное значение path."""
+        chain = self.origins.get(path)
+        if not chain:
+            return NotFound()
+        return Found(chain[-1].source)
+
+    def origin_chain_of(self, path: ConfigPath) -> ConfigLookup[OriginChain]:
+        """Полная цепочка origin-шагов: от ref-узла к финалу."""
+        chain = self.origins.get(path)
+        if chain is None:
+            return NotFound()
+        return Found(chain)
 
     def keys_under(self, prefix: ConfigPath) -> Iterable[ConfigPath]:
         """Все известные leaf-пути под prefix (включая глубокие)."""

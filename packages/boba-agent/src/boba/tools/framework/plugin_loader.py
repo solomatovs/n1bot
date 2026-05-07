@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from boba.config.app import AppConfig, ConfigError
-from boba.tools.framework.registry import ToolFactory, ToolSource, ToolsService
+from boba.tools.framework.registry import ToolSource, ToolsService
 
 __all__ = [
     "ENTRY_POINTS_GROUP",
@@ -65,12 +65,7 @@ class ToolPluginLoader:
         return self._tools_service
 
     def _build_tools_service(self) -> ToolsService:
-        factory = ToolFactory()
-        for source in self._tool_sources:
-            factory.register(source)
-        service = ToolsService(factory)
-        service.rebuild_catalog()
-        return service
+        return ToolsService.from_sources(self._tool_sources)
 
     def _discover(self) -> None:
         for ep in importlib.metadata.entry_points(group=ENTRY_POINTS_GROUP):

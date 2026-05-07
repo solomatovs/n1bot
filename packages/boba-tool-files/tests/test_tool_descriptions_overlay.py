@@ -153,7 +153,7 @@ def test_runtime_setting_overridden_via_toml():
     cat = _cat_tool(app)
     cfg: CatToolConfig = cat._cfg  # type: ignore[attr-defined]
     assert cfg.max_lines == 555
-0
+
 
 def test_cat_tool_can_be_instantiated_directly():
     """Sanity: CatTool(CatToolConfig(...)) работает без AppConfig (для unit-тестов)."""

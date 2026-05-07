@@ -117,16 +117,16 @@ class ToolFactory(
 class ToolsService(Executor[ToolContext, ToolCall, ToolResult]):
     """Диспетчер tool-вызовов над ToolCatalog; ошибки → ToolExecutionError."""
 
-    def __init__(
-        self,
-        factory: ToolFactory,
-    ) -> None:
-        self._factory = factory
-        self._catalog: ToolCatalog = ToolCatalog([])
+    def __init__(self, catalog: ToolCatalog) -> None:
+        self._catalog = catalog
 
-    def rebuild_catalog(self) -> None:
-        """Пересобрать каталог из источников фабрики."""
-        self._catalog = self._factory.build()
+    @classmethod
+    def from_sources(cls, sources: Iterable[ToolSource]) -> ToolsService:
+        """Удобный one-shot: собрать ToolsService из набора ToolSource'ов."""
+        factory = ToolFactory()
+        for source in sources:
+            factory.register(source)
+        return cls(factory.build())
 
     def tools(self) -> Iterable[Tool[Any]]:
         """Все собранные инструменты — если нужны и id, и definition."""
