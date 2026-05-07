@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+from boba.chunking.sliding import SlidingChunker, SlidingChunkerConfig
 from boba.indexing import ChunkerId
 from boba.processing import IndexingContext, PipelineId, Section
-from boba.chunking.sliding import SlidingChunker
-from boba.chunking.sliding import SlidingChunkerConfig
 
 
 def _ctx() -> IndexingContext:

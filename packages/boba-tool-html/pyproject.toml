@@ -3,7 +3,7 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "boba-ext-html-tools"
+name = "boba-tool-html"
 version = "0.1.0"
 description = "Boba HTML navigation tools: outline + section reading via workspace files."
 requires-python = ">=3.11,<4"

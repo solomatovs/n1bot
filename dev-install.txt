@@ -4,32 +4,18 @@
 
 # core/foundation
 -e ./packages/boba-core
--e ./packages/boba-chunking
 
 # indexing domain
 -e ./packages/boba-indexing
--e ./packages/boba-processing
 
 # agent runtime (LLM contracts + tools framework + adapters)
 -e ./packages/boba-agent
 
-# shared parsers (libs)
--e ./packages/boba-html-parser
-
-# transports (libs)
--e ./packages/boba-http-transport
-
-# readers (libs)
--e ./packages/boba-html-reader
-
-# tool extensions (boba.tools entry-point)
--e ./packages/boba-ext-files-tools
--e ./packages/boba-ext-html-tools
--e ./packages/boba-ext-confluence-tools
--e ./packages/boba-ext-chromadb-tools
-
-# indexing pipelines (libs)
--e ./packages/boba-fs-pipelines
+# tools (boba.tools entry-point)
+-e ./packages/boba-tool-files
+-e ./packages/boba-tool-html
+-e ./packages/boba-tool-confluence
+-e ./packages/boba-tool-chromadb
 
 # entry-point apps
 -e ./packages/boba-cli-agent-run

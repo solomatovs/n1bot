@@ -3,7 +3,7 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "boba-ext-chromadb-tools"
+name = "boba-tool-chromadb"
 version = "0.1.0"
 description = "Boba ChromaDB: read-only kb-tools (kb_search, kb_list_collections), write-side ChromadbPersistStore, общий config (persist_path + embedding)."
 requires-python = ">=3.11,<4"
