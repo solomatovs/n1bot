@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import ClassVar
 
 from bs4.element import Tag
@@ -16,9 +15,7 @@ from boba.coercion import (
     IsString,
     MinValue,
     NonEmpty,
-    ParseString,
 )
-from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.html_tools._parse import (
     Heading,
@@ -26,8 +23,9 @@ from boba.ext.html_tools._parse import (
     load_soup,
     resolve_anchor,
 )
+from boba.plugin import ExtensionContext
+from boba.plugin.prompt import PromptOverlay
 from boba.tools.domain import (
-    ParamOverlay,
     TextResult,
     Tool,
     ToolContext,
@@ -35,13 +33,13 @@ from boba.tools.domain import (
     ToolId,
     ToolResult,
     ToolSourceId,
-    param_desc,
-    params_field,
 )
 from boba.workspace import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
+
+__all__ = ["HtmlSectionTool", "HtmlSectionToolConfig"]
 
 
 @dataclass(frozen=True)
@@ -54,38 +52,20 @@ class SectionArgs:
 
 @dataclass(frozen=True)
 class HtmlSectionToolConfig:
-    """DTO секции [ext.html.tools.html_section]."""
+    """DTO tool'а: только prompt overlay."""
 
-    description: str
-    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+    prompt: PromptOverlay
 
 
 class HtmlSectionTool(Tool[SectionArgs]):
     """HTML фрагмент раздела от заголовка до следующего заголовка."""
 
-    _ID = ToolId("html_section")
-    _SOURCE = ToolSourceId("builtin.html")
+    _ID: ClassVar[ToolId] = ToolId("html_section")
+    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.html")
 
-    DEFAULT_DESCRIPTION: ClassVar[str] = (
-        "Вернуть HTML-фрагмент раздела от выбранного заголовка до "
-        "следующего. anchor берётся из html_outline (idx:N или html-id; "
-        "ведущий # необязателен). Содержимое возвращается как есть, "
-        "без преобразований в markdown/текст."
-    )
-    DEFAULT_PATH_DESC: ClassVar[str] = "Путь к HTML-файлу в workspace."
-    DEFAULT_ANCHOR_DESC: ClassVar[str] = (
-        "Anchor заголовка из html_outline (idx:N или html id). "
-        "Ведущий '#' необязателен."
-    )
-    DEFAULT_INCLUDE_SUBSECTIONS_DESC: ClassVar[str] = (
-        "true — включать вложенные подзаголовки (стоп на "
-        "следующем заголовке того же или меньшего уровня); "
-        "false — стоп на любом следующем заголовке."
-    )
-    DEFAULT_MAX_CHARS_DESC: ClassVar[str] = "Лимит длины ответа в символах."
-
-    def __init__(self, cfg: HtmlSectionToolConfig) -> None:
+    def __init__(self, cfg: HtmlSectionToolConfig, ctx: ExtensionContext) -> None:
         self._cfg = cfg
+        self._ctx = ctx
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -94,43 +74,46 @@ class HtmlSectionTool(Tool[SectionArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[SectionArgs]:
-        p = self._cfg.params
-        return ObjectSchema(
-            description=self._cfg.description,
+        return self._cfg.prompt.apply(ObjectSchema(
+            description=(
+                "Вернуть HTML-фрагмент раздела от выбранного заголовка до "
+                "следующего. anchor берётся из html_outline (idx:N или html-id; "
+                "ведущий # необязателен). Содержимое возвращается как есть, "
+                "без преобразований в markdown/текст."
+            ),
             fields=[
                 FieldSpec(
                     name="path",
-                    description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
+                    description="Путь к HTML-файлу в workspace.",
                     coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
                     name="anchor",
-                    description=param_desc(
-                        p, "anchor", self.DEFAULT_ANCHOR_DESC
+                    description=(
+                        "Anchor заголовка из html_outline (idx:N или html id). "
+                        "Ведущий '#' необязателен."
                     ),
                     coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
                     name="include_subsections",
-                    description=param_desc(
-                        p,
-                        "include_subsections",
-                        self.DEFAULT_INCLUDE_SUBSECTIONS_DESC,
+                    description=(
+                        "true — включать вложенные подзаголовки (стоп на "
+                        "следующем заголовке того же или меньшего уровня); "
+                        "false — стоп на любом следующем заголовке."
                     ),
                     coercer=ChainCoercer(Default(True), IsBool()),
                 ),
                 FieldSpec(
                     name="max_chars",
-                    description=param_desc(
-                        p, "max_chars", self.DEFAULT_MAX_CHARS_DESC
-                    ),
+                    description="Лимит длины ответа в символах.",
                     coercer=ChainCoercer(Default(8000), IsInt(), MinValue(100)),
                 ),
             ],
             factory=SectionArgs,
-        )
+        ))
 
     def execute(self, ctx: ToolContext, req: SectionArgs) -> ToolResult:
         try:
@@ -156,8 +139,8 @@ class HtmlSectionTool(Tool[SectionArgs]):
             )
 
         target_idx = headings.index(target)
-        stop = _find_stop_heading(headings, target_idx, req.include_subsections)
-        html = _collect_section_html(target.tag, stop.tag if stop else None)
+        stop = self._find_stop_heading(headings, target_idx, req.include_subsections)
+        html = self._collect_section_html(target.tag, stop.tag if stop else None)
 
         if len(html) > req.max_chars:
             html = (
@@ -167,56 +150,33 @@ class HtmlSectionTool(Tool[SectionArgs]):
 
         return TextResult(text=html)
 
-
-def _find_stop_heading(
-    headings: list[Heading],
-    target_idx: int,
-    include_subsections: bool,
-) -> Heading | None:
-    target = headings[target_idx]
-    for h in headings[target_idx + 1 :]:
-        if include_subsections:
-            if h.level <= target.level:
+    @staticmethod
+    def _find_stop_heading(
+        headings: list[Heading],
+        target_idx: int,
+        include_subsections: bool,
+    ) -> Heading | None:
+        target = headings[target_idx]
+        for h in headings[target_idx + 1 :]:
+            if include_subsections:
+                if h.level <= target.level:
+                    return h
+            else:
                 return h
-        else:
-            return h
-    return None
+        return None
 
-
-def _collect_section_html(start: Tag, stop: Tag | None) -> str:
-    """Sibling'и start (включая) до stop или конца parent'а; stop в descendants — обрезаем."""
-    parts: list[str] = [str(start)]
-    for sib in start.next_siblings:
-        if stop is not None and sib is stop:
-            break
-        if (
-            stop is not None
-            and isinstance(sib, Tag)
-            and any(d is stop for d in sib.descendants)
-        ):
-            break
-        parts.append(str(sib))
-    return "".join(parts)
-
-
-class HtmlSectionToolSection(ConfigSection[HtmlSectionToolConfig]):
-    """Секция [ext.html.tools.html_section]."""
-
-    namespace: ClassVar[tuple[str, ...]] = (
-        "ext", "html", "tools", "html_section",
-    )
-
-    schema: ClassVar[ObjectSchema[HtmlSectionToolConfig]] = ObjectSchema(
-        description="Конфиг tool 'html_section'.",
-        fields=[
-            FieldSpec(
-                name="description",
-                coercer=ChainCoercer(
-                    Default(HtmlSectionTool.DEFAULT_DESCRIPTION), ParseString()
-                ),
-                description="Override описания tool'а; пусто — дефолт из кода.",
-            ),
-            params_field("params"),
-        ],
-        factory=HtmlSectionToolConfig,
-    )
+    @staticmethod
+    def _collect_section_html(start: Tag, stop: Tag | None) -> str:
+        """Sibling'и start (включая) до stop или конца parent'а."""
+        parts: list[str] = [str(start)]
+        for sib in start.next_siblings:
+            if stop is not None and sib is stop:
+                break
+            if (
+                stop is not None
+                and isinstance(sib, Tag)
+                and any(d is stop for d in sib.descendants)
+            ):
+                break
+            parts.append(str(sib))
+        return "".join(parts)

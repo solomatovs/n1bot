@@ -14,14 +14,8 @@ dependencies = [
     "chromadb>=0.5",
 ]
 
-[project.entry-points."boba.tools"]
-chromadb_tools = "boba.ext.chromadb_tools:register_tools"
-
-[project.entry-points."boba.config_sections"]
-chromadb_shared = "boba.ext.chromadb_tools.shared:ChromadbSharedSection"
-chromadb_tools = "boba.ext.chromadb_tools.config:ChromadbToolsSection"
-chromadb_kb_list_collections = "boba.ext.chromadb_tools.kb_list_collections:KbListCollectionsToolSection"
-chromadb_kb_search = "boba.ext.chromadb_tools.kb_search:KbSearchToolSection"
+[project.entry-points."boba.plugins"]
+chromadb = "boba.ext.chromadb_tools.plugin:ChromadbPlugin"
 
 [tool.setuptools.packages.find]
 where = ["src"]

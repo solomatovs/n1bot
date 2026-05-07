@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.coercion import ChainCoercer, Default, IsString, NonEmpty, ParseString
-from boba.config.section import ConfigSection
+from boba.coercion import ChainCoercer, IsString, NonEmpty
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.plugin import ExtensionContext
+from boba.plugin.prompt import PromptOverlay
 from boba.tools.domain import (
-    ParamOverlay,
     TextResult,
     Tool,
     ToolContext,
@@ -18,13 +17,10 @@ from boba.tools.domain import (
     ToolId,
     ToolResult,
     ToolSourceId,
-    param_desc,
-    params_field,
 )
-from boba.workspace import (
-    WorkspaceError,
-    WorkspaceNotFoundError,
-)
+from boba.workspace import WorkspaceError, WorkspaceNotFoundError
+
+__all__ = ["MvTool", "MvToolConfig"]
 
 
 @dataclass(frozen=True)
@@ -35,29 +31,18 @@ class MvArgs:
 
 @dataclass(frozen=True)
 class MvToolConfig:
-    """DTO секции [ext.files.tools.mv]."""
-
-    description: str
-    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+    prompt: PromptOverlay
 
 
 class MvTool(Tool[MvArgs]):
     """Переместить/переименовать файл или директорию."""
 
-    _ID = ToolId("mv")
-    _SOURCE = ToolSourceId("builtin.files")
+    _ID: ClassVar[ToolId] = ToolId("mv")
+    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.files")
 
-    DEFAULT_DESCRIPTION: ClassVar[str] = (
-        "Переместить или переименовать файл/директорию. Если dst — "
-        "существующая директория, src переносится внутрь. Файл по "
-        "пути dst перезаписывается. Промежуточные директории не "
-        "создаются."
-    )
-    DEFAULT_SRC_DESC: ClassVar[str] = "Путь источника."
-    DEFAULT_DST_DESC: ClassVar[str] = "Путь назначения."
-
-    def __init__(self, cfg: MvToolConfig) -> None:
+    def __init__(self, cfg: MvToolConfig, ctx: ExtensionContext) -> None:
         self._cfg = cfg
+        self._ctx = ctx
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -66,25 +51,29 @@ class MvTool(Tool[MvArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[MvArgs]:
-        p = self._cfg.params
-        return ObjectSchema(
-            description=self._cfg.description,
+        return self._cfg.prompt.apply(ObjectSchema(
+            description=(
+                "Переместить или переименовать файл/директорию. Если dst — "
+                "существующая директория, src переносится внутрь. Файл по "
+                "пути dst перезаписывается. Промежуточные директории не "
+                "создаются."
+            ),
             fields=[
                 FieldSpec(
                     name="src",
-                    description=param_desc(p, "src", self.DEFAULT_SRC_DESC),
+                    description="Путь источника.",
                     coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
                     name="dst",
-                    description=param_desc(p, "dst", self.DEFAULT_DST_DESC),
+                    description="Путь назначения.",
                     coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
             ],
             factory=MvArgs,
-        )
+        ))
 
     def execute(self, ctx: ToolContext, req: MvArgs) -> ToolResult:
         try:
@@ -100,24 +89,3 @@ class MvTool(Tool[MvArgs]):
                 message=f"Ошибка перемещения: {e}",
             ) from e
         return TextResult(text=f"Перемещено: {req.src} → {req.dst}")
-
-
-class MvToolSection(ConfigSection[MvToolConfig]):
-    """Секция [ext.files.tools.mv]."""
-
-    namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "mv")
-
-    schema: ClassVar[ObjectSchema[MvToolConfig]] = ObjectSchema(
-        description="Конфиг tool 'mv'.",
-        fields=[
-            FieldSpec(
-                name="description",
-                coercer=ChainCoercer(
-                    Default(MvTool.DEFAULT_DESCRIPTION), ParseString()
-                ),
-                description="Override описания tool'а; пусто — дефолт из кода.",
-            ),
-            params_field("params"),
-        ],
-        factory=MvToolConfig,
-    )

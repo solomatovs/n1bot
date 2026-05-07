@@ -1,13 +1,13 @@
 """Plugin-протокол: декларация конфигурации + сборка артефакта.
 
 Plugin — структурный протокол. Класс плагина должен иметь:
-  * `NAME: ClassVar[StrId]` — имя плагина (mount path = `$tool.<NAME>`);
+  * `NAME: ClassVar[StrId]` — имя плагина (mount path = `tool.<NAME>`);
   * classmethod `config()` — возвращает `ObjectSchema` всей секции плагина;
   * classmethod `build(cfg, ctx) -> Out` — фабрика артефакта (`ToolSource`,
     `Pipeline`, ...) из материализованного DTO.
 
 Соглашения convention-уровня:
-  * mount path плагина — `$tool.<NAME>` (см. `mount_path_for`);
+  * mount path плагина — `tool.<NAME>` (см. `mount_path_for`);
   * подключение управляется флагом `enable` рядом с конфигом плагина;
     `enable` не объявляется в `config()` — это convention app
     (см. `is_enabled`);
@@ -61,8 +61,8 @@ class Plugin(Protocol):
 
 
 def mount_path_for(plugin_name: StrId) -> ConfigPath:
-    """Convention: каждый плагин монтируется под `$tool.<name>`."""
-    return ConfigPath.parse(f"$tool.{plugin_name.to_wire()}")
+    """Convention: каждый плагин монтируется под `tool.<name>`."""
+    return ConfigPath.parse(f"tool.{plugin_name.to_wire()}")
 
 
 def is_enabled(bundle: ConfigBundle, mount: ConfigPath) -> bool:
@@ -91,5 +91,7 @@ def install_plugins(
         mount = mount_path_for(plugin_cls.NAME)
         if not is_enabled(bundle, mount):
             continue
-        cfg = bundle.materialize(plugin_cls.config(), mount)
-        yield plugin_cls.build(cfg, ctx)
+
+        yield plugin_cls.build(
+            bundle.materialize(mount, plugin_cls.config()), ctx
+        )

@@ -2,24 +2,23 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.coercion import ChainCoercer, Default, ParseString
-from boba.config.section import ConfigSection
-from boba.declaration import FieldSpec, ObjectSchema
+from boba.declaration import ObjectSchema
 from boba.ext.chromadb_tools.kb import ChromaKnowledgeBase
+from boba.plugin import ExtensionContext
+from boba.plugin.prompt import PromptOverlay
 from boba.tools.domain import (
     JsonResult,
-    ParamOverlay,
     Tool,
     ToolContext,
     ToolId,
     ToolResult,
     ToolSourceId,
-    params_field,
 )
+
+__all__ = ["KbListCollectionsTool", "KbListCollectionsToolConfig"]
 
 
 @dataclass(frozen=True)
@@ -29,32 +28,26 @@ class KbListCollectionsArgs:
 
 @dataclass(frozen=True)
 class KbListCollectionsToolConfig:
-    """DTO секции [ext.chromadb.tools.kb_list_collections]."""
+    """DTO tool'а: только prompt overlay."""
 
-    description: str
-    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+    prompt: PromptOverlay
 
 
 class KbListCollectionsTool(Tool[KbListCollectionsArgs]):
     """Возвращает JSON [{name, description}] доступных коллекций."""
 
-    _ID = ToolId("kb_list_collections")
-    _SOURCE = ToolSourceId("ext.chromadb_tools")
-
-    DEFAULT_DESCRIPTION: ClassVar[str] = (
-        "Список доступных knowledge-base коллекций ChromaDB. "
-        "Возвращает JSON-массив объектов "
-        "{name, description}. Используй перед kb_search чтобы "
-        "выбрать подходящую коллекцию."
-    )
+    _ID: ClassVar[ToolId] = ToolId("kb_list_collections")
+    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.chromadb")
 
     def __init__(
         self,
         kb: ChromaKnowledgeBase,
         cfg: KbListCollectionsToolConfig,
+        ctx: ExtensionContext,
     ) -> None:
         self._kb = kb
         self._cfg = cfg
+        self._ctx = ctx
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -63,11 +56,15 @@ class KbListCollectionsTool(Tool[KbListCollectionsArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[KbListCollectionsArgs]:
-        return ObjectSchema(
-            description=self._cfg.description,
+        return self._cfg.prompt.apply(ObjectSchema(
+            description=(
+                "Список доступных knowledge-base коллекций ChromaDB. "
+                "Возвращает JSON-массив объектов {name, description}. "
+                "Используй перед kb_search чтобы выбрать подходящую коллекцию."
+            ),
             fields=[],
             factory=KbListCollectionsArgs,
-        )
+        ))
 
     def execute(self, ctx: ToolContext, req: KbListCollectionsArgs) -> ToolResult:
         del ctx, req
@@ -76,30 +73,3 @@ class KbListCollectionsTool(Tool[KbListCollectionsArgs]):
             for c in self._kb.list_collections()
         ]
         return JsonResult(payload=items)
-
-
-class KbListCollectionsToolSection(ConfigSection[KbListCollectionsToolConfig]):
-    """Секция [ext.chromadb.tools.kb_list_collections]."""
-
-    namespace: ClassVar[tuple[str, ...]] = (
-        "ext",
-        "chromadb",
-        "tools",
-        "kb_list_collections",
-    )
-
-    schema: ClassVar[ObjectSchema[KbListCollectionsToolConfig]] = ObjectSchema(
-        description="Конфиг tool 'kb_list_collections'.",
-        fields=[
-            FieldSpec(
-                name="description",
-                coercer=ChainCoercer(
-                    Default(KbListCollectionsTool.DEFAULT_DESCRIPTION),
-                    ParseString(),
-                ),
-                description="Override описания tool'а; пусто — дефолт из кода.",
-            ),
-            params_field("params"),
-        ],
-        factory=KbListCollectionsToolConfig,
-    )

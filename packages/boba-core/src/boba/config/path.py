@@ -1,4 +1,4 @@
-"""ConfigPath: JsonPath-like адресация ($a.b[0].c) для плоского конфиг-пространства.
+"""ConfigPath: иерархическая адресация (a.b[0].c) для плоского конфиг-пространства.
 
 Сегменты — полиморфные: каждый подкласс Segment знает, как себя:
   - распознать в строке (match_at),
@@ -7,6 +7,9 @@
 
 Добавление нового типа сегмента сводится к описанию нового подкласса
 Segment и регистрации его в SEGMENT_TYPES — никаких if/elif в ConfigPath.
+
+Корневой путь рендерится как пустая строка; legacy-префикс `$`
+принимается в `parse` для обратной совместимости и игнорируется.
 """
 
 from __future__ import annotations
@@ -162,9 +165,9 @@ class ConfigPath:
 
     @classmethod
     def parse(cls, source: str) -> Self:
-        if not source.startswith("$"):
-            raise ConfigPathParseError(source, "must start with '$'")
-        body = source[1:]
+        # Legacy: исторический префикс `$` остаётся валидным, но в новом
+        # коде идиоматичный путь — без него: "a.b[0].c".
+        body = source[1:] if source.startswith("$") else source
         if not body:
             return cls.root()
         # Первый именованный сегмент допускается без ведущей точки —
@@ -213,7 +216,7 @@ class ConfigPath:
         return self._segments[index]
 
     def render(self) -> str:
-        parts = ["$"]
+        parts: list[str] = []
         for i, seg in enumerate(self._segments):
             if i > 0:
                 parts.append(seg.separator())

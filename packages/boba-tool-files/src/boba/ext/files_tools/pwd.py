@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.coercion import ChainCoercer, Default, ParseString
-from boba.config.section import ConfigSection
-from boba.declaration import FieldSpec, ObjectSchema
+from boba.declaration import ObjectSchema
+from boba.plugin import ExtensionContext
+from boba.plugin.prompt import PromptOverlay
 from boba.tools.domain import (
     TextResult,
     Tool,
@@ -17,6 +17,8 @@ from boba.tools.domain import (
     ToolSourceId,
 )
 
+__all__ = ["PwdTool", "PwdToolConfig"]
+
 
 @dataclass(frozen=True)
 class PwdArgs:
@@ -25,21 +27,18 @@ class PwdArgs:
 
 @dataclass(frozen=True)
 class PwdToolConfig:
-    """DTO секции [ext.files.tools.pwd]."""
-
-    description: str
+    prompt: PromptOverlay
 
 
 class PwdTool(Tool[PwdArgs]):
     """Возвращает путь текущей директории."""
 
-    _ID = ToolId("pwd")
-    _SOURCE = ToolSourceId("builtin.files")
+    _ID: ClassVar[ToolId] = ToolId("pwd")
+    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.files")
 
-    DEFAULT_DESCRIPTION: ClassVar[str] = "Вернуть путь текущей директории."
-
-    def __init__(self, cfg: PwdToolConfig) -> None:
+    def __init__(self, cfg: PwdToolConfig, ctx: ExtensionContext) -> None:
         self._cfg = cfg
+        self._ctx = ctx
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -48,32 +47,12 @@ class PwdTool(Tool[PwdArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[PwdArgs]:
-        return ObjectSchema(
-            description=self._cfg.description,
+        return self._cfg.prompt.apply(ObjectSchema(
+            description="Вернуть путь текущей директории.",
             fields=[],
             factory=PwdArgs,
-        )
+        ))
 
     def execute(self, ctx: ToolContext, req: PwdArgs) -> ToolResult:
         del req
         return TextResult(text=ctx.project_workspace.cwd)
-
-
-class PwdToolSection(ConfigSection[PwdToolConfig]):
-    """Секция [ext.files.tools.pwd]."""
-
-    namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "pwd")
-
-    schema: ClassVar[ObjectSchema[PwdToolConfig]] = ObjectSchema(
-        description="Конфиг tool 'pwd'.",
-        fields=[
-            FieldSpec(
-                name="description",
-                coercer=ChainCoercer(
-                    Default(PwdTool.DEFAULT_DESCRIPTION), ParseString()
-                ),
-                description="Override описания tool'а; пусто — дефолт из кода.",
-            ),
-        ],
-        factory=PwdToolConfig,
-    )

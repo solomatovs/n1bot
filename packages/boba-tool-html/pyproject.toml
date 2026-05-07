@@ -14,13 +14,8 @@ dependencies = [
     "lxml>=5.0",
 ]
 
-[project.entry-points."boba.tools"]
-html = "boba.ext.html_tools:register_tools"
-
-[project.entry-points."boba.config_sections"]
-html = "boba.ext.html_tools.config:HtmlSection"
-html_outline = "boba.ext.html_tools.outline:HtmlOutlineToolSection"
-html_section = "boba.ext.html_tools.section:HtmlSectionToolSection"
+[project.entry-points."boba.plugins"]
+html = "boba.ext.html_tools.plugin:HtmlPlugin"
 
 [tool.setuptools.packages.find]
 where = ["src"]

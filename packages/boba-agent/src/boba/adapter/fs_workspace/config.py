@@ -1,4 +1,4 @@
-"""Конфиг-секция файлового workspace-адаптера."""
+"""DTO файлового workspace-адаптера: WorkspaceLayout + SCHEMA."""
 
 from __future__ import annotations
 
@@ -7,8 +7,9 @@ from pathlib import Path
 from typing import ClassVar
 
 from boba.coercion import ChainCoercer, Default, ParseString
-from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+
+__all__ = ["WorkspaceLayout"]
 
 
 @dataclass(frozen=True)
@@ -20,38 +21,35 @@ class WorkspaceLayout:
     system_subdir: str = "system"
     tmp_subdir: str = "tmp"
 
+    SCHEMA: ClassVar[ObjectSchema[WorkspaceLayout]]
+
     def root(self) -> Path:
         return Path(self.base_dir)
 
 
-class WorkspacesSection(ConfigSection[WorkspaceLayout]):
-    """Раскладка namespace'ов workspace'а относительно base_dir."""
-
-    namespace: ClassVar[tuple[str, ...]] = ("workspaces",)
-
-    schema: ClassVar[ObjectSchema[WorkspaceLayout]] = ObjectSchema(
-        description="Раскладка namespace'ов workspace'а относительно base_dir.",
-        fields=[
-            FieldSpec(
-                name="base_dir",
-                coercer=ChainCoercer(Default("./workspaces"), ParseString()),
-                description="Корневая директория всех workspace-namespace'ов.",
-            ),
-            FieldSpec(
-                name="user_subdir",
-                coercer=ChainCoercer(Default("user"), ParseString()),
-                description="Имя поддиректории user-workspace'а внутри base_dir.",
-            ),
-            FieldSpec(
-                name="system_subdir",
-                coercer=ChainCoercer(Default("system"), ParseString()),
-                description="Имя поддиректории system-workspace'а внутри base_dir.",
-            ),
-            FieldSpec(
-                name="tmp_subdir",
-                coercer=ChainCoercer(Default("tmp"), ParseString()),
-                description="Имя поддиректории tmp-workspace'а внутри base_dir.",
-            ),
-        ],
-        factory=WorkspaceLayout,
-    )
+WorkspaceLayout.SCHEMA = ObjectSchema(
+    description="Раскладка namespace'ов workspace'а относительно base_dir.",
+    fields=[
+        FieldSpec(
+            name="base_dir",
+            coercer=ChainCoercer(Default("./workspaces"), ParseString()),
+            description="Корневая директория всех workspace-namespace'ов.",
+        ),
+        FieldSpec(
+            name="user_subdir",
+            coercer=ChainCoercer(Default("user"), ParseString()),
+            description="Имя поддиректории user-workspace'а внутри base_dir.",
+        ),
+        FieldSpec(
+            name="system_subdir",
+            coercer=ChainCoercer(Default("system"), ParseString()),
+            description="Имя поддиректории system-workspace'а внутри base_dir.",
+        ),
+        FieldSpec(
+            name="tmp_subdir",
+            coercer=ChainCoercer(Default("tmp"), ParseString()),
+            description="Имя поддиректории tmp-workspace'а внутри base_dir.",
+        ),
+    ],
+    factory=WorkspaceLayout,
+)

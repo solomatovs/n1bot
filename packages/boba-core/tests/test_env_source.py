@@ -11,7 +11,7 @@ from boba.value import StringValue
 
 def test_simple_two_segments():
     snap = EnvSource({"BOBA_AGENT__MAX_ITERATIONS": "200"}).load()
-    assert snap == {ConfigPath.parse("$agent.max_iterations"): StringValue("200")}
+    assert snap == {ConfigPath.parse("agent.max_iterations"): StringValue("200")}
 
 
 def test_nested_extension_path():
@@ -21,24 +21,24 @@ def test_nested_extension_path():
         }
     ).load()
     assert snap == {
-        ConfigPath.parse("$ext.chromadb.tools.kb_search.enabled"): StringValue("true"),
+        ConfigPath.parse("ext.chromadb.tools.kb_search.enabled"): StringValue("true"),
     }
 
 
 def test_index_segment_from_digits():
     snap = EnvSource({"BOBA_MODELS__0": "qwen3"}).load()
-    assert snap == {ConfigPath.parse("$models[0]"): StringValue("qwen3")}
+    assert snap == {ConfigPath.parse("models[0]"): StringValue("qwen3")}
 
 
 def test_underscores_inside_segment_preserved():
     snap = EnvSource({"BOBA_AGENT__MAX_ITERATIONS": "200"}).load()
     # Внутри сегмента подчёркивание сохраняется (max_iterations).
-    assert ConfigPath.parse("$agent.max_iterations") in snap
+    assert ConfigPath.parse("agent.max_iterations") in snap
 
 
 def test_non_boba_keys_ignored():
     snap = EnvSource({"PATH": "/usr", "BOBA_X": "y"}).load()
-    assert ConfigPath.parse("$x") in snap
+    assert ConfigPath.parse("x") in snap
     assert all("path" not in p.render() for p in snap)
 
 
@@ -47,7 +47,7 @@ def test_env_file_source_reads_secret(tmp_path: Path):
     secret.write_text("token-123\n", encoding="utf-8")
     snap = EnvFileSource({"BOBA_LLM__API_KEY_FILE": str(secret)}).load()
     assert snap == {
-        ConfigPath.parse("$llm.api_key"): StringValue("token-123"),
+        ConfigPath.parse("llm.api_key"): StringValue("token-123"),
     }
 
 

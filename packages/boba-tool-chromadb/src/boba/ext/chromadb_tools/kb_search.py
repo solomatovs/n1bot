@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import ClassVar
 
 from boba.coercion import (
@@ -14,23 +14,21 @@ from boba.coercion import (
     MaxValue,
     MinLength,
     MinValue,
-    ParseInt,
-    ParseString,
 )
-from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.chromadb_tools.kb import ChromaKnowledgeBase
+from boba.plugin import ExtensionContext
+from boba.plugin.prompt import PromptOverlay
 from boba.tools.domain import (
     JsonResult,
-    ParamOverlay,
     Tool,
     ToolContext,
     ToolId,
     ToolResult,
     ToolSourceId,
-    param_desc,
-    params_field,
 )
+
+__all__ = ["KbSearchTool", "KbSearchToolConfig"]
 
 
 @dataclass(frozen=True)
@@ -42,41 +40,27 @@ class KbSearchArgs:
 
 @dataclass(frozen=True)
 class KbSearchToolConfig:
-    """DTO секции [ext.chromadb.tools.kb_search]."""
+    """DTO tool'а: max_top_k предел + prompt overlay."""
 
-    description: str
     max_top_k: int
-    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+    prompt: PromptOverlay
 
 
 class KbSearchTool(Tool[KbSearchArgs]):
     """Возвращает JSON [{id, distance, metadata, snippet}] top-k hits."""
 
-    _ID = ToolId("kb_search")
-    _SOURCE = ToolSourceId("ext.chromadb_tools")
-
-    DEFAULT_DESCRIPTION: ClassVar[str] = (
-        "Semantic search по KB-коллекции ChromaDB. Возвращает "
-        "JSON-массив hits {id, distance, metadata, snippet}, "
-        "упорядоченный по релевантности (меньшее distance = "
-        "ближе). Перед вызовом узнай доступные коллекции через "
-        "kb_list_collections."
-    )
-    DEFAULT_COLLECTION_DESC: ClassVar[str] = "Имя коллекции из kb_list_collections."
-    DEFAULT_QUERY_DESC: ClassVar[str] = (
-        "Поисковый запрос на естественном языке — "
-        "будет преобразован в embedding и сопоставлен "
-        "с документами коллекции."
-    )
-    DEFAULT_MAX_TOP_K: ClassVar[int] = 20
+    _ID: ClassVar[ToolId] = ToolId("kb_search")
+    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.chromadb")
 
     def __init__(
         self,
         kb: ChromaKnowledgeBase,
         cfg: KbSearchToolConfig,
+        ctx: ExtensionContext,
     ) -> None:
         self._kb = kb
         self._cfg = cfg
+        self._ctx = ctx
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -85,29 +69,37 @@ class KbSearchTool(Tool[KbSearchArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[KbSearchArgs]:
-        p = self._cfg.params
         max_top_k = self._cfg.max_top_k
-        default_top_k_desc = f"Сколько hits вернуть (1..{max_top_k}). По умолчанию 5."
-        return ObjectSchema(
-            description=self._cfg.description,
+        return self._cfg.prompt.apply(ObjectSchema(
+            description=(
+                "Semantic search по KB-коллекции ChromaDB. Возвращает "
+                "JSON-массив hits {id, distance, metadata, snippet}, "
+                "упорядоченный по релевантности (меньшее distance = ближе). "
+                "Перед вызовом узнай доступные коллекции через "
+                "kb_list_collections."
+            ),
             fields=[
                 FieldSpec(
                     name="collection",
-                    description=param_desc(
-                        p, "collection", self.DEFAULT_COLLECTION_DESC
-                    ),
+                    description="Имя коллекции из kb_list_collections.",
                     coercer=ChainCoercer(IsString(), MinLength(1)),
                     required=True,
                 ),
                 FieldSpec(
                     name="query",
-                    description=param_desc(p, "query", self.DEFAULT_QUERY_DESC),
+                    description=(
+                        "Поисковый запрос на естественном языке — "
+                        "будет преобразован в embedding и сопоставлен с "
+                        "документами коллекции."
+                    ),
                     coercer=ChainCoercer(IsString(), MinLength(1)),
                     required=True,
                 ),
                 FieldSpec(
                     name="top_k",
-                    description=param_desc(p, "top_k", default_top_k_desc),
+                    description=(
+                        f"Сколько hits вернуть (1..{max_top_k}). По умолчанию 5."
+                    ),
                     coercer=ChainCoercer(
                         Default(5),
                         IsInt(),
@@ -117,7 +109,7 @@ class KbSearchTool(Tool[KbSearchArgs]):
                 ),
             ],
             factory=KbSearchArgs,
-        )
+        ))
 
     def execute(self, ctx: ToolContext, req: KbSearchArgs) -> ToolResult:
         del ctx
@@ -147,41 +139,3 @@ class KbSearchTool(Tool[KbSearchArgs]):
             return ""
         anchor = str(metadata.get("anchor") or "")
         return f"{url}#{anchor}" if anchor else url
-
-
-class KbSearchToolSection(ConfigSection[KbSearchToolConfig]):
-    """Секция [ext.chromadb.tools.kb_search]."""
-
-    namespace: ClassVar[tuple[str, ...]] = (
-        "ext",
-        "chromadb",
-        "tools",
-        "kb_search",
-    )
-
-    schema: ClassVar[ObjectSchema[KbSearchToolConfig]] = ObjectSchema(
-        description="Конфиг tool 'kb_search'.",
-        fields=[
-            FieldSpec(
-                name="description",
-                coercer=ChainCoercer(
-                    Default(KbSearchTool.DEFAULT_DESCRIPTION), ParseString()
-                ),
-                description="Override описания tool'а; пусто — дефолт из кода.",
-            ),
-            FieldSpec(
-                name="max_top_k",
-                coercer=ChainCoercer(
-                    Default(KbSearchTool.DEFAULT_MAX_TOP_K),
-                    ParseInt(),
-                    MinValue(1),
-                ),
-                description=(
-                    "Жёсткий потолок параметра top_k (защита от слишком "
-                    "крупных запросов)."
-                ),
-            ),
-            params_field("params"),
-        ],
-        factory=KbSearchToolConfig,
-    )

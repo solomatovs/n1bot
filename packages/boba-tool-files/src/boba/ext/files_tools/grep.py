@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from itertools import islice
 from typing import ClassVar
 
@@ -16,12 +15,11 @@ from boba.coercion import (
     MinValue,
     NonEmpty,
     Nullable,
-    ParseString,
 )
-from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.plugin import ExtensionContext
+from boba.plugin.prompt import PromptOverlay
 from boba.tools.domain import (
-    ParamOverlay,
     TextResult,
     Tool,
     ToolContext,
@@ -29,14 +27,10 @@ from boba.tools.domain import (
     ToolId,
     ToolResult,
     ToolSourceId,
-    param_desc,
-    params_field,
 )
-from boba.workspace import (
-    GrepMatch,
-    WorkspaceError,
-    WorkspaceNotFoundError,
-)
+from boba.workspace import GrepMatch, WorkspaceError, WorkspaceNotFoundError
+
+__all__ = ["GrepTool", "GrepToolConfig"]
 
 
 @dataclass(frozen=True)
@@ -53,47 +47,18 @@ class GrepArgs:
 
 @dataclass(frozen=True)
 class GrepToolConfig:
-    """DTO секции [ext.files.tools.grep]."""
-
-    description: str
-    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+    prompt: PromptOverlay
 
 
 class GrepTool(Tool[GrepArgs]):
     """Поиск подстроки/regex по содержимому файлов."""
 
-    _ID = ToolId("grep")
-    _SOURCE = ToolSourceId("builtin.files")
+    _ID: ClassVar[ToolId] = ToolId("grep")
+    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.files")
 
-    DEFAULT_DESCRIPTION: ClassVar[str] = (
-        "Найти совпадения pattern в текстовых файлах. Формат "
-        "результата: 'path:line: content'. Бинарные и недекодируемые "
-        "файлы пропускаются. При переполнении limit ответ обрезается "
-        "с маркером."
-    )
-    DEFAULT_PATTERN_DESC: ClassVar[str] = "Python-regex; литерал при fixed_string=true."
-    DEFAULT_PATH_DESC: ClassVar[str] = "Стартовый путь. Без значения — cwd."
-    DEFAULT_RECURSIVE_DESC: ClassVar[str] = (
-        "Рекурсивный обход директории. По умолчанию true."
-    )
-    DEFAULT_INCLUDE_DESC: ClassVar[str] = (
-        "Fnmatch-glob по пути (например '*.py'). Без значения — все файлы."
-    )
-    DEFAULT_CASE_INSENSITIVE_DESC: ClassVar[str] = (
-        "Игнорировать регистр. По умолчанию false."
-    )
-    DEFAULT_CONTEXT_DESC: ClassVar[str] = (
-        "Строк контекста до и после каждого совпадения. По умолчанию 0."
-    )
-    DEFAULT_LIMIT_DESC: ClassVar[str] = (
-        "Максимум совпадений в ответе. По умолчанию 100."
-    )
-    DEFAULT_FIXED_STRING_DESC: ClassVar[str] = (
-        "Литеральный поиск без regex. По умолчанию false."
-    )
-
-    def __init__(self, cfg: GrepToolConfig) -> None:
+    def __init__(self, cfg: GrepToolConfig, ctx: ExtensionContext) -> None:
         self._cfg = cfg
+        self._ctx = ctx
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -102,74 +67,64 @@ class GrepTool(Tool[GrepArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[GrepArgs]:
-        p = self._cfg.params
-        return ObjectSchema(
-            description=self._cfg.description,
+        return self._cfg.prompt.apply(ObjectSchema(
+            description=(
+                "Найти совпадения pattern в текстовых файлах. Формат "
+                "результата: 'path:line: content'. Бинарные и недекодируемые "
+                "файлы пропускаются. При переполнении limit ответ обрезается "
+                "с маркером."
+            ),
             fields=[
                 FieldSpec(
                     name="pattern",
-                    description=param_desc(
-                        p, "pattern", self.DEFAULT_PATTERN_DESC
-                    ),
+                    description="Python-regex; литерал при fixed_string=true.",
                     coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
                 FieldSpec(
                     name="path",
-                    description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
+                    description="Стартовый путь. Без значения — cwd.",
                     coercer=Nullable(ChainCoercer(IsString(), NonEmpty())),
                 ),
                 FieldSpec(
                     name="recursive",
-                    description=param_desc(
-                        p, "recursive", self.DEFAULT_RECURSIVE_DESC
-                    ),
+                    description="Рекурсивный обход директории. По умолчанию true.",
                     coercer=ChainCoercer(Default(True), IsBool()),
                 ),
                 FieldSpec(
                     name="include",
-                    description=param_desc(
-                        p, "include", self.DEFAULT_INCLUDE_DESC
+                    description=(
+                        "Fnmatch-glob по пути (например '*.py'). "
+                        "Без значения — все файлы."
                     ),
                     coercer=Nullable(ChainCoercer(IsString(), NonEmpty())),
                 ),
                 FieldSpec(
                     name="case_insensitive",
-                    description=param_desc(
-                        p, "case_insensitive", self.DEFAULT_CASE_INSENSITIVE_DESC
-                    ),
+                    description="Игнорировать регистр. По умолчанию false.",
                     coercer=ChainCoercer(Default(False), IsBool()),
                 ),
                 FieldSpec(
                     name="context",
-                    description=param_desc(
-                        p, "context", self.DEFAULT_CONTEXT_DESC
+                    description=(
+                        "Строк контекста до и после каждого совпадения. "
+                        "По умолчанию 0."
                     ),
-                    coercer=ChainCoercer(
-                        Default(0),
-                        IsInt(),
-                        MinValue(0),
-                    ),
+                    coercer=ChainCoercer(Default(0), IsInt(), MinValue(0)),
                 ),
                 FieldSpec(
                     name="limit",
-                    description=param_desc(p, "limit", self.DEFAULT_LIMIT_DESC),
-                    coercer=ChainCoercer(
-                        Default(100),
-                        IsInt(),
-                        MinValue(1),
-                    ),
+                    description="Максимум совпадений в ответе. По умолчанию 100.",
+                    coercer=ChainCoercer(Default(100), IsInt(), MinValue(1)),
                 ),
                 FieldSpec(
                     name="fixed_string",
-                    description=param_desc(
-                        p, "fixed_string", self.DEFAULT_FIXED_STRING_DESC
-                    ),
+                    description="Литеральный поиск без regex. По умолчанию false.",
                     coercer=ChainCoercer(Default(False), IsBool()),
                 ),
             ],
             factory=GrepArgs,
-        )
+        ))
 
     def execute(self, ctx: ToolContext, req: GrepArgs) -> ToolResult:
         try:
@@ -180,7 +135,7 @@ class GrepTool(Tool[GrepArgs]):
                 include=req.include,
                 case_insensitive=req.case_insensitive,
                 context=req.context,
-                limit=req.limit + 1,  # +1 чтобы заметить, что упёрлись в потолок
+                limit=req.limit + 1,
                 fixed_string=req.fixed_string,
             )
             matches = list(islice(iterator, req.limit + 1))
@@ -222,24 +177,3 @@ class GrepTool(Tool[GrepArgs]):
                 n = m.line + 1 + j
                 parts.append(f"{m.path}:{n}- {ctx_line}")
         return "\n".join(parts)
-
-
-class GrepToolSection(ConfigSection[GrepToolConfig]):
-    """Секция [ext.files.tools.grep]."""
-
-    namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "grep")
-
-    schema: ClassVar[ObjectSchema[GrepToolConfig]] = ObjectSchema(
-        description="Конфиг tool 'grep'.",
-        fields=[
-            FieldSpec(
-                name="description",
-                coercer=ChainCoercer(
-                    Default(GrepTool.DEFAULT_DESCRIPTION), ParseString()
-                ),
-                description="Override описания tool'а; пусто — дефолт из кода.",
-            ),
-            params_field("params"),
-        ],
-        factory=GrepToolConfig,
-    )

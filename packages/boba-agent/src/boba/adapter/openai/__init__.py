@@ -1,6 +1,7 @@
 """OpenAI-совместимый LLM-адаптер."""
 
-from boba.adapter.openai.config import OpenAIAdapterSection, create_llm_source
+from boba.adapter.openai.config import create_llm_source
+from boba.adapter.openai.dto import OpenAIConfig
 from boba.adapter.openai.observer import (
     CurlTraceChatCompletionObserver,
     MetricsChatCompletionObserver,
@@ -18,8 +19,8 @@ __all__ = [
     "DuplicateToolCallIndexReindexer",
     "MetricsChatCompletionObserver",
     "MultiKeyReasoningExtractor",
-    "OpenAIAdapterSection",
     "OpenAIChatVisitor",
+    "OpenAIConfig",
     "OpenAITerminal",
     "RequestOutcome",
     "build_openai_client",

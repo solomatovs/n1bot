@@ -9,26 +9,8 @@ description = "Builtin file-system tools for the Boba agent (cat/ls/grep/edit/wr
 requires-python = ">=3.11,<4"
 dependencies = ["boba-agent", "boba-core"]
 
-[project.entry-points."boba.tools"]
-files = "boba.ext.files_tools:register_tools"
-
-[project.entry-points."boba.config_sections"]
-files = "boba.ext.files_tools.config:FilesSection"
-files_append = "boba.ext.files_tools.append:AppendToolSection"
-files_cat = "boba.ext.files_tools.cat:CatToolSection"
-files_cd = "boba.ext.files_tools.cd:CdToolSection"
-files_cp = "boba.ext.files_tools.cp:CpToolSection"
-files_edit = "boba.ext.files_tools.edit:EditToolSection"
-files_grep = "boba.ext.files_tools.grep:GrepToolSection"
-files_ls = "boba.ext.files_tools.ls:LsToolSection"
-files_mkdir = "boba.ext.files_tools.mkdir:MkdirToolSection"
-files_mv = "boba.ext.files_tools.mv:MvToolSection"
-files_pwd = "boba.ext.files_tools.pwd:PwdToolSection"
-files_rm = "boba.ext.files_tools.rm:RmToolSection"
-files_stat = "boba.ext.files_tools.stat:StatToolSection"
-files_touch = "boba.ext.files_tools.touch:TouchToolSection"
-files_tree = "boba.ext.files_tools.tree:TreeToolSection"
-files_write = "boba.ext.files_tools.write:WriteToolSection"
+[project.entry-points."boba.plugins"]
+files = "boba.ext.files_tools.plugin:FilesPlugin"
 
 [tool.setuptools.packages.find]
 where = ["src"]

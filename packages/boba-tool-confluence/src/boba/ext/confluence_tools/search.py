@@ -2,70 +2,36 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import ClassVar
 
 from boba.coercion import (
     ChainCoercer,
-    Default,
     IsInt,
     IsString,
     MaxValue,
     MinValue,
     NonEmpty,
-    ParseString,
 )
-from boba.config.section import ConfigSection
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.ext.confluence_tools._http_client import ConfluenceHttpClient
 from boba.ext.confluence_tools._search_pipeline import (
     ConfluenceSearchPipeline,
     ConfluenceSearchPipelineError,
 )
-from boba.ext.confluence_tools.connection import ConfluenceConnection
+from boba.plugin import ExtensionContext
+from boba.plugin.prompt import PromptOverlay
 from boba.tools.domain import (
     JsonResult,
-    ParamOverlay,
     Tool,
     ToolContext,
     ToolExecutionError,
     ToolId,
     ToolResult,
     ToolSourceId,
-    param_desc,
-    params_field,
 )
 
-__all__ = [
-    "ConfluenceSearchSection",
-    "ConfluenceSearchTool",
-    "ConfluenceSearchToolSection",
-]
-
-
-@dataclass(frozen=True)
-class ConfluenceSearchConfig:
-    """Runtime-конфиг подключения к Confluence для search-операций."""
-
-    base_url: str
-    auth_method: str
-    auth_user: str
-    auth_token: str
-    timeout_sec: float
-
-
-class ConfluenceSearchSection(ConfigSection[ConfluenceSearchConfig]):
-    """Секция [ext.confluence.search]: connection-настройки для tool/CLI."""
-
-    namespace: ClassVar[tuple[str, ...]] = ("ext", "confluence", "search")
-
-    schema: ClassVar[ObjectSchema[ConfluenceSearchConfig]] = ObjectSchema(
-        description="Поиск по Confluence через REST API (используется tool'ом и CLI).",
-        fields=ConfluenceConnection.fields(),
-        invariants=ConfluenceConnection.invariant(),
-        factory=ConfluenceSearchConfig,
-    )
+__all__ = ["ConfluenceSearchTool", "ConfluenceSearchToolConfig"]
 
 
 @dataclass(frozen=True)
@@ -76,32 +42,27 @@ class SearchArgs:
 
 @dataclass(frozen=True)
 class ConfluenceSearchToolConfig:
-    """DTO секции [ext.confluence.tools.confluence_search]."""
+    """DTO tool'а: connection-поля + prompt overlay."""
 
-    description: str
-    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+    base_url: str
+    auth_method: str
+    auth_user: str
+    auth_token: str
+    timeout_sec: float
+    prompt: PromptOverlay
 
 
 class ConfluenceSearchTool(Tool[SearchArgs]):
-    """Поиск страниц Confluence по тексту"""
+    """Поиск страниц Confluence по тексту."""
 
-    _ID = ToolId("confluence_search")
-    _SOURCE = ToolSourceId("builtin.confluence")
-
-    DEFAULT_DESCRIPTION: ClassVar[str] = (
-        "Полнотекстовый поиск страниц Confluence. Возвращает список "
-        "(title, space, page_id, url, excerpt)."
-    )
-    DEFAULT_QUERY_DESC: ClassVar[str] = "Поисковый запрос (обычный текст)."
-    DEFAULT_LIMIT_DESC: ClassVar[str] = "Максимум hits в ответе. (обязательно)"
+    _ID: ClassVar[ToolId] = ToolId("confluence_search")
+    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.confluence")
 
     def __init__(
-        self,
-        tool_cfg: ConfluenceSearchToolConfig,
-        runtime_cfg: ConfluenceSearchConfig,
+        self, cfg: ConfluenceSearchToolConfig, ctx: ExtensionContext,
     ) -> None:
-        self._cfg = tool_cfg
-        self._runtime = runtime_cfg
+        self._cfg = cfg
+        self._ctx = ctx
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -110,37 +71,35 @@ class ConfluenceSearchTool(Tool[SearchArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[SearchArgs]:
-        p = self._cfg.params
-        return ObjectSchema(
-            description=self._cfg.description,
+        return self._cfg.prompt.apply(ObjectSchema(
+            description=(
+                "Полнотекстовый поиск страниц Confluence. Возвращает список "
+                "(title, space, page_id, url, excerpt)."
+            ),
             fields=[
                 FieldSpec(
                     name="query",
-                    description=param_desc(p, "query", self.DEFAULT_QUERY_DESC),
-                    coercer=ChainCoercer(
-                        NonEmpty(),
-                        IsString(),
-                    ),
+                    description="Поисковый запрос (обычный текст).",
+                    coercer=ChainCoercer(NonEmpty(), IsString()),
                     required=True,
                 ),
                 FieldSpec(
                     name="limit",
-                    description=param_desc(p, "limit", self.DEFAULT_LIMIT_DESC),
+                    description="Максимум hits в ответе.",
                     coercer=ChainCoercer(IsInt(), MinValue(1), MaxValue(50)),
                     required=True,
                 ),
             ],
             factory=SearchArgs,
-        )
+        ))
 
     def execute(self, ctx: ToolContext, req: SearchArgs) -> ToolResult:
         del ctx
-
         try:
-            with ConfluenceHttpClient.make(self._runtime) as client:
+            with ConfluenceHttpClient.make(self._cfg) as client:
                 pipeline = ConfluenceSearchPipeline(
                     client=client,
-                    base_url=self._runtime.base_url,
+                    base_url=self._cfg.base_url,
                     cql=self._build_query(req.query),
                     limit=req.limit,
                 )
@@ -172,30 +131,3 @@ class ConfluenceSearchTool(Tool[SearchArgs]):
     def _build_query(query: str) -> str:
         escaped = query.strip().replace('"', '\\"')
         return f'text ~ "{escaped}"'
-
-
-class ConfluenceSearchToolSection(ConfigSection[ConfluenceSearchToolConfig]):
-    """Секция [ext.confluence.tools.confluence_search]."""
-
-    namespace: ClassVar[tuple[str, ...]] = (
-        "ext",
-        "confluence",
-        "tools",
-        "confluence_search",
-    )
-
-    schema: ClassVar[ObjectSchema[ConfluenceSearchToolConfig]] = ObjectSchema(
-        description="Конфиг tool 'confluence_search'.",
-        fields=[
-            FieldSpec(
-                name="description",
-                coercer=ChainCoercer(
-                    Default(ConfluenceSearchTool.DEFAULT_DESCRIPTION),
-                    ParseString(),
-                ),
-                description="Override описания tool'а; пусто — дефолт из кода.",
-            ),
-            params_field("params"),
-        ],
-        factory=ConfluenceSearchToolConfig,
-    )

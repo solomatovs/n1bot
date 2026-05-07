@@ -1,6 +1,6 @@
 """Файловые реализации WorkspaceShell / WorkspaceRegistry."""
 
-from boba.adapter.fs_workspace.config import WorkspacesSection
+from boba.adapter.fs_workspace.config import WorkspaceLayout
 from boba.adapter.fs_workspace.registry import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
@@ -28,6 +28,6 @@ __all__ = [
     "FsScratchWorkspaceShell",
     "FsWorkspaceRegistry",
     "FsWorkspaceShell",
+    "WorkspaceLayout",
     "WorkspacePath",
-    "WorkspacesSection",
 ]

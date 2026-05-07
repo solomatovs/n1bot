@@ -7,10 +7,17 @@
 
 * Источник конфига — плоское пространство `FlatConfig`, неизменное в этом
   дизайне.
-* DTO любого компонента собирается через `bundle.materialize(schema, prefix)`.
-  Никакой регистрации секций.
+* **Концепт «регистрация секции» удаляется как явление.** Вся инфра
+  pre-build регистрации (`ConfigSection`/`AppConfigBootstrap.register_section`/
+  `discover_extension_sections`/entry-point group `boba.config_sections`/
+  `ConfigSectionFactory`/`AppConfig.section(...)`) выкидывается. DTO любого
+  компонента материализуется лениво вызовом `bundle.materialize(schema, prefix)` —
+  schema приносит caller (плагин в `config()`, composition root для core-DTO),
+  без предварительной декларации фреймворку. Двусторонний контракт
+  «зарегистрируй, потом запрашивай» заменяется на односторонний «опиши
+  schema там, где она нужна, и материализуй на месте».
 * Плагин не знает свой mount path; путь определяет app по convention
-  `$tool.<name>`.
+  `tool.<name>`.
 * Дублирование значений в источниках устраняется ссылками `@{path}` внутри
   FlatConfig (eager-resolve, полная замена).
 * Подключение плагина управляется флагом `enable` рядом с его конфигом.
@@ -162,7 +169,7 @@ class ExtensionContext:
     """Канал общих сервисов (logger, метрики и т. п.). Точное содержимое — см. §9.2."""
 
 class Plugin(Protocol):
-    NAME: ClassVar[StrId]                              # имя плагина (mount path = $tool.<NAME>)
+    NAME: ClassVar[StrId]                              # имя плагина (mount path = tool.<NAME>)
 
     @classmethod
     def config(cls) -> ObjectSchema[Any]: ...          # плоская schema: общие поля + per-tool prompts
@@ -336,7 +343,7 @@ def _is_enabled(bundle: ConfigBundle, mount: ConfigPath) -> bool:
 
 ```python
 def _mount_path_for(plugin_name: StrId) -> ConfigPath:
-    return ConfigPath.parse(f"$tool.{plugin_name}")
+    return ConfigPath.parse(f"tool.{plugin_name}")
 ```
 
 ## 6. Plugin: единый контракт на одной картине
@@ -619,9 +626,11 @@ def build_app(argv: list[str], envfile: Path | None) -> RunningApp:
         TomlSource(...),
     ])
 
-    core       = bundle.materialize(CORE_SCHEMA,       ConfigPath.parse("$core"))
-    agent      = bundle.materialize(AGENT_SCHEMA,      ConfigPath.parse("$agent"))
-    workspaces = bundle.materialize(WORKSPACES_SCHEMA, ConfigPath.parse("$workspaces"))
+    # Каждый DTO объявляет `SCHEMA: ClassVar[ObjectSchema[Self]]`,
+    # bundle.get(DTO, prefix) — синтаксический сахар над materialize.
+    core       = bundle.get(AppCoreConfig,    "core")
+    agent      = bundle.get(AgentConfig,      "agent")
+    workspaces = bundle.get(WorkspaceLayout,  "workspaces")
     ...
 
     ctx = ExtensionContext(...)
@@ -676,8 +685,8 @@ App работает только через `Plugin`-протокол: `NAME`, 
 
 ### 9.1. Mount-convention для не-tool плагинов и форма entry-points
 
-Для tool-плагинов: `$tool.<name>`. Для pipelines / providers — варианты
-свой ветки `$pipeline.<name>`, единая `$tool.<name>`, отдельные entry-point
+Для tool-плагинов: `tool.<name>`. Для pipelines / providers — варианты
+свой ветки `pipeline.<name>`, единая `tool.<name>`, отдельные entry-point
 group по роли.
 
 ### 9.2. Содержимое `ExtensionContext`

@@ -45,7 +45,6 @@ from boba.declaration import (
 )
 
 __all__ = [
-    "PROMPT_OVERLAY_SCHEMA",
     "PromptOverlay",
     "prompt_field",
 ]
@@ -88,25 +87,6 @@ class PromptOverlay:
         )
 
 
-PROMPT_OVERLAY_SCHEMA: ObjectSchema[PromptOverlay] = ObjectSchema(
-    description="Overlay описаний tool'а: общее description и per-field overrides.",
-    fields=[
-        FieldSpec(
-            name="description",
-            coercer=ChainCoercer(Default(""), ParseString()),
-            description="Override общего описания tool'а; пусто — дефолт из кода.",
-        ),
-        CollectionField(
-            name="fields",
-            reader=ScalarItem(coercer=ChainCoercer(Default(""), ParseString())),
-            shape=KeyedShape(),
-            description="Per-field overrides: имя поля → новое описание.",
-        ),
-    ],
-    factory=PromptOverlay,
-)
-
-
 def prompt_field(name: str) -> NestedField[PromptOverlay]:
     """Convenience: NestedField с PROMPT_OVERLAY_SCHEMA под указанным именем.
 
@@ -118,4 +98,23 @@ def prompt_field(name: str) -> NestedField[PromptOverlay]:
             prompt_field("confluence_page"),
         ]
     """
-    return NestedField(name=name, schema=PROMPT_OVERLAY_SCHEMA)
+    return NestedField(
+        name=name,
+        schema=ObjectSchema(
+            description="Overlay описаний tool'а: общее description и per-field overrides.",
+            fields=[
+                FieldSpec(
+                    name="description",
+                    coercer=ChainCoercer(Default(""), ParseString()),
+                    description="Override общего описания tool'а; пусто — дефолт из кода.",
+                ),
+                CollectionField(
+                    name="fields",
+                    reader=ScalarItem(coercer=ChainCoercer(Default(""), ParseString())),
+                    shape=KeyedShape(),
+                    description="Per-field overrides: имя поля → новое описание.",
+                ),
+            ],
+            factory=PromptOverlay,
+        ),
+    )

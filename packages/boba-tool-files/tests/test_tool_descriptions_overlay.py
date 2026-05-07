@@ -1,14 +1,12 @@
-"""Тест end-to-end overlay-описаний tools через ConfigSection.
+"""Тесты overlay-описаний tools через FilesPlugin (новая Plugin-модель).
 
-Operator задаёт `[ext.files.tools.cat] description = "..."` и
-`[ext.files.tools.cat.params.path] description = "..."`. Эти значения
-доходят до `CatTool.definition()` через стандартный механизм
-`ctx.config.section(CatToolSection)`.
+Operator задаёт `[tool.files.cat.prompt] description = "..."` и
+`[tool.files.cat.prompt.fields.path] = "..."`. Эти значения доходят до
+`CatTool.definition()` через `cfg.prompt.apply(...)`.
 """
 
 from __future__ import annotations
 
-from boba.config.app import ConfigSectionFactory
 from boba.config.bundle import ConfigBundle
 from boba.config.path import (
     ConfigLookup,
@@ -17,46 +15,12 @@ from boba.config.path import (
     Found,
     NotFound,
 )
-from boba.ext.files_tools import register_tools as files_register_tools
-from boba.ext.files_tools.append import AppendToolSection
-from boba.ext.files_tools.cat import CatTool, CatToolConfig, CatToolSection
-from boba.ext.files_tools.cd import CdToolSection
-from boba.ext.files_tools.config import FilesSection
-from boba.ext.files_tools.cp import CpToolSection
-from boba.ext.files_tools.edit import EditToolSection
-from boba.ext.files_tools.grep import GrepToolSection
-from boba.ext.files_tools.ls import LsToolSection
-from boba.ext.files_tools.mkdir import MkdirToolSection
-from boba.ext.files_tools.mv import MvToolSection
-from boba.ext.files_tools.pwd import PwdToolSection
-from boba.ext.files_tools.rm import RmToolSection
-from boba.ext.files_tools.stat import StatToolSection
-from boba.ext.files_tools.touch import TouchToolSection
-from boba.ext.files_tools.tree import TreeToolSection
-from boba.ext.files_tools.write import WriteToolSection
+from boba.ext.files_tools import FilesPlugin
+from boba.ext.files_tools.cat import CatTool, CatToolConfig
 from boba.patterns import StrId
-from boba.tools.domain import ParamOverlay
-from boba.tools.framework import ExtensionContext
+from boba.plugin import ExtensionContext, install_plugins
+from boba.plugin.prompt import PromptOverlay
 from boba.value import StringValue
-
-_FILES_SECTIONS = (
-    FilesSection(),
-    AppendToolSection(),
-    CatToolSection(),
-    CdToolSection(),
-    CpToolSection(),
-    EditToolSection(),
-    GrepToolSection(),
-    LsToolSection(),
-    MkdirToolSection(),
-    MvToolSection(),
-    PwdToolSection(),
-    RmToolSection(),
-    StatToolSection(),
-    TouchToolSection(),
-    TreeToolSection(),
-    WriteToolSection(),
-)
 
 
 class _InlineSource(ConfigSource):
@@ -87,84 +51,59 @@ class _InlineSource(ConfigSource):
         return StrId("inline")
 
 
-def _make_app(values: dict[str, str]):
-    bundle = ConfigBundle.from_sources([_InlineSource(values)])
-    factory = ConfigSectionFactory()
-    # Регистрируем только files-секции явно, чтобы тест не зависел от того,
-    # какие посторонние плагины установлены в окружении (их required-поля
-    # упали бы при build из-за пустого bundle).
-    for section in _FILES_SECTIONS:
-        factory.register_section(section)
-    return factory.build(bundle)
+_BASE = {"tool.files.enable": "true"}
 
 
-def _cat_tool(app):
-    sources = list(files_register_tools(ExtensionContext(config=app)))
+def _cat_tool(values: dict[str, str]) -> CatTool:
+    bundle = ConfigBundle.from_sources([_InlineSource({**_BASE, **values})])
+    sources = list(install_plugins(bundle, [FilesPlugin], ExtensionContext()))
     return next(
         t for src in sources for t in src.tools() if t.tool_id().to_wire() == "cat"
     )
 
 
 def test_tool_description_default_when_no_overlay():
-    app = _make_app({"$ext.files.enable": "true"})
-    cat = _cat_tool(app)
+    cat = _cat_tool({})
     schema = cat.definition()
-    # Дефолт из CatTool.DEFAULT_DESCRIPTION — обычная строка.
-    assert isinstance(schema.description, str)
-    assert schema.description == CatTool.DEFAULT_DESCRIPTION
+    assert "Прочитать строки" in schema.description
 
 
 def test_tool_description_overridden_via_toml():
-    app = _make_app(
-        {
-            "$ext.files.enable": "true",
-            "$ext.files.tools.cat.description": "OPERATOR override.",
-        }
-    )
-    cat = _cat_tool(app)
+    cat = _cat_tool({"tool.files.cat.prompt.description": "OPERATOR override."})
     schema = cat.definition()
     assert schema.description == "OPERATOR override."
 
 
 def test_param_description_overridden_via_toml():
-    app = _make_app(
-        {
-            "$ext.files.enable": "true",
-            "$ext.files.tools.cat.params.path.description": "OPERATOR path.",
-        }
+    cat = _cat_tool(
+        {"tool.files.cat.prompt.fields.path": "OPERATOR path."},
     )
-    cat = _cat_tool(app)
     schema = cat.definition()
     path_field = next(f for f in schema.fields if f.name == "path")
     assert path_field.description == "OPERATOR path."
     # Другие параметры — дефолтные.
     encoding_field = next(f for f in schema.fields if f.name == "encoding")
-    assert encoding_field.description == CatTool.DEFAULT_ENCODING_DESC
+    assert "utf-8" in encoding_field.description
 
 
 def test_runtime_setting_overridden_via_toml():
-    """max_lines runtime-параметр меняется через [ext.files.tools.cat] max_lines=N."""
-    app = _make_app(
-        {
-            "$ext.files.enable": "true",
-            "$ext.files.tools.cat.max_lines": "555",
-        }
-    )
-    cat = _cat_tool(app)
+    """max_lines runtime-параметр меняется через `[tool.files.cat] max_lines=N`."""
+    cat = _cat_tool({"tool.files.cat.max_lines": "555"})
     cfg: CatToolConfig = cat._cfg  # type: ignore[attr-defined]
     assert cfg.max_lines == 555
 
 
 def test_cat_tool_can_be_instantiated_directly():
-    """Sanity: CatTool(CatToolConfig(...)) работает без AppConfig (для unit-тестов)."""
+    """Sanity: CatTool(CatToolConfig(...), ctx) работает без AppConfig."""
     cfg = CatToolConfig(
-        description="test",
         max_lines=100,
-        params={"path": ParamOverlay(description="test path")},
+        prompt=PromptOverlay(
+            description="test",
+            fields={"path": "test path"},
+        ),
     )
-    cat = CatTool(cfg)
+    cat = CatTool(cfg, ExtensionContext())
     schema = cat.definition()
     assert schema.description == "test"
-    assert isinstance(schema.description, str)
     path_field = next(f for f in schema.fields if f.name == "path")
     assert path_field.description == "test path"

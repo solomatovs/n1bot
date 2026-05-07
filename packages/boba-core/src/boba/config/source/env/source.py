@@ -1,4 +1,4 @@
-"""env-источник под confignext: BOBA_<SEG>__<SEG>__<INDEX> → $seg.seg[index]."""
+"""env-источник под confignext: BOBA_<SEG>__<SEG>__<INDEX> → seg.seg[index]."""
 
 from __future__ import annotations
 
@@ -120,7 +120,7 @@ class EnvFileSource(ConfigSource):
 
 
 def _decode_env_key(env_key: str) -> ConfigPath | None:
-    """`BOBA_AGENT__MAX_ITERATIONS` → ConfigPath('$agent.max_iterations')."""
+    """`BOBA_AGENT__MAX_ITERATIONS` → ConfigPath('agent.max_iterations')."""
     body = env_key[len(ENV_PREFIX) + 1 :]
     if not body:
         return None

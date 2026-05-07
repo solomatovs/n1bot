@@ -6,10 +6,9 @@ materializer и lookup'ы работают с уже разрешёнными з
 
 Синтаксис: только полная замена. Значение должно быть строкой,
 **целиком** соответствующей паттерну `@{path}`, где `path` — абсолютный
-путь в нотации `a.b.c[0].d` (без префикса `$`). Шаблоны вида
-`"prefix-@{X}-suffix"` намеренно не поддерживаются — это сохраняет
-типобезопасность (можно ссылаться на int, list, dict) и не превращает
-конфиг в template-engine.
+путь в нотации `a.b.c[0].d`. Шаблоны вида `"prefix-@{X}-suffix"`
+намеренно не поддерживаются — это сохраняет типобезопасность (можно
+ссылаться на int, list, dict) и не превращает конфиг в template-engine.
 """
 
 from __future__ import annotations
@@ -166,7 +165,7 @@ class ReferenceResolver:
             return None
         body = match.group("path")
         try:
-            return ConfigPath.parse("$" + body)
+            return ConfigPath.parse(body)
         except ConfigPathParseError as exc:
             raise UnresolvedRefError(
                 ref_at=ref_at,

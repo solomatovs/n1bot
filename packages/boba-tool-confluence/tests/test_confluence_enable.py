@@ -1,8 +1,12 @@
-"""Тесты механики [ext.confluence] enable / tools_allow."""
+"""Тесты enable-конвенции и сборки ConfluencePlugin.
+
+`enable` — convention `boba.plugin.is_enabled` поверх `[tool.confluence]`.
+При `enable!=true` плагин не материализуется; при `enable=true` `build()`
+возвращает один `StaticToolSource` с 3 tools.
+"""
 
 from __future__ import annotations
 
-from boba.config.app import ConfigSectionFactory
 from boba.config.bundle import ConfigBundle
 from boba.config.path import (
     ConfigLookup,
@@ -11,9 +15,9 @@ from boba.config.path import (
     Found,
     NotFound,
 )
-from boba.ext.confluence_tools import register_tools as confluence_register_tools
+from boba.ext.confluence_tools import ConfluencePlugin
 from boba.patterns import StrId
-from boba.tools.framework import ExtensionContext
+from boba.plugin import ExtensionContext, install_plugins
 from boba.value import StringValue
 
 
@@ -45,32 +49,28 @@ class _InlineSource(ConfigSource):
         return StrId("inline")
 
 
-def _make_app(values: dict[str, str]):
-    # ConfluenceSearchSection / ConfluencePageSection требуют base_url+auth_token.
-    # auto-discovery материализует все registered-секции — задаём фоновый минимум.
-    base_values = {
-        "$ext.confluence.search.base_url": "https://example.test",
-        "$ext.confluence.search.auth_token": "test-token",
-        "$ext.confluence.page.base_url": "https://example.test",
-        "$ext.confluence.page.auth_token": "test-token",
-    }
-    bundle = ConfigBundle.from_sources([_InlineSource({**base_values, **values})])
-    factory = ConfigSectionFactory()
-    factory.discover_extension_sections()
-    return factory.build(bundle)
+_BASE_VALUES = {
+    "tool.confluence.base_url": "https://example.test",
+    "tool.confluence.auth_token": "test-token",
+}
 
 
-def _tool_names(app) -> list[str]:
-    sources = list(confluence_register_tools(ExtensionContext(config=app)))
+def _tool_names(values: dict[str, str]) -> list[str]:
+    bundle = ConfigBundle.from_sources([_InlineSource({**_BASE_VALUES, **values})])
+    sources = list(install_plugins(bundle, [ConfluencePlugin], ExtensionContext()))
     return [t.tool_id().to_wire() for src in sources for t in src.tools()]
 
 
 def test_disabled_by_default():
-    assert _tool_names(_make_app({})) == []
+    assert _tool_names({}) == []
+
+
+def test_disabled_explicit():
+    assert _tool_names({"tool.confluence.enable": "false"}) == []
 
 
 def test_enabled_yields_all_tools():
-    names = _tool_names(_make_app({"$ext.confluence.enable": "true"}))
+    names = _tool_names({"tool.confluence.enable": "true"})
     assert set(names) == {
         "confluence_search",
         "confluence_page_outline",

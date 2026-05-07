@@ -1,4 +1,4 @@
-"""PromptOverlay: apply, materialize через PROMPT_OVERLAY_SCHEMA, prompt_field."""
+"""PromptOverlay: apply, materialize через _OVERLAY_SCHEMA, prompt_field."""
 
 from __future__ import annotations
 
@@ -13,11 +13,10 @@ from boba.declaration import (
     NestedField,
     ObjectSchema,
 )
-from boba.plugin.prompt import (
-    PROMPT_OVERLAY_SCHEMA,
-    PromptOverlay,
-    prompt_field,
-)
+from boba.plugin.prompt import PromptOverlay, prompt_field
+
+# Schema PromptOverlay живёт inline в prompt_field() — берём её через helper.
+_OVERLAY_SCHEMA = prompt_field("__probe__").schema
 from boba.value import ConfigValue, StringValue
 
 
@@ -156,13 +155,13 @@ def test_apply_preserves_field_required_flag_and_coercer():
     assert query_f.coercer is canonical_query.coercer
 
 
-# --- PROMPT_OVERLAY_SCHEMA через materializer ---
+# --- _OVERLAY_SCHEMA через materializer ---
 
 
 def test_materialize_empty_overlay_uses_defaults():
     flat = ConfigBundle.from_sources([_DictSource({})]).flat
-    overlay = FlatConfigMaterializer(PROMPT_OVERLAY_SCHEMA).materialize(
-        flat, _path("$tool.search.prompt")
+    overlay = FlatConfigMaterializer(_OVERLAY_SCHEMA).materialize(
+        flat, _path("tool.search.prompt")
     )
     assert overlay == PromptOverlay(description="", fields={})
 
@@ -172,15 +171,15 @@ def test_materialize_with_description_only():
         [
             _DictSource(
                 {
-                    _path("$tool.search.prompt.description"): StringValue(
+                    _path("tool.search.prompt.description"): StringValue(
                         "Custom search."
                     ),
                 }
             )
         ]
     ).flat
-    overlay = FlatConfigMaterializer(PROMPT_OVERLAY_SCHEMA).materialize(
-        flat, _path("$tool.search.prompt")
+    overlay = FlatConfigMaterializer(_OVERLAY_SCHEMA).materialize(
+        flat, _path("tool.search.prompt")
     )
     assert overlay.description == "Custom search."
     assert overlay.fields == {}
@@ -191,14 +190,14 @@ def test_materialize_with_per_field_overrides():
         [
             _DictSource(
                 {
-                    _path("$tool.search.prompt.fields.query"): StringValue("Q."),
-                    _path("$tool.search.prompt.fields.limit"): StringValue("L."),
+                    _path("tool.search.prompt.fields.query"): StringValue("Q."),
+                    _path("tool.search.prompt.fields.limit"): StringValue("L."),
                 }
             )
         ]
     ).flat
-    overlay = FlatConfigMaterializer(PROMPT_OVERLAY_SCHEMA).materialize(
-        flat, _path("$tool.search.prompt")
+    overlay = FlatConfigMaterializer(_OVERLAY_SCHEMA).materialize(
+        flat, _path("tool.search.prompt")
     )
     assert overlay.description == ""
     assert overlay.fields == {"query": "Q.", "limit": "L."}
@@ -211,7 +210,8 @@ def test_prompt_field_returns_nested_field_with_overlay_schema():
     f = prompt_field("my_overlay")
     assert isinstance(f, NestedField)
     assert f.name == "my_overlay"
-    assert f.schema is PROMPT_OVERLAY_SCHEMA
+    assert f.schema.factory is PromptOverlay
+    assert {fld.name for fld in f.schema.fields} == {"description", "fields"}
 
 
 def test_prompt_field_used_in_plugin_schema_e2e():
@@ -235,12 +235,12 @@ def test_prompt_field_used_in_plugin_schema_e2e():
             _DictSource(
                 {
                     _path(
-                        "$tool.confluence.confluence_search.description"
+                        "tool.confluence.confluence_search.description"
                     ): StringValue("Поиск только по своим."),
                     _path(
-                        "$tool.confluence.confluence_search.fields.query"
+                        "tool.confluence.confluence_search.fields.query"
                     ): StringValue("Поисковый запрос."),
-                    _path("$tool.confluence.confluence_page.description"): StringValue(
+                    _path("tool.confluence.confluence_page.description"): StringValue(
                         "Outline страницы."
                     ),
                 }
@@ -248,7 +248,7 @@ def test_prompt_field_used_in_plugin_schema_e2e():
         ]
     ).flat
     cfg = FlatConfigMaterializer(plugin_schema).materialize(
-        flat, _path("$tool.confluence")
+        flat, _path("tool.confluence")
     )
     assert cfg.confluence_search.description == "Поиск только по своим."
     assert cfg.confluence_search.fields == {"query": "Поисковый запрос."}

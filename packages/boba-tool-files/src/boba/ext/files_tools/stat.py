@@ -2,29 +2,25 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.coercion import ChainCoercer, Default, IsString, NonEmpty, ParseString
-from boba.config.section import ConfigSection
+from boba.coercion import ChainCoercer, IsString, NonEmpty
 from boba.declaration import FieldSpec, ObjectSchema
+from boba.plugin import ExtensionContext
+from boba.plugin.prompt import PromptOverlay
 from boba.tools.domain import (
-    ParamOverlay,
-    TextResult,
+    JsonResult,
     Tool,
     ToolContext,
     ToolExecutionError,
     ToolId,
     ToolResult,
     ToolSourceId,
-    param_desc,
-    params_field,
 )
-from boba.workspace import (
-    WorkspaceError,
-    WorkspaceNotFoundError,
-)
+from boba.workspace import WorkspaceError, WorkspaceNotFoundError
+
+__all__ = ["StatTool", "StatToolConfig"]
 
 
 @dataclass(frozen=True)
@@ -34,28 +30,18 @@ class StatArgs:
 
 @dataclass(frozen=True)
 class StatToolConfig:
-    """DTO секции [ext.files.tools.stat]."""
-
-    description: str
-    params: Mapping[str, ParamOverlay] = field(default_factory=dict)
+    prompt: PromptOverlay
 
 
 class StatTool(Tool[StatArgs]):
     """Метаданные файла или директории."""
 
-    _ID = ToolId("stat")
-    _SOURCE = ToolSourceId("builtin.files")
+    _ID: ClassVar[ToolId] = ToolId("stat")
+    _SOURCE: ClassVar[ToolSourceId] = ToolSourceId("plugin.files")
 
-    DEFAULT_DESCRIPTION: ClassVar[str] = (
-        "Вернуть метаданные ресурса: тип (file/directory/other), "
-        "размер в байтах, время модификации. Если ресурса нет — "
-        "ошибка. Для директорий size — размер inode-блока ФС, не "
-        "количество файлов; для содержимого директории — ls/tree."
-    )
-    DEFAULT_PATH_DESC: ClassVar[str] = "Путь к файлу или директории."
-
-    def __init__(self, cfg: StatToolConfig) -> None:
+    def __init__(self, cfg: StatToolConfig, ctx: ExtensionContext) -> None:
         self._cfg = cfg
+        self._ctx = ctx
 
     def tool_id(self) -> ToolId:
         return self._ID
@@ -64,19 +50,23 @@ class StatTool(Tool[StatArgs]):
         return self._SOURCE
 
     def definition(self) -> ObjectSchema[StatArgs]:
-        p = self._cfg.params
-        return ObjectSchema(
-            description=self._cfg.description,
+        return self._cfg.prompt.apply(ObjectSchema(
+            description=(
+                "Вернуть метаданные ресурса: тип (file/directory/other), "
+                "размер в байтах, время модификации. Если ресурса нет — "
+                "ошибка. Для директорий size — размер inode-блока ФС, не "
+                "количество файлов; для содержимого директории — ls/tree."
+            ),
             fields=[
                 FieldSpec(
                     name="path",
-                    description=param_desc(p, "path", self.DEFAULT_PATH_DESC),
+                    description="Путь к файлу или директории.",
                     coercer=ChainCoercer(IsString(), NonEmpty()),
                     required=True,
                 ),
             ],
             factory=StatArgs,
-        )
+        ))
 
     def execute(self, ctx: ToolContext, req: StatArgs) -> ToolResult:
         try:
@@ -92,31 +82,11 @@ class StatTool(Tool[StatArgs]):
                 message=f"Ошибка stat: {e}",
             ) from e
 
-        body = (
-            f"path: {meta.path}\n"
-            f"kind: {meta.kind}\n"
-            f"size: {meta.size}\n"
-            f"modified: {meta.modified.isoformat()}"
-        )
-        return TextResult(text=body)
+        body = {
+            "path": meta.path,
+            "kind": meta.kind,
+            "size": meta.size,
+            "modified": meta.modified.isoformat()
+        }
 
-
-class StatToolSection(ConfigSection[StatToolConfig]):
-    """Секция [ext.files.tools.stat]."""
-
-    namespace: ClassVar[tuple[str, ...]] = ("ext", "files", "tools", "stat")
-
-    schema: ClassVar[ObjectSchema[StatToolConfig]] = ObjectSchema(
-        description="Конфиг tool 'stat'.",
-        fields=[
-            FieldSpec(
-                name="description",
-                coercer=ChainCoercer(
-                    Default(StatTool.DEFAULT_DESCRIPTION), ParseString()
-                ),
-                description="Override описания tool'а; пусто — дефолт из кода.",
-            ),
-            params_field("params"),
-        ],
-        factory=StatToolConfig,
-    )
+        return JsonResult(body)
