@@ -15,6 +15,7 @@ from boba.config.path import (
     NameSegment,
     Segment,
 )
+from boba.config.refs import ReferenceResolver
 from boba.declaration import (
     CollectionField,
     CollectionShape,
@@ -267,9 +268,11 @@ class ConfigBundleFactory(FoldFactory[StrId, _MergeState, ConfigBundle]):
         return _MergeState()
 
     def finalize(self, state: _MergeState) -> ConfigBundle:
-        return ConfigBundle(
-            flat=FlatConfig(values=state.values, origins=state.origins),
-        )
+        # Между fold источников и созданием FlatConfig разрешаем @{...}-ссылки.
+        # После resolve в значениях ссылок не остаётся, origins содержит
+        # цепочку шагов разрешения (длина 1 — без ссылок).
+        values, origins = ReferenceResolver().resolve(state.values, state.origins)
+        return ConfigBundle(flat=FlatConfig(values=values, origins=origins))
 
     def attach_sources(self, sources: Iterable[ConfigSource]) -> None:
         """Удобный helper: завернуть source'ы в reducer'ы и зарегистрировать."""
