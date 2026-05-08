@@ -9,7 +9,7 @@ from boba.agent.events import (
     IterationStarted,
     Terminal,
 )
-from boba.agent.models import AgentContext
+from boba.agent.orchestrator import AgentContext
 from boba.patterns import Specification, StreamSource
 
 

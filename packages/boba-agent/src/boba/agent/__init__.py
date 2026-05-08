@@ -1,7 +1,6 @@
 """Публичный API агент-слоя."""
 
 from boba.agent.builder import AgentBuilder
-from boba.agent.dialogue_writer import DialogueWriter
 from boba.agent.errors import (
     AgentLLMFeedbackError,
     LLMGenerationFailedError,
@@ -45,8 +44,8 @@ from boba.agent.events import (
     ToolResultReady,
     UserQueryReceived,
 )
-from boba.agent.in_memory import InMemoryMessageService
 from boba.agent.messages import (
+    InMemoryMessageService,
     MessageReader,
     MessageService,
     MessageStoreError,
@@ -66,19 +65,19 @@ from boba.agent.middleware import (
     ToolExecutionMiddleware,
 )
 from boba.agent.models import (
-    AgentConfig,
-    AgentContext,
-    AgentInput,
-    AgentRequest,
-    AgentRunResult,
-)
-from boba.agent.orchestrator import Agent
-from boba.agent.payloads import (
     LLMCritique,
     LLMFeedback,
     ToolCallFailure,
     ToolCallRejection,
     ToolCallResult,
+)
+from boba.agent.orchestrator import (
+    Agent,
+    AgentConfig,
+    AgentContext,
+    AgentInput,
+    AgentRequest,
+    AgentRunResult,
 )
 from boba.agent.prompt import (
     PermanentPromptError,
@@ -95,12 +94,11 @@ from boba.agent.prompt import (
 from boba.agent.turn.reducers import (
     AgentRequestSamplingReducer,
     HistoryReducer,
-    HistoryWithTaskAnchorReducer,
     ModelReducer,
     SystemPromptReducer,
     ToolsReducer,
 )
-from boba.agent.turn.spec import TurnResolveContext, TurnSpec, TurnState
+from boba.agent.turn.spec import TurnSpec, TurnState
 
 __all__ = [
     "Advisory",
@@ -124,14 +122,12 @@ __all__ = [
     "BaseAgentEvent",
     "ContentDelta",
     "ContentSnapshot",
-    "DialogueWriter",
     "FeedbackToLLMAdded",
     "GenerationDone",
     "GenerationFailed",
     "GenerationRetried",
     "GenerationStarted",
     "HistoryReducer",
-    "HistoryWithTaskAnchorReducer",
     "InMemoryMessageService",
     "IterationCounterMiddleware",
     "IterationStarted",
@@ -186,7 +182,6 @@ __all__ = [
     "ToolExecutionStarted",
     "ToolResultReady",
     "ToolsReducer",
-    "TurnResolveContext",
     "TurnSpec",
     "TurnState",
     "UserQueryReceived",

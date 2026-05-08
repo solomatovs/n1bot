@@ -12,7 +12,7 @@ from boba.agent import (
     AgentInput,
     InMemoryMessageService,
 )
-from boba.agent.models import AgentRequest
+from boba.agent.orchestrator import AgentRequest
 from boba.cli.agent_run.config import AgentRunConfig
 from boba.cli.agent_run.console_sink import ConsoleSink
 from boba.cli.agent_run.infra import (

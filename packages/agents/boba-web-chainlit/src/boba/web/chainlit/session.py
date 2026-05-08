@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from boba.agent import AgentBuilder, AgentInput, InMemoryMessageService
-from boba.agent.models import AgentConfig, AgentRequest
+from boba.agent.orchestrator import AgentConfig, AgentRequest
 from boba.config.bundle import ConfigBundle
 from boba.llm.models import RequestId
 from boba.plugin import ExtensionContext as PluginCtx

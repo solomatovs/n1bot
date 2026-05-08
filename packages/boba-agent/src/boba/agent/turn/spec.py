@@ -6,45 +6,38 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from boba.agent.models import AgentContext
-from boba.agent.state import ChannelRegistry
 from boba.llm.errors import (
     LLMRequestEmptyMessagesError,
     LLMRequestModelNoneError,
     LLMRequestSystemMessageNoneError,
 )
 from boba.llm.models import (
-    LLMMessage,
     LLMRequest,
     LLMToolRequest,
+    Message,
     SamplingParams,
+    SystemMessage,
 )
-from boba.patterns import ContextFoldFactory, StrId
+from boba.patterns import FoldFactory, StrId
 
 
 @dataclass
 class TurnState:
     model: str | None = None
-    system_message: LLMMessage | None = None
-    messages: tuple[LLMMessage, ...] = ()
+    system_message: SystemMessage | None = None
+    messages: tuple[Message, ...] = ()
     tools: LLMToolRequest = field(default_factory=LLMToolRequest)
     sampling: SamplingParams = field(default_factory=SamplingParams)
     response_format: Mapping[str, Any] | None = None
 
 
-@dataclass(frozen=True)
-class TurnResolveContext:
-    agent: AgentContext
-    channels: ChannelRegistry
-
-
 class TurnSpec(
-    ContextFoldFactory[TurnResolveContext, StrId, TurnState, LLMRequest],
+    FoldFactory[StrId, TurnState, LLMRequest],
 ):
-    def initial(self, ctx: TurnResolveContext) -> TurnState:
+    def initial(self) -> TurnState:
         return TurnState()
 
-    def finalize(self, ctx: TurnResolveContext, state: TurnState) -> LLMRequest:
+    def finalize(self, state: TurnState) -> LLMRequest:
         if state.model is None:
             raise LLMRequestModelNoneError()
         if state.system_message is None:

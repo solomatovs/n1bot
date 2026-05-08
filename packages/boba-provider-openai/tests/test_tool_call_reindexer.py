@@ -13,9 +13,10 @@ from openai.types.chat.chat_completion_chunk import (
 from boba.llm.events import LLMToolCallArgumentDelta, LLMToolCallBegin
 from boba.llm.models import (
     LLMContext,
-    LLMMessage,
     LLMRequest,
     RequestId,
+    SystemMessage,
+    UserMessage,
 )
 from boba.provider.openai.response import FromOpenAIChunkConverter
 from boba.provider.openai.tool_call_reindexer import (
@@ -24,11 +25,11 @@ from boba.provider.openai.tool_call_reindexer import (
 
 
 def _ctx() -> LLMContext:
-    sys_msg = LLMMessage(role="system", content="s")
+    sys_msg = SystemMessage(content="s")
     req = LLMRequest(
         model="m",
         system_message=sys_msg,
-        messages=(LLMMessage(role="user", content="hi"),),
+        messages=(UserMessage(content="hi"),),
     )
     return LLMContext(request_id=RequestId.new(), request=req)
 

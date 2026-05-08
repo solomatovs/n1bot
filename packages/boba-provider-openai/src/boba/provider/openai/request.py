@@ -5,7 +5,15 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from boba.llm.models import LLMMessage, LLMRequest, LLMToolSchema
+from boba.llm.models import (
+    AssistantMessage,
+    LLMRequest,
+    LLMToolSchema,
+    Message,
+    SystemMessage,
+    ToolResultMessage,
+    UserMessage,
+)
 from boba.patterns import Converter
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
@@ -31,45 +39,48 @@ class ToOpenAIToolConverter(Converter[LLMToolSchema, ChatCompletionToolParam]):
         }
 
 
-class ToOpenAIMessageConverter(Converter[LLMMessage, ChatCompletionMessageParam]):
-    """Конвертация LLMMessage → OpenAI message param."""
+class ToOpenAIMessageConverter(Converter[Message, ChatCompletionMessageParam]):
+    """Конвертация Message-иерархии → OpenAI message param (visitor по типу)."""
 
-    def convert(self, value: LLMMessage) -> ChatCompletionMessageParam:
-        match value.role:
-            case "system":
+    def convert(self, value: Message) -> ChatCompletionMessageParam:
+        match value:
+            case SystemMessage(content=content):
                 return ChatCompletionSystemMessageParam(
                     role="system",
-                    content=value.content,
+                    content=content,
                 )
-            case "user":
+            case UserMessage(content=content):
                 return ChatCompletionUserMessageParam(
                     role="user",
-                    content=value.content,
+                    content=content,
                 )
-            case "assistant":
+            case AssistantMessage(content=content, tool_calls=tcs):
                 param = ChatCompletionAssistantMessageParam(
                     role="assistant",
-                    content=value.content,
+                    content=content,
                 )
-                if value.tool_calls:
+                if tcs:
                     param["tool_calls"] = [
                         {
                             "id": tc.id,
                             "type": "function",
                             "function": {
                                 "name": tc.name,
-                                "arguments": tc.arguments,
+                                "arguments": tc.args_json(),
                             },
                         }
-                        for tc in value.tool_calls
+                        for tc in tcs
                     ]
                 return param
-            case "tool":
+            case ToolResultMessage(tool_call_id=tcid, content=content):
                 return ChatCompletionToolMessageParam(
                     role="tool",
-                    content=value.content,
-                    tool_call_id=value.tool_call_id or "",
+                    content=content,
+                    tool_call_id=tcid,
                 )
+            case _:
+                msg = f"ToOpenAIMessageConverter: неизвестный Message-тип: {type(value).__name__}"
+                raise TypeError(msg)
 
 
 class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
@@ -93,11 +104,10 @@ class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
 
     def _apply_messages(self, kwargs: dict[str, Any], r: LLMRequest) -> None:
         """Склеивает в OpenAI-порядок: system → messages."""
-        ordered: list[LLMMessage] = [r.system_message, *r.messages]
-        kwargs["messages"] = list(self._convert_messages(ordered))
+        kwargs["messages"] = list(self._convert_messages(r.all_messages()))
 
     def _convert_messages(
-        self, messages: Iterable[LLMMessage]
+        self, messages: Iterable[Message]
     ) -> Iterable[ChatCompletionMessageParam]:
         for m in messages:
             yield self._to_message.convert(m)

@@ -5,10 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Self
 
-from boba.agent.dialogue_writer import DialogueWriter
 from boba.agent.events import AgentEvent
-from boba.agent.in_memory import InMemoryMessageService
-from boba.agent.messages import MessageService
+from boba.agent.messages import InMemoryMessageService, MessageService, MessageWriter
 from boba.agent.middleware import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
@@ -19,18 +17,8 @@ from boba.agent.middleware import (
     StopOnFinished,
     ToolExecutionMiddleware,
 )
-from boba.agent.models import AgentConfig, AgentContext
-from boba.agent.orchestrator import Agent
+from boba.agent.orchestrator import Agent, AgentConfig, AgentContext
 from boba.agent.prompt import PromptProvider
-from boba.agent.state import ChannelRegistry
-from boba.agent.turn.reducers import (
-    AgentRequestSamplingReducer,
-    HistoryReducer,
-    ModelReducer,
-    SystemPromptReducer,
-    ToolsReducer,
-)
-from boba.agent.turn.spec import TurnSpec
 from boba.llm.events import LLMEvent
 from boba.llm.models import LLMContext
 from boba.patterns import (
@@ -107,33 +95,20 @@ class AgentBuilder:
             raise ValueError(msg)
 
         message_service = self._message_service or InMemoryMessageService()
-        writer = DialogueWriter(message_service)
-        channels = ChannelRegistry([message_service])
 
-        turn_spec = self._build_turn_spec(self._tools_service)
         chain = self._build_chain(
             llm_source=self._llm_source,
             tools_service=self._tools_service,
             visitor=self._tool_result_visitor,
-            channels=channels,
-            writer=writer,
+            prompt_providers=self._prompt_providers,
+            message_service=message_service,
             tool_ctx=tool_ctx,
-            turn_spec=turn_spec,
         )
         source = StreamSourceLoop(
             source=chain,
             stop_if=StopOnFinished().or_(StopOnAnyFailure()),
         )
-        return Agent(source=source, writer=writer, reader=message_service)
-
-    def _build_turn_spec(self, tools_service: ToolsService) -> TurnSpec:
-        spec = TurnSpec()
-        spec.register(ModelReducer())
-        spec.register(SystemPromptReducer(self._prompt_providers))
-        spec.register(HistoryReducer())
-        spec.register(ToolsReducer(tools_service))
-        spec.register(AgentRequestSamplingReducer())
-        return spec
+        return Agent(source=source, writer=message_service, reader=message_service)
 
     @staticmethod
     def _build_chain(  # noqa: PLR0913
@@ -141,23 +116,32 @@ class AgentBuilder:
         llm_source: StreamSource[LLMContext, LLMEvent],
         tools_service: ToolsService,
         visitor: ToolResultVisitor[str],
-        channels: ChannelRegistry,
-        writer: DialogueWriter,
+        prompt_providers: list[PromptProvider],
+        message_service: MessageService,
         tool_ctx: ToolContext,
-        turn_spec: TurnSpec,
     ) -> StreamSource[AgentContext, AgentEvent]:
+        writer: MessageWriter = message_service
         error_router = AgentErrorRouter(writer)
         builder = StreamSourceChainBuilder[AgentContext, AgentEvent]()
         builder.use(lambda inner: AgentErrorRouterMiddleware(inner, error_router))
         builder.use(IterationCounterMiddleware)
         builder.use(
             lambda inner: ToolExecutionMiddleware(
-                inner, tools_service, tool_ctx, writer, visitor,
+                inner,
+                tools_service,
+                tool_ctx,
+                writer,
+                visitor,
             ),
         )
         builder.use(
             lambda inner: AssistantMessagePersistenceMiddleware(inner, writer),
         )
         return builder.terminal(
-            LLMInvokeMiddleware(llm_source, turn_spec, channels),
+            LLMInvokeMiddleware(
+                llm_source,
+                prompt_providers,
+                tools_service,
+                message_service,
+            ),
         )

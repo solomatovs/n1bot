@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable
 
-from boba.agent.dialogue_writer import DialogueWriter
 from boba.agent.events import (
     AgentEvent,
     FeedbackToLLMAdded,
@@ -14,8 +12,10 @@ from boba.agent.events import (
     ToolExecutionStarted,
     ToolResultReady,
 )
-from boba.agent.models import AgentContext
-from boba.agent.payloads import ToolCallFailure, ToolCallResult
+from boba.agent.messages import MessageWriter
+from boba.agent.models import ToolCallFailure, ToolCallResult
+from boba.agent.orchestrator import AgentContext
+from boba.llm.models import ToolResultMessage
 from boba.patterns import StreamSource
 from boba.tools.domain import ToolCall as DomainToolCall
 from boba.tools.domain import (
@@ -35,7 +35,7 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
         inner: StreamSource[AgentContext, AgentEvent],
         tools_service: ToolsService,
         tool_ctx: ToolContext,
-        writer: DialogueWriter,
+        writer: MessageWriter,
         visitor: ToolResultVisitor[str],
     ) -> None:
         self._inner = inner
@@ -66,23 +66,6 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
         tc: ToolCallComplete,
     ) -> Iterable[AgentEvent]:
         call = tc.call
-        try:
-            arguments = json.loads(call.arguments)
-        except json.JSONDecodeError as e:
-            message = f"invalid JSON arguments: {e}"
-            self._writer.append_tool_result(
-                tool_call_id=call.id,
-                content=message,
-            )
-            yield ToolExecutionFailed(
-                request_id=tc.request_id,
-                call=call,
-                failure=ToolCallFailure(
-                    error_kind=type(e).__name__,
-                    message=message,
-                ),
-            )
-            return
 
         yield ToolExecutionStarted(
             request_id=tc.request_id,
@@ -92,12 +75,15 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
         try:
             result = self._tools_service.execute(
                 self._tool_ctx,
-                DomainToolCall(tool_id=ToolId(call.name), arguments=arguments),
+                DomainToolCall(tool_id=ToolId(call.name), arguments=dict(call.args)),
             )
         except ToolExecutionError as e:
-            self._writer.append_tool_result(
-                tool_call_id=call.id,
-                content=e.message,
+            self._writer.add(
+                ToolResultMessage(
+                    tool_call_id=call.id,
+                    content=e.message,
+                    success=False,
+                ),
             )
             yield ToolExecutionFailed(
                 request_id=tc.request_id,
@@ -110,9 +96,8 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
             return
 
         rendered = result.accept(self._visitor)
-        self._writer.append_tool_result(
-            tool_call_id=call.id,
-            content=rendered,
+        self._writer.add(
+            ToolResultMessage(tool_call_id=call.id, content=rendered),
         )
         yield ToolResultReady(
             request_id=tc.request_id,
@@ -128,7 +113,7 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
         self,
         inner: StreamSource[AgentContext, AgentEvent],
         max_consecutive: int,
-        writer: DialogueWriter,
+        writer: MessageWriter,
     ) -> None:
         self._inner = inner
         self._max_consecutive = max_consecutive
@@ -151,7 +136,7 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
                 continue
 
             call = event.call
-            key = (call.name, call.arguments)
+            key = (call.name, call.args_json())
             if self._last == key:
                 self._count += 1
             else:
@@ -162,15 +147,18 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
                 message = (
                     f"Обнаружен луп: {self._count}-й подряд "
                     f"идентичный вызов '{call.name}' с "
-                    f"arguments={call.arguments}. Результат уже "
+                    f"args={call.args_json()}. Результат уже "
                     f"есть в предыдущих role='tool' сообщениях. "
                     f"Либо вызови инструмент с другими аргументами, "
                     f"либо сформулируй ответ пользователю обычным "
                     f"текстом."
                 )
-                self._writer.append_tool_call_rejection(
-                    tool_call_id=call.id,
-                    content=message,
+                self._writer.add(
+                    ToolResultMessage(
+                        tool_call_id=call.id,
+                        content=message,
+                        success=False,
+                    ),
                 )
                 yield FeedbackToLLMAdded(
                     request_id=event.request_id,

@@ -10,12 +10,7 @@ __all__ = [
     "AllMatchesDispatcher",
     "Always",
     "CatalogFactory",
-    "ContextCatalogFactory",
     "ContextConverter",
-    "ContextFactoryMethod",
-    "ContextFoldFactory",
-    "ContextItemProvider",
-    "ContextPrioritySource",
     "Converter",
     "ConverterError",
     "ConverterInputError",
@@ -124,7 +119,6 @@ TIn = TypeVar("TIn")
 TId = TypeVar("TId", bound=Id)
 TState = TypeVar("TState")
 TOut = TypeVar("TOut")
-# Ковариантный TOut: только output-позиции (return).
 TOut_co = TypeVar("TOut_co", covariant=True)
 TValue = TypeVar("TValue")
 TQuery = TypeVar("TQuery")
@@ -234,13 +228,6 @@ class FactoryMethod(ABC, Generic[TOut]):
     def build(self) -> TOut: ...
 
 
-class ContextFactoryMethod(ABC, Generic[TCtx, TOut]):
-    """Factory, которому для сборки нужен контекст вызова."""
-
-    @abstractmethod
-    def build(self, ctx: TCtx) -> TOut: ...
-
-
 class PrioritySource(ABC, Generic[TId, TState]):
     """Одна стадия сборки для FoldFactory: state_n → state_{n+1}."""
 
@@ -291,56 +278,6 @@ class FoldFactory(
         return self.finalize(state)
 
 
-class ContextPrioritySource(ABC, Generic[TCtx, TId, TState]):
-    """Context-aware reducer для ContextFoldFactory."""
-
-    @abstractmethod
-    def id(self) -> TId: ...
-
-    @abstractmethod
-    def priority(self) -> int: ...
-
-    @abstractmethod
-    def apply(self, ctx: TCtx, state: TState) -> TState: ...
-
-
-class ContextFoldFactory(
-    ContextFactoryMethod[TCtx, TOut],
-    Generic[TCtx, TId, TState, TOut],
-):
-    """ContextFactoryMethod, собирающий объект через fold-стадии с ctx."""
-
-    def __init__(self) -> None:
-        self._reducers: dict[TId, ContextPrioritySource[TCtx, TId, TState]] = {}
-
-    def register(self, reducer: ContextPrioritySource[TCtx, TId, TState]) -> None:
-        self._reducers[reducer.id()] = reducer
-
-    def unregister(self, key: TId) -> None:
-        self._reducers.pop(key, None)
-
-    def providers(self) -> Iterable[ContextPrioritySource[TCtx, TId, TState]]:
-        return iter(self._reducers.values())
-
-    @abstractmethod
-    def initial(self, ctx: TCtx) -> TState:
-        """Начальное состояние сборки."""
-        ...
-
-    @abstractmethod
-    def finalize(self, ctx: TCtx, state: TState) -> TOut:
-        """Превратить накопленное состояние в результат."""
-        ...
-
-    def build(self, ctx: TCtx) -> TOut:
-        state = self.initial(ctx)
-
-        for p in sorted(self._reducers.values(), key=lambda p: p.priority()):
-            state = p.apply(ctx, state)
-
-        return self.finalize(ctx, state)
-
-
 class ItemProvider(ABC, Generic[TId, TItem]):
     """Производит один элемент с известным id; используется CatalogFactory."""
 
@@ -379,42 +316,6 @@ class CatalogFactory(FactoryMethod[TOut], Generic[TId, TItem, TOut]):
     def build(self) -> TOut:
         items = {p.id(): p.produce() for p in self._providers.values()}
         return self.finalize(items)
-
-
-class ContextItemProvider(ABC, Generic[TCtx, TId, TItem]):
-    """Context-aware variant ItemProvider: produce требует контекста."""
-
-    @abstractmethod
-    def id(self) -> TId: ...
-
-    @abstractmethod
-    def produce(self, ctx: TCtx) -> TItem: ...
-
-
-class ContextCatalogFactory(
-    ContextFactoryMethod[TCtx, TOut],
-    Generic[TCtx, TId, TItem, TOut],
-):
-    """ContextFactoryMethod-вариант CatalogFactory; produce принимает ctx."""
-
-    def __init__(self) -> None:
-        self._providers: dict[TId, ContextItemProvider[TCtx, TId, TItem]] = {}
-
-    def register(self, provider: ContextItemProvider[TCtx, TId, TItem]) -> None:
-        self._providers[provider.id()] = provider
-
-    def unregister(self, item_id: TId) -> None:
-        self._providers.pop(item_id, None)
-
-    def providers(self) -> Iterable[ContextItemProvider[TCtx, TId, TItem]]:
-        return iter(self._providers.values())
-
-    @abstractmethod
-    def finalize(self, ctx: TCtx, items: dict[TId, TItem]) -> TOut: ...
-
-    def build(self, ctx: TCtx) -> TOut:
-        items = {p.id(): p.produce(ctx) for p in self._providers.values()}
-        return self.finalize(ctx, items)
 
 
 class Serializer(Generic[TIn, TOut]):

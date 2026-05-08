@@ -8,12 +8,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal, TypeAlias
 
-from boba.agent.payloads import (
+from boba.agent.models import (
     ToolCallFailure,
     ToolCallResult,
 )
 from boba.llm.events import FinishReason
-from boba.llm.models import LLMToolCall, RequestId
+from boba.llm.models import InvalidToolCall, RequestId, ToolCall
 
 
 class Severity(StrEnum):
@@ -247,7 +247,7 @@ class ToolCallStreamStarted(PhaseTransition):
 class ToolExecutionStarted(PhaseTransition):
     """Tool готов к исполнению — args разобраны."""
 
-    call: LLMToolCall
+    call: ToolCall
 
     @classmethod
     def name(cls) -> Literal["ToolExecutionStarted"]:
@@ -260,7 +260,7 @@ class ToolExecutionStarted(PhaseTransition):
         return {"id": self.call.id, "name": self.call.name}
 
     def body(self) -> str | None:
-        return self.call.arguments
+        return self.call.args_json()
 
 
 @dataclass(frozen=True)
@@ -474,10 +474,33 @@ class RefusalComplete(ContentSnapshot):
 
 
 @dataclass(frozen=True)
+class InvalidToolCallReceived(Advisory):
+    """LLM выдала tool-call с невалидным JSON в args; цикл продолжается."""
+
+    invalid: InvalidToolCall
+
+    @classmethod
+    def name(cls) -> Literal["InvalidToolCallReceived"]:
+        return "InvalidToolCallReceived"
+
+    def headline(self) -> str:
+        return f"invalid tool call: {self.invalid.name}"
+
+    def details(self) -> Mapping[str, str]:
+        return {
+            "id": self.invalid.id,
+            "name": self.invalid.name,
+        }
+
+    def body(self) -> str | None:
+        return f"raw_args: {self.invalid.raw_args}\nerror: {self.invalid.error}"
+
+
+@dataclass(frozen=True)
 class ToolCallComplete(ContentSnapshot):
     """Завершённый tool call (id + имя + args)."""
 
-    call: LLMToolCall
+    call: ToolCall
 
     @classmethod
     def name(cls) -> Literal["ToolCallComplete"]:
@@ -493,14 +516,14 @@ class ToolCallComplete(ContentSnapshot):
         return self.call.name
 
     def body(self) -> str:
-        return self.call.arguments
+        return self.call.args_json()
 
 
 @dataclass(frozen=True)
 class ToolResultReady(ContentSnapshot):
     """Результат выполнения tool — вызов и результат."""
 
-    call: LLMToolCall
+    call: ToolCall
     result: ToolCallResult
 
     @classmethod
@@ -543,7 +566,7 @@ class FeedbackToLLMAdded(ContentSnapshot):
 class ToolExecutionFailed(Advisory):
     """Tool упал — вызов и описание провала; цикл продолжается."""
 
-    call: LLMToolCall
+    call: ToolCall
     failure: ToolCallFailure
 
     @classmethod
@@ -561,7 +584,7 @@ class ToolExecutionFailed(Advisory):
         }
 
     def body(self) -> str | None:
-        return f"args: {self.call.arguments}\nerror: {self.failure.message}"
+        return f"args: {self.call.args_json()}\nerror: {self.failure.message}"
 
 @dataclass(frozen=True)
 class GenerationFailed(Terminal):
@@ -683,6 +706,7 @@ AgentEvent = (
     | FeedbackToLLMAdded
     # Advisory
     | ToolExecutionFailed
+    | InvalidToolCallReceived
     # Terminal
     | GenerationFailed
     | PromptFailed
@@ -714,6 +738,7 @@ AgentEventName: TypeAlias = Literal[
     "ToolResultReady",
     "FeedbackToLLMAdded",
     "ToolExecutionFailed",
+    "InvalidToolCallReceived",
     "GenerationFailed",
     "PromptFailed",
     "MaxIterationsReached",
