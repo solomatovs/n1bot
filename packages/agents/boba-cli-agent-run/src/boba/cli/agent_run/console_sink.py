@@ -16,11 +16,9 @@ from boba.agent.events import (
     SlotKind,
     Terminal,
 )
-from boba.agent.models import AgentContext
-from boba.patterns import StreamSink
 
 
-class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
+class ConsoleSink:
     """AgentEvent → stdout/stderr; use_color=None — авто по TTY/NO_COLOR."""
 
     _RESET = "\x1b[0m"
@@ -65,8 +63,7 @@ class ConsoleSink(StreamSink[AgentContext, AgentEvent]):
         return "ConsoleSink"
 
 
-    def handle(self, ctx: AgentContext, event: AgentEvent) -> None:
-        del ctx
+    def handle(self, event: AgentEvent) -> None:
         match event:
             case ContentDelta():
                 self._on_delta(event)

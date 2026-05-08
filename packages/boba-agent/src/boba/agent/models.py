@@ -7,7 +7,8 @@ from typing import ClassVar
 
 from boba.coercion import ChainCoercer, Default, MinValue, ParseInt
 from boba.declaration import FieldSpec, ObjectSchema
-from boba.llm.models import RequestId, SamplingParams
+from boba.llm.events import FinishReason
+from boba.llm.models import LLMMessage, RequestId, SamplingParams
 
 
 @dataclass(frozen=True)
@@ -56,3 +57,21 @@ class AgentContext:
     agent_request: AgentRequest
     config: AgentConfig = field(default_factory=AgentConfig)
     iteration: int = 0
+
+
+@dataclass(frozen=True)
+class AgentInput:
+    """Вход одного прогона агента: query + параметры запроса."""
+
+    query: str
+    request: AgentRequest
+    config: AgentConfig = field(default_factory=AgentConfig)
+
+
+@dataclass(frozen=True)
+class AgentRunResult:
+    """Итог одного прогона агента (для invoke)."""
+
+    final_message: LLMMessage | None
+    iterations: int
+    finish_reason: FinishReason | None

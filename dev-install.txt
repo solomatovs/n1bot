@@ -4,19 +4,26 @@
 
 # core/foundation
 -e ./packages/boba-core
+-e ./packages/boba-config-source-toml
 
-# indexing domain
+# domain
 -e ./packages/boba-indexing
+-e ./packages/boba-llm
+-e ./packages/boba-tools
+-e ./packages/boba-workspace-fs
 
-# agent runtime (LLM contracts + tools framework + adapters)
+# agent runtime + adapters
 -e ./packages/boba-agent
+-e ./packages/boba-messages-jsonl
+-e ./packages/boba-prompt-providers
+-e ./packages/boba-provider-openai
 
 # tools (boba.tools entry-point)
--e ./packages/boba-tool-files
--e ./packages/boba-tool-html
--e ./packages/boba-tool-confluence
--e ./packages/boba-tool-chromadb
+-e ./packages/tools/boba-tool-chromadb
+-e ./packages/tools/boba-tool-confluence
+-e ./packages/tools/boba-tool-files
+-e ./packages/tools/boba-tool-html
 
 # entry-point apps
--e ./packages/boba-cli-agent-run
--e ./packages/boba-web-chainlit
+-e ./packages/agents/boba-cli-agent-run
+-e ./packages/agents/boba-web-chainlit

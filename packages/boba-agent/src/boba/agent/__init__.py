@@ -65,7 +65,13 @@ from boba.agent.middleware import (
     StopOnFinished,
     ToolExecutionMiddleware,
 )
-from boba.agent.models import AgentConfig, AgentContext, AgentRequest
+from boba.agent.models import (
+    AgentConfig,
+    AgentContext,
+    AgentInput,
+    AgentRequest,
+    AgentRunResult,
+)
 from boba.agent.orchestrator import Agent
 from boba.agent.payloads import (
     LLMCritique,
@@ -106,9 +112,11 @@ __all__ = [
     "AgentErrorRouterMiddleware",
     "AgentEvent",
     "AgentEventName",
+    "AgentInput",
     "AgentLLMFeedbackError",
     "AgentRequest",
     "AgentRequestSamplingReducer",
+    "AgentRunResult",
     "AnswerComplete",
     "AnswerStarted",
     "AnswerToken",

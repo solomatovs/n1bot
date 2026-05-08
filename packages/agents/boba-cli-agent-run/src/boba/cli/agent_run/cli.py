@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-import contextlib
 import sys
 from pathlib import Path
 
-with contextlib.suppress(ImportError):
-    import readline  # noqa: F401  # pyright: ignore[reportUnusedImport]
-    # side-effect: подключает редактирование строки и историю в input().
-
-from boba.agent import Agent, AgentBuilder, AgentConfig, InMemoryMessageService
+from boba.agent import (
+    Agent,
+    AgentBuilder,
+    AgentConfig,
+    AgentInput,
+    InMemoryMessageService,
+)
 from boba.agent.models import AgentRequest
 from boba.cli.agent_run.config import AgentRunConfig
 from boba.cli.agent_run.console_sink import ConsoleSink
@@ -56,7 +57,7 @@ def main() -> int:
     try:
         bundle = _build_bundle()
     except ConverterInputError as e:
-        print(f"error: {e}", file=sys.stderr)  # noqa: T201
+        print(f"error: {e}", file=sys.stderr)
         return 2
     return _run(bundle)
 
@@ -123,21 +124,20 @@ def _run(bundle: ConfigBundle) -> int:
             .with_messages(message_service)
             .with_prompts(prompt_loader.prompt_providers())
             .with_config(agent_config)
-            .build(
-                sink=ConsoleSink(sys.stdout, sys.stderr),
-                tool_ctx=ToolContext(project_workspace=project_workspace),
-            )
+            .build(tool_ctx=ToolContext(project_workspace=project_workspace))
         )
+        sink = ConsoleSink(sys.stdout, sys.stderr)
 
         if run_cfg.query is not None:
-            _run_turn(agent, agent_config, run_cfg, run_cfg.query)
+            _run_turn(agent, sink, agent_config, run_cfg, run_cfg.query)
             return 0
 
-        return _run_repl(agent, agent_config, run_cfg, message_service)
+        return _run_repl(agent, sink, agent_config, run_cfg, message_service)
 
 
 def _run_turn(
     agent: Agent,
+    sink: ConsoleSink,
     agent_config: AgentConfig,
     run_cfg: AgentRunConfig,
     query: str,
@@ -148,11 +148,14 @@ def _run_turn(
         request_id=RequestId.new(),
         sampling=run_cfg.to_sampling_params(),
     )
-    agent.run(agent_config, request, query)
+    agent_input = AgentInput(query=query, request=request, config=agent_config)
+    for event in agent.stream(agent_input):
+        sink.handle(event)
 
 
 def _run_repl(
     agent: Agent,
+    sink: ConsoleSink,
     agent_config: AgentConfig,
     run_cfg: AgentRunConfig,
     message_service: InMemoryMessageService,
@@ -187,6 +190,6 @@ def _run_repl(
             continue
 
         try:
-            _run_turn(agent, agent_config, run_cfg, query)
+            _run_turn(agent, sink, agent_config, run_cfg, query)
         except KeyboardInterrupt:
             sys.stderr.write("\n(текущий ход прерван)\n")

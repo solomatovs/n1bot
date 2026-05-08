@@ -5,11 +5,9 @@ from __future__ import annotations
 import asyncio
 
 from boba.agent.events import AgentEvent
-from boba.agent.models import AgentContext
-from boba.patterns import StreamSink
 
 
-class ChainlitBridgeSink(StreamSink[AgentContext, AgentEvent]):
+class ChainlitBridgeSink:
     """Sink, перекладывающий AgentEvent в async-очередь из рабочего потока."""
 
     def __init__(
@@ -23,8 +21,7 @@ class ChainlitBridgeSink(StreamSink[AgentContext, AgentEvent]):
     def name(self) -> str:
         return "ChainlitBridge"
 
-    def handle(self, ctx: AgentContext, event: AgentEvent) -> None:
-        del ctx
+    def handle(self, event: AgentEvent) -> None:
         self._loop.call_soon_threadsafe(self._queue.put_nowait, event)
 
     def close(self) -> None:
