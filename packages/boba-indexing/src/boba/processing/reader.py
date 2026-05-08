@@ -14,8 +14,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 
-from boba.patterns import ContextConverter, StateFull, StrId
-from boba.processing.context import IndexingContext
+from boba.patterns import Converter, StateFull, StrId
 from boba.processing.raw_document import RawDocument
 from boba.processing.sections import Section
 
@@ -27,24 +26,16 @@ class ReaderId(StrId):
 
 
 class Reader(
-    ContextConverter[IndexingContext, RawDocument, Iterable[Section]],
+    Converter[RawDocument, Iterable[Section]],
     StateFull,
     ABC,
 ):
-    """Парсер RawDocument → Section'ы.
-
-    Контракт:
-    - Внутри `convert()` открывает `value.open()`, читает, парсит, **закрывает**
-      handle (через `with`).
-    - `Section.source_id = value.canonical_id` (если пуст — fallback на
-      то, что положил RequestSource в `Request.url`).
-    - `Section.metadata` обогащается через `value.identity_hints`.
+    """
+    Парсер RawDocument → Section'ы.
     """
 
     @abstractmethod
     def reader_id(self) -> ReaderId: ...
 
     @abstractmethod
-    def convert(
-        self, ctx: IndexingContext, value: RawDocument
-    ) -> Iterable[Section]: ...
+    def convert(self, value: RawDocument) -> Iterable[Section]: ...

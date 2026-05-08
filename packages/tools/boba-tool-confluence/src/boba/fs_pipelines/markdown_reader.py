@@ -20,7 +20,6 @@ from boba.fs_pipelines.markdown_parser import (
     split_sections,
 )
 from boba.processing import (
-    IndexingContext,
     RawDocument,
     Reader,
     ReaderId,
@@ -40,8 +39,7 @@ class MarkdownReader(Reader):
     def reader_id(self) -> ReaderId:
         return ReaderId("ext.markdown")
 
-    def convert(self, ctx: IndexingContext, value: RawDocument) -> Iterable[Section]:
-        del ctx
+    def convert(self, value: RawDocument) -> Iterable[Section]:
         text = value.handle.read().decode("utf-8", errors="replace")
         for md_sec in split_sections(text):
             section = self._build_section(value, md_sec)

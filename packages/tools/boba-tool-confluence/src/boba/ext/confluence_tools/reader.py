@@ -24,7 +24,6 @@ from boba.ext.confluence_tools.parse import (
     text_between,
 )
 from boba.processing import (
-    IndexingContext,
     RawDocument,
     Reader,
     ReaderId,
@@ -47,9 +46,8 @@ class ConfluenceReader(Reader):
         return _READER_ID
 
     def convert(
-        self, ctx: IndexingContext, value: RawDocument
+        self, value: RawDocument
     ) -> Iterable[Section]:
-        del ctx
         payload = value.handle.read()
         if not payload.strip():
             return
