@@ -37,7 +37,7 @@ class ModelReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
         return self._priority
 
     def apply(self, ctx: TurnResolveContext, state: TurnState) -> TurnState:
-        state.model = ctx.agent.agent_request.model
+        state.model = ctx.agent.request.model
         return state
 
 
@@ -209,7 +209,7 @@ class AgentRequestSamplingReducer(
         return self._priority
 
     def apply(self, ctx: TurnResolveContext, state: TurnState) -> TurnState:
-        sampling = ctx.agent.agent_request.sampling
+        sampling = ctx.agent.request.sampling
         if sampling is not None:
             state.sampling = sampling
         return state

@@ -147,7 +147,7 @@ class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
             for event in self._llm_source.stream(
                 LLMContext(
                     request=request,
-                    request_id=ctx.agent_request.request_id,
+                    request_id=ctx.request.request_id,
                 )
             ):
                 yield from converter.convert(event)

@@ -35,8 +35,8 @@ from boba.tools.domain import (
     ToolExecutionError,
     ToolId,
     ToolName,
-    ToolSourceId,
     ToolResult,
+    ToolSourceId,
 )
 
 __all__ = ["ConfluencePageSectionTool", "ConfluencePageSectionToolConfig"]

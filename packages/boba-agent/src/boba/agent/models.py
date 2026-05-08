@@ -17,6 +17,7 @@ class AgentRequest:
 
     model: str
     request_id: RequestId
+    query: str
     sampling: SamplingParams | None = None
 
 
@@ -41,9 +42,7 @@ AgentConfig.SCHEMA = ObjectSchema(
         FieldSpec(
             name="max_consecutive_tool_calls",
             coercer=ChainCoercer(Default(3), ParseInt(), MinValue(1)),
-            description=(
-                "Сколько раз подряд агент может звать tools без LLM-ответа."
-            ),
+            description=("Сколько раз подряд агент может звать tools без LLM-ответа."),
         ),
     ],
     factory=AgentConfig,
@@ -54,7 +53,7 @@ AgentConfig.SCHEMA = ObjectSchema(
 class AgentContext:
     """Контекст одного прогона: input-данные, неизменяемые в течение run."""
 
-    agent_request: AgentRequest
+    request: AgentRequest
     config: AgentConfig = field(default_factory=AgentConfig)
 
 
@@ -62,7 +61,6 @@ class AgentContext:
 class AgentInput:
     """Вход одного прогона агента: query + параметры запроса."""
 
-    query: str
     request: AgentRequest
     config: AgentConfig = field(default_factory=AgentConfig)
 

@@ -18,7 +18,6 @@ from io import BufferedIOBase, TextIOBase
 from pathlib import Path
 from typing import Generic, TypeVar
 
-from boba.workspace.fs.growbuffer import GrowBuffer
 from boba.patterns import Id, Specification
 from boba.workspace.contract import (
     EntryMeta,
@@ -35,6 +34,7 @@ from boba.workspace.contract import (
     WorkspacePermissionError,
     WorkspaceShell,
 )
+from boba.workspace.fs.growbuffer import GrowBuffer
 
 TWsId = TypeVar("TWsId", bound=Id)
 
