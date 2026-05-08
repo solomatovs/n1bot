@@ -56,7 +56,7 @@ def main() -> int:
     try:
         bundle = _build_bundle()
     except ConverterInputError as e:
-        print(f"error: {e}", file=sys.stderr)
+        print(f"error: {e}", file=sys.stderr)  # noqa: T201
         return 2
     return _run(bundle)
 
@@ -106,12 +106,10 @@ def _run(bundle: ConfigBundle) -> int:
 
         observer = CompositeLLMRequestObserver(
             [
-                # WireTraceChatCompletionObserver(history_workspace),
                 CurlTraceChatCompletionObserver(
                     history_workspace,
                     response_chunks=False,
                 ),
-                # TranscriptChatCompletionObserver(history_workspace),
             ]
         )
         llm_source = create_llm_source(llm_cfg, observer)
