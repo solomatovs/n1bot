@@ -10,10 +10,6 @@ from typing import Any
 import httpx
 
 import openai
-from boba.provider.openai.dto import OpenAIConfig
-from boba.provider.openai.errors import OpenAIErrorConverter
-from boba.provider.openai.request import ToOpenAIRequestConverter
-from boba.provider.openai.response import FromOpenAIChunkConverter
 from boba.llm.errors import LLMError
 from boba.llm.events import (
     LLMEvent,
@@ -23,6 +19,10 @@ from boba.llm.events import (
 from boba.llm.models import LLMContext
 from boba.llm.observer import LLMRequestObserver, RequestOutcome
 from boba.patterns import StreamSource
+from boba.provider.openai.dto import OpenAIConfig
+from boba.provider.openai.errors import OpenAIErrorConverter
+from boba.provider.openai.request import ToOpenAIRequestConverter
+from boba.provider.openai.response import FromOpenAIChunkConverter
 from openai import OpenAI
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 

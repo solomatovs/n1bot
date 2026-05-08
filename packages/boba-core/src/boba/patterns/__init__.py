@@ -706,6 +706,9 @@ class StreamSourceLoop(StreamSource[TCtx, TOut]):
     def name(self) -> str:
         return "Loop(" + self._source.name() + ")"
 
+    def reset(self) -> None:
+        self._source.reset()
+
     def stream(self, ctx: TCtx) -> Iterable[TOut]:
         while True:
             for event in self._source.stream(ctx):

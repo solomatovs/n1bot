@@ -18,27 +18,29 @@ class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
 
     def __init__(self, inner: StreamSource[AgentContext, AgentEvent]) -> None:
         self._inner = inner
+        self._iteration = 0
 
     def name(self) -> str:
         return "IterationCounter"
 
     def reset(self) -> None:
+        self._iteration = 0
         self._inner.reset()
 
     def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
-        ctx.iteration += 1
+        self._iteration += 1
 
-        if ctx.iteration > ctx.config.max_iterations:
+        if self._iteration > ctx.config.max_iterations:
             raise MaxIterationsExceededError(
-                f"Исчерпан лимит итераций цикла агента: {ctx.iteration} > "
+                f"Исчерпан лимит итераций цикла агента: {self._iteration} > "
                 f"{ctx.config.max_iterations}. Финальный ответ не получен.",
                 limit=ctx.config.max_iterations,
-                iteration=ctx.iteration,
+                iteration=self._iteration,
             )
 
         yield IterationStarted(
             request_id=ctx.agent_request.request_id,
-            iteration=ctx.iteration,
+            iteration=self._iteration,
             max_iterations=ctx.config.max_iterations,
         )
         yield from self._inner.stream(ctx)
