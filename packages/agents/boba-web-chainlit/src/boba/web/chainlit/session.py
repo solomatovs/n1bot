@@ -17,13 +17,12 @@ from boba.provider.openai import (
     create_llm_source,
 )
 from boba.prompt.providers import PromptLoader, PromptsConfig
-from boba.agent import AgentBuilder, InMemoryMessageService
-from boba.agent.events import AgentEvent
-from boba.agent.models import AgentConfig, AgentContext, AgentRequest
+from boba.agent import AgentBuilder, AgentInput, InMemoryMessageService
+from boba.agent.models import AgentConfig, AgentRequest
 from boba.config.bundle import ConfigBundle
 from boba.llm.models import RequestId
-from boba.patterns import StreamSink
 from boba.plugin import ExtensionContext as PluginCtx
+from boba.web.chainlit.bridge import ChainlitBridgeSink
 from boba.plugin import install_plugins
 from boba.plugin.discovery import discover_plugins
 from boba.tools.domain import ToolContext
@@ -110,7 +109,7 @@ class ChatSession:
         self,
         workspace_id: WorkspaceId,
         query: str,
-        extra_sink: StreamSink[AgentContext, AgentEvent],
+        extra_sink: ChainlitBridgeSink,
         *,
         model: str,
     ) -> None:
@@ -133,15 +132,21 @@ class ChatSession:
             .with_messages(InMemoryMessageService())
             .with_prompts(self._prompt_providers)
             .with_config(self._agent_config)
-            .build(sink=extra_sink, tool_ctx=tool_ctx)
+            .build(tool_ctx=tool_ctx)
         )
 
         request = AgentRequest(
             model=model,
             request_id=request_id,
         )
+        agent_input = AgentInput(
+            query=query,
+            request=request,
+            config=self._agent_config,
+        )
         with log_context(
             request_id=request_id.to_wire(),
             workspace_id=workspace_id.to_wire(),
         ):
-            agent.run(self._agent_config, request, query)
+            for event in agent.stream(agent_input):
+                extra_sink.handle(event)

@@ -34,7 +34,6 @@ from boba.agent.turn.spec import TurnSpec
 from boba.llm.events import LLMEvent
 from boba.llm.models import LLMContext
 from boba.patterns import (
-    StreamSink,
     StreamSource,
     StreamSourceChainBuilder,
     StreamSourceLoop,
@@ -91,10 +90,9 @@ class AgentBuilder:
     def build(
         self,
         *,
-        sink: StreamSink[AgentContext, AgentEvent],
         tool_ctx: ToolContext,
     ) -> Agent:
-        """Собрать Agent. sink/tool_ctx — per-call DI, не часть билдера."""
+        """Собрать Agent. tool_ctx — per-call DI, не часть билдера."""
         if self._llm_source is None:
             msg = "AgentBuilder.build: .with_llm(...) обязателен до .build()"
             raise ValueError(msg)
@@ -126,7 +124,7 @@ class AgentBuilder:
             source=chain,
             stop_if=StopOnFinished().or_(StopOnAnyFailure()),
         )
-        return Agent(source=source, sink=sink, writer=writer)
+        return Agent(source=source, writer=writer, reader=message_service)
 
     def _build_turn_spec(self, tools_service: ToolsService) -> TurnSpec:
         spec = TurnSpec()
