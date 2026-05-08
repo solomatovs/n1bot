@@ -121,7 +121,10 @@ async def _finalize_step(
     *,
     is_error: bool = False,
 ) -> None:
-    """Финальный output у step через streaming API (stream_token заменяет содержимое)."""
+    """
+    Финальный output у step через streaming API
+    (stream_token заменяет содержимое)
+    """
     if is_error:
         step.is_error = True
     await step.stream_token(content, is_sequence=True)
@@ -203,7 +206,7 @@ class _EventRenderer:
                 if step is not None:
                     await _finalize_step(step, e.body())
             case SlotKind.TOOL_CALL:
-                # Step создан в ToolCallStreamStarted, args стримятся через ContentDelta.
+                # Step создан в ToolCallStreamStarted, args стримятся через ContentDelta
                 pass
             case SlotKind.USER_QUERY:
                 # chainlit уже отрисовал ввод из cl.Message.
@@ -228,7 +231,7 @@ class _EventRenderer:
                     f"(сообщений в контексте: {e.messages_count})",
                 )
             case IterationStarted() if e.iteration > 1:
-                # Первую итерацию не маркируем — пользователь только что отправил запрос.
+                # Первую итерацию не маркируем — пользователь только что отправил запрос
                 await self._set_status(
                     f"Итерация: {e.iteration}/{e.max_iterations}…",
                 )
@@ -257,7 +260,8 @@ class _EventRenderer:
 
     async def _on_advisory(self, e: Advisory) -> None:
         await self._clear_status()
-        # ToolExecutionFailed — финализируем tool-Step, чтобы ошибка была рядом с вызовом.
+        # ToolExecutionFailed — финализируем tool-Step,
+        # чтобы ошибка была рядом с вызовом
         if isinstance(e, ToolExecutionFailed):
             step = self.tool_steps_by_id.pop(e.call.id, None)
             if step is not None:

@@ -5,20 +5,20 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from typing import assert_never
 
-from boba.agent.dialogue_writer import DialogueWriter
 from boba.agent.errors import AgentLLMFeedbackError
 from boba.agent.events import AgentEvent, FeedbackToLLMAdded
-from boba.agent.models import AgentContext
-from boba.agent.payloads import LLMCritique, LLMFeedback, ToolCallRejection
+from boba.agent.messages import MessageWriter
+from boba.agent.models import LLMCritique, LLMFeedback, ToolCallRejection
+from boba.agent.orchestrator import AgentContext
 from boba.errors import RoutableError, UserFeedbackError
-from boba.llm.models import RequestId
+from boba.llm.models import RequestId, ToolResultMessage, UserMessage
 from boba.patterns import StreamSource
 
 
 class AgentErrorRouter:
     """Маршрутизирует RoutableError по маркерам."""
 
-    def __init__(self, writer: DialogueWriter) -> None:
+    def __init__(self, writer: MessageWriter) -> None:
         self._writer = writer
 
     def route(
@@ -38,14 +38,17 @@ class AgentErrorRouter:
             yield err.to_user_feedback(request_id)
 
     def _dispatch_feedback(self, feedback: LLMFeedback) -> None:
-        """Раскрывает LLMFeedback-union в узкие writer-методы."""
+        """Раскрывает LLMFeedback-union в типизированные Message'и."""
         match feedback:
             case LLMCritique(content=c):
-                self._writer.append_llm_critique(c)
+                self._writer.add(UserMessage(content=c))
             case ToolCallRejection(tool_call_id=tid, content=c):
-                self._writer.append_tool_call_rejection(
-                    tool_call_id=tid,
-                    content=c,
+                self._writer.add(
+                    ToolResultMessage(
+                        tool_call_id=tid,
+                        content=c,
+                        success=False,
+                    ),
                 )
             case _:
                 assert_never(feedback)

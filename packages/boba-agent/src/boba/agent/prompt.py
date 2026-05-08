@@ -5,14 +5,12 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Generic, Self, TypeVar
+from typing import Self
 
 from boba.agent.events import AgentEvent, PromptFailed
 from boba.errors import TerminalError
 from boba.llm.models import RequestId
 from boba.patterns import FoldFactory, Id, PrioritySource
-
-TCtx = TypeVar("TCtx")
 
 
 class PromptError(TerminalError[RequestId, AgentEvent]):
@@ -58,11 +56,10 @@ class PromptId(Id[str]):
         return cls(value)
 
 
-class PromptState(Generic[TCtx]):
+class PromptState:
     """Накапливаемое состояние сборки: blocks + контекст."""
 
-    def __init__(self, ctx: TCtx) -> None:
-        self.ctx = ctx
+    def __init__(self) -> None:
         self.blocks: list[PromptBlock] = []
 
     def add(self, block: PromptBlock) -> None:
@@ -118,17 +115,16 @@ class StaticPromptProvider(PromptProvider):
         yield PromptBlock(name=self._id.name, content=self._content)
 
 
-class PromptFactory(FoldFactory[PromptId, PromptState[TCtx], PromptResult]):
+class PromptFactory(FoldFactory[PromptId, PromptState, PromptResult]):
     """Собирает PromptResult из зарегистрированных провайдеров."""
 
-    def __init__(self, ctx: TCtx, providers: Iterable[PromptProvider]) -> None:
+    def __init__(self, providers: Iterable[PromptProvider]) -> None:
         super().__init__()
-        self._ctx = ctx
         for p in providers:
             self.register(p)
 
     def initial(self) -> PromptState:
-        return PromptState(self._ctx)
+        return PromptState()
 
     def finalize(self, state: PromptState) -> PromptResult:
         return PromptResult(state.blocks)

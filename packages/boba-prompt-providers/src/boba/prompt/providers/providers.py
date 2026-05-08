@@ -9,7 +9,6 @@ from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
-from boba.agent.models import AgentContext
 from boba.agent.prompt import (
     PromptBlock,
     PromptId,
@@ -40,7 +39,7 @@ class FilePromptProvider(PromptProvider):
     def priority(self) -> int:
         return self._priority
 
-    def blocks(self, state: PromptState[AgentContext]) -> Iterable[PromptBlock]:
+    def blocks(self, state: PromptState) -> Iterable[PromptBlock]:
         if self._path.exists():
             content = self._path.read_text(encoding="utf-8")
         else:
@@ -61,7 +60,7 @@ class EnvironmentPromptProvider(PromptProvider):
     def priority(self) -> int:
         return self._priority
 
-    def blocks(self, state: PromptState[AgentContext]) -> Iterable[PromptBlock]:
+    def blocks(self, state: PromptState) -> Iterable[PromptBlock]:
         lines = [
             f"Platform: {platform.system()}",
             f"Shell: {os.environ.get('SHELL', 'unknown')}",
@@ -86,7 +85,7 @@ class GitPromptProvider(PromptProvider):
     def priority(self) -> int:
         return self._priority
 
-    def blocks(self, state: PromptState[AgentContext]) -> Iterable[PromptBlock]:
+    def blocks(self, state: PromptState) -> Iterable[PromptBlock]:
         branch = self._git("branch", "--show-current")
         status = self._git("status", "--short")
         log = self._git("log", "--oneline", "-5")
@@ -132,7 +131,7 @@ class WorkspaceSystemPromptProvider(PromptProvider):
     def priority(self) -> int:
         return self._priority
 
-    def blocks(self, state: PromptState[AgentContext]) -> Iterator[PromptBlock]:
+    def blocks(self, state: PromptState) -> Iterator[PromptBlock]:
         for path in sorted(self._workspace.ls(self._directory)):
             with self._workspace.read_text(path) as f:
                 content = f.read().strip()

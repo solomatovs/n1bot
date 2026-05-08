@@ -1,74 +1,37 @@
-"""Модели агент-слоя."""
-
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import ClassVar
-
-from boba.coercion import ChainCoercer, Default, MinValue, ParseInt
-from boba.declaration import FieldSpec, ObjectSchema
-from boba.llm.events import FinishReason
-from boba.llm.models import LLMMessage, RequestId, SamplingParams
+from dataclasses import dataclass
+from typing import TypeAlias
 
 
 @dataclass(frozen=True)
-class AgentRequest:
-    """Параметры одного прогона агента (model, request_id, sampling)."""
+class ToolCallResult:
+    """Результат успешного выполнения tool."""
 
-    model: str
-    request_id: RequestId
-    query: str
-    sampling: SamplingParams | None = None
+    content: str
 
 
 @dataclass(frozen=True)
-class AgentConfig:
-    """Настройки одного прогона агента."""
+class ToolCallFailure:
+    """Tool бросил ToolExecutionError или невалидный JSON в args."""
 
-    max_iterations: int = field(default=20)
-    max_consecutive_tool_calls: int = field(default=3)
-
-    SCHEMA: ClassVar[ObjectSchema[AgentConfig]]
-
-
-AgentConfig.SCHEMA = ObjectSchema(
-    description="Лимиты агентского лупа.",
-    fields=[
-        FieldSpec(
-            name="max_iterations",
-            coercer=ChainCoercer(Default(20), ParseInt(), MinValue(1)),
-            description="Жёсткий потолок числа итераций агента в одной сессии.",
-        ),
-        FieldSpec(
-            name="max_consecutive_tool_calls",
-            coercer=ChainCoercer(Default(3), ParseInt(), MinValue(1)),
-            description=("Сколько раз подряд агент может звать tools без LLM-ответа."),
-        ),
-    ],
-    factory=AgentConfig,
-)
+    error_kind: str
+    message: str
 
 
 @dataclass(frozen=True)
-class AgentContext:
-    """Контекст одного прогона: input-данные, неизменяемые в течение run."""
+class LLMCritique:
+    """Общая критика к LLM (role="user"), не привязана к tool_call."""
 
-    request: AgentRequest
-    config: AgentConfig = field(default_factory=AgentConfig)
-
-
-@dataclass(frozen=True)
-class AgentInput:
-    """Вход одного прогона агента: query + параметры запроса."""
-
-    request: AgentRequest
-    config: AgentConfig = field(default_factory=AgentConfig)
+    content: str
 
 
 @dataclass(frozen=True)
-class AgentRunResult:
-    """Итог одного прогона агента (для invoke)."""
+class ToolCallRejection:
+    """Подавление tool_call'а: ответ в слот вызова (role="tool")."""
 
-    final_message: LLMMessage | None
-    iterations: int
-    finish_reason: FinishReason | None
+    tool_call_id: str
+    content: str
+
+
+LLMFeedback: TypeAlias = LLMCritique | ToolCallRejection

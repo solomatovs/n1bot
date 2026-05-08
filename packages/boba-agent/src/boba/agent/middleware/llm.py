@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from typing import assert_never
 
 from boba.agent.errors import LLMGenerationFailedError
@@ -21,9 +21,17 @@ from boba.agent.events import (
     ToolCallStreamStarted,
 )
 from boba.agent.events import LLMRequestSent as AgentLLMRequestSent
-from boba.agent.models import AgentContext
-from boba.agent.state import ChannelRegistry
-from boba.agent.turn.spec import TurnResolveContext, TurnSpec
+from boba.agent.messages import MessageReader
+from boba.agent.orchestrator import AgentContext
+from boba.agent.prompt import PromptProvider
+from boba.agent.turn.reducers import (
+    AgentRequestSamplingReducer,
+    HistoryReducer,
+    ModelReducer,
+    SystemPromptReducer,
+    ToolsReducer,
+)
+from boba.agent.turn.spec import TurnSpec
 from boba.llm.errors import LLMError
 from boba.llm.events import (
     LLMAnswerStarted,
@@ -42,9 +50,10 @@ from boba.llm.events import (
 )
 from boba.llm.models import LLMContext, LLMRequest
 from boba.patterns import StreamSource
+from boba.tools.framework import ToolsService
 
 
-class _LLMToAgentConverter:
+class LLMToAgentConverter:
     """Per-stream stateful конвертер LLM → Agent."""
 
     def __init__(self, request: LLMRequest) -> None:
@@ -125,24 +134,36 @@ class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
     def __init__(
         self,
         llm_source: StreamSource[LLMContext, LLMEvent],
-        spec: TurnSpec,
-        channels: ChannelRegistry,
+        prompt_providers: Sequence[PromptProvider],
+        tools_service: ToolsService,
+        message_reader: MessageReader,
     ) -> None:
         self._llm_source = llm_source
-        self._spec = spec
-        self._channels = channels
+        self._prompt_providers = prompt_providers
+        self._tools_service = tools_service
+        self._message_reader = message_reader
 
     def name(self) -> str:
         return "LLMInvoke"
 
+    def _create_turn_spec(self, ctx: AgentContext) -> TurnSpec:
+        """
+        Собрать TurnSpec для данного прогона на основе AgentContext
+        В будущем потребуется инджектить creator TunSpec, а сейчас можно и так
+        """
+
+        spec = TurnSpec()
+        spec.register(ModelReducer(ctx.request.model))
+        spec.register(SystemPromptReducer(self._prompt_providers))
+        spec.register(HistoryReducer(self._message_reader))
+        spec.register(ToolsReducer(self._tools_service))
+        spec.register(AgentRequestSamplingReducer(ctx.request.sampling))
+        return spec
+
     def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
-        request = self._spec.build(
-            TurnResolveContext(
-                agent=ctx,
-                channels=self._channels,
-            )
-        )
-        converter = _LLMToAgentConverter(request)
+        request = self._create_turn_spec(ctx).build()
+
+        converter = LLMToAgentConverter(request)
         try:
             for event in self._llm_source.stream(
                 LLMContext(

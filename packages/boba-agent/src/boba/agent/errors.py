@@ -9,7 +9,7 @@ from boba.agent.events import (
     GenerationFailed,
     MaxIterationsReached,
 )
-from boba.agent.payloads import LLMFeedback
+from boba.agent.models import LLMFeedback
 from boba.errors import LLMFeedbackError, TerminalError
 from boba.llm.models import RequestId
 

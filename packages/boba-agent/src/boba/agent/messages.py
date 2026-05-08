@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import Self
 
 from boba.agent.events import AgentEvent, PersistenceFailed
 from boba.agent.state import ChannelId, StateChannel
 from boba.errors import TerminalError
-from boba.llm.models import LLMMessage, RequestId
+from boba.llm.models import Message, RequestId
 
 __all__ = [
     "MessageReader",
@@ -62,23 +62,28 @@ class MessageReader(ABC):
     """Read-side порт хранилища сообщений."""
 
     @abstractmethod
-    def message_iter(self) -> Iterator[LLMMessage]:
+    def message_iter(self) -> Iterator[Message]:
         """Все сообщения в порядке добавления; MessageStoreReadError при сбое."""
         ...
 
     @abstractmethod
-    def last(self) -> LLMMessage | None:
+    def last(self) -> Message | None:
         """Последнее сообщение или None."""
         ...
 
 
 class MessageWriter(ABC):
-    """Write-side порт хранилища сообщений (только DialogueWriter)."""
+    """Write-side порт хранилища сообщений."""
 
     @abstractmethod
-    def add(self, message: LLMMessage) -> None:
+    def add(self, message: Message) -> None:
         """Добавить сообщение; MessageStoreWriteError при сбое."""
         ...
+
+    def add_many(self, messages: Iterable[Message]) -> None:
+        """Bulk-добавление; default — цикл add. Persistent impls могут оверрайдить."""
+        for message in messages:
+            self.add(message)
 
     @abstractmethod
     def clear(self) -> None:
@@ -92,3 +97,21 @@ class MessageService(MessageReader, MessageWriter, StateChannel, ABC):
     @classmethod
     def channel_id(cls) -> ChannelId[Self]:
         return ChannelId("messages")
+
+class InMemoryMessageService(MessageService):
+    """In-memory реализация MessageService."""
+
+    def __init__(self) -> None:
+        self._messages: list[Message] = []
+
+    def add(self, message: Message) -> None:
+        self._messages.append(message)
+
+    def message_iter(self) -> Iterator[Message]:
+        return iter(self._messages)
+
+    def last(self) -> Message | None:
+        return self._messages[-1] if self._messages else None
+
+    def clear(self) -> None:
+        self._messages.clear()
