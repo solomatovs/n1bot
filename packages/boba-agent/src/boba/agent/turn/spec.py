@@ -6,8 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from boba.agent.messages import MessageReader
 from boba.agent.models import AgentContext
+from boba.agent.state import ChannelRegistry
 from boba.llm.errors import (
     LLMRequestEmptyMessagesError,
     LLMRequestModelNoneError,
@@ -35,7 +35,7 @@ class TurnState:
 @dataclass(frozen=True)
 class TurnResolveContext:
     agent: AgentContext
-    message_reader: MessageReader
+    channels: ChannelRegistry
 
 
 class TurnSpec(

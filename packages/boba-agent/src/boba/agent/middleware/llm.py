@@ -21,8 +21,8 @@ from boba.agent.events import (
     ToolCallStreamStarted,
 )
 from boba.agent.events import LLMRequestSent as AgentLLMRequestSent
-from boba.agent.messages import MessageReader
 from boba.agent.models import AgentContext
+from boba.agent.state import ChannelRegistry
 from boba.agent.turn.spec import TurnResolveContext, TurnSpec
 from boba.llm.errors import LLMError
 from boba.llm.events import (
@@ -126,11 +126,11 @@ class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
         self,
         llm_source: StreamSource[LLMContext, LLMEvent],
         spec: TurnSpec,
-        message_reader: MessageReader,
+        channels: ChannelRegistry,
     ) -> None:
         self._llm_source = llm_source
         self._spec = spec
-        self._message_reader = message_reader
+        self._channels = channels
 
     def name(self) -> str:
         return "LLMInvoke"
@@ -139,7 +139,7 @@ class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
         request = self._spec.build(
             TurnResolveContext(
                 agent=ctx,
-                message_reader=self._message_reader,
+                channels=self._channels,
             )
         )
         converter = _LLMToAgentConverter(request)

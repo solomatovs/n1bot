@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
+from typing import Self
 
 from boba.agent.events import AgentEvent, PersistenceFailed
+from boba.agent.state import ChannelId, StateChannel
 from boba.errors import TerminalError
 from boba.llm.models import LLMMessage, RequestId
 
@@ -84,5 +86,9 @@ class MessageWriter(ABC):
         ...
 
 
-class MessageService(MessageReader, MessageWriter, ABC):
-    """Композиция MessageReader + MessageWriter (тип для реализаций)."""
+class MessageService(MessageReader, MessageWriter, StateChannel, ABC):
+    """Композиция MessageReader + MessageWriter + StateChannel."""
+
+    @classmethod
+    def channel_id(cls) -> ChannelId[Self]:
+        return ChannelId("messages")
