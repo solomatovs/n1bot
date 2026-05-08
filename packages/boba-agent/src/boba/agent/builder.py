@@ -22,6 +22,7 @@ from boba.agent.middleware import (
 from boba.agent.models import AgentConfig, AgentContext
 from boba.agent.orchestrator import Agent
 from boba.agent.prompt import PromptProvider
+from boba.agent.state import ChannelRegistry
 from boba.agent.turn.reducers import (
     AgentRequestSamplingReducer,
     HistoryReducer,
@@ -109,13 +110,14 @@ class AgentBuilder:
 
         message_service = self._message_service or InMemoryMessageService()
         writer = DialogueWriter(message_service)
+        channels = ChannelRegistry([message_service])
 
         turn_spec = self._build_turn_spec(self._tools_service)
         chain = self._build_chain(
             llm_source=self._llm_source,
             tools_service=self._tools_service,
             visitor=self._tool_result_visitor,
-            message_service=message_service,
+            channels=channels,
             writer=writer,
             tool_ctx=tool_ctx,
             turn_spec=turn_spec,
@@ -136,12 +138,12 @@ class AgentBuilder:
         return spec
 
     @staticmethod
-    def _build_chain(
+    def _build_chain(  # noqa: PLR0913
         *,
         llm_source: StreamSource[LLMContext, LLMEvent],
         tools_service: ToolsService,
         visitor: ToolResultVisitor[str],
-        message_service: MessageService,
+        channels: ChannelRegistry,
         writer: DialogueWriter,
         tool_ctx: ToolContext,
         turn_spec: TurnSpec,
@@ -159,5 +161,5 @@ class AgentBuilder:
             lambda inner: AssistantMessagePersistenceMiddleware(inner, writer),
         )
         return builder.terminal(
-            LLMInvokeMiddleware(llm_source, turn_spec, message_service),
+            LLMInvokeMiddleware(llm_source, turn_spec, channels),
         )

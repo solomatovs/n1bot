@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, ClassVar
 
+from boba.agent.messages import MessageService
 from boba.agent.prompt import PromptFactory, PromptProvider
 from boba.agent.turn.spec import TurnResolveContext, TurnState
 from boba.declaration import ObjectSchema
@@ -20,38 +21,17 @@ from boba.tools.domain import (
 )
 from boba.tools.framework import ToolsService
 
-_MODEL_ID = StrId("model")
-_SYSTEM_ID = StrId("system")
-_HISTORY_ID = StrId("history")
-_TOOLS_ID = StrId("tools")
-_SAMPLING_ID = StrId("sampling")
-
-
-def _tool_to_schema(
-    tool_id: ToolId,
-    schema: ObjectSchema[Any],
-) -> LLMToolSchema:
-    """Конверсия (qualified-id, ObjectSchema) в data-only LLMToolSchema."""
-    wire = ToolWireSchemaBuilder(schema).build()
-    return LLMToolSchema(
-        name=tool_id.to_wire(),
-        description=schema.description,
-        parameters_schema={
-            "type": "object",
-            "properties": wire.get("properties", {}),
-            "required": wire.get("required", []),
-        },
-    )
-
 
 class ModelReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
     """Берёт модель из ctx.agent.agent_request.model."""
+
+    ID: ClassVar[StrId] = StrId("model")
 
     def __init__(self, priority: int = 10) -> None:
         self._priority = priority
 
     def id(self) -> StrId:
-        return _MODEL_ID
+        return self.ID
 
     def priority(self) -> int:
         return self._priority
@@ -64,6 +44,8 @@ class ModelReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
 class SystemPromptReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
     """Собирает system-prompt через PromptFactory каждую итерацию."""
 
+    ID: ClassVar[StrId] = StrId("system")
+
     def __init__(
         self,
         providers: Sequence[PromptProvider],
@@ -73,7 +55,7 @@ class SystemPromptReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnS
         self._priority = priority
 
     def id(self) -> StrId:
-        return _SYSTEM_ID
+        return self.ID
 
     def priority(self) -> int:
         return self._priority
@@ -88,17 +70,20 @@ class SystemPromptReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnS
 class HistoryReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
     """Копирует весь диалог из MessageReader в state."""
 
+    ID: ClassVar[StrId] = StrId("history")
+
     def __init__(self, priority: int = 30) -> None:
         self._priority = priority
 
     def id(self) -> StrId:
-        return _HISTORY_ID
+        return self.ID
 
     def priority(self) -> int:
         return self._priority
 
     def apply(self, ctx: TurnResolveContext, state: TurnState) -> TurnState:
-        state.messages = tuple(ctx.message_reader.message_iter())
+        messages = ctx.channels.get(MessageService.channel_id())
+        state.messages = tuple(messages.message_iter())
         return state
 
 
@@ -116,13 +101,14 @@ class HistoryWithTaskAnchorReducer(
         self._min_tool_content_chars = min_tool_content_chars
 
     def id(self) -> StrId:
-        return _HISTORY_ID
+        return HistoryReducer.ID
 
     def priority(self) -> int:
         return self._priority
 
     def apply(self, ctx: TurnResolveContext, state: TurnState) -> TurnState:
-        history = list(ctx.message_reader.message_iter())
+        messages = ctx.channels.get(MessageService.channel_id())
+        history = list(messages.message_iter())
         anchor = self._maybe_anchor(history)
         if anchor is not None:
             history.append(anchor)
@@ -160,6 +146,8 @@ class HistoryWithTaskAnchorReducer(
 class ToolsReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
     """Каталог tools из ToolsService."""
 
+    ID: ClassVar[StrId] = StrId("tools")
+
     def __init__(
         self,
         tools_service: ToolsService,
@@ -171,7 +159,7 @@ class ToolsReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
         self._priority = priority
 
     def id(self) -> StrId:
-        return _TOOLS_ID
+        return self.ID
 
     def priority(self) -> int:
         return self._priority
@@ -179,12 +167,29 @@ class ToolsReducer(ContextPrioritySource[TurnResolveContext, StrId, TurnState]):
     def apply(self, ctx: TurnResolveContext, state: TurnState) -> TurnState:
         state.tools = LLMToolRequest(
             tools=tuple(
-                _tool_to_schema(tid, schema)
+                self._tool_to_schema(tid, schema)
                 for tid, schema in self._tools_service.definitions()
             ),
             parallel_tool_calls=self._parallel,
         )
         return state
+
+    @staticmethod
+    def _tool_to_schema(
+        tool_id: ToolId,
+        schema: ObjectSchema[Any],
+    ) -> LLMToolSchema:
+        """Конверсия (qualified-id, ObjectSchema) в data-only LLMToolSchema."""
+        wire = ToolWireSchemaBuilder(schema).build()
+        return LLMToolSchema(
+            name=tool_id.to_wire(),
+            description=schema.description,
+            parameters_schema={
+                "type": "object",
+                "properties": wire.get("properties", {}),
+                "required": wire.get("required", []),
+            },
+        )
 
 
 class AgentRequestSamplingReducer(
@@ -192,11 +197,13 @@ class AgentRequestSamplingReducer(
 ):
     """Берёт SamplingParams из ctx.agent.agent_request.sampling."""
 
+    ID: ClassVar[StrId] = StrId("sampling")
+
     def __init__(self, priority: int = 50) -> None:
         self._priority = priority
 
     def id(self) -> StrId:
-        return _SAMPLING_ID
+        return self.ID
 
     def priority(self) -> int:
         return self._priority
