@@ -25,8 +25,8 @@ class AgentRequest:
 class AgentConfig:
     """Настройки одного прогона агента."""
 
-    max_iterations: int = 20
-    max_consecutive_tool_calls: int = 3
+    max_iterations: int = field(default=20)
+    max_consecutive_tool_calls: int = field(default=3)
 
     SCHEMA: ClassVar[ObjectSchema[AgentConfig]]
 
