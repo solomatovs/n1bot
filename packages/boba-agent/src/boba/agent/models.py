@@ -50,13 +50,12 @@ AgentConfig.SCHEMA = ObjectSchema(
 )
 
 
-@dataclass
+@dataclass(frozen=True)
 class AgentContext:
-    """Mutable контекст одного прогона; iteration 1-based, 0 — до старта."""
+    """Контекст одного прогона: input-данные, неизменяемые в течение run."""
 
     agent_request: AgentRequest
     config: AgentConfig = field(default_factory=AgentConfig)
-    iteration: int = 0
 
 
 @dataclass(frozen=True)

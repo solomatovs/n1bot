@@ -34,6 +34,7 @@ class Agent:
 
     def stream(self, input: AgentInput) -> Iterator[AgentEvent]:
         """Прогнать агента; ленивый итератор AgentEvent. Не raise — события."""
+        self._source.reset()
         self._writer.append_user_query(input.query)
         ctx = AgentContext(agent_request=input.request, config=input.config)
         yield from self._source.stream(ctx)
