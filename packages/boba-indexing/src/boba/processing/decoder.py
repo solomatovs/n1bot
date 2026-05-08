@@ -13,8 +13,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from boba.patterns import ContextConverter, StateFull, StrId
-from boba.processing.context import IndexingContext
+from boba.patterns import Converter, StateFull, StrId
 from boba.processing.raw_document import RawDocument
 
 __all__ = ["Decoder", "DecoderId", "IdentityDecoder"]
@@ -25,7 +24,7 @@ class DecoderId(StrId):
 
 
 class Decoder(
-    ContextConverter[IndexingContext, RawDocument, RawDocument],
+    Converter[RawDocument, RawDocument],
     StateFull,
     ABC,
 ):
@@ -36,7 +35,7 @@ class Decoder(
 
     @abstractmethod
     def convert(
-        self, ctx: IndexingContext, value: RawDocument,
+        self, value: RawDocument,
     ) -> RawDocument: ...
 
 
@@ -50,9 +49,8 @@ class IdentityDecoder(Decoder):
         return DecoderId("identity")
 
     def convert(
-        self, ctx: IndexingContext, value: RawDocument,
+        self, value: RawDocument,
     ) -> RawDocument:
-        del ctx
         return value
 
     def reset(self) -> None:

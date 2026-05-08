@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from boba.processing import (
-    IndexingContext,
     RawDocument,
     Reader,
     ReaderId,
@@ -25,9 +24,8 @@ class TextReader(Reader):
         return ReaderId("ext.text")
 
     def convert(
-        self, ctx: IndexingContext, value: RawDocument
+        self, value: RawDocument
     ) -> Iterable[Section]:
-        del ctx
         text = value.handle.read().decode("utf-8", errors="replace")
         if not text.strip():
             return

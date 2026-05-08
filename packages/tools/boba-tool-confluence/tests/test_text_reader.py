@@ -26,21 +26,20 @@ def test_reader_id():
 
 
 def test_emits_one_section():
-    sections = list(TextReader().convert(_ctx(), _doc("hello world")))
+    sections = list(TextReader().convert(_doc("hello world")))
     assert len(sections) == 1
     assert sections[0].text == "hello world"
     assert sections[0].metadata["format"] == "text"
 
 
 def test_skips_empty_payload():
-    assert list(TextReader().convert(_ctx(), _doc("   "))) == []
+    assert list(TextReader().convert(_doc("   "))) == []
 
 
 def test_metadata_merge_from_raw_document():
     """Reader должен мерж'ить свои поля с RawDocument.metadata."""
     sections = list(
         TextReader().convert(
-            _ctx(),
             _doc(
                 "x",
                 metadata={"my_upstream_field": "value", "format": "OVERRIDE"},
@@ -53,7 +52,7 @@ def test_metadata_merge_from_raw_document():
 
 
 def test_source_id_from_raw_document():
-    sections = list(TextReader().convert(_ctx(), _doc("x", source_id="fs:/abs/y")))
+    sections = list(TextReader().convert(_doc("x", source_id="fs:/abs/y")))
     assert sections[0].source_id == "fs:/abs/y"
 
 
@@ -62,6 +61,6 @@ def test_invalid_utf8_replaced_not_raised():
     doc = RawDocument(
         handle=BytesIO(bad), source_id="fs:/y", content_hint="txt", metadata={}
     )
-    sections = list(TextReader().convert(_ctx(), doc))
+    sections = list(TextReader().convert(doc))
     assert len(sections) == 1
     assert "hello" in sections[0].text  # утончения через errors='replace'

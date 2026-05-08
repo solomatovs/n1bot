@@ -21,7 +21,6 @@ from boba.html_parser import (
     text_between,
 )
 from boba.processing import (
-    IndexingContext,
     RawDocument,
     Reader,
     ReaderId,
@@ -45,9 +44,8 @@ class HtmlReader(Reader):
         return ReaderId("ext.html")
 
     def convert(
-        self, ctx: IndexingContext, value: RawDocument
+        self, value: RawDocument
     ) -> Iterable[Section]:
-        del ctx
         payload = value.handle.read()
         if not payload.strip():
             return

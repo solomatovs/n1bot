@@ -10,7 +10,6 @@ __all__ = [
     "AllMatchesDispatcher",
     "Always",
     "CatalogFactory",
-    "ContextConverter",
     "Converter",
     "ConverterError",
     "ConverterInputError",
@@ -162,12 +161,6 @@ class Converter(ABC, Generic[TIn, TOut_co]):
     def convert(self, value: TIn) -> TOut_co:
         """Выполнить конвертацию; бросает ConverterError."""
         ...
-
-
-class ContextConverter(ABC, Generic[TCtx, TIn, TOut]):
-    @abstractmethod
-    def convert(self, ctx: TCtx, value: TIn) -> TOut: ...
-
 
 class StreamConverter(ABC, Generic[TIn, TOut]):
     """Потоковая конвертация N:M. Iterable[A] → Iterable[B]."""

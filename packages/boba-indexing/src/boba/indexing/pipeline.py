@@ -127,8 +127,8 @@ class IndexPipeline(StateFull, Generic[ReqT]):
         stats.source_seen(raw_doc.source_id)
         stats.chunks_deleted_add(self._store.delete_by_source(ctx, raw_doc.source_id))
 
-        decoded = self._decoder.convert(ctx, raw_doc)
-        sections = self._reader.convert(ctx, decoded)
+        decoded = self._decoder.convert(raw_doc)
+        sections = self._reader.convert(decoded)
 
         def _tap() -> Iterator[Section]:
             for s in sections:
