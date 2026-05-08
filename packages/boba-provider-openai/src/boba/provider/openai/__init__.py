@@ -1,5 +1,6 @@
 """OpenAI-совместимый LLM-адаптер."""
 
+from boba.llm.observer import RequestOutcome
 from boba.provider.openai.config import create_llm_source
 from boba.provider.openai.dto import OpenAIConfig
 from boba.provider.openai.observer import (
@@ -12,7 +13,6 @@ from boba.provider.openai.tool_call_reindexer import (
     DuplicateToolCallIndexReindexer,
 )
 from boba.provider.openai.visitor import OpenAIChatVisitor
-from boba.llm.observer import RequestOutcome
 
 __all__ = [
     "CurlTraceChatCompletionObserver",

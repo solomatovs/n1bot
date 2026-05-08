@@ -146,9 +146,11 @@ def _run_turn(
     request = AgentRequest(
         model=run_cfg.model,
         request_id=RequestId.new(),
+        query=query,
         sampling=run_cfg.to_sampling_params(),
     )
-    agent_input = AgentInput(query=query, request=request, config=agent_config)
+    agent_input = AgentInput(request=request, config=agent_config)
+
     for event in agent.stream(agent_input):
         sink.handle(event)
 

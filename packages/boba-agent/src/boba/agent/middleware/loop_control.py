@@ -39,7 +39,7 @@ class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
             )
 
         yield IterationStarted(
-            request_id=ctx.agent_request.request_id,
+            request_id=ctx.request.request_id,
             iteration=self._iteration,
             max_iterations=ctx.config.max_iterations,
         )

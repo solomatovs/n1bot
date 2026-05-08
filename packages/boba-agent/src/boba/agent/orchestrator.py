@@ -32,18 +32,18 @@ class Agent:
     def name(self) -> str:
         return "Agent"
 
-    def stream(self, input: AgentInput) -> Iterator[AgentEvent]:
+    def stream(self, agent_input: AgentInput) -> Iterator[AgentEvent]:
         """Прогнать агента; ленивый итератор AgentEvent. Не raise — события."""
         self._source.reset()
-        self._writer.append_user_query(input.query)
-        ctx = AgentContext(agent_request=input.request, config=input.config)
+        self._writer.append_user_query(agent_input.request.query)
+        ctx = AgentContext(request=agent_input.request, config=agent_input.config)
         yield from self._source.stream(ctx)
 
-    def invoke(self, input: AgentInput) -> AgentRunResult:
+    def invoke(self, agent_input: AgentInput) -> AgentRunResult:
         """Прогнать агента до конца; вернуть AgentRunResult."""
         iterations = 0
         finish_reason: FinishReason | None = None
-        for event in self.stream(input):
+        for event in self.stream(agent_input):
             if isinstance(event, IterationStarted):
                 iterations = event.iteration
             elif isinstance(event, GenerationDone):

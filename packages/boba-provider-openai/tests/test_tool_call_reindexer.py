@@ -10,16 +10,16 @@ from openai.types.chat.chat_completion_chunk import (
     ChoiceDeltaToolCallFunction,
 )
 
-from boba.provider.openai.response import FromOpenAIChunkConverter
-from boba.provider.openai.tool_call_reindexer import (
-    DuplicateToolCallIndexReindexer,
-)
 from boba.llm.events import LLMToolCallArgumentDelta, LLMToolCallBegin
 from boba.llm.models import (
     LLMContext,
     LLMMessage,
     LLMRequest,
     RequestId,
+)
+from boba.provider.openai.response import FromOpenAIChunkConverter
+from boba.provider.openai.tool_call_reindexer import (
+    DuplicateToolCallIndexReindexer,
 )
 
 
@@ -68,8 +68,6 @@ def _chunk(*choices: Choice) -> ChatCompletionChunk:
         object="chat.completion.chunk",
         choices=list(choices),
     )
-
-
 
 
 def test_one_tool_call_index_unchanged() -> None:
@@ -142,8 +140,6 @@ def test_reset_clears_state() -> None:
     tc_d = _tc(index=0, tc_id="D", name="t")
     list(rx.stream(_ctx(), [_choice(tc_c), _choice(tc_d)]))
     assert (tc_c.index, tc_d.index) == (0, 1)
-
-
 
 
 def _begins_and_args(

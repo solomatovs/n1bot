@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from boba.provider.openai.dto import OpenAIConfig
-from boba.provider.openai.terminal import OpenAITerminal, build_openai_client
 from boba.llm.events import LLMEvent
 from boba.llm.models import LLMContext
 from boba.llm.observer import LLMRequestObserver
@@ -13,6 +11,8 @@ from boba.patterns import (
     StreamSource,
     StreamSourceChainBuilder,
 )
+from boba.provider.openai.dto import OpenAIConfig
+from boba.provider.openai.terminal import OpenAITerminal, build_openai_client
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 

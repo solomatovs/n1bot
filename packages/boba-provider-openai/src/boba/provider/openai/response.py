@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from boba.provider.openai.observer import MultiKeyReasoningExtractor
-from boba.provider.openai.tool_call_reindexer import DuplicateToolCallIndexReindexer
 from boba.llm.errors import LLMProtocolError
 from boba.llm.events import (
     FinishReason,
@@ -26,6 +24,8 @@ from boba.patterns import (
     StreamTransformer,
     StreamTransformerPipeline,
 )
+from boba.provider.openai.observer import MultiKeyReasoningExtractor
+from boba.provider.openai.tool_call_reindexer import DuplicateToolCallIndexReindexer
 from openai.types.chat.chat_completion_chunk import (
     ChatCompletionChunk,
     Choice,

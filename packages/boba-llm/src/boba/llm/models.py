@@ -86,8 +86,7 @@ class LLMRequest:
         return bool(self.tools.tools)
 
 
-@dataclass
+@dataclass(frozen=True)
 class LLMContext:
     request: LLMRequest
     request_id: RequestId
-    attempt: int = 0

@@ -46,7 +46,6 @@ class RetryMiddleware(StreamSource[LLMContext, LLMEvent]):
             if attempt > 0:
                 if last_exc is None:  # pragma: no cover — инвариант
                     raise RuntimeError("retry invariant broken: last_exc is None")
-                ctx.attempt = attempt
                 yield LLMRetryAttempt(
                     request_id=ctx.request_id,
                     attempt=attempt,

@@ -26,9 +26,9 @@ from boba.tools.domain import (
     ToolExecutionError,
     ToolId,
     ToolName,
-    ToolSourceId,
     ToolOutputTooLargeError,
     ToolResult,
+    ToolSourceId,
 )
 from boba.workspace.contract import WorkspaceError, WorkspaceNotFoundError
 

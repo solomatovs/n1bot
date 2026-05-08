@@ -8,13 +8,6 @@ from pathlib import Path
 from threading import Lock
 from typing import Generic, TypeVar
 
-from boba.workspace.fs.shell import (
-    FsHistoryWorkspaceShell,
-    FsProjectWorkspaceShell,
-    FsPromptWorkspaceShell,
-    FsScratchWorkspaceShell,
-    FsWorkspaceShell,
-)
 from boba.patterns import Id
 from boba.workspace.contract import (
     HistoryWorkspaceRegistry,
@@ -25,6 +18,13 @@ from boba.workspace.contract import (
     WorkspaceId,
     WorkspaceNotFoundError,
     WorkspaceRegistry,
+)
+from boba.workspace.fs.shell import (
+    FsHistoryWorkspaceShell,
+    FsProjectWorkspaceShell,
+    FsPromptWorkspaceShell,
+    FsScratchWorkspaceShell,
+    FsWorkspaceShell,
 )
 
 TWsId = TypeVar("TWsId", bound=Id)

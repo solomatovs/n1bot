@@ -23,21 +23,19 @@ class AgentErrorRouter:
 
     def route(
         self,
-        ctx: AgentContext,
+        request_id: RequestId,
         err: RoutableError,
     ) -> Iterator[AgentEvent]:
-        rid: RequestId = ctx.agent_request.request_id
-
         if isinstance(err, AgentLLMFeedbackError):
             feedback = err.to_llm_feedback()
             self._dispatch_feedback(feedback)
             yield FeedbackToLLMAdded(
-                request_id=rid,
+                request_id=request_id,
                 content=feedback.content,
             )
 
         if isinstance(err, UserFeedbackError):
-            yield err.to_user_feedback(rid)
+            yield err.to_user_feedback(request_id)
 
     def _dispatch_feedback(self, feedback: LLMFeedback) -> None:
         """Раскрывает LLMFeedback-union в узкие writer-методы."""
@@ -74,4 +72,4 @@ class AgentErrorRouterMiddleware(StreamSource[AgentContext, AgentEvent]):
         try:
             yield from self._inner.stream(ctx)
         except RoutableError as e:
-            yield from self._router.route(ctx, e)
+            yield from self._router.route(ctx.request.request_id, e)

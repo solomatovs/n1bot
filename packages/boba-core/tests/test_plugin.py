@@ -6,7 +6,14 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.coercion import ChainCoercer, Default, ParseBool, ParseInt, ParseString, Required
+from boba.coercion import (
+    ChainCoercer,
+    Default,
+    ParseBool,
+    ParseInt,
+    ParseString,
+    Required,
+)
 from boba.config.bundle import ConfigBundle
 from boba.config.path import ConfigPath
 from boba.config.source.dict_source import DictSource
