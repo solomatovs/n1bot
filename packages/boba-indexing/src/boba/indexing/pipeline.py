@@ -17,7 +17,6 @@ from boba.indexing.store import Store
 from boba.patterns import StateFull
 from boba.processing import (
     Decoder,
-    IdentityDecoder,
     IndexingContext,
     RawDocument,
     Reader,
@@ -37,15 +36,8 @@ _HASH_KEYS = ("etag", "version", "mtime", "last_modified")
 
 
 class IndexPipeline(StateFull, Generic[ReqT]):
-    """Оркестратор одного прогона индексации, generic по типу Request.
-
-    Per-document:
-    - Skip-if-unchanged: Pipeline ищет в `RawDocument.metadata` ключи
-      `etag` / `version` / `mtime` / `last_modified` (в порядке приоритета),
-      сравнивает с тем что в Store через `Store.content_hash_for(source_id)`.
-      Если совпадает — документ пропускается.
-    - Иначе: `Store.delete_by_source(source_id)` → reader → chunker →
-      `Store.handle(chunk)` для каждого чанка.
+    """
+    Оркестратор одного прогона индексации документа
     """
 
     def __init__(  # noqa: PLR0913
@@ -56,11 +48,11 @@ class IndexPipeline(StateFull, Generic[ReqT]):
         reader: Reader,
         chunker: Chunker,
         store: Store,
-        decoder: Decoder | None = None,
+        decoder: Decoder,
     ) -> None:
         self._request_source = request_source
         self._transport = transport
-        self._decoder = decoder if decoder is not None else IdentityDecoder()
+        self._decoder = decoder
         self._reader = reader
         self._chunker = chunker
         self._store = store
@@ -97,6 +89,7 @@ class IndexPipeline(StateFull, Generic[ReqT]):
         self._store.ensure_target(ctx, description)
         stats = IndexStatsBuilder()
         requests = self._request_source.stream(ctx)
+
         for raw_doc in self._transport.stream(ctx, requests):
             try:
                 self._process_one(ctx, raw_doc, stats)

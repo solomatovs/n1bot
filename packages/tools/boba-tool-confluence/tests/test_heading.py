@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from boba.chunking.heading import HeadingChunker, HeadingChunkerConfig
+from boba.chunking.heading import HeadingChunkerConfig, heading_chunker
 from boba.indexing import ChunkerId
+from boba.indexing.section_chunker import SectionChunker
 from boba.processing import IndexingContext, PipelineId, Section
 
 
@@ -11,8 +12,8 @@ def _ctx() -> IndexingContext:
     return IndexingContext(pipeline_id=PipelineId("t"), collection="c")
 
 
-def _chunker(*, size: int = 1500, overlap: int = 0) -> HeadingChunker:
-    return HeadingChunker(
+def _chunker(*, size: int = 1500, overlap: int = 0) -> SectionChunker:
+    return heading_chunker(
         HeadingChunkerConfig(chunk_size=size, chunk_overlap=overlap)
     )
 

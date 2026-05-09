@@ -35,7 +35,7 @@ class IncompatibleContentError(IndexingError):
 
 
 class SyncUnsupportedError(IndexingError):
-    """RequestSource не умеет перечислять canonical_id'ы (бесконечный стрим)."""
+    """RequestSource не умеет перечислять canonical_id (бесконечный стрим)."""
 
     def __init__(self, source_name: str) -> None:
         super().__init__(

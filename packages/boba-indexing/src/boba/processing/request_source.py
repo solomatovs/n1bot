@@ -26,13 +26,8 @@ ReqT = TypeVar("ReqT", bound=Request)
 
 
 class RequestSource(StreamSource[IndexingContext, ReqT], ABC, Generic[ReqT]):
-    """Источник Request-планов для Transport'а.
-
-    `stream(ctx)` — generator, yield'ит Request'ы лениво.
-
-    `list_source_ids(ctx)` — для sync-операции: какие source_id'ы будут
-    произведены этим RequestSource'ом без фактического fetch'а тел.
-    Бросает `SyncUnsupportedError`, если перечисление невозможно.
+    """
+    Источник Request-планов для Transport'а.
     """
 
     @abstractmethod
