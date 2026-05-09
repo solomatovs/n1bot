@@ -12,9 +12,9 @@ Per-source pipeline собран как ленивая цепочка генер
                               ↓
                           ReconcileSummary
 
-`reconcile` принимает `Iterable[Chunk[T]]` лениво; impl сам решает,
-потреблять поток chunk-за-chunk'ом или собирать в list внутри. Снаружи
-StreamingIndexer не выделяет промежуточных буферов.
+`reconcile` принимает `Iterable[Chunk[T]]`
+Реализация сама решает, потреблять поток chunk-за-chunk'ом или собирать в list внутри.
+Снаружи StreamingIndexer не выделяет промежуточных буферов.
 
 Run-level state (`stats`, `touched_sources`) выводится из event stream'а
 единственным `_observe(event)`-callback'ом — нет накопления параллельно
@@ -30,11 +30,10 @@ sources. Cleanup получает `IndexQuery` через CleanupContext.query �
 стратегия делает только filter-based ops (`clean(where=...)`), не видит
 Store напрямую и не имеет write-доступа.
 
-`force_update=True` пробрасывается в `reconcile(force=True)` —
-re-embed без idempotency-check'а.
+`force_update=True` - означает что надо в любом случае выполнить re-embed
 
 StreamingIndexer не знает про scope (collection / namespace / tag / ...) —
-он инкапсулирован в view-impl'ах, привязанных в его конструкторе.
+он инкапсулирован в view-impl, привязанных в его конструкторе
 """
 
 from __future__ import annotations
