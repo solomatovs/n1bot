@@ -1,99 +1,187 @@
-"""VectorStore: document-уровень — upsert/delete/get_by_ids/similarity_search.
+"""VectorStore[T] + CollectionsAdmin — все чистые абстракции работы с векторной базой.
 
-Read/Write split по конвенции проекта (как MessageReader/MessageWriter):
-- VectorStoreReader: get_by_ids, similarity_search, peek
-- VectorStoreWriter: upsert, delete
-- VectorStore: композиция
+Две ортогональные оси:
 
-Collection-уровень (list/ensure/delete коллекции) — отдельная ось, см.
-boba.indexing.collections_admin.CollectionsAdmin.
+1. Document-уровень — VectorStore[T] (чанки внутри коллекции):
+   - VectorStoreReader[T]: get_by_ids, similarity_search, peek
+   - VectorStoreWriter[T]: upsert, delete
+   - VectorStore[T]: композиция
 
-Embedder инжектится в конкретный impl, не часть контракта VectorStore.
+2. Collection-уровень — CollectionsAdmin (CRUD над коллекциями целиком):
+   - CollectionsAdminReader: list_collections, collection_info
+   - CollectionsAdminWriter: ensure_collection, delete_collection
+   - CollectionsAdmin: композиция
+
+Коллекция идентифицируется явным параметром `collection: CollectionId` в
+каждом методе VectorStore.
+
+Один store-instance обслуживает много коллекций.
+
+Pipeline-уровень встраивается отдельной обёрткой - `boba.indexing.chunk_sink.ChunkSink`
+
+Embedder[T] инжектится в конкретный backend-impl, не часть контракта.
+
+Конкретный backend обычно реализует и VectorStore[T], и CollectionsAdmin
+одной сущностью: например ChromaDBClient — единый класс, реализующий оба
+интерфейса.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from typing import Generic, TypeVar
 
-from boba.indexing.chunks import Chunk, ChunkSummary
-from boba.processing import IndexingContext
+from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary
+from boba.indexing.context import CollectionId
+from boba.indexing.metadata import Metadata
+from boba.indexing.sections import SourceId
 
 __all__ = [
+    "CollectionInfo",
+    "CollectionsAdminReader",
+    "CollectionsAdminWriter",
     "SearchHit",
-    "VectorStore",
     "VectorStoreReader",
     "VectorStoreWriter",
 ]
 
+T = TypeVar("T")
+
 
 @dataclass(frozen=True)
-class SearchHit:
-    """Результат similarity-search; distance — нативный (меньше = ближе)."""
+class SearchHit(Generic[T]):
+    """
+    Один результат поиска над `VectorStore[T]`
 
-    chunk_id: str
+    Содержит:
+    - `chunk_id`: id найденного чанка, через него можно получить полный
+      `Chunk[T]` через `VectorStoreReader.get_by_ids([chunk_id])`
+
+    - `distance`: метрика proximity к query. Семантика **зависит от backend'а**:
+      у Chroma — squared-L2 / cosine-distance (меньше = ближе);
+      у других провайдеров может быть similarity-score (больше = ближе).
+      Backend документирует свою метрику; единого контракта нет.
+
+    - `snippet`: preview выдержка content'а чанка (тип совпадает с T `VectorStore[T]`)
+      Для T=str — обрезанный/highlighted текст для UI;
+      для T=bytes — thumbnail или сжатый sample.
+      Не обязательно равно полному `Chunk.content` — backend решает что класть.
+
+    - `metadata`: метадата чанка (`source_id`, `anchor`, transport/reader/
+      chunker-keys и т.п.) для отрисовки в UI без re-fetch'а Chunk'а.
+    """
+
+    chunk_id: ChunkId
     distance: float
-    snippet: str
-    metadata: Mapping[str, str] = field(default_factory=dict)
+    snippet: T
+    metadata: Metadata = field(default_factory=Metadata.empty)
 
 
-class VectorStoreReader(ABC):
+@dataclass(frozen=True)
+class CollectionInfo:
+    """Логическая группа векторов в Store (collection в Chroma/Qdrant и т.п.)."""
+
+    name: CollectionId
+    description: str
+    count: int
+
+
+class VectorStoreReader(ABC, Generic[T]):
     """Read-side порт: search + inspect документов в коллекции."""
 
     @abstractmethod
     def get_by_ids(
         self,
-        ctx: IndexingContext,
-        chunk_ids: Iterable[str],
-    ) -> Iterable[Chunk]:
-        """Получить чанки по id; пропускает несуществующие."""
+        collection: CollectionId,
+        chunk_ids: Iterable[ChunkId],
+    ) -> Iterable[Chunk[T]]:
+        """Получить чанки по id из коллекции; пропускает несуществующие."""
         ...
 
     @abstractmethod
     def similarity_search(
         self,
-        ctx: IndexingContext,
+        collection: CollectionId,
         *,
-        query: str,
+        query: T,
         k: int,
-    ) -> Iterable[SearchHit]:
-        """Семантический поиск top-k; query→embedding делает impl."""
+    ) -> Iterable[SearchHit[T]]:
+        """Семантический поиск top-k в коллекции; query→embedding делает impl."""
         ...
 
     @abstractmethod
     def peek(
         self,
-        ctx: IndexingContext,
+        collection: CollectionId,
         *,
-        source_id: str | None,
+        source_id: SourceId | None,
         limit: int,
-    ) -> Iterable[ChunkSummary]:
-        """Admin-просмотр: до limit ChunkSummary; source_id=None — без фильтра."""
+    ) -> Iterable[ChunkSummary[T]]:
+        """
+        Admin-просмотр: до limit ChunkSummary
+        source_id=None — без фильтра
+        """
         ...
 
 
-class VectorStoreWriter(ABC):
+class VectorStoreWriter(ABC, Generic[T]):
     """Write-side порт: upsert/delete документов в коллекции."""
 
     @abstractmethod
     def upsert(
         self,
-        ctx: IndexingContext,
-        chunks: Iterable[Chunk],
+        collection: CollectionId,
+        chunks: Iterable[Chunk[T]],
     ) -> None:
-        """Bulk-upsert чанков в `ctx.collection`. Atomic per batch не гарантируется."""
+        """
+        Bulk-upsert чанков в коллекцию
+        Atomic per batch не гарантируется
+        """
         ...
 
     @abstractmethod
     def delete(
         self,
-        ctx: IndexingContext,
-        chunk_ids: Iterable[str],
+        collection: CollectionId,
+        chunk_ids: Iterable[ChunkId],
     ) -> None:
-        """Удалить чанки по id; несуществующие игнорируются."""
+        """
+        Удалить чанки по id из коллекции
+        несуществующие игнорируются
+        """
         ...
 
 
-class VectorStore(VectorStoreReader, VectorStoreWriter, ABC):
-    """Композиция Reader + Writer для impls, делающих и то и другое."""
+class CollectionsAdminReader(ABC):
+    """Read-side admin: перечисление и инспекция коллекций."""
+
+    @abstractmethod
+    def list_collections(self) -> Iterable[CollectionInfo]:
+        """Все коллекции в backend'е."""
+        ...
+
+    @abstractmethod
+    def collection_info(self, name: CollectionId) -> CollectionInfo:
+        """Сводка одной коллекции по имени."""
+        ...
+
+
+class CollectionsAdminWriter(ABC):
+    """Write-side admin: создание и удаление коллекций."""
+
+    @abstractmethod
+    def ensure_collection(
+        self,
+        name: CollectionId,
+        *,
+        description: str | None,
+    ) -> None:
+        """Создать коллекцию name, если отсутствует. Idempotent."""
+        ...
+
+    @abstractmethod
+    def delete_collection(self, name: CollectionId) -> None:
+        """Удалить коллекцию целиком."""
+        ...

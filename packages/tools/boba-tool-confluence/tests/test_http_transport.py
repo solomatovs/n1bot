@@ -6,11 +6,11 @@ import httpx
 import pytest
 
 from boba.http_transport import HttpRequest, HttpTransport, PatAuth
-from boba.processing import IndexingContext, PipelineId
+from boba.processing import PipelineContext, PipelineId
 
 
-def _ctx() -> IndexingContext:
-    return IndexingContext(pipeline_id=PipelineId("t"), collection="c")
+def _ctx() -> PipelineContext:
+    return PipelineContext(pipeline_id=PipelineId("t"), collection="c")
 
 
 def _patch(monkeypatch, handler):
@@ -20,9 +20,7 @@ def _patch(monkeypatch, handler):
         kwargs["transport"] = httpx.MockTransport(handler)
         return real_client(**kwargs)
 
-    monkeypatch.setattr(
-        "boba.http_transport.transport.httpx.Client", mock_client
-    )
+    monkeypatch.setattr("boba.http_transport.transport.httpx.Client", mock_client)
 
 
 def test_yields_raw_document_propagates_source_id_and_metadata(monkeypatch):
@@ -61,9 +59,7 @@ def test_handle_streams_in_chunks(monkeypatch):
     chunks = []
     for doc in HttpTransport().stream(
         _ctx(),
-        iter(
-            [HttpRequest(url="https://x.test/big", source_id="https://x.test/big")]
-        ),
+        iter([HttpRequest(url="https://x.test/big", source_id="https://x.test/big")]),
     ):
         chunks.append(doc.handle.read(100))
         chunks.append(doc.handle.read(100))
@@ -105,6 +101,7 @@ def test_missing_source_id_raises(monkeypatch):
     """Transport — исполнитель: identity обязан быть установлен RequestSource'ом.
     Пустой source_id это ошибка контракта, не fallback.
     """
+
     def handler(_req):
         return httpx.Response(200, content=b"")
 

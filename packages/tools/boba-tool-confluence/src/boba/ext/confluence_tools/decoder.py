@@ -22,11 +22,16 @@ from dataclasses import replace
 from io import BytesIO
 from typing import Any
 
-from boba.processing import Decoder, DecoderId, IndexingContext, RawDocument
+from boba.processing import (
+    Decoder,
+    PipelineContext,
+    RawDocument,
+    RawDocumentId,
+)
 
 __all__ = ["ConfluenceJsonDecoder"]
 
-_DECODER_ID = DecoderId("ext.confluence_json")
+_DECODER_ID = RawDocumentId("ext.confluence_json")
 _HTML_HINT = "confluence_html"
 
 
@@ -39,11 +44,13 @@ class ConfluenceJsonDecoder(Decoder):
     def name(self) -> str:
         return f"ConfluenceJsonDecoder(format={self._body_format})"
 
-    def decoder_id(self) -> DecoderId:
+    def decoder_id(self) -> RawDocumentId:
         return _DECODER_ID
 
     def convert(
-        self, ctx: IndexingContext, value: RawDocument,
+        self,
+        ctx: PipelineContext,
+        value: RawDocument,
     ) -> RawDocument:
         del ctx
         payload = value.handle.read()

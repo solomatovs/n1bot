@@ -5,11 +5,11 @@ from __future__ import annotations
 from io import BytesIO
 
 from boba.fs_pipelines.markdown_reader import MarkdownReader
-from boba.processing import IndexingContext, PipelineId, RawDocument, ReaderId
+from boba.processing import PipelineContext, PipelineId, RawDocument, ReaderId
 
 
-def _ctx() -> IndexingContext:
-    return IndexingContext(pipeline_id=PipelineId("t"), collection="c")
+def _ctx() -> PipelineContext:
+    return PipelineContext(pipeline_id=PipelineId("t"), collection="c")
 
 
 def _doc(payload: str, *, source_id: str = "fs:/y", metadata=None) -> RawDocument:
@@ -55,9 +55,7 @@ def test_preamble_becomes_anchorless_section():
 
 
 def test_no_headings_yields_single_anchorless_section():
-    sections = list(
-        MarkdownReader().convert(_doc("just text without headings\nmore"))
-    )
+    sections = list(MarkdownReader().convert(_doc("just text without headings\nmore")))
     assert len(sections) == 1
     assert sections[0].anchor is None
 
@@ -80,9 +78,7 @@ def test_metadata_merge_from_raw_document():
 
 
 def test_source_id_from_raw_document():
-    sections = list(
-        MarkdownReader().convert(_doc("# A\nbody", source_id="custom-id"))
-    )
+    sections = list(MarkdownReader().convert(_doc("# A\nbody", source_id="custom-id")))
     assert all(s.source_id == "custom-id" for s in sections)
 
 

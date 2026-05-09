@@ -10,7 +10,7 @@ from boba.ext.confluence_tools.pipelines.request_sources._common import (
     viewpage_url,
 )
 from boba.http_transport import HttpRequest
-from boba.processing import AuthApplier, IndexingContext, RequestSource
+from boba.processing import AuthApplier, PipelineContext, RequestSource
 
 __all__ = ["ConfluencePagesRequestSource"]
 
@@ -35,7 +35,7 @@ class ConfluencePagesRequestSource(RequestSource[HttpRequest]):
     def name(self) -> str:
         return f"ConfluencePagesRequestSource({len(self._page_ids)} pages)"
 
-    def stream(self, ctx: IndexingContext) -> Iterable[HttpRequest]:
+    def stream(self, ctx: PipelineContext) -> Iterable[HttpRequest]:
         del ctx
         for page_id in self._page_ids:
             yield make_page_request(
@@ -46,7 +46,7 @@ class ConfluencePagesRequestSource(RequestSource[HttpRequest]):
                 body_format=self._body_format,
             )
 
-    def list_source_ids(self, ctx: IndexingContext) -> Iterable[str]:
+    def list_source_ids(self, ctx: PipelineContext) -> Iterable[str]:
         del ctx
         for page_id in self._page_ids:
             yield viewpage_url(self._base_url, page_id)
