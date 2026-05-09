@@ -15,11 +15,15 @@ storage (bytes / int / str) сам через subclass'ы `ContentHash`. Caller 
 
 from __future__ import annotations
 
-from typing import Protocol, TypeVar, runtime_checkable
+import hashlib
+from typing import ClassVar, Protocol, TypeVar, runtime_checkable
 
-from boba.indexing.content_hash import ContentHash
+from boba.indexing.content_hash import BytesContentHash, ContentHash
 
-__all__ = ["KeyEncoder"]
+__all__ = [
+    "KeyEncoder",
+    "Sha256TextEncoder",
+]
 
 T_contra = TypeVar("T_contra", contravariant=True)
 
@@ -39,3 +43,13 @@ class KeyEncoder(Protocol[T_contra]):
         StringContentHash) на своё усмотрение.
         """
         ...
+
+
+class Sha256TextEncoder(KeyEncoder[str]):
+    """SHA-256 поверх str: encode UTF-8 → 32-байтовый BytesContentHash."""
+
+    _ENCODING: ClassVar[str] = "utf-8"
+
+    def encode(self, content: str) -> ContentHash:
+        digest = hashlib.sha256(content.encode(self._ENCODING)).digest()
+        return BytesContentHash(raw=digest)

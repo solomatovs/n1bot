@@ -19,13 +19,15 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from collections.abc import Iterable
-from typing import TypeVar
+from typing import ClassVar, TypeVar
 
+from boba.indexing.errors import IncompatibleContentError
+from boba.indexing.metadata import ReaderKeys
 from boba.indexing.raw_document import RawDocument
 from boba.indexing.sections import Section
 from boba.patterns import Converter, StateFull, StrId
 
-__all__ = ["Reader", "ReaderId"]
+__all__ = ["PlainTextReader", "Reader", "ReaderId"]
 
 T = TypeVar("T")
 
@@ -47,3 +49,42 @@ class Reader(
 
     @abstractmethod
     def convert(self, value: RawDocument) -> Iterable[Section[T]]: ...
+
+
+class PlainTextReader(Reader[str]):
+    """
+    Reader[str] для плоского текста: читает handle целиком и эмитит один
+    Section[str] с полным content. Метит metadata как `text/plain`.
+    """
+
+    READER_ID: ClassVar[ReaderId] = ReaderId("ext.text")
+    DEFAULT_ENCODING: ClassVar[str] = "utf-8"
+    DOC_TYPE: ClassVar[str] = "text/plain"
+
+    def __init__(self, encoding: str = DEFAULT_ENCODING) -> None:
+        self._encoding = encoding
+
+    def name(self) -> str:
+        return "PlainTextReader"
+
+    def reader_id(self) -> ReaderId:
+        return self.READER_ID
+
+    def convert(self, value: RawDocument) -> Iterable[Section[str]]:
+        raw = value.handle.read()
+        try:
+            text = raw.decode(self._encoding)
+        except UnicodeDecodeError as e:
+            raise IncompatibleContentError(
+                reader_id=self.READER_ID.to_wire(),
+                canonical_id=value.source_id.to_wire(),
+                reason=f"cannot decode with {self._encoding!r}: {e}",
+            ) from e
+
+        yield Section(
+            source_id=value.source_id,
+            content=text,
+            anchor=None,
+            order=0,
+            metadata=value.metadata.set(ReaderKeys.DOC_TYPE, self.DOC_TYPE),
+        )

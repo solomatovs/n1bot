@@ -3,6 +3,7 @@
 from boba.llm.observer import RequestOutcome
 from boba.provider.openai.config import create_llm_source
 from boba.provider.openai.dto import OpenAIConfig
+from boba.provider.openai.embedder import OpenAIEmbedder
 from boba.provider.openai.observer import (
     CurlTraceChatCompletionObserver,
     MetricsChatCompletionObserver,
@@ -21,6 +22,7 @@ __all__ = [
     "MultiKeyReasoningExtractor",
     "OpenAIChatVisitor",
     "OpenAIConfig",
+    "OpenAIEmbedder",
     "OpenAITerminal",
     "RequestOutcome",
     "build_openai_client",
