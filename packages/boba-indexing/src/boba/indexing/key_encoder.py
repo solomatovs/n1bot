@@ -2,12 +2,12 @@
 KeyEncoder[T] — алгоритм хэширования chunk-content в `ContentHash`.
 
 Необходимо для идемпотентной индексации: при повторной индексации без изменений
-контента мы должны получать тот же hash, чтобы `RecordManager.exists` мог
+контента мы должны получать тот же hash, чтобы `IndexSink.reconcile` мог
 пропустить уже проиндексированные чанки.
 
 Возвращает `ContentHash` (а не сырую строку) — concrete impl выбирает internal
 storage (bytes / int / str) сам через subclass'ы `ContentHash`. Caller получает
-строковую форму через `ContentHash.to_wire()` для записи в RecordManager.
+строковую форму через `ContentHash.to_wire()` для записи в IndexSink.
 
 Конкретный алгоритм (SHA-256, xxhash, blake2b, любой кастом) выбирает
 пользовательский код, реализующий `KeyEncoder[T].encode(content: T) → ContentHash`.

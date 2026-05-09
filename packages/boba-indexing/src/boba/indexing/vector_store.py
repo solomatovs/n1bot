@@ -29,12 +29,13 @@ Embedder[T] инжектится в конкретный backend-impl, не ча
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Generic, TypeVar
 
 from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary
 from boba.indexing.context import CollectionId
+from boba.indexing.filter import Filter
 from boba.indexing.metadata import Metadata
 from boba.indexing.sections import SourceId
 
@@ -125,6 +126,27 @@ class VectorStoreReader(ABC, Generic[T]):
         """
         ...
 
+    @abstractmethod
+    def find(
+        self,
+        collection: CollectionId,
+        *,
+        where: Filter | None,
+        limit: int | None = None,
+    ) -> Iterable[ChunkSummary[T]]:
+        """
+        Backend-агностичный поиск по фильтру (Filter DSL).
+
+        `where=None`  — без фильтрации (вся коллекция, ограничено limit'ом).
+        `limit=None`  — без лимита (caller сам отвечает за риски на больших данных).
+
+        Backend переводит Filter в свой нативный язык запроса; для непереводимых
+        предикатов бросает `UnsupportedFilterError`.
+
+        Используется IndexQuery для cleanup-find, scope-aware find и т.п.
+        """
+        ...
+
 
 class VectorStoreWriter(ABC, Generic[T]):
     """Write-side порт: upsert/delete документов в коллекции."""
@@ -138,6 +160,25 @@ class VectorStoreWriter(ABC, Generic[T]):
         """
         Bulk-upsert чанков в коллекцию
         Atomic per batch не гарантируется
+        """
+        ...
+
+    @abstractmethod
+    def update_metadata(
+        self,
+        collection: CollectionId,
+        chunk_ids: Iterable[ChunkId],
+        patch: Mapping[str, str | int | float | bool],
+    ) -> None:
+        """
+        Patch-обновление metadata у указанных chunk'ов БЕЗ re-embed.
+
+        Только перечисленные в `patch` ключи перезаписываются; остальные
+        metadata-поля чанка остаются нетронутыми. embedding и document
+        не перерасчитываются.
+
+        Используется IndexSink для refresh `updated_at` в skip-case
+        (чанк не изменился, но касался текущего прогона — нужно пометить как seen).
         """
         ...
 

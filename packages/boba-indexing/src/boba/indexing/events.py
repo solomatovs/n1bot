@@ -195,7 +195,6 @@ class RunFinished(PhaseTransition):
             "sources_processed": str(s.sources_processed),
             "sources_failed": str(s.sources_failed),
             "sources_skipped_unchanged": str(s.sources_skipped_unchanged),
-            "sections_emitted": str(s.sections_emitted),
             "chunks_upserted": str(s.chunks_upserted),
             "chunks_deleted": str(s.chunks_deleted),
         }
