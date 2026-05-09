@@ -8,6 +8,7 @@ from boba.indexing.chunk_id import (
     AnchorBasedChunkId,
     ChunkIdStrategy,
     DigestPrefix,
+    FixedDigestPrefix,
     SourceBasedChunkId,
 )
 from boba.indexing.chunk_sink import ChunkSink, VectorStoreChunkSink
@@ -41,14 +42,23 @@ from boba.indexing.errors import (
 )
 from boba.indexing.events import (
     BaseIndexEvent,
+    BatchStarted,
+    BatchUpserted,
+    ChunksDeleted,
+    CleanupStarted,
     CompletedItem,
     IndexEvent,
     PhaseTransition,
+    RunFinished,
     RunId,
+    RunStarted,
     Severity,
+    SourceFailed,
+    SourceIndexed,
+    SourceSkippedUnchanged,
 )
 from boba.indexing.indexer import Indexer, IndexerConfig
-from boba.indexing.key_encoder import KeyEncoder
+from boba.indexing.key_encoder import KeyEncoder, Sha256TextEncoder
 from boba.indexing.metadata import (
     ChunkerKeys,
     Metadata,
@@ -57,7 +67,7 @@ from boba.indexing.metadata import (
     TransportKeys,
 )
 from boba.indexing.raw_document import BinaryStream, RawDocument
-from boba.indexing.reader import Reader, ReaderId
+from boba.indexing.reader import PlainTextReader, Reader, ReaderId
 from boba.indexing.records import (
     ListKeysQuery,
     RecordEntry,
@@ -68,7 +78,12 @@ from boba.indexing.records import (
 from boba.indexing.request import Request, RequestSource
 from boba.indexing.section_chunker import SectionChunker
 from boba.indexing.sections import Section, SourceId
-from boba.indexing.splitter import LengthFunction, SplitPiece, Splitter
+from boba.indexing.splitter import (
+    LengthFunction,
+    RecursiveCharSplitter,
+    SplitPiece,
+    Splitter,
+)
 from boba.indexing.stats import IndexStats, IndexStatsBuilder
 from boba.indexing.transport import Transport
 from boba.indexing.vector_store import (
@@ -83,6 +98,8 @@ from boba.indexing.vector_store import (
 __all__ = [
     "AnchorBasedChunkId",
     "BaseIndexEvent",
+    "BatchStarted",
+    "BatchUpserted",
     "BinaryStream",
     "BytesContentHash",
     "Chunk",
@@ -94,7 +111,9 @@ __all__ = [
     "Chunker",
     "ChunkerId",
     "ChunkerKeys",
+    "ChunksDeleted",
     "CleanupContext",
+    "CleanupStarted",
     "CleanupStrategy",
     "CollectionId",
     "CollectionInfo",
@@ -106,6 +125,7 @@ __all__ = [
     "DecoderId",
     "DigestPrefix",
     "Embedder",
+    "FixedDigestPrefix",
     "FullCleanup",
     "IncompatibleContentError",
     "IncrementalCleanup",
@@ -127,6 +147,7 @@ __all__ = [
     "PhaseTransition",
     "PipelineContext",
     "PipelineId",
+    "PlainTextReader",
     "RawDocument",
     "Reader",
     "ReaderId",
@@ -135,15 +156,22 @@ __all__ = [
     "RecordManagerReader",
     "RecordManagerWriter",
     "RecordsAdmin",
+    "RecursiveCharSplitter",
     "Request",
     "RequestSource",
+    "RunFinished",
     "RunId",
+    "RunStarted",
     "SearchHit",
     "Section",
     "SectionChunker",
     "Severity",
+    "Sha256TextEncoder",
     "SourceBasedChunkId",
+    "SourceFailed",
     "SourceId",
+    "SourceIndexed",
+    "SourceSkippedUnchanged",
     "SplitPiece",
     "Splitter",
     "StringContentHash",

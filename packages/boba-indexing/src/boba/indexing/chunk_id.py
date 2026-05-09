@@ -22,6 +22,7 @@ section.content
 from __future__ import annotations
 
 from abc import abstractmethod
+from dataclasses import dataclass
 from typing import Generic, Protocol, TypeVar, runtime_checkable
 
 from boba.indexing.chunks import ChunkId
@@ -32,6 +33,7 @@ __all__ = [
     "AnchorBasedChunkId",
     "ChunkIdStrategy",
     "DigestPrefix",
+    "FixedDigestPrefix",
     "SourceBasedChunkId",
 ]
 
@@ -43,6 +45,16 @@ class DigestPrefix(Protocol):
     """Возвращает длину digest-префикса (в hex-символах) для ChunkId."""
 
     def length(self) -> int: ...
+
+
+@dataclass(frozen=True)
+class FixedDigestPrefix(DigestPrefix):
+    """Фиксированная длина digest-префикса в hex-символах."""
+
+    chars: int
+
+    def length(self) -> int:
+        return self.chars
 
 
 class ChunkIdStrategy(Generic[T]):

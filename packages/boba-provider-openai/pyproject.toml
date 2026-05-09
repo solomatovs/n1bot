@@ -7,7 +7,13 @@ name = "boba-provider-openai"
 version = "0.1.0"
 description = "Boba LLM-провайдер OpenAI: терминал, observers, конвертеры request/response, OpenAIChatVisitor."
 requires-python = ">=3.11,<4"
-dependencies = ["boba-core", "boba-llm", "boba-tools", "openai>=1.0,<3"]
+dependencies = [
+    "boba-core",
+    "boba-llm",
+    "boba-indexing",
+    "boba-tools",
+    "openai>=1.0,<3",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
