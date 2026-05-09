@@ -28,6 +28,10 @@ class Section(Generic[T]):
         Heading-aware Chunker использует anchor, чтобы не пересекать границы секций.
 
     `order` — порядок в исходном документе; нужен для детерминизма chunk_id.
+
+    `tags` — множество тэгов, проброс на Chunk'и через Chunker'ы по умолчанию.
+        Reader'ы могут проставлять source-уровневые тэги (тип документа,
+        категория, источник).
     """
 
     source_id: SourceId
@@ -35,3 +39,4 @@ class Section(Generic[T]):
     anchor: str | None = None
     order: int = 0
     metadata: Metadata = field(default_factory=Metadata.empty)
+    tags: frozenset[str] = field(default_factory=frozenset)

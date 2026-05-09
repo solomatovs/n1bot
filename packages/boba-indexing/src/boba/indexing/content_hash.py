@@ -31,7 +31,7 @@ class ContentHash(ABC):
 
     @abstractmethod
     def to_wire(self) -> str:
-        """Wire-format для записи в RecordManager (обычно hex-string)"""
+        """Wire-format для записи в IndexSink (обычно hex-string)"""
         ...
 
 

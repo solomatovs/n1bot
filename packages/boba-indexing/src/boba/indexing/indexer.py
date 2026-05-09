@@ -6,15 +6,16 @@ Request[ReqT] →
             Reader[T] →
                 Section[T] →
                     Chunk[T] →
-                        RecordManager (hash) →
+                        IndexSink.reconcile →
                             VectorStore[T] + Embedder[T]
 
 За одну сессию запуска `Indexer.stream(ctx, config)` обязан выполнить:
 
-1. для каждого Chunk[T] вычислить hash через `KeyEncoder[T]` → проверить
-   через `RecordManager.exists()` → пропустить уже-проиндексированные;
+1. для каждого Chunk[T] вычислить hash через `KeyEncoder[T]` → отдать
+   в `IndexSink.reconcile()` — он сам решит skip vs upsert по idempotency-check'у;
 
-2. новые/изменённые → upsert в `VectorStore[T]` + update в `RecordManager`;
+2. новые/изменённые → upsert в `VectorStore[T]` + refresh tracking-metadata
+   автоматически внутри `IndexSink.reconcile`;
 
 3. cleanup в конце прогона через `IndexerConfig.cleanup` (CleanupStrategy).
 

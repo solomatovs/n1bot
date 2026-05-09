@@ -1,4 +1,5 @@
-"""ChromaVectorStore — Chroma-impl `boba.indexing` VectorStore + CollectionsAdmin.
+"""
+ChromaVectorStore — VectorStore + CollectionsAdmin.
 
 Один класс реализует 4 ABC:
 - VectorStoreReader[str]:   get_by_ids / similarity_search / peek
@@ -19,12 +20,14 @@ Chunk-payload в Chroma:
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from itertools import islice
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from chromadb.api import ClientAPI
 from chromadb.api.models.Collection import Collection
+from chromadb.api.types import Metadata as ChromaMetadata
+from chromadb.api.types import PyEmbedding, Where
 
 from boba.indexing.chunks import Chunk, ChunkId, ChunkLocation, ChunkSummary
 from boba.indexing.content_hash import StringContentHash
@@ -83,7 +86,6 @@ class ChromaVectorStore(
         self._embedder = embedder
         self._batch_size = batch_size
 
-    # ──────────────── VectorStoreReader[str] ────────────────
 
     def get_by_ids(
         self,
@@ -137,8 +139,10 @@ class ChromaVectorStore(
         limit: int,
     ) -> Iterable[ChunkSummary[str]]:
         coll = self._open(collection)
-        where = (
-            {self.KEY_SOURCE_ID: source_id.to_wire()} if source_id is not None else None
+        where: Where | None = (
+            {self.KEY_SOURCE_ID: source_id.to_wire()}
+            if source_id is not None
+            else None
         )
         result = coll.get(
             where=where,
@@ -151,7 +155,6 @@ class ChromaVectorStore(
         for cid, doc, meta in zip(ids, documents, metadatas, strict=False):
             yield self._build_summary(cid, doc or "", meta or {})
 
-    # ──────────────── VectorStoreWriter[str] ────────────────
 
     def upsert(
         self,
@@ -162,8 +165,12 @@ class ChromaVectorStore(
         for batch in self._batched(chunks):
             ids = [c.chunk_id.to_wire() for c in batch]
             documents = [c.content for c in batch]
-            metadatas = [self._encode_metadata(c) for c in batch]
-            embeddings = list(self._embedder.embed_documents(documents))
+            metadatas: list[ChromaMetadata] = [
+                self._encode_metadata(c) for c in batch
+            ]
+            embeddings: list[PyEmbedding] = [
+                list(v) for v in self._embedder.embed_documents(documents)
+            ]
             coll.upsert(
                 ids=ids,
                 documents=documents,
@@ -181,16 +188,12 @@ class ChromaVectorStore(
             return
         self._open(collection).delete(ids=ids)
 
-    # ──────────────── CollectionsAdminReader ────────────────
-
     def list_collections(self) -> Iterable[CollectionInfo]:
         for coll in self._client.list_collections():
             yield self._collection_info(coll)
 
     def collection_info(self, name: CollectionId) -> CollectionInfo:
         return self._collection_info(self._open(name))
-
-    # ──────────────── CollectionsAdminWriter ────────────────
 
     def ensure_collection(
         self,
@@ -203,8 +206,6 @@ class ChromaVectorStore(
 
     def delete_collection(self, name: CollectionId) -> None:
         self._client.delete_collection(name=name.to_wire())
-
-    # ──────────────── private ────────────────
 
     def _open(self, collection: CollectionId) -> Collection:
         return self._client.get_or_create_collection(name=collection.to_wire())
@@ -233,7 +234,7 @@ class ChromaVectorStore(
         self,
         chunk_id: str,
         content: str,
-        meta: dict[str, str | int | float | bool | None],
+        meta: Mapping[str, Any],
     ) -> Chunk[str]:
         anchor = str(meta.get(self.KEY_ANCHOR, "") or "")
         content_hash_wire = meta.get(self.KEY_CONTENT_HASH)
@@ -259,7 +260,7 @@ class ChromaVectorStore(
         self,
         chunk_id: str,
         snippet: str,
-        meta: dict[str, str | int | float | bool | None],
+        meta: Mapping[str, Any],
     ) -> ChunkSummary[str]:
         anchor = str(meta.get(self.KEY_ANCHOR, "") or "")
         return ChunkSummary(
@@ -276,10 +277,7 @@ class ChromaVectorStore(
         )
 
     @classmethod
-    def _business_metadata(
-        cls,
-        meta: dict[str, str | int | float | bool | None],
-    ) -> Metadata:
+    def _business_metadata(cls, meta: Mapping[str, Any]) -> Metadata:
         wire: dict[str, str] = {
             k: str(v)
             for k, v in meta.items()

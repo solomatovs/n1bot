@@ -57,6 +57,24 @@ from boba.indexing.events import (
     SourceIndexed,
     SourceSkippedUnchanged,
 )
+from boba.indexing.filter import (
+    And,
+    Eq,
+    Filter,
+    Gt,
+    Gte,
+    HasAllTags,
+    HasAnyTag,
+    HasTag,
+    In,
+    Lt,
+    Lte,
+    Ne,
+    Not,
+    NotIn,
+    Or,
+    UnsupportedFilterError,
+)
 from boba.indexing.indexer import Indexer, IndexerConfig
 from boba.indexing.key_encoder import KeyEncoder, Sha256TextEncoder
 from boba.indexing.metadata import (
@@ -68,12 +86,11 @@ from boba.indexing.metadata import (
 )
 from boba.indexing.raw_document import BinaryStream, RawDocument
 from boba.indexing.reader import PlainTextReader, Reader, ReaderId
-from boba.indexing.records import (
-    ListKeysQuery,
-    RecordEntry,
-    RecordManagerReader,
-    RecordManagerWriter,
-    RecordsAdmin,
+from boba.indexing.index_views import (
+    IndexQuery,
+    IndexSink,
+    ReconcileSummary,
+    TrackingKeys,
 )
 from boba.indexing.request import Request, RequestSource
 from boba.indexing.section_chunker import SectionChunker
@@ -85,6 +102,7 @@ from boba.indexing.splitter import (
     Splitter,
 )
 from boba.indexing.stats import IndexStats, IndexStatsBuilder
+from boba.indexing.streaming_indexer import StreamingIndexer
 from boba.indexing.transport import Transport
 from boba.indexing.vector_store import (
     CollectionInfo,
@@ -97,6 +115,7 @@ from boba.indexing.vector_store import (
 
 __all__ = [
     "AnchorBasedChunkId",
+    "And",
     "BaseIndexEvent",
     "BatchStarted",
     "BatchUpserted",
@@ -125,11 +144,21 @@ __all__ = [
     "DecoderId",
     "DigestPrefix",
     "Embedder",
+    "Eq",
+    "Filter",
     "FixedDigestPrefix",
     "FullCleanup",
+    "Gt",
+    "Gte",
+    "HasAllTags",
+    "HasAnyTag",
+    "HasTag",
+    "In",
     "IncompatibleContentError",
     "IncrementalCleanup",
     "IndexEvent",
+    "IndexQuery",
+    "IndexSink",
     "IndexStats",
     "IndexStatsBuilder",
     "Indexer",
@@ -138,11 +167,16 @@ __all__ = [
     "IntContentHash",
     "KeyEncoder",
     "LengthFunction",
-    "ListKeysQuery",
+    "Lt",
+    "Lte",
     "Metadata",
     "MetadataKey",
     "NamespaceId",
+    "Ne",
     "NoneCleanup",
+    "Not",
+    "NotIn",
+    "Or",
     "PassThroughDecoder",
     "PhaseTransition",
     "PipelineContext",
@@ -152,10 +186,7 @@ __all__ = [
     "Reader",
     "ReaderId",
     "ReaderKeys",
-    "RecordEntry",
-    "RecordManagerReader",
-    "RecordManagerWriter",
-    "RecordsAdmin",
+    "ReconcileSummary",
     "RecursiveCharSplitter",
     "Request",
     "RequestSource",
@@ -174,10 +205,13 @@ __all__ = [
     "SourceSkippedUnchanged",
     "SplitPiece",
     "Splitter",
+    "StreamingIndexer",
     "StringContentHash",
     "SyncUnsupportedError",
+    "TrackingKeys",
     "Transport",
     "TransportKeys",
+    "UnsupportedFilterError",
     "VectorStoreChunkSink",
     "VectorStoreReader",
     "VectorStoreWriter",
