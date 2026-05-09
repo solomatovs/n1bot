@@ -1,21 +1,11 @@
 """
-ChromaVectorStore — VectorStore + CollectionsAdmin.
+ChromaVectorStore — реализауйия VectorStore + CollectionsAdmin поверх chromadb.
 
 Один класс реализует 4 ABC:
-- VectorStoreReader[str]:   get_by_ids / similarity_search / peek
-- VectorStoreWriter[str]:   upsert / delete
+- VectorStoreReader[str]:   get_by_ids / similarity_search / peek / find
+- VectorStoreWriter[str]:   upsert / delete / update_metadata
 - CollectionsAdminReader:   list_collections / collection_info
 - CollectionsAdminWriter:   ensure_collection / delete_collection
-
-Chunk-payload в Chroma:
-  document   = chunk.content (str)
-  embedding  = embedder.embed_documents([content])
-  metadata   = chunk.metadata.to_wire() ∪ reserved keys (_source_id, _anchor,
-               _chunk_index, _loc_start, _loc_end, _content_hash)
-
-При обратной сборке Chunk reserved keys фильтруются из business-Metadata —
-поэтому ключи Metadata не должны начинаться с `_` (chroma не поддерживает
-вложенные структуры).
 """
 
 from __future__ import annotations
@@ -33,6 +23,24 @@ from boba.indexing.chunks import Chunk, ChunkId, ChunkLocation, ChunkSummary
 from boba.indexing.content_hash import StringContentHash
 from boba.indexing.context import CollectionId
 from boba.indexing.embedder import Embedder
+from boba.indexing.filter import (
+    And,
+    Eq,
+    Filter,
+    Gt,
+    Gte,
+    HasAllTags,
+    HasAnyTag,
+    HasTag,
+    In,
+    Lt,
+    Lte,
+    Ne,
+    Not,
+    NotIn,
+    Or,
+    UnsupportedFilterError,
+)
 from boba.indexing.metadata import Metadata
 from boba.indexing.sections import SourceId
 from boba.indexing.vector_store import (
@@ -53,16 +61,18 @@ class ChromaVectorStore(
     CollectionsAdminReader,
     CollectionsAdminWriter,
 ):
-    """Chroma-impl VectorStore[str] и CollectionsAdmin для индексации текстов."""
+    """Chroma реализация VectorStore[str] и CollectionsAdmin для индексации текстов"""
 
     DEFAULT_BATCH_SIZE: ClassVar[int] = 100
+    BACKEND_NAME: ClassVar[str] = "chroma"
 
-    KEY_SOURCE_ID: ClassVar[str] = "_source_id"
-    KEY_ANCHOR: ClassVar[str] = "_anchor"
-    KEY_CHUNK_INDEX: ClassVar[str] = "_chunk_index"
-    KEY_LOC_START: ClassVar[str] = "_loc_start"
-    KEY_LOC_END: ClassVar[str] = "_loc_end"
-    KEY_CONTENT_HASH: ClassVar[str] = "_content_hash"
+    KEY_SOURCE_ID: ClassVar[str] = "source_id"
+    KEY_ANCHOR: ClassVar[str] = "anchor"
+    KEY_CHUNK_INDEX: ClassVar[str] = "chunk_index"
+    KEY_LOC_START: ClassVar[str] = "loc_start"
+    KEY_LOC_END: ClassVar[str] = "loc_end"
+    KEY_CONTENT_HASH: ClassVar[str] = "content_hash"
+    KEY_TAG_PREFIX: ClassVar[str] = "tag."
     DESCRIPTION_KEY: ClassVar[str] = "description"
 
     _RESERVED_KEYS: ClassVar[frozenset[str]] = frozenset(
@@ -75,6 +85,12 @@ class ChromaVectorStore(
             KEY_CONTENT_HASH,
         }
     )
+    """
+    Tags хранятся в chroma коллекциях как отдельные metadata keys
+    с префиксом "tag."
+
+    `Chunk.tags = {"public", "doc"}` → `{"tag.public": True, "tag.doc": True}`
+    """
 
     def __init__(
         self,
@@ -85,7 +101,6 @@ class ChromaVectorStore(
         self._client = client
         self._embedder = embedder
         self._batch_size = batch_size
-
 
     def get_by_ids(
         self,
@@ -140,9 +155,7 @@ class ChromaVectorStore(
     ) -> Iterable[ChunkSummary[str]]:
         coll = self._open(collection)
         where: Where | None = (
-            {self.KEY_SOURCE_ID: source_id.to_wire()}
-            if source_id is not None
-            else None
+            {self.KEY_SOURCE_ID: source_id.to_wire()} if source_id is not None else None
         )
         result = coll.get(
             where=where,
@@ -155,6 +168,29 @@ class ChromaVectorStore(
         for cid, doc, meta in zip(ids, documents, metadatas, strict=False):
             yield self._build_summary(cid, doc or "", meta or {})
 
+    def find(
+        self,
+        collection: CollectionId,
+        *,
+        where: Filter | None,
+        limit: int | None = None,
+    ) -> Iterable[ChunkSummary[str]]:
+        coll = self._open(collection)
+        chroma_where: Where | None = (
+            self._filter_to_chroma(where) if where is not None else None
+        )
+        get_kwargs: dict[str, Any] = {
+            "where": chroma_where,
+            "include": ["documents", "metadatas"],
+        }
+        if limit is not None:
+            get_kwargs["limit"] = limit
+        result = coll.get(**get_kwargs)
+        ids = result.get("ids") or []
+        documents = result.get("documents") or []
+        metadatas = result.get("metadatas") or []
+        for cid, doc, meta in zip(ids, documents, metadatas, strict=False):
+            yield self._build_summary(cid, doc or "", meta or {})
 
     def upsert(
         self,
@@ -165,12 +201,15 @@ class ChromaVectorStore(
         for batch in self._batched(chunks):
             ids = [c.chunk_id.to_wire() for c in batch]
             documents = [c.content for c in batch]
-            metadatas: list[ChromaMetadata] = [
-                self._encode_metadata(c) for c in batch
-            ]
+            metadatas: list[ChromaMetadata] = [self._encode_metadata(c) for c in batch]
             embeddings: list[PyEmbedding] = [
                 list(v) for v in self._embedder.embed_documents(documents)
             ]
+            # Полная замена metadata: chroma native upsert MERGES metadata
+            # (не удаляет old keys, отсутствующие в new). Чтобы соблюсти
+            # replace-контракт `VectorStoreWriter.upsert`, явно удаляем
+            # перед переустановкой. delete несуществующих id — no-op.
+            coll.delete(ids=ids)
             coll.upsert(
                 ids=ids,
                 documents=documents,
@@ -187,6 +226,22 @@ class ChromaVectorStore(
         if not ids:
             return
         self._open(collection).delete(ids=ids)
+
+    def update_metadata(
+        self,
+        collection: CollectionId,
+        chunk_ids: Iterable[ChunkId],
+        patch: Mapping[str, str | int | float | bool],
+    ) -> None:
+        ids = [c.to_wire() for c in chunk_ids]
+        if not ids:
+            return
+        # Chroma's collection.update merges metadata: только ключи из patch
+        # перезаписываются, остальные поля чанка не трогаются. Embedding и
+        # document не пересчитываются.
+        patch_dict = dict(patch)
+        metadatas: list[ChromaMetadata] = [patch_dict for _ in ids]
+        self._open(collection).update(ids=ids, metadatas=metadatas)
 
     def list_collections(self) -> Iterable[CollectionInfo]:
         for coll in self._client.list_collections():
@@ -219,8 +274,10 @@ class ChromaVectorStore(
             count=coll.count(),
         )
 
-    def _encode_metadata(self, chunk: Chunk[str]) -> dict[str, str | int | float]:
-        out: dict[str, str | int | float] = dict(chunk.metadata.to_wire())
+    def _encode_metadata(
+        self, chunk: Chunk[str]
+    ) -> dict[str, str | int | float | bool]:
+        out: dict[str, str | int | float | bool] = dict(chunk.metadata.to_wire())
         out[self.KEY_SOURCE_ID] = chunk.source_id.to_wire()
         out[self.KEY_ANCHOR] = chunk.anchor or ""
         out[self.KEY_CHUNK_INDEX] = chunk.chunk_index
@@ -228,6 +285,8 @@ class ChromaVectorStore(
         out[self.KEY_LOC_END] = chunk.location.end
         if chunk.content_hash is not None:
             out[self.KEY_CONTENT_HASH] = chunk.content_hash.to_wire()
+        for tag in chunk.tags:
+            out[self.KEY_TAG_PREFIX + tag] = True
         return out
 
     def _build_chunk(
@@ -254,6 +313,7 @@ class ChromaVectorStore(
                 else None
             ),
             metadata=self._business_metadata(meta),
+            tags=self._extract_tags(meta),
         )
 
     def _build_summary(
@@ -274,16 +334,114 @@ class ChromaVectorStore(
             chunk_index=int(meta.get(self.KEY_CHUNK_INDEX, 0) or 0),
             snippet=snippet,
             metadata=self._business_metadata(meta),
+            tags=self._extract_tags(meta),
         )
 
     @classmethod
     def _business_metadata(cls, meta: Mapping[str, Any]) -> Metadata:
+        """
+        Извлечь business-Metadata, отбросив system-keys
+        """
         wire: dict[str, str] = {
             k: str(v)
             for k, v in meta.items()
-            if k not in cls._RESERVED_KEYS and v is not None
+            if cls._is_business_key(k) and v is not None
         }
         return Metadata.from_wire(wire)
+
+    @classmethod
+    def _is_business_key(cls, k: str) -> bool:
+        return "." in k and not k.startswith(cls.KEY_TAG_PREFIX)
+
+    @classmethod
+    def _extract_tags(cls, meta: Mapping[str, Any]) -> frozenset[str]:
+        prefix_len = len(cls.KEY_TAG_PREFIX)
+        return frozenset(
+            k[prefix_len:]
+            for k, v in meta.items()
+            if k.startswith(cls.KEY_TAG_PREFIX) and v
+        )
+
+    @classmethod
+    def _filter_to_chroma(cls, f: Filter) -> Where:  # noqa: C901, PLR0911, PLR0912
+        """
+        Перевод Filter DSL в chroma `where`
+
+        Поддержка: Eq/Ne/Lt/Lte/Gt/Gte/In/NotIn/And/Or + ограниченный Not
+        (через де-Морган). HasTag/HasAnyTag/HasAllTags пока бросают
+        UnsupportedFilterError — для них нужна tags-encoding в metadata
+        """
+        if isinstance(f, Eq):
+            return {f.field: f.value}
+        if isinstance(f, Ne):
+            return {f.field: {"$ne": f.value}}
+        if isinstance(f, Lt):
+            return {f.field: {"$lt": f.value}}
+        if isinstance(f, Lte):
+            return {f.field: {"$lte": f.value}}
+        if isinstance(f, Gt):
+            return {f.field: {"$gt": f.value}}
+        if isinstance(f, Gte):
+            return {f.field: {"$gte": f.value}}
+        if isinstance(f, In):
+            return {f.field: {"$in": list(f.values)}}
+        if isinstance(f, NotIn):
+            return {f.field: {"$nin": list(f.values)}}
+        if isinstance(f, And):
+            if not f.filters:
+                raise UnsupportedFilterError(f, cls.BACKEND_NAME, "empty And")
+            if len(f.filters) == 1:
+                return cls._filter_to_chroma(f.filters[0])
+            return {"$and": [cls._filter_to_chroma(s) for s in f.filters]}
+        if isinstance(f, Or):
+            if not f.filters:
+                raise UnsupportedFilterError(f, cls.BACKEND_NAME, "empty Or")
+            if len(f.filters) == 1:
+                return cls._filter_to_chroma(f.filters[0])
+            return {"$or": [cls._filter_to_chroma(s) for s in f.filters]}
+        if isinstance(f, Not):
+            # Chroma не поддерживает $not напрямую
+            inner = f.filter
+            if isinstance(inner, Eq):
+                return cls._filter_to_chroma(Ne(inner.field, inner.value))
+            if isinstance(inner, Ne):
+                return cls._filter_to_chroma(Eq(inner.field, inner.value))
+            if isinstance(inner, Lt):
+                return cls._filter_to_chroma(Gte(inner.field, inner.value))
+            if isinstance(inner, Lte):
+                return cls._filter_to_chroma(Gt(inner.field, inner.value))
+            if isinstance(inner, Gt):
+                return cls._filter_to_chroma(Lte(inner.field, inner.value))
+            if isinstance(inner, Gte):
+                return cls._filter_to_chroma(Lt(inner.field, inner.value))
+            if isinstance(inner, In):
+                return cls._filter_to_chroma(NotIn(inner.field, inner.values))
+            if isinstance(inner, NotIn):
+                return cls._filter_to_chroma(In(inner.field, inner.values))
+            raise UnsupportedFilterError(
+                f, cls.BACKEND_NAME, "Not over composite не разворачивается"
+            )
+        if isinstance(f, HasTag):
+            return {cls.KEY_TAG_PREFIX + f.tag: True}
+        if isinstance(f, HasAnyTag):
+            if not f.tags:
+                raise UnsupportedFilterError(
+                    f, cls.BACKEND_NAME, "пустой список тэгов в HasAnyTag"
+                )
+            if len(f.tags) == 1:
+                return {cls.KEY_TAG_PREFIX + f.tags[0]: True}
+            return {"$or": [{cls.KEY_TAG_PREFIX + t: True} for t in f.tags]}
+        if isinstance(f, HasAllTags):
+            if not f.tags:
+                raise UnsupportedFilterError(
+                    f, cls.BACKEND_NAME, "пустой список тэгов в HasAllTags"
+                )
+            if len(f.tags) == 1:
+                return {cls.KEY_TAG_PREFIX + f.tags[0]: True}
+            return {"$and": [{cls.KEY_TAG_PREFIX + t: True} for t in f.tags]}
+        raise UnsupportedFilterError(
+            f, cls.BACKEND_NAME, f"unknown filter type {type(f).__name__}"
+        )
 
     def _batched(self, chunks: Iterable[Chunk[str]]) -> Iterable[list[Chunk[str]]]:
         it = iter(chunks)

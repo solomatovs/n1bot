@@ -75,6 +75,12 @@ from boba.indexing.filter import (
     Or,
     UnsupportedFilterError,
 )
+from boba.indexing.index_views import (
+    IndexQuery,
+    IndexSink,
+    ReconcileSummary,
+    TrackingKeys,
+)
 from boba.indexing.indexer import Indexer, IndexerConfig
 from boba.indexing.key_encoder import KeyEncoder, Sha256TextEncoder
 from boba.indexing.metadata import (
@@ -84,14 +90,9 @@ from boba.indexing.metadata import (
     ReaderKeys,
     TransportKeys,
 )
+from boba.indexing.namespaced_view import NamespacedView
 from boba.indexing.raw_document import BinaryStream, RawDocument
 from boba.indexing.reader import PlainTextReader, Reader, ReaderId
-from boba.indexing.index_views import (
-    IndexQuery,
-    IndexSink,
-    ReconcileSummary,
-    TrackingKeys,
-)
 from boba.indexing.request import Request, RequestSource
 from boba.indexing.section_chunker import SectionChunker
 from boba.indexing.sections import Section, SourceId
@@ -172,6 +173,7 @@ __all__ = [
     "Metadata",
     "MetadataKey",
     "NamespaceId",
+    "NamespacedView",
     "Ne",
     "NoneCleanup",
     "Not",
