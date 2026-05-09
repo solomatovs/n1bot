@@ -159,7 +159,16 @@ class VectorStoreWriter(ABC, Generic[T]):
     ) -> None:
         """
         Bulk-upsert чанков в коллекцию
-        Atomic per batch не гарантируется
+
+        Полная замена по chunk_id: existing запись (если есть) перезаписывается
+        целиком — embedding, document, metadata. Ключи metadata, бывшие у старой
+        записи но отсутствующие в новой, удаляются (это важно для tracking-полей
+        вроде tag.X и для произвольной business-Metadata).
+
+        Для частичного обновления metadata без re-embed — используй
+        `update_metadata` (там merge-семантика).
+
+        Atomic per batch не гарантируется.
         """
         ...
 
