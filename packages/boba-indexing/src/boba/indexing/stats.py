@@ -1,8 +1,13 @@
-"""Накапливаемая статистика одного запуска IndexPipeline."""
+"""
+Накапливаемая статистика одного запуска IndexPipeline
+для логирования, метрик, CLI-отчётов, и т.п.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
+from boba.indexing.sections import SourceId
 
 __all__ = ["IndexStats", "IndexStatsBuilder"]
 
@@ -29,9 +34,9 @@ class IndexStatsBuilder:
     sections_emitted: int = 0
     chunks_upserted: int = 0
     chunks_deleted: int = 0
-    _seen_sources: set[str] = field(default_factory=set)
+    _seen_sources: set[SourceId] = field(default_factory=set)
 
-    def source_seen(self, source_id: str) -> None:
+    def source_seen(self, source_id: SourceId) -> None:
         if source_id not in self._seen_sources:
             self._seen_sources.add(source_id)
             self.sources_processed += 1

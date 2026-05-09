@@ -20,7 +20,7 @@ from typing import Any
 import httpx
 
 from boba.http_transport.request import HttpRequest
-from boba.processing import IndexingContext, RawDocument, Transport
+from boba.processing import PipelineContext, RawDocument, Transport
 
 __all__ = ["HttpTransport"]
 
@@ -44,7 +44,7 @@ class HttpTransport(Transport[HttpRequest]):
 
     def stream(
         self,
-        ctx: IndexingContext,
+        ctx: PipelineContext,
         stream: Iterable[HttpRequest],
     ) -> Iterable[RawDocument]:
         del ctx

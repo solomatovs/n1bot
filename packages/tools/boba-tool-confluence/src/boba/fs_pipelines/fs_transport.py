@@ -15,7 +15,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 from boba.processing import (
-    IndexingContext,
+    PipelineContext,
     RawDocument,
     RequestSource,
     Transport,
@@ -56,7 +56,7 @@ class FsTransport(Transport[FsRequest]):
 
     def stream(
         self,
-        ctx: IndexingContext,
+        ctx: PipelineContext,
         stream: Iterable[FsRequest],
     ) -> Iterable[RawDocument]:
         del ctx
@@ -122,7 +122,7 @@ class FsWalkRequestSource(RequestSource[FsRequest]):
     def name(self) -> str:
         return f"FsWalkRequestSource(paths={len(self._paths)})"
 
-    def stream(self, ctx: IndexingContext) -> Iterable[FsRequest]:
+    def stream(self, ctx: PipelineContext) -> Iterable[FsRequest]:
         del ctx
         for path in self._iter_files():
             p = Path(path)
@@ -132,7 +132,7 @@ class FsWalkRequestSource(RequestSource[FsRequest]):
                 metadata={"path": str(p), "name": p.name},
             )
 
-    def list_source_ids(self, ctx: IndexingContext) -> Iterable[str]:
+    def list_source_ids(self, ctx: PipelineContext) -> Iterable[str]:
         del ctx
         for path in self._iter_files():
             yield f"fs:{Path(path).resolve()}"
@@ -168,6 +168,4 @@ class FsWalkRequestSource(RequestSource[FsRequest]):
             return False
         if not self._include:
             return True
-        return any(
-            path.match(pat) or fnmatch(name, pat) for pat in self._include
-        )
+        return any(path.match(pat) or fnmatch(name, pat) for pat in self._include)

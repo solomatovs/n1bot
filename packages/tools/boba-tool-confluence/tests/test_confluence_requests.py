@@ -13,11 +13,11 @@ from boba.ext.confluence_tools.pipelines.request_sources import (
     ConfluenceSpaceRequestSource,
 )
 from boba.http_transport import PatAuth
-from boba.processing import IndexingContext, PipelineId
+from boba.processing import PipelineContext, PipelineId
 
 
-def _ctx() -> IndexingContext:
-    return IndexingContext(pipeline_id=PipelineId("t"), collection="c")
+def _ctx() -> PipelineContext:
+    return PipelineContext(pipeline_id=PipelineId("t"), collection="c")
 
 
 def _patch_httpx(monkeypatch, handler):
@@ -48,8 +48,12 @@ def test_pages_source_sets_viewpage_source_id_and_rest_url():
     assert all("rest/api/content/" in r.url for r in requests)
     assert all("expand=body.export_view" in r.url for r in requests)
     # source_id = stable viewpage URL — НЕ равен r.url
-    assert requests[0].source_id == "https://confl.test/pages/viewpage.action?pageId=111"
-    assert requests[1].source_id == "https://confl.test/pages/viewpage.action?pageId=222"
+    assert (
+        requests[0].source_id == "https://confl.test/pages/viewpage.action?pageId=111"
+    )
+    assert (
+        requests[1].source_id == "https://confl.test/pages/viewpage.action?pageId=222"
+    )
     assert all(r.source_id != r.url for r in requests)
     # metadata содержит structured-данные для kb_search
     assert all(r.metadata["confluence_page_id"] for r in requests)
@@ -104,9 +108,7 @@ def test_space_source_paginates_via_discovery(monkeypatch):
 
 def test_space_source_stream_emits_one_request_per_page(monkeypatch):
     def handler(_req: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200, content=json.dumps({"results": [{"id": "777"}]})
-        )
+        return httpx.Response(200, content=json.dumps({"results": [{"id": "777"}]}))
 
     _patch_httpx(monkeypatch, handler)
 
@@ -203,7 +205,9 @@ def test_no_auth_passes_none(monkeypatch):
 )
 def test_host_extraction(base_url, expected_host):
     src = ConfluencePagesRequestSource(
-        base_url=base_url, auth=None, page_ids=["1"],
+        base_url=base_url,
+        auth=None,
+        page_ids=["1"],
     )
     req = next(iter(src.stream(_ctx())))
     assert req.metadata["confluence_host"] == expected_host

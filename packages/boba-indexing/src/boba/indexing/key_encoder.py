@@ -1,0 +1,41 @@
+"""
+KeyEncoder[T] — алгоритм хэширования chunk-content в `ContentHash`.
+
+Необходимо для идемпотентной индексации: при повторной индексации без изменений
+контента мы должны получать тот же hash, чтобы `RecordManager.exists` мог
+пропустить уже проиндексированные чанки.
+
+Возвращает `ContentHash` (а не сырую строку) — concrete impl выбирает internal
+storage (bytes / int / str) сам через subclass'ы `ContentHash`. Caller получает
+строковую форму через `ContentHash.to_wire()` для записи в RecordManager.
+
+Конкретный алгоритм (SHA-256, xxhash, blake2b, любой кастом) выбирает
+пользовательский код, реализующий `KeyEncoder[T].encode(content: T) → ContentHash`.
+"""
+
+from __future__ import annotations
+
+from typing import Protocol, TypeVar, runtime_checkable
+
+from boba.indexing.content_hash import ContentHash
+
+__all__ = ["KeyEncoder"]
+
+T_contra = TypeVar("T_contra", contravariant=True)
+
+
+@runtime_checkable
+class KeyEncoder(Protocol[T_contra]):
+    """T → ContentHash: стабильный hash chunk-content для idempotent re-index."""
+
+    def encode(self, content: T_contra) -> ContentHash:
+        """
+        Вернуть стабильный ContentHash для content'а.
+
+        Стабильный означает одинаковый для одинакового контента — это
+        обеспечивает идемпотентность индексации.
+        Конкретный impl выбирает алгоритм (SHA-256 / xxhash / blake2b / ...)
+        и формат ContentHash-subclass'а (BytesContentHash / IntContentHash /
+        StringContentHash) на своё усмотрение.
+        """
+        ...

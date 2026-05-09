@@ -7,11 +7,11 @@ from pathlib import Path
 import pytest
 
 from boba.fs_pipelines.fs_transport import FsRequest, FsTransport, FsWalkRequestSource
-from boba.processing import IndexingContext, PipelineId
+from boba.processing import PipelineContext, PipelineId
 
 
-def _ctx() -> IndexingContext:
-    return IndexingContext(pipeline_id=PipelineId("t"), collection="c")
+def _ctx() -> PipelineContext:
+    return PipelineContext(pipeline_id=PipelineId("t"), collection="c")
 
 
 def test_fs_transport_opens_file_and_propagates_metadata(tmp_path: Path):

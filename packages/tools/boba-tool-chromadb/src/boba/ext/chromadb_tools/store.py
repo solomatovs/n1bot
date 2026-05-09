@@ -14,7 +14,7 @@ from boba.indexing import (
     Store,
     StoreId,
 )
-from boba.processing import IndexingContext
+from boba.processing import PipelineContext
 
 __all__ = ["ChromadbPersistStore"]
 
@@ -57,9 +57,7 @@ class ChromadbPersistStore(Store):
     def reset(self) -> None:
         self._buffer.clear()
 
-    def ensure_target(
-        self, ctx: IndexingContext, description: str | None
-    ) -> None:
+    def ensure_target(self, ctx: PipelineContext, description: str | None) -> None:
         existing = {c.name for c in self._client.list_collections()}
         if ctx.collection in existing:
             return
@@ -78,23 +76,21 @@ class ChromadbPersistStore(Store):
             embedding_function=self._embedding_function,
         )
 
-    def handle(self, ctx: IndexingContext, event: Chunk) -> None:
+    def handle(self, ctx: PipelineContext, event: Chunk) -> None:
         bucket = self._buffer.setdefault(ctx.collection, [])
         bucket.append(event)
         if len(bucket) >= _BATCH_SIZE:
             self._upsert_to(ctx.collection, bucket)
             bucket.clear()
 
-    def flush(self, ctx: IndexingContext) -> None:
+    def flush(self, ctx: PipelineContext) -> None:
         del ctx
         for collection_name, chunks in list(self._buffer.items()):
             if chunks:
                 self._upsert_to(collection_name, chunks)
         self._buffer.clear()
 
-    def delete_by_source(
-        self, ctx: IndexingContext, source_id: str
-    ) -> int:
+    def delete_by_source(self, ctx: PipelineContext, source_id: str) -> int:
         col = self._get_collection(ctx.collection)
         existing = col.get(where={"source_id": source_id})
         ids = existing.get("ids") or []
@@ -105,7 +101,7 @@ class ChromadbPersistStore(Store):
 
     def peek_chunks(
         self,
-        ctx: IndexingContext,
+        ctx: PipelineContext,
         *,
         source_id: str | None = None,
         limit: int = 20,
@@ -142,7 +138,7 @@ class ChromadbPersistStore(Store):
 
     def search(
         self,
-        ctx: IndexingContext,
+        ctx: PipelineContext,
         *,
         query: str,
         top_k: int = 5,
@@ -169,7 +165,7 @@ class ChromadbPersistStore(Store):
                 metadata={k: str(v) for k, v in (md or {}).items()},
             )
 
-    def embedding_dim(self, ctx: IndexingContext) -> int:
+    def embedding_dim(self, ctx: PipelineContext) -> int:
         try:
             col = self._get_collection(ctx.collection)
         except Exception:
@@ -183,7 +179,7 @@ class ChromadbPersistStore(Store):
             return 0
         return len(first)
 
-    def list_source_ids(self, ctx: IndexingContext) -> Iterable[str]:
+    def list_source_ids(self, ctx: PipelineContext) -> Iterable[str]:
         col = self._get_collection(ctx.collection)
         existing = col.get(include=["metadatas"])
         out: set[str] = set()
@@ -193,9 +189,7 @@ class ChromadbPersistStore(Store):
                 out.add(sid)
         return out
 
-    def content_hash_for(
-        self, ctx: IndexingContext, source_id: str
-    ) -> str:
+    def content_hash_for(self, ctx: PipelineContext, source_id: str) -> str:
         """Достать content_hash из metadata любого чанка этого source_id.
 
         Все чанки одного source_id пишутся одной транзакцией с одним hash'ом,

@@ -12,7 +12,7 @@ from boba.ext.confluence_tools.pipelines.request_sources._common import (
     viewpage_url,
 )
 from boba.http_transport import HttpRequest
-from boba.processing import AuthApplier, IndexingContext, RequestSource
+from boba.processing import AuthApplier, PipelineContext, RequestSource
 
 __all__ = ["ConfluenceSpaceRequestSource"]
 
@@ -47,7 +47,7 @@ class ConfluenceSpaceRequestSource(RequestSource[HttpRequest]):
     def name(self) -> str:
         return f"ConfluenceSpaceRequestSource({self._host}/{self._space_key})"
 
-    def stream(self, ctx: IndexingContext) -> Iterable[HttpRequest]:
+    def stream(self, ctx: PipelineContext) -> Iterable[HttpRequest]:
         del ctx
         for page_id in self._iter_page_ids():
             yield make_page_request(
@@ -58,7 +58,7 @@ class ConfluenceSpaceRequestSource(RequestSource[HttpRequest]):
                 body_format=self._body_format,
             )
 
-    def list_source_ids(self, ctx: IndexingContext) -> Iterable[str]:
+    def list_source_ids(self, ctx: PipelineContext) -> Iterable[str]:
         """Перечисление source_id'ов = viewpage URL'ы (stable canonical)."""
         del ctx
         for page_id in self._iter_page_ids():

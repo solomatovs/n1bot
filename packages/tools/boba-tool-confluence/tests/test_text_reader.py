@@ -5,11 +5,11 @@ from __future__ import annotations
 from io import BytesIO
 
 from boba.fs_pipelines.text_reader import TextReader
-from boba.processing import IndexingContext, PipelineId, RawDocument, ReaderId
+from boba.processing import PipelineContext, PipelineId, RawDocument, ReaderId
 
 
-def _ctx() -> IndexingContext:
-    return IndexingContext(pipeline_id=PipelineId("t"), collection="c")
+def _ctx() -> PipelineContext:
+    return PipelineContext(pipeline_id=PipelineId("t"), collection="c")
 
 
 def _doc(payload: str, *, source_id: str = "fs:/y", metadata=None) -> RawDocument:

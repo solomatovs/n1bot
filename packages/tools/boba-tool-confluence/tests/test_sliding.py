@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from boba.chunking.sliding import SlidingChunkerConfig, sliding_chunker
 from boba.indexing import ChunkerId
-from boba.processing import IndexingContext, PipelineId, Section
+from boba.processing import PipelineContext, PipelineId, Section
 
 
-def _ctx() -> IndexingContext:
-    return IndexingContext(pipeline_id=PipelineId("t"), collection="c")
+def _ctx() -> PipelineContext:
+    return PipelineContext(pipeline_id=PipelineId("t"), collection="c")
 
 
 def test_chunker_id():
