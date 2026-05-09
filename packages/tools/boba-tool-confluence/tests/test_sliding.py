@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from boba.chunking.sliding import SlidingChunker, SlidingChunkerConfig
+from boba.chunking.sliding import SlidingChunkerConfig, sliding_chunker
 from boba.indexing import ChunkerId
 from boba.processing import IndexingContext, PipelineId, Section
 
@@ -12,12 +12,12 @@ def _ctx() -> IndexingContext:
 
 
 def test_chunker_id():
-    chunker = SlidingChunker(SlidingChunkerConfig())
+    chunker = sliding_chunker(SlidingChunkerConfig())
     assert chunker.chunker_id() == ChunkerId("ext.sliding")
 
 
 def test_short_section_yields_single_chunk():
-    chunker = SlidingChunker(SlidingChunkerConfig(chunk_size=100, chunk_overlap=10))
+    chunker = sliding_chunker(SlidingChunkerConfig(chunk_size=100, chunk_overlap=10))
     sections = [Section(source_id="x:/a", text="hello world")]
     chunks = list(chunker.stream(_ctx(), iter(sections)))
     assert len(chunks) == 1
@@ -27,7 +27,7 @@ def test_short_section_yields_single_chunk():
 
 
 def test_long_section_split_into_multiple_chunks():
-    chunker = SlidingChunker(SlidingChunkerConfig(chunk_size=20, chunk_overlap=5))
+    chunker = sliding_chunker(SlidingChunkerConfig(chunk_size=20, chunk_overlap=5))
     text = " ".join(["word"] * 50)  # ~ 250 chars
     sections = [Section(source_id="x:/a", text=text)]
     chunks = list(chunker.stream(_ctx(), iter(sections)))
@@ -37,8 +37,8 @@ def test_long_section_split_into_multiple_chunks():
 
 
 def test_chunk_id_stable_for_same_input():
-    chunker1 = SlidingChunker(SlidingChunkerConfig(chunk_size=100, chunk_overlap=10))
-    chunker2 = SlidingChunker(SlidingChunkerConfig(chunk_size=100, chunk_overlap=10))
+    chunker1 = sliding_chunker(SlidingChunkerConfig(chunk_size=100, chunk_overlap=10))
+    chunker2 = sliding_chunker(SlidingChunkerConfig(chunk_size=100, chunk_overlap=10))
     sections = [Section(source_id="x:/a", text="hello")]
     ids1 = [c.chunk_id for c in chunker1.stream(_ctx(), iter(sections))]
     ids2 = [c.chunk_id for c in chunker2.stream(_ctx(), iter(sections))]
@@ -46,7 +46,7 @@ def test_chunk_id_stable_for_same_input():
 
 
 def test_per_source_index_resets_across_sources():
-    chunker = SlidingChunker(SlidingChunkerConfig(chunk_size=100, chunk_overlap=10))
+    chunker = sliding_chunker(SlidingChunkerConfig(chunk_size=100, chunk_overlap=10))
     sections = [
         Section(source_id="x:/a", text="alpha"),
         Section(source_id="x:/b", text="beta"),
@@ -57,7 +57,7 @@ def test_per_source_index_resets_across_sources():
 
 
 def test_anchor_and_metadata_propagate():
-    chunker = SlidingChunker(SlidingChunkerConfig(chunk_size=100, chunk_overlap=10))
+    chunker = sliding_chunker(SlidingChunkerConfig(chunk_size=100, chunk_overlap=10))
     sections = [
         Section(
             source_id="x:/a",

@@ -10,14 +10,8 @@ __all__ = ["Chunk", "ChunkSummary"]
 
 @dataclass(frozen=True)
 class Chunk:
-    """Один кусок текста для индексирования в vector store.
-
-    `chunk_id` — стабильный составной id, обычно `f"{source_id}#{anchor}:{idx}"`,
-    чтобы re-index был идемпотентен (тот же текст → тот же id).
-
-    `content_hash` — версия источника (например `version.number` страницы).
-    Store пишет это в metadata, Pipeline сравнивает на следующем прогоне для
-    skip-if-unchanged.
+    """
+    Один кусок текста для индексирования в vector store
     """
 
     chunk_id: str
@@ -31,10 +25,8 @@ class Chunk:
 
 @dataclass(frozen=True)
 class ChunkSummary:
-    """Read-only сводка чанка для оператора (action=show).
-
-    `snippet` — обрезанный preview текста (без полного содержимого), чтобы
-    cli-вывод был компактным.
+    """
+    Read-only сводка чанка для оператора
     """
 
     chunk_id: str

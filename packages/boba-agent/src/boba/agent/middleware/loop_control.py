@@ -43,6 +43,7 @@ class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
             iteration=self._iteration,
             max_iterations=ctx.config.max_iterations,
         )
+
         yield from self._inner.stream(ctx)
 
 

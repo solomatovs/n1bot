@@ -20,11 +20,8 @@ class PipelineId(StrId):
 
 @dataclass(frozen=True)
 class IndexingContext:
-    """Контекст пробрасываемый через все стадии Source→Reader→Chunker→Store.
-
-    `collection` — логический target в Store (collection в Chroma/Qdrant,
-    namespace в Pinecone, и т.п.). Стрим-стадии (Source/Reader/Chunker) его
-    обычно игнорируют; Store берёт как target для upsert/delete.
+    """
+    Контекст пробрасываемый через все стадии Source→Reader→Chunker→Store.
     """
 
     pipeline_id: PipelineId
