@@ -28,7 +28,8 @@ __all__ = ["MarkdownReader"]
 
 
 class MarkdownReader(Reader[str]):
-    """`Reader[str]` для Markdown: парсит документ в поток типизированных Section'ов.
+    """
+    `Reader[str]` для Markdown: парсит документ в поток типизированных Section
 
     Каждый top-level markdown-блок (heading, paragraph, code-fence, table,
     list, blockquote, hr, raw HTML) становится соответствующим
@@ -45,7 +46,9 @@ class MarkdownReader(Reader[str]):
     - `order` — монотонный счётчик появления секции в документе.
 
     **Поведение**:
-    - bytes handle декодируются как UTF-8 (с `errors="replace"`).
+    - bytes handle декодируются указанным `encoding` (default `utf-8`,
+      `errors="replace"` — невалидные байты заменяются на U+FFFD,
+      а не выбрасывают исключение).
     - Heading'и внутри code-fence (` ``` `) игнорируются (markdown-it-py
       это умеет).
     - Inline-форматирование (`**bold**`, `[link]()`, `` `code` ``) остаётся
@@ -56,9 +59,11 @@ class MarkdownReader(Reader[str]):
 
     DOC_TYPE: ClassVar[str] = "markdown"
     READER_ID: ClassVar[ReaderId] = ReaderId("ext.markdown")
+    DEFAULT_ENCODING: ClassVar[str] = "utf-8"
 
-    def __init__(self) -> None:
+    def __init__(self, encoding: str = DEFAULT_ENCODING) -> None:
         self._parser = MarkdownSectionParser()
+        self._encoding = encoding
 
     def name(self) -> str:
         return "MarkdownReader"
@@ -67,10 +72,12 @@ class MarkdownReader(Reader[str]):
         return self.READER_ID
 
     def convert(self, value: RawDocument) -> Iterable[Section[str]]:
-        text = value.handle.read().decode("utf-8", errors="replace")
+        text = value.handle.read().decode(self._encoding, errors="replace")
         if not text:
             return
+
         base_metadata = value.metadata.set(ReaderKeys.DOC_TYPE, self.DOC_TYPE)
+
         yield from self._parser.parse(
             text,
             source_id=value.source_id,

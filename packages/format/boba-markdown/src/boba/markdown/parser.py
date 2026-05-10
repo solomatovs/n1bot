@@ -1,40 +1,42 @@
-"""
-Markdown AST-парсер: markdown-text → типизированные `Section`
+"""Markdown AST-парсер: markdown-text → типизированные `Section`.
 
-Использует `markdown-it-py` для AST-парсинга
+Использует `markdown-it-py` для AST-парсинга. Каждый top-level markdown-блок
+становится конкретным наследником `boba.indexing.Section[str]`:
 
-Каждый top-level markdown-блок становится конкретным наследником
-`boba.indexing.Section[str]`
 - `HeadingSection`
 - `ParagraphSection`
-- `CodeFenceSection`
-- `TableSection`
-- `ListSection`
-- `BlockquoteSection`
-- `HorizontalRuleSection`
+- `MarkdownCodeFenceSection`
+- `MarkdownTableSection`
+- `MarkdownListSection`
+- `MarkdownBlockquoteSection`
+- `MarkdownHorizontalRuleSection`
 
 **HTML-блоки внутри markdown** (`<div>...</div>`) представляются как
 `ParagraphSection` — сырой HTML кладётся в content как есть, без отдельного
-типа (он markdown-специфичен)
+типа (он markdown-специфичен).
 
 **Inline-форматирование** (bold/italic/links/inline-code) НЕ разворачивается
 в отдельные секции — остаётся внутри `content` как markdown-syntax.
 
 Зависимость: `markdown-it-py` (обязательная — пакет без неё не работает).
 
-**Контракт offset-tracking**: для любой Section `s`,
-`original_text[s.location.start:s.location.end] == s.content`.
+**Контракт offset-tracking**: для любой Section `s` парсер кладёт в её
+`metadata` ключи `SectionKeys.LOCATION_START` / `LOCATION_END` так, что
+`original_text[start:end] == s.content`.
 
-Парсер также `source_id` и `base_metadata` для каждой эмитируемой Section,
-чтобы `Reader.convert(raw)` мог напрямую `yield from parser.parse(...)`.
+Парсер также проставляет `source_id` и `base_metadata` для каждой
+эмитируемой Section, чтобы `Reader.convert(raw)` мог напрямую
+`yield from parser.parse(...)`.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from markdown_it import MarkdownIt
+from markdown_it.token import Token
 
 from boba.indexing import (
     ChunkLocation,
@@ -53,22 +55,15 @@ from boba.markdown.sections import (
     MarkdownTableSection,
 )
 
-
-def _with_location(
-    base: Metadata, start: int, end: int, anchor: str | None = None,
-) -> Metadata:
-    """Кладёт координаты секции (и опционально anchor) в metadata."""
-    md = base.set(SectionKeys.LOCATION_START, start).set(
-        SectionKeys.LOCATION_END, end
-    )
-    if anchor is not None:
-        md = md.set(SectionKeys.ANCHOR, anchor)
-    return md
-
 __all__ = ["MarkdownSectionParser", "slugify"]
 
 
 _NONALNUM = re.compile(r"[^\w\-]+", flags=re.UNICODE)
+
+
+# Возвращаемое значение всех _parse_* helper'ов:
+# (section_or_None, advance_от_текущего_токена).
+_ParseResult = tuple[Section[str] | None, int]
 
 
 def slugify(text: str) -> str | None:
@@ -79,8 +74,69 @@ def slugify(text: str) -> str | None:
     return s or None
 
 
+def _with_location(
+    base: Metadata,
+    start: int,
+    end: int,
+    anchor: str | None = None,
+) -> Metadata:
+    """Кладёт координаты секции (и опционально anchor) в metadata."""
+    md = base.set(SectionKeys.LOCATION_START, start).set(
+        SectionKeys.LOCATION_END, end,
+    )
+    if anchor is not None:
+        md = md.set(SectionKeys.ANCHOR, anchor)
+    return md
+
+
+def _compute_line_offsets(text: str) -> list[int]:
+    """Префиксные char-offset'ы каждой строки `text` (включая виртуальную
+    строку после последней — для half-open-range `tok.map`).
+    """
+    offsets = [0]
+    pos = 0
+    for line in text.split("\n"):
+        pos += len(line) + 1
+        offsets.append(pos)
+    return offsets
+
+
+@dataclass(frozen=True, slots=True)
+class _ParseContext:
+    """Session-invariant вход парсера. Передаётся в каждый `_parse_*`-helper.
+
+    `tokens`, `text`, `line_offsets` — общие производные исходного текста;
+    `source_id` / `base_metadata` — то что копируется в каждую эмитируемую
+    Section.
+    """
+
+    tokens: list[Token]
+    text: str
+    line_offsets: list[int]
+    source_id: SourceId
+    base_metadata: Metadata
+
+    def slice_for_map(self, map_range: list[int]) -> tuple[int, int, str]:
+        """Half-open `[line_start, line_end)` → `(char_start, char_end, slice)`.
+
+        Trailing `\\n` отбрасывается, чтобы выполнить slice-инвариант
+        `text[start:end] == content`.
+        """
+        line_start, line_end = map_range[0], map_range[1]
+        char_start = self.line_offsets[line_start]
+        char_end = (
+            self.line_offsets[line_end]
+            if line_end < len(self.line_offsets)
+            else len(self.text)
+        )
+        char_end = min(char_end, len(self.text))
+        while char_end > char_start and self.text[char_end - 1] == "\n":
+            char_end -= 1
+        return char_start, char_end, self.text[char_start:char_end]
+
+
 class MarkdownSectionParser:
-    """Парсит markdown в поток `Section[str]`-ов с offset-tracking.
+    """Парсит markdown в поток `Section[str]` с offset-tracking.
 
     Использует `markdown-it-py` для block-level AST. Каждый top-level
     AST-токен → соответствующий `Section`-наследник.
@@ -104,151 +160,120 @@ class MarkdownSectionParser:
         """
         if not text:
             return
-        tokens = self._md.parse(text)
-        line_offsets = self._compute_line_offsets(text)
+        ctx = _ParseContext(
+            tokens=self._md.parse(text),
+            text=text,
+            line_offsets=_compute_line_offsets(text),
+            source_id=source_id,
+            base_metadata=base_metadata,
+        )
         order = 0
         i = 0
-        while i < len(tokens):
-            section, advance = self._parse_top_level(
-                tokens, i, text, line_offsets,
-                source_id=source_id,
-                base_metadata=base_metadata,
-                order=order,
-            )
+        while i < len(ctx.tokens):
+            section, advance = self._parse_top_level(ctx, i, order)
             if section is not None:
                 yield section
                 order += 1
             i += advance
 
-    @staticmethod
-    def _compute_line_offsets(text: str) -> list[int]:
-        offsets = [0]
-        pos = 0
-        for line in text.split("\n"):
-            pos += len(line) + 1
-            offsets.append(pos)
-        return offsets
-
-    @staticmethod
-    def _slice_for_map(
-        text: str,
-        line_offsets: list[int],
-        map_range: list[int],
-    ) -> tuple[int, int, str]:
-        line_start, line_end = map_range[0], map_range[1]
-        char_start = line_offsets[line_start]
-        char_end = (
-            line_offsets[line_end] if line_end < len(line_offsets) else len(text)
-        )
-        char_end = min(char_end, len(text))
-        while char_end > char_start and text[char_end - 1] == "\n":
-            char_end -= 1
-        return char_start, char_end, text[char_start:char_end]
-
-    def _parse_top_level(
+    def _parse_top_level(  # noqa: PLR0911 — диспатч по token.type
         self,
-        tokens: list,
+        ctx: _ParseContext,
         i: int,
-        text: str,
-        line_offsets: list[int],
-        *,
-        source_id: SourceId,
-        base_metadata: Metadata,
         order: int,
-    ) -> tuple[Section[str] | None, int]:
-        """Парсит один top-level block начиная с tokens[i]; возвращает (section, advance)."""
-        tok = tokens[i]
-        kwargs = {
-            "source_id": source_id,
-            "base_metadata": base_metadata,
-            "order": order,
-        }
+    ) -> _ParseResult:
+        """Диспатч одного top-level block начиная с `ctx.tokens[i]`.
+
+        Возвращает `(section_or_None, advance)`, где `advance` — на сколько
+        токенов сдвигаться от текущего `i` к следующему top-level block'у.
+        """
+        tok = ctx.tokens[i]
         if tok.type == "heading_open":
-            return self._parse_heading(tokens, i, text, line_offsets, **kwargs)
+            return self._parse_heading(ctx, i, order)
         if tok.type == "paragraph_open":
-            return self._parse_paragraph(tokens, i, text, line_offsets, **kwargs)
+            return self._parse_paragraph(ctx, i, order)
         if tok.type == "fence":
-            return self._parse_fence(tok, text, line_offsets, **kwargs)
+            return self._parse_fence(ctx, i, order)
         if tok.type == "table_open":
-            return self._parse_table(tokens, i, text, line_offsets, **kwargs)
+            return self._parse_table(ctx, i, order)
         if tok.type in ("bullet_list_open", "ordered_list_open"):
             return self._parse_list(
-                tokens, i, text, line_offsets,
-                ordered=tok.type == "ordered_list_open",
-                **kwargs,
+                ctx, i, order, ordered=tok.type == "ordered_list_open",
             )
         if tok.type == "blockquote_open":
-            return self._parse_blockquote(tokens, i, text, line_offsets, **kwargs)
+            return self._parse_blockquote(ctx, i, order)
         if tok.type == "hr":
-            return self._parse_hr(tok, text, line_offsets, **kwargs)
+            return self._parse_hr(ctx, i, order)
         if tok.type == "html_block":
-            # Raw HTML внутри markdown → представляем как ParagraphSection
+            # Raw HTML внутри markdown → ParagraphSection
             # (HTML-специфика не в доменной иерархии Section).
-            return self._parse_html_block(tok, text, line_offsets, **kwargs)
+            return self._parse_html_block(ctx, i, order)
         return None, 1
 
     @classmethod
     def _parse_heading(
-        cls, tokens, i, text, line_offsets,
-        *, source_id, base_metadata, order,
-    ):
-        tok = tokens[i]
+        cls, ctx: _ParseContext, i: int, order: int,
+    ) -> _ParseResult:
+        tok = ctx.tokens[i]
         if not tok.map:
-            return None, cls._skip_until(tokens, i + 1, "heading_close") + 1
+            return None, cls._skip_until(ctx.tokens, i + 1, "heading_close") + 1
         level = int(tok.tag[1:])
-        heading_text = tokens[i + 1].content if tokens[i + 1].type == "inline" else ""
-        start, end, content = cls._slice_for_map(text, line_offsets, tok.map)
+        heading_text = (
+            ctx.tokens[i + 1].content
+            if i + 1 < len(ctx.tokens) and ctx.tokens[i + 1].type == "inline"
+            else ""
+        )
+        start, end, content = ctx.slice_for_map(tok.map)
         section = HeadingSection(
-            source_id=source_id,
+            source_id=ctx.source_id,
             content=content,
             order=order,
             metadata=_with_location(
-                base_metadata, start, end, anchor=slugify(heading_text),
+                ctx.base_metadata, start, end, anchor=slugify(heading_text),
             ),
             level=level,
             text=heading_text,
         )
-        advance = cls._skip_until(tokens, i + 1, "heading_close") + 1
+        advance = cls._skip_until(ctx.tokens, i + 1, "heading_close") + 1
         return section, advance
 
     @classmethod
     def _parse_paragraph(
-        cls, tokens, i, text, line_offsets,
-        *, source_id, base_metadata, order,
-    ):
-        tok = tokens[i]
+        cls, ctx: _ParseContext, i: int, order: int,
+    ) -> _ParseResult:
+        tok = ctx.tokens[i]
         if not tok.map:
-            return None, cls._skip_until(tokens, i + 1, "paragraph_close") + 1
-        start, end, content = cls._slice_for_map(text, line_offsets, tok.map)
+            return None, cls._skip_until(ctx.tokens, i + 1, "paragraph_close") + 1
+        start, end, content = ctx.slice_for_map(tok.map)
         section = ParagraphSection(
-            source_id=source_id,
+            source_id=ctx.source_id,
             content=content,
             order=order,
-            metadata=_with_location(base_metadata, start, end),
+            metadata=_with_location(ctx.base_metadata, start, end),
         )
-        advance = cls._skip_until(tokens, i + 1, "paragraph_close") + 1
+        advance = cls._skip_until(ctx.tokens, i + 1, "paragraph_close") + 1
         return section, advance
 
     @classmethod
     def _parse_fence(
-        cls, tok, text, line_offsets,
-        *, source_id, base_metadata, order,
-    ):
+        cls, ctx: _ParseContext, i: int, order: int,
+    ) -> _ParseResult:
+        tok = ctx.tokens[i]
         if not tok.map:
             return None, 1
-        start, end, content = cls._slice_for_map(text, line_offsets, tok.map)
+        start, end, content = ctx.slice_for_map(tok.map)
         info = tok.info.strip()
         body_first_line = tok.map[0] + 1
         body_last_line = tok.map[1] - 1
         line_locs: list[ChunkLocation] = []
         for line_no in range(body_first_line, body_last_line):
-            ls, le, _ = cls._slice_for_map(text, line_offsets, [line_no, line_no + 1])
+            ls, le, _ = ctx.slice_for_map([line_no, line_no + 1])
             line_locs.append(ChunkLocation(start=ls, end=le))
         section = MarkdownCodeFenceSection(
-            source_id=source_id,
+            source_id=ctx.source_id,
             content=content,
             order=order,
-            metadata=_with_location(base_metadata, start, end),
+            metadata=_with_location(ctx.base_metadata, start, end),
             language=info or None,
             code=tok.content,
             code_line_locations=tuple(line_locs),
@@ -256,14 +281,13 @@ class MarkdownSectionParser:
         return section, 1
 
     @classmethod
-    def _parse_table(  # noqa: C901, PLR0912
-        cls, tokens, i, text, line_offsets,
-        *, source_id, base_metadata, order,
-    ):
-        tok = tokens[i]
+    def _parse_table(  # noqa: C901, PLR0912 — линейный сканер с per-tag dispatch
+        cls, ctx: _ParseContext, i: int, order: int,
+    ) -> _ParseResult:
+        tok = ctx.tokens[i]
         if not tok.map:
-            return None, cls._skip_until(tokens, i + 1, "table_close") + 1
-        start, end, content = cls._slice_for_map(text, line_offsets, tok.map)
+            return None, cls._skip_until(ctx.tokens, i + 1, "table_close") + 1
+        start, end, content = ctx.slice_for_map(tok.map)
         header: list[str] = []
         rows: list[list[str]] = []
         row_locs: list[ChunkLocation] = []
@@ -274,8 +298,8 @@ class MarkdownSectionParser:
         tbody_start_line: int | None = None
         cur_row_map: list[int] | None = None
         j = i + 1
-        while j < len(tokens) and tokens[j].type != "table_close":
-            t = tokens[j]
+        while j < len(ctx.tokens) and ctx.tokens[j].type != "table_close":
+            t = ctx.tokens[j]
             if t.type == "thead_open":
                 in_header = True
                 if t.map:
@@ -298,22 +322,20 @@ class MarkdownSectionParser:
                 elif in_body:
                     rows.append(cur_row)
                     if cur_row_map is not None:
-                        rs, re_, _ = cls._slice_for_map(text, line_offsets, cur_row_map)
+                        rs, re_, _ = ctx.slice_for_map(cur_row_map)
                         row_locs.append(ChunkLocation(start=rs, end=re_))
                 cur_row = []
                 cur_row_map = None
             j += 1
         if thead_start_line is not None and tbody_start_line is not None:
-            hs, he, htext = cls._slice_for_map(
-                text, line_offsets, [thead_start_line, tbody_start_line]
-            )
+            hs, he, htext = ctx.slice_for_map([thead_start_line, tbody_start_line])
         else:
             hs, he, htext = start, start, ""
         section = MarkdownTableSection(
-            source_id=source_id,
+            source_id=ctx.source_id,
             content=content,
             order=order,
-            metadata=_with_location(base_metadata, start, end),
+            metadata=_with_location(ctx.base_metadata, start, end),
             header=tuple(header),
             rows=tuple(tuple(r) for r in rows),
             header_text=htext,
@@ -324,14 +346,18 @@ class MarkdownSectionParser:
 
     @classmethod
     def _parse_list(
-        cls, tokens, i, text, line_offsets,
-        *, ordered, source_id, base_metadata, order,
-    ):
-        tok = tokens[i]
+        cls,
+        ctx: _ParseContext,
+        i: int,
+        order: int,
+        *,
+        ordered: bool,
+    ) -> _ParseResult:
+        tok = ctx.tokens[i]
         close_type = "ordered_list_close" if ordered else "bullet_list_close"
         if not tok.map:
-            return None, cls._skip_until(tokens, i + 1, close_type) + 1
-        start, end, content = cls._slice_for_map(text, line_offsets, tok.map)
+            return None, cls._skip_until(ctx.tokens, i + 1, close_type) + 1
+        start, end, content = ctx.slice_for_map(tok.map)
         items: list[str] = []
         item_locs: list[ChunkLocation] = []
         depth = 1
@@ -339,8 +365,8 @@ class MarkdownSectionParser:
         cur_item_map: list[int] | None = None
         in_top_level_item = False
         j = i + 1
-        while j < len(tokens):
-            t = tokens[j]
+        while j < len(ctx.tokens):
+            t = ctx.tokens[j]
             if t.type in ("bullet_list_open", "ordered_list_open"):
                 depth += 1
             elif t.type in ("bullet_list_close", "ordered_list_close"):
@@ -355,17 +381,17 @@ class MarkdownSectionParser:
                 in_top_level_item = False
                 items.append("\n".join(p for p in cur_item_parts if p))
                 if cur_item_map is not None:
-                    is_, ie, _ = cls._slice_for_map(text, line_offsets, cur_item_map)
+                    is_, ie, _ = ctx.slice_for_map(cur_item_map)
                     item_locs.append(ChunkLocation(start=is_, end=ie))
                 cur_item_map = None
             elif in_top_level_item and t.type == "inline":
                 cur_item_parts.append(t.content)
             j += 1
         section = MarkdownListSection(
-            source_id=source_id,
+            source_id=ctx.source_id,
             content=content,
             order=order,
-            metadata=_with_location(base_metadata, start, end),
+            metadata=_with_location(ctx.base_metadata, start, end),
             ordered=ordered,
             items=tuple(items),
             item_locations=tuple(item_locs),
@@ -374,64 +400,71 @@ class MarkdownSectionParser:
 
     @classmethod
     def _parse_blockquote(
-        cls, tokens, i, text, line_offsets,
-        *, source_id, base_metadata, order,
-    ):
-        tok = tokens[i]
+        cls, ctx: _ParseContext, i: int, order: int,
+    ) -> _ParseResult:
+        tok = ctx.tokens[i]
         if not tok.map:
-            return None, cls._skip_until(tokens, i + 1, "blockquote_close") + 1
-        start, end, content = cls._slice_for_map(text, line_offsets, tok.map)
+            return None, cls._skip_until(ctx.tokens, i + 1, "blockquote_close") + 1
+        start, end, content = ctx.slice_for_map(tok.map)
         section = MarkdownBlockquoteSection(
-            source_id=source_id,
+            source_id=ctx.source_id,
             content=content,
             order=order,
-            metadata=_with_location(base_metadata, start, end),
+            metadata=_with_location(ctx.base_metadata, start, end),
         )
+        # Сканируем до соответствующего `blockquote_close` с учётом вложенности.
+        # `j` после loop'а уже инкрементирован за close — поэтому advance = j - i
+        # (без +1, в отличие от других _parse_*: цикл сам ушёл на токен past close).
         depth = 1
         j = i + 1
-        while j < len(tokens) and depth > 0:
-            if tokens[j].type == "blockquote_open":
+        while j < len(ctx.tokens) and depth > 0:
+            if ctx.tokens[j].type == "blockquote_open":
                 depth += 1
-            elif tokens[j].type == "blockquote_close":
+            elif ctx.tokens[j].type == "blockquote_close":
                 depth -= 1
             j += 1
         return section, j - i
 
     @classmethod
     def _parse_hr(
-        cls, tok, text, line_offsets,
-        *, source_id, base_metadata, order,
-    ):
+        cls, ctx: _ParseContext, i: int, order: int,
+    ) -> _ParseResult:
+        tok = ctx.tokens[i]
         if not tok.map:
             return None, 1
-        start, end, content = cls._slice_for_map(text, line_offsets, tok.map)
+        start, end, content = ctx.slice_for_map(tok.map)
         section = MarkdownHorizontalRuleSection(
-            source_id=source_id,
+            source_id=ctx.source_id,
             content=content,
             order=order,
-            metadata=_with_location(base_metadata, start, end),
+            metadata=_with_location(ctx.base_metadata, start, end),
         )
         return section, 1
 
     @classmethod
     def _parse_html_block(
-        cls, tok, text, line_offsets,
-        *, source_id, base_metadata, order,
-    ):
-        """Raw HTML внутри markdown → ParagraphSection (HTML-фрагмент как plain content)."""
+        cls, ctx: _ParseContext, i: int, order: int,
+    ) -> _ParseResult:
+        """Raw HTML → `ParagraphSection` (HTML-фрагмент как plain content)."""
+        tok = ctx.tokens[i]
         if not tok.map:
             return None, 1
-        start, end, content = cls._slice_for_map(text, line_offsets, tok.map)
+        start, end, content = ctx.slice_for_map(tok.map)
         section = ParagraphSection(
-            source_id=source_id,
+            source_id=ctx.source_id,
             content=content,
             order=order,
-            metadata=_with_location(base_metadata, start, end),
+            metadata=_with_location(ctx.base_metadata, start, end),
         )
         return section, 1
 
     @staticmethod
-    def _skip_until(tokens: list, start: int, close_type: str) -> int:
+    def _skip_until(tokens: list[Token], start: int, close_type: str) -> int:
+        """Расстояние от `start` до позиции **за** первым `close_type`-токеном.
+
+        Если `close_type` не найден до конца `tokens`, возвращает расстояние
+        до `len(tokens) + 1` (и caller просто упрётся в end-of-stream).
+        """
         j = start
         while j < len(tokens) and tokens[j].type != close_type:
             j += 1
