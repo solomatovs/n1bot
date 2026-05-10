@@ -17,11 +17,6 @@ Format-specific типы (markdown-таблицы, markdown-списки, code-f
 
 Контракт:
 
-- Координаты/идентификаторы (location, anchor) — в `metadata` через
-  `SectionKeys.LOCATION_START` / `LOCATION_END` / `ANCHOR`. Не у каждого
-  формата они есть (HTML без lxml-sourceline-tracking не даёт offset'ов),
-  поэтому `Section` их не required-полями: парсер пишет в metadata то,
-  что умеет, consumer читает с обработкой `None`.
 - Структурные типизированные поля (`level`, `text`, ...) живут как
   атрибуты подклассов и переезжают в `chunk.metadata` через
   `to_chunk_metadata()`.

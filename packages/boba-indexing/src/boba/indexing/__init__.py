@@ -5,7 +5,6 @@ boba.indexing — абстракции для индексации докуме�
 from __future__ import annotations
 
 from boba.indexing.chunk_id import (
-    AnchorBasedChunkId,
     ChunkIdStrategy,
     DigestPrefix,
     FixedDigestPrefix,
@@ -92,9 +91,8 @@ from boba.indexing.metadata import (
 )
 from boba.indexing.namespaced_view import NamespacedView
 from boba.indexing.raw_document import BinaryStream, RawDocument
-from boba.indexing.reader import PlainTextReader, Reader, ReaderId
+from boba.indexing.reader import Reader, ReaderId
 from boba.indexing.request import Request, RequestSource
-from boba.indexing.section_chunker import SectionChunker
 from boba.indexing.sections import (
     HeadingSection,
     ParagraphSection,
@@ -104,7 +102,6 @@ from boba.indexing.sections import (
 )
 from boba.indexing.splitter import (
     LengthFunction,
-    OverlapCharSplitter,
     SplitPiece,
     Splitter,
 )
@@ -121,7 +118,6 @@ from boba.indexing.vector_store import (
 )
 
 __all__ = [
-    "AnchorBasedChunkId",
     "And",
     "BaseIndexEvent",
     "BatchStarted",
@@ -187,13 +183,11 @@ __all__ = [
     "Not",
     "NotIn",
     "Or",
-    "OverlapCharSplitter",
     "ParagraphSection",
     "PassThroughDecoder",
     "PhaseTransition",
     "PipelineContext",
     "PipelineId",
-    "PlainTextReader",
     "RawDocument",
     "Reader",
     "ReaderId",
@@ -207,7 +201,6 @@ __all__ = [
     "SearchHit",
     "Section",
     "SectionKeys",
-    "SectionChunker",
     "Severity",
     "Sha256TextEncoder",
     "SourceBasedChunkId",
