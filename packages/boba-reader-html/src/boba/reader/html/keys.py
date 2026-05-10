@@ -1,4 +1,4 @@
-"""HtmlKeys — MetadataKey, проставляемые HtmlReader"""
+"""HtmlKeys — MetadataKey, проставляемые HTML reader'ами (HEADING_LEVEL/HEADING_TEXT)."""
 
 from __future__ import annotations
 

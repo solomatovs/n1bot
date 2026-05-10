@@ -9,7 +9,7 @@ SectionChunker[T] — универсальный Chunker[T] для нарезк�
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Generic, TypeVar
+from typing import TypeVar
 
 from boba.indexing.chunk_id import ChunkIdStrategy
 from boba.indexing.chunker import Chunker, ChunkerId
@@ -23,7 +23,7 @@ __all__ = ["SectionChunker"]
 T = TypeVar("T")
 
 
-class SectionChunker(Chunker[T], Generic[T]):
+class SectionChunker(Chunker[T]):
     """
     Универсальная реализация `Chunker[T]`: композиция `Splitter[T]` + `ChunkIdStrategy[T]`.
 

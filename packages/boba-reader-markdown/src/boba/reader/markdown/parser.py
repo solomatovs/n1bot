@@ -1,18 +1,16 @@
-"""Markdown heading-aware парсер.
+"""
+Markdown heading-aware парсер
 
-Поддерживает ATX-style heading'и (`# Title`, `## Subtitle`, ...). Setext-
-heading'и (`====` / `----` под строкой) не поддерживаются — для целей
-индексации они почти не встречаются и обрабатываются как plain text.
+Поддерживает ATX-style heading (`# Title`, `## Subtitle`, ...).
+
+Setext-heading (`====` / `----` под строкой) не поддерживаются — для целей
+индексации они почти не встречаются и обрабатываются как plain text
 
 Code-fence (```...```) и блоки кода (4 пробела отступа) пропускаются —
-символы `#` внутри них не считаются heading'ами.
+символы `#` внутри них не считаются heading
 
-Anchor — slug из текста heading'а (lowercase, пробелы → '-', не-alnum
-выкидываются). Fallback `idx:N` через `anchor_for(h)`.
-
-Pure parser: `boba.indexing` не импортит. Internal `MarkdownSection`
-именован отдельно от `boba.indexing.Section[T]`, чтобы не конфликтовать
-при импорте обоих в одном модуле.
+Anchor — slug из текста heading (lowercase, пробелы → '-', не-alnum
+выкидываются). Fallback `idx:N`
 """
 
 from __future__ import annotations
@@ -38,7 +36,10 @@ _NONALNUM = re.compile(r"[^\w\-]+", flags=re.UNICODE)
 
 @dataclass(frozen=True)
 class Heading:
-    """Markdown ATX heading; index 1-based, line — 0-based номер строки начала."""
+    """Markdown ATX heading
+        index 1-based
+        line  0-based номер строки начала
+    """
 
     index: int
     level: int
@@ -49,21 +50,20 @@ class Heading:
 
 @dataclass(frozen=True)
 class MarkdownSection:
-    """Раздел markdown-документа: заголовок + body до следующего heading'а.
-
-    Internal-DTO парсера, передаётся в `MarkdownReader._build_section`.
-    Не путать с `boba.indexing.Section[T]` — финальным выходом Reader'а.
+    """
+    Раздел markdown-документа: заголовок + body до следующего heading
     """
 
-    heading: Heading | None  # None → preamble до первого heading'а
-    body: str  # текст после строки heading'а до следующего heading'а
+    heading: Heading | None     # None означает что это преамбула до первого heading
+    body: str                   # текст после строки heading до следующего heading
 
 
 def collect_headings(text: str, *, max_depth: int | None = None) -> list[Heading]:
-    """Все ATX heading'и документа в порядке появления.
+    """
+    Все ATX heading документа в порядке появления
 
-    Heading'и внутри code-fence (```...```) пропускаются.
-    `max_depth` ограничивает максимальный уровень (1..max_depth).
+    Heading внутри code-fence (```...```) пропускаются
+    `max_depth` ограничивает максимальный уровень (1..max_depth)
     """
     cap = max_depth if max_depth is not None else 6
     in_fence = False
@@ -98,13 +98,15 @@ def collect_headings(text: str, *, max_depth: int | None = None) -> list[Heading
 def split_sections(
     text: str, *, max_depth: int | None = None
 ) -> list[MarkdownSection]:
-    """Разбить markdown на MarkdownSection'ы по heading'ам.
+    """
+    Разбить markdown на MarkdownSection по heading
 
     `MarkdownSection.body` — строки **после** heading-строки до следующего
-    heading'а (включая пустые), без trailing whitespace. Если до первого
-    heading'а есть текст (preamble), он становится секцией с heading=None.
+    heading (включая пустые), без trailing whitespace.
+    Если до первого heading есть текст (preamble),
+    он становится секцией с heading=None
 
-    Heading'и внутри code-fence пропускаются (см. collect_headings).
+    Heading внутри code-fence пропускаются (см. collect_headings)
     """
     headings = collect_headings(text, max_depth=max_depth)
     lines = text.splitlines()
