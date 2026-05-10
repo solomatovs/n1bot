@@ -26,7 +26,59 @@ _log = logging.getLogger(__name__)
 
 
 class FsTransport(Transport[FsRequest]):
-    """Открывает файлы файловой системы для индексации."""
+    """
+    `Transport[FsRequest]`: `FsRequest` → `RawDocument` через `open(path, "rb")`.
+
+    **Схема**:
+    ```python
+    FsRequest   ──────────────────────FsTransport.stream──→  RawDocument
+        path        : str        ──open──→
+        source_id   : SourceId   ──pass──→                       source_id   (тот же)
+        metadata    : Metadata   ──merge─→                       metadata    (+ TransportKeys.MTIME, FsKeys.SIZE, FsKeys.SUFFIX)
+                                                           →     handle      : BufferedReader  (open; закроется по выходу из stream)
+    ```
+
+    **Lifecycle handle**:
+    ```python
+    with p.open("rb") as fp:
+        yield RawDocument(handle=fp, ...)        # handle жив
+    # сюда возвращаемся после next(generator) — fp закрыт
+    ```
+    Reader должен прочитать `handle` ДО следующей итерации, иначе уже
+    закрытый `fp.read()` бросит `ValueError`.
+
+    **Поведение на ошибки**:
+    - файл исчез между листингом и open (`OSError` на `stat`) — warn'аем
+      и пропускаем (request «съедается», prowadzення продолжается).
+    - суффикс приводится к `lower()`; пустой → `"bin"`.
+
+    **Пример**:
+    ```python
+    transport = FsTransport()
+    requests = iter([
+        FsRequest(
+            path="/abs/note.md",
+            source_id=SourceId("fs:/abs/note.md"),
+            metadata=Metadata.empty().set(FsKeys.PATH, "/abs/note.md"),
+        ),
+    ])
+
+    # 1 FsRequest → 1 открытый RawDocument; handle живёт до перехода к следующему.
+    raw = next(iter(transport.stream(ctx, requests)))
+    raw == RawDocument(
+        handle=<BufferedReader name='/abs/note.md'>,   # новое: открытый file descriptor
+        source_id=SourceId("fs:/abs/note.md"),         # pass из FsRequest
+        metadata=(                                     # merge из FsRequest.metadata + 3 ключа от Transport
+            Metadata.empty()
+            .set(FsKeys.PATH, "/abs/note.md")          # был в FsRequest
+            .set(TransportKeys.MTIME, 1715342400.0)    # новое от Transport (st_mtime)
+            .set(FsKeys.SIZE, 1024)                    # новое от Transport (st_size)
+            .set(FsKeys.SUFFIX, "md")                  # новое от Transport (lower-case extension)
+        ),
+    )
+    raw.handle.read()  # → b"# Note\\n..."
+    ```
+    """  # noqa: E501
 
     def name(self) -> str:
         return "FsTransport"
