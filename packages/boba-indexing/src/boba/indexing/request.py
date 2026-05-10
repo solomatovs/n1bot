@@ -105,6 +105,9 @@ class RequestSource(StreamSource[PipelineContext, ReqT]):
 
     @abstractmethod
     def list_source_ids(self, ctx: PipelineContext) -> Iterable[str]:
-        """Перечисляет canonical source_id'ы; `SyncUnsupportedError` если не реализовано."""
+        """
+        Перечисляет canonical source_id
+        `SyncUnsupportedError` если не реализовано
+        """
         del ctx
         raise SyncUnsupportedError(self.name())

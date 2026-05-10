@@ -217,7 +217,7 @@ class StreamingIndexer(Indexer[ReqT, T]):
         for chunk in self._chunker.stream(ctx, sections):
             enriched = replace(
                 chunk,
-                content_hash=config.key_encoder.encode(chunk.content),
+                content_hash=config.key_encoder.encode(chunk.format_content),
             )
 
             self._verify_hash(enriched)

@@ -13,7 +13,7 @@ from boba.indexing.chunk_id import (
 )
 from boba.indexing.chunk_sink import ChunkSink, VectorStoreChunkSink
 from boba.indexing.chunker import Chunker, ChunkerId
-from boba.indexing.chunks import Chunk, ChunkId, ChunkLocation, ChunkSummary
+from boba.indexing.chunks import Chunk, ChunkId, ChunkKeys, ChunkLocation, ChunkSummary
 from boba.indexing.cleanup import (
     CleanupContext,
     CleanupStrategy,
@@ -95,18 +95,12 @@ from boba.indexing.raw_document import BinaryStream, RawDocument
 from boba.indexing.reader import PlainTextReader, Reader, ReaderId
 from boba.indexing.request import Request, RequestSource
 from boba.indexing.section_chunker import SectionChunker
-from boba.indexing.structural_chunker import StructuralChunker, StructuralKeys
 from boba.indexing.sections import (
-    BlockquoteSection,
-    CodeFenceSection,
     HeadingSection,
-    HorizontalRuleSection,
-    ListSection,
     ParagraphSection,
     Section,
     SectionKeys,
     SourceId,
-    TableSection,
 )
 from boba.indexing.splitter import (
     LengthFunction,
@@ -133,11 +127,11 @@ __all__ = [
     "BatchStarted",
     "BatchUpserted",
     "BinaryStream",
-    "BlockquoteSection",
     "BytesContentHash",
     "Chunk",
     "ChunkId",
     "ChunkIdStrategy",
+    "ChunkKeys",
     "ChunkLocation",
     "ChunkSink",
     "ChunkSummary",
@@ -148,7 +142,6 @@ __all__ = [
     "CleanupContext",
     "CleanupStarted",
     "CleanupStrategy",
-    "CodeFenceSection",
     "CollectionId",
     "CollectionInfo",
     "CollectionsAdminReader",
@@ -169,7 +162,6 @@ __all__ = [
     "HasAnyTag",
     "HasTag",
     "HeadingSection",
-    "HorizontalRuleSection",
     "In",
     "IncompatibleContentError",
     "IncrementalCleanup",
@@ -227,11 +219,7 @@ __all__ = [
     "Splitter",
     "StreamingIndexer",
     "StringContentHash",
-    "StructuralChunker",
-    "StructuralKeys",
     "SyncUnsupportedError",
-    "TableSection",
-    "ListSection",
     "TrackingKeys",
     "Transport",
     "TransportKeys",
