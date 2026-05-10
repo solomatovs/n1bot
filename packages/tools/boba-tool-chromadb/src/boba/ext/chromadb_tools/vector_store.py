@@ -19,7 +19,7 @@ from chromadb.api.models.Collection import Collection
 from chromadb.api.types import Metadata as ChromaMetadata
 from chromadb.api.types import PyEmbedding, Where
 
-from boba.indexing.chunks import Chunk, ChunkId, ChunkLocation, ChunkSummary
+from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary
 from boba.indexing.content_hash import StringContentHash
 from boba.indexing.context import CollectionId
 from boba.indexing.embedder import Embedder
@@ -41,6 +41,7 @@ from boba.indexing.filter import (
     Or,
     UnsupportedFilterError,
 )
+from boba.indexing.index_views import TrackingKeys
 from boba.indexing.metadata import Metadata
 from boba.indexing.sections import SourceId
 from boba.indexing.vector_store import (
@@ -66,31 +67,19 @@ class ChromaVectorStore(
     DEFAULT_BATCH_SIZE: ClassVar[int] = 100
     BACKEND_NAME: ClassVar[str] = "chroma"
 
-    KEY_SOURCE_ID: ClassVar[str] = "source_id"
-    KEY_ANCHOR: ClassVar[str] = "anchor"
-    KEY_CHUNK_INDEX: ClassVar[str] = "chunk_index"
-    KEY_LOC_START: ClassVar[str] = "loc_start"
-    KEY_LOC_END: ClassVar[str] = "loc_end"
-    KEY_CONTENT_HASH: ClassVar[str] = "content_hash"
     KEY_TAG_PREFIX: ClassVar[str] = "tag."
+    """Chroma-specific encoding для `Chunk.tags`: chroma не умеет set-valued
+    metadata, поэтому каждый тэг разворачивается в отдельный bool-ключ:
+    `Chunk.tags = {"public", "doc"}` → `{"tag.public": True, "tag.doc": True}`.
+    """
+
     DESCRIPTION_KEY: ClassVar[str] = "description"
+    """Chroma-collection-level metadata-ключ для описания коллекции."""
 
-    _RESERVED_KEYS: ClassVar[frozenset[str]] = frozenset(
-        {
-            KEY_SOURCE_ID,
-            KEY_ANCHOR,
-            KEY_CHUNK_INDEX,
-            KEY_LOC_START,
-            KEY_LOC_END,
-            KEY_CONTENT_HASH,
-        }
-    )
-    """
-    Tags хранятся в chroma коллекциях как отдельные metadata keys
-    с префиксом "tag."
-
-    `Chunk.tags = {"public", "doc"}` → `{"tag.public": True, "tag.doc": True}`
-    """
+    # NB: wire-имена Chunk-frame полей (source_id, chunk_index, content_hash)
+    # берутся из доменного `TrackingKeys` — единый источник правды на всех
+    # store-impl'ов. Format-specific атрибуты (location, anchor) живут в
+    # `chunk.metadata` через `ChunkKeys.*` и проходят как обычные dotted-keys.
 
     def __init__(
         self,
@@ -155,7 +144,9 @@ class ChromaVectorStore(
     ) -> Iterable[ChunkSummary[str]]:
         coll = self._open(collection)
         where: Where | None = (
-            {self.KEY_SOURCE_ID: source_id.to_wire()} if source_id is not None else None
+            {TrackingKeys.SOURCE_ID: source_id.to_wire()}
+            if source_id is not None
+            else None
         )
         result = coll.get(
             where=where,
@@ -200,7 +191,7 @@ class ChromaVectorStore(
         coll = self._open(collection)
         for batch in self._batched(chunks):
             ids = [c.chunk_id.to_wire() for c in batch]
-            documents = [c.content for c in batch]
+            documents = [c.format_content for c in batch]
             metadatas: list[ChromaMetadata] = [self._encode_metadata(c) for c in batch]
             embeddings: list[PyEmbedding] = [
                 list(v) for v in self._embedder.embed_documents(documents)
@@ -278,13 +269,10 @@ class ChromaVectorStore(
         self, chunk: Chunk[str]
     ) -> dict[str, str | int | float | bool]:
         out: dict[str, str | int | float | bool] = dict(chunk.metadata.to_wire())
-        out[self.KEY_SOURCE_ID] = chunk.source_id.to_wire()
-        out[self.KEY_ANCHOR] = chunk.anchor or ""
-        out[self.KEY_CHUNK_INDEX] = chunk.chunk_index
-        out[self.KEY_LOC_START] = chunk.location.start
-        out[self.KEY_LOC_END] = chunk.location.end
+        out[TrackingKeys.SOURCE_ID] = chunk.source_id.to_wire()
+        out[TrackingKeys.CHUNK_INDEX] = chunk.chunk_index
         if chunk.content_hash is not None:
-            out[self.KEY_CONTENT_HASH] = chunk.content_hash.to_wire()
+            out[TrackingKeys.CONTENT_HASH] = chunk.content_hash.to_wire()
         for tag in chunk.tags:
             out[self.KEY_TAG_PREFIX + tag] = True
         return out
@@ -295,18 +283,17 @@ class ChromaVectorStore(
         content: str,
         meta: Mapping[str, Any],
     ) -> Chunk[str]:
-        anchor = str(meta.get(self.KEY_ANCHOR, "") or "")
-        content_hash_wire = meta.get(self.KEY_CONTENT_HASH)
+        content_hash_wire = meta.get(TrackingKeys.CONTENT_HASH)
+        # При чтении: chroma `documents` хранит только то, что эмбедилось,
+        # т.е. format_content. raw_content в storage не выживает — отдаём
+        # тот же текст, что и format_content (lossy round-trip; UI/citation
+        # без re-fetch исходника не сможет показать pre-обогащения раздел).
         return Chunk(
             chunk_id=ChunkId(chunk_id),
-            source_id=SourceId(str(meta.get(self.KEY_SOURCE_ID, ""))),
-            content=content,
-            location=ChunkLocation(
-                start=int(meta.get(self.KEY_LOC_START, 0) or 0),
-                end=int(meta.get(self.KEY_LOC_END, 0) or 0),
-            ),
-            anchor=anchor or None,
-            chunk_index=int(meta.get(self.KEY_CHUNK_INDEX, 0) or 0),
+            source_id=SourceId(str(meta.get(TrackingKeys.SOURCE_ID, ""))),
+            format_content=content,
+            raw_content=content,
+            chunk_index=int(meta.get(TrackingKeys.CHUNK_INDEX, 0) or 0),
             content_hash=(
                 StringContentHash(text=str(content_hash_wire))
                 if content_hash_wire is not None
@@ -322,16 +309,10 @@ class ChromaVectorStore(
         snippet: str,
         meta: Mapping[str, Any],
     ) -> ChunkSummary[str]:
-        anchor = str(meta.get(self.KEY_ANCHOR, "") or "")
         return ChunkSummary(
             chunk_id=ChunkId(chunk_id),
-            source_id=SourceId(str(meta.get(self.KEY_SOURCE_ID, ""))),
-            location=ChunkLocation(
-                start=int(meta.get(self.KEY_LOC_START, 0) or 0),
-                end=int(meta.get(self.KEY_LOC_END, 0) or 0),
-            ),
-            anchor=anchor or None,
-            chunk_index=int(meta.get(self.KEY_CHUNK_INDEX, 0) or 0),
+            source_id=SourceId(str(meta.get(TrackingKeys.SOURCE_ID, ""))),
+            chunk_index=int(meta.get(TrackingKeys.CHUNK_INDEX, 0) or 0),
             snippet=snippet,
             metadata=self._business_metadata(meta),
             tags=self._extract_tags(meta),

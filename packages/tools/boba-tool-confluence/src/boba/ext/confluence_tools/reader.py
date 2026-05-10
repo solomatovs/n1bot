@@ -30,6 +30,7 @@ from boba.indexing import (
     ReaderId,
     ReaderKeys,
     Section,
+    SectionKeys,
 )
 from boba.html import HtmlKeys
 
@@ -70,18 +71,21 @@ class ConfluenceReader(Reader[str]):
             yield Section(
                 source_id=value.source_id,
                 content=text.strip(),
-                anchor=anchor_for(h),
                 order=h.index,
                 metadata=self._section_meta(value, h),
             )
 
     def _section_meta(self, value: RawDocument, h: Heading):
-        return (
+        meta = (
             value.metadata
             .set(ReaderKeys.DOC_TYPE, self.DOC_TYPE)
             .set(HtmlKeys.HEADING_LEVEL, h.level)
             .set(HtmlKeys.HEADING_TEXT, h.text)
         )
+        anchor = anchor_for(h)
+        if anchor:
+            meta = meta.set(SectionKeys.ANCHOR, anchor)
+        return meta
 
     def _fallback_section(
         self, value: RawDocument, body: Tag, title: str
@@ -97,7 +101,6 @@ class ConfluenceReader(Reader[str]):
         yield Section(
             source_id=value.source_id,
             content=composed,
-            anchor=None,
             order=0,
             metadata=meta,
         )
