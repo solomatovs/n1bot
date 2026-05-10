@@ -32,7 +32,7 @@ from boba.workspace.contract import (
     PromptWorkspaceId,
     WorkspaceId,
 )
-from boba.workspace.fs import (
+from boba.agent.workspace_fs import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
     FsPromptWorkspaceRegistry,

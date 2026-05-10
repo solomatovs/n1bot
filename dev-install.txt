@@ -10,11 +10,9 @@
 -e ./packages/boba-indexing
 -e ./packages/boba-llm
 -e ./packages/boba-tools
--e ./packages/boba-workspace-fs
 
 # agent runtime + adapters
 -e ./packages/boba-agent
--e ./packages/boba-messages-jsonl
 -e ./packages/boba-prompt-providers
 -e ./packages/boba-provider-openai
 

@@ -1,14 +1,14 @@
 """Файловые реализации WorkspaceShell / WorkspaceRegistry."""
 
-from boba.workspace.fs.config import WorkspaceLayout
-from boba.workspace.fs.registry import (
+from boba.agent.workspace_fs.config import WorkspaceLayout
+from boba.agent.workspace_fs.registry import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
     FsPromptWorkspaceRegistry,
     FsScratchWorkspaceRegistry,
     FsWorkspaceRegistry,
 )
-from boba.workspace.fs.shell import (
+from boba.agent.workspace_fs.shell import (
     FsHistoryWorkspaceShell,
     FsProjectWorkspaceShell,
     FsPromptWorkspaceShell,

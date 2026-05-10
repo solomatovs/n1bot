@@ -34,7 +34,7 @@ from boba.workspace.contract import (
     WorkspacePermissionError,
     WorkspaceShell,
 )
-from boba.workspace.fs.growbuffer import GrowBuffer
+from boba.agent.workspace_fs.growbuffer import GrowBuffer
 
 TWsId = TypeVar("TWsId", bound=Id)
 

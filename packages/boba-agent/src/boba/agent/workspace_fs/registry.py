@@ -19,7 +19,7 @@ from boba.workspace.contract import (
     WorkspaceNotFoundError,
     WorkspaceRegistry,
 )
-from boba.workspace.fs.shell import (
+from boba.agent.workspace_fs.shell import (
     FsHistoryWorkspaceShell,
     FsProjectWorkspaceShell,
     FsPromptWorkspaceShell,
