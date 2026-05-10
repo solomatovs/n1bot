@@ -1,22 +1,28 @@
 """
 Section[T] — логический фрагмент документа.
 
-Базовый `Section[T]` плюс открытая иерархия типизированных подклассов
-(HeadingSection, ParagraphSection, CodeFenceSection, TableSection, ListSection,
-BlockquoteSection, HorizontalRuleSection, HtmlSection). Доменно-нейтральная —
-markdown / html / любой format-aware Reader выдаёт эти типы. Иерархия
-не закрытая (`@final` НЕ ставится): пользователь / domain-package может
-добавить свои подклассы (`ConfluenceMacroSection`, `JupyterCellSection`, ...).
+Базовый `Section[T]` плюс открытая иерархия типизированных подклассов:
+- HeadingSection
+- ParagraphSection
+- CodeFenceSection
+- TableSection
+- ListSection,
+- BlockquoteSection
+- HorizontalRuleSection
+
+Доменно-нейтральная — format Reader выдаёт эти типы.
+Можно добавить свои подклассы (`ConfluenceMacroSection`, `JupyterCellSection`, ...).
 
 Контракт:
 
 - `location` — char/byte-offset в исходном raw документе (после декодирования).
   Сохраняется на каждом Section, пробрасывается в Chunk и используется LLM/UI
-  для citations / deep-links.
+  для цитирования
+
 - `to_chunk_metadata()` — переопределяется в подклассах для эмиссии типизированных
-  полей в `chunk.metadata` через `MetadataKey`'и.
-- `SECTION_TYPE` — canonical alias (короткий идентификатор для wire-сериализации;
-  не привязан к Python-имени класса).
+  полей в `chunk.metadata` через `MetadataKey`
+
+- `SECTION_TYPE` — canonical alias короткий идентификатор для wire-сериализации
 """
 
 from __future__ import annotations
@@ -33,7 +39,6 @@ __all__ = [
     "CodeFenceSection",
     "HeadingSection",
     "HorizontalRuleSection",
-    "HtmlSection",
     "ListSection",
     "ParagraphSection",
     "Section",
@@ -85,9 +90,12 @@ class SectionKeys:
 
 @dataclass(frozen=True)
 class Section(Generic[T]):
-    """Логический фрагмент документа.
+    """
+    Логический фрагмент документа.
 
-    Базовый класс открытой иерархии. Подклассы добавляют типизированные поля
+    Базовый класс открытой иерархии.
+
+    Подклассы добавляют типизированные поля
     (`level`, `language`, `header`, `rows`, ...) и переопределяют
     `to_chunk_metadata()` для эмиссии этих полей в `chunk.metadata`.
 
@@ -130,15 +138,12 @@ class Section(Generic[T]):
 
 @dataclass(frozen=True)
 class HeadingSection(Section[str]):
-    """Раздел с heading-маркером (`# `, `<h1>`, ...).
+    """
+    Раздел с heading-маркером (`# `, `<h1>`, ...).
 
     Heading-маркер в `content` оригинальный (с разметкой формата —
-    `# Title` для markdown, `<h1>Title</h1>` для html); `level` и `text` —
-    разобранная типизированная информация.
-
-    В chunker'е `HeadingSection` обрабатывается через **prefix-merge**:
-    присоединяется как префикс к следующей не-heading секции, не эмитится
-    отдельным чанком (если за ней есть body).
+    `# Title` для markdown, `<h1>Title</h1>` для html);
+    `level` и `text` — разобранная типизированная информация
     """
 
     SECTION_TYPE: ClassVar[str] = "heading"
@@ -163,7 +168,8 @@ class ParagraphSection(Section[str]):
 
 @dataclass(frozen=True)
 class CodeFenceSection(Section[str]):
-    """Блок кода в обрамлении (` ```lang ... ``` ` в markdown, `<pre><code>` в html).
+    """
+    Блок кода в обрамлении (` ```lang ... ``` ` в markdown, `<pre><code>` в html).
 
     - `language` — language hint (`None` если неизвестен).
     - `code` — содержимое БЕЗ обрамляющих маркеров.
@@ -187,9 +193,10 @@ class CodeFenceSection(Section[str]):
 
 @dataclass(frozen=True)
 class TableSection(Section[str]):
-    """Табличный блок (GFM-table, `<table>`, и т.п.).
+    """
+    Табличный блок (GFM-table, `<table>`, и т.п.).
 
-    - `header` — cells header'а (распарсенный inline-text каждой ячейки).
+    - `header` — cells header (распарсенный inline-text каждой ячейки).
     - `rows` — cells каждой data-строки.
     - `header_text` — raw текст header'а вместе с разметкой-разделителем.
       Используется в row-by-row chunker-стратегии: реплицируется в
@@ -218,7 +225,8 @@ class TableSection(Section[str]):
 
 @dataclass(frozen=True)
 class ListSection(Section[str]):
-    """Список (ordered/unordered).
+    """
+    Список (ordered/unordered).
 
     - `items` — извлечённый текст каждого top-level item.
     - `item_locations` — char-offset каждого item в исходнике;
@@ -237,24 +245,20 @@ class ListSection(Section[str]):
 
 @dataclass(frozen=True)
 class BlockquoteSection(Section[str]):
-    """Цитата (`> ...` / `<blockquote>`)."""
+    """
+    Цитата (`> ...` / `<blockquote>`)
+    """
 
     SECTION_TYPE: ClassVar[str] = "blockquote"
 
 
 @dataclass(frozen=True)
 class HorizontalRuleSection(Section[str]):
-    """Горизонтальная линия / разделитель (`---` / `<hr>`).
+    """
+    Горизонтальная линия / разделитель (`---` / `<hr>`)
 
     Chunker пропускает эту секцию (не эмитит её в Chunk'и) — это структурный
     разделитель для logical-split, не контентная единица.
     """
 
     SECTION_TYPE: ClassVar[str] = "horizontal_rule"
-
-
-@dataclass(frozen=True)
-class HtmlSection(Section[str]):
-    """Raw HTML фрагмент внутри документа (e.g. `<div>...</div>` в markdown)."""
-
-    SECTION_TYPE: ClassVar[str] = "html"

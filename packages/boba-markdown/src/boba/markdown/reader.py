@@ -1,10 +1,13 @@
 """
-MarkdownReader: markdown → heading-aware Section[str]
+MarkdownReader: markdown → поток типизированных `Section`-ов.
 
-Каждый ATX-heading (`# A`, `## B`, ...) → отдельная Section с anchor из slug текста.
-Section = heading-строка + body до следующего heading
+Использует `MarkdownSectionParser` (markdown-it-py AST → Section'ы).
+Каждый top-level markdown-блок становится конкретным `Section`-наследником
+(`HeadingSection`, `ParagraphSection`, `CodeFenceSection`, `TableSection`,
+`ListSection`, `BlockquoteSection`, `HorizontalRuleSection`).
 
-Если в документе нет heading — fallback одной Section со всем body
+Дальше pipeline применяет `StructuralChunker` (из `boba-indexing`) для
+heading-prefix-merge и per-section-type chunking стратегий.
 """
 
 from __future__ import annotations
@@ -19,117 +22,43 @@ from boba.indexing import (
     ReaderKeys,
     Section,
 )
-from boba.markdown.keys import MarkdownKeys
-from boba.markdown.sections import MarkdownSection, anchor_for, split_sections
+from boba.markdown.parser import MarkdownSectionParser
 
 __all__ = ["MarkdownReader"]
 
 
 class MarkdownReader(Reader[str]):
-    """
-    `Reader[str]` для Markdown: режет документ на Section по ATX-heading
+    """`Reader[str]` для Markdown: парсит документ в поток типизированных Section'ов.
 
-    **Схема**:
-    ```markdown
-    preamble before any heading
+    Каждый top-level markdown-блок (heading, paragraph, code-fence, table,
+    list, blockquote, hr, raw HTML) становится соответствующим
+    `Section[str]`-наследником с заполненным offset-tracking'ом и
+    типизированными полями (`HeadingSection.level/text`,
+    `CodeFenceSection.language/code/...`, `TableSection.header/rows/...`,
+    `ListSection.items/...`).
 
-    # Intro
-    intro body
-
-    ## API
-    api body
-    ```
-    ```python
-    Section(
-        content="preamble before any heading",
-        anchor=None,
-        order=0,
-        metadata={
-            DOC_TYPE: "markdown",
-        }
-    )
-    Section(
-        content="# Intro\\n\\nintro body",
-        anchor="intro",
-        order=1,
-        metadata={
-            DOC_TYPE: "markdown",
-            HEADING_LEVEL: 1,
-            HEADING_TEXT: "Intro",
-        }
-    )
-    Section(
-        content="## API\\n\\napi body",
-        anchor="api",
-        order=2,
-        metadata={
-            DOC_TYPE: "markdown",
-            HEADING_LEVEL: 2,
-            HEADING_TEXT: "API",
-        }
-    )
-    ```
+    **Что меняется**:
+    - `source_id` пробрасывается в каждую Section.
+    - `metadata` — `value.metadata.set(ReaderKeys.DOC_TYPE, "markdown")`.
+    - `anchor` у `HeadingSection` — slug текста heading'а (`"Foo Bar"` →
+      `"foo-bar"`); у остальных секций — `None`.
+    - `order` — монотонный счётчик появления секции в документе.
 
     **Поведение**:
-    - ATX-heading (`#`, `##`, …); внутри (` ``` `) heading игнорируются
-    - `anchor` — slug текста heading (`"Foo Bar! 123"` → `"foo-bar-123"`);
-        fallback `"idx:N"` если slug пуст.
-    - Preamble до первого heading — отдельная anchor-less Section (если непуст)
-    - Без heading — одна Section со всем body, `anchor=None`
-    - bytes декодируются как UTF-8 с `errors="replace"`
-
-    **Пример**:
-    ```python
-    reader = MarkdownReader()
-    raw = RawDocument(
-        handle=BytesIO(
-            b"preamble before any heading\\n\\n"
-            b"# Intro\\nintro body\\n\\n"
-            b"## API\\napi body"
-        ),
-        source_id=SourceId("doc1"),
-    )
-
-    # preamble → отдельная Section (без anchor)
-    # затем по Section на каждый heading
-    list(reader.convert(raw)) == [
-        Section(
-            source_id=SourceId("doc1"),                  # pass из RawDocument
-            content="preamble before any heading",       # новое: текст до первого heading'а
-            anchor=None,                                 # новое: None у preamble (нет heading'а)
-            order=0,                                     # новое: позиция в документе
-            metadata=Metadata.empty().set(ReaderKeys.DOC_TYPE, "markdown"),  # merge: + DOC_TYPE
-        ),
-        Section(
-            source_id=SourceId("doc1"),
-            content="# Intro\\n\\nintro body",
-            anchor="intro",                              # новое: slug("Intro") → "intro"
-            order=1,
-            metadata=(                                   # merge: + DOC_TYPE / HEADING_*
-                Metadata.empty()
-                .set(ReaderKeys.DOC_TYPE, "markdown")
-                .set(MarkdownKeys.HEADING_LEVEL, 1)
-                .set(MarkdownKeys.HEADING_TEXT, "Intro")
-            ),
-        ),
-        Section(
-            source_id=SourceId("doc1"),
-            content="## API\\n\\napi body",
-            anchor="api",
-            order=2,
-            metadata=(
-                Metadata.empty()
-                .set(ReaderKeys.DOC_TYPE, "markdown")
-                .set(MarkdownKeys.HEADING_LEVEL, 2)
-                .set(MarkdownKeys.HEADING_TEXT, "API")
-            ),
-        ),
-    ]
-    ```
-    """  # noqa: E501
+    - bytes handle декодируются как UTF-8 (с `errors="replace"`).
+    - Heading'и внутри code-fence (` ``` `) игнорируются (markdown-it-py
+      это умеет).
+    - Inline-форматирование (`**bold**`, `[link]()`, `` `code` ``) остаётся
+      в `content` как markdown-syntax — не разворачивается.
+    - Raw HTML внутри markdown (`<div>...</div>`) представляется как
+      `ParagraphSection` (HTML-фрагмент в content).
+    """
 
     DOC_TYPE: ClassVar[str] = "markdown"
     READER_ID: ClassVar[ReaderId] = ReaderId("ext.markdown")
+
+    def __init__(self) -> None:
+        self._parser = MarkdownSectionParser()
 
     def name(self) -> str:
         return "MarkdownReader"
@@ -139,38 +68,11 @@ class MarkdownReader(Reader[str]):
 
     def convert(self, value: RawDocument) -> Iterable[Section[str]]:
         text = value.handle.read().decode("utf-8", errors="replace")
-        for md_sec in split_sections(text):
-            section = self._build_section(value, md_sec)
-            if section is not None:
-                yield section
-
-    def _build_section(
-        self, value: RawDocument, md_sec: MarkdownSection
-    ) -> Section[str] | None:
-        h = md_sec.heading
-        if h is None:
-            body = md_sec.body.strip()
-            if not body:
-                return None
-            return Section(
-                source_id=value.source_id,
-                content=body,
-                anchor=None,
-                order=0,
-                metadata=value.metadata.set(ReaderKeys.DOC_TYPE, self.DOC_TYPE),
-            )
-        heading_md = "#" * h.level + " " + h.text
-        body = md_sec.body.strip()
-        text = heading_md + (("\n\n" + body) if body else "")
-        return Section(
+        if not text:
+            return
+        base_metadata = value.metadata.set(ReaderKeys.DOC_TYPE, self.DOC_TYPE)
+        yield from self._parser.parse(
+            text,
             source_id=value.source_id,
-            content=text,
-            anchor=anchor_for(h),
-            order=h.index,
-            metadata=(
-                value.metadata
-                .set(ReaderKeys.DOC_TYPE, self.DOC_TYPE)
-                .set(MarkdownKeys.HEADING_LEVEL, h.level)
-                .set(MarkdownKeys.HEADING_TEXT, h.text)
-            ),
+            base_metadata=base_metadata,
         )
