@@ -11,10 +11,9 @@
   Доменные `HeadingSection` / `ParagraphSection` живут в `boba.indexing`.
 - `keys.py`     — `MarkdownKeys`: typed `MetadataKey`-и для markdown-полей.
 
-Зависимости:
-- `boba-indexing` (`Section[T]` + базовые типы).
-- `markdown-it-py` (опциональная). Установка:
-  `pip install boba-markdown[structural]`.
+Зависимости (обязательные):
+- `boba-indexing` — `Section[T]` + базовые типы.
+- `markdown-it-py>=3.0` — block-level AST.
 """
 
 from __future__ import annotations

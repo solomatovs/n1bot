@@ -4,11 +4,6 @@ from __future__ import annotations
 
 from io import BytesIO
 
-import pytest
-
-# Skip if markdown-it-py not installed.
-pytest.importorskip("markdown_it")
-
 from boba.indexing import (
     HeadingSection,
     Metadata,

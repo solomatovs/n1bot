@@ -1,20 +1,26 @@
-"""Markdown AST-парсер: markdown-text → типизированные `Section`-ы.
+"""
+Markdown AST-парсер: markdown-text → типизированные `Section`
 
-Использует `markdown-it-py` для AST-парсинга (CommonMark + GFM tables).
+Использует `markdown-it-py` для AST-парсинга
+
 Каждый top-level markdown-блок становится конкретным наследником
-`boba.indexing.Section[str]` (`HeadingSection`, `ParagraphSection`,
-`CodeFenceSection`, `TableSection`, `ListSection`, `BlockquoteSection`,
-`HorizontalRuleSection`).
+`boba.indexing.Section[str]`
+- `HeadingSection`
+- `ParagraphSection`
+- `CodeFenceSection`
+- `TableSection`
+- `ListSection`
+- `BlockquoteSection`
+- `HorizontalRuleSection`
 
 **HTML-блоки внутри markdown** (`<div>...</div>`) представляются как
 `ParagraphSection` — сырой HTML кладётся в content как есть, без отдельного
-типа (он markdown-специфичен и не нужен в доменной иерархии).
+типа (он markdown-специфичен)
 
 **Inline-форматирование** (bold/italic/links/inline-code) НЕ разворачивается
 в отдельные секции — остаётся внутри `content` как markdown-syntax.
 
-Зависимость: `markdown-it-py` (опциональная). Установка:
-`pip install markdown-it-py` или `pip install boba-markdown[structural]`.
+Зависимость: `markdown-it-py` (обязательная — пакет без неё не работает).
 
 **Контракт offset-tracking**: для любой Section `s`,
 `original_text[s.location.start:s.location.end] == s.content`.
@@ -27,6 +33,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+
+from markdown_it import MarkdownIt
 
 from boba.indexing import (
     ChunkLocation,
@@ -76,19 +84,9 @@ class MarkdownSectionParser:
 
     Использует `markdown-it-py` для block-level AST. Каждый top-level
     AST-токен → соответствующий `Section`-наследник.
-
-    **Зависимость**: `markdown-it-py` (lazy-import в `__init__`).
     """
 
     def __init__(self) -> None:
-        try:
-            from markdown_it import MarkdownIt
-        except ImportError as e:
-            raise ImportError(
-                "MarkdownSectionParser requires `markdown-it-py`. "
-                "Install: `pip install markdown-it-py` or "
-                "`pip install boba-markdown[structural]`."
-            ) from e
         self._md = MarkdownIt("commonmark", {"html": True}).enable("table")
 
     def parse(
