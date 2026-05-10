@@ -1,73 +1,61 @@
-"""boba.html — HTML reader'ы для индексации.
+"""boba.html — HTML-формат для индексации.
 
-Чистые HTML reader'ы без зависимости на markdown-инфраструктуру:
+Содержимое:
 
-- `HtmlHeadingReader`      — heading-aware split по `<h1>..<h6>`. Дефолт для
-  wiki / документации / Confluence; anchor — html-`id` или `idx:N`.
-- `HtmlPlainReader`        — весь body + `<title>` как одна Section. Для HTML
-  без структуры (лендинги, e-mail, simple pages).
-- `HtmlSemanticReader`     — режет по top-level `<article>`/`<section>` (HTML5).
-- `HtmlReadabilityReader`  — content-extraction через `trafilatura` (опциональная
-  зависимость; убирает nav/header/footer/sidebar boilerplate); plain text.
+- `parser.py`   — `HtmlSectionParser`: lxml AST + sourceline → поток
+  типизированных `Section`-ов с line-precision offset-tracking.
+- `reader.py`   — `HtmlReader` (default), `HtmlPlainReader` (один Section на
+  весь body), `HtmlReadabilityReader` (trafilatura для очистки от boilerplate).
+- `sections.py` — HTML-специфичные Section-типы:
+  `HtmlParagraphSection`, `HtmlCodeBlockSection`, `HtmlTableSection`,
+  `HtmlListSection`, `HtmlBlockquoteSection`, `HtmlHorizontalRuleSection`.
+  Доменные `HeadingSection` живут в `boba.indexing`.
+- `keys.py`     — `HtmlKeys`: typed `MetadataKey`-и для html-полей.
 
-Все reader'ы фильтруют `<script>`/`<style>` и кладут `<title>` (если есть)
-в `ReaderKeys.PAGE_TITLE`.
+Каждая Html*Section реализует `to_format_plan()` — markdown-render тела +
+per-unit raw + replicate-header (для таблиц / code-fence). Чтобы фактически
+довести этот сигнал до vector store, используйте `boba.text.StructuralChunker`
+(а не базовый `SectionChunker`) — он реплицирует header в каждый row-чанк,
+ведёт стек heading-breadcrumbs per `source_id` и пишет полный путь в
+`SectionKeys.HEADING_PATH`.
 
-**Композитные HTML→Markdown reader'ы** (`HtmlMarkdownifyReader`,
-`HtmlExtractedMarkdownifyReader`) живут в отдельном пакете
-`boba-html-as-markdown`, чтобы не тащить зависимость на
-`boba-markdown` в чистый html-проект.
+Зависимости (обязательные):
+- `boba-indexing` — `Section[T]` + базовые типы.
+- `lxml>=5.0` — block-level AST + sourceline.
 
-Pure parser (`parser.py`) экспонирует heading-collection / text-extraction
-отдельно — для расширений под конкретные HTML-диалекты (Confluence
-`ac:structured-macro` и т.п.) можно переопределять `text_extractor` /
-`anchor_extractor` в `collect_headings(...)`.
-
-Использование:
-    reader = HtmlHeadingReader()
-    for raw in transport.stream(ctx, requests):
-        for section in reader.convert(raw):
-            print(section.anchor, section.content[:50])
+Опционально:
+- `trafilatura` — для `HtmlReadabilityReader` (boilerplate removal).
+  Установка: `pip install boba-html[readability]`.
+- `markdownify` — для inline-markdown рендера в `HtmlParagraphSection`/
+  `HtmlBlockquoteSection` (bold/italic/links). Без него — fallback на
+  plain-text. Установка: `pip install boba-html[markdown]`.
 """
 
 from __future__ import annotations
 
 from boba.html.keys import HtmlKeys
-from boba.html.parser import (
-    Heading,
-    anchor_for,
-    collect_headings,
-    extract_html_id,
-    heading_default_text,
-    heading_default_text_skip,
-    is_inside_heading,
-    parse_html,
-    plain_text,
-    resolve_anchor,
-    text_between,
-)
-from boba.html.reader import (
-    HtmlHeadingReader,
-    HtmlPlainReader,
-    HtmlReadabilityReader,
-    HtmlSemanticReader,
+from boba.html.parser import HtmlSectionParser, slugify
+from boba.html.reader import HtmlPlainReader, HtmlReadabilityReader, HtmlReader
+from boba.html.sections import (
+    HtmlBlockquoteSection,
+    HtmlCodeBlockSection,
+    HtmlHorizontalRuleSection,
+    HtmlListSection,
+    HtmlParagraphSection,
+    HtmlTableSection,
 )
 
 __all__ = [
-    "Heading",
-    "HtmlHeadingReader",
+    "HtmlBlockquoteSection",
+    "HtmlCodeBlockSection",
+    "HtmlHorizontalRuleSection",
     "HtmlKeys",
+    "HtmlListSection",
+    "HtmlParagraphSection",
     "HtmlPlainReader",
     "HtmlReadabilityReader",
-    "HtmlSemanticReader",
-    "anchor_for",
-    "collect_headings",
-    "extract_html_id",
-    "heading_default_text",
-    "heading_default_text_skip",
-    "is_inside_heading",
-    "parse_html",
-    "plain_text",
-    "resolve_anchor",
-    "text_between",
+    "HtmlReader",
+    "HtmlSectionParser",
+    "HtmlTableSection",
+    "slugify",
 ]

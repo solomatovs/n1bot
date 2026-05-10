@@ -64,8 +64,15 @@ class OverlapCharSplitter(Splitter[str]):
         chunk_overlap: int = 0,
         separators: Sequence[str] | None = None,
         length_function: LengthFunction[str] | None = None,
+        extra_overhead: int = 0,
     ) -> None:
-        self._chunk_size = chunk_size
+        """`extra_overhead` — резерв в budget для prefix/header/footer, которые
+        chunker дописывает в каждый чанк после splitter.split(...). Эффективный
+        budget = `max(1, chunk_size - extra_overhead)`. Используется
+        `StructuralChunker`'ом, чтобы heading-breadcrumbs и replicate-header
+        умещались в итоговом чанке.
+        """
+        self._chunk_size = max(1, chunk_size - extra_overhead)
         self._chunk_overlap = chunk_overlap
         self._separators: tuple[str, ...] = (
             tuple(separators) if separators is not None else self.DEFAULT_SEPARATORS

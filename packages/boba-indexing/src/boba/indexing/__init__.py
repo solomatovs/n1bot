@@ -56,6 +56,7 @@ from boba.indexing.events import (
     SourceIndexed,
     SourceSkippedUnchanged,
 )
+from boba.indexing.format_plan import FormatBlock, FormatPlan
 from boba.indexing.filter import (
     And,
     Eq,
@@ -151,6 +152,8 @@ __all__ = [
     "Eq",
     "Filter",
     "FixedDigestPrefix",
+    "FormatBlock",
+    "FormatPlan",
     "FullCleanup",
     "Gt",
     "Gte",
