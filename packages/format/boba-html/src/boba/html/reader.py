@@ -1,25 +1,18 @@
-"""HTML reader'ы: HTML → типизированные `Section`-ы.
+"""HTML Reader'ы.
 
-Несколько вариантов резки HTML под разные типы документов:
+- `HtmlReader`             — default: structural parser, эмитит весь поток
+                              типизированных `Section`-ов через
+                              `HtmlSectionParser`.
+- `HtmlPlainReader`        — один `ParagraphSection` на весь body + `<title>`.
+                              Для документов где структура не нужна.
+- `HtmlReadabilityReader`  — `trafilatura` отбрасывает boilerplate
+                              (nav/footer/sidebar) → один `ParagraphSection`.
 
-- `HtmlHeadingReader`      — режет по `<h1>..<h6>`. Каждый heading → отдельная
-  `HeadingSection`, идущий за ним body → `ParagraphSection`. `StructuralChunker`
-  сделает heading-prefix-merge при чанковании.
-- `HtmlPlainReader`        — весь body как один `ParagraphSection` (+ `<title>`).
-- `HtmlSemanticReader`     — каждый top-level `<article>`/`<section>` → один
-  `ParagraphSection` с anchor'ом из html-id.
-- `HtmlReadabilityReader`  — content-extraction через `trafilatura`
-  (boilerplate-removal); один `ParagraphSection` с очищенным текстом.
-
-Все HTML-reader'ы:
-- удаляют `<script>`/`<style>` из выдачи;
+Все reader'ы:
+- удаляют `<script>`/`<style>` из выдачи (HtmlSectionParser делает сам;
+  Plain/Readability явно перед сериализацией);
 - кладут `<title>` (если есть) в `ReaderKeys.PAGE_TITLE`;
 - пробрасывают `RawDocument.source_id` и мержат `RawDocument.metadata` в Section.
-
-**Замечание про `location`**: BeautifulSoup не даёт точные char-offset'ы тегов
-в исходном payload, поэтому HTML-reader'ы пока проставляют
-`location=ChunkLocation(0, len(content))` (не invariant-correct, но работает
-с `StructuralChunker` через локальные индексы внутри `section.content`).
 """
 
 from __future__ import annotations
@@ -27,15 +20,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import ClassVar
 
-from boba.html.parser import (
-    anchor_for,
-    collect_headings,
-    parse_html,
-    plain_text,
-    text_between,
-)
+from lxml import html as lxml_html
+
+from boba.html.parser import HtmlSectionParser
 from boba.indexing import (
-    HeadingSection,
     Metadata,
     ParagraphSection,
     RawDocument,
@@ -43,7 +31,6 @@ from boba.indexing import (
     ReaderId,
     ReaderKeys,
     Section,
-    SectionKeys,
 )
 
 try:
@@ -51,58 +38,48 @@ try:
 except ImportError:  # optional dependency — see HtmlReadabilityReader
     _trafilatura = None  # type: ignore[assignment]
 
-__all__ = [
-    "HtmlHeadingReader",
-    "HtmlPlainReader",
-    "HtmlReadabilityReader",
-    "HtmlSemanticReader",
-]
+__all__ = ["HtmlPlainReader", "HtmlReadabilityReader", "HtmlReader"]
 
 
-class _HtmlBase:
-    """Общие утилиты для HTML reader'ов: noise-фильтр, title."""
-
-    DOC_TYPE: ClassVar[str] = "html"
-    NOISE_TAGS: ClassVar[tuple[str, ...]] = ("script", "style")
-
-    @classmethod
-    def _strip_noise(cls, soup) -> None:
-        for tag in soup(list(cls.NOISE_TAGS)):
-            tag.decompose()
-
-    @staticmethod
-    def _extract_title(soup) -> str:
-        title_tag = soup.find("title")
-        return title_tag.get_text(strip=True) if title_tag else ""
-
-    @staticmethod
-    def _with_anchor(meta: Metadata, anchor: str | None) -> Metadata:
-        """Кладёт anchor в section.metadata (когда есть). Location HTML-reader'ы
-        сейчас не пишут — BeautifulSoup не даёт offset'ов в исходнике; для
-        честного source-tracking нужен lxml sourceline (TODO).
-        """
-        return meta.set(SectionKeys.ANCHOR, anchor) if anchor else meta
+_NOISE_TAGS = ("script", "style")
+_DOC_TYPE = "html"
 
 
-class HtmlHeadingReader(_HtmlBase, Reader[str]):
-    """Heading-based HTML reader: режет по `<h1>..<h6>` на типизированные секции.
+def _extract_title(root) -> str:
+    title_el = root.find(".//title")
+    if title_el is None:
+        return ""
+    return (title_el.text_content() or "").strip()
 
-    Для каждого heading'а эмитятся:
-    - `HeadingSection` с `level` / `text` / anchor (html-id или `idx:N`);
-    - `ParagraphSection` с body-текстом до следующего heading'а
-      (только если body не пустой).
 
-    `StructuralChunker` затем делает heading-prefix-merge: heading
-    присоединяется как префикс к следующей `ParagraphSection` в `format_content`.
+def _strip_noise(root) -> None:
+    for noise in root.iter(*_NOISE_TAGS):
+        noise.drop_tree()
 
-    Если в документе нет heading'ов — fallback одного `ParagraphSection`
-    со всем body + `<title>`.
+
+def _build_meta(value: RawDocument, title: str) -> Metadata:
+    meta = value.metadata.set(ReaderKeys.DOC_TYPE, _DOC_TYPE)
+    if title:
+        meta = meta.set(ReaderKeys.PAGE_TITLE, title)
+    return meta
+
+
+class HtmlReader(Reader[str]):
+    """Default HTML reader: structural-parsing через `HtmlSectionParser`.
+
+    Эмитит весь поток типизированных секций (`HeadingSection`,
+    `ParagraphSection`, `HtmlListSection`, `HtmlTableSection`,
+    `HtmlCodeBlockSection`, `HtmlBlockquoteSection`,
+    `HtmlHorizontalRuleSection`) с line-precision offset-tracking.
     """
 
-    READER_ID: ClassVar[ReaderId] = ReaderId("ext.html.heading")
+    READER_ID: ClassVar[ReaderId] = ReaderId("ext.html")
+
+    def __init__(self) -> None:
+        self._parser = HtmlSectionParser()
 
     def name(self) -> str:
-        return "HtmlHeadingReader"
+        return "HtmlReader"
 
     def reader_id(self) -> ReaderId:
         return self.READER_ID
@@ -111,66 +88,24 @@ class HtmlHeadingReader(_HtmlBase, Reader[str]):
         payload = value.handle.read()
         if not payload.strip():
             return
-        soup = parse_html(payload)
-        self._strip_noise(soup)
-
-        title = self._extract_title(soup)
-        body = soup.body or soup
-        headings = [h for h in collect_headings(soup) if h.text.strip()]
-
-        if not headings:
-            yield from self._fallback(value, body, title)
+        text = payload.decode("utf-8", errors="replace")
+        # Title для metadata тащим отдельно — парсер его не trackит как секцию.
+        try:
+            root = lxml_html.fromstring(payload)
+        except (lxml_html.etree.ParserError, ValueError):  # type: ignore[attr-defined]
             return
-
-        base_meta = self._base_meta(value, title)
-        order = 0
-        for i, h in enumerate(headings):
-            heading_text = h.text
-            heading_md = "#" * h.level + " " + heading_text  # canonical text marker
-            yield HeadingSection(
-                source_id=value.source_id,
-                content=heading_md,
-                order=order,
-                metadata=self._with_anchor(base_meta, anchor_for(h)),
-                level=h.level,
-                text=heading_text,
-            )
-            order += 1
-            next_tag = headings[i + 1].tag if i + 1 < len(headings) else None
-            between = text_between(h.tag, next_tag).strip()
-            if between:
-                yield ParagraphSection(
-                    source_id=value.source_id,
-                    content=between,
-                    order=order,
-                    metadata=base_meta,
-                )
-                order += 1
-
-    def _fallback(self, value: RawDocument, body, title: str) -> Iterable[Section[str]]:
-        text = plain_text(body)
-        if not text and not title:
-            return
-        composed = f"{title}\n\n{text}".strip() if title else text
-        yield ParagraphSection(
-            source_id=value.source_id,
-            content=composed,
-            order=0,
-            metadata=self._base_meta(value, title),
+        title = _extract_title(root)
+        base_meta = _build_meta(value, title)
+        yield from self._parser.parse(
+            text, source_id=value.source_id, base_metadata=base_meta,
         )
 
-    def _base_meta(self, value: RawDocument, title: str):
-        meta = value.metadata.set(ReaderKeys.DOC_TYPE, self.DOC_TYPE)
-        if title:
-            meta = meta.set(ReaderKeys.PAGE_TITLE, title)
-        return meta
 
+class HtmlPlainReader(Reader[str]):
+    """Один `ParagraphSection` на весь body + `<title>`.
 
-class HtmlPlainReader(_HtmlBase, Reader[str]):
-    """Плоский HTML reader: один `ParagraphSection` на весь body + `<title>`.
-
-    Не пытается выделить main content (для этого `HtmlReadabilityReader`),
-    не режет по heading'ам (для этого `HtmlHeadingReader`).
+    Не пытается выделять main content (для этого `HtmlReadabilityReader`),
+    не режет по структуре (для этого `HtmlReader`).
     """
 
     READER_ID: ClassVar[ReaderId] = ReaderId("ext.html.plain")
@@ -185,99 +120,60 @@ class HtmlPlainReader(_HtmlBase, Reader[str]):
         payload = value.handle.read()
         if not payload.strip():
             return
-        soup = parse_html(payload)
-        self._strip_noise(soup)
+        try:
+            root = lxml_html.fromstring(payload)
+        except (lxml_html.etree.ParserError, ValueError):  # type: ignore[attr-defined]
+            return
+        _strip_noise(root)
 
-        title = self._extract_title(soup)
-        body = soup.body or soup
-        text = plain_text(body)
+        title = _extract_title(root)
+        body = root.find(".//body")
+        target = body if body is not None else root
+        text = self._render_block_text(target)
         if not text and not title:
             return
 
         composed = f"{title}\n\n{text}".strip() if title else text
-        meta = value.metadata.set(ReaderKeys.DOC_TYPE, self.DOC_TYPE)
-        if title:
-            meta = meta.set(ReaderKeys.PAGE_TITLE, title)
         yield ParagraphSection(
             source_id=value.source_id,
             content=composed,
             order=0,
-            metadata=meta,
+            metadata=_build_meta(value, title),
         )
 
-
-class HtmlSemanticReader(_HtmlBase, Reader[str]):
-    """HTML5-semantic reader: режет по top-level `<article>` и `<section>`.
-
-    Каждый top-level семантический блок → один `ParagraphSection` с anchor'ом
-    из html-id (или fallback `idx:N`). Без top-level блоков — fallback на
-    `<main>` или body как один `ParagraphSection`.
-
-    Top-level: блок без предка `<article>`/`<section>` — это избегает дублей
-    при вложенных семантических блоках.
-    """
-
-    READER_ID: ClassVar[ReaderId] = ReaderId("ext.html.semantic")
-    SEMANTIC_TAGS: ClassVar[tuple[str, ...]] = ("article", "section")
-
-    def name(self) -> str:
-        return "HtmlSemanticReader"
-
-    def reader_id(self) -> ReaderId:
-        return self.READER_ID
-
-    def convert(self, value: RawDocument) -> Iterable[Section[str]]:
-        payload = value.handle.read()
-        if not payload.strip():
-            return
-        soup = parse_html(payload)
-        self._strip_noise(soup)
-
-        title = self._extract_title(soup)
-        blocks = self._collect_top_level(soup)
-        meta_base = value.metadata.set(ReaderKeys.DOC_TYPE, self.DOC_TYPE)
-        if title:
-            meta_base = meta_base.set(ReaderKeys.PAGE_TITLE, title)
-
-        if not blocks:
-            body = soup.find("main") or soup.body or soup
-            text = plain_text(body)
-            if not text and not title:
-                return
-            composed = f"{title}\n\n{text}".strip() if title else text
-            yield ParagraphSection(
-                source_id=value.source_id,
-                content=composed,
-                order=0,
-                metadata=meta_base,
-            )
-            return
-
-        for i, block in enumerate(blocks):
-            text = plain_text(block).strip()
-            if not text:
+    @staticmethod
+    def _render_block_text(target) -> str:
+        """Plain-text body c сохранением структуры: блочные элементы
+        разделяются `\\n\\n`, остальной inline-текст склеен пробелом.
+        """
+        block_tags = (
+            "p", "div", "section", "article", "header", "footer", "main",
+            "aside", "nav", "h1", "h2", "h3", "h4", "h5", "h6",
+            "ul", "ol", "li", "table", "tr", "blockquote", "pre", "hr", "br",
+        )
+        parts: list[str] = []
+        seen: set[int] = set()
+        for el in target.iter():
+            if id(el) in seen:
                 continue
-            anchor = block.get("id") or f"idx:{i}"
-            yield ParagraphSection(
-                source_id=value.source_id,
-                content=text,
-                order=i,
-                metadata=self._with_anchor(meta_base, anchor),
-            )
-
-    @classmethod
-    def _collect_top_level(cls, soup) -> list:
-        """Собирает `<article>`/`<section>`, не имеющие предка того же типа."""
-        all_blocks = soup.find_all(list(cls.SEMANTIC_TAGS))
-        return [b for b in all_blocks if not b.find_parent(list(cls.SEMANTIC_TAGS))]
+            tag = el.tag.lower() if isinstance(el.tag, str) else None
+            if tag not in block_tags:
+                continue
+            chunk = " ".join((el.text_content() or "").split())
+            if not chunk:
+                continue
+            parts.append(chunk)
+            seen.update(id(d) for d in el.iter())
+        return "\n\n".join(parts)
 
 
-class HtmlReadabilityReader(_HtmlBase, Reader[str]):
-    """Content-extraction reader: `trafilatura` отбрасывает boilerplate,
-    результат → один `ParagraphSection`.
+class HtmlReadabilityReader(Reader[str]):
+    """Content-extraction через `trafilatura`: отбрасывает boilerplate
+    (nav/header/footer/sidebar) и возвращает plain-text main content одним
+    `ParagraphSection`.
 
-    **Зависимость**: требует `trafilatura` (опциональная).
-    Установка: `pip install boba-html[readability]`.
+    **Зависимость**: `trafilatura` (опциональная). Установка:
+    `pip install boba-html[readability]`.
     """
 
     READER_ID: ClassVar[ReaderId] = ReaderId("ext.html.readability")
@@ -293,7 +189,7 @@ class HtmlReadabilityReader(_HtmlBase, Reader[str]):
             raise ImportError(
                 "HtmlReadabilityReader requires `trafilatura`. "
                 "Install: `pip install trafilatura` or "
-                "`pip install boba-html[readability]`."
+                "`pip install boba-html[readability]`.",
             )
 
         payload = value.handle.read()
@@ -301,23 +197,23 @@ class HtmlReadabilityReader(_HtmlBase, Reader[str]):
             return
 
         text = _trafilatura.extract(
-            payload, output_format="txt", include_comments=False
+            payload, output_format="txt", include_comments=False,
         )
         if not text:
             return
 
-        soup = parse_html(payload)
-        self._strip_noise(soup)
-        title = self._extract_title(soup)
-
-        meta = value.metadata.set(ReaderKeys.DOC_TYPE, self.DOC_TYPE)
-        if title:
-            meta = meta.set(ReaderKeys.PAGE_TITLE, title)
+        try:
+            root = lxml_html.fromstring(payload)
+        except (lxml_html.etree.ParserError, ValueError):  # type: ignore[attr-defined]
+            title = ""
+        else:
+            _strip_noise(root)
+            title = _extract_title(root)
 
         cleaned = text.strip()
         yield ParagraphSection(
             source_id=value.source_id,
             content=cleaned,
             order=0,
-            metadata=meta,
+            metadata=_build_meta(value, title),
         )

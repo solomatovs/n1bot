@@ -66,6 +66,7 @@ class SectionChunker(Chunker[T]):
         del ctx
         per_source_index: dict[str, int] = {}
         for section in stream:
+            chunk_metadata = section.metadata.merge(section.to_chunk_metadata())
             for piece in self._splitter.split(section.content):
                 key = section.source_id.to_wire()
                 idx = per_source_index.get(key, 0)
@@ -77,5 +78,5 @@ class SectionChunker(Chunker[T]):
                     format_content=piece.content,
                     raw_content=piece.content,
                     chunk_index=idx,
-                    metadata=section.metadata,
+                    metadata=chunk_metadata,
                 )

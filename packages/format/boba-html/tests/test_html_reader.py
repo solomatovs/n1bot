@@ -1,4 +1,4 @@
-"""HTML reader'ы: heading / plain / semantic / readability."""
+"""HTML reader'ы: structural / plain / readability."""
 
 from __future__ import annotations
 
@@ -7,10 +7,15 @@ from io import BytesIO
 import pytest
 
 from boba.html import (
-    HtmlHeadingReader,
+    HtmlBlockquoteSection,
+    HtmlCodeBlockSection,
+    HtmlHorizontalRuleSection,
+    HtmlKeys,
+    HtmlListSection,
     HtmlPlainReader,
     HtmlReadabilityReader,
-    HtmlSemanticReader,
+    HtmlReader,
+    HtmlTableSection,
 )
 from boba.indexing import (
     HeadingSection,
@@ -37,72 +42,159 @@ def _doc(
     )
 
 
-# ------------------------------ HtmlHeadingReader ------------------------------
+# ------------------------------ HtmlReader -------------------------------------
 
 
-def test_heading_reader_id():
-    assert HtmlHeadingReader().reader_id() == ReaderId("ext.html.heading")
+def test_reader_id():
+    assert HtmlReader().reader_id() == ReaderId("ext.html")
 
 
-def test_heading_yields_typed_sections():
-    """Каждый heading → отдельная HeadingSection + ParagraphSection с body."""
-    html = """
-    <html><body>
-      <h1>One</h1><p>alpha</p>
-      <h2>Two</h2><p>beta gamma</p>
-    </body></html>
-    """
-    sections = list(HtmlHeadingReader().convert(_doc(html)))
-    headings = [s for s in sections if isinstance(s, HeadingSection)]
-    paragraphs = [s for s in sections if isinstance(s, ParagraphSection)]
-    assert [(h.level, h.text) for h in headings] == [(1, "One"), (2, "Two")]
-    # alpha идёт за One; beta gamma идёт за Two.
-    assert any("alpha" in p.content for p in paragraphs)
-    assert any("beta gamma" in p.content for p in paragraphs)
-
-
-def test_heading_anchor_uses_html_id_when_present():
-    html = '<html><body><h1 id="intro">Intro</h1><p>x</p></body></html>'
-    sections = list(HtmlHeadingReader().convert(_doc(html)))
-    headings = [s for s in sections if isinstance(s, HeadingSection)]
-    assert headings[0].metadata.get(SectionKeys.ANCHOR) == "intro"
-
-
-def test_heading_no_headings_falls_back_to_single_section_with_title():
+def test_reader_emits_typed_sections_in_document_order():
+    """Все 7 типов в правильном порядке."""
     html = (
-        "<html><head><title>Doc Title</title></head>"
-        "<body><p>just paragraphs</p></body></html>"
+        "<html><body>\n"
+        '<h1 id="intro">Intro</h1>\n'
+        "<p>para text</p>\n"
+        "<ul>\n  <li>a</li>\n  <li>b</li>\n</ul>\n"
+        "<table>\n"
+        "  <thead><tr><th>name</th><th>type</th></tr></thead>\n"
+        "  <tbody>\n    <tr><td>id</td><td>int</td></tr>\n  </tbody>\n"
+        "</table>\n"
+        '<pre><code class="language-py">x = 1</code></pre>\n'
+        "<blockquote>quote</blockquote>\n"
+        "<hr>\n"
+        "</body></html>"
     )
-    sections = list(HtmlHeadingReader().convert(_doc(html)))
-    assert len(sections) == 1
-    assert isinstance(sections[0], ParagraphSection)
-    assert sections[0].metadata.get(SectionKeys.ANCHOR) is None
-    assert "Doc Title" in sections[0].content
-    assert "just paragraphs" in sections[0].content
+    sections = list(HtmlReader().convert(_doc(html)))
+    types = [type(s).__name__ for s in sections]
+    assert types == [
+        "HeadingSection",
+        "HtmlParagraphSection",
+        "HtmlListSection",
+        "HtmlTableSection",
+        "HtmlCodeBlockSection",
+        "HtmlBlockquoteSection",
+        "HtmlHorizontalRuleSection",
+    ]
 
 
-def test_heading_empty_headings_skipped():
-    """Heading'и из одних картинок (без текста) — пропускаются (fallback)."""
-    html = """
-    <html><body>
-      <p>real content</p>
-      <h1><img src="prev.png"/></h1>
-      <h1><img src="home.png"/></h1>
-    </body></html>
-    """
-    sections = list(HtmlHeadingReader().convert(_doc(html)))
-    # Heading'и без текста не учитываются → fallback одна ParagraphSection.
-    assert len(sections) == 1
-    assert isinstance(sections[0], ParagraphSection)
-    assert "real content" in sections[0].content
+def test_heading_section_has_typed_fields_and_anchor():
+    html = '<html><body><h1 id="intro">Intro</h1></body></html>'
+    [s] = list(HtmlReader().convert(_doc(html)))
+    assert isinstance(s, HeadingSection)
+    assert s.level == 1
+    assert s.text == "Intro"
+    assert s.metadata.get(SectionKeys.ANCHOR) == "intro"
+    md = s.to_chunk_metadata()
+    assert md.get(SectionKeys.HEADING_LEVEL) == 1
+    assert md.get(SectionKeys.HEADING_TEXT) == "Intro"
 
 
-def test_heading_script_and_style_dropped():
+def test_heading_anchor_falls_back_to_slug():
+    html = "<html><body><h2>My Section</h2></body></html>"
+    [s] = list(HtmlReader().convert(_doc(html)))
+    assert isinstance(s, HeadingSection)
+    assert s.metadata.get(SectionKeys.ANCHOR) == "my-section"
+
+
+def test_list_section_typed_fields():
+    html = "<html><body><ol><li>one</li><li>two</li><li>three</li></ol></body></html>"
+    [s] = list(HtmlReader().convert(_doc(html)))
+    assert isinstance(s, HtmlListSection)
+    assert s.ordered is True
+    assert s.items == ("one", "two", "three")
+
+
+def test_unordered_list_section():
+    html = "<html><body><ul><li>a</li><li>b</li></ul></body></html>"
+    [s] = list(HtmlReader().convert(_doc(html)))
+    assert isinstance(s, HtmlListSection)
+    assert s.ordered is False
+    md = s.to_chunk_metadata()
+    assert md.get(HtmlKeys.LIST_ORDERED) is False
+
+
+def test_table_section_typed_fields():
     html = (
-        "<html><body><script>alert('x')</script>"
-        "<h1>OK</h1><style>h1{}</style><p>body</p></body></html>"
+        "<html><body><table>"
+        "<thead><tr><th>name</th><th>type</th></tr></thead>"
+        "<tbody>"
+        "<tr><td>id</td><td>int</td></tr>"
+        "<tr><td>foo</td><td>str</td></tr>"
+        "</tbody>"
+        "</table></body></html>"
     )
-    sections = list(HtmlHeadingReader().convert(_doc(html)))
+    [s] = list(HtmlReader().convert(_doc(html)))
+    assert isinstance(s, HtmlTableSection)
+    assert s.header == ("name", "type")
+    assert s.rows == (("id", "int"), ("foo", "str"))
+
+
+def test_code_block_language_from_class():
+    html = (
+        '<html><body><pre><code class="language-py">def hi(): pass</code></pre>'
+        "</body></html>"
+    )
+    [s] = list(HtmlReader().convert(_doc(html)))
+    assert isinstance(s, HtmlCodeBlockSection)
+    assert s.language == "py"
+    assert "def hi()" in s.code
+
+
+def test_code_block_lang_prefix_also_recognized():
+    html = (
+        '<html><body><pre><code class="lang-rust">fn x() {}</code></pre>'
+        "</body></html>"
+    )
+    [s] = list(HtmlReader().convert(_doc(html)))
+    assert isinstance(s, HtmlCodeBlockSection)
+    assert s.language == "rust"
+
+
+def test_code_block_no_language():
+    html = "<html><body><pre><code>plain</code></pre></body></html>"
+    [s] = list(HtmlReader().convert(_doc(html)))
+    assert isinstance(s, HtmlCodeBlockSection)
+    assert s.language is None
+
+
+def test_blockquote_section():
+    html = "<html><body><blockquote>quoted</blockquote></body></html>"
+    [s] = list(HtmlReader().convert(_doc(html)))
+    assert isinstance(s, HtmlBlockquoteSection)
+    assert "quoted" in s.content
+
+
+def test_hr_section():
+    html = "<html><body><hr></body></html>"
+    [s] = list(HtmlReader().convert(_doc(html)))
+    assert isinstance(s, HtmlHorizontalRuleSection)
+
+
+def test_wrapper_tags_are_transparent():
+    """`<div>`/`<section>`/`<article>` обходятся транзитивно."""
+    html = (
+        "<html><body>"
+        "<div><h1>One</h1></div>"
+        "<section><p>para</p></section>"
+        "<article><ul><li>x</li></ul></article>"
+        "</body></html>"
+    )
+    sections = list(HtmlReader().convert(_doc(html)))
+    types = [type(s).__name__ for s in sections]
+    assert types == ["HeadingSection", "HtmlParagraphSection", "HtmlListSection"]
+
+
+def test_script_and_style_are_dropped():
+    html = (
+        "<html><body>"
+        "<script>alert('x')</script>"
+        "<h1>OK</h1>"
+        "<style>h1{}</style>"
+        "<p>body</p>"
+        "</body></html>"
+    )
+    sections = list(HtmlReader().convert(_doc(html)))
     combined = "\n".join(s.content for s in sections)
     assert "alert" not in combined
     assert "h1{}" not in combined
@@ -110,24 +202,46 @@ def test_heading_script_and_style_dropped():
     assert "body" in combined
 
 
-def test_heading_metadata_merge_from_raw_document():
-    """upstream metadata (например source_url) пробрасывается в каждую Section."""
+def test_location_invariant_holds_per_section():
+    """`text[loc.start:loc.end]` покрывает HTML-разметку секции."""
+    html = (
+        "<html><body>\n"
+        "<h1>Title</h1>\n"
+        "<p>para</p>\n"
+        "</body></html>"
+    )
+    text = html
+    for s in HtmlReader().convert(_doc(html)):
+        start = s.metadata.get(SectionKeys.LOCATION_START)
+        end = s.metadata.get(SectionKeys.LOCATION_END)
+        assert start is not None and end is not None
+        # line-precision: start ≤ end ≤ len(text); содержание строки попадает в slice
+        assert 0 <= start <= end <= len(text)
+
+
+def test_metadata_merge_from_raw_document():
     html = "<html><body><h1>A</h1><p>x</p></body></html>"
     upstream = Metadata.from_wire({"source_url": "https://example.com/page"})
-    sections = list(HtmlHeadingReader().convert(_doc(html, metadata=upstream)))
+    sections = list(HtmlReader().convert(_doc(html, metadata=upstream)))
     for s in sections:
-        assert s.metadata.to_wire()["source_url"] == "https://example.com/page"
-    # Типизированные heading-поля доступны через section.to_chunk_metadata().
-    headings = [s for s in sections if isinstance(s, HeadingSection)]
-    assert headings[0].text == "A"
-    md = headings[0].to_chunk_metadata()
-    assert md.get(SectionKeys.HEADING_TEXT) == "A"
-    assert md.get(SectionKeys.HEADING_LEVEL) == 1
+        assert (
+            s.metadata.to_wire()["source_url"] == "https://example.com/page"
+        )
+        assert s.metadata.get(ReaderKeys.DOC_TYPE) == "html"
 
 
-def test_heading_empty_payload_yields_nothing():
-    sections = list(HtmlHeadingReader().convert(_doc("")))
-    assert sections == []
+def test_title_in_metadata():
+    html = (
+        "<html><head><title>Page</title></head>"
+        "<body><h1>X</h1></body></html>"
+    )
+    sections = list(HtmlReader().convert(_doc(html)))
+    for s in sections:
+        assert s.metadata.get(ReaderKeys.PAGE_TITLE) == "Page"
+
+
+def test_empty_payload_yields_nothing():
+    assert list(HtmlReader().convert(_doc(""))) == []
 
 
 # ------------------------------ HtmlPlainReader --------------------------------
@@ -145,6 +259,7 @@ def test_plain_yields_single_section_with_full_body():
     sections = list(HtmlPlainReader().convert(_doc(html)))
     assert len(sections) == 1
     s = sections[0]
+    assert isinstance(s, ParagraphSection)
     assert s.metadata.get(SectionKeys.ANCHOR) is None
     assert s.order == 0
     assert "Page" in s.content
@@ -169,70 +284,11 @@ def test_plain_empty_payload_yields_nothing():
     assert list(HtmlPlainReader().convert(_doc(""))) == []
 
 
-# ------------------------------ HtmlSemanticReader -----------------------------
-
-
-def test_semantic_reader_id():
-    assert HtmlSemanticReader().reader_id() == ReaderId("ext.html.semantic")
-
-
-def test_semantic_yields_section_per_top_level_block():
-    html = (
-        "<html><body>"
-        "<article id='post-1'><h2>Post 1</h2><p>alpha</p></article>"
-        "<article id='post-2'><h2>Post 2</h2><p>beta</p></article>"
-        "</body></html>"
-    )
-    sections = list(HtmlSemanticReader().convert(_doc(html)))
-    assert len(sections) == 2
-    assert sections[0].metadata.get(SectionKeys.ANCHOR) == "post-1"
-    assert "Post 1" in sections[0].content
-    assert "alpha" in sections[0].content
-    assert sections[1].metadata.get(SectionKeys.ANCHOR) == "post-2"
-    assert "Post 2" in sections[1].content
-    assert "beta" in sections[1].content
-
-
-def test_semantic_skips_nested_blocks_to_avoid_duplicates():
-    """Внутреннюю <section> внутри <article> не дублирует — берёт только outer."""
-    html = (
-        "<html><body>"
-        "<article id='a'>"
-        "  <section id='inner'><p>inner text</p></section>"
-        "</article>"
-        "</body></html>"
-    )
-    sections = list(HtmlSemanticReader().convert(_doc(html)))
-    assert len(sections) == 1
-    assert sections[0].metadata.get(SectionKeys.ANCHOR) == "a"
-    assert "inner text" in sections[0].content
-
-
-def test_semantic_anchor_falls_back_to_idx_when_no_id():
-    html = (
-        "<html><body>"
-        "<article><p>first</p></article>"
-        "<article><p>second</p></article>"
-        "</body></html>"
-    )
-    sections = list(HtmlSemanticReader().convert(_doc(html)))
-    assert sections[0].metadata.get(SectionKeys.ANCHOR) == "idx:0"
-    assert sections[1].metadata.get(SectionKeys.ANCHOR) == "idx:1"
-
-
-def test_semantic_no_blocks_falls_back_to_body():
-    html = "<html><body><p>just a paragraph</p></body></html>"
-    sections = list(HtmlSemanticReader().convert(_doc(html)))
-    assert len(sections) == 1
-    assert sections[0].metadata.get(SectionKeys.ANCHOR) is None
-    assert "just a paragraph" in sections[0].content
-
-
 # ----------------------------- HtmlReadabilityReader ---------------------------
 
 
-# Skip if trafilatura not installed — это опциональная зависимость.
-trafilatura = pytest.importorskip("trafilatura")
+# Skip if trafilatura not installed.
+pytest.importorskip("trafilatura")
 
 
 def test_readability_reader_id():
@@ -251,7 +307,6 @@ def test_readability_extracts_main_content_skipping_boilerplate():
         "</body></html>"
     )
     sections = list(HtmlReadabilityReader().convert(_doc(html)))
-    # trafilatura должен отбросить nav и footer, оставить article-текст.
     assert len(sections) == 1
     s = sections[0]
     assert "main story" in s.content

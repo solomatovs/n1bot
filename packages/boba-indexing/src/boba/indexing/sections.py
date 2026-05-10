@@ -28,6 +28,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import ClassVar, Generic, TypeVar
 
+from boba.indexing.format_plan import FormatBlock, FormatPlan
+from boba.indexing.location import ChunkLocation
 from boba.indexing.metadata import Metadata, MetadataKey
 from boba.patterns import StrId
 
@@ -85,6 +87,11 @@ class SectionKeys:
         decode=str,
         encode=str,
     )
+    HEADING_PATH: ClassVar[MetadataKey[str]] = MetadataKey(
+        name="section.heading.path",
+        decode=str,
+        encode=str,
+    )
 
 
 @dataclass(frozen=True)
@@ -121,6 +128,24 @@ class Section(Generic[T]):
         """
         return Metadata.empty()
 
+    def to_format_plan(self) -> FormatPlan:
+        """План рендера секции в LLM-формат для format-aware chunker'а.
+
+        Дефолт — один не-atomic блок с `format_content == raw_content == content`.
+        Format-specific подклассы переопределяют, чтобы отдать markdown-render,
+        per-unit raw, replicate-header и breadcrumb-info.
+        """
+        body = str(self.content)
+        return FormatPlan(
+            blocks=(
+                FormatBlock(
+                    format_content=body,
+                    raw_content=body,
+                    location=ChunkLocation(start=0, end=len(body)),
+                ),
+            ),
+        )
+
 
 @dataclass(frozen=True)
 class HeadingSection(Section[str]):
@@ -140,6 +165,27 @@ class HeadingSection(Section[str]):
             Metadata.empty()
             .set(SectionKeys.HEADING_LEVEL, self.level)
             .set(SectionKeys.HEADING_TEXT, self.text)
+        )
+
+    def to_format_plan(self) -> FormatPlan:
+        """Markdown-heading + регистрация breadcrumb для chunker'а.
+
+        Chunker по `breadcrumb_level`/`breadcrumb_text` обновит свой стек
+        активных заголовков и пропишет полный путь в `HEADING_PATH` для
+        последующих чанков того же `source_id`.
+        """
+        md = "#" * self.level + " " + self.text
+        return FormatPlan(
+            blocks=(
+                FormatBlock(
+                    format_content=md,
+                    raw_content=str(self.content),
+                    location=ChunkLocation(start=0, end=len(md)),
+                    is_atomic=True,
+                ),
+            ),
+            breadcrumb_level=self.level,
+            breadcrumb_text=self.text,
         )
 
 
