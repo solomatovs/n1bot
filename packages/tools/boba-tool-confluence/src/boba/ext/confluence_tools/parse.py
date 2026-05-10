@@ -16,7 +16,7 @@ from __future__ import annotations
 from bs4 import BeautifulSoup
 from bs4.element import NavigableString, Tag
 
-from boba.reader.html.parser import (
+from boba.html.parser import (
     Heading,
     anchor_for,
     extract_html_id,
@@ -24,13 +24,13 @@ from boba.reader.html.parser import (
     parse_html,
     resolve_anchor,
 )
-from boba.reader.html.parser import (
+from boba.html.parser import (
     collect_headings as _collect_headings_generic,
 )
-from boba.reader.html.parser import (
+from boba.html.parser import (
     plain_text as _plain_text_generic,
 )
-from boba.reader.html.parser import (
+from boba.html.parser import (
     text_between as _text_between_generic,
 )
 

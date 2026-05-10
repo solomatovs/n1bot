@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Generic, Self, TypeVar
 
 from boba.indexing.content_hash import ContentHash
+from boba.indexing.location import ChunkLocation
 from boba.indexing.metadata import Metadata
 from boba.indexing.sections import SourceId
 from boba.patterns import StrId
@@ -42,76 +43,79 @@ class ChunkId(StrId):
 
 
 @dataclass(frozen=True)
-class ChunkLocation:
-    """
-    Положение чанка в исходном content
-
-    `start`/`end` — в естественных единицах T:
-        char offsets для str,
-        byte offsets для bytes
-        индексы для list-like.
-
-    `start` включительно, `end` исключительно (полуинтервал).
-    """
-
-    start: int
-    end: int
-
-
-@dataclass(frozen=True)
 class Chunk(Generic[T]):
     """Один кусок индексируемого контента — единица хранения VectorStore.
 
     Поля:
 
-    `chunk_id`     — уникальный id чанка в VectorStore.
-                    не auto-generated как Serial в postgres а именно application-level
-                    (тот же source/anchor → тот же id из прогона в прогон).
-                    Делается ChunkIdStrategy.
+    `chunk_id`         — уникальный id чанка в VectorStore.
+                        Не auto-generated как Serial в postgres — именно
+                        application-level (тот же source/anchor → тот же id
+                        из прогона в прогон). Делается `ChunkIdStrategy`.
 
-    `source_id`    — id source-документа, из которого вырезан чанк
-                     (`Request.source_id`). Несколько чанков одного документа
-                     имеют одинаковый source_id.
+    `source_id`        — id source-документа, из которого вырезан чанк
+                         (`Request.source_id`). Несколько чанков одного документа
+                         имеют одинаковый source_id.
 
-    `content`      — собственно контент чанка (текст, байты, …); тип задаётся
-                     generic-параметром `T`. Именно он попадает в Embedder
-                     и, в большинстве backend'ов, в `document` поле Store.
+    `format_content`   — версия контента для LLM/embedding: может включать
+                         реплицированный контекст (например, header таблицы
+                         перед data-row'ами) или композицию из соседних секций
+                         (heading + следующий параграф). Это то, что попадает
+                         в Embedder и в `document` поле Store.
 
-    `location`     — положение чанка в `Section.content` (offset'ы start/end);
-                     нужно для UI-citations и подсветки.
+    `raw_content`      — оригинальный slice исходного raw документа (без
+                         обогащения). `original[location.start:location.end]
+                         == raw_content`. Используется для UI-citations и
+                         deep-link reconstruction.
 
-    `anchor`       — стабильный якорь внутри source-документа (heading-id,
-                     fragment, page-section). `None` у плоских документов
-                     (PlainTextReader всегда даёт `None`); для Markdown/HTML
-                     — `"#section-1.2"` и т.п. Используется AnchorBasedChunkId
-                     для стабильности chunk_id'ов через re-index.
+    `location`         — offset чанка в исходном raw документе. Соответствует
+                         `raw_content`.
 
-    `chunk_index`  — порядковый номер чанка внутри своего `source_id`;
-                     детерминирует chunk_id (`{digest}:{chunk_index}`)
-                     и обеспечивает уникальность даже при одинаковом anchor'е.
+    `section_location` — offset родительской `Section` в исходном raw документе.
+                         Позволяет LLM/UI ориентироваться: «этот чанк — часть
+                         секции `[section_location.start..end]`».
 
-    `content_hash` — fingerprint содержимого, для idempotency-check'а в
-                     `IndexSink.reconcile` (skip-if-unchanged). `None` пока
-                     pipeline не enrich'нул чанк через `KeyEncoder.encode` —
-                     Chunker про KeyEncoder не знает, hash проставляет
-                     пайплайн (StreamingIndexer) перед reconcile.
+    `section_type`     — canonical alias типа родительской Section
+                         (`"heading"`, `"paragraph"`, `"code_fence"`, `"table"`,
+                         `"list"`, ...). Из `Section.SECTION_TYPE`. Может быть
+                         пользовательским значением для domain-extensions.
 
-    `metadata`     — произвольная business-Metadata, проброшенная Reader'ом
-                     и Chunker'ом (`transport.etag`, `reader.doc_type`,
-                     `chunker.chunk_summary` …). Никаких системных tracking-
-                     полей view-импл сюда не пишет.
+    `anchor`           — стабильный якорь внутри source-документа (heading-id,
+                         fragment, page-section). `None` у плоских документов;
+                         для heading-aware Reader'ов — slug или html-id.
+                         Используется `AnchorBasedChunkId` для стабильности
+                         chunk_id'ов и для UI-deeplinks.
 
-    `tags`         — множество тэгов чанка, индексируемое view-импл'ом
-                     отдельно для быстрой фильтрации через
-                     `HasTag`/`HasAnyTag`/`HasAllTags`. Reader/Chunker могут их
-                     проставлять (категория документа, security-метка); view-
-                     импл сохраняет в Store и индексирует для поиска.
+    `chunk_index`      — порядковый номер чанка внутри своего `source_id`;
+                         детерминирует chunk_id (`{digest}:{chunk_index}`)
+                         и обеспечивает уникальность даже при одинаковом anchor'е.
+
+    `content_hash`     — fingerprint содержимого, для idempotency-check'а в
+                         `IndexSink.reconcile` (skip-if-unchanged). `None` пока
+                         pipeline не enrich'нул чанк через `KeyEncoder.encode`.
+
+    `metadata`         — произвольная business-Metadata: пробрасывается из Section
+                         (Section.metadata + Section.to_chunk_metadata()) плюс
+                         chunker-добавки (OVERFLOW_REASON, TABLE_ROW_RANGE, …).
+
+    `tags`             — множество тэгов; пробрасываются от Reader/Section.
     """
 
     chunk_id: ChunkId
     source_id: SourceId
-    content: T
-    location: ChunkLocation
+    # `content` оставлен для transition — старый SectionChunker ещё пишет сюда.
+    # После полной миграции на StructuralChunker удалится; consumers перейдут
+    # на `format_content` / `raw_content`.
+    content: T = ""  # type: ignore[assignment]
+    format_content: T = ""  # type: ignore[assignment]
+    raw_content: T = ""  # type: ignore[assignment]
+    location: ChunkLocation = field(
+        default_factory=lambda: ChunkLocation(start=0, end=0),
+    )
+    section_location: ChunkLocation = field(
+        default_factory=lambda: ChunkLocation(start=0, end=0),
+    )
+    section_type: str = "section"
     anchor: str | None = None
     chunk_index: int = 0
     content_hash: ContentHash | None = None

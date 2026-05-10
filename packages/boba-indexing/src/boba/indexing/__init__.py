@@ -4,6 +4,17 @@ boba.indexing — абстракции для индексации докуме�
 
 from __future__ import annotations
 
+from boba.indexing.blocks import (
+    Block,
+    BlockquoteBlock,
+    CodeFenceBlock,
+    HeadingBlock,
+    HorizontalRuleBlock,
+    HtmlBlock,
+    ListBlock,
+    ParagraphBlock,
+    TableBlock,
+)
 from boba.indexing.chunk_id import (
     AnchorBasedChunkId,
     ChunkIdStrategy,
@@ -95,7 +106,19 @@ from boba.indexing.raw_document import BinaryStream, RawDocument
 from boba.indexing.reader import PlainTextReader, Reader, ReaderId
 from boba.indexing.request import Request, RequestSource
 from boba.indexing.section_chunker import SectionChunker
-from boba.indexing.sections import Section, SourceId
+from boba.indexing.sections import (
+    BlockquoteSection,
+    CodeFenceSection,
+    HeadingSection,
+    HorizontalRuleSection,
+    HtmlSection,
+    ListSection,
+    ParagraphSection,
+    Section,
+    SectionKeys,
+    SourceId,
+    TableSection,
+)
 from boba.indexing.splitter import (
     LengthFunction,
     OverlapCharSplitter,
@@ -121,6 +144,9 @@ __all__ = [
     "BatchStarted",
     "BatchUpserted",
     "BinaryStream",
+    "Block",
+    "BlockquoteBlock",
+    "BlockquoteSection",
     "BytesContentHash",
     "Chunk",
     "ChunkId",
@@ -135,6 +161,8 @@ __all__ = [
     "CleanupContext",
     "CleanupStarted",
     "CleanupStrategy",
+    "CodeFenceBlock",
+    "CodeFenceSection",
     "CollectionId",
     "CollectionInfo",
     "CollectionsAdminReader",
@@ -154,6 +182,12 @@ __all__ = [
     "HasAllTags",
     "HasAnyTag",
     "HasTag",
+    "HeadingBlock",
+    "HeadingSection",
+    "HorizontalRuleBlock",
+    "HorizontalRuleSection",
+    "HtmlBlock",
+    "HtmlSection",
     "In",
     "IncompatibleContentError",
     "IncrementalCleanup",
@@ -180,6 +214,8 @@ __all__ = [
     "NotIn",
     "Or",
     "OverlapCharSplitter",
+    "ParagraphBlock",
+    "ParagraphSection",
     "PassThroughDecoder",
     "PhaseTransition",
     "PipelineContext",
@@ -197,6 +233,7 @@ __all__ = [
     "RunStarted",
     "SearchHit",
     "Section",
+    "SectionKeys",
     "SectionChunker",
     "Severity",
     "Sha256TextEncoder",
@@ -210,6 +247,9 @@ __all__ = [
     "StreamingIndexer",
     "StringContentHash",
     "SyncUnsupportedError",
+    "TableBlock",
+    "TableSection",
+    "ListSection",
     "TrackingKeys",
     "Transport",
     "TransportKeys",
