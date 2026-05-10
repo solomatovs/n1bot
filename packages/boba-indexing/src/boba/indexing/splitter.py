@@ -1,23 +1,7 @@
-"""
-Splitter[T] и LengthFunction[T] — протоколы для нарезки content'а
-на куски с трекингом offset'ов в исходнике.
-
-- `Splitter[T]` — режет один content на куски
-с трекингом offset'а в исходнике (ChunkLocation),
-чтобы потребитель (SectionChunker) мог честно проставить
-`Chunk[T].location` без угадывания.
-
-- `LengthFunction[T]` — функция длины content'а в естественных единицах
-  `char-count` для str
-  `token-count` для tokenizer-aware splitter'а
-  byte-count для bytes
-
-Инжектится в splitter для подсчета размера чанков в нужных еденицах
-"""
-
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections import deque
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import ClassVar, Generic, Protocol, TypeVar, runtime_checkable
 
@@ -25,7 +9,7 @@ from boba.indexing.chunks import ChunkLocation
 
 __all__ = [
     "LengthFunction",
-    "RecursiveCharSplitter",
+    "OverlapCharSplitter",
     "SplitPiece",
     "Splitter",
 ]
@@ -46,7 +30,7 @@ class Piece:
 @dataclass(frozen=True)
 class SplitPiece(Generic[T]):
     """
-    Один кусок, выданный Splitter'ом:
+    Один кусок, выданный Splitter:
     content + location в исходнике
     """
 
@@ -56,46 +40,49 @@ class SplitPiece(Generic[T]):
 
 @runtime_checkable
 class Splitter(Protocol[T]):
-    """
-    T → Iterable[SplitPiece[T]]: нарезка content'а с offset-трекингом
-
-    Контракт:
-      `location.start`/`location.end` — offset в исходном content
-      start/end могут быть как номенами строк, так и байтовыми смещениями
-      в зависимости от типа T и логики Splitterа.
-      Например, для str это могут быть char offsets,
-      для bytes — byte offsets
-    """
-
     def split(self, value: T) -> Iterable[SplitPiece[T]]: ...
 
 
 @runtime_checkable
 class LengthFunction(Protocol[T_contra]):
-    """
-    Функция длины content в естественных единицах.
-
-    Используется splitter для проверки `chunk_size`.
-    Реализация по умолчаниюдля текста — `len`,
-    но можно подменить на token-counter (tiktoken, huggingface-tokenizer)
-    тогда chunk_size становится «не больше N токенов».
-    """
-
     def __call__(self, value: T_contra, /) -> int: ...
 
 
-class RecursiveCharSplitter(Splitter[str]):
+class OverlapCharSplitter(Splitter[str]):
     """
-    Recursive separator-based текстовый splitter с offset-tracking.
+    Разделяет `value` на чанки внахлест:
 
-    Идём по separators от крупных к мелким, режем; куски ≥ chunk_size
-    рекурсивно режем дальше; маленькие склеиваем тем же separator-glue в
-    чанки ≤ chunk_size с фронт-усечением до chunk_overlap после flush.
+        Схема:
+        ```python
+        # исходный текст
+        index:      0  1  2  3  4  5  6  7  8  9 10 11 12 13
+        value:      a  b     c  d     e  f     g  h     i  j
 
-    `SplitPiece.location.start`/`end` — char offsets в исходной строке.
-    По построению `original[start:end]` совпадает с `content` для chunk'а,
-    собранного из соседних кусков на одном уровне рекурсии.
-    """
+        # полученные чанки
+        chunk 1:    a  b     c  d     e  f                       value[0:8]  = "ab cd ef"
+        chunk 2:             c  d     e  f     g  h              value[3:11] = "cd ef gh"
+        chunk 3:                      e  f     g  h     i  j     value[6:14] = "ef gh ij"
+        ```
+
+        Пример:
+        ```python
+        value = "ab cd ef gh ij"
+        #        0  3  6  9  12
+
+        s = RecursiveCharSplitter(
+            chunk_size=8,         # размер одного чанка
+            chunk_overlap=5,      # перекрытие соседних чанков (≈ символов)
+            separators=[" "],     # приоритет: крупные → мелкие; "" — посимвольно
+            length_function=None, # функция длины; None ≡ len (char-count)
+        )
+
+        list(s.split(value)) == [
+            SplitPiece("ab cd ef", ChunkLocation(start=0, end=8)),
+            SplitPiece("cd ef gh", ChunkLocation(start=3, end=11)),
+            SplitPiece("ef gh ij", ChunkLocation(start=6, end=14)),
+        ]
+        ```
+    """  # noqa: E501
 
     DEFAULT_SEPARATORS: ClassVar[tuple[str, ...]] = ("\n\n", "\n", " ", "")
 
@@ -119,7 +106,7 @@ class RecursiveCharSplitter(Splitter[str]):
         if not value:
             return
 
-        for piece in self._split_recursive(value, 0, self._separators):
+        for piece in self._split_recursive(value, value, 0, self._separators):
             yield SplitPiece(
                 content=piece.text,
                 location=ChunkLocation(
@@ -130,42 +117,37 @@ class RecursiveCharSplitter(Splitter[str]):
 
     def _split_recursive(
         self,
+        original: str,
         text: str,
         base: int,
         seps: Sequence[str],
-    ) -> list[Piece]:
+    ) -> Iterator[Piece]:
         sep, next_seps = self._pick_separator(seps, text)
-        splits = self._split_by_separator(text, base, sep)
-        final: list[Piece] = []
-        good: list[Piece] = []
+        good: deque[Piece] = deque()
 
-        for p in splits:
+        for p in self._split_by_separator(text, base, sep):
             if self._length(p.text) < self._chunk_size:
                 good.append(p)
                 continue
 
             if good:
-                final.extend(self._merge_pieces(good, sep))
-                good = []
+                yield from self._merge_pieces(original, good, sep)
+                good.clear()
 
             if next_seps:
-                final.extend(self._split_recursive(p.text, p.start, next_seps))
+                yield from self._split_recursive(original, p.text, p.start, next_seps)
             else:
-                final.append(p)
+                yield p
 
         if good:
-            final.extend(self._merge_pieces(good, sep))
-
-        return final
+            yield from self._merge_pieces(original, good, sep)
 
     @staticmethod
     def _pick_separator(
         seps: Sequence[str],
         text: str,
     ) -> tuple[str, Sequence[str]]:
-        """
-        Выбирает разделитель по принципу первый попавшийся из списка
-        """
+        """Выбирает первый разделитель из списка, встречающийся в тексте."""
         for i, s in enumerate(seps):
             if s == "":
                 return "", ()
@@ -174,43 +156,40 @@ class RecursiveCharSplitter(Splitter[str]):
         return (seps[-1] if seps else "", ())
 
     @staticmethod
-    def _split_by_separator(text: str, base: int, sep: str) -> list[Piece]:
-        """
-            Разбивает текст на куски по выбранному разделителю
-            Возвращает список объектов
-            Piece = {
-                text  : кусок текста
-                start : offset начала куска внутри text
-            }
-        """
+    def _split_by_separator(text: str, base: int, sep: str) -> Iterator[Piece]:
+        """Стримит куски, разделённые sep, с абсолютными offset от base."""
         if sep == "":
-            return [Piece(text=c, start=base + i) for i, c in enumerate(text)]
+            for i, c in enumerate(text):
+                yield Piece(text=c, start=base + i)
+            return
 
-        pieces: list[Piece] = []
         pos = 0
         n = len(text)
         sep_len = len(sep)
         while pos < n:
             idx = text.find(sep, pos)
             if idx == -1:
-                pieces.append(Piece(text=text[pos:], start=base + pos))
-                break
+                yield Piece(text=text[pos:], start=base + pos)
+                return
             if idx > pos:
-                pieces.append(Piece(text=text[pos:idx], start=base + pos))
+                yield Piece(text=text[pos:idx], start=base + pos)
             pos = idx + sep_len
-        return pieces
 
-    def _merge_pieces(self, pieces: list[Piece], glue: str) -> list[Piece]:
+    def _merge_pieces(
+        self,
+        original: str,
+        pieces: Iterable[Piece],
+        glue: str,
+    ) -> Iterator[Piece]:
         glue_len = self._length(glue)
-        out: list[Piece] = []
-        current: list[Piece] = []
+        current: deque[Piece] = deque()
         current_len = 0
 
         for p in pieces:
             plen = self._length(p.text)
             extra = plen + (glue_len if current else 0)
             if current_len + extra > self._chunk_size and current:
-                out.append(self._join_batch(current, glue))
+                yield self._join_batch(original, current)
                 while current and (
                     current_len > self._chunk_overlap
                     or current_len + extra > self._chunk_size
@@ -219,16 +198,21 @@ class RecursiveCharSplitter(Splitter[str]):
                         glue_len if len(current) > 1 else 0
                     )
                     current_len -= head_len
-                    current = current[1:]
+                    current.popleft()
                     extra = plen + (glue_len if current else 0)
             current.append(p)
             current_len += extra
 
         if current:
-            out.append(self._join_batch(current, glue))
-        return out
+            yield self._join_batch(original, current)
 
     @staticmethod
-    def _join_batch(batch: list[Piece], glue: str) -> Piece:
-        text = glue.join(p.text for p in batch)
-        return Piece(text=text, start=batch[0].start)
+    def _join_batch(original: str, batch: deque[Piece]) -> Piece:
+        # На одном уровне рекурсии соседние pieces разделены ровно тем же sep,
+        # поэтому склейка эквивалентна срезу original без аллокаций glue.join.
+        first = batch[0]
+        last = batch[-1]
+        return Piece(
+            text=original[first.start : last.start + len(last.text)],
+            start=first.start,
+        )

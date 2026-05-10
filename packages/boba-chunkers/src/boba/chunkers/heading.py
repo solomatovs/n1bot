@@ -17,7 +17,7 @@ from boba.indexing import (
     ChunkerId,
     DigestPrefix,
     KeyEncoder,
-    RecursiveCharSplitter,
+    OverlapCharSplitter,
     SectionChunker,
 )
 
@@ -51,7 +51,7 @@ def heading_chunker(
 ) -> SectionChunker[str]:
     return SectionChunker(
         chunker_id=ChunkerId("heading"),
-        splitter=RecursiveCharSplitter(
+        splitter=OverlapCharSplitter(
             chunk_size=config.chunk_size,
             chunk_overlap=config.chunk_overlap,
         ),
