@@ -33,7 +33,65 @@ __all__ = ["HttpTransport"]
 
 
 class HttpTransport(Transport[HttpRequest]):
-    """httpx-based generic HTTP transport."""
+    """
+    `Transport[HttpRequest]`: HTTP-запрос → `RawDocument` со streaming-response handle.
+
+    **Схема**:
+    ```python
+    HttpRequest   ──────────────────HttpTransport.stream──→  RawDocument
+        url         : str           ┐
+        method      : str           ├──httpx.stream──→
+        headers     : Mapping       │  (auth применяется к client kwargs)
+        auth        : AuthApplier   ┘
+        source_id   : SourceId   ──pass─────────────→            source_id   (тот же)
+        metadata    : Metadata   ──merge────────────→            metadata    (+ TransportKeys.ETAG / CONTENT_TYPE, HttpKeys.LAST_MODIFIED, HttpKeys.STATUS)
+                                                          →      handle      : _ResponseHandle  (BinaryStream-адаптер; закроется по выходу из stream)
+    ```
+
+    **Lifecycle handle**:
+    ```python
+    with httpx.Client(**kw) as client, client.stream(method, url) as resp:
+        yield RawDocument(handle=_ResponseHandle(resp), ...)
+    # сюда — после next(generator); resp/client закрыты с выходом из with
+    ```
+    `_ResponseHandle` реализует `BinaryStream` поверх `resp.iter_bytes()`,
+    чтобы Reader мог звать `handle.read()` единообразно.
+
+    **Поведение на ошибки**:
+    - 4xx/5xx → `httpx.HTTPStatusError` через `raise_for_status()` (не глушится).
+    - timeout/connection — стандартные `httpx`-исключения.
+
+    `auth: AuthApplier` — callback на client kwargs; Transport не знает,
+    что внутри (PAT, Basic, Bearer, OAuth), просто применяет.
+
+    **Пример**:
+    ```python
+    transport = HttpTransport(timeout_sec=30.0, verify=True)
+    requests = iter([
+        HttpRequest(
+            url="https://api.example.com/doc/1",
+            method="GET",
+            headers={"Accept": "text/html"},
+            source_id=SourceId("https://api.example.com/doc/1"),
+        ),
+    ])
+
+    # 1 HttpRequest → 1 RawDocument; handle потоковый, закроется после next(...).
+    raw = next(iter(transport.stream(ctx, requests)))
+    raw == RawDocument(
+        handle=<_ResponseHandle resp=200 OK>,                          # новое: streaming-адаптер resp.iter_bytes()
+        source_id=SourceId("https://api.example.com/doc/1"),           # pass из HttpRequest
+        metadata=(                                                     # merge: + 4 ключа из HTTP-заголовков
+            Metadata.empty()
+            .set(TransportKeys.ETAG, "abc-123")                        # новое: response ETag (без кавычек)
+            .set(TransportKeys.CONTENT_TYPE, "text/html; charset=utf-8")  # новое: Content-Type
+            .set(HttpKeys.LAST_MODIFIED, "Wed, 21 Oct 2026 07:28:00 GMT")  # новое: Last-Modified
+            .set(HttpKeys.STATUS, 200)                                 # новое: HTTP-код ответа
+        ),
+    )
+    raw.handle.read()  # → b"<html>..."
+    ```
+    """  # noqa: E501
 
     DEFAULT_TIMEOUT_SEC: ClassVar[float] = 30.0
 

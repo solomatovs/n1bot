@@ -40,11 +40,67 @@ class SplitPiece(Generic[T]):
 
 @runtime_checkable
 class Splitter(Protocol[T]):
+    """
+    Разделяет контент на куски с сохранением оригинального смещения
+
+    Релизация:
+    `split` - разделение на куски
+
+    **Ответственность**:
+    разделить `T` на отдельные `SplitPiece[T]` в потоке и
+    - сохранить исходные смещения внутри `T`
+    - сохранить исходный контент из `T` который расположен внутри `location`
+
+    **Схема**:
+    ```python
+    T   ──────splitter.split──→  Iterable[SplitPiece[T]]
+                              →    content  : T              (кусок исходника)
+                              →    location : ChunkLocation  (start/end внутри value)
+    ```
+
+    **Пример минимальной реализации**:
+    ```python
+    class HalfSplitter(Splitter[str]):
+        def split(self, value: str) -> Iterable[SplitPiece[str]]:
+            mid = len(value) // 2
+            yield SplitPiece(value[:mid], ChunkLocation(start=0, end=mid))
+            yield SplitPiece(value[mid:], ChunkLocation(start=mid, end=len(value)))
+
+    list(HalfSplitter().split("abcd")) == [
+        SplitPiece("ab", ChunkLocation(start=0, end=2)),
+        SplitPiece("cd", ChunkLocation(start=2, end=4)),
+    ]
+    ```
+    """
+
     def split(self, value: T) -> Iterable[SplitPiece[T]]: ...
 
 
 @runtime_checkable
 class LengthFunction(Protocol[T_contra]):
+    """
+    Функция длины content в естественных единицах; инжектится в `Splitter`.
+
+    **Схема**:
+    ```python
+    f(value: T) → int        # сколько единиц «весит» value
+    ```
+
+    **Реализации**:
+    - `len` — char-count для `str`, byte-count для `bytes` (default).
+    - tokenizer-aware (tiktoken / hf-tokenizer) — token-count;
+      тогда `chunk_size` у splitter'а становится «не больше N токенов».
+
+    **Пример**:
+    ```python
+    char_len: LengthFunction[str] = len
+    char_len("hello") == 5
+
+    token_len: LengthFunction[str] = lambda s: len(s.split())
+    token_len("hello world") == 2
+    ```
+    """
+
     def __call__(self, value: T_contra, /) -> int: ...
 
 
@@ -52,37 +108,37 @@ class OverlapCharSplitter(Splitter[str]):
     """
     Разделяет `value` на чанки внахлест:
 
-        Схема:
-        ```python
-        # исходный текст
-        index:      0  1  2  3  4  5  6  7  8  9 10 11 12 13
-        value:      a  b     c  d     e  f     g  h     i  j
+    **Схема**:
+    ```python
+    # исходный текст
+    index:      0  1  2  3  4  5  6  7  8  9 10 11 12 13
+    value:      a  b     c  d     e  f     g  h     i  j
 
-        # полученные чанки
-        chunk 1:    a  b     c  d     e  f                       value[0:8]  = "ab cd ef"
-        chunk 2:             c  d     e  f     g  h              value[3:11] = "cd ef gh"
-        chunk 3:                      e  f     g  h     i  j     value[6:14] = "ef gh ij"
-        ```
+    # полученные чанки
+    chunk 1:    a  b     c  d     e  f                       value[0:8]  = "ab cd ef"
+    chunk 2:             c  d     e  f     g  h              value[3:11] = "cd ef gh"
+    chunk 3:                      e  f     g  h     i  j     value[6:14] = "ef gh ij"
+    ```
 
-        Пример:
-        ```python
-        value = "ab cd ef gh ij"
-        #        0  3  6  9  12
+    **Пример**:
+    ```python
+    value = "ab cd ef gh ij"
+    #        0  3  6  9  12
 
-        s = RecursiveCharSplitter(
-            chunk_size=8,         # размер одного чанка
-            chunk_overlap=5,      # перекрытие соседних чанков (≈ символов)
-            separators=[" "],     # приоритет: крупные → мелкие; "" — посимвольно
-            length_function=None, # функция длины; None ≡ len (char-count)
-        )
+    s = RecursiveCharSplitter(
+        chunk_size=8,         # размер одного чанка
+        chunk_overlap=5,      # перекрытие соседних чанков (≈ символов)
+        separators=[" "],     # приоритет: крупные → мелкие; "" — посимвольно
+        length_function=None, # функция длины; None ≡ len (char-count)
+    )
 
-        list(s.split(value)) == [
-            SplitPiece("ab cd ef", ChunkLocation(start=0, end=8)),
-            SplitPiece("cd ef gh", ChunkLocation(start=3, end=11)),
-            SplitPiece("ef gh ij", ChunkLocation(start=6, end=14)),
-        ]
-        ```
-    """  # noqa: E501
+    list(s.split(value)) == [
+        SplitPiece("ab cd ef", ChunkLocation(start=0, end=8)),
+        SplitPiece("cd ef gh", ChunkLocation(start=3, end=11)),
+        SplitPiece("ef gh ij", ChunkLocation(start=6, end=14)),
+    ]
+    ```
+    """
 
     DEFAULT_SEPARATORS: ClassVar[tuple[str, ...]] = ("\n\n", "\n", " ", "")
 

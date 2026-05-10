@@ -42,7 +42,76 @@ class Reader(
     Converter[RawDocument, Iterable[Section[T]]],
     StateFull,
 ):
-    """Парсер RawDocument → Section[T]'ы для одной модальности content'а."""
+    """
+    Разбирает `RawDocument` на логические разделы документа (`Section[T]`)
+    `RawDocument` - обычно это открытый файловый дескриптор на сырые данные
+    `Section[T]` - это логическая секция внутри сырого потока данных
+
+    **Схема**:
+    ```python
+    RawDocument  ───────────────────────────────reader.convert──→  Iterable[Section[T]]
+        handle      : BinaryStream                                  │
+        source_id   : SourceId  ──pass──────────────────────────→  source_id   (тот же)
+        metadata    : Metadata  ──merge─────────────────────────→  metadata    (+ дополняет своей meta: ReaderKeys.DOC_TYPE …)
+                                                                →    content     : T          (распарсенный фрагмент)
+                                                                →    anchor      : str|None   (heading-id, page …; None у плоских)
+                                                                →    order       : int        (порядок в документе, для детерминизма chunk_id)
+    ```
+
+    **Контракты**:
+    - читает `handle` (целиком или потоково), закрытие — обязанность Transport
+    - на несовместимый payload бросает `IncompatibleContentError`
+    - явно указывается в pipeline, никакого autodetect / dispatch
+
+    **Пример** (usage `MarkdownReader`):
+    ```python
+    reader: Reader[str] = MarkdownReader()
+
+    raw = RawDocument(
+        handle=BytesIO(
+            b"preamble before any heading\\n\\n"
+            b"# Intro\\nintro body\\n\\n"
+            b"## API\\napi body"
+        ),
+        source_id=SourceId("doc1"),
+    )
+
+    # 1 RawDocument → 3 Section'и: preamble + 2 heading'а
+    list(reader.convert(raw)) == [
+        Section(
+            source_id=SourceId("doc1"),                  # pass из RawDocument
+            content="preamble before any heading",       # новое: фрагмент исходного текста
+            anchor=None,                                 # новое: None у preamble (нет heading'а)
+            order=0,                                     # новое: позиция в документе
+            metadata=Metadata.empty().set(ReaderKeys.DOC_TYPE, "markdown"),  # merge: + DOC_TYPE
+        ),
+        Section(
+            source_id=SourceId("doc1"),
+            content="# Intro\\n\\nintro body",
+            anchor="intro",                              # новое: slug текста heading'а
+            order=1,
+            metadata=(
+                Metadata.empty()
+                .set(ReaderKeys.DOC_TYPE, "markdown")
+                .set(MarkdownKeys.HEADING_LEVEL, 1)      # merge: + структурные ключи
+                .set(MarkdownKeys.HEADING_TEXT, "Intro")
+            ),
+        ),
+        Section(
+            source_id=SourceId("doc1"),
+            content="## API\\n\\napi body",
+            anchor="api",
+            order=2,
+            metadata=(
+                Metadata.empty()
+                .set(ReaderKeys.DOC_TYPE, "markdown")
+                .set(MarkdownKeys.HEADING_LEVEL, 2)
+                .set(MarkdownKeys.HEADING_TEXT, "API")
+            ),
+        ),
+    ]
+    ```
+    """  # noqa: E501
 
     @abstractmethod
     def reader_id(self) -> ReaderId: ...
@@ -53,9 +122,34 @@ class Reader(
 
 class PlainTextReader(Reader[str]):
     """
-    Reader[str] для плоского текста: читает handle целиком и эмитит один
-    Section[str] с полным content. Метит metadata как `text/plain`.
-    """
+    Простейший `Reader[str]`: декодирует handle целиком и эмитит один Section.
+
+    **Схема**:
+    ```python
+    RawDocument(handle=b"hello world", source_id="doc1")
+        │
+        └─ handle.read() → bytes ──decode(encoding)──→ str
+                                                        │
+                                                        ▼
+    Section(source_id="doc1", content="hello world",
+            anchor=None, order=0,
+            metadata={ReaderKeys.DOC_TYPE: "text/plain"})
+    ```
+
+    Бросает `IncompatibleContentError` если bytes не декодируются указанным
+    `encoding`. Anchor всегда `None` — секция плоская, без heading'ов.
+
+    **Пример**:
+    ```python
+    reader = PlainTextReader(encoding="utf-8")
+    raw = RawDocument(handle=BytesIO(b"line1\\nline2"), source_id=SourceId("file.txt"))
+
+    list(reader.convert(raw)) == [
+        Section(SourceId("file.txt"), "line1\\nline2", anchor=None, order=0,
+                metadata=Metadata({ReaderKeys.DOC_TYPE: "text/plain"})),
+    ]
+    ```
+    """  # noqa: E501
 
     READER_ID: ClassVar[ReaderId] = ReaderId("ext.text")
     DEFAULT_ENCODING: ClassVar[str] = "utf-8"

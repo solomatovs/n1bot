@@ -24,9 +24,9 @@ source_id формирует RequestSource
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from collections.abc import Iterable
-from typing import Generic, Protocol, TypeVar, runtime_checkable
+from typing import Protocol, TypeVar, runtime_checkable
 
 from boba.indexing.context import PipelineContext
 from boba.indexing.errors import SyncUnsupportedError
@@ -40,37 +40,71 @@ __all__ = ["Request", "RequestSource"]
 @runtime_checkable
 class Request(Protocol):
     """
-    Минимальный контракт Request-DTO для прохождения через Pipeline.
-    """
+    Контракт Request-DTO:
+        `source_id` - сообщает название источника документа.
+            Это название прокидывается далее во все чанки сквозным образом
+        `metadata` - сообщает исходные метаданные документа.
+            Эти метаданные в процессе выполнения pipeline обогощаются и записываются в чанки
+            Здесь можно сообщить о документе базовую исходную информацию, которую хочется
+            Донести до каждого чанка
+
+    Контракты живут в отдельных transport-пакетах, например:
+    - `HttpRequest`  -> Request  — url, method, headers, auth.
+    - `FsRequest`    -> Request  — path.
+    """  # noqa: E501
 
     @property
     def source_id(self) -> SourceId: ...
 
-    """
-    Canonical id итогового документа.
-    """
-
     @property
     def metadata(self) -> Metadata: ...
-
-    """
-    Hint'ы для обогащения Chunk.metadata.
-    Каждый слой добавляет свои ключи (merge), не теряя предыдущие
-    """
 
 
 ReqT = TypeVar("ReqT", bound=Request)
 
 
-class RequestSource(StreamSource[PipelineContext, ReqT], ABC, Generic[ReqT]):
+class RequestSource(StreamSource[PipelineContext, ReqT]):
     """
-    Источник Request-планов для Transport'а.
-    """
+    Источник Request'ов для Transport'а
+
+    Источник нужен что бы генерировать Request'ы на выполнение в Transport
+
+    Пример разных source'еров может быть процесс загрузки confluence-страниц, когда необходимо загрузить из confluence страницы в зависимости от стратегии:
+    - `page_id source` - выдает request ровно на 1-у страницу
+    - `space_key source` - последовательно выдает request'ы на зугрузку страниц внутри указанного space
+
+    **Схема**:
+    ```python
+    source  ──────────────────────source.stream(ctx)──→  Iterable[ReqT]
+    (config, fs-walk, API …)                          →    source_id : SourceId   (canonical id — формирует source)
+                                                      →    metadata  : Metadata   (hint'ы для transport / reader / chunker)
+                                                      →    <fields>               (url / path / …)
+    ```
+
+    `source_id` — каноничен и стабилен: именно RequestSource знает, как
+    сопоставить URL/path с логическим документом. Дальше по pipeline
+    этот id пробрасывается без изменений (Request → RawDocument → Section → Chunk).
+
+    **Пример** (usage):
+    ```python
+    source: RequestSource[FsRequest] = FsWalkRequestSource(
+        paths=[Path("docs/")],
+        include=["*.md"],
+    )
+
+    list(source.stream(ctx)) == [
+        FsRequest(
+            path=Path("docs/intro.md"),
+            source_id=SourceId("fs:/abs/docs/intro.md")),
+        FsRequest(
+            path=Path("docs/api.md"),
+            source_id=SourceId("fs:/abs/docs/api.md")),
+    ]
+    ```
+    """  # noqa: E501
 
     @abstractmethod
     def list_source_ids(self, ctx: PipelineContext) -> Iterable[str]:
-        """
-        Перечислить canonical source_id'ы; SyncUnsupportedError если нет
-        """
+        """Перечисляет canonical source_id'ы; `SyncUnsupportedError` если не реализовано."""
         del ctx
         raise SyncUnsupportedError(self.name())

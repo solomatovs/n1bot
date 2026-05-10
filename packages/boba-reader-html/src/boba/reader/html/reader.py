@@ -37,7 +37,99 @@ _NOISE_TAGS = ("script", "style")
 
 
 class HtmlReader(Reader[str]):
-    """Reader[str] для HTML с h1..h6. Drops <script>/<style>."""
+    """
+    `Reader[str]` для HTML: режет документ на Section'и по `<h1>..<h6>`.
+
+    **Схема**:
+    ```html
+    <html>
+      <head><title>Doc</title></head>
+      <body>
+        <h1 id="intro">Intro</h1>
+        <p>intro body</p>
+
+        <h2 id="api">API</h2>
+        <p>api body</p>
+      </body>
+    </html>
+    ```
+    ```python
+    Section(
+        content="Intro\\n\\nintro body",
+        anchor="intro",
+        order=0,
+        metadata={
+            DOC_TYPE: "html",
+            HEADING_LEVEL: 1,
+            HEADING_TEXT: "Intro",
+            PAGE_TITLE: "Doc"
+        }
+    )
+    Section(
+        content="API\\n\\napi body",
+        anchor="api",
+        order=1,
+        metadata={
+            DOC_TYPE: "html",
+            HEADING_LEVEL: 2,
+            HEADING_TEXT: "API",
+            PAGE_TITLE: "Doc"
+        }
+    )
+    ```
+
+    **Поведение**:
+    - `<script>`/`<style>` декомпозятся (текст не попадает в Section'и).
+    - `anchor` берётся из html `id` heading, но если нет то fallback — `"idx:N"` (порядковый номер)
+    - Heading с пустым текстом пропускаются как неинформативные.
+    - Без heading'ов — одна Section со всем `body` + `<title>` (если есть);
+      `anchor=None`, `order=0`.
+    - Если документ пуст — итератор пуст.
+
+    **Пример**:
+    ```python
+    reader = HtmlReader()
+    raw = RawDocument(
+        handle=BytesIO(
+            b"<html><head><title>Doc</title></head><body>"
+            b"<h1 id='intro'>Intro</h1><p>intro body</p>"
+            b"<h2 id='api'>API</h2><p>api body</p>"
+            b"</body></html>"
+        ),
+        source_id=SourceId("doc1"),
+    )
+
+    # Документ с 2 heading'ами → 2 Section'и; <title> кладётся в metadata.PAGE_TITLE.
+    list(reader.convert(raw)) == [
+        Section(
+            source_id=SourceId("doc1"),         # pass из RawDocument
+            content="Intro\\n\\nintro body",     # новое: heading + текст до следующего heading'а
+            anchor="intro",                     # новое: html id="intro" → anchor
+            order=1,                            # новое: порядок heading'а в документе
+            metadata=(                          # merge: + DOC_TYPE / HEADING_* / PAGE_TITLE
+                Metadata.empty()
+                .set(ReaderKeys.DOC_TYPE, "html")
+                .set(HtmlKeys.HEADING_LEVEL, 1)
+                .set(HtmlKeys.HEADING_TEXT, "Intro")
+                .set(ReaderKeys.PAGE_TITLE, "Doc")
+            ),
+        ),
+        Section(
+            source_id=SourceId("doc1"),
+            content="API\\n\\napi body",
+            anchor="api",
+            order=2,
+            metadata=(
+                Metadata.empty()
+                .set(ReaderKeys.DOC_TYPE, "html")
+                .set(HtmlKeys.HEADING_LEVEL, 2)
+                .set(HtmlKeys.HEADING_TEXT, "API")
+                .set(ReaderKeys.PAGE_TITLE, "Doc")
+            ),
+        ),
+    ]
+    ```
+    """  # noqa: E501
 
     DOC_TYPE: ClassVar[str] = "html"
     READER_ID: ClassVar[ReaderId] = ReaderId("ext.html")

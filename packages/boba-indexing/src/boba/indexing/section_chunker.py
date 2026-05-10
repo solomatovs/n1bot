@@ -25,9 +25,71 @@ T = TypeVar("T")
 
 class SectionChunker(Chunker[T], Generic[T]):
     """
-    Section[T] → Chunk[T];
-    per-source сквозная нумерация chunk_index
-    """
+    Универсальная реализация `Chunker[T]`: композиция `Splitter[T]` + `ChunkIdStrategy[T]`.
+
+    **Схема**:
+    ```python
+    Section[T]   ──────────────────────────chunker.stream──→  Iterable[Chunk[T]]
+        source_id   ──pass──────────────────────────────→     source_id
+        anchor      ──pass──────────────────────────────→     anchor
+        metadata    ──pass──────────────────────────────→     metadata
+        content     ──splitter.split──→ SplitPiece[T]   →     content       (← piece.content)
+                                                        →     location      (← piece.location)
+                                                        →     chunk_index   (per-source counter)
+                                   id_strategy.compute(section, idx)
+                                                        →     chunk_id      (stable ChunkId)
+    ```
+
+    `chunk_index` — per-source сквозной счётчик: разные секции одного source_id
+    получат разные chunk_index (`0..N-1`), даже если резка дала одинаковый контент.
+
+    **Пример**:
+    ```python
+    chunker = SectionChunker(
+        chunker_id=ChunkerId("heading"),
+        splitter=OverlapCharSplitter(chunk_size=8, chunk_overlap=2),
+        id_strategy=AnchorBasedChunkId(
+            encoder=Sha256TextEncoder(),
+            prefix=FixedDigestPrefix(12),
+        ),
+    )
+
+    sections = iter([
+        Section(
+            source_id=SourceId("doc1"),
+            content="ab cd ef gh ij",     # 14 chars → 2 chunks при chunk_size=8, overlap=2
+            anchor="#s1",
+            order=0,
+        ),
+    ])
+
+    # Section → 2 chunks; chunk_id'ы делят digest, chunk_index растёт.
+    list(chunker.stream(ctx, sections)) == [
+        Chunk(
+            chunk_id=ChunkId("d37c2a97056f:0"),       # новое: digest(anchor) + ":{chunk_index}"
+            source_id=SourceId("doc1"),               # pass из Section
+            content="ab cd ef",                       # новое: ← piece.content
+            location=ChunkLocation(start=0, end=8),   # новое: ← piece.location
+            anchor="#s1",                             # pass из Section
+            chunk_index=0,                            # новое: per-source counter
+            content_hash=None,                        # новое: ставится дальше pipeline'ом
+            metadata=Metadata.empty(),                # pass из Section.metadata (тут пусто)
+            tags=frozenset(),                         # default (Section.tags не пробрасывается этой реализацией)
+        ),
+        Chunk(
+            chunk_id=ChunkId("d37c2a97056f:1"),       # тот же digest — anchor тот же
+            source_id=SourceId("doc1"),
+            content="ef gh ij",
+            location=ChunkLocation(start=6, end=14),  # overlap=2 → пересечение с :0
+            anchor="#s1",
+            chunk_index=1,
+            content_hash=None,
+            metadata=Metadata.empty(),
+            tags=frozenset(),
+        ),
+    ]
+    ```
+    """  # noqa: E501
 
     def __init__(
         self,

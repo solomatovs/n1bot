@@ -1,8 +1,8 @@
-"""MarkdownReader: markdown → heading-aware Section[str].
+"""
+MarkdownReader: markdown → heading-aware Section[str]
 
-Каждый ATX-heading (`# A`, `## B`, ...) → отдельная Section с anchor'ом
-из slug текста (или fallback `idx:N`). Текст Section — heading-строка +
-body до следующего heading'а.
+Каждый ATX-heading (`# A`, `## B`, ...) → отдельная Section с anchor из slug текста.
+Section = heading-строка + body до следующего heading
 
 Если в документе нет heading'ов — fallback одной Section со всем body.
 Preamble до первого heading'а становится отдельной anchor-less Section.
@@ -27,7 +27,87 @@ __all__ = ["MarkdownReader"]
 
 
 class MarkdownReader(Reader[str]):
-    """Reader[str] для markdown с ATX heading'ами."""
+    """
+    `Reader[str]` для Markdown: режет документ на Section'и по ATX-heading'ам.
+
+    **Схема**:
+    ```markdown
+    preamble before any heading
+
+    # Intro
+    intro body
+
+    ## API
+    api body
+    ```
+    ```python
+    ──reader.convert(raw)──→
+    Section(content="preamble before any heading", anchor=None, order=0,
+            metadata={DOC_TYPE: "markdown"})
+    Section(content="# Intro\\n\\nintro body", anchor="intro", order=1,
+            metadata={DOC_TYPE: "markdown", HEADING_LEVEL: 1, HEADING_TEXT: "Intro"})
+    Section(content="## API\\n\\napi body",   anchor="api",   order=2,
+            metadata={DOC_TYPE: "markdown", HEADING_LEVEL: 2, HEADING_TEXT: "API"})
+    ```
+
+    **Поведение**:
+    - ATX-heading'и (`#`, `##`, …); внутри code-fence (` ``` `) heading'и
+      игнорируются.
+    - `anchor` — slug текста heading'а (`"Foo Bar! 123"` → `"foo-bar-123"`);
+      fallback `"idx:N"` если slug пуст.
+    - Preamble до первого heading'а — отдельная anchor-less Section
+      (если непуст).
+    - Без heading'ов — одна Section со всем body, `anchor=None`.
+    - bytes декодируются как UTF-8 с `errors="replace"`.
+
+    **Пример**:
+    ```python
+    reader = MarkdownReader()
+    raw = RawDocument(
+        handle=BytesIO(
+            b"preamble before any heading\\n\\n"
+            b"# Intro\\nintro body\\n\\n"
+            b"## API\\napi body"
+        ),
+        source_id=SourceId("doc1"),
+    )
+
+    # preamble → отдельная anchor-less Section; затем по Section на каждый heading.
+    list(reader.convert(raw)) == [
+        Section(
+            source_id=SourceId("doc1"),                  # pass из RawDocument
+            content="preamble before any heading",       # новое: текст до первого heading'а
+            anchor=None,                                 # новое: None у preamble (нет heading'а)
+            order=0,                                     # новое: позиция в документе
+            metadata=Metadata.empty().set(ReaderKeys.DOC_TYPE, "markdown"),  # merge: + DOC_TYPE
+        ),
+        Section(
+            source_id=SourceId("doc1"),
+            content="# Intro\\n\\nintro body",
+            anchor="intro",                              # новое: slug("Intro") → "intro"
+            order=1,
+            metadata=(                                   # merge: + DOC_TYPE / HEADING_*
+                Metadata.empty()
+                .set(ReaderKeys.DOC_TYPE, "markdown")
+                .set(MarkdownKeys.HEADING_LEVEL, 1)
+                .set(MarkdownKeys.HEADING_TEXT, "Intro")
+            ),
+        ),
+        Section(
+            source_id=SourceId("doc1"),
+            content="## API\\n\\napi body",
+            anchor="api",
+            order=2,
+            metadata=(
+                Metadata.empty()
+                .set(ReaderKeys.DOC_TYPE, "markdown")
+                .set(MarkdownKeys.HEADING_LEVEL, 2)
+                .set(MarkdownKeys.HEADING_TEXT, "API")
+            ),
+        ),
+    ]
+    ```
+    """  # noqa: E501
 
     DOC_TYPE: ClassVar[str] = "markdown"
     READER_ID: ClassVar[ReaderId] = ReaderId("ext.markdown")

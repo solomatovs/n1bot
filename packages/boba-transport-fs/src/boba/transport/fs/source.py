@@ -22,19 +22,72 @@ _log = logging.getLogger(__name__)
 
 
 class FsWalkRequestSource(RequestSource[FsRequest]):
-    """Раскрывает paths (файлы и директории) в FsRequest'ы.
-
-    `paths`           — список файлов или директорий; директории обходятся
-                        `rglob`.
-    `include`/`exclude` — glob-фильтры применяются к имени файла и
-                        относительному пути. Скрытые директории/файлы
-                        (`.git`, `.venv`, `.cache`) — пропускаются.
-    `follow_symlinks` — false по умолчанию (защита от циклов).
-
-    `source_id` каждого FsRequest = `fs:{absolute_path}`. Этот RequestSource
-    не знает про canonical-format'ы (Confluence-export и т.п.) — если нужна
-    cross-transport дедупликация, делается отдельный RequestSource поверх.
     """
+    `RequestSource[FsRequest]`: раскрывает paths (файлы/директории) в `FsRequest`'ы.
+
+    **Схема**:
+    ```
+    paths=[Path("docs/")]
+        └── docs/
+            ├── intro.md          ─┐
+            ├── api.md            ─┤  rglob("*") → fnmatch(include/exclude)
+            ├── notes/draft.md    ─┤
+            └── .git/HEAD          │  скрытые dir'ы (".git" / ".venv" / …) пропускаются
+                                   ▼
+    ──source.stream(ctx)──→
+        FsRequest(path="docs/intro.md",       source_id="fs:/abs/docs/intro.md",
+                  metadata={FsKeys.PATH, FsKeys.NAME})
+        FsRequest(path="docs/api.md",         source_id="fs:/abs/docs/api.md",   …)
+        FsRequest(path="docs/notes/draft.md", source_id="fs:/abs/docs/notes/draft.md", …)
+    ```
+
+    **Параметры**:
+    - `paths`            — файлы или директории; директории обходятся `rglob`.
+    - `include`/`exclude` — glob-фильтры по имени и пути; работают через
+      `Path.match` ИЛИ `fnmatch(name, pattern)` (любой match считается).
+    - `follow_symlinks`  — `False` по умолчанию (защита от циклов).
+
+    `source_id` всегда = `fs:{absolute_path}`. RequestSource не знает про
+    canonical-format'ы (Confluence-export и т.п.) — для cross-transport
+    дедупликации делается отдельный RequestSource поверх этого.
+
+    **Пример**:
+    ```python
+    source = FsWalkRequestSource(
+        paths=["docs/"],
+        include=["*.md"],
+        exclude=["**/draft*"],
+    )
+
+    # 2 .md-файла отобраны (draft.md отфильтрован exclude'ом).
+    list(source.stream(ctx)) == [
+        FsRequest(
+            path="docs/api.md",
+            source_id=SourceId("fs:/abs/docs/api.md"),
+            metadata=(
+                Metadata.empty()
+                .set(FsKeys.PATH, "docs/api.md")
+                .set(FsKeys.NAME, "api.md")
+            ),
+        ),
+        FsRequest(
+            path="docs/intro.md",
+            source_id=SourceId("fs:/abs/docs/intro.md"),
+            metadata=(
+                Metadata.empty()
+                .set(FsKeys.PATH, "docs/intro.md")
+                .set(FsKeys.NAME, "intro.md")
+            ),
+        ),
+    ]
+
+    # list_source_ids — те же canonical id, но без раскрытия в Request:
+    list(source.list_source_ids(ctx)) == [
+        "fs:/abs/docs/api.md",
+        "fs:/abs/docs/intro.md",
+    ]
+    ```
+    """  # noqa: E501
 
     def __init__(
         self,
