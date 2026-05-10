@@ -98,7 +98,7 @@ from boba.indexing.section_chunker import SectionChunker
 from boba.indexing.sections import Section, SourceId
 from boba.indexing.splitter import (
     LengthFunction,
-    RecursiveCharSplitter,
+    OverlapCharSplitter,
     SplitPiece,
     Splitter,
 )
@@ -179,6 +179,7 @@ __all__ = [
     "Not",
     "NotIn",
     "Or",
+    "OverlapCharSplitter",
     "PassThroughDecoder",
     "PhaseTransition",
     "PipelineContext",
@@ -189,7 +190,6 @@ __all__ = [
     "ReaderId",
     "ReaderKeys",
     "ReconcileSummary",
-    "RecursiveCharSplitter",
     "Request",
     "RequestSource",
     "RunFinished",

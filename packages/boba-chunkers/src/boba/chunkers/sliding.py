@@ -16,7 +16,7 @@ from boba.indexing import (
     DigestPrefix,
     FixedDigestPrefix,
     KeyEncoder,
-    RecursiveCharSplitter,
+    OverlapCharSplitter,
     SectionChunker,
     Sha256TextEncoder,
     SourceBasedChunkId,
@@ -53,7 +53,7 @@ def sliding_chunker(
 ) -> SectionChunker[str]:
     return SectionChunker(
         chunker_id=ChunkerId("sliding"),
-        splitter=RecursiveCharSplitter(
+        splitter=OverlapCharSplitter(
             chunk_size=config.chunk_size,
             chunk_overlap=config.chunk_overlap,
         ),
