@@ -1,8 +1,10 @@
-"""boba.reader.markdown — Markdown reader для индексации.
+"""
+boba.reader.markdown — Markdown reader для индексации
 
 `MarkdownReader` режет markdown-документ на heading-aware секции
-(ATX-стиль: `# Title`, `## Subtitle`, ...). Каждая секция получает
-anchor из slug текста heading'а — anchor стабилен между ре-индексациями
+(ATX-стиль: `# Title`, `## Subtitle`, ...).
+Каждая секция получает anchor из slug текста heading
+anchor стабилен между ре-индексациями
 пока заголовок не меняется, что даёт стабильный chunk_id для
 `AnchorBasedChunkId` стратегии.
 
@@ -11,10 +13,6 @@ anchor из slug текста heading'а — anchor стабилен между 
     for raw in transport.stream(ctx, requests):
         for section in reader.convert(raw):
             print(section.anchor, section.content[:50])
-
-Низкоуровневый pure parser (`parser.py`) экспонирует ATX-парсинг отдельно
-для случаев когда нужны heading'и без полного pipeline'а (например для
-TOC-генерации, navigation extraction).
 """
 
 from __future__ import annotations

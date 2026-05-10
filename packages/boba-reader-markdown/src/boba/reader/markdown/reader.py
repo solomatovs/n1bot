@@ -4,8 +4,7 @@ MarkdownReader: markdown → heading-aware Section[str]
 Каждый ATX-heading (`# A`, `## B`, ...) → отдельная Section с anchor из slug текста.
 Section = heading-строка + body до следующего heading
 
-Если в документе нет heading'ов — fallback одной Section со всем body.
-Preamble до первого heading'а становится отдельной anchor-less Section.
+Если в документе нет heading — fallback одной Section со всем body
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ __all__ = ["MarkdownReader"]
 
 class MarkdownReader(Reader[str]):
     """
-    `Reader[str]` для Markdown: режет документ на Section'и по ATX-heading'ам.
+    `Reader[str]` для Markdown: режет документ на Section по ATX-heading
 
     **Схема**:
     ```markdown
@@ -41,24 +40,43 @@ class MarkdownReader(Reader[str]):
     api body
     ```
     ```python
-    ──reader.convert(raw)──→
-    Section(content="preamble before any heading", anchor=None, order=0,
-            metadata={DOC_TYPE: "markdown"})
-    Section(content="# Intro\\n\\nintro body", anchor="intro", order=1,
-            metadata={DOC_TYPE: "markdown", HEADING_LEVEL: 1, HEADING_TEXT: "Intro"})
-    Section(content="## API\\n\\napi body",   anchor="api",   order=2,
-            metadata={DOC_TYPE: "markdown", HEADING_LEVEL: 2, HEADING_TEXT: "API"})
+    Section(
+        content="preamble before any heading",
+        anchor=None,
+        order=0,
+        metadata={
+            DOC_TYPE: "markdown",
+        }
+    )
+    Section(
+        content="# Intro\\n\\nintro body",
+        anchor="intro",
+        order=1,
+        metadata={
+            DOC_TYPE: "markdown",
+            HEADING_LEVEL: 1,
+            HEADING_TEXT: "Intro",
+        }
+    )
+    Section(
+        content="## API\\n\\napi body",
+        anchor="api",
+        order=2,
+        metadata={
+            DOC_TYPE: "markdown",
+            HEADING_LEVEL: 2,
+            HEADING_TEXT: "API",
+        }
+    )
     ```
 
     **Поведение**:
-    - ATX-heading'и (`#`, `##`, …); внутри code-fence (` ``` `) heading'и
-      игнорируются.
-    - `anchor` — slug текста heading'а (`"Foo Bar! 123"` → `"foo-bar-123"`);
-      fallback `"idx:N"` если slug пуст.
-    - Preamble до первого heading'а — отдельная anchor-less Section
-      (если непуст).
-    - Без heading'ов — одна Section со всем body, `anchor=None`.
-    - bytes декодируются как UTF-8 с `errors="replace"`.
+    - ATX-heading (`#`, `##`, …); внутри (` ``` `) heading игнорируются
+    - `anchor` — slug текста heading (`"Foo Bar! 123"` → `"foo-bar-123"`);
+        fallback `"idx:N"` если slug пуст.
+    - Preamble до первого heading — отдельная anchor-less Section (если непуст)
+    - Без heading — одна Section со всем body, `anchor=None`
+    - bytes декодируются как UTF-8 с `errors="replace"`
 
     **Пример**:
     ```python
@@ -72,7 +90,8 @@ class MarkdownReader(Reader[str]):
         source_id=SourceId("doc1"),
     )
 
-    # preamble → отдельная anchor-less Section; затем по Section на каждый heading.
+    # preamble → отдельная Section (без anchor)
+    # затем по Section на каждый heading
     list(reader.convert(raw)) == [
         Section(
             source_id=SourceId("doc1"),                  # pass из RawDocument
