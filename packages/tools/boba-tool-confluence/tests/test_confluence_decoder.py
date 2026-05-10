@@ -6,24 +6,29 @@ import json
 from io import BytesIO
 
 from boba.ext.confluence_tools.decoder import ConfluenceJsonDecoder
-from boba.processing import PipelineContext, PipelineId, RawDocument, RawDocumentId
+from boba.ext.confluence_tools.keys import ConfluenceKeys
+from boba.indexing import (
+    DecoderId,
+    Metadata,
+    RawDocument,
+    ReaderKeys,
+    SourceId,
+)
+from boba.transport.http import HttpKeys
 
 
-def _ctx() -> PipelineContext:
-    return PipelineContext(pipeline_id=PipelineId("t"), collection="c")
-
-
-def _doc(payload: bytes, *, metadata: dict[str, str] | None = None) -> RawDocument:
+def _doc(payload: bytes, *, metadata: Metadata | None = None) -> RawDocument:
     return RawDocument(
         handle=BytesIO(payload),
-        source_id="https://confl.test/pages/viewpage.action?pageId=1",
-        content_hint="application/json",
-        metadata=metadata or {},
+        source_id=SourceId(
+            "https://confl.test/pages/viewpage.action?pageId=1"
+        ),
+        metadata=metadata or Metadata.empty(),
     )
 
 
 def test_decoder_id():
-    assert ConfluenceJsonDecoder().decoder_id() == RawDocumentId("ext.confluence_json")
+    assert ConfluenceJsonDecoder().decoder_id() == DecoderId("ext.confluence_json")
 
 
 def test_default_body_format_export_view():
@@ -33,10 +38,9 @@ def test_default_body_format_export_view():
             "body": {"export_view": {"value": "<p>hello</p>"}},
         }
     ).encode("utf-8")
-    out = ConfluenceJsonDecoder().convert(_ctx(), _doc(payload))
+    out = ConfluenceJsonDecoder().convert(_doc(payload))
     assert out.handle.read() == b"<p>hello</p>"
-    assert out.content_hint == "confluence_html"
-    assert out.metadata["title"] == "Page Title"
+    assert out.metadata.get(ReaderKeys.PAGE_TITLE) == "Page Title"
 
 
 def test_custom_body_format():
@@ -46,7 +50,7 @@ def test_custom_body_format():
             "body": {"storage": {"value": "<storage/>"}},
         }
     ).encode("utf-8")
-    out = ConfluenceJsonDecoder(body_format="storage").convert(_ctx(), _doc(payload))
+    out = ConfluenceJsonDecoder(body_format="storage").convert(_doc(payload))
     assert out.handle.read() == b"<storage/>"
 
 
@@ -58,9 +62,9 @@ def test_version_added_to_metadata():
             "version": {"number": 7, "when": "2024-01-15T10:00:00Z"},
         }
     ).encode("utf-8")
-    out = ConfluenceJsonDecoder().convert(_ctx(), _doc(payload))
-    assert out.metadata["version"] == "7"
-    assert out.metadata["last_modified"] == "2024-01-15T10:00:00Z"
+    out = ConfluenceJsonDecoder().convert(_doc(payload))
+    assert out.metadata.get(ConfluenceKeys.VERSION) == 7
+    assert out.metadata.get(HttpKeys.LAST_MODIFIED) == "2024-01-15T10:00:00Z"
 
 
 def test_existing_last_modified_preserved():
@@ -73,11 +77,11 @@ def test_existing_last_modified_preserved():
         }
     ).encode("utf-8")
     upstream = "Wed, 01 Jan 2020 00:00:00 GMT"
+    upstream_md = Metadata.empty().set(HttpKeys.LAST_MODIFIED, upstream)
     out = ConfluenceJsonDecoder().convert(
-        _ctx(),
-        _doc(payload, metadata={"last_modified": upstream}),
+        _doc(payload, metadata=upstream_md),
     )
-    assert out.metadata["last_modified"] == upstream
+    assert out.metadata.get(HttpKeys.LAST_MODIFIED) == upstream
 
 
 def test_upstream_metadata_preserved():
@@ -88,26 +92,30 @@ def test_upstream_metadata_preserved():
             "body": {"export_view": {"value": "<p/>"}},
         }
     ).encode("utf-8")
-    out = ConfluenceJsonDecoder().convert(
-        _ctx(),
-        _doc(payload, metadata={"confluence_page_id": "777", "etag": "abc"}),
+    upstream = (
+        Metadata.empty()
+        .set(ConfluenceKeys.PAGE_ID, "777")
+        .set(ConfluenceKeys.HOST, "confl.test")
     )
-    assert out.metadata["confluence_page_id"] == "777"
-    assert out.metadata["etag"] == "abc"
+    out = ConfluenceJsonDecoder().convert(
+        _doc(payload, metadata=upstream),
+    )
+    assert out.metadata.get(ConfluenceKeys.PAGE_ID) == "777"
+    assert out.metadata.get(ConfluenceKeys.HOST) == "confl.test"
 
 
 def test_empty_payload_passthrough():
     """Пустой ответ — без падения, document возвращается как есть."""
     doc = _doc(b"")
-    out = ConfluenceJsonDecoder().convert(_ctx(), doc)
+    out = ConfluenceJsonDecoder().convert(doc)
     assert out is doc
 
 
 def test_missing_body_yields_empty_html():
     payload = json.dumps({"title": "T"}).encode("utf-8")
-    out = ConfluenceJsonDecoder().convert(_ctx(), _doc(payload))
+    out = ConfluenceJsonDecoder().convert(_doc(payload))
     assert out.handle.read() == b""
-    assert out.metadata["title"] == "T"
+    assert out.metadata.get(ReaderKeys.PAGE_TITLE) == "T"
 
 
 def test_source_id_preserved():
@@ -117,5 +125,8 @@ def test_source_id_preserved():
             "body": {"export_view": {"value": "<p/>"}},
         }
     ).encode("utf-8")
-    out = ConfluenceJsonDecoder().convert(_ctx(), _doc(payload))
-    assert out.source_id == "https://confl.test/pages/viewpage.action?pageId=1"
+    out = ConfluenceJsonDecoder().convert(_doc(payload))
+    assert (
+        out.source_id.to_wire()
+        == "https://confl.test/pages/viewpage.action?pageId=1"
+    )

@@ -1,10 +1,10 @@
 """Общие helpers: URL-builder, httpx-клиент для discovery-запросов.
 
-Identity (source_id) НЕ формируется RequestSource'ом — это URL транспорта.
-HttpTransport подставит `RawDocument.source_id = HttpRequest.url` при пустом
-поле. Если когда-то понадобится cross-transport дедупликация (одна и та же
-Confluence-страница, полученная REST'ом и FS-export'ом, получает один id) —
-это будет отдельный canonical-resolver слой, не функция RequestSource'а.
+Identity (`source_id`) формируется RequestSource'ом — stable viewpage-URL
+страницы (отдельный от REST URL запроса). Если когда-то понадобится
+cross-transport дедупликация (одна и та же Confluence-страница, полученная
+REST'ом и FS-export'ом, получает один id) — это будет отдельный
+canonical-resolver слой, не функция RequestSource'а.
 """
 
 from __future__ import annotations
@@ -15,8 +15,9 @@ from urllib.parse import urlparse
 
 import httpx
 
-from boba.http_transport import HttpRequest
-from boba.processing import AuthApplier
+from boba.ext.confluence_tools.keys import ConfluenceKeys
+from boba.indexing import Metadata, SourceId
+from boba.transport.http import AuthApplier, HttpRequest
 
 __all__ = [
     "extract_host",
@@ -55,9 +56,10 @@ def make_page_request(
 ) -> HttpRequest:
     """HttpRequest на выгрузку страницы.
 
-    `url` — REST endpoint с expand-полями (что Transport исполняет).
-    `source_id` — stable viewpage URL (canonical id документа).
-    Эти поля разные: REST URL может меняться, viewpage URL — нет.
+    `url`        — REST endpoint с expand-полями (что Transport исполняет).
+    `source_id`  — stable viewpage URL (canonical id документа). Отдельный
+                   от REST URL, который меняется с эндпоинтами.
+    `metadata`   — page_id и host для дальнейших стадий (Decoder/Reader).
     """
     expand = _DEFAULT_EXPAND.format(body_format=body_format)
     rest_url = (
@@ -68,11 +70,12 @@ def make_page_request(
         url=rest_url,
         method="GET",
         auth=auth,
-        source_id=viewpage_url(base_url, page_id),
-        metadata={
-            "confluence_page_id": page_id,
-            "confluence_host": host,
-        },
+        source_id=SourceId(viewpage_url(base_url, page_id)),
+        metadata=(
+            Metadata.empty()
+            .set(ConfluenceKeys.PAGE_ID, page_id)
+            .set(ConfluenceKeys.HOST, host)
+        ),
     )
 
 

@@ -1,6 +1,6 @@
 """ConfluenceJsonDecoder: REST-JSON → RawDocument(html-handle, +title/version).
 
-Confluence Content REST endpoint возвращает JSON вида::
+Confluence возвращает JSON вида::
 
     {
       "id": "123",
@@ -10,33 +10,36 @@ Confluence Content REST endpoint возвращает JSON вида::
     }
 
 Decoder вынимает HTML из `body.<body_format>.value`, кладёт его в новый
-handle (BytesIO), обогащает metadata: `title`, `version` (число → str),
-`last_modified` (когда отсутствует — из `version.when`). Reader дальше
-работает с готовым HTML и `metadata['title']`.
+handle (BytesIO), обогащает metadata: title (`ReaderKeys.PAGE_TITLE`),
+version (`ConfluenceKeys.VERSION`), last_modified (`HttpKeys.LAST_MODIFIED`,
+если ещё не заполнен HttpTransport'ом). Reader дальше работает с готовым
+HTML.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 from dataclasses import replace
 from io import BytesIO
 from typing import Any
 
-from boba.processing import (
+from boba.ext.confluence_tools.keys import ConfluenceKeys
+from boba.indexing import (
     Decoder,
-    PipelineContext,
+    DecoderId,
     RawDocument,
-    RawDocumentId,
+    ReaderKeys,
 )
+from boba.transport.http import HttpKeys
 
 __all__ = ["ConfluenceJsonDecoder"]
-
-_DECODER_ID = RawDocumentId("ext.confluence_json")
-_HTML_HINT = "confluence_html"
 
 
 class ConfluenceJsonDecoder(Decoder):
     """Confluence REST JSON → HTML-handle + расширенная metadata."""
+
+    DECODER_ID = DecoderId("ext.confluence_json")
 
     def __init__(self, *, body_format: str = "export_view") -> None:
         self._body_format = body_format
@@ -44,15 +47,10 @@ class ConfluenceJsonDecoder(Decoder):
     def name(self) -> str:
         return f"ConfluenceJsonDecoder(format={self._body_format})"
 
-    def decoder_id(self) -> RawDocumentId:
-        return _DECODER_ID
+    def decoder_id(self) -> DecoderId:
+        return self.DECODER_ID
 
-    def convert(
-        self,
-        ctx: PipelineContext,
-        value: RawDocument,
-    ) -> RawDocument:
-        del ctx
+    def convert(self, value: RawDocument) -> RawDocument:
         payload = value.handle.read()
         if not payload:
             return value
@@ -61,21 +59,21 @@ class ConfluenceJsonDecoder(Decoder):
         body_block = body.get(self._body_format) or {}
         html = str(body_block.get("value", "")) if isinstance(body_block, dict) else ""
 
-        merged: dict[str, str] = {**value.metadata}
+        meta = value.metadata
         if title := data.get("title"):
-            merged["title"] = str(title)
+            meta = meta.set(ReaderKeys.PAGE_TITLE, str(title))
         version = data.get("version") or {}
         if isinstance(version, dict):
             if (n := version.get("number")) is not None:
-                merged["version"] = str(n)
-            if (when := version.get("when")) and "last_modified" not in merged:
-                merged["last_modified"] = str(when)
+                with contextlib.suppress(TypeError, ValueError):
+                    meta = meta.set(ConfluenceKeys.VERSION, int(n))
+            if (when := version.get("when")) and not meta.has(HttpKeys.LAST_MODIFIED):
+                meta = meta.set(HttpKeys.LAST_MODIFIED, str(when))
 
         return replace(
             value,
             handle=BytesIO(html.encode("utf-8")),
-            content_hint=_HTML_HINT,
-            metadata=merged,
+            metadata=meta,
         )
 
     def reset(self) -> None:

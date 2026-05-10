@@ -36,8 +36,8 @@ T_contra = TypeVar("T_contra", contravariant=True)
 
 
 @dataclass(frozen=True, slots=True)
-class _Piece:
-    """Внутренний кусок splitter'а: text + абсолютный start-offset в источнике."""
+class Piece:
+    """Внутренний кусок splitter: text + абсолютный start-offset в источнике"""
 
     text: str
     start: int
@@ -133,11 +133,11 @@ class RecursiveCharSplitter(Splitter[str]):
         text: str,
         base: int,
         seps: Sequence[str],
-    ) -> list[_Piece]:
+    ) -> list[Piece]:
         sep, next_seps = self._pick_separator(seps, text)
         splits = self._split_by_separator(text, base, sep)
-        final: list[_Piece] = []
-        good: list[_Piece] = []
+        final: list[Piece] = []
+        good: list[Piece] = []
 
         for p in splits:
             if self._length(p.text) < self._chunk_size:
@@ -163,6 +163,9 @@ class RecursiveCharSplitter(Splitter[str]):
         seps: Sequence[str],
         text: str,
     ) -> tuple[str, Sequence[str]]:
+        """
+        Выбирает разделитель по принципу первый попавшийся из списка
+        """
         for i, s in enumerate(seps):
             if s == "":
                 return "", ()
@@ -171,28 +174,36 @@ class RecursiveCharSplitter(Splitter[str]):
         return (seps[-1] if seps else "", ())
 
     @staticmethod
-    def _split_by_separator(text: str, base: int, sep: str) -> list[_Piece]:
+    def _split_by_separator(text: str, base: int, sep: str) -> list[Piece]:
+        """
+            Разбивает текст на куски по выбранному разделителю
+            Возвращает список объектов
+            Piece = {
+                text  : кусок текста
+                start : offset начала куска внутри text
+            }
+        """
         if sep == "":
-            return [_Piece(text=c, start=base + i) for i, c in enumerate(text)]
+            return [Piece(text=c, start=base + i) for i, c in enumerate(text)]
 
-        pieces: list[_Piece] = []
+        pieces: list[Piece] = []
         pos = 0
         n = len(text)
         sep_len = len(sep)
         while pos < n:
             idx = text.find(sep, pos)
             if idx == -1:
-                pieces.append(_Piece(text=text[pos:], start=base + pos))
+                pieces.append(Piece(text=text[pos:], start=base + pos))
                 break
             if idx > pos:
-                pieces.append(_Piece(text=text[pos:idx], start=base + pos))
+                pieces.append(Piece(text=text[pos:idx], start=base + pos))
             pos = idx + sep_len
         return pieces
 
-    def _merge_pieces(self, pieces: list[_Piece], glue: str) -> list[_Piece]:
+    def _merge_pieces(self, pieces: list[Piece], glue: str) -> list[Piece]:
         glue_len = self._length(glue)
-        out: list[_Piece] = []
-        current: list[_Piece] = []
+        out: list[Piece] = []
+        current: list[Piece] = []
         current_len = 0
 
         for p in pieces:
@@ -218,6 +229,6 @@ class RecursiveCharSplitter(Splitter[str]):
         return out
 
     @staticmethod
-    def _join_batch(batch: list[_Piece], glue: str) -> _Piece:
+    def _join_batch(batch: list[Piece], glue: str) -> Piece:
         text = glue.join(p.text for p in batch)
-        return _Piece(text=text, start=batch[0].start)
+        return Piece(text=text, start=batch[0].start)

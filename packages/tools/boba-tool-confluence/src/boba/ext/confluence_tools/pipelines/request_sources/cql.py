@@ -12,8 +12,8 @@ from boba.ext.confluence_tools.pipelines.request_sources._common import (
     make_page_request,
     viewpage_url,
 )
-from boba.http_transport import HttpRequest
-from boba.processing import AuthApplier, PipelineContext, RequestSource
+from boba.indexing import PipelineContext, RequestSource
+from boba.transport.http import AuthApplier, HttpRequest
 
 __all__ = ["ConfluenceCqlRequestSource"]
 

@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-chunkers"
+version = "0.1.0"
+description = "Boba chunkers: фабрики SectionChunker[str] с готовыми конфигурациями (heading, sliding)."
+requires-python = ">=3.11,<4"
+dependencies = ["boba-indexing"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

@@ -7,17 +7,18 @@ import json
 import httpx
 import pytest
 
+from boba.ext.confluence_tools.keys import ConfluenceKeys
 from boba.ext.confluence_tools.pipelines.request_sources import (
     ConfluenceCqlRequestSource,
     ConfluencePagesRequestSource,
     ConfluenceSpaceRequestSource,
 )
-from boba.http_transport import PatAuth
-from boba.processing import PipelineContext, PipelineId
+from boba.indexing import PipelineContext, PipelineId
+from boba.transport.http import PatAuth
 
 
 def _ctx() -> PipelineContext:
-    return PipelineContext(pipeline_id=PipelineId("t"), collection="c")
+    return PipelineContext(pipeline_id=PipelineId("t"))
 
 
 def _patch_httpx(monkeypatch, handler):
@@ -49,15 +50,17 @@ def test_pages_source_sets_viewpage_source_id_and_rest_url():
     assert all("expand=body.export_view" in r.url for r in requests)
     # source_id = stable viewpage URL — НЕ равен r.url
     assert (
-        requests[0].source_id == "https://confl.test/pages/viewpage.action?pageId=111"
+        requests[0].source_id.to_wire()
+        == "https://confl.test/pages/viewpage.action?pageId=111"
     )
     assert (
-        requests[1].source_id == "https://confl.test/pages/viewpage.action?pageId=222"
+        requests[1].source_id.to_wire()
+        == "https://confl.test/pages/viewpage.action?pageId=222"
     )
-    assert all(r.source_id != r.url for r in requests)
+    assert all(r.source_id.to_wire() != r.url for r in requests)
     # metadata содержит structured-данные для kb_search
-    assert all(r.metadata["confluence_page_id"] for r in requests)
-    assert all(r.metadata["confluence_host"] == "confl.test" for r in requests)
+    assert all(r.metadata.get(ConfluenceKeys.PAGE_ID) for r in requests)
+    assert all(r.metadata.get(ConfluenceKeys.HOST) == "confl.test" for r in requests)
     assert all(r.auth is not None for r in requests)
 
 
@@ -121,7 +124,10 @@ def test_space_source_stream_emits_one_request_per_page(monkeypatch):
     assert len(requests) == 1
     r = requests[0]
     assert "rest/api/content/777" in r.url
-    assert r.source_id == "https://confl.test/pages/viewpage.action?pageId=777"
+    assert (
+        r.source_id.to_wire()
+        == "https://confl.test/pages/viewpage.action?pageId=777"
+    )
 
 
 def test_cql_source_uses_search_endpoint(monkeypatch):
@@ -154,7 +160,10 @@ def test_pages_request_url_includes_expand_for_body_format():
     req = next(iter(src.stream(_ctx())))
     assert "expand=body.storage" in req.url
     # source_id не зависит от body_format — стабилен
-    assert req.source_id == "https://confl.test/pages/viewpage.action?pageId=1"
+    assert (
+        req.source_id.to_wire()
+        == "https://confl.test/pages/viewpage.action?pageId=1"
+    )
 
 
 def test_request_url_strips_trailing_slash_in_base_url():
@@ -165,7 +174,7 @@ def test_request_url_strips_trailing_slash_in_base_url():
     )
     req = next(iter(src.stream(_ctx())))
     assert "//rest/api" not in req.url
-    assert "//pages/viewpage" not in req.source_id
+    assert "//pages/viewpage" not in req.source_id.to_wire()
 
 
 def test_metadata_carries_page_id_and_host():
@@ -176,8 +185,8 @@ def test_metadata_carries_page_id_and_host():
         page_ids=["12345"],
     )
     req = next(iter(src.stream(_ctx())))
-    assert req.metadata["confluence_page_id"] == "12345"
-    assert req.metadata["confluence_host"] == "confl.x.com"
+    assert req.metadata.get(ConfluenceKeys.PAGE_ID) == "12345"
+    assert req.metadata.get(ConfluenceKeys.HOST) == "confl.x.com"
 
 
 def test_no_auth_passes_none(monkeypatch):
@@ -210,4 +219,4 @@ def test_host_extraction(base_url, expected_host):
         page_ids=["1"],
     )
     req = next(iter(src.stream(_ctx())))
-    assert req.metadata["confluence_host"] == expected_host
+    assert req.metadata.get(ConfluenceKeys.HOST) == expected_host

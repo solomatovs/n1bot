@@ -11,7 +11,7 @@ from typing import Protocol
 from boba.coercion import (
     RequiredWhen,
 )
-from boba.http_transport import BasicAuth, HttpTransport, PatAuth
+from boba.transport.http import BasicAuth, HttpTransport, PatAuth
 
 __all__ = [
     "ConfluenceConnection",
