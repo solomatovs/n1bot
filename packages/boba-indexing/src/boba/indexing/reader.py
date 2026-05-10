@@ -149,7 +149,7 @@ class PlainTextReader(Reader[str]):
                 metadata=Metadata({ReaderKeys.DOC_TYPE: "text/plain"})),
     ]
     ```
-    """  # noqa: E501
+    """
 
     READER_ID: ClassVar[ReaderId] = ReaderId("ext.text")
     DEFAULT_ENCODING: ClassVar[str] = "utf-8"
@@ -178,7 +178,6 @@ class PlainTextReader(Reader[str]):
         yield Section(
             source_id=value.source_id,
             content=text,
-            anchor=None,
             order=0,
             metadata=value.metadata.set(ReaderKeys.DOC_TYPE, self.DOC_TYPE),
         )

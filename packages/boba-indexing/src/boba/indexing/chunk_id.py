@@ -27,7 +27,7 @@ from typing import Generic, Protocol, TypeVar, runtime_checkable
 
 from boba.indexing.chunks import ChunkId
 from boba.indexing.key_encoder import KeyEncoder
-from boba.indexing.sections import Section
+from boba.indexing.sections import Section, SectionKeys
 
 __all__ = [
     "AnchorBasedChunkId",
@@ -98,7 +98,8 @@ class AnchorBasedChunkId(ChunkIdStrategy[T]):
         self._prefix = prefix
 
     def compute(self, section: Section[T], chunk_index: int) -> ChunkId:
-        key = f"{section.source_id.to_wire()}#{section.anchor or ''}"
+        anchor = section.metadata.get(SectionKeys.ANCHOR) or ""
+        key = f"{section.source_id.to_wire()}#{anchor}"
         hash_obj = self._encoder.encode(key)
         return ChunkId.from_digest(
             hash_obj.to_wire(),

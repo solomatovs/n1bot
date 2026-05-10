@@ -29,18 +29,33 @@ import re
 from collections.abc import Iterable
 
 from boba.indexing import (
-    BlockquoteSection,
     ChunkLocation,
-    CodeFenceSection,
     HeadingSection,
-    HorizontalRuleSection,
-    ListSection,
     Metadata,
     ParagraphSection,
     Section,
+    SectionKeys,
     SourceId,
-    TableSection,
 )
+from boba.markdown.sections import (
+    MarkdownBlockquoteSection,
+    MarkdownCodeFenceSection,
+    MarkdownHorizontalRuleSection,
+    MarkdownListSection,
+    MarkdownTableSection,
+)
+
+
+def _with_location(
+    base: Metadata, start: int, end: int, anchor: str | None = None,
+) -> Metadata:
+    """Кладёт координаты секции (и опционально anchor) в metadata."""
+    md = base.set(SectionKeys.LOCATION_START, start).set(
+        SectionKeys.LOCATION_END, end
+    )
+    if anchor is not None:
+        md = md.set(SectionKeys.ANCHOR, anchor)
+    return md
 
 __all__ = ["MarkdownSectionParser", "slugify"]
 
@@ -188,10 +203,10 @@ class MarkdownSectionParser:
         section = HeadingSection(
             source_id=source_id,
             content=content,
-            location=ChunkLocation(start=start, end=end),
-            anchor=slugify(heading_text),
             order=order,
-            metadata=base_metadata,
+            metadata=_with_location(
+                base_metadata, start, end, anchor=slugify(heading_text),
+            ),
             level=level,
             text=heading_text,
         )
@@ -210,9 +225,8 @@ class MarkdownSectionParser:
         section = ParagraphSection(
             source_id=source_id,
             content=content,
-            location=ChunkLocation(start=start, end=end),
             order=order,
-            metadata=base_metadata,
+            metadata=_with_location(base_metadata, start, end),
         )
         advance = cls._skip_until(tokens, i + 1, "paragraph_close") + 1
         return section, advance
@@ -232,12 +246,11 @@ class MarkdownSectionParser:
         for line_no in range(body_first_line, body_last_line):
             ls, le, _ = cls._slice_for_map(text, line_offsets, [line_no, line_no + 1])
             line_locs.append(ChunkLocation(start=ls, end=le))
-        section = CodeFenceSection(
+        section = MarkdownCodeFenceSection(
             source_id=source_id,
             content=content,
-            location=ChunkLocation(start=start, end=end),
             order=order,
-            metadata=base_metadata,
+            metadata=_with_location(base_metadata, start, end),
             language=info or None,
             code=tok.content,
             code_line_locations=tuple(line_locs),
@@ -298,12 +311,11 @@ class MarkdownSectionParser:
             )
         else:
             hs, he, htext = start, start, ""
-        section = TableSection(
+        section = MarkdownTableSection(
             source_id=source_id,
             content=content,
-            location=ChunkLocation(start=start, end=end),
             order=order,
-            metadata=base_metadata,
+            metadata=_with_location(base_metadata, start, end),
             header=tuple(header),
             rows=tuple(tuple(r) for r in rows),
             header_text=htext,
@@ -351,12 +363,11 @@ class MarkdownSectionParser:
             elif in_top_level_item and t.type == "inline":
                 cur_item_parts.append(t.content)
             j += 1
-        section = ListSection(
+        section = MarkdownListSection(
             source_id=source_id,
             content=content,
-            location=ChunkLocation(start=start, end=end),
             order=order,
-            metadata=base_metadata,
+            metadata=_with_location(base_metadata, start, end),
             ordered=ordered,
             items=tuple(items),
             item_locations=tuple(item_locs),
@@ -372,12 +383,11 @@ class MarkdownSectionParser:
         if not tok.map:
             return None, cls._skip_until(tokens, i + 1, "blockquote_close") + 1
         start, end, content = cls._slice_for_map(text, line_offsets, tok.map)
-        section = BlockquoteSection(
+        section = MarkdownBlockquoteSection(
             source_id=source_id,
             content=content,
-            location=ChunkLocation(start=start, end=end),
             order=order,
-            metadata=base_metadata,
+            metadata=_with_location(base_metadata, start, end),
         )
         depth = 1
         j = i + 1
@@ -397,12 +407,11 @@ class MarkdownSectionParser:
         if not tok.map:
             return None, 1
         start, end, content = cls._slice_for_map(text, line_offsets, tok.map)
-        section = HorizontalRuleSection(
+        section = MarkdownHorizontalRuleSection(
             source_id=source_id,
             content=content,
-            location=ChunkLocation(start=start, end=end),
             order=order,
-            metadata=base_metadata,
+            metadata=_with_location(base_metadata, start, end),
         )
         return section, 1
 
@@ -418,9 +427,8 @@ class MarkdownSectionParser:
         section = ParagraphSection(
             source_id=source_id,
             content=content,
-            location=ChunkLocation(start=start, end=end),
             order=order,
-            metadata=base_metadata,
+            metadata=_with_location(base_metadata, start, end),
         )
         return section, 1
 
