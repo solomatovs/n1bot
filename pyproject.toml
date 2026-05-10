@@ -12,8 +12,6 @@ pythonpath = [
     "packages/boba-prompt-providers/src",
     "packages/boba-provider-openai/src",
     "packages/boba-tools/src",
-    "packages/boba-transport-fs/src",
-    "packages/boba-transport-http/src",
     "packages/boba-workspace-fs/src",
     "packages/agents/boba-cli-agent-run/src",
     "packages/agents/boba-web-chainlit/src",
@@ -24,6 +22,8 @@ pythonpath = [
     "packages/tools/boba-tool-confluence/src",
     "packages/tools/boba-tool-files/src",
     "packages/tools/boba-tool-html/src",
+    "packages/transport/boba-transport-fs/src",
+    "packages/transport/boba-transport-http/src",
 ]
 addopts = ["--strict-markers", "-m", "not integration"]
 markers = [
@@ -49,8 +49,6 @@ extraPaths = [
     "packages/boba-prompt-providers/src",
     "packages/boba-provider-openai/src",
     "packages/boba-tools/src",
-    "packages/boba-transport-fs/src",
-    "packages/boba-transport-http/src",
     "packages/boba-workspace-fs/src",
     "packages/agents/boba-cli-agent-run/src",
     "packages/agents/boba-web-chainlit/src",
@@ -61,6 +59,8 @@ extraPaths = [
     "packages/tools/boba-tool-confluence/src",
     "packages/tools/boba-tool-files/src",
     "packages/tools/boba-tool-html/src",
+    "packages/transport/boba-transport-fs/src",
+    "packages/transport/boba-transport-http/src",
 ]
 venvPath = "."
 venv = ".venv"
