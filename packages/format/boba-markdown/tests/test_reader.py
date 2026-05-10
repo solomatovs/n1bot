@@ -10,11 +10,7 @@ import pytest
 pytest.importorskip("markdown_it")
 
 from boba.indexing import (
-    BlockquoteSection,
-    CodeFenceSection,
     HeadingSection,
-    HorizontalRuleSection,
-    ListSection,
     Metadata,
     ParagraphSection,
     RawDocument,
@@ -22,9 +18,15 @@ from boba.indexing import (
     ReaderKeys,
     SectionKeys,
     SourceId,
-    TableSection,
 )
-from boba.markdown import MarkdownReader
+from boba.markdown import (
+    MarkdownBlockquoteSection,
+    MarkdownCodeFenceSection,
+    MarkdownHorizontalRuleSection,
+    MarkdownListSection,
+    MarkdownReader,
+    MarkdownTableSection,
+)
 
 
 def _doc(text: str, *, source_id: str = "doc1") -> RawDocument:
@@ -32,10 +34,6 @@ def _doc(text: str, *, source_id: str = "doc1") -> RawDocument:
         handle=BytesIO(text.encode("utf-8")),
         source_id=SourceId(source_id),
     )
-
-
-# --------------------------- general --------------------------------
-
 
 def test_reader_id():
     assert MarkdownReader().reader_id() == ReaderId("ext.markdown")
@@ -69,14 +67,14 @@ print("hi")
 ---
 """
     for s in MarkdownReader().convert(_doc(md)):
-        assert md[s.location.start : s.location.end] == s.content
+        start = s.metadata.get(SectionKeys.LOCATION_START)
+        end = s.metadata.get(SectionKeys.LOCATION_END)
+        assert start is not None and end is not None
+        assert md[start:end] == s.content
 
 
 def test_empty_payload_yields_nothing():
     assert list(MarkdownReader().convert(_doc(""))) == []
-
-
-# --------------------------- HeadingSection -------------------------
 
 
 def test_heading_section_typed_fields():
@@ -85,7 +83,7 @@ def test_heading_section_typed_fields():
     assert isinstance(s, HeadingSection)
     assert s.level == 2
     assert s.text == "My Section"
-    assert s.anchor == "my-section"
+    assert s.metadata.get(SectionKeys.ANCHOR) == "my-section"
     md_meta = s.to_chunk_metadata()
     assert md_meta.get(SectionKeys.HEADING_LEVEL) == 2
     assert md_meta.get(SectionKeys.HEADING_TEXT) == "My Section"
@@ -101,10 +99,6 @@ def test_multiple_headings_yield_separate_sections_in_order():
         (1, "h1"), (2, "h2"), (3, "h3"),
     ]
 
-
-# --------------------------- ParagraphSection -----------------------
-
-
 def test_paragraph_keeps_inline_markdown():
     md = "This is **bold** and `code` and a [link](url)."
     [s] = list(MarkdownReader().convert(_doc(md)))
@@ -112,13 +106,11 @@ def test_paragraph_keeps_inline_markdown():
     assert s.content == md
 
 
-# --------------------------- CodeFenceSection -----------------------
-
 
 def test_code_fence_section_with_language():
     md = "```python\ndef f():\n    return 1\n```"
     [s] = list(MarkdownReader().convert(_doc(md)))
-    assert isinstance(s, CodeFenceSection)
+    assert isinstance(s, MarkdownCodeFenceSection)
     assert s.language == "python"
     assert s.code == "def f():\n    return 1\n"
     assert s.content == md
@@ -128,30 +120,26 @@ def test_code_fence_section_with_language():
 def test_code_fence_no_language():
     md = "```\nplain code\n```"
     [s] = list(MarkdownReader().convert(_doc(md)))
-    assert isinstance(s, CodeFenceSection)
+    assert isinstance(s, MarkdownCodeFenceSection)
     assert s.language is None
 
-
-# --------------------------- TableSection ---------------------------
 
 
 def test_table_section_typed_fields():
     md = "| name | type |\n|------|------|\n| id   | int  |\n| name | str  |"
     [s] = list(MarkdownReader().convert(_doc(md)))
-    assert isinstance(s, TableSection)
+    assert isinstance(s, MarkdownTableSection)
     assert s.header == ("name", "type")
     assert s.rows == (("id", "int"), ("name", "str"))
     assert s.content == md
     assert len(s.row_locations) == 2
 
 
-# --------------------------- ListSection ----------------------------
-
 
 def test_unordered_list_section():
     md = "- alpha\n- beta\n- gamma"
     [s] = list(MarkdownReader().convert(_doc(md)))
-    assert isinstance(s, ListSection)
+    assert isinstance(s, MarkdownListSection)
     assert s.ordered is False
     assert s.items == ("alpha", "beta", "gamma")
     assert len(s.item_locations) == 3
@@ -160,31 +148,23 @@ def test_unordered_list_section():
 def test_ordered_list_section():
     md = "1. one\n2. two\n3. three"
     [s] = list(MarkdownReader().convert(_doc(md)))
-    assert isinstance(s, ListSection)
+    assert isinstance(s, MarkdownListSection)
     assert s.ordered is True
 
-
-# --------------------------- BlockquoteSection ---------------------
 
 
 def test_blockquote_section():
     md = "> single line quote"
     [s] = list(MarkdownReader().convert(_doc(md)))
-    assert isinstance(s, BlockquoteSection)
+    assert isinstance(s, MarkdownBlockquoteSection)
     assert s.content == md
 
-
-# --------------------------- HorizontalRuleSection -----------------
 
 
 def test_horizontal_rule_section():
     md = "---"
     [s] = list(MarkdownReader().convert(_doc(md)))
-    assert isinstance(s, HorizontalRuleSection)
-
-
-# --------------------------- multiple types together --------------
-
+    assert isinstance(s, MarkdownHorizontalRuleSection)
 
 def test_blocks_emitted_in_document_order():
     md = "# A\n\npara\n\n```\ncode\n```\n\n- item"
@@ -193,13 +173,9 @@ def test_blocks_emitted_in_document_order():
     assert types == [
         "HeadingSection",
         "ParagraphSection",
-        "CodeFenceSection",
-        "ListSection",
+        "MarkdownCodeFenceSection",
+        "MarkdownListSection",
     ]
-
-
-# --------------------------- metadata merge ------------------------
-
 
 def test_metadata_merged_with_upstream():
     upstream = Metadata.from_wire({"source_url": "https://example.com/page"})

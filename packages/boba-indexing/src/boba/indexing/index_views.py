@@ -2,80 +2,87 @@
 """
 Index views — два business-layer ABC поверх VectorStore.
 
-Разделены по типу входных данных:
+- `IndexQuery[T]` — filter-based операции (`find` / `clean` / `narrow`).
+  Принимает `Filter` на вход. Реализация автоматически инжектит scope-фильтр
+  в каждый запрос — caller физически не может задеть данные другого scope'а.
+  В роли scope-key может выступать ЛЮБОЕ поле; impl сам решает какое.
+  Возможные реализации:
+    - `NamespacedView(store, collection, namespace)` — scope по `namespace`
+    - `TaggedView(store, collection, tag)` — scope через `HasTag(tag)`
+    - `TenantView(...)` — multi-tenant изоляция по `tenant_id`
+    - `TimeBucketedView(...)` — sharding по time-bucket
+    - `GlobalView(store, collection)` — без scope-фильтра
 
-- `IndexQuery[T]` — filter-based операции (find / clean / narrow).
-    Принимает Filter на вход.
-    Подходит для search-сервисов, cleanup-стратегий, audit-инструментов.
+- `IndexSink[T]` — data-input операция (только `reconcile`). Чанки сами несут
+  свою идентичность (`chunk_id`, `source_id`, `chunk_index`); sink инжектит
+  свой scope-tag при write, caller не задаёт scope извне. `narrow` на
+  write-стороне не нужен — primary-key уникален.
 
-Каждая реализация автоматически инжектит scope-фильтр в каждый запрос —
-caller физически не может задеть данные другого scope'а.
-В роли scope-key может выступать ЛЮБОЕ поле.
-Реализация сама решает как фильтровать данные что бы соблюдать рамки реализуемого scope фильтра
-Вот некоторые предполагаемые примеры реализаций:
-    - NamespacedView(store, collection, namespace)
-        фильтрует по полю `namespace` - бизнес-уровневая группировка
-        нескольких `source_id`
-    - TaggedView(store, collection, tag) — фильтрует по тэгам `HasTag(tag)`
-    - TenantView(...) — multi-tenant изоляция по `tenant_id`
-    - TimeBucketedView(...) — sharding по time-bucket
-    - GlobalView(store, collection) — без scope-фильтра
+Backend-агностично: любой impl работает поверх произвольного VectorStore.
 
-
-- `IndexSink[T]` — data-input операция (только reconcile).
-    Принимает chunks на вход — единственная операция, которой filter недостаточен
-    (запись требует данных). Чанки сами несут свою идентичность через свои поля
-    (chunk_id, source_id, anchor, tags), поэтому narrow на write-стороне не нужен:
-    primary key уникален, sink уже задан в свой scope при конструировании.
-
-Backend-агностично: любой impl работает поверх произвольного VectorStore
-
-
-╔═══ VectorStore-схема хранения (id + payload, primary key + raw data) ════════╗
-║ chunk_id    — primary key (varchar в pgvector / id в Chroma)                 ║
-║ content     — Chunk.content; в Chroma → document, в pgvector → TEXT          ║
-║ embedding   — vector(N), генерируется Embedder'ом на write                   ║
+╔═══ VectorStore-payload (primary + raw) ══════════════════════════════════════╗
+║ chunk_id        — primary key (varchar в pgvector / id в Chroma)             ║
+║ format_content  — `Chunk.format_content`; то что эмбедится. В Chroma →       ║
+║                    `document`; в pgvector → TEXT                             ║
+║ raw_content     — `Chunk.raw_content` (опционально хранится отдельной        ║
+║                    колонкой; в Chroma не сохраняется — на чтение lossy       ║
+║                    round-trip = format_content)                              ║
+║ embedding       — vector(N), генерируется Embedder'ом на write от            ║
+║                    `format_content`                                          ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
-╔═══ Metadata fields набор дополнительной информации сохраняемой с чанком ═════╗
-║ ── Chunk-frame ───                                                           ║
-║ source_id    — Chunk.source_id (логический id source-документа)              ║
-║ anchor       — Chunk.anchor (heading-id и т.п.; "" если у документа якорей нет)║
-║ chunk_index  — Chunk.chunk_index (порядковый номер в source)                 ║
-║ loc_start    — Chunk.location.start (offset в source.content)                ║
-║ loc_end      — Chunk.location.end                                            ║
+╔═══ Metadata fields (плоский kv-блок рядом с payload) ════════════════════════╗
+║ ── Chunk-frame (TrackingKeys, flat-keys, store-impl пишет всегда) ──         ║
+║ source_id       — `Chunk.source_id`                                          ║
+║ chunk_index     — `Chunk.chunk_index`                                        ║
+║ content_hash    — `Chunk.content_hash` → fingerprint для idempotency         ║
+║ updated_at      — refresh-timestamp; cleanup-фильтр (before cutoff)          ║
+║ tags            — `Chunk.tags`; impl выбирает encoding (chroma: `tag.X`=true)║
 ║                                                                              ║
-║ ── TrackingKeys ──                                                           ║
-║ content_hash — Chunk.content_hash → fingerprint для idempotency              ║
-║ updated_at   — refresh-timestamp; cleanup-фильтр (before cutoff)             ║
-║ tags         — Chunk.tags (multi-value labels)                               ║
+║ ── ChunkKeys (dotted; пишет format-chunker, если умеет) ─────────────        ║
+║ chunk.location.start                                                         ║
+║ chunk.location.end       — char/byte-offset чанка в source-документе         ║
+║ chunk.anchor             — heading-id, html-id, fragment, …                  ║
 ║                                                                              ║
-║ ── Scope-keys ────.                                                          ║
-║ namespace*   — пример: NamespacedView пишет namespace="docs"                 ║
-║ tenant_id*   — пример: TenantView                                            ║
+║ ── SectionKeys (dotted; пишет parser в section.metadata, проходит насквозь) ─║
+║ section.location.start                                                       ║
+║ section.location.end     — координаты родительской section в источнике       ║
+║ section.anchor                                                               ║
+║ section.heading.level                                                        ║
+║ section.heading.text     — типизированные поля HeadingSection                ║
 ║                                                                              ║
-║ ── Произвольные business-Metadata ─                                          ║
-║ transport.etag, reader.doc_type, chunker.chunk_summary, ...                  ║
+║ ── Scope-keys (impl-specific) ───────────────────────────────────────────    ║
+║ namespace*               — `NamespacedView` пишет namespace="docs"           ║
+║ tenant_id*               — `TenantView` пишет tenant_id=...                  ║
+║                                                                              ║
+║ ── Произвольная business-Metadata (любые dotted ключи парсера/transport) ──  ║
+║ transport.etag, reader.doc_type, reader.markdown.heading_text, …             ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
-Реляционный пример хранения чанков в таблице:
-┌──────────┬────────┬──────────────┬───────────┬───────┬────────┬──────────┬─────────┬───────────────┬─────────────┬───────┬────────────┐
-│ chunk_id │content │  embedding   │ source_id │anchor │ ch_idx │ loc_start│ loc_end │ content_hash  │ updated_at  │ tags  │ namespace* │
-├──────────┼────────┼──────────────┼───────────┼───────┼────────┼──────────┼─────────┼───────────────┼─────────────┼───────┼────────────┤
-│ abc123:0 │"Para…" │ [0.12,0.04…] │ src/p-1   │§1     │   0    │    0     │   120   │ sha256:aaa..  │ 1700000001  │ {pub} │ docs       │
-│ abc123:1 │"More…" │ [0.08,0.41…] │ src/p-1   │§1     │   1    │   120    │   240   │ sha256:bbb..  │ 1700000001  │ {pub} │ docs       │
-│ def456:0 │"Other" │ [0.31,0.27…] │ src/p-2   │""     │   0    │    0     │    85   │ sha256:ccc..  │ 1700000005  │ {pdf} │ docs       │
-│ xyz789:0 │"Code…" │ [0.55,0.13…] │ repo/foo  │""     │   0    │    0     │   200   │ sha256:ddd..  │ 1700000010  │ {ai}  │ code       │
-└──────────┴────────┴──────────────┴───────────┴───────┴────────┴──────────┴─────────┴───────────────┴─────────────┴───────┴────────────┘
-(embedding-вектор обрезан до 2 элементов для отображения; реально size=N)
+Реляционный пример хранения чанков в таблице (упрощённо, типичные колонки):
+┌──────────┬──────────────┬──────────────┬───────────┬────────┬──────────────┬─────────────┬───────┬───────────────────┬───────────────┬────────────┐
+│ chunk_id │format_content│  embedding   │ source_id │ ch_idx │ content_hash │ updated_at  │ tags  │ chunk.location.*  │ chunk.anchor  │ namespace* │
+├──────────┼──────────────┼──────────────┼───────────┼────────┼──────────────┼─────────────┼───────┼───────────────────┼───────────────┼────────────┤
+│ abc123:0 │ "# Intro\\n…"│ [0.12,0.04…] │ src/p-1   │   0    │ sha256:aaa.. │ 1700000001  │ {pub} │ start=0   end=120 │ intro         │ docs       │
+│ abc123:1 │ "## API\\n…" │ [0.08,0.41…] │ src/p-1   │   1    │ sha256:bbb.. │ 1700000001  │ {pub} │ start=120 end=240 │ api           │ docs       │
+│ def456:0 │ "plain text" │ [0.31,0.27…] │ src/p-2   │   0    │ sha256:ccc.. │ 1700000005  │ {pdf} │ —                 │ —             │ docs       │
+│ xyz789:0 │ "```py\\n…"  │ [0.55,0.13…] │ repo/foo  │   0    │ sha256:ddd.. │ 1700000010  │ {ai}  │ start=0   end=200 │ —             │ code       │
+└──────────┴──────────────┴──────────────┴───────────┴────────┴──────────────┴─────────────┴───────┴───────────────────┴───────────────┴────────────┘
+(embedding-вектор обрезан до 2 элементов; реально size=N. tags в chroma-impl
+разворачиваются в отдельные `tag.X = true` ключи; здесь склеены для краткости.
+`chunk.location.*` / `chunk.anchor` живут как dotted metadata-keys, не как
+отдельные колонки — они опциональны и пишутся только когда format-chunker их
+вычислил.)
 
 Слева направо:
-  Store-payload:  chunk_id, content, embedding (vectorstore primary + raw)
-  Chunk-frame:    source_id, anchor, ch_idx, loc_start, loc_end (поля Chunk)
-  Tracking:       content_hash, updated_at, tags (управляются view-импл'ом)
-  Scope-key*:     namespace* (impl-specific; пример NamespacedView)
-  (Произвольная business-Metadata — Chunk.metadata.to_wire() — также
-   живёт здесь как dotted-keys: `transport.etag`, `reader.doc_type` и т.п.)
+  Payload      : chunk_id, format_content, embedding (raw_content — опционально)
+  TrackingKeys : source_id, chunk_index, content_hash, updated_at, tags
+  ChunkKeys    : chunk.location.*, chunk.anchor (опционально, dotted)
+  SectionKeys  : section.location.*, section.anchor, section.heading.*
+                 (dotted, проходят из `section.metadata` пробросом)
+  Scope-key*   : namespace* / tenant_id* / … (impl-specific)
+  Business-MD  : `transport.etag`, `reader.doc_type`, `reader.markdown.*`, …
+                 (произвольные dotted ключи — `Chunk.metadata.to_wire()`).
 """
 
 from __future__ import annotations
@@ -99,15 +106,19 @@ T = TypeVar("T")
 
 
 class TrackingKeys:
-    """
-    Универсальные metadata-ключи view-операций
+    """Универсальные metadata-ключи view-операций.
 
-    Используются всеми реализациями для хранения business-данных
+    Это **wire-имена** для projection top-level Chunk-полей
+    (`source_id`, `chunk_index`, `content_hash`, `tags`) и tracking-полей
+    (`updated_at`) в плоский metadata-store. VectorStore-impl'ы должны
+    использовать эти константы при записи и чтении — один источник правды
+    на всех backend'ов.
     """
 
     CONTENT_HASH: ClassVar[str] = "content_hash"
     UPDATED_AT: ClassVar[str] = "updated_at"
     SOURCE_ID: ClassVar[str] = "source_id"
+    CHUNK_INDEX: ClassVar[str] = "chunk_index"
     TAGS: ClassVar[str] = "tags"
 
 
@@ -219,9 +230,9 @@ class IndexSink(ABC, Generic[T]):
 
         Все чанки в одном вызове должны логически принадлежать одной партии
         (обычно — одному source'у). Идентичность каждого чанка несут его
-        собственные поля (chunk_id, source_id, anchor, tags, …); sink сам
-        инжектит свой scope-tag (например `namespace="docs"`) при write,
-        caller не задаёт scope извне.
+        собственные поля (`chunk_id`, `source_id`, `chunk_index`, `tags`, …);
+        sink сам инжектит свой scope-tag (например `namespace="docs"`) при
+        write, caller не задаёт scope извне.
 
         Контракт:
         - `chunks` приходят с уже посчитанным `Chunk.content_hash`

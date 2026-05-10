@@ -27,22 +27,23 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import ClassVar
 
-from boba.indexing import (
-    ChunkLocation,
-    HeadingSection,
-    ParagraphSection,
-    RawDocument,
-    Reader,
-    ReaderId,
-    ReaderKeys,
-    Section,
-)
 from boba.html.parser import (
     anchor_for,
     collect_headings,
     parse_html,
     plain_text,
     text_between,
+)
+from boba.indexing import (
+    HeadingSection,
+    Metadata,
+    ParagraphSection,
+    RawDocument,
+    Reader,
+    ReaderId,
+    ReaderKeys,
+    Section,
+    SectionKeys,
 )
 
 try:
@@ -75,12 +76,12 @@ class _HtmlBase:
         return title_tag.get_text(strip=True) if title_tag else ""
 
     @staticmethod
-    def _location_for(content: str) -> ChunkLocation:
-        """Default location: span of content. Не точный offset в исходнике —
-        BeautifulSoup не даёт char-offset'ов; для accurate location HTML-reader'ам
-        нужно lxml sourceline-tracking (TODO).
+    def _with_anchor(meta: Metadata, anchor: str | None) -> Metadata:
+        """Кладёт anchor в section.metadata (когда есть). Location HTML-reader'ы
+        сейчас не пишут — BeautifulSoup не даёт offset'ов в исходнике; для
+        честного source-tracking нужен lxml sourceline (TODO).
         """
-        return ChunkLocation(start=0, end=len(content))
+        return meta.set(SectionKeys.ANCHOR, anchor) if anchor else meta
 
 
 class HtmlHeadingReader(_HtmlBase, Reader[str]):
@@ -129,10 +130,8 @@ class HtmlHeadingReader(_HtmlBase, Reader[str]):
             yield HeadingSection(
                 source_id=value.source_id,
                 content=heading_md,
-                location=self._location_for(heading_md),
-                anchor=anchor_for(h),
                 order=order,
-                metadata=base_meta,
+                metadata=self._with_anchor(base_meta, anchor_for(h)),
                 level=h.level,
                 text=heading_text,
             )
@@ -143,16 +142,12 @@ class HtmlHeadingReader(_HtmlBase, Reader[str]):
                 yield ParagraphSection(
                     source_id=value.source_id,
                     content=between,
-                    location=self._location_for(between),
-                    anchor=None,
                     order=order,
                     metadata=base_meta,
                 )
                 order += 1
 
-    def _fallback(
-        self, value: RawDocument, body, title: str
-    ) -> Iterable[Section[str]]:
+    def _fallback(self, value: RawDocument, body, title: str) -> Iterable[Section[str]]:
         text = plain_text(body)
         if not text and not title:
             return
@@ -160,8 +155,6 @@ class HtmlHeadingReader(_HtmlBase, Reader[str]):
         yield ParagraphSection(
             source_id=value.source_id,
             content=composed,
-            location=self._location_for(composed),
-            anchor=None,
             order=0,
             metadata=self._base_meta(value, title),
         )
@@ -208,8 +201,6 @@ class HtmlPlainReader(_HtmlBase, Reader[str]):
         yield ParagraphSection(
             source_id=value.source_id,
             content=composed,
-            location=self._location_for(composed),
-            anchor=None,
             order=0,
             metadata=meta,
         )
@@ -257,8 +248,6 @@ class HtmlSemanticReader(_HtmlBase, Reader[str]):
             yield ParagraphSection(
                 source_id=value.source_id,
                 content=composed,
-                location=self._location_for(composed),
-                anchor=None,
                 order=0,
                 metadata=meta_base,
             )
@@ -272,19 +261,15 @@ class HtmlSemanticReader(_HtmlBase, Reader[str]):
             yield ParagraphSection(
                 source_id=value.source_id,
                 content=text,
-                location=self._location_for(text),
-                anchor=anchor,
                 order=i,
-                metadata=meta_base,
+                metadata=self._with_anchor(meta_base, anchor),
             )
 
     @classmethod
     def _collect_top_level(cls, soup) -> list:
         """Собирает `<article>`/`<section>`, не имеющие предка того же типа."""
         all_blocks = soup.find_all(list(cls.SEMANTIC_TAGS))
-        return [
-            b for b in all_blocks if not b.find_parent(list(cls.SEMANTIC_TAGS))
-        ]
+        return [b for b in all_blocks if not b.find_parent(list(cls.SEMANTIC_TAGS))]
 
 
 class HtmlReadabilityReader(_HtmlBase, Reader[str]):
@@ -333,8 +318,6 @@ class HtmlReadabilityReader(_HtmlBase, Reader[str]):
         yield ParagraphSection(
             source_id=value.source_id,
             content=cleaned,
-            location=self._location_for(cleaned),
-            anchor=None,
             order=0,
             metadata=meta,
         )

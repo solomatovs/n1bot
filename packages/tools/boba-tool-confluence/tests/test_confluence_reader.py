@@ -10,6 +10,7 @@ from boba.indexing import (
     RawDocument,
     ReaderId,
     ReaderKeys,
+    SectionKeys,
     SourceId,
 )
 from boba.html import HtmlKeys
@@ -39,7 +40,7 @@ def test_no_headings_yields_single_section():
     html = "<html><body><p>hello world</p></body></html>"
     sections = list(ConfluenceReader().convert(_doc(html)))
     assert len(sections) == 1
-    assert sections[0].anchor is None
+    assert sections[0].metadata.get(SectionKeys.ANCHOR) is None
     assert "hello world" in sections[0].content
 
 
@@ -52,11 +53,11 @@ def test_headings_split_per_heading():
     """
     sections = list(ConfluenceReader().convert(_doc(html)))
     assert len(sections) == 2
-    assert sections[0].anchor == "idx:1"
+    assert sections[0].metadata.get(SectionKeys.ANCHOR) == "idx:1"
     assert "One" in sections[0].content
     assert "alpha" in sections[0].content
     assert "beta" not in sections[0].content
-    assert sections[1].anchor == "idx:2"
+    assert sections[1].metadata.get(SectionKeys.ANCHOR) == "idx:2"
     assert "Two" in sections[1].content
     assert "beta gamma" in sections[1].content
 
@@ -90,7 +91,7 @@ def test_anchor_picked_up_from_confluence_bookmark():
     """
     sections = list(ConfluenceReader().convert(_doc(html)))
     assert len(sections) == 1
-    assert sections[0].anchor == "scroll-bookmark-7"
+    assert sections[0].metadata.get(SectionKeys.ANCHOR) == "scroll-bookmark-7"
     assert "Заголовок" in sections[0].content
     assert "тело" in sections[0].content
 
@@ -119,7 +120,7 @@ def test_empty_headings_skipped():
     """
     sections = list(ConfluenceReader().convert(_doc(html, title="My Page")))
     assert len(sections) == 1
-    assert sections[0].anchor is None
+    assert sections[0].metadata.get(SectionKeys.ANCHOR) is None
     assert "My Page" in sections[0].content
     assert "body content" in sections[0].content
 

@@ -6,6 +6,12 @@ from io import BytesIO
 
 import pytest
 
+from boba.html import (
+    HtmlHeadingReader,
+    HtmlPlainReader,
+    HtmlReadabilityReader,
+    HtmlSemanticReader,
+)
 from boba.indexing import (
     HeadingSection,
     Metadata,
@@ -15,12 +21,6 @@ from boba.indexing import (
     ReaderKeys,
     SectionKeys,
     SourceId,
-)
-from boba.html import (
-    HtmlHeadingReader,
-    HtmlPlainReader,
-    HtmlReadabilityReader,
-    HtmlSemanticReader,
 )
 
 
@@ -65,7 +65,7 @@ def test_heading_anchor_uses_html_id_when_present():
     html = '<html><body><h1 id="intro">Intro</h1><p>x</p></body></html>'
     sections = list(HtmlHeadingReader().convert(_doc(html)))
     headings = [s for s in sections if isinstance(s, HeadingSection)]
-    assert headings[0].anchor == "intro"
+    assert headings[0].metadata.get(SectionKeys.ANCHOR) == "intro"
 
 
 def test_heading_no_headings_falls_back_to_single_section_with_title():
@@ -76,7 +76,7 @@ def test_heading_no_headings_falls_back_to_single_section_with_title():
     sections = list(HtmlHeadingReader().convert(_doc(html)))
     assert len(sections) == 1
     assert isinstance(sections[0], ParagraphSection)
-    assert sections[0].anchor is None
+    assert sections[0].metadata.get(SectionKeys.ANCHOR) is None
     assert "Doc Title" in sections[0].content
     assert "just paragraphs" in sections[0].content
 
@@ -116,10 +116,7 @@ def test_heading_metadata_merge_from_raw_document():
     upstream = Metadata.from_wire({"source_url": "https://example.com/page"})
     sections = list(HtmlHeadingReader().convert(_doc(html, metadata=upstream)))
     for s in sections:
-        assert (
-            s.metadata.to_wire()["source_url"]
-            == "https://example.com/page"
-        )
+        assert s.metadata.to_wire()["source_url"] == "https://example.com/page"
     # Типизированные heading-поля доступны через section.to_chunk_metadata().
     headings = [s for s in sections if isinstance(s, HeadingSection)]
     assert headings[0].text == "A"
@@ -148,7 +145,7 @@ def test_plain_yields_single_section_with_full_body():
     sections = list(HtmlPlainReader().convert(_doc(html)))
     assert len(sections) == 1
     s = sections[0]
-    assert s.anchor is None
+    assert s.metadata.get(SectionKeys.ANCHOR) is None
     assert s.order == 0
     assert "Page" in s.content
     assert "X" in s.content
@@ -188,10 +185,10 @@ def test_semantic_yields_section_per_top_level_block():
     )
     sections = list(HtmlSemanticReader().convert(_doc(html)))
     assert len(sections) == 2
-    assert sections[0].anchor == "post-1"
+    assert sections[0].metadata.get(SectionKeys.ANCHOR) == "post-1"
     assert "Post 1" in sections[0].content
     assert "alpha" in sections[0].content
-    assert sections[1].anchor == "post-2"
+    assert sections[1].metadata.get(SectionKeys.ANCHOR) == "post-2"
     assert "Post 2" in sections[1].content
     assert "beta" in sections[1].content
 
@@ -207,7 +204,7 @@ def test_semantic_skips_nested_blocks_to_avoid_duplicates():
     )
     sections = list(HtmlSemanticReader().convert(_doc(html)))
     assert len(sections) == 1
-    assert sections[0].anchor == "a"
+    assert sections[0].metadata.get(SectionKeys.ANCHOR) == "a"
     assert "inner text" in sections[0].content
 
 
@@ -219,15 +216,15 @@ def test_semantic_anchor_falls_back_to_idx_when_no_id():
         "</body></html>"
     )
     sections = list(HtmlSemanticReader().convert(_doc(html)))
-    assert sections[0].anchor == "idx:0"
-    assert sections[1].anchor == "idx:1"
+    assert sections[0].metadata.get(SectionKeys.ANCHOR) == "idx:0"
+    assert sections[1].metadata.get(SectionKeys.ANCHOR) == "idx:1"
 
 
 def test_semantic_no_blocks_falls_back_to_body():
     html = "<html><body><p>just a paragraph</p></body></html>"
     sections = list(HtmlSemanticReader().convert(_doc(html)))
     assert len(sections) == 1
-    assert sections[0].anchor is None
+    assert sections[0].metadata.get(SectionKeys.ANCHOR) is None
     assert "just a paragraph" in sections[0].content
 
 
@@ -260,7 +257,7 @@ def test_readability_extracts_main_content_skipping_boilerplate():
     assert "main story" in s.content
     assert "Menu" not in s.content
     assert "(c) 2026" not in s.content
-    assert s.anchor is None
+    assert s.metadata.get(SectionKeys.ANCHOR) is None
 
 
 def test_readability_empty_payload_yields_nothing():
