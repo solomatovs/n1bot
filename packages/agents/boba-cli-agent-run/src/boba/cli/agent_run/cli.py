@@ -29,7 +29,7 @@ from boba.patterns import ConverterInputError
 from boba.plugin import ExtensionContext as PluginCtx
 from boba.plugin import install_plugins
 from boba.plugin.discovery import discover_plugins
-from boba.prompt.providers import PromptLoader, PromptsConfig
+from boba.agent.prompt_providers import PromptLoader, PromptsConfig
 from boba.provider.openai import (
     CurlTraceChatCompletionObserver,
     OpenAIChatVisitor,
