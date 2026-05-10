@@ -12,6 +12,8 @@ dependencies = [
     "boba-tools",
     "boba-indexing",
     "boba-tool-chromadb",
+    "boba-transport-http",
+    "boba-reader-html",
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
     "httpx>=0.27",
