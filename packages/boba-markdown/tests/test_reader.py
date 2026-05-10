@@ -1,100 +1,214 @@
-"""MarkdownReader: handle → heading-aware Section'ы."""
+"""MarkdownReader: markdown → типизированные Section'ы."""
 
 from __future__ import annotations
 
 from io import BytesIO
 
+import pytest
+
+# Skip if markdown-it-py not installed.
+pytest.importorskip("markdown_it")
+
 from boba.indexing import (
+    BlockquoteSection,
+    CodeFenceSection,
+    HeadingSection,
+    HorizontalRuleSection,
+    ListSection,
     Metadata,
+    ParagraphSection,
     RawDocument,
     ReaderId,
     ReaderKeys,
+    SectionKeys,
     SourceId,
+    TableSection,
 )
-from boba.markdown import MarkdownKeys, MarkdownReader
+from boba.markdown import MarkdownReader
 
 
-def _doc(
-    payload: str,
-    *,
-    source_id: str = "fs:/y",
-    metadata: Metadata | None = None,
-) -> RawDocument:
+def _doc(text: str, *, source_id: str = "doc1") -> RawDocument:
     return RawDocument(
-        handle=BytesIO(payload.encode("utf-8")),
+        handle=BytesIO(text.encode("utf-8")),
         source_id=SourceId(source_id),
-        metadata=metadata or Metadata.empty(),
     )
+
+
+# --------------------------- general --------------------------------
 
 
 def test_reader_id():
     assert MarkdownReader().reader_id() == ReaderId("ext.markdown")
 
 
-def test_emits_one_section_for_single_heading():
-    sections = list(MarkdownReader().convert(_doc("# Hello\n\nbody")))
-    assert len(sections) == 1
-    assert sections[0].content == "# Hello\n\nbody"
-    assert sections[0].metadata.get(ReaderKeys.DOC_TYPE) == "markdown"
-
-
-def test_heading_aware_split_per_heading():
-    md = "# One\nalpha\n\n## Two\nbeta gamma\n"
+def test_doc_type_in_metadata_of_each_section():
+    md = "# A\n\npara"
     sections = list(MarkdownReader().convert(_doc(md)))
-    assert len(sections) == 2
-    assert sections[0].anchor == "one"
-    assert "One" in sections[0].content
-    assert "alpha" in sections[0].content
-    assert "beta" not in sections[0].content  # не утёк во вторую
-    assert sections[1].anchor == "two"
-    assert "Two" in sections[1].content
-    assert "beta gamma" in sections[1].content
+    for s in sections:
+        assert s.metadata.get(ReaderKeys.DOC_TYPE) == "markdown"
 
 
-def test_preamble_becomes_anchorless_section():
-    md = "intro line\n\n# A\nbody\n"
+def test_offset_invariant_holds_for_every_section():
+    md = """# Title
+
+intro paragraph.
+
+```python
+print("hi")
+```
+
+| a | b |
+|---|---|
+| 1 | 2 |
+
+- alpha
+- beta
+
+> quote
+
+---
+"""
+    for s in MarkdownReader().convert(_doc(md)):
+        assert md[s.location.start : s.location.end] == s.content
+
+
+def test_empty_payload_yields_nothing():
+    assert list(MarkdownReader().convert(_doc(""))) == []
+
+
+# --------------------------- HeadingSection -------------------------
+
+
+def test_heading_section_typed_fields():
+    md = "## My Section"
+    [s] = list(MarkdownReader().convert(_doc(md)))
+    assert isinstance(s, HeadingSection)
+    assert s.level == 2
+    assert s.text == "My Section"
+    assert s.anchor == "my-section"
+    md_meta = s.to_chunk_metadata()
+    assert md_meta.get(SectionKeys.HEADING_LEVEL) == 2
+    assert md_meta.get(SectionKeys.HEADING_TEXT) == "My Section"
+
+
+def test_multiple_headings_yield_separate_sections_in_order():
+    md = "# h1\n\n## h2\n\n### h3"
+    sections = [
+        s for s in MarkdownReader().convert(_doc(md))
+        if isinstance(s, HeadingSection)
+    ]
+    assert [(s.level, s.text) for s in sections] == [
+        (1, "h1"), (2, "h2"), (3, "h3"),
+    ]
+
+
+# --------------------------- ParagraphSection -----------------------
+
+
+def test_paragraph_keeps_inline_markdown():
+    md = "This is **bold** and `code` and a [link](url)."
+    [s] = list(MarkdownReader().convert(_doc(md)))
+    assert isinstance(s, ParagraphSection)
+    assert s.content == md
+
+
+# --------------------------- CodeFenceSection -----------------------
+
+
+def test_code_fence_section_with_language():
+    md = "```python\ndef f():\n    return 1\n```"
+    [s] = list(MarkdownReader().convert(_doc(md)))
+    assert isinstance(s, CodeFenceSection)
+    assert s.language == "python"
+    assert s.code == "def f():\n    return 1\n"
+    assert s.content == md
+    assert len(s.code_line_locations) == 2
+
+
+def test_code_fence_no_language():
+    md = "```\nplain code\n```"
+    [s] = list(MarkdownReader().convert(_doc(md)))
+    assert isinstance(s, CodeFenceSection)
+    assert s.language is None
+
+
+# --------------------------- TableSection ---------------------------
+
+
+def test_table_section_typed_fields():
+    md = "| name | type |\n|------|------|\n| id   | int  |\n| name | str  |"
+    [s] = list(MarkdownReader().convert(_doc(md)))
+    assert isinstance(s, TableSection)
+    assert s.header == ("name", "type")
+    assert s.rows == (("id", "int"), ("name", "str"))
+    assert s.content == md
+    assert len(s.row_locations) == 2
+
+
+# --------------------------- ListSection ----------------------------
+
+
+def test_unordered_list_section():
+    md = "- alpha\n- beta\n- gamma"
+    [s] = list(MarkdownReader().convert(_doc(md)))
+    assert isinstance(s, ListSection)
+    assert s.ordered is False
+    assert s.items == ("alpha", "beta", "gamma")
+    assert len(s.item_locations) == 3
+
+
+def test_ordered_list_section():
+    md = "1. one\n2. two\n3. three"
+    [s] = list(MarkdownReader().convert(_doc(md)))
+    assert isinstance(s, ListSection)
+    assert s.ordered is True
+
+
+# --------------------------- BlockquoteSection ---------------------
+
+
+def test_blockquote_section():
+    md = "> single line quote"
+    [s] = list(MarkdownReader().convert(_doc(md)))
+    assert isinstance(s, BlockquoteSection)
+    assert s.content == md
+
+
+# --------------------------- HorizontalRuleSection -----------------
+
+
+def test_horizontal_rule_section():
+    md = "---"
+    [s] = list(MarkdownReader().convert(_doc(md)))
+    assert isinstance(s, HorizontalRuleSection)
+
+
+# --------------------------- multiple types together --------------
+
+
+def test_blocks_emitted_in_document_order():
+    md = "# A\n\npara\n\n```\ncode\n```\n\n- item"
     sections = list(MarkdownReader().convert(_doc(md)))
-    assert len(sections) == 2
-    assert sections[0].anchor is None
-    assert "intro line" in sections[0].content
-    assert sections[1].anchor == "a"
+    types = [type(s).__name__ for s in sections]
+    assert types == [
+        "HeadingSection",
+        "ParagraphSection",
+        "CodeFenceSection",
+        "ListSection",
+    ]
 
 
-def test_no_headings_yields_single_anchorless_section():
-    sections = list(
-        MarkdownReader().convert(_doc("just text without headings\nmore"))
+# --------------------------- metadata merge ------------------------
+
+
+def test_metadata_merged_with_upstream():
+    upstream = Metadata.from_wire({"source_url": "https://example.com/page"})
+    raw = RawDocument(
+        handle=BytesIO(b"# A\n\npara"),
+        source_id=SourceId("doc1"),
+        metadata=upstream,
     )
-    assert len(sections) == 1
-    assert sections[0].anchor is None
-
-
-def test_anchor_slug_from_heading_text():
-    sections = list(MarkdownReader().convert(_doc("## Hello, World!\nbody")))
-    assert sections[0].anchor == "hello-world"
-    assert sections[0].metadata.get(MarkdownKeys.HEADING_LEVEL) == 2
-    assert sections[0].metadata.get(MarkdownKeys.HEADING_TEXT) == "Hello, World!"
-
-
-def test_metadata_merge_from_raw_document():
-    upstream = Metadata.from_wire({"upstream_field": "v"})
-    sections = list(
-        MarkdownReader().convert(
-            _doc("# A\nx", metadata=upstream),
-        )
-    )
-    assert sections[0].metadata.to_wire()["upstream_field"] == "v"
-    assert sections[0].metadata.get(ReaderKeys.DOC_TYPE) == "markdown"
-
-
-def test_source_id_from_raw_document():
-    sections = list(
-        MarkdownReader().convert(_doc("# A\nbody", source_id="custom-id"))
-    )
-    assert all(s.source_id.to_wire() == "custom-id" for s in sections)
-
-
-def test_code_fence_does_not_trigger_heading():
-    md = "# Real\ntext\n```\n# not heading\n```\n## Real2\nbody"
-    sections = list(MarkdownReader().convert(_doc(md)))
-    headings = [s.anchor for s in sections if s.anchor]
-    assert headings == ["real", "real2"]
+    sections = list(MarkdownReader().convert(raw))
+    for s in sections:
+        assert s.metadata.to_wire()["source_url"] == "https://example.com/page"
+        assert s.metadata.get(ReaderKeys.DOC_TYPE) == "markdown"

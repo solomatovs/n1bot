@@ -7,15 +7,17 @@ from io import BytesIO
 import pytest
 
 from boba.indexing import (
+    HeadingSection,
     Metadata,
+    ParagraphSection,
     RawDocument,
     ReaderId,
     ReaderKeys,
+    SectionKeys,
     SourceId,
 )
 from boba.html import (
     HtmlHeadingReader,
-    HtmlKeys,
     HtmlPlainReader,
     HtmlReadabilityReader,
     HtmlSemanticReader,
@@ -42,7 +44,8 @@ def test_heading_reader_id():
     assert HtmlHeadingReader().reader_id() == ReaderId("ext.html.heading")
 
 
-def test_heading_yields_separate_sections():
+def test_heading_yields_typed_sections():
+    """Каждый heading → отдельная HeadingSection + ParagraphSection с body."""
     html = """
     <html><body>
       <h1>One</h1><p>alpha</p>
@@ -50,20 +53,19 @@ def test_heading_yields_separate_sections():
     </body></html>
     """
     sections = list(HtmlHeadingReader().convert(_doc(html)))
-    assert len(sections) == 2
-    assert sections[0].anchor == "idx:1"
-    assert "One" in sections[0].content
-    assert "alpha" in sections[0].content
-    assert "beta" not in sections[0].content
-    assert sections[1].anchor == "idx:2"
-    assert "Two" in sections[1].content
-    assert "beta gamma" in sections[1].content
+    headings = [s for s in sections if isinstance(s, HeadingSection)]
+    paragraphs = [s for s in sections if isinstance(s, ParagraphSection)]
+    assert [(h.level, h.text) for h in headings] == [(1, "One"), (2, "Two")]
+    # alpha идёт за One; beta gamma идёт за Two.
+    assert any("alpha" in p.content for p in paragraphs)
+    assert any("beta gamma" in p.content for p in paragraphs)
 
 
 def test_heading_anchor_uses_html_id_when_present():
     html = '<html><body><h1 id="intro">Intro</h1><p>x</p></body></html>'
     sections = list(HtmlHeadingReader().convert(_doc(html)))
-    assert sections[0].anchor == "intro"
+    headings = [s for s in sections if isinstance(s, HeadingSection)]
+    assert headings[0].anchor == "intro"
 
 
 def test_heading_no_headings_falls_back_to_single_section_with_title():
@@ -73,13 +75,14 @@ def test_heading_no_headings_falls_back_to_single_section_with_title():
     )
     sections = list(HtmlHeadingReader().convert(_doc(html)))
     assert len(sections) == 1
+    assert isinstance(sections[0], ParagraphSection)
     assert sections[0].anchor is None
     assert "Doc Title" in sections[0].content
     assert "just paragraphs" in sections[0].content
 
 
 def test_heading_empty_headings_skipped():
-    """Heading'и из одних картинок (без текста) — пропускаются."""
+    """Heading'и из одних картинок (без текста) — пропускаются (fallback)."""
     html = """
     <html><body>
       <p>real content</p>
@@ -88,8 +91,9 @@ def test_heading_empty_headings_skipped():
     </body></html>
     """
     sections = list(HtmlHeadingReader().convert(_doc(html)))
+    # Heading'и без текста не учитываются → fallback одна ParagraphSection.
     assert len(sections) == 1
-    assert sections[0].anchor is None
+    assert isinstance(sections[0], ParagraphSection)
     assert "real content" in sections[0].content
 
 
@@ -99,22 +103,29 @@ def test_heading_script_and_style_dropped():
         "<h1>OK</h1><style>h1{}</style><p>body</p></body></html>"
     )
     sections = list(HtmlHeadingReader().convert(_doc(html)))
-    assert "alert" not in sections[0].content
-    assert "h1{}" not in sections[0].content
-    assert "OK" in sections[0].content
-    assert "body" in sections[0].content
+    combined = "\n".join(s.content for s in sections)
+    assert "alert" not in combined
+    assert "h1{}" not in combined
+    assert "OK" in combined
+    assert "body" in combined
 
 
 def test_heading_metadata_merge_from_raw_document():
-    """upstream metadata (например source_url) пробрасывается в Section."""
+    """upstream metadata (например source_url) пробрасывается в каждую Section."""
     html = "<html><body><h1>A</h1><p>x</p></body></html>"
     upstream = Metadata.from_wire({"source_url": "https://example.com/page"})
     sections = list(HtmlHeadingReader().convert(_doc(html, metadata=upstream)))
-    assert (
-        sections[0].metadata.to_wire()["source_url"]
-        == "https://example.com/page"
-    )
-    assert sections[0].metadata.get(HtmlKeys.HEADING_TEXT) == "A"
+    for s in sections:
+        assert (
+            s.metadata.to_wire()["source_url"]
+            == "https://example.com/page"
+        )
+    # Типизированные heading-поля доступны через section.to_chunk_metadata().
+    headings = [s for s in sections if isinstance(s, HeadingSection)]
+    assert headings[0].text == "A"
+    md = headings[0].to_chunk_metadata()
+    assert md.get(SectionKeys.HEADING_TEXT) == "A"
+    assert md.get(SectionKeys.HEADING_LEVEL) == 1
 
 
 def test_heading_empty_payload_yields_nothing():

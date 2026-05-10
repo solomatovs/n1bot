@@ -1,67 +1,38 @@
 """boba.markdown — всё для индексации markdown-формата.
 
-Один пакет содержит весь markdown-стек:
+Содержимое:
 
-- `sections.py` — pure ATX-section parser (`split_sections`, `slugify`,
-  `anchor_for`, ...). Используется `MarkdownReader` для разбиения на
-  логические секции по heading'ам.
-- `blocks.py` — pure block-AST parser через `markdown-it-py`
-  (`MarkdownBlockParser`). Используется `MarkdownStructuralChunker`.
-  Опциональная зависимость `markdown-it-py`.
-- `reader.py` — `MarkdownReader`: `RawDocument` → `Section[str]` по ATX-heading'ам.
-- `chunker.py` — `MarkdownStructuralChunker`: `Section[str]` → `Chunk[str]`
-  с per-block стратегиями (heading-prefix-merge, atomic code-fence/table/list,
-  paragraph char-split с overlap).
-- `keys.py` — `MarkdownKeys` с metadata-ключами reader'а.
+- `parser.py` — `MarkdownSectionParser`: парсит markdown через
+  `markdown-it-py` AST → поток типизированных `Section`-ов
+  (`HeadingSection`, `ParagraphSection`, `CodeFenceSection`,
+  `TableSection`, `ListSection`, `BlockquoteSection`,
+  `HorizontalRuleSection`). Также экспортирует helper `slugify`.
+- `reader.py` — `MarkdownReader`: тонкий wrapper над `MarkdownSectionParser`,
+  декодирует `RawDocument.handle` и заполняет `source_id` / `base_metadata`
+  на каждой эмитируемой Section.
+- `keys.py` — `MarkdownKeys` (markdown-specific metadata-ключи, если потребуются).
 
-Типы блоков — в `boba.indexing` (sealed `Block` иерархия).
+Чанкинг markdown-документов выполняется generic'ом
+`boba.indexing.StructuralChunker` (в `boba-indexing`) — он применяет
+per-section-type стратегии (heading-prefix-merge, atomic code-fence,
+row-by-row split таблиц, item-by-item split списков и т.п.) на основе
+`isinstance` типизированных Section'ов.
 
 Зависимости:
-- `boba-indexing` (Reader / Chunker / Splitter / Section / Chunk / Block / OverlapCharSplitter).
+- `boba-indexing` (`Section[T]` иерархия + `StructuralChunker`).
 - `markdown-it-py` (опциональная). Установка:
   `pip install boba-markdown[structural]`.
 """
 
 from __future__ import annotations
 
-from boba.markdown.blocks import MarkdownBlockParser
-from boba.markdown.chunker import (
-    DEFAULT_CHUNK_OVERLAP,
-    DEFAULT_CHUNK_SIZE,
-    DEFAULT_DIGEST_PREFIX_CHARS,
-    MarkdownStructuralChunker,
-    MarkdownStructuralChunkerConfig,
-    MarkdownStructuralKeys,
-    markdown_structural_chunker,
-)
 from boba.markdown.keys import MarkdownKeys
+from boba.markdown.parser import MarkdownSectionParser, slugify
 from boba.markdown.reader import MarkdownReader
-from boba.markdown.sections import (
-    Heading,
-    MarkdownSection,
-    anchor_for,
-    collect_headings,
-    resolve_anchor,
-    slugify,
-    split_sections,
-)
 
 __all__ = [
-    "DEFAULT_CHUNK_OVERLAP",
-    "DEFAULT_CHUNK_SIZE",
-    "DEFAULT_DIGEST_PREFIX_CHARS",
-    "Heading",
-    "MarkdownBlockParser",
     "MarkdownKeys",
     "MarkdownReader",
-    "MarkdownSection",
-    "MarkdownStructuralChunker",
-    "MarkdownStructuralChunkerConfig",
-    "MarkdownStructuralKeys",
-    "anchor_for",
-    "collect_headings",
-    "markdown_structural_chunker",
-    "resolve_anchor",
+    "MarkdownSectionParser",
     "slugify",
-    "split_sections",
 ]

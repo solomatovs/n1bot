@@ -43,8 +43,10 @@ def test_markdownify_reader_id():
     assert HtmlMarkdownifyReader().reader_id() == ReaderId("ext.html.markdownify")
 
 
-def test_markdownify_yields_section_per_heading_with_md_content():
-    """HTML с h1/h2 → markdown через markdownify → 2 Section'и; content — markdown."""
+def test_markdownify_yields_typed_sections_with_md_content():
+    """HTML → markdown via markdownify → типизированные Section'ы с markdown-content."""
+    from boba.indexing import HeadingSection, ListSection, ParagraphSection
+
     html = (
         "<html><body>"
         "<h1>Intro</h1><p>intro <strong>body</strong></p>"
@@ -52,41 +54,45 @@ def test_markdownify_yields_section_per_heading_with_md_content():
         "</body></html>"
     )
     sections = list(HtmlMarkdownifyReader().convert(_doc(html)))
-    assert len(sections) == 2
 
-    # Section #1: heading "Intro" + markdown body со звёздочками для <strong>.
-    assert sections[0].anchor == "intro"
-    assert sections[0].metadata.get(MarkdownKeys.HEADING_LEVEL) == 1
-    assert sections[0].metadata.get(MarkdownKeys.HEADING_TEXT) == "Intro"
-    assert "Intro" in sections[0].content
-    # markdownify конвертирует <strong> в **...**
-    assert "**body**" in sections[0].content
+    headings = [s for s in sections if isinstance(s, HeadingSection)]
+    paragraphs = [s for s in sections if isinstance(s, ParagraphSection)]
+    lists = [s for s in sections if isinstance(s, ListSection)]
 
-    # Section #2: heading "API" + markdown list.
-    assert sections[1].anchor == "api"
-    assert sections[1].metadata.get(MarkdownKeys.HEADING_LEVEL) == 2
-    assert "API" in sections[1].content
-    assert "one" in sections[1].content
-    assert "two" in sections[1].content
+    # 2 heading'а: Intro (h1) + API (h2).
+    assert {(h.level, h.text) for h in headings} == {(1, "Intro"), (2, "API")}
+    assert {h.anchor for h in headings} == {"intro", "api"}
+
+    # markdownify конвертирует <strong> в **...** — есть в paragraph.
+    assert any("**body**" in p.content for p in paragraphs)
+    # <ul><li> → ListSection с распарсенными items.
+    assert any({"one", "two"}.issubset(set(lst.items)) for lst in lists)
 
 
 def test_markdownify_metadata_merge_from_raw_document():
     html = "<html><body><h1>A</h1><p>x</p></body></html>"
     upstream = Metadata.from_wire({"source_url": "https://example.com/page"})
     sections = list(HtmlMarkdownifyReader().convert(_doc(html, metadata=upstream)))
-    assert (
-        sections[0].metadata.to_wire()["source_url"]
-        == "https://example.com/page"
-    )
+    for s in sections:
+        assert (
+            s.metadata.to_wire()["source_url"]
+            == "https://example.com/page"
+        )
 
 
 def test_markdownify_options_passed_through():
     """markdownify_options прокидывается в markdownify.markdownify(...)."""
+    from boba.indexing import ParagraphSection
+
     html = "<html><body><h1>T</h1><p><a href='x'>link</a></p></body></html>"
     reader = HtmlMarkdownifyReader(markdownify_options={"strip": ["a"]})
     sections = list(reader.convert(_doc(html)))
-    assert "link" in sections[0].content
-    assert "[link]" not in sections[0].content
+    paragraphs = [s for s in sections if isinstance(s, ParagraphSection)]
+    assert paragraphs, "expected at least one ParagraphSection"
+    combined = "\n".join(p.content for p in paragraphs)
+    # `<a>` должен быть стрипнут — текст ссылки остаётся, markdown-link-синтаксиса нет.
+    assert "link" in combined
+    assert "[link]" not in combined
 
 
 def test_markdownify_empty_payload_yields_nothing():
