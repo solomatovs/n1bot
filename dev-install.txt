@@ -13,7 +13,6 @@
 
 # agent runtime + adapters
 -e ./packages/boba-agent
--e ./packages/boba-prompt-providers
 -e ./packages/boba-provider-openai
 
 # tools (boba.tools entry-point)
