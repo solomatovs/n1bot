@@ -12,7 +12,7 @@ from boba.indexing import (
     ReaderKeys,
     SourceId,
 )
-from boba.reader.html import HtmlKeys
+from boba.html import HtmlKeys
 
 
 def _doc(

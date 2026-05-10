@@ -31,7 +31,7 @@ from boba.indexing import (
     ReaderKeys,
     Section,
 )
-from boba.reader.html import HtmlKeys
+from boba.html import HtmlKeys
 
 __all__ = ["ConfluenceReader"]
 

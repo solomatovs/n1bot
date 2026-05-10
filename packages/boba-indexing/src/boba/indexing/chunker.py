@@ -66,8 +66,8 @@ class Chunker(
     ])
 
     # конкретная реализация Chunker[str] (factory из boba-chunkers)
-    chunker: Chunker[str] = heading_chunker(
-        HeadingChunkerConfig(chunk_size=8, chunk_overlap=5),
+    chunker: Chunker[str] = markdown_structural_chunker(
+        MarkdownStructuralChunkerConfig(chunk_size=8, chunk_overlap=5),
         encoder=Sha256TextEncoder(),
         prefix=FixedDigestPrefix(12),
     )

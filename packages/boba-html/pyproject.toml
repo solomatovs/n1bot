@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-html"
+version = "0.1.0"
+description = "Boba HTML: всё для индексации HTML — parser, reader'ы (heading / plain / semantic / readability), keys."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-indexing",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+]
+
+[project.optional-dependencies]
+readability = ["trafilatura>=1.6"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
