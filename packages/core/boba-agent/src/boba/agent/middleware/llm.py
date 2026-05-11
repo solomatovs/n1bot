@@ -32,6 +32,7 @@ from boba.agent.turn.reducers import (
     ToolsReducer,
 )
 from boba.agent.turn.spec import TurnSpec
+from boba.llm.builder import LLMSource
 from boba.llm.errors import LLMError
 from boba.llm.events import (
     LLMAnswerStarted,
@@ -51,8 +52,6 @@ from boba.llm.events import (
 from boba.llm.models import LLMContext, LLMRequest
 from boba.patterns import StreamSource
 from boba.tools.framework import ToolExecutor
-
-LLMSource = StreamSource[LLMContext, LLMEvent]
 
 
 class LLMToAgentConverter:

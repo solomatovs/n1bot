@@ -27,13 +27,13 @@ from boba.cli.agent_run.infra import (
 )
 from boba.config.builder import ConfigBundleBuilder
 from boba.config.source.toml import use_toml
+from boba.llm.builder import LLMSourceBuilder
 from boba.llm.models import RequestId
-from boba.llm.observer import CompositeLLMRequestObserver
 from boba.patterns import ConverterInputError
 from boba.provider.openai import (
     CurlTraceChatCompletionObserver,
     OpenAIChatVisitor,
-    create_llm_source,
+    use_openai,
 )
 from boba.workspace.contract import (
     ProjectWorkspaceShell,
@@ -87,10 +87,14 @@ def _run() -> int:
         subdir=app.workspaces.system_subdir,
     ).get_or_create(workspace_id)
 
-    observer = CompositeLLMRequestObserver(
-        [CurlTraceChatCompletionObserver(history_workspace, response_chunks=False)],
+    llm_source = (
+        LLMSourceBuilder()
+        .add_observer(
+            CurlTraceChatCompletionObserver(history_workspace, response_chunks=False),
+        )
+        .pipe(use_openai, app.openai)
+        .build()
     )
-    llm_source = create_llm_source(app.openai, observer)
 
     message_service = InMemoryMessageService()
     agent = (
