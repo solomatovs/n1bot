@@ -3,16 +3,16 @@
 Convention: Tool кладёт в свой config-DTO поле `prompt: PromptOverlay` и
 в `definition()` строит свою `ObjectSchema` локально, оборачивая её в
 `self._cfg.prompt.apply(...)`. Конфиг плагина может иметь несколько
-prompt-полей (по одному на каждый tool в плагине) — каждое объявляется
-через `prompt_field(name)`.
+prompt-полей (по одному на каждый tool в плагине) — просто как
+`<name>: PromptOverlay` в dataclass; `schema_from_dataclass` собирает
+`NestedField` со схемой PromptOverlay автоматически.
 
-Schema плагина:
+Plugin DTO:
 
-    fields=[
-        *ConfluenceConnection.fields(),
-        prompt_field("confluence_search"),
-        prompt_field("confluence_page"),
-    ]
+    @dataclass(frozen=True)
+    class ConfluencePluginConfig:
+        confluence_search: PromptOverlay
+        confluence_page: PromptOverlay
 
 Tool:
 
@@ -26,28 +26,16 @@ Tool:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from typing import Any, TypeVar
+from typing import Annotated, Any, TypeVar
 
-from boba.schema.coercion import (
-    ChainCoercer,
-    Default,
-    ParseString,
-)
+from boba.schema.coercion import ParseString
 from boba.schema.declaration import (
-    CollectionField,
     FieldSpec,
-    KeyedShape,
-    NestedField,
     ObjectSchema,
-    ScalarItem,
 )
 
-__all__ = [
-    "PromptOverlay",
-    "prompt_field",
-]
+__all__ = ["PromptOverlay"]
 
 
 T = TypeVar("T")
@@ -55,15 +43,22 @@ T = TypeVar("T")
 
 @dataclass(frozen=True)
 class PromptOverlay:
-    """Overlay описаний: общее description tool'а и per-field overrides.
+    """Overlay описаний tool'а: общее description и per-field overrides.
 
     Пустая строка в `description` или в `fields[name]` означает «оставить
     дефолт из CANONICAL». Поля, не упомянутые в `fields`, сохраняют свои
     canonical-описания.
     """
 
-    description: str = ""
-    fields: Mapping[str, str] = field(default_factory=dict)
+    description: Annotated[
+        str,
+        "Override общего описания tool'а; пусто — дефолт из кода.",
+        ParseString(),
+    ] = ""
+    fields: Annotated[
+        dict[str, str],
+        "Per-field overrides: имя поля → новое описание.",
+    ] = field(default_factory=dict)
 
     def apply(self, schema: ObjectSchema[T]) -> ObjectSchema[T]:
         """Вернуть копию `schema` с применённым overlay'ем (frozen-safe)."""
@@ -85,36 +80,3 @@ class PromptOverlay:
             description=new_description,
             fields=tuple(new_fields),
         )
-
-
-def prompt_field(name: str) -> NestedField[PromptOverlay]:
-    """Convenience: NestedField с PROMPT_OVERLAY_SCHEMA под указанным именем.
-
-    Использование в Plugin.config():
-
-        fields=[
-            *ConfluenceConnection.fields(),
-            prompt_field("confluence_search"),
-            prompt_field("confluence_page"),
-        ]
-    """
-    return NestedField(
-        name=name,
-        schema=ObjectSchema(
-            description="Overlay описаний tool'а: общее description и per-field overrides.",
-            fields=[
-                FieldSpec(
-                    name="description",
-                    coercer=ChainCoercer(Default(""), ParseString()),
-                    description="Override общего описания tool'а; пусто — дефолт из кода.",
-                ),
-                CollectionField(
-                    name="fields",
-                    reader=ScalarItem(coercer=ChainCoercer(Default(""), ParseString())),
-                    shape=KeyedShape(),
-                    description="Per-field overrides: имя поля → новое описание.",
-                ),
-            ],
-            factory=PromptOverlay,
-        ),
-    )

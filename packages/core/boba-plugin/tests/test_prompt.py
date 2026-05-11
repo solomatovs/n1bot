@@ -1,4 +1,4 @@
-"""PromptOverlay: apply, materialize через _OVERLAY_SCHEMA, prompt_field."""
+"""PromptOverlay: apply + материализация через schema_from_dataclass."""
 
 from __future__ import annotations
 
@@ -7,19 +7,22 @@ from dataclasses import dataclass
 from boba.config.bundle import ConfigBundle, FlatConfigMaterializer
 from boba.config.path import ConfigPath
 from boba.config.source.dict import DictSource
-from boba.plugin.prompt import PromptOverlay, prompt_field
+from boba.plugin.prompt import PromptOverlay
+from boba.schema import schema_from_dataclass
 from boba.schema.coercion import ChainCoercer, NonEmpty, ParseInt, ParseString, Required
 from boba.schema.declaration import (
+    CollectionField,
     FieldSpec,
+    KeyedShape,
     NestedField,
     ObjectSchema,
 )
-
-# Schema PromptOverlay живёт inline в prompt_field() — берём её через helper.
-_OVERLAY_SCHEMA = prompt_field("__probe__").schema
 from boba.schema.value import StringValue
 
-# --- Canonical (доменная) tool-схема для проверки apply ---
+_OVERLAY_SCHEMA = schema_from_dataclass(PromptOverlay)
+
+
+# Canonical (доменная) tool-схема для проверки apply
 
 
 @dataclass(frozen=True)
@@ -46,7 +49,7 @@ _CANONICAL: ObjectSchema[_SearchArgs] = ObjectSchema(
 )
 
 
-# --- apply ---
+# apply
 
 
 def test_apply_empty_overlay_returns_canonical_unchanged():
@@ -113,10 +116,8 @@ def test_apply_empty_string_override_falls_back_to_canonical():
 def test_apply_unknown_field_in_overlay_is_ignored():
     overlay = PromptOverlay(fields={"unknown": "ignored"})
     applied = overlay.apply(_CANONICAL)
-    # Структура не меняется, лишнего поля нет.
     names = [f.name for f in applied.fields]
     assert names == ["query", "limit"]
-    # Существующие descriptions не тронуты.
     assert (
         next(f for f in applied.fields if f.name == "query").description
         == "Поисковый запрос."
@@ -135,13 +136,38 @@ def test_apply_preserves_coercer_chain_unchanged():
     assert query_f.coercer is canonical_query.coercer
 
 
-# --- _OVERLAY_SCHEMA через materializer ---
+# schema_from_dataclass(PromptOverlay): структура
+
+
+def test_overlay_schema_factory_is_prompt_overlay():
+    assert _OVERLAY_SCHEMA.factory is PromptOverlay
+
+
+def test_overlay_schema_has_two_fields():
+    names = {f.name for f in _OVERLAY_SCHEMA.fields}
+    assert names == {"description", "fields"}
+
+
+def test_overlay_schema_description_field_is_scalar_with_text():
+    desc = next(f for f in _OVERLAY_SCHEMA.fields if f.name == "description")
+    assert isinstance(desc, FieldSpec)
+    assert "Override общего описания" in desc.description
+
+
+def test_overlay_schema_fields_field_is_keyed_collection_with_text():
+    fields = next(f for f in _OVERLAY_SCHEMA.fields if f.name == "fields")
+    assert isinstance(fields, CollectionField)
+    assert isinstance(fields.shape, KeyedShape)
+    assert "Per-field overrides" in fields.description
+
+
+# materializer через автогенную схему
 
 
 def test_materialize_empty_overlay_uses_defaults():
     flat = ConfigBundle.from_sources([DictSource({})]).flat
     overlay = FlatConfigMaterializer(_OVERLAY_SCHEMA).materialize(
-        flat, ConfigPath.parse("tool.search.prompt")
+        flat, ConfigPath.parse("tool.search.prompt"),
     )
     assert overlay == PromptOverlay(description="", fields={})
 
@@ -152,14 +178,14 @@ def test_materialize_with_description_only():
             DictSource(
                 {
                     ConfigPath.parse("tool.search.prompt.description"): StringValue(
-                        "Custom search."
+                        "Custom search.",
                     ),
-                }
-            )
-        ]
+                },
+            ),
+        ],
     ).flat
     overlay = FlatConfigMaterializer(_OVERLAY_SCHEMA).materialize(
-        flat, ConfigPath.parse("tool.search.prompt")
+        flat, ConfigPath.parse("tool.search.prompt"),
     )
     assert overlay.description == "Custom search."
     assert overlay.fields == {}
@@ -171,75 +197,62 @@ def test_materialize_with_per_field_overrides():
             DictSource(
                 {
                     ConfigPath.parse("tool.search.prompt.fields.query"): StringValue(
-                        "Q."
+                        "Q.",
                     ),
                     ConfigPath.parse("tool.search.prompt.fields.limit"): StringValue(
-                        "L."
+                        "L.",
                     ),
-                }
-            )
-        ]
+                },
+            ),
+        ],
     ).flat
     overlay = FlatConfigMaterializer(_OVERLAY_SCHEMA).materialize(
-        flat, ConfigPath.parse("tool.search.prompt")
+        flat, ConfigPath.parse("tool.search.prompt"),
     )
     assert overlay.description == ""
     assert overlay.fields == {"query": "Q.", "limit": "L."}
 
 
-# --- prompt_field helper ---
+# Сценарий: плагин-DTO с per-tool PromptOverlay автогенерится целиком
 
 
-def test_prompt_field_returns_nested_field_with_overlay_schema():
-    f = prompt_field("my_overlay")
-    assert isinstance(f, NestedField)
-    assert f.name == "my_overlay"
-    assert f.schema.factory is PromptOverlay
-    assert {fld.name for fld in f.schema.fields} == {"description", "fields"}
-
-
-def test_prompt_field_used_in_plugin_schema_e2e():
-    """End-to-end: plugin DTO с per-tool prompt-полем материализуется и применяется."""
-
+def test_prompt_overlay_in_plugin_dto_e2e():
     @dataclass(frozen=True)
     class _PluginCfg:
         confluence_search: PromptOverlay
         confluence_page: PromptOverlay
 
-    plugin_schema: ObjectSchema[_PluginCfg] = ObjectSchema(
-        fields=[
-            prompt_field("confluence_search"),
-            prompt_field("confluence_page"),
-        ],
-        factory=_PluginCfg,
-    )
+    plugin_schema = schema_from_dataclass(_PluginCfg)
+    nested_names = {
+        f.name for f in plugin_schema.fields if isinstance(f, NestedField)
+    }
+    assert nested_names == {"confluence_search", "confluence_page"}
 
     flat = ConfigBundle.from_sources(
         [
             DictSource(
                 {
                     ConfigPath.parse(
-                        "tool.confluence.confluence_search.description"
+                        "tool.confluence.confluence_search.description",
                     ): StringValue("Поиск только по своим."),
                     ConfigPath.parse(
-                        "tool.confluence.confluence_search.fields.query"
+                        "tool.confluence.confluence_search.fields.query",
                     ): StringValue("Поисковый запрос."),
                     ConfigPath.parse(
-                        "tool.confluence.confluence_page.description"
+                        "tool.confluence.confluence_page.description",
                     ): StringValue("Outline страницы."),
-                }
-            )
-        ]
+                },
+            ),
+        ],
     ).flat
     cfg = FlatConfigMaterializer(plugin_schema).materialize(
-        flat, ConfigPath.parse("tool.confluence")
+        flat, ConfigPath.parse("tool.confluence"),
     )
     assert cfg.confluence_search.description == "Поиск только по своим."
     assert cfg.confluence_search.fields == {"query": "Поисковый запрос."}
     assert cfg.confluence_page.description == "Outline страницы."
     assert cfg.confluence_page.fields == {}
 
-    # И apply на canonical работает «насквозь» из materialized overlay.
     applied = cfg.confluence_search.apply(_CANONICAL)
     assert applied.description == "Поиск только по своим."
     assert (

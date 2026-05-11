@@ -9,6 +9,7 @@ import inspect
 from typing import Any, get_type_hints
 
 from boba.schema.declaration import FieldKind, ObjectSchema
+from boba.schema.decorator import INVARIANTS_ATTR
 from boba.schema.field import build_field_from_annotation
 
 __all__ = ["schema_from_dataclass"]
@@ -38,10 +39,16 @@ def schema_from_dataclass(dc: type) -> ObjectSchema[Any]:
             ),
         )
 
+    kwargs: dict[str, Any] = {}
+    invariants = getattr(dc, INVARIANTS_ATTR, None)
+    if invariants is not None:
+        kwargs["invariants"] = invariants
+
     return ObjectSchema(
         fields=fields,
         factory=dc,
         description=inspect.getdoc(dc) or "",
+        **kwargs,
     )
 
 
