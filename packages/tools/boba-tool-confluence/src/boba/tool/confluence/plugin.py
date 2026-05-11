@@ -5,10 +5,11 @@
 `body_format`) и `PromptOverlay`-блоками — по одному на tool.
 
 Регистрируемые tools:
-- `confluence_search`        — CQL-поиск по тексту.
-- `confluence_page_outline`  — структура заголовков страницы по page_id.
-- `confluence_page_section`  — текст одной секции по page_id + anchor.
-- `confluence_page_download` — скачать страницы как REST-JSON в workspace.
+- `confluence_search`                  — CQL-поиск по тексту.
+- `confluence_page_outline`            — структура заголовков страницы.
+- `confluence_page_section`            — текст одной секции по page_id+anchor.
+- `confluence_page_download`           — скачать страницы как HTML.
+- `confluence_page_download_markdown`  — скачать страницы как Markdown.
 
 `build(cfg, ctx)` собирает Tool-DTO inline из общих полей и
 соответствующего overlay'я, инстанцирует Tools, упаковывает в
@@ -31,6 +32,10 @@ from boba.tool.confluence.connection import ConfluenceConnection
 from boba.tool.confluence.page_download import (
     ConfluencePageDownloadTool,
     ConfluencePageDownloadToolConfig,
+)
+from boba.tool.confluence.page_download_markdown import (
+    ConfluencePageDownloadMarkdownTool,
+    ConfluencePageDownloadMarkdownToolConfig,
 )
 from boba.tool.confluence.page_outline import (
     ConfluencePageOutlineTool,
@@ -87,11 +92,15 @@ class ConfluencePluginConfig:
     confluence_page_outline: PromptOverlay = field(default_factory=PromptOverlay)
     confluence_page_section: PromptOverlay = field(default_factory=PromptOverlay)
     confluence_page_download: PromptOverlay = field(default_factory=PromptOverlay)
+    confluence_page_download_markdown: PromptOverlay = field(
+        default_factory=PromptOverlay,
+    )
     tools: Annotated[
         list[str] | None,
         "Allowlist tool-имён внутри плагина: None/пустой = все, иначе только "
         "перечисленные ('confluence_search', 'confluence_page_outline', "
-        "'confluence_page_section', 'confluence_page_download').",
+        "'confluence_page_section', 'confluence_page_download', "
+        "'confluence_page_download_markdown').",
         ParseCsvList(),
     ] = None
 
@@ -160,6 +169,21 @@ class ConfluencePlugin(Plugin[ConfluencePluginConfig, ToolSource]):
                 ),
                 ctx,
                 sid,
+            ),
+            "confluence_page_download_markdown": (
+                lambda: ConfluencePageDownloadMarkdownTool(
+                    ConfluencePageDownloadMarkdownToolConfig(
+                        base_url=cfg.base_url,
+                        auth_method=cfg.auth_method,
+                        auth_user=cfg.auth_user,
+                        auth_token=cfg.auth_token,
+                        timeout_sec=cfg.timeout_sec,
+                        body_format=cfg.body_format,
+                        prompt=cfg.confluence_page_download_markdown,
+                    ),
+                    ctx,
+                    sid,
+                )
             ),
         }
         names = cls._select(cfg.tools, factories.keys())

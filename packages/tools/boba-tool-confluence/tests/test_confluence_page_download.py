@@ -1,4 +1,4 @@
-"""ConfluencePageDownloadTool: REST-JSON каждой страницы → workspace-файл."""
+"""ConfluencePageDownloadTool: HTML каждой страницы → workspace-файл."""
 
 from __future__ import annotations
 
@@ -43,7 +43,20 @@ def _patch_httpx(monkeypatch, handler):
 
 
 def test_downloads_pages_to_workspace_files(monkeypatch):
-    pages = {"111": b'{"id":"111","title":"A"}', "222": b'{"id":"222","title":"B"}'}
+    pages = {
+        "111": (
+            b'{"id":"111","title":"A",'
+            b'"body":{"view":{"value":"<p>page A</p>"}}}'
+        ),
+        "222": (
+            b'{"id":"222","title":"B",'
+            b'"body":{"view":{"value":"<p>page B</p>"}}}'
+        ),
+    }
+    html = {
+        "111": b"<p>page A</p>",
+        "222": b"<p>page B</p>",
+    }
 
     def handler(req: httpx.Request) -> httpx.Response:
         for pid, body in pages.items():
@@ -82,12 +95,13 @@ def test_downloads_pages_to_workspace_files(monkeypatch):
     assert payload["total"] == 2
     assert {item["page_id"] for item in payload["saved"]} == {"111", "222"}
     assert {item["path"] for item in payload["saved"]} == {
-        "downloads/111.json",
-        "downloads/222.json",
+        "downloads/111.html",
+        "downloads/222.html",
     }
-    # Файлы реально записаны с сырым телом REST-ответа
-    assert written["downloads/111.json"] == pages["111"]
-    assert written["downloads/222.json"] == pages["222"]
+    assert {item["title"] for item in payload["saved"]} == {"A", "B"}
+    # Файлы реально записаны с HTML-телом из body.view.value
+    assert written["downloads/111.html"] == html["111"]
+    assert written["downloads/222.html"] == html["222"]
     # mkdir вызван один раз, поскольку exists()=False
     shell.mkdir.assert_called_once_with("downloads")
 
@@ -129,5 +143,5 @@ def test_trailing_slash_in_dest_dir_is_stripped(monkeypatch):
     )
 
     assert isinstance(result, JsonResult)
-    assert captured == ["dl/7.json"]
+    assert captured == ["dl/7.html"]
     assert result.payload["dest_dir"] == "dl"

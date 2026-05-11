@@ -1,8 +1,9 @@
-"""Tool: скачать REST-JSON страниц Confluence в workspace-директорию.
+"""Tool: скачать HTML-страницы Confluence в workspace-директорию.
 
-Каждая страница из списка page_ids сохраняется как `{dest_dir}/{page_id}.json`
-с сырым ответом REST API (без вынятия body). Дальше по этим файлам можно
-ходить обычными file-tools (cat/grep/...).
+Каждая страница из списка page_ids сохраняется как `{dest_dir}/{page_id}.html` —
+тело страницы в выбранной body_format-репрезентации (storage/view/export_view/...).
+Дальше по этим файлам можно ходить html-tools (html_outline/html_section) или
+обычными file-tools (cat/grep/...).
 """
 
 from __future__ import annotations
@@ -12,10 +13,11 @@ from typing import Annotated, ClassVar
 
 import httpx
 
-from boba.indexing import PipelineContext, PipelineId
+from boba.indexing import PipelineContext, PipelineId, ReaderKeys
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import NonEmpty
 from boba.tool.confluence.connection import ConfluenceConnection
+from boba.tool.confluence.decoder import ConfluenceJsonDecoder
 from boba.tool.confluence.keys import ConfluenceKeys
 from boba.tool.confluence.request_sources.pages import (
     ConfluencePagesRequestSource,
@@ -38,10 +40,11 @@ __all__ = [
 
 @dataclass(frozen=True)
 class PageDownloadArgs:
-    """Скачивает указанные страницы Confluence в workspace как REST-JSON.
+    """Скачивает указанные страницы Confluence как HTML-файлы в workspace.
 
-    На каждую страницу создаётся файл `{dest_dir}/{page_id}.json` с сырым
-    ответом REST. Для последующего поиска используйте file-tools.
+    На каждую страницу создаётся файл `{dest_dir}/{page_id}.html` с HTML-телом
+    в выбранной body_format-репрезентации. Дальше — html_outline/html_section
+    или обычные file-tools.
     """
 
     page_ids: Annotated[
@@ -101,6 +104,7 @@ class ConfluencePageDownloadTool(
             body_format=self._cfg.body_format,
         )
         transport = ConfluenceConnection.make_transport(self._cfg)
+        decoder = ConfluenceJsonDecoder(body_format=self._cfg.body_format)
         pctx = PipelineContext(pipeline_id=self._PIPELINE_ID)
 
         saved: list[dict[str, str]] = []
@@ -108,13 +112,15 @@ class ConfluencePageDownloadTool(
             for http_req in source.stream(pctx):
                 page_id = http_req.metadata.get(ConfluenceKeys.PAGE_ID) or ""
                 for raw in transport.stream(pctx, [http_req]):
-                    path = f"{dest_dir}/{page_id}.json"
-                    payload = raw.handle.read()
-                    self._write(path, payload)
+                    decoded = decoder.convert(raw)
+                    html_bytes = decoded.handle.read()
+                    path = f"{dest_dir}/{page_id}.html"
+                    self._write(path, html_bytes)
                     saved.append({
                         "page_id": page_id,
+                        "title": decoded.metadata.get(ReaderKeys.PAGE_TITLE) or "",
                         "path": path,
-                        "bytes": str(len(payload)),
+                        "bytes": str(len(html_bytes)),
                     })
         except httpx.HTTPError as e:
             raise ToolExecutionError(
