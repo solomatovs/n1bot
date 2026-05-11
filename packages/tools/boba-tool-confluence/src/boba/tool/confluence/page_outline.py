@@ -3,20 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Annotated
 
-from boba.plugin import ExtensionContext
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import (
-    ChainCoercer,
-    IsInt,
-    IsString,
-    MaxValue,
-    MinValue,
-    NonEmpty,
-    Required,
-)
-from boba.schema.declaration import FieldSpec, ObjectSchema
+from boba.schema.coercion import MaxValue, MinValue, NonEmpty
 from boba.tool.confluence._http_client import ConfluenceHttpClient
 from boba.tool.confluence._page_pipeline import (
     ConfluencePagePipeline,
@@ -27,19 +17,36 @@ from boba.tools.domain import (
     Tool,
     ToolContext,
     ToolExecutionError,
-    ToolId,
-    ToolName,
     ToolResult,
-    ToolSourceId,
 )
 
-__all__ = ["ConfluencePageOutlineTool", "ConfluencePageOutlineToolConfig"]
+__all__ = [
+    "ConfluencePageOutlineTool",
+    "ConfluencePageOutlineToolConfig",
+    "PageOutlineArgs",
+]
 
 
 @dataclass(frozen=True)
 class PageOutlineArgs:
-    page_id: str
-    max_headings: int
+    """Получает структуру заголовков (h1..h6) страницы Confluence по page_id.
+
+    Возвращает title, метаданные и список секций с anchor'ами для последующего
+    вызова confluence_page_section.
+    """
+
+    page_id: Annotated[
+        str,
+        "ID страницы Confluence (число; виден в URL "
+        "viewpage.action?pageId=...).",
+        NonEmpty(),
+    ]
+    max_headings: Annotated[
+        int,
+        "Максимум заголовков в ответе (защита от длинных страниц).",
+        MinValue(1),
+        MaxValue(500),
+    ]
 
 
 @dataclass(frozen=True)
@@ -55,51 +62,10 @@ class ConfluencePageOutlineToolConfig:
     prompt: PromptOverlay
 
 
-class ConfluencePageOutlineTool(Tool[PageOutlineArgs]):
+class ConfluencePageOutlineTool(
+    Tool[PageOutlineArgs, ConfluencePageOutlineToolConfig]
+):
     """Online-outline страницы Confluence: page_id → структура заголовков."""
-
-    _NAME: ClassVar[ToolName] = ToolName("confluence_page_outline")
-
-    def __init__(
-        self,
-        cfg: ConfluencePageOutlineToolConfig,
-        ctx: ExtensionContext,
-        source_id: ToolSourceId,
-    ) -> None:
-        self._cfg = cfg
-        self._ctx = ctx
-        self._tool_id = ToolId.compose(source_id, self._NAME)
-
-    def tool_id(self) -> ToolId:
-        return self._tool_id
-
-
-    def definition(self) -> ObjectSchema[PageOutlineArgs]:
-        return self._cfg.prompt.apply(ObjectSchema(
-            description=(
-                "Получает структуру заголовков (h1..h6) страницы Confluence по "
-                "page_id. Возвращает title, метаданные и список секций с "
-                "anchor'ами для последующего вызова confluence_page_section."
-            ),
-            fields=[
-                FieldSpec(
-                    name="page_id",
-                    description=(
-                        "ID страницы Confluence (число; виден в URL "
-                        "viewpage.action?pageId=...)."
-                    ),
-                    coercer=ChainCoercer(Required(), NonEmpty(), IsString()),
-                ),
-                FieldSpec(
-                    name="max_headings",
-                    description=(
-                        "Максимум заголовков в ответе (защита от длинных страниц)."
-                    ),
-                    coercer=ChainCoercer(Required(), IsInt(), MinValue(1), MaxValue(500)),
-                ),
-            ],
-            factory=PageOutlineArgs,
-        ))
 
     def execute(self, ctx: ToolContext, req: PageOutlineArgs) -> ToolResult:
         del ctx
@@ -113,7 +79,7 @@ class ConfluencePageOutlineTool(Tool[PageOutlineArgs]):
                 content = pipeline.fetch(req.page_id)
         except ConfluencePagePipelineError as e:
             raise ToolExecutionError(
-                tool_id=self._tool_id,
+                tool_id=self.tool_id(),
                 message=f"Confluence page outline failed: {type(e).__name__}: {e}",
             ) from e
 

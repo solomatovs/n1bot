@@ -3,20 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Annotated
 
-from boba.plugin import ExtensionContext
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import (
-    ChainCoercer,
-    IsInt,
-    IsString,
-    MaxValue,
-    MinValue,
-    NonEmpty,
-    Required,
-)
-from boba.schema.declaration import FieldSpec, ObjectSchema
+from boba.schema.coercion import MaxValue, MinValue, NonEmpty
 from boba.tool.confluence._http_client import ConfluenceHttpClient
 from boba.tool.confluence._search_pipeline import (
     ConfluenceSearchPipeline,
@@ -27,19 +17,21 @@ from boba.tools.domain import (
     Tool,
     ToolContext,
     ToolExecutionError,
-    ToolId,
-    ToolName,
     ToolResult,
-    ToolSourceId,
 )
 
-__all__ = ["ConfluenceSearchTool", "ConfluenceSearchToolConfig"]
+__all__ = ["ConfluenceSearchTool", "ConfluenceSearchToolConfig", "SearchArgs"]
 
 
 @dataclass(frozen=True)
 class SearchArgs:
-    query: str
-    limit: int
+    """Полнотекстовый поиск страниц Confluence.
+
+    Возвращает список (title, space, page_id, url, excerpt).
+    """
+
+    query: Annotated[str, "Поисковый запрос (обычный текст).", NonEmpty()]
+    limit: Annotated[int, "Максимум hits в ответе.", MinValue(1), MaxValue(50)]
 
 
 @dataclass(frozen=True)
@@ -54,45 +46,8 @@ class ConfluenceSearchToolConfig:
     prompt: PromptOverlay
 
 
-class ConfluenceSearchTool(Tool[SearchArgs]):
+class ConfluenceSearchTool(Tool[SearchArgs, ConfluenceSearchToolConfig]):
     """Поиск страниц Confluence по тексту."""
-
-    _NAME: ClassVar[ToolName] = ToolName("confluence_search")
-
-    def __init__(
-        self,
-        cfg: ConfluenceSearchToolConfig,
-        ctx: ExtensionContext,
-        source_id: ToolSourceId,
-    ) -> None:
-        self._cfg = cfg
-        self._ctx = ctx
-        self._tool_id = ToolId.compose(source_id, self._NAME)
-
-    def tool_id(self) -> ToolId:
-        return self._tool_id
-
-
-    def definition(self) -> ObjectSchema[SearchArgs]:
-        return self._cfg.prompt.apply(ObjectSchema(
-            description=(
-                "Полнотекстовый поиск страниц Confluence. Возвращает список "
-                "(title, space, page_id, url, excerpt)."
-            ),
-            fields=[
-                FieldSpec(
-                    name="query",
-                    description="Поисковый запрос (обычный текст).",
-                    coercer=ChainCoercer(Required(), NonEmpty(), IsString()),
-                ),
-                FieldSpec(
-                    name="limit",
-                    description="Максимум hits в ответе.",
-                    coercer=ChainCoercer(Required(), IsInt(), MinValue(1), MaxValue(50)),
-                ),
-            ],
-            factory=SearchArgs,
-        ))
 
     def execute(self, ctx: ToolContext, req: SearchArgs) -> ToolResult:
         del ctx
@@ -107,7 +62,7 @@ class ConfluenceSearchTool(Tool[SearchArgs]):
                 stats = pipeline.run()
         except ConfluenceSearchPipelineError as e:
             raise ToolExecutionError(
-                tool_id=self._tool_id,
+                tool_id=self.tool_id(),
                 message=f"Confluence search failed: {type(e).__name__}: {e}",
             ) from e
 

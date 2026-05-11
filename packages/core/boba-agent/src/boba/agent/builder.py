@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable, Iterable
-from typing import Any, ClassVar, Self
+from typing import Any, ClassVar, Self, get_args, get_origin
 
 from boba.agent.events import AgentEvent
 from boba.agent.messages import InMemoryMessageService, MessageService, MessageWriter
@@ -295,14 +295,34 @@ class AgentBuilder:
                     f".use_config_source(...)"
                 )
                 raise ValueError(msg)
-            return shared_bundle.materialize(
-                config_path(plugin_cls.NAME), plugin_cls.config(),
+            return shared_bundle.get(
+                AgentBuilder._resolve_plugin_config_type(plugin_cls),
+                config_path(plugin_cls.NAME),
             )
         if isinstance(config, ConfigSource):
-            return ConfigBundle.from_sources([config]).materialize(
-                config_path(plugin_cls.NAME), plugin_cls.config(),
+            return ConfigBundle.from_sources([config]).get(
+                AgentBuilder._resolve_plugin_config_type(plugin_cls),
+                config_path(plugin_cls.NAME),
             )
         return config
+
+    @staticmethod
+    def _resolve_plugin_config_type(
+        plugin_cls: type[Plugin[Any, ToolSource]],
+    ) -> type:
+        """Извлечь TConfig из объявления `class XPlugin(Plugin[XConfig, ...])`."""
+        for klass in plugin_cls.__mro__:
+            for base in getattr(klass, "__orig_bases__", ()):
+                if get_origin(base) is Plugin:
+                    targs = get_args(base)
+                    if targs and isinstance(targs[0], type):
+                        return targs[0]
+        msg = (
+            f"{plugin_cls.__name__}: не удалось определить TConfig; "
+            f"плагин должен наследовать `Plugin[XConfig, XToolSource]` "
+            f"с конкретным dataclass-типом."
+        )
+        raise TypeError(msg)
 
     @staticmethod
     def _build_chain(  # noqa: PLR0913

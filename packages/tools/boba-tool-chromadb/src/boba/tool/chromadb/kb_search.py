@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Annotated, Any
 
-from boba.plugin import ExtensionContext
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import (
     ChainCoercer,
@@ -24,20 +23,30 @@ from boba.tools.domain import (
     JsonResult,
     Tool,
     ToolContext,
-    ToolId,
-    ToolName,
     ToolResult,
     ToolSourceId,
 )
 
-__all__ = ["KbSearchTool", "KbSearchToolConfig"]
+__all__ = ["KbSearchArgs", "KbSearchTool", "KbSearchToolConfig"]
 
 
 @dataclass(frozen=True)
 class KbSearchArgs:
-    collection: str
-    query: str
-    top_k: int
+    """Semantic search по KB-коллекции ChromaDB.
+
+    Возвращает JSON-массив hits {id, distance, metadata, snippet}, упорядоченный
+    по релевантности (меньшее distance = ближе). Перед вызовом узнай доступные
+    коллекции через kb_list_collections.
+    """
+
+    collection: Annotated[str, "Имя коллекции из kb_list_collections.", MinLength(1)]
+    query: Annotated[
+        str,
+        "Поисковый запрос на естественном языке — будет преобразован в "
+        "embedding и сопоставлен с документами коллекции.",
+        MinLength(1),
+    ]
+    top_k: Annotated[int, "Сколько hits вернуть. По умолчанию 5.", MinValue(1)] = 5
 
 
 @dataclass(frozen=True)
@@ -48,72 +57,60 @@ class KbSearchToolConfig:
     prompt: PromptOverlay
 
 
-class KbSearchTool(Tool[KbSearchArgs]):
+class KbSearchTool(Tool[KbSearchArgs, KbSearchToolConfig]):
     """Возвращает JSON [{id, distance, metadata, snippet}] top-k hits."""
-
-    _NAME: ClassVar[ToolName] = ToolName("kb_search")
 
     def __init__(
         self,
         kb: ChromaKnowledgeBase,
         cfg: KbSearchToolConfig,
-        ctx: ExtensionContext,
+        ctx: Any,
         source_id: ToolSourceId,
     ) -> None:
+        super().__init__(cfg, ctx, source_id)
         self._kb = kb
-        self._cfg = cfg
-        self._ctx = ctx
-        self._tool_id = ToolId.compose(source_id, self._NAME)
-
-    def tool_id(self) -> ToolId:
-        return self._tool_id
-
 
     def definition(self) -> ObjectSchema[KbSearchArgs]:
         max_top_k = self._cfg.max_top_k
-        return self._cfg.prompt.apply(ObjectSchema(
-            description=(
-                "Semantic search по KB-коллекции ChromaDB. Возвращает "
-                "JSON-массив hits {id, distance, metadata, snippet}, "
-                "упорядоченный по релевантности (меньшее distance = ближе). "
-                "Перед вызовом узнай доступные коллекции через "
-                "kb_list_collections."
-            ),
-            fields=[
-                FieldSpec(
-                    name="collection",
-                    description="Имя коллекции из kb_list_collections.",
-                    coercer=ChainCoercer(Required(), IsString(), MinLength(1)),
-                ),
-                FieldSpec(
-                    name="query",
-                    description=(
-                        "Поисковый запрос на естественном языке — "
-                        "будет преобразован в embedding и сопоставлен с "
-                        "документами коллекции."
+        return self._cfg.prompt.apply(
+            ObjectSchema(
+                description=KbSearchArgs.__doc__ or "",
+                fields=[
+                    FieldSpec(
+                        name="collection",
+                        description="Имя коллекции из kb_list_collections.",
+                        coercer=ChainCoercer(Required(), IsString(), MinLength(1)),
                     ),
-                    coercer=ChainCoercer(Required(), IsString(), MinLength(1)),
-                ),
-                FieldSpec(
-                    name="top_k",
-                    description=(
-                        f"Сколько hits вернуть (1..{max_top_k}). По умолчанию 5."
+                    FieldSpec(
+                        name="query",
+                        description=(
+                            "Поисковый запрос на естественном языке — "
+                            "будет преобразован в embedding и сопоставлен с "
+                            "документами коллекции."
+                        ),
+                        coercer=ChainCoercer(Required(), IsString(), MinLength(1)),
                     ),
-                    coercer=ChainCoercer(
-                        Default(5),
-                        IsInt(),
-                        MinValue(1),
-                        MaxValue(max_top_k),
+                    FieldSpec(
+                        name="top_k",
+                        description=(
+                            f"Сколько hits вернуть (1..{max_top_k}). По умолчанию 5."
+                        ),
+                        coercer=ChainCoercer(
+                            Default(5),
+                            IsInt(),
+                            MinValue(1),
+                            MaxValue(max_top_k),
+                        ),
                     ),
-                ),
-            ],
-            factory=KbSearchArgs,
-        ))
+                ],
+                factory=KbSearchArgs,
+            )
+        )
 
     def execute(self, ctx: ToolContext, req: KbSearchArgs) -> ToolResult:
         del ctx
         hits = self._kb.search(
-            tool_id=self._tool_id,
+            tool_id=self.tool_id(),
             collection=req.collection,
             query=req.query,
             top_k=req.top_k,

@@ -30,13 +30,14 @@ from boba.tools.domain.result import (
     ToolResult,
     ToolResultVisitor,
 )
-from boba.tools.domain.tool import Tool, ToolCall, ToolContext
+from boba.tools.domain.tool import SchemaOverlay, Tool, ToolCall, ToolContext
 from boba.tools.domain.wire import ToolWireSchemaBuilder
 
 __all__ = [
     "InvalidSchemaInvariantError",
     "InvalidToolArgumentError",
     "JsonResult",
+    "SchemaOverlay",
     "TextResult",
     "Tool",
     "ToolArgsBuilder",

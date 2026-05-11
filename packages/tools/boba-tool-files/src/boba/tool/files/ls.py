@@ -4,39 +4,36 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import islice
-from typing import ClassVar
+from typing import Annotated
 
-from boba.plugin import ExtensionContext
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import (
-    ChainCoercer,
-    Default,
-    IsInt,
-    IsString,
-    MinValue,
-    NonEmpty,
-    Nullable,
-)
-from boba.schema.declaration import FieldSpec, ObjectSchema
+from boba.schema.coercion import MinValue, NonEmpty
 from boba.tools.domain import (
     TextResult,
     Tool,
     ToolContext,
     ToolExecutionError,
-    ToolId,
-    ToolName,
     ToolResult,
-    ToolSourceId,
 )
 from boba.workspace.contract import WorkspaceError
 
-__all__ = ["LsTool", "LsToolConfig"]
+__all__ = ["LsArgs", "LsTool", "LsToolConfig"]
 
 
 @dataclass(frozen=True)
 class LsArgs:
-    path: str | None
-    limit: int
+    """Перечислить содержимое директории на одном уровне без рекурсии.
+
+    При переполнении limit ответ обрезается с маркером '(truncated at limit=N)'.
+    Для рекурсии — tree.
+    """
+
+    path: Annotated[
+        str | None, "Путь директории. Без значения — корень workspace.", NonEmpty()
+    ] = None
+    limit: Annotated[
+        int, "Максимум элементов в ответе. По умолчанию 200.", MinValue(1)
+    ] = 200
 
 
 @dataclass(frozen=True)
@@ -44,43 +41,8 @@ class LsToolConfig:
     prompt: PromptOverlay
 
 
-class LsTool(Tool[LsArgs]):
+class LsTool(Tool[LsArgs, LsToolConfig]):
     """Плоский список элементов workspace (без рекурсии)."""
-
-    _NAME: ClassVar[ToolName] = ToolName("ls")
-
-    def __init__(self, cfg: LsToolConfig, ctx: ExtensionContext, source_id: ToolSourceId) -> None:
-        self._cfg = cfg
-        self._ctx = ctx
-        self._tool_id = ToolId.compose(source_id, self._NAME)
-
-    def tool_id(self) -> ToolId:
-        return self._tool_id
-
-
-    def definition(self) -> ObjectSchema[LsArgs]:
-        return self._cfg.prompt.apply(ObjectSchema(
-            description=(
-                "Перечислить содержимое директории на одном уровне без рекурсии. "
-                "При переполнении limit ответ обрезается с маркером "
-                "'(truncated at limit=N)'. Для рекурсии — tree."
-            ),
-            fields=[
-                FieldSpec(
-                    name="path",
-                    description=(
-                        "Путь директории. Без значения — корень workspace."
-                    ),
-                    coercer=Nullable(ChainCoercer(IsString(), NonEmpty())),
-                ),
-                FieldSpec(
-                    name="limit",
-                    description="Максимум элементов в ответе. По умолчанию 200.",
-                    coercer=ChainCoercer(Default(200), IsInt(), MinValue(1)),
-                ),
-            ],
-            factory=LsArgs,
-        ))
 
     def execute(self, ctx: ToolContext, req: LsArgs) -> ToolResult:
         try:
@@ -88,7 +50,7 @@ class LsTool(Tool[LsArgs]):
             items = list(islice(iterator, req.limit + 1))
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._tool_id, message=f"Ошибка обхода: {e}",
+                tool_id=self.tool_id(), message=f"Ошибка обхода: {e}",
             ) from e
 
         truncated = len(items) > req.limit

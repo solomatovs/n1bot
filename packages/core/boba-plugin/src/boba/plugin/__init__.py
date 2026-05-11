@@ -44,7 +44,7 @@ __all__ = [
     "resolve_config_type",
 ]
 
-TConfig = TypeVar("TConfig", contravariant=True)  # noqa: PLC0105
+TConfig_contra = TypeVar("TConfig_contra", contravariant=True)
 TToolSource_co = TypeVar("TToolSource_co", covariant=True)
 
 
@@ -59,7 +59,7 @@ class ExtensionContext:
 
 
 @runtime_checkable
-class Plugin(Protocol[TConfig, TToolSource_co]):
+class Plugin(Protocol[TConfig_contra, TToolSource_co]):
     """Структурный протокол плагина.
 
     Дженерик по `TConfig` (DTO секции) и `TToolSource` (тип артефакта).
@@ -71,7 +71,7 @@ class Plugin(Protocol[TConfig, TToolSource_co]):
     @classmethod
     def build(
         cls,
-        cfg: TConfig,
+        cfg: TConfig_contra,
         ctx: ExtensionContext,
     ) -> Iterable[TToolSource_co]: ...
 

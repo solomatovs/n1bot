@@ -81,7 +81,7 @@ class ToolDecoratorFactory:
     def injects_ctx(self) -> bool:
         return self._injects_ctx
 
-    def build(self, source_id: ToolSourceId) -> Tool[dict[str, Any]]:
+    def build(self, source_id: ToolSourceId) -> Tool[dict[str, Any], None]:
         """Привязать к source_id и вернуть готовый Tool."""
         return DecoratedTool(
             fn=self._fn,
@@ -157,7 +157,7 @@ class ToolDecoratorFactory:
         )
 
 
-class DecoratedTool(Tool[dict[str, Any]]):
+class DecoratedTool(Tool[dict[str, Any], None]):
     """Concrete Tool, рождённый @tool. tool_id заполнен через ToolFactory.build."""
 
     def __init__(

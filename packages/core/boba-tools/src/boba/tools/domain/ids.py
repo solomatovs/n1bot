@@ -57,9 +57,13 @@ class ToolId(Id[str]):
         return cls(f"{source_id.to_wire()}{_SEPARATOR}{name.to_wire()}")
 
     def parse(self) -> tuple[ToolSourceId, ToolName]:
-        """`plugin.html/outline` → (ToolSourceId('plugin.html'), ToolName('outline'))."""
+        """
+        `plugin.html/outline` → (ToolSourceId('plugin.html'), ToolName('outline'))
+        """
         source_part, sep, name_part = self._name.partition(_SEPARATOR)
         if not sep or not name_part:
-            msg = f"invalid qualified tool id {self._name!r}: expected '<source>/<name>'"
+            msg = (
+                f"invalid qualified tool id {self._name!r}: expected '<source>/<name>'"
+            )
             raise ValueError(msg)
         return ToolSourceId(source_part), ToolName(name_part)
