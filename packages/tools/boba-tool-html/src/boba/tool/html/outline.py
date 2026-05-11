@@ -57,7 +57,12 @@ class HtmlOutlineTool(Tool[OutlineArgs]):
 
     _NAME: ClassVar[ToolName] = ToolName("html_outline")
 
-    def __init__(self, cfg: HtmlOutlineToolConfig, ctx: ExtensionContext, source_id: ToolSourceId) -> None:
+    def __init__(
+        self,
+        cfg: HtmlOutlineToolConfig,
+        ctx: ExtensionContext,
+        source_id: ToolSourceId,
+    ) -> None:
         self._cfg = cfg
         self._ctx = ctx
         self._tool_id = ToolId.compose(source_id, self._NAME)
@@ -65,38 +70,39 @@ class HtmlOutlineTool(Tool[OutlineArgs]):
     def tool_id(self) -> ToolId:
         return self._tool_id
 
-
     def definition(self) -> ObjectSchema[OutlineArgs]:
-        return self._cfg.prompt.apply(ObjectSchema(
-            description=(
-                "Оглавление HTML-файла: иерархия <h1>..<h6> с anchor'ами. "
-                "Anchor — либо #<id> атрибута заголовка, либо #idx:N "
-                "(порядковый номер). Используется как вход в html_section."
-            ),
-            fields=[
-                FieldSpec(
-                    name="path",
-                    description="Путь к HTML-файлу в workspace.",
-                    coercer=ChainCoercer(Required(), IsString(), NonEmpty()),
+        return self._cfg.prompt.apply(
+            ObjectSchema(
+                description=(
+                    "Оглавление HTML-файла: иерархия <h1>..<h6> с anchor'ами. "
+                    "Anchor — либо #<id> атрибута заголовка, либо #idx:N "
+                    "(порядковый номер). Используется как вход в html_section."
                 ),
-                FieldSpec(
-                    name="max_depth",
-                    description=(
-                        "Максимальный уровень заголовков (1=h1..6=h6). "
-                        "Без значения — все 6."
+                fields=[
+                    FieldSpec(
+                        name="path",
+                        description="Путь к HTML-файлу в workspace.",
+                        coercer=ChainCoercer(Required(), IsString(), NonEmpty()),
                     ),
-                    coercer=Nullable(
-                        ChainCoercer(IsInt(), MinValue(1), MaxValue(6))
+                    FieldSpec(
+                        name="max_depth",
+                        description=(
+                            "Максимальный уровень заголовков (1=h1..6=h6). "
+                            "Без значения — все 6."
+                        ),
+                        coercer=Nullable(
+                            ChainCoercer(IsInt(), MinValue(1), MaxValue(6))
+                        ),
                     ),
-                ),
-                FieldSpec(
-                    name="limit",
-                    description="Максимум заголовков в ответе.",
-                    coercer=ChainCoercer(Default(200), IsInt(), MinValue(1)),
-                ),
-            ],
-            factory=OutlineArgs,
-        ))
+                    FieldSpec(
+                        name="limit",
+                        description="Максимум заголовков в ответе.",
+                        coercer=ChainCoercer(Default(200), IsInt(), MinValue(1)),
+                    ),
+                ],
+                factory=OutlineArgs,
+            )
+        )
 
     def execute(self, ctx: ToolContext, req: OutlineArgs) -> ToolResult:
         try:
