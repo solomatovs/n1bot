@@ -36,10 +36,10 @@
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
-            "args": [
-                "--cli.model=${input:model}",
-                "--cli.query=${input:query}"
-            ],
+            // "args": [
+            //     "--cli.model=${input:model}",
+            //     "--cli.query=${input:query}"
+            // ],
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
@@ -51,11 +51,11 @@
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
-            "args": [
-                "--chainlit.host=0.0.0.0",
-                "--chainlit.port=8502",
-                "--chainlit.root_path=/boba-debug"
-            ],
+            // "args": [
+            //     "--chainlit.host=0.0.0.0",
+            //     "--chainlit.port=8502",
+            //     "--chainlit.root_path=/boba-debug"
+            // ],
             "envFile": "${workspaceFolder}/local/.env"
         },
         {

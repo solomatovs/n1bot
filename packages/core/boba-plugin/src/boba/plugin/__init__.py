@@ -164,10 +164,7 @@ def resolve_config_type(plugin_cls: type[Plugin[Any, Any]]) -> type:
                 )
                 raise TypeError(msg)
             return cfg
-    msg = (
-        f"{plugin_cls.__name__} должен наследоваться от "
-        f"Plugin[TConfig, TToolSource]"
-    )
+    msg = f"{plugin_cls.__name__} должен наследоваться от Plugin[TConfig, TToolSource]"
     raise TypeError(msg)
 
 

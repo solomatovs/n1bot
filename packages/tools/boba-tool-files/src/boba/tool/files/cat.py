@@ -11,7 +11,7 @@ from boba.schema import schema
 from boba.schema.coercion import MinValue, NonEmpty, Ordered, ParseInt
 from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
-    TextResult,
+    JsonResult,
     ToolContext,
     ToolExecutionError,
     ToolOutputTooLargeError,
@@ -87,8 +87,12 @@ class CatTool(FsToolBase[CatArgs, CatToolConfig]):
                 message=f"Ошибка чтения: {e}",
             ) from e
 
-        label = f"{req.path}:{req.start_line}-{last}"
-        return TextResult(text=f"### {label}\n\n{text}")
+        return JsonResult(payload={
+            "path": req.path,
+            "start_line": req.start_line,
+            "end_line": last,
+            "content": text,
+        })
 
     @staticmethod
     def _read_range(

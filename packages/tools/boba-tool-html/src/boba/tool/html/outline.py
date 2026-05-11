@@ -8,9 +8,9 @@ from typing import Annotated
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import MaxValue, MinValue, NonEmpty
 from boba.tool.html._base import HtmlToolBase
-from boba.tool.html._parse import Heading, anchor_for, collect_headings, load_soup
+from boba.tool.html._parse import anchor_for, collect_headings, load_soup
 from boba.tools.domain import (
-    TextResult,
+    JsonResult,
     ToolContext,
     ToolExecutionError,
     ToolResult,
@@ -63,30 +63,29 @@ class HtmlOutlineTool(HtmlToolBase[OutlineArgs, HtmlOutlineToolConfig]):
                 tool_id=self.tool_id(), message=f"Ошибка чтения: {e}"
             ) from e
 
-        headings = collect_headings(soup, max_depth=req.max_depth)
-        truncated = len(headings) > req.limit
-        if truncated:
-            headings = headings[: req.limit]
+        all_headings = collect_headings(soup, max_depth=req.max_depth)
+        total = len(all_headings)
+        truncated = total > req.limit
+        headings = all_headings[: req.limit] if truncated else all_headings
 
         title = soup.title.get_text(strip=True) if soup.title else ""
         charset = soup.original_encoding or ""
 
-        head = f"Документ: {req.path}"
-        if title:
-            head += f"  title={title!r}"
-        if charset:
-            head += f"  charset={charset}"
-
-        if not headings:
-            return TextResult(text=f"{head}\nЗаголовков: 0")
-
-        body = "\n".join(self._render_line(h) for h in headings)
-        suffix = f", truncated at limit={req.limit}" if truncated else ""
-        return TextResult(
-            text=f"{head}\nЗаголовков: {len(headings)}{suffix}\n\n{body}",
-        )
-
-    @staticmethod
-    def _render_line(h: Heading) -> str:
-        indent = "  " * (h.level - 1)
-        return f"{h.index:>3}. {indent}h{h.level} {h.text}  #{anchor_for(h)}"
+        return JsonResult(payload={
+            "path": req.path,
+            "title": title,
+            "charset": charset,
+            "headings": [
+                {
+                    "index": h.index,
+                    "level": h.level,
+                    "text": h.text,
+                    "anchor": anchor_for(h),
+                }
+                for h in headings
+            ],
+            "count": len(headings),
+            "total": total,
+            "truncated": truncated,
+            "limit": req.limit,
+        })

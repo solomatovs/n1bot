@@ -10,7 +10,7 @@ from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import MinValue, NonEmpty
 from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
-    TextResult,
+    JsonResult,
     ToolContext,
     ToolExecutionError,
     ToolResult,
@@ -53,18 +53,15 @@ class LsTool(FsToolBase[LsArgs, LsToolConfig]):
                 tool_id=self.tool_id(), message=f"Ошибка обхода: {e}",
             ) from e
 
-        truncated = len(items) > req.limit
+        total = len(items)
+        truncated = total > req.limit
         if truncated:
             items = items[: req.limit]
 
-        location = req.path or "/"
-
-        if not items:
-            return TextResult(text=f"{location} пуст.")
-
-        header = f"Элементы {location} ({len(items)}, лимит={req.limit}"
-        if truncated:
-            header += f", truncated at limit={req.limit}"
-        header += "):"
-        body = "\n".join(f"- {p}" for p in items)
-        return TextResult(text=f"{header}\n{body}")
+        return JsonResult(payload={
+            "location": req.path or "/",
+            "items": items,
+            "count": len(items),
+            "truncated": truncated,
+            "limit": req.limit,
+        })

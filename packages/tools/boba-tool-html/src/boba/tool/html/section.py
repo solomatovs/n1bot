@@ -17,7 +17,7 @@ from boba.tool.html._parse import (
     resolve_anchor,
 )
 from boba.tools.domain import (
-    TextResult,
+    JsonResult,
     ToolContext,
     ToolExecutionError,
     ToolResult,
@@ -93,13 +93,22 @@ class HtmlSectionTool(HtmlToolBase[SectionArgs, HtmlSectionToolConfig]):
         stop = self._find_stop_heading(headings, target_idx, req.include_subsections)
         html = self._collect_section_html(target.tag, stop.tag if stop else None)
 
-        if len(html) > req.max_chars:
-            html = (
-                html[: req.max_chars]
-                + f"\n... (truncated at max_chars={req.max_chars})"
-            )
+        total_chars = len(html)
+        truncated = total_chars > req.max_chars
+        if truncated:
+            html = html[: req.max_chars]
 
-        return TextResult(text=html)
+        return JsonResult(payload={
+            "path": req.path,
+            "anchor": req.anchor,
+            "level": target.level,
+            "text": target.text,
+            "html": html,
+            "chars": len(html),
+            "total_chars": total_chars,
+            "truncated": truncated,
+            "max_chars": req.max_chars,
+        })
 
     @staticmethod
     def _find_stop_heading(
