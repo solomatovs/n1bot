@@ -9,6 +9,7 @@ from typing import Any, Final
 
 import tomli
 
+from boba.config.builder import ConfigBundleBuilder
 from boba.config.path import (
     ConfigPath,
     ConfigSource,
@@ -33,6 +34,7 @@ from boba.schema.value import (
 __all__ = [
     "TomlFileSource",
     "TomlSource",
+    "use_toml",
 ]
 
 
@@ -183,3 +185,15 @@ class TomlFileSource(ConfigSource):
             f"TOML {path.parent().render()}.{leaf_repr}{TomlSourceBaseHelper.TOML_FILE_SUFFIX}"  # noqa: E501
             f"=<path-to-secret-file> (file: ${TomlSourceBaseHelper.CONFIG_PATH_ENV})"
         )
+
+
+def use_toml(
+    builder: ConfigBundleBuilder,
+    path: str | os.PathLike[str] | None = None,
+) -> ConfigBundleBuilder:
+    """Подключить TomlFileSource + TomlSource к ConfigBundleBuilder."""
+    return (
+        builder
+        .use_source(TomlFileSource(path))
+        .use_source(TomlSource(path))
+    )

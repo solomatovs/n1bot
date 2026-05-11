@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 from boba.agent.builder import AgentBuilder
@@ -10,10 +11,12 @@ from boba.agent.workspace_fs import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
 )
-from boba.patterns import ConverterInputError
+from boba.config.builder import ConfigBundleBuilder
+from boba.config.bundle import ConfigBundle
+from boba.config.source.toml import use_toml
 from boba.web.chainlit.bootstrap import set_app_state
 from boba.web.chainlit.config import ChainlitConfig
-from boba.web.chainlit.infra import AppConfig, use_toml_config
+from boba.web.chainlit.infra import AppConfig
 from boba.web.chainlit.ui_overrides import UIOverrideTomlConverter
 
 
@@ -42,26 +45,28 @@ def write_ui_config_overrides(cfg: ChainlitConfig, app_root: Path) -> None:
     target.write_text(content, encoding="utf-8")
 
 
-def _make_builder() -> AgentBuilder:
-    """Свежий builder под per-session ChatSession: те же sources/plugins."""
+def _build_bundle() -> ConfigBundle:
+    """Собрать общий для всех сессий ConfigBundle."""
     return (
-        AgentBuilder()
-        .use_cli()
-        .use_env_file()
-        .use_env()
-        .pipe(use_toml_config)
-        .use_tools_plugins_discovered()
+        ConfigBundleBuilder().use_cli().use_env_file().use_env().pipe(use_toml).build()
     )
 
 
+def _make_builder_factory(bundle: ConfigBundle) -> Callable[[], AgentBuilder]:
+    """Свежий builder под per-session ChatSession: общий bundle, свои plugins."""
+
+    def factory() -> AgentBuilder:
+        return AgentBuilder().use_config_bundle(bundle).use_tools_plugins_discovered()
+
+    return factory
+
+
 def main() -> int:
-    # Probing-builder для чтения config — chainlit-env и пути нужны до session'ов.
-    probe = _make_builder()
-    try:
-        chainlit_cfg = probe.bundle().get(ChainlitConfig, "chainlit")
-        app = probe.bundle().get(AppConfig, "agent")
-    except ConverterInputError:
-        return 2
+    bundle = _build_bundle()
+
+    chainlit_cfg = bundle.get(ChainlitConfig, "chainlit")
+    app = bundle.get(AppConfig, "agent")
+
     app_root = bridge_chainlit_env(chainlit_cfg)
     write_ui_config_overrides(chainlit_cfg, app_root)
 
@@ -76,7 +81,11 @@ def main() -> int:
 
     # ChatSession создаётся лениво при первом cl.on_chat_start (см. app.py)
     # и получает свой свежий AgentBuilder через factory.
-    set_app_state(_make_builder, project_workspaces, history_workspaces)
+    set_app_state(
+        _make_builder_factory(bundle),
+        project_workspaces,
+        history_workspaces,
+    )
 
     # chainlit импортируется только после bootstrap — он читает env при загрузке.
     from chainlit.cli import run_chainlit  # noqa: PLC0415

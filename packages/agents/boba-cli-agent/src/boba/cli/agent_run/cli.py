@@ -24,8 +24,9 @@ from boba.cli.agent_run.console_sink import ConsoleSink
 from boba.cli.agent_run.infra import (
     AppConfig,
     configure_logging,
-    use_toml_config,
 )
+from boba.config.builder import ConfigBundleBuilder
+from boba.config.source.toml import use_toml
 from boba.llm.models import RequestId
 from boba.llm.observer import CompositeLLMRequestObserver
 from boba.patterns import ConverterInputError
@@ -54,8 +55,10 @@ def main() -> int:
 
 def _run() -> int:
     """Собирает агента и либо прогоняет один запрос, либо запускает REPL."""
-    builder = AgentBuilder().use_cli().use_env_file().use_env().pipe(use_toml_config)
-    bundle = builder.bundle()
+    bundle = (
+        ConfigBundleBuilder().use_cli().use_env_file().use_env().pipe(use_toml).build()
+    )
+    builder = AgentBuilder().use_config_bundle(bundle)
 
     app = bundle.get(AppConfig, "agent")
     run_cfg = bundle.get(AgentRunConfig, "cli")
