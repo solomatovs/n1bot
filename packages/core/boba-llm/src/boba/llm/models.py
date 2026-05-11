@@ -9,6 +9,7 @@ from typing import Any
 
 from boba.llm.errors import LLMProtocolError
 from boba.patterns import UuId
+from boba.tools.domain import ToolResult
 
 __all__ = [
     "AssistantMessage",
@@ -93,11 +94,15 @@ class AssistantMessage(Message):
 
 @dataclass(frozen=True, kw_only=True)
 class ToolResultMessage(Message):
-    """Результат выполнения tool-call в слот id-вызова."""
+    """Результат выполнения tool-call в слот id-вызова.
+
+    Несёт доменный `ToolResult` (sealed). Провайдер-adapter рендерит его
+    в свой wire-формат через `ToolResultVisitor[T]` при конвертации
+    сообщения в API-параметры. Признак ошибки — `isinstance(result, ErrorResult)`.
+    """
 
     tool_call_id: str
-    content: str
-    success: bool = True
+    result: ToolResult
 
 
 @dataclass(frozen=True)

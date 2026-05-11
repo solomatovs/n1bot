@@ -21,6 +21,12 @@ from boba.llm.models import (
     ToolResultMessage,
     UserMessage,
 )
+from boba.tools.domain import (
+    ErrorResult,
+    JsonResult,
+    TextResult,
+    ToolResult,
+)
 from boba.workspace.contract import HistoryWorkspaceShell, WorkspaceError
 
 __all__ = [
@@ -235,14 +241,13 @@ class JsonLinesMessageService(MessageService):
                     ],
                 }
             case ToolResultMessage(
-                id=mid, content=content, tool_call_id=tcid, success=success,
+                id=mid, tool_call_id=tcid, result=result,
             ):
                 payload = {
                     "type": "tool_result",
                     "id": mid.to_wire(),
                     "tool_call_id": tcid,
-                    "content": content,
-                    "success": success,
+                    "result": JsonLinesMessageService._encode_result(result),
                 }
             case _:
                 kind = type(message).__name__
@@ -284,9 +289,50 @@ class JsonLinesMessageService(MessageService):
                 return ToolResultMessage(
                     id=mid,
                     tool_call_id=raw["tool_call_id"],
-                    content=raw["content"],
-                    success=raw.get("success", True),
+                    result=JsonLinesMessageService._decode_result(raw["result"]),
                 )
             case _:
                 msg = f"JsonLinesMessageService: неизвестный type='{msg_type}'"
+                raise ValueError(msg)
+
+    @staticmethod
+    def _encode_result(result: ToolResult) -> dict[str, Any]:
+        match result:
+            case TextResult(text=text, metadata=metadata):
+                return {"kind": "text", "text": text, "metadata": dict(metadata)}
+            case JsonResult(payload=payload, metadata=metadata):
+                return {
+                    "kind": "json",
+                    "payload": payload,
+                    "metadata": dict(metadata),
+                }
+            case ErrorResult(message=message, error_kind=error_kind, metadata=metadata):
+                return {
+                    "kind": "error",
+                    "message": message,
+                    "error_kind": error_kind,
+                    "metadata": dict(metadata),
+                }
+            case _:
+                kind = type(result).__name__
+                msg = f"JsonLinesMessageService: неизвестный ToolResult: {kind}"
+                raise ValueError(msg)
+
+    @staticmethod
+    def _decode_result(raw: dict[str, Any]) -> ToolResult:
+        kind = raw["kind"]
+        metadata = raw.get("metadata", {})
+        match kind:
+            case "text":
+                return TextResult(text=raw["text"], metadata=metadata)
+            case "json":
+                return JsonResult(payload=raw["payload"], metadata=metadata)
+            case "error":
+                return ErrorResult(
+                    message=raw["message"],
+                    error_kind=raw["error_kind"],
+                    metadata=metadata,
+                )
+            case _:
+                msg = f"JsonLinesMessageService: неизвестный result.kind='{kind}'"
                 raise ValueError(msg)

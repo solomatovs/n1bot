@@ -30,7 +30,7 @@ from boba.patterns import (
 )
 from boba.plugin import ExtensionContext, Plugin, config_path, is_enabled
 from boba.plugin.discovery import DEFAULT_PLUGIN_ENTRY_POINT_GROUP, discover_plugins
-from boba.tools.domain import ToolResultVisitor, ToolSourceId
+from boba.tools.domain import ToolSourceId
 from boba.tools.framework import (
     StaticToolSource,
     ToolDecoratorFactory,
@@ -41,8 +41,6 @@ from boba.tools.framework import (
 
 class AgentBuilder:
     """Fluent-фасад: собирает Agent с дефолтной middleware-цепью."""
-
-    # INLINE_SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("inline")
 
     def __init__(self) -> None:
         self._llm: LLMPipeline | None = None
@@ -55,7 +53,6 @@ class AgentBuilder:
         self._discover_groups: list[str] = []
         self._extensions: dict[type, object] = {}
         self._resolved_tool_executor: ToolExecutor | None = None
-        self._tool_result_visitor: ToolResultVisitor[str] | None = None
         self._message_service: MessageService | None = None
         self._prompt_providers: list[PromptProvider] = []
         self._agent_config: AgentConfig = AgentConfig()
@@ -150,11 +147,6 @@ class AgentBuilder:
         """Extension-style: `fn(self, *args, **kwargs) -> Self`."""
         return fn(self, *args, **kwargs)
 
-    def with_tool_result_visitor(self, visitor: ToolResultVisitor[str]) -> Self:
-        """Сериализация результата tool'а в строку для LLM (обязательно)."""
-        self._tool_result_visitor = visitor
-        return self
-
     def with_messages(self, service: MessageService) -> Self:
         """Хранилище истории; дефолт — InMemoryMessageService()."""
         self._message_service = service
@@ -179,12 +171,6 @@ class AgentBuilder:
         if self._llm is None:
             msg = "AgentBuilder.build: .with_llm(...) обязателен до .build()"
             raise ValueError(msg)
-        if self._tool_result_visitor is None:
-            msg = (
-                "AgentBuilder.build: .with_tool_result_visitor(...) "
-                "обязателен до .build()"
-            )
-            raise ValueError(msg)
 
         tool_executor = self._resolve_tool_executor()
 
@@ -193,7 +179,6 @@ class AgentBuilder:
         chain = self._build_chain(
             llm=self._llm,
             tool_executor=tool_executor,
-            visitor=self._tool_result_visitor,
             prompt_providers=self._prompt_providers,
             message_service=message_service,
         )
@@ -327,7 +312,6 @@ class AgentBuilder:
         *,
         llm: LLMPipeline,
         tool_executor: ToolExecutor,
-        visitor: ToolResultVisitor[str],
         prompt_providers: list[PromptProvider],
         message_service: MessageService,
     ) -> StreamSource[AgentContext, AgentEvent]:
@@ -341,7 +325,6 @@ class AgentBuilder:
                 inner,
                 tool_executor,
                 writer,
-                visitor,
             ),
         )
         builder.use(

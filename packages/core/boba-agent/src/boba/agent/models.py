@@ -3,12 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TypeAlias
 
+from boba.tools.domain import ToolResult
+
 
 @dataclass(frozen=True)
 class ToolCallResult:
-    """Результат успешного выполнения tool."""
+    """Результат успешного выполнения tool — доменный ToolResult."""
 
-    content: str
+    result: ToolResult
 
 
 @dataclass(frozen=True)

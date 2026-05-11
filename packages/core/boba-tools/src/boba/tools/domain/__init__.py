@@ -25,6 +25,8 @@ from boba.tools.domain.errors import (
 )
 from boba.tools.domain.ids import ToolId, ToolName, ToolSourceId
 from boba.tools.domain.result import (
+    DefaultTextVisitor,
+    ErrorResult,
     JsonResult,
     TextResult,
     ToolResult,
@@ -34,6 +36,8 @@ from boba.tools.domain.tool import SchemaOverlay, Tool, ToolCall, ToolContext
 from boba.tools.domain.wire import ToolWireSchemaBuilder
 
 __all__ = [
+    "DefaultTextVisitor",
+    "ErrorResult",
     "InvalidSchemaInvariantError",
     "InvalidToolArgumentError",
     "JsonResult",

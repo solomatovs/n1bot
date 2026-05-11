@@ -12,7 +12,6 @@ from boba.llm.builder import LLMPipelineFactory
 from boba.llm.models import RequestId
 from boba.provider.openai import (
     CurlTraceChatCompletionObserver,
-    OpenAIChatVisitor,
     use_openai,
 )
 from boba.web.chainlit.bridge import ChainlitBridgeSink
@@ -81,7 +80,6 @@ class ChatSession:
             builder
             .with_extension(ProjectWorkspaceShell, project_shell)
             .with_llm(llm)
-            .with_tool_result_visitor(OpenAIChatVisitor())
             .with_messages(InMemoryMessageService())
             .with_prompts(prompt_loader.prompt_providers())
             .with_config(self._agent_config)
