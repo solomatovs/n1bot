@@ -32,7 +32,7 @@ from boba.agent.turn.reducers import (
     ToolsReducer,
 )
 from boba.agent.turn.spec import TurnSpec
-from boba.llm.builder import LLMSource
+from boba.llm.builder import LLMPipeline
 from boba.llm.errors import LLMError
 from boba.llm.events import (
     LLMAnswerStarted,
@@ -134,12 +134,12 @@ class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
 
     def __init__(
         self,
-        llm_source: LLMSource,
+        llm: LLMPipeline,
         prompt_providers: Sequence[PromptProvider],
         tool_executor: ToolExecutor,
         message_reader: MessageReader,
     ) -> None:
-        self._llm_source = llm_source
+        self._llm = llm
         self._prompt_providers = prompt_providers
         self._tool_executor = tool_executor
         self._message_reader = message_reader
@@ -167,7 +167,7 @@ class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
         try:
             converter = LLMToAgentConverter(request)
 
-            for event in self._llm_source.stream(
+            for event in self._llm.stream(
                 LLMContext(
                     request=request,
                     request_id=ctx.request.request_id,

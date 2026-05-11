@@ -18,11 +18,11 @@ from boba.agent.middleware import (
     StopOnFinished,
     ToolExecutionMiddleware,
 )
-from boba.agent.middleware.llm import LLMSource
 from boba.agent.orchestrator import Agent, AgentConfig, AgentContext
 from boba.agent.prompt import PromptProvider
 from boba.config.bundle import ConfigBundle
 from boba.config.path import ConfigSource
+from boba.llm.builder import LLMPipeline
 from boba.patterns import (
     StreamSource,
     StreamSourceChainBuilder,
@@ -42,10 +42,10 @@ from boba.tools.framework import (
 class AgentBuilder:
     """Fluent-фасад: собирает Agent с дефолтной middleware-цепью."""
 
-    INLINE_SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("inline")
+    # INLINE_SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("inline")
 
     def __init__(self) -> None:
-        self._llm_source: LLMSource | None = None
+        self._llm: LLMPipeline | None = None
         self._tool_executor: ToolExecutor | None = None
         self._inline_factories: list[ToolDecoratorFactory] = []
         self._bundle: ConfigBundle | None = None
@@ -60,9 +60,9 @@ class AgentBuilder:
         self._prompt_providers: list[PromptProvider] = []
         self._agent_config: AgentConfig = AgentConfig()
 
-    def with_llm(self, source: LLMSource) -> Self:
-        """Готовый LLM-источник (обязательно)."""
-        self._llm_source = source
+    def with_llm(self, llm: LLMPipeline) -> Self:
+        """Готовый LLMPipeline (обязательно; см. LLMPipelineFactory)."""
+        self._llm = llm
         return self
 
     def with_tools(self, service: ToolExecutor) -> Self:
@@ -71,12 +71,12 @@ class AgentBuilder:
         return self
 
     def use_tools(self, factories: Iterable[ToolDecoratorFactory]) -> Self:
-        """Добавить `@tool`-функции под общим source_id `INLINE_SOURCE_ID`."""
+        """Добавить `@tool`-функции под общим source_id"""
         self._inline_factories.extend(factories)
         return self
 
     def use_config_bundle(self, bundle: ConfigBundle) -> Self:
-        """Подключить готовый ConfigBundle (см. ConfigBundleBuilder)."""
+        """Подключить готовый ConfigBundle (см. ConfigBundleFluentFactory)."""
         if self._bundle is not None:
             msg = "AgentBuilder.with_config_bundle: ConfigBundle уже задан"
             raise ValueError(msg)
@@ -176,7 +176,7 @@ class AgentBuilder:
 
     def build(self) -> Agent:
         """Собрать Agent. ToolContext передаётся per-call через AgentInput."""
-        if self._llm_source is None:
+        if self._llm is None:
             msg = "AgentBuilder.build: .with_llm(...) обязателен до .build()"
             raise ValueError(msg)
         if self._tool_result_visitor is None:
@@ -191,7 +191,7 @@ class AgentBuilder:
         message_service = self._message_service or InMemoryMessageService()
 
         chain = self._build_chain(
-            llm_source=self._llm_source,
+            llm=self._llm,
             tool_executor=tool_executor,
             visitor=self._tool_result_visitor,
             prompt_providers=self._prompt_providers,
@@ -249,7 +249,7 @@ class AgentBuilder:
 
         sources: list[ToolSource] = []
         if self._inline_factories:
-            sid = self.INLINE_SOURCE_ID
+            sid = ToolSourceId("inline")
             sources.append(
                 StaticToolSource(
                     sid,
@@ -327,7 +327,7 @@ class AgentBuilder:
     @staticmethod
     def _build_chain(
         *,
-        llm_source: LLMSource,
+        llm: LLMPipeline,
         tool_executor: ToolExecutor,
         visitor: ToolResultVisitor[str],
         prompt_providers: list[PromptProvider],
@@ -351,7 +351,7 @@ class AgentBuilder:
         )
         return builder.terminal(
             LLMInvokeMiddleware(
-                llm_source,
+                llm,
                 prompt_providers,
                 tool_executor,
                 message_service,

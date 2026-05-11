@@ -25,9 +25,9 @@ from boba.cli.agent_run.infra import (
     AppConfig,
     configure_logging,
 )
-from boba.config.builder import ConfigBundleFactory
+from boba.config.builder import ConfigBundleFluentFactory
 from boba.config.source.toml import use_toml
-from boba.llm.builder import LLMSourceBuilder
+from boba.llm.builder import LLMPipelineFactory
 from boba.llm.models import RequestId
 from boba.patterns import ConverterInputError
 from boba.provider.openai import (
@@ -56,7 +56,12 @@ def main() -> int:
 def _run() -> int:
     """Собирает агента и либо прогоняет один запрос, либо запускает REPL."""
     bundle = (
-        ConfigBundleFactory().use_cli().use_env_file().use_env().pipe(use_toml).build()
+        ConfigBundleFluentFactory()
+        .use_cli()
+        .use_env_file()
+        .use_env()
+        .pipe(use_toml)
+        .build()
     )
     builder = AgentBuilder().use_config_bundle(bundle)
 
@@ -87,8 +92,8 @@ def _run() -> int:
         subdir=app.workspaces.system_subdir,
     ).get_or_create(workspace_id)
 
-    llm_source = (
-        LLMSourceBuilder()
+    llm = (
+        LLMPipelineFactory()
         .add_observer(
             CurlTraceChatCompletionObserver(history_workspace, response_chunks=False),
         )
@@ -98,7 +103,7 @@ def _run() -> int:
 
     message_service = InMemoryMessageService()
     agent = (
-        builder.with_llm(llm_source)
+        builder.with_llm(llm)
         .with_tool_result_visitor(OpenAIChatVisitor())
         .with_messages(message_service)
         .with_prompts(prompt_loader.prompt_providers())

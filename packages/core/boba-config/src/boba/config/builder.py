@@ -1,4 +1,4 @@
-"""ConfigBundleBuilder — fluent-фасад поверх ConfigBundle.from_sources."""
+"""ConfigBundleFluentFactory — fluent-фасад поверх ConfigBundle.from_sources."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from boba.config.source.cli import CliSource
 from boba.config.source.env import EnvFileSource, EnvSource
 from boba.patterns import FactoryMethod
 
-__all__ = ["ConfigBundleFactory"]
+__all__ = ["ConfigBundleFluentFactory"]
 
 
-class ConfigBundleFactory(FactoryMethod):
+class ConfigBundleFluentFactory(FactoryMethod[ConfigBundle]):
     """Fluent-фасад: накапливает ConfigSource'ы и собирает ConfigBundle."""
 
     def __init__(self) -> None:

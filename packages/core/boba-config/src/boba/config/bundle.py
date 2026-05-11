@@ -43,7 +43,12 @@ from boba.schema.declaration import (
 )
 from boba.schema.value import ScalarValue
 
-__all__ = ["ConfigBundle", "ConfigBundleFactory", "FlatConfigMaterializer", "PathLike"]
+__all__ = [
+    "ConfigBundle",
+    "ConfigBundleFoldFactory",
+    "FlatConfigMaterializer",
+    "PathLike",
+]
 
 T = TypeVar("T")
 
@@ -228,7 +233,7 @@ class ConfigBundle:
     @classmethod
     def from_sources(cls, sources: Iterable[ConfigSource]) -> ConfigBundle:
         """Удобный one-shot: собрать ConfigBundle из набора источников."""
-        f = ConfigBundleFactory()
+        f = ConfigBundleFoldFactory()
         f.attach_sources(sources)
         return f.build()
 
@@ -305,7 +310,7 @@ class _SourceReducer(PrioritySource[StrId, _MergeState]):
         return state
 
 
-class ConfigBundleFactory(FoldFactory[StrId, _MergeState, ConfigBundle]):
+class ConfigBundleFoldFactory(FoldFactory[StrId, _MergeState, ConfigBundle]):
     """Источники → ConfigBundle. FoldFactory: каждый source — стадия мержа.
 
     Сборка: source'ы сортируются по priority и последовательно сливаются в

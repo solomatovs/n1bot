@@ -8,7 +8,7 @@ from boba.agent import AgentBuilder, AgentInput, InMemoryMessageService
 from boba.agent.orchestrator import Agent, AgentRequest
 from boba.agent.prompt_providers import PromptLoader
 from boba.agent.workspace_fs import FsPromptWorkspaceRegistry
-from boba.llm.builder import LLMSourceBuilder
+from boba.llm.builder import LLMPipelineFactory
 from boba.llm.models import RequestId
 from boba.provider.openai import (
     CurlTraceChatCompletionObserver,
@@ -65,8 +65,8 @@ class ChatSession:
         self._project_shell = project_shell
 
         history_shell = history_workspaces.get_or_create(workspace_id)
-        llm_source = (
-            LLMSourceBuilder()
+        llm = (
+            LLMPipelineFactory()
             .add_observer(CurlTraceChatCompletionObserver(history_shell))
             .pipe(use_openai, app.openai)
             .build()
@@ -80,7 +80,7 @@ class ChatSession:
         self._agent: Agent = (
             builder
             .with_extension(ProjectWorkspaceShell, project_shell)
-            .with_llm(llm_source)
+            .with_llm(llm)
             .with_tool_result_visitor(OpenAIChatVisitor())
             .with_messages(InMemoryMessageService())
             .with_prompts(prompt_loader.prompt_providers())
