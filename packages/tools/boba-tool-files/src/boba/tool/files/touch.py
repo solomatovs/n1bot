@@ -7,9 +7,9 @@ from typing import Annotated
 
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import NonEmpty
+from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     TextResult,
-    Tool,
     ToolContext,
     ToolExecutionError,
     ToolResult,
@@ -34,12 +34,12 @@ class TouchToolConfig:
     prompt: PromptOverlay
 
 
-class TouchTool(Tool[TouchArgs, TouchToolConfig]):
+class TouchTool(FsToolBase[TouchArgs, TouchToolConfig]):
     """Создать пустой файл или обновить mtime существующего."""
 
     def execute(self, ctx: ToolContext, req: TouchArgs) -> ToolResult:
         try:
-            ctx.project_workspace.touch(req.path)
+            self._shell(ctx).touch(req.path)
         except WorkspaceError as e:
             raise ToolExecutionError(
                 tool_id=self.tool_id(),

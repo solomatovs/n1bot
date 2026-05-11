@@ -7,9 +7,9 @@ from typing import Annotated
 
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import NonEmpty
+from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     TextResult,
-    Tool,
     ToolContext,
     ToolExecutionError,
     ToolResult,
@@ -34,12 +34,12 @@ class MkdirToolConfig:
     prompt: PromptOverlay
 
 
-class MkdirTool(Tool[MkdirArgs, MkdirToolConfig]):
+class MkdirTool(FsToolBase[MkdirArgs, MkdirToolConfig]):
     """Создать директорию."""
 
     def execute(self, ctx: ToolContext, req: MkdirArgs) -> ToolResult:
         try:
-            ctx.project_workspace.mkdir(req.path)
+            self._shell(ctx).mkdir(req.path)
         except WorkspaceError as e:
             raise ToolExecutionError(
                 tool_id=self.tool_id(),

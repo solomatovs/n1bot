@@ -9,9 +9,9 @@ from typing import Annotated
 from boba.plugin.prompt import PromptOverlay
 from boba.schema import schema
 from boba.schema.coercion import MinValue, NonEmpty, Ordered, ParseInt
+from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     TextResult,
-    Tool,
     ToolContext,
     ToolExecutionError,
     ToolOutputTooLargeError,
@@ -54,7 +54,7 @@ class CatToolConfig:
     prompt: PromptOverlay = field(default_factory=PromptOverlay)
 
 
-class CatTool(Tool[CatArgs, CatToolConfig]):
+class CatTool(FsToolBase[CatArgs, CatToolConfig]):
     """Чтение содержимого файла (целиком или диапазон строк 1-based)."""
 
     def execute(self, ctx: ToolContext, req: CatArgs) -> ToolResult:
@@ -74,7 +74,7 @@ class CatTool(Tool[CatArgs, CatToolConfig]):
             )
 
         try:
-            with ctx.project_workspace.read_text(req.path, req.encoding) as f:
+            with self._shell(ctx).read_text(req.path, req.encoding) as f:
                 text, last = self._read_range(f, req.start_line, req.end_line)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(

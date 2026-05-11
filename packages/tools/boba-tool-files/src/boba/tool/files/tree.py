@@ -8,9 +8,9 @@ from typing import Annotated
 
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import MinValue, NonEmpty
+from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     TextResult,
-    Tool,
     ToolContext,
     ToolExecutionError,
     ToolResult,
@@ -39,12 +39,12 @@ class TreeToolConfig:
     prompt: PromptOverlay
 
 
-class TreeTool(Tool[TreeArgs, TreeToolConfig]):
+class TreeTool(FsToolBase[TreeArgs, TreeToolConfig]):
     """Рекурсивный обход всех файлов workspace."""
 
     def execute(self, ctx: ToolContext, req: TreeArgs) -> ToolResult:
         try:
-            iterator = ctx.project_workspace.tree(req.path)
+            iterator = self._shell(ctx).tree(req.path)
             items = list(islice(iterator, req.limit + 1))
         except WorkspaceError as e:
             raise ToolExecutionError(

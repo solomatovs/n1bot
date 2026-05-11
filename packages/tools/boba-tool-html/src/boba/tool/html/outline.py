@@ -7,10 +7,10 @@ from typing import Annotated
 
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import MaxValue, MinValue, NonEmpty
+from boba.tool.html._base import HtmlToolBase
 from boba.tool.html._parse import Heading, anchor_for, collect_headings, load_soup
 from boba.tools.domain import (
     TextResult,
-    Tool,
     ToolContext,
     ToolExecutionError,
     ToolResult,
@@ -48,12 +48,12 @@ class HtmlOutlineToolConfig:
     prompt: PromptOverlay
 
 
-class HtmlOutlineTool(Tool[OutlineArgs, HtmlOutlineToolConfig]):
+class HtmlOutlineTool(HtmlToolBase[OutlineArgs, HtmlOutlineToolConfig]):
     """Иерархия <h1>..<h6> HTML-документа с anchor'ами для html_section."""
 
     def execute(self, ctx: ToolContext, req: OutlineArgs) -> ToolResult:
         try:
-            soup = load_soup(ctx.project_workspace, req.path)
+            soup = load_soup(self._shell(ctx), req.path)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self.tool_id(), message=f"Файл не найден: {req.path}"

@@ -7,9 +7,9 @@ from typing import Annotated
 
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import NonEmpty
+from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     TextResult,
-    Tool,
     ToolContext,
     ToolExecutionError,
     ToolResult,
@@ -31,12 +31,13 @@ class CdToolConfig:
     prompt: PromptOverlay
 
 
-class CdTool(Tool[CdArgs, CdToolConfig]):
+class CdTool(FsToolBase[CdArgs, CdToolConfig]):
     """Сменить текущую директорию."""
 
     def execute(self, ctx: ToolContext, req: CdArgs) -> ToolResult:
+        shell = self._shell(ctx)
         try:
-            ctx.project_workspace.cd(req.path)
+            shell.cd(req.path)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self.tool_id(),
@@ -47,4 +48,4 @@ class CdTool(Tool[CdArgs, CdToolConfig]):
                 tool_id=self.tool_id(),
                 message=f"Ошибка cd: {e}",
             ) from e
-        return TextResult(text=f"Текущая директория: {ctx.project_workspace.cwd}")
+        return TextResult(text=f"Текущая директория: {shell.cwd}")

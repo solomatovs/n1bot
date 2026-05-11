@@ -29,7 +29,7 @@ from boba.tools.domain.errors import (
 )
 from boba.tools.domain.ids import ToolId, ToolName, ToolSourceId
 from boba.tools.domain.result import ToolResult
-from boba.workspace.contract import ProjectWorkspaceShell
+from boba.workspace.contract import WorkspaceId
 
 __all__ = [
     "SchemaOverlay",
@@ -57,9 +57,13 @@ class SchemaOverlay(Protocol):
 
 @dataclass(frozen=True)
 class ToolContext:
-    """Per-request контекст исполнения tool'а."""
+    """Per-call идентичность вызова tool'а: id workspace'а сессии.
 
-    project_workspace: ProjectWorkspaceShell
+    Конкретный `WorkspaceShell` tool строит сам через registry,
+    полученный на build-time из `ExtensionContext`.
+    """
+
+    workspace_id: WorkspaceId
 
 
 @dataclass(frozen=True)

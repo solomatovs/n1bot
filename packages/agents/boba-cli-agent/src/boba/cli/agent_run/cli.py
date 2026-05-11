@@ -36,6 +36,8 @@ from boba.provider.openai import (
 )
 from boba.tools.domain import ToolContext
 from boba.workspace.contract import (
+    HistoryWorkspaceRegistry,
+    ProjectWorkspaceRegistry,
     PromptWorkspaceId,
     WorkspaceId,
 )
@@ -68,15 +70,15 @@ def _run() -> int:
     ).get_or_create(PromptWorkspaceId("prompts"))
     prompt_loader = PromptLoader(prompt_workspace)
 
-    project_workspace = FsProjectWorkspaceRegistry(
+    project_workspaces = FsProjectWorkspaceRegistry(
         base_dir=Path(app.workspaces.base_dir),
         subdir=app.workspaces.user_subdir,
-    ).get_or_create(workspace_id)
-
-    history_workspace = FsHistoryWorkspaceRegistry(
+    )
+    history_workspaces = FsHistoryWorkspaceRegistry(
         base_dir=Path(app.workspaces.base_dir),
         subdir=app.workspaces.system_subdir,
-    ).get_or_create(workspace_id)
+    )
+    history_workspace = history_workspaces.get_or_create(workspace_id)
 
     observer = CompositeLLMRequestObserver(
         [
@@ -95,8 +97,10 @@ def _run() -> int:
         .with_messages(message_service)
         .with_prompts(prompt_loader.prompt_providers())
         .with_config(app.runtime)
+        .with_extension(ProjectWorkspaceRegistry, project_workspaces)
+        .with_extension(HistoryWorkspaceRegistry, history_workspaces)
         .use_tools_plugins_discovered()
-        .build(tool_ctx=ToolContext(project_workspace=project_workspace))
+        .build(tool_ctx=ToolContext(workspace_id=workspace_id))
     )
     sink = ConsoleSink(sys.stdout, sys.stderr)
 

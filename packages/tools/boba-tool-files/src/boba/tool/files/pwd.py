@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from boba.plugin.prompt import PromptOverlay
-from boba.tools.domain import TextResult, Tool, ToolContext, ToolResult
+from boba.tool.files._base import FsToolBase
+from boba.tools.domain import TextResult, ToolContext, ToolResult
 
 __all__ = ["PwdArgs", "PwdTool", "PwdToolConfig"]
 
@@ -20,9 +21,9 @@ class PwdToolConfig:
     prompt: PromptOverlay
 
 
-class PwdTool(Tool[PwdArgs, PwdToolConfig]):
+class PwdTool(FsToolBase[PwdArgs, PwdToolConfig]):
     """Возвращает путь текущей директории."""
 
     def execute(self, ctx: ToolContext, req: PwdArgs) -> ToolResult:
         del req
-        return TextResult(text=ctx.project_workspace.cwd)
+        return TextResult(text=self._shell(ctx).cwd)

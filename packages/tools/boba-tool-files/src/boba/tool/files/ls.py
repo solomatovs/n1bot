@@ -8,9 +8,9 @@ from typing import Annotated
 
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import MinValue, NonEmpty
+from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     TextResult,
-    Tool,
     ToolContext,
     ToolExecutionError,
     ToolResult,
@@ -41,12 +41,12 @@ class LsToolConfig:
     prompt: PromptOverlay
 
 
-class LsTool(Tool[LsArgs, LsToolConfig]):
+class LsTool(FsToolBase[LsArgs, LsToolConfig]):
     """Плоский список элементов workspace (без рекурсии)."""
 
     def execute(self, ctx: ToolContext, req: LsArgs) -> ToolResult:
         try:
-            iterator = ctx.project_workspace.ls(req.path)
+            iterator = self._shell(ctx).ls(req.path)
             items = list(islice(iterator, req.limit + 1))
         except WorkspaceError as e:
             raise ToolExecutionError(

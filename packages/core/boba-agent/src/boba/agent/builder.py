@@ -57,6 +57,7 @@ class AgentBuilder:
             tuple[type[Plugin[Any, ToolSource]], ConfigSource | Any | None]
         ] = []
         self._discover_groups: list[str] = []
+        self._extensions: dict[type, object] = {}
         self._resolved_tool_executor: ToolExecutor | None = None
         self._tool_result_visitor: ToolResultVisitor[str] | None = None
         self._message_service: MessageService | None = None
@@ -108,6 +109,30 @@ class AgentBuilder:
         if self._bundle is None:
             self._bundle = ConfigBundle.from_sources(self._config_sources)
         return self._bundle
+
+    def with_extension(self, key: type, instance: object) -> Self:
+        """
+        Зарегистрировать build-time extension для `Plugin.build(ctx)`
+
+        Plugin внутри `build` запрашивает зависимость по типу:
+        `ctx.get(ProjectWorkspaceRegistry)`.
+
+        Повторная регистрация того же ключа — `ValueError`
+        """
+        if key in self._extensions:
+            msg = (
+                f"AgentBuilder.with_extension: extension {key.__name__!r} "
+                f"уже зарегистрирован"
+            )
+            raise ValueError(msg)
+        if not isinstance(instance, key):
+            msg = (
+                f"AgentBuilder.with_extension: instance типа "
+                f"{type(instance).__name__!r} не является {key.__name__!r}"
+            )
+            raise TypeError(msg)
+        self._extensions[key] = instance
+        return self
 
     def use_tools_plugins_discovered(
         self,
@@ -255,7 +280,7 @@ class AgentBuilder:
                     sid, [f.build(sid) for f in self._inline_factories],
                 ),
             )
-        ctx = ExtensionContext()
+        ctx = ExtensionContext(self._extensions)
         for plugin_cls, config in (*self._plugin_entries, *discovered):
             cfg = self._materialize_plugin_config(plugin_cls, config, shared_bundle)
             sources.extend(plugin_cls.build(cfg, ctx))

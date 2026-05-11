@@ -8,9 +8,9 @@ from typing import Annotated
 
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import MinValue, NonEmpty
+from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     TextResult,
-    Tool,
     ToolContext,
     ToolExecutionError,
     ToolResult,
@@ -63,12 +63,12 @@ class GrepToolConfig:
     prompt: PromptOverlay
 
 
-class GrepTool(Tool[GrepArgs, GrepToolConfig]):
+class GrepTool(FsToolBase[GrepArgs, GrepToolConfig]):
     """Поиск подстроки/regex по содержимому файлов."""
 
     def execute(self, ctx: ToolContext, req: GrepArgs) -> ToolResult:
         try:
-            iterator = ctx.project_workspace.grep(
+            iterator = self._shell(ctx).grep(
                 req.pattern,
                 req.path,
                 recursive=req.recursive,

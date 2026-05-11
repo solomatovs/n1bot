@@ -7,9 +7,9 @@ from typing import Annotated
 
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import NonEmpty
+from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     TextResult,
-    Tool,
     ToolContext,
     ToolExecutionError,
     ToolResult,
@@ -38,13 +38,14 @@ class WriteToolConfig:
     prompt: PromptOverlay
 
 
-class WriteTool(Tool[WriteArgs, WriteToolConfig]):
+class WriteTool(FsToolBase[WriteArgs, WriteToolConfig]):
     """Полностью перезаписать файл содержимым."""
 
     def execute(self, ctx: ToolContext, req: WriteArgs) -> ToolResult:
-        existed = ctx.project_workspace.exists(req.path)
+        shell = self._shell(ctx)
+        existed = shell.exists(req.path)
         try:
-            with ctx.project_workspace.write_text(req.path, req.encoding) as f:
+            with shell.write_text(req.path, req.encoding) as f:
                 f.write(req.content)
         except WorkspaceError as e:
             raise ToolExecutionError(
