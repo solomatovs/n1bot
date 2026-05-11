@@ -26,6 +26,7 @@ from boba.schema.declaration import (
     FieldPathMissingError,
     FieldSpec,
     IndexedShape,
+    InlineNestedField,
     KeyedShape,
     NestedField,
     ObjectItem,
@@ -396,6 +397,201 @@ def test_nested_field_two_levels_deep():
             connection=_Connection(base_url="https://example.com", timeout_sec=30),
         ),
     )
+
+
+# --- InlineNestedField ---
+
+
+@dataclass(frozen=True)
+class _InlineOuter:
+    name: str
+    conn: _Connection
+
+
+_INLINE_SCHEMA: ObjectSchema[_InlineOuter] = ObjectSchema(
+    fields=[
+        FieldSpec(name="name", coercer=ChainCoercer(Default("svc"), ParseString())),
+        InlineNestedField(name="conn", schema=_CONNECTION_SCHEMA),
+    ],
+    factory=_InlineOuter,
+)
+
+
+def test_inline_nested_reads_children_under_parent_prefix():
+    flat = ConfigBundle.from_sources(
+        [
+            DictSource(
+                {
+                    ConfigPath.parse("svc.name"): StringValue("api"),
+                    ConfigPath.parse("svc.base_url"): StringValue("https://example.com"),
+                    ConfigPath.parse("svc.timeout_sec"): IntValue(60),
+                }
+            )
+        ]
+    ).flat
+    outer = FlatConfigMaterializer(_INLINE_SCHEMA).materialize(
+        flat, ConfigPath.parse("svc")
+    )
+    assert outer == _InlineOuter(
+        name="api",
+        conn=_Connection(base_url="https://example.com", timeout_sec=60),
+    )
+
+
+def test_inline_nested_uses_inner_defaults():
+    flat = ConfigBundle.from_sources(
+        [
+            DictSource(
+                {ConfigPath.parse("svc.base_url"): StringValue("https://example.com")}
+            )
+        ]
+    ).flat
+    outer = FlatConfigMaterializer(_INLINE_SCHEMA).materialize(
+        flat, ConfigPath.parse("svc")
+    )
+    assert outer == _InlineOuter(
+        name="svc",
+        conn=_Connection(base_url="https://example.com", timeout_sec=30),
+    )
+
+
+def test_inline_nested_propagates_required_error():
+    flat = ConfigBundle.from_sources(
+        [DictSource({ConfigPath.parse("svc.name"): StringValue("api")})]
+    ).flat
+    with pytest.raises(FieldPathMissingError):
+        FlatConfigMaterializer(_INLINE_SCHEMA).materialize(
+            flat, ConfigPath.parse("svc")
+        )
+
+
+def test_inline_nested_does_not_conflict_with_sibling_inline():
+    """Два inline-DTO рядом — оба читают из одного префикса без конфликта."""
+
+    @dataclass(frozen=True)
+    class _Lhs:
+        a: str
+
+    @dataclass(frozen=True)
+    class _Rhs:
+        b: str
+
+    @dataclass(frozen=True)
+    class _Pair:
+        lhs: _Lhs
+        rhs: _Rhs
+
+    lhs_schema: ObjectSchema[_Lhs] = ObjectSchema(
+        fields=[FieldSpec(name="a", coercer=ChainCoercer(Required(), ParseString()))],
+        factory=_Lhs,
+    )
+    rhs_schema: ObjectSchema[_Rhs] = ObjectSchema(
+        fields=[FieldSpec(name="b", coercer=ChainCoercer(Required(), ParseString()))],
+        factory=_Rhs,
+    )
+    pair_schema: ObjectSchema[_Pair] = ObjectSchema(
+        fields=[
+            InlineNestedField(name="lhs", schema=lhs_schema),
+            InlineNestedField(name="rhs", schema=rhs_schema),
+        ],
+        factory=_Pair,
+    )
+    flat = ConfigBundle.from_sources(
+        [
+            DictSource(
+                {
+                    ConfigPath.parse("root.a"): StringValue("AA"),
+                    ConfigPath.parse("root.b"): StringValue("BB"),
+                }
+            )
+        ]
+    ).flat
+    pair = FlatConfigMaterializer(pair_schema).materialize(
+        flat, ConfigPath.parse("root")
+    )
+    assert pair == _Pair(lhs=_Lhs(a="AA"), rhs=_Rhs(b="BB"))
+
+
+# --- ConfigBundle.get: диспатч DTO/ObjectSchema ---
+
+
+@dataclass(frozen=True)
+class _DispatchDTO:
+    """DTO для теста диспатча: без ClassVar SCHEMA."""
+
+    name: str = "default"
+    port: int = 8080
+
+
+def test_get_accepts_dataclass_and_autogens_schema():
+    """bundle.get(DTO, prefix) — без ClassVar SCHEMA автоген отрабатывает."""
+    flat = ConfigBundle.from_sources(
+        [
+            DictSource(
+                {
+                    ConfigPath.parse("svc.name"): StringValue("api"),
+                    ConfigPath.parse("svc.port"): IntValue(9000),
+                }
+            )
+        ]
+    )
+    got = flat.get(_DispatchDTO, "svc")
+    assert got == _DispatchDTO(name="api", port=9000)
+
+
+def test_get_accepts_explicit_object_schema():
+    """bundle.get(ObjectSchema, prefix) — schema используется как есть."""
+    schema: ObjectSchema[_DispatchDTO] = ObjectSchema(
+        fields=[
+            FieldSpec(
+                name="name",
+                coercer=ChainCoercer(Default("manual"), ParseString()),
+            ),
+            FieldSpec(
+                name="port",
+                coercer=ChainCoercer(Default(7000), ParseInt()),
+            ),
+        ],
+        factory=_DispatchDTO,
+    )
+    flat = ConfigBundle.from_sources(
+        [DictSource({ConfigPath.parse("svc.name"): StringValue("api")})]
+    )
+    got = flat.get(schema, "svc")
+    assert got == _DispatchDTO(name="api", port=7000)
+
+
+def test_get_rejects_non_dataclass_non_schema():
+    flat = ConfigBundle.from_sources([DictSource({})])
+    with pytest.raises(TypeError, match="dataclass-тип или ObjectSchema"):
+        flat.get("not-a-type", "svc")  # type: ignore[arg-type]
+
+
+def test_get_falls_back_to_classvar_schema_bridge():
+    """Bridge: если у dataclass есть SCHEMA-атрибут, он используется поверх автогена."""
+
+    @dataclass(frozen=True)
+    class Bridged:
+        name: str = "default"
+
+    bridged_schema: ObjectSchema[Bridged] = ObjectSchema(
+        fields=[
+            FieldSpec(
+                name="name",
+                coercer=ChainCoercer(Default("from-classvar"), ParseString()),
+                description="bridge",
+            ),
+        ],
+        factory=Bridged,
+        description="custom bridge schema",
+    )
+    Bridged.SCHEMA = bridged_schema  # type: ignore[attr-defined]
+
+    flat = ConfigBundle.from_sources([DictSource({})])
+    got = flat.get(Bridged, "svc")
+    # Если бы был чистый автоген — default был бы "default" (dataclass-поле).
+    # Bridge подхватил ClassVar и вернул "from-classvar".
+    assert got == Bridged(name="from-classvar")
 
 
 # Re-export NameSegment чтобы pyright не считал импорт неиспользованным.

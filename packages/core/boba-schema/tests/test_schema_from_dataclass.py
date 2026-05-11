@@ -8,15 +8,17 @@ from typing import Annotated, Any, Literal
 import pytest
 
 from boba.patterns import ConverterInputError, MissingValueError
-from boba.schema import schema_from_dataclass
-from boba.schema.coercion import MISSING, MaxValue, MinValue
+from boba.schema import Inline, schema_from_dataclass
+from boba.schema.coercion import MISSING, ChainCoercer, Default, MaxValue, MinValue, ParseInt
 from boba.schema.declaration import (
     CollectionField,
     FieldSpec,
     IndexedShape,
+    InlineNestedField,
     KeyedShape,
     NestedField,
     ObjectItem,
+    ObjectSchema,
     ScalarItem,
 )
 
@@ -45,6 +47,15 @@ def _nested(schema: Any, name: str) -> NestedField[Any]:
             assert isinstance(f, NestedField)
             return f
     msg = f"nested field {name!r} not found"
+    raise AssertionError(msg)
+
+
+def _inline_nested(schema: Any, name: str) -> InlineNestedField[Any]:
+    for f in schema.fields:
+        if f.name == name:
+            assert isinstance(f, InlineNestedField)
+            return f
+    msg = f"inline-nested field {name!r} not found"
     raise AssertionError(msg)
 
 
@@ -228,11 +239,62 @@ class _Outer:
     flag: bool = False
 
 
+@dataclass(frozen=True)
+class _ManualInner:
+    x: int = 1
+
+
+_MANUAL_INNER_SCHEMA: ObjectSchema[_ManualInner] = ObjectSchema(
+    fields=[
+        FieldSpec(
+            name="x",
+            coercer=ChainCoercer(Default(7), ParseInt()),
+            description="custom-desc",
+        ),
+    ],
+    factory=_ManualInner,
+    description="manual",
+)
+_ManualInner.SCHEMA = _MANUAL_INNER_SCHEMA  # type: ignore[attr-defined]
+
+
+@dataclass(frozen=True)
+class _OuterWithManualInner:
+    inner: _ManualInner = field(default_factory=_ManualInner)
+
+
+_OVERRIDE_INNER_SCHEMA: ObjectSchema[_ManualInner] = ObjectSchema(
+    fields=[
+        FieldSpec(
+            name="x",
+            coercer=ChainCoercer(Default(99), ParseInt()),
+            description="explicit-override",
+        ),
+    ],
+    factory=_ManualInner,
+    description="explicit",
+)
+
+
+@dataclass(frozen=True)
+class _OuterWithInlineOverride:
+    inner: Annotated[_ManualInner, Inline(_OVERRIDE_INNER_SCHEMA)] = field(
+        default_factory=_ManualInner,
+    )
+
+
 def test_nested_dataclass_becomes_nested_field():
     schema = schema_from_dataclass(_Outer)
     n = _nested(schema, "nested")
     assert n.schema.factory is _Nested
     assert n.schema.description == "Вложенная подструктура."
+
+
+def test_nested_dataclass_reuses_manual_schema_if_declared():
+    """Если у sub-DTO есть свой SCHEMA — автоген его переиспользует."""
+    n = _nested(schema_from_dataclass(_OuterWithManualInner), "inner")
+    assert n.schema is _MANUAL_INNER_SCHEMA
+    assert n.schema.description == "manual"
 
 
 def test_list_of_dataclass_uses_object_item():
@@ -271,6 +333,65 @@ def test_optional_dataclass_field_rejected():
         nested: _Nested | None = None
 
     with pytest.raises(TypeError, match="Optional пока не поддерживаются"):
+        schema_from_dataclass(Cfg)
+
+
+# ── Inline-вложенный dataclass ────────────────────────────────────────────
+
+
+def test_inline_marker_produces_inline_nested_field():
+    @dataclass(frozen=True)
+    class Cfg:
+        nested: Annotated[_Nested, Inline()] = field(default_factory=_Nested)
+
+    f = _inline_nested(schema_from_dataclass(Cfg), "nested")
+    assert f.schema.factory is _Nested
+    assert f.schema.description == "Вложенная подструктура."
+
+
+def test_inline_with_description_keeps_description():
+    @dataclass(frozen=True)
+    class Cfg:
+        nested: Annotated[_Nested, "пояснение", Inline()] = field(
+            default_factory=_Nested,
+        )
+
+    f = _inline_nested(schema_from_dataclass(Cfg), "nested")
+    assert f.description == "пояснение"
+
+
+def test_inline_on_non_dataclass_rejected():
+    @dataclass(frozen=True)
+    class Cfg:
+        port: Annotated[int, Inline()] = 8080
+
+    with pytest.raises(TypeError, match="Inline применим только к полю-dataclass"):
+        schema_from_dataclass(Cfg)
+
+
+def test_inline_with_optional_dataclass_rejected():
+    @dataclass(frozen=True)
+    class Cfg:
+        nested: Annotated[_Nested | None, Inline()] = None
+
+    with pytest.raises(TypeError, match="Optional пока не поддерживаются"):
+        schema_from_dataclass(Cfg)
+
+
+def test_inline_schema_override_used_verbatim():
+    """Inline(schema=...) — явное переопределение, ручная SCHEMA на классе игнорируется."""
+    f = _inline_nested(schema_from_dataclass(_OuterWithInlineOverride), "inner")
+    assert f.schema is _OVERRIDE_INNER_SCHEMA
+    # _OVERRIDE_INNER_SCHEMA побеждает над _MANUAL_INNER_SCHEMA, привязанной к _ManualInner.
+    assert f.schema.description == "explicit"
+
+
+def test_double_inline_in_annotated_rejected():
+    @dataclass(frozen=True)
+    class Cfg:
+        inner: Annotated[_Nested, Inline(), Inline()] = field(default_factory=_Nested)
+
+    with pytest.raises(TypeError, match="повторный Inline"):
         schema_from_dataclass(Cfg)
 
 

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Annotated, ClassVar
 
 from boba.agent.orchestrator import AgentConfig
 from boba.agent.prompt_providers import PromptsConfig
 from boba.agent.workspace_fs import WorkspaceLayout
 from boba.provider.openai import OpenAIConfig
+from boba.schema import Inline, schema_from_dataclass
 from boba.schema.coercion import ChainCoercer, Default, Nullable, ParseBool, ParseString
 from boba.schema.declaration import FieldSpec, ObjectSchema
 
@@ -51,52 +52,15 @@ AppCoreConfig.SCHEMA = ObjectSchema(
 
 @dataclass(frozen=True)
 class AppConfig:
-    """DTO одной плоской секции `[agent]`. Поля под-DTO лежат рядом."""
+    """Плоский agent-конфиг: core/workspaces/openai/prompts/runtime."""
 
-    core: AppCoreConfig
-    workspaces: WorkspaceLayout
-    openai: OpenAIConfig
-    prompts: PromptsConfig
-    runtime: AgentConfig
+    core:       Annotated[AppCoreConfig,  Inline()]
+    workspaces: Annotated[WorkspaceLayout, Inline()]
+    openai:     Annotated[OpenAIConfig,    Inline()]
+    prompts:    Annotated[PromptsConfig,   Inline()]
+    runtime:    Annotated[AgentConfig,     Inline()]
 
     SCHEMA: ClassVar[ObjectSchema[AppConfig]]
 
-    @staticmethod
-    def _build(**flat: Any) -> AppConfig:
-        return AppConfig(
-            core=AppCoreConfig(
-                ssl_verify=flat["ssl_verify"],
-                log_level=flat["log_level"],
-                log_file=flat["log_file"],
-            ),
-            workspaces=WorkspaceLayout(
-                base_dir=flat["base_dir"],
-                user_subdir=flat["user_subdir"],
-                system_subdir=flat["system_subdir"],
-                tmp_subdir=flat["tmp_subdir"],
-            ),
-            openai=OpenAIConfig(
-                base_url=flat["base_url"],
-                api_key=flat["api_key"],
-            ),
-            prompts=PromptsConfig(
-                dir=flat["dir"],
-            ),
-            runtime=AgentConfig(
-                max_iterations=flat["max_iterations"],
-                max_consecutive_tool_calls=flat["max_consecutive_tool_calls"],
-            ),
-        )
 
-
-AppConfig.SCHEMA = ObjectSchema(
-    description="Плоский agent-конфиг: core/workspaces/openai/prompts/runtime.",
-    fields=[
-        *AppCoreConfig.SCHEMA.fields,
-        *WorkspaceLayout.SCHEMA.fields,
-        *OpenAIConfig.SCHEMA.fields,
-        *PromptsConfig.SCHEMA.fields,
-        *AgentConfig.SCHEMA.fields,
-    ],
-    factory=AppConfig._build,
-)
+AppConfig.SCHEMA = schema_from_dataclass(AppConfig)

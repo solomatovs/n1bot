@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, overload
 
 from boba.config.flat import FlatConfig
 from boba.config.path import (
@@ -21,6 +22,9 @@ from boba.patterns import (
     PrioritySource,
     StrId,
 )
+from boba.schema import (
+    resolve_schema_for_dataclass,
+)
 from boba.schema.coercion import MISSING
 from boba.schema.declaration import (
     CollectionField,
@@ -29,6 +33,7 @@ from boba.schema.declaration import (
     FieldPathError,
     FieldSpec,
     IndexedShape,
+    InlineNestedField,
     ItemReader,
     KeyedShape,
     NestedField,
@@ -97,6 +102,11 @@ class FlatConfigMaterializer(Generic[T]):
                     space,
                     prefix.join(NameSegment(name)),
                 )
+
+            case InlineNestedField(schema=nested):
+                # Inline: дочерние ключи читаются под префиксом родителя
+                # (без join(name)), но конструируется вложенный DTO.
+                return FlatConfigMaterializer(nested).materialize(space, prefix)
 
             case _:
                 raise NotImplementedError(f"unknown FieldKind: {type(field).__name__}")
@@ -207,7 +217,8 @@ class ConfigBundle:
     `ConfigPath` не требуется.
 
     Способы использования:
-      - bundle.get(MyConfig, "ext.chromadb") → DTO (DTO.SCHEMA).
+      - bundle.get(MyConfig, "ext.chromadb") → DTO (автоген SCHEMA из dataclass).
+      - bundle.get(MY_SCHEMA, "ext.chromadb") → DTO (явная ObjectSchema).
       - bundle.materialize("ext.chromadb", SCHEMA) → DTO (low-level).
       - ConfigBundle.from_sources([...]) — удобный one-shot конструктор.
     """
@@ -228,22 +239,38 @@ class ConfigBundle:
     ) -> T:
         return FlatConfigMaterializer(schema).materialize(self.flat, _as_path(prefix))
 
-    def get(self, dto_cls: type[T], prefix: PathLike) -> T:
-        """Материализовать DTO по его `ClassVar SCHEMA`.
+    @overload
+    def get(self, target: ObjectSchema[T], prefix: PathLike) -> T: ...
+    @overload
+    def get(self, target: type[T], prefix: PathLike) -> T: ...
+    def get(
+        self,
+        target: ObjectSchema[T] | type[T],
+        prefix: PathLike,
+    ) -> T:
+        """Материализовать DTO из dataclass-типа или явной ObjectSchema.
 
-        Соглашение: каждый config-DTO объявляет
-        ``SCHEMA: ClassVar[ObjectSchema[Self]]``. Это делает DTO
-        самодостаточным — пользователь импортирует только класс, без
-        отдельного `*_SCHEMA`-имени.
+        Диспатч:
+          * `ObjectSchema` — используется как есть.
+          * dataclass-тип — резолвится через `resolve_schema_for_dataclass`:
+            переходный bridge подхватывает ручной `DTO.SCHEMA`, если есть;
+            иначе вызывается `schema_from_dataclass` для автогена.
+
+        Это убирает соглашение `SCHEMA: ClassVar` как обязательное —
+        DTO может декларировать схему «снаружи» (отдельный
+        `MY_SCHEMA = ObjectSchema(...)`) или вообще не декларировать, если
+        её хватает автогена из dataclass-аннотаций.
         """
-        schema = getattr(dto_cls, "SCHEMA", None)
-        if not isinstance(schema, ObjectSchema):
-            msg = (
-                f"{dto_cls.__name__} must declare "
-                f"`SCHEMA: ClassVar[ObjectSchema[{dto_cls.__name__}]]`"
-            )
-            raise TypeError(msg)
-        return self.materialize(prefix, schema)
+        if isinstance(target, ObjectSchema):
+            return self.materialize(prefix, target)
+        if isinstance(target, type) and dataclasses.is_dataclass(target):
+            schema = resolve_schema_for_dataclass(target)
+            return self.materialize(prefix, schema)
+        msg = (
+            f"ConfigBundle.get ожидает dataclass-тип или ObjectSchema, "
+            f"получено {target!r}"
+        )
+        raise TypeError(msg)
 
 
 @dataclass
