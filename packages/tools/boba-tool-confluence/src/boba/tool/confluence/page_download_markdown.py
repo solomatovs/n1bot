@@ -118,14 +118,24 @@ class ConfluencePageDownloadMarkdownTool(
                 page_id = http_req.metadata.get(ConfluenceKeys.PAGE_ID) or ""
                 for raw in transport.stream(pctx, [http_req]):
                     decoded = decoder.convert(raw)
+                    title = decoded.metadata.get(ReaderKeys.PAGE_TITLE) or ""
+                    url = decoded.source_id.to_wire()
+                    space_key = (
+                        decoded.metadata.get(ConfluenceKeys.SPACE_KEY) or ""
+                    )
                     html = decoded.handle.read().decode("utf-8", errors="replace")
                     md = markdownify.markdownify(html, heading_style="ATX")
-                    md_bytes = md.encode("utf-8")
+                    frontmatter = self._md_frontmatter(
+                        url=url, title=title, page_id=page_id, space_key=space_key,
+                    )
+                    md_bytes = (frontmatter + md).encode("utf-8")
                     path = f"{dest_dir}/{page_id}.md"
                     self._write(path, md_bytes)
                     saved.append({
                         "page_id": page_id,
-                        "title": decoded.metadata.get(ReaderKeys.PAGE_TITLE) or "",
+                        "title": title,
+                        "url": url,
+                        "space_key": space_key,
                         "path": path,
                         "bytes": str(len(md_bytes)),
                     })
@@ -151,3 +161,20 @@ class ConfluencePageDownloadMarkdownTool(
     def _write(self, path: str, payload: bytes) -> None:
         with self._shell.write_binary(path) as f:
             f.write(payload)
+
+    @staticmethod
+    def _md_frontmatter(
+        *, url: str, title: str, page_id: str, space_key: str,
+    ) -> str:
+        """YAML-frontmatter с источником страницы — для цитирования LLM."""
+        lines = [
+            "---",
+            f"source: {url}",
+            f"title: {title}",
+            f"page_id: {page_id}",
+        ]
+        if space_key:
+            lines.append(f"space: {space_key}")
+        lines.append("---")
+        lines.append("")
+        return "\n".join(lines)
