@@ -8,10 +8,13 @@ from __future__ import annotations
 
 from typing import Protocol
 
+import httpx
+
 from boba.schema.coercion import (
     RequiredWhen,
 )
-from boba.transport.http import BasicAuth, HttpTransport, PatAuth
+from boba.tool.confluence.auth import PatAuth
+from boba.transport.http import HttpTransport
 
 __all__ = [
     "ConfluenceConnection",
@@ -52,10 +55,13 @@ class ConfluenceConnection:
         return RequiredWhen("auth_method", "basic", "auth_user")
 
     @staticmethod
-    def make_auth(cfg: ConfluenceConnectionConfig) -> BasicAuth | PatAuth:
+    def make_auth(cfg: ConfluenceConnectionConfig) -> httpx.Auth:
         match cfg.auth_method:
             case "basic":
-                return BasicAuth(user=cfg.auth_user, password=cfg.auth_token)
+                return httpx.BasicAuth(
+                    username=cfg.auth_user,
+                    password=cfg.auth_token,
+                )
             case "pat":
                 return PatAuth(token=cfg.auth_token)
             case _:

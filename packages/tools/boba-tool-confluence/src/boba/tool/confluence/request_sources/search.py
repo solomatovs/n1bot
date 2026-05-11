@@ -11,10 +11,12 @@ from __future__ import annotations
 from collections.abc import Iterable
 from urllib.parse import quote
 
+import httpx
+
 from boba.indexing import Metadata, PipelineContext, RequestSource, SourceId
 from boba.tool.confluence.keys import ConfluenceKeys
 from boba.tool.confluence.request_sources._common import extract_host
-from boba.transport.http import AuthApplier, HttpRequest
+from boba.transport.http import HttpRequest
 
 __all__ = ["ConfluenceCqlSearchRequestSource"]
 
@@ -26,7 +28,7 @@ class ConfluenceCqlSearchRequestSource(RequestSource[HttpRequest]):
         self,
         *,
         base_url: str,
-        auth: AuthApplier | None,
+        auth: httpx.Auth | None,
         cql: str,
         limit: int,
     ) -> None:

@@ -8,13 +8,13 @@ import httpx
 import pytest
 
 from boba.indexing import PipelineContext, PipelineId
+from boba.tool.confluence.auth import PatAuth
 from boba.tool.confluence.keys import ConfluenceKeys
 from boba.tool.confluence.request_sources import (
     ConfluenceCqlRequestSource,
     ConfluencePagesRequestSource,
     ConfluenceSpaceRequestSource,
 )
-from boba.transport.http import PatAuth
 
 
 def _ctx() -> PipelineContext:

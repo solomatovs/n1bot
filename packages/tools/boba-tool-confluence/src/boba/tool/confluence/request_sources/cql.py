@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from urllib.parse import quote
 
+import httpx
+
 from boba.indexing import PipelineContext, RequestSource
 from boba.tool.confluence.request_sources._common import (
     extract_host,
@@ -13,7 +15,7 @@ from boba.tool.confluence.request_sources._common import (
     make_page_request,
     viewpage_url,
 )
-from boba.transport.http import AuthApplier, HttpRequest
+from boba.transport.http import HttpRequest
 
 __all__ = ["ConfluenceCqlRequestSource"]
 
@@ -31,7 +33,7 @@ class ConfluenceCqlRequestSource(RequestSource[HttpRequest]):
         self,
         *,
         base_url: str,
-        auth: AuthApplier | None,
+        auth: httpx.Auth | None,
         cql: str,
         body_format: str = "export_view",
         timeout_sec: float = 30.0,

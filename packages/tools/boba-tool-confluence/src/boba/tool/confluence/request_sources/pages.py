@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 
+import httpx
+
 from boba.indexing import PipelineContext, RequestSource
 from boba.tool.confluence.request_sources._common import (
     extract_host,
     make_page_request,
     viewpage_url,
 )
-from boba.transport.http import AuthApplier, HttpRequest
+from boba.transport.http import HttpRequest
 
 __all__ = ["ConfluencePagesRequestSource"]
 
@@ -22,7 +24,7 @@ class ConfluencePagesRequestSource(RequestSource[HttpRequest]):
         self,
         *,
         base_url: str,
-        auth: AuthApplier | None,
+        auth: httpx.Auth | None,
         page_ids: Sequence[str],
         body_format: str = "export_view",
     ) -> None:

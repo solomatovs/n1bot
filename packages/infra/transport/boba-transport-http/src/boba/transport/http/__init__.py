@@ -6,12 +6,13 @@
   canonical id).
 - `HttpTransport(timeout_sec, verify)` — выполняет запросы через
   `httpx.Client`, отдаёт `RawDocument` со streaming-handle.
-- `AuthApplier = Callable[[dict[str, Any]], None]` — мутирует kwargs
-  `httpx.Client` перед его созданием. Готовые: `PatAuth(token)` для
-  Atlassian-PAT, `BasicAuth(user, password)` для basic-auth.
+- `auth: httpx.Auth | None` — httpx-native auth, пробрасывается в
+  `httpx.Client(auth=...)`. Для Basic — `httpx.BasicAuth(username, password)`.
+  Любая кастомная схема — `httpx.Auth`-наследник; формат-специфичные
+  реализации (Bearer/PAT/OAuth/...) живут в соответствующих feature-пакетах.
 
 Использование:
-    auth = PatAuth(token=os.environ["CONFLUENCE_PAT"])
+    auth = httpx.BasicAuth("user", "password")
     requests = [
         HttpRequest(url="https://...", source_id=SourceId("..."), auth=auth)
     ]
@@ -23,16 +24,12 @@
 
 from __future__ import annotations
 
-from boba.transport.http.auth import AuthApplier, BasicAuth, PatAuth
 from boba.transport.http.keys import HttpKeys
 from boba.transport.http.request import HttpRequest
 from boba.transport.http.transport import HttpTransport
 
 __all__ = [
-    "AuthApplier",
-    "BasicAuth",
     "HttpKeys",
     "HttpRequest",
     "HttpTransport",
-    "PatAuth",
 ]
