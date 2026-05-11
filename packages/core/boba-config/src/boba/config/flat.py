@@ -1,6 +1,6 @@
 """FlatConfig: единое плоское пространство значений конфига.
 
-Сборка из источников живёт в `bundle.py` (ConfigBundleFactory как FoldFactory).
+Сборка из источников живёт в `bundle.py` (ConfigBundleFoldFactory).
 Этот модуль содержит только структуру данных и базовые lookup-операции.
 """
 

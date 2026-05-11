@@ -1,6 +1,6 @@
 """LLM-домен: модели, события, ошибки, observer, middleware."""
 
-from boba.llm.builder import LLMSource, LLMSourceBuilder
+from boba.llm.builder import LLMPipeline, LLMPipelineFactory
 from boba.llm.errors import (
     LLMAuthError,
     LLMConnectionError,
@@ -85,6 +85,8 @@ __all__ = [
     "LLMGenerationStarted",
     "LLMInvalidRequestError",
     "LLMLifecycleMarker",
+    "LLMPipeline",
+    "LLMPipelineFactory",
     "LLMProtocolError",
     "LLMProviderInternalError",
     "LLMRateLimitError",
@@ -98,8 +100,6 @@ __all__ = [
     "LLMRequestSystemMessageNoneError",
     "LLMRequestValidationError",
     "LLMRetryAttempt",
-    "LLMSource",
-    "LLMSourceBuilder",
     "LLMStreamingDelta",
     "LLMThinkingStarted",
     "LLMThinkingToken",
