@@ -1,242 +1,115 @@
-[app]
+# Шаблон local/config.toml. Скопируйте в local/config.toml и подставьте значения.
+#
+# Секции:
+#   [agent]       — AppConfig (cli + chainlit): inline-композит
+#                    core + workspaces + openai + prompts + runtime.
+#   [cli]         — AgentRunConfig (boba-cli-agent).
+#   [chainlit]    — ChainlitConfig (boba-chainlit-agent).
+#   [tool.<name>] — конфиги tool-плагинов (discovery + enable-флаг).
+
+# --- AppConfig: inline core + workspaces + openai + prompts + runtime ---
+[agent]
+# core
 log_level = "INFO"
 ssl_verify = false
 log_file = "./local/logs/boba.log"
-
-[agent]
-max_iterations = 20
-max_consecutive_tool_calls = 3
-
-[adapter.openai]
-base_url = "http://localhost:4000"
-api_key = "ollama"
-
-[workspaces]
+# workspaces
 base_dir = "./local/workspaces"
 user_subdir = "user"
 system_subdir = "system"
 tmp_subdir = "tmp"
-
-[prompts]
+# openai (base_url/api_key обычно перекрываются env'ом)
+base_url = "http://localhost:4000"
+api_key = "ollama"
+# prompts
 dir = "./local/prompts"
+# runtime
+max_iterations = 20
+max_consecutive_tool_calls = 3
 
+# --- boba-cli-agent ---
+# model обязателен; query пусто → REPL, query задан → single-shot
+[cli]
+model = ""
+query = ""
+# temperature = 0.7
+# top_p = 0.9
+# max_tokens = 4096
+# seed = 0
+# stop = []
+# frequency_penalty = 0.0
+# presence_penalty = 0.0
+
+# --- boba-chainlit-agent ---
+# model обязателен (используется для всех запросов из UI)
 [chainlit]
+model = ""
 host = "0.0.0.0"
 port = "8501"
 root_path = ""
-auth_secret = ""
+# auth_secret обычно из env (openssl rand -hex 32)
 headless = "true"
 app_root = "./local/chainlit"
-models = []
-ui_name = ""
-enable_telemetry = ""
-upload_max_size_mb = ""
-upload_max_files = ""
-upload_accept = ""
+# ui_name = ""
+# enable_telemetry = false
+# upload_max_size_mb = 25
+# upload_max_files = 5
+# upload_accept = ["text/*", "application/pdf"]
 
-[ext.chromadb]
+# --- tool-плагины (entry_points discovery; enable=false => плагин пропускается) ---
+
+# kb_search + kb_list_collections (read-only)
+[tool.chromadb]
+enable = false
 persist_path = "./local/chroma"
 # "default" = built-in ONNX all-MiniLM-L6-v2 (локально, без сети).
-# Любое другое — модель LiteLLM/Ollama-style endpoint'а embeddings.
+# Иначе — модель LiteLLM/OpenAI-API; base_url/api_key обычно из env.
 embedding_model = "default"
-embedding_base_url = ""        # OpenAI-совместимый endpoint (LiteLLM/Ollama)
+embedding_base_url = ""
 embedding_api_key = ""
-
-[ext.chromadb.tools]
-enable = false
-tools_allow = []
 snippet_chars = 300
-
-[ext.chromadb.tools.kb_search]
-description = ""
 max_top_k = 20
-params = {}
+# per-tool PromptOverlay: description + fields:
+#   [tool.chromadb.kb_search]
+#   description = ""
+#   fields = {}
 
-[ext.chromadb.tools.kb_list_collections]
-description = ""
-params = {}
-
-[ext.files]
+# 15 файловых tools под общим enable-флагом
+[tool.files]
 enable = false
-tools_allow = []
+# [tool.files.cat]
+# max_lines = 2000
+# [tool.files.cat.prompt]
+# description = ""
+# fields = {}
+# PromptOverlay по остальным tools: append/cd/cp/edit/grep/ls/mkdir/mv/pwd/rm/stat/touch/tree/write
 
-[ext.files.tools.cat]
-description = ""
-max_lines = 2000
-params = {}
-
-[ext.files.tools.ls]
-description = ""
-params = {}
-
-[ext.files.tools.grep]
-description = ""
-params = {}
-
-[ext.files.tools.edit]
-description = ""
-params = {}
-
-[ext.files.tools.write]
-description = ""
-params = {}
-
-[ext.files.tools.cp]
-description = ""
-params = {}
-
-[ext.files.tools.mv]
-description = ""
-params = {}
-
-[ext.files.tools.rm]
-description = ""
-params = {}
-
-[ext.files.tools.mkdir]
-description = ""
-params = {}
-
-[ext.files.tools.touch]
-description = ""
-params = {}
-
-[ext.files.tools.stat]
-description = ""
-params = {}
-
-[ext.files.tools.pwd]
-description = ""
-
-[ext.files.tools.cd]
-description = ""
-params = {}
-
-[ext.files.tools.tree]
-description = ""
-params = {}
-
-[ext.files.tools.append]
-description = ""
-params = {}
-
-[ext.html]
+# html_outline + html_section (работают по workspace)
+[tool.html]
 enable = false
-tools_allow = []
+# [tool.html.html_outline]
+# description = ""
+# fields = {}
+# [tool.html.html_section]
+# description = ""
+# fields = {}
 
-[ext.html.tools.html_outline]
-description = ""
-params = {}
-
-[ext.html.tools.html_section]
-description = ""
-params = {}
-
-[ext.confluence]
+# confluence_search + confluence_page_outline + confluence_page_section
+# (общий connection-блок на корне плагина; base_url/auth_token обычно из env)
+[tool.confluence]
 enable = false
-tools_allow = []
-
-[ext.confluence.tools.confluence_outline]
-description = ""
-params = {}
-
-[ext.confluence.tools.confluence_section]
-description = ""
-params = {}
-
-[agent_run]
-query = ""
-model = ""
-temperature = ""
-top_p = ""
-max_tokens = ""
-seed = ""
-stop = ""
-frequency_penalty = ""
-presence_penalty = ""
-
-# action ставится только per-launch (CLI/env), в TOML обычно не хранится.
-[vector_index]
-verbose = 0
-
-[vector_index.index]
-collection = ""
-pipeline = ""                # ext.fs_markdown | ext.fs_html | ext.fs_text | ext.confluence_space | ext.confluence_pages | ext.confluence_cql
-description = ""
-
-[vector_index.sync]
-collection = ""
-pipeline = ""
-
-[vector_index.print]
-collection = ""
-source_id = ""
-limit = 20
-snippet_chars = 200
-
-[vector_index.search]
-collection = ""
-query = ""
-top_k = 5
-snippet_chars = 200
-
-[vector_index.delete]
-collection = ""
-
-[indexer.pipelines.fs_markdown]
-paths = []
-include = []
-exclude = []
-follow_symlinks = false
-chunk_size = 1500
-chunk_overlap = 150
-
-[indexer.pipelines.fs_html]
-paths = []
-include = []
-exclude = []
-follow_symlinks = false
-chunk_size = 1500
-chunk_overlap = 150
-
-[indexer.pipelines.fs_text]
-paths = []
-include = []
-exclude = []
-follow_symlinks = false
-chunk_size = 1000
-chunk_overlap = 200
-
-# base_url + auth_token задавать через env (BOBA_INDEXER__PIPELINES__CONFLUENCE_<MODE>__BASE_URL/__AUTH_TOKEN)
-[indexer.pipelines.confluence_space]
 base_url = ""
+auth_token = ""
 auth_method = "pat"          # pat | basic
-auth_user = ""
-auth_token = ""
-space_key = ""
-body_format = "export_view"  # export_view | view | storage
+auth_user = ""               # только для basic-auth
 timeout_sec = 30.0
-chunk_size = 1500
-chunk_overlap = 150
-
-[indexer.pipelines.confluence_pages]
-base_url = ""
-auth_method = "pat"
-auth_user = ""
-auth_token = ""
-page_ids = []
-body_format = "export_view"
-timeout_sec = 30.0
-chunk_size = 1500
-chunk_overlap = 150
-
-[indexer.pipelines.confluence_cql]
-base_url = ""
-auth_method = "pat"
-auth_user = ""
-auth_token = ""
-cql = ""
-body_format = "export_view"
-timeout_sec = 30.0
-chunk_size = 1500
-chunk_overlap = 150
+body_format = "view"         # view | export_view | storage
+# [tool.confluence.confluence_search]
+# description = ""
+# fields = {}
+# [tool.confluence.confluence_page_outline]
+# description = ""
+# fields = {}
+# [tool.confluence.confluence_page_section]
+# description = ""
+# fields = {}

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable, Iterable
-from typing import Any, ClassVar, Self, get_args, get_origin
+from typing import Any, Self, get_args, get_origin
 
 from boba.agent.events import AgentEvent
 from boba.agent.messages import InMemoryMessageService, MessageService, MessageWriter
