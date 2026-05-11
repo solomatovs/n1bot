@@ -20,7 +20,7 @@ from boba.tools.domain import (
     ToolId,
     ToolWireSchemaBuilder,
 )
-from boba.tools.framework import ToolsService
+from boba.tools.framework import ToolExecutor
 
 
 class ModelReducer(PrioritySource[StrId, TurnState]):
@@ -91,17 +91,17 @@ class HistoryReducer(PrioritySource[StrId, TurnState]):
 
 
 class ToolsReducer(PrioritySource[StrId, TurnState]):
-    """Каталог tools из ToolsService."""
+    """Каталог tools из ToolExecutor."""
 
     ID: ClassVar[StrId] = StrId("tools")
 
     def __init__(
         self,
-        tools_service: ToolsService,
+        tool_executor: ToolExecutor,
         parallel_tool_calls: bool = True,
         priority: int = 40,
     ) -> None:
-        self._tools_service = tools_service
+        self._tool_executor = tool_executor
         self._parallel = parallel_tool_calls
         self._priority = priority
 
@@ -115,7 +115,7 @@ class ToolsReducer(PrioritySource[StrId, TurnState]):
         state.tools = LLMToolRequest(
             tools=tuple(
                 self._tool_to_schema(tid, schema)
-                for tid, schema in self._tools_service.definitions()
+                for tid, schema in self._tool_executor.definitions()
             ),
             parallel_tool_calls=self._parallel,
         )
