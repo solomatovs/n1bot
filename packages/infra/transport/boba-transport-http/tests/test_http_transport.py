@@ -6,7 +6,7 @@ import httpx
 
 from boba.indexing import Metadata, SourceId, TransportKeys
 from boba.indexing.context import PipelineContext, PipelineId
-from boba.transport.http import HttpKeys, HttpRequest, HttpTransport, PatAuth
+from boba.transport.http import HttpKeys, HttpRequest, HttpTransport
 
 
 def _ctx() -> PipelineContext:
@@ -80,7 +80,8 @@ def test_handle_streams_in_chunks(monkeypatch):
     assert chunk1 + chunk2 + rest == payload
 
 
-def test_pat_auth_applies_bearer(monkeypatch):
+def test_auth_passed_to_client(monkeypatch):
+    """HttpTransport пробрасывает `httpx.Auth` напрямую в `httpx.Client(auth=...)`."""
     seen_headers = {}
 
     def handler(req):
@@ -97,10 +98,12 @@ def test_pat_auth_applies_bearer(monkeypatch):
                     HttpRequest(
                         url="https://x.test/y",
                         source_id=SourceId("https://x.test/y"),
-                        auth=PatAuth(token="secret-pat"),
+                        auth=httpx.BasicAuth(username="u", password="p"),
                     )
                 ]
             ),
         )
     )
-    assert seen_headers.get("authorization") == "Bearer secret-pat"
+    # httpx.BasicAuth добавляет header через auth_flow поверх client'а.
+    assert "authorization" in seen_headers
+    assert seen_headers["authorization"].lower().startswith("basic ")

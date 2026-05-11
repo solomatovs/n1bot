@@ -17,7 +17,7 @@ import httpx
 
 from boba.indexing import Metadata, SourceId
 from boba.tool.confluence.keys import ConfluenceKeys
-from boba.transport.http import AuthApplier, HttpRequest
+from boba.transport.http import HttpRequest
 
 __all__ = [
     "extract_host",
@@ -49,7 +49,7 @@ def make_page_request(
     *,
     base_url: str,
     host: str,
-    auth: AuthApplier | None,
+    auth: httpx.Auth | None,
     page_id: str,
     body_format: str,
 ) -> HttpRequest:
@@ -80,7 +80,7 @@ def make_page_request(
 
 def make_discovery_client(
     base_url: str,
-    auth: AuthApplier | None,
+    auth: httpx.Auth | None,
     timeout_sec: float,
 ) -> httpx.Client:
     """httpx.Client для discovery-запросов (пагинация id'ов).
@@ -89,13 +89,11 @@ def make_discovery_client(
     Transport занимается выгрузкой content'а; RequestSource — только
     планированием (какие id существуют). Цикла зависимостей нет.
     """
-    kwargs: dict[str, Any] = {
-        "base_url": base_url.rstrip("/"),
-        "timeout": timeout_sec,
-    }
-    if auth is not None:
-        auth(kwargs)
-    return httpx.Client(**kwargs)
+    return httpx.Client(
+        base_url=base_url.rstrip("/"),
+        timeout=timeout_sec,
+        auth=auth,
+    )
 
 
 def iter_paginated(

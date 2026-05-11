@@ -16,7 +16,7 @@ with-блок закрывает response — ровно как и должно 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import httpx
 
@@ -117,16 +117,13 @@ class HttpTransport(Transport[HttpRequest]):
             yield from self._fetch_one(req)
 
     def _fetch_one(self, req: HttpRequest) -> Iterable[RawDocument]:
-        client_kwargs: dict[str, Any] = {
-            "timeout": self._timeout,
-            "verify": self._verify,
-            "headers": dict(req.headers) if req.headers else {},
-        }
-        if req.auth is not None:
-            req.auth(client_kwargs)
-
         with (
-            httpx.Client(**client_kwargs) as client,
+            httpx.Client(
+                timeout=self._timeout,
+                verify=self._verify,
+                headers=dict(req.headers) if req.headers else {},
+                auth=req.auth,
+            ) as client,
             client.stream(req.method, req.url) as resp,
         ):
             resp.raise_for_status()
