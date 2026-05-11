@@ -42,7 +42,7 @@ class RmTool(FsToolBase[RmArgs, RmToolConfig]):
 
     def execute(self, ctx: ToolContext, req: RmArgs) -> ToolResult:
         try:
-            self._shell(ctx).delete(req.path, recursive=req.recursive)
+            self._shell.delete(req.path, recursive=req.recursive)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self.tool_id(),

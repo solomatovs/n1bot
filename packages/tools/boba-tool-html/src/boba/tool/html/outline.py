@@ -53,7 +53,7 @@ class HtmlOutlineTool(HtmlToolBase[OutlineArgs, HtmlOutlineToolConfig]):
 
     def execute(self, ctx: ToolContext, req: OutlineArgs) -> ToolResult:
         try:
-            soup = load_soup(self._shell(ctx), req.path)
+            soup = load_soup(self._shell, req.path)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self.tool_id(), message=f"Файл не найден: {req.path}"

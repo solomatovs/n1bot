@@ -74,7 +74,7 @@ class CatTool(FsToolBase[CatArgs, CatToolConfig]):
             )
 
         try:
-            with self._shell(ctx).read_text(req.path, req.encoding) as f:
+            with self._shell.read_text(req.path, req.encoding) as f:
                 text, last = self._read_range(f, req.start_line, req.end_line)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(

@@ -16,7 +16,7 @@ from boba.patterns import StrId
 from boba.plugin import ExtensionContext, install_plugins
 from boba.schema.value import StringValue
 from boba.tool.files import FilesPlugin
-from boba.workspace.contract import ProjectWorkspaceRegistry
+from boba.workspace.contract import ProjectWorkspaceShell
 
 
 class _InlineSource(ConfigSource):
@@ -55,7 +55,7 @@ _FILES_TOOL_NAMES = {
 
 def _ext_ctx() -> ExtensionContext:
     return ExtensionContext({
-        ProjectWorkspaceRegistry: MagicMock(spec=ProjectWorkspaceRegistry),
+        ProjectWorkspaceShell: MagicMock(spec=ProjectWorkspaceShell),
     })
 
 

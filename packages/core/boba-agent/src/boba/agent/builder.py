@@ -18,14 +18,13 @@ from boba.agent.middleware import (
     StopOnFinished,
     ToolExecutionMiddleware,
 )
+from boba.agent.middleware.llm import LLMSource
 from boba.agent.orchestrator import Agent, AgentConfig, AgentContext
 from boba.agent.prompt import PromptProvider
 from boba.config.bundle import ConfigBundle
 from boba.config.path import ConfigSource
 from boba.config.source.cli import CliSource
 from boba.config.source.env import EnvFileSource, EnvSource
-from boba.llm.events import LLMEvent
-from boba.llm.models import LLMContext
 from boba.patterns import (
     StreamSource,
     StreamSourceChainBuilder,
@@ -33,7 +32,7 @@ from boba.patterns import (
 )
 from boba.plugin import ExtensionContext, Plugin, config_path, is_enabled
 from boba.plugin.discovery import DEFAULT_PLUGIN_ENTRY_POINT_GROUP, discover_plugins
-from boba.tools.domain import ToolContext, ToolResultVisitor, ToolSourceId
+from boba.tools.domain import ToolResultVisitor, ToolSourceId
 from boba.tools.framework import (
     StaticToolSource,
     ToolDecoratorFactory,
@@ -48,7 +47,7 @@ class AgentBuilder:
     INLINE_SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("inline")
 
     def __init__(self) -> None:
-        self._llm_source: StreamSource[LLMContext, LLMEvent] | None = None
+        self._llm_source: LLMSource | None = None
         self._tool_executor: ToolExecutor | None = None
         self._inline_factories: list[ToolDecoratorFactory] = []
         self._config_sources: list[ConfigSource] = []
@@ -64,8 +63,8 @@ class AgentBuilder:
         self._prompt_providers: list[PromptProvider] = []
         self._agent_config: AgentConfig = AgentConfig()
 
-    def with_llm(self, source: StreamSource[LLMContext, LLMEvent]) -> Self:
-        """LLM-источник (обязательно)."""
+    def with_llm(self, source: LLMSource) -> Self:
+        """Готовый LLM-источник (обязательно)."""
         self._llm_source = source
         return self
 
@@ -197,12 +196,8 @@ class AgentBuilder:
         """Текущий AgentConfig (нужен для Agent.run)."""
         return self._agent_config
 
-    def build(
-        self,
-        *,
-        tool_ctx: ToolContext,
-    ) -> Agent:
-        """Собрать Agent. tool_ctx — per-call DI, не часть билдера."""
+    def build(self) -> Agent:
+        """Собрать Agent. ToolContext передаётся per-call через AgentInput."""
         if self._llm_source is None:
             msg = "AgentBuilder.build: .with_llm(...) обязателен до .build()"
             raise ValueError(msg)
@@ -223,7 +218,6 @@ class AgentBuilder:
             visitor=self._tool_result_visitor,
             prompt_providers=self._prompt_providers,
             message_service=message_service,
-            tool_ctx=tool_ctx,
         )
         source = StreamSourceLoop(
             source=chain,
@@ -350,14 +344,13 @@ class AgentBuilder:
         raise TypeError(msg)
 
     @staticmethod
-    def _build_chain(  # noqa: PLR0913
+    def _build_chain(
         *,
-        llm_source: StreamSource[LLMContext, LLMEvent],
+        llm_source: LLMSource,
         tool_executor: ToolExecutor,
         visitor: ToolResultVisitor[str],
         prompt_providers: list[PromptProvider],
         message_service: MessageService,
-        tool_ctx: ToolContext,
     ) -> StreamSource[AgentContext, AgentEvent]:
         writer: MessageWriter = message_service
         error_router = AgentErrorRouter(writer)
@@ -368,7 +361,6 @@ class AgentBuilder:
             lambda inner: ToolExecutionMiddleware(
                 inner,
                 tool_executor,
-                tool_ctx,
                 writer,
                 visitor,
             ),

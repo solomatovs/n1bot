@@ -41,7 +41,7 @@ class MvTool(FsToolBase[MvArgs, MvToolConfig]):
 
     def execute(self, ctx: ToolContext, req: MvArgs) -> ToolResult:
         try:
-            self._shell(ctx).move(req.src, req.dst)
+            self._shell.move(req.src, req.dst)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self.tool_id(),

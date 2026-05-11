@@ -24,7 +24,7 @@ from boba.schema.value import StringValue
 from boba.tool.files import FilesPlugin
 from boba.tool.files.cat import CatTool, CatToolConfig
 from boba.tools.domain import ToolSourceId
-from boba.workspace.contract import ProjectWorkspaceRegistry
+from boba.workspace.contract import ProjectWorkspaceShell
 
 
 class _InlineSource(ConfigSource):
@@ -60,7 +60,7 @@ _BASE = {"tool.files.enable": "true"}
 
 def _ext_ctx() -> ExtensionContext:
     return ExtensionContext({
-        ProjectWorkspaceRegistry: MagicMock(spec=ProjectWorkspaceRegistry),
+        ProjectWorkspaceShell: MagicMock(spec=ProjectWorkspaceShell),
     })
 
 

@@ -15,10 +15,6 @@ from boba.web.chainlit.bootstrap import set_app_state
 from boba.web.chainlit.config import ChainlitConfig
 from boba.web.chainlit.infra import AppConfig, use_toml_config
 from boba.web.chainlit.ui_overrides import UIOverrideTomlConverter
-from boba.workspace.contract import (
-    HistoryWorkspaceRegistry,
-    ProjectWorkspaceRegistry,
-)
 
 
 def bridge_chainlit_env(cfg: ChainlitConfig) -> Path:
@@ -46,24 +42,29 @@ def write_ui_config_overrides(cfg: ChainlitConfig, app_root: Path) -> None:
     target.write_text(content, encoding="utf-8")
 
 
-def main() -> int:
-    builder = (
+def _make_builder() -> AgentBuilder:
+    """Свежий builder под per-session ChatSession: те же sources/plugins."""
+    return (
         AgentBuilder()
         .use_cli()
         .use_env_file()
         .use_env()
         .pipe(use_toml_config)
+        .use_tools_plugins_discovered()
     )
+
+
+def main() -> int:
+    # Probing-builder для чтения config — chainlit-env и пути нужны до session'ов.
+    probe = _make_builder()
     try:
-        chainlit_cfg = builder.bundle().get(ChainlitConfig, "chainlit")
-        app = builder.bundle().get(AppConfig, "agent")
+        chainlit_cfg = probe.bundle().get(ChainlitConfig, "chainlit")
+        app = probe.bundle().get(AppConfig, "agent")
     except ConverterInputError:
         return 2
     app_root = bridge_chainlit_env(chainlit_cfg)
     write_ui_config_overrides(chainlit_cfg, app_root)
 
-    # Registry'и нужны двум потребителям: ToolExecutor (через ExtensionContext)
-    # и ChatSession (для project_workspace() и history-observer'ов).
     project_workspaces = FsProjectWorkspaceRegistry(
         base_dir=Path(app.workspaces.base_dir),
         subdir=app.workspaces.user_subdir,
@@ -72,15 +73,10 @@ def main() -> int:
         base_dir=Path(app.workspaces.base_dir),
         subdir=app.workspaces.system_subdir,
     )
-    builder = (
-        builder
-        .with_extension(ProjectWorkspaceRegistry, project_workspaces)
-        .with_extension(HistoryWorkspaceRegistry, history_workspaces)
-        .use_tools_plugins_discovered()
-    )
 
-    # ChatSession создаётся лениво при первом cl.on_chat_start (см. app.py).
-    set_app_state(builder, project_workspaces, history_workspaces)
+    # ChatSession создаётся лениво при первом cl.on_chat_start (см. app.py)
+    # и получает свой свежий AgentBuilder через factory.
+    set_app_state(_make_builder, project_workspaces, history_workspaces)
 
     # chainlit импортируется только после bootstrap — он читает env при загрузке.
     from chainlit.cli import run_chainlit  # noqa: PLC0415

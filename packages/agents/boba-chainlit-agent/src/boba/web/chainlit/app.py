@@ -36,10 +36,11 @@ logger = logging.getLogger(__name__)
 
 
 @functools.cache
-def _get_session() -> ChatSession:
+def _get_session(workspace_id: WorkspaceId) -> ChatSession:
     state = app_state()
     return ChatSession(
-        state.builder,
+        workspace_id,
+        state.make_builder(),
         state.project_workspaces,
         state.history_workspaces,
     )
@@ -50,7 +51,7 @@ async def on_chat_start() -> None:
     workspace_id = WorkspaceId.from_wire("00000000-0000-0000-0000-000000000001")
     cl.user_session.set("workspace_id", workspace_id)
 
-    await asyncio.to_thread(_get_session)
+    await asyncio.to_thread(_get_session, workspace_id)
 
     await cl.Message(
         content=f"Сессия готова. workspace_id = `{workspace_id.to_wire()}`",
@@ -61,11 +62,11 @@ async def on_chat_start() -> None:
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
     workspace_id = cast(WorkspaceId, cl.user_session.get("workspace_id"))
-    session = _get_session()
+    session = _get_session(workspace_id)
 
     saved: list[str] = []
     if message.elements:
-        shell = session.project_workspace(workspace_id)
+        shell = session.project_workspace()
         for el in message.elements:
             src_path = getattr(el, "path", None)
             name = getattr(el, "name", None)
@@ -85,7 +86,7 @@ async def on_message(message: cl.Message) -> None:
 
     def _run_agent() -> None:
         try:
-            session.run(workspace_id, query, bridge)
+            session.run(query, bridge)
         finally:
             bridge.close()
 

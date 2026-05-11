@@ -6,10 +6,15 @@ Chainlit владеет жизненным циклом: импортирует 
 
 Изолируем его в этом модуле, а не на классах: `ChatSession` остаётся
 чистым DTO-приёмником через конструктор.
+
+Хранится **фабрика** AgentBuilder'ов: каждая сессия привязана к своему
+workspace_id и регистрирует ProjectWorkspaceShell на свежем builder'е,
+поэтому шарить один builder между сессиями нельзя.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from boba.agent.builder import AgentBuilder
@@ -20,12 +25,14 @@ from boba.workspace.contract import (
 
 __all__ = ["AppState", "app_state", "set_app_state"]
 
+BuilderFactory = Callable[[], AgentBuilder]
+
 
 @dataclass(frozen=True)
 class AppState:
     """Application-wide deps, зафиксированные в `main()`."""
 
-    builder: AgentBuilder
+    make_builder: BuilderFactory
     project_workspaces: ProjectWorkspaceRegistry
     history_workspaces: HistoryWorkspaceRegistry
 
@@ -41,13 +48,13 @@ _holder = _Holder()
 
 
 def set_app_state(
-    builder: AgentBuilder,
+    make_builder: BuilderFactory,
     project_workspaces: ProjectWorkspaceRegistry,
     history_workspaces: HistoryWorkspaceRegistry,
 ) -> None:
     """Зафиксировать deps до `run_chainlit(...)`."""
     _holder.state = AppState(
-        builder=builder,
+        make_builder=make_builder,
         project_workspaces=project_workspaces,
         history_workspaces=history_workspaces,
     )

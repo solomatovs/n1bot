@@ -34,10 +34,8 @@ from boba.provider.openai import (
     OpenAIChatVisitor,
     create_llm_source,
 )
-from boba.tools.domain import ToolContext
 from boba.workspace.contract import (
-    HistoryWorkspaceRegistry,
-    ProjectWorkspaceRegistry,
+    ProjectWorkspaceShell,
     PromptWorkspaceId,
     WorkspaceId,
 )
@@ -70,23 +68,24 @@ def _run() -> int:
     ).get_or_create(PromptWorkspaceId("prompts"))
     prompt_loader = PromptLoader(prompt_workspace)
 
-    project_workspaces = FsProjectWorkspaceRegistry(
+    project_workspace = FsProjectWorkspaceRegistry(
         base_dir=Path(app.workspaces.base_dir),
         subdir=app.workspaces.user_subdir,
-    )
-    history_workspaces = FsHistoryWorkspaceRegistry(
+    ).get_or_create(workspace_id)
+    if not isinstance(project_workspace, ProjectWorkspaceShell):
+        msg = (
+            f"FsProjectWorkspaceRegistry returned {type(project_workspace).__name__}, "
+            f"expected ProjectWorkspaceShell"
+        )
+        raise TypeError(msg)
+
+    history_workspace = FsHistoryWorkspaceRegistry(
         base_dir=Path(app.workspaces.base_dir),
         subdir=app.workspaces.system_subdir,
-    )
-    history_workspace = history_workspaces.get_or_create(workspace_id)
+    ).get_or_create(workspace_id)
 
     observer = CompositeLLMRequestObserver(
-        [
-            CurlTraceChatCompletionObserver(
-                history_workspace,
-                response_chunks=False,
-            ),
-        ],
+        [CurlTraceChatCompletionObserver(history_workspace, response_chunks=False)],
     )
     llm_source = create_llm_source(app.openai, observer)
 
@@ -97,10 +96,9 @@ def _run() -> int:
         .with_messages(message_service)
         .with_prompts(prompt_loader.prompt_providers())
         .with_config(app.runtime)
-        .with_extension(ProjectWorkspaceRegistry, project_workspaces)
-        .with_extension(HistoryWorkspaceRegistry, history_workspaces)
+        .with_extension(ProjectWorkspaceShell, project_workspace)
         .use_tools_plugins_discovered()
-        .build(tool_ctx=ToolContext(workspace_id=workspace_id))
+        .build()
     )
     sink = ConsoleSink(sys.stdout, sys.stderr)
 

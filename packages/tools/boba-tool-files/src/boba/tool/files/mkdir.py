@@ -39,7 +39,7 @@ class MkdirTool(FsToolBase[MkdirArgs, MkdirToolConfig]):
 
     def execute(self, ctx: ToolContext, req: MkdirArgs) -> ToolResult:
         try:
-            self._shell(ctx).mkdir(req.path)
+            self._shell.mkdir(req.path)
         except WorkspaceError as e:
             raise ToolExecutionError(
                 tool_id=self.tool_id(),

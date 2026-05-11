@@ -39,7 +39,7 @@ class AppendTool(FsToolBase[AppendArgs, AppendToolConfig]):
     """Дозаписать текст в конец файла."""
 
     def execute(self, ctx: ToolContext, req: AppendArgs) -> ToolResult:
-        shell = self._shell(ctx)
+        shell = self._shell
         existed = shell.exists(req.path)
         try:
             with shell.append_text(req.path, req.encoding) as f:

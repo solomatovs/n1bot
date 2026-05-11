@@ -68,7 +68,7 @@ class GrepTool(FsToolBase[GrepArgs, GrepToolConfig]):
 
     def execute(self, ctx: ToolContext, req: GrepArgs) -> ToolResult:
         try:
-            iterator = self._shell(ctx).grep(
+            iterator = self._shell.grep(
                 req.pattern,
                 req.path,
                 recursive=req.recursive,

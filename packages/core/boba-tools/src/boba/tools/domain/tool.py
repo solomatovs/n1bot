@@ -29,7 +29,6 @@ from boba.tools.domain.errors import (
 )
 from boba.tools.domain.ids import ToolId, ToolName, ToolSourceId
 from boba.tools.domain.result import ToolResult
-from boba.workspace.contract import WorkspaceId
 
 __all__ = [
     "SchemaOverlay",
@@ -57,13 +56,35 @@ class SchemaOverlay(Protocol):
 
 @dataclass(frozen=True)
 class ToolContext:
-    """Per-call идентичность вызова tool'а: id workspace'а сессии.
+    """Per-call контекст вызова tool'а.
 
-    Конкретный `WorkspaceShell` tool строит сам через registry,
-    полученный на build-time из `ExtensionContext`.
+    Сейчас пуст: все стабильные tool-зависимости (workspace, HTTP-клиенты,
+    БД-коннекшены) привязываются на build-time через `ExtensionContext`.
+    Тип сохранён как seam для будущих **реально per-call** концепций.
+
+    Чтобы попасть сюда, концепция должна (1) меняться от вызова к вызову
+    в рамках одного Tool-инстанса и (2) быть нужной достаточно широко,
+    чтобы оправдать общий параметр в сигнатуре `execute`. Если редкая —
+    лучше инжектить provider в конструктор конкретного tool'а и читать
+    через ambient state (contextvar), чем расширять этот dataclass.
+
+    Кандидаты, которые сюда могут лечь:
+
+    - **Cancellation token / deadline.** Юзер прервал агентский луп,
+      сработал общий timeout — нужно обрубить I/O внутри tool'а.
+      По природе per-call: у каждой итерации свой дедлайн.
+    - **Request id / trace id / correlation id.** Логирование, OTel-span'ы.
+      Каждая итерация лупа имеет свежий id; tool пишет логи под
+      правильным correlation.
+    - **Identity вызывающего.** Multi-tenant ACL внутри tool'а,
+      user-scoped квоты. Меняется per-call в шаренных сессиях.
+    - **Progress sink.** Long-running tool эмитит события прогресса
+      наружу; UI-bridge привязан к конкретному соединению.
+    - **History view.** Tool, которому надо посмотреть в прошлые
+      сообщения текущего диалога.
+    - **Делегированный LLM-source.** Tool, который сам зовёт LLM
+      (summarize/extract), хочет те же model/sampling, что у родителя
     """
-
-    workspace_id: WorkspaceId
 
 
 @dataclass(frozen=True)
@@ -79,7 +100,8 @@ class Tool(
     Definition[ObjectSchema[TArgs]],
     Generic[TArgs, TConfig],
 ):
-    """Базовый класс tool'а; application-singleton.
+    """
+    Базовый класс tool; application-singleton.
 
     Соглашения по subclass'ам:
     - наследуют `Tool[XArgs, XToolConfig]` (оба type-var зафиксированы);

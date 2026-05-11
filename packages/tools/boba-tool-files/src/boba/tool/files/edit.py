@@ -47,7 +47,7 @@ class EditTool(FsToolBase[EditArgs, EditToolConfig]):
 
     def execute(self, ctx: ToolContext, req: EditArgs) -> ToolResult:
         try:
-            applied = self._shell(ctx).edit_text(
+            applied = self._shell.edit_text(
                 req.path,
                 req.old_string,
                 req.new_string,
