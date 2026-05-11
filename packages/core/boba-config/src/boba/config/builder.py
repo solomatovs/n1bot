@@ -11,10 +11,10 @@ from boba.config.source.cli import CliSource
 from boba.config.source.env import EnvFileSource, EnvSource
 from boba.patterns import FactoryMethod
 
-__all__ = ["ConfigBundleBuilder"]
+__all__ = ["ConfigBundleFactory"]
 
 
-class ConfigBundleBuilder(FactoryMethod):
+class ConfigBundleFactory(FactoryMethod):
     """Fluent-фасад: накапливает ConfigSource'ы и собирает ConfigBundle."""
 
     def __init__(self) -> None:

@@ -9,7 +9,7 @@ from typing import Any, Final
 
 import tomli
 
-from boba.config.builder import ConfigBundleBuilder
+from boba.config.builder import ConfigBundleFactory
 from boba.config.path import (
     ConfigPath,
     ConfigSource,
@@ -188,12 +188,8 @@ class TomlFileSource(ConfigSource):
 
 
 def use_toml(
-    builder: ConfigBundleBuilder,
+    builder: ConfigBundleFactory,
     path: str | os.PathLike[str] | None = None,
-) -> ConfigBundleBuilder:
+) -> ConfigBundleFactory:
     """Подключить TomlFileSource + TomlSource к ConfigBundleBuilder."""
-    return (
-        builder
-        .use_source(TomlFileSource(path))
-        .use_source(TomlSource(path))
-    )
+    return builder.use_source(TomlFileSource(path)).use_source(TomlSource(path))

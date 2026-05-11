@@ -25,7 +25,7 @@ from boba.cli.agent_run.infra import (
     AppConfig,
     configure_logging,
 )
-from boba.config.builder import ConfigBundleBuilder
+from boba.config.builder import ConfigBundleFactory
 from boba.config.source.toml import use_toml
 from boba.llm.builder import LLMSourceBuilder
 from boba.llm.models import RequestId
@@ -56,7 +56,7 @@ def main() -> int:
 def _run() -> int:
     """Собирает агента и либо прогоняет один запрос, либо запускает REPL."""
     bundle = (
-        ConfigBundleBuilder().use_cli().use_env_file().use_env().pipe(use_toml).build()
+        ConfigBundleFactory().use_cli().use_env_file().use_env().pipe(use_toml).build()
     )
     builder = AgentBuilder().use_config_bundle(bundle)
 
