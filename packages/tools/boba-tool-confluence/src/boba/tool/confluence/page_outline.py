@@ -3,14 +3,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Any, ClassVar
 
+import httpx
+
+from boba.html import HtmlKeys
+from boba.indexing import (
+    PipelineContext,
+    PipelineId,
+    ReaderKeys,
+    RuntimePipeline,
+    Section,
+    SectionKeys,
+)
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import MaxValue, MinValue, NonEmpty
-from boba.tool.confluence._http_client import ConfluenceHttpClient
-from boba.tool.confluence._page_pipeline import (
-    ConfluencePagePipeline,
-    ConfluencePagePipelineError,
+from boba.tool.confluence.connection import ConfluenceConnection
+from boba.tool.confluence.decoder import ConfluenceJsonDecoder
+from boba.tool.confluence.keys import ConfluenceKeys
+from boba.tool.confluence.reader import ConfluenceReader
+from boba.tool.confluence.request_sources.pages import (
+    ConfluencePagesRequestSource,
 )
 from boba.tools.domain import (
     JsonResult,
@@ -19,6 +32,7 @@ from boba.tools.domain import (
     ToolExecutionError,
     ToolResult,
 )
+from boba.transport.http import HttpKeys
 
 __all__ = [
     "ConfluencePageOutlineTool",
@@ -67,35 +81,74 @@ class ConfluencePageOutlineTool(
 ):
     """Online-outline страницы Confluence: page_id → структура заголовков."""
 
+    _PIPELINE_ID: ClassVar[PipelineId] = PipelineId("confluence.page_outline")
+
     def execute(self, ctx: ToolContext, req: PageOutlineArgs) -> ToolResult:
         del ctx
+        pipeline: RuntimePipeline = RuntimePipeline(
+            request_source=ConfluencePagesRequestSource(
+                base_url=self._cfg.base_url,
+                auth=ConfluenceConnection.make_auth(self._cfg),
+                page_ids=[req.page_id],
+                body_format=self._cfg.body_format,
+            ),
+            transport=ConfluenceConnection.make_transport(self._cfg),
+            decoder=ConfluenceJsonDecoder(body_format=self._cfg.body_format),
+            reader=ConfluenceReader(),
+        )
+
         try:
-            with ConfluenceHttpClient.make(self._cfg) as c:
-                pipeline = ConfluencePagePipeline(
-                    client=c,
-                    base_url=self._cfg.base_url,
-                    body_format=self._cfg.body_format,
-                )
-                content = pipeline.fetch(req.page_id)
-        except ConfluencePagePipelineError as e:
+            sections = list(
+                pipeline.stream(PipelineContext(pipeline_id=self._PIPELINE_ID))
+            )
+        except httpx.HTTPError as e:
             raise ToolExecutionError(
                 tool_id=self.tool_id(),
                 message=f"Confluence page outline failed: {type(e).__name__}: {e}",
             ) from e
 
-        headings = content.headings[: req.max_headings]
-        truncated = len(content.headings) > req.max_headings
+        headings = [s for s in sections if s.metadata.has(HtmlKeys.HEADING_LEVEL)]
+        total = len(headings)
+        truncated = total > req.max_headings
+        meta = self._page_meta(sections, req.page_id)
+
         return JsonResult(payload={
-            "page_id": content.page_id,
-            "title": content.title,
-            "space_key": content.space_key,
-            "url": content.url,
-            "version": content.version,
-            "last_modified": content.last_modified,
+            "page_id": req.page_id,
+            "title": meta["title"],
+            "space_key": meta["space_key"],
+            "url": meta["url"],
+            "version": meta["version"],
+            "last_modified": meta["last_modified"],
             "sections": [
-                {"level": h.level, "text": h.text, "anchor": h.anchor}
-                for h in headings
+                {
+                    "level": h.metadata.get(HtmlKeys.HEADING_LEVEL) or 0,
+                    "text": h.metadata.get(HtmlKeys.HEADING_TEXT) or "",
+                    "anchor": h.metadata.get(SectionKeys.ANCHOR) or "",
+                }
+                for h in headings[: req.max_headings]
             ],
             "truncated": truncated,
-            "total_headings": len(content.headings),
+            "total_headings": total,
         })
+
+    @staticmethod
+    def _page_meta(sections: list[Section[str]], page_id: str) -> dict[str, Any]:
+        """Page-level метаданные. Все секции одной страницы делят metadata."""
+        if not sections:
+            return {
+                "title": "",
+                "space_key": "",
+                "url": "",
+                "version": "",
+                "last_modified": "",
+            }
+        first = sections[0]
+        m = first.metadata
+        version = m.get(ConfluenceKeys.VERSION)
+        return {
+            "title": m.get(ReaderKeys.PAGE_TITLE) or "",
+            "space_key": m.get(ConfluenceKeys.SPACE_KEY) or "",
+            "url": str(first.source_id),
+            "version": str(version) if version is not None else "",
+            "last_modified": m.get(HttpKeys.LAST_MODIFIED) or "",
+        }

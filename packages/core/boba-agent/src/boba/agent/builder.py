@@ -231,21 +231,19 @@ class AgentBuilder:
             raise ValueError(msg)
 
         shared_bundle = self._bundle
-        needs_bundle = bool(self._discover_groups) or any(
-            cfg is None for _, cfg in self._plugin_entries
-        )
-        if needs_bundle and shared_bundle is None:
-            msg = (
-                "AgentBuilder.build: discovery/plugin без локального config "
-                "требует ConfigBundle — задайте через .with_config_bundle(...)"
-            )
-            raise ValueError(msg)
 
         discovered: list[tuple[type[Plugin[Any, ToolSource]], None]] = []
-        for group in self._discover_groups:
-            for cls in discover_plugins(group):
-                if is_enabled(shared_bundle, config_path(cls.NAME)):
-                    discovered.append((cls, None))
+        if self._discover_groups:
+            if shared_bundle is None:
+                msg = (
+                    "AgentBuilder.build: discovery/plugin без локального config "
+                    "требует ConfigBundle — задайте через .with_config_bundle(...)"
+                )
+                raise ValueError(msg)
+            for group in self._discover_groups:
+                for cls in discover_plugins(group):
+                    if is_enabled(shared_bundle, config_path(cls.NAME)):
+                        discovered.append((cls, None))
 
         sources: list[ToolSource] = []
         if self._inline_factories:

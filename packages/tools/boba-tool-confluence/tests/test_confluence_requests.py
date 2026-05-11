@@ -9,7 +9,7 @@ import pytest
 
 from boba.indexing import PipelineContext, PipelineId
 from boba.tool.confluence.keys import ConfluenceKeys
-from boba.tool.confluence.pipelines.request_sources import (
+from boba.tool.confluence.request_sources import (
     ConfluenceCqlRequestSource,
     ConfluencePagesRequestSource,
     ConfluenceSpaceRequestSource,
@@ -29,7 +29,7 @@ def _patch_httpx(monkeypatch, handler):
         return real_client(**kwargs)
 
     monkeypatch.setattr(
-        "boba.tool.confluence.pipelines.request_sources._common.httpx.Client",
+        "boba.tool.confluence.request_sources._common.httpx.Client",
         mock_client,
     )
 

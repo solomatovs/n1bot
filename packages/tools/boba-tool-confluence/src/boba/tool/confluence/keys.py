@@ -29,3 +29,8 @@ class ConfluenceKeys:
         decode=int,
         encode=str,
     )
+    SPACE_KEY: ClassVar[MetadataKey[str]] = MetadataKey(
+        name="confluence.space_key",
+        decode=str,
+        encode=str,
+    )

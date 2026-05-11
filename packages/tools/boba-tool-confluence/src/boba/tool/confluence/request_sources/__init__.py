@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from boba.tool.confluence.pipelines.request_sources.cql import (
+from boba.tool.confluence.request_sources.cql import (
     ConfluenceCqlRequestSource,
 )
-from boba.tool.confluence.pipelines.request_sources.pages import (
+from boba.tool.confluence.request_sources.pages import (
     ConfluencePagesRequestSource,
 )
-from boba.tool.confluence.pipelines.request_sources.space import (
+from boba.tool.confluence.request_sources.space import (
     ConfluenceSpaceRequestSource,
 )
 
