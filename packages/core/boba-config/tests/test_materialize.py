@@ -567,32 +567,5 @@ def test_get_rejects_non_dataclass_non_schema():
         flat.get("not-a-type", "svc")  # type: ignore[arg-type]
 
 
-def test_get_falls_back_to_classvar_schema_bridge():
-    """Bridge: если у dataclass есть SCHEMA-атрибут, он используется поверх автогена."""
-
-    @dataclass(frozen=True)
-    class Bridged:
-        name: str = "default"
-
-    bridged_schema: ObjectSchema[Bridged] = ObjectSchema(
-        fields=[
-            FieldSpec(
-                name="name",
-                coercer=ChainCoercer(Default("from-classvar"), ParseString()),
-                description="bridge",
-            ),
-        ],
-        factory=Bridged,
-        description="custom bridge schema",
-    )
-    Bridged.SCHEMA = bridged_schema  # type: ignore[attr-defined]
-
-    flat = ConfigBundle.from_sources([DictSource({})])
-    got = flat.get(Bridged, "svc")
-    # Если бы был чистый автоген — default был бы "default" (dataclass-поле).
-    # Bridge подхватил ClassVar и вернул "from-classvar".
-    assert got == Bridged(name="from-classvar")
-
-
 # Re-export NameSegment чтобы pyright не считал импорт неиспользованным.
 _ = NameSegment

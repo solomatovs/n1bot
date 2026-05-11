@@ -1,40 +1,70 @@
-"""DTO boba-cli-agent: AgentRunConfig + SCHEMA."""
+"""DTO boba-cli-agent: AgentRunConfig."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Annotated
 
 from boba.llm.models import SamplingParams
 from boba.schema.coercion import (
-    ChainCoercer,
-    Nullable,
     ParseCsvList,
     ParseFloat,
     ParseInt,
     ParseString,
-    Required,
 )
-from boba.schema.declaration import FieldSpec, ObjectSchema
 
 __all__ = ["AgentRunConfig"]
 
 
 @dataclass(frozen=True)
 class AgentRunConfig:
-    """Параметры одного запуска boba-cli-agent; query=None → REPL."""
+    """Параметры одного запуска CLI-агента: model + sampling."""
 
-    query: str | None
-    model: str
-    temperature: float | None
-    top_p: float | None
-    max_tokens: int | None
-    seed: int | None
-    stop: list[str] | None
-    frequency_penalty: float | None
-    presence_penalty: float | None
-
-    SCHEMA: ClassVar[ObjectSchema[AgentRunConfig]]
+    model: Annotated[
+        str,
+        "LLM-модель (напр. qwen3.5-35b). Обязательно.",
+        ParseString(),
+    ]
+    query: Annotated[
+        str | None,
+        "Запрос к агенту; если не задан — запускается REPL.",
+        ParseString(),
+    ] = None
+    temperature: Annotated[
+        float | None,
+        "Температура sampling'а (0.0–2.0).",
+        ParseFloat(),
+    ] = None
+    top_p: Annotated[
+        float | None,
+        "Nucleus sampling threshold (0.0–1.0).",
+        ParseFloat(),
+    ] = None
+    max_tokens: Annotated[
+        int | None,
+        "Максимум токенов в ответе.",
+        ParseInt(),
+    ] = None
+    seed: Annotated[
+        int | None,
+        "Seed для детерминистичного sampling'а.",
+        ParseInt(),
+    ] = None
+    stop: Annotated[
+        list[str] | None,
+        "Stop-последовательности (CSV в env, TOML-array).",
+        ParseCsvList(),
+    ] = None
+    frequency_penalty: Annotated[
+        float | None,
+        "Frequency penalty (-2.0–2.0).",
+        ParseFloat(),
+    ] = None
+    presence_penalty: Annotated[
+        float | None,
+        "Presence penalty (-2.0–2.0).",
+        ParseFloat(),
+    ] = None
 
     def to_sampling_params(self) -> SamplingParams | None:
         """SamplingParams из опциональных полей; None если все None."""
@@ -50,56 +80,3 @@ class AgentRunConfig:
         if all(v is None for v in fields.values()):
             return None
         return SamplingParams(**fields)
-
-
-AgentRunConfig.SCHEMA = ObjectSchema(
-    description="Параметры одного запуска CLI-агента: model + sampling.",
-    fields=[
-        FieldSpec(
-            name="query",
-            coercer=Nullable(ParseString()),
-            description="Запрос к агенту; если не задан — запускается REPL.",
-        ),
-        FieldSpec(
-            name="model",
-            coercer=ChainCoercer(Required(), ParseString()),
-            description="LLM-модель (напр. qwen3.5-35b). Обязательно.",
-        ),
-        FieldSpec(
-            name="temperature",
-            coercer=Nullable(ParseFloat()),
-            description="Температура sampling'а (0.0–2.0).",
-        ),
-        FieldSpec(
-            name="top_p",
-            coercer=Nullable(ParseFloat()),
-            description="Nucleus sampling threshold (0.0–1.0).",
-        ),
-        FieldSpec(
-            name="max_tokens",
-            coercer=Nullable(ParseInt()),
-            description="Максимум токенов в ответе.",
-        ),
-        FieldSpec(
-            name="seed",
-            coercer=Nullable(ParseInt()),
-            description="Seed для детерминистичного sampling'а.",
-        ),
-        FieldSpec(
-            name="stop",
-            coercer=Nullable(ParseCsvList()),
-            description="Stop-последовательности (CSV в env, TOML-array).",
-        ),
-        FieldSpec(
-            name="frequency_penalty",
-            coercer=Nullable(ParseFloat()),
-            description="Frequency penalty (-2.0–2.0).",
-        ),
-        FieldSpec(
-            name="presence_penalty",
-            coercer=Nullable(ParseFloat()),
-            description="Presence penalty (-2.0–2.0).",
-        ),
-    ],
-    factory=AgentRunConfig,
-)

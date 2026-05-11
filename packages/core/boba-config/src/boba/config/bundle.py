@@ -252,14 +252,13 @@ class ConfigBundle:
 
         Диспатч:
           * `ObjectSchema` — используется как есть.
-          * dataclass-тип — резолвится через `resolve_schema_for_dataclass`:
-            переходный bridge подхватывает ручной `DTO.SCHEMA`, если есть;
-            иначе вызывается `schema_from_dataclass` для автогена.
+          * dataclass-тип — `resolve_schema_for_dataclass` → автоген через
+            `schema_from_dataclass`.
 
-        Это убирает соглашение `SCHEMA: ClassVar` как обязательное —
-        DTO может декларировать схему «снаружи» (отдельный
-        `MY_SCHEMA = ObjectSchema(...)`) или вообще не декларировать, если
-        её хватает автогена из dataclass-аннотаций.
+        DTO декларирует coercer-цепочку через `Annotated[T, "desc", ...]`
+        на поле; для нетривиальных случаев (custom factory, инварианты,
+        coercer на коллекции) — отдельный module-level
+        `MY_SCHEMA = ObjectSchema(...)`, передаётся в `get` напрямую.
         """
         if isinstance(target, ObjectSchema):
             return self.materialize(prefix, target)

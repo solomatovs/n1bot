@@ -4,15 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import Annotated
 
 from boba.agent.events import AgentEvent, GenerationDone, IterationStarted
 from boba.agent.messages import MessageReader, MessageWriter
 from boba.llm.events import FinishReason
 from boba.llm.models import Message, RequestId, SamplingParams, UserMessage
 from boba.patterns import StreamSource
-from boba.schema.coercion import ChainCoercer, Default, MinValue, ParseInt
-from boba.schema.declaration import FieldSpec, ObjectSchema
+from boba.schema.coercion import MinValue, ParseInt
 
 
 @dataclass(frozen=True)
@@ -27,30 +26,20 @@ class AgentRequest:
 
 @dataclass(frozen=True)
 class AgentConfig:
-    """Настройки одного прогона агента."""
+    """Лимиты агентского лупа."""
 
-    max_iterations: int = field(default=20)
-    max_consecutive_tool_calls: int = field(default=3)
-
-    SCHEMA: ClassVar[ObjectSchema[AgentConfig]]
-
-
-AgentConfig.SCHEMA = ObjectSchema(
-    description="Лимиты агентского лупа.",
-    fields=[
-        FieldSpec(
-            name="max_iterations",
-            coercer=ChainCoercer(Default(20), ParseInt(), MinValue(1)),
-            description="Жёсткий потолок числа итераций агента в одной сессии.",
-        ),
-        FieldSpec(
-            name="max_consecutive_tool_calls",
-            coercer=ChainCoercer(Default(3), ParseInt(), MinValue(1)),
-            description=("Сколько раз подряд агент может звать tools без LLM-ответа."),
-        ),
-    ],
-    factory=AgentConfig,
-)
+    max_iterations: Annotated[
+        int,
+        "Жёсткий потолок числа итераций агента в одной сессии.",
+        ParseInt(),
+        MinValue(1),
+    ] = 20
+    max_consecutive_tool_calls: Annotated[
+        int,
+        "Сколько раз подряд агент может звать tools без LLM-ответа.",
+        ParseInt(),
+        MinValue(1),
+    ] = 3
 
 
 @dataclass(frozen=True)
