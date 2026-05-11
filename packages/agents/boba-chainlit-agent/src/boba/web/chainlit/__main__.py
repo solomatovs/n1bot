@@ -11,7 +11,7 @@ from boba.agent.workspace_fs import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
 )
-from boba.config.builder import ConfigBundleBuilder
+from boba.config.builder import ConfigBundleFactory
 from boba.config.bundle import ConfigBundle
 from boba.config.source.toml import use_toml
 from boba.web.chainlit.bootstrap import set_app_state
@@ -48,7 +48,7 @@ def write_ui_config_overrides(cfg: ChainlitConfig, app_root: Path) -> None:
 def _build_bundle() -> ConfigBundle:
     """Собрать общий для всех сессий ConfigBundle."""
     return (
-        ConfigBundleBuilder().use_cli().use_env_file().use_env().pipe(use_toml).build()
+        ConfigBundleFactory().use_cli().use_env_file().use_env().pipe(use_toml).build()
     )
 
 
