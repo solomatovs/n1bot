@@ -16,10 +16,10 @@
 -e ./packages/core/boba-agent
 
 # infra: config-source impls
--e ./packages/infra/sources/boba-config-toml
+-e ./packages/infra/config/boba-config-toml
 
 # infra: llm provider impls
--e ./packages/infra/providers/boba-openai
+-e ./packages/infra/llm/boba-openai
 
 # infra: format readers
 -e ./packages/infra/format/boba-html
