@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from boba.schema.coercion.base import Coercer
 
@@ -36,6 +36,8 @@ def schema(
     """
 
     def apply(cls: T) -> T:
+        # is_dataclass-проверка сужает `cls` к `type[DataclassInstance]`;
+        # снаружи мы возвращаем тот же объект, поэтому cast обратно к T.
         if not (isinstance(cls, type) and dataclasses.is_dataclass(cls)):
             msg = (
                 f"@schema применим только к dataclass-типу, "
@@ -43,6 +45,6 @@ def schema(
             )
             raise TypeError(msg)
         setattr(cls, INVARIANTS_ATTR, invariants)
-        return cls
+        return cast(T, cls)
 
     return apply

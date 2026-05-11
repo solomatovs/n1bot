@@ -164,5 +164,5 @@ def test_schema_attribute_set_on_dataclass_takes_effect():
 def test_explicit_object_schema_invariants_unchanged():
     """Sanity: ObjectSchema, собранная вручную, не зависит от декоратора."""
     inv = Ordered("a", "b")
-    s: ObjectSchema[None] = ObjectSchema(fields=[], invariants=inv)
+    s = ObjectSchema(fields=[], invariants=inv)
     assert s.invariants is inv

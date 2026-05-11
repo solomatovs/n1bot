@@ -8,8 +8,7 @@ from typing import ClassVar
 
 from boba.patterns import StrId
 from boba.plugin import ExtensionContext, Plugin
-from boba.plugin.prompt import PromptOverlay, prompt_field
-from boba.schema.declaration import ObjectSchema
+from boba.plugin.prompt import PromptOverlay
 from boba.tool.html.outline import HtmlOutlineTool, HtmlOutlineToolConfig
 from boba.tool.html.section import HtmlSectionTool, HtmlSectionToolConfig
 from boba.tools.domain import ToolSourceId
@@ -20,7 +19,10 @@ __all__ = ["HtmlPlugin", "HtmlPluginConfig"]
 
 @dataclass(frozen=True)
 class HtmlPluginConfig:
-    """Плоский DTO плагина: только per-tool PromptOverlay (workspace-tools без connection)."""
+    """
+    HTML multi-tool plugin: outline + section
+    Без connection-полей — работает по workspace
+    """
 
     html_outline: PromptOverlay
     html_section: PromptOverlay
@@ -31,20 +33,6 @@ class HtmlPlugin(Plugin[HtmlPluginConfig, ToolSource]):
 
     NAME: ClassVar[StrId] = StrId("html")
     SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("plugin.html")
-
-    @classmethod
-    def config(cls) -> ObjectSchema[HtmlPluginConfig]:
-        return ObjectSchema(
-            description=(
-                "HTML multi-tool plugin: outline + section. "
-                "Без connection-полей — работает по workspace."
-            ),
-            fields=[
-                prompt_field("html_outline"),
-                prompt_field("html_section"),
-            ],
-            factory=HtmlPluginConfig,
-        )
 
     @classmethod
     def build(

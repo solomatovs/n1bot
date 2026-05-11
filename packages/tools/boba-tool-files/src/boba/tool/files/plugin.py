@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar
 
 from boba.patterns import StrId
 from boba.plugin import ExtensionContext, Plugin
-from boba.plugin.prompt import PromptOverlay, prompt_field
-from boba.schema.coercion import ChainCoercer, Default, MinValue, ParseInt
-from boba.schema.declaration import FieldSpec, NestedField, ObjectSchema
+from boba.plugin.prompt import PromptOverlay
 from boba.tool.files.append import AppendTool, AppendToolConfig
 from boba.tool.files.cat import CatTool, CatToolConfig
 from boba.tool.files.cd import CdTool, CdToolConfig
@@ -34,37 +32,26 @@ __all__ = ["FilesPlugin", "FilesPluginConfig"]
 
 @dataclass(frozen=True)
 class FilesPluginConfig:
-    """Плоский DTO плагина: per-tool prompt overlay'и + nested cat (с max_lines)."""
+    """
+    Builtin file-system tools:
+    cat/ls/grep/edit/write/append/cp/mv/rm/mkdir/touch/cd/pwd/stat/tree
+    """
 
-    cat: CatToolConfig
-    append: PromptOverlay
-    cd: PromptOverlay
-    cp: PromptOverlay
-    edit: PromptOverlay
-    grep: PromptOverlay
-    ls: PromptOverlay
-    mkdir: PromptOverlay
-    mv: PromptOverlay
-    pwd: PromptOverlay
-    rm: PromptOverlay
-    stat: PromptOverlay
-    touch: PromptOverlay
-    tree: PromptOverlay
-    write: PromptOverlay
-
-
-_CAT_SCHEMA: ObjectSchema[CatToolConfig] = ObjectSchema(
-    description="Конфиг tool 'cat': лимит max_lines + prompt overlay.",
-    fields=[
-        FieldSpec(
-            name="max_lines",
-            coercer=ChainCoercer(Default(2000), ParseInt(), MinValue(1)),
-            description="Максимум строк в одном вызове cat.",
-        ),
-        prompt_field("prompt"),
-    ],
-    factory=CatToolConfig,
-)
+    cat: CatToolConfig = field(default_factory=CatToolConfig)
+    append: PromptOverlay = field(default_factory=PromptOverlay)
+    cd: PromptOverlay = field(default_factory=PromptOverlay)
+    cp: PromptOverlay = field(default_factory=PromptOverlay)
+    edit: PromptOverlay = field(default_factory=PromptOverlay)
+    grep: PromptOverlay = field(default_factory=PromptOverlay)
+    ls: PromptOverlay = field(default_factory=PromptOverlay)
+    mkdir: PromptOverlay = field(default_factory=PromptOverlay)
+    mv: PromptOverlay = field(default_factory=PromptOverlay)
+    pwd: PromptOverlay = field(default_factory=PromptOverlay)
+    rm: PromptOverlay = field(default_factory=PromptOverlay)
+    stat: PromptOverlay = field(default_factory=PromptOverlay)
+    touch: PromptOverlay = field(default_factory=PromptOverlay)
+    tree: PromptOverlay = field(default_factory=PromptOverlay)
+    write: PromptOverlay = field(default_factory=PromptOverlay)
 
 
 class FilesPlugin(Plugin[FilesPluginConfig, ToolSource]):
@@ -72,33 +59,6 @@ class FilesPlugin(Plugin[FilesPluginConfig, ToolSource]):
 
     NAME: ClassVar[StrId] = StrId("files")
     SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("plugin.files")
-
-    @classmethod
-    def config(cls) -> ObjectSchema[FilesPluginConfig]:
-        return ObjectSchema(
-            description=(
-                "Builtin file-system tools: cat/ls/grep/edit/write/append/"
-                "cp/mv/rm/mkdir/touch/cd/pwd/stat/tree."
-            ),
-            fields=[
-                NestedField(name="cat", schema=_CAT_SCHEMA),
-                prompt_field("append"),
-                prompt_field("cd"),
-                prompt_field("cp"),
-                prompt_field("edit"),
-                prompt_field("grep"),
-                prompt_field("ls"),
-                prompt_field("mkdir"),
-                prompt_field("mv"),
-                prompt_field("pwd"),
-                prompt_field("rm"),
-                prompt_field("stat"),
-                prompt_field("touch"),
-                prompt_field("tree"),
-                prompt_field("write"),
-            ],
-            factory=FilesPluginConfig,
-        )
 
     @classmethod
     def build(

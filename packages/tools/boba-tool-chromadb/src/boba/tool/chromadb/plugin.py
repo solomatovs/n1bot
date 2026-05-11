@@ -3,21 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
-from typing import Any, ClassVar
+from dataclasses import dataclass, field
+from typing import Annotated, Any, ClassVar
 
 from boba.patterns import StrId
 from boba.plugin import ExtensionContext, Plugin
-from boba.plugin.prompt import PromptOverlay, prompt_field
-from boba.schema.coercion import (
-    ChainCoercer,
-    Default,
-    MinValue,
-    ParseInt,
-    ParseString,
-    Required,
-)
-from boba.schema.declaration import FieldSpec, ObjectSchema
+from boba.plugin.prompt import PromptOverlay
+from boba.schema.coercion import MinValue, ParseInt, ParseString
 from boba.tool.chromadb.kb import get_knowledge_base
 from boba.tool.chromadb.kb_list_collections import (
     KbListCollectionsTool,
@@ -32,16 +24,42 @@ __all__ = ["ChromadbPlugin", "ChromadbPluginConfig"]
 
 @dataclass(frozen=True)
 class ChromadbPluginConfig:
-    """Плоский DTO плагина: persist+embedding + per-tool params + prompts."""
+    """
+    ChromaDB read-tools: kb_search + kb_list_collections. persist_path обязателен;
+    embedding_model='default' = built-in ONNX (без сети)
+    """
 
-    persist_path: str
-    embedding_model: str
-    embedding_base_url: str
-    embedding_api_key: str
-    snippet_chars: int
-    max_top_k: int
-    kb_search: PromptOverlay
-    kb_list_collections: PromptOverlay
+    persist_path: Annotated[str, "Путь к persistent ChromaDB.", ParseString()]
+    embedding_model: Annotated[
+        str,
+        "'default' = built-in ONNX all-MiniLM-L6-v2" \
+        "иначе — модель LiteLLM/OpenAI-API.",
+        ParseString(),
+    ] = "default"
+    embedding_base_url: Annotated[
+        str,
+        "OpenAI-совместимый endpoint embeddings. Игнорируется при model=default.",
+        ParseString(),
+    ] = ""
+    embedding_api_key: Annotated[
+        str,
+        "API key embeddings endpoint'а.",
+        ParseString(),
+    ] = ""
+    snippet_chars: Annotated[
+        int,
+        "Максимальная длина сниппета документа в kb_search.",
+        ParseInt(),
+        MinValue(1),
+    ] = 300
+    max_top_k: Annotated[
+        int,
+        "Жёсткий потолок параметра top_k.",
+        ParseInt(),
+        MinValue(1),
+    ] = 20
+    kb_search: PromptOverlay = field(default_factory=PromptOverlay)
+    kb_list_collections: PromptOverlay = field(default_factory=PromptOverlay)
 
 
 class ChromadbPlugin(Plugin[ChromadbPluginConfig, ToolSource]):
@@ -49,57 +67,6 @@ class ChromadbPlugin(Plugin[ChromadbPluginConfig, ToolSource]):
 
     NAME: ClassVar[StrId] = StrId("chromadb")
     SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("plugin.chromadb")
-
-    @classmethod
-    def config(cls) -> ObjectSchema[ChromadbPluginConfig]:
-        return ObjectSchema(
-            description=(
-                "ChromaDB read-tools: kb_search + kb_list_collections. "
-                "persist_path обязателен; embedding_model='default' = "
-                "built-in ONNX (без сети)."
-            ),
-            fields=[
-                FieldSpec(
-                    name="persist_path",
-                    coercer=ChainCoercer(Required(), ParseString()),
-                    description="Путь к persistent ChromaDB.",
-                ),
-                FieldSpec(
-                    name="embedding_model",
-                    coercer=ChainCoercer(Default("default"), ParseString()),
-                    description=(
-                        "'default' = built-in ONNX all-MiniLM-L6-v2; иначе — "
-                        "модель LiteLLM/OpenAI-API."
-                    ),
-                ),
-                FieldSpec(
-                    name="embedding_base_url",
-                    coercer=ChainCoercer(Default(""), ParseString()),
-                    description=(
-                        "OpenAI-совместимый endpoint embeddings. "
-                        "Игнорируется при model=default."
-                    ),
-                ),
-                FieldSpec(
-                    name="embedding_api_key",
-                    coercer=ChainCoercer(Default(""), ParseString()),
-                    description="API key embeddings endpoint'а.",
-                ),
-                FieldSpec(
-                    name="snippet_chars",
-                    coercer=ChainCoercer(Default(300), ParseInt(), MinValue(1)),
-                    description="Максимальная длина сниппета документа в kb_search.",
-                ),
-                FieldSpec(
-                    name="max_top_k",
-                    coercer=ChainCoercer(Default(20), ParseInt(), MinValue(1)),
-                    description="Жёсткий потолок параметра top_k.",
-                ),
-                prompt_field("kb_search"),
-                prompt_field("kb_list_collections"),
-            ],
-            factory=ChromadbPluginConfig,
-        )
 
     @classmethod
     def build(
@@ -119,7 +86,8 @@ class ChromadbPlugin(Plugin[ChromadbPluginConfig, ToolSource]):
                 KbSearchTool(
                     kb,
                     KbSearchToolConfig(
-                        max_top_k=cfg.max_top_k, prompt=cfg.kb_search,
+                        max_top_k=cfg.max_top_k,
+                        prompt=cfg.kb_search,
                     ),
                     ctx,
                     sid,
@@ -138,7 +106,6 @@ class ChromadbPlugin(Plugin[ChromadbPluginConfig, ToolSource]):
         """chromadb embedding_function из конфига; None = built-in default."""
         if cfg.embedding_model in ("", "default"):
             return None
-        # Lazy import — избегаем падения при импорте без chromadb deps.
         from chromadb.utils.embedding_functions import (  # noqa: PLC0415
             OpenAIEmbeddingFunction,
         )
