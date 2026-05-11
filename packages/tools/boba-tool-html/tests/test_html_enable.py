@@ -10,10 +10,10 @@ from boba.config.path import (
     Found,
     NotFound,
 )
-from boba.ext.html_tools import HtmlPlugin
 from boba.patterns import StrId
 from boba.plugin import ExtensionContext, install_plugins
-from boba.value import StringValue
+from boba.schema.value import StringValue
+from boba.tool.html import HtmlPlugin
 
 
 class _InlineSource(ConfigSource):

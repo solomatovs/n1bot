@@ -7,13 +7,13 @@ import json
 import httpx
 import pytest
 
-from boba.ext.confluence_tools.keys import ConfluenceKeys
-from boba.ext.confluence_tools.pipelines.request_sources import (
+from boba.indexing import PipelineContext, PipelineId
+from boba.tool.confluence.keys import ConfluenceKeys
+from boba.tool.confluence.pipelines.request_sources import (
     ConfluenceCqlRequestSource,
     ConfluencePagesRequestSource,
     ConfluenceSpaceRequestSource,
 )
-from boba.indexing import PipelineContext, PipelineId
 from boba.transport.http import PatAuth
 
 
@@ -29,7 +29,7 @@ def _patch_httpx(monkeypatch, handler):
         return real_client(**kwargs)
 
     monkeypatch.setattr(
-        "boba.ext.confluence_tools.pipelines.request_sources._common.httpx.Client",
+        "boba.tool.confluence.pipelines.request_sources._common.httpx.Client",
         mock_client,
     )
 

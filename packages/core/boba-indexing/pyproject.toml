@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-indexing"
+version = "0.1.0"
+description = "Boba indexing + processing: Source/Reader/Chunker/Store/IndexPipeline + streaming-processing primitives (Request/Transport/Decoder/RawDocument/Section)."
+requires-python = ">=3.11,<4"
+dependencies = ["boba-patterns"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

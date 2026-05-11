@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from io import BytesIO
 
-from boba.ext.confluence_tools.decoder import ConfluenceJsonDecoder
-from boba.ext.confluence_tools.keys import ConfluenceKeys
 from boba.indexing import (
     DecoderId,
     Metadata,
@@ -14,6 +12,8 @@ from boba.indexing import (
     ReaderKeys,
     SourceId,
 )
+from boba.tool.confluence.decoder import ConfluenceJsonDecoder
+from boba.tool.confluence.keys import ConfluenceKeys
 from boba.transport.http import HttpKeys
 
 

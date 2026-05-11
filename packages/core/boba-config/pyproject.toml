@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-config"
+version = "0.1.0"
+description = "Boba config-application: ConfigBundle, ConfigPath, ReferenceResolver, builtin config-sources (cli/env/dict)."
+requires-python = ">=3.11,<4"
+dependencies = ["boba-patterns", "boba-schema"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
