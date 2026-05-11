@@ -19,7 +19,7 @@ from boba.provider.openai import (
     create_llm_source,
 )
 from boba.tools.domain import ToolContext
-from boba.tools.framework import ToolsService
+from boba.tools.framework import ToolExecutor
 from boba.web.chainlit.bridge import ChainlitBridgeSink
 from boba.web.chainlit.config import ChainlitConfig
 from boba.web.chainlit.infra import (
@@ -77,7 +77,7 @@ class ChatSession:
         prompt_loader = PromptLoader(prompt_workspace)
         self._prompt_providers = prompt_loader.prompt_providers()
 
-        self._tools_service: ToolsService = builder.tools_service()
+        self._tool_executor: ToolExecutor = builder.tool_executor()
         self._tool_result_visitor = OpenAIChatVisitor()
 
     def project_workspace(self, workspace_id: WorkspaceId) -> ProjectWorkspaceShell:
@@ -111,7 +111,7 @@ class ChatSession:
         agent = (
             AgentBuilder()
             .with_llm(llm_source)
-            .with_tools(self._tools_service)
+            .with_tools(self._tool_executor)
             .with_tool_result_visitor(self._tool_result_visitor)
             .with_messages(InMemoryMessageService())
             .with_prompts(self._prompt_providers)

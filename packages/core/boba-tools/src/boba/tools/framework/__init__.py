@@ -1,4 +1,4 @@
-"""Tools framework: ToolSource + ToolsService.
+"""Tools framework: ToolSource + ToolExecutor.
 
 Application-слой над `boba.tools.domain` (Tool ABC, ToolResult, etc).
 Plugin discovery — отдельная инфра в `boba.plugin.discovery`.
@@ -13,15 +13,15 @@ from boba.tools.framework.decorator import (
 )
 from boba.tools.framework.registry import (
     StaticToolSource,
+    ToolExecutor,
     ToolSource,
-    ToolsService,
 )
 
 __all__ = [
     "StaticToolSource",
     "ToolDecoratorFactory",
+    "ToolExecutor",
     "ToolSource",
-    "ToolsService",
     "tool",
     "tool_factory",
 ]

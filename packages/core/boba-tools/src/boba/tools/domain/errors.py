@@ -77,7 +77,7 @@ class ToolIdCollisionError(Exception):
 
 
 class ToolSourceCollisionError(Exception):
-    """Два source'а с одинаковым `ToolSourceId` в одном `ToolsService`."""
+    """Два source'а с одинаковым `ToolSourceId` в одном `ToolExecutor`."""
 
     def __init__(self, source_id: ToolSourceId) -> None:
         super().__init__(

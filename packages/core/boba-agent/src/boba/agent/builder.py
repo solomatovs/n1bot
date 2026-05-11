@@ -37,8 +37,8 @@ from boba.tools.domain import ToolContext, ToolResultVisitor, ToolSourceId
 from boba.tools.framework import (
     StaticToolSource,
     ToolDecoratorFactory,
+    ToolExecutor,
     ToolSource,
-    ToolsService,
 )
 
 
@@ -49,7 +49,7 @@ class AgentBuilder:
 
     def __init__(self) -> None:
         self._llm_source: StreamSource[LLMContext, LLMEvent] | None = None
-        self._tools_service: ToolsService | None = None
+        self._tool_executor: ToolExecutor | None = None
         self._inline_factories: list[ToolDecoratorFactory] = []
         self._config_sources: list[ConfigSource] = []
         self._bundle: ConfigBundle | None = None
@@ -57,7 +57,7 @@ class AgentBuilder:
             tuple[type[Plugin[Any, ToolSource]], ConfigSource | Any | None]
         ] = []
         self._discover_groups: list[str] = []
-        self._resolved_tools_service: ToolsService | None = None
+        self._resolved_tool_executor: ToolExecutor | None = None
         self._tool_result_visitor: ToolResultVisitor[str] | None = None
         self._message_service: MessageService | None = None
         self._prompt_providers: list[PromptProvider] = []
@@ -68,9 +68,9 @@ class AgentBuilder:
         self._llm_source = source
         return self
 
-    def with_tools(self, service: ToolsService) -> Self:
+    def with_tools(self, service: ToolExecutor) -> Self:
         """Готовый реестр инструментов; mutually-exclusive с use_*-путями."""
-        self._tools_service = service
+        self._tool_executor = service
         return self
 
     def use_tools(self, factories: Iterable[ToolDecoratorFactory]) -> Self:
@@ -117,9 +117,9 @@ class AgentBuilder:
         self._discover_groups.append(group)
         return self
 
-    def tools_service(self) -> ToolsService:
-        """Собрать (и закешировать) ToolsService без сборки Agent."""
-        return self._resolve_tools_service()
+    def tool_executor(self) -> ToolExecutor:
+        """Собрать (и закешировать) ToolExecutor без сборки Agent."""
+        return self._resolve_tool_executor()
 
     def use_tools_plugin(
         self,
@@ -188,13 +188,13 @@ class AgentBuilder:
             )
             raise ValueError(msg)
 
-        tools_service = self._resolve_tools_service()
+        tool_executor = self._resolve_tool_executor()
 
         message_service = self._message_service or InMemoryMessageService()
 
         chain = self._build_chain(
             llm_source=self._llm_source,
-            tools_service=tools_service,
+            tool_executor=tool_executor,
             visitor=self._tool_result_visitor,
             prompt_providers=self._prompt_providers,
             message_service=message_service,
@@ -206,25 +206,25 @@ class AgentBuilder:
         )
         return Agent(source=source, writer=message_service, reader=message_service)
 
-    def _resolve_tools_service(self) -> ToolsService:
-        """Выбрать готовый `ToolsService` или собрать из накопленных источников."""
+    def _resolve_tool_executor(self) -> ToolExecutor:
+        """Выбрать готовый `ToolExecutor` или собрать из накопленных источников."""
         has_accumulated = (
             bool(self._inline_factories)
             or bool(self._plugin_entries)
             or bool(self._config_sources)
             or bool(self._discover_groups)
         )
-        if self._tools_service is not None and has_accumulated:
+        if self._tool_executor is not None and has_accumulated:
             msg = (
                 "AgentBuilder.build: .with_tools(...) взаимоисключающий "
                 "с use_*-путями — задан один маршрут"
             )
             raise ValueError(msg)
-        if self._tools_service is not None:
-            return self._tools_service
+        if self._tool_executor is not None:
+            return self._tool_executor
 
-        if self._resolved_tools_service is not None:
-            return self._resolved_tools_service
+        if self._resolved_tool_executor is not None:
+            return self._resolved_tool_executor
 
         has_tools = (
             bool(self._inline_factories)
@@ -259,8 +259,8 @@ class AgentBuilder:
         for plugin_cls, config in (*self._plugin_entries, *discovered):
             cfg = self._materialize_plugin_config(plugin_cls, config, shared_bundle)
             sources.extend(plugin_cls.build(cfg, ctx))
-        self._resolved_tools_service = ToolsService.from_sources(sources)
-        return self._resolved_tools_service
+        self._resolved_tool_executor = ToolExecutor.from_sources(sources)
+        return self._resolved_tool_executor
 
     @staticmethod
     def _resolve_plugin(
@@ -328,7 +328,7 @@ class AgentBuilder:
     def _build_chain(  # noqa: PLR0913
         *,
         llm_source: StreamSource[LLMContext, LLMEvent],
-        tools_service: ToolsService,
+        tool_executor: ToolExecutor,
         visitor: ToolResultVisitor[str],
         prompt_providers: list[PromptProvider],
         message_service: MessageService,
@@ -342,7 +342,7 @@ class AgentBuilder:
         builder.use(
             lambda inner: ToolExecutionMiddleware(
                 inner,
-                tools_service,
+                tool_executor,
                 tool_ctx,
                 writer,
                 visitor,
@@ -355,7 +355,7 @@ class AgentBuilder:
             LLMInvokeMiddleware(
                 llm_source,
                 prompt_providers,
-                tools_service,
+                tool_executor,
                 message_service,
             ),
         )

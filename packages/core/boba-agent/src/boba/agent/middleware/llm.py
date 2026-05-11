@@ -50,7 +50,7 @@ from boba.llm.events import (
 )
 from boba.llm.models import LLMContext, LLMRequest
 from boba.patterns import StreamSource
-from boba.tools.framework import ToolsService
+from boba.tools.framework import ToolExecutor
 
 
 class LLMToAgentConverter:
@@ -135,12 +135,12 @@ class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
         self,
         llm_source: StreamSource[LLMContext, LLMEvent],
         prompt_providers: Sequence[PromptProvider],
-        tools_service: ToolsService,
+        tool_executor: ToolExecutor,
         message_reader: MessageReader,
     ) -> None:
         self._llm_source = llm_source
         self._prompt_providers = prompt_providers
-        self._tools_service = tools_service
+        self._tool_executor = tool_executor
         self._message_reader = message_reader
 
     def name(self) -> str:
@@ -156,7 +156,7 @@ class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
         spec.register(ModelReducer(ctx.request.model))
         spec.register(SystemPromptReducer(self._prompt_providers))
         spec.register(HistoryReducer(self._message_reader))
-        spec.register(ToolsReducer(self._tools_service))
+        spec.register(ToolsReducer(self._tool_executor))
         spec.register(AgentRequestSamplingReducer(ctx.request.sampling))
         return spec
 

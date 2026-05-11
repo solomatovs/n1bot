@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-tools"
 version = "0.1.0"
-description = "Boba tools: contract layer (Tool ABC, ToolResult, ToolContext) + ToolsService framework. Pure-domain, без I/O и LLM-провайдеров."
+description = "Boba tools: contract layer (Tool ABC, ToolResult, ToolContext) + ToolExecutor framework. Pure-domain, без I/O и LLM-провайдеров."
 requires-python = ">=3.11,<4"
 dependencies = ["boba-patterns", "boba-schema", "boba-workspace"]
 

@@ -1,4 +1,4 @@
-"""ToolSource + ToolsService.
+"""ToolSource + ToolExecutor.
 
 Минимальная схема:
 - `ToolSource` — владеет своими `Tool`'ами (и любыми shared-ресурсами:
@@ -6,7 +6,7 @@
   каскадит вниз. Уникальность tool-имён — забота source'а; глобальной
   коллизии между source'ами нет, потому что dispatch — двуступенчатый
   (`source_id` → `name`).
-- `ToolsService` — runtime-контейнер: владеет source'ами, парсит wire-id
+- `ToolExecutor` — runtime-контейнер: владеет source'ами, парсит wire-id
   `<source>/<name>` при dispatch'е, отдаёт definitions для LLM, на
   `close()` закрывает все source'ы.
 """
@@ -29,8 +29,8 @@ from boba.tools.domain.tool import Tool, ToolCall, ToolContext, ToolResult
 
 __all__ = [
     "StaticToolSource",
+    "ToolExecutor",
     "ToolSource",
-    "ToolsService",
 ]
 
 
@@ -91,7 +91,7 @@ class StaticToolSource(ToolSource):
         return self._index.get(name)
 
 
-class ToolsService(Executor[ToolContext, ToolCall, ToolResult]):
+class ToolExecutor(Executor[ToolContext, ToolCall, ToolResult]):
     """Диспетчер вызовов поверх набора `ToolSource`'ов.
 
     Owns sources; парсит qualified wire-id `<source>/<name>` при dispatch'е.
@@ -156,7 +156,7 @@ class ToolsService(Executor[ToolContext, ToolCall, ToolResult]):
             except Exception as e:
                 errors.append(e)
         if errors:
-            raise ExceptionGroup("errors during ToolsService.close", errors)
+            raise ExceptionGroup("errors during ToolExecutor.close", errors)
 
     def __enter__(self) -> Self:
         return self

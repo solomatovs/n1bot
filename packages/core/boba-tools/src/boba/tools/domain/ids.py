@@ -6,7 +6,7 @@
   `outline` внутри `plugin.html`). Уникальность гарантируется самим
   source'ом — глобальной коллизии нет.
 - `ToolId` — wire-формат, по которому tool вызывается LLM-ом:
-  `<source_id>/<name>`. Единственная точка композиции/парсинга — `ToolsService`.
+  `<source_id>/<name>`. Единственная точка композиции/парсинга — `ToolExecutor`.
 """
 
 from __future__ import annotations
