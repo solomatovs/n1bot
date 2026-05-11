@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-tool-postgres-fts"
+version = "0.1.0"
+description = "Boba PostgreSQL FTS: read-only tools (fts_search, fts_list_indexes) поверх whitelist-индексов pg_catalog tsvector."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-patterns",
+    "boba-schema",
+    "boba-config",
+    "boba-plugin",
+    "boba-tools",
+    "boba-db-postgres",
+]
+
+[project.entry-points."boba.plugins"]
+postgres_fts = "boba.tool.postgres_fts.plugin:PostgresFtsPlugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
