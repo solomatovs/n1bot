@@ -11,9 +11,9 @@ from boba.agent.workspace_fs import (
     FsProjectWorkspaceRegistry,
 )
 from boba.patterns import ConverterInputError
+from boba.web.chainlit.bootstrap import set_app_state
 from boba.web.chainlit.config import ChainlitConfig
 from boba.web.chainlit.infra import AppConfig, use_toml_config
-from boba.web.chainlit.session import ChatSession
 from boba.web.chainlit.ui_overrides import UIOverrideTomlConverter
 from boba.workspace.contract import (
     HistoryWorkspaceRegistry,
@@ -79,12 +79,8 @@ def main() -> int:
         .use_tools_plugins_discovered()
     )
 
-    # ChatSession создаётся лениво при первом cl.on_chat_start.
-    ChatSession.set_builder(
-        builder,
-        project_workspaces=project_workspaces,
-        history_workspaces=history_workspaces,
-    )
+    # ChatSession создаётся лениво при первом cl.on_chat_start (см. app.py).
+    set_app_state(builder, project_workspaces, history_workspaces)
 
     # chainlit импортируется только после bootstrap — он читает env при загрузке.
     from chainlit.cli import run_chainlit  # noqa: PLC0415

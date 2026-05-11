@@ -26,6 +26,7 @@ from boba.agent.events import (
     ToolExecutionFailed,
     ToolExecutionStarted,
 )
+from boba.web.chainlit.bootstrap import app_state
 from boba.web.chainlit.bridge import ChainlitBridgeSink
 from boba.web.chainlit.files import save_upload
 from boba.web.chainlit.session import ChatSession
@@ -36,7 +37,12 @@ logger = logging.getLogger(__name__)
 
 @functools.cache
 def _get_session() -> ChatSession:
-    return ChatSession()
+    state = app_state()
+    return ChatSession(
+        state.builder,
+        state.project_workspaces,
+        state.history_workspaces,
+    )
 
 
 @cl.on_chat_start
