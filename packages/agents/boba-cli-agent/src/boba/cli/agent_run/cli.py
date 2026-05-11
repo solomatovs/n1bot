@@ -95,7 +95,7 @@ def _run() -> int:
     llm = (
         LLMPipelineFactory()
         .add_observer(
-            CurlTraceChatCompletionObserver(history_workspace, response_chunks=False),
+            CurlTraceChatCompletionObserver(history_workspace),
         )
         .pipe(use_openai, app.openai)
         .build()

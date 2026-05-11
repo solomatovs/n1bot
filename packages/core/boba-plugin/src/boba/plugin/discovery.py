@@ -61,11 +61,7 @@ def discover_plugins(
 
 
 def _looks_like_plugin(obj: object) -> bool:
-    """Структурная проверка: класс с NAME, config, build."""
+    """Структурная проверка: класс с NAME и build."""
     if not isinstance(obj, type):
         return False
-    return (
-        hasattr(obj, "NAME")
-        and callable(getattr(obj, "config", None))
-        and callable(getattr(obj, "build", None))
-    )
+    return hasattr(obj, "NAME") and callable(getattr(obj, "build", None))
