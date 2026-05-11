@@ -23,8 +23,6 @@ from boba.agent.orchestrator import Agent, AgentConfig, AgentContext
 from boba.agent.prompt import PromptProvider
 from boba.config.bundle import ConfigBundle
 from boba.config.path import ConfigSource
-from boba.config.source.cli import CliSource
-from boba.config.source.env import EnvFileSource, EnvSource
 from boba.patterns import (
     StreamSource,
     StreamSourceChainBuilder,
@@ -50,7 +48,6 @@ class AgentBuilder:
         self._llm_source: LLMSource | None = None
         self._tool_executor: ToolExecutor | None = None
         self._inline_factories: list[ToolDecoratorFactory] = []
-        self._config_sources: list[ConfigSource] = []
         self._bundle: ConfigBundle | None = None
         self._plugin_entries: list[
             tuple[type[Plugin[Any, ToolSource]], ConfigSource | Any | None]
@@ -78,35 +75,16 @@ class AgentBuilder:
         self._inline_factories.extend(factories)
         return self
 
-    def use_config_source(self, source: ConfigSource) -> Self:
-        """Зарегистрировать ConfigSource для общего `ConfigBundle` билдера."""
+    def use_config_bundle(self, bundle: ConfigBundle) -> Self:
+        """Подключить готовый ConfigBundle (см. ConfigBundleBuilder)."""
         if self._bundle is not None:
-            msg = (
-                "AgentBuilder.use_config_source: ConfigBundle уже зафиксирован "
-                "вызовом .bundle()/.build() — новые source'ы добавлять нельзя"
-            )
+            msg = "AgentBuilder.with_config_bundle: ConfigBundle уже задан"
             raise ValueError(msg)
-        self._config_sources.append(source)
+        self._bundle = bundle
         return self
 
-    def use_cli(self, argv: Iterable[str] | None = None) -> Self:
-        """Шорткат: зарегистрировать стандартный `CliSource()`."""
-        return self.use_config_source(
-            CliSource(list(argv)) if argv is not None else CliSource(),
-        )
-
-    def use_env(self) -> Self:
-        """Шорткат: зарегистрировать стандартный `EnvSource()`."""
-        return self.use_config_source(EnvSource())
-
-    def use_env_file(self) -> Self:
-        """Шорткат: зарегистрировать стандартный `EnvFileSource()`."""
-        return self.use_config_source(EnvFileSource())
-
-    def bundle(self) -> ConfigBundle:
-        """Собрать и зафиксировать `ConfigBundle` из накопленных source'ов."""
-        if self._bundle is None:
-            self._bundle = ConfigBundle.from_sources(self._config_sources)
+    def config_bundle(self) -> ConfigBundle | None:
+        """Текущий ConfigBundle, если был задан."""
         return self._bundle
 
     def with_extension(self, key: type, instance: object) -> Self:
@@ -157,7 +135,7 @@ class AgentBuilder:
         `config`:
         - готовый DTO — пробрасывается as-is;
         - `ConfigSource` — материализуется как локальный bundle;
-        - `None` — материализуется из накопленных `use_config_source(...)`.
+        - `None` — материализуется из `with_config_bundle(...)`.
         """
         self._plugin_entries.append((self._resolve_plugin(plugin), config))
         return self
@@ -230,7 +208,6 @@ class AgentBuilder:
         has_accumulated = (
             bool(self._inline_factories)
             or bool(self._plugin_entries)
-            or bool(self._config_sources)
             or bool(self._discover_groups)
         )
         if self._tool_executor is not None and has_accumulated:
@@ -245,12 +222,7 @@ class AgentBuilder:
         if self._resolved_tool_executor is not None:
             return self._resolved_tool_executor
 
-        has_tools = (
-            bool(self._inline_factories)
-            or bool(self._plugin_entries)
-            or bool(self._discover_groups)
-        )
-        if not has_tools:
+        if not has_accumulated:
             msg = (
                 "AgentBuilder.build: задайте инструменты через "
                 ".with_tools(...), .use_tools(...), .use_tools_plugin(...) "
@@ -258,7 +230,16 @@ class AgentBuilder:
             )
             raise ValueError(msg)
 
-        shared_bundle = self.bundle()
+        shared_bundle = self._bundle
+        needs_bundle = bool(self._discover_groups) or any(
+            cfg is None for _, cfg in self._plugin_entries
+        )
+        if needs_bundle and shared_bundle is None:
+            msg = (
+                "AgentBuilder.build: discovery/plugin без локального config "
+                "требует ConfigBundle — задайте через .with_config_bundle(...)"
+            )
+            raise ValueError(msg)
 
         discovered: list[tuple[type[Plugin[Any, ToolSource]], None]] = []
         for group in self._discover_groups:
@@ -271,7 +252,8 @@ class AgentBuilder:
             sid = self.INLINE_SOURCE_ID
             sources.append(
                 StaticToolSource(
-                    sid, [f.build(sid) for f in self._inline_factories],
+                    sid,
+                    [f.build(sid) for f in self._inline_factories],
                 ),
             )
         ctx = ExtensionContext(self._extensions)
@@ -310,8 +292,7 @@ class AgentBuilder:
                 msg = (
                     f"AgentBuilder: плагин "
                     f"{plugin_cls.NAME.to_wire()!r} вызван без config, "
-                    f"но ни один ConfigSource не зарегистрирован через "
-                    f".use_config_source(...)"
+                    f"но ConfigBundle не задан через .with_config_bundle(...)"
                 )
                 raise ValueError(msg)
             return shared_bundle.get(
