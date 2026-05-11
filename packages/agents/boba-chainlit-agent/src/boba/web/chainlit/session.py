@@ -37,39 +37,13 @@ from boba.workspace.contract import (
 class ChatSession:
     """One-shot обёртка: конфиг + workspace registry; агент пересобирается на каждый run."""  # noqa: E501
 
-    _builder: AgentBuilder | None = None
-    _project_workspaces: ProjectWorkspaceRegistry | None = None
-    _history_workspaces: HistoryWorkspaceRegistry | None = None
-
-    @classmethod
-    def set_builder(
-        cls,
+    def __init__(
+        self,
         builder: AgentBuilder,
-        *,
         project_workspaces: ProjectWorkspaceRegistry,
         history_workspaces: HistoryWorkspaceRegistry,
     ) -> None:
-        """
-        Инжектит application-level AgentBuilder + registry'и до первого ChatSession()
-        """
-        cls._builder = builder
-        cls._project_workspaces = project_workspaces
-        cls._history_workspaces = history_workspaces
-
-    def __init__(self) -> None:
-        if (
-            ChatSession._builder is None
-            or ChatSession._project_workspaces is None
-            or ChatSession._history_workspaces is None
-        ):
-            msg = (
-                "ChatSession instantiated before ChatSession.set_builder() — "
-                "bootstrap must call set_builder() in __main__.main()."
-            )
-            raise RuntimeError(msg)
-        builder = ChatSession._builder
         bundle = builder.bundle()
-
         app = bundle.get(AppConfig, "agent")
         configure_logging(app.core.log_level, app.core.log_file)
 
@@ -77,8 +51,8 @@ class ChatSession:
         self._agent_config = app.runtime
         self._chainlit_config = bundle.get(ChainlitConfig, "chainlit")
 
-        self._workspaces = ChatSession._project_workspaces
-        self._history_workspaces = ChatSession._history_workspaces
+        self._workspaces = project_workspaces
+        self._history_workspaces = history_workspaces
 
         prompt_workspace = FsPromptWorkspaceRegistry(
             root=Path(app.prompts.dir),
@@ -87,7 +61,6 @@ class ChatSession:
         self._prompt_providers = prompt_loader.prompt_providers()
 
         self._tool_executor: ToolExecutor = builder.tool_executor()
-        self._tool_result_visitor = OpenAIChatVisitor()
 
     def project_workspace(self, workspace_id: WorkspaceId) -> ProjectWorkspaceShell:
         """Project-workspace пользователя — тот же, куда смотрят file-tools агента."""
@@ -120,7 +93,7 @@ class ChatSession:
             AgentBuilder()
             .with_llm(llm_source)
             .with_tools(self._tool_executor)
-            .with_tool_result_visitor(self._tool_result_visitor)
+            .with_tool_result_visitor(OpenAIChatVisitor())
             .with_messages(InMemoryMessageService())
             .with_prompts(self._prompt_providers)
             .with_config(self._agent_config)
