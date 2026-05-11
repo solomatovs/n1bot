@@ -34,13 +34,11 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
         self,
         inner: StreamSource[AgentContext, AgentEvent],
         tool_executor: ToolExecutor,
-        tool_ctx: ToolContext,
         writer: MessageWriter,
         visitor: ToolResultVisitor[str],
     ) -> None:
         self._inner = inner
         self._tool_executor = tool_executor
-        self._tool_ctx = tool_ctx
         self._writer = writer
         self._visitor = visitor
 
@@ -74,8 +72,11 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
 
         try:
             result = self._tool_executor.execute(
-                self._tool_ctx,
-                DomainToolCall(tool_id=ToolId(call.name), arguments=dict(call.args)),
+                ToolContext(),
+                DomainToolCall(
+                    tool_id=ToolId(call.name),
+                    arguments=dict(call.args),
+                ),
             )
         except ToolExecutionError as e:
             self._writer.add(

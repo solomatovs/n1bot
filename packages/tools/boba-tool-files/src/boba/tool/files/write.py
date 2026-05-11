@@ -42,7 +42,7 @@ class WriteTool(FsToolBase[WriteArgs, WriteToolConfig]):
     """Полностью перезаписать файл содержимым."""
 
     def execute(self, ctx: ToolContext, req: WriteArgs) -> ToolResult:
-        shell = self._shell(ctx)
+        shell = self._shell
         existed = shell.exists(req.path)
         try:
             with shell.write_text(req.path, req.encoding) as f:

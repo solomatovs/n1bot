@@ -5,19 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from boba.agent import AgentBuilder, AgentInput, InMemoryMessageService
-from boba.agent.orchestrator import AgentRequest
+from boba.agent.orchestrator import Agent, AgentRequest
 from boba.agent.prompt_providers import PromptLoader
-from boba.agent.workspace_fs import (
-    FsPromptWorkspaceRegistry,
-)
+from boba.agent.workspace_fs import FsPromptWorkspaceRegistry
 from boba.llm.models import RequestId
 from boba.provider.openai import (
     CurlTraceChatCompletionObserver,
     OpenAIChatVisitor,
     create_llm_source,
 )
-from boba.tools.domain import ToolContext
-from boba.tools.framework import ToolExecutor
 from boba.web.chainlit.bridge import ChainlitBridgeSink
 from boba.web.chainlit.config import ChainlitConfig
 from boba.web.chainlit.infra import (
@@ -35,10 +31,11 @@ from boba.workspace.contract import (
 
 
 class ChatSession:
-    """One-shot обёртка: конфиг + workspace registry; агент пересобирается на каждый run."""  # noqa: E501
+    """Per-workspace обёртка: один Agent, привязанный к конкретному workspace_id."""
 
     def __init__(
         self,
+        workspace_id: WorkspaceId,
         builder: AgentBuilder,
         project_workspaces: ProjectWorkspaceRegistry,
         history_workspaces: HistoryWorkspaceRegistry,
@@ -47,71 +44,57 @@ class ChatSession:
         app = bundle.get(AppConfig, "agent")
         configure_logging(app.core.log_level, app.core.log_file)
 
-        self._llm_cfg = app.openai
+        self._workspace_id = workspace_id
         self._agent_config = app.runtime
         self._chainlit_config = bundle.get(ChainlitConfig, "chainlit")
 
-        self._workspaces = project_workspaces
-        self._history_workspaces = history_workspaces
+        project_shell = project_workspaces.get_or_create(workspace_id)
+        if not isinstance(project_shell, ProjectWorkspaceShell):
+            msg = (
+                f"FsProjectWorkspaceRegistry returned {type(project_shell).__name__},"
+                f" expected ProjectWorkspaceShell"
+            )
+            raise TypeError(msg)
+        self._project_shell = project_shell
+
+        history_shell = history_workspaces.get_or_create(workspace_id)
+        observer = CurlTraceChatCompletionObserver(history_shell)
+        llm_source = create_llm_source(app.openai, observer)
 
         prompt_workspace = FsPromptWorkspaceRegistry(
             root=Path(app.prompts.dir),
         ).get_or_create(PromptWorkspaceId("prompts"))
         prompt_loader = PromptLoader(prompt_workspace)
-        self._prompt_providers = prompt_loader.prompt_providers()
 
-        self._tool_executor: ToolExecutor = builder.tool_executor()
-
-    def project_workspace(self, workspace_id: WorkspaceId) -> ProjectWorkspaceShell:
-        """Project-workspace пользователя — тот же, куда смотрят file-tools агента."""
-        shell = self._workspaces.get_or_create(workspace_id)
-        if not isinstance(shell, ProjectWorkspaceShell):
-            msg = (
-                f"FsProjectWorkspaceRegistry returned "
-                f"{type(shell).__name__}, expected ProjectWorkspaceShell"
-            )
-            raise TypeError(msg)
-        return shell
-
-    def run(
-        self,
-        workspace_id: WorkspaceId,
-        query: str,
-        extra_sink: ChainlitBridgeSink,
-    ) -> None:
-        """Запустить агентский цикл; модель берётся из chainlit-конфига."""
-        # workspace подтягивается заранее, чтобы последующий upload в тот же id работал.
-        self._workspaces.get_or_create(workspace_id)
-        request_id = RequestId.new()
-
-        tool_ctx = ToolContext(workspace_id=workspace_id)
-
-        history_workspace = self._history_workspaces.get_or_create(workspace_id)
-        observer = CurlTraceChatCompletionObserver(history_workspace)
-        llm_source = create_llm_source(self._llm_cfg, observer)
-        agent = (
-            AgentBuilder()
+        self._agent: Agent = (
+            builder
+            .with_extension(ProjectWorkspaceShell, project_shell)
             .with_llm(llm_source)
-            .with_tools(self._tool_executor)
             .with_tool_result_visitor(OpenAIChatVisitor())
             .with_messages(InMemoryMessageService())
-            .with_prompts(self._prompt_providers)
+            .with_prompts(prompt_loader.prompt_providers())
             .with_config(self._agent_config)
-            .build(tool_ctx=tool_ctx)
+            .build()
         )
 
-        request = AgentRequest(
-            model=self._chainlit_config.model,
-            request_id=request_id,
-            query=query,
-        )
+    def project_workspace(self) -> ProjectWorkspaceShell:
+        """Project-workspace сессии — тот же, куда смотрят file-tools агента."""
+        return self._project_shell
+
+    def run(self, query: str, extra_sink: ChainlitBridgeSink) -> None:
+        """Запустить агентский цикл; модель берётся из chainlit-конфига."""
+        request_id = RequestId.new()
         agent_input = AgentInput(
-            request=request,
+            request=AgentRequest(
+                model=self._chainlit_config.model,
+                request_id=request_id,
+                query=query,
+            ),
             config=self._agent_config,
         )
         with log_context(
             request_id=request_id.to_wire(),
-            workspace_id=workspace_id.to_wire(),
+            workspace_id=self._workspace_id.to_wire(),
         ):
-            for event in agent.stream(agent_input):
+            for event in self._agent.stream(agent_input):
                 extra_sink.handle(event)

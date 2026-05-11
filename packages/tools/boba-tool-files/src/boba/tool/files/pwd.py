@@ -26,4 +26,4 @@ class PwdTool(FsToolBase[PwdArgs, PwdToolConfig]):
 
     def execute(self, ctx: ToolContext, req: PwdArgs) -> ToolResult:
         del req
-        return TextResult(text=self._shell(ctx).cwd)
+        return TextResult(text=self._shell.cwd)

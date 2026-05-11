@@ -46,7 +46,7 @@ class LsTool(FsToolBase[LsArgs, LsToolConfig]):
 
     def execute(self, ctx: ToolContext, req: LsArgs) -> ToolResult:
         try:
-            iterator = self._shell(ctx).ls(req.path)
+            iterator = self._shell.ls(req.path)
             items = list(islice(iterator, req.limit + 1))
         except WorkspaceError as e:
             raise ToolExecutionError(

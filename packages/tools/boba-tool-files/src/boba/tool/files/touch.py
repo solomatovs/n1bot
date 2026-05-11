@@ -39,7 +39,7 @@ class TouchTool(FsToolBase[TouchArgs, TouchToolConfig]):
 
     def execute(self, ctx: ToolContext, req: TouchArgs) -> ToolResult:
         try:
-            self._shell(ctx).touch(req.path)
+            self._shell.touch(req.path)
         except WorkspaceError as e:
             raise ToolExecutionError(
                 tool_id=self.tool_id(),

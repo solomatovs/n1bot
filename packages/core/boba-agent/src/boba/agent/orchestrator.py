@@ -18,8 +18,8 @@ from boba.schema.coercion import MinValue, ParseInt
 class AgentRequest:
     """Параметры одного прогона агента (model, request_id, sampling)."""
 
-    model: str
     request_id: RequestId
+    model: str
     query: str
     sampling: SamplingParams | None = None
 
@@ -87,7 +87,10 @@ class Agent:
         """Прогнать агента; ленивый итератор AgentEvent. Не raise — события."""
         self._source.reset()
         self._writer.add(UserMessage(content=agent_input.request.query))
-        ctx = AgentContext(request=agent_input.request, config=agent_input.config)
+        ctx = AgentContext(
+            request=agent_input.request,
+            config=agent_input.config,
+        )
         yield from self._source.stream(ctx)
 
     def invoke(self, agent_input: AgentInput) -> AgentRunResult:

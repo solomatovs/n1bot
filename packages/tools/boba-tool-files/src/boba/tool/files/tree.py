@@ -44,7 +44,7 @@ class TreeTool(FsToolBase[TreeArgs, TreeToolConfig]):
 
     def execute(self, ctx: ToolContext, req: TreeArgs) -> ToolResult:
         try:
-            iterator = self._shell(ctx).tree(req.path)
+            iterator = self._shell.tree(req.path)
             items = list(islice(iterator, req.limit + 1))
         except WorkspaceError as e:
             raise ToolExecutionError(

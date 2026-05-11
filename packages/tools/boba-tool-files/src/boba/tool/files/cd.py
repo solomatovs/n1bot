@@ -35,7 +35,7 @@ class CdTool(FsToolBase[CdArgs, CdToolConfig]):
     """Сменить текущую директорию."""
 
     def execute(self, ctx: ToolContext, req: CdArgs) -> ToolResult:
-        shell = self._shell(ctx)
+        shell = self._shell
         try:
             shell.cd(req.path)
         except WorkspaceNotFoundError as e:

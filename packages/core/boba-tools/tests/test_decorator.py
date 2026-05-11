@@ -29,13 +29,11 @@ from boba.tools.domain import (
     ToolSourceId,
 )
 from boba.tools.framework import ToolDecoratorFactory, tool
-from boba.workspace.contract import WorkspaceId
-
 _SOURCE = ToolSourceId("test")
 
 
 def _ctx() -> ToolContext:
-    return ToolContext(workspace_id=WorkspaceId.new())
+    return ToolContext()
 
 
 def _field(factory: ToolDecoratorFactory, name: str) -> FieldSpec[Any]:

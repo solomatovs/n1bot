@@ -41,7 +41,7 @@ class StatTool(FsToolBase[StatArgs, StatToolConfig]):
 
     def execute(self, ctx: ToolContext, req: StatArgs) -> ToolResult:
         try:
-            meta = self._shell(ctx).meta(req.path)
+            meta = self._shell.meta(req.path)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self.tool_id(),

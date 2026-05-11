@@ -40,7 +40,7 @@ class CpTool(FsToolBase[CpArgs, CpToolConfig]):
 
     def execute(self, ctx: ToolContext, req: CpArgs) -> ToolResult:
         try:
-            self._shell(ctx).copy(req.src, req.dst, recursive=req.recursive)
+            self._shell.copy(req.src, req.dst, recursive=req.recursive)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self.tool_id(),

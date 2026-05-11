@@ -52,6 +52,8 @@ from boba.llm.models import LLMContext, LLMRequest
 from boba.patterns import StreamSource
 from boba.tools.framework import ToolExecutor
 
+LLMSource = StreamSource[LLMContext, LLMEvent]
+
 
 class LLMToAgentConverter:
     """Per-stream stateful конвертер LLM → Agent."""
@@ -133,7 +135,7 @@ class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
 
     def __init__(
         self,
-        llm_source: StreamSource[LLMContext, LLMEvent],
+        llm_source: LLMSource,
         prompt_providers: Sequence[PromptProvider],
         tool_executor: ToolExecutor,
         message_reader: MessageReader,
@@ -163,8 +165,9 @@ class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
     def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
         request = self._create_turn_spec(ctx).build()
 
-        converter = LLMToAgentConverter(request)
         try:
+            converter = LLMToAgentConverter(request)
+
             for event in self._llm_source.stream(
                 LLMContext(
                     request=request,
