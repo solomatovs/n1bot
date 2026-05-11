@@ -1,9 +1,10 @@
-"""Tool: скачать HTML-страницы Confluence в workspace-директорию.
+"""Tool: скачать страницы Confluence как Markdown-файлы в workspace.
 
-Каждая страница из списка page_ids сохраняется как `{dest_dir}/{page_id}.html` —
-тело страницы в выбранной body_format-репрезентации (storage/view/export_view/...).
-Дальше по этим файлам можно ходить html-tools (html_outline/html_section) или
-обычными file-tools (cat/grep/...).
+Каждая страница из списка page_ids сохраняется как `{dest_dir}/{page_id}.md` —
+HTML тело страницы пропускается через `markdownify` (ATX-заголовки).
+
+Структурно симметричен `confluence_page_download` (HTML-вариант); разница
+только в финальной трансформации: HTML → Markdown.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from dataclasses import dataclass
 from typing import Annotated, ClassVar
 
 import httpx
+import markdownify
 
 from boba.indexing import PipelineContext, PipelineId, ReaderKeys
 from boba.plugin.prompt import PromptOverlay
@@ -32,19 +34,18 @@ from boba.tools.domain import (
 from boba.workspace.contract import ProjectWorkspaceShell, WorkspaceError
 
 __all__ = [
-    "ConfluencePageDownloadTool",
-    "ConfluencePageDownloadToolConfig",
-    "PageDownloadArgs",
+    "ConfluencePageDownloadMarkdownTool",
+    "ConfluencePageDownloadMarkdownToolConfig",
+    "PageDownloadMarkdownArgs",
 ]
 
 
 @dataclass(frozen=True)
-class PageDownloadArgs:
-    """Скачивает указанные страницы Confluence как HTML-файлы в workspace.
+class PageDownloadMarkdownArgs:
+    """Скачивает указанные страницы Confluence как Markdown-файлы в workspace.
 
-    На каждую страницу создаётся файл `{dest_dir}/{page_id}.html` с HTML-телом
-    в выбранной body_format-репрезентации. Дальше — html_outline/html_section
-    или обычные file-tools.
+    На каждую страницу создаётся файл `{dest_dir}/{page_id}.md` с Markdown-телом
+    (HTML страницы конвертируется через markdownify). Дальше — обычные file-tools.
     """
 
     page_ids: Annotated[
@@ -62,7 +63,7 @@ class PageDownloadArgs:
 
 
 @dataclass(frozen=True)
-class ConfluencePageDownloadToolConfig:
+class ConfluencePageDownloadMarkdownToolConfig:
     """DTO tool'а: connection + body_format + prompt overlay."""
 
     base_url: str
@@ -74,18 +75,22 @@ class ConfluencePageDownloadToolConfig:
     prompt: PromptOverlay
 
 
-class ConfluencePageDownloadTool(
-    Tool[PageDownloadArgs, ConfluencePageDownloadToolConfig]
+class ConfluencePageDownloadMarkdownTool(
+    Tool[PageDownloadMarkdownArgs, ConfluencePageDownloadMarkdownToolConfig]
 ):
-    """Скачивание страниц Confluence в workspace-директорию."""
+    """Скачивание страниц Confluence как Markdown-файлов в workspace."""
 
-    _PIPELINE_ID: ClassVar[PipelineId] = PipelineId("confluence.page_download")
+    _PIPELINE_ID: ClassVar[PipelineId] = PipelineId(
+        "confluence.page_download_markdown",
+    )
 
     def __init__(self, cfg, ctx, source_id) -> None:
         super().__init__(cfg, ctx, source_id)
         self._shell: ProjectWorkspaceShell = ctx.get(ProjectWorkspaceShell)
 
-    def execute(self, ctx: ToolContext, req: PageDownloadArgs) -> ToolResult:
+    def execute(
+        self, ctx: ToolContext, req: PageDownloadMarkdownArgs,
+    ) -> ToolResult:
         del ctx
         dest_dir = req.dest_dir.rstrip("/")
         try:
@@ -113,14 +118,16 @@ class ConfluencePageDownloadTool(
                 page_id = http_req.metadata.get(ConfluenceKeys.PAGE_ID) or ""
                 for raw in transport.stream(pctx, [http_req]):
                     decoded = decoder.convert(raw)
-                    html_bytes = decoded.handle.read()
-                    path = f"{dest_dir}/{page_id}.html"
-                    self._write(path, html_bytes)
+                    html = decoded.handle.read().decode("utf-8", errors="replace")
+                    md = markdownify.markdownify(html, heading_style="ATX")
+                    md_bytes = md.encode("utf-8")
+                    path = f"{dest_dir}/{page_id}.md"
+                    self._write(path, md_bytes)
                     saved.append({
                         "page_id": page_id,
                         "title": decoded.metadata.get(ReaderKeys.PAGE_TITLE) or "",
                         "path": path,
-                        "bytes": str(len(html_bytes)),
+                        "bytes": str(len(md_bytes)),
                     })
         except httpx.HTTPError as e:
             raise ToolExecutionError(
@@ -138,7 +145,7 @@ class ConfluencePageDownloadTool(
                 "dest_dir": dest_dir,
                 "saved": saved,
                 "total": len(saved),
-            }
+            },
         )
 
     def _write(self, path: str, payload: bytes) -> None:

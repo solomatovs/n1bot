@@ -1,4 +1,4 @@
-"""ConfluencePageDownloadTool: HTML каждой страницы → workspace-файл."""
+"""ConfluencePageDownloadMarkdownTool: HTML → Markdown → workspace-файл."""
 
 from __future__ import annotations
 
@@ -9,17 +9,17 @@ import httpx
 
 from boba.plugin import ExtensionContext
 from boba.plugin.prompt import PromptOverlay
-from boba.tool.confluence.page_download import (
-    ConfluencePageDownloadTool,
-    ConfluencePageDownloadToolConfig,
-    PageDownloadArgs,
+from boba.tool.confluence.page_download_markdown import (
+    ConfluencePageDownloadMarkdownTool,
+    ConfluencePageDownloadMarkdownToolConfig,
+    PageDownloadMarkdownArgs,
 )
 from boba.tools.domain import JsonResult, ToolContext, ToolSourceId
 from boba.workspace.contract import ProjectWorkspaceShell
 
 
 def _make_tool(shell):
-    cfg = ConfluencePageDownloadToolConfig(
+    cfg = ConfluencePageDownloadMarkdownToolConfig(
         base_url="https://confl.test",
         auth_method="pat",
         auth_user="",
@@ -29,7 +29,9 @@ def _make_tool(shell):
         prompt=PromptOverlay(),
     )
     ctx = ExtensionContext({ProjectWorkspaceShell: shell})
-    return ConfluencePageDownloadTool(cfg, ctx, ToolSourceId("plugin.confluence"))
+    return ConfluencePageDownloadMarkdownTool(
+        cfg, ctx, ToolSourceId("plugin.confluence"),
+    )
 
 
 def _patch_httpx(monkeypatch, handler):
@@ -42,20 +44,16 @@ def _patch_httpx(monkeypatch, handler):
     monkeypatch.setattr("boba.transport.http.transport.httpx.Client", mock_client)
 
 
-def test_downloads_pages_to_workspace_files(monkeypatch):
+def test_downloads_pages_as_markdown(monkeypatch):
     pages = {
         "111": (
-            b'{"id":"111","title":"A",'
-            b'"body":{"view":{"value":"<p>page A</p>"}}}'
+            b'{"id":"111","title":"Alpha",'
+            b'"body":{"view":{"value":"<h1>Heading</h1><p>Body <b>bold</b></p>"}}}'
         ),
         "222": (
-            b'{"id":"222","title":"B",'
-            b'"body":{"view":{"value":"<p>page B</p>"}}}'
+            b'{"id":"222","title":"Beta",'
+            b'"body":{"view":{"value":"<h2>Sub</h2><p>Just text</p>"}}}'
         ),
-    }
-    html = {
-        "111": b"<p>page A</p>",
-        "222": b"<p>page B</p>",
     }
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -86,7 +84,10 @@ def test_downloads_pages_to_workspace_files(monkeypatch):
     tool = _make_tool(shell)
     result = tool.execute(
         ToolContext(),
-        PageDownloadArgs(page_ids=["111", "222"], dest_dir="downloads"),
+        PageDownloadMarkdownArgs(
+            page_ids=["111", "222"],
+            dest_dir="downloads",
+        ),
     )
 
     assert isinstance(result, JsonResult)
@@ -95,39 +96,27 @@ def test_downloads_pages_to_workspace_files(monkeypatch):
     assert payload["total"] == 2
     assert {item["page_id"] for item in payload["saved"]} == {"111", "222"}
     assert {item["path"] for item in payload["saved"]} == {
-        "downloads/111.html",
-        "downloads/222.html",
+        "downloads/111.md",
+        "downloads/222.md",
     }
-    assert {item["title"] for item in payload["saved"]} == {"A", "B"}
-    # Файлы реально записаны с HTML-телом из body.view.value
-    assert written["downloads/111.html"] == html["111"]
-    assert written["downloads/222.html"] == html["222"]
-    # mkdir вызван один раз, поскольку exists()=False
+    assert {item["title"] for item in payload["saved"]} == {"Alpha", "Beta"}
+
+    md_111 = written["downloads/111.md"].decode("utf-8")
+    md_222 = written["downloads/222.md"].decode("utf-8")
+    # markdownify рендерит h1 как `# Heading`, **bold** для <b>.
+    assert "# Heading" in md_111
+    assert "**bold**" in md_111
+    assert "## Sub" in md_222
+    assert "Just text" in md_222
     shell.mkdir.assert_called_once_with("downloads")
 
 
-def test_dest_dir_not_created_if_exists(monkeypatch):
+def test_trailing_slash_stripped(monkeypatch):
     def handler(_req: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=b"{}")
-
-    _patch_httpx(monkeypatch, handler)
-
-    shell = MagicMock(spec=ProjectWorkspaceShell)
-    shell.exists.return_value = True
-    shell.write_binary.side_effect = lambda _path: BytesIO()
-
-    tool = _make_tool(shell)
-    tool.execute(
-        ToolContext(),
-        PageDownloadArgs(page_ids=["1"], dest_dir="existing"),
-    )
-
-    shell.mkdir.assert_not_called()
-
-
-def test_trailing_slash_in_dest_dir_is_stripped(monkeypatch):
-    def handler(_req: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=b"{}")
+        return httpx.Response(
+            200,
+            content=b'{"id":"7","body":{"view":{"value":"<p>x</p>"}}}',
+        )
 
     _patch_httpx(monkeypatch, handler)
 
@@ -139,9 +128,9 @@ def test_trailing_slash_in_dest_dir_is_stripped(monkeypatch):
     tool = _make_tool(shell)
     result = tool.execute(
         ToolContext(),
-        PageDownloadArgs(page_ids=["7"], dest_dir="dl/"),
+        PageDownloadMarkdownArgs(page_ids=["7"], dest_dir="dl/"),
     )
 
     assert isinstance(result, JsonResult)
-    assert captured == ["dl/7.html"]
+    assert captured == ["dl/7.md"]
     assert result.payload["dest_dir"] == "dl"
