@@ -28,6 +28,7 @@ from boba.llm.models import (
     ToolResultMessage,
 )
 from boba.patterns import StreamSource
+from boba.tools.domain import ErrorResult
 
 
 class AssistantMessagePersistenceMiddleware(StreamSource[AgentContext, AgentEvent]):
@@ -111,7 +112,9 @@ class AssistantMessagePersistenceMiddleware(StreamSource[AgentContext, AgentEven
             self._writer.add(
                 ToolResultMessage(
                     tool_call_id=itc.id,
-                    content=itc.error,
-                    success=False,
+                    result=ErrorResult(
+                        message=itc.error,
+                        error_kind="InvalidToolCall",
+                    ),
                 ),
             )

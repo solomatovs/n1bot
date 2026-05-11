@@ -32,7 +32,6 @@ from boba.llm.models import RequestId
 from boba.patterns import ConverterInputError
 from boba.provider.openai import (
     CurlTraceChatCompletionObserver,
-    OpenAIChatVisitor,
     use_openai,
 )
 from boba.workspace.contract import (
@@ -104,7 +103,6 @@ def _run() -> int:
     message_service = InMemoryMessageService()
     agent = (
         builder.with_llm(llm)
-        .with_tool_result_visitor(OpenAIChatVisitor())
         .with_messages(message_service)
         .with_prompts(prompt_loader.prompt_providers())
         .with_config(app.runtime)

@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Literal, TypeAlias
+from typing import ClassVar, Literal, TypeAlias
 
 from boba.agent.models import (
     ToolCallFailure,
@@ -14,6 +14,7 @@ from boba.agent.models import (
 )
 from boba.llm.events import FinishReason
 from boba.llm.models import InvalidToolCall, RequestId, ToolCall
+from boba.tools.domain import DefaultTextVisitor
 
 
 class Severity(StrEnum):
@@ -523,6 +524,8 @@ class ToolCallComplete(ContentSnapshot):
 class ToolResultReady(ContentSnapshot):
     """Результат выполнения tool — вызов и результат."""
 
+    _TEXT_VISITOR: ClassVar[DefaultTextVisitor] = DefaultTextVisitor()
+
     call: ToolCall
     result: ToolCallResult
 
@@ -540,7 +543,7 @@ class ToolResultReady(ContentSnapshot):
         return self.call.name
 
     def body(self) -> str:
-        return self.result.content
+        return self.result.result.accept(self._TEXT_VISITOR)
 
 
 @dataclass(frozen=True)

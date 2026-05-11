@@ -15,6 +15,8 @@ from boba.llm.models import (
     UserMessage,
 )
 from boba.patterns import Converter
+from boba.provider.openai.visitor import OpenAIChatVisitor
+from boba.tools.domain import ToolResultVisitor
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
     ChatCompletionMessageParam,
@@ -40,7 +42,20 @@ class ToOpenAIToolConverter(Converter[LLMToolSchema, ChatCompletionToolParam]):
 
 
 class ToOpenAIMessageConverter(Converter[Message, ChatCompletionMessageParam]):
-    """Конвертация Message-иерархии → OpenAI message param (visitor по типу)."""
+    """Конвертация Message-иерархии → OpenAI message param (visitor по типу).
+
+    Для `ToolResultMessage` доменный `ToolResult` рендерится через переданный
+    `ToolResultVisitor[str]` — это граница между домен-моделью и wire-форматом
+    конкретного провайдера.
+    """
+
+    def __init__(
+        self,
+        tool_result_visitor: ToolResultVisitor[str] | None = None,
+    ) -> None:
+        self._tool_result_visitor: ToolResultVisitor[str] = (
+            tool_result_visitor or OpenAIChatVisitor()
+        )
 
     def convert(self, value: Message) -> ChatCompletionMessageParam:
         match value:
@@ -72,10 +87,10 @@ class ToOpenAIMessageConverter(Converter[Message, ChatCompletionMessageParam]):
                         for tc in tcs
                     ]
                 return param
-            case ToolResultMessage(tool_call_id=tcid, content=content):
+            case ToolResultMessage(tool_call_id=tcid, result=result):
                 return ChatCompletionToolMessageParam(
                     role="tool",
-                    content=content,
+                    content=result.accept(self._tool_result_visitor),
                     tool_call_id=tcid,
                 )
             case _:
@@ -86,8 +101,11 @@ class ToOpenAIMessageConverter(Converter[Message, ChatCompletionMessageParam]):
 class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
     """LLMRequest → kwargs для client.chat.completions.create."""
 
-    def __init__(self) -> None:
-        self._to_message = ToOpenAIMessageConverter()
+    def __init__(
+        self,
+        tool_result_visitor: ToolResultVisitor[str] | None = None,
+    ) -> None:
+        self._to_message = ToOpenAIMessageConverter(tool_result_visitor)
         self._to_tool = ToOpenAIToolConverter()
 
     def convert(self, value: LLMRequest) -> dict[str, Any]:

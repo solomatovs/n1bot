@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from boba.tools.domain import JsonResult, TextResult, ToolResultVisitor
+from boba.tools.domain import ErrorResult, JsonResult, TextResult, ToolResultVisitor
 
 __all__ = ["OpenAIChatVisitor"]
 
@@ -22,3 +22,6 @@ class OpenAIChatVisitor(ToolResultVisitor[str]):
 
     def visit_json(self, result: JsonResult) -> str:
         return json.dumps(result.payload, ensure_ascii=False)
+
+    def visit_error(self, result: ErrorResult) -> str:
+        return result.message

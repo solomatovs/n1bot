@@ -17,13 +17,13 @@ from boba.agent.models import ToolCallFailure, ToolCallResult
 from boba.agent.orchestrator import AgentContext
 from boba.llm.models import ToolResultMessage
 from boba.patterns import StreamSource
-from boba.tools.domain import ToolCall as DomainToolCall
 from boba.tools.domain import (
+    ErrorResult,
     ToolContext,
     ToolExecutionError,
     ToolId,
-    ToolResultVisitor,
 )
+from boba.tools.domain import ToolCall as DomainToolCall
 from boba.tools.framework import ToolExecutor
 
 
@@ -35,12 +35,10 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
         inner: StreamSource[AgentContext, AgentEvent],
         tool_executor: ToolExecutor,
         writer: MessageWriter,
-        visitor: ToolResultVisitor[str],
     ) -> None:
         self._inner = inner
         self._tool_executor = tool_executor
         self._writer = writer
-        self._visitor = visitor
 
     def name(self) -> str:
         return "ToolExecution"
@@ -79,31 +77,27 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
                 ),
             )
         except ToolExecutionError as e:
+            error = ErrorResult(message=e.message, error_kind=type(e).__name__)
             self._writer.add(
-                ToolResultMessage(
-                    tool_call_id=call.id,
-                    content=e.message,
-                    success=False,
-                ),
+                ToolResultMessage(tool_call_id=call.id, result=error),
             )
             yield ToolExecutionFailed(
                 request_id=tc.request_id,
                 call=call,
                 failure=ToolCallFailure(
-                    error_kind=type(e).__name__,
-                    message=e.message,
+                    error_kind=error.error_kind,
+                    message=error.message,
                 ),
             )
             return
 
-        rendered = result.accept(self._visitor)
         self._writer.add(
-            ToolResultMessage(tool_call_id=call.id, content=rendered),
+            ToolResultMessage(tool_call_id=call.id, result=result),
         )
         yield ToolResultReady(
             request_id=tc.request_id,
             call=call,
-            result=ToolCallResult(content=rendered),
+            result=ToolCallResult(result=result),
         )
 
 
@@ -154,12 +148,12 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
                     f"либо сформулируй ответ пользователю обычным "
                     f"текстом."
                 )
+                error = ErrorResult(
+                    message=message,
+                    error_kind="RepeatedToolCallError",
+                )
                 self._writer.add(
-                    ToolResultMessage(
-                        tool_call_id=call.id,
-                        content=message,
-                        success=False,
-                    ),
+                    ToolResultMessage(tool_call_id=call.id, result=error),
                 )
                 yield FeedbackToLLMAdded(
                     request_id=event.request_id,
@@ -169,8 +163,8 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
                     request_id=event.request_id,
                     call=call,
                     failure=ToolCallFailure(
-                        error_kind="RepeatedToolCallError",
-                        message=message,
+                        error_kind=error.error_kind,
+                        message=error.message,
                     ),
                 )
                 continue

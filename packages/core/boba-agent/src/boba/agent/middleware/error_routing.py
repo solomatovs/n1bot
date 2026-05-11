@@ -12,6 +12,7 @@ from boba.agent.models import LLMCritique, LLMFeedback, ToolCallRejection
 from boba.agent.orchestrator import AgentContext
 from boba.llm.models import RequestId, ToolResultMessage, UserMessage
 from boba.patterns import StreamSource
+from boba.tools.domain import ErrorResult
 
 
 class AgentErrorRouter:
@@ -45,8 +46,10 @@ class AgentErrorRouter:
                 self._writer.add(
                     ToolResultMessage(
                         tool_call_id=tid,
-                        content=c,
-                        success=False,
+                        result=ErrorResult(
+                            message=c,
+                            error_kind="ToolCallRejection",
+                        ),
                     ),
                 )
             case _:
