@@ -29,7 +29,7 @@ from boba.tools.domain import (
     ToolResult,
     ToolSourceId,
 )
-from boba.tools.framework import ToolFactory, tool
+from boba.tools.framework import ToolDecoratorFactory, tool
 from boba.workspace.contract import ProjectWorkspaceShell
 
 _SOURCE = ToolSourceId("test")
@@ -41,7 +41,7 @@ def _ctx() -> ToolContext:
     )
 
 
-def _field(factory: ToolFactory, name: str) -> FieldSpec[Any]:
+def _field(factory: ToolDecoratorFactory, name: str) -> FieldSpec[Any]:
     for f in factory.schema.fields:
         if f.name == name:
             assert isinstance(f, FieldSpec)
@@ -261,6 +261,37 @@ def test_build_assigns_qualified_tool_id():
     assert built.tool_id() == ToolId.compose(_SOURCE, ToolName("fn"))
 
 
+def test_into_source_yields_single_tool_source():
+    @tool
+    def fn(path: str) -> ToolResult:
+        return TextResult(text=path)
+
+    source = fn.into_source(_SOURCE)
+    assert source.id() == _SOURCE
+    tools = list(source.tools())
+    assert len(tools) == 1
+    assert tools[0].tool_id() == ToolId.compose(_SOURCE, ToolName("fn"))
+
+
+def test_into_source_find_by_name():
+    @tool
+    def fn(path: str) -> ToolResult:
+        return TextResult(text=path)
+
+    source = fn.into_source(_SOURCE)
+    found = source.find(ToolName("fn"))
+    assert found is not None
+    assert found.tool_id() == ToolId.compose(_SOURCE, ToolName("fn"))
+
+
+def test_into_source_find_missing_returns_none():
+    @tool
+    def fn(path: str) -> ToolResult:
+        return TextResult(text=path)
+
+    assert fn.into_source(_SOURCE).find(ToolName("missing")) is None
+
+
 def test_invoke_calls_function_with_kwargs():
     @tool
     def fn(path: str, count: int = 1) -> ToolResult:
@@ -439,7 +470,9 @@ def test_union_of_two_non_none_types_rejected():
 # ── list[X] / dict[str, X] ────────────────────────────────────────────────
 
 
-def _coll_field(factory: ToolFactory, name: str) -> CollectionField[Any, Any, Any]:
+def _coll_field(
+    factory: ToolDecoratorFactory, name: str
+) -> CollectionField[Any, Any, Any]:
     for f in factory.schema.fields:
         if f.name == name:
             assert isinstance(f, CollectionField)
@@ -448,7 +481,7 @@ def _coll_field(factory: ToolFactory, name: str) -> CollectionField[Any, Any, An
     raise AssertionError(msg)
 
 
-def _nested_field(factory: ToolFactory, name: str) -> NestedField[Any]:
+def _nested_field(factory: ToolDecoratorFactory, name: str) -> NestedField[Any]:
     for f in factory.schema.fields:
         if f.name == name:
             assert isinstance(f, NestedField)

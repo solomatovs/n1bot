@@ -6,7 +6,7 @@ Plugin discovery — отдельная инфра в `boba.plugin.discovery`.
 
 from __future__ import annotations
 
-from boba.tools.framework.decorator import ToolFactory, tool
+from boba.tools.framework.decorator import ToolDecoratorFactory, tool
 from boba.tools.framework.registry import (
     StaticToolSource,
     ToolSource,
@@ -15,7 +15,7 @@ from boba.tools.framework.registry import (
 
 __all__ = [
     "StaticToolSource",
-    "ToolFactory",
+    "ToolDecoratorFactory",
     "ToolSource",
     "ToolsService",
     "tool",
