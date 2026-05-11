@@ -28,6 +28,7 @@ from boba.schema.coercion import (
     OneOf,
     Required,
 )
+from boba.schema.coercion.base import ValueCoercer
 from boba.schema.declaration import (
     CollectionField,
     FieldKind,
@@ -126,8 +127,17 @@ def build_field_from_annotation(
         )
         raise TypeError(msg)
 
+    # Если пользователь указал ValueCoercer на поле-коллекцию (например
+    # ParseCsvList на list[str]), он явно хочет scalar-pathway: коэрсер сам
+    # читает значение целиком (строку/массив) и возвращает list/dict.
+    # В этом случае CollectionField (per-item-чтение) семантически неверен —
+    # идём в _build_scalar, где annotated_coercers применятся как chain.
+    user_scalar_override = any(
+        isinstance(c, ValueCoercer) for c in annotated_coercers
+    )
+
     origin = get_origin(inner)
-    if origin is list:
+    if origin is list and not user_scalar_override:
         return _build_collection(
             owner,
             field_name,
@@ -135,7 +145,7 @@ def build_field_from_annotation(
             IndexedShape(),
             description,
         )
-    if origin is dict:
+    if origin is dict and not user_scalar_override:
         return _build_collection(
             owner,
             field_name,
@@ -175,7 +185,12 @@ def _build_scalar(  # noqa: PLR0913
     else:
         coercers.append(Required())
 
-    type_coercers = _type_coercers(owner, field_name, inner)
+    # Если пользователь сам указал ValueCoercer в Annotated (Parse*, Is*),
+    # автогенный type-guard не нужен — он бы дублировал/ломал семантику.
+    user_supplies_type = any(isinstance(c, ValueCoercer) for c in annotated_coercers)
+    type_coercers: list[Coercer[Any, Any]] = (
+        [] if user_supplies_type else _type_coercers(owner, field_name, inner)
+    )
 
     if is_optional:
         coercers.append(
@@ -259,7 +274,10 @@ def _build_item_reader(
         )
         raise TypeError(msg)
 
-    type_coercers = _type_coercers(owner, field_name, inner)
+    user_supplies_type = any(isinstance(c, ValueCoercer) for c in annotated_coercers)
+    type_coercers: list[Coercer[Any, Any]] = (
+        [] if user_supplies_type else _type_coercers(owner, field_name, inner)
+    )
     return ScalarItem(
         coercer=ChainCoercer(NotNull(), *type_coercers, *annotated_coercers),
     )
@@ -368,20 +386,14 @@ def resolve_schema_for_dataclass(
     dc: type,
     inline_marker: Inline | None = None,
 ) -> ObjectSchema[Any]:
-    """Подхватить явную/ручную SCHEMA с DTO, иначе сгенерировать автогеном.
+    """Разрешить ObjectSchema для dataclass-типа.
 
     Приоритет:
       1. `Inline(schema=...)` — явное переопределение на поле родителя.
-      2. `dc.__dict__["SCHEMA"]` — ручная схема, привязанная к классу
-         (переходный bridge: на период миграции с ClassVar SCHEMA на
-         чистый `Annotated`).
-      3. Рекурсивный автоген.
+      2. Рекурсивный автоген (`schema_from_dataclass`).
     """
     if inline_marker is not None and inline_marker.schema is not None:
         return inline_marker.schema
-    existing = dc.__dict__.get("SCHEMA")
-    if isinstance(existing, ObjectSchema):
-        return existing
     # Локальный импорт — разрываем цикл field ↔ from_dataclass.
     from boba.schema.from_dataclass import (  # noqa: PLC0415
         schema_from_dataclass,

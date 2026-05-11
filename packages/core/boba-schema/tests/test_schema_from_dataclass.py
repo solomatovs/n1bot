@@ -9,7 +9,17 @@ import pytest
 
 from boba.patterns import ConverterInputError, MissingValueError
 from boba.schema import Inline, schema_from_dataclass
-from boba.schema.coercion import MISSING, ChainCoercer, Default, MaxValue, MinValue, ParseInt
+from boba.schema.coercion import (
+    MISSING,
+    ChainCoercer,
+    Default,
+    MaxValue,
+    MinValue,
+    ParseBool,
+    ParseCsvList,
+    ParseInt,
+    ParseString,
+)
 from boba.schema.declaration import (
     CollectionField,
     FieldSpec,
@@ -21,6 +31,7 @@ from boba.schema.declaration import (
     ObjectSchema,
     ScalarItem,
 )
+from boba.schema.value import StringValue
 
 
 def _field(schema: Any, name: str) -> FieldSpec[Any]:
@@ -59,7 +70,7 @@ def _inline_nested(schema: Any, name: str) -> InlineNestedField[Any]:
     raise AssertionError(msg)
 
 
-# ── factory и базовые поля ────────────────────────────────────────────────
+# factory и базовые поля
 
 
 def test_factory_is_dataclass_itself():
@@ -122,7 +133,7 @@ def test_type_guard_rejects_wrong_runtime_value():
         f.coercer.apply("not-an-int")
 
 
-# ── Annotated[...]: description и доп. coercer'ы ──────────────────────────
+# Annotated[...]: description и доп. coercer
 
 
 def test_annotated_string_becomes_field_description():
@@ -148,7 +159,72 @@ def test_annotated_extra_coercer_is_appended():
         f.coercer.apply(101)
 
 
-# ── Optional ──────────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class _CfgWithParseBool:
+    flag: Annotated[bool, "...", ParseBool()] = False
+
+
+@dataclass(frozen=True)
+class _CfgWithOptionalParseString:
+    name: Annotated[str | None, "...", ParseString()] = None
+
+
+@dataclass(frozen=True)
+class _CfgWithCsvScalarOverride:
+    tags: Annotated[list[str], "CSV-разделённые теги.", ParseCsvList()] = field(
+        default_factory=list,
+    )
+
+
+@dataclass(frozen=True)
+class _CfgWithOptionalCsvScalarOverride:
+    tags: Annotated[list[str] | None, "...", ParseCsvList()] = None
+
+
+def test_annotated_parse_coercer_replaces_autogen_type_guard():
+    """Если в Annotated есть ValueCoercer (Parse*/Is*), автогенный guard не добавляется."""
+    f = _field(schema_from_dataclass(_CfgWithParseBool), "flag")
+    # StringValue("true") должен пройти ParseBool (lenient), без IsBool-guard.
+    assert f.coercer.apply(StringValue("true")) is True
+    assert f.coercer.apply(StringValue("false")) is False
+
+
+def test_annotated_parse_coercer_works_for_optional():
+    """Опт-аут type-guard работает и для Optional через Nullable-цепочку."""
+    f = _field(schema_from_dataclass(_CfgWithOptionalParseString), "name")
+    assert f.coercer.apply(MISSING) is None
+    assert f.coercer.apply(None) is None
+    assert f.coercer.apply(StringValue("ok")) == "ok"
+
+
+def test_list_with_scalar_coercer_becomes_field_spec_not_collection():
+    """ValueCoercer на list[T] переключает поле в scalar-pathway (FieldSpec)."""
+    schema = schema_from_dataclass(_CfgWithCsvScalarOverride)
+    f = _field(schema, "tags")
+    # ParseCsvList на StringValue("a,b,c") должен вернуть list.
+    assert f.coercer.apply(StringValue("a,b,c")) == ["a", "b", "c"]
+
+
+def test_optional_list_with_scalar_coercer_supports_missing_and_none():
+    schema = schema_from_dataclass(_CfgWithOptionalCsvScalarOverride)
+    f = _field(schema, "tags")
+    assert f.coercer.apply(MISSING) is None
+    assert f.coercer.apply(None) is None
+    assert f.coercer.apply(StringValue("x,y")) == ["x", "y"]
+
+
+def test_list_without_coercer_still_builds_collection():
+    """Если нет ValueCoercer — list[T] по-прежнему CollectionField."""
+
+    @dataclass(frozen=True)
+    class _Plain:
+        items: list[str] = field(default_factory=list)
+
+    c = _coll(schema_from_dataclass(_Plain), "items")
+    assert isinstance(c.shape, IndexedShape)
+
+
+# Optional
 
 
 def test_optional_without_default_becomes_default_none():
@@ -172,7 +248,7 @@ def test_optional_rejects_wrong_type():
         f.coercer.apply("nope")
 
 
-# ── Literal ───────────────────────────────────────────────────────────────
+# Literal
 
 
 def test_literal_becomes_oneof():
@@ -186,7 +262,7 @@ def test_literal_becomes_oneof():
         f.coercer.apply("trace")
 
 
-# ── Коллекции ─────────────────────────────────────────────────────────────
+# Коллекции
 
 
 def test_list_of_str_is_indexed_collection():
@@ -223,7 +299,7 @@ def test_dict_with_non_str_keys_rejected():
         schema_from_dataclass(Cfg)
 
 
-# ── Nested dataclass ──────────────────────────────────────────────────────
+# Nested dataclass
 
 
 @dataclass(frozen=True)
@@ -240,30 +316,11 @@ class _Outer:
 
 
 @dataclass(frozen=True)
-class _ManualInner:
+class _OverrideInner:
     x: int = 1
 
 
-_MANUAL_INNER_SCHEMA: ObjectSchema[_ManualInner] = ObjectSchema(
-    fields=[
-        FieldSpec(
-            name="x",
-            coercer=ChainCoercer(Default(7), ParseInt()),
-            description="custom-desc",
-        ),
-    ],
-    factory=_ManualInner,
-    description="manual",
-)
-_ManualInner.SCHEMA = _MANUAL_INNER_SCHEMA  # type: ignore[attr-defined]
-
-
-@dataclass(frozen=True)
-class _OuterWithManualInner:
-    inner: _ManualInner = field(default_factory=_ManualInner)
-
-
-_OVERRIDE_INNER_SCHEMA: ObjectSchema[_ManualInner] = ObjectSchema(
+_OVERRIDE_INNER_SCHEMA: ObjectSchema[_OverrideInner] = ObjectSchema(
     fields=[
         FieldSpec(
             name="x",
@@ -271,15 +328,15 @@ _OVERRIDE_INNER_SCHEMA: ObjectSchema[_ManualInner] = ObjectSchema(
             description="explicit-override",
         ),
     ],
-    factory=_ManualInner,
+    factory=_OverrideInner,
     description="explicit",
 )
 
 
 @dataclass(frozen=True)
 class _OuterWithInlineOverride:
-    inner: Annotated[_ManualInner, Inline(_OVERRIDE_INNER_SCHEMA)] = field(
-        default_factory=_ManualInner,
+    inner: Annotated[_OverrideInner, Inline(_OVERRIDE_INNER_SCHEMA)] = field(
+        default_factory=_OverrideInner,
     )
 
 
@@ -288,13 +345,6 @@ def test_nested_dataclass_becomes_nested_field():
     n = _nested(schema, "nested")
     assert n.schema.factory is _Nested
     assert n.schema.description == "Вложенная подструктура."
-
-
-def test_nested_dataclass_reuses_manual_schema_if_declared():
-    """Если у sub-DTO есть свой SCHEMA — автоген его переиспользует."""
-    n = _nested(schema_from_dataclass(_OuterWithManualInner), "inner")
-    assert n.schema is _MANUAL_INNER_SCHEMA
-    assert n.schema.description == "manual"
 
 
 def test_list_of_dataclass_uses_object_item():
@@ -307,7 +357,7 @@ def test_list_of_dataclass_uses_object_item():
     assert isinstance(c.reader, ObjectItem)
 
 
-# ── Ошибки ────────────────────────────────────────────────────────────────
+# Ошибки
 
 
 def test_non_dataclass_argument_rejected():
@@ -379,10 +429,9 @@ def test_inline_with_optional_dataclass_rejected():
 
 
 def test_inline_schema_override_used_verbatim():
-    """Inline(schema=...) — явное переопределение, ручная SCHEMA на классе игнорируется."""
+    """Inline(schema=...) — явное переопределение, используется как есть."""
     f = _inline_nested(schema_from_dataclass(_OuterWithInlineOverride), "inner")
     assert f.schema is _OVERRIDE_INNER_SCHEMA
-    # _OVERRIDE_INNER_SCHEMA побеждает над _MANUAL_INNER_SCHEMA, привязанной к _ManualInner.
     assert f.schema.description == "explicit"
 
 
@@ -395,7 +444,7 @@ def test_double_inline_in_annotated_rejected():
         schema_from_dataclass(Cfg)
 
 
-# ── Сценарий: реальный DTO без ручного SCHEMA ─────────────────────────────
+# Сценарий: реальный DTO без ручного SCHEMA
 
 
 def test_materializes_dto_via_generated_schema():

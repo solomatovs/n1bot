@@ -135,7 +135,7 @@ def test_multiple_ignored_params_reported_in_order():
     assert [f.name for f in parsed.schema.fields] == ["q"]
 
 
-# ── parse_docstring ───────────────────────────────────────────────────────
+# parse_docstring
 
 
 def test_parse_docstring_extracts_arg_descriptions():

@@ -17,6 +17,9 @@ __pycache__
 *.pyo
 *.pyd
 *.egg-info/
+# setuptools / python -m build артефакты
+packages/**/build/
+packages/**/dist/
 chroma_debug_db
 # Chainlit runtime artifacts
 .chainlit/translations/

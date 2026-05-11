@@ -1,53 +1,33 @@
-"""DTO/Schema chainlit-приложения: AppCoreConfig + плоский AppConfig."""
+"""DTO chainlit-приложения: AppCoreConfig + плоский AppConfig."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, ClassVar
+from typing import Annotated
 
 from boba.agent.orchestrator import AgentConfig
 from boba.agent.prompt_providers import PromptsConfig
 from boba.agent.workspace_fs import WorkspaceLayout
 from boba.provider.openai import OpenAIConfig
-from boba.schema import Inline, schema_from_dataclass
-from boba.schema.coercion import ChainCoercer, Default, Nullable, ParseBool, ParseString
-from boba.schema.declaration import FieldSpec, ObjectSchema
+from boba.schema import Inline
+from boba.schema.coercion import ParseBool, ParseString
 
 __all__ = ["AppConfig", "AppCoreConfig"]
 
 
 @dataclass(frozen=True)
 class AppCoreConfig:
-    """DTO ядра — кросс-слойные настройки приложения."""
+    """Кросс-слойные настройки приложения: SSL/логирование."""
 
-    ssl_verify: bool
-    log_level: str
-    log_file: str | None
-
-    SCHEMA: ClassVar[ObjectSchema[AppCoreConfig]]
-
-
-AppCoreConfig.SCHEMA = ObjectSchema(
-    description="Кросс-слойные настройки приложения: SSL/логирование.",
-    fields=[
-        FieldSpec(
-            name="ssl_verify",
-            coercer=ChainCoercer(Default(False), ParseBool()),
-            description="Проверять ли TLS-сертификат у HTTPS-запросов.",
-        ),
-        FieldSpec(
-            name="log_level",
-            coercer=ChainCoercer(Default("INFO"), ParseString()),
-            description="Уровень корневого логгера.",
-        ),
-        FieldSpec(
-            name="log_file",
-            coercer=Nullable(ParseString()),
-            description="Путь к log-файлу. Пусто — логи в stderr.",
-        ),
-    ],
-    factory=AppCoreConfig,
-)
+    ssl_verify: Annotated[
+        bool, "Проверять ли TLS-сертификат у HTTPS-запросов.", ParseBool(),
+    ] = False
+    log_level: Annotated[
+        str, "Уровень корневого логгера.", ParseString(),
+    ] = "INFO"
+    log_file: Annotated[
+        str | None, "Путь к log-файлу. Пусто — логи в stderr.", ParseString(),
+    ] = None
 
 
 @dataclass(frozen=True)
@@ -59,8 +39,3 @@ class AppConfig:
     openai:     Annotated[OpenAIConfig,    Inline()]
     prompts:    Annotated[PromptsConfig,   Inline()]
     runtime:    Annotated[AgentConfig,     Inline()]
-
-    SCHEMA: ClassVar[ObjectSchema[AppConfig]]
-
-
-AppConfig.SCHEMA = schema_from_dataclass(AppConfig)
