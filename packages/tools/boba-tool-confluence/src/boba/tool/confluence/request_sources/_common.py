@@ -27,11 +27,10 @@ __all__ = [
     "viewpage_url",
 ]
 
-_DEFAULT_EXPAND = "body.{body_format},version,ancestors,space,metadata.labels"
-
-
 def extract_host(base_url: str) -> str:
-    """`https://confl.x.com/wiki/` → `confl.x.com` (только netloc)."""
+    """
+    `https://confl.x.com/wiki/` → `confl.x.com` (только netloc)
+    """
     netloc = urlparse(base_url).netloc
     return netloc or base_url.split("://", 1)[-1].split("/", 1)[0]
 
@@ -61,7 +60,7 @@ def make_page_request(
                    от REST URL, который меняется с эндпоинтами.
     `metadata`   — page_id и host для дальнейших стадий (Decoder/Reader).
     """
-    expand = _DEFAULT_EXPAND.format(body_format=body_format)
+    expand = f"body.{body_format},version,ancestors,space,metadata.labels"
     rest_url = (
         f"{base_url.rstrip('/')}/rest/api/content/{page_id}"
         f"?expand={expand}"

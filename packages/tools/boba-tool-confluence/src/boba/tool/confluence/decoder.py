@@ -69,6 +69,9 @@ class ConfluenceJsonDecoder(Decoder):
                     meta = meta.set(ConfluenceKeys.VERSION, int(n))
             if (when := version.get("when")) and not meta.has(HttpKeys.LAST_MODIFIED):
                 meta = meta.set(HttpKeys.LAST_MODIFIED, str(when))
+        space = data.get("space") or {}
+        if isinstance(space, dict) and (space_key := space.get("key")):
+            meta = meta.set(ConfluenceKeys.SPACE_KEY, str(space_key))
 
         return replace(
             value,

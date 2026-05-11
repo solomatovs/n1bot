@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 
 from boba.indexing import PipelineContext, RequestSource
-from boba.tool.confluence.pipelines.request_sources._common import (
+from boba.tool.confluence.request_sources._common import (
     extract_host,
     make_page_request,
     viewpage_url,

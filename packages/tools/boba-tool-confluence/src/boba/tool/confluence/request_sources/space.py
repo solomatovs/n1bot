@@ -1,12 +1,11 @@
-"""ConfluenceCqlRequestSource: CQL-запрос → пагинированные результаты."""
+"""ConfluenceSpaceRequestSource: все страницы одного space."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from urllib.parse import quote
 
 from boba.indexing import PipelineContext, RequestSource
-from boba.tool.confluence.pipelines.request_sources._common import (
+from boba.tool.confluence.request_sources._common import (
     extract_host,
     iter_paginated,
     make_discovery_client,
@@ -15,16 +14,15 @@ from boba.tool.confluence.pipelines.request_sources._common import (
 )
 from boba.transport.http import AuthApplier, HttpRequest
 
-__all__ = ["ConfluenceCqlRequestSource"]
+__all__ = ["ConfluenceSpaceRequestSource"]
 
 _LIST_LIMIT = 50
-_LIST_PATH = "/rest/api/content/search?cql={cql}&limit={limit}"
+_LIST_PATH = "/rest/api/space/{key}/content?type=page&limit={limit}&start=0"
 
 
-class ConfluenceCqlRequestSource(RequestSource[HttpRequest]):
-    """CQL-запрос: `space = DOCS AND lastModified > '2024-01-01'` и т.п.
-
-    Discovery — через `/rest/api/content/search?cql=...` с пагинацией.
+class ConfluenceSpaceRequestSource(RequestSource[HttpRequest]):
+    """
+    Все страницы space через `/rest/api/space/{key}/content`
     """
 
     def __init__(
@@ -32,19 +30,19 @@ class ConfluenceCqlRequestSource(RequestSource[HttpRequest]):
         *,
         base_url: str,
         auth: AuthApplier | None,
-        cql: str,
+        space_key: str,
         body_format: str = "export_view",
         timeout_sec: float = 30.0,
     ) -> None:
-        self._base_url = base_url.rstrip("/")
+        self._base_url = base_url
         self._host = extract_host(base_url)
         self._auth = auth
-        self._cql = cql
+        self._space_key = space_key
         self._body_format = body_format
         self._timeout = timeout_sec
 
     def name(self) -> str:
-        return f"ConfluenceCqlRequestSource({self._cql!r})"
+        return f"ConfluenceSpaceRequestSource({self._host}/{self._space_key})"
 
     def stream(self, ctx: PipelineContext) -> Iterable[HttpRequest]:
         del ctx
@@ -58,12 +56,14 @@ class ConfluenceCqlRequestSource(RequestSource[HttpRequest]):
             )
 
     def list_source_ids(self, ctx: PipelineContext) -> Iterable[str]:
+        """Перечисление source_id = viewpage URL"""
         del ctx
         for page_id in self._iter_page_ids():
             yield viewpage_url(self._base_url, page_id)
 
     def _iter_page_ids(self) -> Iterable[str]:
-        path = _LIST_PATH.format(cql=quote(self._cql, safe=""), limit=_LIST_LIMIT)
+        """Discovery: пагинирует /space/{key}/content и возвращает только page-id"""
+        path = _LIST_PATH.format(key=self._space_key, limit=_LIST_LIMIT)
         with make_discovery_client(self._base_url, self._auth, self._timeout) as client:
             for raw in iter_paginated(client, path):
                 page_id = str(raw.get("id") or "").strip()

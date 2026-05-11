@@ -94,6 +94,7 @@ from boba.indexing.namespaced_view import NamespacedView
 from boba.indexing.raw_document import BinaryStream, RawDocument
 from boba.indexing.reader import Reader, ReaderId
 from boba.indexing.request import Request, RequestSource
+from boba.indexing.runtime_pipeline import RuntimePipeline
 from boba.indexing.sections import (
     HeadingSection,
     ParagraphSection,
@@ -201,6 +202,7 @@ __all__ = [
     "RunFinished",
     "RunId",
     "RunStarted",
+    "RuntimePipeline",
     "SearchHit",
     "Section",
     "SectionKeys",
