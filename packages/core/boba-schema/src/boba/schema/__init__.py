@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from boba.schema.decorator import schema
 from boba.schema.field import (
     Inline,
     build_field_from_annotation,
@@ -23,6 +24,7 @@ __all__ = [
     "Inline",
     "build_field_from_annotation",
     "resolve_schema_for_dataclass",
+    "schema",
     "schema_from_callable",
     "schema_from_dataclass",
 ]
