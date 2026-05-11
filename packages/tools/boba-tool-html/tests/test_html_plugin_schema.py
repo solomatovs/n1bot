@@ -30,11 +30,16 @@ def test_schema_description_from_dto_docstring():
 
 
 def test_top_level_field_names():
-    assert {f.name for f in _SCHEMA.fields} == {"html_outline", "html_section"}
+    assert {f.name for f in _SCHEMA.fields} == {
+        "html_outline",
+        "html_section",
+        "tools",
+    }
 
 
-def test_each_top_level_field_is_nested_prompt_overlay():
-    for f in _SCHEMA.fields:
+def test_prompt_overlay_fields_are_nested():
+    for name in ("html_outline", "html_section"):
+        f = next(x for x in _SCHEMA.fields if x.name == name)
         assert isinstance(f, NestedField)
         assert f.schema.factory is PromptOverlay
 

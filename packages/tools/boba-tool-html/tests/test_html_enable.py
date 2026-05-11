@@ -34,3 +34,10 @@ def test_disabled_explicit():
 def test_enabled_yields_both_tools():
     names = _tool_names({"tool.html.enable": "true"})
     assert set(names) == {"html_outline", "html_section"}
+
+
+def test_allowlist_filters_tools():
+    names = _tool_names(
+        {"tool.html.enable": "true", "tool.html.tools": "html_outline"},
+    )
+    assert set(names) == {"html_outline"}

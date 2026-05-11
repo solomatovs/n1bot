@@ -10,12 +10,12 @@ from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import MinValue, NonEmpty
 from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
-    TextResult,
+    JsonResult,
     ToolContext,
     ToolExecutionError,
     ToolResult,
 )
-from boba.workspace.contract import GrepMatch, WorkspaceError, WorkspaceNotFoundError
+from boba.workspace.contract import WorkspaceError, WorkspaceNotFoundError
 
 __all__ = ["GrepArgs", "GrepTool", "GrepToolConfig"]
 
@@ -90,30 +90,24 @@ class GrepTool(FsToolBase[GrepArgs, GrepToolConfig]):
                 message=f"Ошибка grep: {e}",
             ) from e
 
-        truncated = len(matches) > req.limit
+        total = len(matches)
+        truncated = total > req.limit
         if truncated:
             matches = matches[: req.limit]
 
-        if not matches:
-            return TextResult(text="Совпадений не найдено.")
-
-        body = self._format_matches(matches, req.context)
-        footer = f"\n\n{len(matches)} совпадение(й)"
-        if truncated:
-            footer += f" (truncated at limit={req.limit})"
-        return TextResult(text=body + footer)
-
-    @staticmethod
-    def _format_matches(matches: list[GrepMatch], context: int) -> str:
-        parts: list[str] = []
-        for i, m in enumerate(matches):
-            if context > 0 and i > 0:
-                parts.append("--")
-            for j, ctx_line in enumerate(m.before):
-                n = m.line - len(m.before) + j
-                parts.append(f"{m.path}:{n}- {ctx_line}")
-            parts.append(f"{m.path}:{m.line}: {m.content}")
-            for j, ctx_line in enumerate(m.after):
-                n = m.line + 1 + j
-                parts.append(f"{m.path}:{n}- {ctx_line}")
-        return "\n".join(parts)
+        return JsonResult(payload={
+            "matches": [
+                {
+                    "path": m.path,
+                    "line": m.line,
+                    "content": m.content,
+                    "before": list(m.before),
+                    "after": list(m.after),
+                }
+                for m in matches
+            ],
+            "count": len(matches),
+            "total": total,
+            "truncated": truncated,
+            "limit": req.limit,
+        })

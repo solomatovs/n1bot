@@ -46,7 +46,7 @@ class ConfluenceCqlSearchRequestSource(RequestSource[HttpRequest]):
 
     def _seatch_path(self, cql: str, limit: int) -> str:
         return (
-            "/rest/api/content/search?cql={cql}&limit={limit}"
+            f"/rest/api/content/search?cql={cql}&limit={limit}"
             "&expand=body.view,version,space"
         )
 

@@ -39,3 +39,19 @@ def test_disabled_explicit():
 def test_enabled_yields_all_tools():
     names = _tool_names({"tool.files.enable": "true"})
     assert set(names) == _FILES_TOOL_NAMES
+
+
+def test_allowlist_filters_tools():
+    names = _tool_names(
+        {"tool.files.enable": "true", "tool.files.tools": "cat,grep"},
+    )
+    assert set(names) == {"cat", "grep"}
+
+
+def test_allowlist_unknown_name_raises():
+    import pytest
+
+    with pytest.raises(ValueError, match="unknown names"):
+        _tool_names(
+            {"tool.files.enable": "true", "tool.files.tools": "cat,nonsense"},
+        )

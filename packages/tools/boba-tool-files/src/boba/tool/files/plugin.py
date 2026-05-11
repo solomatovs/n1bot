@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import Annotated, ClassVar
 
 from boba.patterns import StrId
 from boba.plugin import ExtensionContext, Plugin
 from boba.plugin.prompt import PromptOverlay
+from boba.schema.coercion.types import ParseCsvList
 from boba.tool.files.append import AppendTool, AppendToolConfig
 from boba.tool.files.cat import CatTool, CatToolConfig
 from boba.tool.files.cd import CdTool, CdToolConfig
@@ -24,7 +25,7 @@ from boba.tool.files.stat import StatTool, StatToolConfig
 from boba.tool.files.touch import TouchTool, TouchToolConfig
 from boba.tool.files.tree import TreeTool, TreeToolConfig
 from boba.tool.files.write import WriteTool, WriteToolConfig
-from boba.tools.domain import ToolSourceId
+from boba.tools.domain import Tool, ToolSourceId
 from boba.tools.framework import StaticToolSource, ToolSource
 
 __all__ = ["FilesPlugin", "FilesPluginConfig"]
@@ -52,6 +53,13 @@ class FilesPluginConfig:
     touch: PromptOverlay = field(default_factory=PromptOverlay)
     tree: PromptOverlay = field(default_factory=PromptOverlay)
     write: PromptOverlay = field(default_factory=PromptOverlay)
+    tools: Annotated[
+        list[str] | None,
+        "Allowlist tool-имён внутри плагина: None (default) — все включены; "
+        "иначе создаются и регистрируются только перечисленные. "
+        "Имена соответствуют t.name().to_wire() (например 'cat', 'grep').",
+        ParseCsvList(),
+    ] = None
 
 
 class FilesPlugin(Plugin[FilesPluginConfig, ToolSource]):
@@ -67,23 +75,43 @@ class FilesPlugin(Plugin[FilesPluginConfig, ToolSource]):
         ctx: ExtensionContext,
     ) -> Iterable[ToolSource]:
         sid = cls.SOURCE_ID
+        factories: dict[str, Callable[[], Tool]] = {
+            "append": lambda: AppendTool(AppendToolConfig(prompt=cfg.append), ctx, sid),
+            "cat": lambda: CatTool(cfg.cat, ctx, sid),
+            "cd": lambda: CdTool(CdToolConfig(prompt=cfg.cd), ctx, sid),
+            "cp": lambda: CpTool(CpToolConfig(prompt=cfg.cp), ctx, sid),
+            "edit": lambda: EditTool(EditToolConfig(prompt=cfg.edit), ctx, sid),
+            "grep": lambda: GrepTool(GrepToolConfig(prompt=cfg.grep), ctx, sid),
+            "ls": lambda: LsTool(LsToolConfig(prompt=cfg.ls), ctx, sid),
+            "mkdir": lambda: MkdirTool(MkdirToolConfig(prompt=cfg.mkdir), ctx, sid),
+            "mv": lambda: MvTool(MvToolConfig(prompt=cfg.mv), ctx, sid),
+            "pwd": lambda: PwdTool(PwdToolConfig(prompt=cfg.pwd), ctx, sid),
+            "rm": lambda: RmTool(RmToolConfig(prompt=cfg.rm), ctx, sid),
+            "stat": lambda: StatTool(StatToolConfig(prompt=cfg.stat), ctx, sid),
+            "touch": lambda: TouchTool(TouchToolConfig(prompt=cfg.touch), ctx, sid),
+            "tree": lambda: TreeTool(TreeToolConfig(prompt=cfg.tree), ctx, sid),
+            "write": lambda: WriteTool(WriteToolConfig(prompt=cfg.write), ctx, sid),
+        }
+        names = cls._select(cfg.tools, factories.keys())
         yield StaticToolSource(
             source_id=sid,
-            tools=[
-                AppendTool(AppendToolConfig(prompt=cfg.append), ctx, sid),
-                CatTool(cfg.cat, ctx, sid),
-                CdTool(CdToolConfig(prompt=cfg.cd), ctx, sid),
-                CpTool(CpToolConfig(prompt=cfg.cp), ctx, sid),
-                EditTool(EditToolConfig(prompt=cfg.edit), ctx, sid),
-                GrepTool(GrepToolConfig(prompt=cfg.grep), ctx, sid),
-                LsTool(LsToolConfig(prompt=cfg.ls), ctx, sid),
-                MkdirTool(MkdirToolConfig(prompt=cfg.mkdir), ctx, sid),
-                MvTool(MvToolConfig(prompt=cfg.mv), ctx, sid),
-                PwdTool(PwdToolConfig(prompt=cfg.pwd), ctx, sid),
-                RmTool(RmToolConfig(prompt=cfg.rm), ctx, sid),
-                StatTool(StatToolConfig(prompt=cfg.stat), ctx, sid),
-                TouchTool(TouchToolConfig(prompt=cfg.touch), ctx, sid),
-                TreeTool(TreeToolConfig(prompt=cfg.tree), ctx, sid),
-                WriteTool(WriteToolConfig(prompt=cfg.write), ctx, sid),
-            ],
+            tools=[factories[n]() for n in names],
         )
+
+    @staticmethod
+    def _select(
+        allowlist: list[str] | None,
+        all_names: Iterable[str],
+    ) -> list[str]:
+        """Применить allowlist к набору имён; None/пустой allowlist = все."""
+        available = list(all_names)
+        if not allowlist:
+            return available
+        unknown = [n for n in allowlist if n not in available]
+        if unknown:
+            msg = (
+                f"FilesPlugin.tools: unknown names {unknown!r}, "
+                f"available: {available!r}"
+            )
+            raise ValueError(msg)
+        return [n for n in available if n in allowlist]

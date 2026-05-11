@@ -38,7 +38,7 @@ def test_schema_description_from_dto_docstring():
 
 
 def test_top_level_field_names():
-    assert {f.name for f in _SCHEMA.fields} == _PROMPT_NAMES | {"cat"}
+    assert {f.name for f in _SCHEMA.fields} == _PROMPT_NAMES | {"cat", "tools"}
 
 
 def test_prompt_overlay_fields_are_nested():
