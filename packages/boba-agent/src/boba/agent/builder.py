@@ -22,6 +22,8 @@ from boba.agent.orchestrator import Agent, AgentConfig, AgentContext
 from boba.agent.prompt import PromptProvider
 from boba.config.bundle import ConfigBundle
 from boba.config.path import ConfigSource
+from boba.config.source.cli import CliSource
+from boba.config.source.env import EnvFileSource, EnvSource
 from boba.llm.events import LLMEvent
 from boba.llm.models import LLMContext
 from boba.patterns import (
@@ -29,7 +31,8 @@ from boba.patterns import (
     StreamSourceChainBuilder,
     StreamSourceLoop,
 )
-from boba.plugin import ExtensionContext, Plugin, config_path
+from boba.plugin import ExtensionContext, Plugin, config_path, is_enabled
+from boba.plugin.discovery import DEFAULT_PLUGIN_ENTRY_POINT_GROUP, discover_plugins
 from boba.tools.domain import ToolContext, ToolResultVisitor, ToolSourceId
 from boba.tools.framework import (
     StaticToolSource,
@@ -49,9 +52,12 @@ class AgentBuilder:
         self._tools_service: ToolsService | None = None
         self._inline_factories: list[ToolDecoratorFactory] = []
         self._config_sources: list[ConfigSource] = []
+        self._bundle: ConfigBundle | None = None
         self._plugin_entries: list[
             tuple[type[Plugin[Any, ToolSource]], ConfigSource | Any | None]
         ] = []
+        self._discover_groups: list[str] = []
+        self._resolved_tools_service: ToolsService | None = None
         self._tool_result_visitor: ToolResultVisitor[str] | None = None
         self._message_service: MessageService | None = None
         self._prompt_providers: list[PromptProvider] = []
@@ -73,9 +79,47 @@ class AgentBuilder:
         return self
 
     def use_config_source(self, source: ConfigSource) -> Self:
-        """Зарегистрировать ConfigSource для материализации plugin-конфигов."""
+        """Зарегистрировать ConfigSource для общего `ConfigBundle` билдера."""
+        if self._bundle is not None:
+            msg = (
+                "AgentBuilder.use_config_source: ConfigBundle уже зафиксирован "
+                "вызовом .bundle()/.build() — новые source'ы добавлять нельзя"
+            )
+            raise ValueError(msg)
         self._config_sources.append(source)
         return self
+
+    def use_cli(self, argv: Iterable[str] | None = None) -> Self:
+        """Шорткат: зарегистрировать стандартный `CliSource()`."""
+        return self.use_config_source(
+            CliSource(list(argv)) if argv is not None else CliSource(),
+        )
+
+    def use_env(self) -> Self:
+        """Шорткат: зарегистрировать стандартный `EnvSource()`."""
+        return self.use_config_source(EnvSource())
+
+    def use_env_file(self) -> Self:
+        """Шорткат: зарегистрировать стандартный `EnvFileSource()`."""
+        return self.use_config_source(EnvFileSource())
+
+    def bundle(self) -> ConfigBundle:
+        """Собрать и зафиксировать `ConfigBundle` из накопленных source'ов."""
+        if self._bundle is None:
+            self._bundle = ConfigBundle.from_sources(self._config_sources)
+        return self._bundle
+
+    def use_tools_plugins_discovered(
+        self,
+        group: str = DEFAULT_PLUGIN_ENTRY_POINT_GROUP,
+    ) -> Self:
+        """Подцепить все entry-point плагины group; фильтр `tool.<NAME>.enable`."""
+        self._discover_groups.append(group)
+        return self
+
+    def tools_service(self) -> ToolsService:
+        """Собрать (и закешировать) ToolsService без сборки Agent."""
+        return self._resolve_tools_service()
 
     def use_tools_plugin(
         self,
@@ -168,6 +212,7 @@ class AgentBuilder:
             bool(self._inline_factories)
             or bool(self._plugin_entries)
             or bool(self._config_sources)
+            or bool(self._discover_groups)
         )
         if self._tools_service is not None and has_accumulated:
             msg = (
@@ -178,18 +223,29 @@ class AgentBuilder:
         if self._tools_service is not None:
             return self._tools_service
 
-        if not self._inline_factories and not self._plugin_entries:
+        if self._resolved_tools_service is not None:
+            return self._resolved_tools_service
+
+        has_tools = (
+            bool(self._inline_factories)
+            or bool(self._plugin_entries)
+            or bool(self._discover_groups)
+        )
+        if not has_tools:
             msg = (
                 "AgentBuilder.build: задайте инструменты через "
-                ".with_tools(...), .use_tools(...) или .use_tools_plugin(...)"
+                ".with_tools(...), .use_tools(...), .use_tools_plugin(...) "
+                "или .use_tools_plugins_discovered(...)"
             )
             raise ValueError(msg)
 
-        shared_bundle = (
-            ConfigBundle.from_sources(self._config_sources)
-            if self._config_sources
-            else None
-        )
+        shared_bundle = self.bundle()
+
+        discovered: list[tuple[type[Plugin[Any, ToolSource]], None]] = []
+        for group in self._discover_groups:
+            for cls in discover_plugins(group):
+                if is_enabled(shared_bundle, config_path(cls.NAME)):
+                    discovered.append((cls, None))
 
         sources: list[ToolSource] = []
         if self._inline_factories:
@@ -200,10 +256,11 @@ class AgentBuilder:
                 ),
             )
         ctx = ExtensionContext()
-        for plugin_cls, config in self._plugin_entries:
+        for plugin_cls, config in (*self._plugin_entries, *discovered):
             cfg = self._materialize_plugin_config(plugin_cls, config, shared_bundle)
             sources.extend(plugin_cls.build(cfg, ctx))
-        return ToolsService.from_sources(sources)
+        self._resolved_tools_service = ToolsService.from_sources(sources)
+        return self._resolved_tools_service
 
     @staticmethod
     def _resolve_plugin(

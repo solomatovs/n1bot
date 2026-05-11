@@ -13,40 +13,31 @@ from boba.agent import (
     InMemoryMessageService,
 )
 from boba.agent.orchestrator import AgentRequest
-from boba.cli.agent_run.config import AgentRunConfig
-from boba.cli.agent_run.console_sink import ConsoleSink
-from boba.cli.agent_run.infra import (
-    AppCoreConfig,
-    configure_logging,
-)
-from boba.config.bundle import ConfigBundle
-from boba.config.source.cli import CliSource
-from boba.config.source.env import EnvFileSource, EnvSource
-from boba.config.source.toml import TomlFileSource, TomlSource
-from boba.llm.models import RequestId
-from boba.llm.observer import CompositeLLMRequestObserver
-from boba.patterns import ConverterInputError
-from boba.plugin import ExtensionContext as PluginCtx
-from boba.plugin import install_plugins
-from boba.plugin.discovery import discover_plugins
-from boba.agent.prompt_providers import PromptLoader, PromptsConfig
-from boba.provider.openai import (
-    CurlTraceChatCompletionObserver,
-    OpenAIChatVisitor,
-    OpenAIConfig,
-    create_llm_source,
-)
-from boba.tools.domain import ToolContext
-from boba.tools.framework import ToolsService
-from boba.workspace.contract import (
-    PromptWorkspaceId,
-    WorkspaceId,
-)
+from boba.agent.prompt_providers import PromptLoader
 from boba.agent.workspace_fs import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
     FsPromptWorkspaceRegistry,
-    WorkspaceLayout,
+)
+from boba.cli.agent_run.config import AgentRunConfig
+from boba.cli.agent_run.console_sink import ConsoleSink
+from boba.cli.agent_run.infra import (
+    AppConfig,
+    configure_logging,
+    use_toml_config,
+)
+from boba.llm.models import RequestId
+from boba.llm.observer import CompositeLLMRequestObserver
+from boba.patterns import ConverterInputError
+from boba.provider.openai import (
+    CurlTraceChatCompletionObserver,
+    OpenAIChatVisitor,
+    create_llm_source,
+)
+from boba.tools.domain import ToolContext
+from boba.workspace.contract import (
+    PromptWorkspaceId,
+    WorkspaceId,
 )
 
 _REPL_EXIT_COMMANDS = frozenset({"/exit", "/quit", ":q"})
@@ -55,84 +46,72 @@ _REPL_EXIT_COMMANDS = frozenset({"/exit", "/quit", ":q"})
 def main() -> int:
     """Entry-point. Возвращает exit-code (0 = успех)."""
     try:
-        bundle = _build_bundle()
+        return _run()
     except ConverterInputError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    return _run(bundle)
 
 
-def _build_bundle() -> ConfigBundle:
-    """ConfigBundle для всего: core-DTO + Plugin-протокол."""
-    return ConfigBundle.from_sources(
-        [
-            CliSource(),
-            EnvFileSource(),
-            EnvSource(),
-            TomlFileSource(),
-            TomlSource(),
-        ]
-    )
-
-
-def _run(bundle: ConfigBundle) -> int:
+def _run() -> int:
     """Собирает агента и либо прогоняет один запрос, либо запускает REPL."""
-    core = bundle.get(AppCoreConfig, "app")
-    workspaces = bundle.get(WorkspaceLayout, "workspaces")
-    llm_cfg = bundle.get(OpenAIConfig, "provider.openai")
-    prompts = bundle.get(PromptsConfig, "prompts")
-    agent_config = bundle.get(AgentConfig, "agent")
-    run_cfg = bundle.get(AgentRunConfig, "agent_run")
-    configure_logging(core.log_level, core.log_file)
+    builder = (
+        AgentBuilder()
+        .use_cli()
+        .use_env_file()
+        .use_env()
+        .pipe(use_toml_config)
+    )
+    bundle = builder.bundle()
+
+    app = bundle.get(AppConfig, "agent")
+    run_cfg = bundle.get(AgentRunConfig, "cli")
+    configure_logging(app.core.log_level, app.core.log_file)
 
     workspace_id = WorkspaceId.from_wire("00000000-0000-0000-0000-000000000001")
 
     prompt_workspace = FsPromptWorkspaceRegistry(
-        root=Path(prompts.dir),
+        root=Path(app.prompts.dir),
     ).get_or_create(PromptWorkspaceId("prompts"))
     prompt_loader = PromptLoader(prompt_workspace)
 
-    with ToolsService.from_sources(
-        install_plugins(bundle, discover_plugins(), PluginCtx()),
-    ) as tools_service:
-        project_workspace = FsProjectWorkspaceRegistry(
-            base_dir=Path(workspaces.base_dir),
-            subdir=workspaces.user_subdir,
-        ).get_or_create(workspace_id)
+    project_workspace = FsProjectWorkspaceRegistry(
+        base_dir=Path(app.workspaces.base_dir),
+        subdir=app.workspaces.user_subdir,
+    ).get_or_create(workspace_id)
 
-        history_workspace = FsHistoryWorkspaceRegistry(
-            base_dir=Path(workspaces.base_dir),
-            subdir=workspaces.system_subdir,
-        ).get_or_create(workspace_id)
+    history_workspace = FsHistoryWorkspaceRegistry(
+        base_dir=Path(app.workspaces.base_dir),
+        subdir=app.workspaces.system_subdir,
+    ).get_or_create(workspace_id)
 
-        observer = CompositeLLMRequestObserver(
-            [
-                CurlTraceChatCompletionObserver(
-                    history_workspace,
-                    response_chunks=False,
-                ),
-            ]
-        )
-        llm_source = create_llm_source(llm_cfg, observer)
+    observer = CompositeLLMRequestObserver(
+        [
+            CurlTraceChatCompletionObserver(
+                history_workspace,
+                response_chunks=False,
+            ),
+        ],
+    )
+    llm_source = create_llm_source(app.openai, observer)
 
-        message_service = InMemoryMessageService()
-        agent = (
-            AgentBuilder()
-            .with_llm(llm_source)
-            .with_tools(tools_service)
-            .with_tool_result_visitor(OpenAIChatVisitor())
-            .with_messages(message_service)
-            .with_prompts(prompt_loader.prompt_providers())
-            .with_config(agent_config)
-            .build(tool_ctx=ToolContext(project_workspace=project_workspace))
-        )
-        sink = ConsoleSink(sys.stdout, sys.stderr)
+    message_service = InMemoryMessageService()
+    agent = (
+        builder
+        .with_llm(llm_source)
+        .with_tool_result_visitor(OpenAIChatVisitor())
+        .with_messages(message_service)
+        .with_prompts(prompt_loader.prompt_providers())
+        .with_config(app.runtime)
+        .use_tools_plugins_discovered()
+        .build(tool_ctx=ToolContext(project_workspace=project_workspace))
+    )
+    sink = ConsoleSink(sys.stdout, sys.stderr)
 
-        if run_cfg.query is not None:
-            _run_turn(agent, sink, agent_config, run_cfg, run_cfg.query)
-            return 0
+    if run_cfg.query is not None:
+        _run_turn(agent, sink, app.runtime, run_cfg, run_cfg.query)
+        return 0
 
-        return _run_repl(agent, sink, agent_config, run_cfg, message_service)
+    return _run_repl(agent, sink, app.runtime, run_cfg, message_service)
 
 
 def _run_turn(

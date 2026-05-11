@@ -29,7 +29,7 @@ class ChainlitConfig:
     auth_secret: str | None
     headless: str
     app_root: str
-    models: list[str]
+    model: str
 
     ui_name: str | None
     enable_telemetry: bool | None
@@ -43,7 +43,7 @@ class ChainlitConfig:
 ChainlitConfig.SCHEMA = ObjectSchema(
     description=(
         "Параметры chainlit-приложения: server, runtime-root, "
-        "список моделей, UI-overrides."
+        "LLM-модель, UI-overrides."
     ),
     fields=[
         FieldSpec(
@@ -90,12 +90,9 @@ ChainlitConfig.SCHEMA = ObjectSchema(
             ),
         ),
         FieldSpec(
-            name="models",
-            coercer=ChainCoercer(Default([]), ParseCsvList()),
-            description=(
-                "CSV/TOML-list LLM-моделей, выбираемых пользователем в "
-                "ChatSettings."
-            ),
+            name="model",
+            coercer=ParseString(),
+            description="Конкретная LLM-модель для всех запросов из UI.",
         ),
         FieldSpec(
             name="ui_name",
