@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from typing import Any, Generic, Self, TypeVar, cast
 
 from boba.agent.events import AgentEvent, PersistenceFailed
-from boba.errors import TerminalError
+from boba.agent.errors import TerminalError
 from boba.llm.models import RequestId
 from boba.patterns import StrId
 

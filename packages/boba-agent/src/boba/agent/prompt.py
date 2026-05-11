@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Self
 
 from boba.agent.events import AgentEvent, PromptFailed
-from boba.errors import TerminalError
+from boba.agent.errors import TerminalError
 from boba.llm.models import RequestId
 from boba.patterns import FoldFactory, Id, PrioritySource
 

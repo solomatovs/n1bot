@@ -9,7 +9,7 @@ from typing import Any, Self
 
 from boba.agent.events import AgentEvent, PersistenceFailed
 from boba.agent.state import ChannelId, StateChannel
-from boba.errors import TerminalError
+from boba.agent.errors import TerminalError
 from boba.llm.models import (
     AssistantMessage,
     InvalidToolCall,

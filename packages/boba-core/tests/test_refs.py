@@ -13,7 +13,7 @@ from boba.config.refs import (
     ReferenceResolver,
     UnresolvedRefError,
 )
-from boba.config.source.dict_source import DictSource
+from boba.config.source.dict import DictSource
 from boba.value import (
     BoolValue,
     ConfigValue,

@@ -7,8 +7,6 @@ from collections.abc import Mapping
 from boba.config.path import ConfigPath, ConfigSource
 from boba.value import ConfigValue
 
-__all__ = ["DictSource"]
-
 
 class DictSource(ConfigSource):
     """In-memory ConfigSource поверх готового {ConfigPath: ConfigValue}."""

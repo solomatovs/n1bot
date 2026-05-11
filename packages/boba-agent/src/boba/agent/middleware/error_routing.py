@@ -5,12 +5,11 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from typing import assert_never
 
-from boba.agent.errors import AgentLLMFeedbackError
+from boba.agent.errors import AgentLLMFeedbackError, RoutableError, UserFeedbackError
 from boba.agent.events import AgentEvent, FeedbackToLLMAdded
 from boba.agent.messages import MessageWriter
 from boba.agent.models import LLMCritique, LLMFeedback, ToolCallRejection
 from boba.agent.orchestrator import AgentContext
-from boba.errors import RoutableError, UserFeedbackError
 from boba.llm.models import RequestId, ToolResultMessage, UserMessage
 from boba.patterns import StreamSource
 

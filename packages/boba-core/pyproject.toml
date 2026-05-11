@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-core"
 version = "0.1.0"
-description = "Boba core: patterns + foundation (errors, declaration, value, coercion, workspace) + config + builtin config-sources (cli/env/dict). TOML живёт в boba-config-source-toml."
+description = "Boba core: patterns + foundation (declaration, value, coercion, workspace) + config + builtin config-sources (cli/env/dict). TOML живёт в boba-config-source-toml."
 requires-python = ">=3.11,<4"
 dependencies = []
 
