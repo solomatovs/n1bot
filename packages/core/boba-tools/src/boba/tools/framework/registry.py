@@ -49,10 +49,10 @@ class ToolSource:
     def id(self) -> ToolSourceId: ...
 
     @abstractmethod
-    def tools(self) -> Iterable[Tool[Any]]: ...
+    def tools(self) -> Iterable[Tool[Any, Any]]: ...
 
     @abstractmethod
-    def find(self, name: ToolName) -> Tool[Any] | None: ...
+    def find(self, name: ToolName) -> Tool[Any, Any] | None: ...
 
     def close(self) -> None:
         """Освободить долгоживущие ресурсы. Default no-op."""
@@ -64,10 +64,10 @@ class StaticToolSource(ToolSource):
     def __init__(
         self,
         source_id: ToolSourceId,
-        tools: Iterable[Tool[Any]],
+        tools: Iterable[Tool[Any, Any]],
     ) -> None:
         self._id = source_id
-        self._index: dict[ToolName, Tool[Any]] = {}
+        self._index: dict[ToolName, Tool[Any, Any]] = {}
         for tool in tools:
             tid_source, tid_name = tool.tool_id().parse()
             if tid_source != source_id:
@@ -84,10 +84,10 @@ class StaticToolSource(ToolSource):
     def id(self) -> ToolSourceId:
         return self._id
 
-    def tools(self) -> Iterable[Tool[Any]]:
+    def tools(self) -> Iterable[Tool[Any, Any]]:
         return iter(self._index.values())
 
-    def find(self, name: ToolName) -> Tool[Any] | None:
+    def find(self, name: ToolName) -> Tool[Any, Any] | None:
         return self._index.get(name)
 
 
@@ -114,7 +114,7 @@ class ToolsService(Executor[ToolContext, ToolCall, ToolResult]):
     def sources(self) -> Mapping[ToolSourceId, ToolSource]:
         return self._sources
 
-    def tools(self) -> Iterator[Tool[Any]]:
+    def tools(self) -> Iterator[Tool[Any, Any]]:
         for src in self._sources.values():
             yield from src.tools()
 

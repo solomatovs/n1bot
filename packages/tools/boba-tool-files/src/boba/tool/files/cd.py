@@ -3,30 +3,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Annotated
 
-from boba.plugin import ExtensionContext
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import ChainCoercer, IsString, NonEmpty, Required
-from boba.schema.declaration import FieldSpec, ObjectSchema
+from boba.schema.coercion import NonEmpty
 from boba.tools.domain import (
     TextResult,
     Tool,
     ToolContext,
     ToolExecutionError,
-    ToolId,
-    ToolName,
     ToolResult,
-    ToolSourceId,
 )
 from boba.workspace.contract import WorkspaceError, WorkspaceNotFoundError
 
-__all__ = ["CdTool", "CdToolConfig"]
+__all__ = ["CdArgs", "CdTool", "CdToolConfig"]
 
 
 @dataclass(frozen=True)
 class CdArgs:
-    path: str
+    """Сменить текущую директорию."""
+
+    path: Annotated[str, "Путь директории.", NonEmpty()]
 
 
 @dataclass(frozen=True)
@@ -34,44 +31,20 @@ class CdToolConfig:
     prompt: PromptOverlay
 
 
-class CdTool(Tool[CdArgs]):
+class CdTool(Tool[CdArgs, CdToolConfig]):
     """Сменить текущую директорию."""
-
-    _NAME: ClassVar[ToolName] = ToolName("cd")
-
-    def __init__(self, cfg: CdToolConfig, ctx: ExtensionContext, source_id: ToolSourceId) -> None:
-        self._cfg = cfg
-        self._ctx = ctx
-        self._tool_id = ToolId.compose(source_id, self._NAME)
-
-    def tool_id(self) -> ToolId:
-        return self._tool_id
-
-
-    def definition(self) -> ObjectSchema[CdArgs]:
-        return self._cfg.prompt.apply(ObjectSchema(
-            description="Сменить текущую директорию.",
-            fields=[
-                FieldSpec(
-                    name="path",
-                    description="Путь директории.",
-                    coercer=ChainCoercer(Required(), IsString(), NonEmpty()),
-                ),
-            ],
-            factory=CdArgs,
-        ))
 
     def execute(self, ctx: ToolContext, req: CdArgs) -> ToolResult:
         try:
             ctx.project_workspace.cd(req.path)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._tool_id,
+                tool_id=self.tool_id(),
                 message=f"Директория не найдена: {req.path}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._tool_id,
+                tool_id=self.tool_id(),
                 message=f"Ошибка cd: {e}",
             ) from e
         return TextResult(text=f"Текущая директория: {ctx.project_workspace.cwd}")

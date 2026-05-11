@@ -3,20 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Annotated
 
-from boba.plugin import ExtensionContext
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import (
-    ChainCoercer,
-    IsInt,
-    IsString,
-    MaxValue,
-    MinValue,
-    NonEmpty,
-    Required,
-)
-from boba.schema.declaration import FieldSpec, ObjectSchema
+from boba.schema.coercion import MaxValue, MinValue, NonEmpty
 from boba.tool.confluence._http_client import ConfluenceHttpClient
 from boba.tool.confluence._page_pipeline import (
     ConfluencePagePipeline,
@@ -33,20 +23,40 @@ from boba.tools.domain import (
     Tool,
     ToolContext,
     ToolExecutionError,
-    ToolId,
-    ToolName,
     ToolResult,
-    ToolSourceId,
 )
 
-__all__ = ["ConfluencePageSectionTool", "ConfluencePageSectionToolConfig"]
+__all__ = [
+    "ConfluencePageSectionTool",
+    "ConfluencePageSectionToolConfig",
+    "PageSectionArgs",
+]
 
 
 @dataclass(frozen=True)
 class PageSectionArgs:
-    page_id: str
-    anchor: str
-    max_chars: int
+    """Читает текст одной секции страницы Confluence.
+
+    От заголовка до следующего того же или большего уровня. page_id и anchor
+    берутся из ответа confluence_page_outline.
+    """
+
+    page_id: Annotated[
+        str,
+        "ID страницы Confluence (как в confluence_page_outline).",
+        NonEmpty(),
+    ]
+    anchor: Annotated[
+        str,
+        "Anchor нужного раздела (поле `anchor` из confluence_page_outline).",
+        NonEmpty(),
+    ]
+    max_chars: Annotated[
+        int,
+        "Максимум символов в text-поле ответа (обрезка после).",
+        MinValue(1),
+        MaxValue(5000000),
+    ]
 
 
 @dataclass(frozen=True)
@@ -62,56 +72,10 @@ class ConfluencePageSectionToolConfig:
     prompt: PromptOverlay
 
 
-class ConfluencePageSectionTool(Tool[PageSectionArgs]):
+class ConfluencePageSectionTool(
+    Tool[PageSectionArgs, ConfluencePageSectionToolConfig]
+):
     """Online-чтение одной секции страницы Confluence по anchor."""
-
-    _NAME: ClassVar[ToolName] = ToolName("confluence_page_section")
-
-    def __init__(
-        self,
-        cfg: ConfluencePageSectionToolConfig,
-        ctx: ExtensionContext,
-        source_id: ToolSourceId,
-    ) -> None:
-        self._cfg = cfg
-        self._ctx = ctx
-        self._tool_id = ToolId.compose(source_id, self._NAME)
-
-    def tool_id(self) -> ToolId:
-        return self._tool_id
-
-
-    def definition(self) -> ObjectSchema[PageSectionArgs]:
-        return self._cfg.prompt.apply(ObjectSchema(
-            description=(
-                "Читает текст одной секции страницы Confluence (от заголовка до "
-                "следующего того же или большего уровня). page_id и anchor "
-                "берутся из ответа confluence_page_outline."
-            ),
-            fields=[
-                FieldSpec(
-                    name="page_id",
-                    description=(
-                        "ID страницы Confluence (как в confluence_page_outline)."
-                    ),
-                    coercer=ChainCoercer(Required(), NonEmpty(), IsString()),
-                ),
-                FieldSpec(
-                    name="anchor",
-                    description=(
-                        "Anchor нужного раздела (поле `anchor` из "
-                        "confluence_page_outline)."
-                    ),
-                    coercer=ChainCoercer(Required(), NonEmpty(), IsString()),
-                ),
-                FieldSpec(
-                    name="max_chars",
-                    description="Максимум символов в text-поле ответа (обрезка после).",
-                    coercer=ChainCoercer(Required(), IsInt(), MinValue(1), MaxValue(5000000)),
-                ),
-            ],
-            factory=PageSectionArgs,
-        ))
 
     def execute(self, ctx: ToolContext, req: PageSectionArgs) -> ToolResult:
         del ctx
@@ -125,14 +89,14 @@ class ConfluencePageSectionTool(Tool[PageSectionArgs]):
                 content = pipeline.fetch(req.page_id)
         except ConfluencePagePipelineError as e:
             raise ToolExecutionError(
-                tool_id=self._tool_id,
+                tool_id=self.tool_id(),
                 message=f"Confluence page fetch failed: {type(e).__name__}: {e}",
             ) from e
 
         text = self._extract_section_text(content.body_html, req.anchor)
         if text is None:
             raise ToolExecutionError(
-                tool_id=self._tool_id,
+                tool_id=self.tool_id(),
                 message=(
                     f"anchor={req.anchor!r} не найден на странице "
                     f"page_id={req.page_id!r}; вызовите confluence_page_outline "

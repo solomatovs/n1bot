@@ -4,47 +4,58 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import islice
-from typing import ClassVar
+from typing import Annotated
 
-from boba.plugin import ExtensionContext
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import (
-    ChainCoercer,
-    Default,
-    IsBool,
-    IsInt,
-    IsString,
-    MinValue,
-    NonEmpty,
-    Nullable,
-    Required,
-)
-from boba.schema.declaration import FieldSpec, ObjectSchema
+from boba.schema.coercion import MinValue, NonEmpty
 from boba.tools.domain import (
     TextResult,
     Tool,
     ToolContext,
     ToolExecutionError,
-    ToolId,
-    ToolName,
     ToolResult,
-    ToolSourceId,
 )
 from boba.workspace.contract import GrepMatch, WorkspaceError, WorkspaceNotFoundError
 
-__all__ = ["GrepTool", "GrepToolConfig"]
+__all__ = ["GrepArgs", "GrepTool", "GrepToolConfig"]
 
 
 @dataclass(frozen=True)
 class GrepArgs:
-    pattern: str
-    path: str | None
-    recursive: bool
-    include: str | None
-    case_insensitive: bool
-    context: int
-    limit: int
-    fixed_string: bool
+    """Найти совпадения pattern в текстовых файлах.
+
+    Формат результата: 'path:line: content'. Бинарные и недекодируемые файлы
+    пропускаются. При переполнении limit ответ обрезается с маркером.
+    """
+
+    pattern: Annotated[
+        str, "Python-regex; литерал при fixed_string=true.", NonEmpty()
+    ]
+    path: Annotated[
+        str | None, "Стартовый путь. Без значения — cwd.", NonEmpty()
+    ] = None
+    recursive: Annotated[
+        bool, "Рекурсивный обход директории. По умолчанию true."
+    ] = True
+    include: Annotated[
+        str | None,
+        "Fnmatch-glob по пути (например '*.py'). Без значения — все файлы.",
+        NonEmpty(),
+    ] = None
+    case_insensitive: Annotated[
+        bool, "Игнорировать регистр. По умолчанию false."
+    ] = False
+    context: Annotated[
+        int,
+        "Строк контекста до и после каждого совпадения. По умолчанию 0.",
+        MinValue(0),
+    ] = 0
+    limit: Annotated[
+        int, "Максимум совпадений в ответе. По умолчанию 100.", MinValue(1)
+    ] = 100
+    fixed_string: Annotated[
+        bool, "Литеральный поиск без regex. По умолчанию false."
+    ] = False
 
 
 @dataclass(frozen=True)
@@ -52,78 +63,8 @@ class GrepToolConfig:
     prompt: PromptOverlay
 
 
-class GrepTool(Tool[GrepArgs]):
+class GrepTool(Tool[GrepArgs, GrepToolConfig]):
     """Поиск подстроки/regex по содержимому файлов."""
-
-    _NAME: ClassVar[ToolName] = ToolName("grep")
-
-    def __init__(self, cfg: GrepToolConfig, ctx: ExtensionContext, source_id: ToolSourceId) -> None:
-        self._cfg = cfg
-        self._ctx = ctx
-        self._tool_id = ToolId.compose(source_id, self._NAME)
-
-    def tool_id(self) -> ToolId:
-        return self._tool_id
-
-
-    def definition(self) -> ObjectSchema[GrepArgs]:
-        return self._cfg.prompt.apply(ObjectSchema(
-            description=(
-                "Найти совпадения pattern в текстовых файлах. Формат "
-                "результата: 'path:line: content'. Бинарные и недекодируемые "
-                "файлы пропускаются. При переполнении limit ответ обрезается "
-                "с маркером."
-            ),
-            fields=[
-                FieldSpec(
-                    name="pattern",
-                    description="Python-regex; литерал при fixed_string=true.",
-                    coercer=ChainCoercer(Required(), IsString(), NonEmpty()),
-                ),
-                FieldSpec(
-                    name="path",
-                    description="Стартовый путь. Без значения — cwd.",
-                    coercer=Nullable(ChainCoercer(IsString(), NonEmpty())),
-                ),
-                FieldSpec(
-                    name="recursive",
-                    description="Рекурсивный обход директории. По умолчанию true.",
-                    coercer=ChainCoercer(Default(True), IsBool()),
-                ),
-                FieldSpec(
-                    name="include",
-                    description=(
-                        "Fnmatch-glob по пути (например '*.py'). "
-                        "Без значения — все файлы."
-                    ),
-                    coercer=Nullable(ChainCoercer(IsString(), NonEmpty())),
-                ),
-                FieldSpec(
-                    name="case_insensitive",
-                    description="Игнорировать регистр. По умолчанию false.",
-                    coercer=ChainCoercer(Default(False), IsBool()),
-                ),
-                FieldSpec(
-                    name="context",
-                    description=(
-                        "Строк контекста до и после каждого совпадения. "
-                        "По умолчанию 0."
-                    ),
-                    coercer=ChainCoercer(Default(0), IsInt(), MinValue(0)),
-                ),
-                FieldSpec(
-                    name="limit",
-                    description="Максимум совпадений в ответе. По умолчанию 100.",
-                    coercer=ChainCoercer(Default(100), IsInt(), MinValue(1)),
-                ),
-                FieldSpec(
-                    name="fixed_string",
-                    description="Литеральный поиск без regex. По умолчанию false.",
-                    coercer=ChainCoercer(Default(False), IsBool()),
-                ),
-            ],
-            factory=GrepArgs,
-        ))
 
     def execute(self, ctx: ToolContext, req: GrepArgs) -> ToolResult:
         try:
@@ -140,12 +81,12 @@ class GrepTool(Tool[GrepArgs]):
             matches = list(islice(iterator, req.limit + 1))
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._tool_id,
+                tool_id=self.tool_id(),
                 message=f"Путь не найден: {req.path}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._tool_id,
+                tool_id=self.tool_id(),
                 message=f"Ошибка grep: {e}",
             ) from e
 

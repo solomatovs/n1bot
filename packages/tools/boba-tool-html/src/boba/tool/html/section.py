@@ -3,23 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Annotated
 
 from bs4.element import Tag
 
-from boba.plugin import ExtensionContext
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import (
-    ChainCoercer,
-    Default,
-    IsBool,
-    IsInt,
-    IsString,
-    MinValue,
-    NonEmpty,
-    Required,
-)
-from boba.schema.declaration import FieldSpec, ObjectSchema
+from boba.schema.coercion import MinValue, NonEmpty
 from boba.tool.html._parse import (
     Heading,
     collect_headings,
@@ -31,25 +20,40 @@ from boba.tools.domain import (
     Tool,
     ToolContext,
     ToolExecutionError,
-    ToolId,
-    ToolName,
     ToolResult,
-    ToolSourceId,
 )
 from boba.workspace.contract import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
 
-__all__ = ["HtmlSectionTool", "HtmlSectionToolConfig"]
+__all__ = ["HtmlSectionTool", "HtmlSectionToolConfig", "SectionArgs"]
 
 
 @dataclass(frozen=True)
 class SectionArgs:
-    path: str
-    anchor: str
-    include_subsections: bool
-    max_chars: int
+    """Вернуть HTML-фрагмент раздела от выбранного заголовка до следующего.
+
+    anchor берётся из html_outline (idx:N или html-id; ведущий # необязателен).
+    Содержимое возвращается как есть, без преобразований в markdown/текст.
+    """
+
+    path: Annotated[str, "Путь к HTML-файлу в workspace.", NonEmpty()]
+    anchor: Annotated[
+        str,
+        "Anchor заголовка из html_outline (idx:N или html id). "
+        "Ведущий '#' необязателен.",
+        NonEmpty(),
+    ]
+    include_subsections: Annotated[
+        bool,
+        "true — включать вложенные подзаголовки (стоп на следующем заголовке "
+        "того же или меньшего уровня); false — стоп на любом следующем "
+        "заголовке.",
+    ] = True
+    max_chars: Annotated[
+        int, "Лимит длины ответа в символах.", MinValue(100)
+    ] = 8000
 
 
 @dataclass(frozen=True)
@@ -59,77 +63,26 @@ class HtmlSectionToolConfig:
     prompt: PromptOverlay
 
 
-class HtmlSectionTool(Tool[SectionArgs]):
+class HtmlSectionTool(Tool[SectionArgs, HtmlSectionToolConfig]):
     """HTML фрагмент раздела от заголовка до следующего заголовка."""
-
-    _NAME: ClassVar[ToolName] = ToolName("html_section")
-
-    def __init__(self, cfg: HtmlSectionToolConfig, ctx: ExtensionContext, source_id: ToolSourceId) -> None:
-        self._cfg = cfg
-        self._ctx = ctx
-        self._tool_id = ToolId.compose(source_id, self._NAME)
-
-    def tool_id(self) -> ToolId:
-        return self._tool_id
-
-
-    def definition(self) -> ObjectSchema[SectionArgs]:
-        return self._cfg.prompt.apply(ObjectSchema(
-            description=(
-                "Вернуть HTML-фрагмент раздела от выбранного заголовка до "
-                "следующего. anchor берётся из html_outline (idx:N или html-id; "
-                "ведущий # необязателен). Содержимое возвращается как есть, "
-                "без преобразований в markdown/текст."
-            ),
-            fields=[
-                FieldSpec(
-                    name="path",
-                    description="Путь к HTML-файлу в workspace.",
-                    coercer=ChainCoercer(Required(), IsString(), NonEmpty()),
-                ),
-                FieldSpec(
-                    name="anchor",
-                    description=(
-                        "Anchor заголовка из html_outline (idx:N или html id). "
-                        "Ведущий '#' необязателен."
-                    ),
-                    coercer=ChainCoercer(Required(), IsString(), NonEmpty()),
-                ),
-                FieldSpec(
-                    name="include_subsections",
-                    description=(
-                        "true — включать вложенные подзаголовки (стоп на "
-                        "следующем заголовке того же или меньшего уровня); "
-                        "false — стоп на любом следующем заголовке."
-                    ),
-                    coercer=ChainCoercer(Default(True), IsBool()),
-                ),
-                FieldSpec(
-                    name="max_chars",
-                    description="Лимит длины ответа в символах.",
-                    coercer=ChainCoercer(Default(8000), IsInt(), MinValue(100)),
-                ),
-            ],
-            factory=SectionArgs,
-        ))
 
     def execute(self, ctx: ToolContext, req: SectionArgs) -> ToolResult:
         try:
             soup = load_soup(ctx.project_workspace, req.path)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._tool_id, message=f"Файл не найден: {req.path}"
+                tool_id=self.tool_id(), message=f"Файл не найден: {req.path}"
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._tool_id, message=f"Ошибка чтения: {e}"
+                tool_id=self.tool_id(), message=f"Ошибка чтения: {e}"
             ) from e
 
         headings = collect_headings(soup)
         target = resolve_anchor(headings, req.anchor)
         if target is None:
             raise ToolExecutionError(
-                tool_id=self._tool_id,
+                tool_id=self.tool_id(),
                 message=(
                     f"Заголовок с anchor={req.anchor!r} не найден; "
                     "получи актуальные anchor'ы через html_outline."

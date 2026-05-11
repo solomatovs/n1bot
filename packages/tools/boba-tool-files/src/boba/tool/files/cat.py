@@ -4,44 +4,41 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from io import TextIOBase
-from typing import Annotated, ClassVar
+from typing import Annotated
 
-from boba.plugin import ExtensionContext
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import (
-    ChainCoercer,
-    Default,
-    IsInt,
-    IsString,
-    MinValue,
-    NonEmpty,
-    Ordered,
-    ParseInt,
-    Required,
-)
-from boba.schema.declaration import FieldSpec, ObjectSchema
+from boba.schema import schema
+from boba.schema.coercion import MinValue, NonEmpty, Ordered, ParseInt
 from boba.tools.domain import (
     TextResult,
     Tool,
     ToolContext,
     ToolExecutionError,
-    ToolId,
-    ToolName,
     ToolOutputTooLargeError,
     ToolResult,
-    ToolSourceId,
 )
 from boba.workspace.contract import WorkspaceError, WorkspaceNotFoundError
 
-__all__ = ["CatTool", "CatToolConfig"]
+__all__ = ["CatArgs", "CatTool", "CatToolConfig"]
 
 
+@schema(invariants=Ordered("start_line", "end_line"))
 @dataclass(frozen=True)
 class CatArgs:
-    path: str
-    encoding: str
-    start_line: int
-    end_line: int
+    """Прочитать строки [start_line; end_line] из текстового файла."""
+
+    path: Annotated[str, "Путь к файлу.", NonEmpty()]
+    start_line: Annotated[int, "Первая строка окна. 1 = начало файла.", MinValue(1)]
+    end_line: Annotated[
+        int,
+        "Последняя строка окна, включительно >= start_line.",
+        MinValue(1),
+    ]
+    encoding: Annotated[
+        str,
+        "Кодировка файла. По умолчанию 'utf-8'.",
+        NonEmpty(),
+    ] = "utf-8"
 
 
 @dataclass(frozen=True)
@@ -57,60 +54,14 @@ class CatToolConfig:
     prompt: PromptOverlay = field(default_factory=PromptOverlay)
 
 
-class CatTool(Tool[CatArgs]):
+class CatTool(Tool[CatArgs, CatToolConfig]):
     """Чтение содержимого файла (целиком или диапазон строк 1-based)."""
-
-    _NAME: ClassVar[ToolName] = ToolName("cat")
-
-    def __init__(
-        self, cfg: CatToolConfig, ctx: ExtensionContext, source_id: ToolSourceId
-    ) -> None:
-        self._cfg = cfg
-        self._ctx = ctx
-        self._tool_id = ToolId.compose(source_id, self._NAME)
-
-    def tool_id(self) -> ToolId:
-        return self._tool_id
-
-    def definition(self) -> ObjectSchema[CatArgs]:
-        return self._cfg.prompt.apply(
-            ObjectSchema(
-                description=(
-                    "Прочитать строки [start_line; end_line] из текстового файла."
-                ),
-                fields=[
-                    FieldSpec(
-                        name="path",
-                        description="Путь к файлу.",
-                        coercer=ChainCoercer(Required(), IsString(), NonEmpty()),
-                    ),
-                    FieldSpec(
-                        name="encoding",
-                        description="Кодировка файла. По умолчанию 'utf-8'.",
-                        coercer=ChainCoercer(Default("utf-8"), IsString(), NonEmpty()),
-                    ),
-                    FieldSpec(
-                        name="start_line",
-                        description="Первая строка окна. 1 = начало файла.",
-                        coercer=ChainCoercer(Required(), IsInt(), MinValue(1)),
-                    ),
-                    FieldSpec(
-                        name="end_line",
-                        description="Последняя строка окна, включительно"
-                        " >= start_line.",
-                        coercer=ChainCoercer(Required(), IsInt(), MinValue(1)),
-                    ),
-                ],
-                invariants=Ordered("start_line", "end_line"),
-                factory=CatArgs,
-            )
-        )
 
     def execute(self, ctx: ToolContext, req: CatArgs) -> ToolResult:
         max_lines = self._cfg.max_lines
         if req.end_line - req.start_line + 1 > max_lines:
             raise ToolOutputTooLargeError(
-                tool_id=self._tool_id,
+                tool_id=self.tool_id(),
                 limit=max_lines,
                 unit="строк",
                 hint=(
@@ -127,12 +78,12 @@ class CatTool(Tool[CatArgs]):
                 text, last = self._read_range(f, req.start_line, req.end_line)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._tool_id,
+                tool_id=self.tool_id(),
                 message=f"Файл не найден: {req.path}",
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._tool_id,
+                tool_id=self.tool_id(),
                 message=f"Ошибка чтения: {e}",
             ) from e
 

@@ -3,46 +3,42 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Annotated
 
-from boba.plugin import ExtensionContext
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import (
-    ChainCoercer,
-    Default,
-    IsInt,
-    IsString,
-    MaxValue,
-    MinValue,
-    NonEmpty,
-    Nullable,
-    Required,
-)
-from boba.schema.declaration import FieldSpec, ObjectSchema
+from boba.schema.coercion import MaxValue, MinValue, NonEmpty
 from boba.tool.html._parse import Heading, anchor_for, collect_headings, load_soup
 from boba.tools.domain import (
     TextResult,
     Tool,
     ToolContext,
     ToolExecutionError,
-    ToolId,
-    ToolName,
     ToolResult,
-    ToolSourceId,
 )
 from boba.workspace.contract import (
     WorkspaceError,
     WorkspaceNotFoundError,
 )
 
-__all__ = ["HtmlOutlineTool", "HtmlOutlineToolConfig"]
+__all__ = ["HtmlOutlineTool", "HtmlOutlineToolConfig", "OutlineArgs"]
 
 
 @dataclass(frozen=True)
 class OutlineArgs:
-    path: str
-    max_depth: int | None
-    limit: int
+    """Оглавление HTML-файла: иерархия <h1>..<h6> с anchor'ами.
+
+    Anchor — либо #<id> атрибута заголовка, либо #idx:N (порядковый номер).
+    Используется как вход в html_section.
+    """
+
+    path: Annotated[str, "Путь к HTML-файлу в workspace.", NonEmpty()]
+    max_depth: Annotated[
+        int | None,
+        "Максимальный уровень заголовков (1=h1..6=h6). Без значения — все 6.",
+        MinValue(1),
+        MaxValue(6),
+    ] = None
+    limit: Annotated[int, "Максимум заголовков в ответе.", MinValue(1)] = 200
 
 
 @dataclass(frozen=True)
@@ -52,68 +48,19 @@ class HtmlOutlineToolConfig:
     prompt: PromptOverlay
 
 
-class HtmlOutlineTool(Tool[OutlineArgs]):
+class HtmlOutlineTool(Tool[OutlineArgs, HtmlOutlineToolConfig]):
     """Иерархия <h1>..<h6> HTML-документа с anchor'ами для html_section."""
-
-    _NAME: ClassVar[ToolName] = ToolName("html_outline")
-
-    def __init__(
-        self,
-        cfg: HtmlOutlineToolConfig,
-        ctx: ExtensionContext,
-        source_id: ToolSourceId,
-    ) -> None:
-        self._cfg = cfg
-        self._ctx = ctx
-        self._tool_id = ToolId.compose(source_id, self._NAME)
-
-    def tool_id(self) -> ToolId:
-        return self._tool_id
-
-    def definition(self) -> ObjectSchema[OutlineArgs]:
-        return self._cfg.prompt.apply(
-            ObjectSchema(
-                description=(
-                    "Оглавление HTML-файла: иерархия <h1>..<h6> с anchor'ами. "
-                    "Anchor — либо #<id> атрибута заголовка, либо #idx:N "
-                    "(порядковый номер). Используется как вход в html_section."
-                ),
-                fields=[
-                    FieldSpec(
-                        name="path",
-                        description="Путь к HTML-файлу в workspace.",
-                        coercer=ChainCoercer(Required(), IsString(), NonEmpty()),
-                    ),
-                    FieldSpec(
-                        name="max_depth",
-                        description=(
-                            "Максимальный уровень заголовков (1=h1..6=h6). "
-                            "Без значения — все 6."
-                        ),
-                        coercer=Nullable(
-                            ChainCoercer(IsInt(), MinValue(1), MaxValue(6))
-                        ),
-                    ),
-                    FieldSpec(
-                        name="limit",
-                        description="Максимум заголовков в ответе.",
-                        coercer=ChainCoercer(Default(200), IsInt(), MinValue(1)),
-                    ),
-                ],
-                factory=OutlineArgs,
-            )
-        )
 
     def execute(self, ctx: ToolContext, req: OutlineArgs) -> ToolResult:
         try:
             soup = load_soup(ctx.project_workspace, req.path)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
-                tool_id=self._tool_id, message=f"Файл не найден: {req.path}"
+                tool_id=self.tool_id(), message=f"Файл не найден: {req.path}"
             ) from e
         except WorkspaceError as e:
             raise ToolExecutionError(
-                tool_id=self._tool_id, message=f"Ошибка чтения: {e}"
+                tool_id=self.tool_id(), message=f"Ошибка чтения: {e}"
             ) from e
 
         headings = collect_headings(soup, max_depth=req.max_depth)
