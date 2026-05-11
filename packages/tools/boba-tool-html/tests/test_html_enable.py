@@ -5,46 +5,10 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from boba.config.bundle import ConfigBundle
-from boba.config.path import (
-    ConfigLookup,
-    ConfigPath,
-    ConfigSource,
-    Found,
-    NotFound,
-)
-from boba.patterns import StrId
+from boba.config.source.dict import DictSource
 from boba.plugin import ExtensionContext, install_plugins
-from boba.schema.value import StringValue
 from boba.tool.html import HtmlPlugin
 from boba.workspace.contract import ProjectWorkspaceShell
-
-
-class _InlineSource(ConfigSource):
-    def __init__(self, vals: dict[str, str]) -> None:
-        self._vals = {ConfigPath.parse(k): StringValue(v) for k, v in vals.items()}
-
-    def name(self) -> str:
-        return "inline"
-
-    def priority(self) -> int:
-        return 100
-
-    def load(self):
-        return dict(self._vals)
-
-    def lookup(self, path: ConfigPath) -> ConfigLookup:
-        if path in self._vals:
-            return Found(self._vals[path])
-        return NotFound()
-
-    def keys_with_prefix(self, prefix: ConfigPath):
-        for p in self._vals:
-            if p.startswith(prefix):
-                yield p
-
-    @property
-    def id(self) -> StrId:
-        return StrId("inline")
 
 
 def _ext_ctx() -> ExtensionContext:
@@ -54,7 +18,7 @@ def _ext_ctx() -> ExtensionContext:
 
 
 def _tool_names(values: dict[str, str]) -> list[str]:
-    bundle = ConfigBundle.from_sources([_InlineSource(values)])
+    bundle = ConfigBundle.from_sources([DictSource.from_strings(values)])
     sources = list(install_plugins(bundle, [HtmlPlugin], _ext_ctx()))
     return [t.name().to_wire() for src in sources for t in src.tools()]
 

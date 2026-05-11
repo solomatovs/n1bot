@@ -91,7 +91,10 @@ def collect_headings(
 
 
 def anchor_for(h: Heading) -> str:
-    """Canonical-anchor: html-id/scroll-bookmark или `idx:N` если ни того, ни другого."""
+    """
+    Canonical-anchor: html-id/scroll-bookmark
+    или `idx:N` если ни того, ни другого
+    """
     return h.anchor if h.anchor else f"idx:{h.index}"
 
 

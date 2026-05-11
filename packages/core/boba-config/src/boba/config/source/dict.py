@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Self
 
 from boba.config.path import ConfigPath, ConfigSource
-from boba.schema.value import ScalarValue
+from boba.schema.value import ScalarValue, StringValue
 
 
 class DictSource(ConfigSource):
@@ -30,3 +31,19 @@ class DictSource(ConfigSource):
 
     def load(self) -> Mapping[ConfigPath, ScalarValue]:
         return dict(self._values)
+
+    @classmethod
+    def from_strings(
+        cls,
+        values: Mapping[str, str],
+        *,
+        name: str = "dict",
+        priority: int = 100,
+    ) -> Self:
+        """Удобный конструктор: ключи как строки (через `ConfigPath.parse`),
+        значения как `StringValue`."""
+        return cls(
+            {ConfigPath.parse(k): StringValue(v) for k, v in values.items()},
+            name=name,
+            priority=priority,
+        )
