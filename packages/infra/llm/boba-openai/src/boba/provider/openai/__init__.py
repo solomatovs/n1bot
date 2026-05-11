@@ -1,7 +1,7 @@
 """OpenAI-совместимый LLM-адаптер."""
 
 from boba.llm.observer import RequestOutcome
-from boba.provider.openai.config import create_llm_source
+from boba.provider.openai.config import use_openai
 from boba.provider.openai.dto import OpenAIConfig
 from boba.provider.openai.embedder import OpenAIEmbedder
 from boba.provider.openai.observer import (
@@ -26,5 +26,5 @@ __all__ = [
     "OpenAITerminal",
     "RequestOutcome",
     "build_openai_client",
-    "create_llm_source",
+    "use_openai",
 ]

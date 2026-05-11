@@ -1,5 +1,6 @@
 """LLM-домен: модели, события, ошибки, observer, middleware."""
 
+from boba.llm.builder import LLMSource, LLMSourceBuilder
 from boba.llm.errors import (
     LLMAuthError,
     LLMConnectionError,
@@ -97,6 +98,8 @@ __all__ = [
     "LLMRequestSystemMessageNoneError",
     "LLMRequestValidationError",
     "LLMRetryAttempt",
+    "LLMSource",
+    "LLMSourceBuilder",
     "LLMStreamingDelta",
     "LLMThinkingStarted",
     "LLMThinkingToken",
