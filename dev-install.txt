@@ -3,24 +3,39 @@
 #     pip install -r dev-install.txt
 
 # core/foundation
--e ./packages/boba-core
--e ./packages/boba-config-source-toml
+-e ./packages/core/boba-patterns
+-e ./packages/core/boba-schema
+-e ./packages/core/boba-config
+-e ./packages/core/boba-plugin
+-e ./packages/core/boba-workspace
+-e ./packages/core/boba-indexing
+-e ./packages/core/boba-tools
+-e ./packages/core/boba-llm
 
-# domain
--e ./packages/boba-indexing
--e ./packages/boba-llm
--e ./packages/boba-tools
+# agent runtime
+-e ./packages/core/boba-agent
 
-# agent runtime + adapters
--e ./packages/boba-agent
--e ./packages/boba-provider-openai
+# infra: config-source impls
+-e ./packages/infra/sources/boba-config-toml
 
-# tools (boba.tools entry-point)
+# infra: llm provider impls
+-e ./packages/infra/providers/boba-openai
+
+# infra: format readers
+-e ./packages/infra/format/boba-html
+-e ./packages/infra/format/boba-markdown
+-e ./packages/infra/format/boba-text
+
+# infra: transport impls
+-e ./packages/infra/transport/boba-transport-fs
+-e ./packages/infra/transport/boba-transport-http
+
+# tools (boba.plugins entry-point)
 -e ./packages/tools/boba-tool-chromadb
 -e ./packages/tools/boba-tool-confluence
 -e ./packages/tools/boba-tool-files
 -e ./packages/tools/boba-tool-html
 
 # entry-point apps
--e ./packages/agents/boba-cli-agent-run
--e ./packages/agents/boba-web-chainlit
+-e ./packages/agents/boba-cli-agent
+-e ./packages/agents/boba-chainlit-agent

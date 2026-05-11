@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-cli-agent"
+version = "0.1.0"
+description = "Operator CLI: run a single agent query against the Boba runtime."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-agent",
+    "boba-patterns",
+    "boba-schema",
+    "boba-config",
+    "boba-workspace",
+    "boba-config-toml",
+]
+
+[project.scripts]
+boba-cli-agent = "boba.cli.agent_run.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

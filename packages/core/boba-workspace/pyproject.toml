@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-workspace"
+version = "0.1.0"
+description = "Boba workspace contract: WorkspaceShell + WorkspaceRegistry (cd/ls/grep/edit_text) + DI-маркеры Project/History/Scratch/Prompt."
+requires-python = ">=3.11,<4"
+dependencies = ["boba-patterns"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

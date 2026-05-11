@@ -15,13 +15,13 @@ from boba.config.path import (
     Found,
     NotFound,
 )
-from boba.ext.files_tools import FilesPlugin
-from boba.ext.files_tools.cat import CatTool, CatToolConfig
 from boba.patterns import StrId
 from boba.plugin import ExtensionContext, install_plugins
 from boba.plugin.prompt import PromptOverlay
+from boba.schema.value import StringValue
+from boba.tool.files import FilesPlugin
+from boba.tool.files.cat import CatTool, CatToolConfig
 from boba.tools.domain import ToolSourceId
-from boba.value import StringValue
 
 
 class _InlineSource(ConfigSource):

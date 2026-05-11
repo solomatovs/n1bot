@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-plugin"
+version = "0.1.0"
+description = "Boba plugin: Plugin ABC, PluginDiscovery (entry-points), PromptOverlay, конвенции config_path/is_enabled."
+requires-python = ">=3.11,<4"
+dependencies = ["boba-patterns", "boba-schema", "boba-config"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

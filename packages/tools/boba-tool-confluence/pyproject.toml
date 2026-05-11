@@ -8,7 +8,10 @@ version = "0.1.0"
 description = "Boba Confluence: онлайн-tools (search, page outline/section), domain-парсер/декодер/reader, offline indexing pipelines (cql/pages/space)."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-core",
+    "boba-patterns",
+    "boba-schema",
+    "boba-config",
+    "boba-plugin",
     "boba-tools",
     "boba-indexing",
     "boba-tool-chromadb",
@@ -20,7 +23,7 @@ dependencies = [
 ]
 
 [project.entry-points."boba.plugins"]
-confluence = "boba.ext.confluence_tools.plugin:ConfluencePlugin"
+confluence = "boba.tool.confluence.plugin:ConfluencePlugin"
 
 [tool.setuptools.packages.find]
 where = ["src"]

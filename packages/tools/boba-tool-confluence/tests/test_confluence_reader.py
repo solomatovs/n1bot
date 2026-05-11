@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from io import BytesIO
 
-from boba.ext.confluence_tools.reader import ConfluenceReader
+from boba.html import HtmlKeys
 from boba.indexing import (
     Metadata,
     RawDocument,
@@ -13,7 +13,7 @@ from boba.indexing import (
     SectionKeys,
     SourceId,
 )
-from boba.html import HtmlKeys
+from boba.tool.confluence.reader import ConfluenceReader
 
 
 def _doc(
@@ -149,7 +149,7 @@ def test_fallback_yields_nothing_for_empty_body_and_no_title():
 def test_metadata_merge_from_raw_document():
     """upstream metadata (например confluence_page_id, source_url) пробрасывается."""
     html = "<html><body><h1>T</h1><p>x</p></body></html>"
-    from boba.ext.confluence_tools.keys import ConfluenceKeys
+    from boba.tool.confluence.keys import ConfluenceKeys
     upstream = (
         Metadata.empty()
         .set(ReaderKeys.PAGE_TITLE, "Page")
