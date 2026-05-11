@@ -15,7 +15,6 @@ import httpx
 from boba.indexing import PipelineContext, PipelineId
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import NonEmpty
-from boba.schema.coercion.types import ParseCsvList
 from boba.tool.confluence.connection import ConfluenceConnection
 from boba.tool.confluence.keys import ConfluenceKeys
 from boba.tool.confluence.request_sources.pages import (
@@ -48,8 +47,7 @@ class PageDownloadArgs:
     page_ids: Annotated[
         list[str],
         "ID страниц для скачивания (как в confluence_search/page_outline). "
-        "В JSON-формате передавайте массив, через CLI — строку через запятую.",
-        ParseCsvList(),
+        "Передавайте JSON-массив строк.",
         NonEmpty(),
     ]
     dest_dir: Annotated[

@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import json
+from typing import Any, ClassVar
+
 from boba.tools.domain.ids import ToolId, ToolName, ToolSourceId
 
 __all__ = [
@@ -28,12 +31,53 @@ class ToolExecutionError(Exception):
 
 
 class InvalidToolArgumentError(ToolExecutionError):
-    """Аргумент tool'а не прошёл per-param валидацию."""
+    """Аргумент tool'а не прошёл per-param валидацию.
 
-    def __init__(self, tool_id: ToolId, param: str, reason: str) -> None:
-        super().__init__(tool_id, f"параметр {param!r}: {reason}")
+    Сообщение для LLM содержит:
+    - имя параметра и причину;
+    - JSON-Schema fragment (что ожидалось), если доступно;
+    - preview полученного значения, чтобы модель видела что отправила.
+    """
+
+    _RECEIVED_PREVIEW_LIMIT: ClassVar[int] = 200
+    _UNSET: ClassVar[Any] = object()
+
+    def __init__(
+        self,
+        tool_id: ToolId,
+        param: str,
+        reason: str,
+        *,
+        expected: dict[str, Any] | None = None,
+        received: Any = _UNSET,
+    ) -> None:
+        message = self._format(param, reason, expected, received)
+        super().__init__(tool_id, message)
         self.param = param
         self.reason = reason
+        self.expected = expected
+        self.received = received if received is not self._UNSET else None
+
+    @classmethod
+    def _format(
+        cls,
+        param: str,
+        reason: str,
+        expected: dict[str, Any] | None,
+        received: Any,
+    ) -> str:
+        parts = [f"параметр {param!r}: {reason}"]
+        if expected is not None:
+            parts.append(
+                f"ожидалось (JSON-Schema): "
+                f"{json.dumps(expected, ensure_ascii=False)}"
+            )
+        if received is not cls._UNSET:
+            preview = json.dumps(received, ensure_ascii=False, default=str)
+            if len(preview) > cls._RECEIVED_PREVIEW_LIMIT:
+                preview = preview[: cls._RECEIVED_PREVIEW_LIMIT] + "…"
+            parts.append(f"получено: {preview}")
+        return "; ".join(parts)
 
 
 class ToolOutputTooLargeError(ToolExecutionError):

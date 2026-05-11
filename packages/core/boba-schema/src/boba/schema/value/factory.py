@@ -31,4 +31,7 @@ class PythonValueFactory:
             if wrapped is not None:
                 return wrapped
 
-        raise ConverterInputError(f"cannot wrap {type(value).__name__} as ConfigValue")
+        raise ConverterInputError(
+            f"неподдерживаемый тип значения: {type(value).__name__}; "
+            f"ожидался скаляр (string/int/bool/float/null/date/time/datetime)"
+        )

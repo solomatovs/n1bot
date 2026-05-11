@@ -29,6 +29,7 @@ from boba.tools.domain.errors import (
 )
 from boba.tools.domain.ids import ToolId, ToolName, ToolSourceId
 from boba.tools.domain.result import ToolResult
+from boba.tools.domain.wire import ToolWireSchemaBuilder
 
 __all__ = [
     "SchemaOverlay",
@@ -196,6 +197,7 @@ class _ToolArgsAdapter(Converter[dict[str, Any], TArgs], Generic[TArgs]):
     """
 
     def __init__(self, schema: ObjectSchema[TArgs], tool_id: ToolId) -> None:
+        self._schema = schema
         self._builder: ToolArgsBuilder[TArgs] = ToolArgsBuilder(schema)
         self._tool_id = tool_id
         self._known: frozenset[str] = frozenset(f.name for f in schema.fields)
@@ -212,11 +214,32 @@ class _ToolArgsAdapter(Converter[dict[str, Any], TArgs], Generic[TArgs]):
             return self._builder.build(value)
         except FieldPathMissingError as e:
             raise InvalidToolArgumentError(
-                self._tool_id, e.field_name, str(e),
+                self._tool_id,
+                e.field_name,
+                self._strip_field_prefix(str(e), e.field_name),
+                expected=self._field_wire_schema(e.field_name),
+                received=value.get(e.field_name),
             ) from e
         except FieldPathError as e:
             if e.field_name == "<invariants>":
                 raise InvalidSchemaInvariantError(self._tool_id, str(e)) from e
             raise InvalidToolArgumentError(
-                self._tool_id, e.field_name, str(e),
+                self._tool_id,
+                e.field_name,
+                self._strip_field_prefix(str(e), e.field_name),
+                expected=self._field_wire_schema(e.field_name),
+                received=value.get(e.field_name),
             ) from e
+
+    def _field_wire_schema(self, field_name: str) -> dict[str, Any] | None:
+        """JSON-Schema fragment поля для подсказки LLM о ожидаемом формате."""
+        wire = ToolWireSchemaBuilder(self._schema).build()
+        return wire.get("properties", {}).get(field_name)
+
+    @staticmethod
+    def _strip_field_prefix(message: str, field_name: str) -> str:
+        """Снимает повторяющийся 'field 'X': ' префикс из вложенной FieldPathError."""
+        prefix = f"field {field_name!r}: "
+        if message.startswith(prefix):
+            return message[len(prefix):]
+        return message
