@@ -71,14 +71,15 @@ from boba.declaration import (
 from boba.tools.domain.ids import ToolId, ToolName, ToolSourceId
 from boba.tools.domain.result import JsonResult, TextResult, ToolResult
 from boba.tools.domain.tool import Tool, ToolContext
+from boba.tools.framework.registry import StaticToolSource, ToolSource
 
-__all__ = ["ToolFactory", "tool"]
+__all__ = ["ToolDecoratorFactory", "tool"]
 
 _NONE_TYPE = type(None)
 _DICT_TYPE_ARITY = 2
 
 
-class ToolFactory:
+class ToolDecoratorFactory:
     """
     Результат @tool: связывает декорированную функцию со схемой.
 
@@ -126,12 +127,16 @@ class ToolFactory:
 
     def build(self, source_id: ToolSourceId) -> Tool[dict[str, Any]]:
         """Привязать к source_id и вернуть готовый Tool."""
-        return _DecoratedTool(
+        return DecoratedTool(
             fn=self._fn,
             tool_id=ToolId.compose(source_id, self._name),
             schema=self._schema,
             injects_ctx=self._injects_ctx,
         )
+
+    def into_source(self, source_id: ToolSourceId) -> ToolSource:
+        """Обернуть в `ToolSource` из одного инструмента."""
+        return StaticToolSource(source_id, [self.build(source_id)])
 
     @classmethod
     def from_function(
@@ -141,7 +146,7 @@ class ToolFactory:
         name: str | None = None,
         description: str | None = None,
         parse_docstring: bool = False,
-    ) -> ToolFactory:
+    ) -> ToolDecoratorFactory:
         """Public-фабрика без декоратор-сахара. Используется и из @tool, и напрямую."""
         sig = inspect.signature(fn)
         hints = get_type_hints(fn, include_extras=True)
@@ -459,7 +464,7 @@ class ToolFactory:
         return description, annotated_coercers
 
 
-class _DecoratedTool(Tool[dict[str, Any]]):
+class DecoratedTool(Tool[dict[str, Any]]):
     """Concrete Tool, рождённый @tool. tool_id заполнен через ToolFactory.build."""
 
     def __init__(
@@ -651,7 +656,8 @@ def _parse_google_docstring(doc: str) -> tuple[str, dict[str, str]]:
 
 
 @overload
-def tool(name_or_fn: Callable[..., Any], /) -> ToolFactory: ...
+def tool(name_or_fn: Callable[..., Any], /) -> ToolDecoratorFactory: ...
+
 
 @overload
 def tool(
@@ -660,7 +666,8 @@ def tool(
     *,
     description: str | None = None,
     parse_docstring: bool = False,
-) -> Callable[[Callable[..., Any]], ToolFactory]: ...
+) -> Callable[[Callable[..., Any]], ToolDecoratorFactory]: ...
+
 
 def tool(
     name_or_fn: Callable[..., Any] | str | None = None,
@@ -668,7 +675,7 @@ def tool(
     *,
     description: str | None = None,
     parse_docstring: bool = False,
-) -> ToolFactory | Callable[[Callable[..., Any]], ToolFactory]:
+) -> ToolDecoratorFactory | Callable[[Callable[..., Any]], ToolDecoratorFactory]:
     """Превратить функцию в `ToolFactory`.
 
     Формы:
@@ -691,12 +698,12 @@ def tool(
         list[SomeDataclass]      — CollectionField + ObjectItem
     """
     if callable(name_or_fn) and not isinstance(name_or_fn, str):
-        return ToolFactory.from_function(name_or_fn)
+        return ToolDecoratorFactory.from_function(name_or_fn)
 
     name_override = name_or_fn
 
-    def decorator(fn: Callable[..., Any]) -> ToolFactory:
-        return ToolFactory.from_function(
+    def decorator(fn: Callable[..., Any]) -> ToolDecoratorFactory:
+        return ToolDecoratorFactory.from_function(
             fn,
             name=name_override,
             description=description,
