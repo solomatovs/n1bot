@@ -22,6 +22,7 @@ __all__ = [
     "FieldPathMissingError",
     "FieldSpec",
     "IndexedShape",
+    "InlineNestedField",
     "ItemReader",
     "KeyedShape",
     "NestedField",
@@ -156,6 +157,28 @@ class NestedField(FieldKind, Generic[V]):
     В отличие от CollectionField + ObjectItem (даёт Mapping или tuple),
     NestedField даёт ровно один вложенный DTO. Используется для составных
     конфигов, где один объект логически вкладывается в другой.
+    """
+
+    name: str
+    schema: ObjectSchema[V]
+    description: str = ""
+
+
+@dataclass(frozen=True)
+class InlineNestedField(FieldKind, Generic[V]):
+    """Inline-вложенное поле: дочерние ключи читаются под префиксом родителя.
+
+    В отличие от `NestedField`, который уходит в под-префикс `parent.name.X`,
+    `InlineNestedField` при материализации читает дочерние поля под текущим
+    префиксом (`parent.X`), но всё равно конструирует вложенный DTO и кладёт
+    его в поле `name` родительского DTO. Это развязывает структуру DTO
+    (композиция доменных под-DTO) и раскладку в FlatConfig (одна плоская
+    секция, питающая несколько под-DTO).
+
+    Поддерживается `FlatConfigMaterializer`. В tool-контексте
+    (`ToolWireSchemaBuilder`, `ToolArgsBuilder`) сейчас не интерпретируется
+    и приведёт к `NotImplementedError` — inline нужен для конфиг-источников
+    с плоской раскладкой, а не для tool-API.
     """
 
     name: str
