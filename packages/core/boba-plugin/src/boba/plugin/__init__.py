@@ -26,9 +26,8 @@ Plugin — структурный протокол, дженерик по `TConf
 from __future__ import annotations
 
 import typing
-from collections.abc import Iterable
-from dataclasses import dataclass
-from typing import Any, ClassVar, Protocol, TypeVar, runtime_checkable
+from collections.abc import Iterable, Mapping
+from typing import Any, ClassVar, Protocol, TypeVar, cast, runtime_checkable
 
 from boba.config.bundle import ConfigBundle
 from boba.config.path import ConfigPath, NameSegment
@@ -37,6 +36,7 @@ from boba.schema.coercion import ParseBool
 
 __all__ = [
     "ExtensionContext",
+    "MissingExtensionError",
     "Plugin",
     "config_path",
     "install_plugins",
@@ -46,24 +46,63 @@ __all__ = [
 
 TConfig_contra = TypeVar("TConfig_contra", contravariant=True)
 TToolSource_co = TypeVar("TToolSource_co", covariant=True)
+T = TypeVar("T")
 
 
-@dataclass(frozen=True)
+class MissingExtensionError(KeyError):
+    """Запрошен extension, не зарегистрированный в `ExtensionContext`."""
+
+    def __init__(self, key: type) -> None:
+        super().__init__(key)
+        self.key = key
+
+    def __str__(self) -> str:
+        return f"extension {self.key.__name__!r} not registered"
+
+
 class ExtensionContext:
-    """Канал общих сервисов для install/build плагина.
-
-    На старте — пустой контейнер. По мере реальных потребностей плагинов
-    сюда добавляются shared-сервисы (logger, метрики, observers,
-    async-runtime).
     """
+    Типизированный реестр shared-сервисов для install/build плагина
+
+    Позволяет Plugin'у запросить зависимость по типу
+    По сути является неким DI для плагинов
+
+    Незарегистрированный тип = `MissingExtensionError`
+
+    Иммутабелен после создания.
+    """
+
+    __slots__ = ("_providers",)
+
+    def __init__(
+        self,
+        providers: Mapping[type, object] | None = None,
+    ) -> None:
+        self._providers: dict[type, object] = dict(providers or {})
+
+    def get(self, key: type[T]) -> T:
+        """Вернуть extension по типу; иначе `MissingExtensionError`."""
+        try:
+            return cast(T, self._providers[key])
+        except KeyError as e:
+            raise MissingExtensionError(key) from e
+
+    def has(self, key: type) -> bool:
+        """Проверить, зарегистрирован ли extension данного типа."""
+        return key in self._providers
 
 
 @runtime_checkable
 class Plugin(Protocol[TConfig_contra, TToolSource_co]):
-    """Структурный протокол плагина.
+    """
+    Структурный протокол плагина
 
-    Дженерик по `TConfig` (DTO секции) и `TToolSource` (тип артефакта).
-    Concrete-плагин: `class HtmlPlugin(Plugin[HtmlPluginConfig, ToolSource])`.
+    Дженерик:
+    `TConfig` - DTO секции (конфиг секции)
+    `TToolSource` - тип ToolSource
+        бывают разные, типпа StaticToolSource, McpToolSource, ...
+
+    пример: `class HtmlPlugin(Plugin[HtmlPluginConfig, ToolSource])`
     """
 
     NAME: ClassVar[StrId]
@@ -93,10 +132,11 @@ def is_enabled(bundle: ConfigBundle, mount: ConfigPath) -> bool:
 
 
 def resolve_config_type(plugin_cls: type[Plugin[Any, Any]]) -> type:
-    """Извлечь TConfig из `class Foo(Plugin[Cfg, ToolSource])`.
+    """
+    Извлечь TConfig из `class Foo(Plugin[Cfg, ToolSource])`
 
-    Берётся первый generic-base, чей origin — `Plugin`. Если такого нет
-    или TConfig — TypeVar (плагин-абстракция), бросается TypeError.
+    Берётся первый generic-base, чей origin — `Plugin`.
+    Если такого нет или TConfig — TypeVar (плагин-абстракция), бросается TypeError.
     """
     for base in getattr(plugin_cls, "__orig_bases__", ()):
         if typing.get_origin(base) is Plugin:
@@ -124,18 +164,16 @@ def resolve_config_type(plugin_cls: type[Plugin[Any, Any]]) -> type:
     raise TypeError(msg)
 
 
-T = TypeVar("T")
-
-
 def install_plugins(
     bundle: ConfigBundle,
     plugin_classes: Iterable[type[Plugin[Any, T]]],
     ctx: ExtensionContext,
 ) -> Iterable[T]:
-    """Цикл установки: convention-mount → enable → materialize → build.
+    """
+    Цикл установки плагина: convention-mount → enable → materialize → build.
 
-    Уплощает `Iterable[Iterable[T]]` от каждого `build()` в общий поток `T`.
-    Плагины с `enable != true` пропускаются — их DTO даже не материализуется.
+    Плагины с `enable != true` пропускаются
+    их DTO даже не материализуется
     """
     for plugin_cls in plugin_classes:
         p = config_path(plugin_cls.NAME)

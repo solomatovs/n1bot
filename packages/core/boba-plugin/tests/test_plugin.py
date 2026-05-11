@@ -15,6 +15,7 @@ from boba.config.source.dict import DictSource
 from boba.patterns import StrId
 from boba.plugin import (
     ExtensionContext,
+    MissingExtensionError,
     Plugin,
     config_path,
     install_plugins,
@@ -219,6 +220,49 @@ def test_search_plugin_satisfies_runtime_protocol():
     assert isinstance(_SearchPlugin, type)
     assert hasattr(_SearchPlugin, "NAME")
     assert callable(getattr(_SearchPlugin, "build", None))
+
+
+# ExtensionContext — typed lookup
+
+
+class _RegistryA:
+    pass
+
+
+class _RegistryB:
+    pass
+
+
+def test_extension_context_get_returns_registered_instance():
+    """`get(Type)` возвращает зарегистрированный объект ровно по типу-ключу."""
+    a, b = _RegistryA(), _RegistryB()
+    ctx = ExtensionContext({_RegistryA: a, _RegistryB: b})
+    assert ctx.get(_RegistryA) is a
+    assert ctx.get(_RegistryB) is b
+
+
+def test_extension_context_get_missing_raises():
+    """Незарегистрированный тип → `MissingExtensionError` с понятным сообщением."""
+    ctx = ExtensionContext()
+    with pytest.raises(MissingExtensionError) as exc:
+        ctx.get(_RegistryA)
+    assert exc.value.key is _RegistryA
+    assert "_RegistryA" in str(exc.value)
+
+
+def test_extension_context_has_reflects_registration():
+    """`has(Type)` — true только для зарегистрированных типов."""
+    ctx = ExtensionContext({_RegistryA: _RegistryA()})
+    assert ctx.has(_RegistryA) is True
+    assert ctx.has(_RegistryB) is False
+
+
+def test_extension_context_no_args_is_empty_bag():
+    """`ExtensionContext()` без аргументов — пустой реестр (back-compat)."""
+    ctx = ExtensionContext()
+    assert ctx.has(_RegistryA) is False
+    with pytest.raises(MissingExtensionError):
+        ctx.get(_RegistryA)
 
 
 # Re-export, чтобы pyright не считал импорт неиспользованным.
