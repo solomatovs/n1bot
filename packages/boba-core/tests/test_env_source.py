@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from boba.config.path import ConfigPath
-from boba.config.source.env import EnvFileSource, EnvSource
+from boba.config.source import EnvFileSource, EnvSource
 from boba.value import StringValue
 
 

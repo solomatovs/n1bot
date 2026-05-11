@@ -16,7 +16,7 @@ from boba.coercion import (
 )
 from boba.config.bundle import ConfigBundle
 from boba.config.path import ConfigPath
-from boba.config.source.dict_source import DictSource
+from boba.config.source.dict import DictSource
 from boba.declaration import FieldSpec, ObjectSchema
 from boba.patterns import StrId
 from boba.plugin import (

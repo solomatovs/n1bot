@@ -23,7 +23,7 @@ from boba.agent.prompt import PromptProvider
 from boba.config.bundle import ConfigBundle
 from boba.config.path import ConfigSource
 from boba.config.source.cli import CliSource
-from boba.config.source.env import EnvFileSource, EnvSource
+from boba.config.source import EnvFileSource, EnvSource
 from boba.llm.events import LLMEvent
 from boba.llm.models import LLMContext
 from boba.patterns import (

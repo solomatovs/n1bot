@@ -19,7 +19,7 @@ from boba.coercion import (
 )
 from boba.config.bundle import ConfigBundle, FlatConfigMaterializer
 from boba.config.path import ConfigPath, NameSegment
-from boba.config.source.dict_source import DictSource
+from boba.config.source.dict import DictSource
 from boba.declaration import (
     CollectionField,
     FieldPathError,

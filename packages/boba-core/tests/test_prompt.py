@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from boba.coercion import ChainCoercer, NonEmpty, ParseInt, ParseString, Required
 from boba.config.bundle import ConfigBundle, FlatConfigMaterializer
 from boba.config.path import ConfigPath
-from boba.config.source.dict_source import DictSource
+from boba.config.source.dict import DictSource
 from boba.declaration import (
     FieldSpec,
     NestedField,
