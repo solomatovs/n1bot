@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Self
+from typing import ClassVar, Self
 
 from boba.agent.events import AgentEvent
 from boba.agent.messages import InMemoryMessageService, MessageService, MessageWriter
@@ -26,16 +26,23 @@ from boba.patterns import (
     StreamSourceChainBuilder,
     StreamSourceLoop,
 )
-from boba.tools.domain import ToolContext, ToolResultVisitor
-from boba.tools.framework import ToolsService
+from boba.tools.domain import ToolContext, ToolResultVisitor, ToolSourceId
+from boba.tools.framework import (
+    StaticToolSource,
+    ToolDecoratorFactory,
+    ToolsService,
+)
 
 
 class AgentBuilder:
     """Fluent-фасад: собирает Agent с дефолтной middleware-цепью."""
 
+    INLINE_SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("inline")
+
     def __init__(self) -> None:
         self._llm_source: StreamSource[LLMContext, LLMEvent] | None = None
         self._tools_service: ToolsService | None = None
+        self._inline_factories: list[ToolDecoratorFactory] = []
         self._tool_result_visitor: ToolResultVisitor[str] | None = None
         self._message_service: MessageService | None = None
         self._prompt_providers: list[PromptProvider] = []
@@ -47,8 +54,13 @@ class AgentBuilder:
         return self
 
     def with_tools(self, service: ToolsService) -> Self:
-        """Реестр инструментов (обязательно)."""
+        """Готовый реестр инструментов; mutually-exclusive с `use_tools(...)`."""
         self._tools_service = service
+        return self
+
+    def use_tools(self, factories: Iterable[ToolDecoratorFactory]) -> Self:
+        """Добавить `@tool`-функции под общим source_id `INLINE_SOURCE_ID`."""
+        self._inline_factories.extend(factories)
         return self
 
     def with_tool_result_visitor(self, visitor: ToolResultVisitor[str]) -> Self:
@@ -84,9 +96,6 @@ class AgentBuilder:
         if self._llm_source is None:
             msg = "AgentBuilder.build: .with_llm(...) обязателен до .build()"
             raise ValueError(msg)
-        if self._tools_service is None:
-            msg = "AgentBuilder.build: .with_tools(...) обязателен до .build()"
-            raise ValueError(msg)
         if self._tool_result_visitor is None:
             msg = (
                 "AgentBuilder.build: .with_tool_result_visitor(...) "
@@ -94,11 +103,13 @@ class AgentBuilder:
             )
             raise ValueError(msg)
 
+        tools_service = self._resolve_tools_service()
+
         message_service = self._message_service or InMemoryMessageService()
 
         chain = self._build_chain(
             llm_source=self._llm_source,
-            tools_service=self._tools_service,
+            tools_service=tools_service,
             visitor=self._tool_result_visitor,
             prompt_providers=self._prompt_providers,
             message_service=message_service,
@@ -109,6 +120,27 @@ class AgentBuilder:
             stop_if=StopOnFinished().or_(StopOnAnyFailure()),
         )
         return Agent(source=source, writer=message_service, reader=message_service)
+
+    def _resolve_tools_service(self) -> ToolsService:
+        """Выбрать готовый `ToolsService` или собрать из накопленных источников."""
+        if self._tools_service is not None and self._inline_factories:
+            msg = (
+                "AgentBuilder.build: .with_tools(...) и .use_tools(...) "
+                "взаимоисключающие — задан один из путей"
+            )
+            raise ValueError(msg)
+        if self._tools_service is not None:
+            return self._tools_service
+        if not self._inline_factories:
+            msg = (
+                "AgentBuilder.build: задайте инструменты через "
+                ".with_tools(...) или .use_tools(...)"
+            )
+            raise ValueError(msg)
+        sid = self.INLINE_SOURCE_ID
+        return ToolsService.from_sources(
+            [StaticToolSource(sid, [f.build(sid) for f in self._inline_factories])],
+        )
 
     @staticmethod
     def _build_chain(  # noqa: PLR0913
