@@ -1,4 +1,5 @@
-"""Curl-trace дамп LLM-вызовов: copy-paste-ready bash-команда + сырой ответ.
+"""
+Curl-trace дамп LLM-вызовов: copy-paste-ready bash-команда + сырой ответ.
 
 ВНИМАНИЕ: пишет полные заголовки запроса/ответа БЕЗ маскировки —
 включая `Authorization: Bearer <token>`. Файл curl_trace.md
@@ -11,7 +12,7 @@ from __future__ import annotations
 import json
 import shlex
 from collections.abc import Iterable, Mapping
-from typing import Any, ClassVar
+from typing import Any
 
 from boba.llm.observer import LLMRequestObserver, RequestOutcome
 from boba.workspace.contract import WorkspaceShell
@@ -23,26 +24,20 @@ class CurlTraceChatCompletionObserver(
 ):
     """Пишет curl-команду + статус/заголовки/чанки ответа в markdown-файл."""
 
-    _REASONING_KEY: ClassVar[str] = "reasoning_content"
-
     def __init__(
         self,
         workspace: WorkspaceShell,
-        response_chunks: bool = True,
         path: str = "curl_trace.md",
     ) -> None:
         self._workspace = workspace
         self._path = path
-        self._response_chunk = response_chunks
         self._reset_state()
 
     def _reset_state(self) -> None:
-        self._reasoning: list[str] = []
-        self._answer: list[str] = []
-        self._refusal: list[str] = []
         self._tool_calls: dict[int, dict[str, Any]] = {}
         self._finish_reason: str | None = None
         self._usage: tuple[int, int, int] | None = None
+        self._current_section: str | None = None
 
     def on_request(self, request: dict[str, Any]) -> None:
         del request
@@ -67,21 +62,18 @@ class CurlTraceChatCompletionObserver(
         for k, v in headers.items():
             lines.append(f"{k}: {v}")
         head = "\n".join(lines)
-        self._append(f"## Response\n\n```\n{head}\n```\n\n```jsonl\n")
+        self._append(f"## Response\n\n```\n{head}\n```\n\n")
 
     def on_response_chunk(self, chunk: ChatCompletionChunk) -> None:
-        if self._response_chunk:
-            self._append(chunk.model_dump_json() + "\n")
-
         for choice in chunk.choices:
             delta = choice.delta
-            r = (delta.model_extra or {}).get(self._REASONING_KEY)
+            r = (delta.model_extra or {}).get("reasoning_content")
             if r:
-                self._reasoning.append(str(r))
+                self._emit_section("Thinking", str(r))
             if delta.content:
-                self._answer.append(delta.content)
+                self._emit_section("Answer", delta.content)
             if delta.refusal:
-                self._refusal.append(delta.refusal)
+                self._emit_section("Refusal", delta.refusal)
             if delta.tool_calls:
                 self._absorb_tool_calls(delta.tool_calls)
             if choice.finish_reason and self._finish_reason is None:
@@ -92,37 +84,28 @@ class CurlTraceChatCompletionObserver(
             self._usage = (u.prompt_tokens, u.completion_tokens, u.total_tokens)
 
     def on_request_end(self, outcome: RequestOutcome) -> None:
-        self._append("```\n\n")
-        self._append(self._render_aggregated())
-        self._append(f"## end: {outcome.label()}\n\n---\n\n")
-
-    def _render_aggregated(self) -> str:
-        parts: list[str] = ["## Aggregated\n\n"]
-        if self._reasoning:
-            parts.append("### Reasoning\n\n")
-            parts.append("".join(self._reasoning).rstrip() + "\n\n")
-        if self._answer:
-            parts.append("### Answer\n\n")
-            parts.append("".join(self._answer).rstrip() + "\n\n")
-        if self._refusal:
-            parts.append("### Refusal\n\n")
-            parts.append("".join(self._refusal).rstrip() + "\n\n")
+        if self._current_section is not None:
+            self._append("\n\n")
+            self._current_section = None
         for idx in sorted(self._tool_calls):
             tc = self._tool_calls[idx]
             name = tc["name"] or "(none)"
             tc_id = tc["id"] or "(none)"
             args_text = "".join(tc["args"])
-            parts.append(f"### Tool call #{idx}: {name} (id={tc_id})\n\n")
-            parts.append(f"```json\n{args_text}\n```\n\n")
-        meta: list[str] = []
-        if self._finish_reason:
-            pass
+            self._append(f"## Tool call #{idx}: {name} (id={tc_id})\n\n")
+            self._append(f"```json\n{args_text}\n```\n\n")
         if self._usage is not None:
             p, c, t = self._usage
-            meta.append(f"usage prompt={p} completion={c} total={t}")
-        if meta:
-            parts.append("_" + " | ".join(meta) + "_\n\n")
-        return "".join(parts)
+            self._append(f"_usage prompt={p} completion={c} total={t}_\n\n")
+        self._append(f"## end: {outcome.label()}\n\n---\n\n")
+
+    def _emit_section(self, title: str, text: str) -> None:
+        if self._current_section != title:
+            if self._current_section is not None:
+                self._append("\n\n")
+            self._append(f"## {title}\n\n")
+            self._current_section = title
+        self._append(text)
 
     def _absorb_tool_calls(self, tool_calls: Iterable[Any]) -> None:
         for tc in tool_calls:

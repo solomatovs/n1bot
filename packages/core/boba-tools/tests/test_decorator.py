@@ -29,6 +29,7 @@ from boba.tools.domain import (
     ToolSourceId,
 )
 from boba.tools.framework import ToolDecoratorFactory, tool
+
 _SOURCE = ToolSourceId("test")
 
 

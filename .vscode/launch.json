@@ -5,7 +5,7 @@
             "id": "model",
             "type": "pickString",
             "description": "LiteLLM модель",
-            "default": "qwen3.5:9b",
+            "default": "qwen3.5-35b",
             "options": [
                 "qwen3.5:9b",
                 "qwen3.5-35b",
@@ -24,98 +24,6 @@
                 "Как именовать таблицы в adqm? прочитай это в файлах и объясни простым языком",
                 "Прочитай файл 950276.html и расскажи как именовать таблицы в adqm на основе его содержимого?"
             ]
-        },
-        {
-            "id": "indexCollection",
-            "type": "promptString",
-            "description": "Имя коллекции в ChromaDB",
-            "default": "docs"
-        },
-        {
-            "id": "indexDescription",
-            "type": "promptString",
-            "description": "Описание коллекции (применяется только при создании)",
-            "default": "Документы, проиндексированные оператором"
-        },
-        {
-            "id": "fsPaths",
-            "type": "promptString",
-            "description": "Путь к файлу или директории для индексации (через запятую)",
-            "default": "${workspaceFolder}/local/manual"
-        },
-        {
-            "id": "fsInclude",
-            "type": "promptString",
-            "description": "Glob-фильтры включения через запятую (пусто = все)",
-            "default": ""
-        },
-        {
-            "id": "confluencePageIds",
-            "type": "promptString",
-            "description": "Confluence page-id(s) через запятую",
-            "default": "98305"
-        },
-        {
-            "id": "confluenceSpaceKey",
-            "type": "promptString",
-            "description": "Confluence space key (например DOCS, paas)",
-            "default": "paas"
-        },
-        {
-            "id": "confluenceCql",
-            "type": "promptString",
-            "description": "Confluence CQL-запрос",
-            "default": "space = paas AND type = page"
-        },
-        {
-            "id": "printSourceId",
-            "type": "promptString",
-            "description": "Фильтр по source_id (пусто = все чанки)",
-            "default": ""
-        },
-        {
-            "id": "printLimit",
-            "type": "promptString",
-            "description": "Сколько чанков показать (max)",
-            "default": "20"
-        },
-        {
-            "id": "searchQuery",
-            "type": "promptString",
-            "description": "Поисковый запрос (action=search)",
-            "default": "Как именовать таблицы"
-        },
-        {
-            "id": "searchTopK",
-            "type": "promptString",
-            "description": "Сколько hits вернуть",
-            "default": "5"
-        },
-        {
-            "id": "embeddingModel",
-            "type": "pickString",
-            "description": "Embedding-модель",
-            "default": "default",
-            "options": [
-                "default",
-                "ollama/nomic-embed-text",
-                "ollama/mxbai-embed-large",
-                "ollama/bge-m3",
-                "text-embedding-3-small",
-                "text-embedding-3-large"
-            ]
-        },
-        {
-            "id": "embeddingBaseUrl",
-            "type": "promptString",
-            "description": "Embeddings endpoint (пусто = built-in ONNX)",
-            "default": "http://localhost:4000"
-        },
-        {
-            "id": "embeddingApiKey",
-            "type": "promptString",
-            "description": "API key для embeddings endpoint",
-            "default": "ollama"
         }
     ],
     "configurations": [
@@ -129,7 +37,8 @@
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "args": [
-                // "--agent_run.query=${input:query}"
+                "--cli.model=${input:model}",
+                "--cli.query=${input:query}"
             ],
             "envFile": "${workspaceFolder}/local/.env"
         },
@@ -143,182 +52,9 @@
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "args": [
-                "--chainlit-host", "0.0.0.0",
-                "--chainlit-port", "8502",
-                "--chainlit-root-path", "/boba-debug"
-            ],
-            "envFile": "${workspaceFolder}/local/.env"
-        },
-        {
-            "name": "Vector Index: index FS .md (ext.fs_markdown)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.cli.vector_index",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "args": [
-                "--vector_index.action=index",
-                "--vector_index.pipeline=ext.fs_markdown",
-                "--vector_index.index.collection=${input:indexCollection}",
-                "--vector_index.index.description=${input:indexDescription}",
-                "--ext.chromadb.embedding_model=${input:embeddingModel}",
-                "--ext.chromadb.embedding_base_url=${input:embeddingBaseUrl}",
-                "--ext.chromadb.embedding_api_key=${input:embeddingApiKey}",
-                "--indexer.pipelines.fs_markdown.paths=${input:fsPaths}",
-                "--indexer.pipelines.fs_markdown.include=${input:fsInclude}",
-                "--vector_index.verbose=1"
-            ],
-            "envFile": "${workspaceFolder}/local/.env"
-        },
-        {
-            "name": "Vector Index: index FS .html (ext.fs_html)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.cli.vector_index",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "args": [
-                "--vector_index.action=index",
-                "--vector_index.pipeline=ext.fs_html",
-                "--vector_index.index.collection=${input:indexCollection}",
-                "--vector_index.index.description=${input:indexDescription}",
-                "--ext.chromadb.embedding_model=${input:embeddingModel}",
-                "--ext.chromadb.embedding_base_url=${input:embeddingBaseUrl}",
-                "--ext.chromadb.embedding_api_key=${input:embeddingApiKey}",
-                "--indexer.pipelines.fs_html.paths=${input:fsPaths}",
-                "--indexer.pipelines.fs_html.include=${input:fsInclude}",
-                "--vector_index.verbose=1"
-            ],
-            "envFile": "${workspaceFolder}/local/.env"
-        },
-        {
-            "name": "Vector Index: index FS .txt/.log (ext.fs_text)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.cli.vector_index",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "args": [
-                "--vector_index.action=index",
-                "--vector_index.pipeline=ext.fs_text",
-                "--vector_index.index.collection=${input:indexCollection}",
-                "--vector_index.index.description=${input:indexDescription}",
-                "--ext.chromadb.embedding_model=${input:embeddingModel}",
-                "--ext.chromadb.embedding_base_url=${input:embeddingBaseUrl}",
-                "--ext.chromadb.embedding_api_key=${input:embeddingApiKey}",
-                "--indexer.pipelines.fs_text.paths=${input:fsPaths}",
-                "--indexer.pipelines.fs_text.include=${input:fsInclude}",
-                "--vector_index.verbose=1"
-            ],
-            "envFile": "${workspaceFolder}/local/.env"
-        },
-        {
-            "name": "Vector Index: index Confluence space (ext.confluence_space)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.cli.vector_index",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "args": [
-                "--vector_index.action=index",
-                "--vector_index.pipeline=ext.confluence_space",
-                "--vector_index.index.collection=${input:indexCollection}",
-                "--vector_index.index.description=${input:indexDescription}",
-                "--indexer.pipelines.confluence_space.space_key=${input:confluenceSpaceKey}"
-            ],
-            "envFile": "${workspaceFolder}/local/.env"
-        },
-        {
-            "name": "Vector Index: index Confluence pages (ext.confluence_pages)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.cli.vector_index",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "args": [
-                "--vector_index.action=index",
-                "--vector_index.pipeline=ext.confluence_pages",
-                "--vector_index.index.collection=${input:indexCollection}",
-                "--vector_index.index.description=${input:indexDescription}",
-                "--ext.chromadb.embedding_model=${input:embeddingModel}",
-                "--ext.chromadb.embedding_base_url=${input:embeddingBaseUrl}",
-                "--ext.chromadb.embedding_api_key=${input:embeddingApiKey}",
-                "--indexer.pipelines.confluence_pages.page_ids=${input:confluencePageIds}",
-                "--vector_index.verbose=1"
-            ],
-            "envFile": "${workspaceFolder}/local/.env"
-        },
-        {
-            "name": "Vector Index: index Confluence CQL (ext.confluence_cql)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.cli.vector_index",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "args": [
-                "--vector_index.action=index",
-                "--vector_index.pipeline=ext.confluence_cql",
-                "--vector_index.index.collection=${input:indexCollection}",
-                "--vector_index.index.description=${input:indexDescription}",
-                "--ext.chromadb.embedding_model=${input:embeddingModel}",
-                "--ext.chromadb.embedding_base_url=${input:embeddingBaseUrl}",
-                "--ext.chromadb.embedding_api_key=${input:embeddingApiKey}",
-                "--indexer.pipelines.confluence_cql.cql=${input:confluenceCql}",
-                "--vector_index.verbose=1"
-            ],
-            "envFile": "${workspaceFolder}/local/.env"
-        },
-        {
-            "name": "Vector Index: print collection",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.cli.vector_index",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "args": [
-                "--vector_index.action=print",
-                "--vector_index.print.collection=${input:indexCollection}",
-                "--vector_index.print.source_id=${input:printSourceId}",
-                "--vector_index.print.limit=${input:printLimit}",
-                "--ext.chromadb.embedding_model=${input:embeddingModel}",
-                "--ext.chromadb.embedding_base_url=${input:embeddingBaseUrl}",
-                "--ext.chromadb.embedding_api_key=${input:embeddingApiKey}",
-                "--vector_index.verbose=1"
-            ],
-            "envFile": "${workspaceFolder}/local/.env"
-        },
-        {
-            "name": "Vector Index: search collection",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.cli.vector_index",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "args": [
-                "--vector_index.action=search",
-                "--vector_index.search.collection=${input:indexCollection}",
-                "--vector_index.search.query=${input:searchQuery}",
-                "--vector_index.search.top_k=${input:searchTopK}",
-                "--ext.chromadb.embedding_model=${input:embeddingModel}",
-                "--ext.chromadb.embedding_base_url=${input:embeddingBaseUrl}",
-                "--ext.chromadb.embedding_api_key=${input:embeddingApiKey}",
-                "--vector_index.verbose=1"
+                "--chainlit.host=0.0.0.0",
+                "--chainlit.port=8502",
+                "--chainlit.root_path=/boba-debug"
             ],
             "envFile": "${workspaceFolder}/local/.env"
         },
