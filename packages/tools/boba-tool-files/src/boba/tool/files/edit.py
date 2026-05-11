@@ -7,9 +7,9 @@ from typing import Annotated
 
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import NonEmpty
+from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     TextResult,
-    Tool,
     ToolContext,
     ToolExecutionError,
     ToolResult,
@@ -42,12 +42,12 @@ class EditToolConfig:
     prompt: PromptOverlay
 
 
-class EditTool(Tool[EditArgs, EditToolConfig]):
+class EditTool(FsToolBase[EditArgs, EditToolConfig]):
     """Find-and-replace редактирование текстового файла."""
 
     def execute(self, ctx: ToolContext, req: EditArgs) -> ToolResult:
         try:
-            applied = ctx.project_workspace.edit_text(
+            applied = self._shell(ctx).edit_text(
                 req.path,
                 req.old_string,
                 req.new_string,

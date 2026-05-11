@@ -7,9 +7,9 @@ from typing import Annotated
 
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import NonEmpty
+from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     TextResult,
-    Tool,
     ToolContext,
     ToolExecutionError,
     ToolResult,
@@ -35,12 +35,12 @@ class CpToolConfig:
     prompt: PromptOverlay
 
 
-class CpTool(Tool[CpArgs, CpToolConfig]):
+class CpTool(FsToolBase[CpArgs, CpToolConfig]):
     """Скопировать файл или директорию."""
 
     def execute(self, ctx: ToolContext, req: CpArgs) -> ToolResult:
         try:
-            ctx.project_workspace.copy(req.src, req.dst, recursive=req.recursive)
+            self._shell(ctx).copy(req.src, req.dst, recursive=req.recursive)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self.tool_id(),

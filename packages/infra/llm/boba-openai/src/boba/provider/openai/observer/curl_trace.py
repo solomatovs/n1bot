@@ -14,7 +14,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any, ClassVar
 
 from boba.llm.observer import LLMRequestObserver, RequestOutcome
-from boba.workspace.contract import HistoryWorkspaceShell
+from boba.workspace.contract import WorkspaceShell
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 
@@ -27,7 +27,7 @@ class CurlTraceChatCompletionObserver(
 
     def __init__(
         self,
-        workspace: HistoryWorkspaceShell,
+        workspace: WorkspaceShell,
         response_chunks: bool = True,
         path: str = "curl_trace.md",
     ) -> None:

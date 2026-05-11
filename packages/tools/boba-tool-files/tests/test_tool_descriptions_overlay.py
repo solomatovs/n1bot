@@ -7,6 +7,8 @@ Operator задаёт `[tool.files.cat.prompt] description = "..."` и
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 from boba.config.bundle import ConfigBundle
 from boba.config.path import (
     ConfigLookup,
@@ -22,6 +24,7 @@ from boba.schema.value import StringValue
 from boba.tool.files import FilesPlugin
 from boba.tool.files.cat import CatTool, CatToolConfig
 from boba.tools.domain import ToolSourceId
+from boba.workspace.contract import ProjectWorkspaceRegistry
 
 
 class _InlineSource(ConfigSource):
@@ -55,9 +58,15 @@ class _InlineSource(ConfigSource):
 _BASE = {"tool.files.enable": "true"}
 
 
+def _ext_ctx() -> ExtensionContext:
+    return ExtensionContext({
+        ProjectWorkspaceRegistry: MagicMock(spec=ProjectWorkspaceRegistry),
+    })
+
+
 def _cat_tool(values: dict[str, str]) -> CatTool:
     bundle = ConfigBundle.from_sources([_InlineSource({**_BASE, **values})])
-    sources = list(install_plugins(bundle, [FilesPlugin], ExtensionContext()))
+    sources = list(install_plugins(bundle, [FilesPlugin], _ext_ctx()))
     found = next(
         t for src in sources for t in src.tools() if t.name().to_wire() == "cat"
     )
@@ -105,7 +114,7 @@ def test_cat_tool_can_be_instantiated_directly():
             fields={"path": "test path"},
         ),
     )
-    cat = CatTool(cfg, ExtensionContext(), ToolSourceId("test"))
+    cat = CatTool(cfg, _ext_ctx(), ToolSourceId("test"))
     schema = cat.definition()
     assert schema.description == "test"
     path_field = next(f for f in schema.fields if f.name == "path")

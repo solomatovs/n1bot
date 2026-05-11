@@ -9,6 +9,7 @@ from bs4.element import Tag
 
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import MinValue, NonEmpty
+from boba.tool.html._base import HtmlToolBase
 from boba.tool.html._parse import (
     Heading,
     collect_headings,
@@ -17,7 +18,6 @@ from boba.tool.html._parse import (
 )
 from boba.tools.domain import (
     TextResult,
-    Tool,
     ToolContext,
     ToolExecutionError,
     ToolResult,
@@ -63,12 +63,12 @@ class HtmlSectionToolConfig:
     prompt: PromptOverlay
 
 
-class HtmlSectionTool(Tool[SectionArgs, HtmlSectionToolConfig]):
+class HtmlSectionTool(HtmlToolBase[SectionArgs, HtmlSectionToolConfig]):
     """HTML фрагмент раздела от заголовка до следующего заголовка."""
 
     def execute(self, ctx: ToolContext, req: SectionArgs) -> ToolResult:
         try:
-            soup = load_soup(ctx.project_workspace, req.path)
+            soup = load_soup(self._shell(ctx), req.path)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self.tool_id(), message=f"Файл не найден: {req.path}"

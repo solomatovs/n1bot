@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Annotated, cast
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -22,15 +21,13 @@ from boba.tools.domain import (
     ToolSourceId,
 )
 from boba.tools.framework import ToolDecoratorFactory, tool_factory
-from boba.workspace.contract import ProjectWorkspaceShell
+from boba.workspace.contract import WorkspaceId
 
 _SOURCE = ToolSourceId("test")
 
 
 def _ctx() -> ToolContext:
-    return ToolContext(
-        project_workspace=cast(ProjectWorkspaceShell, MagicMock()),
-    )
+    return ToolContext(workspace_id=WorkspaceId.new())
 
 
 #  имя и описание

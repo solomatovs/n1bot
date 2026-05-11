@@ -7,9 +7,9 @@ from typing import Annotated
 
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import NonEmpty
+from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     TextResult,
-    Tool,
     ToolContext,
     ToolExecutionError,
     ToolResult,
@@ -37,12 +37,12 @@ class RmToolConfig:
     prompt: PromptOverlay
 
 
-class RmTool(Tool[RmArgs, RmToolConfig]):
+class RmTool(FsToolBase[RmArgs, RmToolConfig]):
     """Удалить файл или директорию."""
 
     def execute(self, ctx: ToolContext, req: RmArgs) -> ToolResult:
         try:
-            ctx.project_workspace.delete(req.path, recursive=req.recursive)
+            self._shell(ctx).delete(req.path, recursive=req.recursive)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self.tool_id(),

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 from boba.config.bundle import ConfigBundle
 from boba.config.path import (
     ConfigLookup,
@@ -14,6 +16,7 @@ from boba.patterns import StrId
 from boba.plugin import ExtensionContext, install_plugins
 from boba.schema.value import StringValue
 from boba.tool.html import HtmlPlugin
+from boba.workspace.contract import ProjectWorkspaceRegistry
 
 
 class _InlineSource(ConfigSource):
@@ -44,9 +47,15 @@ class _InlineSource(ConfigSource):
         return StrId("inline")
 
 
+def _ext_ctx() -> ExtensionContext:
+    return ExtensionContext({
+        ProjectWorkspaceRegistry: MagicMock(spec=ProjectWorkspaceRegistry),
+    })
+
+
 def _tool_names(values: dict[str, str]) -> list[str]:
     bundle = ConfigBundle.from_sources([_InlineSource(values)])
-    sources = list(install_plugins(bundle, [HtmlPlugin], ExtensionContext()))
+    sources = list(install_plugins(bundle, [HtmlPlugin], _ext_ctx()))
     return [t.name().to_wire() for src in sources for t in src.tools()]
 
 

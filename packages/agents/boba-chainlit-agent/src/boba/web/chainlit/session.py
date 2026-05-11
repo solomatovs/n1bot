@@ -8,8 +8,6 @@ from boba.agent import AgentBuilder, AgentInput, InMemoryMessageService
 from boba.agent.orchestrator import AgentRequest
 from boba.agent.prompt_providers import PromptLoader
 from boba.agent.workspace_fs import (
-    FsHistoryWorkspaceRegistry,
-    FsProjectWorkspaceRegistry,
     FsPromptWorkspaceRegistry,
 )
 from boba.llm.models import RequestId
@@ -28,6 +26,8 @@ from boba.web.chainlit.infra import (
     log_context,
 )
 from boba.workspace.contract import (
+    HistoryWorkspaceRegistry,
+    ProjectWorkspaceRegistry,
     ProjectWorkspaceShell,
     PromptWorkspaceId,
     WorkspaceId,
@@ -38,14 +38,30 @@ class ChatSession:
     """One-shot обёртка: конфиг + workspace registry; агент пересобирается на каждый run."""  # noqa: E501
 
     _builder: AgentBuilder | None = None
+    _project_workspaces: ProjectWorkspaceRegistry | None = None
+    _history_workspaces: HistoryWorkspaceRegistry | None = None
 
     @classmethod
-    def set_builder(cls, builder: AgentBuilder) -> None:
-        """Инжектит application-level AgentBuilder до первого ChatSession()."""
+    def set_builder(
+        cls,
+        builder: AgentBuilder,
+        *,
+        project_workspaces: ProjectWorkspaceRegistry,
+        history_workspaces: HistoryWorkspaceRegistry,
+    ) -> None:
+        """
+        Инжектит application-level AgentBuilder + registry'и до первого ChatSession()
+        """
         cls._builder = builder
+        cls._project_workspaces = project_workspaces
+        cls._history_workspaces = history_workspaces
 
     def __init__(self) -> None:
-        if ChatSession._builder is None:
+        if (
+            ChatSession._builder is None
+            or ChatSession._project_workspaces is None
+            or ChatSession._history_workspaces is None
+        ):
             msg = (
                 "ChatSession instantiated before ChatSession.set_builder() — "
                 "bootstrap must call set_builder() in __main__.main()."
@@ -61,15 +77,8 @@ class ChatSession:
         self._agent_config = app.runtime
         self._chainlit_config = bundle.get(ChainlitConfig, "chainlit")
 
-        self._workspaces = FsProjectWorkspaceRegistry(
-            base_dir=Path(app.workspaces.base_dir),
-            subdir=app.workspaces.user_subdir,
-        )
-
-        self._history_workspaces = FsHistoryWorkspaceRegistry(
-            base_dir=Path(app.workspaces.base_dir),
-            subdir=app.workspaces.system_subdir,
-        )
+        self._workspaces = ChatSession._project_workspaces
+        self._history_workspaces = ChatSession._history_workspaces
 
         prompt_workspace = FsPromptWorkspaceRegistry(
             root=Path(app.prompts.dir),
@@ -99,11 +108,10 @@ class ChatSession:
     ) -> None:
         """Запустить агентский цикл; модель берётся из chainlit-конфига."""
         # workspace подтягивается заранее, чтобы последующий upload в тот же id работал.
-        project_workspace = self._workspaces.get_or_create(workspace_id)
+        self._workspaces.get_or_create(workspace_id)
         request_id = RequestId.new()
 
-        # ToolContext — per-request DI: прокидывает workspace в Tool.execute.
-        tool_ctx = ToolContext(project_workspace=project_workspace)
+        tool_ctx = ToolContext(workspace_id=workspace_id)
 
         history_workspace = self._history_workspaces.get_or_create(workspace_id)
         observer = CurlTraceChatCompletionObserver(history_workspace)

@@ -7,9 +7,9 @@ from typing import Annotated
 
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import NonEmpty
+from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     JsonResult,
-    Tool,
     ToolContext,
     ToolExecutionError,
     ToolResult,
@@ -36,12 +36,12 @@ class StatToolConfig:
     prompt: PromptOverlay
 
 
-class StatTool(Tool[StatArgs, StatToolConfig]):
+class StatTool(FsToolBase[StatArgs, StatToolConfig]):
     """Метаданные файла или директории."""
 
     def execute(self, ctx: ToolContext, req: StatArgs) -> ToolResult:
         try:
-            meta = ctx.project_workspace.meta(req.path)
+            meta = self._shell(ctx).meta(req.path)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self.tool_id(),

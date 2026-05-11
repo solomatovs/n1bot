@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Literal, Optional, cast
-from unittest.mock import MagicMock
+from typing import Annotated, Any, Literal, Optional
 
 import pytest
 
@@ -30,15 +29,13 @@ from boba.tools.domain import (
     ToolSourceId,
 )
 from boba.tools.framework import ToolDecoratorFactory, tool
-from boba.workspace.contract import ProjectWorkspaceShell
+from boba.workspace.contract import WorkspaceId
 
 _SOURCE = ToolSourceId("test")
 
 
 def _ctx() -> ToolContext:
-    return ToolContext(
-        project_workspace=cast(ProjectWorkspaceShell, MagicMock()),
-    )
+    return ToolContext(workspace_id=WorkspaceId.new())
 
 
 def _field(factory: ToolDecoratorFactory, name: str) -> FieldSpec[Any]:

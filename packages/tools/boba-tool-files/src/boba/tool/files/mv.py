@@ -7,9 +7,9 @@ from typing import Annotated
 
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import NonEmpty
+from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     TextResult,
-    Tool,
     ToolContext,
     ToolExecutionError,
     ToolResult,
@@ -36,12 +36,12 @@ class MvToolConfig:
     prompt: PromptOverlay
 
 
-class MvTool(Tool[MvArgs, MvToolConfig]):
+class MvTool(FsToolBase[MvArgs, MvToolConfig]):
     """Переместить/переименовать файл или директорию."""
 
     def execute(self, ctx: ToolContext, req: MvArgs) -> ToolResult:
         try:
-            ctx.project_workspace.move(req.src, req.dst)
+            self._shell(ctx).move(req.src, req.dst)
         except WorkspaceNotFoundError as e:
             raise ToolExecutionError(
                 tool_id=self.tool_id(),
