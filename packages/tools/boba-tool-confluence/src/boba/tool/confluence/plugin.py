@@ -2,7 +2,13 @@
 
 Конфиг плагина — плоский DTO с общими connection-полями на корне
 (`base_url`, `auth_method`, `auth_user`, `auth_token`, `timeout_sec`,
-`body_format`) и тремя `PromptOverlay`-блоками (по одному на tool).
+`body_format`) и `PromptOverlay`-блоками — по одному на tool.
+
+Регистрируемые tools:
+- `confluence_search`        — CQL-поиск по тексту.
+- `confluence_page_outline`  — структура заголовков страницы по page_id.
+- `confluence_page_section`  — текст одной секции по page_id + anchor.
+- `confluence_page_download` — скачать страницы как REST-JSON в workspace.
 
 `build(cfg, ctx)` собирает Tool-DTO inline из общих полей и
 соответствующего overlay'я, инстанцирует Tools, упаковывает в
@@ -21,6 +27,10 @@ from boba.plugin.prompt import PromptOverlay
 from boba.schema import schema
 from boba.schema.coercion import ParseFloat, ParseString
 from boba.tool.confluence.connection import ConfluenceConnection
+from boba.tool.confluence.page_download import (
+    ConfluencePageDownloadTool,
+    ConfluencePageDownloadToolConfig,
+)
 from boba.tool.confluence.page_outline import (
     ConfluencePageOutlineTool,
     ConfluencePageOutlineToolConfig,
@@ -75,6 +85,7 @@ class ConfluencePluginConfig:
     confluence_search: PromptOverlay = field(default_factory=PromptOverlay)
     confluence_page_outline: PromptOverlay = field(default_factory=PromptOverlay)
     confluence_page_section: PromptOverlay = field(default_factory=PromptOverlay)
+    confluence_page_download: PromptOverlay = field(default_factory=PromptOverlay)
 
 
 class ConfluencePlugin(Plugin[ConfluencePluginConfig, ToolSource]):
@@ -127,6 +138,19 @@ class ConfluencePlugin(Plugin[ConfluencePluginConfig, ToolSource]):
                         timeout_sec=cfg.timeout_sec,
                         body_format=cfg.body_format,
                         prompt=cfg.confluence_page_section,
+                    ),
+                    ctx,
+                    sid,
+                ),
+                ConfluencePageDownloadTool(
+                    ConfluencePageDownloadToolConfig(
+                        base_url=cfg.base_url,
+                        auth_method=cfg.auth_method,
+                        auth_user=cfg.auth_user,
+                        auth_token=cfg.auth_token,
+                        timeout_sec=cfg.timeout_sec,
+                        body_format=cfg.body_format,
+                        prompt=cfg.confluence_page_download,
                     ),
                     ctx,
                     sid,

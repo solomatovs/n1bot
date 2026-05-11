@@ -10,50 +10,13 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from boba.config.bundle import ConfigBundle
-from boba.config.path import (
-    ConfigLookup,
-    ConfigPath,
-    ConfigSource,
-    Found,
-    NotFound,
-)
-from boba.patterns import StrId
+from boba.config.source.dict import DictSource
 from boba.plugin import ExtensionContext, install_plugins
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.value import StringValue
 from boba.tool.files import FilesPlugin
 from boba.tool.files.cat import CatTool, CatToolConfig
 from boba.tools.domain import ToolSourceId
 from boba.workspace.contract import ProjectWorkspaceShell
-
-
-class _InlineSource(ConfigSource):
-    def __init__(self, vals: dict[str, str]) -> None:
-        self._vals = {ConfigPath.parse(k): StringValue(v) for k, v in vals.items()}
-
-    def name(self) -> str:
-        return "inline"
-
-    def priority(self) -> int:
-        return 100
-
-    def load(self):
-        return dict(self._vals)
-
-    def lookup(self, path: ConfigPath) -> ConfigLookup:
-        if path in self._vals:
-            return Found(self._vals[path])
-        return NotFound()
-
-    def keys_with_prefix(self, prefix: ConfigPath):
-        for p in self._vals:
-            if p.startswith(prefix):
-                yield p
-
-    @property
-    def id(self) -> StrId:
-        return StrId("inline")
-
 
 _BASE = {"tool.files.enable": "true"}
 
@@ -65,7 +28,9 @@ def _ext_ctx() -> ExtensionContext:
 
 
 def _cat_tool(values: dict[str, str]) -> CatTool:
-    bundle = ConfigBundle.from_sources([_InlineSource({**_BASE, **values})])
+    bundle = ConfigBundle.from_sources(
+        [DictSource.from_strings({**_BASE, **values})],
+    )
     sources = list(install_plugins(bundle, [FilesPlugin], _ext_ctx()))
     found = next(
         t for src in sources for t in src.tools() if t.name().to_wire() == "cat"

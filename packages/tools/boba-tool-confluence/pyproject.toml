@@ -13,6 +13,7 @@ dependencies = [
     "boba-config",
     "boba-plugin",
     "boba-tools",
+    "boba-workspace",
     "boba-indexing",
     "boba-tool-chromadb",
     "boba-transport-http",
