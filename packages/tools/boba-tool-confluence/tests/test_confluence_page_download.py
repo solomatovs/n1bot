@@ -45,11 +45,11 @@ def _patch_httpx(monkeypatch, handler):
 def test_downloads_pages_to_workspace_files(monkeypatch):
     pages = {
         "111": (
-            b'{"id":"111","title":"A",'
+            b'{"id":"111","title":"A","space":{"key":"DOC"},'
             b'"body":{"view":{"value":"<p>page A</p>"}}}'
         ),
         "222": (
-            b'{"id":"222","title":"B",'
+            b'{"id":"222","title":"B","space":{"key":"DOC"},'
             b'"body":{"view":{"value":"<p>page B</p>"}}}'
         ),
     }
@@ -99,9 +99,17 @@ def test_downloads_pages_to_workspace_files(monkeypatch):
         "downloads/222.html",
     }
     assert {item["title"] for item in payload["saved"]} == {"A", "B"}
-    # Файлы реально записаны с HTML-телом из body.view.value
-    assert written["downloads/111.html"] == html["111"]
-    assert written["downloads/222.html"] == html["222"]
+    assert {item["space_key"] for item in payload["saved"]} == {"DOC"}
+    urls = {item["url"] for item in payload["saved"]}
+    assert "https://confl.test/pages/viewpage.action?pageId=111" in urls
+    assert "https://confl.test/pages/viewpage.action?pageId=222" in urls
+    # Файлы начинаются с HTML-комментария с метаданными и заканчиваются телом
+    for pid in ("111", "222"):
+        content = written[f"downloads/{pid}.html"]
+        assert content.startswith(b"<!--")
+        assert f"page_id: {pid}".encode() in content
+        assert b"space: DOC" in content
+        assert content.endswith(html[pid])
     # mkdir вызван один раз, поскольку exists()=False
     shell.mkdir.assert_called_once_with("downloads")
 

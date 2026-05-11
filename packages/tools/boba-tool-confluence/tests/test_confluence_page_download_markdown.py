@@ -47,11 +47,11 @@ def _patch_httpx(monkeypatch, handler):
 def test_downloads_pages_as_markdown(monkeypatch):
     pages = {
         "111": (
-            b'{"id":"111","title":"Alpha",'
+            b'{"id":"111","title":"Alpha","space":{"key":"DOC"},'
             b'"body":{"view":{"value":"<h1>Heading</h1><p>Body <b>bold</b></p>"}}}'
         ),
         "222": (
-            b'{"id":"222","title":"Beta",'
+            b'{"id":"222","title":"Beta","space":{"key":"DOC"},'
             b'"body":{"view":{"value":"<h2>Sub</h2><p>Just text</p>"}}}'
         ),
     }
@@ -100,9 +100,17 @@ def test_downloads_pages_as_markdown(monkeypatch):
         "downloads/222.md",
     }
     assert {item["title"] for item in payload["saved"]} == {"Alpha", "Beta"}
+    assert {item["space_key"] for item in payload["saved"]} == {"DOC"}
+    urls = {item["url"] for item in payload["saved"]}
+    assert "https://confl.test/pages/viewpage.action?pageId=111" in urls
+    assert "https://confl.test/pages/viewpage.action?pageId=222" in urls
 
     md_111 = written["downloads/111.md"].decode("utf-8")
     md_222 = written["downloads/222.md"].decode("utf-8")
+    # YAML frontmatter с источником
+    assert md_111.startswith("---\nsource: https://confl.test/pages/viewpage.action?pageId=111\n")
+    assert "page_id: 111" in md_111
+    assert "space: DOC" in md_111
     # markdownify рендерит h1 как `# Heading`, **bold** для <b>.
     assert "# Heading" in md_111
     assert "**bold**" in md_111
