@@ -38,6 +38,7 @@
 -e ./packages/tools/boba-tool-confluence
 -e ./packages/tools/boba-tool-files
 -e ./packages/tools/boba-tool-html
+-e ./packages/tools/boba-tool-postgres-fts
 
 # entry-point apps
 -e ./packages/agents/boba-cli-agent
