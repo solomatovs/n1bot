@@ -30,7 +30,6 @@ from boba.web.chainlit.bridge import ChainlitBridgeSink
 from boba.web.chainlit.files import save_upload
 from boba.web.chainlit.session import ChatSession
 from boba.workspace.contract import WorkspaceId
-from chainlit.input_widget import Select
 
 logger = logging.getLogger(__name__)
 
@@ -45,24 +44,7 @@ async def on_chat_start() -> None:
     workspace_id = WorkspaceId.from_wire("00000000-0000-0000-0000-000000000001")
     cl.user_session.set("workspace_id", workspace_id)
 
-    session = await asyncio.to_thread(_get_session)
-
-    models = session.models
-    if not models:
-        msg = "[chainlit] models пуст или не задан — UI не может выбрать модель"
-        raise RuntimeError(msg)
-    await cl.ChatSettings(
-        [
-            Select(
-                id="model",
-                label="LLM модель",
-                values=models,
-                initial_index=0,
-            ),
-        ],
-    ).send()
-
-    cl.user_session.set("model", models[0])
+    await asyncio.to_thread(_get_session)
 
     await cl.Message(
         content=f"Сессия готова. workspace_id = `{workspace_id.to_wire()}`",
@@ -70,17 +52,9 @@ async def on_chat_start() -> None:
     ).send()
 
 
-@cl.on_settings_update
-async def on_settings_update(settings: dict[str, object]) -> None:
-    model = settings.get("model")
-    if isinstance(model, str) and model:
-        cl.user_session.set("model", model)
-
-
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
     workspace_id = cast(WorkspaceId, cl.user_session.get("workspace_id"))
-    model = cast(str, cl.user_session.get("model"))
     session = _get_session()
 
     saved: list[str] = []
@@ -105,7 +79,7 @@ async def on_message(message: cl.Message) -> None:
 
     def _run_agent() -> None:
         try:
-            session.run(workspace_id, query, bridge, model=model)
+            session.run(workspace_id, query, bridge)
         finally:
             bridge.close()
 

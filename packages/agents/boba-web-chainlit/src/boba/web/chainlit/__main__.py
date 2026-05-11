@@ -5,30 +5,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from boba.config.bundle import ConfigBundle
-from boba.config.path import ConfigSource
-from boba.config.source.cli import CliSource
-from boba.config.source.env import EnvFileSource, EnvSource
-from boba.config.source.toml import TomlFileSource, TomlSource
+from boba.agent.builder import AgentBuilder
 from boba.patterns import ConverterInputError
 from boba.web.chainlit.config import ChainlitConfig
+from boba.web.chainlit.infra import use_toml_config
 from boba.web.chainlit.session import ChatSession
 from boba.web.chainlit.ui_overrides import UIOverrideTomlConverter
-
-
-def _config_sources() -> list[ConfigSource]:
-    return [
-        CliSource(),
-        EnvFileSource(),
-        EnvSource(),
-        TomlFileSource(),
-        TomlSource(),
-    ]
-
-
-def build_app_config() -> ConfigBundle:
-    """ConfigBundle для core-DTO + Plugin-протокола."""
-    return ConfigBundle.from_sources(_config_sources())
 
 
 def bridge_chainlit_env(cfg: ChainlitConfig) -> Path:
@@ -57,16 +39,23 @@ def write_ui_config_overrides(cfg: ChainlitConfig, app_root: Path) -> None:
 
 
 def main() -> int:
+    builder = (
+        AgentBuilder()
+        .use_cli()
+        .use_env_file()
+        .use_env()
+        .pipe(use_toml_config)
+        .use_tools_plugins_discovered()
+    )
     try:
-        bundle = build_app_config()
-    except ConverterInputError as _e:
+        chainlit_cfg = builder.bundle().get(ChainlitConfig, "chainlit")
+    except ConverterInputError:
         return 2
-    chainlit_cfg = bundle.get(ChainlitConfig, "chainlit")
     app_root = bridge_chainlit_env(chainlit_cfg)
     write_ui_config_overrides(chainlit_cfg, app_root)
 
     # ChatSession создаётся лениво при первом cl.on_chat_start.
-    ChatSession.set_bundle(bundle)
+    ChatSession.set_builder(builder)
 
     # chainlit импортируется только после bootstrap — он читает env при загрузке.
     from chainlit.cli import run_chainlit  # noqa: PLC0415
