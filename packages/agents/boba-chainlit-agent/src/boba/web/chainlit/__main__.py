@@ -7,9 +7,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 from boba.agent.builder import AgentBuilder
+from boba.agent.messages import InMemoryMessageService, MessageService
 from boba.agent.workspace_fs import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
+    FsWorkspaceCatalog,
 )
 from boba.config.builder import ConfigBundleFluentFactory
 from boba.config.bundle import ConfigBundle
@@ -18,6 +20,7 @@ from boba.web.chainlit.bootstrap import set_app_state
 from boba.web.chainlit.config import ChainlitConfig
 from boba.web.chainlit.infra import AppConfig
 from boba.web.chainlit.ui_overrides import UIOverrideTomlConverter
+from boba.workspace.contract import WorkspaceId
 
 
 def bridge_chainlit_env(cfg: ChainlitConfig) -> Path:
@@ -75,14 +78,21 @@ def main() -> int:
     app_root = bridge_chainlit_env(chainlit_cfg)
     write_ui_config_overrides(chainlit_cfg, app_root)
 
+    workspaces_base = Path(app.workspaces.base_dir)
     project_workspaces = FsProjectWorkspaceRegistry(
-        base_dir=Path(app.workspaces.base_dir),
+        base_dir=workspaces_base,
         subdir=app.workspaces.user_subdir,
     )
     history_workspaces = FsHistoryWorkspaceRegistry(
-        base_dir=Path(app.workspaces.base_dir),
+        base_dir=workspaces_base,
         subdir=app.workspaces.system_subdir,
     )
+    catalog = FsWorkspaceCatalog(workspaces_base)
+
+    def make_message_service(_workspace_id: WorkspaceId) -> MessageService:
+        # InMemory: история не персистится. Catalog будет всегда видеть пустой
+        # message_iter() и Chainlit пропустит формирование label.
+        return InMemoryMessageService()
 
     # ChatSession создаётся лениво при первом cl.on_chat_start (см. app.py)
     # и получает свой свежий AgentBuilder через factory.
@@ -90,6 +100,8 @@ def main() -> int:
         _make_builder_factory(bundle),
         project_workspaces,
         history_workspaces,
+        catalog,
+        make_message_service,
     )
 
     # chainlit импортируется только после bootstrap — он читает env при загрузке.

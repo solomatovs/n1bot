@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from boba.agent import AgentBuilder, AgentInput, InMemoryMessageService
+from boba.agent import AgentBuilder, AgentInput
+from boba.agent.messages import MessageService
 from boba.agent.orchestrator import Agent, AgentRequest
 from boba.agent.prompt_providers import PromptLoader
 from boba.agent.turn.reducers import (
@@ -42,6 +43,7 @@ class ChatSession:
         builder: AgentBuilder,
         project_workspaces: ProjectWorkspaceRegistry,
         history_workspaces: HistoryWorkspaceRegistry,
+        message_service: MessageService,
     ) -> None:
         bundle = builder.config_bundle()
         if bundle is None:
@@ -84,7 +86,7 @@ class ChatSession:
             .with_llm(llm)
             .use_default_turn_reducers()
             .use_turn_reducer(RememberUserQueryReducer())
-            .with_messages(InMemoryMessageService())
+            .with_messages(message_service)
             .with_prompts(prompt_loader.prompt_providers())
             .with_config(self._agent_config)
             .build()

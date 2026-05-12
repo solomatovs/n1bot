@@ -18,14 +18,18 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from boba.agent.builder import AgentBuilder
+from boba.agent.messages import MessageService
+from boba.workspace.catalog import WorkspaceCatalog
 from boba.workspace.contract import (
     HistoryWorkspaceRegistry,
     ProjectWorkspaceRegistry,
+    WorkspaceId,
 )
 
 __all__ = ["AppState", "app_state", "set_app_state"]
 
 BuilderFactory = Callable[[], AgentBuilder]
+MessageServiceFactory = Callable[[WorkspaceId], MessageService]
 
 
 @dataclass(frozen=True)
@@ -35,6 +39,8 @@ class AppState:
     make_builder: BuilderFactory
     project_workspaces: ProjectWorkspaceRegistry
     history_workspaces: HistoryWorkspaceRegistry
+    catalog: WorkspaceCatalog
+    make_message_service: MessageServiceFactory
 
 
 @dataclass
@@ -51,12 +57,16 @@ def set_app_state(
     make_builder: BuilderFactory,
     project_workspaces: ProjectWorkspaceRegistry,
     history_workspaces: HistoryWorkspaceRegistry,
+    catalog: WorkspaceCatalog,
+    make_message_service: MessageServiceFactory,
 ) -> None:
     """Зафиксировать deps до `run_chainlit(...)`."""
     _holder.state = AppState(
         make_builder=make_builder,
         project_workspaces=project_workspaces,
         history_workspaces=history_workspaces,
+        catalog=catalog,
+        make_message_service=make_message_service,
     )
 
 

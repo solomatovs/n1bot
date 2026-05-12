@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import cast
+from typing import ClassVar, cast
 
 import chainlit as cl
 from boba.agent.events import (
@@ -25,7 +25,9 @@ from boba.agent.events import (
     ToolExecutionFailed,
     ToolExecutionStarted,
 )
-from boba.web.chainlit.bootstrap import app_state
+from boba.agent.messages import MessageService
+from boba.llm.models import UserMessage
+from boba.web.chainlit.bootstrap import AppState, app_state
 from boba.web.chainlit.bridge import ChainlitBridgeSink
 from boba.web.chainlit.files import save_upload
 from boba.web.chainlit.session import ChatSession
@@ -41,33 +43,119 @@ def _build_session(workspace_id: WorkspaceId) -> ChatSession:
         state.make_builder(),
         state.project_workspaces,
         state.history_workspaces,
+        state.make_message_service(workspace_id),
     )
+
+
+class _ProfileBuilder:
+    """Сборка cl.ChatProfile для selector'а до старта чата."""
+
+    NEW_SENTINEL: ClassVar[str] = "__new__"
+    _LABEL_MAX: ClassVar[int] = 60
+
+    @staticmethod
+    def build(state: AppState) -> list[cl.ChatProfile]:
+        profiles: list[cl.ChatProfile] = [
+            cl.ChatProfile(
+                name=_ProfileBuilder.NEW_SENTINEL,
+                markdown_description="Создать **новый** workspace",
+            ),
+        ]
+
+        for summary in sorted(
+            state.catalog.iterator(),
+            key=lambda s: s.last_used_at,
+            reverse=True,
+        ):
+            ms = state.make_message_service(summary.workspace_id)
+            preview = _ProfileBuilder._first_user_preview(ms)
+            heading = preview or summary.workspace_id.to_wire()[:8]
+            date_str = summary.last_used_at.strftime("%Y-%m-%d %H:%M")
+            profiles.append(
+                cl.ChatProfile(
+                    name=summary.workspace_id.to_wire(),
+                    markdown_description=f"**{heading}**\n\n_{date_str}_",
+                )
+            )
+        return profiles
+
+    @staticmethod
+    def resolve_workspace(profile: str | None) -> WorkspaceId:
+        if profile is None or profile == _ProfileBuilder.NEW_SENTINEL:
+            return WorkspaceId.new()
+        return WorkspaceId.from_wire(profile)
+
+    @staticmethod
+    def _first_user_preview(ms: MessageService) -> str | None:
+        """Достаем preview первого сообщения для отображения в названии чата"""
+        for m in ms.message_iter():
+            if not isinstance(m, UserMessage):
+                continue
+
+            text = m.content.strip()
+            if not text:
+                continue
+
+            if len(text) > _ProfileBuilder._LABEL_MAX:
+                return text[: _ProfileBuilder._LABEL_MAX] + "…"
+
+            return text
+
+        return None
+
+
+@cl.set_chat_profiles
+async def chat_profiles(_user: cl.User | None) -> list[cl.ChatProfile]:
+    state = app_state()
+    return await asyncio.to_thread(_ProfileBuilder.build, state)
 
 
 @cl.on_chat_start
 async def on_chat_start() -> None:
-    workspace_id = WorkspaceId.from_wire(cl.context.session.thread_id)
-    session = await asyncio.to_thread(_build_session, workspace_id)
+    # Chainlit запускает on_chat_start через create_task (fire-and-forget),
+    # поэтому on_message может стартовать раньше окончания инициализации.
+    # Кладём Future в user_session ДО первого await — on_message делает await его.
+    profile = cast("str | None", cl.user_session.get("chat_profile"))
+    workspace_id = _ProfileBuilder.resolve_workspace(profile)
     cl.user_session.set("workspace_id", workspace_id)
-    cl.user_session.set("session", session)
 
-    await cl.Message(
-        content=f"Сессия готова. workspace_id = `{workspace_id.to_wire()}`",
-        author="system",
-    ).send()
+    future: asyncio.Future[ChatSession] = (
+        asyncio.get_running_loop().create_future()
+    )
+    cl.user_session.set("session_future", future)
+    try:
+        session = await asyncio.to_thread(_build_session, workspace_id)
+    except BaseException as exc:
+        future.set_exception(exc)
+        raise
+    future.set_result(session)
 
 
 @cl.on_chat_end
 async def on_chat_end() -> None:
-    # Снимаем ссылку на ChatSession — Agent/MessageService собирает GC.
+    # Снимаем ссылку на сессию — Agent/MessageService собирает GC.
     # project/history shells живут в registry и переживают сессию (это нормально:
     # при resume того же thread'а получим тот же FS-workspace).
-    cl.user_session.set("session", None)
+    cl.user_session.set("session_future", None)
 
 
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
-    session = cast(ChatSession, cl.user_session.get("session"))
+    future = cast(
+        "asyncio.Future[ChatSession] | None",
+        cl.user_session.get("session_future"),
+    )
+    if future is None:
+        await cl.Message(
+            content="Сессия не инициализирована. Обновите страницу.",
+            author="system",
+        ).send()
+        logger.error(
+            "on_message без session_future; chat_profile=%r",
+            cl.user_session.get("chat_profile"),
+        )
+        return
+    session = await future
 
     saved: list[str] = []
     if message.elements:
@@ -139,7 +227,6 @@ class _EventRenderer:
             case PhaseTransition():
                 await self._on_phase(event)
 
-
     async def _set_status(self, text: str) -> None:
         if self.status_msg is None:
             self.status_msg = cl.Message(content=text, author="system")
@@ -159,7 +246,6 @@ class _EventRenderer:
             self.answer_msg = cl.Message(content="")
             await self.answer_msg.send()
         return self.answer_msg
-
 
     async def _on_delta(self, e: ContentDelta) -> None:
         chunk = e.chunk()
@@ -211,15 +297,10 @@ class _EventRenderer:
             case ToolExecutionStarted():
                 await self._on_tool_exec_started(e)
             case LLMRequestSent():
-                tools_hint = " с tools" if e.has_tools else ""
+                await self._set_status(f"`{e.model}` sent message")
+            case IterationStarted():
                 await self._set_status(
-                    f"Жду ответ от модели `{e.model}`{tools_hint}… "
-                    f"(сообщений в контексте: {e.messages_count})",
-                )
-            case IterationStarted() if e.iteration > 1:
-                # Первую итерацию не маркируем — пользователь только что отправил запрос
-                await self._set_status(
-                    f"Итерация: {e.iteration}/{e.max_iterations}…",
+                    f"Iterable: {e.iteration}/{e.max_iterations}",
                 )
             case AnswerStarted():
                 await self._open_answer()
@@ -228,7 +309,7 @@ class _EventRenderer:
                 self.thinking_step = cl.Step(name="thinking", type="run")
                 await self.thinking_step.send()
             case GenerationStarted():
-                await self._set_status("Модель обрабатывает запрос…")
+                await self._set_status("llm recieved first chunk...")
             case GenerationDone():
                 await self._clear_status()
 
