@@ -31,7 +31,9 @@ from boba.web.chainlit.bridge import ChainlitBridgeSink
 from boba.web.chainlit.data_layer import WorkspaceOwnership, WorkspaceOwnershipEntry
 from boba.web.chainlit.files import save_upload
 from boba.workspace.contract import WorkspaceId
+from chainlit.context import local_steps
 from chainlit.types import ThreadDict
+from chainlit.utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -272,12 +274,28 @@ async def _finalize_step(
 
 
 class _EventRenderer:
-    """Рендерит AgentEvent'ы в Chainlit UI поверх семей событий."""
+    """Рендерит AgentEvent'ы в Chainlit UI поверх семей событий.
 
-    def __init__(self) -> None:
+    Корневая причина «ответ сверху над thinking/tool»:
+    `@cl.on_message` оборачивает handler в неявный run-`cl.Step`. `cl.Message`
+    в `__post_init__` читает `local_steps` и автоматически получает этот run
+    как parent. `cl.Step` так не делает — `parent_id=None` остаётся.
+    В итоге answer оказывается ВНУТРИ run-step, а thinking/tool — top-level
+    рядом, и frontend рендерит answer «выше» (он внутри parent).
+
+    Фикс: захватываем id текущего run-step и пробрасываем его в parent_id
+    каждого cl.Step (thinking/tool/status). Тогда все элементы turn'а
+    становятся children одного run, frontend помещает их в parent.steps
+    в порядке прихода — порядок гарантирован.
+    """
+
+    def __init__(self, parent_id: str | None) -> None:
+        self._parent_id = parent_id
         self.answer_msg: cl.Message | None = None
         self.thinking_step: cl.Step | None = None
-        self.status_msg: cl.Message | None = None
+        # Status — cl.Step(type="run"), а не cl.Message: статус не должен
+        # занимать слот в основной chat-ленте и влиять на ordering.
+        self.status_step: cl.Step | None = None
         # tool_call_id → Step.
         self.tool_steps_by_id: dict[str, cl.Step] = {}
 
@@ -295,24 +313,61 @@ class _EventRenderer:
                 await self._on_phase(event)
 
     async def _set_status(self, text: str) -> None:
-        if self.status_msg is None:
-            self.status_msg = cl.Message(content=text, author="system")
-            await self.status_msg.send()
+        if self.status_step is None:
+            self.status_step = cl.Step(
+                name=text,
+                type="run",
+                parent_id=self._parent_id,
+            )
+            await self.status_step.send()
         else:
-            self.status_msg.content = text
-            await self.status_msg.update()
+            self.status_step.name = text
+            await self.status_step.update()
 
     async def _clear_status(self) -> None:
-        if self.status_msg is not None:
-            await self.status_msg.remove()
-            self.status_msg = None
+        if self.status_step is not None:
+            await self.status_step.remove()
+            self.status_step = None
 
     async def _open_answer(self) -> cl.Message:
+        """Создаёт answer-cl.Message по требованию (lazy)."""
         await self._clear_status()
         if self.answer_msg is None:
-            self.answer_msg = cl.Message(content="")
+            # created_at фиксируем в момент Python-создания, чтобы chainlit
+            # frontend сортировал answer строго ПОСЛЕ ранее созданных
+            # cl.Step (которые ставят created_at в __init__).
+            self.answer_msg = cl.Message(content="", created_at=utc_now())
             await self.answer_msg.send()
         return self.answer_msg
+
+    async def _open_thinking(self) -> cl.Step:
+        """Создаёт thinking-cl.Step по требованию (lazy)."""
+        await self._clear_status()
+        if self.thinking_step is None:
+            self.thinking_step = cl.Step(
+                name="thinking",
+                type="run",
+                parent_id=self._parent_id,
+            )
+            await self.thinking_step.send()
+        return self.thinking_step
+
+    async def _drop_pending_answer(self) -> None:
+        """Сбрасывает ссылку на не-завершённый answer; пустой удаляем из timeline.
+
+        Why: AnswerSource (LLM) эмитит AnswerStarted на ЛЮБОЙ первый delta.content,
+        даже если итерация в итоге ушла в tool_calls без финального ContentSnapshot.
+        Без сброса между итерациями новый ContentDelta(ANSWER) будет писать в
+        старое сообщение из прошлой итерации — оно остаётся выше последующих
+        thinking/tool в timeline.
+        How to apply: на IterationStarted; если answer_msg пустой — удаляем,
+        чтобы фантомное сообщение не висело в чате.
+        """
+        if self.answer_msg is None:
+            return
+        if not (self.answer_msg.content or "").strip():
+            await self.answer_msg.remove()
+        self.answer_msg = None
 
     async def _on_delta(self, e: ContentDelta) -> None:
         chunk = e.chunk()
@@ -323,8 +378,8 @@ class _EventRenderer:
                 msg = await self._open_answer()
                 await msg.stream_token(chunk)
             case SlotKind.THINKING:
-                if self.thinking_step is not None:
-                    await self.thinking_step.stream_token(chunk)
+                step = await self._open_thinking()
+                await step.stream_token(chunk)
             case SlotKind.TOOL_ARGS:
                 step = self.tool_steps_by_id.get(e.slot_id())
                 if step is not None:
@@ -354,10 +409,15 @@ class _EventRenderer:
                 await cl.Message(
                     content=f"**Feedback to LLM**:\n\n{e.body()}",
                     author="system",
+                    created_at=utc_now(),
                 ).send()
 
     async def _on_phase(self, e: PhaseTransition) -> None:
         # Диспатч по классу — рендерим только phase'ы с UI-эффектом.
+        # UI-сущности (answer cl.Message, thinking cl.Step) создаём ЛЕНИВО
+        # в _on_delta при первом реальном chunk: phase-event может прилетать
+        # до контента или вовсе без контента (LLM ушёл в tool_calls после
+        # пустого AnswerStarted), а pre-emptive send() ломает порядок в timeline.
         match e:
             case ToolCallStreamStarted():
                 await self._on_tool_call_stream_started(e)
@@ -366,15 +426,15 @@ class _EventRenderer:
             case LLMRequestSent():
                 await self._set_status(f"`{e.model}` sent message")
             case IterationStarted():
+                # Между итерациями обнуляем ссылки на answer/thinking,
+                # иначе stream_token из новой итерации пишет в UI из старой.
+                await self._drop_pending_answer()
+                self.thinking_step = None
                 await self._set_status(
                     f"Iterable: {e.iteration}/{e.max_iterations}",
                 )
-            case AnswerStarted():
-                await self._open_answer()
-            case ThinkingStarted():
+            case AnswerStarted() | ThinkingStarted():
                 await self._clear_status()
-                self.thinking_step = cl.Step(name="thinking", type="run")
-                await self.thinking_step.send()
             case GenerationStarted():
                 await self._set_status("llm recieved first chunk...")
             case GenerationDone():
@@ -382,7 +442,7 @@ class _EventRenderer:
 
     async def _on_tool_call_stream_started(self, e: ToolCallStreamStarted) -> None:
         await self._clear_status()
-        step = cl.Step(name=e.tool_name, type="tool")
+        step = cl.Step(name=e.tool_name, type="tool", parent_id=self._parent_id)
         await step.send()
         self.tool_steps_by_id[e.tool_call_id] = step
 
@@ -409,6 +469,7 @@ class _EventRenderer:
         await cl.Message(
             content=f"**{e.headline()}**\n\n{body}",
             author="system",
+            created_at=utc_now(),
         ).send()
 
     async def _on_terminal(self, e: Terminal) -> None:
@@ -420,8 +481,14 @@ class _EventRenderer:
         ).send()
 
 
+def _current_run_step_id() -> str | None:
+    """id текущего run-step (обёртка @cl.on_message вокруг handler'а)."""
+    stack = local_steps.get() or []
+    return stack[-1].id if stack else None
+
+
 async def _render_events(queue: asyncio.Queue[AgentEvent | None]) -> None:
-    renderer = _EventRenderer()
+    renderer = _EventRenderer(parent_id=_current_run_step_id())
     while True:
         event = await queue.get()
         if event is None:

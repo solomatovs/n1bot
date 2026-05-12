@@ -8,9 +8,10 @@ from boba.agent import AgentBuilder, AgentInput
 from boba.agent.messages import MessageService
 from boba.agent.orchestrator import Agent, AgentRequest
 from boba.agent.prompt_providers import PromptLoader
-from boba.agent.turn.reducers import (
-    RememberUserQueryReducer,
-)
+
+# from boba.agent.turn.reducers import (
+#     RememberUserQueryReducer,
+# )
 from boba.agent.workspace_fs import FsPromptWorkspaceRegistry
 from boba.llm.builder import LLMPipelineFactory
 from boba.llm.models import RequestId
@@ -83,7 +84,7 @@ class ChatSession:
             builder.with_extension(ProjectWorkspaceShell, project_shell)
             .with_llm(llm)
             .use_default_turn_reducers()
-            .use_turn_reducer(RememberUserQueryReducer())
+            # .use_turn_reducer(RememberUserQueryReducer())
             .with_messages(message_service)
             .with_prompts(prompt_loader.prompt_providers())
             .with_config(self._agent_config)
