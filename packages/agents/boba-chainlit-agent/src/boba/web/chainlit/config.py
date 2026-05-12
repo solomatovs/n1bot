@@ -34,7 +34,8 @@ class ChainlitConfig:
     ] = "127.0.0.1"
     port: Annotated[
         str,
-        "Порт chainlit-сервера. Хранится строкой — bridge пишет напрямую в CHAINLIT_PORT env.",
+        "Порт chainlit-сервера." \
+        "Хранится строкой — bridge пишет напрямую в CHAINLIT_PORT env.",
         ParseString(),
     ] = "8501"
     root_path: Annotated[
@@ -44,9 +45,20 @@ class ChainlitConfig:
     ] = ""
     auth_secret: Annotated[
         str | None,
-        "Секрет для подписи user-session cookie. Если не задан — chainlit генерит сам.",
+        "Секрет для подписи user-session cookie. Если не задан — bootstrap "
+        "сгенерирует случайный и сохранит в local/.auth_secret.",
         ParseString(),
     ] = None
+    auth_username: Annotated[
+        str,
+        "Имя единственного пользователя (multi-user будет в отдельной [auth.users]).",
+        ParseString(),
+    ] = "admin"
+    auth_password: Annotated[
+        str,
+        "Пароль единственного пользователя.",
+        ParseString(),
+    ] = "admin"  # noqa: S105
     headless: Annotated[
         str,
         "true — не пытаться открыть браузер при старте.",
@@ -88,3 +100,8 @@ class ChainlitConfig:
         "([features.spontaneous_file_upload] accept).",
         ParseCsvList(),
     ] = None
+    chat_session_pool_capacity: Annotated[
+        int,
+        "Сколько ChatSession держать в RAM одновременно (LRU eviction).",
+        ParseInt(),
+    ] = 32

@@ -22,7 +22,6 @@ from boba.web.chainlit.bridge import ChainlitBridgeSink
 from boba.web.chainlit.config import ChainlitConfig
 from boba.web.chainlit.infra import (
     AppConfig,
-    configure_logging,
     log_context,
 )
 from boba.workspace.contract import (
@@ -53,7 +52,6 @@ class ChatSession:
             )
             raise ValueError(msg)
         app = bundle.get(AppConfig, "agent")
-        configure_logging(app.core.log_level, app.core.log_file)
 
         self._workspace_id = workspace_id
         self._agent_config = app.runtime

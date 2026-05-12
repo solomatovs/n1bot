@@ -25,57 +25,95 @@ from boba.agent.events import (
     ToolExecutionFailed,
     ToolExecutionStarted,
 )
-from boba.agent.messages import MessageService
-from boba.llm.models import UserMessage
-from boba.web.chainlit.bootstrap import AppState, app_state
+from boba.web.chainlit.auth import User
+from boba.web.chainlit.bootstrap import app_state
 from boba.web.chainlit.bridge import ChainlitBridgeSink
+from boba.web.chainlit.data_layer import WorkspaceOwnership, WorkspaceOwnershipEntry
 from boba.web.chainlit.files import save_upload
-from boba.web.chainlit.session import ChatSession
 from boba.workspace.contract import WorkspaceId
+from chainlit.types import ThreadDict
 
 logger = logging.getLogger(__name__)
 
 
-def _build_session(workspace_id: WorkspaceId) -> ChatSession:
-    state = app_state()
-    return ChatSession(
-        workspace_id,
-        state.make_builder(),
-        state.project_workspaces,
-        state.history_workspaces,
-        state.make_message_service(workspace_id),
-    )
+@cl.password_auth_callback
+async def password_auth(username: str, password: str) -> cl.User | None:
+    user = app_state().authenticate_user.execute(username, password)
+    if user is None:
+        return None
+    return cl.User(identifier=user.username)
+
+
+@cl.data_layer
+def get_data_layer():
+    return app_state().data_layer
+
+
+def _current_user() -> User:
+    """Достаём авторизованного пользователя из Chainlit-сессии."""
+    cl_user = cl.context.session.user
+    if cl_user is None:
+        msg = "Chainlit session has no authenticated user"
+        raise RuntimeError(msg)
+    return User(username=cl_user.identifier)
+
+
+class _WarmupTasks:
+    """Strong-refs fire-and-forget warmup-тасков.
+
+    Event loop держит таски только weak-reference'ами — без этого set
+    их может собрать GC до завершения.
+    """
+
+    _TASKS: ClassVar[set[asyncio.Task]] = set()
+
+    @classmethod
+    def spawn(cls, user: User, workspace_id: WorkspaceId) -> asyncio.Task:
+        task = asyncio.create_task(
+            app_state().open_chat_session.execute(user, workspace_id),
+        )
+        cls._TASKS.add(task)
+        task.add_done_callback(lambda t: cls._on_done(t, workspace_id))
+        return task
+
+    @classmethod
+    def _on_done(cls, task: asyncio.Task, workspace_id: WorkspaceId) -> None:
+        cls._TASKS.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.exception(
+                "ChatSession warmup failed for workspace=%s",
+                workspace_id.to_wire(),
+                exc_info=exc,
+            )
 
 
 class _ProfileBuilder:
-    """Сборка cl.ChatProfile для selector'а до старта чата."""
+    """Сборка cl.ChatProfile: один пункт + список workspace'ов пользователя."""
 
     NEW_SENTINEL: ClassVar[str] = "__new__"
     _LABEL_MAX: ClassVar[int] = 60
 
     @staticmethod
-    def build(state: AppState) -> list[cl.ChatProfile]:
+    async def build(
+        ownership: WorkspaceOwnership,
+        user_id: str,
+    ) -> list[cl.ChatProfile]:
         profiles: list[cl.ChatProfile] = [
             cl.ChatProfile(
                 name=_ProfileBuilder.NEW_SENTINEL,
-                markdown_description="Создать **новый** workspace",
+                markdown_description="**+ Новый проект** — создать пустой workspace.",
             ),
         ]
-
-        for summary in sorted(
-            state.catalog.iterator(),
-            key=lambda s: s.last_used_at,
-            reverse=True,
-        ):
-            ms = state.make_message_service(summary.workspace_id)
-            preview = _ProfileBuilder._first_user_preview(ms)
-            heading = preview or summary.workspace_id.to_wire()[:8]
-            date_str = summary.last_used_at.strftime("%Y-%m-%d %H:%M")
+        entries = await ownership.list_for_user(user_id)
+        for entry in entries:
             profiles.append(
                 cl.ChatProfile(
-                    name=summary.workspace_id.to_wire(),
-                    markdown_description=f"**{heading}**\n\n_{date_str}_",
-                )
+                    name=entry.workspace_id.to_wire(),
+                    markdown_description=_ProfileBuilder._render_description(entry),
+                ),
             )
         return profiles
 
@@ -86,76 +124,108 @@ class _ProfileBuilder:
         return WorkspaceId.from_wire(profile)
 
     @staticmethod
-    def _first_user_preview(ms: MessageService) -> str | None:
-        """Достаем preview первого сообщения для отображения в названии чата"""
-        for m in ms.message_iter():
-            if not isinstance(m, UserMessage):
-                continue
+    def _render_description(entry: WorkspaceOwnershipEntry) -> str:
+        heading = (
+            _ProfileBuilder._trim(entry.first_user_message)
+            if entry.first_user_message
+            else entry.workspace_id.to_wire()[:8]
+        )
+        return f"**{heading}**\n\n_последняя активность: {entry.last_used_at}_"
 
-            text = m.content.strip()
-            if not text:
-                continue
-
-            if len(text) > _ProfileBuilder._LABEL_MAX:
-                return text[: _ProfileBuilder._LABEL_MAX] + "…"
-
-            return text
-
-        return None
+    @staticmethod
+    def _trim(text: str) -> str:
+        cleaned = text.strip()
+        if len(cleaned) > _ProfileBuilder._LABEL_MAX:
+            return cleaned[: _ProfileBuilder._LABEL_MAX] + "…"
+        return cleaned
 
 
 @cl.set_chat_profiles
-async def chat_profiles(_user: cl.User | None) -> list[cl.ChatProfile]:
+async def chat_profiles(user: cl.User | None) -> list[cl.ChatProfile]:
+    only_new = [
+        cl.ChatProfile(
+            name=_ProfileBuilder.NEW_SENTINEL,
+            markdown_description="**+ Новый проект**",
+        ),
+    ]
+    if user is None:
+        return only_new
     state = app_state()
-    return await asyncio.to_thread(_ProfileBuilder.build, state)
+    persisted = await state.data_layer.get_user(user.identifier)
+    if persisted is None:
+        # Пользователь в auth есть, но ещё не закоммитился в users.json
+        # (первый login без сообщений) — workspace'ов точно нет.
+        return only_new
+    return await _ProfileBuilder.build(state.workspace_ownership, persisted.id)
 
 
 @cl.on_chat_start
 async def on_chat_start() -> None:
-    # Chainlit запускает on_chat_start через create_task (fire-and-forget),
-    # поэтому on_message может стартовать раньше окончания инициализации.
-    # Кладём Future в user_session ДО первого await — on_message делает await его.
+    # Pull-модель: callback только фиксирует выбор workspace_id.
+    # Сам ChatSession создаётся лениво в on_message через OpenChatSession под локом,
+    # поэтому race condition с fire-and-forget невозможен по построению.
     profile = cast("str | None", cl.user_session.get("chat_profile"))
     workspace_id = _ProfileBuilder.resolve_workspace(profile)
     cl.user_session.set("workspace_id", workspace_id)
+    # Прогрев пула в фоне: к моменту первого on_message сессия часто уже готова.
+    _WarmupTasks.spawn(_current_user(), workspace_id)
 
-    future: asyncio.Future[ChatSession] = (
-        asyncio.get_running_loop().create_future()
-    )
-    cl.user_session.set("session_future", future)
+
+@cl.on_chat_resume
+async def on_chat_resume(thread: ThreadDict) -> None:
+    # При клике по thread'у в sidebar Chainlit зовёт нас вместо on_chat_start.
+    # Workspace_id живёт в thread.metadata, кладём в user_session — дальше
+    # on_message идёт через тот же OpenChatSession.
+    metadata = thread.get("metadata") or {}
+    raw = metadata.get("workspace_id")
+    if not isinstance(raw, str):
+        await cl.Message(
+            content="Не удалось восстановить workspace для этого чата.",
+            author="system",
+        ).send()
+        logger.error("on_chat_resume: thread %s без workspace_id", thread.get("id"))
+        return
     try:
-        session = await asyncio.to_thread(_build_session, workspace_id)
-    except BaseException as exc:
-        future.set_exception(exc)
-        raise
-    future.set_result(session)
+        workspace_id = WorkspaceId.from_wire(raw)
+    except ValueError:
+        await cl.Message(
+            content="Не удалось восстановить workspace для этого чата.",
+            author="system",
+        ).send()
+        logger.error(
+            "on_chat_resume: thread %s имеет невалидный workspace_id=%r",
+            thread.get("id"),
+            raw,
+        )
+        return
+    cl.user_session.set("workspace_id", workspace_id)
+    _WarmupTasks.spawn(_current_user(), workspace_id)
 
 
 @cl.on_chat_end
 async def on_chat_end() -> None:
-    # Снимаем ссылку на сессию — Agent/MessageService собирает GC.
-    # project/history shells живут в registry и переживают сессию (это нормально:
-    # при resume того же thread'а получим тот же FS-workspace).
-    cl.user_session.set("session_future", None)
+    # На итерации 2 lifecycle pool'а ещё простой: сессии живут до рестарта процесса.
+    # Eviction подключим в итерации 5 (LRU/TTL).
+    pass
 
 
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
-    future = cast(
-        "asyncio.Future[ChatSession] | None",
-        cl.user_session.get("session_future"),
-    )
-    if future is None:
+    workspace_id = cast("WorkspaceId | None", cl.user_session.get("workspace_id"))
+    if workspace_id is None:
         await cl.Message(
             content="Сессия не инициализирована. Обновите страницу.",
             author="system",
         ).send()
         logger.error(
-            "on_message без session_future; chat_profile=%r",
+            "on_message без workspace_id; chat_profile=%r",
             cl.user_session.get("chat_profile"),
         )
         return
-    session = await future
+    session = await app_state().open_chat_session.execute(
+        _current_user(),
+        workspace_id,
+    )
 
     saved: list[str] = []
     if message.elements:
@@ -195,10 +265,7 @@ async def _finalize_step(
     *,
     is_error: bool = False,
 ) -> None:
-    """
-    Финальный output у step через streaming API
-    (stream_token заменяет содержимое)
-    """
+    """Финальный output step через streaming API: stream_token заменяет содержимое."""
     if is_error:
         step.is_error = True
     await step.stream_token(content, is_sequence=True)

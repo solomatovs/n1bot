@@ -14,13 +14,6 @@ from boba.web.chainlit.config import ChainlitConfig
 __all__ = ["UIOverrideTomlConverter"]
 
 
-def _has_upload(cfg: ChainlitConfig) -> bool:
-    return any(
-        v is not None
-        for v in (cfg.upload_max_size_mb, cfg.upload_max_files, cfg.upload_accept)
-    )
-
-
 class _TelemetryIsSet(Specification[ChainlitConfig]):
     def check(self, candidate: ChainlitConfig) -> bool:
         return candidate.enable_telemetry is not None
@@ -28,7 +21,14 @@ class _TelemetryIsSet(Specification[ChainlitConfig]):
 
 class _HasUpload(Specification[ChainlitConfig]):
     def check(self, candidate: ChainlitConfig) -> bool:
-        return _has_upload(candidate)
+        return any(
+            v is not None
+            for v in (
+                candidate.upload_max_size_mb,
+                candidate.upload_max_files,
+                candidate.upload_accept,
+            )
+        )
 
 
 class _UiNameIsSet(Specification[ChainlitConfig]):
@@ -62,12 +62,13 @@ class _UIRenderer(Converter[ChainlitConfig, str]):
         return "\n".join(["[UI]", f'name = "{value.ui_name}"', ""])
 
 
-# chainlit падает, если [meta] generated_by <= "0.3.0" лексикографически.
-_META = "\n".join(["[meta]", 'generated_by = "boba-chainlit"', ""])
-
-
 class UIOverrideTomlConverter(Converter[ChainlitConfig, str]):
     """ChainlitConfig → TOML-строка для .chainlit/config.toml; пусто = не писать."""
+
+    # chainlit падает, если [meta] generated_by <= "0.3.0" лексикографически.
+    _META: ClassVar[str] = "\n".join(
+        ["[meta]", 'generated_by = "boba-chainlit"', ""]
+    )
 
     _ROUTES: ClassVar[
         list[tuple[Specification[ChainlitConfig], Converter[ChainlitConfig, str]]]
@@ -86,5 +87,5 @@ class UIOverrideTomlConverter(Converter[ChainlitConfig, str]):
         sections = list(self._dispatch(value))
         if not sections:
             return ""
-        sections.append(_META)
+        sections.append(self._META)
         return "\n".join(sections)
