@@ -59,7 +59,7 @@ class MetadataKey(Generic[T]):
 class Metadata:
     """Иммутабельный typed view над wire-format Mapping[str, str]."""
 
-    _data: Mapping[str, str] = field(default_factory=dict)
+    data: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
     def empty(cls) -> Metadata:
@@ -69,30 +69,30 @@ class Metadata:
     @classmethod
     def from_wire(cls, data: Mapping[str, str]) -> Metadata:
         """Восстановить из wire-формата (JSON / persistent storage)."""
-        return cls(_data=dict(data))
+        return cls(data=dict(data))
 
     def to_wire(self) -> Mapping[str, str]:
         """Wire-формат: копия dict[str, str] для сериализации."""
-        return dict(self._data)
+        return dict(self.data)
 
     def get(self, key: MetadataKey[T]) -> T | None:
         """Типизированное значение по ключу или None если отсутствует."""
-        raw = self._data.get(key.name)
+        raw = self.data.get(key.name)
         if raw is None:
             return None
         return key.decode(raw)
 
     def set(self, key: MetadataKey[T], value: T) -> Metadata:
         """Новый Metadata с установленным ключом+значением (immutable)."""
-        return Metadata(_data={**self._data, key.name: key.encode(value)})
+        return Metadata(data={**self.data, key.name: key.encode(value)})
 
     def merge(self, other: Metadata) -> Metadata:
         """Слить два Metadata; other побеждает при коллизии ключей."""
-        return Metadata(_data={**self._data, **other._data})
+        return Metadata(data={**self.data, **other.data})
 
     def has(self, key: MetadataKey[T]) -> bool:
         """True если ключ присутствует в Metadata."""
-        return key.name in self._data
+        return key.name in self.data
 
 
 class TransportKeys:
