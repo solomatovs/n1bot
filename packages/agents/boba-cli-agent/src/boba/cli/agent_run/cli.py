@@ -14,6 +14,9 @@ from boba.agent import (
 )
 from boba.agent.orchestrator import AgentRequest
 from boba.agent.prompt_providers import PromptLoader
+from boba.agent.turn.reducers import (
+    RememberUserQueryReducer,
+)
 from boba.agent.workspace_fs import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
@@ -104,6 +107,8 @@ def _run() -> int:
     agent = (
         builder.with_llm(llm)
         .with_messages(message_service)
+        .use_default_turn_reducers()
+        .use_turn_reducer(RememberUserQueryReducer())
         .with_prompts(prompt_loader.prompt_providers())
         .with_config(app.runtime)
         .with_extension(ProjectWorkspaceShell, project_workspace)
