@@ -7,6 +7,9 @@ from pathlib import Path
 from boba.agent import AgentBuilder, AgentInput, InMemoryMessageService
 from boba.agent.orchestrator import Agent, AgentRequest
 from boba.agent.prompt_providers import PromptLoader
+from boba.agent.turn.reducers import (
+    RememberUserQueryReducer,
+)
 from boba.agent.workspace_fs import FsPromptWorkspaceRegistry
 from boba.llm.builder import LLMPipelineFactory
 from boba.llm.models import RequestId
@@ -77,9 +80,10 @@ class ChatSession:
         prompt_loader = PromptLoader(prompt_workspace)
 
         self._agent: Agent = (
-            builder
-            .with_extension(ProjectWorkspaceShell, project_shell)
+            builder.with_extension(ProjectWorkspaceShell, project_shell)
             .with_llm(llm)
+            .use_default_turn_reducers()
+            .use_turn_reducer(RememberUserQueryReducer())
             .with_messages(InMemoryMessageService())
             .with_prompts(prompt_loader.prompt_providers())
             .with_config(self._agent_config)
