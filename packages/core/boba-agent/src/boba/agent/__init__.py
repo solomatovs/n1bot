@@ -91,12 +91,15 @@ from boba.agent.prompt import (
     PromptState,
     StaticPromptProvider,
 )
+from boba.agent.turn.builder import TurnReducerFactory, TurnSpecBuilder
 from boba.agent.turn.reducers import (
     AgentRequestSamplingReducer,
     HistoryReducer,
     ModelReducer,
+    RememberUserQueryReducer,
     SystemPromptReducer,
     ToolsReducer,
+    TurnReducer,
 )
 from boba.agent.turn.spec import TurnSpec, TurnState
 
@@ -160,6 +163,7 @@ __all__ = [
     "PromptState",
     "RefusalComplete",
     "RefusalToken",
+    "RememberUserQueryReducer",
     "RepeatedToolCallGuardMiddleware",
     "Severity",
     "SlotKind",
@@ -182,7 +186,10 @@ __all__ = [
     "ToolExecutionStarted",
     "ToolResultReady",
     "ToolsReducer",
+    "TurnReducer",
+    "TurnReducerFactory",
     "TurnSpec",
+    "TurnSpecBuilder",
     "TurnState",
     "UserQueryReceived",
 ]

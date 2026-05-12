@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator
 from typing import assert_never
 
 from boba.agent.errors import LLMGenerationFailedError
@@ -21,17 +21,8 @@ from boba.agent.events import (
     ToolCallStreamStarted,
 )
 from boba.agent.events import LLMRequestSent as AgentLLMRequestSent
-from boba.agent.messages import MessageReader
 from boba.agent.orchestrator import AgentContext
-from boba.agent.prompt import PromptProvider
-from boba.agent.turn.reducers import (
-    AgentRequestSamplingReducer,
-    HistoryReducer,
-    ModelReducer,
-    SystemPromptReducer,
-    ToolsReducer,
-)
-from boba.agent.turn.spec import TurnSpec
+from boba.agent.turn.builder import TurnSpecBuilder
 from boba.llm.builder import LLMPipeline
 from boba.llm.errors import LLMError
 from boba.llm.events import (
@@ -51,7 +42,6 @@ from boba.llm.events import (
 )
 from boba.llm.models import LLMContext, LLMRequest
 from boba.patterns import StreamSource
-from boba.tools.framework import ToolExecutor
 
 
 class LLMToAgentConverter:
@@ -130,39 +120,27 @@ class LLMToAgentConverter:
 
 
 class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Терминал агентской цепочки: build request → invoke LLM."""
+    """Терминал агентской цепочки: build request → invoke LLM.
+
+    Состав TurnSpec'а сюда не зашит — он целиком определяется
+    `TurnSpecBuilder`'ом, переданным извне (bootstrap-уровень). Middleware
+    про конкретные reducer'ы ничего не знает: добавлять/удалять стадии
+    можно без правок этого класса.
+    """
 
     def __init__(
         self,
         llm: LLMPipeline,
-        prompt_providers: Sequence[PromptProvider],
-        tool_executor: ToolExecutor,
-        message_reader: MessageReader,
+        turn_spec_builder: TurnSpecBuilder,
     ) -> None:
         self._llm = llm
-        self._prompt_providers = prompt_providers
-        self._tool_executor = tool_executor
-        self._message_reader = message_reader
+        self._turn_spec_builder = turn_spec_builder
 
     def name(self) -> str:
         return "LLMInvoke"
 
-    def _create_turn_spec(self, ctx: AgentContext) -> TurnSpec:
-        """
-        Собрать TurnSpec для данного прогона на основе AgentContext
-        В будущем потребуется инджектить creator TunSpec, а сейчас можно и так
-        """
-
-        spec = TurnSpec()
-        spec.register(ModelReducer(ctx.request.model))
-        spec.register(SystemPromptReducer(self._prompt_providers))
-        spec.register(HistoryReducer(self._message_reader))
-        spec.register(ToolsReducer(self._tool_executor))
-        spec.register(AgentRequestSamplingReducer(ctx.request.sampling))
-        return spec
-
     def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
-        request = self._create_turn_spec(ctx).build()
+        request = self._turn_spec_builder.build(ctx).build()
 
         try:
             converter = LLMToAgentConverter(request)
