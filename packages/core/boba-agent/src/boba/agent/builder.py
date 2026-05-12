@@ -20,6 +20,15 @@ from boba.agent.middleware import (
 )
 from boba.agent.orchestrator import Agent, AgentConfig, AgentContext
 from boba.agent.prompt import PromptProvider
+from boba.agent.turn.builder import TurnReducerFactory, TurnSpecBuilder
+from boba.agent.turn.reducers import (
+    AgentRequestSamplingReducer,
+    HistoryReducer,
+    ModelReducer,
+    SystemPromptReducer,
+    ToolsReducer,
+    TurnReducer,
+)
 from boba.config.bundle import ConfigBundle
 from boba.config.path import ConfigSource
 from boba.llm.builder import LLMPipeline
@@ -54,8 +63,10 @@ class AgentBuilder:
         self._extensions: dict[type, object] = {}
         self._resolved_tool_executor: ToolExecutor | None = None
         self._message_service: MessageService | None = None
+        self._resolved_message_service: MessageService | None = None
         self._prompt_providers: list[PromptProvider] = []
         self._agent_config: AgentConfig = AgentConfig()
+        self._turn_spec_builder: TurnSpecBuilder = TurnSpecBuilder()
 
     def with_llm(self, llm: LLMPipeline) -> Self:
         """Готовый LLMPipeline (обязательно; см. LLMPipelineFactory)."""
@@ -162,6 +173,52 @@ class AgentBuilder:
         self._agent_config = config
         return self
 
+    def use_turn_reducer(
+        self,
+        reducer_or_factory: TurnReducer | TurnReducerFactory,
+    ) -> Self:
+        """Зарегистрировать стадию TurnSpec.
+
+        Принимает:
+        - готовый `TurnReducer` (context-independent), напр.
+          `RememberUserQueryReducer()`;
+        - фабрику `(AgentContext) -> TurnReducer`, если reducer'у нужен ctx.
+        Reducer с тем же `id()` перезатрёт ранее зарегистрированный с этим id.
+
+        Если ни один `use_turn_reducer` / `use_default_turn_reducers` не был
+        вызван до `build()`, дефолтный набор подключается автоматически.
+        """
+        self._turn_spec_builder.add(reducer_or_factory)
+        return self
+
+    def use_default_turn_reducers(self) -> Self:
+        """Зарегистрировать дефолтный набор TurnSpec'а.
+
+        Состав: model / system_prompt / history / tools / sampling. Зависимости
+        (`prompt_providers`, `message_service`, `tool_executor`) разрешаются
+        на момент `build()` — порядок вызовов в fluent-цепочке не важен.
+
+        Полезно, когда нужно «дефолт + что-то ещё»: вызови этот метод явно,
+        затем `use_turn_reducer(R)`. Если ни один reducer не зарегистрирован,
+        `build()` вызовет этот метод автоматически.
+        """
+        self._turn_spec_builder.add(
+            lambda ctx: ModelReducer(ctx.request.model),
+        )
+        self._turn_spec_builder.add(
+            lambda _ctx: SystemPromptReducer(self._prompt_providers),
+        )
+        self._turn_spec_builder.add(
+            lambda _ctx: HistoryReducer(self._resolve_message_service()),
+        )
+        self._turn_spec_builder.add(
+            lambda _ctx: ToolsReducer(self._resolve_tool_executor()),
+        )
+        self._turn_spec_builder.add(
+            lambda ctx: AgentRequestSamplingReducer(ctx.request.sampling),
+        )
+        return self
+
     def agent_config(self) -> AgentConfig:
         """Текущий AgentConfig (нужен для Agent.run)."""
         return self._agent_config
@@ -172,21 +229,34 @@ class AgentBuilder:
             msg = "AgentBuilder.build: .with_llm(...) обязателен до .build()"
             raise ValueError(msg)
 
-        tool_executor = self._resolve_tool_executor()
+        # Резолвим зависимости ДО регистрации дефолта: closure-фабрики читают
+        # их через _resolve_*_service() / _resolve_tool_executor() — кеш в self.
+        self._resolve_tool_executor()
+        message_service = self._resolve_message_service()
 
-        message_service = self._message_service or InMemoryMessageService()
+        if self._turn_spec_builder.is_empty():
+            self.use_default_turn_reducers()
 
         chain = self._build_chain(
             llm=self._llm,
-            tool_executor=tool_executor,
-            prompt_providers=self._prompt_providers,
-            message_service=message_service,
+            message_writer=message_service,
+            tool_executor=self._resolve_tool_executor(),
+            turn_spec_builder=self._turn_spec_builder,
         )
         source = StreamSourceLoop(
             source=chain,
             stop_if=StopOnFinished().or_(StopOnAnyFailure()),
         )
         return Agent(source=source, writer=message_service, reader=message_service)
+
+    def _resolve_message_service(self) -> MessageService:
+        """Кешированный MessageService: пользовательский либо InMemoryMessageService()."""  # noqa: E501
+        if self._resolved_message_service is not None:
+            return self._resolved_message_service
+        self._resolved_message_service = (
+            self._message_service or InMemoryMessageService()
+        )
+        return self._resolved_message_service
 
     def _resolve_tool_executor(self) -> ToolExecutor:
         """Выбрать готовый `ToolExecutor` или собрать из накопленных источников."""
@@ -311,12 +381,11 @@ class AgentBuilder:
     def _build_chain(
         *,
         llm: LLMPipeline,
+        message_writer: MessageWriter,
         tool_executor: ToolExecutor,
-        prompt_providers: list[PromptProvider],
-        message_service: MessageService,
+        turn_spec_builder: TurnSpecBuilder,
     ) -> StreamSource[AgentContext, AgentEvent]:
-        writer: MessageWriter = message_service
-        error_router = AgentErrorRouter(writer)
+        error_router = AgentErrorRouter(message_writer)
         builder = StreamSourceChainBuilder[AgentContext, AgentEvent]()
         builder.use(lambda inner: AgentErrorRouterMiddleware(inner, error_router))
         builder.use(IterationCounterMiddleware)
@@ -324,17 +393,12 @@ class AgentBuilder:
             lambda inner: ToolExecutionMiddleware(
                 inner,
                 tool_executor,
-                writer,
+                message_writer,
             ),
         )
         builder.use(
-            lambda inner: AssistantMessagePersistenceMiddleware(inner, writer),
-        )
-        return builder.terminal(
-            LLMInvokeMiddleware(
-                llm,
-                prompt_providers,
-                tool_executor,
-                message_service,
+            lambda inner: AssistantMessagePersistenceMiddleware(
+                inner, message_writer,
             ),
         )
+        return builder.terminal(LLMInvokeMiddleware(llm, turn_spec_builder))

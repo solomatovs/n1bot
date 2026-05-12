@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeAlias
 
 from boba.agent.messages import MessageReader
 from boba.agent.prompt import PromptFactory, PromptProvider
@@ -13,6 +13,8 @@ from boba.llm.models import (
     LLMToolSchema,
     SamplingParams,
     SystemMessage,
+    ToolResultMessage,
+    UserMessage,
 )
 from boba.patterns import PrioritySource, StrId
 from boba.schema.declaration import ObjectSchema
@@ -21,6 +23,9 @@ from boba.tools.domain import (
     ToolWireSchemaBuilder,
 )
 from boba.tools.framework import ToolExecutor
+
+TurnReducer: TypeAlias = PrioritySource[StrId, TurnState]
+"""Alias для reducer'а TurnSpec — стадия сборки TurnState."""
 
 
 class ModelReducer(PrioritySource[StrId, TurnState]):
@@ -162,3 +167,51 @@ class AgentRequestSamplingReducer(PrioritySource[StrId, TurnState]):
         if self._sampling is not None:
             state.sampling = self._sampling
         return state
+
+
+class RememberUserQueryReducer(PrioritySource[StrId, TurnState]):
+    """После tool-output дублирует последний UserMessage в хвост истории.
+
+    Срабатывает только когда последнее сообщение в state.messages —
+    ToolResultMessage, т.е. LLM сейчас будет решать «звать ещё tool
+    или отвечать». Цель — удержать фокус LLM на текущей задаче, чтобы
+    она не уходила в сторону после длинной серии tool-вызовов.
+    Reducer не мутирует сам MessageReader — добавление происходит
+    в state каждую итерацию, без persistence.
+    """
+
+    ID: ClassVar[StrId] = StrId("remember_user_query")
+    DEFAULT_PREFIX: ClassVar[str] = "Напоминание об исходном запросе: "
+
+    def __init__(
+        self,
+        prefix: str = DEFAULT_PREFIX,
+        priority: int = 35,
+    ) -> None:
+        self._prefix = prefix
+        self._priority = priority
+
+    def id(self) -> StrId:
+        return self.ID
+
+    def priority(self) -> int:
+        return self._priority
+
+    def apply(self, state: TurnState) -> TurnState:
+        if not state.messages:
+            return state
+        if not isinstance(state.messages[-1], ToolResultMessage):
+            return state
+        original = self._last_user_content(state.messages)
+        if original is None:
+            return state
+        reminder = UserMessage(content=f"{self._prefix}{original}")
+        state.messages = (*state.messages, reminder)
+        return state
+
+    @staticmethod
+    def _last_user_content(messages: tuple[Any, ...]) -> str | None:
+        for m in reversed(messages):
+            if isinstance(m, UserMessage):
+                return m.content
+        return None
