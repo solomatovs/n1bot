@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import functools
 import logging
 from typing import cast
 
@@ -35,8 +34,7 @@ from boba.workspace.contract import WorkspaceId
 logger = logging.getLogger(__name__)
 
 
-@functools.cache
-def _get_session(workspace_id: WorkspaceId) -> ChatSession:
+def _build_session(workspace_id: WorkspaceId) -> ChatSession:
     state = app_state()
     return ChatSession(
         workspace_id,
@@ -48,10 +46,10 @@ def _get_session(workspace_id: WorkspaceId) -> ChatSession:
 
 @cl.on_chat_start
 async def on_chat_start() -> None:
-    workspace_id = WorkspaceId.from_wire("00000000-0000-0000-0000-000000000001")
+    workspace_id = WorkspaceId.from_wire(cl.context.session.thread_id)
+    session = await asyncio.to_thread(_build_session, workspace_id)
     cl.user_session.set("workspace_id", workspace_id)
-
-    await asyncio.to_thread(_get_session, workspace_id)
+    cl.user_session.set("session", session)
 
     await cl.Message(
         content=f"Сессия готова. workspace_id = `{workspace_id.to_wire()}`",
@@ -59,10 +57,17 @@ async def on_chat_start() -> None:
     ).send()
 
 
+@cl.on_chat_end
+async def on_chat_end() -> None:
+    # Снимаем ссылку на ChatSession — Agent/MessageService собирает GC.
+    # project/history shells живут в registry и переживают сессию (это нормально:
+    # при resume того же thread'а получим тот же FS-workspace).
+    cl.user_session.set("session", None)
+
+
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
-    workspace_id = cast(WorkspaceId, cl.user_session.get("workspace_id"))
-    session = _get_session(workspace_id)
+    session = cast(ChatSession, cl.user_session.get("session"))
 
     saved: list[str] = []
     if message.elements:
