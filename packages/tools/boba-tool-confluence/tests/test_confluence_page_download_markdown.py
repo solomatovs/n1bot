@@ -26,6 +26,7 @@ def _make_tool(shell):
         auth_token="tok",
         timeout_sec=30.0,
         body_format="view",
+        ssl_verify=False,
         prompt=PromptOverlay(),
     )
     ctx = ExtensionContext({ProjectWorkspaceShell: shell})

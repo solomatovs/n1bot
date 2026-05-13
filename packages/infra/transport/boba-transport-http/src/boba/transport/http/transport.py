@@ -99,7 +99,7 @@ class HttpTransport(Transport[HttpRequest]):
         self,
         *,
         timeout_sec: float = DEFAULT_TIMEOUT_SEC,
-        verify: bool = True,
+        verify: bool = False,
     ) -> None:
         self._timeout = timeout_sec
         self._verify = verify

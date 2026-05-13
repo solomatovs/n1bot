@@ -26,8 +26,7 @@ from boba.patterns import StrId
 from boba.plugin import ExtensionContext, Plugin
 from boba.plugin.prompt import PromptOverlay
 from boba.schema import schema
-from boba.schema.coercion import ParseFloat, ParseString
-from boba.schema.coercion.types import ParseCsvList
+from boba.schema.coercion import ParseBool, ParseCsvList, ParseFloat, ParseString
 from boba.tool.confluence.connection import ConfluenceConnection
 from boba.tool.confluence.page_download import (
     ConfluencePageDownloadTool,
@@ -83,6 +82,11 @@ class ConfluencePluginConfig:
         "HTTP-таймаут (сек).",
         ParseFloat(),
     ] = 30.0
+    ssl_verify: Annotated[
+        bool,
+        "ssl verify",
+        ParseBool(),
+    ] = False
     body_format: Annotated[
         Literal["view", "export_view", "storage"],
         "`view` — clean HTML (рекомендуется); `export_view` — с макросами;"
@@ -126,6 +130,7 @@ class ConfluencePlugin(Plugin[ConfluencePluginConfig, ToolSource]):
                     auth_user=cfg.auth_user,
                     auth_token=cfg.auth_token,
                     timeout_sec=cfg.timeout_sec,
+                    ssl_verify=cfg.ssl_verify,
                     prompt=cfg.confluence_search,
                 ),
                 ctx,
@@ -138,6 +143,7 @@ class ConfluencePlugin(Plugin[ConfluencePluginConfig, ToolSource]):
                     auth_user=cfg.auth_user,
                     auth_token=cfg.auth_token,
                     timeout_sec=cfg.timeout_sec,
+                    ssl_verify=cfg.ssl_verify,
                     body_format=cfg.body_format,
                     prompt=cfg.confluence_page_outline,
                 ),
@@ -153,6 +159,7 @@ class ConfluencePlugin(Plugin[ConfluencePluginConfig, ToolSource]):
                     timeout_sec=cfg.timeout_sec,
                     body_format=cfg.body_format,
                     prompt=cfg.confluence_page_section,
+                    ssl_verify=cfg.ssl_verify,
                 ),
                 ctx,
                 sid,
@@ -164,6 +171,7 @@ class ConfluencePlugin(Plugin[ConfluencePluginConfig, ToolSource]):
                     auth_user=cfg.auth_user,
                     auth_token=cfg.auth_token,
                     timeout_sec=cfg.timeout_sec,
+                    ssl_verify=cfg.ssl_verify,
                     body_format=cfg.body_format,
                     prompt=cfg.confluence_page_download,
                 ),
@@ -178,6 +186,7 @@ class ConfluencePlugin(Plugin[ConfluencePluginConfig, ToolSource]):
                         auth_user=cfg.auth_user,
                         auth_token=cfg.auth_token,
                         timeout_sec=cfg.timeout_sec,
+                        ssl_verify=cfg.ssl_verify,
                         body_format=cfg.body_format,
                         prompt=cfg.confluence_page_download_markdown,
                     ),

@@ -13,6 +13,8 @@ from boba.schema.declaration import FieldSpec, NestedField
 from boba.schema.value import BoolValue, IntValue, StringValue
 from boba.tool.chromadb import ChromadbPlugin, ChromadbPluginConfig
 
+import pytest
+
 _SCHEMA = schema_from_dataclass(ChromadbPluginConfig)
 
 
@@ -58,8 +60,6 @@ def test_prompt_overlay_fields_are_nested():
 
 
 def test_persist_path_required_and_parses_string():
-    import pytest
-
     from boba.patterns import MissingValueError
 
     f = _field("persist_path")

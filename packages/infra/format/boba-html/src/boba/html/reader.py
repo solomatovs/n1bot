@@ -33,10 +33,7 @@ from boba.indexing import (
     Section,
 )
 
-try:
-    import trafilatura as _trafilatura
-except ImportError:  # optional dependency — see HtmlReadabilityReader
-    _trafilatura = None  # type: ignore[assignment]
+import trafilatura
 
 __all__ = ["HtmlPlainReader", "HtmlReadabilityReader", "HtmlReader"]
 
@@ -185,18 +182,11 @@ class HtmlReadabilityReader(Reader[str]):
         return self.READER_ID
 
     def convert(self, value: RawDocument) -> Iterable[Section[str]]:
-        if _trafilatura is None:
-            raise ImportError(
-                "HtmlReadabilityReader requires `trafilatura`. "
-                "Install: `pip install trafilatura` or "
-                "`pip install boba-html[readability]`.",
-            )
-
         payload = value.handle.read()
         if not payload.strip():
             return
 
-        text = _trafilatura.extract(
+        text = trafilatura.extract(
             payload, output_format="txt", include_comments=False,
         )
         if not text:

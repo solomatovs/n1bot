@@ -24,6 +24,12 @@ dependencies = [
     "markdownify>=0.11,<1.0",
 ]
 
+[project.optional-dependencies]
+test = [
+    "boba-config-toml",
+    "pytest>=8",
+]
+
 [project.entry-points."boba.plugins"]
 confluence = "boba.tool.confluence.plugin:ConfluencePlugin"
 

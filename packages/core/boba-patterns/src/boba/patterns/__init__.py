@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from types import TracebackType
 from typing import Generic, Self, TypeVar
 from uuid import UUID, uuid4
+import uuid
 
 __all__ = [
     "AllMatchesDispatcher",
@@ -111,6 +112,10 @@ class StrId(Id[str]):
     @classmethod
     def from_wire(cls, value: str) -> Self:
         return cls(value)
+
+    @classmethod
+    def new(cls) -> Self:
+        return cls.from_wire(str(uuid.uuid4()))
 
 
 TCtx = TypeVar("TCtx")

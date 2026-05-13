@@ -18,7 +18,9 @@ import markdownify
 from boba.indexing import PipelineContext, PipelineId, ReaderKeys
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import NonEmpty
-from boba.tool.confluence.connection import ConfluenceConnection
+from boba.tool.confluence.connection import (
+    ConfluenceConnection,
+)
 from boba.tool.confluence.decoder import ConfluenceJsonDecoder
 from boba.tool.confluence.keys import ConfluenceKeys
 from boba.tool.confluence.request_sources.pages import (
@@ -71,6 +73,7 @@ class ConfluencePageDownloadMarkdownToolConfig:
     auth_user: str
     auth_token: str
     timeout_sec: float
+    ssl_verify: bool
     body_format: str
     prompt: PromptOverlay
 
@@ -89,7 +92,9 @@ class ConfluencePageDownloadMarkdownTool(
         self._shell: ProjectWorkspaceShell = ctx.get(ProjectWorkspaceShell)
 
     def execute(
-        self, ctx: ToolContext, req: PageDownloadMarkdownArgs,
+        self,
+        ctx: ToolContext,
+        req: PageDownloadMarkdownArgs,
     ) -> ToolResult:
         del ctx
         dest_dir = req.dest_dir.rstrip("/")
@@ -120,25 +125,28 @@ class ConfluencePageDownloadMarkdownTool(
                     decoded = decoder.convert(raw)
                     title = decoded.metadata.get(ReaderKeys.PAGE_TITLE) or ""
                     url = decoded.source_id.to_wire()
-                    space_key = (
-                        decoded.metadata.get(ConfluenceKeys.SPACE_KEY) or ""
-                    )
+                    space_key = decoded.metadata.get(ConfluenceKeys.SPACE_KEY) or ""
                     html = decoded.handle.read().decode("utf-8", errors="replace")
                     md = markdownify.markdownify(html, heading_style="ATX")
                     frontmatter = self._md_frontmatter(
-                        url=url, title=title, page_id=page_id, space_key=space_key,
+                        url=url,
+                        title=title,
+                        page_id=page_id,
+                        space_key=space_key,
                     )
                     md_bytes = (frontmatter + md).encode("utf-8")
                     path = f"{dest_dir}/{page_id}.md"
                     self._write(path, md_bytes)
-                    saved.append({
-                        "page_id": page_id,
-                        "title": title,
-                        "url": url,
-                        "space_key": space_key,
-                        "path": path,
-                        "bytes": str(len(md_bytes)),
-                    })
+                    saved.append(
+                        {
+                            "page_id": page_id,
+                            "title": title,
+                            "url": url,
+                            "space_key": space_key,
+                            "path": path,
+                            "bytes": str(len(md_bytes)),
+                        }
+                    )
         except httpx.HTTPError as e:
             raise ToolExecutionError(
                 tool_id=self.tool_id(),
@@ -164,7 +172,11 @@ class ConfluencePageDownloadMarkdownTool(
 
     @staticmethod
     def _md_frontmatter(
-        *, url: str, title: str, page_id: str, space_key: str,
+        *,
+        url: str,
+        title: str,
+        page_id: str,
+        space_key: str,
     ) -> str:
         """YAML-frontmatter с источником страницы — для цитирования LLM."""
         lines = [

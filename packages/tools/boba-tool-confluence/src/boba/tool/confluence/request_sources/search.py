@@ -40,8 +40,7 @@ class ConfluenceCqlSearchRequestSource(RequestSource[HttpRequest]):
 
     def name(self) -> str:
         return (
-            f"ConfluenceCqlSearchRequestSource"
-            f"(cql={self._cql!r}, limit={self._limit})"
+            f"ConfluenceCqlSearchRequestSource(cql={self._cql!r}, limit={self._limit})"
         )
 
     def _seatch_path(self, cql: str, limit: int) -> str:

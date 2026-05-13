@@ -18,7 +18,9 @@ from boba.indexing import (
 )
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import MaxValue, MinValue, NonEmpty
-from boba.tool.confluence.connection import ConfluenceConnection
+from boba.tool.confluence.connection import (
+    ConfluenceConnection,
+)
 from boba.tool.confluence.decoder import ConfluenceJsonDecoder
 from boba.tool.confluence.keys import ConfluenceKeys
 from boba.tool.confluence.reader import ConfluenceReader
@@ -51,8 +53,7 @@ class PageOutlineArgs:
 
     page_id: Annotated[
         str,
-        "ID страницы Confluence (число; виден в URL "
-        "viewpage.action?pageId=...).",
+        "ID страницы Confluence (число; виден в URL viewpage.action?pageId=...).",
         NonEmpty(),
     ]
     max_headings: Annotated[
@@ -72,13 +73,12 @@ class ConfluencePageOutlineToolConfig:
     auth_user: str
     auth_token: str
     timeout_sec: float
+    ssl_verify: bool
     body_format: str
     prompt: PromptOverlay
 
 
-class ConfluencePageOutlineTool(
-    Tool[PageOutlineArgs, ConfluencePageOutlineToolConfig]
-):
+class ConfluencePageOutlineTool(Tool[PageOutlineArgs, ConfluencePageOutlineToolConfig]):
     """Online-outline страницы Confluence: page_id → структура заголовков."""
 
     _PIPELINE_ID: ClassVar[PipelineId] = PipelineId("confluence.page_outline")
@@ -112,24 +112,26 @@ class ConfluencePageOutlineTool(
         truncated = total > req.max_headings
         meta = self._page_meta(sections, req.page_id)
 
-        return JsonResult(payload={
-            "page_id": req.page_id,
-            "title": meta["title"],
-            "space_key": meta["space_key"],
-            "url": meta["url"],
-            "version": meta["version"],
-            "last_modified": meta["last_modified"],
-            "sections": [
-                {
-                    "level": h.metadata.get(HtmlKeys.HEADING_LEVEL) or 0,
-                    "text": h.metadata.get(HtmlKeys.HEADING_TEXT) or "",
-                    "anchor": h.metadata.get(SectionKeys.ANCHOR) or "",
-                }
-                for h in headings[: req.max_headings]
-            ],
-            "truncated": truncated,
-            "total_headings": total,
-        })
+        return JsonResult(
+            payload={
+                "page_id": req.page_id,
+                "title": meta["title"],
+                "space_key": meta["space_key"],
+                "url": meta["url"],
+                "version": meta["version"],
+                "last_modified": meta["last_modified"],
+                "sections": [
+                    {
+                        "level": h.metadata.get(HtmlKeys.HEADING_LEVEL) or 0,
+                        "text": h.metadata.get(HtmlKeys.HEADING_TEXT) or "",
+                        "anchor": h.metadata.get(SectionKeys.ANCHOR) or "",
+                    }
+                    for h in headings[: req.max_headings]
+                ],
+                "truncated": truncated,
+                "total_headings": total,
+            }
+        )
 
     @staticmethod
     def _page_meta(sections: list[Section[str]], page_id: str) -> dict[str, Any]:

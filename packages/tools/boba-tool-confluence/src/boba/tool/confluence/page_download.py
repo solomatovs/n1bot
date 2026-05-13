@@ -16,7 +16,9 @@ import httpx
 from boba.indexing import PipelineContext, PipelineId, ReaderKeys
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import NonEmpty
-from boba.tool.confluence.connection import ConfluenceConnection
+from boba.tool.confluence.connection import (
+    ConfluenceConnection,
+)
 from boba.tool.confluence.decoder import ConfluenceJsonDecoder
 from boba.tool.confluence.keys import ConfluenceKeys
 from boba.tool.confluence.request_sources.pages import (
@@ -70,6 +72,7 @@ class ConfluencePageDownloadToolConfig:
     auth_user: str
     auth_token: str
     timeout_sec: float
+    ssl_verify: bool
     body_format: str
     prompt: PromptOverlay
 
@@ -115,23 +118,26 @@ class ConfluencePageDownloadTool(
                     decoded = decoder.convert(raw)
                     title = decoded.metadata.get(ReaderKeys.PAGE_TITLE) or ""
                     url = decoded.source_id.to_wire()
-                    space_key = (
-                        decoded.metadata.get(ConfluenceKeys.SPACE_KEY) or ""
-                    )
+                    space_key = decoded.metadata.get(ConfluenceKeys.SPACE_KEY) or ""
                     header = self._html_header(
-                        url=url, title=title, page_id=page_id, space_key=space_key,
+                        url=url,
+                        title=title,
+                        page_id=page_id,
+                        space_key=space_key,
                     )
                     html_bytes = header + decoded.handle.read()
                     path = f"{dest_dir}/{page_id}.html"
                     self._write(path, html_bytes)
-                    saved.append({
-                        "page_id": page_id,
-                        "title": title,
-                        "url": url,
-                        "space_key": space_key,
-                        "path": path,
-                        "bytes": str(len(html_bytes)),
-                    })
+                    saved.append(
+                        {
+                            "page_id": page_id,
+                            "title": title,
+                            "url": url,
+                            "space_key": space_key,
+                            "path": path,
+                            "bytes": str(len(html_bytes)),
+                        }
+                    )
         except httpx.HTTPError as e:
             raise ToolExecutionError(
                 tool_id=self.tool_id(),
@@ -157,7 +163,11 @@ class ConfluencePageDownloadTool(
 
     @staticmethod
     def _html_header(
-        *, url: str, title: str, page_id: str, space_key: str,
+        *,
+        url: str,
+        title: str,
+        page_id: str,
+        space_key: str,
     ) -> bytes:
         """HTML-комментарий с источником страницы — для цитирования LLM."""
         lines = [
