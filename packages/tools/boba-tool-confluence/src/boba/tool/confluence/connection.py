@@ -44,6 +44,8 @@ class ConfluenceConnectionConfig(Protocol):
     def auth_token(self) -> str: ...
     @property
     def timeout_sec(self) -> float: ...
+    @property
+    def ssl_verify(self) -> bool: ...
 
 
 class ConfluenceConnection:
@@ -70,4 +72,7 @@ class ConfluenceConnection:
 
     @staticmethod
     def make_transport(cfg: ConfluenceConnectionConfig) -> HttpTransport:
-        return HttpTransport(timeout_sec=cfg.timeout_sec)
+        return HttpTransport(
+            timeout_sec=cfg.timeout_sec,
+            verify=cfg.ssl_verify
+        )

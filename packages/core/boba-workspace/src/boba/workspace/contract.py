@@ -11,7 +11,7 @@ from datetime import datetime
 from io import BufferedIOBase, TextIOBase
 from typing import Generic, TypeVar
 
-from boba.patterns import Id, Specification, StrId, UuId
+from boba.patterns import Id, Specification, StrId
 
 __all__ = [
     "EntryMeta",
@@ -37,7 +37,7 @@ __all__ = [
 TWsId = TypeVar("TWsId", bound=Id)
 
 
-class WorkspaceId(UuId):
+class WorkspaceId(StrId):
     """Идентификатор user-сессии — value object."""
 
 

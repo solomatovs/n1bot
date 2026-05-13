@@ -17,7 +17,9 @@ from boba.indexing import (
 )
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import MaxValue, MinValue, NonEmpty
-from boba.tool.confluence.connection import ConfluenceConnection
+from boba.tool.confluence.connection import (
+    ConfluenceConnection,
+)
 from boba.tool.confluence.decoder import ConfluenceJsonDecoder
 from boba.tool.confluence.reader import ConfluenceReader
 from boba.tool.confluence.request_sources.pages import (
@@ -73,13 +75,12 @@ class ConfluencePageSectionToolConfig:
     auth_user: str
     auth_token: str
     timeout_sec: float
+    ssl_verify: bool
     body_format: str
     prompt: PromptOverlay
 
 
-class ConfluencePageSectionTool(
-    Tool[PageSectionArgs, ConfluencePageSectionToolConfig]
-):
+class ConfluencePageSectionTool(Tool[PageSectionArgs, ConfluencePageSectionToolConfig]):
     """Online-чтение одной секции страницы Confluence по anchor."""
 
     _PIPELINE_ID: ClassVar[PipelineId] = PipelineId("confluence.page_section")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Annotated, ClassVar
+from urllib.parse import quote
 
 import httpx
 
@@ -15,8 +16,11 @@ from boba.indexing import (
     Section,
 )
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import MaxValue, MinValue, NonEmpty
-from boba.tool.confluence.connection import ConfluenceConnection
+from boba.schema.coercion import MaxValue, MinValue, NonEmpty, Nullable
+from boba.schema.coercion.types import ParseString
+from boba.tool.confluence.connection import (
+    ConfluenceConnection,
+)
 from boba.tool.confluence.keys import ConfluenceKeys
 from boba.tool.confluence.request_sources.search import (
     ConfluenceCqlSearchRequestSource,
@@ -41,7 +45,16 @@ class SearchArgs:
     Возвращает список (title, space, page_id, url, excerpt).
     """
 
-    query: Annotated[str, "Поисковый запрос (обычный текст).", NonEmpty()]
+    query: Annotated[
+        str,
+        "Строка понотекстового поиска в confluence",
+        NonEmpty(),
+    ]
+    space: Annotated[
+        str | None,
+        "Ограничение поиска по space",
+        Nullable(ParseString()),
+    ]
     limit: Annotated[int, "Максимум hits в ответе.", MinValue(1), MaxValue(50)]
 
 
@@ -54,6 +67,7 @@ class ConfluenceSearchToolConfig:
     auth_user: str
     auth_token: str
     timeout_sec: float
+    ssl_verify: bool
     prompt: PromptOverlay
 
 
@@ -69,7 +83,10 @@ class ConfluenceSearchTool(Tool[SearchArgs, ConfluenceSearchToolConfig]):
             request_source=ConfluenceCqlSearchRequestSource(
                 base_url=self._cfg.base_url,
                 auth=ConfluenceConnection.make_auth(self._cfg),
-                cql=self._build_query(req.query),
+                cql=self._build_query(
+                    query=req.query,
+                    space=req.space,
+                ),
                 limit=req.limit,
             ),
             transport=ConfluenceConnection.make_transport(self._cfg),
@@ -91,7 +108,7 @@ class ConfluenceSearchTool(Tool[SearchArgs, ConfluenceSearchToolConfig]):
 
         return JsonResult(
             payload={
-                "cql": self._build_query(req.query),
+                "cql": req.query,
                 "hits": [self._hit(s) for s in sections],
             }
         )
@@ -109,6 +126,11 @@ class ConfluenceSearchTool(Tool[SearchArgs, ConfluenceSearchToolConfig]):
         }
 
     @staticmethod
-    def _build_query(query: str) -> str:
-        escaped = query.strip().replace('"', '\\"')
-        return f'text ~ "{escaped}"'
+    def _build_query(query: str, space: str | None) -> str:
+        text_search_block = f'text ~ "{quote(query, safe="")}"'
+        res = text_search_block
+
+        if space:
+            res = f"({text_search_block}) and (space = {space})"
+
+        return res
