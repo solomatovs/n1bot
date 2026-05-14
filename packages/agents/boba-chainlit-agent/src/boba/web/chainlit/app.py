@@ -30,6 +30,7 @@ from boba.web.chainlit.bootstrap import app_state
 from boba.web.chainlit.bridge import ChainlitBridgeSink
 from boba.web.chainlit.data_layer import WorkspaceOwnership, WorkspaceOwnershipEntry
 from boba.web.chainlit.files import save_upload
+from boba.web.chainlit.modesl import ThreadId, UserId
 from boba.workspace.contract import WorkspaceId
 from chainlit.context import local_steps
 from chainlit.types import ThreadDict
@@ -101,7 +102,7 @@ class _ProfileBuilder:
     @staticmethod
     async def build(
         ownership: WorkspaceOwnership,
-        user_id: str,
+        user_id: UserId,
     ) -> list[cl.ChatProfile]:
         profiles: list[cl.ChatProfile] = [
             cl.ChatProfile(
@@ -153,12 +154,14 @@ async def chat_profiles(user: cl.User | None) -> list[cl.ChatProfile]:
     if user is None:
         return only_new
     state = app_state()
-    persisted = await state.data_layer.get_user(user.identifier)
+    persisted = await state.data_layer.get_user(ThreadId.from_wire(user.identifier))
     if persisted is None:
         # Пользователь в auth есть, но ещё не закоммитился в users.json
         # (первый login без сообщений) — workspace'ов точно нет.
         return only_new
-    return await _ProfileBuilder.build(state.workspace_ownership, persisted.id)
+    return await _ProfileBuilder.build(
+        state.workspace_ownership, UserId.from_wire(persisted.id)
+    )
 
 
 @cl.on_chat_start
