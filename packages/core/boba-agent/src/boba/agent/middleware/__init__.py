@@ -5,6 +5,7 @@ from boba.agent.middleware.error_routing import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
 )
+from boba.agent.middleware.history import HistoryRecorderMiddleware
 from boba.agent.middleware.llm import LLMInvokeMiddleware
 from boba.agent.middleware.loop_control import (
     IterationCounterMiddleware,
@@ -20,6 +21,7 @@ __all__ = [
     "AgentErrorRouter",
     "AgentErrorRouterMiddleware",
     "AssistantMessagePersistenceMiddleware",
+    "HistoryRecorderMiddleware",
     "IterationCounterMiddleware",
     "LLMInvokeMiddleware",
     "RepeatedToolCallGuardMiddleware",

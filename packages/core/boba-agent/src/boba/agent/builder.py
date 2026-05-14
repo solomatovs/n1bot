@@ -7,11 +7,13 @@ from collections.abc import Callable, Iterable
 from typing import Any, Self, get_args, get_origin
 
 from boba.agent.events import AgentEvent
+from boba.agent.history import HistoryService, HistoryWriter, InMemoryHistoryService
 from boba.agent.messages import InMemoryMessageService, MessageService, MessageWriter
 from boba.agent.middleware import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
     AssistantMessagePersistenceMiddleware,
+    HistoryRecorderMiddleware,
     IterationCounterMiddleware,
     LLMInvokeMiddleware,
     StopOnAnyFailure,
@@ -64,6 +66,8 @@ class AgentBuilder:
         self._resolved_tool_executor: ToolExecutor | None = None
         self._message_service: MessageService | None = None
         self._resolved_message_service: MessageService | None = None
+        self._history_service: HistoryService | None = None
+        self._resolved_history_service: HistoryService | None = None
         self._prompt_providers: list[PromptProvider] = []
         self._agent_config: AgentConfig = AgentConfig()
         self._turn_spec_builder: TurnSpecBuilder = TurnSpecBuilder()
@@ -163,6 +167,11 @@ class AgentBuilder:
         self._message_service = service
         return self
 
+    def with_history(self, service: HistoryService) -> Self:
+        """Журнал AgentEvent; дефолт — InMemoryHistoryService()."""
+        self._history_service = service
+        return self
+
     def with_prompts(self, providers: Iterable[PromptProvider]) -> Self:
         """Провайдеры system-prompt блоков; дефолт — пусто."""
         self._prompt_providers = list(providers)
@@ -233,6 +242,7 @@ class AgentBuilder:
         # их через _resolve_*_service() / _resolve_tool_executor() — кеш в self.
         self._resolve_tool_executor()
         message_service = self._resolve_message_service()
+        history_service = self._resolve_history_service()
 
         if self._turn_spec_builder.is_empty():
             self.use_default_turn_reducers()
@@ -240,6 +250,7 @@ class AgentBuilder:
         chain = self._build_chain(
             llm=self._llm,
             message_writer=message_service,
+            history_writer=history_service,
             tool_executor=self._resolve_tool_executor(),
             turn_spec_builder=self._turn_spec_builder,
         )
@@ -257,6 +268,15 @@ class AgentBuilder:
             self._message_service or InMemoryMessageService()
         )
         return self._resolved_message_service
+
+    def _resolve_history_service(self) -> HistoryService:
+        """Кешированный HistoryService: пользовательский либо InMemoryHistoryService()."""  # noqa: E501
+        if self._resolved_history_service is not None:
+            return self._resolved_history_service
+        self._resolved_history_service = (
+            self._history_service or InMemoryHistoryService()
+        )
+        return self._resolved_history_service
 
     def _resolve_tool_executor(self) -> ToolExecutor:
         """Выбрать готовый `ToolExecutor` или собрать из накопленных источников."""
@@ -382,11 +402,15 @@ class AgentBuilder:
         *,
         llm: LLMPipeline,
         message_writer: MessageWriter,
+        history_writer: HistoryWriter,
         tool_executor: ToolExecutor,
         turn_spec_builder: TurnSpecBuilder,
     ) -> StreamSource[AgentContext, AgentEvent]:
         error_router = AgentErrorRouter(message_writer)
         builder = StreamSourceChainBuilder[AgentContext, AgentEvent]()
+        builder.use(
+            lambda inner: HistoryRecorderMiddleware(inner, history_writer),
+        )
         builder.use(lambda inner: AgentErrorRouterMiddleware(inner, error_router))
         builder.use(IterationCounterMiddleware)
         builder.use(
