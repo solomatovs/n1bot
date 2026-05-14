@@ -57,4 +57,5 @@ def app_state() -> AppState:
     if _holder.state is None:
         msg = "bootstrap.set_app_state(...) не вызван до run_chainlit(...)"
         raise RuntimeError(msg)
+
     return _holder.state

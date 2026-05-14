@@ -46,8 +46,10 @@ class ChatSessionPool:
         workspace_id: WorkspaceId,
     ) -> ChatSession:
         key = _SessionKey(user.username, workspace_id)
+
         async with self._registry_lock:
             lock = self._locks.setdefault(key, asyncio.Lock())
+
         async with lock:
             cached = self._sessions.get(key)
             if cached is not None:
@@ -60,6 +62,7 @@ class ChatSessionPool:
 
     async def drop(self, user: User, workspace_id: WorkspaceId) -> None:
         key = _SessionKey(user.username, workspace_id)
+
         async with self._registry_lock:
             self._sessions.pop(key, None)
             # Если lock сейчас залочен — оставляем владельцу; иначе освобождаем
