@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, cast, TypedDict
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import chainlit as cl
 from boba.web.chainlit.modesl import StoredUser, ThreadId, UserId
@@ -36,6 +36,7 @@ __all__ = [
     "FsThreadRepository",
     "FsUserCatalog",
     "ThreadDerivedWorkspaceOwnership",
+    "ThreadIndexEntry",
     "ThreadMeta",
     "ThreadRepository",
     "UserCatalog",
@@ -86,11 +87,116 @@ class ThreadMeta:
     created_at: str
     updated_at: str
 
+    def to_dict(self) -> dict[str, Any]:
+        thread_id = self.id.to_wire() if isinstance(self.id, ThreadId) else self.id
+        user_id = (
+            self.user_id.to_wire()
+            if isinstance(self.user_id, UserId)
+            else self.user_id
+        )
+        return {
+            "id": thread_id,
+            "workspaceId": self.workspace_id.to_wire(),
+            "userId": user_id,
+            "userIdentifier": self.user_identifier,
+            "name": self.name,
+            "tags": list(self.tags),
+            "metadata": dict(self.metadata),
+            "createdAt": self.created_at,
+            "updatedAt": self.updated_at,
+        }
 
-@dataclass
-class ThreadIndexMeta(TypedDict):
-    thread_id: ThreadId
-    meta: ThreadMeta
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> ThreadMeta:
+        user_id_raw = raw.get("userId")
+        user_id = UserId(user_id_raw) if isinstance(user_id_raw, str) else None
+        return cls(
+            id=raw["id"],
+            workspace_id=WorkspaceId(raw["workspaceId"]),
+            user_id=user_id,
+            user_identifier=raw.get("userIdentifier"),
+            name=raw.get("name"),
+            tags=list(raw.get("tags") or []),
+            metadata=dict(raw.get("metadata") or {}),
+            created_at=raw["createdAt"],
+            updated_at=raw["updatedAt"],
+        )
+
+
+@dataclass(frozen=True)
+class ThreadIndexEntry:
+    """Снимок ThreadMeta для глобального индекса (`index.json`)."""
+
+    workspace_id: WorkspaceId
+    user_id: UserId | None
+    user_identifier: str | None
+    name: str | None
+    tags: list[str]
+    metadata: dict[str, Any]
+    created_at: str
+    updated_at: str
+
+    @classmethod
+    def from_meta(cls, meta: ThreadMeta) -> ThreadIndexEntry:
+        # Chainlit передаёт plain-строки даже там, где аннотация UserId, —
+        # нормализуем на входе, чтобы в индексе всегда лежал UserId.
+        raw_user_id = meta.user_id
+        user_id = (
+            UserId(raw_user_id)
+            if isinstance(raw_user_id, str)
+            else raw_user_id
+        )
+        return cls(
+            workspace_id=meta.workspace_id,
+            user_id=user_id,
+            user_identifier=meta.user_identifier,
+            name=meta.name,
+            tags=list(meta.tags),
+            metadata=dict(meta.metadata),
+            created_at=meta.created_at,
+            updated_at=meta.updated_at,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "workspaceId": self.workspace_id.to_wire(),
+            "userId": self.user_id.to_wire() if self.user_id is not None else None,
+            "userIdentifier": self.user_identifier,
+            "name": self.name,
+            "tags": list(self.tags),
+            "metadata": dict(self.metadata),
+            "createdAt": self.created_at,
+            "updatedAt": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> ThreadIndexEntry:
+        user_id_raw = raw.get("userId")
+        user_id = UserId(user_id_raw) if isinstance(user_id_raw, str) else None
+        return cls(
+            workspace_id=WorkspaceId(raw["workspaceId"]),
+            user_id=user_id,
+            user_identifier=raw.get("userIdentifier"),
+            name=raw.get("name"),
+            tags=list(raw.get("tags") or []),
+            metadata=dict(raw.get("metadata") or {}),
+            created_at=raw["createdAt"],
+            updated_at=raw["updatedAt"],
+        )
+
+    def to_meta(self, thread_id: ThreadId) -> ThreadMeta:
+        return ThreadMeta(
+            id=thread_id,
+            workspace_id=self.workspace_id,
+            user_id=self.user_id,
+            user_identifier=self.user_identifier,
+            name=self.name,
+            tags=list(self.tags),
+            metadata=dict(self.metadata),
+            created_at=self.created_at,
+            updated_at=self.updated_at,
+        )
+
 
 class UserCatalog(ABC):
     """Источник users (auth-каталог)"""
@@ -252,7 +358,7 @@ class FsUserCatalog(UserCatalog):
             identifier=raw["identifier"],
             display_name=raw.get("display_name"),
             metadata=raw.get("metadata", {}),
-            created_at=raw.get("createdAt") or _AtomicFs.now_iso(),
+            created_at=raw["createdAt"],
         )
 
 
@@ -299,10 +405,7 @@ class FsThreadRepository(ThreadRepository):
         entry = await self._lookup_entry(thread_id)
         if entry is None:
             return None
-        workspace_id = self._workspace_from_entry(entry)
-        if workspace_id is None:
-            return None
-        return await asyncio.to_thread(self._read_meta, workspace_id, thread_id)
+        return await asyncio.to_thread(self._read_meta, entry.workspace_id, thread_id)
 
     async def upsert_meta(self, meta: ThreadMeta) -> None:
         await asyncio.to_thread(self._write_meta, meta)
@@ -312,9 +415,7 @@ class FsThreadRepository(ThreadRepository):
         entry = await self._lookup_entry(thread_id)
         if entry is None:
             return
-        workspace_id = self._workspace_from_entry(entry)
-        if workspace_id is not None:
-            await asyncio.to_thread(self._delete_dir, workspace_id, thread_id)
+        await asyncio.to_thread(self._delete_dir, entry.workspace_id, thread_id)
         await self._index_remove(thread_id)
         # _step_locks вычистится сам по refs==0; на всякий — попытаемся снять
         # незанятый слот.
@@ -325,13 +426,11 @@ class FsThreadRepository(ThreadRepository):
 
     async def list_for_user(self, user_id: UserId) -> list[ThreadMeta]:
         index = await self._load_index_locked()
-        metas: list[ThreadMeta] = []
-        for thread_id, entry in index.items():
-            if entry.get("userId") != user_id.to_wire():
-                continue
-            meta = self._meta_from_entry(thread_id, entry)
-            if meta is not None:
-                metas.append(meta)
+        metas = [
+            entry.to_meta(thread_id)
+            for thread_id, entry in index.items()
+            if entry.user_id == user_id
+        ]
         metas.sort(key=lambda m: m.updated_at, reverse=True)
         return metas
 
@@ -341,6 +440,7 @@ class FsThreadRepository(ThreadRepository):
         if workspace_id is None:
             logger.warning("append_step: thread %s not in index, skipping", thread_id)
             return
+
         async with self._step_lock(thread_id):
             await asyncio.to_thread(self._append_step, workspace_id, thread_id, step)
 
@@ -349,6 +449,7 @@ class FsThreadRepository(ThreadRepository):
         workspace_id = await self._lookup_workspace(thread_id)
         if workspace_id is None:
             return
+
         async with self._step_lock(thread_id):
             await asyncio.to_thread(self._rewrite_step, workspace_id, thread_id, step)
 
@@ -356,6 +457,7 @@ class FsThreadRepository(ThreadRepository):
         workspace_id = await self._lookup_workspace(thread_id)
         if workspace_id is None:
             return
+
         async with self._step_lock(thread_id):
             await asyncio.to_thread(
                 self._remove_step,
@@ -369,6 +471,7 @@ class FsThreadRepository(ThreadRepository):
         workspace_id = await self._lookup_workspace(thread_id)
         if workspace_id is None:
             return []
+
         return await asyncio.to_thread(self._read_steps, workspace_id, thread_id)
 
     @asynccontextmanager
@@ -389,19 +492,19 @@ class FsThreadRepository(ThreadRepository):
                 if slot.refs == 0:
                     self._step_locks.pop(thread_id, None)
 
-    async def _lookup_entry(self, thread_id: ThreadId) -> dict[str, Any] | None:
+    async def _lookup_entry(self, thread_id: ThreadId) -> ThreadIndexEntry | None:
         index = await self._load_index_locked()
         return index.get(thread_id)
 
     async def _lookup_workspace(self, thread_id: ThreadId) -> WorkspaceId | None:
         "Найти workspace_id по thread_id"
         entry = await self._lookup_entry(thread_id)
-        return self._workspace_from_entry(entry) if entry else None
+        return entry.workspace_id if entry is not None else None
 
     async def _index_upsert(self, meta: ThreadMeta) -> None:
         async with self._index_lock:
             index = await asyncio.to_thread(self._load_index)
-            index[meta.id] = self._entry_from_meta(meta)
+            index[meta.id] = ThreadIndexEntry.from_meta(meta)
             await asyncio.to_thread(self._save_index, index)
 
     async def _index_remove(self, thread_id: ThreadId) -> None:
@@ -410,72 +513,21 @@ class FsThreadRepository(ThreadRepository):
             if index.pop(thread_id, None) is not None:
                 await asyncio.to_thread(self._save_index, index)
 
-    async def _load_index_locked(self) -> dict[ThreadId, dict[str, Any]]:
+    async def _load_index_locked(self) -> dict[ThreadId, ThreadIndexEntry]:
         async with self._index_lock:
             return await asyncio.to_thread(self._load_index)
 
-    def _load_index(self) -> dict[ThreadId, ThreadMeta]:
+    def _load_index(self) -> dict[ThreadId, ThreadIndexEntry]:
         if not self._index_path.exists():
             return {}
-
         raw = json.loads(self._index_path.read_text(encoding="utf-8") or "{}")
+        return {tid: ThreadIndexEntry.from_dict(value) for tid, value in raw.items()}
 
-        return {
-            tid: ({"workspaceId": value} if isinstance(value, str) else value)
-            for tid, value in raw.items()
-        }
-
-    def _save_index(self, index: dict[ThreadId, dict[str, Any]]) -> None:
+    def _save_index(self, index: dict[ThreadId, ThreadIndexEntry]) -> None:
+        payload = {tid: entry.to_dict() for tid, entry in index.items()}
         _AtomicFs.write_text(
             self._index_path,
-            json.dumps(index, ensure_ascii=False, indent=2),
-        )
-
-    @staticmethod
-    def _entry_from_meta(meta: ThreadMeta) -> dict[str, Any]:
-        return {
-            "workspaceId": meta.workspace_id.to_wire(),
-            "userId": meta.user_id,
-            "userIdentifier": meta.user_identifier,
-            "name": meta.name,
-            "tags": list(meta.tags),
-            "metadata": dict(meta.metadata),
-            "createdAt": meta.created_at,
-            "updatedAt": meta.updated_at,
-        }
-
-    @staticmethod
-    def _workspace_from_entry(entry: dict[str, Any] | None) -> WorkspaceId | None:
-        if not entry:
-            return None
-        raw = entry.get("workspaceId")
-        if not isinstance(raw, str):
-            return None
-        try:
-            return WorkspaceId(raw)
-        except ValueError:
-            return None
-
-    @classmethod
-    def _meta_from_entry(
-        cls,
-        thread_id: ThreadId,
-        entry: dict[str, Any],
-    ) -> ThreadMeta | None:
-        workspace_id = cls._workspace_from_entry(entry)
-        created_at = entry.get("createdAt")
-        if workspace_id is None or not created_at:
-            return None
-        return ThreadMeta(
-            id=thread_id,
-            workspace_id=workspace_id,
-            user_id=entry.get("userId"),
-            user_identifier=entry.get("userIdentifier"),
-            name=entry.get("name"),
-            tags=list(entry.get("tags") or []),
-            metadata=dict(entry.get("metadata") or {}),
-            created_at=created_at,
-            updated_at=entry.get("updatedAt") or created_at,
+            json.dumps(payload, ensure_ascii=False, indent=2),
         )
 
     def _thread_dir(self, workspace_id: WorkspaceId, thread_id: ThreadId) -> Path:
@@ -496,35 +548,13 @@ class FsThreadRepository(ThreadRepository):
         if not path.exists():
             return None
         raw = json.loads(path.read_text(encoding="utf-8"))
-        return ThreadMeta(
-            id=raw["id"],
-            workspace_id=WorkspaceId(raw["workspaceId"]),
-            user_id=raw.get("userId"),
-            user_identifier=raw.get("userIdentifier"),
-            name=raw.get("name"),
-            tags=list(raw.get("tags") or []),
-            metadata=dict(raw.get("metadata") or {}),
-            created_at=raw["createdAt"],
-            updated_at=raw.get("updatedAt") or raw["createdAt"],
-        )
+        return ThreadMeta.from_dict(raw)
 
     def _write_meta(self, meta: ThreadMeta) -> None:
-        directory = self._thread_dir(meta.workspace_id, meta.id)
-        path = directory / self._META
-        payload = {
-            "id": meta.id,
-            "workspaceId": meta.workspace_id.to_wire(),
-            "userId": meta.user_id,
-            "userIdentifier": meta.user_identifier,
-            "name": meta.name,
-            "tags": meta.tags,
-            "metadata": meta.metadata,
-            "createdAt": meta.created_at,
-            "updatedAt": meta.updated_at,
-        }
+        path = self._thread_dir(meta.workspace_id, meta.id) / self._META
         _AtomicFs.write_text(
             path,
-            json.dumps(payload, ensure_ascii=False, indent=2),
+            json.dumps(meta.to_dict(), ensure_ascii=False, indent=2),
         )
 
     def _delete_dir(self, workspace_id: WorkspaceId, thread_id: ThreadId) -> None:

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+from psycopg.sql import Composable, Composed
 
 from boba.db.postgres import PostgresPool
 from boba.tool.postgres_fts.errors import (
@@ -13,9 +15,6 @@ from boba.tool.postgres_fts.errors import (
 )
 from boba.tool.postgres_fts.models import FtsHit, IndexInfo, IndexSpec
 from boba.tools.domain import ToolId
-
-if TYPE_CHECKING:
-    from psycopg.sql import Composable, Composed
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +71,7 @@ class PgFtsKnowledgeBase:
         except Exception as e:
             raise FtsKnowledgeBaseError(
                 tool_id,
-                f"fts query failed for index {index!r}: "
-                f"{type(e).__name__}: {e}",
+                f"fts query failed for index {index!r}: {type(e).__name__}: {e}",
             ) from e
 
         return [self._row_to_hit(row, column_names) for row in rows]
