@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from types import TracebackType
 from typing import Generic, Self, TypeVar
 from uuid import UUID, uuid4
-import uuid
 
 __all__ = [
     "AllMatchesDispatcher",
@@ -167,6 +167,7 @@ class Converter(ABC, Generic[TIn, TOut_co]):
         """Выполнить конвертацию; бросает ConverterError."""
         ...
 
+
 class StreamConverter(ABC, Generic[TIn, TOut]):
     """Потоковая конвертация N:M. Iterable[A] → Iterable[B]."""
 
@@ -191,23 +192,23 @@ class StreamSink(StateFull, Generic[TCtx, TIn]):
 class StreamTransformer(StateFull, Generic[TCtx, TIn, TOut]):
     """Потоковое преобразование с контекстом:
 
-        ```python
-        def stream(self, ctx: TCtx, stream: Iterable[TIn]) -> Iterable[TOut]: ...
-        ```
-        - ```ctx``` — для доступа к внешним ресурсам, параметрам, логированию
-        - ```stream``` — генератор входящих событий которые нужно преобразовать
+    ```python
+    def stream(self, ctx: TCtx, stream: Iterable[TIn]) -> Iterable[TOut]: ...
+    ```
+    - ```ctx``` — для доступа к внешним ресурсам, параметрам, логированию
+    - ```stream``` — генератор входящих событий которые нужно преобразовать
 
-        Зачем так сложно?
+    Зачем так сложно?
 
-        Без него очень сложно организовать сложные сценарии разбитые на отдельные стадии
-        Научившись писать StreamSource/StreamTransformer/StreamSink,
-        можно строить сложные конвейеры из простых компонентов:
-            - пропускаем через себя и считаем кол-во
-            - преобразуем, фильтруем, аггрегируем, и т.п.
-            - не пускаем наружу, а просто сохраняем куда-то (в консоль, бд, файл)
+    Без него очень сложно организовать сложные сценарии разбитые на отдельные стадии
+    Научившись писать StreamSource/StreamTransformer/StreamSink,
+    можно строить сложные конвейеры из простых компонентов:
+        - пропускаем через себя и считаем кол-во
+        - преобразуем, фильтруем, аггрегируем, и т.п.
+        - не пускаем наружу, а просто сохраняем куда-то (в консоль, бд, файл)
 
-        Позволяет организовать сложную цепочку через изолированные стадии
-        Каждая стадия — чистая функция над потоком, без побочных эффектов
+    Позволяет организовать сложную цепочку через изолированные стадии
+    Каждая стадия — чистая функция над потоком, без побочных эффектов
     """
 
     @abstractmethod
