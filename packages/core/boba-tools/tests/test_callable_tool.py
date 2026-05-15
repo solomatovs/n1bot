@@ -15,10 +15,10 @@ from boba.tools.domain import (
     JsonResult,
     TextResult,
     ToolContext,
-    ToolId,
     ToolName,
     ToolResult,
     ToolSourceId,
+    compose_tool_id,
 )
 from boba.tools.framework import ToolDecoratorFactory, tool_factory
 
@@ -209,7 +209,7 @@ def test_into_source_yields_single_tool_source():
     assert src.id() == _SOURCE
     tools = list(src.tools())
     assert len(tools) == 1
-    assert tools[0].tool_id() == ToolId.compose(_SOURCE, ToolName("T"))
+    assert tools[0].tool_id() == compose_tool_id(_SOURCE, ToolName("T"))
 
 
 def test_build_with_name_override():
@@ -218,7 +218,7 @@ def test_build_with_name_override():
             return TextResult(text=query)
 
     built = tool_factory(T(), name="renamed").build(_SOURCE)
-    assert built.tool_id() == ToolId.compose(_SOURCE, ToolName("renamed"))
+    assert built.tool_id() == compose_tool_id(_SOURCE, ToolName("renamed"))
 
 
 # ── ошибки ────────────────────────────────────────────────────────────────

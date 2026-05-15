@@ -36,7 +36,12 @@ from typing import Any, overload
 
 from boba.schema import schema_from_callable
 from boba.schema.declaration import ObjectSchema
-from boba.tools.domain.ids import ToolId, ToolName, ToolSourceId
+from boba.tools.domain.ids import (
+    ToolId,
+    ToolName,
+    ToolSourceId,
+    compose_tool_id,
+)
 from boba.tools.domain.result import (
     JsonResult,
     TextResult,
@@ -90,7 +95,7 @@ class ToolDecoratorFactory:
         """Привязать к source_id и вернуть готовый Tool."""
         return DecoratedTool(
             fn=self._fn,
-            tool_id=ToolId.compose(source_id, self._name),
+            tool_id=compose_tool_id(source_id, self._name),
             schema=self._schema,
             injects_ctx=self._injects_ctx,
         )
@@ -217,7 +222,7 @@ def _coerce_result(tool_id: ToolId, value: Any) -> ToolResult:
         if predicate(value):
             return convert(value)
     msg = (
-        f"@tool: функция {tool_id.to_wire()!r} вернула неподдерживаемый тип "
+        f"@tool: функция {tool_id!r} вернула неподдерживаемый тип "
         f"{type(value).__name__} (ожидается ToolResult / str / int / float / "
         f"bool / list / tuple / set / dict / dataclass / None)"
     )

@@ -10,9 +10,9 @@ import pytest
 from boba.tool.postgres_fts.db import PgFtsKnowledgeBase
 from boba.tool.postgres_fts.errors import IndexNotFoundError
 from boba.tool.postgres_fts.models import IndexSpec
-from boba.tools.domain import ToolId, ToolName, ToolSourceId
+from boba.tools.domain import ToolName, ToolSourceId, compose_tool_id
 
-_TOOL_ID = ToolId.compose(ToolSourceId("plugin.postgres_fts"), ToolName("fts_search"))
+_TOOL_ID = compose_tool_id(ToolSourceId("plugin.postgres_fts"), ToolName("fts_search"))
 _Column = namedtuple("_Column", ["name"])
 
 

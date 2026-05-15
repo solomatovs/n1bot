@@ -113,8 +113,8 @@ class ToolIdCollisionError(Exception):
 
     def __init__(self, source_id: ToolSourceId, name: ToolName) -> None:
         super().__init__(
-            f"source {source_id.to_wire()!r} declares tool "
-            f"{name.to_wire()!r} more than once"
+            f"source {source_id!r} declares tool "
+            f"{name!r} more than once"
         )
         self.source_id = source_id
         self.name = name
@@ -125,6 +125,6 @@ class ToolSourceCollisionError(Exception):
 
     def __init__(self, source_id: ToolSourceId) -> None:
         super().__init__(
-            f"duplicate tool source {source_id.to_wire()!r}",
+            f"duplicate tool source {source_id!r}",
         )
         self.source_id = source_id

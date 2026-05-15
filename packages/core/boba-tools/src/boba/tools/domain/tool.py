@@ -27,7 +27,12 @@ from boba.tools.domain.errors import (
     InvalidSchemaInvariantError,
     InvalidToolArgumentError,
 )
-from boba.tools.domain.ids import ToolId, ToolName, ToolSourceId
+from boba.tools.domain.ids import (
+    ToolId,
+    ToolName,
+    ToolSourceId,
+    compose_tool_id,
+)
 from boba.tools.domain.result import ToolResult
 from boba.tools.domain.wire import ToolWireSchemaBuilder
 
@@ -133,7 +138,7 @@ class Tool(
 
     @cached_property
     def _tool_id(self) -> ToolId:
-        return ToolId.compose(self._source_id, self.name())
+        return compose_tool_id(self._source_id, self.name())
 
     def tool_id(self) -> ToolId:
         return self._tool_id

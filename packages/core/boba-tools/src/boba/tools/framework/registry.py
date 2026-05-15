@@ -24,7 +24,12 @@ from boba.tools.domain.errors import (
     ToolIdCollisionError,
     ToolSourceCollisionError,
 )
-from boba.tools.domain.ids import ToolId, ToolName, ToolSourceId
+from boba.tools.domain.ids import (
+    ToolId,
+    ToolName,
+    ToolSourceId,
+    parse_tool_id,
+)
 from boba.tools.domain.tool import Tool, ToolCall, ToolContext, ToolResult
 
 __all__ = [
@@ -69,12 +74,12 @@ class StaticToolSource(ToolSource):
         self._id = source_id
         self._index: dict[ToolName, Tool[Any, Any]] = {}
         for tool in tools:
-            tid_source, tid_name = tool.tool_id().parse()
+            tid_source, tid_name = parse_tool_id(tool.tool_id())
             if tid_source != source_id:
                 msg = (
-                    f"tool {tool.tool_id().to_wire()!r} attached to source "
-                    f"{source_id.to_wire()!r} but claims source "
-                    f"{tid_source.to_wire()!r}"
+                    f"tool {tool.tool_id()!r} attached to source "
+                    f"{source_id!r} but claims source "
+                    f"{tid_source!r}"
                 )
                 raise ValueError(msg)
             if tid_name in self._index:
@@ -125,7 +130,7 @@ class ToolExecutor(Executor[ToolContext, ToolCall, ToolResult]):
 
     def execute(self, ctx: ToolContext, req: ToolCall) -> ToolResult:
         try:
-            source_id, name = req.tool_id.parse()
+            source_id, name = parse_tool_id(req.tool_id)
         except ValueError as e:
             raise self._unknown_tool(req.tool_id) from e
 
@@ -165,12 +170,12 @@ class ToolExecutor(Executor[ToolContext, ToolCall, ToolResult]):
         self.close()
 
     def _unknown_tool(self, tool_id: ToolId) -> ToolExecutionError:
-        available = sorted(t.tool_id().to_wire() for t in self.tools())
+        available = sorted(t.tool_id() for t in self.tools())
         if not available:
-            msg = f"tool {tool_id.to_wire()!r} not found; no tools are registered"
+            msg = f"tool {tool_id!r} not found; no tools are registered"
         else:
             msg = (
-                f"tool {tool_id.to_wire()!r} not found. "
+                f"tool {tool_id!r} not found. "
                 f"available: {', '.join(repr(a) for a in available)}"
             )
         return ToolExecutionError(tool_id, msg)

@@ -23,10 +23,10 @@ from boba.tools.domain import (
     JsonResult,
     TextResult,
     ToolContext,
-    ToolId,
     ToolName,
     ToolResult,
     ToolSourceId,
+    compose_tool_id,
 )
 from boba.tools.framework import ToolDecoratorFactory, tool
 
@@ -253,7 +253,7 @@ def test_build_assigns_qualified_tool_id():
         return TextResult(text=path)
 
     built = fn.build(_SOURCE)
-    assert built.tool_id() == ToolId.compose(_SOURCE, ToolName("fn"))
+    assert built.tool_id() == compose_tool_id(_SOURCE, ToolName("fn"))
 
 
 def test_into_source_yields_single_tool_source():
@@ -265,7 +265,7 @@ def test_into_source_yields_single_tool_source():
     assert source.id() == _SOURCE
     tools = list(source.tools())
     assert len(tools) == 1
-    assert tools[0].tool_id() == ToolId.compose(_SOURCE, ToolName("fn"))
+    assert tools[0].tool_id() == compose_tool_id(_SOURCE, ToolName("fn"))
 
 
 def test_into_source_find_by_name():
@@ -276,7 +276,7 @@ def test_into_source_find_by_name():
     source = fn.into_source(_SOURCE)
     found = source.find(ToolName("fn"))
     assert found is not None
-    assert found.tool_id() == ToolId.compose(_SOURCE, ToolName("fn"))
+    assert found.tool_id() == compose_tool_id(_SOURCE, ToolName("fn"))
 
 
 def test_into_source_find_missing_returns_none():

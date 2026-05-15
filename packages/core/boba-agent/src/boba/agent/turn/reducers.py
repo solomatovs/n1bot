@@ -134,7 +134,7 @@ class ToolsReducer(PrioritySource[StrId, TurnState]):
         """Конверсия (qualified-id, ObjectSchema) в data-only LLMToolSchema."""
         wire = ToolWireSchemaBuilder(schema).build()
         return LLMToolSchema(
-            name=tool_id.to_wire(),
+            name=tool_id,
             description=schema.description,
             parameters_schema={
                 "type": "object",
