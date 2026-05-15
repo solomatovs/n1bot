@@ -31,7 +31,6 @@ from boba.agent.turn.reducers import (
     ToolsReducer,
     TurnReducer,
 )
-from boba.config.bundle import ConfigBundle
 from boba.llm.builder import LLMPipeline
 from boba.patterns import (
     StreamSource,
@@ -56,7 +55,6 @@ class AgentBuilder:
         self._llm: LLMPipeline | None = None
         self._tool_executor: ToolExecutor | None = None
         self._inline_factories: list[ToolDecoratorFactory] = []
-        self._bundle: ConfigBundle | None = None
         self._plugin_entries: list[
             tuple[type[Plugin[Any, ToolSource]], Any | None]
         ] = []
@@ -85,18 +83,6 @@ class AgentBuilder:
         """Добавить `@tool`-функции под общим source_id"""
         self._inline_factories.extend(factories)
         return self
-
-    def use_config_bundle(self, bundle: ConfigBundle) -> Self:
-        """Подключить готовый ConfigBundle (см. ConfigBundleFluentFactory)."""
-        if self._bundle is not None:
-            msg = "AgentBuilder.with_config_bundle: ConfigBundle уже задан"
-            raise ValueError(msg)
-        self._bundle = bundle
-        return self
-
-    def config_bundle(self) -> ConfigBundle | None:
-        """Текущий ConfigBundle, если был задан."""
-        return self._bundle
 
     def with_extension(self, key: type, instance: object) -> Self:
         """

@@ -10,10 +10,7 @@ requires-python = ">=3.11,<4"
 dependencies = [
     "boba-agent",
     "boba-patterns",
-    "boba-schema",
-    "boba-config",
     "boba-workspace",
-    "boba-config-toml",
     "boba-settings",
     "pydantic-settings>=2.13,<3",
 ]

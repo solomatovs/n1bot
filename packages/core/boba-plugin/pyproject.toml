@@ -9,8 +9,6 @@ description = "Boba plugin: Plugin ABC, PluginDiscovery (entry-points), PromptOv
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-patterns",
-    "boba-schema",
-    "boba-config",
     "boba-settings",
     "pydantic>=2.10,<2.11",
     "pydantic-settings>=2.13,<3",

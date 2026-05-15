@@ -13,9 +13,6 @@ from boba.agent.workspace_fs import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
 )
-from boba.config.builder import ConfigBundleFluentFactory
-from boba.config.bundle import ConfigBundle
-from boba.config.source.toml import use_toml
 from boba.web.chainlit.auth import (
     AuthenticateUser,
     StaticUserRepository,
@@ -64,23 +61,11 @@ def write_ui_config_overrides(cfg: ChainlitConfig, app_root: Path) -> None:
     target.write_text(content, encoding="utf-8")
 
 
-def _build_bundle() -> ConfigBundle:
-    """Собрать общий для всех сессий ConfigBundle."""
-    return (
-        ConfigBundleFluentFactory()
-        .use_cli()
-        .use_env_file()
-        .use_env()
-        .pipe(use_toml)
-        .build()
-    )
-
-
-def _make_builder_factory(bundle: ConfigBundle) -> Callable[[], AgentBuilder]:
-    """Свежий builder под per-session ChatSession: общий bundle, свои plugins."""
+def _make_builder_factory() -> Callable[[], AgentBuilder]:
+    """Свежий builder под per-session ChatSession (свои plugins)."""
 
     def factory() -> AgentBuilder:
-        return AgentBuilder().use_config_bundle(bundle).use_tools_plugins_discovered()
+        return AgentBuilder().use_tools_plugins_discovered()
 
     return factory
 
@@ -120,8 +105,6 @@ def _resolve_auth_secret(configured: str | None, local_dir: Path) -> str:
 
 
 def main() -> int:
-    bundle = _build_bundle()
-
     chainlit_cfg = ChainlitConfig.load()
     app = AppConfig.load()
 
@@ -154,7 +137,7 @@ def main() -> int:
     )
     authenticate_user = AuthenticateUser(user_repository)
 
-    builder_factory = _make_builder_factory(bundle)
+    builder_factory = _make_builder_factory()
     chat_session_pool = ChatSessionPool(
         _make_chat_session_builder(
             builder_factory,

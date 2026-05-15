@@ -9,8 +9,6 @@ description = "Boba Confluence: онлайн-tools (search, page outline/section
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-patterns",
-    "boba-schema",
-    "boba-config",
     "boba-plugin",
     "boba-tools",
     "boba-settings",
@@ -27,7 +25,6 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
-    "boba-config-toml",
     "pytest>=8",
 ]
 

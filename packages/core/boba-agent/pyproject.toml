@@ -9,8 +9,6 @@ description = "Boba agent: orchestrator + builder + middleware + turn-spec + pro
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-patterns",
-    "boba-schema",
-    "boba-config",
     "boba-plugin",
     "boba-workspace",
     "boba-llm",

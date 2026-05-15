@@ -28,8 +28,6 @@ from boba.cli.agent_run.infra import (
     AppConfig,
     configure_logging,
 )
-from boba.config.builder import ConfigBundleFluentFactory
-from boba.config.source.toml import use_toml
 from boba.llm.builder import LLMPipelineFactory
 from boba.llm.models import new_request_id
 from boba.patterns import ConverterInputError
@@ -57,15 +55,7 @@ def main() -> int:
 
 def _run() -> int:
     """Собирает агента и либо прогоняет один запрос, либо запускает REPL."""
-    bundle = (
-        ConfigBundleFluentFactory()
-        .use_cli()
-        .use_env_file()
-        .use_env()
-        .pipe(use_toml)
-        .build()
-    )
-    builder = AgentBuilder().use_config_bundle(bundle)
+    builder = AgentBuilder()
 
     app = AppConfig.load()
     run_cfg = AgentRunConfig.load()
