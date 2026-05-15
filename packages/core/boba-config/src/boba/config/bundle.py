@@ -20,7 +20,6 @@ from boba.patterns import (
     ConverterInputError,
     FoldFactory,
     PrioritySource,
-    StrId,
 )
 from boba.schema import (
     resolve_schema_for_dataclass,
@@ -285,18 +284,18 @@ class _MergeState:
     origins: dict[ConfigPath, str] = field(default_factory=dict)
 
 
-class _SourceReducer(PrioritySource[StrId, _MergeState]):
+class _SourceReducer(PrioritySource[str, _MergeState]):
     """Адаптер: один ConfigSource как стадия FoldFactory."""
 
     def __init__(self, source: ConfigSource) -> None:
         self._src = source
-        self._id = StrId(source.name())
+        self._id = source.name()
 
     @property
     def source(self) -> ConfigSource:
         return self._src
 
-    def id(self) -> StrId:
+    def id(self) -> str:
         return self._id
 
     def priority(self) -> int:
@@ -310,7 +309,7 @@ class _SourceReducer(PrioritySource[StrId, _MergeState]):
         return state
 
 
-class ConfigBundleFoldFactory(FoldFactory[StrId, _MergeState, ConfigBundle]):
+class ConfigBundleFoldFactory(FoldFactory[str, _MergeState, ConfigBundle]):
     """Источники → ConfigBundle. FoldFactory: каждый source — стадия мержа.
 
     Сборка: source'ы сортируются по priority и последовательно сливаются в

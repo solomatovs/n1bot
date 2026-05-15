@@ -18,7 +18,7 @@ from boba.llm.models import (
     SamplingParams,
     SystemMessage,
 )
-from boba.patterns import FoldFactory, StrId
+from boba.patterns import FoldFactory
 
 
 @dataclass
@@ -32,7 +32,7 @@ class TurnState:
 
 
 class TurnSpec(
-    FoldFactory[StrId, TurnState, LLMRequest],
+    FoldFactory[str, TurnState, LLMRequest],
 ):
     def initial(self) -> TurnState:
         return TurnState()

@@ -16,18 +16,18 @@ from boba.agent.turn.reducers import (
 )
 from boba.agent.turn.spec import TurnState
 from boba.llm.models import new_request_id
-from boba.patterns import PrioritySource, StrId
+from boba.patterns import PrioritySource
 
 
-class _MarkerReducer(PrioritySource[StrId, TurnState]):
+class _MarkerReducer(PrioritySource[str, TurnState]):
     """Reducer с уникальным id; используется как маркер регистрации."""
 
-    ID: ClassVar[StrId] = StrId("test_marker")
+    ID: ClassVar[str] = "test_marker"
 
     def __init__(self, priority: int = 90) -> None:
         self._priority = priority
 
-    def id(self) -> StrId:
+    def id(self) -> str:
         return self.ID
 
     def priority(self) -> int:
@@ -91,8 +91,8 @@ def test_builder_default_reducers_registered_when_user_silent():
         ModelReducer.ID,
         SystemPromptReducer.ID,
         HistoryReducer.ID,
-        StrId("tools"),
-        StrId("sampling"),
+        "tools",
+        "sampling",
     }
     assert ids == expected
 
@@ -139,10 +139,10 @@ def test_builder_user_only_skips_default():
 def test_builder_extra_reducer_with_same_id_overrides_default():
     builder = AgentBuilder()
 
-    class _OverrideModel(PrioritySource[StrId, TurnState]):
-        ID: ClassVar[StrId] = ModelReducer.ID
+    class _OverrideModel(PrioritySource[str, TurnState]):
+        ID: ClassVar[str] = ModelReducer.ID
 
-        def id(self) -> StrId:
+        def id(self) -> str:
             return self.ID
 
         def priority(self) -> int:
