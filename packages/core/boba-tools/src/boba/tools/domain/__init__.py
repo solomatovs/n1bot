@@ -2,9 +2,8 @@
 
 Содержит:
 - Identity: ToolName (локальное), ToolSourceId, ToolId (qualified wire).
-- Tool ABC + ToolCall, ToolContext.
+- Tool ABC + ToolCall, ToolContext, JsonSchemaOverlay-protocol.
 - ToolResult sealed family + ToolResultVisitor (double-dispatch).
-- args/wire builders: типизация tool-arguments + JSON-Schema export.
 - доменные ошибки: ToolExecutionError, InvalidToolArgumentError, etc.
 
 Application-фреймворк (registry, ToolExecutor, plugin_loader) — в `boba-tools`.
@@ -14,7 +13,6 @@ target-формат (str, multi-part, structured-output).
 
 from __future__ import annotations
 
-from boba.tools.domain.args import ToolArgsBuilder
 from boba.tools.domain.errors import (
     InvalidSchemaInvariantError,
     InvalidToolArgumentError,
@@ -30,6 +28,7 @@ from boba.tools.domain.ids import (
     compose_tool_id,
     parse_tool_id,
 )
+from boba.tools.domain.llm_schema import clean_llm_json_schema
 from boba.tools.domain.result import (
     DefaultTextVisitor,
     ErrorResult,
@@ -38,8 +37,12 @@ from boba.tools.domain.result import (
     ToolResult,
     ToolResultVisitor,
 )
-from boba.tools.domain.tool import SchemaOverlay, Tool, ToolCall, ToolContext
-from boba.tools.domain.wire import ToolWireSchemaBuilder
+from boba.tools.domain.tool import (
+    JsonSchemaOverlay,
+    Tool,
+    ToolCall,
+    ToolContext,
+)
 
 __all__ = [
     "DefaultTextVisitor",
@@ -47,10 +50,9 @@ __all__ = [
     "InvalidSchemaInvariantError",
     "InvalidToolArgumentError",
     "JsonResult",
-    "SchemaOverlay",
+    "JsonSchemaOverlay",
     "TextResult",
     "Tool",
-    "ToolArgsBuilder",
     "ToolCall",
     "ToolContext",
     "ToolExecutionError",
@@ -62,7 +64,7 @@ __all__ = [
     "ToolResultVisitor",
     "ToolSourceCollisionError",
     "ToolSourceId",
-    "ToolWireSchemaBuilder",
+    "clean_llm_json_schema",
     "compose_tool_id",
     "parse_tool_id",
 ]
