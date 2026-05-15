@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from io import BytesIO
 from unittest.mock import MagicMock
 
@@ -16,6 +17,8 @@ from boba.tool.confluence.page_download import (
 )
 from boba.tools.domain import JsonResult, ToolContext, ToolSourceId
 from boba.workspace.contract import ProjectWorkspaceShell
+
+_HTTPX_TARGET = "boba.transport.http.transport.httpx.Client"
 
 
 def _make_tool(shell):
@@ -33,17 +36,9 @@ def _make_tool(shell):
     return ConfluencePageDownloadTool(cfg, ctx, ToolSourceId("plugin.confluence"))
 
 
-def _patch_httpx(monkeypatch, handler):
-    real_client = httpx.Client
-
-    def mock_client(**kwargs):
-        kwargs["transport"] = httpx.MockTransport(handler)
-        return real_client(**kwargs)
-
-    monkeypatch.setattr("boba.transport.http.transport.httpx.Client", mock_client)
-
-
-def test_downloads_pages_to_workspace_files(monkeypatch):
+def test_downloads_pages_to_workspace_files(
+    patch_httpx: Callable[[str, Callable[[httpx.Request], httpx.Response]], None],
+):
     pages = {
         "111": (
             b'{"id":"111","title":"A","space":{"key":"DOC"},'
@@ -65,7 +60,7 @@ def test_downloads_pages_to_workspace_files(monkeypatch):
                 return httpx.Response(200, content=body)
         return httpx.Response(404)
 
-    _patch_httpx(monkeypatch, handler)
+    patch_httpx(_HTTPX_TARGET, handler)
 
     written: dict[str, bytes] = {}
 
@@ -115,11 +110,13 @@ def test_downloads_pages_to_workspace_files(monkeypatch):
     shell.mkdir.assert_called_once_with("downloads")
 
 
-def test_dest_dir_not_created_if_exists(monkeypatch):
+def test_dest_dir_not_created_if_exists(
+    patch_httpx: Callable[[str, Callable[[httpx.Request], httpx.Response]], None],
+):
     def handler(_req: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"{}")
 
-    _patch_httpx(monkeypatch, handler)
+    patch_httpx(_HTTPX_TARGET, handler)
 
     shell = MagicMock(spec=ProjectWorkspaceShell)
     shell.exists.return_value = True
@@ -134,11 +131,13 @@ def test_dest_dir_not_created_if_exists(monkeypatch):
     shell.mkdir.assert_not_called()
 
 
-def test_trailing_slash_in_dest_dir_is_stripped(monkeypatch):
+def test_trailing_slash_in_dest_dir_is_stripped(
+    patch_httpx: Callable[[str, Callable[[httpx.Request], httpx.Response]], None],
+):
     def handler(_req: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"{}")
 
-    _patch_httpx(monkeypatch, handler)
+    patch_httpx(_HTTPX_TARGET, handler)
 
     shell = MagicMock(spec=ProjectWorkspaceShell)
     shell.exists.return_value = True

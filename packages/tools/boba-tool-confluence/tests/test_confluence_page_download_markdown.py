@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from io import BytesIO
 from unittest.mock import MagicMock
 
@@ -16,6 +17,8 @@ from boba.tool.confluence.page_download_markdown import (
 )
 from boba.tools.domain import JsonResult, ToolContext, ToolSourceId
 from boba.workspace.contract import ProjectWorkspaceShell
+
+_HTTPX_TARGET = "boba.transport.http.transport.httpx.Client"
 
 
 def _make_tool(shell):
@@ -35,17 +38,9 @@ def _make_tool(shell):
     )
 
 
-def _patch_httpx(monkeypatch, handler):
-    real_client = httpx.Client
-
-    def mock_client(**kwargs):
-        kwargs["transport"] = httpx.MockTransport(handler)
-        return real_client(**kwargs)
-
-    monkeypatch.setattr("boba.transport.http.transport.httpx.Client", mock_client)
-
-
-def test_downloads_pages_as_markdown(monkeypatch):
+def test_downloads_pages_as_markdown(
+    patch_httpx: Callable[[str, Callable[[httpx.Request], httpx.Response]], None],
+):
     pages = {
         "111": (
             b'{"id":"111","title":"Alpha","space":{"key":"DOC"},'
@@ -63,7 +58,7 @@ def test_downloads_pages_as_markdown(monkeypatch):
                 return httpx.Response(200, content=body)
         return httpx.Response(404)
 
-    _patch_httpx(monkeypatch, handler)
+    patch_httpx(_HTTPX_TARGET, handler)
 
     written: dict[str, bytes] = {}
 
@@ -120,14 +115,16 @@ def test_downloads_pages_as_markdown(monkeypatch):
     shell.mkdir.assert_called_once_with("downloads")
 
 
-def test_trailing_slash_stripped(monkeypatch):
+def test_trailing_slash_stripped(
+    patch_httpx: Callable[[str, Callable[[httpx.Request], httpx.Response]], None],
+):
     def handler(_req: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
             content=b'{"id":"7","body":{"view":{"value":"<p>x</p>"}}}',
         )
 
-    _patch_httpx(monkeypatch, handler)
+    patch_httpx(_HTTPX_TARGET, handler)
 
     shell = MagicMock(spec=ProjectWorkspaceShell)
     shell.exists.return_value = True

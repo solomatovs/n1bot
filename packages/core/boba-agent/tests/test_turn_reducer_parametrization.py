@@ -6,7 +6,7 @@ from typing import ClassVar
 
 from boba.agent.builder import AgentBuilder
 from boba.agent.middleware.llm import LLMInvokeMiddleware
-from boba.agent.orchestrator import AgentContext, AgentRequest
+from boba.agent.orchestrator import AgentContext
 from boba.agent.turn.builder import TurnSpecBuilder
 from boba.agent.turn.reducers import (
     HistoryReducer,
@@ -15,7 +15,6 @@ from boba.agent.turn.reducers import (
     SystemPromptReducer,
 )
 from boba.agent.turn.spec import TurnState
-from boba.llm.models import new_request_id
 from boba.patterns import PrioritySource
 
 
@@ -37,20 +36,12 @@ class _MarkerReducer(PrioritySource[str, TurnState]):
         return state
 
 
-def _ctx() -> AgentContext:
-    return AgentContext(
-        request=AgentRequest(
-            request_id=new_request_id(),
-            model="test-model",
-            query="hi",
-        ),
-    )
-
-
 # LLMInvokeMiddleware: терминал ничего не знает про конкретные reducer'ы
 
 
-def test_middleware_delegates_spec_construction_to_builder():
+def test_middleware_delegates_spec_construction_to_builder(
+    agent_ctx: AgentContext,
+):
     captured: list[AgentContext] = []
 
     def factory(ctx: AgentContext) -> _MarkerReducer:
@@ -64,29 +55,23 @@ def test_middleware_delegates_spec_construction_to_builder():
         llm=None,  # type: ignore[arg-type]
         turn_spec_builder=spec_builder,
     )
-    ctx = _ctx()
-    spec = mw._turn_spec_builder.build(ctx)
+    spec = mw._turn_spec_builder.build(agent_ctx)
 
     ids = {p.id() for p in spec.providers()}
     assert _MarkerReducer.ID in ids
-    assert captured == [ctx]
+    assert captured == [agent_ctx]
 
 
 # AgentBuilder.use_turn_reducer / use_default_turn_reducers
 
 
-def test_builder_default_reducers_registered_when_user_silent():
+def test_builder_default_reducers_registered_when_user_silent(
+    agent_ctx: AgentContext,
+):
     builder = AgentBuilder()
     builder.use_default_turn_reducers()
-    spec = builder._turn_spec_builder.build(_ctx())
+    spec = builder._turn_spec_builder.build(agent_ctx)
     ids = {p.id() for p in spec.providers()}
-    assert ids == {
-        ModelReducer.ID,
-        SystemPromptReducer.ID,
-        HistoryReducer.ID,
-        # ToolsReducer / AgentRequestSamplingReducer тоже здесь —
-        # сверяем по подмножеству, чтобы тест не ломался при добавлении.
-    } | ids  # подмножество-проверка через self-union — assert ниже строгий
     expected = {
         ModelReducer.ID,
         SystemPromptReducer.ID,
@@ -97,46 +82,56 @@ def test_builder_default_reducers_registered_when_user_silent():
     assert ids == expected
 
 
-def test_builder_use_turn_reducer_accepts_ready_reducer():
+def test_builder_use_turn_reducer_accepts_ready_reducer(
+    agent_ctx: AgentContext,
+):
     builder = AgentBuilder()
     marker = _MarkerReducer()
     builder.use_turn_reducer(marker)
-    spec = builder._turn_spec_builder.build(_ctx())
+    spec = builder._turn_spec_builder.build(agent_ctx)
     providers = {p.id(): p for p in spec.providers()}
     assert providers[_MarkerReducer.ID] is marker
 
 
-def test_builder_use_turn_reducer_accepts_factory():
+def test_builder_use_turn_reducer_accepts_factory(
+    agent_ctx: AgentContext,
+):
     builder = AgentBuilder()
     builder.use_turn_reducer(lambda _ctx: _MarkerReducer())
-    spec = builder._turn_spec_builder.build(_ctx())
+    spec = builder._turn_spec_builder.build(agent_ctx)
     ids = {p.id() for p in spec.providers()}
     assert _MarkerReducer.ID in ids
 
 
-def test_builder_default_plus_extra():
+def test_builder_default_plus_extra(
+    agent_ctx: AgentContext,
+):
     builder = AgentBuilder()
     (
         builder
         .use_default_turn_reducers()
         .use_turn_reducer(RememberUserQueryReducer())
     )
-    spec = builder._turn_spec_builder.build(_ctx())
+    spec = builder._turn_spec_builder.build(agent_ctx)
     ids = {p.id() for p in spec.providers()}
     assert ModelReducer.ID in ids
     assert RememberUserQueryReducer.ID in ids
 
 
-def test_builder_user_only_skips_default():
+def test_builder_user_only_skips_default(
+    agent_ctx: AgentContext,
+):
     builder = AgentBuilder()
     builder.use_turn_reducer(_MarkerReducer())
-    spec = builder._turn_spec_builder.build(_ctx())
+    spec = builder._turn_spec_builder.build(agent_ctx)
     ids = {p.id() for p in spec.providers()}
     # Стандартного набора не должно быть — пользователь явно задал только маркер.
     assert ids == {_MarkerReducer.ID}
 
 
-def test_builder_extra_reducer_with_same_id_overrides_default():
+def test_builder_extra_reducer_with_same_id_overrides_default(
+    agent_ctx: AgentContext,
+):
     builder = AgentBuilder()
 
     class _OverrideModel(PrioritySource[str, TurnState]):
@@ -154,6 +149,6 @@ def test_builder_extra_reducer_with_same_id_overrides_default():
 
     override = _OverrideModel()
     builder.use_default_turn_reducers().use_turn_reducer(override)
-    spec = builder._turn_spec_builder.build(_ctx())
+    spec = builder._turn_spec_builder.build(agent_ctx)
     providers = {p.id(): p for p in spec.providers()}
     assert providers[ModelReducer.ID] is override
