@@ -14,7 +14,7 @@ from boba.agent.prompt_providers import PromptLoader
 # )
 from boba.agent.workspace_fs import FsPromptWorkspaceRegistry
 from boba.llm.builder import LLMPipelineFactory
-from boba.llm.models import RequestId
+from boba.llm.models import new_request_id
 from boba.provider.openai import (
     CurlTraceChatCompletionObserver,
     use_openai,
@@ -97,7 +97,7 @@ class ChatSession:
 
     def run(self, query: str, extra_sink: ChainlitBridgeSink) -> None:
         """Запустить агентский цикл; модель берётся из chainlit-конфига."""
-        request_id = RequestId.new()
+        request_id = new_request_id()
         agent_input = AgentInput(
             request=AgentRequest(
                 model=self._chainlit_config.model,
@@ -107,7 +107,7 @@ class ChatSession:
             config=self._agent_config,
         )
         with log_context(
-            request_id=request_id.to_wire(),
+            request_id=str(request_id),
             workspace_id=self._workspace_id.to_wire(),
         ):
             for event in self._agent.stream(agent_input):

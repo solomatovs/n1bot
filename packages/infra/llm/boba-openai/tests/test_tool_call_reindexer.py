@@ -14,9 +14,9 @@ from boba.llm.events import LLMToolCallArgumentDelta, LLMToolCallBegin
 from boba.llm.models import (
     LLMContext,
     LLMRequest,
-    RequestId,
     SystemMessage,
     UserMessage,
+    new_request_id,
 )
 from boba.provider.openai.response import FromOpenAIChunkConverter
 from boba.provider.openai.tool_call_reindexer import (
@@ -31,7 +31,7 @@ def _ctx() -> LLMContext:
         system_message=sys_msg,
         messages=(UserMessage(content="hi"),),
     )
-    return LLMContext(request_id=RequestId.new(), request=req)
+    return LLMContext(request_id=new_request_id(), request=req)
 
 
 def _tc(

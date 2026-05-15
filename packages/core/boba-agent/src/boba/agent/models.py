@@ -5,7 +5,7 @@ from typing import TypeAlias
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.agent._pydantic_compat import ToolResultField
+from boba.tools.domain import ToolResult
 
 
 class ToolCallResult(BaseModel):
@@ -13,7 +13,7 @@ class ToolCallResult(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    result: ToolResultField
+    result: ToolResult
 
 
 class ToolCallFailure(BaseModel):

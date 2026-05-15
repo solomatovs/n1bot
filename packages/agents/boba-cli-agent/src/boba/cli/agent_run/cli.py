@@ -31,7 +31,7 @@ from boba.cli.agent_run.infra import (
 from boba.config.builder import ConfigBundleFluentFactory
 from boba.config.source.toml import use_toml
 from boba.llm.builder import LLMPipelineFactory
-from boba.llm.models import RequestId
+from boba.llm.models import new_request_id
 from boba.patterns import ConverterInputError
 from boba.provider.openai import (
     CurlTraceChatCompletionObserver,
@@ -134,7 +134,7 @@ def _run_turn(
     """Один ход: свежий RequestId, общий message_service хранит историю."""
     request = AgentRequest(
         model=run_cfg.model,
-        request_id=RequestId.new(),
+        request_id=new_request_id(),
         query=query,
         sampling=run_cfg.to_sampling_params(),
     )

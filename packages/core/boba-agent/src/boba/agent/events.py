@@ -9,16 +9,12 @@ from typing import Annotated, ClassVar, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from boba.agent._pydantic_compat import (
-    InvalidToolCallField,
-    RequestIdField,
-    ToolCallField,
-)
 from boba.agent.models import (
     ToolCallFailure,
     ToolCallResult,
 )
 from boba.llm.events import FinishReason
+from boba.llm.models import InvalidToolCall, RequestId, ToolCall
 from boba.tools.domain import DefaultTextVisitor
 
 
@@ -53,7 +49,7 @@ class BaseAgentEvent(BaseModel, ABC):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    request_id: RequestIdField
+    request_id: RequestId
 
 
 class PhaseTransition(BaseAgentEvent, ABC):
@@ -233,7 +229,7 @@ class ToolExecutionStarted(PhaseTransition):
     """Tool готов к исполнению — args разобраны."""
 
     type: Literal["ToolExecutionStarted"] = "ToolExecutionStarted"
-    call: ToolCallField
+    call: ToolCall
 
     def label(self) -> str:
         return f"tool exec: {self.call.name}"
@@ -297,7 +293,7 @@ class ThinkingToken(ContentDelta):
         return SlotKind.THINKING
 
     def slot_id(self) -> str:
-        return self.request_id.to_wire()
+        return str(self.request_id)
 
     def chunk(self) -> str:
         return self.token
@@ -313,7 +309,7 @@ class AnswerToken(ContentDelta):
         return SlotKind.ANSWER
 
     def slot_id(self) -> str:
-        return self.request_id.to_wire()
+        return str(self.request_id)
 
     def chunk(self) -> str:
         return self.token
@@ -329,7 +325,7 @@ class RefusalToken(ContentDelta):
         return SlotKind.REFUSAL
 
     def slot_id(self) -> str:
-        return self.request_id.to_wire()
+        return str(self.request_id)
 
     def chunk(self) -> str:
         return self.token
@@ -369,7 +365,7 @@ class UserQueryReceived(ContentSnapshot):
         return SlotKind.USER_QUERY
 
     def slot_id(self) -> str:
-        return self.request_id.to_wire()
+        return str(self.request_id)
 
     def body(self) -> str:
         return self.query
@@ -385,7 +381,7 @@ class ThinkingComplete(ContentSnapshot):
         return SlotKind.THINKING
 
     def slot_id(self) -> str:
-        return self.request_id.to_wire()
+        return str(self.request_id)
 
     def body(self) -> str:
         return self.content
@@ -401,7 +397,7 @@ class AnswerComplete(ContentSnapshot):
         return SlotKind.ANSWER
 
     def slot_id(self) -> str:
-        return self.request_id.to_wire()
+        return str(self.request_id)
 
     def body(self) -> str:
         return self.content
@@ -417,7 +413,7 @@ class RefusalComplete(ContentSnapshot):
         return SlotKind.REFUSAL
 
     def slot_id(self) -> str:
-        return self.request_id.to_wire()
+        return str(self.request_id)
 
     def body(self) -> str:
         return self.content
@@ -427,7 +423,7 @@ class ToolCallComplete(ContentSnapshot):
     """Завершённый tool call (id + имя + args)."""
 
     type: Literal["ToolCallComplete"] = "ToolCallComplete"
-    call: ToolCallField
+    call: ToolCall
 
     def slot(self) -> SlotKind:
         return SlotKind.TOOL_CALL
@@ -448,7 +444,7 @@ class ToolResultReady(ContentSnapshot):
     _TEXT_VISITOR: ClassVar[DefaultTextVisitor] = DefaultTextVisitor()
 
     type: Literal["ToolResultReady"] = "ToolResultReady"
-    call: ToolCallField
+    call: ToolCall
     result: ToolCallResult
 
     def slot(self) -> SlotKind:
@@ -474,7 +470,7 @@ class FeedbackToLLMAdded(ContentSnapshot):
         return SlotKind.FEEDBACK
 
     def slot_id(self) -> str:
-        return self.request_id.to_wire()
+        return str(self.request_id)
 
     def body(self) -> str:
         return self.content
@@ -489,7 +485,7 @@ class InvalidToolCallReceived(Advisory):
     """LLM выдала tool-call с невалидным JSON в args; цикл продолжается."""
 
     type: Literal["InvalidToolCallReceived"] = "InvalidToolCallReceived"
-    invalid: InvalidToolCallField
+    invalid: InvalidToolCall
 
     def headline(self) -> str:
         return f"invalid tool call: {self.invalid.name}"
@@ -508,7 +504,7 @@ class ToolExecutionFailed(Advisory):
     """Tool упал — вызов и описание провала; цикл продолжается."""
 
     type: Literal["ToolExecutionFailed"] = "ToolExecutionFailed"
-    call: ToolCallField
+    call: ToolCall
     failure: ToolCallFailure
 
     def headline(self) -> str:

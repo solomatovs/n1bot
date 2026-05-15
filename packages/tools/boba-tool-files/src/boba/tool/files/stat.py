@@ -60,4 +60,4 @@ class StatTool(FsToolBase[StatArgs, StatToolConfig]):
             "modified": meta.modified.isoformat(),
         }
 
-        return JsonResult(body)
+        return JsonResult(payload=body)
