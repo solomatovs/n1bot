@@ -29,7 +29,13 @@ from boba.tools.domain.ids import (
     ToolSourceId,
     parse_tool_id,
 )
-from boba.tools.domain.tool import Tool, ToolCall, ToolContext, ToolResult
+from boba.tools.domain.tool import (
+    Tool,
+    ToolCall,
+    ToolContext,
+    ToolResult,
+    ToolSchema,
+)
 
 __all__ = [
     "StaticToolSource",
@@ -122,10 +128,10 @@ class ToolExecutor(Executor[ToolContext, ToolCall, ToolResult]):
         for src in self._sources.values():
             yield from src.tools()
 
-    def definitions(self) -> Iterator[tuple[ToolId, dict[str, Any]]]:
-        """Описания tool'ов для LLM: пары (qualified-id, JSON-schema dict)."""
+    def definitions(self) -> Iterator[ToolSchema]:
+        """Описания tool'ов для LLM: упакованные `ToolSchema` (name + schema)."""
         for tool in self.tools():
-            yield tool.tool_id(), tool.definition()
+            yield tool.definition()
 
     def execute(self, ctx: ToolContext, req: ToolCall) -> ToolResult:
         try:

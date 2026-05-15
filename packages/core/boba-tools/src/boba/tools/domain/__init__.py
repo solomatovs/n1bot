@@ -42,6 +42,7 @@ from boba.tools.domain.tool import (
     Tool,
     ToolCall,
     ToolContext,
+    ToolSchema,
 )
 
 __all__ = [
@@ -62,6 +63,7 @@ __all__ = [
     "ToolOutputTooLargeError",
     "ToolResult",
     "ToolResultVisitor",
+    "ToolSchema",
     "ToolSourceCollisionError",
     "ToolSourceId",
     "clean_llm_json_schema",

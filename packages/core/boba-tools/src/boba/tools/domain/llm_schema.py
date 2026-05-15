@@ -3,7 +3,7 @@
 `BaseModel.model_json_schema()` пишет богатую draft-2020-12 схему с
 полями, которые для LLM-tools обычно бесполезны или вредят (лишний
 размер, неверный strict-режим). Этот хелпер «причёсывает» dict до
-минимального набора, ожидаемого `LLMToolSchema.parameters_schema`:
+минимального набора, ожидаемого `ToolSchema.parameters_schema`:
 
   * `title` — удалён на корне и в каждом property/sub-schema;
   * `$defs`/`definitions` — инлайнятся (рекурсивно) и удаляются

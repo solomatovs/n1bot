@@ -10,14 +10,12 @@ from boba.agent.prompt import PromptFactory, PromptProvider
 from boba.agent.turn.spec import TurnState
 from boba.llm.models import (
     LLMToolRequest,
-    LLMToolSchema,
     SamplingParams,
     SystemMessage,
     ToolResultMessage,
     UserMessage,
 )
 from boba.patterns import PrioritySource
-from boba.tools.domain import ToolId
 from boba.tools.framework import ToolExecutor
 
 TurnReducer: TypeAlias = PrioritySource[str, TurnState]
@@ -114,29 +112,10 @@ class ToolsReducer(PrioritySource[str, TurnState]):
 
     def apply(self, state: TurnState) -> TurnState:
         state.tools = LLMToolRequest(
-            tools=tuple(
-                self._tool_to_schema(tid, schema)
-                for tid, schema in self._tool_executor.definitions()
-            ),
+            tools=tuple(self._tool_executor.definitions()),
             parallel_tool_calls=self._parallel,
         )
         return state
-
-    @staticmethod
-    def _tool_to_schema(
-        tool_id: ToolId,
-        schema: dict[str, Any],
-    ) -> LLMToolSchema:
-        """Конверсия (qualified-id, JSON-schema dict) в data-only LLMToolSchema."""
-        return LLMToolSchema(
-            name=tool_id,
-            description=str(schema.get("description", "")),
-            parameters_schema={
-                "type": "object",
-                "properties": schema.get("properties", {}),
-                "required": schema.get("required", []),
-            },
-        )
 
 
 class AgentRequestSamplingReducer(PrioritySource[str, TurnState]):
