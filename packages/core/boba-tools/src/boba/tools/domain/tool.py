@@ -29,7 +29,7 @@ from boba.tools.domain.ids import (
     ToolSourceId,
     compose_tool_id,
 )
-from boba.tools.domain.llm_schema import clean_llm_json_schema
+from boba.tools.domain.llm_schema import LLMSchemaGenerator
 from boba.tools.domain.result import ToolResult
 
 __all__ = [
@@ -172,24 +172,34 @@ class Tool(
     def definition(self) -> ToolSchema:
         """`ToolSchema` инструмента: name + description + parameters_schema.
 
-        TArgs резолвится из объявления `Tool[XArgs, XConfig]` через
-        `__orig_bases__`. `cfg.prompt` (если реализует `JsonSchemaOverlay`)
-        патчит JSON-schema через `apply_to_json_schema`. Полученная схема
-        нормализуется `clean_llm_json_schema` (инлайн `$defs`/`$ref`, дроп
-        `title`) и упаковывается: `description` переезжает в одноимённое
-        поле `ToolSchema`, остальное идёт в `parameters_schema`.
+        args_model берётся из `_args_model_class()` (instance-hook; default
+        резолвит TArgs из `Tool[XArgs, XConfig]` через `__orig_bases__`).
+        Схема эмитится `LLMSchemaGenerator`-ом сразу плоской (без `$defs`/
+        `$ref`/`title`); `cfg.prompt` (если реализует `JsonSchemaOverlay`)
+        патчит её через `apply_to_json_schema`. `description` переезжает в
+        одноимённое поле `ToolSchema`, остальное идёт в `parameters_schema`.
         """
-        raw = self._resolve_args_model().model_json_schema()
+        schema = self._args_model_class().model_json_schema(
+            schema_generator=LLMSchemaGenerator,
+        )
         prompt = getattr(self._cfg, "prompt", None)
         if isinstance(prompt, JsonSchemaOverlay):
-            raw = prompt.apply_to_json_schema(raw)
-        parameters = clean_llm_json_schema(raw)
-        description = str(parameters.pop("description", ""))
+            schema = prompt.apply_to_json_schema(schema)
+        description = str(schema.pop("description", ""))
         return ToolSchema(
             name=self.tool_id(),
             description=description,
-            parameters_schema=parameters,
+            parameters_schema=schema,
         )
+
+    def _args_model_class(self) -> type[BaseModel]:
+        """Instance-hook: какая pydantic-модель валидирует аргументы.
+
+        Default — резолв через generic-параметр `Tool[XArgs, XConfig]`.
+        Сабклассы, у которых args_model рождается не из generic (например,
+        `DecoratedTool` создаёт модель через `create_model`), переопределяют.
+        """
+        return self._resolve_args_model()
 
     @classmethod
     def _resolve_args_model(cls) -> type[BaseModel]:
@@ -223,7 +233,7 @@ class Tool(
         `InvalidSchemaInvariantError` с подсказкой `expected: JSON-schema`
         и preview `received` для LLM.
         """
-        args_model = self._resolve_args_model()
+        args_model = self._args_model_class()
         try:
             return args_model.model_validate(  # type: ignore[return-value]
                 raw,

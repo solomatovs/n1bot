@@ -1,47 +1,72 @@
-"""LLM-friendly post-processing для pydantic-эмитированного JSON-schema.
+"""LLM-friendly `GenerateJsonSchema` для pydantic Args-моделей.
 
-`BaseModel.model_json_schema()` пишет богатую draft-2020-12 схему с
-полями, которые для LLM-tools обычно бесполезны или вредят (лишний
-размер, неверный strict-режим). Этот хелпер «причёсывает» dict до
-минимального набора, ожидаемого `ToolSchema.parameters_schema`:
+`BaseModel.model_json_schema()` без настройки выдаёт draft-2020-12 со
+всем содержимым: `$defs` + `$ref`-ссылки на вложенные модели и `title`
+на каждом property/sub-schema. Для LLM-tool это шум: лишние байты,
+лишний уровень indirection, конфликт с strict-режимом ряда провайдеров.
 
-  * `title` — удалён на корне и в каждом property/sub-schema;
-  * `$defs`/`definitions` — инлайнятся (рекурсивно) и удаляются
-    с корня; ссылки `$ref` разрешаются;
-  * остальные ключи (`type`, `description`, `properties`, `required`,
-    `default`, `minimum`, `maximum`, `minLength`, `maxLength`,
-    `pattern`, `enum`, `anyOf`, `oneOf`, `allOf`, `items`,
-    `additionalProperties`, `format`, `const`, `examples`, ...) —
-    оставлены без изменений.
+`LLMSchemaGenerator` — sabklass, который сразу эмитит «плоскую»
+LLM-схему. Передаётся в стандартный pydantic-API:
 
-Возврат — новый dict, исходный не мутируется.
+    schema = MyArgs.model_json_schema(schema_generator=LLMSchemaGenerator)
+
+На выходе:
+
+  * `title` снят на корне и в каждом property/sub-schema
+    (override `field_title_should_be_set` + пост-проход);
+  * `$defs`/`definitions` инлайнятся в местах `$ref` и удаляются с корня;
+  * остальное (`type`, `description`, `properties`, `required`, `default`,
+    `minimum`, `maximum`, `minLength`, `maxLength`, `pattern`, `enum`,
+    `anyOf`, `oneOf`, `allOf`, `items`, `additionalProperties`, `format`,
+    `const`, `examples`, …) сохраняется.
+
+Возвращаемый dict — свежий; исходные схемы pydantic не мутируются.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["clean_llm_json_schema"]
+from pydantic.json_schema import GenerateJsonSchema, JsonSchemaMode
+from pydantic_core import CoreSchema
+
+__all__ = ["LLMSchemaGenerator"]
 
 
 _DEFS_KEYS = ("$defs", "definitions")
-_DROP_AT_ROOT = ("title",)
-_DROP_NESTED = ("title",)
+_DROP_KEYS = ("title",)
 
 
-def clean_llm_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Привести pydantic-эмитированный JSON-schema к LLM-минимальной форме."""
+class LLMSchemaGenerator(GenerateJsonSchema):
+    """`GenerateJsonSchema`-sabklass, выдающий плоскую LLM-схему."""
+
+    def field_title_should_be_set(self, _schema: CoreSchema) -> bool:
+        """Подавить `title` на field-level — у LLM-tool оно бесполезно."""
+        return False
+
+    def generate(
+        self,
+        schema: CoreSchema,
+        mode: JsonSchemaMode = "validation",
+    ) -> dict[str, Any]:
+        """Сгенерировать схему и сразу привести к LLM-минимальной форме."""
+        raw = super().generate(schema, mode)
+        return _flatten(raw)
+
+
+def _flatten(schema: dict[str, Any]) -> dict[str, Any]:
+    """Инлайн `$defs`/`$ref`, дроп `title` и пустых `$defs` на корне."""
     defs = _collect_defs(schema)
-    cleaned = _walk(schema, defs)
-    for key in _DROP_AT_ROOT:
-        cleaned.pop(key, None)
+    out = _walk(schema, defs)
+    for key in _DROP_KEYS:
+        out.pop(key, None)
     for key in _DEFS_KEYS:
-        cleaned.pop(key, None)
-    return cleaned
+        out.pop(key, None)
+    return out
 
 
 def _collect_defs(schema: dict[str, Any]) -> dict[str, Any]:
-    """Собрать все `$defs`/`definitions` для inline-резолва `$ref`."""
+    """Собрать `$defs`/`definitions` в плоскую таблицу для inline-резолва."""
     defs: dict[str, Any] = {}
     for key in _DEFS_KEYS:
         bucket = schema.get(key)
@@ -51,7 +76,7 @@ def _collect_defs(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 def _walk(node: Any, defs: dict[str, Any]) -> Any:
-    """Рекурсивный обход: резолв `$ref`, удаление `title`, копия."""
+    """Рекурсивно: резолв `$ref`, удаление `title`, копия (без мутаций)."""
     if isinstance(node, dict):
         ref = node.get("$ref")
         if isinstance(ref, str):
@@ -60,7 +85,7 @@ def _walk(node: Any, defs: dict[str, Any]) -> Any:
                 return _walk(resolved, defs)
         out: dict[str, Any] = {}
         for k, v in node.items():
-            if k in _DROP_NESTED or k in _DEFS_KEYS:
+            if k in _DROP_KEYS or k in _DEFS_KEYS:
                 continue
             out[k] = _walk(v, defs)
         return out
@@ -70,7 +95,7 @@ def _walk(node: Any, defs: dict[str, Any]) -> Any:
 
 
 def _resolve_ref(ref: str, defs: dict[str, Any]) -> dict[str, Any] | None:
-    """Разрешить локальную `$ref` через таблицу `defs`. Внешние — игнор."""
+    """Разрешить локальную `$ref` через таблицу defs. Внешние — игнор."""
     prefix_defs = "#/$defs/"
     prefix_definitions = "#/definitions/"
     if ref.startswith(prefix_defs):

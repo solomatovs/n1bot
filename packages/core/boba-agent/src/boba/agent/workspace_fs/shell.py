@@ -374,6 +374,30 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
                 resolved,
             )
 
+    def atomic_write_text(
+        self, path: str, content: str, encoding: str = "utf-8",
+    ) -> None:
+        """Атомарная перезапись через tmp+fsync+`os.replace` в той же директории."""
+        resolved = self._resolve(path)
+        with self._map_errors(resolved):
+            target = resolved.absolute
+            target.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f".{target.name}.",
+                suffix=".tmp",
+                dir=str(target.parent),
+            )
+            tmp = Path(tmp_name)
+            try:
+                with os.fdopen(fd, "w", encoding=encoding) as fh:
+                    fh.write(content)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, target)
+            except BaseException:
+                tmp.unlink(missing_ok=True)
+                raise
+
     def write_binary(self, path: str) -> BufferedIOBase:
         resolved = self._resolve(path)
         with self._map_errors(resolved):
