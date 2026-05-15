@@ -1,8 +1,7 @@
 """Декоратор `@tool` и фабрика `tool_factory`: callable → `ToolDecoratorFactory`.
 
-Тонкий слой поверх `boba.schema.schema_from_callable`: добавляет
-ToolContext-инжекцию, ToolId/ToolName и обработку возвращаемого значения
-функции.
+Тонкий слой поверх `callable_to_args_model`: добавляет ToolContext-инжекцию,
+ToolId/ToolName и обработку возвращаемого значения функции.
 
 Точки входа:
 - `@tool` — декоратор-сахар для функций (с опциональным переопределением
@@ -23,6 +22,7 @@ ToolContext-параметр в подписи помечается как injec
 - `int` / `float` / `bool` — `TextResult(text=str(value))`
 - `dict` — `JsonResult(payload=value)`
 - `list` / `tuple` / `set` / `frozenset` — `JsonResult(payload=list(value))`
+- pydantic `BaseModel` — `JsonResult(payload=value.model_dump())`
 - dataclass-инстанс — `JsonResult(payload=dataclasses.asdict(value))`
 - `None` — `TextResult(text="null")`
 - прочее — `TypeError`
@@ -34,8 +34,8 @@ import dataclasses
 from collections.abc import Callable
 from typing import Any, overload
 
-from boba.schema import schema_from_callable
-from boba.schema.declaration import ObjectSchema
+from pydantic import BaseModel
+
 from boba.tools.domain.ids import (
     ToolId,
     ToolName,
@@ -43,15 +43,14 @@ from boba.tools.domain.ids import (
     compose_tool_id,
     parse_tool_id,
 )
-from boba.tools.domain.llm_schema import clean_llm_json_schema
 from boba.tools.domain.result import (
     JsonResult,
     TextResult,
     ToolResult,
     ToolResultBase,
 )
-from boba.tools.domain.tool import Tool, ToolContext, _ToolArgsAdapter
-from boba.tools.domain.wire import ToolWireSchemaBuilder
+from boba.tools.domain.tool import Tool, ToolContext
+from boba.tools.framework.from_callable import callable_to_args_model
 from boba.tools.framework.registry import StaticToolSource, ToolSource
 
 __all__ = ["ToolDecoratorFactory", "tool", "tool_factory"]
@@ -69,13 +68,13 @@ class ToolDecoratorFactory:
         fn: Callable[..., Any],
         name: ToolName,
         description: str,
-        schema: ObjectSchema[dict[str, Any]],
+        args_model: type[BaseModel],
         injects_ctx: bool,
     ) -> None:
         self._fn = fn
         self._name = name
         self._description = description
-        self._schema = schema
+        self._args_model = args_model
         self._injects_ctx = injects_ctx
 
     @property
@@ -87,19 +86,20 @@ class ToolDecoratorFactory:
         return self._description
 
     @property
-    def schema(self) -> ObjectSchema[dict[str, Any]]:
-        return self._schema
+    def args_model(self) -> type[BaseModel]:
+        return self._args_model
 
     @property
     def injects_ctx(self) -> bool:
         return self._injects_ctx
 
-    def build(self, source_id: ToolSourceId) -> Tool[dict[str, Any], None]:
+    def build(self, source_id: ToolSourceId) -> Tool[BaseModel, None]:
         """Привязать к source_id и вернуть готовый Tool."""
         return DecoratedTool(
             fn=self._fn,
             tool_id=compose_tool_id(source_id, self._name),
-            schema=self._schema,
+            args_model=self._args_model,
+            description=self._description,
             injects_ctx=self._injects_ctx,
         )
 
@@ -122,7 +122,7 @@ class ToolDecoratorFactory:
         injected (передаётся в `execute` отдельно). Если в подписи больше
         одного `ToolContext`-параметра — `TypeError`.
         """
-        parsed = schema_from_callable(
+        parsed = callable_to_args_model(
             obj,
             ignore_types=(ToolContext,),
             parse_docstring=parse_docstring,
@@ -140,15 +140,11 @@ class ToolDecoratorFactory:
         )
         name_final = name if name is not None else parsed.name
 
-        schema = parsed.schema
-        if description is not None:
-            schema = dataclasses.replace(schema, description=description_final)
-
         return cls(
             fn=obj,
             name=ToolName(name_final),
             description=description_final,
-            schema=schema,
+            args_model=parsed.args_model,
             injects_ctx=len(parsed.injected) == 1,
         )
 
@@ -170,23 +166,25 @@ class ToolDecoratorFactory:
         )
 
 
-class DecoratedTool(Tool[dict[str, Any], None]):
+class DecoratedTool(Tool[BaseModel, None]):
     """Concrete Tool, рождённый @tool. tool_id заполнен через ToolFactory.build.
 
-    Schema приходит готовая из `schema_from_callable` (`@tool`-декоратор),
-    overlay не применяется — `@tool`-функции без config'а.
+    args_model — pydantic-модель, сгенерированная `callable_to_args_model`.
+    Tool ABC использует её через стандартный pydantic-путь.
     """
 
     def __init__(
         self,
         fn: Callable[..., Any],
         tool_id: ToolId,
-        schema: ObjectSchema[dict[str, Any]],
+        args_model: type[BaseModel],
+        description: str,
         injects_ctx: bool,
     ) -> None:
         self._fn = fn
         self._tool_id_value = tool_id
-        self._schema = schema
+        self._args_model_value = args_model
+        self._description = description
         self._injects_ctx = injects_ctx
         # Tool.__init__ ставит _cfg/_ctx/_source_id; для @tool их нет.
         source_id, _name = parse_tool_id(tool_id)
@@ -197,23 +195,30 @@ class DecoratedTool(Tool[dict[str, Any], None]):
     def tool_id(self) -> ToolId:
         return self._tool_id_value
 
+    @classmethod
+    def _try_resolve_args_type(cls) -> type | None:
+        """`DecoratedTool` хранит args_model на инстансе, не в generic."""
+        return None
+
     def definition(self) -> dict[str, Any]:
-        wire = ToolWireSchemaBuilder(self._schema).build()
-        return clean_llm_json_schema(wire)
+        from boba.tools.domain.llm_schema import clean_llm_json_schema  # noqa: PLC0415
 
-    @property
-    def _args_adapter(  # type: ignore[override]
-        self,
-    ) -> _ToolArgsAdapter[dict[str, Any]]:
-        """Per-instance adapter поверх pre-built schema (не дёргает TArgs-резолв)."""
-        return _ToolArgsAdapter(self._schema, self._tool_id_value)
+        raw = self._args_model_value.model_json_schema()
+        if self._description:
+            raw["description"] = self._description
+        return clean_llm_json_schema(raw)
 
-    def execute(
-        self,
-        ctx: ToolContext,
-        args: dict[str, Any],
-    ) -> ToolResult:
-        raw = self._fn(ctx, **args) if self._injects_ctx else self._fn(**args)
+    def _parse_args(self, raw: dict[str, Any]) -> Any:
+        return self._parse_pydantic(self._args_model_value, raw)
+
+    def execute(self, ctx: ToolContext, args: BaseModel) -> ToolResult:
+        # getattr вместо model_dump(): не сериализует nested BaseModel
+        # в dict'ы — функция получит typed-инстансы.
+        kwargs = {
+            name: getattr(args, name)
+            for name in self._args_model_value.model_fields
+        }
+        raw = self._fn(ctx, **kwargs) if self._injects_ctx else self._fn(**kwargs)
         return _coerce_result(self._tool_id_value, raw)
 
 
@@ -224,6 +229,10 @@ _RESULT_COERCERS: tuple[_ResultRule, ...] = (
     (lambda v: isinstance(v, ToolResultBase), lambda v: v),
     (lambda v: isinstance(v, str), lambda v: TextResult(text=v)),
     (lambda v: isinstance(v, (bool, int, float)), lambda v: TextResult(text=str(v))),
+    (
+        lambda v: isinstance(v, BaseModel),
+        lambda v: JsonResult(payload=v.model_dump()),
+    ),
     (
         lambda v: dataclasses.is_dataclass(v) and not isinstance(v, type),
         lambda v: JsonResult(payload=dataclasses.asdict(v)),
@@ -244,7 +253,7 @@ def _coerce_result(tool_id: ToolId, value: Any) -> ToolResult:
     msg = (
         f"@tool: функция {tool_id!r} вернула неподдерживаемый тип "
         f"{type(value).__name__} (ожидается ToolResult / str / int / float / "
-        f"bool / list / tuple / set / dict / dataclass / None)"
+        f"bool / list / tuple / set / dict / BaseModel / dataclass / None)"
     )
     raise TypeError(msg)
 

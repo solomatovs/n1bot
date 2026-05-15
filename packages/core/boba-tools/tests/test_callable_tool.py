@@ -1,17 +1,14 @@
-"""
-Тесты декоратор `@tool` — для функций
-"""
+"""Тесты `tool_factory` — для callable-инстансов (классов с `__call__`)."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Annotated, cast
 
 import pytest
+from pydantic import Field
 
-from boba.schema import schema_from_dataclass
-from boba.schema.coercion import MinValue
 from boba.tools.domain import (
+    InvalidToolArgumentError,
     JsonResult,
     TextResult,
     ToolContext,
@@ -42,7 +39,6 @@ def test_callable_instance_uses_class_name():
     factory = tool_factory(SearchTool())
     assert factory.name == ToolName("SearchTool")
     assert factory.description == "Поиск по индексу."
-    assert factory.schema.description == "Поиск по индексу."
 
 
 def test_name_override_replaces_class_name():
@@ -73,41 +69,42 @@ def test_no_docstring_yields_empty_description():
     assert tool_factory(T()).description == ""
 
 
-# schema из __call__
+# args_model из __call__
 
 
-def test_schema_extracted_from_call_signature():
+def test_args_model_extracted_from_call_signature():
     class T:
         def __call__(
             self,
             query: Annotated[str, "Поисковая строка."],
-            limit: Annotated[int, "Лимит.", MinValue(1)] = 10,
+            limit: Annotated[int, Field(ge=1, description="Лимит.")] = 10,
         ) -> ToolResult:
             return TextResult(text=query)
 
     factory = tool_factory(T())
-    fields = {f.name: f for f in factory.schema.fields}
+    fields = factory.args_model.model_fields
     assert set(fields) == {"query", "limit"}
     assert fields["query"].description == "Поисковая строка."
     assert fields["limit"].description == "Лимит."
 
 
-def test_self_param_not_in_schema():
+def test_self_param_not_in_args_model():
     class T:
         def __call__(self, query: str) -> ToolResult:
             return TextResult(text=query)
 
     factory = tool_factory(T())
-    assert [f.name for f in factory.schema.fields] == ["query"]
+    assert list(factory.args_model.model_fields) == ["query"]
 
 
-def test_tool_context_param_excluded_from_schema():
+def test_tool_context_param_excluded_from_args_model():
     class T:
         def __call__(self, ctx: ToolContext, query: str) -> ToolResult:
+            del ctx
             return TextResult(text=query)
 
     factory = tool_factory(T())
-    assert [f.name for f in factory.schema.fields] == ["query"]
+    assert list(factory.args_model.model_fields) == ["query"]
     assert factory.injects_ctx is True
 
 
@@ -119,8 +116,7 @@ def test_invoke_calls_instance_with_kwargs():
         def __call__(self, query: str, limit: int = 5) -> ToolResult:
             return TextResult(text=f"{query}*{limit}")
 
-    built = tool_factory(T()).build(_SOURCE)
-    out = built.invoke(_ctx(), {"query": "x", "limit": 3})
+    out = tool_factory(T()).build(_SOURCE).invoke(_ctx(), {"query": "x", "limit": 3})
     assert isinstance(out, TextResult)
     assert out.text == "x*3"
 
@@ -133,9 +129,8 @@ def test_invoke_injects_tool_context():
             received.append(ctx)
             return TextResult(text=query)
 
-    built = tool_factory(T()).build(_SOURCE)
     ctx = _ctx()
-    built.invoke(ctx, {"query": "x"})
+    tool_factory(T()).build(_SOURCE).invoke(ctx, {"query": "x"})
     assert received == [ctx]
 
 
@@ -157,44 +152,14 @@ def test_instance_state_is_preserved_between_calls():
     assert cast(TextResult, out2).text == "b:2"
 
 
-# совмещение с schema_from_dataclass
+def test_invoke_validates_arg_constraint():
+    class T:
+        def __call__(self, limit: Annotated[int, Field(ge=1)]) -> ToolResult:
+            return TextResult(text=str(limit))
 
-
-def test_dataclass_tool_carries_both_config_schema_and_call_schema():
-    """Tool — это dataclass с конфигом в полях и аргументами вызова в `__call__`.
-
-    `schema_from_dataclass(cls)` даёт схему конфига этого tool'а.
-    `tool_factory(instance)` даёт схему аргументов вызова.
-    """
-
-    @dataclass(frozen=True)
-    class SearchTool:
-        """Поиск по индексу."""
-
-        index_path: Annotated[str, "Путь к индексу."]
-        top_k: Annotated[int, "Размер выдачи.", MinValue(1)] = 5
-
-        def __call__(self, query: str) -> ToolResult:
-            return JsonResult(
-                payload={
-                    "index": self.index_path,
-                    "k": self.top_k,
-                    "query": query,
-                },
-            )
-
-    config_schema = schema_from_dataclass(SearchTool)
-    assert config_schema.factory is SearchTool
-    assert {f.name for f in config_schema.fields} == {"index_path", "top_k"}
-
-    instance = SearchTool(index_path="/srv/idx", top_k=3)
-    factory = tool_factory(instance)
-    assert factory.name == ToolName("SearchTool")
-    assert {f.name for f in factory.schema.fields} == {"query"}
-
-    out = factory.build(_SOURCE).invoke(_ctx(), {"query": "hello"})
-    assert isinstance(out, JsonResult)
-    assert out.payload == {"index": "/srv/idx", "k": 3, "query": "hello"}
+    built = tool_factory(T()).build(_SOURCE)
+    with pytest.raises(InvalidToolArgumentError):
+        built.invoke(_ctx(), {"limit": 0})
 
 
 # into_source / build
@@ -252,3 +217,30 @@ def test_factory_from_callable_alias_matches_function_form():
     inst_factory = ToolDecoratorFactory.from_callable(T())
     assert fn_factory.name == ToolName("fn")
     assert inst_factory.name == ToolName("T")
+
+
+def test_returns_json_result_from_instance():
+    """Sanity-проверка: callable-инстанс умеет вернуть JsonResult."""
+
+    class SearchTool:
+        def __init__(self, index_path: str, top_k: int) -> None:
+            self._index_path = index_path
+            self._top_k = top_k
+
+        def __call__(self, query: str) -> ToolResult:
+            return JsonResult(
+                payload={
+                    "index": self._index_path,
+                    "k": self._top_k,
+                    "query": query,
+                },
+            )
+
+    instance = SearchTool(index_path="/srv/idx", top_k=3)
+    factory = tool_factory(instance)
+    assert factory.name == ToolName("SearchTool")
+    assert list(factory.args_model.model_fields) == ["query"]
+
+    out = factory.build(_SOURCE).invoke(_ctx(), {"query": "hello"})
+    assert isinstance(out, JsonResult)
+    assert out.payload == {"index": "/srv/idx", "k": 3, "query": "hello"}
