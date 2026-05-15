@@ -1,31 +1,5 @@
 {
     "version": "0.2.0",
-    "inputs": [
-        {
-            "id": "model",
-            "type": "pickString",
-            "description": "LiteLLM модель",
-            "default": "qwen3.5-35b",
-            "options": [
-                "qwen3.5:9b",
-                "qwen3.5-35b",
-                "llama3.1:8b-instruct-fp16",
-                "llama3.1-8b",
-                "qwen2.5-14b"
-            ]
-        },
-        {
-            "id": "query",
-            "type": "pickString",
-            "description": "Запрос",
-            "default": "Прочитай список файлов на файловой системе и объясни о чем в них говориться?",
-            "options": [
-                "Прочитай список файлов на файловой системе и объясни о чем в них говориться?",
-                "Как именовать таблицы в adqm? прочитай это в файлах и объясни простым языком",
-                "Прочитай файл 950276.html и расскажи как именовать таблицы в adqm на основе его содержимого?"
-            ]
-        }
-    ],
     "configurations": [
         {
             "name": "Agent: run query",
@@ -36,10 +10,8 @@
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
-            // "args": [
-            //     "--cli.model=${input:model}",
-            //     "--cli.query=${input:query}"
-            // ],
+            // model/query/sampling берутся из секции [cli] в local/config.toml
+            // (или env-варсов BOBA_CLI__MODEL, BOBA_CLI__QUERY и т.п.).
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
@@ -51,11 +23,8 @@
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
-            // "args": [
-            //     "--chainlit.host=0.0.0.0",
-            //     "--chainlit.port=8502",
-            //     "--chainlit.root_path=/boba-debug"
-            // ],
+            // ChainlitConfig читается из env (BOBA_CHAINLIT__*) или TOML [chainlit].
+            // CLI-аргументы у ChainlitConfig не подключены (boba_cli=false).
             "envFile": "${workspaceFolder}/local/.env"
         },
         {

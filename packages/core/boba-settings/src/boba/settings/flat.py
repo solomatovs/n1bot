@@ -260,7 +260,7 @@ class BobaFlatSettings(BaseSettings):
                 CliSettingsSource(
                     settings_cls,
                     cli_parse_args=True,
-                    cli_ignore_unknown_args=True,
+                    cli_ignore_unknown_args=False,
                     cli_kebab_case=True,
                 ),
             )
