@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any, Generic, Self, TypeVar, cast
 
 from boba.agent.errors import TerminalError
 from boba.agent.events import AgentEvent, PersistenceFailed
 from boba.llm.models import RequestId
-from boba.patterns import StrId
 
 __all__ = [
     "ChannelDuplicateError",
@@ -24,8 +24,11 @@ TChannel = TypeVar("TChannel", bound="StateChannel")
 TChannel_co = TypeVar("TChannel_co", bound="StateChannel", covariant=True)
 
 
-class ChannelId(StrId, Generic[TChannel_co]):
+@dataclass(frozen=True)
+class ChannelId(Generic[TChannel_co]):
     """Id state-канала: строковое имя + фантомный тип канала."""
+
+    name: str
 
 
 class StateChannel(ABC):

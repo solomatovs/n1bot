@@ -44,7 +44,7 @@ class FilePromptProvider(PromptProvider):
             content = self._path.read_text(encoding="utf-8")
         else:
             content = self._default_prompt
-        yield PromptBlock(name=self._id.name, content=content)
+        yield PromptBlock(name=self._id, content=content)
 
 
 class EnvironmentPromptProvider(PromptProvider):
@@ -67,7 +67,7 @@ class EnvironmentPromptProvider(PromptProvider):
             f"OS Version: {platform.release()}",
             f"Current date: {datetime.now(UTC).date().isoformat()}",
         ]
-        yield PromptBlock(name=self._id.name, content="\n".join(lines))
+        yield PromptBlock(name=self._id, content="\n".join(lines))
 
 
 class GitPromptProvider(PromptProvider):
@@ -92,7 +92,7 @@ class GitPromptProvider(PromptProvider):
         content = (
             f"Current branch: {branch}\n\nStatus:\n{status}\n\nRecent commits:\n{log}"
         )
-        yield PromptBlock(name=self._id.name, content=content)
+        yield PromptBlock(name=self._id, content=content)
 
     @classmethod
     def _git(cls, *args: str) -> str:

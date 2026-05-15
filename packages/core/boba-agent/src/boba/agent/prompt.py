@@ -5,12 +5,12 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Self
+from typing import NewType
 
 from boba.agent.errors import TerminalError
 from boba.agent.events import AgentEvent, PromptFailed
 from boba.llm.models import RequestId
-from boba.patterns import FoldFactory, Id, PrioritySource
+from boba.patterns import FoldFactory, PrioritySource
 
 
 class PromptError(TerminalError[RequestId, AgentEvent]):
@@ -45,15 +45,8 @@ class PromptBlock:
     content: str
 
 
-class PromptId(Id[str]):
-    """Идентификатор провайдера."""
-
-    def to_wire(self) -> str:
-        return self._name
-
-    @classmethod
-    def from_wire(cls, value: str) -> Self:
-        return cls(value)
+PromptId = NewType("PromptId", str)
+"""Идентификатор провайдера."""
 
 
 class PromptState:
@@ -112,7 +105,7 @@ class StaticPromptProvider(PromptProvider):
         return self._priority
 
     def blocks(self, state: PromptState) -> Iterable[PromptBlock]:
-        yield PromptBlock(name=self._id.name, content=self._content)
+        yield PromptBlock(name=self._id, content=self._content)
 
 
 class PromptFactory(FoldFactory[PromptId, PromptState, PromptResult]):
@@ -139,6 +132,6 @@ class PromptFactory(FoldFactory[PromptId, PromptState, PromptResult]):
             except OSError as e:
                 raise PromptProviderError(
                     f"{type(e).__name__}: {e}",
-                    provider=p.id().to_wire(),
+                    provider=p.id(),
                 ) from e
         return self.finalize(state)

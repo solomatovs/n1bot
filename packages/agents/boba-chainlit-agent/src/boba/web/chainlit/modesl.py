@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NewType
 
-from boba.patterns import StrId
+UserId = NewType("UserId", str)
+"""Идентификатор пользователя."""
 
 
-class UserId(StrId):
-    "Идентификатор пользователя"
+ThreadId = NewType("ThreadId", str)
+"""Идентификатор thread_id chainlit."""
 
 
 @dataclass(frozen=True)
@@ -19,8 +20,3 @@ class StoredUser:
     created_at: str
     display_name: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-
-
-class ThreadId(StrId):
-    "Идентификатор thread_id chainlit"
-

@@ -5,9 +5,7 @@ Chunker[T] - интерфейс для нарезки Section[T] на Chunk[T]
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import TypeVar
-
-from typing import NewType
+from typing import NewType, TypeVar
 
 from boba.indexing.chunks import Chunk
 from boba.indexing.context import PipelineContext

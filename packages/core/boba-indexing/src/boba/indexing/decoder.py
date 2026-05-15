@@ -20,7 +20,6 @@ Decoer это преобразования которые полезны для 
 from __future__ import annotations
 
 from abc import abstractmethod
-
 from typing import NewType
 
 from boba.indexing.raw_document import RawDocument
