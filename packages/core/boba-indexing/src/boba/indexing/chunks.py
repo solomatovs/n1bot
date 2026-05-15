@@ -22,34 +22,38 @@ Format-specific атрибуты — `location`, `anchor` — живут в `met
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import ClassVar, Generic, Self, TypeVar
+from typing import ClassVar, Generic, NewType, TypeVar
 
 from boba.indexing.content_hash import ContentHash
 from boba.indexing.location import ChunkLocation
 from boba.indexing.metadata import Metadata, MetadataKey
 from boba.indexing.sections import SourceId
-from boba.patterns import StrId
 
-__all__ = ["Chunk", "ChunkId", "ChunkKeys", "ChunkLocation", "ChunkSummary"]
+__all__ = [
+    "Chunk",
+    "ChunkId",
+    "ChunkKeys",
+    "ChunkLocation",
+    "ChunkSummary",
+    "chunk_id_from_digest",
+]
 
 T = TypeVar("T")
 
 
-class ChunkId(StrId):
-    """Стабильный составной id чанка для idempotent re-index.
+ChunkId = NewType("ChunkId", str)
+"""Стабильный составной id чанка для idempotent re-index.
 
-    Канонический wire-формат: `{digest_prefix}:{chunk_index}`.
-    Конструируется через `ChunkId.from_digest(...)` — единая точка форматирования.
-    """
+Канонический wire-формат: `{digest_prefix}:{chunk_index}`.
+Конструируется через `chunk_id_from_digest(...)` — единая точка форматирования.
+"""
 
-    @classmethod
-    def from_digest(
-        cls,
-        digest: str,
-        chunk_index: int,
-        prefix_length: int,
-    ) -> Self:
-        return cls(f"{digest[:prefix_length]}:{chunk_index}")
+
+def chunk_id_from_digest(
+    digest: str, chunk_index: int, prefix_length: int,
+) -> ChunkId:
+    """Скомпоновать ChunkId из digest'а и индекса чанка."""
+    return ChunkId(f"{digest[:prefix_length]}:{chunk_index}")
 
 
 class ChunkKeys:

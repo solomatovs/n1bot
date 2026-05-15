@@ -62,7 +62,7 @@ class StructuralChunker(Chunker[str]):
         self._breadcrumb_separator = breadcrumb_separator
 
     def name(self) -> str:
-        return f"StructuralChunker({self._chunker_id.to_wire()})"
+        return f"StructuralChunker({self._chunker_id})"
 
     def chunker_id(self) -> ChunkerId:
         return self._chunker_id
@@ -106,7 +106,7 @@ class StructuralChunker(Chunker[str]):
                 )
 
             for fc, rc in self._compose_chunks(plan, prefix):
-                key = section.source_id.to_wire()
+                key = section.source_id
                 idx = per_source_index.get(key, 0)
                 per_source_index[key] = idx + 1
                 yield Chunk[str](

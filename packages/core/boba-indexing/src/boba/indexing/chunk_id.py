@@ -70,7 +70,7 @@ class SourceBasedChunkId(ChunkIdStrategy[T]):
         self._prefix = prefix
 
     def compute(self, section: Section[T], chunk_index: int) -> ChunkId:
-        hash_obj = self._encoder.encode(section.source_id.to_wire())
+        hash_obj = self._encoder.encode(section.source_id)
         return ChunkId.from_digest(
             hash_obj.to_wire(),
             chunk_index=chunk_index,

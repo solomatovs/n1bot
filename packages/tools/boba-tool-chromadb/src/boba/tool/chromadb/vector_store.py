@@ -95,7 +95,7 @@ class ChromaVectorStore(
         collection: CollectionId,
         chunk_ids: Iterable[ChunkId],
     ) -> Iterable[Chunk[str]]:
-        ids = [c.to_wire() for c in chunk_ids]
+        ids = [str(c) for c in chunk_ids]
         if not ids:
             return
         coll = self._open(collection)
@@ -143,7 +143,7 @@ class ChromaVectorStore(
     ) -> Iterable[ChunkSummary[str]]:
         coll = self._open(collection)
         where: Where | None = (
-            {TrackingKeys.SOURCE_ID: source_id.to_wire()}
+            {TrackingKeys.SOURCE_ID: str(source_id)}
             if source_id is not None
             else None
         )
@@ -189,7 +189,7 @@ class ChromaVectorStore(
     ) -> None:
         coll = self._open(collection)
         for batch in self._batched(chunks):
-            ids = [c.chunk_id.to_wire() for c in batch]
+            ids = [str(c.chunk_id) for c in batch]
             documents = [c.format_content for c in batch]
             metadatas: list[ChromaMetadata] = [self._encode_metadata(c) for c in batch]
             embeddings: list[PyEmbedding] = [
@@ -212,7 +212,7 @@ class ChromaVectorStore(
         collection: CollectionId,
         chunk_ids: Iterable[ChunkId],
     ) -> None:
-        ids = [c.to_wire() for c in chunk_ids]
+        ids = [str(c) for c in chunk_ids]
         if not ids:
             return
         self._open(collection).delete(ids=ids)
@@ -223,7 +223,7 @@ class ChromaVectorStore(
         chunk_ids: Iterable[ChunkId],
         patch: Mapping[str, str | int | float | bool],
     ) -> None:
-        ids = [c.to_wire() for c in chunk_ids]
+        ids = [str(c) for c in chunk_ids]
         if not ids:
             return
         # Chroma's collection.update merges metadata: только ключи из patch
@@ -247,13 +247,13 @@ class ChromaVectorStore(
         description: str | None,
     ) -> None:
         meta = {self.DESCRIPTION_KEY: description} if description else None
-        self._client.get_or_create_collection(name=name.to_wire(), metadata=meta)
+        self._client.get_or_create_collection(name=str(name), metadata=meta)
 
     def delete_collection(self, name: CollectionId) -> None:
-        self._client.delete_collection(name=name.to_wire())
+        self._client.delete_collection(name=str(name))
 
     def _open(self, collection: CollectionId) -> Collection:
-        return self._client.get_or_create_collection(name=collection.to_wire())
+        return self._client.get_or_create_collection(name=str(collection))
 
     def _collection_info(self, coll: Collection) -> CollectionInfo:
         meta = coll.metadata or {}
@@ -268,7 +268,7 @@ class ChromaVectorStore(
         self, chunk: Chunk[str]
     ) -> dict[str, str | int | float | bool]:
         out: dict[str, str | int | float | bool] = dict(chunk.metadata.to_wire())
-        out[TrackingKeys.SOURCE_ID] = chunk.source_id.to_wire()
+        out[TrackingKeys.SOURCE_ID] = chunk.source_id
         out[TrackingKeys.CHUNK_INDEX] = chunk.chunk_index
         if chunk.content_hash is not None:
             out[TrackingKeys.CONTENT_HASH] = chunk.content_hash.to_wire()

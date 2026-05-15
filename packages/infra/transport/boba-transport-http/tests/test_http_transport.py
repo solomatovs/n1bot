@@ -43,7 +43,7 @@ def test_yields_raw_document_propagates_source_id_and_metadata(monkeypatch):
         seen.append((doc.source_id, doc.metadata, doc.handle.read()))
     sid, md, payload = seen[0]
     # source_id берётся ИЗ Request'а, не из response.url
-    assert sid.to_wire() == "https://x.test/pages/viewpage.action?pageId=12345"
+    assert sid == "https://x.test/pages/viewpage.action?pageId=12345"
     assert md.to_wire()["page_id"] == "12345"
     assert md.get(TransportKeys.ETAG) == "v1"
     assert md.get(HttpKeys.STATUS) == 200

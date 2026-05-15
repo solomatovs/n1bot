@@ -96,7 +96,7 @@ class NamespacedView(IndexQuery[T], IndexSink[T]):
         unchanged = 0
 
         scope_patch: dict[str, str | int | float | bool] = {
-            self.NAMESPACE_KEY: self._namespace.to_wire(),
+            self.NAMESPACE_KEY: self._namespace,
             TrackingKeys.UPDATED_AT: float(time_at_least),
         }
 
@@ -143,7 +143,7 @@ class NamespacedView(IndexQuery[T], IndexSink[T]):
         """
         Фильтр по namespace + custom который указал пользователь
         """
-        parts: list[Filter] = [Eq(self.NAMESPACE_KEY, self._namespace.to_wire())]
+        parts: list[Filter] = [Eq(self.NAMESPACE_KEY, self._namespace)]
         if self._scope_extra is not None:
             parts.append(self._scope_extra)
 
@@ -161,13 +161,13 @@ class NamespacedView(IndexQuery[T], IndexSink[T]):
     ) -> tuple[list[Chunk[T]], int]:
         chunk_ids = [c.chunk_id for c in chunks]
         existing: dict[str, Chunk[T]] = {
-            c.chunk_id.to_wire(): c
+            c.chunk_id: c
             for c in self._reader.get_by_ids(self._collection, chunk_ids)
         }
         dirty: list[Chunk[T]] = []
         unchanged_count = 0
         for c in chunks:
-            stored = existing.get(c.chunk_id.to_wire())
+            stored = existing.get(c.chunk_id)
             if stored is None:
                 dirty.append(c)
                 continue

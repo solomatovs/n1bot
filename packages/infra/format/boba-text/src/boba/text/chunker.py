@@ -50,7 +50,7 @@ class SectionChunker(Chunker[T]):
         self._id_strategy = id_strategy
 
     def name(self) -> str:
-        return f"SectionChunker({self._chunker_id.to_wire()})"
+        return f"SectionChunker({self._chunker_id})"
 
     def chunker_id(self) -> ChunkerId:
         return self._chunker_id
@@ -68,7 +68,7 @@ class SectionChunker(Chunker[T]):
         for section in stream:
             chunk_metadata = section.metadata.merge(section.to_chunk_metadata())
             for piece in self._splitter.split(section.content):
-                key = section.source_id.to_wire()
+                key = section.source_id
                 idx = per_source_index.get(key, 0)
                 per_source_index[key] = idx + 1
 

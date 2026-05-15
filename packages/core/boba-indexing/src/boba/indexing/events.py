@@ -12,14 +12,16 @@ fatal ошибки просто выбрасывают exception и прерыв
 
 from __future__ import annotations
 
+import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import NewType
+from uuid import UUID
 
 from boba.indexing.sections import SourceId
 from boba.indexing.stats import IndexStats
-from boba.patterns import UuId
 
 __all__ = [
     "BaseIndexEvent",
@@ -37,11 +39,17 @@ __all__ = [
     "SourceFailed",
     "SourceIndexed",
     "SourceSkippedUnchanged",
+    "new_run_id",
 ]
 
 
-class RunId(UuId):
-    """Идентификатор одного прогона `Indexer.stream(...)` на 1 вызов"""
+RunId = NewType("RunId", UUID)
+"""Идентификатор одного прогона `Indexer.stream(...)` на 1 вызов."""
+
+
+def new_run_id() -> RunId:
+    """Свежий RunId."""
+    return RunId(uuid.uuid4())
 
 
 class Severity(StrEnum):
@@ -215,14 +223,14 @@ class SourceIndexed(CompletedItem):
 
     def headline(self) -> str:
         return (
-            f"indexed {self.source_id.to_wire()} "
+            f"indexed {self.source_id} "
             f"({self.chunks_upserted}/{self.chunks_total} upserted, "
             f"{self.chunks_skipped} skipped)"
         )
 
     def details(self) -> Mapping[str, str]:
         return {
-            "source_id": self.source_id.to_wire(),
+            "source_id": self.source_id,
             "chunks_total": str(self.chunks_total),
             "chunks_upserted": str(self.chunks_upserted),
             "chunks_skipped": str(self.chunks_skipped),
@@ -241,11 +249,11 @@ class SourceFailed(CompletedItem):
         return "source.failed"
 
     def headline(self) -> str:
-        return f"failed {self.source_id.to_wire()}: {self.reason}"
+        return f"failed {self.source_id}: {self.reason}"
 
     def details(self) -> Mapping[str, str]:
         return {
-            "source_id": self.source_id.to_wire(),
+            "source_id": self.source_id,
             "reason": self.reason,
         }
 
@@ -266,12 +274,12 @@ class SourceSkippedUnchanged(CompletedItem):
 
     def headline(self) -> str:
         return (
-            f"unchanged {self.source_id.to_wire()} ({self.chunks_total} chunks)"
+            f"unchanged {self.source_id} ({self.chunks_total} chunks)"
         )
 
     def details(self) -> Mapping[str, str]:
         return {
-            "source_id": self.source_id.to_wire(),
+            "source_id": self.source_id,
             "chunks_total": str(self.chunks_total),
         }
 

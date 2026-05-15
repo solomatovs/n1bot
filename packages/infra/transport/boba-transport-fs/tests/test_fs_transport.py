@@ -33,7 +33,7 @@ def test_fs_transport_opens_file_and_propagates_metadata(tmp_path: Path):
         )
     assert len(seen) == 1
     sid, md, payload = seen[0]
-    assert sid.to_wire() == "fs:custom-id"
+    assert sid == "fs:custom-id"
     assert md.to_wire()["my_field"] == "v"
     assert md.get(TransportKeys.MTIME) is not None
     assert md.get(FsKeys.SIZE) == f.stat().st_size

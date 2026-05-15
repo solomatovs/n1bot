@@ -127,6 +127,6 @@ def test_source_id_preserved():
     ).encode("utf-8")
     out = ConfluenceJsonDecoder().convert(_doc(payload))
     assert (
-        out.source_id.to_wire()
+        out.source_id
         == "https://confl.test/pages/viewpage.action?pageId=1"
     )
