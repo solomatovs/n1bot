@@ -15,6 +15,8 @@ from typing import (
     runtime_checkable,
 )
 
+from pydantic import BaseModel, ValidationError
+
 from boba.patterns import Converter, Definition, Executor
 from boba.schema.declaration import (
     FieldPathError,
@@ -33,10 +35,12 @@ from boba.tools.domain.ids import (
     ToolSourceId,
     compose_tool_id,
 )
+from boba.tools.domain.llm_schema import clean_llm_json_schema
 from boba.tools.domain.result import ToolResult
 from boba.tools.domain.wire import ToolWireSchemaBuilder
 
 __all__ = [
+    "JsonSchemaOverlay",
     "SchemaOverlay",
     "Tool",
     "ToolCall",
@@ -50,14 +54,29 @@ TConfig = TypeVar("TConfig")
 
 @runtime_checkable
 class SchemaOverlay(Protocol):
-    """Структурный protocol overlay'я: умеет применить себя к ObjectSchema.
+    """Legacy-protocol overlay'я: умеет применить себя к `ObjectSchema`.
 
-    Реализуется любым объектом с методом `apply(schema) -> schema` —
-    в частности `boba.plugin.prompt.PromptOverlay`. Domain-слой не зависит
-    от plugin-слоя; protocol даёт duck-typed расширение без жёсткой связи.
+    Использовался до миграции на pydantic. После — оставлен только для
+    tool'ов, чей TArgs ещё `@dataclass`. Pydantic-tool'ы используют
+    `JsonSchemaOverlay`-протокол.
     """
 
     def apply(self, schema: ObjectSchema[Any]) -> ObjectSchema[Any]: ...
+
+
+@runtime_checkable
+class JsonSchemaOverlay(Protocol):
+    """Структурный protocol overlay'я для JSON-schema dict.
+
+    Реализуется `boba.plugin.prompt.PromptOverlay`. Domain-слой не знает
+    про plugin-слой — duck-typed Protocol через метод
+    `apply_to_json_schema`.
+    """
+
+    def apply_to_json_schema(
+        self,
+        schema: dict[str, Any],
+    ) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -103,11 +122,10 @@ class ToolCall:
 
 class Tool(
     Executor[ToolContext, TArgs, ToolResult],
-    Definition[ObjectSchema[TArgs]],
+    Definition[dict[str, Any]],
     Generic[TArgs, TConfig],
 ):
-    """
-    Базовый класс tool; application-singleton.
+    """Базовый класс tool; application-singleton.
 
     Соглашения по subclass'ам:
     - наследуют `Tool[XArgs, XToolConfig]` (оба type-var зафиксированы);
@@ -115,10 +133,14 @@ class Tool(
     - `name()`, `tool_id()`, `definition()` имеют дефолтные реализации
       на базе TArgs/TConfig и могут быть переопределены.
 
+    `TArgs`:
+    - `BaseModel`-subclass — pydantic-путь: `model_validate` + `model_json_schema`;
+    - `@dataclass` — legacy-путь через `boba.schema` (поэтапная миграция).
+
     Соглашения по cfg:
     - конфиг хранится в `self._cfg`;
-    - если у конфига есть атрибут `prompt`, реализующий `SchemaOverlay`,
-      он автоматически применяется к авто-сгенерированной схеме.
+    - если у конфига есть атрибут `prompt: PromptOverlay`, он применяется
+      поверх дефолтной схемы.
 
     Identity: tool_id = `<source>/<name>`. По умолчанию `name()` —
     snake_case имени класса без суффикса `Tool` (CatTool → "cat").
@@ -154,22 +176,43 @@ class Tool(
     def source_id(self) -> ToolSourceId:
         return self._source_id
 
-    def definition(self) -> ObjectSchema[TArgs]:
-        """Wire-schema параметров: автоген из dataclass TArgs + cfg.prompt overlay.
+    def definition(self) -> dict[str, Any]:
+        """JSON-schema параметров (для LLM): автоген + cfg.prompt overlay.
 
-        TArgs резолвится из объявления `Tool[XArgs, XConfig]` через `__orig_bases__`.
-        Если у `self._cfg` есть атрибут `prompt`, реализующий `SchemaOverlay`,
-        он применяется поверх схемы; иначе схема возвращается как есть.
+        TArgs резолвится из объявления `Tool[XArgs, XConfig]`. Pydantic-args
+        → `model_json_schema()`. Legacy-dataclass → `schema_from_dataclass`
+        + `ToolWireSchemaBuilder`. `cfg.prompt` (если есть) патчит итоговый
+        dict через `PromptOverlay.apply_to_json_schema`.
         """
-        schema = schema_from_dataclass(self._resolve_args_type())
+        args_type = self._try_resolve_args_type()
+        if args_type is not None and issubclass(args_type, BaseModel):
+            raw = args_type.model_json_schema()
+        elif args_type is not None:
+            raw = ToolWireSchemaBuilder(
+                schema_from_dataclass(args_type),
+            ).build()
+        else:
+            msg = (
+                f"{type(self).__name__}.definition: невозможно автоматически "
+                f"построить схему — TArgs не резолвится. Переопредели "
+                f"definition() в подклассе."
+            )
+            raise TypeError(msg)
+
         prompt = getattr(self._cfg, "prompt", None)
-        if isinstance(prompt, SchemaOverlay):
-            return prompt.apply(schema)
-        return schema
+        if isinstance(prompt, JsonSchemaOverlay):
+            raw = prompt.apply_to_json_schema(raw)
+        return clean_llm_json_schema(raw)
 
     @classmethod
-    def _resolve_args_type(cls) -> type:
-        """Извлечь параметр TArgs из объявления `Tool[XArgs, XConfig]`."""
+    def _try_resolve_args_type(cls) -> type | None:
+        """`TArgs` как concrete `type` или None, если резолв невозможен.
+
+        Возвращает None, если базовый `Tool[X, Y]` параметризован не
+        классом (например, `dict[str, Any]` — generic alias). Это валидный
+        кейс для `DecoratedTool` / других tool'ов, которые сами строят
+        adapter/definition.
+        """
         for klass in cls.__mro__:
             for base in getattr(klass, "__orig_bases__", ()):
                 origin = get_origin(base)
@@ -177,28 +220,104 @@ class Tool(
                     targs = get_args(base)
                     if targs and isinstance(targs[0], type):
                         return targs[0]
-        msg = (
-            f"{cls.__name__}: не удалось определить TArgs; "
-            f"наследуй от Tool[XArgs, XConfig] с конкретным dataclass-типом."
-        )
-        raise TypeError(msg)
+        return None
+
+    @classmethod
+    def _resolve_args_type(cls) -> type:
+        """`TArgs` как concrete `type`; иначе TypeError."""
+        result = cls._try_resolve_args_type()
+        if result is None:
+            msg = (
+                f"{cls.__name__}: не удалось определить TArgs; "
+                f"наследуй от Tool[XArgs, XConfig] с конкретным типом."
+            )
+            raise TypeError(msg)
+        return result
 
     def invoke(self, ctx: ToolContext, raw: dict[str, Any]) -> ToolResult:
-        """Распарсить `raw` через `definition()` и делегировать в `execute`."""
-        args = self._args_adapter.convert(raw)
+        """Распарсить `raw` через TArgs-схему и делегировать в `execute`."""
+        args = self._parse_args(raw)
         return self.execute(ctx, args)
+
+    def _parse_args(self, raw: dict[str, Any]) -> TArgs:
+        """`raw` → typed TArgs; ошибки заворачиваются в InvalidToolArgumentError."""
+        args_type = self._try_resolve_args_type()
+        if args_type is not None and issubclass(args_type, BaseModel):
+            return self._parse_pydantic(args_type, raw)
+        return self._args_adapter.convert(raw)
+
+    def _parse_pydantic(
+        self,
+        args_type: type[BaseModel],
+        raw: dict[str, Any],
+    ) -> Any:
+        try:
+            return args_type.model_validate(raw)
+        except ValidationError as e:
+            raise _pydantic_error_to_tool_error(
+                e, self.tool_id(), self.definition(), raw,
+            ) from e
 
     @cached_property
     def _args_adapter(self) -> _ToolArgsAdapter[TArgs]:
-        return _ToolArgsAdapter(self.definition(), self.tool_id())
+        """Legacy: per-tool adapter поверх `ToolArgsBuilder` (для @dataclass TArgs).
+
+        Default: строит схему из `schema_from_dataclass(TArgs)`. Подклассы
+        с предварительно построенной схемой (например, `DecoratedTool`)
+        переопределяют это свойство.
+        """
+        args_type = self._resolve_args_type()
+        schema = schema_from_dataclass(args_type)
+        prompt = getattr(self._cfg, "prompt", None)
+        if isinstance(prompt, SchemaOverlay):
+            schema = prompt.apply(schema)
+        return _ToolArgsAdapter(schema, self.tool_id())
+
+
+def _pydantic_error_to_tool_error(
+    err: ValidationError,
+    tool_id: ToolId,
+    wire_schema: dict[str, Any],
+    raw: dict[str, Any],
+) -> InvalidToolArgumentError | InvalidSchemaInvariantError:
+    """Pydantic ValidationError → InvalidToolArgumentError/InvalidSchemaInvariantError.
+
+    Берём первую ошибку из `err.errors()` и маппим:
+    - `type == "missing"` / валидаторы на отдельных полях → `InvalidToolArgumentError`;
+    - валидаторы на корне модели (`loc=()`) → `InvalidSchemaInvariantError`;
+    - все остальные кейсы трактуются как per-field.
+    """
+    errors = err.errors()
+    if not errors:  # pragma: no cover — pydantic всегда возвращает >=1
+        return InvalidSchemaInvariantError(tool_id, str(err))
+
+    first = errors[0]
+    loc: tuple[Any, ...] = tuple(first.get("loc", ()))
+    msg: str = str(first.get("msg", ""))
+    if not loc:
+        return InvalidSchemaInvariantError(tool_id, msg)
+
+    head = loc[0]
+    if not isinstance(head, str):
+        return InvalidSchemaInvariantError(tool_id, msg)
+
+    field_path = ".".join(str(p) for p in loc)
+    props = wire_schema.get("properties", {}) if isinstance(wire_schema, dict) else {}
+    expected = props.get(head) if isinstance(props, dict) else None
+    received = raw.get(head)
+    return InvalidToolArgumentError(
+        tool_id,
+        field_path,
+        msg,
+        expected=expected if isinstance(expected, dict) else None,
+        received=received,
+    )
 
 
 class _ToolArgsAdapter(Converter[dict[str, Any], TArgs], Generic[TArgs]):
-    """
-    Адаптер ToolArgsBuilder для Tool:
-    - проверяет unknown keys и
-    - переоборачивает FieldPathError в
-        InvalidToolArgumentError / InvalidSchemaInvariantError.
+    """Legacy: адаптер ToolArgsBuilder для tool'ов с @dataclass TArgs.
+
+    Сохраняется до завершения миграции всех Args на pydantic.
     """
 
     def __init__(self, schema: ObjectSchema[TArgs], tool_id: ToolId) -> None:

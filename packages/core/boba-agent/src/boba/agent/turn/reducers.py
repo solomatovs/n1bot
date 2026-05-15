@@ -17,11 +17,7 @@ from boba.llm.models import (
     UserMessage,
 )
 from boba.patterns import PrioritySource
-from boba.schema.declaration import ObjectSchema
-from boba.tools.domain import (
-    ToolId,
-    ToolWireSchemaBuilder,
-)
+from boba.tools.domain import ToolId
 from boba.tools.framework import ToolExecutor
 
 TurnReducer: TypeAlias = PrioritySource[str, TurnState]
@@ -129,17 +125,16 @@ class ToolsReducer(PrioritySource[str, TurnState]):
     @staticmethod
     def _tool_to_schema(
         tool_id: ToolId,
-        schema: ObjectSchema[Any],
+        schema: dict[str, Any],
     ) -> LLMToolSchema:
-        """Конверсия (qualified-id, ObjectSchema) в data-only LLMToolSchema."""
-        wire = ToolWireSchemaBuilder(schema).build()
+        """Конверсия (qualified-id, JSON-schema dict) в data-only LLMToolSchema."""
         return LLMToolSchema(
             name=tool_id,
-            description=schema.description,
+            description=str(schema.get("description", "")),
             parameters_schema={
                 "type": "object",
-                "properties": wire.get("properties", {}),
-                "required": wire.get("required", []),
+                "properties": schema.get("properties", {}),
+                "required": schema.get("required", []),
             },
         )
 

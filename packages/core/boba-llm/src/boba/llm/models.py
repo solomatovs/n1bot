@@ -155,11 +155,6 @@ MessageAdapter: TypeAdapter[Message] = TypeAdapter(
 """
 
 
-# --------------------------------------------------------------------- #
-# Streaming chunks (не сериализуются в JSONL — оставлены dataclass'ами)
-# --------------------------------------------------------------------- #
-
-
 @dataclass(frozen=True)
 class ToolCallChunk:
     """Накопленное состояние одного tool-call'а в стриме (args — substring JSON)."""
@@ -290,12 +285,6 @@ class AssistantMessageChunk:
             and not self.thinking
             and not self.tool_call_chunks
         )
-
-
-# --------------------------------------------------------------------- #
-# Sampling / request / context (не сериализуются в JSONL)
-# --------------------------------------------------------------------- #
-
 
 @dataclass(frozen=True)
 class SamplingParams:
