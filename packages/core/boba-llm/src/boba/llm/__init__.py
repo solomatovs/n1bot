@@ -57,6 +57,8 @@ from boba.llm.models import (
     ToolCallChunk,
     ToolResultMessage,
     UserMessage,
+    new_message_id,
+    new_request_id,
 )
 from boba.llm.observer import (
     CompositeLLMRequestObserver,
@@ -123,4 +125,6 @@ __all__ = [
     "ToolCallChunk",
     "ToolResultMessage",
     "UserMessage",
+    "new_message_id",
+    "new_request_id",
 ]

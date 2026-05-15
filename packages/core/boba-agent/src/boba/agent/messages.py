@@ -5,28 +5,14 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
-from typing import Any, Self
+from typing import Self
+
+from pydantic import ValidationError
 
 from boba.agent.errors import TerminalError
 from boba.agent.events import AgentEvent, PersistenceFailed
 from boba.agent.state import ChannelId, StateChannel
-from boba.llm.models import (
-    AssistantMessage,
-    InvalidToolCall,
-    Message,
-    MessageId,
-    RequestId,
-    SystemMessage,
-    ToolCall,
-    ToolResultMessage,
-    UserMessage,
-)
-from boba.tools.domain import (
-    ErrorResult,
-    JsonResult,
-    TextResult,
-    ToolResult,
-)
+from boba.llm.models import Message, MessageAdapter, RequestId
 from boba.workspace.contract import HistoryWorkspaceShell, WorkspaceError
 
 __all__ = [
@@ -169,16 +155,16 @@ class JsonLinesMessageService(MessageService):
                 if not stripped:
                     continue
                 try:
-                    self._messages.append(self._decode(stripped))
-                except (json.JSONDecodeError, TypeError, KeyError, ValueError) as exc:
+                    self._messages.append(MessageAdapter.validate_json(stripped))
+                except (json.JSONDecodeError, ValidationError) as exc:
                     raise MessageStoreReadError(
-                        exc, ctx=f"path={self._filename}: {stripped!r}"
+                        exc, ctx=f"path={self._filename}: {stripped!r}",
                     ) from exc
         except WorkspaceError as exc:
             raise MessageStoreReadError(exc, ctx=f"path={self._filename}") from exc
 
     def add(self, message: Message) -> None:
-        line = self._encode(message)
+        line = MessageAdapter.dump_json(message).decode("utf-8")
         try:
             with self._workspace.append_text(self._filename) as f:
                 f.write(line)
@@ -200,139 +186,3 @@ class JsonLinesMessageService(MessageService):
         except WorkspaceError as exc:
             raise MessageStoreWriteError(exc, ctx=f"path={self._filename}") from exc
         self._messages.clear()
-
-    @staticmethod
-    def _encode(message: Message) -> str:
-        match message:
-            case SystemMessage(id=mid, content=content):
-                payload: dict[str, Any] = {
-                    "type": "system",
-                    "id": mid.to_wire(),
-                    "content": content,
-                }
-            case UserMessage(id=mid, content=content):
-                payload = {
-                    "type": "user",
-                    "id": mid.to_wire(),
-                    "content": content,
-                }
-            case AssistantMessage(
-                id=mid,
-                content=content,
-                tool_calls=tcs,
-                invalid_tool_calls=itcs,
-            ):
-                payload = {
-                    "type": "assistant",
-                    "id": mid.to_wire(),
-                    "content": content,
-                    "tool_calls": [
-                        {"id": tc.id, "name": tc.name, "args": dict(tc.args)}
-                        for tc in tcs
-                    ],
-                    "invalid_tool_calls": [
-                        {
-                            "id": itc.id,
-                            "name": itc.name,
-                            "raw_args": itc.raw_args,
-                            "error": itc.error,
-                        }
-                        for itc in itcs
-                    ],
-                }
-            case ToolResultMessage(
-                id=mid, tool_call_id=tcid, result=result,
-            ):
-                payload = {
-                    "type": "tool_result",
-                    "id": mid.to_wire(),
-                    "tool_call_id": tcid,
-                    "result": JsonLinesMessageService._encode_result(result),
-                }
-            case _:
-                kind = type(message).__name__
-                msg = f"JsonLinesMessageService: неизвестный тип Message: {kind}"
-                raise ValueError(msg)
-        return json.dumps(payload, ensure_ascii=False)
-
-    @staticmethod
-    def _decode(line: str) -> Message:
-        raw = json.loads(line)
-        msg_type = raw["type"]
-        mid = MessageId.from_wire(raw["id"])
-        match msg_type:
-            case "system":
-                return SystemMessage(id=mid, content=raw["content"])
-            case "user":
-                return UserMessage(id=mid, content=raw["content"])
-            case "assistant":
-                tool_calls = tuple(
-                    ToolCall(id=tc["id"], name=tc["name"], args=tc["args"])
-                    for tc in raw.get("tool_calls", [])
-                )
-                invalid_tool_calls = tuple(
-                    InvalidToolCall(
-                        id=itc["id"],
-                        name=itc["name"],
-                        raw_args=itc["raw_args"],
-                        error=itc["error"],
-                    )
-                    for itc in raw.get("invalid_tool_calls", [])
-                )
-                return AssistantMessage(
-                    id=mid,
-                    content=raw.get("content", ""),
-                    tool_calls=tool_calls,
-                    invalid_tool_calls=invalid_tool_calls,
-                )
-            case "tool_result":
-                return ToolResultMessage(
-                    id=mid,
-                    tool_call_id=raw["tool_call_id"],
-                    result=JsonLinesMessageService._decode_result(raw["result"]),
-                )
-            case _:
-                msg = f"JsonLinesMessageService: неизвестный type='{msg_type}'"
-                raise ValueError(msg)
-
-    @staticmethod
-    def _encode_result(result: ToolResult) -> dict[str, Any]:
-        match result:
-            case TextResult(text=text, metadata=metadata):
-                return {"kind": "text", "text": text, "metadata": dict(metadata)}
-            case JsonResult(payload=payload, metadata=metadata):
-                return {
-                    "kind": "json",
-                    "payload": payload,
-                    "metadata": dict(metadata),
-                }
-            case ErrorResult(message=message, error_kind=error_kind, metadata=metadata):
-                return {
-                    "kind": "error",
-                    "message": message,
-                    "error_kind": error_kind,
-                    "metadata": dict(metadata),
-                }
-            case _:
-                kind = type(result).__name__
-                msg = f"JsonLinesMessageService: неизвестный ToolResult: {kind}"
-                raise ValueError(msg)
-
-    @staticmethod
-    def _decode_result(raw: dict[str, Any]) -> ToolResult:
-        kind = raw["kind"]
-        metadata = raw.get("metadata", {})
-        match kind:
-            case "text":
-                return TextResult(text=raw["text"], metadata=metadata)
-            case "json":
-                return JsonResult(payload=raw["payload"], metadata=metadata)
-            case "error":
-                return ErrorResult(
-                    message=raw["message"],
-                    error_kind=raw["error_kind"],
-                    metadata=metadata,
-                )
-            case _:
-                msg = f"JsonLinesMessageService: неизвестный result.kind='{kind}'"
-                raise ValueError(msg)

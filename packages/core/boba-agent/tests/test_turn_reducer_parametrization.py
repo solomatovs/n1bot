@@ -15,7 +15,7 @@ from boba.agent.turn.reducers import (
     SystemPromptReducer,
 )
 from boba.agent.turn.spec import TurnState
-from boba.llm.models import RequestId
+from boba.llm.models import new_request_id
 from boba.patterns import PrioritySource, StrId
 
 
@@ -40,7 +40,7 @@ class _MarkerReducer(PrioritySource[StrId, TurnState]):
 def _ctx() -> AgentContext:
     return AgentContext(
         request=AgentRequest(
-            request_id=RequestId.new(),
+            request_id=new_request_id(),
             model="test-model",
             query="hi",
         ),

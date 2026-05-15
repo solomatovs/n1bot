@@ -37,7 +37,12 @@ from typing import Any, overload
 from boba.schema import schema_from_callable
 from boba.schema.declaration import ObjectSchema
 from boba.tools.domain.ids import ToolId, ToolName, ToolSourceId
-from boba.tools.domain.result import JsonResult, TextResult, ToolResult
+from boba.tools.domain.result import (
+    JsonResult,
+    TextResult,
+    ToolResult,
+    ToolResultBase,
+)
 from boba.tools.domain.tool import Tool, ToolContext
 from boba.tools.framework.registry import StaticToolSource, ToolSource
 
@@ -191,7 +196,7 @@ _ResultRule = tuple[Callable[[Any], bool], Callable[[Any], ToolResult]]
 
 _RESULT_COERCERS: tuple[_ResultRule, ...] = (
     (lambda v: v is None, lambda _: TextResult(text="null")),
-    (lambda v: isinstance(v, ToolResult), lambda v: v),
+    (lambda v: isinstance(v, ToolResultBase), lambda v: v),
     (lambda v: isinstance(v, str), lambda v: TextResult(text=v)),
     (lambda v: isinstance(v, (bool, int, float)), lambda v: TextResult(text=str(v))),
     (

@@ -58,6 +58,7 @@ from boba.agent.history import (
 )
 from boba.agent.messages import (
     InMemoryMessageService,
+    JsonLinesMessageService,
     MessageReader,
     MessageService,
     MessageStoreError,
@@ -158,6 +159,7 @@ __all__ = [
     "IterationCounterMiddleware",
     "IterationStarted",
     "JsonLinesHistoryService",
+    "JsonLinesMessageService",
     "LLMCritique",
     "LLMFeedback",
     "LLMGenerationFailedError",

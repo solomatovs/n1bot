@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -63,7 +64,7 @@ from boba.llm.models import InvalidToolCall, RequestId, ToolCall
 from boba.tools.domain import ErrorResult, JsonResult, TextResult
 from boba.workspace.contract import WorkspaceId
 
-_RID = RequestId.from_wire("00000000-0000-0000-0000-000000000001")
+_RID = RequestId(UUID("00000000-0000-0000-0000-000000000001"))
 _TC = ToolCall(id="call_1", name="search", args={"q": "hello"})
 _ITC = InvalidToolCall(
     id="call_x",
@@ -200,6 +201,7 @@ def test_tool_result_json_variant() -> None:
     line = AgentEventAdapter.dump_json(e).decode("utf-8")
     assert '"kind":"json"' in line
     parsed = AgentEventAdapter.validate_json(line)
+    assert isinstance(parsed, ToolResultReady)
     assert isinstance(parsed.result.result, JsonResult)
     assert parsed.result.result.payload == {"a": [1, 2]}
 
@@ -215,6 +217,7 @@ def test_tool_result_error_variant() -> None:
     line = AgentEventAdapter.dump_json(e).decode("utf-8")
     assert '"kind":"error"' in line
     parsed = AgentEventAdapter.validate_json(line)
+    assert isinstance(parsed, ToolResultReady)
     assert isinstance(parsed.result.result, ErrorResult)
 
 

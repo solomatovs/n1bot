@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+from abc import ABC
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Annotated, Any, Literal, NewType
+from uuid import UUID, uuid4
+
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from boba.llm.errors import LLMProtocolError
-from boba.patterns import UuId
 from boba.tools.domain import ToolResult
 
 __all__ = [
@@ -20,6 +23,7 @@ __all__ = [
     "LLMToolRequest",
     "LLMToolSchema",
     "Message",
+    "MessageAdapter",
     "MessageId",
     "RequestId",
     "SamplingParams",
@@ -28,20 +32,45 @@ __all__ = [
     "ToolCallChunk",
     "ToolResultMessage",
     "UserMessage",
+    "new_message_id",
+    "new_request_id",
 ]
 
 
-class RequestId(UuId):
-    """Идентификатор запроса пользователя, проходящий через всю систему."""
+# --------------------------------------------------------------------- #
+# Идентификаторы (PEP 484 NewType поверх UUID)
+# --------------------------------------------------------------------- #
+#
+# Стандартный python-способ для типизированных id: статическая type-safety
+# (pyright различает RequestId и MessageId) + нулевая runtime-стоимость +
+# нативная поддержка Pydantic/JSON Schema.
+
+RequestId = NewType("RequestId", UUID)
+"""Идентификатор запроса пользователя, проходящий через всю систему."""
+
+MessageId = NewType("MessageId", UUID)
+"""Стабильный id сообщения (для dedup, replay, referencing)."""
 
 
-class MessageId(UuId):
-    """Стабильный id сообщения (для dedup, replay, referencing)."""
+def new_request_id() -> RequestId:
+    """Свежий RequestId."""
+    return RequestId(uuid4())
 
 
-@dataclass(frozen=True)
-class ToolCall:
+def new_message_id() -> MessageId:
+    """Свежий MessageId."""
+    return MessageId(uuid4())
+
+
+# --------------------------------------------------------------------- #
+# ToolCall / InvalidToolCall
+# --------------------------------------------------------------------- #
+
+
+class ToolCall(BaseModel):
     """Завершённый валидный tool-call: args уже распарсены."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: str
     name: str
@@ -52,9 +81,10 @@ class ToolCall:
         return json.dumps(dict(self.args), ensure_ascii=False)
 
 
-@dataclass(frozen=True)
-class InvalidToolCall:
+class InvalidToolCall(BaseModel):
     """Tool-call с невалидным JSON в args; пробрасывается типом, а не исключением."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: str
     name: str
@@ -62,37 +92,42 @@ class InvalidToolCall:
     error: str
 
 
-@dataclass(frozen=True, kw_only=True)
-class Message:
+# --------------------------------------------------------------------- #
+# Message hierarchy (Pydantic discriminated union)
+# --------------------------------------------------------------------- #
+
+
+class Message(BaseModel, ABC):
     """База типизированного сообщения протокола; общие поля."""
 
-    id: MessageId = field(default_factory=MessageId.new)
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: MessageId = Field(default_factory=new_message_id)
 
 
-@dataclass(frozen=True, kw_only=True)
 class SystemMessage(Message):
     """System-prompt; всегда text-only."""
 
+    type: Literal["system"] = "system"
     content: str
 
 
-@dataclass(frozen=True, kw_only=True)
 class UserMessage(Message):
     """Сообщение пользователя (вход или синтетический critique от агента)."""
 
+    type: Literal["user"] = "user"
     content: str
 
 
-@dataclass(frozen=True, kw_only=True)
 class AssistantMessage(Message):
     """Ответ модели; text + tool_calls + invalid_tool_calls."""
 
+    type: Literal["assistant"] = "assistant"
     content: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
     invalid_tool_calls: tuple[InvalidToolCall, ...] = ()
 
 
-@dataclass(frozen=True, kw_only=True)
 class ToolResultMessage(Message):
     """Результат выполнения tool-call в слот id-вызова.
 
@@ -101,8 +136,28 @@ class ToolResultMessage(Message):
     сообщения в API-параметры. Признак ошибки — `isinstance(result, ErrorResult)`.
     """
 
+    type: Literal["tool_result"] = "tool_result"
     tool_call_id: str
     result: ToolResult
+
+
+MessageAdapter: TypeAdapter[Message] = TypeAdapter(
+    Annotated[
+        SystemMessage | UserMessage | AssistantMessage | ToolResultMessage,
+        Field(discriminator="type"),
+    ],
+)
+"""TypeAdapter для (де)сериализации Message через discriminator='type'.
+
+Использование:
+    line: str = MessageAdapter.dump_json(message).decode("utf-8")
+    msg: Message = MessageAdapter.validate_json(line)
+"""
+
+
+# --------------------------------------------------------------------- #
+# Streaming chunks (не сериализуются в JSONL — оставлены dataclass'ами)
+# --------------------------------------------------------------------- #
 
 
 @dataclass(frozen=True)
@@ -235,6 +290,11 @@ class AssistantMessageChunk:
             and not self.thinking
             and not self.tool_call_chunks
         )
+
+
+# --------------------------------------------------------------------- #
+# Sampling / request / context (не сериализуются в JSONL)
+# --------------------------------------------------------------------- #
 
 
 @dataclass(frozen=True)
