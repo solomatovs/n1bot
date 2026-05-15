@@ -3,19 +3,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TypeAlias
 
-from boba.tools.domain import ToolResult
+from pydantic import BaseModel, ConfigDict
+
+from boba.agent._pydantic_compat import ToolResultField
 
 
-@dataclass(frozen=True)
-class ToolCallResult:
+class ToolCallResult(BaseModel):
     """Результат успешного выполнения tool — доменный ToolResult."""
 
-    result: ToolResult
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    result: ToolResultField
 
 
-@dataclass(frozen=True)
-class ToolCallFailure:
+class ToolCallFailure(BaseModel):
     """Tool бросил ToolExecutionError или невалидный JSON в args."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     error_kind: str
     message: str
