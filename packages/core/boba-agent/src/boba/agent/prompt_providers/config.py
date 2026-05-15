@@ -2,20 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Annotated
-
-from boba.schema.coercion import ParseString
+from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = ["PromptsConfig"]
 
 
-@dataclass(frozen=True)
-class PromptsConfig:
+class PromptsConfig(BaseModel):
     """Путь к директории с системными prompt'ами агента."""
 
-    dir: Annotated[
-        str,
-        "Корневая директория .md/.txt-файлов с system-prompt'ами.",
-        ParseString(),
-    ]
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    dir: str = Field(
+        description="Корневая директория .md/.txt-файлов с system-prompt'ами.",
+    )
