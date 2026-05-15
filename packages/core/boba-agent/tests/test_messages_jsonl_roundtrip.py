@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -32,7 +31,6 @@ from boba.llm.models import (
     UserMessage,
 )
 from boba.tools.domain import ErrorResult, JsonResult, TextResult
-from boba.workspace.contract import WorkspaceId
 
 _MID = MessageId(UUID("00000000-0000-0000-0000-000000000aaa"))
 _TC = ToolCall(id="c1", name="search", args={"q": "hello"})
@@ -146,9 +144,8 @@ def test_in_memory_message_service() -> None:
     assert svc.last() is None
 
 
-def test_jsonlines_message_e2e(tmp_path: Path) -> None:
-    workspace = FsHistoryWorkspaceShell(WorkspaceId("test"), tmp_path)
-    svc = JsonLinesMessageService(workspace)
+def test_jsonlines_message_e2e(history_workspace: FsHistoryWorkspaceShell) -> None:
+    svc = JsonLinesMessageService(history_workspace)
 
     messages = [
         SystemMessage(content="be helpful"),
@@ -163,14 +160,13 @@ def test_jsonlines_message_e2e(tmp_path: Path) -> None:
         svc.add(m)
 
     # Восстановим из файла через свежий instance.
-    fresh = JsonLinesMessageService(workspace)
+    fresh = JsonLinesMessageService(history_workspace)
     recovered = list(fresh.message_iter())
     assert recovered == messages
 
 
-def test_jsonlines_message_clear(tmp_path: Path) -> None:
-    workspace = FsHistoryWorkspaceShell(WorkspaceId("test"), tmp_path)
-    svc = JsonLinesMessageService(workspace)
+def test_jsonlines_message_clear(history_workspace: FsHistoryWorkspaceShell) -> None:
+    svc = JsonLinesMessageService(history_workspace)
     svc.add(SystemMessage(content="x"))
     assert len(list(svc.message_iter())) == 1
     svc.clear()

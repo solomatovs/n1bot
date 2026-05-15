@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -62,7 +61,6 @@ from boba.agent.workspace_fs.shell import FsHistoryWorkspaceShell
 from boba.llm.events import FinishReason
 from boba.llm.models import InvalidToolCall, RequestId, ToolCall
 from boba.tools.domain import ErrorResult, JsonResult, TextResult
-from boba.workspace.contract import WorkspaceId
 
 _RID = RequestId(UUID("00000000-0000-0000-0000-000000000001"))
 _TC = ToolCall(id="call_1", name="search", args={"q": "hello"})
@@ -322,10 +320,9 @@ def test_is_content_delta_spec() -> None:
     )
 
 
-def test_jsonlines_history_e2e(tmp_path: Path) -> None:
+def test_jsonlines_history_e2e(history_workspace: FsHistoryWorkspaceShell) -> None:
     """Полный e2e: запись в файл, чтение, фильтрация ContentDelta."""
-    workspace = FsHistoryWorkspaceShell(WorkspaceId("test"), tmp_path)
-    svc = JsonLinesHistoryService(workspace)
+    svc = JsonLinesHistoryService(history_workspace)
 
     events = [
         IterationStarted(request_id=_RID, iteration=1, max_iterations=5),
@@ -347,9 +344,8 @@ def test_jsonlines_history_e2e(tmp_path: Path) -> None:
     assert recovered[2] == events[3]
 
 
-def test_jsonlines_clear(tmp_path: Path) -> None:
-    workspace = FsHistoryWorkspaceShell(WorkspaceId("test"), tmp_path)
-    svc = JsonLinesHistoryService(workspace)
+def test_jsonlines_clear(history_workspace: FsHistoryWorkspaceShell) -> None:
+    svc = JsonLinesHistoryService(history_workspace)
     svc.record(IterationStarted(request_id=_RID, iteration=1, max_iterations=1))
     assert len(list(svc.events())) == 1
     svc.clear()

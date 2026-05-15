@@ -105,32 +105,31 @@ def test_resolve_config_type_raises_when_tconfig_is_typevar():
 # install_plugins
 
 
-def test_install_plugins_skips_disabled(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.delenv("BOBA_TOOL__SEARCH__ENABLE", raising=False)
-    monkeypatch.delenv("BOBA_CONFIG_PATH", raising=False)
-    ctx = ExtensionContext()
-    artifacts = list(install_plugins([_SearchPlugin], ctx))
+def test_install_plugins_skips_disabled(empty_ctx: ExtensionContext):
+    artifacts = list(install_plugins([_SearchPlugin], empty_ctx))
     assert artifacts == []
 
 
 def test_install_plugins_materializes_and_builds_when_enabled(
     monkeypatch: pytest.MonkeyPatch,
+    empty_ctx: ExtensionContext,
 ):
     monkeypatch.setenv("BOBA_TOOL__SEARCH__ENABLE", "true")
     monkeypatch.setenv("BOBA_TOOL__SEARCH__BASE_URL", "https://example.com")
     monkeypatch.setenv("BOBA_TOOL__SEARCH__LIMIT", "50")
-    monkeypatch.delenv("BOBA_CONFIG_PATH", raising=False)
-    ctx = ExtensionContext()
-    artifacts = list(install_plugins([_SearchPlugin], ctx))
+    artifacts = list(install_plugins([_SearchPlugin], empty_ctx))
     assert len(artifacts) == 1
     built = artifacts[0]
     assert isinstance(built, _BuiltSearch)
     assert built.cfg.base_url == "https://example.com"
     assert built.cfg.limit == 50
-    assert built.ctx is ctx
+    assert built.ctx is empty_ctx
 
 
-def test_install_plugins_iterates_multiple(monkeypatch: pytest.MonkeyPatch):
+def test_install_plugins_iterates_multiple(
+    monkeypatch: pytest.MonkeyPatch,
+    empty_ctx: ExtensionContext,
+):
     class _OtherCfg(BobaFlatSettings):
         model_config = BobaSettingsConfigDict(
             case_sensitive=False,
@@ -157,9 +156,7 @@ def test_install_plugins_iterates_multiple(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("BOBA_TOOL__SEARCH__BASE_URL", "https://search")
     monkeypatch.setenv("BOBA_TOOL__OTHER__ENABLE", "true")
     monkeypatch.setenv("BOBA_TOOL__OTHER__BASE_URL", "https://other")
-    monkeypatch.delenv("BOBA_CONFIG_PATH", raising=False)
-    ctx = ExtensionContext()
-    artifacts = list(install_plugins([_SearchPlugin, _OtherPlugin], ctx))
+    artifacts = list(install_plugins([_SearchPlugin, _OtherPlugin], empty_ctx))
     assert len(artifacts) == 2
     urls = sorted(a.cfg.base_url for a in artifacts)
     assert urls == ["https://other", "https://search"]
@@ -194,11 +191,10 @@ def test_extension_context_get_returns_registered_instance():
     assert ctx.get(_RegistryB) is b
 
 
-def test_extension_context_get_missing_raises():
+def test_extension_context_get_missing_raises(empty_ctx: ExtensionContext):
     """Незарегистрированный тип → `MissingExtensionError` с понятным сообщением."""
-    ctx = ExtensionContext()
     with pytest.raises(MissingExtensionError) as exc:
-        ctx.get(_RegistryA)
+        empty_ctx.get(_RegistryA)
     assert exc.value.key is _RegistryA
     assert "_RegistryA" in str(exc.value)
 
@@ -210,9 +206,8 @@ def test_extension_context_has_reflects_registration():
     assert ctx.has(_RegistryB) is False
 
 
-def test_extension_context_no_args_is_empty_bag():
+def test_extension_context_no_args_is_empty_bag(empty_ctx: ExtensionContext):
     """`ExtensionContext()` без аргументов — пустой реестр (back-compat)."""
-    ctx = ExtensionContext()
-    assert ctx.has(_RegistryA) is False
+    assert empty_ctx.has(_RegistryA) is False
     with pytest.raises(MissingExtensionError):
-        ctx.get(_RegistryA)
+        empty_ctx.get(_RegistryA)
