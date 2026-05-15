@@ -31,7 +31,7 @@ from boba.web.chainlit.bridge import ChainlitBridgeSink
 from boba.web.chainlit.data_layer import WorkspaceOwnership, WorkspaceOwnershipEntry
 from boba.web.chainlit.files import save_upload
 from boba.web.chainlit.modesl import ThreadId, UserId
-from boba.workspace.contract import WorkspaceId
+from boba.workspace.contract import WorkspaceId, new_workspace_id
 from chainlit.context import local_steps
 from chainlit.types import ThreadDict
 from chainlit.utils import utc_now
@@ -88,7 +88,7 @@ class _WarmupTasks:
         if exc is not None:
             logger.exception(
                 "ChatSession warmup failed for workspace=%s",
-                workspace_id.to_wire(),
+                workspace_id,
                 exc_info=exc,
             )
 
@@ -114,7 +114,7 @@ class _ProfileBuilder:
         for entry in entries:
             profiles.append(
                 cl.ChatProfile(
-                    name=entry.workspace_id.to_wire(),
+                    name=entry.workspace_id,
                     markdown_description=_ProfileBuilder._render_description(entry),
                 ),
             )
@@ -123,15 +123,15 @@ class _ProfileBuilder:
     @staticmethod
     def resolve_workspace(profile: str | None) -> WorkspaceId:
         if profile is None or profile == _ProfileBuilder.NEW_SENTINEL:
-            return WorkspaceId.new()
-        return WorkspaceId.from_wire(profile)
+            return new_workspace_id()
+        return WorkspaceId(profile)
 
     @staticmethod
     def _render_description(entry: WorkspaceOwnershipEntry) -> str:
         heading = (
             _ProfileBuilder._trim(entry.first_user_message)
             if entry.first_user_message
-            else entry.workspace_id.to_wire()[:8]
+            else entry.workspace_id[:8]
         )
         return f"**{heading}**\n\n_последняя активность: {entry.last_used_at}_"
 
@@ -191,7 +191,7 @@ async def on_chat_resume(thread: ThreadDict) -> None:
         logger.error("on_chat_resume: thread %s без workspace_id", thread.get("id"))
         return
     try:
-        workspace_id = WorkspaceId.from_wire(raw)
+        workspace_id = WorkspaceId(raw)
     except ValueError:
         await cl.Message(
             content="Не удалось восстановить workspace для этого чата.",

@@ -96,7 +96,7 @@ class ThreadMeta:
         )
         return {
             "id": thread_id,
-            "workspaceId": self.workspace_id.to_wire(),
+            "workspaceId": self.workspace_id,
             "userId": user_id,
             "userIdentifier": self.user_identifier,
             "name": self.name,
@@ -159,7 +159,7 @@ class ThreadIndexEntry:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "workspaceId": self.workspace_id.to_wire(),
+            "workspaceId": self.workspace_id,
             "userId": self.user_id.to_wire() if self.user_id is not None else None,
             "userIdentifier": self.user_identifier,
             "name": self.name,
@@ -533,7 +533,7 @@ class FsThreadRepository(ThreadRepository):
     def _thread_dir(self, workspace_id: WorkspaceId, thread_id: ThreadId) -> Path:
         return (
             self._base
-            / workspace_id.to_wire()
+            / workspace_id
             / self._system_subdir
             / self._THREADS_DIR
             / thread_id.to_wire()
@@ -732,7 +732,7 @@ class BobaDataLayer(BaseDataLayer):
         merged_metadata = dict(existing.metadata) if existing else {}
         if metadata:
             merged_metadata.update(metadata)
-        merged_metadata[self._WORKSPACE_META_KEY] = workspace_id.to_wire()
+        merged_metadata[self._WORKSPACE_META_KEY] = workspace_id
 
         meta = ThreadMeta(
             id=thread_id,
@@ -877,8 +877,8 @@ class BobaDataLayer(BaseDataLayer):
             ws = cl.user_session.get(self._WORKSPACE_META_KEY)
         except (LookupError, RuntimeError):
             return None
-        if isinstance(ws, WorkspaceId):
-            return ws
+        if isinstance(ws, str):
+            return WorkspaceId(ws)
         return None
 
     @staticmethod

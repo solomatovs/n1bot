@@ -148,7 +148,7 @@ def test_in_memory_message_service() -> None:
 
 
 def test_jsonlines_message_e2e(tmp_path: Path) -> None:
-    workspace = FsHistoryWorkspaceShell(WorkspaceId.from_wire("test"), tmp_path)
+    workspace = FsHistoryWorkspaceShell(WorkspaceId("test"), tmp_path)
     svc = JsonLinesMessageService(workspace)
 
     messages = [
@@ -170,7 +170,7 @@ def test_jsonlines_message_e2e(tmp_path: Path) -> None:
 
 
 def test_jsonlines_message_clear(tmp_path: Path) -> None:
-    workspace = FsHistoryWorkspaceShell(WorkspaceId.from_wire("test"), tmp_path)
+    workspace = FsHistoryWorkspaceShell(WorkspaceId("test"), tmp_path)
     svc = JsonLinesMessageService(workspace)
     svc.add(SystemMessage(content="x"))
     assert len(list(svc.message_iter())) == 1

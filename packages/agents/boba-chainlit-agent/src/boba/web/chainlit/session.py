@@ -108,7 +108,7 @@ class ChatSession:
         )
         with log_context(
             request_id=str(request_id),
-            workspace_id=self._workspace_id.to_wire(),
+            workspace_id=self._workspace_id,
         ):
             for event in self._agent.stream(agent_input):
                 extra_sink.handle(event)
