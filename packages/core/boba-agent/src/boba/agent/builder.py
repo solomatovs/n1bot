@@ -364,7 +364,7 @@ class AgentBuilder:
             if shared_bundle is None:
                 msg = (
                     f"AgentBuilder: плагин "
-                    f"{plugin_cls.NAME.to_wire()!r} вызван без config, "
+                    f"{plugin_cls.NAME!r} вызван без config, "
                     f"но ConfigBundle не задан через .with_config_bundle(...)"
                 )
                 raise ValueError(msg)

@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from types import TracebackType
 from typing import Generic, Self, TypeVar
-from uuid import UUID, uuid4
 
 __all__ = [
     "AllMatchesDispatcher",
@@ -23,7 +21,6 @@ __all__ = [
     "FirstMatchDispatcher",
     "FoldFactory",
     "FoldingDispatcher",
-    "Id",
     "IsInstance",
     "ItemProvider",
     "Matcher",
@@ -35,7 +32,6 @@ __all__ = [
     "Specification",
     "StateFull",
     "StateLess",
-    "StrId",
     "StreamConverter",
     "StreamSink",
     "StreamSinkPipeline",
@@ -46,76 +42,7 @@ __all__ = [
     "StreamTransformer",
     "StreamTransformerChain",
     "StreamTransformerPipeline",
-    "UuId",
 ]
-
-
-TName = TypeVar("TName")
-
-
-class Id(ABC, Generic[TName]):
-    """Базовый value object для идентификаторов."""
-
-    def __init__(self, name: TName) -> None:
-        self._name = name
-
-    @property
-    def name(self) -> TName:
-        return self._name
-
-    def __eq__(self, other: object) -> bool:
-        return isinstance(other, self.__class__) and self._name == other._name
-
-    def __hash__(self) -> int:
-        return hash(self._name)
-
-    def __repr__(self) -> str:
-        return f"{self.__class__.__name__}({self._name!r})"
-
-    @abstractmethod
-    def to_wire(self) -> str:
-        """Сериализовать Id в строковое представление (JSON-safe)."""
-        ...
-
-    @classmethod
-    @abstractmethod
-    def from_wire(cls, value: str) -> Self:
-        """Восстановить Id из строкового представления."""
-        ...
-
-
-class UuId(Id[UUID]):
-    """Базовый UUID-идентификатор."""
-
-    @classmethod
-    def new(cls) -> Self:
-        return cls(uuid4())
-
-    @classmethod
-    def from_uuid(cls, _id: UUID) -> Self:
-        return cls(_id)
-
-    def to_wire(self) -> str:
-        return str(self._name)
-
-    @classmethod
-    def from_wire(cls, value: str) -> Self:
-        return cls(UUID(value))
-
-
-class StrId(Id[str]):
-    """Строковый Id — для читабельных идентификаторов (имя секции, стадии)."""
-
-    def to_wire(self) -> str:
-        return self._name
-
-    @classmethod
-    def from_wire(cls, value: str) -> Self:
-        return cls(value)
-
-    @classmethod
-    def new(cls) -> Self:
-        return cls.from_wire(str(uuid.uuid4()))
 
 
 TCtx = TypeVar("TCtx")

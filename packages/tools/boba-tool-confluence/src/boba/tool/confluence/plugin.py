@@ -22,7 +22,6 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Annotated, ClassVar, Literal
 
-from boba.patterns import StrId
 from boba.plugin import ExtensionContext, Plugin
 from boba.plugin.prompt import PromptOverlay
 from boba.schema import schema
@@ -112,7 +111,7 @@ class ConfluencePluginConfig:
 class ConfluencePlugin(Plugin[ConfluencePluginConfig, ToolSource]):
     """Plugin Confluence-tools: search + page_outline + page_section."""
 
-    NAME: ClassVar[StrId] = StrId("confluence")
+    NAME: ClassVar[str] = "confluence"
     SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("plugin.confluence")
 
     @classmethod

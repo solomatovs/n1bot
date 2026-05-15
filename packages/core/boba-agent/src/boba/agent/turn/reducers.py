@@ -16,7 +16,7 @@ from boba.llm.models import (
     ToolResultMessage,
     UserMessage,
 )
-from boba.patterns import PrioritySource, StrId
+from boba.patterns import PrioritySource
 from boba.schema.declaration import ObjectSchema
 from boba.tools.domain import (
     ToolId,
@@ -24,20 +24,20 @@ from boba.tools.domain import (
 )
 from boba.tools.framework import ToolExecutor
 
-TurnReducer: TypeAlias = PrioritySource[StrId, TurnState]
+TurnReducer: TypeAlias = PrioritySource[str, TurnState]
 """Alias для reducer'а TurnSpec — стадия сборки TurnState."""
 
 
-class ModelReducer(PrioritySource[StrId, TurnState]):
+class ModelReducer(PrioritySource[str, TurnState]):
     """Берёт модель из ctx.agent.agent_request.model."""
 
-    ID: ClassVar[StrId] = StrId("model")
+    ID: ClassVar[str] = "model"
 
     def __init__(self, model: str, priority: int = 10) -> None:
         self._model = model
         self._priority = priority
 
-    def id(self) -> StrId:
+    def id(self) -> str:
         return self.ID
 
     def priority(self) -> int:
@@ -48,10 +48,10 @@ class ModelReducer(PrioritySource[StrId, TurnState]):
         return state
 
 
-class SystemPromptReducer(PrioritySource[StrId, TurnState]):
+class SystemPromptReducer(PrioritySource[str, TurnState]):
     """Собирает system-prompt через PromptFactory каждую итерацию."""
 
-    ID: ClassVar[StrId] = StrId("system")
+    ID: ClassVar[str] = "system"
 
     def __init__(
         self,
@@ -61,7 +61,7 @@ class SystemPromptReducer(PrioritySource[StrId, TurnState]):
         self._providers = providers
         self._priority = priority
 
-    def id(self) -> StrId:
+    def id(self) -> str:
         return self.ID
 
     def priority(self) -> int:
@@ -75,16 +75,16 @@ class SystemPromptReducer(PrioritySource[StrId, TurnState]):
         return state
 
 
-class HistoryReducer(PrioritySource[StrId, TurnState]):
+class HistoryReducer(PrioritySource[str, TurnState]):
     """Копирует весь диалог из MessageReader в state."""
 
-    ID: ClassVar[StrId] = StrId("history")
+    ID: ClassVar[str] = "history"
 
     def __init__(self, message_reader: MessageReader, priority: int = 30) -> None:
         self._message_reader = message_reader
         self._priority = priority
 
-    def id(self) -> StrId:
+    def id(self) -> str:
         return self.ID
 
     def priority(self) -> int:
@@ -95,10 +95,10 @@ class HistoryReducer(PrioritySource[StrId, TurnState]):
         return state
 
 
-class ToolsReducer(PrioritySource[StrId, TurnState]):
+class ToolsReducer(PrioritySource[str, TurnState]):
     """Каталог tools из ToolExecutor."""
 
-    ID: ClassVar[StrId] = StrId("tools")
+    ID: ClassVar[str] = "tools"
 
     def __init__(
         self,
@@ -110,7 +110,7 @@ class ToolsReducer(PrioritySource[StrId, TurnState]):
         self._parallel = parallel_tool_calls
         self._priority = priority
 
-    def id(self) -> StrId:
+    def id(self) -> str:
         return self.ID
 
     def priority(self) -> int:
@@ -144,10 +144,10 @@ class ToolsReducer(PrioritySource[StrId, TurnState]):
         )
 
 
-class AgentRequestSamplingReducer(PrioritySource[StrId, TurnState]):
+class AgentRequestSamplingReducer(PrioritySource[str, TurnState]):
     """Кладёт SamplingParams в state (per-turn инжектится из AgentRequest)."""
 
-    ID: ClassVar[StrId] = StrId("sampling")
+    ID: ClassVar[str] = "sampling"
 
     def __init__(
         self,
@@ -157,7 +157,7 @@ class AgentRequestSamplingReducer(PrioritySource[StrId, TurnState]):
         self._sampling = sampling
         self._priority = priority
 
-    def id(self) -> StrId:
+    def id(self) -> str:
         return self.ID
 
     def priority(self) -> int:
@@ -169,7 +169,7 @@ class AgentRequestSamplingReducer(PrioritySource[StrId, TurnState]):
         return state
 
 
-class RememberUserQueryReducer(PrioritySource[StrId, TurnState]):
+class RememberUserQueryReducer(PrioritySource[str, TurnState]):
     """После tool-output дублирует последний UserMessage в хвост истории.
 
     Срабатывает только когда последнее сообщение в state.messages —
@@ -180,7 +180,7 @@ class RememberUserQueryReducer(PrioritySource[StrId, TurnState]):
     в state каждую итерацию, без persistence.
     """
 
-    ID: ClassVar[StrId] = StrId("remember_user_query")
+    ID: ClassVar[str] = "remember_user_query"
     DEFAULT_PREFIX: ClassVar[str] = "Напоминание об исходном запросе: "
 
     def __init__(
@@ -191,7 +191,7 @@ class RememberUserQueryReducer(PrioritySource[StrId, TurnState]):
         self._prefix = prefix
         self._priority = priority
 
-    def id(self) -> StrId:
+    def id(self) -> str:
         return self.ID
 
     def priority(self) -> int:

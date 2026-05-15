@@ -6,7 +6,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar
 
-from boba.patterns import StrId
 from boba.plugin import ExtensionContext, Plugin
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import MinValue, ParseInt, ParseString
@@ -65,7 +64,7 @@ class ChromadbPluginConfig:
 class ChromadbPlugin(Plugin[ChromadbPluginConfig, ToolSource]):
     """Plugin ChromaDB read-tools: kb_search + kb_list_collections."""
 
-    NAME: ClassVar[StrId] = StrId("chromadb")
+    NAME: ClassVar[str] = "chromadb"
     SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("plugin.chromadb")
 
     @classmethod

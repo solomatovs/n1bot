@@ -5,7 +5,7 @@ Plugin — структурный протокол, дженерик по `TConf
 `TToolSource` (тип артефакта).
 
 Класс плагина должен иметь:
-  * `NAME: ClassVar[StrId]` — имя плагина (mount path = `tool.<NAME>`);
+  * `NAME: ClassVar[str]` — имя плагина (mount path = `tool.<NAME>`);
   * classmethod `build(cfg, ctx)` → `Iterable[TToolSource]` - итератор артефактов
 
 Один плагин может вернуть несколько источников
@@ -38,7 +38,6 @@ from typing import Any, ClassVar, Protocol, TypeVar, cast, runtime_checkable
 
 from boba.config.bundle import ConfigBundle
 from boba.config.path import ConfigPath, NameSegment
-from boba.patterns import StrId
 from boba.schema.coercion import ParseBool
 
 __all__ = [
@@ -112,7 +111,7 @@ class Plugin(Protocol[TConfig_contra, TToolSource_co]):
     пример: `class HtmlPlugin(Plugin[HtmlPluginConfig, ToolSource])`
     """
 
-    NAME: ClassVar[StrId]
+    NAME: ClassVar[str]
 
     @classmethod
     def build(
@@ -122,9 +121,9 @@ class Plugin(Protocol[TConfig_contra, TToolSource_co]):
     ) -> Iterable[TToolSource_co]: ...
 
 
-def config_path(plugin_name: StrId) -> ConfigPath:
+def config_path(plugin_name: str) -> ConfigPath:
     """Convention: каждый плагин монтируется под `tool.<name>`."""
-    return ConfigPath.parse("tool").join(NameSegment(plugin_name.to_wire()))
+    return ConfigPath.parse("tool").join(NameSegment(plugin_name))
 
 
 def is_enabled(bundle: ConfigBundle, mount: ConfigPath) -> bool:

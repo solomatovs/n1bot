@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from typing import Annotated, ClassVar
 
 from boba.db.postgres import PostgresConfig, PostgresPool
-from boba.patterns import StrId
 from boba.plugin import ExtensionContext, Plugin
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion import MinValue, ParseFloat, ParseInt, ParseString
@@ -75,7 +74,7 @@ class PostgresFtsPluginConfig:
 class PostgresFtsPlugin(Plugin[PostgresFtsPluginConfig, ToolSource]):
     """Plugin PG FTS read-tools: fts_search + fts_list_indexes."""
 
-    NAME: ClassVar[StrId] = StrId("postgres_fts")
+    NAME: ClassVar[str] = "postgres_fts"
     SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("plugin.postgres_fts")
 
     @classmethod

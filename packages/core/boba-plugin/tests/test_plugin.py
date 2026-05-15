@@ -12,7 +12,6 @@ import pytest
 from boba.config.bundle import ConfigBundle
 from boba.config.path import ConfigPath
 from boba.config.source.dict import DictSource
-from boba.patterns import StrId
 from boba.plugin import (
     ExtensionContext,
     MissingExtensionError,
@@ -45,7 +44,7 @@ class _BuiltSearch:
 
 
 class _SearchPlugin(Plugin[_SearchCfg, _BuiltSearch]):
-    NAME: ClassVar[StrId] = StrId("search")
+    NAME: ClassVar[str] = "search"
 
     @classmethod
     def build(
@@ -60,8 +59,8 @@ class _SearchPlugin(Plugin[_SearchCfg, _BuiltSearch]):
 
 
 def test_mount_path_for_uses_tool_prefix():
-    assert config_path(StrId("search")) == ConfigPath.parse("tool.search")
-    assert config_path(StrId("confluence_page")) == ConfigPath.parse(
+    assert config_path("search") == ConfigPath.parse("tool.search")
+    assert config_path("confluence_page") == ConfigPath.parse(
         "tool.confluence_page",
     )
 
@@ -112,7 +111,7 @@ def test_resolve_config_type_returns_tconfig():
 
 def test_resolve_config_type_raises_without_plugin_base():
     class _NotAPlugin:
-        NAME: ClassVar[StrId] = StrId("nope")
+        NAME: ClassVar[str] = "nope"
 
     with pytest.raises(TypeError, match="должен наследоваться"):
         resolve_config_type(_NotAPlugin)  # type: ignore[arg-type]
@@ -125,7 +124,7 @@ def test_resolve_config_type_raises_when_tconfig_is_typevar():
     TCfg = TypeVar("TCfg")
 
     class _Abstract(Plugin[TCfg, Any]):  # type: ignore[type-var]
-        NAME: ClassVar[StrId] = StrId("abstract")
+        NAME: ClassVar[str] = "abstract"
 
         @classmethod
         def build(cls, cfg: TCfg, ctx: ExtensionContext) -> Iterable[Any]:  # type: ignore[type-var]
@@ -179,7 +178,7 @@ def test_install_plugins_disabled_plugin_dto_is_not_materialized():
 
 def test_install_plugins_iterates_multiple():
     class _OtherPlugin(Plugin[_SearchCfg, _BuiltSearch]):
-        NAME: ClassVar[StrId] = StrId("other")
+        NAME: ClassVar[str] = "other"
 
         @classmethod
         def build(

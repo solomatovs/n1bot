@@ -6,7 +6,6 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Annotated, ClassVar
 
-from boba.patterns import StrId
 from boba.plugin import ExtensionContext, Plugin
 from boba.plugin.prompt import PromptOverlay
 from boba.schema.coercion.types import ParseCsvList
@@ -65,7 +64,7 @@ class FilesPluginConfig:
 class FilesPlugin(Plugin[FilesPluginConfig, ToolSource]):
     """Plugin файловых tools: 15 tools, без connection."""
 
-    NAME: ClassVar[StrId] = StrId("files")
+    NAME: ClassVar[str] = "files"
     SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("plugin.files")
 
     @classmethod
