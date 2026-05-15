@@ -34,7 +34,6 @@ from boba.llm.models import (
 from boba.tools.domain import ErrorResult, JsonResult, TextResult
 from boba.workspace.contract import WorkspaceId
 
-
 _MID = MessageId(UUID("00000000-0000-0000-0000-000000000aaa"))
 _TC = ToolCall(id="c1", name="search", args={"q": "hello"})
 _ITC = InvalidToolCall(

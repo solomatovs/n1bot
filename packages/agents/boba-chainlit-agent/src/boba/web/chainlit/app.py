@@ -154,13 +154,13 @@ async def chat_profiles(user: cl.User | None) -> list[cl.ChatProfile]:
     if user is None:
         return only_new
     state = app_state()
-    persisted = await state.data_layer.get_user(ThreadId.from_wire(user.identifier))
+    persisted = await state.data_layer.get_user(ThreadId(user.identifier))
     if persisted is None:
         # Пользователь в auth есть, но ещё не закоммитился в users.json
         # (первый login без сообщений) — workspace'ов точно нет.
         return only_new
     return await _ProfileBuilder.build(
-        state.workspace_ownership, UserId.from_wire(persisted.id)
+        state.workspace_ownership, UserId(persisted.id)
     )
 
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from boba.config.bundle import ConfigBundle
 from boba.config.path import ConfigPath
 from boba.config.source.dict import DictSource
@@ -12,8 +14,6 @@ from boba.schema.coercion import MISSING
 from boba.schema.declaration import FieldSpec, NestedField
 from boba.schema.value import BoolValue, IntValue, StringValue
 from boba.tool.chromadb import ChromadbPlugin, ChromadbPluginConfig
-
-import pytest
 
 _SCHEMA = schema_from_dataclass(ChromadbPluginConfig)
 

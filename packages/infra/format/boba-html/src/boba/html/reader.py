@@ -20,6 +20,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import ClassVar
 
+import trafilatura
 from lxml import html as lxml_html
 
 from boba.html.parser import HtmlSectionParser
@@ -32,8 +33,6 @@ from boba.indexing import (
     ReaderKeys,
     Section,
 )
-
-import trafilatura
 
 __all__ = ["HtmlPlainReader", "HtmlReadabilityReader", "HtmlReader"]
 

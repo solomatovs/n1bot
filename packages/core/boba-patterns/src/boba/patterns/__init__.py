@@ -120,7 +120,7 @@ class StrId(Id[str]):
 
 TCtx = TypeVar("TCtx")
 TIn = TypeVar("TIn")
-TId = TypeVar("TId", bound=Id)
+TId = TypeVar("TId")
 TState = TypeVar("TState")
 TOut = TypeVar("TOut")
 TOut_co = TypeVar("TOut_co", covariant=True)

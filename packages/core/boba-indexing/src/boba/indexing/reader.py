@@ -19,9 +19,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from collections.abc import Iterable
-from typing import TypeVar
-
-from typing import NewType
+from typing import NewType, TypeVar
 
 from boba.indexing.raw_document import RawDocument
 from boba.indexing.sections import Section

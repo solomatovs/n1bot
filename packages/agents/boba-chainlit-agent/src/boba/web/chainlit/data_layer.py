@@ -88,16 +88,10 @@ class ThreadMeta:
     updated_at: str
 
     def to_dict(self) -> dict[str, Any]:
-        thread_id = self.id.to_wire() if isinstance(self.id, ThreadId) else self.id
-        user_id = (
-            self.user_id.to_wire()
-            if isinstance(self.user_id, UserId)
-            else self.user_id
-        )
         return {
-            "id": thread_id,
+            "id": self.id,
             "workspaceId": self.workspace_id,
-            "userId": user_id,
+            "userId": self.user_id,
             "userIdentifier": self.user_identifier,
             "name": self.name,
             "tags": list(self.tags),
@@ -138,17 +132,9 @@ class ThreadIndexEntry:
 
     @classmethod
     def from_meta(cls, meta: ThreadMeta) -> ThreadIndexEntry:
-        # Chainlit передаёт plain-строки даже там, где аннотация UserId, —
-        # нормализуем на входе, чтобы в индексе всегда лежал UserId.
-        raw_user_id = meta.user_id
-        user_id = (
-            UserId(raw_user_id)
-            if isinstance(raw_user_id, str)
-            else raw_user_id
-        )
         return cls(
             workspace_id=meta.workspace_id,
-            user_id=user_id,
+            user_id=meta.user_id,
             user_identifier=meta.user_identifier,
             name=meta.name,
             tags=list(meta.tags),
@@ -160,7 +146,7 @@ class ThreadIndexEntry:
     def to_dict(self) -> dict[str, Any]:
         return {
             "workspaceId": self.workspace_id,
-            "userId": self.user_id.to_wire() if self.user_id is not None else None,
+            "userId": self.user_id if self.user_id is not None else None,
             "userIdentifier": self.user_identifier,
             "name": self.name,
             "tags": list(self.tags),
@@ -344,7 +330,7 @@ class FsUserCatalog(UserCatalog):
     @staticmethod
     def _encode(user: StoredUser) -> dict[str, Any]:
         return {
-            "id": user.id.to_wire(),
+            "id": user.id,
             "identifier": user.identifier,
             "display_name": user.display_name,
             "metadata": user.metadata,
@@ -536,7 +522,7 @@ class FsThreadRepository(ThreadRepository):
             / workspace_id
             / self._system_subdir
             / self._THREADS_DIR
-            / thread_id.to_wire()
+            / thread_id
         )
 
     def _read_meta(
@@ -689,10 +675,10 @@ class BobaDataLayer(BaseDataLayer):
         return cast(
             "ThreadDict",
             {
-                "id": meta.id.to_wire(),
+                "id": meta.id,
                 "createdAt": meta.created_at,
                 "name": meta.name,
-                "userId": meta.user_id.to_wire() if meta.user_id is not None else None,
+                "userId": meta.user_id if meta.user_id is not None else None,
                 "userIdentifier": meta.user_identifier,
                 "tags": meta.tags,
                 "metadata": meta.metadata,
@@ -782,10 +768,10 @@ class BobaDataLayer(BaseDataLayer):
         has_next = (start + pagination.first) < len(metas)
         data = [
             {
-                "id": m.id.to_wire(),
+                "id": m.id,
                 "createdAt": m.created_at,
                 "name": m.name,
-                "userId": m.user_id.to_wire() if m.user_id is not None else None,
+                "userId": m.user_id if m.user_id is not None else None,
                 "userIdentifier": m.user_identifier,
                 "tags": m.tags,
                 "metadata": m.metadata,
@@ -797,8 +783,8 @@ class BobaDataLayer(BaseDataLayer):
         return PaginatedResponse(
             pageInfo=PageInfo(
                 hasNextPage=has_next,
-                startCursor=chunk[0].id.to_wire() if chunk else None,
-                endCursor=chunk[-1].id.to_wire() if chunk else None,
+                startCursor=chunk[0].id if chunk else None,
+                endCursor=chunk[-1].id if chunk else None,
             ),
             data=data,
         )
@@ -892,7 +878,7 @@ class BobaDataLayer(BaseDataLayer):
     @staticmethod
     def _to_persisted(record: StoredUser) -> PersistedUser:
         return PersistedUser(
-            id=record.id.to_wire(),
+            id=record.id,
             identifier=record.identifier,
             display_name=record.display_name,
             metadata=dict(record.metadata),
