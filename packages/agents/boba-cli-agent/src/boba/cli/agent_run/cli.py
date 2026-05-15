@@ -67,8 +67,8 @@ def _run() -> int:
     )
     builder = AgentBuilder().use_config_bundle(bundle)
 
-    app = bundle.get(AppConfig, "agent")
-    run_cfg = bundle.get(AgentRunConfig, "cli")
+    app = AppConfig.load()
+    run_cfg = AgentRunConfig.load()
     configure_logging(app.core.log_level, app.core.log_file)
 
     workspace_id = WorkspaceId("00000000-0000-0000-0000-000000000001")

@@ -2,31 +2,34 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
 
-from boba.schema.coercion import ParseString
+from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = ["WorkspaceLayout"]
 
 
-@dataclass(frozen=True)
-class WorkspaceLayout:
+class WorkspaceLayout(BaseModel):
     """Раскладка namespace'ов workspace'а относительно base_dir."""
 
-    base_dir: Annotated[
-        str, "Корневая директория всех workspace-namespace'ов.", ParseString(),
-    ] = "./workspaces"
-    user_subdir: Annotated[
-        str, "Имя поддиректории user-workspace'а внутри base_dir.", ParseString(),
-    ] = "user"
-    system_subdir: Annotated[
-        str, "Имя поддиректории system-workspace'а внутри base_dir.", ParseString(),
-    ] = "system"
-    tmp_subdir: Annotated[
-        str, "Имя поддиректории tmp-workspace'а внутри base_dir.", ParseString(),
-    ] = "tmp"
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    base_dir: str = Field(
+        default="./workspaces",
+        description="Корневая директория всех workspace-namespace'ов.",
+    )
+    user_subdir: str = Field(
+        default="user",
+        description="Имя поддиректории user-workspace'а внутри base_dir.",
+    )
+    system_subdir: str = Field(
+        default="system",
+        description="Имя поддиректории system-workspace'а внутри base_dir.",
+    )
+    tmp_subdir: str = Field(
+        default="tmp",
+        description="Имя поддиректории tmp-workspace'а внутри base_dir.",
+    )
 
     def root(self) -> Path:
         return Path(self.base_dir)

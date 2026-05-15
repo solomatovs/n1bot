@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.agent.events import AgentEvent, GenerationDone, IterationStarted
 from boba.agent.messages import MessageReader, MessageWriter
 from boba.llm.events import FinishReason
 from boba.llm.models import Message, RequestId, SamplingParams, UserMessage
 from boba.patterns import StreamSource
-from boba.schema.coercion import MinValue, ParseInt
 
 
 @dataclass(frozen=True)
@@ -24,22 +24,21 @@ class AgentRequest:
     sampling: SamplingParams | None = None
 
 
-@dataclass(frozen=True)
-class AgentConfig:
+class AgentConfig(BaseModel):
     """Лимиты агентского лупа."""
 
-    max_iterations: Annotated[
-        int,
-        "Жёсткий потолок числа итераций агента в одной сессии.",
-        ParseInt(),
-        MinValue(1),
-    ] = 20
-    max_consecutive_tool_calls: Annotated[
-        int,
-        "Сколько раз подряд агент может звать tools без LLM-ответа.",
-        ParseInt(),
-        MinValue(1),
-    ] = 3
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    max_iterations: int = Field(
+        default=20,
+        ge=1,
+        description="Жёсткий потолок числа итераций агента в одной сессии.",
+    )
+    max_consecutive_tool_calls: int = Field(
+        default=3,
+        ge=1,
+        description="Сколько раз подряд агент может звать tools без LLM-ответа.",
+    )
 
 
 @dataclass(frozen=True)

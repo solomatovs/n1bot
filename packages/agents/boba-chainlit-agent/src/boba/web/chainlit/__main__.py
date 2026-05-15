@@ -122,8 +122,8 @@ def _resolve_auth_secret(configured: str | None, local_dir: Path) -> str:
 def main() -> int:
     bundle = _build_bundle()
 
-    chainlit_cfg = bundle.get(ChainlitConfig, "chainlit")
-    app = bundle.get(AppConfig, "agent")
+    chainlit_cfg = ChainlitConfig.load()
+    app = AppConfig.load()
 
     configure_logging(app.core.log_level, app.core.log_file)
 

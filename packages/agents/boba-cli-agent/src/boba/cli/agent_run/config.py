@@ -1,70 +1,78 @@
-"""DTO boba-cli-agent: AgentRunConfig."""
+"""DTO boba-cli-agent: AgentRunConfig.
+
+Источники (priority high → low):
+  1. CLI argv:  --model qwen3.5-35b --temperature 0.7 --query "..." ...
+  2. init-kwargs (`AgentRunConfig(model="...")`).
+  3. env:       BOBA_CLI__MODEL, BOBA_CLI__TEMPERATURE, ...
+  4. TOML:      секция [cli] в файле $BOBA_CONFIG_PATH.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Any
+
+from pydantic import BeforeValidator, Field
 
 from boba.llm.models import SamplingParams
-from boba.schema.coercion import (
-    ParseCsvList,
-    ParseFloat,
-    ParseInt,
-    ParseString,
-)
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 
 __all__ = ["AgentRunConfig"]
 
 
-@dataclass(frozen=True)
-class AgentRunConfig:
+def _csv_to_list(v: Any) -> Any:
+    """CSV-строка → list[str]; list/None — без изменений."""
+    if isinstance(v, str):
+        return [item.strip() for item in v.split(",") if item.strip()]
+    return v
+
+
+StringList = Annotated[list[str], BeforeValidator(_csv_to_list)]
+
+
+class AgentRunConfig(BobaFlatSettings):
     """Параметры одного запуска CLI-агента: model + sampling."""
 
-    model: Annotated[
-        str,
-        "LLM-модель (напр. qwen3.5-35b). Обязательно.",
-        ParseString(),
-    ]
-    query: Annotated[
-        str | None,
-        "Запрос к агенту; если не задан — запускается REPL.",
-        ParseString(),
-    ] = None
-    temperature: Annotated[
-        float | None,
-        "Температура sampling'а (0.0–2.0).",
-        ParseFloat(),
-    ] = None
-    top_p: Annotated[
-        float | None,
-        "Nucleus sampling threshold (0.0–1.0).",
-        ParseFloat(),
-    ] = None
-    max_tokens: Annotated[
-        int | None,
-        "Максимум токенов в ответе.",
-        ParseInt(),
-    ] = None
-    seed: Annotated[
-        int | None,
-        "Seed для детерминистичного sampling'а.",
-        ParseInt(),
-    ] = None
-    stop: Annotated[
-        list[str] | None,
-        "Stop-последовательности (CSV в env, TOML-array).",
-        ParseCsvList(),
-    ] = None
-    frequency_penalty: Annotated[
-        float | None,
-        "Frequency penalty (-2.0–2.0).",
-        ParseFloat(),
-    ] = None
-    presence_penalty: Annotated[
-        float | None,
-        "Presence penalty (-2.0–2.0).",
-        ParseFloat(),
-    ] = None
+    model_config = BobaSettingsConfigDict(
+        case_sensitive=False,
+        extra="forbid",
+        boba_env_prefix="BOBA_CLI__",
+        boba_toml_section="cli",
+        boba_cli=True,
+    )
+
+    model: str = Field(description="LLM-модель (напр. qwen3.5-35b). Обязательно.")
+    query: str | None = Field(
+        default=None,
+        description="Запрос к агенту; если не задан — запускается REPL.",
+    )
+    temperature: float | None = Field(
+        default=None,
+        description="Температура sampling'а (0.0–2.0).",
+    )
+    top_p: float | None = Field(
+        default=None,
+        description="Nucleus sampling threshold (0.0–1.0).",
+    )
+    max_tokens: int | None = Field(
+        default=None,
+        description="Максимум токенов в ответе.",
+    )
+    seed: int | None = Field(
+        default=None,
+        description="Seed для детерминистичного sampling'а.",
+    )
+    stop: StringList | None = Field(
+        default=None,
+        description="Stop-последовательности (CSV в env, TOML-array).",
+    )
+    frequency_penalty: float | None = Field(
+        default=None,
+        description="Frequency penalty (-2.0–2.0).",
+    )
+    presence_penalty: float | None = Field(
+        default=None,
+        description="Presence penalty (-2.0–2.0).",
+    )
 
     def to_sampling_params(self) -> SamplingParams | None:
         """SamplingParams из опциональных полей; None если все None."""

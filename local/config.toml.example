@@ -1,13 +1,12 @@
 # Шаблон local/config.toml. Скопируйте в local/config.toml и подставьте значения.
 #
 # Секции:
-#   [agent]       — AppConfig (cli + chainlit): inline-композит
-#                    core + workspaces + openai + prompts + runtime.
+#   [agent.core/workspaces/openai/prompts/runtime] — AppConfig (cli + chainlit).
 #   [cli]         — AgentRunConfig (boba-cli-agent).
 #   [chainlit]    — ChainlitConfig (boba-chainlit-agent).
 #   [tool.<name>] — конфиги tool-плагинов (discovery + enable-флаг).
 
-# --- AppConfig: inline core + workspaces + openai + prompts + runtime ---
+# --- AppConfig: плоский [agent] (поля собираются в core/workspaces/openai/prompts/runtime) ---
 [agent]
 # core
 log_level = "INFO"
