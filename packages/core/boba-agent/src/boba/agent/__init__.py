@@ -10,6 +10,7 @@ from boba.agent.event_specs import IsContentDelta
 from boba.agent.events import (
     Advisory,
     AgentEvent,
+    AgentEventAdapter,
     AgentEventName,
     AnswerComplete,
     AnswerStarted,
@@ -124,6 +125,7 @@ __all__ = [
     "AgentErrorRouter",
     "AgentErrorRouterMiddleware",
     "AgentEvent",
+    "AgentEventAdapter",
     "AgentEventName",
     "AgentInput",
     "AgentLLMFeedbackError",
