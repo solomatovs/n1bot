@@ -34,7 +34,7 @@ import dataclasses
 from collections.abc import Callable
 from typing import Any, overload
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from boba.tools.domain.ids import (
     ToolId,
@@ -43,14 +43,13 @@ from boba.tools.domain.ids import (
     compose_tool_id,
     parse_tool_id,
 )
-from boba.tools.domain.llm_schema import clean_llm_json_schema
 from boba.tools.domain.result import (
+    ErrorResult,
     JsonResult,
     TextResult,
     ToolResult,
-    ToolResultBase,
 )
-from boba.tools.domain.tool import Tool, ToolContext, ToolSchema
+from boba.tools.domain.tool import Tool, ToolContext
 from boba.tools.framework.from_callable import callable_to_args_model
 from boba.tools.framework.registry import StaticToolSource, ToolSource
 
@@ -100,7 +99,6 @@ class ToolDecoratorFactory:
             fn=self._fn,
             tool_id=compose_tool_id(source_id, self._name),
             args_model=self._args_model,
-            description=self._description,
             injects_ctx=self._injects_ctx,
         )
 
@@ -141,6 +139,10 @@ class ToolDecoratorFactory:
         )
         name_final = name if name is not None else parsed.name
 
+        # Описание попадёт в JSON-schema как корневой `description`
+        # стандартным pydantic-путём через class docstring.
+        parsed.args_model.__doc__ = description_final or None
+
         return cls(
             fn=obj,
             name=ToolName(name_final),
@@ -170,8 +172,9 @@ class ToolDecoratorFactory:
 class DecoratedTool(Tool[BaseModel, None]):
     """Concrete Tool, рождённый @tool. tool_id заполнен через ToolFactory.build.
 
-    args_model — pydantic-модель, сгенерированная `callable_to_args_model`.
-    Tool ABC использует её через стандартный pydantic-путь.
+    args_model — pydantic-модель, сгенерированная `callable_to_args_model`,
+    с уже проставленным `__doc__` (описание tool'а попадёт в JSON-schema
+    стандартным pydantic-путём). Tool ABC рулит всем остальным.
     """
 
     def __init__(
@@ -179,13 +182,11 @@ class DecoratedTool(Tool[BaseModel, None]):
         fn: Callable[..., Any],
         tool_id: ToolId,
         args_model: type[BaseModel],
-        description: str,
         injects_ctx: bool,
     ) -> None:
         self._fn = fn
         self._tool_id_value = tool_id
         self._args_model_value = args_model
-        self._description = description
         self._injects_ctx = injects_ctx
         # Tool.__init__ ставит _cfg/_ctx/_source_id; для @tool их нет.
         source_id, _name = parse_tool_id(tool_id)
@@ -196,46 +197,9 @@ class DecoratedTool(Tool[BaseModel, None]):
     def tool_id(self) -> ToolId:
         return self._tool_id_value
 
-    @classmethod
-    def _resolve_args_model(cls) -> type[BaseModel]:  # type: ignore[override]
-        """`DecoratedTool` хранит args_model на инстансе, не в generic.
-
-        Базовый `Tool._resolve_args_model` идёт через `__orig_bases__` —
-        для `Tool[BaseModel, None]` он вернул бы абстрактный `BaseModel`.
-        Здесь возвращаем модель, реально построенную `@tool`.
-        """
-        msg = (
-            "DecoratedTool._resolve_args_model вызывается только как instance-"
-            "метод (через self), а не как classmethod"
-        )
-        raise TypeError(msg)
-
-    def _instance_args_model(self) -> type[BaseModel]:
+    def _args_model_class(self) -> type[BaseModel]:
+        """`@tool` строит модель через `create_model`; generic не задействован."""
         return self._args_model_value
-
-    def definition(self) -> ToolSchema:
-        raw = self._args_model_value.model_json_schema()
-        if self._description:
-            raw["description"] = self._description
-        parameters = clean_llm_json_schema(raw)
-        description = str(parameters.pop("description", ""))
-        return ToolSchema(
-            name=self._tool_id_value,
-            description=description,
-            parameters_schema=parameters,
-        )
-
-    def _parse_args(self, raw: dict[str, Any]) -> Any:  # type: ignore[override]
-        try:
-            return self._args_model_value.model_validate(raw)
-        except ValidationError as e:
-            from boba.tools.domain.tool import (  # noqa: PLC0415
-                _pydantic_error_to_tool_error,
-            )
-
-            raise _pydantic_error_to_tool_error(
-                e, self._tool_id_value, self.definition(), raw,
-            ) from e
 
     def execute(self, ctx: ToolContext, args: BaseModel) -> ToolResult:
         # getattr вместо model_dump(): не сериализует nested BaseModel
@@ -245,43 +209,43 @@ class DecoratedTool(Tool[BaseModel, None]):
             for name in self._args_model_value.model_fields
         }
         raw = self._fn(ctx, **kwargs) if self._injects_ctx else self._fn(**kwargs)
-        return _coerce_result(self._tool_id_value, raw)
+        return self._tools_result(self._tool_id_value, raw)
 
 
-_ResultRule = tuple[Callable[[Any], bool], Callable[[Any], ToolResult]]
+    @staticmethod
+    def _tools_result(tool_id: ToolId, value: Any) -> ToolResult:  # noqa: PLR0911
+        """Привести возврат функции к ToolResult.
 
-_RESULT_COERCERS: tuple[_ResultRule, ...] = (
-    (lambda v: v is None, lambda _: TextResult(text="null")),
-    (lambda v: isinstance(v, ToolResultBase), lambda v: v),
-    (lambda v: isinstance(v, str), lambda v: TextResult(text=v)),
-    (lambda v: isinstance(v, (bool, int, float)), lambda v: TextResult(text=str(v))),
-    (
-        lambda v: isinstance(v, BaseModel),
-        lambda v: JsonResult(payload=v.model_dump()),
-    ),
-    (
-        lambda v: dataclasses.is_dataclass(v) and not isinstance(v, type),
-        lambda v: JsonResult(payload=dataclasses.asdict(v)),
-    ),
-    (lambda v: isinstance(v, dict), lambda v: JsonResult(payload=v)),
-    (
-        lambda v: isinstance(v, (list, tuple, set, frozenset)),
-        lambda v: JsonResult(payload=list(v)),
-    ),
-)
-
-
-def _coerce_result(tool_id: ToolId, value: Any) -> ToolResult:
-    """Привести возврат функции к ToolResult."""
-    for predicate, convert in _RESULT_COERCERS:
-        if predicate(value):
-            return convert(value)
-    msg = (
-        f"@tool: функция {tool_id!r} вернула неподдерживаемый тип "
-        f"{type(value).__name__} (ожидается ToolResult / str / int / float / "
-        f"bool / list / tuple / set / dict / BaseModel / dataclass / None)"
-    )
-    raise TypeError(msg)
+        Порядок важен: готовый `ToolResult` (TextResult/JsonResult/ErrorResult)
+        пробрасывается as-is до общих типов; `str`/`bool|int|float` — до
+        `BaseModel`/`dataclass`/`dict`; `dataclass` — guard'ом, потому что это
+        маркер, а не тип-предок.
+        """
+        match value:
+            case None:
+                return TextResult(text="null")
+            case TextResult() | JsonResult() | ErrorResult():
+                return value
+            case str():
+                return TextResult(text=value)
+            case bool() | int() | float():
+                return TextResult(text=str(value))
+            case BaseModel():
+                return JsonResult(payload=value.model_dump())
+            case _ if dataclasses.is_dataclass(value) and not isinstance(value, type):
+                return JsonResult(payload=dataclasses.asdict(value))
+            case dict():
+                return JsonResult(payload=value)
+            case list() | tuple() | set() | frozenset():
+                return JsonResult(payload=list(value))
+            case _:
+                msg = (
+                    f"@tool: функция {tool_id!r} вернула неподдерживаемый тип "
+                    f"{type(value).__name__} (ожидается ToolResult / str / int / "
+                    f"float / bool / list / tuple / set / dict / BaseModel / "
+                    f"dataclass / None)"
+                )
+                raise TypeError(msg)
 
 
 def tool_factory(

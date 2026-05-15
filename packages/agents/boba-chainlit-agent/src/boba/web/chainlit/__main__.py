@@ -6,6 +6,7 @@ import os
 import secrets
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 from boba.agent.builder import AgentBuilder
 from boba.agent.messages import InMemoryMessageService, MessageService
@@ -31,9 +32,13 @@ from boba.web.chainlit.ui_overrides import UIOverrideTomlConverter
 from boba.web.chainlit.usecase import ChatSessionPool, OpenChatSession
 from boba.workspace.contract import (
     HistoryWorkspaceRegistry,
+    HistoryWorkspaceShell,
     ProjectWorkspaceRegistry,
     WorkspaceId,
 )
+
+_SYSTEM_WORKSPACE_ID = WorkspaceId("_chainlit_system")
+"""Workspace для системных файлов chainlit (users.json, threads-index.json)."""
 
 
 def bridge_chainlit_env(cfg: ChainlitConfig) -> Path:
@@ -149,12 +154,14 @@ def main() -> int:
     )
     open_chat_session = OpenChatSession(chat_session_pool)
 
-    local_dir = app_root.parent
-    user_catalog = FsUserCatalog(local_dir / "users.json")
+    system_shell = cast(
+        "HistoryWorkspaceShell",
+        history_workspaces.get_or_create(_SYSTEM_WORKSPACE_ID),
+    )
+    user_catalog = FsUserCatalog(system_shell)
     thread_repository = FsThreadRepository(
-        workspaces_base=workspaces_base,
-        system_subdir=app.workspaces.system_subdir,
-        index_path=local_dir / "threads-index.json",
+        history_workspaces=history_workspaces,
+        system_shell=system_shell,
     )
     data_layer = BobaDataLayer(user_catalog, thread_repository)
     workspace_ownership = ThreadDerivedWorkspaceOwnership(thread_repository)

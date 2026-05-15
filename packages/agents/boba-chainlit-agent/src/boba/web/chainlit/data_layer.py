@@ -5,20 +5,24 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import tempfile
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
+
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic.alias_generators import to_camel
 
 import chainlit as cl
 from boba.web.chainlit.modesl import StoredUser, ThreadId, UserId
-from boba.workspace.contract import WorkspaceId
+from boba.workspace.contract import (
+    HistoryWorkspaceRegistry,
+    HistoryWorkspaceShell,
+    WorkspaceId,
+)
 from chainlit.data.base import BaseDataLayer
 from chainlit.types import PageInfo, PaginatedResponse, Pagination, ThreadFilter
 from chainlit.user import PersistedUser
@@ -45,143 +49,62 @@ __all__ = [
 ]
 
 
-class _AtomicFs:
-    """File-system helpers: атомарная запись и текущее UTC-время."""
-
-    @staticmethod
-    def now_iso() -> str:
-        return datetime.now(UTC).isoformat()
-
-    @staticmethod
-    def write_text(path: Path, content: str) -> None:
-        """tmp+rename: либо целиком новый файл, либо старый — без обрезанного."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            dir=str(path.parent),
-        )
-        tmp = Path(tmp_name)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(content)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(tmp, path)
-        except BaseException:
-            tmp.unlink(missing_ok=True)
-            raise
+_WIRE_CONFIG = ConfigDict(
+    alias_generator=to_camel,
+    populate_by_name=True,
+    frozen=True,
+)
+"""Wire-формат — camelCase. Конструктор по python-name работает через
+`populate_by_name=True`."""
 
 
-@dataclass
-class ThreadMeta:
-    """Метаданные thread'а: всё, кроме самих steps."""
+class ThreadMeta(BaseModel):
+    """Метаданные thread'а: всё, кроме самих steps. Wire — camelCase."""
+
+    model_config = _WIRE_CONFIG
 
     id: ThreadId
     workspace_id: WorkspaceId
     user_id: UserId | None
     user_identifier: str | None
     name: str | None
-    tags: list[str]
-    metadata: dict[str, Any]
+    tags: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: str
     updated_at: str
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "workspaceId": self.workspace_id,
-            "userId": self.user_id,
-            "userIdentifier": self.user_identifier,
-            "name": self.name,
-            "tags": list(self.tags),
-            "metadata": dict(self.metadata),
-            "createdAt": self.created_at,
-            "updatedAt": self.updated_at,
-        }
 
-    @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> ThreadMeta:
-        user_id_raw = raw.get("userId")
-        user_id = UserId(user_id_raw) if isinstance(user_id_raw, str) else None
-        return cls(
-            id=ThreadId(raw["id"]),
-            workspace_id=WorkspaceId(raw["workspaceId"]),
-            user_id=user_id,
-            user_identifier=raw.get("userIdentifier"),
-            name=raw.get("name"),
-            tags=list(raw.get("tags") or []),
-            metadata=dict(raw.get("metadata") or {}),
-            created_at=raw["createdAt"],
-            updated_at=raw["updatedAt"],
-        )
+class ThreadIndexEntry(BaseModel):
+    """Снимок ThreadMeta для глобального индекса (`threads-index.json`)."""
 
-
-@dataclass(frozen=True)
-class ThreadIndexEntry:
-    """Снимок ThreadMeta для глобального индекса (`index.json`)."""
+    model_config = _WIRE_CONFIG
 
     workspace_id: WorkspaceId
     user_id: UserId | None
     user_identifier: str | None
     name: str | None
-    tags: list[str]
-    metadata: dict[str, Any]
+    tags: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: str
     updated_at: str
 
     @classmethod
     def from_meta(cls, meta: ThreadMeta) -> ThreadIndexEntry:
-        return cls(
-            workspace_id=meta.workspace_id,
-            user_id=meta.user_id,
-            user_identifier=meta.user_identifier,
-            name=meta.name,
-            tags=list(meta.tags),
-            metadata=dict(meta.metadata),
-            created_at=meta.created_at,
-            updated_at=meta.updated_at,
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "workspaceId": self.workspace_id,
-            "userId": self.user_id if self.user_id is not None else None,
-            "userIdentifier": self.user_identifier,
-            "name": self.name,
-            "tags": list(self.tags),
-            "metadata": dict(self.metadata),
-            "createdAt": self.created_at,
-            "updatedAt": self.updated_at,
-        }
-
-    @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> ThreadIndexEntry:
-        user_id_raw = raw.get("userId")
-        user_id = UserId(user_id_raw) if isinstance(user_id_raw, str) else None
-        return cls(
-            workspace_id=WorkspaceId(raw["workspaceId"]),
-            user_id=user_id,
-            user_identifier=raw.get("userIdentifier"),
-            name=raw.get("name"),
-            tags=list(raw.get("tags") or []),
-            metadata=dict(raw.get("metadata") or {}),
-            created_at=raw["createdAt"],
-            updated_at=raw["updatedAt"],
-        )
+        return cls.model_validate(meta, from_attributes=True)
 
     def to_meta(self, thread_id: ThreadId) -> ThreadMeta:
-        return ThreadMeta(
-            id=thread_id,
-            workspace_id=self.workspace_id,
-            user_id=self.user_id,
-            user_identifier=self.user_identifier,
-            name=self.name,
-            tags=list(self.tags),
-            metadata=dict(self.metadata),
-            created_at=self.created_at,
-            updated_at=self.updated_at,
-        )
+        return ThreadMeta(id=thread_id, **self.model_dump())
+
+
+_THREAD_INDEX_ADAPTER: TypeAdapter[dict[ThreadId, ThreadIndexEntry]] = TypeAdapter(
+    dict[ThreadId, ThreadIndexEntry],
+)
+"""Адаптер `index.json`: `{ThreadId: ThreadIndexEntry}` через Pydantic."""
+
+_USER_CATALOG_ADAPTER: TypeAdapter[dict[str, StoredUser]] = TypeAdapter(
+    dict[str, StoredUser],
+)
+"""Адаптер `users.json`: `{identifier: StoredUser}` через Pydantic."""
 
 
 class UserCatalog(ABC):
@@ -284,68 +207,59 @@ class ThreadDerivedWorkspaceOwnership(WorkspaceOwnership):
 
 
 class FsUserCatalog(UserCatalog):
-    """JSON-файл `users.json`: {identifier -> StoredUser}."""
+    """JSON-файл `{identifier -> StoredUser}` внутри системного `HistoryWorkspaceShell`.
 
-    def __init__(self, path: Path) -> None:
-        self._path = path
+    Файл живёт по относительному пути внутри workspace'а (`users.json` по
+    умолчанию). Запись — через `shell.atomic_write_text`, чтение — через
+    `shell.read_text` / `shell.exists`. Никакого прямого FS-API.
+    """
+
+    _DEFAULT_FILENAME: ClassVar[str] = "users.json"
+
+    def __init__(
+        self,
+        shell: HistoryWorkspaceShell,
+        filename: str = _DEFAULT_FILENAME,
+    ) -> None:
+        self._shell = shell
+        self._filename = filename
         self._lock = asyncio.Lock()
 
     async def get(self, identifier: str) -> StoredUser | None:
         async with self._lock:
             data = await asyncio.to_thread(self._load)
-            raw = data.get(identifier)
-            return self._decode(raw) if raw else None
+            return data.get(identifier)
 
     async def upsert(
         self, identifier: str, display_name: str | None, metadata: dict[str, Any]
     ) -> StoredUser:
         async with self._lock:
             data = await asyncio.to_thread(self._load)
-            existing = data.get(identifier)
-            if existing:
-                user = self._decode(existing)
-            else:
-                user = StoredUser(
-                    id=UserId(str(uuid.uuid4())),
-                    identifier=identifier,
-                    display_name=display_name,
-                    metadata=dict(metadata),
-                    created_at=_AtomicFs.now_iso(),
-                )
-            data[identifier] = self._encode(user)
+            user = data.get(identifier) or StoredUser(
+                id=UserId(str(uuid.uuid4())),
+                identifier=identifier,
+                display_name=display_name,
+                metadata=dict(metadata),
+                created_at=datetime.now(UTC).isoformat(),
+            )
+            data[identifier] = user
             await asyncio.to_thread(self._save, data)
             return user
 
-    def _load(self) -> dict[str, dict[str, Any]]:
-        if not self._path.exists():
+    def _load(self) -> dict[str, StoredUser]:
+        if not self._shell.exists(self._filename):
             return {}
-        return json.loads(self._path.read_text(encoding="utf-8") or "{}")
+        with self._shell.read_text(self._filename) as fh:
+            text = fh.read() or "{}"
+        return _USER_CATALOG_ADAPTER.validate_json(text)
 
-    def _save(self, data: dict[str, dict[str, Any]]) -> None:
-        _AtomicFs.write_text(
-            self._path,
-            json.dumps(data, ensure_ascii=False, indent=2),
-        )
-
-    @staticmethod
-    def _encode(user: StoredUser) -> dict[str, Any]:
-        return {
-            "id": user.id,
-            "identifier": user.identifier,
-            "display_name": user.display_name,
-            "metadata": user.metadata,
-            "createdAt": user.created_at,
-        }
-
-    @staticmethod
-    def _decode(raw: dict[str, Any]) -> StoredUser:
-        return StoredUser(
-            id=UserId(raw["id"]),
-            identifier=raw["identifier"],
-            display_name=raw.get("display_name"),
-            metadata=raw.get("metadata", {}),
-            created_at=raw["createdAt"],
-        )
+    def _save(self, data: dict[str, StoredUser]) -> None:
+        payload = _USER_CATALOG_ADAPTER.dump_json(
+            data,
+            by_alias=True,
+            indent=2,
+        ).decode("utf-8")
+        self._shell.atomic_write_text(self._filename, payload)
 
 
 @dataclass
@@ -357,32 +271,38 @@ class _StepLockSlot:
 
 
 class FsThreadRepository(ThreadRepository):
-    """Threads хранятся внутри своего workspace.
+    """Threads хранятся внутри своего `HistoryWorkspaceShell`.
 
-    Layout:
-        {workspaces_base}/{workspace_id}/{system_subdir}/threads/{thread_id}/
-            meta.json
-            steps.jsonl
+    Layout per workspace (через `history_workspaces.get_or_create(ws_id)`):
+        threads/{thread_id}/meta.json
+        threads/{thread_id}/steps.jsonl
 
-    Глобальный index `index_path` хранит снимок ThreadMeta:
+    Глобальный index — в `system_shell` (отдельный системный workspace):
+        {index_filename}  (по умолчанию `threads-index.json`)
+
+    Index хранит снимок `ThreadMeta`:
     `{thread_id: {workspaceId, userId, userIdentifier, name, tags, metadata,
     createdAt, updatedAt}}`. Это даёт `list_for_user` за O(N_threads) без
     обхода всех workspace-директорий.
+
+    Все FS-операции идут через `WorkspaceShell` API; прямого доступа к
+    `pathlib.Path` за пределами shell'а нет.
     """
 
     _META: ClassVar[str] = "meta.json"
     _STEPS: ClassVar[str] = "steps.jsonl"
     _THREADS_DIR: ClassVar[str] = "threads"
+    _DEFAULT_INDEX_FILENAME: ClassVar[str] = "threads-index.json"
 
     def __init__(
         self,
-        workspaces_base: Path,
-        system_subdir: str,
-        index_path: Path,
+        history_workspaces: HistoryWorkspaceRegistry,
+        system_shell: HistoryWorkspaceShell,
+        index_filename: str = _DEFAULT_INDEX_FILENAME,
     ) -> None:
-        self._base = workspaces_base
-        self._system_subdir = system_subdir
-        self._index_path = index_path
+        self._history_workspaces = history_workspaces
+        self._system_shell = system_shell
+        self._index_filename = index_filename
         self._index_lock = asyncio.Lock()
         self._step_locks: dict[ThreadId, _StepLockSlot] = {}
         self._step_locks_lock = asyncio.Lock()
@@ -504,79 +424,85 @@ class FsThreadRepository(ThreadRepository):
             return await asyncio.to_thread(self._load_index)
 
     def _load_index(self) -> dict[ThreadId, ThreadIndexEntry]:
-        if not self._index_path.exists():
+        if not self._system_shell.exists(self._index_filename):
             return {}
-        raw = json.loads(self._index_path.read_text(encoding="utf-8") or "{}")
-        return {tid: ThreadIndexEntry.from_dict(value) for tid, value in raw.items()}
+        with self._system_shell.read_text(self._index_filename) as fh:
+            text = fh.read() or "{}"
+        return _THREAD_INDEX_ADAPTER.validate_json(text)
 
     def _save_index(self, index: dict[ThreadId, ThreadIndexEntry]) -> None:
-        payload = {tid: entry.to_dict() for tid, entry in index.items()}
-        _AtomicFs.write_text(
-            self._index_path,
-            json.dumps(payload, ensure_ascii=False, indent=2),
-        )
+        payload = _THREAD_INDEX_ADAPTER.dump_json(
+            index,
+            by_alias=True,
+            indent=2,
+        ).decode("utf-8")
+        self._system_shell.atomic_write_text(self._index_filename, payload)
 
-    def _thread_dir(self, workspace_id: WorkspaceId, thread_id: ThreadId) -> Path:
-        return (
-            self._base
-            / workspace_id
-            / self._system_subdir
-            / self._THREADS_DIR
-            / thread_id
-        )
+    def _shell_for(self, workspace_id: WorkspaceId) -> HistoryWorkspaceShell:
+        """`HistoryWorkspaceShell` для конкретного workspace_id (lazy create)."""
+        shell = self._history_workspaces.get_or_create(workspace_id)
+        # Все шеллы history-namespace по контракту реализуют HistoryWorkspaceShell.
+        return cast("HistoryWorkspaceShell", shell)
+
+    def _meta_path(self, thread_id: ThreadId) -> str:
+        return f"{self._THREADS_DIR}/{thread_id}/{self._META}"
+
+    def _steps_path(self, thread_id: ThreadId) -> str:
+        return f"{self._THREADS_DIR}/{thread_id}/{self._STEPS}"
+
+    def _thread_dir_path(self, thread_id: ThreadId) -> str:
+        return f"{self._THREADS_DIR}/{thread_id}"
 
     def _read_meta(
         self,
         workspace_id: WorkspaceId,
         thread_id: ThreadId,
     ) -> ThreadMeta | None:
-        path = self._thread_dir(workspace_id, thread_id) / self._META
-        if not path.exists():
+        shell = self._shell_for(workspace_id)
+        path = self._meta_path(thread_id)
+        if not shell.exists(path):
             return None
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        return ThreadMeta.from_dict(raw)
+        with shell.read_text(path) as fh:
+            return ThreadMeta.model_validate_json(fh.read())
 
     def _write_meta(self, meta: ThreadMeta) -> None:
-        path = self._thread_dir(meta.workspace_id, meta.id) / self._META
-        _AtomicFs.write_text(
-            path,
-            json.dumps(meta.to_dict(), ensure_ascii=False, indent=2),
+        shell = self._shell_for(meta.workspace_id)
+        shell.atomic_write_text(
+            self._meta_path(meta.id),
+            meta.model_dump_json(by_alias=True, indent=2),
         )
 
     def _delete_dir(self, workspace_id: WorkspaceId, thread_id: ThreadId) -> None:
-        import shutil  # noqa: PLC0415
-
-        directory = self._thread_dir(workspace_id, thread_id)
-        if directory.exists():
-            shutil.rmtree(directory)
-
-    def _steps_path(self, workspace_id: WorkspaceId, thread_id: ThreadId) -> Path:
-        return self._thread_dir(workspace_id, thread_id) / self._STEPS
+        shell = self._shell_for(workspace_id)
+        thread_dir = self._thread_dir_path(thread_id)
+        if shell.exists(thread_dir):
+            shell.delete(thread_dir, recursive=True)
 
     def _read_steps(
         self,
         workspace_id: WorkspaceId,
         thread_id: ThreadId,
     ) -> list[dict[str, Any]]:
-        path = self._steps_path(workspace_id, thread_id)
-        if not path.exists():
+        shell = self._shell_for(workspace_id)
+        path = self._steps_path(thread_id)
+        if not shell.exists(path):
             return []
         steps: list[dict[str, Any]] = []
-        with path.open("r", encoding="utf-8") as fh:
-            for lineno, raw in enumerate(fh, start=1):
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    steps.append(json.loads(line))
-                except json.JSONDecodeError:
-                    # Кривая строка возможна после crash в середине _append_step;
-                    # пропускаем, чтобы не терять весь thread.
-                    logger.warning(
-                        "skip corrupted step at %s:%d",
-                        path,
-                        lineno,
-                    )
+        for lineno, raw in enumerate(shell.read_lines(path), start=1):
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                steps.append(json.loads(line))
+            except json.JSONDecodeError:
+                # Кривая строка возможна после crash в середине _append_step;
+                # пропускаем, чтобы не терять весь thread.
+                logger.warning(
+                    "skip corrupted step at %s/%s:%d",
+                    workspace_id,
+                    path,
+                    lineno,
+                )
         return steps
 
     def _append_step(
@@ -585,13 +511,11 @@ class FsThreadRepository(ThreadRepository):
         thread_id: ThreadId,
         step: dict[str, Any],
     ) -> None:
-        path = self._steps_path(workspace_id, thread_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        shell = self._shell_for(workspace_id)
+        path = self._steps_path(thread_id)
         payload = json.dumps(step, ensure_ascii=False) + "\n"
-        with path.open("a", encoding="utf-8") as fh:
+        with shell.append_text(path) as fh:
             fh.write(payload)
-            fh.flush()
-            os.fsync(fh.fileno())
 
     def _rewrite_step(
         self,
@@ -599,7 +523,7 @@ class FsThreadRepository(ThreadRepository):
         thread_id: ThreadId,
         step: dict[str, Any],
     ) -> None:
-        "Обновить несколько step"
+        "Обновить один step (целиком перезаписав steps.jsonl)."
         steps = self._read_steps(workspace_id, thread_id)
         step_id = step.get("id")
         replaced = False
@@ -631,9 +555,9 @@ class FsThreadRepository(ThreadRepository):
         thread_id: ThreadId,
         steps: list[dict[str, Any]],
     ) -> None:
-        path = self._steps_path(workspace_id, thread_id)
+        shell = self._shell_for(workspace_id)
         body = "".join(json.dumps(step, ensure_ascii=False) + "\n" for step in steps)
-        _AtomicFs.write_text(path, body)
+        shell.atomic_write_text(self._steps_path(thread_id), body)
 
 
 class BobaDataLayer(BaseDataLayer):
@@ -713,7 +637,7 @@ class BobaDataLayer(BaseDataLayer):
             )
             return
 
-        now = _AtomicFs.now_iso()
+        now = datetime.now(UTC).isoformat()
         user_identifier = self._current_user_identifier()
         merged_metadata = dict(existing.metadata) if existing else {}
         if metadata:

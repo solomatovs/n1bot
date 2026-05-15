@@ -28,7 +28,6 @@ from boba.tools.domain.ids import (
     compose_tool_id,
     parse_tool_id,
 )
-from boba.tools.domain.llm_schema import clean_llm_json_schema
 from boba.tools.domain.result import (
     DefaultTextVisitor,
     ErrorResult,
@@ -66,7 +65,6 @@ __all__ = [
     "ToolSchema",
     "ToolSourceCollisionError",
     "ToolSourceId",
-    "clean_llm_json_schema",
     "compose_tool_id",
     "parse_tool_id",
 ]

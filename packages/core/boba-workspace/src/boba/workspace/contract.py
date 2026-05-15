@@ -206,6 +206,19 @@ class WorkspaceShell(ABC, Generic[TWsId]):
         ...
 
     @abstractmethod
+    def atomic_write_text(
+        self, path: str, content: str, encoding: str = "utf-8",
+    ) -> None:
+        """Атомарная перезапись: либо новый файл целиком, либо старый.
+
+        Реализация: tmp в той же директории + fsync + `os.replace`.
+        Гарантия: даже при crash в середине операции читатели не увидят
+        частично записанного файла. Использовать для критичных
+        wire-моделей (JSON-индексы, manifest'ы, конфиги).
+        """
+        ...
+
+    @abstractmethod
     def grep(  # noqa: PLR0913 — все параметры — независимые флаги grep'а
         self,
         pattern: str,
