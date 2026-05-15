@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Annotated, Any
 
 from boba.plugin.prompt import PromptOverlay
@@ -24,7 +25,10 @@ from boba.tools.domain import (
     ToolContext,
     ToolResult,
     ToolSourceId,
+    ToolWireSchemaBuilder,
 )
+from boba.tools.domain.llm_schema import clean_llm_json_schema
+from boba.tools.domain.tool import JsonSchemaOverlay, _ToolArgsAdapter
 
 __all__ = ["FtsSearchArgs", "FtsSearchTool", "FtsSearchToolConfig"]
 
@@ -70,42 +74,57 @@ class FtsSearchTool(Tool[FtsSearchArgs, FtsSearchToolConfig]):
         super().__init__(cfg, ctx, source_id)
         self._kb = kb
 
-    def definition(self) -> ObjectSchema[FtsSearchArgs]:
+    @cached_property
+    def _legacy_schema(self) -> ObjectSchema[FtsSearchArgs]:
+        """Canonical ObjectSchema c runtime max_top_k. Используется и в
+        `definition()`-эмите, и в `_args_adapter`-валидации."""
         max_top_k = self._cfg.max_top_k
-        return self._cfg.prompt.apply(
-            ObjectSchema(
-                description=FtsSearchArgs.__doc__ or "",
-                fields=[
-                    FieldSpec(
-                        name="index",
-                        description="Имя индекса из fts_list_indexes.",
-                        coercer=ChainCoercer(Required(), IsString(), MinLength(1)),
+        return ObjectSchema(
+            description=FtsSearchArgs.__doc__ or "",
+            fields=[
+                FieldSpec(
+                    name="index",
+                    description="Имя индекса из fts_list_indexes.",
+                    coercer=ChainCoercer(Required(), IsString(), MinLength(1)),
+                ),
+                FieldSpec(
+                    name="query",
+                    description=(
+                        "Поисковый запрос. Поддерживается websearch-синтаксис: "
+                        'кавычки для фраз ("exact phrase"), OR для '
+                        "альтернатив, минус-слово для исключения."
                     ),
-                    FieldSpec(
-                        name="query",
-                        description=(
-                            "Поисковый запрос. Поддерживается websearch-синтаксис: "
-                            'кавычки для фраз ("exact phrase"), OR для '
-                            "альтернатив, минус-слово для исключения."
-                        ),
-                        coercer=ChainCoercer(Required(), IsString(), MinLength(1)),
+                    coercer=ChainCoercer(Required(), IsString(), MinLength(1)),
+                ),
+                FieldSpec(
+                    name="top_k",
+                    description=(
+                        f"Сколько hits вернуть (1..{max_top_k}). По умолчанию 5."
                     ),
-                    FieldSpec(
-                        name="top_k",
-                        description=(
-                            f"Сколько hits вернуть (1..{max_top_k}). По умолчанию 5."
-                        ),
-                        coercer=ChainCoercer(
-                            Default(5),
-                            IsInt(),
-                            MinValue(1),
-                            MaxValue(max_top_k),
-                        ),
+                    coercer=ChainCoercer(
+                        Default(5),
+                        IsInt(),
+                        MinValue(1),
+                        MaxValue(max_top_k),
                     ),
-                ],
-                factory=FtsSearchArgs,
-            )
+                ),
+            ],
+            factory=FtsSearchArgs,
         )
+
+    def definition(self) -> dict[str, Any]:
+        wire = ToolWireSchemaBuilder(self._legacy_schema).build()
+        prompt = self._cfg.prompt
+        if isinstance(prompt, JsonSchemaOverlay):
+            wire = prompt.apply_to_json_schema(wire)
+        return clean_llm_json_schema(wire)
+
+    @property
+    def _args_adapter(  # type: ignore[override]
+        self,
+    ) -> _ToolArgsAdapter[FtsSearchArgs]:
+        """Валидация через тот же `_legacy_schema` (с MaxValue(max_top_k))."""
+        return _ToolArgsAdapter(self._legacy_schema, self.tool_id())
 
     def execute(self, ctx: ToolContext, req: FtsSearchArgs) -> ToolResult:
         del ctx

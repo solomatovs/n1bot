@@ -18,7 +18,6 @@ from collections.abc import Iterable, Iterator, Mapping
 from typing import Any, Self
 
 from boba.patterns import Executor
-from boba.schema.declaration import ObjectSchema
 from boba.tools.domain.errors import (
     ToolExecutionError,
     ToolIdCollisionError,
@@ -123,8 +122,8 @@ class ToolExecutor(Executor[ToolContext, ToolCall, ToolResult]):
         for src in self._sources.values():
             yield from src.tools()
 
-    def definitions(self) -> Iterator[tuple[ToolId, ObjectSchema[dict[str, Any]]]]:
-        """Описания tool'ов для LLM: пары (qualified-id, schema)."""
+    def definitions(self) -> Iterator[tuple[ToolId, dict[str, Any]]]:
+        """Описания tool'ов для LLM: пары (qualified-id, JSON-schema dict)."""
         for tool in self.tools():
             yield tool.tool_id(), tool.definition()
 

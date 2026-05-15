@@ -41,14 +41,17 @@ from boba.tools.domain.ids import (
     ToolName,
     ToolSourceId,
     compose_tool_id,
+    parse_tool_id,
 )
+from boba.tools.domain.llm_schema import clean_llm_json_schema
 from boba.tools.domain.result import (
     JsonResult,
     TextResult,
     ToolResult,
     ToolResultBase,
 )
-from boba.tools.domain.tool import Tool, ToolContext
+from boba.tools.domain.tool import Tool, ToolContext, _ToolArgsAdapter
+from boba.tools.domain.wire import ToolWireSchemaBuilder
 from boba.tools.framework.registry import StaticToolSource, ToolSource
 
 __all__ = ["ToolDecoratorFactory", "tool", "tool_factory"]
@@ -168,7 +171,11 @@ class ToolDecoratorFactory:
 
 
 class DecoratedTool(Tool[dict[str, Any], None]):
-    """Concrete Tool, рождённый @tool. tool_id заполнен через ToolFactory.build."""
+    """Concrete Tool, рождённый @tool. tool_id заполнен через ToolFactory.build.
+
+    Schema приходит готовая из `schema_from_callable` (`@tool`-декоратор),
+    overlay не применяется — `@tool`-функции без config'а.
+    """
 
     def __init__(
         self,
@@ -181,12 +188,25 @@ class DecoratedTool(Tool[dict[str, Any], None]):
         self._tool_id_value = tool_id
         self._schema = schema
         self._injects_ctx = injects_ctx
+        # Tool.__init__ ставит _cfg/_ctx/_source_id; для @tool их нет.
+        source_id, _name = parse_tool_id(tool_id)
+        self._cfg = None  # type: ignore[assignment]
+        self._ctx = None
+        self._source_id = source_id
 
     def tool_id(self) -> ToolId:
         return self._tool_id_value
 
-    def definition(self) -> ObjectSchema[dict[str, Any]]:
-        return self._schema
+    def definition(self) -> dict[str, Any]:
+        wire = ToolWireSchemaBuilder(self._schema).build()
+        return clean_llm_json_schema(wire)
+
+    @property
+    def _args_adapter(  # type: ignore[override]
+        self,
+    ) -> _ToolArgsAdapter[dict[str, Any]]:
+        """Per-instance adapter поверх pre-built schema (не дёргает TArgs-резолв)."""
+        return _ToolArgsAdapter(self._schema, self._tool_id_value)
 
     def execute(
         self,

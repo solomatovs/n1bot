@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from pydantic import BaseModel, ConfigDict
+
 from boba.plugin.prompt import PromptOverlay
 from boba.tool.files._base import FsToolBase
 from boba.tools.domain import TextResult, ToolContext, ToolResult
@@ -11,9 +13,10 @@ from boba.tools.domain import TextResult, ToolContext, ToolResult
 __all__ = ["PwdArgs", "PwdTool", "PwdToolConfig"]
 
 
-@dataclass(frozen=True)
-class PwdArgs:
+class PwdArgs(BaseModel):
     """Вернуть путь текущей директории."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
 
 @dataclass(frozen=True)
