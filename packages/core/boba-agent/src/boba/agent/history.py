@@ -122,15 +122,9 @@ class HistoryWriter(ABC):
         ...
 
 
-_SKIP_RECORD: IsContentDelta = IsContentDelta()
-
-
 class HistoryService(HistoryReader, HistoryWriter, StateChannel, ABC):
-    """Композиция HistoryReader + HistoryWriter + StateChannel.
-
-    Шлюз `record()` применяет общий фильтр (`IsContentDelta` инвертом) ко всем
-    реализациям — chunk-события (ContentDelta) в журнал не попадают независимо
-    от транспорта. Наследники реализуют только `_persist(event)`.
+    """
+    Композиция HistoryReader + HistoryWriter + StateChannel
     """
 
     @classmethod
@@ -138,8 +132,10 @@ class HistoryService(HistoryReader, HistoryWriter, StateChannel, ABC):
         return ChannelId("history")
 
     def record(self, event: AgentEvent) -> None:
-        if _SKIP_RECORD.check(event):
+        """Фильтрует ContentDelta сообщения"""
+        if IsContentDelta().check(event):
             return
+
         self._persist(event)
 
     @abstractmethod
