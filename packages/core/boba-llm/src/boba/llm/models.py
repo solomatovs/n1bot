@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from boba.llm.errors import LLMProtocolError
-from boba.tools.domain import ToolResult
+from boba.tools.domain import ToolResult, ToolSchema
 
 __all__ = [
     "AssistantMessage",
@@ -21,7 +21,6 @@ __all__ = [
     "LLMContext",
     "LLMRequest",
     "LLMToolRequest",
-    "LLMToolSchema",
     "Message",
     "MessageAdapter",
     "MessageId",
@@ -298,17 +297,8 @@ class SamplingParams:
 
 
 @dataclass(frozen=True)
-class LLMToolSchema:
-    """Декларация тула для LLM-провайдера: имя, описание, JSON-schema."""
-
-    name: str
-    description: str
-    parameters_schema: Mapping[str, Any]
-
-
-@dataclass(frozen=True)
 class LLMToolRequest:
-    tools: tuple[LLMToolSchema, ...] = ()
+    tools: tuple[ToolSchema, ...] = ()
     tool_choice: str | None = None
     parallel_tool_calls: bool | None = None
 

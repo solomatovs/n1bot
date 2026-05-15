@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cached_property
 from typing import (
@@ -37,6 +38,7 @@ __all__ = [
     "ToolCall",
     "ToolContext",
     "ToolResult",
+    "ToolSchema",
 ]
 
 TArgs = TypeVar("TArgs", bound=BaseModel)
@@ -99,9 +101,23 @@ class ToolCall:
     arguments: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class ToolSchema:
+    """Декларация tool'а: имя, описание, JSON-schema параметров.
+
+    Живёт в tools-домене как контракт, **исходящий** из tools наружу к
+    LLM-слою. Симметрично к `ToolResult`, который тоже доменная сущность
+    tools, используемая LLM-протоколом (`ToolResultMessage.result`).
+    """
+
+    name: str
+    description: str
+    parameters_schema: Mapping[str, Any]
+
+
 class Tool(
     Executor[ToolContext, TArgs, ToolResult],
-    Definition[dict[str, Any]],
+    Definition[ToolSchema],
     Generic[TArgs, TConfig],
 ):
     """Базовый класс tool; application-singleton.
@@ -153,18 +169,27 @@ class Tool(
     def source_id(self) -> ToolSourceId:
         return self._source_id
 
-    def definition(self) -> dict[str, Any]:
-        """JSON-schema параметров (для LLM): `model_json_schema()` + cfg.prompt overlay.
+    def definition(self) -> ToolSchema:
+        """`ToolSchema` инструмента: name + description + parameters_schema.
 
         TArgs резолвится из объявления `Tool[XArgs, XConfig]` через
         `__orig_bases__`. `cfg.prompt` (если реализует `JsonSchemaOverlay`)
-        патчит итоговый dict через `apply_to_json_schema`.
+        патчит JSON-schema через `apply_to_json_schema`. Полученная схема
+        нормализуется `clean_llm_json_schema` (инлайн `$defs`/`$ref`, дроп
+        `title`) и упаковывается: `description` переезжает в одноимённое
+        поле `ToolSchema`, остальное идёт в `parameters_schema`.
         """
         raw = self._resolve_args_model().model_json_schema()
         prompt = getattr(self._cfg, "prompt", None)
         if isinstance(prompt, JsonSchemaOverlay):
             raw = prompt.apply_to_json_schema(raw)
-        return clean_llm_json_schema(raw)
+        parameters = clean_llm_json_schema(raw)
+        description = str(parameters.pop("description", ""))
+        return ToolSchema(
+            name=self.tool_id(),
+            description=description,
+            parameters_schema=parameters,
+        )
 
     @classmethod
     def _resolve_args_model(cls) -> type[BaseModel]:
@@ -201,11 +226,15 @@ class Tool(
         args_model = self._resolve_args_model()
         try:
             return args_model.model_validate(  # type: ignore[return-value]
-                raw, context=self._validation_context(),
+                raw,
+                context=self._validation_context(),
             )
         except ValidationError as e:
             raise _pydantic_error_to_tool_error(
-                e, self.tool_id(), self.definition(), raw,
+                e,
+                self.tool_id(),
+                self.definition(),
+                raw,
             ) from e
 
     def _validation_context(self) -> dict[str, Any]:
@@ -222,7 +251,7 @@ class Tool(
 def _pydantic_error_to_tool_error(
     err: ValidationError,
     tool_id: ToolId,
-    wire_schema: dict[str, Any],
+    wire_schema: ToolSchema,
     raw: dict[str, Any],
 ) -> InvalidToolArgumentError | InvalidSchemaInvariantError:
     """Pydantic `ValidationError` → `InvalidToolArgument` / `InvalidSchemaInvariant`.
@@ -230,7 +259,7 @@ def _pydantic_error_to_tool_error(
     Берётся первая ошибка из `err.errors()` и маппится:
     - `loc == ()` (root-level validator) → `InvalidSchemaInvariantError`;
     - `loc == (str_field, ...)` → `InvalidToolArgumentError` с
-      `expected = schema["properties"][field]` и
+      `expected = parameters_schema["properties"][field]` и
       `received = raw[field]`;
     - кейсы со странным `loc` (не строка) → `InvalidSchemaInvariantError`.
     """
@@ -249,7 +278,7 @@ def _pydantic_error_to_tool_error(
         return InvalidSchemaInvariantError(tool_id, msg)
 
     field_path = ".".join(str(p) for p in loc)
-    props = wire_schema.get("properties", {}) if isinstance(wire_schema, dict) else {}
+    props = wire_schema.parameters_schema.get("properties", {})
     expected = props.get(head) if isinstance(props, dict) else None
     received = raw.get(head)
     return InvalidToolArgumentError(

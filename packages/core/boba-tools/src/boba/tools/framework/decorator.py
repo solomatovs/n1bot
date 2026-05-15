@@ -50,7 +50,7 @@ from boba.tools.domain.result import (
     ToolResult,
     ToolResultBase,
 )
-from boba.tools.domain.tool import Tool, ToolContext
+from boba.tools.domain.tool import Tool, ToolContext, ToolSchema
 from boba.tools.framework.from_callable import callable_to_args_model
 from boba.tools.framework.registry import StaticToolSource, ToolSource
 
@@ -213,11 +213,17 @@ class DecoratedTool(Tool[BaseModel, None]):
     def _instance_args_model(self) -> type[BaseModel]:
         return self._args_model_value
 
-    def definition(self) -> dict[str, Any]:
+    def definition(self) -> ToolSchema:
         raw = self._args_model_value.model_json_schema()
         if self._description:
             raw["description"] = self._description
-        return clean_llm_json_schema(raw)
+        parameters = clean_llm_json_schema(raw)
+        description = str(parameters.pop("description", ""))
+        return ToolSchema(
+            name=self._tool_id_value,
+            description=description,
+            parameters_schema=parameters,
+        )
 
     def _parse_args(self, raw: dict[str, Any]) -> Any:  # type: ignore[override]
         try:

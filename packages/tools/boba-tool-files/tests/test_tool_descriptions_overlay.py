@@ -48,7 +48,7 @@ def test_tool_description_default_when_no_overlay(
 ):
     cat = _cat_tool(monkeypatch, tmp_path)
     schema = cat.definition()
-    assert "Прочитать строки" in schema["description"]
+    assert "Прочитать строки" in schema.description
 
 
 def test_tool_description_overridden_via_toml(
@@ -60,7 +60,7 @@ def test_tool_description_overridden_via_toml(
         '\n[tool.files.cat.prompt]\ndescription = "OPERATOR override."\n',
     )
     schema = cat.definition()
-    assert schema["description"] == "OPERATOR override."
+    assert schema.description == "OPERATOR override."
 
 
 def test_param_description_overridden_via_toml(
@@ -72,7 +72,7 @@ def test_param_description_overridden_via_toml(
         '\n[tool.files.cat.prompt.fields]\npath = "OPERATOR path."\n',
     )
     schema = cat.definition()
-    props = schema["properties"]
+    props = schema.parameters_schema["properties"]
     assert props["path"]["description"] == "OPERATOR path."
     assert "utf-8" in props["encoding"]["description"]
 
@@ -101,5 +101,5 @@ def test_cat_tool_can_be_instantiated_directly():
     )
     cat = CatTool(cfg, _ext_ctx(), ToolSourceId("test"))
     schema = cat.definition()
-    assert schema["description"] == "test"
-    assert schema["properties"]["path"]["description"] == "test path"
+    assert schema.description == "test"
+    assert schema.parameters_schema["properties"]["path"]["description"] == "test path"

@@ -172,6 +172,7 @@ class JsonLinesHistoryService(HistoryService):
                 stripped = line.strip()
                 if not stripped:
                     continue
+
                 try:
                     yield AgentEventAdapter.validate_json(stripped)
                 except (json.JSONDecodeError, ValidationError) as exc:

@@ -8,7 +8,6 @@ from typing import Any
 from boba.llm.models import (
     AssistantMessage,
     LLMRequest,
-    LLMToolSchema,
     Message,
     SystemMessage,
     ToolResultMessage,
@@ -16,7 +15,7 @@ from boba.llm.models import (
 )
 from boba.patterns import Converter
 from boba.provider.openai.visitor import OpenAIChatVisitor
-from boba.tools.domain import ToolResultVisitor
+from boba.tools.domain import ToolResultVisitor, ToolSchema
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
     ChatCompletionMessageParam,
@@ -27,10 +26,10 @@ from openai.types.chat import (
 )
 
 
-class ToOpenAIToolConverter(Converter[LLMToolSchema, ChatCompletionToolParam]):
-    """Конвертация LLMToolSchema → OpenAI tools."""
+class ToOpenAIToolConverter(Converter[ToolSchema, ChatCompletionToolParam]):
+    """Конвертация ToolSchema → OpenAI tools."""
 
-    def convert(self, value: LLMToolSchema) -> ChatCompletionToolParam:
+    def convert(self, value: ToolSchema) -> ChatCompletionToolParam:
         return {
             "type": "function",
             "function": {
