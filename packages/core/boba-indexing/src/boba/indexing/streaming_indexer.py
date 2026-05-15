@@ -58,6 +58,7 @@ from boba.indexing.events import (
     SourceFailed,
     SourceIndexed,
     SourceSkippedUnchanged,
+    new_run_id,
 )
 from boba.indexing.index_views import IndexQuery, IndexSink
 from boba.indexing.indexer import Indexer, IndexerConfig
@@ -112,7 +113,7 @@ class StreamingIndexer(Indexer[ReqT, T]):
         ctx: PipelineContext,
         config: IndexerConfig[T],
     ) -> Iterator[IndexEvent]:
-        run_id = RunId.new()
+        run_id = new_run_id()
         run_start = time.time()
         stats = IndexStatsBuilder()
         touched_sources: set[SourceId] = set()

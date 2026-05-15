@@ -48,8 +48,8 @@ class PlainTextReader(Reader[str]):
             text = raw.decode(self._encoding)
         except UnicodeDecodeError as e:
             raise IncompatibleContentError(
-                reader_id=self.READER_ID.to_wire(),
-                canonical_id=value.source_id.to_wire(),
+                reader_id=self.READER_ID,
+                canonical_id=value.source_id,
                 reason=f"cannot decode with {self._encoding!r}: {e}",
             ) from e
 

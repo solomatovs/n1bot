@@ -87,7 +87,7 @@ class IncrementalCleanup(CleanupStrategy):
             Lt(TrackingKeys.UPDATED_AT, ctx.run_start),
             In(
                 TrackingKeys.SOURCE_ID,
-                [s.to_wire() for s in ctx.touched_sources],
+                list(ctx.touched_sources),
             ),
         ])
         return ctx.query.clean(where=where)

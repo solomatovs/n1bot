@@ -117,7 +117,7 @@ class ConfluencePageDownloadTool(
                 for raw in transport.stream(pctx, [http_req]):
                     decoded = decoder.convert(raw)
                     title = decoded.metadata.get(ReaderKeys.PAGE_TITLE) or ""
-                    url = decoded.source_id.to_wire()
+                    url = decoded.source_id
                     space_key = decoded.metadata.get(ConfluenceKeys.SPACE_KEY) or ""
                     header = self._html_header(
                         url=url,

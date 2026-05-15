@@ -6,35 +6,32 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-
-from boba.patterns import StrId
+from typing import NewType
 
 __all__ = ["CollectionId", "NamespaceId", "PipelineContext", "PipelineId"]
 
 
-class PipelineId(StrId):
-    """Идентификатор именованного pipeline'а из конфига."""
+PipelineId = NewType("PipelineId", str)
+"""Идентификатор именованного pipeline'а из конфига."""
 
 
-class CollectionId(StrId):
-    """
-    Идентификатор коллекции в векторной базе (Chroma/Qdrant collection).
+CollectionId = NewType("CollectionId", str)
+"""Идентификатор коллекции в векторной базе (Chroma/Qdrant collection).
 
-    Бэкэнд-уровневый scope: всё, что лежит в одной collection, физически
-    хранится вместе. На один backend — много коллекций.
-    """
+Бэкэнд-уровневый scope: всё, что лежит в одной collection, физически
+хранится вместе. На один backend — много коллекций.
+"""
 
 
-class NamespaceId(StrId):
-    """
-    Логический scope для view-учёта внутри одной коллекции.
+NamespaceId = NewType("NamespaceId", str)
+"""Логический scope для view-учёта внутри одной коллекции.
 
-    Namespace — business-уровневая изоляция: несколько view-импл'ов
-    (IndexQuery+IndexSink) могут работать на одной collection, но видеть
-    только записи своего namespace. Реализуется как scope-фильтр на
-    каждом query/write — конкретное поле (namespace, tag, tenant_id, ...)
-    выбирает impl.
-    """
+Namespace — business-уровневая изоляция: несколько view-импл'ов
+(IndexQuery+IndexSink) могут работать на одной collection, но видеть
+только записи своего namespace. Реализуется как scope-фильтр на
+каждом query/write — конкретное поле (namespace, tag, tenant_id, ...)
+выбирает impl.
+"""
 
 
 @dataclass(frozen=True)

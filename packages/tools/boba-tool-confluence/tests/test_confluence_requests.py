@@ -50,14 +50,14 @@ def test_pages_source_sets_viewpage_source_id_and_rest_url():
     assert all("expand=body.export_view" in r.url for r in requests)
     # source_id = stable viewpage URL — НЕ равен r.url
     assert (
-        requests[0].source_id.to_wire()
+        requests[0].source_id
         == "https://confl.test/pages/viewpage.action?pageId=111"
     )
     assert (
-        requests[1].source_id.to_wire()
+        requests[1].source_id
         == "https://confl.test/pages/viewpage.action?pageId=222"
     )
-    assert all(r.source_id.to_wire() != r.url for r in requests)
+    assert all(r.source_id != r.url for r in requests)
     # metadata содержит structured-данные для kb_search
     assert all(r.metadata.get(ConfluenceKeys.PAGE_ID) for r in requests)
     assert all(r.metadata.get(ConfluenceKeys.HOST) == "confl.test" for r in requests)
@@ -125,7 +125,7 @@ def test_space_source_stream_emits_one_request_per_page(monkeypatch):
     r = requests[0]
     assert "rest/api/content/777" in r.url
     assert (
-        r.source_id.to_wire()
+        r.source_id
         == "https://confl.test/pages/viewpage.action?pageId=777"
     )
 
@@ -161,7 +161,7 @@ def test_pages_request_url_includes_expand_for_body_format():
     assert "expand=body.storage" in req.url
     # source_id не зависит от body_format — стабилен
     assert (
-        req.source_id.to_wire()
+        req.source_id
         == "https://confl.test/pages/viewpage.action?pageId=1"
     )
 
@@ -174,7 +174,7 @@ def test_request_url_strips_trailing_slash_in_base_url():
     )
     req = next(iter(src.stream(_ctx())))
     assert "//rest/api" not in req.url
-    assert "//pages/viewpage" not in req.source_id.to_wire()
+    assert "//pages/viewpage" not in req.source_id
 
 
 def test_metadata_carries_page_id_and_host():

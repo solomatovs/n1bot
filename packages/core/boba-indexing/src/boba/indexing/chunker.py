@@ -7,18 +7,20 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import TypeVar
 
+from typing import NewType
+
 from boba.indexing.chunks import Chunk
 from boba.indexing.context import PipelineContext
 from boba.indexing.sections import Section
-from boba.patterns import StreamTransformer, StrId
+from boba.patterns import StreamTransformer
 
 __all__ = ["Chunker", "ChunkerId"]
 
 T = TypeVar("T")
 
 
-class ChunkerId(StrId):
-    """Идентификатор Chunker-реализации (например 'sliding', 'heading')"""
+ChunkerId = NewType("ChunkerId", str)
+"""Идентификатор Chunker-реализации (например 'sliding', 'heading')."""
 
 
 class Chunker(

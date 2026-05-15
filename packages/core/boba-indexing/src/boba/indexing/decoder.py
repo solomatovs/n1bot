@@ -21,14 +21,16 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
+from typing import NewType
+
 from boba.indexing.raw_document import RawDocument
-from boba.patterns import Converter, StateFull, StrId
+from boba.patterns import Converter, StateFull
 
 __all__ = ["Decoder", "DecoderId", "PassThroughDecoder"]
 
 
-class DecoderId(StrId):
-    """Идентификатор Decoder-реализации"""
+DecoderId = NewType("DecoderId", str)
+"""Идентификатор Decoder-реализации."""
 
 
 class Decoder(

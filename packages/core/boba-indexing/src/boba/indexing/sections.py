@@ -26,12 +26,11 @@ Format-specific типы (markdown-таблицы, markdown-списки, code-f
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import ClassVar, Generic, TypeVar
+from typing import ClassVar, Generic, NewType, TypeVar
 
 from boba.indexing.format_plan import FormatBlock, FormatPlan
 from boba.indexing.location import ChunkLocation
 from boba.indexing.metadata import Metadata, MetadataKey
-from boba.patterns import StrId
 
 __all__ = [
     "HeadingSection",
@@ -44,8 +43,8 @@ __all__ = [
 T = TypeVar("T")
 
 
-class SourceId(StrId):
-    """Стабильный canonical id документа-источника (URL, fs-path, doc-key)."""
+SourceId = NewType("SourceId", str)
+"""Стабильный canonical id документа-источника (URL, fs-path, doc-key)."""
 
 
 class SectionKeys:
