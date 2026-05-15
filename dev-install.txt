@@ -4,8 +4,7 @@
 
 # core/foundation
 -e ./packages/core/boba-patterns
--e ./packages/core/boba-schema
--e ./packages/core/boba-config
+-e ./packages/core/boba-settings
 -e ./packages/core/boba-plugin
 -e ./packages/core/boba-workspace
 -e ./packages/core/boba-indexing
@@ -14,9 +13,6 @@
 
 # agent runtime
 -e ./packages/core/boba-agent
-
-# infra: config-source impls
--e ./packages/infra/config/boba-config-toml
 
 # infra: llm provider impls
 -e ./packages/infra/llm/boba-openai
