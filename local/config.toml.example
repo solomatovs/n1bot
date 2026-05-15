@@ -56,6 +56,9 @@ app_root = "./local/chainlit"
 # upload_accept = ["text/*", "application/pdf"]
 
 # --- tool-плагины (entry_points discovery; enable=false => плагин пропускается) ---
+# env-конвенции:
+#   BOBA_TOOL__<PLUGIN_NAME>__<FIELD>=...
+# Например: BOBA_TOOL__CONFLUENCE__BASE_URL=https://confluence.example.com
 
 # kb_search + kb_list_collections (read-only)
 [tool.chromadb]
@@ -102,6 +105,7 @@ auth_token = ""
 auth_method = "pat"          # pat | basic
 auth_user = ""               # только для basic-auth
 timeout_sec = 30.0
+ssl_verify = false
 body_format = "view"         # view | export_view | storage
 # [tool.confluence.confluence_search]
 # description = ""

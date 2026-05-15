@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
-from typing import Annotated, ClassVar
+from typing import ClassVar
+
+from pydantic import Field
 
 from boba.plugin import ExtensionContext, Plugin
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion.types import ParseCsvList
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
 from boba.tool.html.outline import HtmlOutlineTool, HtmlOutlineToolConfig
 from boba.tool.html.section import HtmlSectionTool, HtmlSectionToolConfig
 from boba.tools.domain import Tool, ToolSourceId
@@ -17,21 +18,32 @@ from boba.tools.framework import StaticToolSource, ToolSource
 __all__ = ["HtmlPlugin", "HtmlPluginConfig"]
 
 
-@dataclass(frozen=True)
-class HtmlPluginConfig:
+class HtmlPluginConfig(BobaFlatSettings):
     """
-    HTML multi-tool plugin: outline + section
-    Без connection-полей — работает по workspace
+    HTML multi-tool plugin: outline + section.
+    Без connection-полей — работает по workspace.
     """
 
-    html_outline: PromptOverlay = field(default_factory=PromptOverlay)
-    html_section: PromptOverlay = field(default_factory=PromptOverlay)
-    tools: Annotated[
-        list[str] | None,
-        "Allowlist tool-имён внутри плагина: None/пустой = все, иначе только "
-        "перечисленные ('html_outline', 'html_section').",
-        ParseCsvList(),
-    ] = None
+    model_config = BobaSettingsConfigDict(
+        case_sensitive=False,
+        extra="forbid",
+        boba_env_prefix="BOBA_TOOL__HTML__",
+        boba_toml_section="tool.html",
+    )
+
+    enable: bool = Field(
+        default=False,
+        description="Подключить плагин в discovery.",
+    )
+    html_outline: PromptOverlay = Field(default_factory=PromptOverlay)
+    html_section: PromptOverlay = Field(default_factory=PromptOverlay)
+    tools: StringList | None = Field(
+        default=None,
+        description=(
+            "Allowlist tool-имён внутри плагина: None/пустой = все, иначе "
+            "только перечисленные ('html_outline', 'html_section')."
+        ),
+    )
 
 
 class HtmlPlugin(Plugin[HtmlPluginConfig, ToolSource]):

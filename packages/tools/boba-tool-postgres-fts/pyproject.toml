@@ -13,6 +13,7 @@ dependencies = [
     "boba-config",
     "boba-plugin",
     "boba-tools",
+    "boba-settings",
     "boba-db-postgres",
 ]
 

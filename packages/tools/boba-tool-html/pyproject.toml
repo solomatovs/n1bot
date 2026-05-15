@@ -14,6 +14,7 @@ dependencies = [
     "boba-plugin",
     "boba-workspace",
     "boba-tools",
+    "boba-settings",
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
 ]

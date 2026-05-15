@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Self
 
@@ -47,7 +47,7 @@ class BobaSettingsConfigDict(SettingsConfigDict, total=False):
     boba_env_prefix: str
     boba_env_delimiter: str
     boba_toml_path_env: str
-    boba_toml_section: str
+    boba_toml_section: str | Sequence[str]
     boba_cli: bool
 
 
@@ -103,21 +103,36 @@ class PrefixedFlatEnvSource(PydanticBaseSettingsSource):
 
 
 class SectionTomlSource(TomlConfigSettingsSource):
-    """`TomlConfigSettingsSource`, читающий только заданную top-level секцию."""
+    """`TomlConfigSettingsSource`, читающий только заданную TOML-секцию.
+
+    Секция задаётся:
+      * строкой с точкой: `"tool.chromadb"` → `[tool.chromadb]`;
+      * последовательностью сегментов: `("tool", "chromadb")` — эквивалент.
+    """
 
     def __init__(
         self,
         settings_cls: type[BaseSettings],
         toml_file: Path | str,
-        section: str,
+        section: str | Sequence[str],
     ) -> None:
-        self._section = section
+        if isinstance(section, str):
+            parts: tuple[str, ...] = tuple(s for s in section.split(".") if s)
+        else:
+            parts = tuple(section)
+        if not parts:
+            raise ValueError("SectionTomlSource: section must be non-empty")
+        self._section_path = parts
         super().__init__(settings_cls, toml_file=toml_file)
 
     def _read_file(self, file_path: Path) -> dict[str, Any]:
         full = super()._read_file(file_path)
-        section = full.get(self._section, {})
-        return section if isinstance(section, dict) else {}
+        node: Any = full
+        for part in self._section_path:
+            if not isinstance(node, Mapping):
+                return {}
+            node = node.get(part, {})
+        return node if isinstance(node, dict) else {}
 
 
 def _as_submodel(annotation: Any) -> type[BaseModel] | None:

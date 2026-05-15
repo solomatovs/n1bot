@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable, Iterable
-from typing import Any, Self, get_args, get_origin
+from typing import Any, Self
 
 from boba.agent.events import AgentEvent
 from boba.agent.history import HistoryService, HistoryWriter, InMemoryHistoryService
@@ -32,14 +32,13 @@ from boba.agent.turn.reducers import (
     TurnReducer,
 )
 from boba.config.bundle import ConfigBundle
-from boba.config.path import ConfigSource
 from boba.llm.builder import LLMPipeline
 from boba.patterns import (
     StreamSource,
     StreamSourceChainBuilder,
     StreamSourceLoop,
 )
-from boba.plugin import ExtensionContext, Plugin, config_path, is_enabled
+from boba.plugin import ExtensionContext, Plugin, is_enabled, resolve_config_type
 from boba.plugin.discovery import DEFAULT_PLUGIN_ENTRY_POINT_GROUP, discover_plugins
 from boba.tools.domain import ToolSourceId
 from boba.tools.framework import (
@@ -59,7 +58,7 @@ class AgentBuilder:
         self._inline_factories: list[ToolDecoratorFactory] = []
         self._bundle: ConfigBundle | None = None
         self._plugin_entries: list[
-            tuple[type[Plugin[Any, ToolSource]], ConfigSource | Any | None]
+            tuple[type[Plugin[Any, ToolSource]], Any | None]
         ] = []
         self._discover_groups: list[str] = []
         self._extensions: dict[type, object] = {}
@@ -139,15 +138,14 @@ class AgentBuilder:
         self,
         plugin: type[Plugin[Any, ToolSource]] | str,
         *,
-        config: ConfigSource | Any | None = None,
+        config: Any | None = None,
     ) -> Self:
         """Добавить tool-плагин.
 
         `plugin` — класс `Plugin` или строка `module:attr`.
         `config`:
         - готовый DTO — пробрасывается as-is;
-        - `ConfigSource` — материализуется как локальный bundle;
-        - `None` — материализуется из `with_config_bundle(...)`.
+        - `None` — материализуется через `cfg_type.load()` (env + TOML).
         """
         self._plugin_entries.append((self._resolve_plugin(plugin), config))
         return self
@@ -264,6 +262,7 @@ class AgentBuilder:
         """Кешированный MessageService: пользовательский либо InMemoryMessageService()."""  # noqa: E501
         if self._resolved_message_service is not None:
             return self._resolved_message_service
+
         self._resolved_message_service = (
             self._message_service or InMemoryMessageService()
         )
@@ -273,6 +272,7 @@ class AgentBuilder:
         """Кешированный HistoryService: пользовательский либо InMemoryHistoryService()."""  # noqa: E501
         if self._resolved_history_service is not None:
             return self._resolved_history_service
+
         self._resolved_history_service = (
             self._history_service or InMemoryHistoryService()
         )
@@ -305,20 +305,10 @@ class AgentBuilder:
             )
             raise ValueError(msg)
 
-        shared_bundle = self._bundle
-
         discovered: list[tuple[type[Plugin[Any, ToolSource]], None]] = []
-        if self._discover_groups:
-            if shared_bundle is None:
-                msg = (
-                    "AgentBuilder.build: discovery/plugin без локального config "
-                    "требует ConfigBundle — задайте через .with_config_bundle(...)"
-                )
-                raise ValueError(msg)
-            for group in self._discover_groups:
-                for cls in discover_plugins(group):
-                    if is_enabled(shared_bundle, config_path(cls.NAME)):
-                        discovered.append((cls, None))
+        for group in self._discover_groups:
+            for cls in discover_plugins(group):
+                discovered.append((cls, None))
 
         sources: list[ToolSource] = []
         if self._inline_factories:
@@ -331,7 +321,9 @@ class AgentBuilder:
             )
         ctx = ExtensionContext(self._extensions)
         for plugin_cls, config in (*self._plugin_entries, *discovered):
-            cfg = self._materialize_plugin_config(plugin_cls, config, shared_bundle)
+            cfg = self._materialize_plugin_config(plugin_cls, config)
+            if not is_enabled(cfg):
+                continue
             sources.extend(plugin_cls.build(cfg, ctx))
         self._resolved_tool_executor = ToolExecutor.from_sources(sources)
         return self._resolved_tool_executor
@@ -356,46 +348,15 @@ class AgentBuilder:
     @staticmethod
     def _materialize_plugin_config(
         plugin_cls: type[Plugin[Any, ToolSource]],
-        config: ConfigSource | Any | None,
-        shared_bundle: ConfigBundle | None,
+        config: Any | None,
     ) -> Any:
-        """`config` → DTO; None → shared bundle, ConfigSource → локальный bundle."""
-        if config is None:
-            if shared_bundle is None:
-                msg = (
-                    f"AgentBuilder: плагин "
-                    f"{plugin_cls.NAME!r} вызван без config, "
-                    f"но ConfigBundle не задан через .with_config_bundle(...)"
-                )
-                raise ValueError(msg)
-            return shared_bundle.get(
-                AgentBuilder._resolve_plugin_config_type(plugin_cls),
-                config_path(plugin_cls.NAME),
-            )
-        if isinstance(config, ConfigSource):
-            return ConfigBundle.from_sources([config]).get(
-                AgentBuilder._resolve_plugin_config_type(plugin_cls),
-                config_path(plugin_cls.NAME),
-            )
-        return config
-
-    @staticmethod
-    def _resolve_plugin_config_type(
-        plugin_cls: type[Plugin[Any, ToolSource]],
-    ) -> type:
-        """Извлечь TConfig из объявления `class XPlugin(Plugin[XConfig, ...])`."""
-        for klass in plugin_cls.__mro__:
-            for base in getattr(klass, "__orig_bases__", ()):
-                if get_origin(base) is Plugin:
-                    targs = get_args(base)
-                    if targs and isinstance(targs[0], type):
-                        return targs[0]
-        msg = (
-            f"{plugin_cls.__name__}: не удалось определить TConfig; "
-            f"плагин должен наследовать `Plugin[XConfig, XToolSource]` "
-            f"с конкретным dataclass-типом."
-        )
-        raise TypeError(msg)
+        """`config` → DTO; None → `cfg_type.load()` (env + TOML)."""
+        if config is not None:
+            return config
+        cfg_type = resolve_config_type(plugin_cls)
+        if hasattr(cfg_type, "load"):
+            return cfg_type.load()
+        return cfg_type()  # type: ignore[call-arg]
 
     @staticmethod
     def _build_chain(
