@@ -12,22 +12,18 @@ Plugin — структурный протокол, дженерик по `TConf
 например, MCP-плагин — по одному `ToolSource` на сервер
 
 `TConfig` DTO резолвится из дженерик-параметра базы `Plugin[TConfig, ...]`
-материализуется через `ConfigBundle.get`.
-
-Плагин строит схему TConfig через аннотации DTO:
- - `Annotated[...]` блоки
- - `@schema(invariants=...)`
+и материализуется напрямую через `cfg_type.load()`
+(`BobaFlatSettings`-конвенция: env-prefix + TOML-секция задаются в
+`model_config = BobaSettingsConfigDict(...)`).
 
 Соглашения плагинов:
 
   * `tool.<NAME>` - это секция для конфигурирования плагина, см. `def config_path()`
 
-  * Каждый плагин включается отдельно и управляется флагом `enable` из конфигураций
-    У плагина всегда есть собственная секция конфига - `tool.<NAME>`,
-    где обязательно будет произведена попытка считать флаг `enable`
-    Если этот флаг true, значит плагин включен и работает, иначе нет
-    `enable` не объявляется в DTO конфига плагина, попытка его получить происходит
-    в инфраструктурном слое
+  * Каждый плагин включается отдельно и управляется флагом `enable` из
+    собственного конфига; для плагина с `enable=False` — `build()` не зовётся,
+    а сам инстанс DTO может иметь незаполненные обязательные поля (см.
+    `@model_validator(mode='after')` в конкретном Plugin-DTO).
 """
 
 from __future__ import annotations
@@ -36,15 +32,12 @@ import typing
 from collections.abc import Iterable, Mapping
 from typing import Any, ClassVar, Protocol, TypeVar, cast, runtime_checkable
 
-from boba.config.bundle import ConfigBundle
-from boba.config.path import ConfigPath, NameSegment
-from boba.schema.coercion import ParseBool
+from pydantic_settings import BaseSettings
 
 __all__ = [
     "ExtensionContext",
     "MissingExtensionError",
     "Plugin",
-    "config_path",
     "install_plugins",
     "is_enabled",
     "resolve_config_type",
@@ -121,20 +114,9 @@ class Plugin(Protocol[TConfig_contra, TToolSource_co]):
     ) -> Iterable[TToolSource_co]: ...
 
 
-def config_path(plugin_name: str) -> ConfigPath:
-    """Convention: каждый плагин монтируется под `tool.<name>`."""
-    return ConfigPath.parse("tool").join(NameSegment(plugin_name))
-
-
-def is_enabled(bundle: ConfigBundle, mount: ConfigPath) -> bool:
-    """Прочитать `<mount>.enable` из FlatConfig. Default: false."""
-    lookup = bundle.flat.lookup(mount.join(NameSegment("enable")))
-    if not lookup.is_found():
-        return False
-    try:
-        return ParseBool().apply(lookup.value())
-    except Exception:
-        return False
+def is_enabled(cfg: Any) -> bool:
+    """Прочитать `enable` поле из конфига; default False, если поля нет."""
+    return bool(getattr(cfg, "enable", False))
 
 
 def resolve_config_type(plugin_cls: type[Plugin[Any, Any]]) -> type:
@@ -168,20 +150,25 @@ def resolve_config_type(plugin_cls: type[Plugin[Any, Any]]) -> type:
 
 
 def install_plugins(
-    bundle: ConfigBundle,
     plugin_classes: Iterable[type[Plugin[Any, T]]],
     ctx: ExtensionContext,
 ) -> Iterable[T]:
     """
-    Цикл установки плагина: convention-mount → enable → materialize → build.
+    Цикл установки плагинов: load конфига → enable → build.
 
-    Плагины с `enable != true` пропускаются
-    их DTO даже не материализуется
+    Плагины с `enable=False` пропускаются — `build` не вызывается.
+    Конфиги читаются через `cfg_type.load()` (env + TOML по
+    `BobaSettingsConfigDict` плагина).
     """
     for plugin_cls in plugin_classes:
-        p = config_path(plugin_cls.NAME)
-        if not is_enabled(bundle, p):
-            continue
-
         cfg_type = resolve_config_type(plugin_cls)
-        yield from plugin_cls.build(bundle.get(cfg_type, p), ctx)
+        if not issubclass(cfg_type, BaseSettings):
+            msg = (
+                f"{plugin_cls.__name__}: TConfig должен наследоваться "
+                f"от BaseSettings (`BobaFlatSettings`); получено {cfg_type!r}"
+            )
+            raise TypeError(msg)
+        cfg = cfg_type.load() if hasattr(cfg_type, "load") else cfg_type()  # type: ignore[call-arg]
+        if not is_enabled(cfg):
+            continue
+        yield from plugin_cls.build(cfg, ctx)

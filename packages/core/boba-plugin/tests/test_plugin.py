@@ -1,46 +1,41 @@
-"""Plugin Protocol + helpers (config_path, is_enabled, install_plugins,
-resolve_config_type)."""
+"""Plugin Protocol + helpers (is_enabled, install_plugins, resolve_config_type)."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
-from typing import Annotated, Any, ClassVar
+from typing import Any, ClassVar
 
 import pytest
+from pydantic import Field
 
-from boba.config.bundle import ConfigBundle
-from boba.config.path import ConfigPath
-from boba.config.source.dict import DictSource
 from boba.plugin import (
     ExtensionContext,
     MissingExtensionError,
     Plugin,
-    config_path,
     install_plugins,
     is_enabled,
     resolve_config_type,
 )
-from boba.schema.coercion import (
-    Default,
-    ParseBool,
-    ParseInt,
-    ParseString,
-    Required,
-)
-from boba.schema.value import BoolValue, IntValue, StringValue
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 
 
-@dataclass(frozen=True)
-class _SearchCfg:
-    base_url: Annotated[str, "URL поиска.", Required(), ParseString()]
-    limit: Annotated[int, "Лимит.", ParseInt()] = 10
+class _SearchCfg(BobaFlatSettings):
+    model_config = BobaSettingsConfigDict(
+        case_sensitive=False,
+        extra="forbid",
+        boba_env_prefix="BOBA_TOOL__SEARCH__",
+        boba_toml_section="tool.search",
+    )
+
+    enable: bool = False
+    base_url: str = Field(default="", description="URL поиска.")
+    limit: int = Field(default=10, description="Лимит.")
 
 
-@dataclass(frozen=True)
 class _BuiltSearch:
-    cfg: _SearchCfg
-    ctx: ExtensionContext
+    def __init__(self, cfg: _SearchCfg, ctx: ExtensionContext) -> None:
+        self.cfg = cfg
+        self.ctx = ctx
 
 
 class _SearchPlugin(Plugin[_SearchCfg, _BuiltSearch]):
@@ -55,51 +50,24 @@ class _SearchPlugin(Plugin[_SearchCfg, _BuiltSearch]):
         yield _BuiltSearch(cfg=cfg, ctx=ctx)
 
 
-# mount path / enable
+# is_enabled
 
 
-def test_mount_path_for_uses_tool_prefix():
-    assert config_path("search") == ConfigPath.parse("tool.search")
-    assert config_path("confluence_page") == ConfigPath.parse(
-        "tool.confluence_page",
-    )
+def test_is_enabled_reads_enable_attribute():
+    cfg = _SearchCfg(enable=True)
+    assert is_enabled(cfg) is True
 
 
-def test_is_enabled_default_false_when_absent():
-    bundle = ConfigBundle.from_sources([DictSource({})])
-    assert is_enabled(bundle, ConfigPath.parse("tool.search")) is False
+def test_is_enabled_default_false_when_attribute_missing():
+    class _NoEnable:
+        pass
+
+    assert is_enabled(_NoEnable()) is False
 
 
-def test_is_enabled_true_when_explicit_true():
-    bundle = ConfigBundle.from_sources(
-        [DictSource({ConfigPath.parse("tool.search.enable"): BoolValue(True)})],
-    )
-    assert is_enabled(bundle, ConfigPath.parse("tool.search")) is True
-
-
-def test_is_enabled_false_when_explicit_false():
-    bundle = ConfigBundle.from_sources(
-        [DictSource({ConfigPath.parse("tool.search.enable"): BoolValue(False)})],
-    )
-    assert is_enabled(bundle, ConfigPath.parse("tool.search")) is False
-
-
-def test_is_enabled_parses_string_true():
-    bundle = ConfigBundle.from_sources(
-        [DictSource({ConfigPath.parse("tool.search.enable"): StringValue("true")})],
-    )
-    assert is_enabled(bundle, ConfigPath.parse("tool.search")) is True
-
-
-def test_is_enabled_garbage_string_treated_as_false():
-    bundle = ConfigBundle.from_sources(
-        [
-            DictSource(
-                {ConfigPath.parse("tool.search.enable"): StringValue("not-a-bool")},
-            ),
-        ],
-    )
-    assert is_enabled(bundle, ConfigPath.parse("tool.search")) is False
+def test_is_enabled_false_when_attribute_false():
+    cfg = _SearchCfg(enable=False)
+    assert is_enabled(cfg) is False
 
 
 # resolve_config_type
@@ -137,75 +105,61 @@ def test_resolve_config_type_raises_when_tconfig_is_typevar():
 # install_plugins
 
 
-def test_install_plugins_skips_disabled():
-    bundle = ConfigBundle.from_sources([DictSource({})])
+def test_install_plugins_skips_disabled(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("BOBA_TOOL__SEARCH__ENABLE", raising=False)
+    monkeypatch.delenv("BOBA_CONFIG_PATH", raising=False)
     ctx = ExtensionContext()
-    artifacts = list(install_plugins(bundle, [_SearchPlugin], ctx))
+    artifacts = list(install_plugins([_SearchPlugin], ctx))
     assert artifacts == []
 
 
-def test_install_plugins_materializes_and_builds_when_enabled():
-    bundle = ConfigBundle.from_sources(
-        [
-            DictSource(
-                {
-                    ConfigPath.parse("tool.search.enable"): BoolValue(True),
-                    ConfigPath.parse("tool.search.base_url"): StringValue(
-                        "https://example.com",
-                    ),
-                    ConfigPath.parse("tool.search.limit"): IntValue(50),
-                },
-            ),
-        ],
-    )
+def test_install_plugins_materializes_and_builds_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("BOBA_TOOL__SEARCH__ENABLE", "true")
+    monkeypatch.setenv("BOBA_TOOL__SEARCH__BASE_URL", "https://example.com")
+    monkeypatch.setenv("BOBA_TOOL__SEARCH__LIMIT", "50")
+    monkeypatch.delenv("BOBA_CONFIG_PATH", raising=False)
     ctx = ExtensionContext()
-    artifacts = list(install_plugins(bundle, [_SearchPlugin], ctx))
+    artifacts = list(install_plugins([_SearchPlugin], ctx))
     assert len(artifacts) == 1
     built = artifacts[0]
     assert isinstance(built, _BuiltSearch)
-    assert built.cfg == _SearchCfg(base_url="https://example.com", limit=50)
+    assert built.cfg.base_url == "https://example.com"
+    assert built.cfg.limit == 50
     assert built.ctx is ctx
 
 
-def test_install_plugins_disabled_plugin_dto_is_not_materialized():
-    """Если плагин выключен — required-поле не падает (DTO не строится)."""
-    bundle = ConfigBundle.from_sources(
-        [DictSource({ConfigPath.parse("tool.search.enable"): BoolValue(False)})],
-    )
-    ctx = ExtensionContext()
-    assert list(install_plugins(bundle, [_SearchPlugin], ctx)) == []
+def test_install_plugins_iterates_multiple(monkeypatch: pytest.MonkeyPatch):
+    class _OtherCfg(BobaFlatSettings):
+        model_config = BobaSettingsConfigDict(
+            case_sensitive=False,
+            extra="forbid",
+            boba_env_prefix="BOBA_TOOL__OTHER__",
+            boba_toml_section="tool.other",
+        )
 
+        enable: bool = False
+        base_url: str = ""
 
-def test_install_plugins_iterates_multiple():
-    class _OtherPlugin(Plugin[_SearchCfg, _BuiltSearch]):
+    class _OtherPlugin(Plugin[_OtherCfg, _BuiltSearch]):
         NAME: ClassVar[str] = "other"
 
         @classmethod
         def build(
             cls,
-            cfg: _SearchCfg,
+            cfg: _OtherCfg,
             ctx: ExtensionContext,
         ) -> Iterable[_BuiltSearch]:
-            yield _BuiltSearch(cfg=cfg, ctx=ctx)
+            yield _BuiltSearch(cfg=cfg, ctx=ctx)  # type: ignore[arg-type]
 
-    bundle = ConfigBundle.from_sources(
-        [
-            DictSource(
-                {
-                    ConfigPath.parse("tool.search.enable"): BoolValue(True),
-                    ConfigPath.parse("tool.search.base_url"): StringValue(
-                        "https://search",
-                    ),
-                    ConfigPath.parse("tool.other.enable"): BoolValue(True),
-                    ConfigPath.parse("tool.other.base_url"): StringValue(
-                        "https://other",
-                    ),
-                },
-            ),
-        ],
-    )
+    monkeypatch.setenv("BOBA_TOOL__SEARCH__ENABLE", "true")
+    monkeypatch.setenv("BOBA_TOOL__SEARCH__BASE_URL", "https://search")
+    monkeypatch.setenv("BOBA_TOOL__OTHER__ENABLE", "true")
+    monkeypatch.setenv("BOBA_TOOL__OTHER__BASE_URL", "https://other")
+    monkeypatch.delenv("BOBA_CONFIG_PATH", raising=False)
     ctx = ExtensionContext()
-    artifacts = list(install_plugins(bundle, [_SearchPlugin, _OtherPlugin], ctx))
+    artifacts = list(install_plugins([_SearchPlugin, _OtherPlugin], ctx))
     assert len(artifacts) == 2
     urls = sorted(a.cfg.base_url for a in artifacts)
     assert urls == ["https://other", "https://search"]
@@ -262,9 +216,3 @@ def test_extension_context_no_args_is_empty_bag():
     assert ctx.has(_RegistryA) is False
     with pytest.raises(MissingExtensionError):
         ctx.get(_RegistryA)
-
-
-# Re-export, чтобы pyright не считал импорт неиспользованным.
-_ = ParseBool
-_ = Default
-_ = Plugin

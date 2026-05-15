@@ -4,15 +4,13 @@ Convention: Tool кладёт в свой config-DTO поле `prompt: PromptOve
 в `definition()` строит свою `ObjectSchema` локально, оборачивая её в
 `self._cfg.prompt.apply(...)`. Конфиг плагина может иметь несколько
 prompt-полей (по одному на каждый tool в плагине) — просто как
-`<name>: PromptOverlay` в dataclass; `schema_from_dataclass` собирает
-`NestedField` со схемой PromptOverlay автоматически.
+`<name>: PromptOverlay` в pydantic-модели.
 
 Plugin DTO:
 
-    @dataclass(frozen=True)
-    class ConfluencePluginConfig:
-        confluence_search: PromptOverlay
-        confluence_page: PromptOverlay
+    class ConfluencePluginConfig(BobaFlatSettings):
+        confluence_search: PromptOverlay = Field(default_factory=PromptOverlay)
+        confluence_page: PromptOverlay = Field(default_factory=PromptOverlay)
 
 Tool:
 
@@ -26,10 +24,11 @@ Tool:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from typing import Annotated, Any, TypeVar
+from dataclasses import replace
+from typing import Any, TypeVar
 
-from boba.schema.coercion import ParseString
+from pydantic import BaseModel, ConfigDict, Field
+
 from boba.schema.declaration import (
     FieldSpec,
     ObjectSchema,
@@ -41,8 +40,7 @@ __all__ = ["PromptOverlay"]
 T = TypeVar("T")
 
 
-@dataclass(frozen=True)
-class PromptOverlay:
+class PromptOverlay(BaseModel):
     """Overlay описаний tool'а: общее description и per-field overrides.
 
     Пустая строка в `description` или в `fields[name]` означает «оставить
@@ -50,15 +48,16 @@ class PromptOverlay:
     canonical-описания.
     """
 
-    description: Annotated[
-        str,
-        "Override общего описания tool'а; пусто — дефолт из кода.",
-        ParseString(),
-    ] = ""
-    fields: Annotated[
-        dict[str, str],
-        "Per-field overrides: имя поля → новое описание.",
-    ] = field(default_factory=dict)
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    description: str = Field(
+        default="",
+        description="Override общего описания tool'а; пусто — дефолт из кода.",
+    )
+    fields: dict[str, str] = Field(
+        default_factory=dict,
+        description="Per-field overrides: имя поля → новое описание.",
+    )
 
     def apply(self, schema: ObjectSchema[T]) -> ObjectSchema[T]:
         """Вернуть копию `schema` с применённым overlay'ем (frozen-safe)."""

@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from io import TextIOBase
 from typing import Annotated
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from boba.plugin.prompt import PromptOverlay
 from boba.schema import schema
-from boba.schema.coercion import MinValue, NonEmpty, Ordered, ParseInt
+from boba.schema.coercion import MinValue, NonEmpty, Ordered
 from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     JsonResult,
@@ -41,17 +43,17 @@ class CatArgs:
     ] = "utf-8"
 
 
-@dataclass(frozen=True)
-class CatToolConfig:
+class CatToolConfig(BaseModel):
     """Конфиг tool 'cat': лимит max_lines + prompt overlay."""
 
-    max_lines: Annotated[
-        int,
-        "Максимум строк в одном вызове cat.",
-        ParseInt(),
-        MinValue(1),
-    ] = 2000
-    prompt: PromptOverlay = field(default_factory=PromptOverlay)
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    max_lines: int = Field(
+        default=2000,
+        ge=1,
+        description="Максимум строк в одном вызове cat.",
+    )
+    prompt: PromptOverlay = Field(default_factory=PromptOverlay)
 
 
 class CatTool(FsToolBase[CatArgs, CatToolConfig]):

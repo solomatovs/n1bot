@@ -9,23 +9,11 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from pydantic import Field
 
-from pydantic import BeforeValidator, Field
-
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
 
 __all__ = ["ChainlitConfig"]
-
-
-def _csv_to_list(v: Any) -> Any:
-    """CSV-строка → list[str]; list/None — без изменений."""
-    if isinstance(v, str):
-        return [item.strip() for item in v.split(",") if item.strip()]
-    return v
-
-
-StringList = Annotated[list[str], BeforeValidator(_csv_to_list)]
 
 
 class ChainlitConfig(BobaFlatSettings):

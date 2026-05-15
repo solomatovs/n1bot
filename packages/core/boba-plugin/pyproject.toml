@@ -7,7 +7,14 @@ name = "boba-plugin"
 version = "0.1.0"
 description = "Boba plugin: Plugin ABC, PluginDiscovery (entry-points), PromptOverlay, конвенции config_path/is_enabled."
 requires-python = ">=3.11,<4"
-dependencies = ["boba-patterns", "boba-schema", "boba-config"]
+dependencies = [
+    "boba-patterns",
+    "boba-schema",
+    "boba-config",
+    "boba-settings",
+    "pydantic>=2.10,<2.11",
+    "pydantic-settings>=2.13,<3",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

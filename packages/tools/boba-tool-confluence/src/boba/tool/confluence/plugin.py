@@ -19,14 +19,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
-from typing import Annotated, ClassVar, Literal
+from typing import ClassVar, Literal, Self
+
+from pydantic import Field, model_validator
 
 from boba.plugin import ExtensionContext, Plugin
 from boba.plugin.prompt import PromptOverlay
-from boba.schema import schema
-from boba.schema.coercion import ParseBool, ParseCsvList, ParseFloat, ParseString
-from boba.tool.confluence.connection import ConfluenceConnection
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
 from boba.tool.confluence.page_download import (
     ConfluencePageDownloadTool,
     ConfluencePageDownloadToolConfig,
@@ -53,59 +52,88 @@ from boba.tools.framework import StaticToolSource, ToolSource
 __all__ = ["ConfluencePlugin", "ConfluencePluginConfig"]
 
 
-@schema(invariants=ConfluenceConnection.invariant())
-@dataclass(frozen=True)
-class ConfluencePluginConfig:
-    """
-    Confluence multi-tool plugin: search + page_outline + page_section.
-    Connection — на корне, описания — в overlay'ях
+class ConfluencePluginConfig(BobaFlatSettings):
+    """Confluence multi-tool plugin: search + page_outline + page_section.
+
+    Connection — на корне, описания — в overlay'ях.
     """
 
-    base_url: Annotated[str, "URL Confluence (env: ...__BASE_URL).", ParseString()]
-    auth_token: Annotated[
-        str,
-        "PAT или пароль (env: ...__AUTH_TOKEN).",
-        ParseString(),
-    ]
-    auth_method: Annotated[
-        Literal["pat", "basic"],
-        "`pat` — Bearer-токен; `basic` — login+password.",
-    ] = "pat"
-    auth_user: Annotated[
-        str,
-        "Логин для basic-auth; для PAT — пусто.",
-        ParseString(),
-    ] = ""
-    timeout_sec: Annotated[
-        float,
-        "HTTP-таймаут (сек).",
-        ParseFloat(),
-    ] = 30.0
-    ssl_verify: Annotated[
-        bool,
-        "ssl verify",
-        ParseBool(),
-    ] = False
-    body_format: Annotated[
-        Literal["view", "export_view", "storage"],
-        "`view` — clean HTML (рекомендуется); `export_view` — с макросами;"
-        "`storage` — raw storage XML.",
-    ] = "view"
-    confluence_search: PromptOverlay = field(default_factory=PromptOverlay)
-    confluence_page_outline: PromptOverlay = field(default_factory=PromptOverlay)
-    confluence_page_section: PromptOverlay = field(default_factory=PromptOverlay)
-    confluence_page_download: PromptOverlay = field(default_factory=PromptOverlay)
-    confluence_page_download_markdown: PromptOverlay = field(
+    model_config = BobaSettingsConfigDict(
+        case_sensitive=False,
+        extra="forbid",
+        boba_env_prefix="BOBA_TOOL__CONFLUENCE__",
+        boba_toml_section="tool.confluence",
+    )
+
+    enable: bool = Field(
+        default=False,
+        description="Подключить плагин в discovery.",
+    )
+    base_url: str = Field(
+        default="",
+        description="URL Confluence (обязателен при enable=True).",
+    )
+    auth_token: str = Field(
+        default="",
+        description="PAT или пароль (обязателен при enable=True).",
+    )
+    auth_method: Literal["pat", "basic"] = Field(
+        default="pat",
+        description="`pat` — Bearer-токен; `basic` — login+password.",
+    )
+    auth_user: str = Field(
+        default="",
+        description=(
+            "Логин для basic-auth; обязателен при auth_method=basic. "
+            "Для PAT — пусто."
+        ),
+    )
+    timeout_sec: float = Field(
+        default=30.0,
+        description="HTTP-таймаут (сек).",
+    )
+    ssl_verify: bool = Field(
+        default=False,
+        description="Проверять ли TLS-сертификат.",
+    )
+    body_format: Literal["view", "export_view", "storage"] = Field(
+        default="view",
+        description=(
+            "`view` — clean HTML (рекомендуется); `export_view` — с макросами; "
+            "`storage` — raw storage XML."
+        ),
+    )
+    confluence_search: PromptOverlay = Field(default_factory=PromptOverlay)
+    confluence_page_outline: PromptOverlay = Field(default_factory=PromptOverlay)
+    confluence_page_section: PromptOverlay = Field(default_factory=PromptOverlay)
+    confluence_page_download: PromptOverlay = Field(default_factory=PromptOverlay)
+    confluence_page_download_markdown: PromptOverlay = Field(
         default_factory=PromptOverlay,
     )
-    tools: Annotated[
-        list[str] | None,
-        "Allowlist tool-имён внутри плагина: None/пустой = все, иначе только "
-        "перечисленные ('confluence_search', 'confluence_page_outline', "
-        "'confluence_page_section', 'confluence_page_download', "
-        "'confluence_page_download_markdown').",
-        ParseCsvList(),
-    ] = None
+    tools: StringList | None = Field(
+        default=None,
+        description=(
+            "Allowlist tool-имён внутри плагина: None/пустой = все, иначе "
+            "только перечисленные ('confluence_search', "
+            "'confluence_page_outline', 'confluence_page_section', "
+            "'confluence_page_download', 'confluence_page_download_markdown')."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _check_invariants(self) -> Self:
+        if not self.enable:
+            return self
+        if not self.base_url:
+            msg = "base_url обязателен при enable=True"
+            raise ValueError(msg)
+        if not self.auth_token:
+            msg = "auth_token обязателен при enable=True"
+            raise ValueError(msg)
+        if self.auth_method == "basic" and not self.auth_user:
+            msg = "auth_user обязателен при auth_method='basic'"
+            raise ValueError(msg)
+        return self
 
 
 class ConfluencePlugin(Plugin[ConfluencePluginConfig, ToolSource]):

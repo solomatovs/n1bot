@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
-from typing import Annotated
+from dataclasses import dataclass
 
-from boba.schema.coercion import ParseString
+from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = ["FtsHit", "IndexInfo", "IndexSpec"]
 
 
-@dataclass(frozen=True)
-class IndexSpec:
+class IndexSpec(BaseModel):
     """Декларация одного FTS-индекса в whitelist'е плагина.
 
     Имена колонок/таблицы приходят из конфига (TOML), не от LLM, и
@@ -20,50 +18,36 @@ class IndexSpec:
     (`query`, `top_k`) — всегда через placeholder'ы, без склейки.
     """
 
-    name: Annotated[
-        str,
-        "Имя индекса для агента (видно в fts_list_indexes).",
-        ParseString(),
-    ]
-    description: Annotated[
-        str,
-        "Что лежит в этом индексе — для LLM.",
-        ParseString(),
-    ]
-    table: Annotated[
-        str,
-        "Имя таблицы (без schema).",
-        ParseString(),
-    ]
-    id_column: Annotated[
-        str,
-        "Колонка-PK; её значение возвращается в hit.id.",
-        ParseString(),
-    ]
-    tsv_column: Annotated[
-        str,
-        "Колонка типа tsvector (обычно GENERATED + GIN-индекс).",
-        ParseString(),
-    ]
-    snippet_column: Annotated[
-        str,
-        "Текстовая колонка для ts_headline (обычно body/content).",
-        ParseString(),
-    ]
-    schema: Annotated[
-        str,
-        "PG schema таблицы.",
-        ParseString(),
-    ] = "public"
-    language: Annotated[
-        str,
-        "PG search config (regconfig): russian/english/simple/...",
-        ParseString(),
-    ] = "english"
-    metadata_columns: Annotated[
-        list[str],
-        "Колонки, отдаваемые как hit.metadata (например title, source_url).",
-    ] = field(default_factory=list)
+    # protected_namespaces=() — гасим предупреждение про field "schema",
+    # которое shadow'ит deprecated v1-метод BaseModel.schema(); сам метод
+    # в pydantic v2 заменён на model_json_schema().
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        protected_namespaces=(),
+    )
+
+    name: str = Field(description="Имя индекса для агента (видно в fts_list_indexes).")
+    description: str = Field(description="Что лежит в этом индексе — для LLM.")
+    table: str = Field(description="Имя таблицы (без schema).")
+    id_column: str = Field(description="Колонка-PK; её значение возвращается в hit.id.")
+    tsv_column: str = Field(
+        description="Колонка типа tsvector (обычно GENERATED + GIN-индекс).",
+    )
+    snippet_column: str = Field(
+        description="Текстовая колонка для ts_headline (обычно body/content).",
+    )
+    schema: str = Field(default="public", description="PG schema таблицы.")
+    language: str = Field(
+        default="english",
+        description="PG search config (regconfig): russian/english/simple/...",
+    )
+    metadata_columns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Колонки, отдаваемые как hit.metadata (например title, source_url)."
+        ),
+    )
 
 
 @dataclass(frozen=True)

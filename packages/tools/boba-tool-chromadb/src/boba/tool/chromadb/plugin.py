@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
-from typing import Annotated, Any, ClassVar
+from typing import Any, ClassVar, Self
+
+from pydantic import Field, model_validator
 
 from boba.plugin import ExtensionContext, Plugin
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import MinValue, ParseInt, ParseString
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.chromadb.kb import get_knowledge_base
 from boba.tool.chromadb.kb_list_collections import (
     KbListCollectionsTool,
@@ -21,44 +22,65 @@ from boba.tools.framework import StaticToolSource, ToolSource
 __all__ = ["ChromadbPlugin", "ChromadbPluginConfig"]
 
 
-@dataclass(frozen=True)
-class ChromadbPluginConfig:
-    """
-    ChromaDB read-tools: kb_search + kb_list_collections. persist_path обязателен;
-    embedding_model='default' = built-in ONNX (без сети)
+class ChromadbPluginConfig(BobaFlatSettings):
+    """ChromaDB read-tools: kb_search + kb_list_collections.
+
+    `persist_path` обязателен при `enable=True`. `embedding_model='default'` —
+    built-in ONNX (без сети).
     """
 
-    persist_path: Annotated[str, "Путь к persistent ChromaDB.", ParseString()]
-    embedding_model: Annotated[
-        str,
-        "'default' = built-in ONNX all-MiniLM-L6-v2" \
-        "иначе — модель LiteLLM/OpenAI-API.",
-        ParseString(),
-    ] = "default"
-    embedding_base_url: Annotated[
-        str,
-        "OpenAI-совместимый endpoint embeddings. Игнорируется при model=default.",
-        ParseString(),
-    ] = ""
-    embedding_api_key: Annotated[
-        str,
-        "API key embeddings endpoint'а.",
-        ParseString(),
-    ] = ""
-    snippet_chars: Annotated[
-        int,
-        "Максимальная длина сниппета документа в kb_search.",
-        ParseInt(),
-        MinValue(1),
-    ] = 300
-    max_top_k: Annotated[
-        int,
-        "Жёсткий потолок параметра top_k.",
-        ParseInt(),
-        MinValue(1),
-    ] = 20
-    kb_search: PromptOverlay = field(default_factory=PromptOverlay)
-    kb_list_collections: PromptOverlay = field(default_factory=PromptOverlay)
+    model_config = BobaSettingsConfigDict(
+        case_sensitive=False,
+        extra="forbid",
+        boba_env_prefix="BOBA_TOOL__CHROMADB__",
+        boba_toml_section="tool.chromadb",
+    )
+
+    enable: bool = Field(
+        default=False,
+        description="Подключить плагин в discovery.",
+    )
+    persist_path: str = Field(
+        default="",
+        description="Путь к persistent ChromaDB (обязателен при enable=True).",
+    )
+    embedding_model: str = Field(
+        default="default",
+        description=(
+            "'default' = built-in ONNX all-MiniLM-L6-v2; "
+            "иначе — модель LiteLLM/OpenAI-API."
+        ),
+    )
+    embedding_base_url: str = Field(
+        default="",
+        description=(
+            "OpenAI-совместимый endpoint embeddings. "
+            "Игнорируется при model=default."
+        ),
+    )
+    embedding_api_key: str = Field(
+        default="",
+        description="API key embeddings endpoint'а.",
+    )
+    snippet_chars: int = Field(
+        default=300,
+        ge=1,
+        description="Максимальная длина сниппета документа в kb_search.",
+    )
+    max_top_k: int = Field(
+        default=20,
+        ge=1,
+        description="Жёсткий потолок параметра top_k.",
+    )
+    kb_search: PromptOverlay = Field(default_factory=PromptOverlay)
+    kb_list_collections: PromptOverlay = Field(default_factory=PromptOverlay)
+
+    @model_validator(mode="after")
+    def _check_persist_path_when_enabled(self) -> Self:
+        if self.enable and not self.persist_path:
+            msg = "persist_path обязателен при enable=True"
+            raise ValueError(msg)
+        return self
 
 
 class ChromadbPlugin(Plugin[ChromadbPluginConfig, ToolSource]):

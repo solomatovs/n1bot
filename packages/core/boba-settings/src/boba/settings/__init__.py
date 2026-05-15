@@ -19,10 +19,12 @@ from boba.settings.flat import (
     PrefixedFlatEnvSource,
     SectionTomlSource,
 )
+from boba.settings.types import StringList
 
 __all__ = [
     "BobaFlatSettings",
     "BobaSettingsConfigDict",
     "PrefixedFlatEnvSource",
     "SectionTomlSource",
+    "StringList",
 ]

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
-from typing import Annotated, ClassVar
+from typing import ClassVar
+
+from pydantic import Field
 
 from boba.plugin import ExtensionContext, Plugin
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion.types import ParseCsvList
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
 from boba.tool.files.append import AppendTool, AppendToolConfig
 from boba.tool.files.cat import CatTool, CatToolConfig
 from boba.tool.files.cd import CdTool, CdToolConfig
@@ -30,35 +31,46 @@ from boba.tools.framework import StaticToolSource, ToolSource
 __all__ = ["FilesPlugin", "FilesPluginConfig"]
 
 
-@dataclass(frozen=True)
-class FilesPluginConfig:
-    """
-    Builtin file-system tools:
-    cat/ls/grep/edit/write/append/cp/mv/rm/mkdir/touch/cd/pwd/stat/tree
+class FilesPluginConfig(BobaFlatSettings):
+    """Builtin file-system tools.
+
+    cat/ls/grep/edit/write/append/cp/mv/rm/mkdir/touch/cd/pwd/stat/tree.
     """
 
-    cat: CatToolConfig = field(default_factory=CatToolConfig)
-    append: PromptOverlay = field(default_factory=PromptOverlay)
-    cd: PromptOverlay = field(default_factory=PromptOverlay)
-    cp: PromptOverlay = field(default_factory=PromptOverlay)
-    edit: PromptOverlay = field(default_factory=PromptOverlay)
-    grep: PromptOverlay = field(default_factory=PromptOverlay)
-    ls: PromptOverlay = field(default_factory=PromptOverlay)
-    mkdir: PromptOverlay = field(default_factory=PromptOverlay)
-    mv: PromptOverlay = field(default_factory=PromptOverlay)
-    pwd: PromptOverlay = field(default_factory=PromptOverlay)
-    rm: PromptOverlay = field(default_factory=PromptOverlay)
-    stat: PromptOverlay = field(default_factory=PromptOverlay)
-    touch: PromptOverlay = field(default_factory=PromptOverlay)
-    tree: PromptOverlay = field(default_factory=PromptOverlay)
-    write: PromptOverlay = field(default_factory=PromptOverlay)
-    tools: Annotated[
-        list[str] | None,
-        "Allowlist tool-имён внутри плагина: None (default) — все включены; "
-        "иначе создаются и регистрируются только перечисленные. "
-        "Имена соответствуют t.name().to_wire() (например 'cat', 'grep').",
-        ParseCsvList(),
-    ] = None
+    model_config = BobaSettingsConfigDict(
+        case_sensitive=False,
+        extra="forbid",
+        boba_env_prefix="BOBA_TOOL__FILES__",
+        boba_toml_section="tool.files",
+    )
+
+    enable: bool = Field(
+        default=False,
+        description="Подключить плагин в discovery.",
+    )
+    cat: CatToolConfig = Field(default_factory=CatToolConfig)
+    append: PromptOverlay = Field(default_factory=PromptOverlay)
+    cd: PromptOverlay = Field(default_factory=PromptOverlay)
+    cp: PromptOverlay = Field(default_factory=PromptOverlay)
+    edit: PromptOverlay = Field(default_factory=PromptOverlay)
+    grep: PromptOverlay = Field(default_factory=PromptOverlay)
+    ls: PromptOverlay = Field(default_factory=PromptOverlay)
+    mkdir: PromptOverlay = Field(default_factory=PromptOverlay)
+    mv: PromptOverlay = Field(default_factory=PromptOverlay)
+    pwd: PromptOverlay = Field(default_factory=PromptOverlay)
+    rm: PromptOverlay = Field(default_factory=PromptOverlay)
+    stat: PromptOverlay = Field(default_factory=PromptOverlay)
+    touch: PromptOverlay = Field(default_factory=PromptOverlay)
+    tree: PromptOverlay = Field(default_factory=PromptOverlay)
+    write: PromptOverlay = Field(default_factory=PromptOverlay)
+    tools: StringList | None = Field(
+        default=None,
+        description=(
+            "Allowlist tool-имён внутри плагина: None (default) — все включены; "
+            "иначе создаются и регистрируются только перечисленные. "
+            "Имена соответствуют t.name().to_wire() (например 'cat', 'grep')."
+        ),
+    )
 
 
 class FilesPlugin(Plugin[FilesPluginConfig, ToolSource]):
