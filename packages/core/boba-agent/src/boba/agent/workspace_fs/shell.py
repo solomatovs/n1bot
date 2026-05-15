@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Generic, TypeVar
 
 from boba.agent.workspace_fs.growbuffer import GrowBuffer
-from boba.patterns import Id, Specification
+from boba.patterns import Specification
 from boba.workspace.contract import (
     EntryMeta,
     GrepMatch,
@@ -36,7 +36,7 @@ from boba.workspace.contract import (
     WorkspaceShell,
 )
 
-TWsId = TypeVar("TWsId", bound=Id)
+TWsId = TypeVar("TWsId")
 
 logger = logging.getLogger(__name__)
 

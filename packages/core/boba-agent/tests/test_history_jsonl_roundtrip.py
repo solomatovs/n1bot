@@ -324,7 +324,7 @@ def test_is_content_delta_spec() -> None:
 
 def test_jsonlines_history_e2e(tmp_path: Path) -> None:
     """Полный e2e: запись в файл, чтение, фильтрация ContentDelta."""
-    workspace = FsHistoryWorkspaceShell(WorkspaceId.from_wire("test"), tmp_path)
+    workspace = FsHistoryWorkspaceShell(WorkspaceId("test"), tmp_path)
     svc = JsonLinesHistoryService(workspace)
 
     events = [
@@ -348,7 +348,7 @@ def test_jsonlines_history_e2e(tmp_path: Path) -> None:
 
 
 def test_jsonlines_clear(tmp_path: Path) -> None:
-    workspace = FsHistoryWorkspaceShell(WorkspaceId.from_wire("test"), tmp_path)
+    workspace = FsHistoryWorkspaceShell(WorkspaceId("test"), tmp_path)
     svc = JsonLinesHistoryService(workspace)
     svc.record(IterationStarted(request_id=_RID, iteration=1, max_iterations=1))
     assert len(list(svc.events())) == 1

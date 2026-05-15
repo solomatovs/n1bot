@@ -15,7 +15,6 @@ from boba.agent.workspace_fs.shell import (
     FsScratchWorkspaceShell,
     FsWorkspaceShell,
 )
-from boba.patterns import Id
 from boba.workspace.contract import (
     HistoryWorkspaceRegistry,
     ProjectWorkspaceRegistry,
@@ -25,9 +24,10 @@ from boba.workspace.contract import (
     WorkspaceId,
     WorkspaceNotFoundError,
     WorkspaceRegistry,
+    new_workspace_id,
 )
 
-TWsId = TypeVar("TWsId", bound=Id)
+TWsId = TypeVar("TWsId")
 TWs = TypeVar("TWs", bound=FsWorkspaceShell)
 
 
@@ -90,28 +90,28 @@ class FsWorkspaceRegistry(WorkspaceRegistry[TWsId], Generic[TWs, TWsId]):
         return shell
 
     def _workspace_dir(self, workspace_id: TWsId) -> Path:
-        return self._base_dir / str(workspace_id.name) / self._subdir
+        return self._base_dir / str(workspace_id) / self._subdir
 
 
 class FsProjectWorkspaceRegistry(
     FsWorkspaceRegistry[FsProjectWorkspaceShell, WorkspaceId], ProjectWorkspaceRegistry
 ):
     def __init__(self, base_dir: Path, subdir: str) -> None:
-        super().__init__(base_dir, FsProjectWorkspaceShell, subdir, WorkspaceId.new)
+        super().__init__(base_dir, FsProjectWorkspaceShell, subdir, new_workspace_id)
 
 
 class FsHistoryWorkspaceRegistry(
     FsWorkspaceRegistry[FsHistoryWorkspaceShell, WorkspaceId], HistoryWorkspaceRegistry
 ):
     def __init__(self, base_dir: Path, subdir: str) -> None:
-        super().__init__(base_dir, FsHistoryWorkspaceShell, subdir, WorkspaceId.new)
+        super().__init__(base_dir, FsHistoryWorkspaceShell, subdir, new_workspace_id)
 
 
 class FsScratchWorkspaceRegistry(
     FsWorkspaceRegistry[FsScratchWorkspaceShell, WorkspaceId], ScratchWorkspaceRegistry
 ):
     def __init__(self, base_dir: Path, subdir: str) -> None:
-        super().__init__(base_dir, FsScratchWorkspaceShell, subdir, WorkspaceId.new)
+        super().__init__(base_dir, FsScratchWorkspaceShell, subdir, new_workspace_id)
 
 
 class FsPromptWorkspaceRegistry(

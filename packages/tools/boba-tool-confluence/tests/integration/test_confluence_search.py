@@ -42,7 +42,7 @@ def config_fixture() -> ConfigBundle:
 @pytest.fixture
 def shell_fixture() -> ProjectWorkspaceShell:
     reg = FsProjectWorkspaceRegistry(Path("local"), "test")
-    return reg.get_or_create(WorkspaceId.from_wire("integration"))
+    return reg.get_or_create(WorkspaceId("integration"))
 
 
 @pytest.fixture

@@ -4,14 +4,15 @@ namespace'ами + DI-маркеры конкретных видов (Project/Hi
 
 from __future__ import annotations
 
+import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from io import BufferedIOBase, TextIOBase
-from typing import Generic, TypeVar
+from typing import Generic, NewType, TypeVar
 
-from boba.patterns import Id, Specification, StrId
+from boba.patterns import Specification
 
 __all__ = [
     "EntryMeta",
@@ -32,13 +33,19 @@ __all__ = [
     "WorkspacePermissionError",
     "WorkspaceRegistry",
     "WorkspaceShell",
+    "new_workspace_id",
 ]
 
-TWsId = TypeVar("TWsId", bound=Id)
+TWsId = TypeVar("TWsId")
 
 
-class WorkspaceId(StrId):
-    """Идентификатор user-сессии — value object."""
+WorkspaceId = NewType("WorkspaceId", str)
+"""Идентификатор user-сессии."""
+
+
+def new_workspace_id() -> WorkspaceId:
+    """Свежий WorkspaceId."""
+    return WorkspaceId(str(uuid.uuid4()))
 
 
 @dataclass(frozen=True)
@@ -277,8 +284,8 @@ class ScratchWorkspaceRegistry(WorkspaceRegistry[WorkspaceId]):
     """DI-маркер реестра ScratchWorkspaceShell."""
 
 
-class PromptWorkspaceId(StrId):
-    """Строковый id prompt-namespace (application-singleton)."""
+PromptWorkspaceId = NewType("PromptWorkspaceId", str)
+"""Строковый id prompt-namespace (application-singleton)."""
 
 
 class PromptWorkspaceShell(WorkspaceShell[PromptWorkspaceId]):

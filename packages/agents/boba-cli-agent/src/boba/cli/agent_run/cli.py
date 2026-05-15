@@ -71,7 +71,7 @@ def _run() -> int:
     run_cfg = bundle.get(AgentRunConfig, "cli")
     configure_logging(app.core.log_level, app.core.log_file)
 
-    workspace_id = WorkspaceId.from_wire("00000000-0000-0000-0000-000000000001")
+    workspace_id = WorkspaceId("00000000-0000-0000-0000-000000000001")
 
     prompt_workspace = FsPromptWorkspaceRegistry(
         root=Path(app.prompts.dir),
