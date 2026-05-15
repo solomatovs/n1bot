@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from io import TextIOBase
-from typing import Annotated
+from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.plugin.prompt import PromptOverlay
-from boba.schema import schema
-from boba.schema.coercion import MinValue, NonEmpty, Ordered
 from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     JsonResult,
@@ -24,23 +21,35 @@ from boba.workspace.contract import WorkspaceError, WorkspaceNotFoundError
 __all__ = ["CatArgs", "CatTool", "CatToolConfig"]
 
 
-@schema(invariants=Ordered("start_line", "end_line"))
-@dataclass(frozen=True)
-class CatArgs:
+class CatArgs(BaseModel):
     """Прочитать строки [start_line; end_line] из текстового файла."""
 
-    path: Annotated[str, "Путь к файлу.", NonEmpty()]
-    start_line: Annotated[int, "Первая строка окна. 1 = начало файла.", MinValue(1)]
-    end_line: Annotated[
-        int,
-        "Последняя строка окна, включительно >= start_line.",
-        MinValue(1),
-    ]
-    encoding: Annotated[
-        str,
-        "Кодировка файла. По умолчанию 'utf-8'.",
-        NonEmpty(),
-    ] = "utf-8"
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str = Field(min_length=1, description="Путь к файлу.")
+    start_line: int = Field(
+        ge=1,
+        description="Первая строка окна. 1 = начало файла.",
+    )
+    end_line: int = Field(
+        ge=1,
+        description="Последняя строка окна, включительно >= start_line.",
+    )
+    encoding: str = Field(
+        default="utf-8",
+        min_length=1,
+        description="Кодировка файла. По умолчанию 'utf-8'.",
+    )
+
+    @model_validator(mode="after")
+    def _check_ordered(self) -> Self:
+        if self.start_line > self.end_line:
+            msg = (
+                f"start_line ({self.start_line}) должна быть "
+                f"<= end_line ({self.end_line})"
+            )
+            raise ValueError(msg)
+        return self
 
 
 class CatToolConfig(BaseModel):

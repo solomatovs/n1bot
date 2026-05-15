@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import NonEmpty
 from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     TextResult,
@@ -19,15 +19,17 @@ from boba.workspace.contract import WorkspaceError, WorkspaceNotFoundError
 __all__ = ["CpArgs", "CpTool", "CpToolConfig"]
 
 
-@dataclass(frozen=True)
-class CpArgs:
+class CpArgs(BaseModel):
     """Скопировать файл или директорию. Для директорий требуется recursive=true."""
 
-    src: Annotated[str, "Путь источника.", NonEmpty()]
-    dst: Annotated[str, "Путь назначения.", NonEmpty()]
-    recursive: Annotated[
-        bool, "Рекурсивное копирование директории. По умолчанию false."
-    ] = False
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    src: str = Field(min_length=1, description="Путь источника.")
+    dst: str = Field(min_length=1, description="Путь назначения.")
+    recursive: bool = Field(
+        default=False,
+        description="Рекурсивное копирование директории. По умолчанию false.",
+    )
 
 
 @dataclass(frozen=True)

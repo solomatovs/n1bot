@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import NonEmpty
 from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     TextResult,
@@ -19,14 +19,15 @@ from boba.workspace.contract import WorkspaceError
 __all__ = ["MkdirArgs", "MkdirTool", "MkdirToolConfig"]
 
 
-@dataclass(frozen=True)
-class MkdirArgs:
+class MkdirArgs(BaseModel):
     """Создать директорию (включая промежуточные).
 
     Если уже существует — no-op. Если по пути файл — ошибка.
     """
 
-    path: Annotated[str, "Путь создаваемой директории.", NonEmpty()]
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str = Field(min_length=1, description="Путь создаваемой директории.")
 
 
 @dataclass(frozen=True)

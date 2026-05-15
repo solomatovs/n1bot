@@ -252,11 +252,23 @@ class Tool(
         raw: dict[str, Any],
     ) -> Any:
         try:
-            return args_type.model_validate(raw)
+            return args_type.model_validate(
+                raw, context=self._validation_context(),
+            )
         except ValidationError as e:
             raise _pydantic_error_to_tool_error(
                 e, self.tool_id(), self.definition(), raw,
             ) from e
+
+    def _validation_context(self) -> dict[str, Any]:
+        """Context для `model_validate(raw, context=...)`.
+
+        Default — пусто. Tool с runtime-параметрами в констрейнтах
+        (например, `KbSearchTool.max_top_k`) переопределяет: возвращает
+        `{"max_top_k": self._cfg.max_top_k}`, который читает
+        `@field_validator(mode="after")` на Args.
+        """
+        return {}
 
     @cached_property
     def _args_adapter(self) -> _ToolArgsAdapter[TArgs]:

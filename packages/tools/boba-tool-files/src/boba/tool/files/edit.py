@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import NonEmpty
 from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     TextResult,
@@ -19,8 +19,7 @@ from boba.workspace.contract import WorkspaceError, WorkspaceNotFoundError
 __all__ = ["EditArgs", "EditTool", "EditToolConfig"]
 
 
-@dataclass(frozen=True)
-class EditArgs:
+class EditArgs(BaseModel):
     """Заменить подстроку old_string на new_string.
 
     По умолчанию old_string должна встречаться в файле ровно один раз — иначе
@@ -28,13 +27,23 @@ class EditArgs:
     посимвольное.
     """
 
-    path: Annotated[str, "Путь к файлу.", NonEmpty()]
-    old_string: Annotated[str, "Подстрока для замены. Совпадение точное.", NonEmpty()]
-    new_string: Annotated[str, "Заменяющий текст. Пустая строка = удаление."]
-    replace_all: Annotated[bool, "Заменить все вхождения. По умолчанию false."] = False
-    encoding: Annotated[
-        str, "Кодировка файла. По умолчанию 'utf-8'.", NonEmpty()
-    ] = "utf-8"
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str = Field(min_length=1, description="Путь к файлу.")
+    old_string: str = Field(
+        min_length=1,
+        description="Подстрока для замены. Совпадение точное.",
+    )
+    new_string: str = Field(description="Заменяющий текст. Пустая строка = удаление.")
+    replace_all: bool = Field(
+        default=False,
+        description="Заменить все вхождения. По умолчанию false.",
+    )
+    encoding: str = Field(
+        default="utf-8",
+        min_length=1,
+        description="Кодировка файла. По умолчанию 'utf-8'.",
+    )
 
 
 @dataclass(frozen=True)

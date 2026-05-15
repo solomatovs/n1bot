@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict
+
 from boba.plugin.prompt import PromptOverlay
 from boba.tool.postgres_fts.db import PgFtsKnowledgeBase
 from boba.tools.domain import (
@@ -22,13 +24,14 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True)
-class FtsListIndexesArgs:
+class FtsListIndexesArgs(BaseModel):
     """Список доступных PostgreSQL FTS-индексов.
 
     Возвращает JSON-массив объектов {name, description}. Используй перед
     fts_search чтобы выбрать подходящий индекс.
     """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
 
 @dataclass(frozen=True)

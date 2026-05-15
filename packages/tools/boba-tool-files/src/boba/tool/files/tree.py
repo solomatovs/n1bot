@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import islice
-from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import MinValue, NonEmpty
 from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     JsonResult,
@@ -20,18 +20,21 @@ from boba.workspace.contract import WorkspaceError
 __all__ = ["TreeArgs", "TreeTool", "TreeToolConfig"]
 
 
-@dataclass(frozen=True)
-class TreeArgs:
+class TreeArgs(BaseModel):
     """Рекурсивно перечислить все файлы под директорией.
 
     Плоский список путей. При переполнении limit ответ обрезается с маркером
     '(truncated at limit=N)'. Для одного уровня — ls.
     """
 
-    limit: Annotated[int, "Максимум путей в ответе.", MinValue(1)]
-    path: Annotated[
-        str | None, "Корень обхода. Без значения — корень workspace.", NonEmpty()
-    ] = None
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    limit: int = Field(ge=1, description="Максимум путей в ответе.")
+    path: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Корень обхода. Без значения — корень workspace.",
+    )
 
 
 @dataclass(frozen=True)

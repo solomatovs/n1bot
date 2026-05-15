@@ -4,21 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from functools import cached_property
-from typing import Annotated, Any
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import (
-    ChainCoercer,
-    Default,
-    IsInt,
-    IsString,
-    MaxValue,
-    MinLength,
-    MinValue,
-    Required,
-)
-from boba.schema.declaration import FieldSpec, ObjectSchema
 from boba.tool.chromadb.kb import ChromaKnowledgeBase
 from boba.tools.domain import (
     JsonResult,
@@ -26,16 +16,12 @@ from boba.tools.domain import (
     ToolContext,
     ToolResult,
     ToolSourceId,
-    ToolWireSchemaBuilder,
 )
-from boba.tools.domain.llm_schema import clean_llm_json_schema
-from boba.tools.domain.tool import JsonSchemaOverlay, _ToolArgsAdapter
 
 __all__ = ["KbSearchArgs", "KbSearchTool", "KbSearchToolConfig"]
 
 
-@dataclass(frozen=True)
-class KbSearchArgs:
+class KbSearchArgs(BaseModel):
     """Semantic search по KB-коллекции ChromaDB.
 
     Возвращает JSON-массив hits {id, distance, metadata, snippet}, упорядоченный
@@ -43,14 +29,39 @@ class KbSearchArgs:
     коллекции через kb_list_collections.
     """
 
-    collection: Annotated[str, "Имя коллекции из kb_list_collections.", MinLength(1)]
-    query: Annotated[
-        str,
-        "Поисковый запрос на естественном языке — будет преобразован в "
-        "embedding и сопоставлен с документами коллекции.",
-        MinLength(1),
-    ]
-    top_k: Annotated[int, "Сколько hits вернуть. По умолчанию 5.", MinValue(1)] = 5
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    collection: str = Field(
+        min_length=1,
+        description="Имя коллекции из kb_list_collections.",
+    )
+    query: str = Field(
+        min_length=1,
+        description=(
+            "Поисковый запрос на естественном языке — будет преобразован "
+            "в embedding и сопоставлен с документами коллекции."
+        ),
+    )
+    top_k: int = Field(
+        default=5,
+        ge=1,
+        description=(
+            "Сколько hits вернуть. По умолчанию 5; жёсткий потолок задан "
+            "в конфиге плагина (`max_top_k`)."
+        ),
+    )
+
+    @field_validator("top_k", mode="after")
+    @classmethod
+    def _check_max_top_k(cls, v: int, info: ValidationInfo) -> int:
+        """Runtime-проверка верхней границы из `info.context['max_top_k']`."""
+        ctx = info.context
+        if isinstance(ctx, Mapping):
+            limit = ctx.get("max_top_k")
+            if isinstance(limit, int) and v > limit:
+                msg = f"top_k={v} превышает max_top_k={limit}"
+                raise ValueError(msg)
+        return v
 
 
 @dataclass(frozen=True)
@@ -74,57 +85,9 @@ class KbSearchTool(Tool[KbSearchArgs, KbSearchToolConfig]):
         super().__init__(cfg, ctx, source_id)
         self._kb = kb
 
-    @cached_property
-    def _legacy_schema(self) -> ObjectSchema[KbSearchArgs]:
-        """Canonical ObjectSchema c runtime max_top_k. Используется и в
-        `definition()`-эмите, и в `_args_adapter`-валидации."""
-        max_top_k = self._cfg.max_top_k
-        return ObjectSchema(
-            description=KbSearchArgs.__doc__ or "",
-            fields=[
-                FieldSpec(
-                    name="collection",
-                    description="Имя коллекции из kb_list_collections.",
-                    coercer=ChainCoercer(Required(), IsString(), MinLength(1)),
-                ),
-                FieldSpec(
-                    name="query",
-                    description=(
-                        "Поисковый запрос на естественном языке — "
-                        "будет преобразован в embedding и сопоставлен с "
-                        "документами коллекции."
-                    ),
-                    coercer=ChainCoercer(Required(), IsString(), MinLength(1)),
-                ),
-                FieldSpec(
-                    name="top_k",
-                    description=(
-                        f"Сколько hits вернуть (1..{max_top_k}). По умолчанию 5."
-                    ),
-                    coercer=ChainCoercer(
-                        Default(5),
-                        IsInt(),
-                        MinValue(1),
-                        MaxValue(max_top_k),
-                    ),
-                ),
-            ],
-            factory=KbSearchArgs,
-        )
-
-    def definition(self) -> dict[str, Any]:
-        wire = ToolWireSchemaBuilder(self._legacy_schema).build()
-        prompt = self._cfg.prompt
-        if isinstance(prompt, JsonSchemaOverlay):
-            wire = prompt.apply_to_json_schema(wire)
-        return clean_llm_json_schema(wire)
-
-    @property
-    def _args_adapter(  # type: ignore[override]
-        self,
-    ) -> _ToolArgsAdapter[KbSearchArgs]:
-        """Валидация через тот же `_legacy_schema` (с MaxValue(max_top_k))."""
-        return _ToolArgsAdapter(self._legacy_schema, self.tool_id())
+    def _validation_context(self) -> dict[str, Any]:
+        """Прокидываем runtime-лимит `max_top_k` в `@field_validator`."""
+        return {"max_top_k": self._cfg.max_top_k}
 
     def execute(self, ctx: ToolContext, req: KbSearchArgs) -> ToolResult:
         del ctx

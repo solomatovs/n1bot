@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import islice
-from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import MinValue, NonEmpty
 from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     JsonResult,
@@ -20,42 +20,53 @@ from boba.workspace.contract import WorkspaceError, WorkspaceNotFoundError
 __all__ = ["GrepArgs", "GrepTool", "GrepToolConfig"]
 
 
-@dataclass(frozen=True)
-class GrepArgs:
+class GrepArgs(BaseModel):
     """Найти совпадения pattern в текстовых файлах.
 
     Формат результата: 'path:line: content'. Бинарные и недекодируемые файлы
     пропускаются. При переполнении limit ответ обрезается с маркером.
     """
 
-    pattern: Annotated[
-        str, "Python-regex; литерал при fixed_string=true.", NonEmpty()
-    ]
-    path: Annotated[
-        str | None, "Стартовый путь. Без значения — cwd.", NonEmpty()
-    ] = None
-    recursive: Annotated[
-        bool, "Рекурсивный обход директории. По умолчанию true."
-    ] = True
-    include: Annotated[
-        str | None,
-        "Fnmatch-glob по пути (например '*.py'). Без значения — все файлы.",
-        NonEmpty(),
-    ] = None
-    case_insensitive: Annotated[
-        bool, "Игнорировать регистр. По умолчанию false."
-    ] = False
-    context: Annotated[
-        int,
-        "Строк контекста до и после каждого совпадения. По умолчанию 0.",
-        MinValue(0),
-    ] = 0
-    limit: Annotated[
-        int, "Максимум совпадений в ответе. По умолчанию 100.", MinValue(1)
-    ] = 100
-    fixed_string: Annotated[
-        bool, "Литеральный поиск без regex. По умолчанию false."
-    ] = False
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    pattern: str = Field(
+        min_length=1,
+        description="Python-regex; литерал при fixed_string=true.",
+    )
+    path: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Стартовый путь. Без значения — cwd.",
+    )
+    recursive: bool = Field(
+        default=True,
+        description="Рекурсивный обход директории. По умолчанию true.",
+    )
+    include: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Fnmatch-glob по пути (например '*.py'). Без значения — все файлы."
+        ),
+    )
+    case_insensitive: bool = Field(
+        default=False,
+        description="Игнорировать регистр. По умолчанию false.",
+    )
+    context: int = Field(
+        default=0,
+        ge=0,
+        description="Строк контекста до и после каждого совпадения. По умолчанию 0.",
+    )
+    limit: int = Field(
+        default=100,
+        ge=1,
+        description="Максимум совпадений в ответе. По умолчанию 100.",
+    )
+    fixed_string: bool = Field(
+        default=False,
+        description="Литеральный поиск без regex. По умолчанию false.",
+    )
 
 
 @dataclass(frozen=True)

@@ -10,14 +10,14 @@ HTML тело страницы пропускается через `markdownify`
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, ClassVar
+from typing import ClassVar
 
 import httpx
 import markdownify
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.indexing import PipelineContext, PipelineId, ReaderKeys
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import NonEmpty
 from boba.tool.confluence.connection import (
     ConfluenceConnection,
 )
@@ -42,26 +42,29 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True)
-class PageDownloadMarkdownArgs:
+class PageDownloadMarkdownArgs(BaseModel):
     """Скачивает указанные страницы Confluence как Markdown-файлы в workspace.
 
     На каждую страницу создаётся файл `{dest_dir}/{page_id}.md` с Markdown-телом
     (HTML страницы конвертируется через markdownify). Дальше — обычные file-tools.
     """
 
-    page_ids: Annotated[
-        list[str],
-        "ID страниц для скачивания (как в confluence_search/page_outline). "
-        "Передавайте JSON-массив строк.",
-        NonEmpty(),
-    ]
-    dest_dir: Annotated[
-        str,
-        "Директория внутри workspace, куда сохранять файлы (создаётся, "
-        "если не существует).",
-        NonEmpty(),
-    ]
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    page_ids: list[str] = Field(
+        min_length=1,
+        description=(
+            "ID страниц для скачивания (как в confluence_search/page_outline). "
+            "Передавайте JSON-массив строк."
+        ),
+    )
+    dest_dir: str = Field(
+        min_length=1,
+        description=(
+            "Директория внутри workspace, куда сохранять файлы (создаётся, "
+            "если не существует)."
+        ),
+    )
 
 
 @dataclass(frozen=True)

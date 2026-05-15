@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Any, ClassVar
+from typing import Any, ClassVar
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.html import HtmlKeys
 from boba.indexing import (
@@ -17,7 +18,6 @@ from boba.indexing import (
     SectionKeys,
 )
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import MaxValue, MinValue, NonEmpty
 from boba.tool.confluence.connection import (
     ConfluenceConnection,
 )
@@ -43,25 +43,27 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True)
-class PageOutlineArgs:
+class PageOutlineArgs(BaseModel):
     """Получает структуру заголовков (h1..h6) страницы Confluence по page_id.
 
     Возвращает title, метаданные и список секций с anchor'ами для последующего
     вызова confluence_page_section.
     """
 
-    page_id: Annotated[
-        str,
-        "ID страницы Confluence (число; виден в URL viewpage.action?pageId=...).",
-        NonEmpty(),
-    ]
-    max_headings: Annotated[
-        int,
-        "Максимум заголовков в ответе (защита от длинных страниц).",
-        MinValue(1),
-        MaxValue(500),
-    ]
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    page_id: str = Field(
+        min_length=1,
+        description=(
+            "ID страницы Confluence (число; виден в URL "
+            "viewpage.action?pageId=...)."
+        ),
+    )
+    max_headings: int = Field(
+        ge=1,
+        le=500,
+        description="Максимум заголовков в ответе (защита от длинных страниц).",
+    )
 
 
 @dataclass(frozen=True)
