@@ -20,7 +20,7 @@ def _ext_ctx() -> ExtensionContext:
 def _tool_names(values: dict[str, str]) -> list[str]:
     bundle = ConfigBundle.from_sources([DictSource.from_strings(values)])
     sources = list(install_plugins(bundle, [HtmlPlugin], _ext_ctx()))
-    return [t.name().to_wire() for src in sources for t in src.tools()]
+    return [t.name() for src in sources for t in src.tools()]
 
 
 def test_disabled_by_default():

@@ -33,7 +33,7 @@ def _cat_tool(values: dict[str, str]) -> CatTool:
     )
     sources = list(install_plugins(bundle, [FilesPlugin], _ext_ctx()))
     found = next(
-        t for src in sources for t in src.tools() if t.name().to_wire() == "cat"
+        t for src in sources for t in src.tools() if t.name() == "cat"
     )
     assert isinstance(found, CatTool)
     return found

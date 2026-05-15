@@ -23,7 +23,13 @@ from boba.tools.domain.errors import (
     ToolOutputTooLargeError,
     ToolSourceCollisionError,
 )
-from boba.tools.domain.ids import ToolId, ToolName, ToolSourceId
+from boba.tools.domain.ids import (
+    ToolId,
+    ToolName,
+    ToolSourceId,
+    compose_tool_id,
+    parse_tool_id,
+)
 from boba.tools.domain.result import (
     DefaultTextVisitor,
     ErrorResult,
@@ -57,4 +63,6 @@ __all__ = [
     "ToolSourceCollisionError",
     "ToolSourceId",
     "ToolWireSchemaBuilder",
+    "compose_tool_id",
+    "parse_tool_id",
 ]
