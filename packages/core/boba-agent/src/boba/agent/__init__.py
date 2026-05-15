@@ -6,6 +6,7 @@ from boba.agent.errors import (
     LLMGenerationFailedError,
     MaxIterationsExceededError,
 )
+from boba.agent.event_specs import IsContentDelta
 from boba.agent.events import (
     Advisory,
     AgentEvent,
@@ -44,7 +45,6 @@ from boba.agent.events import (
     ToolResultReady,
     UserQueryReceived,
 )
-from boba.agent.event_specs import IsContentDelta
 from boba.agent.history import (
     HistoryReader,
     HistoryService,
