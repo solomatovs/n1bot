@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import NonEmpty
 from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     TextResult,
@@ -19,11 +19,12 @@ from boba.workspace.contract import WorkspaceError, WorkspaceNotFoundError
 __all__ = ["CdArgs", "CdTool", "CdToolConfig"]
 
 
-@dataclass(frozen=True)
-class CdArgs:
+class CdArgs(BaseModel):
     """Сменить текущую директорию."""
 
-    path: Annotated[str, "Путь директории.", NonEmpty()]
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str = Field(min_length=1, description="Путь директории.")
 
 
 @dataclass(frozen=True)

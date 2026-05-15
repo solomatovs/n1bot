@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import NonEmpty
 from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     JsonResult,
@@ -19,8 +19,7 @@ from boba.workspace.contract import WorkspaceError, WorkspaceNotFoundError
 __all__ = ["StatArgs", "StatTool", "StatToolConfig"]
 
 
-@dataclass(frozen=True)
-class StatArgs:
+class StatArgs(BaseModel):
     """Вернуть метаданные ресурса.
 
     Тип (file/directory/other), размер в байтах, время модификации. Если
@@ -28,7 +27,9 @@ class StatArgs:
     количество файлов; для содержимого директории — ls/tree.
     """
 
-    path: Annotated[str, "Путь к файлу или директории.", NonEmpty()]
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str = Field(min_length=1, description="Путь к файлу или директории.")
 
 
 @dataclass(frozen=True)

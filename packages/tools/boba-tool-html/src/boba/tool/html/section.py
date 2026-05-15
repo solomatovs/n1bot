@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated
 
 from bs4.element import Tag
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import MinValue, NonEmpty
 from boba.tool.html._base import HtmlToolBase
 from boba.tool.html._parse import (
     Heading,
@@ -30,30 +29,36 @@ from boba.workspace.contract import (
 __all__ = ["HtmlSectionTool", "HtmlSectionToolConfig", "SectionArgs"]
 
 
-@dataclass(frozen=True)
-class SectionArgs:
+class SectionArgs(BaseModel):
     """Вернуть HTML-фрагмент раздела от выбранного заголовка до следующего.
 
     anchor берётся из html_outline (idx:N или html-id; ведущий # необязателен).
     Содержимое возвращается как есть, без преобразований в markdown/текст.
     """
 
-    path: Annotated[str, "Путь к HTML-файлу в workspace.", NonEmpty()]
-    anchor: Annotated[
-        str,
-        "Anchor заголовка из html_outline (idx:N или html id). "
-        "Ведущий '#' необязателен.",
-        NonEmpty(),
-    ]
-    include_subsections: Annotated[
-        bool,
-        "true — включать вложенные подзаголовки (стоп на следующем заголовке "
-        "того же или меньшего уровня); false — стоп на любом следующем "
-        "заголовке.",
-    ] = True
-    max_chars: Annotated[
-        int, "Лимит длины ответа в символах.", MinValue(100)
-    ] = 8000
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str = Field(min_length=1, description="Путь к HTML-файлу в workspace.")
+    anchor: str = Field(
+        min_length=1,
+        description=(
+            "Anchor заголовка из html_outline (idx:N или html id). "
+            "Ведущий '#' необязателен."
+        ),
+    )
+    include_subsections: bool = Field(
+        default=True,
+        description=(
+            "true — включать вложенные подзаголовки (стоп на следующем "
+            "заголовке того же или меньшего уровня); false — стоп на любом "
+            "следующем заголовке."
+        ),
+    )
+    max_chars: int = Field(
+        default=8000,
+        ge=100,
+        description="Лимит длины ответа в символах.",
+    )
 
 
 @dataclass(frozen=True)

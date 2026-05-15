@@ -10,9 +10,6 @@ from typing import Protocol
 
 import httpx
 
-from boba.schema.coercion import (
-    RequiredWhen,
-)
 from boba.tool.confluence.auth import PatAuth
 from boba.transport.http import HttpTransport
 
@@ -49,12 +46,12 @@ class ConfluenceConnectionConfig(Protocol):
 
 
 class ConfluenceConnection:
-    """Helpers поверх `ConfluenceConnectionConfig`: схема + auth/transport."""
+    """Helpers поверх `ConfluenceConnectionConfig`: auth/transport.
 
-    @staticmethod
-    def invariant() -> RequiredWhen:
-        """Object-level invariant: при `auth_method=basic` обязателен `auth_user`."""
-        return RequiredWhen("auth_method", "basic", "auth_user")
+    Object-level invariant `при auth_method=basic обязателен auth_user`
+    реализован прямо в `ConfluencePluginConfig._check_invariants`
+    (`@model_validator(mode='after')`); см. `plugin.py`.
+    """
 
     @staticmethod
     def make_auth(cfg: ConfluenceConnectionConfig) -> httpx.Auth:

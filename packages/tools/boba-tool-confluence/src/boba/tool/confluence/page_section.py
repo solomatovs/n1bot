@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, ClassVar
+from typing import ClassVar
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.indexing import (
     PipelineContext,
@@ -16,7 +17,6 @@ from boba.indexing import (
     SectionKeys,
 )
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import MaxValue, MinValue, NonEmpty
 from boba.tool.confluence.connection import (
     ConfluenceConnection,
 )
@@ -40,30 +40,30 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True)
-class PageSectionArgs:
+class PageSectionArgs(BaseModel):
     """Читает текст одной секции страницы Confluence.
 
     От заголовка до следующего того же или большего уровня. page_id и anchor
     берутся из ответа confluence_page_outline.
     """
 
-    page_id: Annotated[
-        str,
-        "ID страницы Confluence (как в confluence_page_outline).",
-        NonEmpty(),
-    ]
-    anchor: Annotated[
-        str,
-        "Anchor нужного раздела (поле `anchor` из confluence_page_outline).",
-        NonEmpty(),
-    ]
-    max_chars: Annotated[
-        int,
-        "Максимум символов в text-поле ответа (обрезка после).",
-        MinValue(1),
-        MaxValue(5000000),
-    ]
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    page_id: str = Field(
+        min_length=1,
+        description="ID страницы Confluence (как в confluence_page_outline).",
+    )
+    anchor: str = Field(
+        min_length=1,
+        description=(
+            "Anchor нужного раздела (поле `anchor` из confluence_page_outline)."
+        ),
+    )
+    max_chars: int = Field(
+        ge=1,
+        le=5_000_000,
+        description="Максимум символов в text-поле ответа (обрезка после).",
+    )
 
 
 @dataclass(frozen=True)

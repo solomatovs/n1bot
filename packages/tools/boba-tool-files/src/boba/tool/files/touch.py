@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import NonEmpty
 from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     TextResult,
@@ -19,14 +19,15 @@ from boba.workspace.contract import WorkspaceError
 __all__ = ["TouchArgs", "TouchTool", "TouchToolConfig"]
 
 
-@dataclass(frozen=True)
-class TouchArgs:
+class TouchArgs(BaseModel):
     """Создать пустой файл (включая промежуточные директории).
 
     Если уже существует — обновить время модификации, содержимое не трогать.
     """
 
-    path: Annotated[str, "Путь к файлу.", NonEmpty()]
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str = Field(min_length=1, description="Путь к файлу.")
 
 
 @dataclass(frozen=True)

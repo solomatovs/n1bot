@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import islice
-from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import MinValue, NonEmpty
 from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     JsonResult,
@@ -20,20 +20,25 @@ from boba.workspace.contract import WorkspaceError
 __all__ = ["LsArgs", "LsTool", "LsToolConfig"]
 
 
-@dataclass(frozen=True)
-class LsArgs:
+class LsArgs(BaseModel):
     """Перечислить содержимое директории на одном уровне без рекурсии.
 
     При переполнении limit ответ обрезается с маркером '(truncated at limit=N)'.
     Для рекурсии — tree.
     """
 
-    path: Annotated[
-        str | None, "Путь директории. Без значения — корень workspace.", NonEmpty()
-    ] = None
-    limit: Annotated[
-        int, "Максимум элементов в ответе. По умолчанию 200.", MinValue(1)
-    ] = 200
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Путь директории. Без значения — корень workspace.",
+    )
+    limit: int = Field(
+        default=200,
+        ge=1,
+        description="Максимум элементов в ответе. По умолчанию 200.",
+    )
 
 
 @dataclass(frozen=True)

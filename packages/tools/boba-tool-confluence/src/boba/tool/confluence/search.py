@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, ClassVar
+from typing import ClassVar
 from urllib.parse import quote
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.indexing import (
     PipelineContext,
@@ -16,8 +17,6 @@ from boba.indexing import (
     Section,
 )
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import MaxValue, MinValue, NonEmpty, Nullable
-from boba.schema.coercion.types import ParseString
 from boba.tool.confluence.connection import (
     ConfluenceConnection,
 )
@@ -38,24 +37,23 @@ from boba.transport.http import HttpKeys
 __all__ = ["ConfluenceSearchTool", "ConfluenceSearchToolConfig", "SearchArgs"]
 
 
-@dataclass(frozen=True)
-class SearchArgs:
+class SearchArgs(BaseModel):
     """Полнотекстовый поиск страниц Confluence.
 
     Возвращает список (title, space, page_id, url, excerpt).
     """
 
-    query: Annotated[
-        str,
-        "Строка понотекстового поиска в confluence",
-        NonEmpty(),
-    ]
-    space: Annotated[
-        str | None,
-        "Ограничение поиска по space",
-        Nullable(ParseString()),
-    ]
-    limit: Annotated[int, "Максимум hits в ответе.", MinValue(1), MaxValue(50)]
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    query: str = Field(
+        min_length=1,
+        description="Строка понотекстового поиска в confluence",
+    )
+    space: str | None = Field(
+        default=None,
+        description="Ограничение поиска по space",
+    )
+    limit: int = Field(ge=1, le=50, description="Максимум hits в ответе.")
 
 
 @dataclass(frozen=True)

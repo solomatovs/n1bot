@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import NonEmpty
 from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     TextResult,
@@ -19,18 +19,21 @@ from boba.workspace.contract import WorkspaceError
 __all__ = ["WriteArgs", "WriteTool", "WriteToolConfig"]
 
 
-@dataclass(frozen=True)
-class WriteArgs:
+class WriteArgs(BaseModel):
     """Перезаписать файл указанным содержимым.
 
     Если файла или промежуточных директорий нет — создать.
     """
 
-    path: Annotated[str, "Путь к файлу.", NonEmpty()]
-    content: Annotated[str, "Новое содержимое файла."]
-    encoding: Annotated[
-        str, "Кодировка файла. По умолчанию 'utf-8'.", NonEmpty()
-    ] = "utf-8"
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str = Field(min_length=1, description="Путь к файлу.")
+    content: str = Field(description="Новое содержимое файла.")
+    encoding: str = Field(
+        default="utf-8",
+        min_length=1,
+        description="Кодировка файла. По умолчанию 'utf-8'.",
+    )
 
 
 @dataclass(frozen=True)

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict
+
 from boba.plugin.prompt import PromptOverlay
 from boba.tool.chromadb.kb import ChromaKnowledgeBase
 from boba.tools.domain import (
@@ -22,13 +24,14 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True)
-class KbListCollectionsArgs:
+class KbListCollectionsArgs(BaseModel):
     """Список доступных knowledge-base коллекций ChromaDB.
 
     Возвращает JSON-массив объектов {name, description}. Используй перед
     kb_search чтобы выбрать подходящую коллекцию.
     """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
 
 @dataclass(frozen=True)

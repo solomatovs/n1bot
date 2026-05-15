@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import MaxValue, MinValue, NonEmpty
 from boba.tool.html._base import HtmlToolBase
 from boba.tool.html._parse import anchor_for, collect_headings, load_soup
 from boba.tools.domain import (
@@ -23,22 +23,25 @@ from boba.workspace.contract import (
 __all__ = ["HtmlOutlineTool", "HtmlOutlineToolConfig", "OutlineArgs"]
 
 
-@dataclass(frozen=True)
-class OutlineArgs:
+class OutlineArgs(BaseModel):
     """Оглавление HTML-файла: иерархия <h1>..<h6> с anchor'ами.
 
     Anchor — либо #<id> атрибута заголовка, либо #idx:N (порядковый номер).
     Используется как вход в html_section.
     """
 
-    path: Annotated[str, "Путь к HTML-файлу в workspace.", NonEmpty()]
-    max_depth: Annotated[
-        int | None,
-        "Максимальный уровень заголовков (1=h1..6=h6). Без значения — все 6.",
-        MinValue(1),
-        MaxValue(6),
-    ] = None
-    limit: Annotated[int, "Максимум заголовков в ответе.", MinValue(1)] = 200
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str = Field(min_length=1, description="Путь к HTML-файлу в workspace.")
+    max_depth: int | None = Field(
+        default=None,
+        ge=1,
+        le=6,
+        description=(
+            "Максимальный уровень заголовков (1=h1..6=h6). Без значения — все 6."
+        ),
+    )
+    limit: int = Field(default=200, ge=1, description="Максимум заголовков в ответе.")
 
 
 @dataclass(frozen=True)

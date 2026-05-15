@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.plugin.prompt import PromptOverlay
-from boba.schema.coercion import NonEmpty
 from boba.tool.files._base import FsToolBase
 from boba.tools.domain import (
     TextResult,
@@ -19,17 +19,19 @@ from boba.workspace.contract import WorkspaceError, WorkspaceNotFoundError
 __all__ = ["RmArgs", "RmTool", "RmToolConfig"]
 
 
-@dataclass(frozen=True)
-class RmArgs:
+class RmArgs(BaseModel):
     """Удалить файл или директорию.
 
     Для директорий требуется recursive=true. Безвозвратно.
     """
 
-    path: Annotated[str, "Путь к файлу или директории.", NonEmpty()]
-    recursive: Annotated[
-        bool, "Удалить директорию со всем содержимым. По умолчанию false."
-    ] = False
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str = Field(min_length=1, description="Путь к файлу или директории.")
+    recursive: bool = Field(
+        default=False,
+        description="Удалить директорию со всем содержимым. По умолчанию false.",
+    )
 
 
 @dataclass(frozen=True)
