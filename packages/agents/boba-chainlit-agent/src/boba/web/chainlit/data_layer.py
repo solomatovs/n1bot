@@ -111,7 +111,7 @@ class ThreadMeta:
         user_id_raw = raw.get("userId")
         user_id = UserId(user_id_raw) if isinstance(user_id_raw, str) else None
         return cls(
-            id=raw["id"],
+            id=ThreadId(raw["id"]),
             workspace_id=WorkspaceId(raw["workspaceId"]),
             user_id=user_id,
             user_identifier=raw.get("userIdentifier"),
@@ -344,7 +344,7 @@ class FsUserCatalog(UserCatalog):
     @staticmethod
     def _encode(user: StoredUser) -> dict[str, Any]:
         return {
-            "id": user.id,
+            "id": user.id.to_wire(),
             "identifier": user.identifier,
             "display_name": user.display_name,
             "metadata": user.metadata,
@@ -689,10 +689,10 @@ class BobaDataLayer(BaseDataLayer):
         return cast(
             "ThreadDict",
             {
-                "id": meta.id,
+                "id": meta.id.to_wire(),
                 "createdAt": meta.created_at,
                 "name": meta.name,
-                "userId": meta.user_id,
+                "userId": meta.user_id.to_wire() if meta.user_id is not None else None,
                 "userIdentifier": meta.user_identifier,
                 "tags": meta.tags,
                 "metadata": meta.metadata,
@@ -782,10 +782,10 @@ class BobaDataLayer(BaseDataLayer):
         has_next = (start + pagination.first) < len(metas)
         data = [
             {
-                "id": m.id,
+                "id": m.id.to_wire(),
                 "createdAt": m.created_at,
                 "name": m.name,
-                "userId": m.user_id,
+                "userId": m.user_id.to_wire() if m.user_id is not None else None,
                 "userIdentifier": m.user_identifier,
                 "tags": m.tags,
                 "metadata": m.metadata,
