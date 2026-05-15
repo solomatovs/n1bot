@@ -34,7 +34,7 @@ import dataclasses
 from collections.abc import Callable
 from typing import Any, overload
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from boba.tools.domain.ids import (
     ToolId,
@@ -43,6 +43,7 @@ from boba.tools.domain.ids import (
     compose_tool_id,
     parse_tool_id,
 )
+from boba.tools.domain.llm_schema import clean_llm_json_schema
 from boba.tools.domain.result import (
     JsonResult,
     TextResult,
@@ -196,20 +197,39 @@ class DecoratedTool(Tool[BaseModel, None]):
         return self._tool_id_value
 
     @classmethod
-    def _try_resolve_args_type(cls) -> type | None:
-        """`DecoratedTool` хранит args_model на инстансе, не в generic."""
-        return None
+    def _resolve_args_model(cls) -> type[BaseModel]:  # type: ignore[override]
+        """`DecoratedTool` хранит args_model на инстансе, не в generic.
+
+        Базовый `Tool._resolve_args_model` идёт через `__orig_bases__` —
+        для `Tool[BaseModel, None]` он вернул бы абстрактный `BaseModel`.
+        Здесь возвращаем модель, реально построенную `@tool`.
+        """
+        msg = (
+            "DecoratedTool._resolve_args_model вызывается только как instance-"
+            "метод (через self), а не как classmethod"
+        )
+        raise TypeError(msg)
+
+    def _instance_args_model(self) -> type[BaseModel]:
+        return self._args_model_value
 
     def definition(self) -> dict[str, Any]:
-        from boba.tools.domain.llm_schema import clean_llm_json_schema  # noqa: PLC0415
-
         raw = self._args_model_value.model_json_schema()
         if self._description:
             raw["description"] = self._description
         return clean_llm_json_schema(raw)
 
-    def _parse_args(self, raw: dict[str, Any]) -> Any:
-        return self._parse_pydantic(self._args_model_value, raw)
+    def _parse_args(self, raw: dict[str, Any]) -> Any:  # type: ignore[override]
+        try:
+            return self._args_model_value.model_validate(raw)
+        except ValidationError as e:
+            from boba.tools.domain.tool import (  # noqa: PLC0415
+                _pydantic_error_to_tool_error,
+            )
+
+            raise _pydantic_error_to_tool_error(
+                e, self._tool_id_value, self.definition(), raw,
+            ) from e
 
     def execute(self, ctx: ToolContext, args: BaseModel) -> ToolResult:
         # getattr вместо model_dump(): не сериализует nested BaseModel
