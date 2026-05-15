@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from typing import Generic, TypeVar
 
+from pydantic import BaseModel
+
 from boba.tools.domain import Tool
 from boba.workspace.contract import ProjectWorkspaceShell
 
 __all__ = ["HtmlToolBase"]
 
-TArgs = TypeVar("TArgs")
+TArgs = TypeVar("TArgs", bound=BaseModel)
 TConfig = TypeVar("TConfig")
 
 

@@ -9,8 +9,6 @@ description = "Builtin file-system tools for the Boba agent (cat/ls/grep/edit/wr
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-patterns",
-    "boba-schema",
-    "boba-config",
     "boba-plugin",
     "boba-workspace",
     "boba-tools",

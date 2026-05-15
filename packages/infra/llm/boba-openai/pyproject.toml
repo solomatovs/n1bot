@@ -9,7 +9,6 @@ description = "Boba LLM-провайдер OpenAI: терминал, observers, 
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-patterns",
-    "boba-schema",
     "boba-workspace",
     "boba-llm",
     "boba-indexing",

@@ -9,8 +9,6 @@ description = "Boba PostgreSQL FTS: read-only tools (fts_search, fts_list_indexe
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-patterns",
-    "boba-schema",
-    "boba-config",
     "boba-plugin",
     "boba-tools",
     "boba-settings",

@@ -45,18 +45,11 @@ class ChatSession:
         history_workspaces: HistoryWorkspaceRegistry,
         message_service: MessageService,
     ) -> None:
-        bundle = builder.config_bundle()
-        if bundle is None:
-            msg = (
-                "ChatSession: AgentBuilder must be initialized "
-                "via with_config_bundle(...)"
-            )
-            raise ValueError(msg)
-        app = bundle.get(AppConfig, "agent")
+        app = AppConfig.load()
 
         self._workspace_id = workspace_id
         self._agent_config = app.runtime
-        self._chainlit_config = bundle.get(ChainlitConfig, "chainlit")
+        self._chainlit_config = ChainlitConfig.load()
 
         project_shell = project_workspaces.get_or_create(workspace_id)
         if not isinstance(project_shell, ProjectWorkspaceShell):
