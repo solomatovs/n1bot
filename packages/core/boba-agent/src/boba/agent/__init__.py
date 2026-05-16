@@ -106,7 +106,7 @@ from boba.agent.prompt import (
     PromptState,
     StaticPromptProvider,
 )
-from boba.agent.turn.builder import TurnReducerFactory, TurnSpecBuilder
+from boba.agent.turn.builder import TurnBuilder, TurnReducerFactory, TurnSpecBuilder
 from boba.agent.turn.reducers import (
     HistoryReducer,
     ModelReducer,
@@ -213,6 +213,7 @@ __all__ = [
     "ToolPart",
     "ToolResultReady",
     "ToolsReducer",
+    "TurnBuilder",
     "TurnReducer",
     "TurnReducerFactory",
     "TurnSpec",

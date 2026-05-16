@@ -6,7 +6,8 @@
 - ToolResult sealed family + ToolResultVisitor (double-dispatch).
 - доменные ошибки: ToolExecutionError, InvalidToolArgumentError, etc.
 
-Application-фреймворк (registry, ToolExecutor, plugin_loader) — в `boba-tools`.
+Application-фреймворк (registry, ToolRegistry, ToolCatalog, ToolExecutor,
+plugin_loader) — в `boba-tools`.
 LLM-adapter'ы (`boba-adapter-*`) реализуют `ToolResultVisitor` под свой
 target-формат (str, multi-part, structured-output).
 """

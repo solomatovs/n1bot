@@ -9,6 +9,7 @@ from boba.agent import (
     Agent,
     AgentBuilder,
     InMemoryMessageService,
+    TurnBuilder,
 )
 from boba.agent.prompt_providers import PromptLoader
 from boba.agent.turn.reducers import (
@@ -90,22 +91,25 @@ def _run() -> int:
     )
 
     message_service = InMemoryMessageService()
-    builder = (
-        builder.with_llm(llm)
+    turn = (
+        TurnBuilder()
         .with_model(run_cfg.model)
-        .with_messages(message_service)
-        .use_default_turn_reducers()
-        .use_turn_reducer(RememberUserQueryReducer())
         .with_prompts(prompt_loader.prompt_providers())
-        .with_extension(ProjectWorkspaceShell, project_workspace)
-        .use_tools_plugins_discovered()
+        .use_default_reducers()
+        .use_reducer(RememberUserQueryReducer())
     )
-
     sampling = run_cfg.to_sampling_params()
     if sampling is not None:
-        builder = builder.with_sampling(sampling)
+        turn = turn.with_sampling(sampling)
 
-    agent = builder.build()
+    agent = (
+        builder.with_llm(llm)
+        .with_messages(message_service)
+        .with_extension(ProjectWorkspaceShell, project_workspace)
+        .use_tools_plugins_discovered()
+        .use_turn(turn)
+        .build()
+    )
     sink = ConsoleSink(sys.stdout, sys.stderr)
 
     if run_cfg.query is not None:

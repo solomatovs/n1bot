@@ -25,18 +25,8 @@ from boba.agent.middleware import (
     StopOnFinished,
     ToolExecutionMiddleware,
 )
-from boba.agent.prompt import PromptProvider
-from boba.agent.turn.builder import TurnReducerFactory, TurnSpecBuilder
-from boba.agent.turn.reducers import (
-    HistoryReducer,
-    ModelReducer,
-    SamplingReducer,
-    SystemPromptReducer,
-    ToolsReducer,
-    TurnReducer,
-)
+from boba.agent.turn.builder import TurnBuilder, TurnSpecBuilder
 from boba.llm.builder import LLM
-from boba.llm.models import SamplingParams
 from boba.patterns import (
     StreamSource,
     StreamSourceChainBuilder,
@@ -49,6 +39,7 @@ from boba.tools.framework import (
     StaticToolSource,
     ToolDecoratorFactory,
     ToolExecutor,
+    ToolRegistry,
     ToolSource,
 )
 
@@ -74,24 +65,27 @@ class AgentBuilderConfig(BaseModel):
 
 
 class AgentBuilder:
-    """Fluent-фасад: собирает Agent с дефолтной middleware-цепью."""
+    """Fluent-фасад: собирает Agent с дефолтной middleware-цепью.
+
+    Owns: LLM, message store, history journal, tool registry (sources +
+    lifecycle), bootstrap-конфиг middleware-цепочки, event-stamper.
+    Turn-side (model/prompts/sampling/reducers) живёт в `TurnBuilder` и
+    подаётся одним методом `.use_turn(turn_builder)`.
+    """
 
     def __init__(self) -> None:
         self._llm: LLM | None = None
-        self._tool_executor: ToolExecutor | None = None
+        self._tool_registry: ToolRegistry | None = None
         self._inline_factories: list[ToolDecoratorFactory] = []
         self._plugin_entries: list[
             tuple[type[Plugin[Any, ToolSource]], Any | None]
         ] = []
         self._discover_groups: list[str] = []
         self._extensions: dict[type, object] = {}
-        self._resolved_tool_executor: ToolExecutor | None = None
+        self._resolved_tool_registry: ToolRegistry | None = None
         self._message_service: MessageService = InMemoryMessageService()
         self._history_service: HistoryService = InMemoryHistoryService()
-        self._prompt_providers: list[PromptProvider] = []
-        self._model: str | None = None
-        self._sampling: SamplingParams | None = None
-        self._turn_spec_builder: TurnSpecBuilder = TurnSpecBuilder()
+        self._turn: TurnBuilder | None = None
         self._event_stamper_factory: EventStamperFactory = EventStamperMiddleware
         # Bootstrap-конфиг middleware-цепочки; переопределяется .use_config().
         self._builder_config: AgentBuilderConfig = AgentBuilderConfig()
@@ -101,9 +95,9 @@ class AgentBuilder:
         self._llm = llm
         return self
 
-    def with_tools(self, service: ToolExecutor) -> Self:
-        """Готовый реестр инструментов; mutually-exclusive с use_*-путями."""
-        self._tool_executor = service
+    def with_tools(self, registry: ToolRegistry) -> Self:
+        """Готовый `ToolRegistry`; mutually-exclusive с use_*-путями."""
+        self._tool_registry = registry
         return self
 
     def use_tools(self, factories: Iterable[ToolDecoratorFactory]) -> Self:
@@ -143,9 +137,9 @@ class AgentBuilder:
         self._discover_groups.append(group)
         return self
 
-    def tool_executor(self) -> ToolExecutor:
-        """Собрать (и закешировать) ToolExecutor без сборки Agent."""
-        return self._resolve_tool_executor()
+    def tool_registry(self) -> ToolRegistry:
+        """Собрать (и закешировать) `ToolRegistry` без сборки Agent."""
+        return self._resolve_tool_registry()
 
     def use_tools_plugin(
         self,
@@ -183,37 +177,15 @@ class AgentBuilder:
         self._history_service = service
         return self
 
-    def with_prompts(self, providers: Iterable[PromptProvider]) -> Self:
-        """Провайдеры system-prompt блоков; дефолт — пусто."""
-        self._prompt_providers = list(providers)
-        return self
+    def use_turn(self, turn: TurnBuilder) -> Self:
+        """Описание следующего хода. Обязательно до `.build()`.
 
-    def with_model(self, model: str) -> Self:
-        """LLM-модель для всех прогонов агента (обязательно до `build()`)."""
-        self._model = model
-        return self
-
-    def with_sampling(self, sampling: SamplingParams) -> Self:
-        """SamplingParams (temperature/top_p/...); дефолт — None (без override)."""
-        self._sampling = sampling
-        return self
-
-    def use_turn_reducer(
-        self,
-        reducer_or_factory: TurnReducer | TurnReducerFactory,
-    ) -> Self:
-        """Зарегистрировать стадию TurnSpec.
-
-        Принимает:
-        - готовый `TurnReducer` (context-independent), напр.
-          `RememberUserQueryReducer()`;
-        - фабрику `(AgentContext) -> TurnReducer`, если reducer'у нужен ctx.
-        Reducer с тем же `id()` перезатрёт ранее зарегистрированный с этим id.
-
-        Если ни один `use_turn_reducer` / `use_default_turn_reducers` не был
-        вызван до `build()`, дефолтный набор подключается автоматически.
+        Auto-wiring: если `turn` не задал `messages`/`tool_catalog` явно,
+        AgentBuilder при `.build()` прокидывает свои `MessageService` и
+        `ToolRegistry.catalog()`. Явно заданное в `turn` уважается —
+        удобная override-точка для тестов.
         """
-        self._turn_spec_builder.add(reducer_or_factory)
+        self._turn = turn
         return self
 
     def use_config(self, config: AgentBuilderConfig) -> Self:
@@ -236,54 +208,31 @@ class AgentBuilder:
         self._event_stamper_factory = factory
         return self
 
-    def use_default_turn_reducers(self) -> Self:
-        """Зарегистрировать дефолтный набор TurnSpec'а.
-
-        Состав: model / system_prompt / history / tools / sampling. Зависимости
-        (`prompt_providers`, `message_service`, `tool_executor`, model, sampling)
-        разрешаются на момент `build()` — порядок вызовов в fluent-цепочке не важен.
-
-        Полезно, когда нужно «дефолт + что-то ещё»: вызови этот метод явно,
-        затем `use_turn_reducer(R)`. Если ни один reducer не зарегистрирован,
-        `build()` вызовет этот метод автоматически.
-        """
-        self._turn_spec_builder.add(
-            lambda _ctx: ModelReducer(self._require_model()),
-        )
-        self._turn_spec_builder.add(
-            lambda _ctx: SystemPromptReducer(self._prompt_providers),
-        )
-        self._turn_spec_builder.add(
-            lambda _ctx: HistoryReducer(self._message_service),
-        )
-        self._turn_spec_builder.add(
-            lambda _ctx: ToolsReducer(self._resolve_tool_executor()),
-        )
-        self._turn_spec_builder.add(
-            lambda _ctx: SamplingReducer(self._sampling),
-        )
-        return self
-
     def build(self) -> Agent:
-        """Собрать Agent. Требуются `.with_llm(...)` и `.with_model(...)`."""
+        """Собрать Agent. Требуются `.with_llm(...)` и `.use_turn(...)`."""
         if self._llm is None:
             msg = "AgentBuilder.build: .with_llm(...) обязателен до .build()"
             raise ValueError(msg)
-        self._require_model()
+        if self._turn is None:
+            msg = "AgentBuilder.build: .use_turn(...) обязателен до .build()"
+            raise ValueError(msg)
 
-        self._resolve_tool_executor()
+        registry = self._resolve_tool_registry()
         message_service = self._message_service
         history_service = self._history_service
 
-        if self._turn_spec_builder.is_empty():
-            self.use_default_turn_reducers()
+        if not self._turn.has_messages():
+            self._turn.with_messages(message_service)
+        if not self._turn.has_tool_catalog():
+            self._turn.with_tool_catalog(registry.catalog())
+        turn_spec_builder = self._turn.build_spec_builder()
 
         chain = self._build_chain(
             llm=self._llm,
             message_writer=message_service,
             history_writer=history_service,
-            tool_executor=self._resolve_tool_executor(),
-            turn_spec_builder=self._turn_spec_builder,
+            tool_executor=registry.executor(),
+            turn_spec_builder=turn_spec_builder,
             event_stamper_factory=self._event_stamper_factory,
             builder_config=self._builder_config,
         )
@@ -293,30 +242,24 @@ class AgentBuilder:
         )
         return Agent(source=source)
 
-    def _require_model(self) -> str:
-        if self._model is None:
-            msg = "AgentBuilder.build: .with_model(...) обязателен до .build()"
-            raise ValueError(msg)
-        return self._model
-
-    def _resolve_tool_executor(self) -> ToolExecutor:
-        """Выбрать готовый `ToolExecutor` или собрать из накопленных источников."""
+    def _resolve_tool_registry(self) -> ToolRegistry:
+        """Выбрать готовый `ToolRegistry` или собрать из накопленных источников."""
         has_accumulated = (
             bool(self._inline_factories)
             or bool(self._plugin_entries)
             or bool(self._discover_groups)
         )
-        if self._tool_executor is not None and has_accumulated:
+        if self._tool_registry is not None and has_accumulated:
             msg = (
                 "AgentBuilder.build: .with_tools(...) взаимоисключающий "
                 "с use_*-путями — задан один маршрут"
             )
             raise ValueError(msg)
-        if self._tool_executor is not None:
-            return self._tool_executor
+        if self._tool_registry is not None:
+            return self._tool_registry
 
-        if self._resolved_tool_executor is not None:
-            return self._resolved_tool_executor
+        if self._resolved_tool_registry is not None:
+            return self._resolved_tool_registry
 
         if not has_accumulated:
             msg = (
@@ -346,8 +289,8 @@ class AgentBuilder:
             if not is_enabled(cfg):
                 continue
             sources.extend(plugin_cls.build(cfg, ctx))
-        self._resolved_tool_executor = ToolExecutor.from_sources(sources)
-        return self._resolved_tool_executor
+        self._resolved_tool_registry = ToolRegistry.from_sources(sources)
+        return self._resolved_tool_registry
 
     @staticmethod
     def _resolve_plugin(

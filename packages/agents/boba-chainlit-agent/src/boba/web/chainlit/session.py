@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from boba.agent import AgentBuilder
+from boba.agent import AgentBuilder, TurnBuilder
 from boba.agent.agent import Agent
 from boba.agent.messages import MessageService
 from boba.agent.prompt_providers import PromptLoader
@@ -71,14 +71,18 @@ class ChatSession:
         ).get_or_create(PromptWorkspaceId("prompts"))
         prompt_loader = PromptLoader(prompt_workspace)
 
+        turn = (
+            TurnBuilder()
+            .with_model(self._chainlit_config.model)
+            .with_prompts(prompt_loader.prompt_providers())
+            .use_default_reducers()
+            # .use_reducer(RememberUserQueryReducer())
+        )
         self._agent: Agent = (
             builder.with_extension(ProjectWorkspaceShell, project_shell)
             .with_llm(llm)
-            .with_model(self._chainlit_config.model)
-            .use_default_turn_reducers()
-            # .use_turn_reducer(RememberUserQueryReducer())
             .with_messages(message_service)
-            .with_prompts(prompt_loader.prompt_providers())
+            .use_turn(turn)
             .build()
         )
 
