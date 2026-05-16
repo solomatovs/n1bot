@@ -62,7 +62,7 @@ class MaxIterationsExceededError(TerminalError[RequestId, AgentEvent]):
             error_kind=type(self).__name__,
             message=str(self),
             limit=self.limit,
-            iteration=self.iteration,
+            iteration_count=self.iteration,
         )
 
 

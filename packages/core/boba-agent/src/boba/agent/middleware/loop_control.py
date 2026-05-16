@@ -7,7 +7,7 @@ from boba.agent.events import (
     AgentEvent,
     GenerationDone,
     IterationStarted,
-    Terminal,
+    TerminalEvent,
 )
 from boba.agent.orchestrator import AgentContext
 from boba.patterns import Specification, StreamSource
@@ -40,7 +40,7 @@ class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
 
         yield IterationStarted(
             request_id=ctx.request.request_id,
-            iteration=self._iteration,
+            iteration_count=self._iteration,
             max_iterations=ctx.config.max_iterations,
         )
 
@@ -58,8 +58,8 @@ class StopOnFinished(Specification[tuple[AgentContext, AgentEvent]]):
 
 
 class StopOnAnyFailure(Specification[tuple[AgentContext, AgentEvent]]):
-    """Останавливает цикл при любом Terminal-событии."""
+    """Останавливает цикл при любом TerminalEvent."""
 
     def check(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
         _ctx, event = candidate
-        return isinstance(event, Terminal)
+        return isinstance(event, TerminalEvent)

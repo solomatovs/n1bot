@@ -15,7 +15,7 @@ from boba.patterns import StreamSource
 class HistoryRecorderMiddleware(StreamSource[AgentContext, AgentEvent]):
     """Регистрирует каждое AgentEvent из inner-стрима в HistoryService; passthrough.
 
-    При HistoryStoreError эмитит PersistenceFailed (Terminal) и завершает стрим;
+    При HistoryStoreError эмитит PersistenceFailed (TerminalEvent) и завершает стрим;
     StopOnAnyFailure в StreamSourceLoop остановит агентский цикл.
     """
 

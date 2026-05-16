@@ -13,6 +13,7 @@ from boba.agent.middleware import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
     AssistantMessagePersistenceMiddleware,
+    EventStamperMiddleware,
     HistoryRecorderMiddleware,
     IterationCounterMiddleware,
     LLMInvokeMiddleware,
@@ -47,6 +48,11 @@ from boba.tools.framework import (
     ToolSource,
 )
 
+EventStamperFactory = Callable[
+    [StreamSource[AgentContext, AgentEvent]],
+    StreamSource[AgentContext, AgentEvent],
+]
+
 
 class AgentBuilder:
     """Fluent-фасад: собирает Agent с дефолтной middleware-цепью."""
@@ -66,6 +72,7 @@ class AgentBuilder:
         self._prompt_providers: list[PromptProvider] = []
         self._agent_config: AgentConfig = AgentConfig()
         self._turn_spec_builder: TurnSpecBuilder = TurnSpecBuilder()
+        self._event_stamper_factory: EventStamperFactory = EventStamperMiddleware
 
     def with_llm(self, llm: LLMPipeline) -> Self:
         """Готовый LLMPipeline (обязательно; см. LLMPipelineFactory)."""
@@ -182,6 +189,16 @@ class AgentBuilder:
         self._turn_spec_builder.add(reducer_or_factory)
         return self
 
+    def use_event_stamper(self, factory: EventStamperFactory) -> Self:
+        """Переопределить EventStamper-middleware своей фабрикой.
+
+        Фабрика принимает inner-стрим и возвращает обёртку — passthrough,
+        который проставляет envelope-поля (seq / emitted_at / iteration)
+        на каждом проходящем AgentEvent. Дефолт — `EventStamperMiddleware`.
+        """
+        self._event_stamper_factory = factory
+        return self
+
     def use_default_turn_reducers(self) -> Self:
         """Зарегистрировать дефолтный набор TurnSpec'а.
 
@@ -233,6 +250,7 @@ class AgentBuilder:
             history_writer=history_service,
             tool_executor=self._resolve_tool_executor(),
             turn_spec_builder=self._turn_spec_builder,
+            event_stamper_factory=self._event_stamper_factory,
         )
         source = StreamSourceLoop(
             source=chain,
@@ -328,12 +346,17 @@ class AgentBuilder:
         history_writer: HistoryWriter,
         tool_executor: ToolExecutor,
         turn_spec_builder: TurnSpecBuilder,
+        event_stamper_factory: EventStamperFactory,
     ) -> StreamSource[AgentContext, AgentEvent]:
         error_router = AgentErrorRouter(message_writer)
         builder = StreamSourceChainBuilder[AgentContext, AgentEvent]()
+        # HistoryRecorder самым внешним — журналит уже стампленные события.
         builder.use(
             lambda inner: HistoryRecorderMiddleware(inner, history_writer),
         )
+        # EventStamper — сразу под HistoryRecorder: стампит ВСЁ, что приходит
+        # от внутренних middleware, до записи в журнал и отдачи в sink'и.
+        builder.use(event_stamper_factory)
         builder.use(lambda inner: AgentErrorRouterMiddleware(inner, error_router))
         builder.use(IterationCounterMiddleware)
         builder.use(

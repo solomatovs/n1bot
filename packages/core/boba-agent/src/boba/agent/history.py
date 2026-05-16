@@ -10,8 +10,12 @@ from typing import Self
 from pydantic import ValidationError
 
 from boba.agent.errors import TerminalError
-from boba.agent.event_specs import IsContentDelta
-from boba.agent.events import AgentEvent, AgentEventAdapter, PersistenceFailed
+from boba.agent.events import (
+    AgentEvent,
+    AgentEventAdapter,
+    EventCategory,
+    PersistenceFailed,
+)
 from boba.agent.state import ChannelId, StateChannel
 from boba.llm.models import RequestId
 from boba.workspace.contract import HistoryWorkspaceShell, WorkspaceError
@@ -98,8 +102,8 @@ class HistoryService(HistoryReader, HistoryWriter, StateChannel, ABC):
         return ChannelId("history")
 
     def record(self, event: AgentEvent) -> None:
-        """Фильтрует ContentDelta сообщения"""
-        if IsContentDelta().check(event):
+        """Фильтрует ContentDeltaEvent сообщения."""
+        if event.category == EventCategory.CONTENT_DELTA:
             return
 
         self._persist(event)
@@ -131,9 +135,9 @@ class JsonLinesHistoryService(HistoryService):
     Journaling-реализация HistoryService поверх workspace
 
     Записывает все завершённые события:
-        PhaseTransition / ContentSnapshot / Advisory / Terminal
+        PhaseEvent / ContentSnapshotEvent / AdvisoryEvent / TerminalEvent
 
-    Чанки (ContentDelta) пропускаются — журнал хранит
+    Чанки (ContentDeltaEvent) пропускаются — журнал хранит
     только агрегированные снапшоты и переходы фаз
     """
 

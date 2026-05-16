@@ -12,6 +12,7 @@ from boba.agent.middleware.loop_control import (
     StopOnAnyFailure,
     StopOnFinished,
 )
+from boba.agent.middleware.stamper import EventStamperMiddleware
 from boba.agent.middleware.tools import (
     RepeatedToolCallGuardMiddleware,
     ToolExecutionMiddleware,
@@ -21,6 +22,7 @@ __all__ = [
     "AgentErrorRouter",
     "AgentErrorRouterMiddleware",
     "AssistantMessagePersistenceMiddleware",
+    "EventStamperMiddleware",
     "HistoryRecorderMiddleware",
     "IterationCounterMiddleware",
     "LLMInvokeMiddleware",

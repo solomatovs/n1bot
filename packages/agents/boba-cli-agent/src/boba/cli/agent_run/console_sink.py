@@ -1,4 +1,4 @@
-"""Sink в stdout/stderr поверх семей событий."""
+"""Sink в stdout/stderr поверх категорий событий."""
 
 from __future__ import annotations
 
@@ -7,14 +7,15 @@ from collections.abc import Mapping
 from typing import TextIO
 
 from boba.agent.events import (
-    Advisory,
+    AdvisoryEvent,
     AgentEvent,
-    ContentDelta,
-    ContentSnapshot,
-    PhaseTransition,
+    ContentDeltaEvent,
+    ContentSnapshotEvent,
+    PhaseEvent,
     Severity,
-    SlotKind,
-    Terminal,
+    StreamKind,
+    TerminalEvent,
+    ToolPart,
 )
 
 
@@ -32,7 +33,11 @@ class ConsoleSink:
     _BOLD_CYAN = "\x1b[1;36m"
     _BOLD_GREEN = "\x1b[1;32m"
 
-    _STREAMING_SLOTS = frozenset({SlotKind.ANSWER, SlotKind.THINKING, SlotKind.REFUSAL})
+    _STREAMING_KINDS = frozenset({
+        StreamKind.ANSWER,
+        StreamKind.THINKING,
+        StreamKind.REFUSAL,
+    })
 
     _MAX_PREVIEW = 200
 
@@ -65,74 +70,74 @@ class ConsoleSink:
 
     def handle(self, event: AgentEvent) -> None:
         match event:
-            case ContentDelta():
+            case ContentDeltaEvent():
                 self._on_delta(event)
-            case ContentSnapshot():
+            case ContentSnapshotEvent():
                 self._on_snapshot(event)
-            case PhaseTransition():
+            case PhaseEvent():
                 self._on_phase(event)
-            case Advisory():
+            case AdvisoryEvent():
                 self._on_advisory(event)
-            case Terminal():
+            case TerminalEvent():
                 self._on_terminal(event)
 
 
-    def _on_delta(self, e: ContentDelta) -> None:
-        chunk = e.chunk()
-        if not chunk:
+    def _on_delta(self, e: ContentDeltaEvent) -> None:
+        if not e.chunk:
             return
-        color = self._color_for_slot(e.slot())
-        self._inline(self._paint(chunk, color))
+        color = self._color_for_stream(e.stream_kind, e.part)
+        self._inline(self._paint(e.chunk, color))
 
-    def _on_snapshot(self, e: ContentSnapshot) -> None:
-        slot = e.slot()
-        if slot in self._STREAMING_SLOTS:
+    def _on_snapshot(self, e: ContentSnapshotEvent) -> None:
+        if e.stream_kind in self._STREAMING_KINDS:
             self._line("")
             return
-        color = self._color_for_slot(slot)
-        head_label = slot.value
-        if e.headline():
-            head_label = f"{head_label}:{e.headline()}"
+        color = self._color_for_stream(e.stream_kind, e.part)
+        head_label = e.stream_kind.value
+        if e.part is not None:
+            head_label = f"{head_label}:{e.part.value}"
+        if e.headline:
+            head_label = f"{head_label}:{e.headline}"
         head = f"[{head_label}]"
-        body = self._truncate(e.body())
+        body = self._truncate(e.body)
         self._line(self._paint(f"{head} {body}", color))
 
-    def _on_phase(self, e: PhaseTransition) -> None:
-        color = self._color_for_severity(e.severity())
-        details_str = self._fmt_details(e.details())
-        self._line(self._paint(f"[{e.label()}]{details_str}", color))
-        body = e.body()
-        if self._verbose and body:
-            self._line(self._paint(self._truncate(body), self._DIM))
+    def _on_phase(self, e: PhaseEvent) -> None:
+        color = self._color_for_severity(e.severity)
+        details_str = self._fmt_details(e.details)
+        self._line(self._paint(f"[{e.label}]{details_str}", color))
+        if self._verbose and e.body:
+            self._line(self._paint(self._truncate(e.body), self._DIM))
 
-    def _on_advisory(self, e: Advisory) -> None:
-        color = self._color_for_severity(e.severity())
-        details_str = self._fmt_details(e.details())
-        self._err(self._paint(f"[WARN] {e.headline()}{details_str}", color))
-        body = e.body()
-        if body:
-            self._err(self._paint(self._truncate(body), self._DIM))
+    def _on_advisory(self, e: AdvisoryEvent) -> None:
+        color = self._color_for_severity(e.severity)
+        details_str = self._fmt_details(e.details)
+        self._err(self._paint(f"[WARN] {e.headline}{details_str}", color))
+        if e.body:
+            self._err(self._paint(self._truncate(e.body), self._DIM))
 
-    def _on_terminal(self, e: Terminal) -> None:
-        color = self._color_for_severity(e.severity())
-        details_str = self._fmt_details(e.details())
-        self._err(self._paint(f"[FATAL] {e.headline()}{details_str}", color))
-        body = e.body()
-        if body:
-            self._err(self._paint(self._truncate(body), self._DIM))
+    def _on_terminal(self, e: TerminalEvent) -> None:
+        color = self._color_for_severity(e.severity)
+        details_str = self._fmt_details(e.details)
+        self._err(self._paint(f"[FATAL] {e.headline}{details_str}", color))
+        if e.body:
+            self._err(self._paint(self._truncate(e.body), self._DIM))
 
 
-    def _color_for_slot(self, slot: SlotKind) -> str:
+    def _color_for_stream(
+        self,
+        kind: StreamKind,
+        part: ToolPart | None,
+    ) -> str:
+        if kind == StreamKind.TOOL_INVOCATION:
+            return self._GREEN if part == ToolPart.RESULT else self._MAGENTA
         return {
-            SlotKind.ANSWER: "",
-            SlotKind.THINKING: self._DIM,
-            SlotKind.REFUSAL: self._YELLOW,
-            SlotKind.TOOL_ARGS: self._MAGENTA,
-            SlotKind.TOOL_CALL: self._MAGENTA,
-            SlotKind.TOOL_RESULT: self._GREEN,
-            SlotKind.USER_QUERY: self._BOLD_GREEN,
-            SlotKind.FEEDBACK: self._BLUE,
-        }[slot]
+            StreamKind.ANSWER: "",
+            StreamKind.THINKING: self._DIM,
+            StreamKind.REFUSAL: self._YELLOW,
+            StreamKind.USER_QUERY: self._BOLD_GREEN,
+            StreamKind.FEEDBACK: self._BLUE,
+        }[kind]
 
     def _color_for_severity(self, severity: Severity) -> str:
         return {
