@@ -183,6 +183,8 @@ class LLMToolCallArgumentDelta(LLMStreamingDelta):
     """Chunk аргументов tool call."""
 
     index: int
+    tool_call_id: str
+    tool_name: str
     arguments: str
 
     @classmethod

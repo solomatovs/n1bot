@@ -130,13 +130,13 @@ class ToolCallSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
 
     def __init__(self, request_id: RequestId) -> None:
         self._request_id = request_id
-        self._seen: set[int] = set()
+        self._tool_calls: dict[int, tuple[str, str]] = {}
 
     def name(self) -> str:
         return "ToolCall"
 
     def reset(self) -> None:
-        self._seen.clear()
+        self._tool_calls.clear()
 
     def stream(self, ctx: LLMContext, stream: Iterable[Choice]) -> Iterable[LLMEvent]:
         for choice in stream:
@@ -144,12 +144,12 @@ class ToolCallSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
                 continue
             for tc in choice.delta.tool_calls:
                 if (
-                    tc.index not in self._seen
+                    tc.index not in self._tool_calls
                     and tc.id
                     and tc.function
                     and tc.function.name
                 ):
-                    self._seen.add(tc.index)
+                    self._tool_calls[tc.index] = (tc.id, tc.function.name)
                     yield LLMToolCallBegin(
                         request_id=self._request_id,
                         index=tc.index,
@@ -157,9 +157,18 @@ class ToolCallSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
                         tool_name=tc.function.name,
                     )
                 if tc.function and tc.function.arguments:
+                    begin = self._tool_calls.get(tc.index)
+                    if begin is None:
+                        raise LLMProtocolError(
+                            f"ToolCallSource: arguments delta для index={tc.index} "
+                            f"пришла без предшествующего Begin (нет id/name)"
+                        )
+                    tool_call_id, tool_name = begin
                     yield LLMToolCallArgumentDelta(
                         request_id=self._request_id,
                         index=tc.index,
+                        tool_call_id=tool_call_id,
+                        tool_name=tool_name,
                         arguments=tc.function.arguments,
                     )
 

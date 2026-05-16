@@ -45,24 +45,25 @@ from boba.llm.events import (
     LLMToolCallArgumentDelta,
     LLMToolCallBegin,
 )
-from boba.llm.models import LLMContext, LLMRequest
+from boba.llm.models import LLMContext
 from boba.patterns import StreamSource
 
 
 class LLMToAgentConverter:
-    """Per-stream stateful конвертер LLM → Agent."""
-
-    def __init__(self, request: LLMRequest) -> None:
-        self._request = request
-        self._tool_calls: dict[int, tuple[str, str]] = {}
+    """Stateless конвертер LLM → Agent."""
 
     def convert(self, event: LLMEvent) -> Iterator[AgentEvent]:  # noqa: C901, PLR0912
         match event:
-            case LLMRequestStarted(request_id=rid, monotonic_ns=ts):
+            case LLMRequestStarted(
+                request_id=rid,
+                model=model,
+                has_tools=has_tools,
+                monotonic_ns=ts,
+            ):
                 yield AgentLLMRequestSent(
                     request_id=rid,
-                    model=self._request.model,
-                    has_tools=self._request.has_tools(),
+                    model=model,
+                    has_tools=has_tools,
                     monotonic_ns=ts,
                 )
             case LLMResponseStarted(request_id=rid, monotonic_ns=ts):
@@ -85,7 +86,6 @@ class LLMToAgentConverter:
                 tool_call_id=tid,
                 tool_name=tn,
             ):
-                self._tool_calls[i] = (tid, tn)
                 yield ToolCallStreamStarted(
                     request_id=rid,
                     index=i,
@@ -95,9 +95,10 @@ class LLMToAgentConverter:
             case LLMToolCallArgumentDelta(
                 request_id=rid,
                 index=i,
+                tool_call_id=tid,
+                tool_name=tn,
                 arguments=a,
             ):
-                tid, tn = self._tool_calls.get(i, ("", ""))
                 yield ToolCallArgumentDelta(
                     request_id=rid,
                     index=i,
@@ -152,10 +153,8 @@ class LLMPort(StreamSource[AgentContext, AgentEvent]):
         request = self._turn_spec_builder.build(ctx).build()
 
         try:
-            converter = LLMToAgentConverter(request)
-
             for event in self._llm.stream(LLMContext(request=request)):
-                yield from converter.convert(event)
+                yield from LLMToAgentConverter().convert(event)
         except LLMError as e:
             raise LLMGenerationFailedError(
                 str(e),
