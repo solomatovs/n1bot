@@ -14,9 +14,7 @@ from boba.agent.events import (
     ContentDeltaEvent,
     ContentSnapshotEvent,
     GenerationDone,
-    GenerationStarted,
     IterationStarted,
-    LLMRequestSent,
     PhaseEvent,
     StreamKind,
     TerminalEvent,
@@ -160,9 +158,7 @@ async def chat_profiles(user: cl.User | None) -> list[cl.ChatProfile]:
         # Пользователь в auth есть, но ещё не закоммитился в users.json
         # (первый login без сообщений) — workspace'ов точно нет.
         return only_new
-    return await _ProfileBuilder.build(
-        state.workspace_ownership, UserId(persisted.id)
-    )
+    return await _ProfileBuilder.build(state.workspace_ownership, UserId(persisted.id))
 
 
 @cl.on_chat_start
@@ -360,7 +356,7 @@ class _EventRenderer:
         """Сбрасывает ссылку на не-завершённый answer; пустой удаляем из timeline.
 
         Why: AnswerSource (LLM) эмитит AnswerStarted на ЛЮБОЙ первый delta.content,
-        даже если итерация в итоге ушла в tool_calls без финального ContentSnapshotEvent.
+        даже если итерация в итоге ушла в tool_calls без финального ContentSnapshotEvent
         Без сброса между итерациями новый ContentDeltaEvent(ANSWER) будет писать в
         старое сообщение из прошлой итерации — оно остаётся выше последующих
         thinking/tool в timeline.
@@ -417,32 +413,60 @@ class _EventRenderer:
                 ).send()
 
     async def _on_phase(self, e: PhaseEvent) -> None:
-        # Диспатч по классу — рендерим только phase'ы с UI-эффектом.
-        # UI-сущности (answer cl.Message, thinking cl.Step) создаём ЛЕНИВО
-        # в _on_delta при первом реальном chunk: phase-event может прилетать
-        # до контента или вовсе без контента (LLM ушёл в tool_calls после
-        # пустого AnswerStarted), а pre-emptive send() ломает порядок в timeline.
+        # Спец-обработка только там, где нужен НЕтекстовый UI-эффект
+        # (создание step'а, сброс answer/thinking, очистка статуса).
+        # Текстовое отображение берём из e.label/e.details — sink не знает
+        # конкретный тип события и работает на контракте категории.
         match e:
             case ToolCallStreamStarted():
                 await self._on_tool_call_stream_started(e)
+                return
             case ToolExecutionStarted():
                 await self._on_tool_exec_started(e)
-            case LLMRequestSent():
-                await self._set_status(f"`{e.model}` sent message")
+                return
             case IterationStarted():
                 # Между итерациями обнуляем ссылки на answer/thinking,
                 # иначе stream_token из новой итерации пишет в UI из старой.
                 await self._drop_pending_answer()
                 self.thinking_step = None
-                await self._set_status(
-                    f"Iterable: {e.iteration_count}/{e.max_iterations}",
-                )
-            case AnswerStarted() | ThinkingStarted():
+            case AnswerStarted() | ThinkingStarted() | GenerationDone():
+                # UI-сущности (answer cl.Message, thinking cl.Step) создаём
+                # ЛЕНИВО в _on_delta при первом реальном chunk: phase может
+                # прилетать без контента (LLM ушёл в tool_calls после пустого
+                # AnswerStarted), а pre-emptive send() ломает порядок в timeline.
                 await self._clear_status()
-            case GenerationStarted():
-                await self._set_status("llm recieved first chunk...")
-            case GenerationDone():
-                await self._clear_status()
+                return
+
+        # Дефолт для всех PhaseEvent: статус из label + details.
+        await self._set_status(self._render_phase_text(e))
+
+    @staticmethod
+    def _render_phase_text(e: PhaseEvent) -> str:
+        parts: list[str] = []
+        if e.details:
+            details = " ".join(f"{k}={v}" for k, v in e.details.items() if v)
+            if details:
+                parts.append(details)
+        duration = _EventRenderer._fmt_duration(e.duration_ns)
+        if duration:
+            parts.append(duration)
+        if not parts:
+            return e.label
+        return f"{e.label} ({', '.join(parts)})"
+
+    _NS_PER_US: ClassVar[int] = 1_000
+    _NS_PER_MS: ClassVar[int] = 1_000_000
+    _NS_PER_S: ClassVar[int] = 1_000_000_000
+
+    @staticmethod
+    def _fmt_duration(ns: int) -> str:
+        if ns <= 0:
+            return ""
+        if ns < _EventRenderer._NS_PER_MS:
+            return f"+{ns / _EventRenderer._NS_PER_US:.0f}µs"
+        if ns < _EventRenderer._NS_PER_S:
+            return f"+{ns / _EventRenderer._NS_PER_MS:.0f}ms"
+        return f"+{ns / _EventRenderer._NS_PER_S:.2f}s"
 
     async def _on_tool_call_stream_started(self, e: ToolCallStreamStarted) -> None:
         await self._clear_status()

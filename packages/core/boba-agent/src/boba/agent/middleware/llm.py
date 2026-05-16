@@ -13,14 +13,14 @@ from boba.agent.events import (
     GenerationDone,
     GenerationRetried,
     GenerationStarted,
-    LLMResponseStreamOpened,
     RefusalToken,
+    ResponseStarted,
     ThinkingStarted,
     ThinkingToken,
     ToolCallArgumentDelta,
     ToolCallStreamStarted,
 )
-from boba.agent.events import LLMRequestSent as AgentLLMRequestSent
+from boba.agent.events import RequestStart as AgentLLMRequestSent
 from boba.agent.orchestrator import AgentContext
 from boba.agent.turn.builder import TurnSpecBuilder
 from boba.llm.builder import LLMPipeline
@@ -32,8 +32,8 @@ from boba.llm.events import (
     LLMGenerationDone,
     LLMGenerationStarted,
     LLMRefusalToken,
-    LLMRequestSent,
     LLMRequestStarted,
+    LLMResponseStarted,
     LLMRetryAttempt,
     LLMThinkingStarted,
     LLMThinkingToken,
@@ -57,12 +57,11 @@ class LLMToAgentConverter:
                 yield AgentLLMRequestSent(
                     request_id=rid,
                     model=self._request.model,
-                    messages_count=self._request.messages_count(),
                     has_tools=self._request.has_tools(),
                     monotonic_ns=ts,
                 )
-            case LLMRequestSent(request_id=rid, monotonic_ns=ts):
-                yield LLMResponseStreamOpened(request_id=rid, monotonic_ns=ts)
+            case LLMResponseStarted(request_id=rid, monotonic_ns=ts):
+                yield ResponseStarted(request_id=rid, monotonic_ns=ts)
             case LLMGenerationStarted(request_id=rid):
                 yield GenerationStarted(request_id=rid)
             case LLMThinkingStarted(request_id=rid):

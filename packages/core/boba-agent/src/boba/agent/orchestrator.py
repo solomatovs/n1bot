@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from boba.agent.events import AgentEvent, GenerationDone, IterationStarted
 from boba.agent.messages import MessageReader, MessageWriter
@@ -25,20 +25,16 @@ class AgentRequest:
 
 
 class AgentConfig(BaseModel):
-    """Лимиты агентского лупа."""
+    """Конфиг агентского цикла.
+
+    Сейчас пустой — лимиты (max_iterations, max_consecutive_tool_calls)
+    переехали в bootstrap конкретных middleware (`IterationCounterMiddleware`,
+    `RepeatedToolCallGuardMiddleware`). Класс остаётся как заглушка для
+    `AgentInput.config` / `AgentContext.config` на случай будущих сквозных
+    параметров run-а.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
-
-    max_iterations: int = Field(
-        default=20,
-        ge=1,
-        description="Жёсткий потолок числа итераций агента в одной сессии.",
-    )
-    max_consecutive_tool_calls: int = Field(
-        default=3,
-        ge=1,
-        description="Сколько раз подряд агент может звать tools без LLM-ответа.",
-    )
 
 
 @dataclass(frozen=True)

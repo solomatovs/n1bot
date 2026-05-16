@@ -105,9 +105,24 @@ class ConsoleSink:
     def _on_phase(self, e: PhaseEvent) -> None:
         color = self._color_for_severity(e.severity)
         details_str = self._fmt_details(e.details)
-        self._line(self._paint(f"[{e.label}]{details_str}", color))
+        duration_str = self._fmt_duration(e.duration_ns)
+        self._line(self._paint(f"[{e.label}]{duration_str}{details_str}", color))
         if self._verbose and e.body:
             self._line(self._paint(self._truncate(e.body), self._DIM))
+
+    _NS_PER_US = 1_000
+    _NS_PER_MS = 1_000_000
+    _NS_PER_S = 1_000_000_000
+
+    @staticmethod
+    def _fmt_duration(ns: int) -> str:
+        if ns <= 0:
+            return ""
+        if ns < ConsoleSink._NS_PER_MS:
+            return f" +{ns / ConsoleSink._NS_PER_US:.0f}µs"
+        if ns < ConsoleSink._NS_PER_S:
+            return f" +{ns / ConsoleSink._NS_PER_MS:.0f}ms"
+        return f" +{ns / ConsoleSink._NS_PER_S:.2f}s"
 
     def _on_advisory(self, e: AdvisoryEvent) -> None:
         color = self._color_for_severity(e.severity)

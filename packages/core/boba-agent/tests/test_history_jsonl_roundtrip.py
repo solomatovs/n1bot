@@ -38,13 +38,13 @@ from boba.agent.events import (
     GenerationStarted,
     InvalidToolCallReceived,
     IterationStarted,
-    LLMRequestSent,
-    LLMResponseStreamOpened,
     MaxIterationsReached,
     PersistenceFailed,
     PromptFailed,
     RefusalComplete,
     RefusalToken,
+    RequestStart,
+    ResponseStarted,
     ThinkingComplete,
     ThinkingStarted,
     ThinkingToken,
@@ -76,14 +76,13 @@ def _all_events() -> list[Any]:
     return [
         # PhaseEvent (10)
         IterationStarted(request_id=_RID, iteration_count=1, max_iterations=5),
-        LLMRequestSent(
+        RequestStart(
             request_id=_RID,
             model="gpt-4",
-            messages_count=3,
             has_tools=True,
             monotonic_ns=123,
         ),
-        LLMResponseStreamOpened(request_id=_RID, monotonic_ns=456),
+        ResponseStarted(request_id=_RID, monotonic_ns=456),
         GenerationStarted(request_id=_RID),
         ThinkingStarted(request_id=_RID),
         AnswerStarted(request_id=_RID),
@@ -156,8 +155,8 @@ def test_event_roundtrip(event: Any) -> None:
     parsed = AgentEventAdapter.validate_json(line)
     assert parsed == event
     assert type(parsed) is type(event)
-    # Discriminator type должен присутствовать и совпадать с именем класса.
-    assert f'"type":"{type(event).__name__}"' in line
+    # Discriminator type должен присутствовать и совпадать с Literal-полем.
+    assert f'"type":"{event.type}"' in line
 
 
 def test_optional_status_code_omitted() -> None:
@@ -262,13 +261,16 @@ def test_family_isinstance() -> None:
     )
     assert isinstance(ThinkingToken(request_id=_RID, token="t"), ContentDeltaEvent)
     assert isinstance(
-        UserQueryReceived(request_id=_RID, query="q"), ContentSnapshotEvent,
+        UserQueryReceived(request_id=_RID, query="q"),
+        ContentSnapshotEvent,
     )
     assert isinstance(
-        InvalidToolCallReceived(request_id=_RID, invalid=_ITC), AdvisoryEvent,
+        InvalidToolCallReceived(request_id=_RID, invalid=_ITC),
+        AdvisoryEvent,
     )
     assert isinstance(
-        GenerationFailed(request_id=_RID, error_kind="K", message="m"), TerminalEvent,
+        GenerationFailed(request_id=_RID, error_kind="K", message="m"),
+        TerminalEvent,
     )
 
 

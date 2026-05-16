@@ -13,8 +13,8 @@ import openai
 from boba.llm.errors import LLMError
 from boba.llm.events import (
     LLMEvent,
-    LLMRequestSent,
     LLMRequestStarted,
+    LLMResponseStarted,
 )
 from boba.llm.models import LLMContext
 from boba.llm.observer import LLMRequestObserver, RequestOutcome
@@ -116,7 +116,7 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
                 raise self._error_converter.convert(e) from e
 
             # event после запроса и перед получением ответа
-            yield LLMRequestSent(
+            yield LLMResponseStarted(
                 request_id=ctx.request_id,
                 monotonic_ns=time.monotonic_ns(),
             )

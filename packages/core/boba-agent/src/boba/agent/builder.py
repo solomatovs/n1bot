@@ -73,6 +73,8 @@ class AgentBuilder:
         self._agent_config: AgentConfig = AgentConfig()
         self._turn_spec_builder: TurnSpecBuilder = TurnSpecBuilder()
         self._event_stamper_factory: EventStamperFactory = EventStamperMiddleware
+        # Лимит итераций агентского цикла; переопределяется .with_max_iterations().
+        self._max_iterations: int = 20
 
     def with_llm(self, llm: LLMPipeline) -> Self:
         """Готовый LLMPipeline (обязательно; см. LLMPipelineFactory)."""
@@ -189,6 +191,17 @@ class AgentBuilder:
         self._turn_spec_builder.add(reducer_or_factory)
         return self
 
+    def with_max_iterations(self, limit: int) -> Self:
+        """Лимит итераций агентского цикла. Дефолт 20."""
+        if limit < 1:
+            msg = (
+                f"AgentBuilder.with_max_iterations: limit должен быть >= 1, "
+                f"получено {limit}"
+            )
+            raise ValueError(msg)
+        self._max_iterations = limit
+        return self
+
     def use_event_stamper(self, factory: EventStamperFactory) -> Self:
         """Переопределить EventStamper-middleware своей фабрикой.
 
@@ -251,6 +264,7 @@ class AgentBuilder:
             tool_executor=self._resolve_tool_executor(),
             turn_spec_builder=self._turn_spec_builder,
             event_stamper_factory=self._event_stamper_factory,
+            max_iterations=self._max_iterations,
         )
         source = StreamSourceLoop(
             source=chain,
@@ -347,6 +361,7 @@ class AgentBuilder:
         tool_executor: ToolExecutor,
         turn_spec_builder: TurnSpecBuilder,
         event_stamper_factory: EventStamperFactory,
+        max_iterations: int,
     ) -> StreamSource[AgentContext, AgentEvent]:
         error_router = AgentErrorRouter(message_writer)
         builder = StreamSourceChainBuilder[AgentContext, AgentEvent]()
@@ -358,7 +373,9 @@ class AgentBuilder:
         # от внутренних middleware, до записи в журнал и отдачи в sink'и.
         builder.use(event_stamper_factory)
         builder.use(lambda inner: AgentErrorRouterMiddleware(inner, error_router))
-        builder.use(IterationCounterMiddleware)
+        builder.use(
+            lambda inner: IterationCounterMiddleware(inner, max_iterations),
+        )
         builder.use(
             lambda inner: ToolExecutionMiddleware(
                 inner,

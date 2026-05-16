@@ -174,7 +174,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Annotated, Any, ClassVar, Final, Literal, TypeAlias
+from typing import Annotated, Any, ClassVar, Final, Literal, Self, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
@@ -253,7 +253,7 @@ class AgentEventBase(BaseModel):
     Производитель события передаёт только доменные поля + `request_id`.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(extra="forbid")
 
     type: str
     category: EventCategory
@@ -274,6 +274,10 @@ class PhaseEvent(AgentEventBase):
     severity: Severity = Severity.INFO
     details: Mapping[str, str] = Field(default_factory=dict)
     body: str | None = None
+    # Наносекунды с момента предыдущего PhaseEvent того же request_id.
+    # Стампится `EventStamperMiddleware` через `time.monotonic_ns()`.
+    # Для первого PhaseEvent в request — 0.
+    duration_ns: int = 0
 
 
 class ContentDeltaEvent(AgentEventBase):
@@ -346,186 +350,157 @@ class IterationStarted(PhaseEvent):
     iteration_count: int
     max_iterations: int
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            it = data.get("iteration_count")
-            mx = data.get("max_iterations")
-            data.setdefault("label", f"iteration {it}/{mx}")
-            data.setdefault("details", {"iteration": str(it), "max": str(mx)})
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.label = f"iteration {self.iteration_count}/{self.max_iterations}"
+        self.details = {
+            "iteration": str(self.iteration_count),
+            "max": str(self.max_iterations),
+        }
+
+        return self
 
 
-class LLMRequestSent(PhaseEvent):
-    """Round-trip к LLM начат."""
+class RequestStart(PhaseEvent):
+    """
+    Отправили запрос в LLM
+    """
 
     type: Literal["LLMRequestSent"] = "LLMRequestSent"
     model: str
-    messages_count: int
     has_tools: bool
     monotonic_ns: int
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            model = data.get("model")
-            cnt = data.get("messages_count")
-            tools = " +tools" if data.get("has_tools") else ""
-            data.setdefault("label", f"→ llm: {model}, {cnt} msgs{tools}")
-            data.setdefault(
-                "details",
-                {
-                    "model": str(model),
-                    "messages_count": str(cnt),
-                    "has_tools": str(data.get("has_tools")),
-                },
-            )
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        tools = " +tools" if self.has_tools else ""
+        self.label = f"llm request: {self.model}{tools}"
+        self.details = {
+            "model": self.model,
+            "has_tools": str(self.has_tools),
+        }
+        return self
 
 
-class LLMResponseStreamOpened(PhaseEvent):
-    """Stream-handle от провайдера получен — парный замер к LLMRequestSent."""
+class ResponseStarted(PhaseEvent):
+    """
+    Получаен http-response от llm но еще не начато чтение этого response
+    Чанки будут генерироваться после события
+    """
 
     type: Literal["LLMResponseStreamOpened"] = "LLMResponseStreamOpened"
+    label: str = "llm response started"
     monotonic_ns: int
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            data.setdefault("label", "← stream open")
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.details = {"monotonic_ns": str(self.monotonic_ns)}
+        return self
 
 
 class GenerationStarted(PhaseEvent):
-    """Первый chunk от LLM — генерация началась."""
+    """
+    Первый chunk от LLM — генерация ответа началась
+    """
 
     type: Literal["GenerationStarted"] = "GenerationStarted"
-
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            data.setdefault("label", "generation")
-        return data
+    label: str = "generation"
 
 
 class ThinkingStarted(PhaseEvent):
-    """Модель начала reasoning."""
+    """
+    Модель начала reasoning (кароче начала думать)
+    """
 
     type: Literal["ThinkingStarted"] = "ThinkingStarted"
-
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            data.setdefault("label", "thinking")
-        return data
+    label: str = "thinking"
 
 
 class AnswerStarted(PhaseEvent):
-    """Модель начала отдавать ответ."""
+    """
+    Модель начала отдавать ответ
+    """
 
     type: Literal["AnswerStarted"] = "AnswerStarted"
-
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            data.setdefault("label", "answer")
-        return data
+    label: str = "answer"
 
 
 class ToolCallStreamStarted(PhaseEvent):
-    """Tool call объявлен — id и имя пришли, args ещё стримятся."""
+    """
+    Tool call объявлен
+        id и имя пришли
+        args ещё стримятся
+    """
 
     type: Literal["ToolCallStreamStarted"] = "ToolCallStreamStarted"
     index: int
     tool_call_id: str
     tool_name: str
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            idx = data.get("index")
-            name = data.get("tool_name")
-            tid = data.get("tool_call_id")
-            data.setdefault("label", f"tool#{idx} stream: {name}")
-            data.setdefault(
-                "details",
-                {
-                    "id": str(tid),
-                    "name": str(name),
-                    "index": str(idx),
-                },
-            )
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.label = f"tool#{self.index} stream: {self.tool_name}"
+        self.details = {
+            "id": self.tool_call_id,
+            "name": self.tool_name,
+            "index": str(self.index),
+        }
+        return self
 
 
 class ToolExecutionStarted(PhaseEvent):
-    """Tool готов к исполнению — args разобраны."""
+    """
+    Tool готов к исполнению
+    """
 
     type: Literal["ToolExecutionStarted"] = "ToolExecutionStarted"
     call: ToolCall
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            call = data.get("call")
-            if isinstance(call, ToolCall):
-                data.setdefault("label", f"tool exec: {call.name}")
-                data.setdefault("details", {"id": call.id, "name": call.name})
-                data.setdefault("body", call.args_json())
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.label = f"tool exec: {self.call.name}"
+        self.details = {"id": self.call.id, "name": self.call.name}
+        self.body = self.call.args_json()
+        return self
 
 
 class GenerationRetried(PhaseEvent):
-    """LLM-слой решил повторить запрос."""
+    """
+    LLM-слой решил повторить запрос
+    """
 
     type: Literal["GenerationRetried"] = "GenerationRetried"
+    severity: Severity = Severity.WARN
     attempt: int
     reason: str
     status_code: int | None = None
-    severity: Severity = Severity.WARN
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            att = data.get("attempt")
-            rsn = data.get("reason")
-            sc = data.get("status_code")
-            data.setdefault("label", f"retry #{att}: {rsn}")
-            data.setdefault(
-                "details",
-                {
-                    "attempt": str(att),
-                    "reason": str(rsn),
-                    "status_code": str(sc) if sc is not None else "",
-                },
-            )
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.label = f"retry #{self.attempt}: {self.reason}"
+        self.details = {
+            "attempt": str(self.attempt),
+            "reason": self.reason,
+            "status_code": (
+                str(self.status_code) if self.status_code is not None else ""
+            ),
+        }
+        return self
 
 
 class GenerationDone(PhaseEvent):
-    """Прогон завершён — пришёл finish_reason."""
+    """
+    Прогон завершён — пришёл finish_reason
+    """
 
     type: Literal["GenerationDone"] = "GenerationDone"
     finish_reason: FinishReason = FinishReason.STOP
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            fr = data.get("finish_reason", FinishReason.STOP)
-            fr_value = fr.value if isinstance(fr, FinishReason) else str(fr)
-            data.setdefault("label", f"generation done ({fr_value})")
-            data.setdefault("details", {"finish_reason": fr_value})
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.label = f"generation done ({self.finish_reason.value})"
+        self.details = {"finish_reason": self.finish_reason.value}
+        return self
 
 
 # --------------------------------------------------------------------- #
@@ -534,71 +509,72 @@ class GenerationDone(PhaseEvent):
 
 
 class ThinkingToken(ContentDeltaEvent):
-    """Chunk reasoning-токена."""
+    """
+    Chunk reasoning-токена
+    """
 
     type: Literal["ThinkingToken"] = "ThinkingToken"
+    stream_kind: Literal[StreamKind.THINKING] = StreamKind.THINKING
     token: str
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            data.setdefault("stream_kind", StreamKind.THINKING)
-            data.setdefault("stream_id", str(data.get("request_id", "")))
-            data.setdefault("chunk", str(data.get("token", "")))
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.stream_id = str(self.request_id)
+        self.chunk = self.token
+        return self
 
 
 class AnswerToken(ContentDeltaEvent):
-    """Chunk текстового ответа для отображения пользователю."""
+    """
+    Chunk текстового ответа для отображения пользователю
+    """
 
     type: Literal["AnswerToken"] = "AnswerToken"
+    stream_kind: Literal[StreamKind.ANSWER] = StreamKind.ANSWER
     token: str
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            data.setdefault("stream_kind", StreamKind.ANSWER)
-            data.setdefault("stream_id", str(data.get("request_id", "")))
-            data.setdefault("chunk", str(data.get("token", "")))
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.stream_id = str(self.request_id)
+        self.chunk = self.token
+        return self
 
 
 class RefusalToken(ContentDeltaEvent):
-    """Chunk отказа модели отвечать."""
+    """
+    Chunk отказа модели отвечать
+    """
 
     type: Literal["RefusalToken"] = "RefusalToken"
+    stream_kind: Literal[StreamKind.REFUSAL] = StreamKind.REFUSAL
     token: str
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            data.setdefault("stream_kind", StreamKind.REFUSAL)
-            data.setdefault("stream_id", str(data.get("request_id", "")))
-            data.setdefault("chunk", str(data.get("token", "")))
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.stream_id = str(self.request_id)
+        self.chunk = self.token
+        return self
 
 
 class ToolCallArgumentDelta(ContentDeltaEvent):
-    """Chunk аргументов tool call (JSON-строка, может прийти частями)."""
+    """
+    Chunk аргументов tool call
+    tool call тоже приходит частами
+    """
 
     type: Literal["ToolCallArgumentDelta"] = "ToolCallArgumentDelta"
+    stream_kind: Literal[StreamKind.TOOL_INVOCATION] = StreamKind.TOOL_INVOCATION
+    part: Literal[ToolPart.ARGS] = ToolPart.ARGS
     index: int
     tool_call_id: str
     tool_name: str
     arguments_chunk: str
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            data.setdefault("stream_kind", StreamKind.TOOL_INVOCATION)
-            data.setdefault("stream_id", str(data.get("tool_call_id", "")))
-            data.setdefault("chunk", str(data.get("arguments_chunk", "")))
-            data.setdefault("part", ToolPart.ARGS)
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.stream_id = self.tool_call_id
+        self.chunk = self.arguments_chunk
+        return self
 
 
 # --------------------------------------------------------------------- #
@@ -610,84 +586,72 @@ class UserQueryReceived(ContentSnapshotEvent):
     """Запрос пользователя принят агентом и записан в историю."""
 
     type: Literal["UserQueryReceived"] = "UserQueryReceived"
+    stream_kind: Literal[StreamKind.USER_QUERY] = StreamKind.USER_QUERY
     query: str
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            data.setdefault("stream_kind", StreamKind.USER_QUERY)
-            data.setdefault("stream_id", str(data.get("request_id", "")))
-            data.setdefault("body", str(data.get("query", "")))
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.stream_id = str(self.request_id)
+        self.body = self.query
+        return self
 
 
 class ThinkingComplete(ContentSnapshotEvent):
     """Агрегированный reasoning итерации."""
 
     type: Literal["ThinkingComplete"] = "ThinkingComplete"
+    stream_kind: Literal[StreamKind.THINKING] = StreamKind.THINKING
     content: str
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            data.setdefault("stream_kind", StreamKind.THINKING)
-            data.setdefault("stream_id", str(data.get("request_id", "")))
-            data.setdefault("body", str(data.get("content", "")))
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.stream_id = str(self.request_id)
+        self.body = self.content
+        return self
 
 
 class AnswerComplete(ContentSnapshotEvent):
     """Агрегированный текстовый ответ итерации (пишется в историю)."""
 
     type: Literal["AnswerComplete"] = "AnswerComplete"
+    stream_kind: Literal[StreamKind.ANSWER] = StreamKind.ANSWER
     content: str
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            data.setdefault("stream_kind", StreamKind.ANSWER)
-            data.setdefault("stream_id", str(data.get("request_id", "")))
-            data.setdefault("body", str(data.get("content", "")))
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.stream_id = str(self.request_id)
+        self.body = self.content
+        return self
 
 
 class RefusalComplete(ContentSnapshotEvent):
     """Агрегированный отказ модели."""
 
     type: Literal["RefusalComplete"] = "RefusalComplete"
+    stream_kind: Literal[StreamKind.REFUSAL] = StreamKind.REFUSAL
     content: str
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            data.setdefault("stream_kind", StreamKind.REFUSAL)
-            data.setdefault("stream_id", str(data.get("request_id", "")))
-            data.setdefault("body", str(data.get("content", "")))
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.stream_id = str(self.request_id)
+        self.body = self.content
+        return self
 
 
 class ToolCallComplete(ContentSnapshotEvent):
     """Завершённый tool call (id + имя + args)."""
 
     type: Literal["ToolCallComplete"] = "ToolCallComplete"
+    stream_kind: Literal[StreamKind.TOOL_INVOCATION] = StreamKind.TOOL_INVOCATION
+    part: Literal[ToolPart.ARGS] = ToolPart.ARGS
     call: ToolCall
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            call = data.get("call")
-            if isinstance(call, ToolCall):
-                data.setdefault("stream_kind", StreamKind.TOOL_INVOCATION)
-                data.setdefault("stream_id", call.id)
-                data.setdefault("headline", call.name)
-                data.setdefault("body", call.args_json())
-                data.setdefault("part", ToolPart.ARGS)
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.stream_id = self.call.id
+        self.headline = self.call.name
+        self.body = self.call.args_json()
+        return self
 
 
 class ToolResultReady(ContentSnapshotEvent):
@@ -696,39 +660,31 @@ class ToolResultReady(ContentSnapshotEvent):
     _TEXT_VISITOR: ClassVar[DefaultTextVisitor] = DefaultTextVisitor()
 
     type: Literal["ToolResultReady"] = "ToolResultReady"
+    stream_kind: Literal[StreamKind.TOOL_INVOCATION] = StreamKind.TOOL_INVOCATION
+    part: Literal[ToolPart.RESULT] = ToolPart.RESULT
     call: ToolCall
     result: ToolCallResult
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            call = data.get("call")
-            result = data.get("result")
-            if isinstance(call, ToolCall):
-                data.setdefault("stream_kind", StreamKind.TOOL_INVOCATION)
-                data.setdefault("stream_id", call.id)
-                data.setdefault("headline", call.name)
-                data.setdefault("part", ToolPart.RESULT)
-            if isinstance(result, ToolCallResult) and "body" not in data:
-                data["body"] = result.result.accept(cls._TEXT_VISITOR)
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.stream_id = self.call.id
+        self.headline = self.call.name
+        self.body = self.result.result.accept(self._TEXT_VISITOR)
+        return self
 
 
 class FeedbackToLLMAdded(ContentSnapshotEvent):
     """Feedback от агента к LLM записан в MessageService."""
 
     type: Literal["FeedbackToLLMAdded"] = "FeedbackToLLMAdded"
+    stream_kind: Literal[StreamKind.FEEDBACK] = StreamKind.FEEDBACK
     content: str
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            data.setdefault("stream_kind", StreamKind.FEEDBACK)
-            data.setdefault("stream_id", str(data.get("request_id", "")))
-            data.setdefault("body", str(data.get("content", "")))
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.stream_id = str(self.request_id)
+        self.body = self.content
+        return self
 
 
 # --------------------------------------------------------------------- #
@@ -742,19 +698,12 @@ class InvalidToolCallReceived(AdvisoryEvent):
     type: Literal["InvalidToolCallReceived"] = "InvalidToolCallReceived"
     invalid: InvalidToolCall
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            inv = data.get("invalid")
-            if isinstance(inv, InvalidToolCall):
-                data.setdefault("headline", f"invalid tool call: {inv.name}")
-                data.setdefault("details", {"id": inv.id, "name": inv.name})
-                data.setdefault(
-                    "body",
-                    f"raw_args: {inv.raw_args}\nerror: {inv.error}",
-                )
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.headline = f"invalid tool call: {self.invalid.name}"
+        self.details = {"id": self.invalid.id, "name": self.invalid.name}
+        self.body = f"raw_args: {self.invalid.raw_args}\nerror: {self.invalid.error}"
+        return self
 
 
 class ToolExecutionFailed(AdvisoryEvent):
@@ -764,27 +713,16 @@ class ToolExecutionFailed(AdvisoryEvent):
     call: ToolCall
     failure: ToolCallFailure
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            call = data.get("call")
-            failure = data.get("failure")
-            if isinstance(call, ToolCall) and isinstance(failure, ToolCallFailure):
-                data.setdefault("headline", f"tool failed: {call.name}")
-                data.setdefault(
-                    "details",
-                    {
-                        "id": call.id,
-                        "name": call.name,
-                        "kind": failure.error_kind,
-                    },
-                )
-                data.setdefault(
-                    "body",
-                    f"args: {call.args_json()}\nerror: {failure.message}",
-                )
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.headline = f"tool failed: {self.call.name}"
+        self.details = {
+            "id": self.call.id,
+            "name": self.call.name,
+            "kind": self.failure.error_kind,
+        }
+        self.body = f"args: {self.call.args_json()}\nerror: {self.failure.message}"
+        return self
 
 
 # --------------------------------------------------------------------- #
@@ -798,15 +736,12 @@ class GenerationFailed(TerminalEvent):
     type: Literal["GenerationFailed"] = "GenerationFailed"
     message: str
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            kind = data.get("error_kind", "")
-            data.setdefault("headline", f"generation failed: {kind}")
-            data.setdefault("details", {"kind": str(kind)})
-            data.setdefault("body", str(data.get("message", "")))
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.headline = f"generation failed: {self.error_kind}"
+        self.details = {"kind": self.error_kind}
+        self.body = self.message
+        return self
 
 
 class PromptFailed(TerminalEvent):
@@ -816,22 +751,15 @@ class PromptFailed(TerminalEvent):
     message: str
     provider: str | None = None
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            kind = data.get("error_kind", "")
-            provider = data.get("provider")
-            data.setdefault("headline", f"prompt failed: {provider or 'unknown'}")
-            data.setdefault(
-                "details",
-                {
-                    "kind": str(kind),
-                    "provider": str(provider) if provider else "",
-                },
-            )
-            data.setdefault("body", str(data.get("message", "")))
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.headline = f"prompt failed: {self.provider or 'unknown'}"
+        self.details = {
+            "kind": self.error_kind,
+            "provider": self.provider or "",
+        }
+        self.body = self.message
+        return self
 
 
 class MaxIterationsReached(TerminalEvent):
@@ -842,24 +770,16 @@ class MaxIterationsReached(TerminalEvent):
     limit: int
     iteration_count: int
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            kind = data.get("error_kind", "")
-            limit = data.get("limit")
-            it = data.get("iteration_count")
-            data.setdefault("headline", f"max iterations: {it}/{limit}")
-            data.setdefault(
-                "details",
-                {
-                    "kind": str(kind),
-                    "limit": str(limit),
-                    "iteration": str(it),
-                },
-            )
-            data.setdefault("body", str(data.get("message", "")))
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.headline = f"max iterations: {self.iteration_count}/{self.limit}"
+        self.details = {
+            "kind": self.error_kind,
+            "limit": str(self.limit),
+            "iteration": str(self.iteration_count),
+        }
+        self.body = self.message
+        return self
 
 
 class PersistenceFailed(TerminalEvent):
@@ -868,15 +788,12 @@ class PersistenceFailed(TerminalEvent):
     type: Literal["PersistenceFailed"] = "PersistenceFailed"
     message: str
 
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            kind = data.get("error_kind", "")
-            data.setdefault("headline", f"persistence failed: {kind}")
-            data.setdefault("details", {"kind": str(kind)})
-            data.setdefault("body", str(data.get("message", "")))
-        return data
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.headline = f"persistence failed: {self.error_kind}"
+        self.details = {"kind": self.error_kind}
+        self.body = self.message
+        return self
 
 
 # --------------------------------------------------------------------- #
@@ -905,8 +822,8 @@ class UnknownAgentEvent(AgentEventBase):
 AgentEvent = (
     # PhaseEvent
     IterationStarted
-    | LLMRequestSent
-    | LLMResponseStreamOpened
+    | RequestStart
+    | ResponseStarted
     | GenerationStarted
     | ThinkingStarted
     | AnswerStarted
@@ -1054,8 +971,8 @@ class AgentEventRegistry:
 def _register_core_events() -> None:
     for cls in (
         IterationStarted,
-        LLMRequestSent,
-        LLMResponseStreamOpened,
+        RequestStart,
+        ResponseStarted,
         GenerationStarted,
         ThinkingStarted,
         AnswerStarted,
