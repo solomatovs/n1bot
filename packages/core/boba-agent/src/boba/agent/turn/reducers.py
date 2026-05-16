@@ -16,7 +16,7 @@ from boba.llm.models import (
     UserMessage,
 )
 from boba.patterns import PrioritySource
-from boba.tools.framework import ToolExecutor
+from boba.tools.framework import ToolCatalog
 
 TurnReducer: TypeAlias = PrioritySource[str, TurnState]
 """Alias для reducer'а TurnSpec — стадия сборки TurnState."""
@@ -90,17 +90,17 @@ class HistoryReducer(PrioritySource[str, TurnState]):
 
 
 class ToolsReducer(PrioritySource[str, TurnState]):
-    """Каталог tools из ToolExecutor."""
+    """Каталог tools из ToolCatalog."""
 
     ID: ClassVar[str] = "tools"
 
     def __init__(
         self,
-        tool_executor: ToolExecutor,
+        catalog: ToolCatalog,
         parallel_tool_calls: bool = True,
         priority: int = 40,
     ) -> None:
-        self._tool_executor = tool_executor
+        self._catalog = catalog
         self._parallel = parallel_tool_calls
         self._priority = priority
 
@@ -112,7 +112,7 @@ class ToolsReducer(PrioritySource[str, TurnState]):
 
     def apply(self, state: TurnState) -> TurnState:
         state.tools = LLMToolRequest(
-            tools=tuple(self._tool_executor.definitions()),
+            tools=tuple(self._catalog.definitions()),
             parallel_tool_calls=self._parallel,
         )
         return state
