@@ -98,7 +98,7 @@ class Agent:
         finish_reason: FinishReason | None = None
         for event in self.stream(agent_input):
             if isinstance(event, IterationStarted):
-                iterations = event.iteration
+                iterations = event.iteration_count
             elif isinstance(event, GenerationDone):
                 finish_reason = event.finish_reason
         return AgentRunResult(

@@ -8,22 +8,23 @@ from typing import ClassVar, cast
 
 import chainlit as cl
 from boba.agent.events import (
-    Advisory,
+    AdvisoryEvent,
     AgentEvent,
     AnswerStarted,
-    ContentDelta,
-    ContentSnapshot,
+    ContentDeltaEvent,
+    ContentSnapshotEvent,
     GenerationDone,
     GenerationStarted,
     IterationStarted,
     LLMRequestSent,
-    PhaseTransition,
-    SlotKind,
-    Terminal,
+    PhaseEvent,
+    StreamKind,
+    TerminalEvent,
     ThinkingStarted,
     ToolCallStreamStarted,
     ToolExecutionFailed,
     ToolExecutionStarted,
+    ToolPart,
 )
 from boba.web.chainlit.auth import User
 from boba.web.chainlit.bootstrap import app_state
@@ -304,15 +305,15 @@ class _EventRenderer:
 
     async def handle(self, event: AgentEvent) -> None:
         match event:
-            case ContentDelta():
+            case ContentDeltaEvent():
                 await self._on_delta(event)
-            case ContentSnapshot():
+            case ContentSnapshotEvent():
                 await self._on_snapshot(event)
-            case Terminal():
+            case TerminalEvent():
                 await self._on_terminal(event)
-            case Advisory():
+            case AdvisoryEvent():
                 await self._on_advisory(event)
-            case PhaseTransition():
+            case PhaseEvent():
                 await self._on_phase(event)
 
     async def _set_status(self, text: str) -> None:
@@ -359,8 +360,8 @@ class _EventRenderer:
         """Сбрасывает ссылку на не-завершённый answer; пустой удаляем из timeline.
 
         Why: AnswerSource (LLM) эмитит AnswerStarted на ЛЮБОЙ первый delta.content,
-        даже если итерация в итоге ушла в tool_calls без финального ContentSnapshot.
-        Без сброса между итерациями новый ContentDelta(ANSWER) будет писать в
+        даже если итерация в итоге ушла в tool_calls без финального ContentSnapshotEvent.
+        Без сброса между итерациями новый ContentDeltaEvent(ANSWER) будет писать в
         старое сообщение из прошлой итерации — оно остаётся выше последующих
         thinking/tool в timeline.
         How to apply: на IterationStarted; если answer_msg пустой — удаляем,
@@ -372,50 +373,50 @@ class _EventRenderer:
             await self.answer_msg.remove()
         self.answer_msg = None
 
-    async def _on_delta(self, e: ContentDelta) -> None:
-        chunk = e.chunk()
-        if not chunk:
+    async def _on_delta(self, e: ContentDeltaEvent) -> None:
+        if not e.chunk:
             return
-        match e.slot():
-            case SlotKind.ANSWER | SlotKind.REFUSAL:
+        match e.stream_kind:
+            case StreamKind.ANSWER | StreamKind.REFUSAL:
                 msg = await self._open_answer()
-                await msg.stream_token(chunk)
-            case SlotKind.THINKING:
+                await msg.stream_token(e.chunk)
+            case StreamKind.THINKING:
                 step = await self._open_thinking()
-                await step.stream_token(chunk)
-            case SlotKind.TOOL_ARGS:
-                step = self.tool_steps_by_id.get(e.slot_id())
-                if step is not None:
-                    await step.stream_token(chunk, is_input=True)
+                await step.stream_token(e.chunk)
+            case StreamKind.TOOL_INVOCATION:
+                # Args стримятся в открытый tool-step; result не стримится delta'ми.
+                if e.part == ToolPart.ARGS:
+                    step = self.tool_steps_by_id.get(e.stream_id)
+                    if step is not None:
+                        await step.stream_token(e.chunk, is_input=True)
             case _:
                 pass
 
-    async def _on_snapshot(self, e: ContentSnapshot) -> None:
-        slot = e.slot()
-        match slot:
-            case SlotKind.ANSWER | SlotKind.REFUSAL:
+    async def _on_snapshot(self, e: ContentSnapshotEvent) -> None:
+        match e.stream_kind:
+            case StreamKind.ANSWER | StreamKind.REFUSAL:
                 # Токены уже отрисованы потоково — просто закрываем сообщение.
                 self.answer_msg = None
-            case SlotKind.THINKING:
+            case StreamKind.THINKING:
                 self.thinking_step = None
-            case SlotKind.TOOL_RESULT:
-                step = self.tool_steps_by_id.pop(e.slot_id(), None)
-                if step is not None:
-                    await _finalize_step(step, e.body())
-            case SlotKind.TOOL_CALL:
-                # Step создан в ToolCallStreamStarted, args стримятся через ContentDelta
-                pass
-            case SlotKind.USER_QUERY:
+            case StreamKind.TOOL_INVOCATION:
+                # ARGS-snapshot — Step уже создан, ничего не делаем;
+                # RESULT-snapshot — финализируем body'ом и забываем.
+                if e.part == ToolPart.RESULT:
+                    step = self.tool_steps_by_id.pop(e.stream_id, None)
+                    if step is not None:
+                        await _finalize_step(step, e.body)
+            case StreamKind.USER_QUERY:
                 # chainlit уже отрисовал ввод из cl.Message.
                 pass
-            case SlotKind.FEEDBACK:
+            case StreamKind.FEEDBACK:
                 await cl.Message(
-                    content=f"**Feedback to LLM**:\n\n{e.body()}",
+                    content=f"**Feedback to LLM**:\n\n{e.body}",
                     author="system",
                     created_at=utc_now(),
                 ).send()
 
-    async def _on_phase(self, e: PhaseTransition) -> None:
+    async def _on_phase(self, e: PhaseEvent) -> None:
         # Диспатч по классу — рендерим только phase'ы с UI-эффектом.
         # UI-сущности (answer cl.Message, thinking cl.Step) создаём ЛЕНИВО
         # в _on_delta при первом реальном chunk: phase-event может прилетать
@@ -434,7 +435,7 @@ class _EventRenderer:
                 await self._drop_pending_answer()
                 self.thinking_step = None
                 await self._set_status(
-                    f"Iterable: {e.iteration}/{e.max_iterations}",
+                    f"Iterable: {e.iteration_count}/{e.max_iterations}",
                 )
             case AnswerStarted() | ThinkingStarted():
                 await self._clear_status()
@@ -455,7 +456,7 @@ class _EventRenderer:
         if step is not None:
             await _finalize_step(step, "⏳ выполняется…")
 
-    async def _on_advisory(self, e: Advisory) -> None:
+    async def _on_advisory(self, e: AdvisoryEvent) -> None:
         await self._clear_status()
         # ToolExecutionFailed — финализируем tool-Step,
         # чтобы ошибка была рядом с вызовом
@@ -468,18 +469,18 @@ class _EventRenderer:
                     is_error=True,
                 )
                 return
-        body = e.body() or ""
+        body = e.body or ""
         await cl.Message(
-            content=f"**{e.headline()}**\n\n{body}",
+            content=f"**{e.headline}**\n\n{body}",
             author="system",
             created_at=utc_now(),
         ).send()
 
-    async def _on_terminal(self, e: Terminal) -> None:
+    async def _on_terminal(self, e: TerminalEvent) -> None:
         await self._clear_status()
-        body = e.body() or ""
+        body = e.body or ""
         await cl.Message(
-            content=f"**{e.headline()}**\n\n{body}",
+            content=f"**{e.headline}**\n\n{body}",
             author="system",
         ).send()
 

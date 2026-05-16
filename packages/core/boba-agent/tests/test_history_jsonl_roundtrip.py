@@ -6,7 +6,7 @@
 3. Backward-compat: старые JSONL-строки (поле type первое или последнее)
    парсятся неизменно.
 4. JsonLinesHistoryService end-to-end через FsHistoryWorkspaceShell.
-5. InMemoryHistoryService фильтрует ContentDelta-события.
+5. InMemoryHistoryService фильтрует ContentDeltaEvent-события.
 """
 
 from __future__ import annotations
@@ -17,13 +17,13 @@ from uuid import UUID
 import pytest
 
 from boba.agent import (
-    Advisory,
-    ContentDelta,
-    ContentSnapshot,
+    AdvisoryEvent,
+    ContentDeltaEvent,
+    ContentSnapshotEvent,
     InMemoryHistoryService,
     JsonLinesHistoryService,
-    PhaseTransition,
-    Terminal,
+    PhaseEvent,
+    TerminalEvent,
 )
 from boba.agent.event_specs import IsContentDelta
 from boba.agent.events import (
@@ -74,8 +74,8 @@ _ITC = InvalidToolCall(
 
 def _all_events() -> list[Any]:
     return [
-        # PhaseTransition (10)
-        IterationStarted(request_id=_RID, iteration=1, max_iterations=5),
+        # PhaseEvent (10)
+        IterationStarted(request_id=_RID, iteration_count=1, max_iterations=5),
         LLMRequestSent(
             request_id=_RID,
             model="gpt-4",
@@ -101,7 +101,7 @@ def _all_events() -> list[Any]:
             status_code=429,
         ),
         GenerationDone(request_id=_RID, finish_reason=FinishReason.STOP),
-        # ContentDelta (4)
+        # ContentDeltaEvent (4)
         ThinkingToken(request_id=_RID, token="t"),
         AnswerToken(request_id=_RID, token="a"),
         RefusalToken(request_id=_RID, token="r"),
@@ -112,7 +112,7 @@ def _all_events() -> list[Any]:
             tool_name="search",
             arguments_chunk='{"q":',
         ),
-        # ContentSnapshot (7)
+        # ContentSnapshotEvent (7)
         UserQueryReceived(request_id=_RID, query="hello"),
         ThinkingComplete(request_id=_RID, content="thought"),
         AnswerComplete(request_id=_RID, content="answer"),
@@ -124,14 +124,14 @@ def _all_events() -> list[Any]:
             result=ToolCallResult(result=TextResult(text="ok", metadata={"k": "v"})),
         ),
         FeedbackToLLMAdded(request_id=_RID, content="critique"),
-        # Advisory (2)
+        # AdvisoryEvent (2)
         InvalidToolCallReceived(request_id=_RID, invalid=_ITC),
         ToolExecutionFailed(
             request_id=_RID,
             call=_TC,
             failure=ToolCallFailure(error_kind="K", message="m"),
         ),
-        # Terminal (4)
+        # TerminalEvent (4)
         GenerationFailed(request_id=_RID, error_kind="K", message="m"),
         PromptFailed(
             request_id=_RID,
@@ -144,7 +144,7 @@ def _all_events() -> list[Any]:
             error_kind="K",
             message="m",
             limit=10,
-            iteration=10,
+            iteration_count=10,
         ),
         PersistenceFailed(request_id=_RID, error_kind="K", message="m"),
     ]
@@ -223,11 +223,11 @@ def test_golden_jsonl_iteration_started() -> None:
     """Старый формат журнала (поле type в произвольной позиции) парсится."""
     golden = (
         '{"request_id":"00000000-0000-0000-0000-000000000001",'
-        '"type":"IterationStarted","iteration":1,"max_iterations":5}'
+        '"type":"IterationStarted","iteration_count":1,"max_iterations":5}'
     )
     parsed = AgentEventAdapter.validate_json(golden)
     assert isinstance(parsed, IterationStarted)
-    assert parsed.iteration == 1
+    assert parsed.iteration_count == 1
     assert parsed.max_iterations == 5
 
 
@@ -235,7 +235,7 @@ def test_golden_jsonl_type_first() -> None:
     golden = (
         '{"type":"IterationStarted",'
         '"request_id":"00000000-0000-0000-0000-000000000001",'
-        '"iteration":1,"max_iterations":5}'
+        '"iteration_count":1,"max_iterations":5}'
     )
     parsed = AgentEventAdapter.validate_json(golden)
     assert isinstance(parsed, IterationStarted)
@@ -257,14 +257,18 @@ def test_golden_jsonl_tool_result_ready() -> None:
 
 def test_family_isinstance() -> None:
     assert isinstance(
-        IterationStarted(request_id=_RID, iteration=1, max_iterations=5),
-        PhaseTransition,
+        IterationStarted(request_id=_RID, iteration_count=1, max_iterations=5),
+        PhaseEvent,
     )
-    assert isinstance(ThinkingToken(request_id=_RID, token="t"), ContentDelta)
-    assert isinstance(UserQueryReceived(request_id=_RID, query="q"), ContentSnapshot)
-    assert isinstance(InvalidToolCallReceived(request_id=_RID, invalid=_ITC), Advisory)
+    assert isinstance(ThinkingToken(request_id=_RID, token="t"), ContentDeltaEvent)
     assert isinstance(
-        GenerationFailed(request_id=_RID, error_kind="K", message="m"), Terminal
+        UserQueryReceived(request_id=_RID, query="q"), ContentSnapshotEvent,
+    )
+    assert isinstance(
+        InvalidToolCallReceived(request_id=_RID, invalid=_ITC), AdvisoryEvent,
+    )
+    assert isinstance(
+        GenerationFailed(request_id=_RID, error_kind="K", message="m"), TerminalEvent,
     )
 
 
@@ -273,22 +277,24 @@ def test_match_statement_dispatch() -> None:
 
     def classify(e: Any) -> str:
         match e:
-            case ContentDelta():
+            case ContentDeltaEvent():
                 return "delta"
-            case Terminal():
+            case TerminalEvent():
                 return "terminal"
-            case PhaseTransition():
+            case PhaseEvent():
                 return "phase"
-            case ContentSnapshot():
+            case ContentSnapshotEvent():
                 return "snapshot"
-            case Advisory():
+            case AdvisoryEvent():
                 return "advisory"
             case _:
                 return "?"
 
     assert classify(ThinkingToken(request_id=_RID, token="t")) == "delta"
     assert (
-        classify(IterationStarted(request_id=_RID, iteration=1, max_iterations=1))
+        classify(
+            IterationStarted(request_id=_RID, iteration_count=1, max_iterations=1),
+        )
         == "phase"
     )
     assert classify(UserQueryReceived(request_id=_RID, query="q")) == "snapshot"
@@ -303,8 +309,11 @@ def test_match_statement_dispatch() -> None:
 
 def test_in_memory_history_filters_content_delta() -> None:
     svc = InMemoryHistoryService()
-    svc.record(IterationStarted(request_id=_RID, iteration=1, max_iterations=1))
-    svc.record(ThinkingToken(request_id=_RID, token="x"))  # ContentDelta — фильтруется
+    svc.record(
+        IterationStarted(request_id=_RID, iteration_count=1, max_iterations=1),
+    )
+    # ContentDeltaEvent — фильтруется
+    svc.record(ThinkingToken(request_id=_RID, token="x"))
     svc.record(GenerationFailed(request_id=_RID, error_kind="K", message="m"))
     recorded = list(svc.events())
     assert len(recorded) == 2
@@ -316,16 +325,16 @@ def test_is_content_delta_spec() -> None:
     spec = IsContentDelta()
     assert spec.check(ThinkingToken(request_id=_RID, token="t"))
     assert not spec.check(
-        IterationStarted(request_id=_RID, iteration=1, max_iterations=1)
+        IterationStarted(request_id=_RID, iteration_count=1, max_iterations=1),
     )
 
 
 def test_jsonlines_history_e2e(history_workspace: FsHistoryWorkspaceShell) -> None:
-    """Полный e2e: запись в файл, чтение, фильтрация ContentDelta."""
+    """Полный e2e: запись в файл, чтение, фильтрация ContentDeltaEvent."""
     svc = JsonLinesHistoryService(history_workspace)
 
     events = [
-        IterationStarted(request_id=_RID, iteration=1, max_iterations=5),
+        IterationStarted(request_id=_RID, iteration_count=1, max_iterations=5),
         ThinkingToken(request_id=_RID, token="x"),  # фильтруется
         ToolResultReady(
             request_id=_RID,
@@ -346,7 +355,9 @@ def test_jsonlines_history_e2e(history_workspace: FsHistoryWorkspaceShell) -> No
 
 def test_jsonlines_clear(history_workspace: FsHistoryWorkspaceShell) -> None:
     svc = JsonLinesHistoryService(history_workspace)
-    svc.record(IterationStarted(request_id=_RID, iteration=1, max_iterations=1))
+    svc.record(
+        IterationStarted(request_id=_RID, iteration_count=1, max_iterations=1),
+    )
     assert len(list(svc.events())) == 1
     svc.clear()
     assert len(list(svc.events())) == 0
