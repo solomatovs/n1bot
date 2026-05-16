@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-tool-shell"
+version = "0.1.0"
+description = "Sandboxed bash tool for the Boba agent (bubblewrap-based)."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-patterns",
+    "boba-plugin",
+    "boba-workspace",
+    "boba-tools",
+    "boba-settings",
+]
+
+[project.entry-points."boba.plugins"]
+shell = "boba.tool.shell.plugin:ShellPlugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
