@@ -6,7 +6,7 @@ from typing import ClassVar
 
 from boba.agent.agent import AgentContext
 from boba.agent.builder import AgentBuilder
-from boba.agent.middleware.llm import LLMInvokeMiddleware
+from boba.agent.middleware.llm import LLMPort
 from boba.agent.turn.builder import TurnSpecBuilder
 from boba.agent.turn.reducers import (
     HistoryReducer,
@@ -36,7 +36,7 @@ class _MarkerReducer(PrioritySource[str, TurnState]):
         return state
 
 
-# LLMInvokeMiddleware: терминал ничего не знает про конкретные reducer'ы
+# LLMPort: терминал ничего не знает про конкретные reducer'ы
 
 
 def test_middleware_delegates_spec_construction_to_builder(
@@ -51,7 +51,7 @@ def test_middleware_delegates_spec_construction_to_builder(
     spec_builder = TurnSpecBuilder()
     spec_builder.add(factory)
 
-    mw = LLMInvokeMiddleware(
+    mw = LLMPort(
         llm=None,  # type: ignore[arg-type]
         turn_spec_builder=spec_builder,
     )

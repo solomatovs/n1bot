@@ -15,6 +15,7 @@ from boba.llm.models import (
     LLMRequest,
     LLMToolRequest,
     Message,
+    RequestId,
     SamplingParams,
     SystemMessage,
 )
@@ -34,6 +35,10 @@ class TurnState:
 class TurnSpec(
     FoldFactory[str, TurnState, LLMRequest],
 ):
+    def __init__(self, request_id: RequestId) -> None:
+        super().__init__()
+        self._request_id = request_id
+
     def initial(self) -> TurnState:
         return TurnState()
 
@@ -46,6 +51,7 @@ class TurnSpec(
             raise LLMRequestEmptyMessagesError()
 
         return LLMRequest(
+            request_id=self._request_id,
             model=state.model,
             system_message=state.system_message,
             messages=state.messages,

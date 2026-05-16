@@ -1,4 +1,9 @@
-"""LLMPipeline: класс-обёртка над provider stream + Factory для его сборки."""
+"""LLM — тонкий оркестратор LLM-цепочки + LLMBuilder для его сборки.
+
+Симметрично `Agent` / `AgentBuilder`: `LLM` — это `StreamSource[LLMContext, LLMEvent]`,
+обёрнутый методом `stream`, а `LLMBuilder` — fluent-фасад, накапливающий
+middleware, observer'ов и provider-terminal.
+"""
 
 from __future__ import annotations
 
@@ -8,32 +13,36 @@ from typing import Any, Generic, Self, TypeVar
 from boba.llm.events import LLMEvent
 from boba.llm.models import LLMContext
 from boba.llm.observer import CompositeLLMRequestObserver, LLMRequestObserver
-from boba.patterns import FactoryMethod, StreamSource
+from boba.patterns import FactoryMethod, StreamSource, StreamSourceChainBuilder
 
-__all__ = ["LLMPipeline", "LLMPipelineFactory"]
+__all__ = ["LLM", "LLMBuilder"]
 
 
 TRequest = TypeVar("TRequest")
 TChunk = TypeVar("TChunk")
 
+MiddlewareFactory = Callable[
+    [StreamSource[LLMContext, LLMEvent]],
+    StreamSource[LLMContext, LLMEvent],
+]
 TerminalFactory = Callable[
     [LLMRequestObserver[Any, Any]],
     StreamSource[LLMContext, LLMEvent],
 ]
 
 
-class LLMPipeline:
-    """Pipeline LLM-вызова: оборачивает StreamSource и стримит LLMEvent.
+class LLM:
+    """Тонкий оркестратор LLM-цепочки: один `stream`, никакого loop.
 
-    Симметрично `Agent.stream(input)` — публичный API скрывает
-    `StreamSource[LLMContext, LLMEvent]`-нутрянку.
+    Симметрично `Agent`: оборачивает `StreamSource[LLMContext, LLMEvent]`
+    и сбрасывает его на каждый вызов.
     """
 
     def __init__(self, source: StreamSource[LLMContext, LLMEvent]) -> None:
         self._source = source
 
     def name(self) -> str:
-        return "LLMPipeline"
+        return "LLM"
 
     def stream(self, ctx: LLMContext) -> Iterator[LLMEvent]:
         """Прогнать один LLM-вызов; ленивый итератор LLMEvent."""
@@ -41,12 +50,19 @@ class LLMPipeline:
         yield from self._source.stream(ctx)
 
 
-class LLMPipelineFactory(FactoryMethod[LLMPipeline], Generic[TRequest, TChunk]):
-    """Накапливает observer'ы и provider-terminal; собирает LLMPipeline."""
+class LLMBuilder(FactoryMethod[LLM], Generic[TRequest, TChunk]):
+    """
+    Fluent-фасад LLM-слоя: middleware + observers + provider-terminal
+    - `.use(...)`           — добавление конкретного middleware в цепочку
+    - `.add_observer(...)`  — добавление наблюдателя запросов/ответов llm
+                                например метрика, логирование, подсчеты
+    - `.use_terminal(...)`  — терминальная стадия с указанием провайдера для обработки
+    """
 
     def __init__(self) -> None:
         self._observers: list[LLMRequestObserver[TRequest, TChunk]] = []
         self._terminal_factory: TerminalFactory | None = None
+        self._middlewares: list[MiddlewareFactory] = []
 
     def add_observer(
         self,
@@ -56,10 +72,20 @@ class LLMPipelineFactory(FactoryMethod[LLMPipeline], Generic[TRequest, TChunk]):
         self._observers.append(observer)
         return self
 
+    def use(self, factory: MiddlewareFactory) -> Self:
+        """Зарегистрировать middleware-factory.
+
+        Семантика — как `AgentBuilder`/`StreamSourceChainBuilder.use`:
+        `factory(inner) -> StreamSource`. Порядок регистрации = порядок
+        «снаружи внутрь»: первый `use` оказывается самым внешним.
+        """
+        self._middlewares.append(factory)
+        return self
+
     def use_terminal(self, factory: TerminalFactory) -> Self:
         """Зарегистрировать provider-terminal (factory принимает observer)."""
         if self._terminal_factory is not None:
-            msg = "LLMPipelineFactory.use_terminal: terminal уже задан"
+            msg = "LLMBuilder.use_terminal: terminal уже задан"
             raise ValueError(msg)
 
         self._terminal_factory = factory
@@ -75,20 +101,22 @@ class LLMPipelineFactory(FactoryMethod[LLMPipeline], Generic[TRequest, TChunk]):
         """Extension-style: fn(self, *args, **kwargs) -> Self."""
         return fn(self, *args, **kwargs)
 
-    def build(self) -> LLMPipeline:
-        """Собрать LLMPipeline: composite-observer → terminal → обёртка."""
+    def build(self) -> LLM:
+        """Собрать LLM: composite-observer → terminal → middleware-chain → обёртка."""
         if self._terminal_factory is None:
             msg = (
-                "LLMPipelineFactory.build: terminal не задан — "
+                "LLMBuilder.build: terminal не задан — "
                 "вызовите .use_terminal(...) или provider-extension "
                 "(например, use_openai)"
             )
             raise ValueError(msg)
 
-        observer: LLMRequestObserver[TRequest, TChunk] = (
-            self._observers[0]
-            if len(self._observers) == 1
-            else CompositeLLMRequestObserver(self._observers)
-        )
+        chain_builder = StreamSourceChainBuilder[LLMContext, LLMEvent]()
+        for mw in self._middlewares:
+            chain_builder.use(mw)
 
-        return LLMPipeline(self._terminal_factory(observer))
+        return LLM(
+            chain_builder.terminal(
+                self._terminal_factory(CompositeLLMRequestObserver(self._observers))
+            )
+        )

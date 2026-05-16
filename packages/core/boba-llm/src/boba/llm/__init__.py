@@ -1,6 +1,6 @@
 """LLM-домен: модели, события, ошибки, observer, middleware."""
 
-from boba.llm.builder import LLMPipeline, LLMPipelineFactory
+from boba.llm.builder import LLM, LLMBuilder
 from boba.llm.errors import (
     LLMAuthError,
     LLMConnectionError,
@@ -67,6 +67,7 @@ from boba.llm.observer import (
 )
 
 __all__ = [
+    "LLM",
     "AssistantMessage",
     "AssistantMessageChunk",
     "BaseLLMEvent",
@@ -76,6 +77,7 @@ __all__ = [
     "LLMAnswerStarted",
     "LLMAnswerToken",
     "LLMAuthError",
+    "LLMBuilder",
     "LLMConnectionError",
     "LLMContext",
     "LLMContextLengthError",
@@ -86,8 +88,6 @@ __all__ = [
     "LLMGenerationStarted",
     "LLMInvalidRequestError",
     "LLMLifecycleMarker",
-    "LLMPipeline",
-    "LLMPipelineFactory",
     "LLMProtocolError",
     "LLMProviderInternalError",
     "LLMRateLimitError",

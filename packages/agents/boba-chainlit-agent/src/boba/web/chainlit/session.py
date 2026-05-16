@@ -13,7 +13,7 @@ from boba.agent.prompt_providers import PromptLoader
 #     RememberUserQueryReducer,
 # )
 from boba.agent.workspace_fs import FsPromptWorkspaceRegistry
-from boba.llm.builder import LLMPipelineFactory
+from boba.llm.builder import LLMBuilder
 from boba.provider.openai import (
     CurlTraceChatCompletionObserver,
     use_openai,
@@ -60,7 +60,7 @@ class ChatSession:
 
         history_shell = history_workspaces.get_or_create(workspace_id)
         llm = (
-            LLMPipelineFactory()
+            LLMBuilder()
             .add_observer(CurlTraceChatCompletionObserver(history_shell))
             .pipe(use_openai, app.openai)
             .build()

@@ -101,7 +101,7 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
         with _observe_request(self._observer, kwargs):
             # event перед запросом
             yield LLMRequestStarted(
-                request_id=ctx.request_id,
+                request_id=ctx.request.request_id,
                 model=ctx.request.model,
                 messages_count=ctx.request.messages_count(),
                 has_tools=ctx.request.has_tools(),
@@ -117,14 +117,14 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
 
             # event после запроса и перед получением ответа
             yield LLMResponseStarted(
-                request_id=ctx.request_id,
+                request_id=ctx.request.request_id,
                 monotonic_ns=time.monotonic_ns(),
             )
 
             try:
                 # стримим чанки из ответа, конвертируя их в LLM-события на лету
                 yield from FromOpenAIChunkConverter(
-                    ctx.request_id,
+                    ctx.request.request_id,
                     reindex_tool_calls=self._reindex_tool_calls,
                 ).stream(ctx, self._observe_chunks(response))
             except LLMError:

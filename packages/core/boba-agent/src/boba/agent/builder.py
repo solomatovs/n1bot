@@ -20,7 +20,7 @@ from boba.agent.middleware import (
     HistoryRecorderMiddleware,
     IterationCounterConfig,
     IterationCounterMiddleware,
-    LLMInvokeMiddleware,
+    LLMPort,
     StopOnAnyFailure,
     StopOnFinished,
     ToolExecutionMiddleware,
@@ -35,7 +35,7 @@ from boba.agent.turn.reducers import (
     ToolsReducer,
     TurnReducer,
 )
-from boba.llm.builder import LLMPipeline
+from boba.llm.builder import LLM
 from boba.llm.models import SamplingParams
 from boba.patterns import (
     StreamSource,
@@ -77,7 +77,7 @@ class AgentBuilder:
     """Fluent-фасад: собирает Agent с дефолтной middleware-цепью."""
 
     def __init__(self) -> None:
-        self._llm: LLMPipeline | None = None
+        self._llm: LLM | None = None
         self._tool_executor: ToolExecutor | None = None
         self._inline_factories: list[ToolDecoratorFactory] = []
         self._plugin_entries: list[
@@ -96,8 +96,8 @@ class AgentBuilder:
         # Bootstrap-конфиг middleware-цепочки; переопределяется .use_config().
         self._builder_config: AgentBuilderConfig = AgentBuilderConfig()
 
-    def with_llm(self, llm: LLMPipeline) -> Self:
-        """Готовый LLMPipeline (обязательно; см. LLMPipelineFactory)."""
+    def with_llm(self, llm: LLM) -> Self:
+        """Готовый LLM (обязательно; см. LLMBuilder)."""
         self._llm = llm
         return self
 
@@ -382,7 +382,7 @@ class AgentBuilder:
     @staticmethod
     def _build_chain(
         *,
-        llm: LLMPipeline,
+        llm: LLM,
         message_writer: MessageWriter,
         history_writer: HistoryWriter,
         tool_executor: ToolExecutor,
@@ -414,4 +414,4 @@ class AgentBuilder:
             ),
         )
         builder.use(AssistantSnapshotMiddleware)
-        return builder.terminal(LLMInvokeMiddleware(llm, turn_spec_builder))
+        return builder.terminal(LLMPort(llm, turn_spec_builder))

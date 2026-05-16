@@ -48,7 +48,7 @@ class RetryMiddleware(StreamSource[LLMContext, LLMEvent]):
                     raise RuntimeError("retry invariant broken: last_exc is None")
 
                 yield LLMRetryAttempt(
-                    request_id=ctx.request_id,
+                    request_id=ctx.request.request_id,
                     attempt=attempt,
                     reason=type(last_exc).__name__,
                     status_code=getattr(last_exc, "status_code", None),
