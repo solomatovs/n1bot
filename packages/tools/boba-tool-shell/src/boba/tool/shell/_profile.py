@@ -7,6 +7,12 @@
 Поля по умолчанию выбраны под кейс «LLM выполняет bash в workspace
 без сети»: read-only системные директории + RW workspace + tmpfs /tmp,
 network unshared, 30s timeout, 256 KiB на каждый поток.
+
+Env-переменные в песочнице приходят **только** через `env_set` — этот
+словарь пишется явно в конфиге. Host-environment (включая API-ключи и
+прочие секреты процесса агента) не наследуется намеренно. Минимальный
+PATH (например, `/usr/bin:/bin`) тоже нужно прописать в `env_set`,
+иначе bash не найдёт стандартные утилиты.
 """
 
 from __future__ import annotations
@@ -48,20 +54,13 @@ _DEFAULT_RO_BINDS: tuple[str, ...] = (
     "/etc/resolv.conf",
 )
 
-_DEFAULT_ENV_PASSTHROUGH: tuple[str, ...] = (
-    "PATH",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "TERM",
-)
-
 
 class SandboxProfile(BaseModel):
-    """Параметры одной песочницы.
+    """
+    Параметры одной песочницы.
 
-    LLM выбирает профиль по имени из `ShellPluginConfig.profiles`; сами
-    поля LLM править не может.
+    LLM выбирает профиль по имени из `ShellPluginConfig.profiles`
+    сами поля LLM править не может
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -90,16 +89,13 @@ class SandboxProfile(BaseModel):
             "Если False — `--unshare-net` (нет сети). True — сеть хоста."
         ),
     )
-    env_passthrough: tuple[str, ...] = Field(
-        default=_DEFAULT_ENV_PASSTHROUGH,
-        description=(
-            "Имена env-переменных, прокидываемых из хоста. Всё остальное "
-            "стирается."
-        ),
-    )
     env_set: dict[str, str] = Field(
         default_factory=dict,
-        description="Дополнительные env-переменные, выставляемые жёстко.",
+        description=(
+            "Env-переменные внутри песочницы. Задаются явно — host-env "
+            "не наследуется (защита от утечки секретов агента). Чтобы "
+            "bash нашёл стандартные утилиты, обычно нужен 'PATH'."
+        ),
     )
     timeout_sec: int = Field(
         default=30,
