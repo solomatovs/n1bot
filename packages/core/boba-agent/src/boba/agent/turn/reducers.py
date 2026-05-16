@@ -9,6 +9,7 @@ from boba.agent.messages import MessageReader
 from boba.agent.prompt import PromptFactory, PromptProvider
 from boba.agent.turn.spec import TurnState
 from boba.llm.models import (
+    AssistantMessage,
     LLMToolRequest,
     SamplingParams,
     SystemMessage,
@@ -43,7 +44,7 @@ class ModelReducer(PrioritySource[str, TurnState]):
 
 
 class SystemPromptReducer(PrioritySource[str, TurnState]):
-    """Собирает system-prompt через PromptFactory каждую итерацию."""
+    """Собирает system-сообщения через PromptFactory каждую итерацию."""
 
     ID: ClassVar[str] = "system"
 
@@ -62,15 +63,54 @@ class SystemPromptReducer(PrioritySource[str, TurnState]):
         return self._priority
 
     def apply(self, state: TurnState) -> TurnState:
-        content = PromptFactory(self._providers).build().to_string()
-        if content:
-            state.system_message = SystemMessage(content=content)
+        result = PromptFactory(self._providers).build()
+
+        state.system_messages = tuple(
+            SystemMessage.from_text(block.content) for block in result.blocks()
+        )
 
         return state
 
 
+class UserQueryReducer(PrioritySource[str, TurnState]):
+    """Префиксует `UserMessage.from_text(ctx.query)` к dialog_messages.
+
+    Исходный запрос пользователя живёт в AgentContext, а не в истории:
+    `HistoryReducer` собирает диалог как view над событийным журналом
+    (assistant/tool_result, генерируемые внутри agent loop), а query —
+    это input текущего request_id и инжектится per-turn в начало диалога.
+    Приоритет между `HistoryReducer` (30) и `RememberUserQueryReducer` (35),
+    чтобы напоминание добавлялось уже после исходного запроса.
+    """
+
+    ID: ClassVar[str] = "user_query"
+
+    def __init__(self, query: str, priority: int = 32) -> None:
+        self._query = query
+        self._priority = priority
+
+    def id(self) -> str:
+        return self.ID
+
+    def priority(self) -> int:
+        return self._priority
+
+    def apply(self, state: TurnState) -> TurnState:
+        state.dialog_messages = (
+            UserMessage.from_text(self._query),
+            *state.dialog_messages,
+        )
+        return state
+
+
 class HistoryReducer(PrioritySource[str, TurnState]):
-    """Копирует весь диалог из MessageReader в state."""
+    """Копирует диалог из MessageReader в state.
+
+    SystemMessage из истории отбрасывается — system-блоки строятся каждый
+    turn через `SystemPromptReducer`, а не персистятся вместе с диалогом.
+    Store остаётся общим (может хранить любые `Message` для replay/snapshot),
+    но в `LLMRequest.messages` попадают только `DialogMessage`-ы.
+    """
 
     ID: ClassVar[str] = "history"
 
@@ -85,7 +125,11 @@ class HistoryReducer(PrioritySource[str, TurnState]):
         return self._priority
 
     def apply(self, state: TurnState) -> TurnState:
-        state.messages = tuple(self._message_reader.message_iter())
+        state.dialog_messages = tuple(
+            m
+            for m in self._message_reader.message_iter()
+            if isinstance(m, (UserMessage, AssistantMessage, ToolResultMessage))
+        )
         return state
 
 
@@ -172,15 +216,15 @@ class RememberUserQueryReducer(PrioritySource[str, TurnState]):
         return self._priority
 
     def apply(self, state: TurnState) -> TurnState:
-        if not state.messages:
+        if not state.dialog_messages:
             return state
-        if not isinstance(state.messages[-1], ToolResultMessage):
+        if not isinstance(state.dialog_messages[-1], ToolResultMessage):
             return state
-        original = self._last_user_content(state.messages)
+        original = self._last_user_content(state.dialog_messages)
         if original is None:
             return state
-        reminder = UserMessage(content=f"{self._prefix}{original}")
-        state.messages = (*state.messages, reminder)
+        reminder = UserMessage.from_text(f"{self._prefix}{original}")
+        state.dialog_messages = (*state.dialog_messages, reminder)
         return state
 
     @staticmethod

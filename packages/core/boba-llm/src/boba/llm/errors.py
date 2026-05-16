@@ -13,8 +13,7 @@
         ├── LLMProtocolError               ответ вне схемы
         ├── LLMRequestValidationError      клиентская валидация (без HTTP)
         │   ├── LLMRequestModelNoneError
-        │   ├── LLMRequestEmptyMessagesError
-        │   └── LLMRequestSystemMessageNoneError
+        │   └── LLMRequestEmptyMessagesError
         └── LLMUnknownError                нераспознанное исключение провайдера
 """
 
@@ -31,7 +30,6 @@ __all__ = [
     "LLMRateLimitError",
     "LLMRequestEmptyMessagesError",
     "LLMRequestModelNoneError",
-    "LLMRequestSystemMessageNoneError",
     "LLMRequestValidationError",
     "LLMTimeoutError",
     "LLMUnknownError",
@@ -127,10 +125,3 @@ class LLMRequestEmptyMessagesError(LLMRequestValidationError):
 
     def __init__(self) -> None:
         super().__init__("LLMRequest.messages is empty")
-
-
-class LLMRequestSystemMessageNoneError(LLMRequestValidationError):
-    """LLM-запрос собран без system_message."""
-
-    def __init__(self) -> None:
-        super().__init__("LLMRequest.system_message is None")

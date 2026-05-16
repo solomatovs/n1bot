@@ -10,7 +10,7 @@ import pytest
 from boba.agent.agent import AgentContext
 from boba.agent.turn.spec import TurnState
 from boba.agent.workspace_fs.shell import FsHistoryWorkspaceShell
-from boba.llm.models import Message, ToolResultMessage, new_request_id
+from boba.llm.models import DialogMessage, ToolResultMessage, new_request_id
 from boba.tools.domain import TextResult
 from boba.workspace.contract import WorkspaceId
 
@@ -28,8 +28,8 @@ def agent_ctx() -> AgentContext:
 def make_turn_state() -> Callable[..., TurnState]:
     """Фабрика `TurnState` с произвольным набором messages."""
 
-    def _factory(*messages: Message) -> TurnState:
-        return TurnState(messages=tuple(messages))
+    def _factory(*messages: DialogMessage) -> TurnState:
+        return TurnState(dialog_messages=tuple(messages))
 
     return _factory
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from itertools import chain
 from typing import Any
 
 from boba.llm.errors import LLMProtocolError
@@ -11,6 +12,8 @@ from boba.llm.models import (
     LLMRequest,
     Message,
     SystemMessage,
+    TextBlock,
+    ToolCallBlock,
     ToolResultMessage,
     UserMessage,
 )
@@ -58,34 +61,55 @@ class ToOpenAIMessageConverter(Converter[Message, ChatCompletionMessageParam]):
         )
 
     def convert(self, value: Message) -> ChatCompletionMessageParam:
+        """Flatten доменных блоков в OpenAI Chat Completions wire-shape.
+
+        OpenAI Chat не interleav'ит блоки — `content` это одна строка, а
+        tool_calls — поле параллельное content. Поэтому: для system/user
+        склеиваем все TextBlock; для assistant — текст в content, tool_calls
+        в одноимённое поле. Не-text блоки в system/user пока игнорируются
+        (image/file требуют отдельной формы content-array — добавим, когда
+        мультимодальность станет use-case'ом).
+        """
         match value:
-            case SystemMessage(content=content):
+            case SystemMessage():
                 return ChatCompletionSystemMessageParam(
                     role="system",
-                    content=content,
+                    content=value.content,
                 )
-            case UserMessage(content=content):
+            case UserMessage():
                 return ChatCompletionUserMessageParam(
                     role="user",
-                    content=content,
+                    content=value.content,
                 )
-            case AssistantMessage(content=content, tool_calls=tcs):
+            case AssistantMessage(blocks=blocks):
+                text_parts: list[str] = []
+                tool_calls: list[Any] = []
+                for block in blocks:
+                    match block:
+                        case TextBlock(content=c):
+                            text_parts.append(c)
+                        case ToolCallBlock(call=tc):
+                            tool_calls.append(
+                                {
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.name,
+                                        "arguments": tc.args_json(),
+                                    },
+                                },
+                            )
+                        case _:
+                            # thinking / refusal / invalid_tool_call —
+                            # для replay/audit держим в домене, в OpenAI
+                            # Chat не отправляем.
+                            pass
                 param = ChatCompletionAssistantMessageParam(
                     role="assistant",
-                    content=content,
+                    content="".join(text_parts),
                 )
-                if tcs:
-                    param["tool_calls"] = [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": tc.args_json(),
-                            },
-                        }
-                        for tc in tcs
-                    ]
+                if tool_calls:
+                    param["tool_calls"] = tool_calls
                 return param
             case ToolResultMessage(tool_call_id=tcid, result=result):
                 return ChatCompletionToolMessageParam(
@@ -121,8 +145,10 @@ class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
         kwargs["model"] = r.model
 
     def _apply_messages(self, kwargs: dict[str, Any], r: LLMRequest) -> None:
-        """Склеивает в OpenAI-порядок: system → messages."""
-        kwargs["messages"] = list(self._convert_messages(r.all_messages()))
+        """Склеивает в OpenAI-порядок: system_messages → messages."""
+        kwargs["messages"] = list(
+            self._convert_messages(chain(r.system_messages, r.messages))
+        )
 
     def _convert_messages(
         self, messages: Iterable[Message]

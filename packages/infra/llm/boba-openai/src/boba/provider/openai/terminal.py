@@ -103,7 +103,8 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
             yield LLMRequestStarted(
                 request_id=ctx.request.request_id,
                 model=ctx.request.model,
-                messages_count=ctx.request.messages_count(),
+                messages_count=len(ctx.request.system_messages)
+                + len(ctx.request.messages),
                 has_tools=ctx.request.has_tools(),
                 monotonic_ns=time.monotonic_ns(),
             )
