@@ -4,6 +4,7 @@ from collections.abc import Iterable
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from boba.agent.agent import AgentContext
 from boba.agent.errors import MaxIterationsExceededError
 from boba.agent.events import (
     AgentEvent,
@@ -11,7 +12,6 @@ from boba.agent.events import (
     IterationStarted,
     TerminalEvent,
 )
-from boba.agent.orchestrator import AgentContext
 from boba.patterns import Specification, StreamSource
 
 
@@ -61,7 +61,7 @@ class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
             )
 
         yield IterationStarted(
-            request_id=ctx.request.request_id,
+            request_id=ctx.request_id,
             iteration_count=self._iteration,
             max_iterations=self._max_iterations,
         )

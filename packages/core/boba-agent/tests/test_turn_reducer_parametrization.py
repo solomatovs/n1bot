@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import ClassVar
 
+from boba.agent.agent import AgentContext
 from boba.agent.builder import AgentBuilder
 from boba.agent.middleware.llm import LLMInvokeMiddleware
-from boba.agent.orchestrator import AgentContext
 from boba.agent.turn.builder import TurnSpecBuilder
 from boba.agent.turn.reducers import (
     HistoryReducer,
@@ -68,7 +68,7 @@ def test_middleware_delegates_spec_construction_to_builder(
 def test_builder_default_reducers_registered_when_user_silent(
     agent_ctx: AgentContext,
 ):
-    builder = AgentBuilder()
+    builder = AgentBuilder().with_model("test-model")
     builder.use_default_turn_reducers()
     spec = builder._turn_spec_builder.build(agent_ctx)
     ids = {p.id() for p in spec.providers()}
@@ -106,7 +106,7 @@ def test_builder_use_turn_reducer_accepts_factory(
 def test_builder_default_plus_extra(
     agent_ctx: AgentContext,
 ):
-    builder = AgentBuilder()
+    builder = AgentBuilder().with_model("test-model")
     (
         builder
         .use_default_turn_reducers()
@@ -132,7 +132,7 @@ def test_builder_user_only_skips_default(
 def test_builder_extra_reducer_with_same_id_overrides_default(
     agent_ctx: AgentContext,
 ):
-    builder = AgentBuilder()
+    builder = AgentBuilder().with_model("test-model")
 
     class _OverrideModel(PrioritySource[str, TurnState]):
         ID: ClassVar[str] = ModelReducer.ID

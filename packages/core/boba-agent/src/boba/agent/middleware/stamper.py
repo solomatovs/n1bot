@@ -19,8 +19,8 @@ import time
 from collections.abc import Iterable
 from datetime import UTC, datetime
 
+from boba.agent.agent import AgentContext
 from boba.agent.events import AgentEvent, IterationStarted, PhaseEvent
-from boba.agent.orchestrator import AgentContext
 from boba.llm.models import RequestId
 from boba.patterns import StreamSource
 

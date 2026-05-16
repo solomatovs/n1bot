@@ -24,7 +24,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Self
 
-from boba.agent.orchestrator import AgentContext
+from boba.agent.agent import AgentContext
 from boba.agent.turn.reducers import TurnReducer
 from boba.agent.turn.spec import TurnSpec
 from boba.patterns import PrioritySource

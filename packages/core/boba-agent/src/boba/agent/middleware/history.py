@@ -6,9 +6,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from boba.agent.agent import AgentContext
 from boba.agent.events import AgentEvent
 from boba.agent.history import HistoryStoreError, HistoryWriter
-from boba.agent.orchestrator import AgentContext
 from boba.patterns import StreamSource
 
 
@@ -43,4 +43,4 @@ class HistoryRecorderMiddleware(StreamSource[AgentContext, AgentEvent]):
                 yield event
                 # и генерируем PersistenceFailed, который
                 # остановит агентский цикл через условие StopOnAnyFailure
-                yield err.to_user_feedback(ctx.request.request_id)
+                yield err.to_user_feedback(ctx.request_id)

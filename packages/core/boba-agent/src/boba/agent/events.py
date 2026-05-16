@@ -611,7 +611,7 @@ class ThinkingComplete(ContentSnapshotEvent):
 
 
 class AnswerComplete(ContentSnapshotEvent):
-    """Агрегированный текстовый ответ итерации (пишется в историю)."""
+    """Агрегированный текстовый ответ итерации"""
 
     type: Literal["AnswerComplete"] = "AnswerComplete"
     stream_kind: Literal[StreamKind.ANSWER] = StreamKind.ANSWER

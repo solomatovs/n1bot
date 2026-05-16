@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.agent.orchestrator import AgentConfig
 from boba.agent.prompt_providers import PromptsConfig
 from boba.agent.workspace_fs import WorkspaceLayout
 from boba.provider.openai import OpenAIConfig
@@ -37,7 +36,7 @@ class AppCoreConfig(BaseModel):
 
 
 class AppConfig(BobaFlatSettings):
-    """Конфиг агента: core/workspaces/openai/prompts/runtime."""
+    """Конфиг агента: core/workspaces/openai/prompts."""
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
@@ -50,4 +49,3 @@ class AppConfig(BobaFlatSettings):
     workspaces: WorkspaceLayout = Field(default_factory=WorkspaceLayout)
     openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
     prompts: PromptsConfig
-    runtime: AgentConfig = Field(default_factory=AgentConfig)

@@ -1,5 +1,9 @@
 """Публичный API агент-слоя."""
 
+from boba.agent.agent import (
+    Agent,
+    AgentContext,
+)
 from boba.agent.builder import AgentBuilder
 from boba.agent.errors import (
     AgentLLMFeedbackError,
@@ -74,7 +78,7 @@ from boba.agent.messages import (
 from boba.agent.middleware import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
-    AssistantMessagePersistenceMiddleware,
+    AssistantSnapshotMiddleware,
     HistoryRecorderMiddleware,
     IterationCounterMiddleware,
     LLMInvokeMiddleware,
@@ -90,14 +94,6 @@ from boba.agent.models import (
     ToolCallRejection,
     ToolCallResult,
 )
-from boba.agent.orchestrator import (
-    Agent,
-    AgentConfig,
-    AgentContext,
-    AgentInput,
-    AgentRequest,
-    AgentRunResult,
-)
 from boba.agent.prompt import (
     PermanentPromptError,
     PromptBlock,
@@ -112,10 +108,10 @@ from boba.agent.prompt import (
 )
 from boba.agent.turn.builder import TurnReducerFactory, TurnSpecBuilder
 from boba.agent.turn.reducers import (
-    AgentRequestSamplingReducer,
     HistoryReducer,
     ModelReducer,
     RememberUserQueryReducer,
+    SamplingReducer,
     SystemPromptReducer,
     ToolsReducer,
     TurnReducer,
@@ -126,7 +122,6 @@ __all__ = [
     "AdvisoryEvent",
     "Agent",
     "AgentBuilder",
-    "AgentConfig",
     "AgentContext",
     "AgentErrorRouter",
     "AgentErrorRouterMiddleware",
@@ -135,15 +130,11 @@ __all__ = [
     "AgentEventBase",
     "AgentEventName",
     "AgentEventRegistry",
-    "AgentInput",
     "AgentLLMFeedbackError",
-    "AgentRequest",
-    "AgentRequestSamplingReducer",
-    "AgentRunResult",
     "AnswerComplete",
     "AnswerStarted",
     "AnswerToken",
-    "AssistantMessagePersistenceMiddleware",
+    "AssistantSnapshotMiddleware",
     "ContentDeltaEvent",
     "ContentSnapshotEvent",
     "EventCategory",
@@ -199,6 +190,7 @@ __all__ = [
     "RepeatedToolCallGuardMiddleware",
     "RequestStart",
     "ResponseStarted",
+    "SamplingReducer",
     "Severity",
     "StaticPromptProvider",
     "StopOnAnyFailure",
