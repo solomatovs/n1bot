@@ -20,8 +20,8 @@ __all__ = [
     "LLMGenerationStarted",
     "LLMLifecycleMarker",
     "LLMRefusalToken",
-    "LLMRequestSent",
     "LLMRequestStarted",
+    "LLMResponseStarted",
     "LLMRetryAttempt",
     "LLMStreamingDelta",
     "LLMThinkingStarted",
@@ -73,7 +73,9 @@ class LLMStreamingDelta(BaseLLMEvent, ABC):
 
 @dataclass(frozen=True)
 class LLMRequestStarted(LLMLifecycleMarker):
-    """HTTP-запрос к провайдеру вот-вот будет отправлен; парный к LLMRequestSent."""
+    """
+    Событие возникает непосредственно перед отправкой HTTP-запрос к llm
+    """
 
     model: str
     messages_count: int
@@ -86,8 +88,15 @@ class LLMRequestStarted(LLMLifecycleMarker):
 
 
 @dataclass(frozen=True)
-class LLMRequestSent(LLMLifecycleMarker):
-    """HTTP-запрос отправлен, stream-handle получен; парный к LLMRequestStarted."""
+class LLMResponseStarted(LLMLifecycleMarker):
+    """
+    Событие возникает непосредственно после получения HTTP-ответа от llm
+    Данные еще не прочитаны
+    Разница по времени между
+    `LLMResponseStarted.monotonic_ns` - `LLMRequestStarted.monotonic_ns`
+    Позволяет замерить скорость обработки запроса самой llm
+    Либо самим провайдером предоставляющим доступ к llm
+    """
 
     monotonic_ns: int
 
@@ -211,7 +220,7 @@ class LLMGenerationDone(LLMLifecycleMarker):
 
 LLMEvent = (
     LLMRequestStarted
-    | LLMRequestSent
+    | LLMResponseStarted
     | LLMGenerationStarted
     | LLMThinkingStarted
     | LLMThinkingToken
