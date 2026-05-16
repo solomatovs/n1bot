@@ -61,10 +61,8 @@ class AgentBuilder:
         self._discover_groups: list[str] = []
         self._extensions: dict[type, object] = {}
         self._resolved_tool_executor: ToolExecutor | None = None
-        self._message_service: MessageService | None = None
-        self._resolved_message_service: MessageService | None = None
-        self._history_service: HistoryService | None = None
-        self._resolved_history_service: HistoryService | None = None
+        self._message_service: MessageService = InMemoryMessageService()
+        self._history_service: HistoryService = InMemoryHistoryService()
         self._prompt_providers: list[PromptProvider] = []
         self._agent_config: AgentConfig = AgentConfig()
         self._turn_spec_builder: TurnSpecBuilder = TurnSpecBuilder()
@@ -202,7 +200,7 @@ class AgentBuilder:
             lambda _ctx: SystemPromptReducer(self._prompt_providers),
         )
         self._turn_spec_builder.add(
-            lambda _ctx: HistoryReducer(self._resolve_message_service()),
+            lambda _ctx: HistoryReducer(self._message_service),
         )
         self._turn_spec_builder.add(
             lambda _ctx: ToolsReducer(self._resolve_tool_executor()),
@@ -222,11 +220,9 @@ class AgentBuilder:
             msg = "AgentBuilder.build: .with_llm(...) обязателен до .build()"
             raise ValueError(msg)
 
-        # Резолвим зависимости ДО регистрации дефолта: closure-фабрики читают
-        # их через _resolve_*_service() / _resolve_tool_executor() — кеш в self.
         self._resolve_tool_executor()
-        message_service = self._resolve_message_service()
-        history_service = self._resolve_history_service()
+        message_service = self._message_service
+        history_service = self._history_service
 
         if self._turn_spec_builder.is_empty():
             self.use_default_turn_reducers()
@@ -243,26 +239,6 @@ class AgentBuilder:
             stop_if=StopOnFinished().or_(StopOnAnyFailure()),
         )
         return Agent(source=source, writer=message_service, reader=message_service)
-
-    def _resolve_message_service(self) -> MessageService:
-        """Кешированный MessageService: пользовательский либо InMemoryMessageService()."""  # noqa: E501
-        if self._resolved_message_service is not None:
-            return self._resolved_message_service
-
-        self._resolved_message_service = (
-            self._message_service or InMemoryMessageService()
-        )
-        return self._resolved_message_service
-
-    def _resolve_history_service(self) -> HistoryService:
-        """Кешированный HistoryService: пользовательский либо InMemoryHistoryService()."""  # noqa: E501
-        if self._resolved_history_service is not None:
-            return self._resolved_history_service
-
-        self._resolved_history_service = (
-            self._history_service or InMemoryHistoryService()
-        )
-        return self._resolved_history_service
 
     def _resolve_tool_executor(self) -> ToolExecutor:
         """Выбрать готовый `ToolExecutor` или собрать из накопленных источников."""
