@@ -7,6 +7,7 @@ from itertools import islice
 from typing import ClassVar
 
 from boba.indexing.embedder import Embedder
+from boba.llm.errors import LLMProtocolError
 from openai import OpenAI
 
 __all__ = ["OpenAIEmbedder"]
@@ -57,6 +58,10 @@ class OpenAIEmbedder(Embedder[str]):
             input=content,
             dimensions=self._dim,
         )
+        if not response.data:
+            raise LLMProtocolError(
+                f"OpenAIEmbedder.embed_query: пустой response.data от модели {self._model!r}"
+            )
         return response.data[0].embedding
 
     def dim(self) -> int:

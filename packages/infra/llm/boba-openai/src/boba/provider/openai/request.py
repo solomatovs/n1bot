@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+from boba.llm.errors import LLMProtocolError
 from boba.llm.models import (
     AssistantMessage,
     LLMRequest,
@@ -94,7 +95,7 @@ class ToOpenAIMessageConverter(Converter[Message, ChatCompletionMessageParam]):
                 )
             case _:
                 msg = f"ToOpenAIMessageConverter: неизвестный Message-тип: {type(value).__name__}"
-                raise TypeError(msg)
+                raise LLMProtocolError(msg)
 
 
 class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):

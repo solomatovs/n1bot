@@ -93,7 +93,7 @@ class OpenAIErrorConverter(FirstMatchConverter[Exception, LLMError]):
     def status_code(exc: Exception) -> int:
         """HTTP-статус из APIStatusError."""
         if not isinstance(exc, openai.APIStatusError):  # pragma: no cover — инвариант
-            raise RuntimeError(
+            raise LLMUnknownError(
                 "OpenAIErrorConverter.status_code invariant broken: "
                 f"expected APIStatusError, got {type(exc).__name__}"
             )

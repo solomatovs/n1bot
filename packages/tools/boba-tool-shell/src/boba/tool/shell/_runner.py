@@ -18,7 +18,15 @@ import subprocess
 import time
 from dataclasses import dataclass
 
-__all__ = ["RunResult", "run_sandboxed"]
+__all__ = ["RunResult", "ShellRunnerInvariantError", "run_sandboxed"]
+
+
+class ShellRunnerInvariantError(Exception):
+    """Нарушение внутреннего инварианта shell-runner'а (например, отсутствие
+    stdout/stderr у Popen, который запущен с `stdout=PIPE, stderr=PIPE`).
+
+    В отличие от `assert`, переживает запуск с `python -O`.
+    """
 
 
 @dataclass(frozen=True)
@@ -90,8 +98,10 @@ def _pump(
 
     Возвращает `(stdout, stderr, trunc_out, trunc_err, timed_out)`.
     """
-    assert proc.stdout is not None  # noqa: S101
-    assert proc.stderr is not None  # noqa: S101
+    if proc.stdout is None or proc.stderr is None:
+        raise ShellRunnerInvariantError(
+            "_pump: ожидались proc.stdout и proc.stderr (Popen запущен с PIPE)"
+        )
 
     deadline = time.monotonic() + timeout_sec
     fds = {proc.stdout.fileno(): "out", proc.stderr.fileno(): "err"}
