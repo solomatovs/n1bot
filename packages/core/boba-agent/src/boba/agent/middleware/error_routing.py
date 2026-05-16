@@ -5,11 +5,11 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from typing import assert_never
 
+from boba.agent.agent import AgentContext
 from boba.agent.errors import AgentLLMFeedbackError, RoutableError, UserFeedbackError
 from boba.agent.events import AgentEvent, FeedbackToLLMAdded
 from boba.agent.messages import MessageWriter
 from boba.agent.models import LLMCritique, LLMFeedback, ToolCallRejection
-from boba.agent.orchestrator import AgentContext
 from boba.llm.models import RequestId, ToolResultMessage, UserMessage
 from boba.patterns import StreamSource
 from boba.tools.domain import ErrorResult
@@ -77,4 +77,4 @@ class AgentErrorRouterMiddleware(StreamSource[AgentContext, AgentEvent]):
         try:
             yield from self._inner.stream(ctx)
         except RoutableError as e:
-            yield from self._router.route(ctx.request.request_id, e)
+            yield from self._router.route(ctx.request_id, e)

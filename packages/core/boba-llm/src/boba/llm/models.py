@@ -199,6 +199,7 @@ class AssistantMessageChunk:
 
     content: str = ""
     thinking: str = ""
+    refusal: str = ""
     tool_call_chunks: tuple[ToolCallChunk, ...] = ()
 
     @classmethod
@@ -210,6 +211,7 @@ class AssistantMessageChunk:
         return AssistantMessageChunk(
             content=self.content + token,
             thinking=self.thinking,
+            refusal=self.refusal,
             tool_call_chunks=self.tool_call_chunks,
         )
 
@@ -218,6 +220,16 @@ class AssistantMessageChunk:
         return AssistantMessageChunk(
             content=self.content,
             thinking=self.thinking + token,
+            refusal=self.refusal,
+            tool_call_chunks=self.tool_call_chunks,
+        )
+
+    def with_refusal(self, token: str) -> AssistantMessageChunk:
+        """Прибавить refusal-токен."""
+        return AssistantMessageChunk(
+            content=self.content,
+            thinking=self.thinking,
+            refusal=self.refusal + token,
             tool_call_chunks=self.tool_call_chunks,
         )
 
@@ -234,6 +246,7 @@ class AssistantMessageChunk:
         return AssistantMessageChunk(
             content=self.content,
             thinking=self.thinking,
+            refusal=self.refusal,
             tool_call_chunks=(
                 *self.tool_call_chunks,
                 ToolCallChunk(index=index, id=tool_call_id, name=tool_name),
@@ -251,6 +264,7 @@ class AssistantMessageChunk:
                 return AssistantMessageChunk(
                     content=self.content,
                     thinking=self.thinking,
+                    refusal=self.refusal,
                     tool_call_chunks=tuple(updated),
                 )
         raise LLMProtocolError(
@@ -278,10 +292,11 @@ class AssistantMessageChunk:
         return AssistantMessage(**kwargs)
 
     def is_empty(self) -> bool:
-        """True если ни текста, ни thinking, ни tool-call'ов."""
+        """True если ни текста, ни thinking, ни refusal, ни tool-call'ов."""
         return (
             not self.content
             and not self.thinking
+            and not self.refusal
             and not self.tool_call_chunks
         )
 

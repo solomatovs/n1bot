@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from boba.agent.orchestrator import AgentContext, AgentRequest
+from boba.agent.agent import AgentContext
 from boba.agent.turn.spec import TurnState
 from boba.agent.workspace_fs.shell import FsHistoryWorkspaceShell
 from boba.llm.models import Message, ToolResultMessage, new_request_id
@@ -17,13 +17,10 @@ from boba.workspace.contract import WorkspaceId
 
 @pytest.fixture
 def agent_ctx() -> AgentContext:
-    """`AgentContext` с минимальным `AgentRequest` для тестов reducer'ов/middleware."""
+    """Минимальный `AgentContext` для тестов reducer'ов/middleware."""
     return AgentContext(
-        request=AgentRequest(
-            request_id=new_request_id(),
-            model="test-model",
-            query="hi",
-        ),
+        request_id=new_request_id(),
+        query="hi",
     )
 
 

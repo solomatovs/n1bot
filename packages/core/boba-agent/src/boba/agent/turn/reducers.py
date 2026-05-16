@@ -118,8 +118,8 @@ class ToolsReducer(PrioritySource[str, TurnState]):
         return state
 
 
-class AgentRequestSamplingReducer(PrioritySource[str, TurnState]):
-    """Кладёт SamplingParams в state (per-turn инжектится из AgentRequest)."""
+class SamplingReducer(PrioritySource[str, TurnState]):
+    """Кладёт SamplingParams в state. Конфигурируется один раз на этапе сборки."""
 
     ID: ClassVar[str] = "sampling"
 

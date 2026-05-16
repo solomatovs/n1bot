@@ -6,33 +6,37 @@ import importlib
 from collections.abc import Callable, Iterable
 from typing import Any, Self
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from boba.agent.agent import Agent, AgentContext
 from boba.agent.events import AgentEvent
 from boba.agent.history import HistoryService, HistoryWriter, InMemoryHistoryService
 from boba.agent.messages import InMemoryMessageService, MessageService, MessageWriter
 from boba.agent.middleware import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
-    AssistantMessagePersistenceMiddleware,
+    AssistantSnapshotMiddleware,
     EventStamperMiddleware,
     HistoryRecorderMiddleware,
+    IterationCounterConfig,
     IterationCounterMiddleware,
     LLMInvokeMiddleware,
     StopOnAnyFailure,
     StopOnFinished,
     ToolExecutionMiddleware,
 )
-from boba.agent.orchestrator import Agent, AgentConfig, AgentContext
 from boba.agent.prompt import PromptProvider
 from boba.agent.turn.builder import TurnReducerFactory, TurnSpecBuilder
 from boba.agent.turn.reducers import (
-    AgentRequestSamplingReducer,
     HistoryReducer,
     ModelReducer,
+    SamplingReducer,
     SystemPromptReducer,
     ToolsReducer,
     TurnReducer,
 )
 from boba.llm.builder import LLMPipeline
+from boba.llm.models import SamplingParams
 from boba.patterns import (
     StreamSource,
     StreamSourceChainBuilder,
@@ -54,6 +58,21 @@ EventStamperFactory = Callable[
 ]
 
 
+class AgentBuilderConfig(BaseModel):
+    """DTO bootstrap-конфига AgentBuilder.
+
+    Агрегирует per-middleware конфиги, нужные на этапе сборки агента.
+    Дефолтный экземпляр создаётся в `AgentBuilder.__init__`; перезаписать
+    можно через `AgentBuilder.use_config(...)`.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    iteration_counter: IterationCounterConfig = Field(
+        default_factory=IterationCounterConfig,
+    )
+
+
 class AgentBuilder:
     """Fluent-фасад: собирает Agent с дефолтной middleware-цепью."""
 
@@ -70,11 +89,12 @@ class AgentBuilder:
         self._message_service: MessageService = InMemoryMessageService()
         self._history_service: HistoryService = InMemoryHistoryService()
         self._prompt_providers: list[PromptProvider] = []
-        self._agent_config: AgentConfig = AgentConfig()
+        self._model: str | None = None
+        self._sampling: SamplingParams | None = None
         self._turn_spec_builder: TurnSpecBuilder = TurnSpecBuilder()
         self._event_stamper_factory: EventStamperFactory = EventStamperMiddleware
-        # Лимит итераций агентского цикла; переопределяется .with_max_iterations().
-        self._max_iterations: int = 20
+        # Bootstrap-конфиг middleware-цепочки; переопределяется .use_config().
+        self._builder_config: AgentBuilderConfig = AgentBuilderConfig()
 
     def with_llm(self, llm: LLMPipeline) -> Self:
         """Готовый LLMPipeline (обязательно; см. LLMPipelineFactory)."""
@@ -168,9 +188,14 @@ class AgentBuilder:
         self._prompt_providers = list(providers)
         return self
 
-    def with_config(self, config: AgentConfig) -> Self:
-        """Лимиты агентского лупа; дефолт — AgentConfig()."""
-        self._agent_config = config
+    def with_model(self, model: str) -> Self:
+        """LLM-модель для всех прогонов агента (обязательно до `build()`)."""
+        self._model = model
+        return self
+
+    def with_sampling(self, sampling: SamplingParams) -> Self:
+        """SamplingParams (temperature/top_p/...); дефолт — None (без override)."""
+        self._sampling = sampling
         return self
 
     def use_turn_reducer(
@@ -191,15 +216,14 @@ class AgentBuilder:
         self._turn_spec_builder.add(reducer_or_factory)
         return self
 
-    def with_max_iterations(self, limit: int) -> Self:
-        """Лимит итераций агентского цикла. Дефолт 20."""
-        if limit < 1:
-            msg = (
-                f"AgentBuilder.with_max_iterations: limit должен быть >= 1, "
-                f"получено {limit}"
-            )
-            raise ValueError(msg)
-        self._max_iterations = limit
+    def use_config(self, config: AgentBuilderConfig) -> Self:
+        """Заменить bootstrap-конфиг builder'а целиком.
+
+        Используется, когда конфиг приходит из внешней системы
+        (env / TOML / DI-контейнер). По умолчанию builder создаёт
+        `AgentBuilderConfig()` со всеми дефолтами.
+        """
+        self._builder_config = config
         return self
 
     def use_event_stamper(self, factory: EventStamperFactory) -> Self:
@@ -216,15 +240,15 @@ class AgentBuilder:
         """Зарегистрировать дефолтный набор TurnSpec'а.
 
         Состав: model / system_prompt / history / tools / sampling. Зависимости
-        (`prompt_providers`, `message_service`, `tool_executor`) разрешаются
-        на момент `build()` — порядок вызовов в fluent-цепочке не важен.
+        (`prompt_providers`, `message_service`, `tool_executor`, model, sampling)
+        разрешаются на момент `build()` — порядок вызовов в fluent-цепочке не важен.
 
         Полезно, когда нужно «дефолт + что-то ещё»: вызови этот метод явно,
         затем `use_turn_reducer(R)`. Если ни один reducer не зарегистрирован,
         `build()` вызовет этот метод автоматически.
         """
         self._turn_spec_builder.add(
-            lambda ctx: ModelReducer(ctx.request.model),
+            lambda _ctx: ModelReducer(self._require_model()),
         )
         self._turn_spec_builder.add(
             lambda _ctx: SystemPromptReducer(self._prompt_providers),
@@ -236,19 +260,16 @@ class AgentBuilder:
             lambda _ctx: ToolsReducer(self._resolve_tool_executor()),
         )
         self._turn_spec_builder.add(
-            lambda ctx: AgentRequestSamplingReducer(ctx.request.sampling),
+            lambda _ctx: SamplingReducer(self._sampling),
         )
         return self
 
-    def agent_config(self) -> AgentConfig:
-        """Текущий AgentConfig (нужен для Agent.run)."""
-        return self._agent_config
-
     def build(self) -> Agent:
-        """Собрать Agent. ToolContext передаётся per-call через AgentInput."""
+        """Собрать Agent. Требуются `.with_llm(...)` и `.with_model(...)`."""
         if self._llm is None:
             msg = "AgentBuilder.build: .with_llm(...) обязателен до .build()"
             raise ValueError(msg)
+        self._require_model()
 
         self._resolve_tool_executor()
         message_service = self._message_service
@@ -264,13 +285,19 @@ class AgentBuilder:
             tool_executor=self._resolve_tool_executor(),
             turn_spec_builder=self._turn_spec_builder,
             event_stamper_factory=self._event_stamper_factory,
-            max_iterations=self._max_iterations,
+            builder_config=self._builder_config,
         )
         source = StreamSourceLoop(
             source=chain,
             stop_if=StopOnFinished().or_(StopOnAnyFailure()),
         )
-        return Agent(source=source, writer=message_service, reader=message_service)
+        return Agent(source=source)
+
+    def _require_model(self) -> str:
+        if self._model is None:
+            msg = "AgentBuilder.build: .with_model(...) обязателен до .build()"
+            raise ValueError(msg)
+        return self._model
 
     def _resolve_tool_executor(self) -> ToolExecutor:
         """Выбрать готовый `ToolExecutor` или собрать из накопленных источников."""
@@ -361,7 +388,7 @@ class AgentBuilder:
         tool_executor: ToolExecutor,
         turn_spec_builder: TurnSpecBuilder,
         event_stamper_factory: EventStamperFactory,
-        max_iterations: int,
+        builder_config: AgentBuilderConfig,
     ) -> StreamSource[AgentContext, AgentEvent]:
         error_router = AgentErrorRouter(message_writer)
         builder = StreamSourceChainBuilder[AgentContext, AgentEvent]()
@@ -374,7 +401,10 @@ class AgentBuilder:
         builder.use(event_stamper_factory)
         builder.use(lambda inner: AgentErrorRouterMiddleware(inner, error_router))
         builder.use(
-            lambda inner: IterationCounterMiddleware(inner, max_iterations),
+            lambda inner: IterationCounterMiddleware(
+                inner,
+                builder_config.iteration_counter.max_iterations,
+            ),
         )
         builder.use(
             lambda inner: ToolExecutionMiddleware(
@@ -383,9 +413,5 @@ class AgentBuilder:
                 message_writer,
             ),
         )
-        builder.use(
-            lambda inner: AssistantMessagePersistenceMiddleware(
-                inner, message_writer,
-            ),
-        )
+        builder.use(AssistantSnapshotMiddleware)
         return builder.terminal(LLMInvokeMiddleware(llm, turn_spec_builder))

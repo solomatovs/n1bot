@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from typing import assert_never
 
+from boba.agent.agent import AgentContext
 from boba.agent.errors import LLMGenerationFailedError
 from boba.agent.events import (
     AgentEvent,
@@ -21,7 +22,6 @@ from boba.agent.events import (
     ToolCallStreamStarted,
 )
 from boba.agent.events import RequestStart as AgentLLMRequestSent
-from boba.agent.orchestrator import AgentContext
 from boba.agent.turn.builder import TurnSpecBuilder
 from boba.llm.builder import LLMPipeline
 from boba.llm.errors import LLMError
@@ -147,7 +147,7 @@ class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
             for event in self._llm.stream(
                 LLMContext(
                     request=request,
-                    request_id=ctx.request.request_id,
+                    request_id=ctx.request_id,
                 )
             ):
                 yield from converter.convert(event)

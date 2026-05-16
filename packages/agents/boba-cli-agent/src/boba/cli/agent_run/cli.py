@@ -8,11 +8,8 @@ from pathlib import Path
 from boba.agent import (
     Agent,
     AgentBuilder,
-    AgentConfig,
-    AgentInput,
     InMemoryMessageService,
 )
-from boba.agent.orchestrator import AgentRequest
 from boba.agent.prompt_providers import PromptLoader
 from boba.agent.turn.reducers import (
     RememberUserQueryReducer,
@@ -29,7 +26,6 @@ from boba.cli.agent_run.infra import (
     configure_logging,
 )
 from boba.llm.builder import LLMPipelineFactory
-from boba.llm.models import new_request_id
 from boba.patterns import ConverterInputError
 from boba.provider.openai import (
     CurlTraceChatCompletionObserver,
@@ -94,50 +90,42 @@ def _run() -> int:
     )
 
     message_service = InMemoryMessageService()
-    agent = (
+    builder = (
         builder.with_llm(llm)
+        .with_model(run_cfg.model)
         .with_messages(message_service)
         .use_default_turn_reducers()
         .use_turn_reducer(RememberUserQueryReducer())
         .with_prompts(prompt_loader.prompt_providers())
-        .with_config(app.runtime)
         .with_extension(ProjectWorkspaceShell, project_workspace)
         .use_tools_plugins_discovered()
-        .build()
     )
+    sampling = run_cfg.to_sampling_params()
+    if sampling is not None:
+        builder = builder.with_sampling(sampling)
+    agent = builder.build()
     sink = ConsoleSink(sys.stdout, sys.stderr)
 
     if run_cfg.query is not None:
-        _run_turn(agent, sink, app.runtime, run_cfg, run_cfg.query)
+        _run_turn(agent, sink, run_cfg.query)
         return 0
 
-    return _run_repl(agent, sink, app.runtime, run_cfg, message_service)
+    return _run_repl(agent, sink, run_cfg, message_service)
 
 
 def _run_turn(
     agent: Agent,
     sink: ConsoleSink,
-    agent_config: AgentConfig,
-    run_cfg: AgentRunConfig,
     query: str,
 ) -> None:
-    """Один ход: свежий RequestId, общий message_service хранит историю."""
-    request = AgentRequest(
-        model=run_cfg.model,
-        request_id=new_request_id(),
-        query=query,
-        sampling=run_cfg.to_sampling_params(),
-    )
-    agent_input = AgentInput(request=request, config=agent_config)
-
-    for event in agent.stream(agent_input):
+    """Один ход: общий message_service хранит историю между запросами."""
+    for event in agent.stream(query):
         sink.handle(event)
 
 
 def _run_repl(
     agent: Agent,
     sink: ConsoleSink,
-    agent_config: AgentConfig,
     run_cfg: AgentRunConfig,
     message_service: InMemoryMessageService,
 ) -> int:
@@ -171,6 +159,6 @@ def _run_repl(
             continue
 
         try:
-            _run_turn(agent, sink, agent_config, run_cfg, query)
+            _run_turn(agent, sink, query)
         except KeyboardInterrupt:
             sys.stderr.write("\n(текущий ход прерван)\n")

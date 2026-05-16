@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from boba.agent import AgentBuilder, AgentInput
+from boba.agent import AgentBuilder
+from boba.agent.agent import Agent
 from boba.agent.messages import MessageService
-from boba.agent.orchestrator import Agent, AgentRequest
 from boba.agent.prompt_providers import PromptLoader
 
 # from boba.agent.turn.reducers import (
@@ -14,7 +14,6 @@ from boba.agent.prompt_providers import PromptLoader
 # )
 from boba.agent.workspace_fs import FsPromptWorkspaceRegistry
 from boba.llm.builder import LLMPipelineFactory
-from boba.llm.models import new_request_id
 from boba.provider.openai import (
     CurlTraceChatCompletionObserver,
     use_openai,
@@ -48,7 +47,6 @@ class ChatSession:
         app = AppConfig.load()
 
         self._workspace_id = workspace_id
-        self._agent_config = app.runtime
         self._chainlit_config = ChainlitConfig.load()
 
         project_shell = project_workspaces.get_or_create(workspace_id)
@@ -76,11 +74,11 @@ class ChatSession:
         self._agent: Agent = (
             builder.with_extension(ProjectWorkspaceShell, project_shell)
             .with_llm(llm)
+            .with_model(self._chainlit_config.model)
             .use_default_turn_reducers()
             # .use_turn_reducer(RememberUserQueryReducer())
             .with_messages(message_service)
             .with_prompts(prompt_loader.prompt_providers())
-            .with_config(self._agent_config)
             .build()
         )
 
@@ -89,19 +87,7 @@ class ChatSession:
         return self._project_shell
 
     def run(self, query: str, extra_sink: ChainlitBridgeSink) -> None:
-        """Запустить агентский цикл; модель берётся из chainlit-конфига."""
-        request_id = new_request_id()
-        agent_input = AgentInput(
-            request=AgentRequest(
-                model=self._chainlit_config.model,
-                request_id=request_id,
-                query=query,
-            ),
-            config=self._agent_config,
-        )
-        with log_context(
-            request_id=str(request_id),
-            workspace_id=self._workspace_id,
-        ):
-            for event in self._agent.stream(agent_input):
+        """Запустить агентский цикл; модель задана при сборке."""
+        with log_context(workspace_id=self._workspace_id):
+            for event in self._agent.stream(query):
                 extra_sink.handle(event)

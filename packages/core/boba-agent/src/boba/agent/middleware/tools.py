@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from boba.agent.agent import AgentContext
 from boba.agent.events import (
     AgentEvent,
     FeedbackToLLMAdded,
@@ -14,7 +15,6 @@ from boba.agent.events import (
 )
 from boba.agent.messages import MessageWriter
 from boba.agent.models import ToolCallFailure, ToolCallResult
-from boba.agent.orchestrator import AgentContext
 from boba.llm.models import ToolResultMessage
 from boba.patterns import StreamSource
 from boba.tools.domain import (
