@@ -176,7 +176,14 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final, Literal, Self, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 
 from boba.agent.models import (
     ToolCallFailure,
@@ -899,6 +906,16 @@ AgentEventAdapter: TypeAdapter[AgentEvent] = TypeAdapter(
 """
 
 
+class AgentEventDecodeError(Exception):
+    """Ошибка десериализации события из транспортного формата.
+
+    Поднимается `AgentEventRegistry.decode` при невалидном payload
+    (нет `type`, не проходит pydantic-валидация и т.п.). Не наследуется
+    от `RoutableError`, т.к. decode выполняется транспортным слоем,
+    а не агентским loop'ом — обработка остаётся за вызывающей стороной.
+    """
+
+
 class AgentEventRegistry:
     """Расширяемый реестр типов AgentEvent.
 
@@ -938,34 +955,47 @@ class AgentEventRegistry:
         """
         type_value = data.get("type")
         if not isinstance(type_value, str):
-            msg = "AgentEventRegistry.decode: отсутствует поле 'type'"
-            raise ValueError(msg)
+            raise AgentEventDecodeError(
+                "AgentEventRegistry.decode: отсутствует поле 'type'"
+            )
         event_cls = cls._by_type.get(type_value)
         if event_cls is None:
-            return UnknownAgentEvent.model_validate(
-                {
-                    "type": type_value,
-                    "category": data.get("category"),
-                    "request_id": data.get("request_id"),
-                    "seq": data.get("seq", _UNSTAMPED_SEQ),
-                    "emitted_at": data.get("emitted_at", _epoch_utc()),
-                    "iteration": data.get("iteration", _UNSTAMPED_ITERATION),
-                    "payload": {
-                        k: v
-                        for k, v in data.items()
-                        if k
-                        not in {
-                            "type",
-                            "category",
-                            "request_id",
-                            "seq",
-                            "emitted_at",
-                            "iteration",
-                        }
-                    },
-                }
-            )
-        return event_cls.model_validate(data)
+            try:
+                return UnknownAgentEvent.model_validate(
+                    {
+                        "type": type_value,
+                        "category": data.get("category"),
+                        "request_id": data.get("request_id"),
+                        "seq": data.get("seq", _UNSTAMPED_SEQ),
+                        "emitted_at": data.get("emitted_at", _epoch_utc()),
+                        "iteration": data.get("iteration", _UNSTAMPED_ITERATION),
+                        "payload": {
+                            k: v
+                            for k, v in data.items()
+                            if k
+                            not in {
+                                "type",
+                                "category",
+                                "request_id",
+                                "seq",
+                                "emitted_at",
+                                "iteration",
+                            }
+                        },
+                    }
+                )
+            except ValidationError as e:
+                raise AgentEventDecodeError(
+                    f"AgentEventRegistry.decode: невалидный UnknownAgentEvent "
+                    f"для type={type_value!r}: {e}"
+                ) from e
+        try:
+            return event_cls.model_validate(data)
+        except ValidationError as e:
+            raise AgentEventDecodeError(
+                f"AgentEventRegistry.decode: невалидный payload для "
+                f"type={type_value!r} ({event_cls.__name__}): {e}"
+            ) from e
 
 
 def _register_core_events() -> None:

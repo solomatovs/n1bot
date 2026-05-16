@@ -6,7 +6,7 @@ import logging
 import time
 from collections.abc import Callable, Iterable
 
-from boba.llm.errors import RetryableLLMError
+from boba.llm.errors import LLMUnknownError, RetryableLLMError
 from boba.llm.events import LLMEvent, LLMRetryAttempt
 from boba.llm.models import LLMContext
 from boba.patterns import StreamSource
@@ -45,7 +45,7 @@ class RetryMiddleware(StreamSource[LLMContext, LLMEvent]):
         for attempt in range(self._max_attempts):
             if attempt > 0:
                 if last_exc is None:  # pragma: no cover — инвариант
-                    raise RuntimeError("retry invariant broken: last_exc is None")
+                    raise LLMUnknownError("retry invariant broken: last_exc is None")
 
                 yield LLMRetryAttempt(
                     request_id=ctx.request.request_id,
@@ -76,5 +76,5 @@ class RetryMiddleware(StreamSource[LLMContext, LLMEvent]):
                 last_exc = e
 
         if last_exc is None:  # pragma: no cover — инвариант
-            raise RuntimeError("retry invariant broken: no attempts made")
+            raise LLMUnknownError("retry invariant broken: no attempts made")
         raise last_exc

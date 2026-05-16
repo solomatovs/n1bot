@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from pydantic.alias_generators import to_camel
 
 import chainlit as cl
@@ -42,11 +42,21 @@ __all__ = [
     "ThreadDerivedWorkspaceOwnership",
     "ThreadIndexEntry",
     "ThreadMeta",
+    "ThreadMetaCorruptedError",
     "ThreadRepository",
     "UserCatalog",
     "WorkspaceOwnership",
     "WorkspaceOwnershipEntry",
 ]
+
+
+class ThreadMetaCorruptedError(Exception):
+    """Не удалось декодировать ThreadMeta (повреждённый файл / неверный wire-формат).
+
+    Поднимается из `_read_meta` и `ThreadIndexEntry.from_meta`. Не наследуется
+    от RoutableError: ошибки персистентности обрабатываются chainlit data layer'ом,
+    а не агентским роутером.
+    """
 
 
 _WIRE_CONFIG = ConfigDict(
@@ -90,7 +100,13 @@ class ThreadIndexEntry(BaseModel):
 
     @classmethod
     def from_meta(cls, meta: ThreadMeta) -> ThreadIndexEntry:
-        return cls.model_validate(meta, from_attributes=True)
+        try:
+            return cls.model_validate(meta, from_attributes=True)
+        except ValidationError as e:
+            raise ThreadMetaCorruptedError(
+                f"ThreadIndexEntry.from_meta: не удалось построить запись индекса "
+                f"из ThreadMeta (id={meta.id!r}): {e}"
+            ) from e
 
     def to_meta(self, thread_id: ThreadId) -> ThreadMeta:
         return ThreadMeta(id=thread_id, **self.model_dump())
@@ -463,7 +479,14 @@ class FsThreadRepository(ThreadRepository):
         if not shell.exists(path):
             return None
         with shell.read_text(path) as fh:
-            return ThreadMeta.model_validate_json(fh.read())
+            payload = fh.read()
+        try:
+            return ThreadMeta.model_validate_json(payload)
+        except ValidationError as e:
+            raise ThreadMetaCorruptedError(
+                f"_read_meta: повреждённый ThreadMeta в {path} "
+                f"(thread_id={thread_id!r}): {e}"
+            ) from e
 
     def _write_meta(self, meta: ThreadMeta) -> None:
         shell = self._shell_for(meta.workspace_id)

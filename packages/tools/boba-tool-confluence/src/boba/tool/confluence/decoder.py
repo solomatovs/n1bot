@@ -30,6 +30,7 @@ from boba.indexing import (
     RawDocument,
     ReaderKeys,
 )
+from boba.tool.confluence.errors import ConfluencePayloadError
 from boba.tool.confluence.keys import ConfluenceKeys
 from boba.transport.http import HttpKeys
 
@@ -54,7 +55,12 @@ class ConfluenceJsonDecoder(Decoder):
         payload = value.handle.read()
         if not payload:
             return value
-        data: dict[str, Any] = json.loads(payload)
+        try:
+            data: dict[str, Any] = json.loads(payload)
+        except json.JSONDecodeError as e:
+            raise ConfluencePayloadError(
+                f"ConfluenceJsonDecoder: невалидный JSON от Confluence: {e}"
+            ) from e
         body = data.get("body") or {}
         body_block = body.get(self._body_format) or {}
         html = str(body_block.get("value", "")) if isinstance(body_block, dict) else ""

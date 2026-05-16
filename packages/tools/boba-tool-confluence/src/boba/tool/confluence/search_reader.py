@@ -25,6 +25,7 @@ from boba.indexing import (
     Section,
     SourceId,
 )
+from boba.tool.confluence.errors import ConfluencePayloadError
 from boba.tool.confluence.keys import ConfluenceKeys
 from boba.tool.confluence.parse import parse_html, plain_text
 from boba.tool.confluence.request_sources._common import viewpage_url
@@ -53,7 +54,12 @@ class ConfluenceSearchHitsReader(Reader[str]):
         payload = value.handle.read()
         if not payload:
             return
-        data: dict[str, Any] = json.loads(payload)
+        try:
+            data: dict[str, Any] = json.loads(payload)
+        except json.JSONDecodeError as e:
+            raise ConfluencePayloadError(
+                f"ConfluenceSearchHitsReader: невалидный JSON от Confluence search: {e}"
+            ) from e
         for order, hit in enumerate(data.get("results") or []):
             yield self._make_section(value, hit, order)
 
