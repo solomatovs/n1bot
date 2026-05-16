@@ -13,9 +13,8 @@ LLM передаёт `command` (обязательное), `stdin` (опцион
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
-from typing import ClassVar, Self
+from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -81,15 +80,11 @@ class BashToolConfig:
 class BashTool(Tool[BashArgs, BashToolConfig]):
     """Sandboxed bash: выполнить команду внутри bwrap-песочницы."""
 
-    _ERR_KIND_UNKNOWN_PROFILE: ClassVar[str] = "unknown_profile"
-    _ERR_KIND_TIMEOUT: ClassVar[str] = "timeout"
-
-    def __init__(  # noqa: PLR0913 — все аргументы доменно осмыслены
+    def __init__(  # noqa: PLR0913
         self,
         cfg: BashToolConfig,
         ctx,
         source_id: ToolSourceId,
-        *,
         workspace_root: str,
         profiles: dict[str, SandboxProfile],
         default_profile: str,
@@ -105,27 +100,28 @@ class BashTool(Tool[BashArgs, BashToolConfig]):
         profile = self._profiles.get(profile_name)
         if profile is None:
             available = sorted(self._profiles)
-            return JsonResult(payload={
-                "exit_code": -1,
-                "stdout": "",
-                "stderr": (
-                    f"unknown sandbox profile: {profile_name!r}; "
-                    f"available: {available}"
-                ),
-                "duration_ms": 0,
-                "truncated_stdout": False,
-                "truncated_stderr": False,
-                "timed_out": False,
-                "profile": profile_name,
-                "error_kind": self._ERR_KIND_UNKNOWN_PROFILE,
-            })
+            return JsonResult(
+                payload={
+                    "exit_code": -1,
+                    "stdout": "",
+                    "stderr": (
+                        f"unknown sandbox profile: {profile_name!r}; "
+                        f"available: {available}"
+                    ),
+                    "duration_ms": 0,
+                    "truncated_stdout": False,
+                    "truncated_stderr": False,
+                    "timed_out": False,
+                    "profile": profile_name,
+                    "error_kind": "unknown_profile",
+                }
+            )
 
-        env = _resolve_env(profile, os.environ)
         argv = build_bwrap_argv(
             profile,
             req.command,
             workspace_root=self._workspace_root,
-            env=env,
+            env=profile.env_set,
         )
         result = run_sandboxed(
             argv,
@@ -134,20 +130,6 @@ class BashTool(Tool[BashArgs, BashToolConfig]):
             max_output_bytes=profile.max_output_bytes,
         )
         return _result_to_json(result, profile_name)
-
-
-def _resolve_env(
-    profile: SandboxProfile,
-    host_env: os._Environ[str],
-) -> dict[str, str]:
-    """Слить `env_passthrough` (из host_env) с `env_set` (жёсткий override)."""
-    out: dict[str, str] = {}
-    for name in profile.env_passthrough:
-        value = host_env.get(name)
-        if value is not None:
-            out[name] = value
-    out.update(profile.env_set)
-    return out
 
 
 def _result_to_json(result: RunResult, profile: str) -> JsonResult:

@@ -20,6 +20,11 @@ from boba.tools.framework import StaticToolSource, ToolSource
 __all__ = ["ShellPlugin", "ShellPluginConfig"]
 
 
+_REQUIRED_WHEN_ENABLED: frozenset[str] = frozenset(
+    {"workspace_root", "profiles", "default_profile"},
+)
+
+
 class ShellPluginConfig(BobaFlatSettings):
     """Sandboxed bash tool (bubblewrap-based).
 
@@ -28,8 +33,15 @@ class ShellPluginConfig(BobaFlatSettings):
 
     При `enable=true` обязательны: `workspace_root`, непустой
     `profiles` и `default_profile`, ссылающийся на ключ из `profiles`.
-    Дефолтных значений нет намеренно — host-путь и политика песочницы
-    выбираются пользователем явно.
+
+    Типы полей объявлены строго (`Path`, `dict[...]`, `str`) без
+    `Optional` — downstream-код после загрузки конфига работает с
+    конкретными типами без рантайм-проверок. Обязательность при
+    `enable=true` проверяется через `__pydantic_fields_set__`: поле
+    считается заданным только если оно явно присутствует во входных
+    данных (TOML/env). При `enable=false` все три поля можно опустить —
+    их placeholder-значения не используются, потому что `build()` не
+    вызывается.
     """
 
     model_config = BobaSettingsConfigDict(
@@ -43,8 +55,8 @@ class ShellPluginConfig(BobaFlatSettings):
         default=False,
         description="Подключить плагин в discovery.",
     )
-    workspace_root: Path | None = Field(
-        default=None,
+    workspace_root: Path = Field(
+        default=Path(),
         description=(
             "Host-путь к корню проекта. Обязателен при enable=true. "
             "Резолвится до абсолютного/каноничного. Монтируется RW в "
@@ -58,8 +70,8 @@ class ShellPluginConfig(BobaFlatSettings):
             "содержать хотя бы один профиль."
         ),
     )
-    default_profile: str | None = Field(
-        default=None,
+    default_profile: str = Field(
+        default="",
         description=(
             "Имя профиля, выбираемого если LLM не указал явно. "
             "Обязателен при enable=true, должен быть ключом `profiles`."
@@ -69,7 +81,6 @@ class ShellPluginConfig(BobaFlatSettings):
         default=None,
         description=(
             "Allowlist tool-имён внутри плагина: None — все включены. "
-            "Сейчас единственный tool — 'bash'."
         ),
     )
     bash: PromptOverlay = Field(default_factory=PromptOverlay)
@@ -78,16 +89,10 @@ class ShellPluginConfig(BobaFlatSettings):
     def _validate(self) -> Self:
         if not self.enable:
             return self
-        if self.workspace_root is None:
-            msg = "workspace_root обязателен при enable=true"
-            raise ValueError(msg)
-        if not self.profiles:
-            msg = "profiles обязателен при enable=true (минимум один профиль)"
-            raise ValueError(msg)
-        if self.default_profile is None:
+        missing = _REQUIRED_WHEN_ENABLED - self.model_fields_set
+        if missing:
             msg = (
-                f"default_profile обязателен при enable=true; "
-                f"доступные профили: {sorted(self.profiles)}"
+                f"при enable=true обязательны поля: {sorted(missing)}"
             )
             raise ValueError(msg)
         if self.default_profile not in self.profiles:
@@ -120,22 +125,15 @@ class ShellPlugin(Plugin[ShellPluginConfig, ToolSource]):
         ctx: ExtensionContext,
     ) -> Iterable[ToolSource]:
         cls._check_bwrap_available()
-        # install_plugins зовёт build только при enable=true, после чего
-        # ShellPluginConfig._validate гарантирует non-None для этих полей.
-        workspace_root = cfg.workspace_root
-        default_profile = cfg.default_profile
-        if workspace_root is None or default_profile is None:
-            msg = "ShellPluginConfig: build() вызван при незаполненных полях"
-            raise RuntimeError(msg)
         sid = cls.SOURCE_ID
         factories: dict[str, Callable[[], Tool]] = {
             "bash": lambda: BashTool(
                 BashToolConfig(prompt=cfg.bash),
                 ctx,
                 sid,
-                workspace_root=str(workspace_root),
+                workspace_root=str(cfg.workspace_root),
                 profiles=dict(cfg.profiles),
-                default_profile=default_profile,
+                default_profile=cfg.default_profile,
             ),
         }
         names = cls._select(cfg.tools, factories.keys())
