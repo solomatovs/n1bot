@@ -1,4 +1,9 @@
-"""Граница между Agent и LLM-слоем."""
+"""Граница (port) между Agent-слоем и LLM-слоем.
+
+`LLMPort` — adapter в смысле ports-and-adapters: единственное место, где
+Agent-слой знает про существование LLM-слоя. Слой LLM в обратную сторону
+ничего про Agent не знает.
+"""
 
 from __future__ import annotations
 
@@ -23,7 +28,7 @@ from boba.agent.events import (
 )
 from boba.agent.events import RequestStart as AgentLLMRequestSent
 from boba.agent.turn.builder import TurnSpecBuilder
-from boba.llm.builder import LLMPipeline
+from boba.llm.builder import LLM
 from boba.llm.errors import LLMError
 from boba.llm.events import (
     LLMAnswerStarted,
@@ -118,25 +123,30 @@ class LLMToAgentConverter:
                 assert_never(event)
 
 
-class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Терминал агентской цепочки: build request → invoke LLM.
+class LLMPort(StreamSource[AgentContext, AgentEvent]):
+    """
+    Agent программа собирает LLMRequest и отправляет на обработку в LLM программе
 
-    Состав TurnSpec'а сюда не зашит — он целиком определяется
-    `TurnSpecBuilder`'ом, переданным извне (bootstrap-уровень). Middleware
-    про конкретные reducer'ы ничего не знает: добавлять/удалять стадии
-    можно без правок этого класса.
+    LLMPort выполняет две функции:
+    - собирает LLMRequest и отправляет в LLM слой
+    - конвертирует события приходящие от LLM в агентские события
+        LLMEvent -> AgentEvent
+    - конвертирует ошибки приходящие от LLM в агентские ошибки
+
+    LLMPort это единственное место в Agent-цепочке,
+    которое знает об существовании LLM
     """
 
     def __init__(
         self,
-        llm: LLMPipeline,
+        llm: LLM,
         turn_spec_builder: TurnSpecBuilder,
     ) -> None:
         self._llm = llm
         self._turn_spec_builder = turn_spec_builder
 
     def name(self) -> str:
-        return "LLMInvoke"
+        return "LLMPort"
 
     def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
         request = self._turn_spec_builder.build(ctx).build()
@@ -144,12 +154,7 @@ class LLMInvokeMiddleware(StreamSource[AgentContext, AgentEvent]):
         try:
             converter = LLMToAgentConverter(request)
 
-            for event in self._llm.stream(
-                LLMContext(
-                    request=request,
-                    request_id=ctx.request_id,
-                )
-            ):
+            for event in self._llm.stream(LLMContext(request=request)):
                 yield from converter.convert(event)
         except LLMError as e:
             raise LLMGenerationFailedError(

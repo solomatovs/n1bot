@@ -27,11 +27,12 @@ from boba.provider.openai.tool_call_reindexer import (
 def _ctx() -> LLMContext:
     sys_msg = SystemMessage(content="s")
     req = LLMRequest(
+        request_id=new_request_id(),
         model="m",
         system_message=sys_msg,
         messages=(UserMessage(content="hi"),),
     )
-    return LLMContext(request_id=new_request_id(), request=req)
+    return LLMContext(request=req)
 
 
 def _tc(
@@ -154,7 +155,7 @@ def _begins_and_args(
 def test_converter_on_separates_collision() -> None:
     """reindex_tool_calls=True (default): коллизия id+index → два LLMToolCallBegin."""
     ctx = _ctx()
-    conv = FromOpenAIChunkConverter(ctx.request_id)
+    conv = FromOpenAIChunkConverter(ctx.request.request_id)
     chunks = [
         _chunk(
             _choice(
@@ -193,7 +194,7 @@ def test_converter_on_separates_collision() -> None:
 def test_converter_off_keeps_provider_collision() -> None:
     """reindex_tool_calls=False: коллизия не чинится — args склеиваются под index=0."""
     ctx = _ctx()
-    conv = FromOpenAIChunkConverter(ctx.request_id, reindex_tool_calls=False)
+    conv = FromOpenAIChunkConverter(ctx.request.request_id, reindex_tool_calls=False)
     chunks = [
         _chunk(
             _choice(
@@ -228,7 +229,7 @@ def test_converter_off_keeps_provider_collision() -> None:
 def test_converter_on_keeps_well_formed_parallel() -> None:
     """reindex_tool_calls=True не ломает корректные параллельные tool_calls."""
     ctx = _ctx()
-    conv = FromOpenAIChunkConverter(ctx.request_id)
+    conv = FromOpenAIChunkConverter(ctx.request.request_id)
     chunks = [
         _chunk(
             _choice(

@@ -25,7 +25,7 @@ from boba.cli.agent_run.infra import (
     AppConfig,
     configure_logging,
 )
-from boba.llm.builder import LLMPipelineFactory
+from boba.llm.builder import LLMBuilder
 from boba.patterns import ConverterInputError
 from boba.provider.openai import (
     CurlTraceChatCompletionObserver,
@@ -81,7 +81,7 @@ def _run() -> int:
     ).get_or_create(workspace_id)
 
     llm = (
-        LLMPipelineFactory()
+        LLMBuilder()
         .add_observer(
             CurlTraceChatCompletionObserver(history_workspace),
         )

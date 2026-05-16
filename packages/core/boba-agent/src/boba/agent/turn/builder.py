@@ -11,7 +11,7 @@
 - `TurnSpec` — *что* собрать (fold по reducer'ам, валидация результата).
 - `TurnSpecBuilder` — *из чего* собрать (декларация состава, late-binding
   ресурсов через closure).
-- `LLMInvokeMiddleware` — *когда* (per-call: build → invoke → events).
+- `LLMPort` — *когда* (per-call: build → invoke → events).
 
 Состав `TurnSpec` полностью определяется на bootstrap-уровне через
 `AgentBuilder.use_turn_reducer(...)` / `use_default_turn_reducers()`.
@@ -73,7 +73,7 @@ class TurnSpecBuilder:
 
     def build(self, ctx: AgentContext) -> TurnSpec:
         """Свежий TurnSpec под `ctx`: вызвать все фабрики, зарегистрировать в spec."""
-        spec = TurnSpec()
+        spec = TurnSpec(ctx.request_id)
         for f in self._factories:
             spec.register(f(ctx))
         return spec

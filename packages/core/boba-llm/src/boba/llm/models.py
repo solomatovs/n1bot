@@ -35,15 +35,6 @@ __all__ = [
     "new_request_id",
 ]
 
-
-# --------------------------------------------------------------------- #
-# Идентификаторы (PEP 484 NewType поверх UUID)
-# --------------------------------------------------------------------- #
-#
-# Стандартный python-способ для типизированных id: статическая type-safety
-# (pyright различает RequestId и MessageId) + нулевая runtime-стоимость +
-# нативная поддержка Pydantic/JSON Schema.
-
 RequestId = NewType("RequestId", UUID)
 """Идентификатор запроса пользователя, проходящий через всю систему."""
 
@@ -130,9 +121,10 @@ class AssistantMessage(Message):
 class ToolResultMessage(Message):
     """Результат выполнения tool-call в слот id-вызова.
 
-    Несёт доменный `ToolResult` (sealed). Провайдер-adapter рендерит его
-    в свой wire-формат через `ToolResultVisitor[T]` при конвертации
-    сообщения в API-параметры. Признак ошибки — `isinstance(result, ErrorResult)`.
+    Несёт доменный `ToolResult` (sealed).
+    Провайдер-adapter рендерит его в свой wire-формат
+    через `ToolResultVisitor[T]` при конвертации сообщения в API-параметры.
+    Признак ошибки — `isinstance(result, ErrorResult)`.
     """
 
     type: Literal["tool_result"] = "tool_result"
@@ -146,7 +138,8 @@ MessageAdapter: TypeAdapter[Message] = TypeAdapter(
         Field(discriminator="type"),
     ],
 )
-"""TypeAdapter для (де)сериализации Message через discriminator='type'.
+"""
+TypeAdapter для (де)сериализации Message через discriminator='type'.
 
 Использование:
     line: str = MessageAdapter.dump_json(message).decode("utf-8")
@@ -156,7 +149,9 @@ MessageAdapter: TypeAdapter[Message] = TypeAdapter(
 
 @dataclass(frozen=True)
 class ToolCallChunk:
-    """Накопленное состояние одного tool-call'а в стриме (args — substring JSON)."""
+    """
+    Накопленное состояние одного tool-call в стриме
+    """
 
     index: int
     id: str
@@ -183,6 +178,7 @@ class ToolCallChunk:
                 raw_args=self.args,
                 error=f"invalid JSON arguments: {e}",
             )
+
         if not isinstance(parsed, dict):
             return InvalidToolCall(
                 id=self.id,
@@ -190,6 +186,7 @@ class ToolCallChunk:
                 raw_args=self.args,
                 error=f"args must be JSON object, got {type(parsed).__name__}",
             )
+
         return ToolCall(id=self.id, name=self.name, args=parsed)
 
 
@@ -234,7 +231,11 @@ class AssistantMessageChunk:
         )
 
     def with_tool_call_start(
-        self, *, index: int, tool_call_id: str, tool_name: str,
+        self,
+        *,
+        index: int,
+        tool_call_id: str,
+        tool_name: str,
     ) -> AssistantMessageChunk:
         """Зарегистрировать новый tool-call slot (из ToolCallStreamStarted)."""
         for existing in self.tool_call_chunks:
@@ -254,7 +255,10 @@ class AssistantMessageChunk:
         )
 
     def with_tool_call_args(
-        self, *, index: int, args_chunk: str,
+        self,
+        *,
+        index: int,
+        args_chunk: str,
     ) -> AssistantMessageChunk:
         """Дописать args в зарегистрированный tool-call (из ToolCallArgumentDelta)."""
         updated = list(self.tool_call_chunks)
@@ -300,6 +304,7 @@ class AssistantMessageChunk:
             and not self.tool_call_chunks
         )
 
+
 @dataclass(frozen=True)
 class SamplingParams:
     temperature: float | None = None
@@ -320,6 +325,7 @@ class LLMToolRequest:
 
 @dataclass(frozen=True)
 class LLMRequest:
+    request_id: RequestId
     model: str
     system_message: SystemMessage
     messages: tuple[Message, ...] = ()
@@ -343,4 +349,3 @@ class LLMRequest:
 @dataclass(frozen=True)
 class LLMContext:
     request: LLMRequest
-    request_id: RequestId
