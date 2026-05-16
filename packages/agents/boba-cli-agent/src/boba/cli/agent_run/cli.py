@@ -95,7 +95,7 @@ def _run() -> int:
         TurnBuilder()
         .with_model(run_cfg.model)
         .with_prompts(prompt_loader.prompt_providers())
-        .use_default_reducers()
+        .with_user_query()
         .use_reducer(RememberUserQueryReducer())
     )
     sampling = run_cfg.to_sampling_params()

@@ -9,12 +9,11 @@ from typing import Any
 from boba.llm.errors import (
     LLMRequestEmptyMessagesError,
     LLMRequestModelNoneError,
-    LLMRequestSystemMessageNoneError,
 )
 from boba.llm.models import (
+    DialogMessage,
     LLMRequest,
     LLMToolRequest,
-    Message,
     RequestId,
     SamplingParams,
     SystemMessage,
@@ -25,8 +24,8 @@ from boba.patterns import FoldFactory
 @dataclass
 class TurnState:
     model: str | None = None
-    system_message: SystemMessage | None = None
-    messages: tuple[Message, ...] = ()
+    system_messages: tuple[SystemMessage, ...] = ()
+    dialog_messages: tuple[DialogMessage, ...] = ()
     tools: LLMToolRequest = field(default_factory=LLMToolRequest)
     sampling: SamplingParams = field(default_factory=SamplingParams)
     response_format: Mapping[str, Any] | None = None
@@ -45,16 +44,14 @@ class TurnSpec(
     def finalize(self, state: TurnState) -> LLMRequest:
         if state.model is None:
             raise LLMRequestModelNoneError()
-        if state.system_message is None:
-            raise LLMRequestSystemMessageNoneError()
-        if not state.messages:
+        if not state.dialog_messages:
             raise LLMRequestEmptyMessagesError()
 
         return LLMRequest(
             request_id=self._request_id,
             model=state.model,
-            system_message=state.system_message,
-            messages=state.messages,
+            system_messages=state.system_messages,
+            messages=state.dialog_messages,
             tools=state.tools,
             sampling=state.sampling,
             response_format=state.response_format,

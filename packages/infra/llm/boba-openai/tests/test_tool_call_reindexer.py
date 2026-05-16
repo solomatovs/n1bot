@@ -25,12 +25,11 @@ from boba.provider.openai.tool_call_reindexer import (
 
 
 def _ctx() -> LLMContext:
-    sys_msg = SystemMessage(content="s")
     req = LLMRequest(
         request_id=new_request_id(),
         model="m",
-        system_message=sys_msg,
-        messages=(UserMessage(content="hi"),),
+        system_messages=(SystemMessage.from_text("s"),),
+        messages=(UserMessage.from_text("hi"),),
     )
     return LLMContext(request=req)
 

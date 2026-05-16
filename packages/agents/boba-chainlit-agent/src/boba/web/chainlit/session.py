@@ -75,7 +75,7 @@ class ChatSession:
             TurnBuilder()
             .with_model(self._chainlit_config.model)
             .with_prompts(prompt_loader.prompt_providers())
-            .use_default_reducers()
+            .with_user_query()
             # .use_reducer(RememberUserQueryReducer())
         )
         self._agent: Agent = (

@@ -23,10 +23,13 @@ from boba.agent.workspace_fs.shell import FsHistoryWorkspaceShell
 from boba.llm.models import (
     AssistantMessage,
     InvalidToolCall,
+    InvalidToolCallBlock,
     MessageAdapter,
     MessageId,
     SystemMessage,
+    TextBlock,
     ToolCall,
+    ToolCallBlock,
     ToolResultMessage,
     UserMessage,
 )
@@ -41,16 +44,18 @@ _ITC = InvalidToolCall(
 
 def _all_messages() -> list[Any]:
     return [
-        SystemMessage(id=_MID, content="be helpful"),
-        UserMessage(id=_MID, content="hi"),
-        # AssistantMessage без tool_calls
-        AssistantMessage(id=_MID, content="hello"),
-        # AssistantMessage с tool_calls + invalid_tool_calls
+        SystemMessage.from_text("be helpful", id=_MID),
+        UserMessage.from_text("hi", id=_MID),
+        # AssistantMessage только с текстом
+        AssistantMessage.from_text("hello", id=_MID),
+        # AssistantMessage с разнородными блоками: text + tool_call + invalid_tool_call
         AssistantMessage(
             id=_MID,
-            content="reply",
-            tool_calls=(_TC,),
-            invalid_tool_calls=(_ITC,),
+            blocks=(
+                TextBlock(content="reply"),
+                ToolCallBlock(call=_TC),
+                InvalidToolCallBlock(invalid=_ITC),
+            ),
         ),
         # ToolResultMessage с каждым ToolResult-вариантом
         ToolResultMessage(
@@ -81,23 +86,27 @@ def test_message_roundtrip(message: Any) -> None:
 
 def test_message_default_id_factory() -> None:
     """Без явного id Message получает свежий UUID через new_message_id()."""
-    a = SystemMessage(content="x")
-    b = SystemMessage(content="x")
+    a = SystemMessage.from_text("x")
+    b = SystemMessage.from_text("x")
     assert a.id != b.id
     assert isinstance(a.id, UUID)
 
 
-def test_assistant_default_empty_tool_calls() -> None:
-    a = AssistantMessage(id=_MID, content="x")
+def test_assistant_text_only_serializes_as_single_text_block() -> None:
+    """Только текст → один TextBlock в `blocks`, без tool_call/invalid блоков."""
+    a = AssistantMessage.from_text("x", id=_MID)
     line = MessageAdapter.dump_json(a).decode("utf-8")
-    assert '"tool_calls":[]' in line
-    assert '"invalid_tool_calls":[]' in line
+    assert '"type":"text"' in line
+    assert '"content":"x"' in line
+    assert '"type":"tool_call"' not in line
+    assert '"type":"invalid_tool_call"' not in line
 
 
 def test_golden_jsonl_system() -> None:
+    """Канонический wire-формат: system с одним text-блоком."""
     golden = (
-        '{"id":"00000000-0000-0000-0000-000000000aaa",'
-        '"type":"system","content":"be helpful"}'
+        '{"id":"00000000-0000-0000-0000-000000000aaa","type":"system",'
+        '"blocks":[{"type":"text","content":"be helpful"}]}'
     )
     parsed = MessageAdapter.validate_json(golden)
     assert isinstance(parsed, SystemMessage)
@@ -106,11 +115,14 @@ def test_golden_jsonl_system() -> None:
 
 
 def test_golden_jsonl_assistant_with_tools() -> None:
+    """Канонический wire-формат: assistant с text + tool_call блоками."""
     golden = (
-        '{"id":"00000000-0000-0000-0000-000000000aaa",'
-        '"type":"assistant","content":"reply",'
-        '"tool_calls":[{"id":"c1","name":"search","args":{"q":"x"}}],'
-        '"invalid_tool_calls":[]}'
+        '{"id":"00000000-0000-0000-0000-000000000aaa","type":"assistant",'
+        '"blocks":['
+        '{"type":"text","content":"reply"},'
+        '{"type":"tool_call","call":'
+        '{"id":"c1","name":"search","args":{"q":"x"}}}'
+        ']}'
     )
     parsed = MessageAdapter.validate_json(golden)
     assert isinstance(parsed, AssistantMessage)
@@ -135,8 +147,8 @@ def test_golden_jsonl_tool_result() -> None:
 def test_in_memory_message_service() -> None:
     svc = InMemoryMessageService()
     assert svc.last() is None
-    svc.add(SystemMessage(content="s"))
-    svc.add(UserMessage(content="u"))
+    svc.add(SystemMessage.from_text("s"))
+    svc.add(UserMessage.from_text("u"))
     msgs = list(svc.message_iter())
     assert len(msgs) == 2
     assert isinstance(svc.last(), UserMessage)
@@ -148,9 +160,9 @@ def test_jsonlines_message_e2e(history_workspace: FsHistoryWorkspaceShell) -> No
     svc = JsonLinesMessageService(history_workspace)
 
     messages = [
-        SystemMessage(content="be helpful"),
-        UserMessage(content="hi"),
-        AssistantMessage(content="hello"),
+        SystemMessage.from_text("be helpful"),
+        UserMessage.from_text("hi"),
+        AssistantMessage.from_text("hello"),
         ToolResultMessage(
             tool_call_id="c1",
             result=TextResult(text="ok", metadata={}),
@@ -167,7 +179,7 @@ def test_jsonlines_message_e2e(history_workspace: FsHistoryWorkspaceShell) -> No
 
 def test_jsonlines_message_clear(history_workspace: FsHistoryWorkspaceShell) -> None:
     svc = JsonLinesMessageService(history_workspace)
-    svc.add(SystemMessage(content="x"))
+    svc.add(SystemMessage.from_text("x"))
     assert len(list(svc.message_iter())) == 1
     svc.clear()
     assert len(list(svc.message_iter())) == 0

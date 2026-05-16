@@ -110,6 +110,45 @@ class GitPromptProvider(PromptProvider):
             return "(unavailable)"
 
 
+class DirectoryPromptProvider(PromptProvider):
+    """Читает все файлы из директории; каждый файл — отдельный `PromptBlock`.
+
+    После 1:1-маппинга `PromptBlock` → `SystemMessage` в SystemPromptReducer
+    несколько файлов разворачиваются в несколько system-сообщений, что
+    1-в-1 ложится на Anthropic multi-block system. Несуществующая
+    директория молча даёт ноль блоков (как `FilePromptProvider` с default).
+    """
+
+    def __init__(
+        self,
+        prompt_id: PromptId,
+        priority: int,
+        directory: Path,
+        *,
+        glob: str = "*",
+    ) -> None:
+        self._id = prompt_id
+        self._priority = priority
+        self._directory = directory
+        self._glob = glob
+
+    def id(self) -> PromptId:
+        return self._id
+
+    def priority(self) -> int:
+        return self._priority
+
+    def blocks(self, state: PromptState) -> Iterator[PromptBlock]:
+        if not self._directory.is_dir():
+            return
+        for path in sorted(self._directory.glob(self._glob)):
+            if not path.is_file():
+                continue
+            content = path.read_text(encoding="utf-8").strip()
+            if content:
+                yield PromptBlock(name=str(path), content=content)
+
+
 class WorkspaceSystemPromptProvider(PromptProvider):
     """Собирает system-промпт из файлов директории workspace'а."""
 

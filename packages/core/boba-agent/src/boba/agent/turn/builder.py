@@ -21,11 +21,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from typing import Self
+from pathlib import Path
+from typing import Self, cast
 
 from boba.agent.agent import AgentContext
 from boba.agent.messages import MessageReader
-from boba.agent.prompt import PromptProvider
+from boba.agent.prompt import PromptId, PromptProvider, StaticPromptProvider
+from boba.agent.prompt_providers import DirectoryPromptProvider
 from boba.agent.turn.reducers import (
     HistoryReducer,
     ModelReducer,
@@ -33,6 +35,7 @@ from boba.agent.turn.reducers import (
     SystemPromptReducer,
     ToolsReducer,
     TurnReducer,
+    UserQueryReducer,
 )
 from boba.agent.turn.spec import TurnSpec
 from boba.llm.models import SamplingParams
@@ -93,71 +96,105 @@ class TurnBuilder:
     """Fluent-описание следующего хода агента.
 
     Самостоятельный bootstrap: описывает *что* должно попасть в `LLMRequest`
-    каждой итерации (модель/sampling/системный prompt/историю/каталог tools/
-    дополнительные reducer'ы) — независимо от `AgentBuilder`. Можно
-    собирать и тестировать изолированно.
+    каждой итерации. Каждый `.with_*(...)` отвечает за один reducer:
+    устанавливает ресурс и регистрирует соответствующую стадию в
+    `TurnSpecBuilder`. Повторный вызов того же метода обновляет ресурс
+    (без дублирования фабрики). Reducer'ы, которые пользователь не вызывал,
+    не попадают в LLMRequest — например, без `.with_tool_catalog(...)`
+    запрос отправляется без tools.
 
-    Ресурсы `MessageReader` (для `HistoryReducer`) и `ToolCatalog` (для
-    `ToolsReducer`) задаются либо явно через `.with_messages()` /
-    `.with_tool_catalog()`, либо прокидываются `AgentBuilder.use_turn()`
-    из собственных полей. Явно заданное в `TurnBuilder` не перетирается.
+    Ресурсы `MessageReader` и `ToolCatalog` задаются либо явно через
+    `.with_messages()` / `.with_tool_catalog()`, либо прокидываются
+    `AgentBuilder.use_turn()` (он уважает явно заданное).
     """
 
     def __init__(self) -> None:
-        self._model: str | None = None
-        self._sampling: SamplingParams | None = None
+        self._spec_builder = TurnSpecBuilder()
         self._prompt_providers: list[PromptProvider] = []
         self._messages: MessageReader | None = None
         self._tool_catalog: ToolCatalog | None = None
-        self._extras: list[TurnReducer | TurnReducerFactory] = []
-        self._use_defaults: bool = False
+        self._model: str | None = None
+        self._sampling: SamplingParams | None = None
+        self._registered: set[str] = set()
+
+    def _ensure(self, reducer_id: str, factory: TurnReducerFactory) -> None:
+        """Идемпотентная регистрация фабрики reducer'а по его id."""
+        if reducer_id in self._registered:
+            return
+        self._spec_builder.add(factory)
+        self._registered.add(reducer_id)
 
     def with_model(self, model: str) -> Self:
-        """LLM-модель (обязательна, если используется `use_default_reducers`)."""
+        """LLM-модель → `ModelReducer`. Повторный вызов обновляет значение."""
         self._model = model
+        self._ensure(ModelReducer.ID, self._make_model)
         return self
 
     def with_sampling(self, sampling: SamplingParams) -> Self:
-        """`SamplingParams` для `SamplingReducer`. Опционально."""
+        """`SamplingParams` → `SamplingReducer`. Повторный вызов обновляет."""
         self._sampling = sampling
-        return self
-
-    def with_prompts(self, providers: Iterable[PromptProvider]) -> Self:
-        """Провайдеры system-prompt блоков для `SystemPromptReducer`."""
-        self._prompt_providers = list(providers)
+        self._ensure(SamplingReducer.ID, self._make_sampling)
         return self
 
     def with_messages(self, messages: MessageReader) -> Self:
-        """`MessageReader` для `HistoryReducer`. Стандартно прокидывает Agent."""
+        """`MessageReader` → `HistoryReducer`. Стандартно прокидывает Agent."""
         self._messages = messages
+        self._ensure(HistoryReducer.ID, self._make_history)
         return self
 
     def with_tool_catalog(self, catalog: ToolCatalog) -> Self:
-        """`ToolCatalog` для `ToolsReducer`. Стандартно прокидывает Agent."""
+        """`ToolCatalog` → `ToolsReducer`. Стандартно прокидывает Agent."""
         self._tool_catalog = catalog
+        self._ensure(ToolsReducer.ID, self._make_tools)
+        return self
+
+    def with_user_query(self) -> Self:
+        """Включить `UserQueryReducer` — префиксует UserMessage(ctx.query)."""
+        self._ensure(UserQueryReducer.ID, self._make_user_query)
+        return self
+
+    def with_prompts(self, providers: Iterable[PromptProvider]) -> Self:
+        """Полная замена списка system-prompt провайдеров + `SystemPromptReducer`.
+
+        Для добавления отдельных источников — `.system_prompt(...)` и
+        `.system_prompt_from_dir(...)`.
+        """
+        self._prompt_providers = list(providers)
+        self._ensure(SystemPromptReducer.ID, self._make_system_prompt)
+        return self
+
+    def system_prompt(self, text: str, *, priority: int = 100) -> Self:
+        """Добавить статичный system-prompt блок (отдельным `SystemMessage`)."""
+        pid = PromptId(f"static_{len(self._prompt_providers)}")
+        self._prompt_providers.append(StaticPromptProvider(pid, priority, text))
+        self._ensure(SystemPromptReducer.ID, self._make_system_prompt)
+        return self
+
+    def system_prompt_from_dir(
+        self,
+        directory: Path,
+        *,
+        priority: int = 100,
+        glob: str = "*",
+    ) -> Self:
+        """Добавить provider, читающий файлы из директории как отдельные блоки."""
+        pid = PromptId(f"dir_{len(self._prompt_providers)}_{directory.name}")
+        self._prompt_providers.append(
+            DirectoryPromptProvider(pid, priority, directory, glob=glob),
+        )
+        self._ensure(SystemPromptReducer.ID, self._make_system_prompt)
         return self
 
     def use_reducer(
         self,
         reducer_or_factory: TurnReducer | TurnReducerFactory,
     ) -> Self:
-        """Добавить дополнительный reducer (или фабрику).
+        """Добавить произвольный reducer (или фабрику от `AgentContext`).
 
-        Reducer с тем же `id()` перезатрёт ранее зарегистрированный —
-        в том числе из дефолтного набора. Это явный путь override.
+        Reducer с уже зарегистрированным `id()` перезатрёт ранее
+        зарегистрированный — это явный путь override встроенного.
         """
-        self._extras.append(reducer_or_factory)
-        return self
-
-    def use_default_reducers(self) -> Self:
-        """Включить дефолтный набор reducer'ов.
-
-        Состав: `model` / `system` / `history` / `tools` / `sampling`.
-        Зависимости (`model`, `messages`, `tool_catalog`, `prompts`,
-        `sampling`) проверяются в `build_spec_builder()` — порядок
-        fluent-вызовов не важен.
-        """
-        self._use_defaults = True
+        self._spec_builder.add(reducer_or_factory)
         return self
 
     def has_messages(self) -> bool:
@@ -169,50 +206,34 @@ class TurnBuilder:
         return self._tool_catalog is not None
 
     def build_spec_builder(self) -> TurnSpecBuilder:
-        """Финализация: late-bind ресурсы → собранный `TurnSpecBuilder`."""
-        if not self._use_defaults and not self._extras:
+        """Финализация — вернуть накопленный `TurnSpecBuilder`."""
+        if self._spec_builder.is_empty():
             msg = (
                 "TurnBuilder.build_spec_builder: ни одного reducer'а не "
-                "задано. Вызови .use_default_reducers() или .use_reducer(...)."
+                "задано. Вызови `.with_model(...)`/`.with_*(...)`-методы "
+                "и/или `.use_reducer(...)`."
             )
             raise ValueError(msg)
+        return self._spec_builder
 
-        spec_builder = TurnSpecBuilder()
+    # --- фабрики reducer'ов (читают live state self.*) ------------------
 
-        if self._use_defaults:
-            if self._model is None:
-                msg = (
-                    "TurnBuilder.use_default_reducers: .with_model(...) обязателен."
-                )
-                raise ValueError(msg)
-            if self._messages is None:
-                msg = (
-                    "TurnBuilder.use_default_reducers: .with_messages(...) "
-                    "обязателен (для HistoryReducer). Обычно прокидывает "
-                    "AgentBuilder.use_turn()."
-                )
-                raise ValueError(msg)
-            if self._tool_catalog is None:
-                msg = (
-                    "TurnBuilder.use_default_reducers: .with_tool_catalog(...) "
-                    "обязателен (для ToolsReducer). Обычно прокидывает "
-                    "AgentBuilder.use_turn()."
-                )
-                raise ValueError(msg)
+    def _make_model(self, _ctx: AgentContext) -> ModelReducer:
+        # инвариант: _ensure регистрирует фабрику только после `with_model`,
+        # который выставляет `self._model`; cast уговаривает type-checker.
+        return ModelReducer(cast("str", self._model))
 
-            model = self._model
-            messages = self._messages
-            catalog = self._tool_catalog
-            prompts = list(self._prompt_providers)
-            sampling = self._sampling
+    def _make_sampling(self, _ctx: AgentContext) -> SamplingReducer:
+        return SamplingReducer(self._sampling)
 
-            spec_builder.add(lambda _ctx: ModelReducer(model))
-            spec_builder.add(lambda _ctx: SystemPromptReducer(prompts))
-            spec_builder.add(lambda _ctx: HistoryReducer(messages))
-            spec_builder.add(lambda _ctx: ToolsReducer(catalog))
-            spec_builder.add(lambda _ctx: SamplingReducer(sampling))
+    def _make_history(self, _ctx: AgentContext) -> HistoryReducer:
+        return HistoryReducer(cast("MessageReader", self._messages))
 
-        for extra in self._extras:
-            spec_builder.add(extra)
+    def _make_tools(self, _ctx: AgentContext) -> ToolsReducer:
+        return ToolsReducer(cast("ToolCatalog", self._tool_catalog))
 
-        return spec_builder
+    def _make_user_query(self, ctx: AgentContext) -> UserQueryReducer:
+        return UserQueryReducer(ctx.query)
+
+    def _make_system_prompt(self, _ctx: AgentContext) -> SystemPromptReducer:
+        return SystemPromptReducer(list(self._prompt_providers))

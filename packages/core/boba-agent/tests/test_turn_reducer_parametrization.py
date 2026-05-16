@@ -15,9 +15,13 @@ from boba.agent.turn.reducers import (
     HistoryReducer,
     ModelReducer,
     RememberUserQueryReducer,
+    SamplingReducer,
     SystemPromptReducer,
+    ToolsReducer,
+    UserQueryReducer,
 )
 from boba.agent.turn.spec import TurnState
+from boba.llm.models import SamplingParams
 from boba.patterns import PrioritySource
 from boba.tools.domain import ToolSourceId
 from boba.tools.framework import StaticToolSource, ToolRegistry
@@ -74,25 +78,46 @@ def test_middleware_delegates_spec_construction_to_builder(
 # TurnBuilder (high-level)
 
 
-def test_turn_builder_default_reducers_set(agent_ctx: AgentContext):
+def test_turn_builder_full_set(agent_ctx: AgentContext):
+    """Полный набор `.with_*(...)` регистрирует все стандартные reducer'ы."""
     registry = _empty_catalog()
     turn = (
         TurnBuilder()
         .with_model("test-model")
         .with_messages(InMemoryMessageService())
         .with_tool_catalog(registry.catalog())
-        .use_default_reducers()
+        .with_sampling(SamplingParams())
+        .with_user_query()
+        .system_prompt("static")
     )
     spec = turn.build_spec_builder().build(agent_ctx)
     ids = {p.id() for p in spec.providers()}
-    expected = {
+    assert ids == {
         ModelReducer.ID,
         SystemPromptReducer.ID,
         HistoryReducer.ID,
-        "tools",
-        "sampling",
+        UserQueryReducer.ID,
+        ToolsReducer.ID,
+        SamplingReducer.ID,
     }
-    assert ids == expected
+
+
+def test_turn_builder_minimal_only_registers_called(agent_ctx: AgentContext):
+    """Только вызванные методы — только их reducer'ы; ничего лишнего."""
+    turn = TurnBuilder().with_model("test-model").with_user_query()
+    spec = turn.build_spec_builder().build(agent_ctx)
+    ids = {p.id() for p in spec.providers()}
+    assert ids == {ModelReducer.ID, UserQueryReducer.ID}
+
+
+def test_turn_builder_with_model_latest_wins(agent_ctx: AgentContext):
+    """Повторный `.with_model(...)` обновляет значение, не плодя дубликаты."""
+    turn = TurnBuilder().with_model("first").with_model("second")
+    spec = turn.build_spec_builder().build(agent_ctx)
+    state = TurnState()
+    for p in sorted(spec.providers(), key=lambda r: r.priority()):
+        state = p.apply(state)
+    assert state.model == "second"
 
 
 def test_turn_builder_use_reducer_accepts_ready(agent_ctx: AgentContext):
@@ -110,14 +135,13 @@ def test_turn_builder_use_reducer_accepts_factory(agent_ctx: AgentContext):
     assert _MarkerReducer.ID in ids
 
 
-def test_turn_builder_default_plus_extra(agent_ctx: AgentContext):
+def test_turn_builder_with_plus_use_reducer(agent_ctx: AgentContext):
     registry = _empty_catalog()
     turn = (
         TurnBuilder()
         .with_model("test-model")
         .with_messages(InMemoryMessageService())
         .with_tool_catalog(registry.catalog())
-        .use_default_reducers()
         .use_reducer(RememberUserQueryReducer())
     )
     spec = turn.build_spec_builder().build(agent_ctx)
@@ -126,15 +150,65 @@ def test_turn_builder_default_plus_extra(agent_ctx: AgentContext):
     assert RememberUserQueryReducer.ID in ids
 
 
-def test_turn_builder_user_only_skips_default(agent_ctx: AgentContext):
-    turn = TurnBuilder().use_reducer(_MarkerReducer())
+def test_turn_builder_system_prompt_static(agent_ctx: AgentContext):
+    """`.system_prompt(text)` материализуется в один `SystemMessage`."""
+    turn = (
+        TurnBuilder()
+        .with_model("test-model")
+        .system_prompt("Ты — Claude.")
+        .system_prompt("Отвечай по-русски.")
+    )
     spec = turn.build_spec_builder().build(agent_ctx)
-    ids = {p.id() for p in spec.providers()}
-    # Без use_default_reducers() — только то, что задал пользователь.
-    assert ids == {_MarkerReducer.ID}
+    state = TurnState()
+    for p in sorted(spec.providers(), key=lambda r: r.priority()):
+        if p.id() == SystemPromptReducer.ID:
+            state = p.apply(state)
+    contents = [m.content for m in state.system_messages]
+    assert contents == ["Ты — Claude.", "Отвечай по-русски."]
 
 
-def test_turn_builder_extra_overrides_default_by_id(agent_ctx: AgentContext):
+def test_turn_builder_system_prompt_from_dir(
+    agent_ctx: AgentContext,
+    tmp_path,
+):
+    """`.system_prompt_from_dir(path)` читает файлы как отдельные блоки."""
+    (tmp_path / "01_persona.md").write_text("Ты — Claude.", encoding="utf-8")
+    (tmp_path / "02_rules.md").write_text("Отвечай по-русски.", encoding="utf-8")
+    (tmp_path / "empty.md").write_text("", encoding="utf-8")
+
+    turn = (
+        TurnBuilder()
+        .with_model("test-model")
+        .system_prompt_from_dir(tmp_path)
+    )
+    spec = turn.build_spec_builder().build(agent_ctx)
+    state = TurnState()
+    for p in sorted(spec.providers(), key=lambda r: r.priority()):
+        if p.id() == SystemPromptReducer.ID:
+            state = p.apply(state)
+    contents = [m.content for m in state.system_messages]
+    assert contents == ["Ты — Claude.", "Отвечай по-русски."]
+
+
+def test_turn_builder_system_prompt_missing_dir_is_noop(
+    agent_ctx: AgentContext,
+    tmp_path,
+):
+    """Несуществующая директория — ноль блоков, без ошибки."""
+    turn = (
+        TurnBuilder()
+        .with_model("test-model")
+        .system_prompt_from_dir(tmp_path / "does-not-exist")
+    )
+    spec = turn.build_spec_builder().build(agent_ctx)
+    state = TurnState()
+    for p in sorted(spec.providers(), key=lambda r: r.priority()):
+        if p.id() == SystemPromptReducer.ID:
+            state = p.apply(state)
+    assert state.system_messages == ()
+
+
+def test_turn_builder_extra_overrides_built_in_by_id(agent_ctx: AgentContext):
     class _OverrideModel(PrioritySource[str, TurnState]):
         ID: ClassVar[str] = ModelReducer.ID
 
@@ -149,13 +223,9 @@ def test_turn_builder_extra_overrides_default_by_id(agent_ctx: AgentContext):
             return state
 
     override = _OverrideModel()
-    registry = _empty_catalog()
     turn = (
         TurnBuilder()
         .with_model("test-model")
-        .with_messages(InMemoryMessageService())
-        .with_tool_catalog(registry.catalog())
-        .use_default_reducers()
         .use_reducer(override)
     )
     spec = turn.build_spec_builder().build(agent_ctx)
@@ -168,48 +238,13 @@ def test_turn_builder_empty_raises():
         TurnBuilder().build_spec_builder()
 
 
-def test_turn_builder_defaults_require_model():
-    registry = _empty_catalog()
-    turn = (
-        TurnBuilder()
-        .with_messages(InMemoryMessageService())
-        .with_tool_catalog(registry.catalog())
-        .use_default_reducers()
-    )
-    with pytest.raises(ValueError, match="with_model"):
-        turn.build_spec_builder()
-
-
-def test_turn_builder_defaults_require_messages():
-    registry = _empty_catalog()
-    turn = (
-        TurnBuilder()
-        .with_model("test-model")
-        .with_tool_catalog(registry.catalog())
-        .use_default_reducers()
-    )
-    with pytest.raises(ValueError, match="with_messages"):
-        turn.build_spec_builder()
-
-
-def test_turn_builder_defaults_require_tool_catalog():
-    turn = (
-        TurnBuilder()
-        .with_model("test-model")
-        .with_messages(InMemoryMessageService())
-        .use_default_reducers()
-    )
-    with pytest.raises(ValueError, match="with_tool_catalog"):
-        turn.build_spec_builder()
-
-
 # AgentBuilder.use_turn() auto-wiring
 
 
 def test_agent_builder_use_turn_autowires_messages_and_catalog():
     """Если TurnBuilder не задал messages/catalog — AgentBuilder подкладывает свои."""
     messages = InMemoryMessageService()
-    turn = TurnBuilder().with_model("test-model").use_default_reducers()
+    turn = TurnBuilder().with_model("test-model")
     registry = _empty_catalog()
     builder = AgentBuilder().with_messages(messages).with_tools(registry).use_turn(turn)
     # Имитируем wiring, который происходит внутри build():
@@ -229,7 +264,6 @@ def test_agent_builder_use_turn_respects_explicit_resources():
         TurnBuilder()
         .with_model("test-model")
         .with_messages(explicit_messages)
-        .use_default_reducers()
     )
     other_messages = InMemoryMessageService()
     builder = AgentBuilder().with_messages(other_messages).use_turn(turn)

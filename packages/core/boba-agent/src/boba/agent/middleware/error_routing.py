@@ -41,7 +41,7 @@ class AgentErrorRouter:
         """Раскрывает LLMFeedback-union в типизированные Message'и."""
         match feedback:
             case LLMCritique(content=c):
-                self._writer.add(UserMessage(content=c))
+                self._writer.add(UserMessage.from_text(c))
             case ToolCallRejection(tool_call_id=tid, content=c):
                 self._writer.add(
                     ToolResultMessage(

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 from abc import ABC
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Literal, NewType
+from typing import Annotated, Any, Literal, NewType, TypeAlias
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
@@ -15,21 +15,32 @@ from boba.llm.errors import LLMProtocolError
 from boba.tools.domain import ToolResult, ToolSchema
 
 __all__ = [
+    "AssistantBlock",
     "AssistantMessage",
     "AssistantMessageChunk",
+    "DialogMessage",
+    "FileBlock",
+    "ImageBlock",
     "InvalidToolCall",
+    "InvalidToolCallBlock",
     "LLMContext",
     "LLMRequest",
     "LLMToolRequest",
     "Message",
     "MessageAdapter",
     "MessageId",
+    "RefusalBlock",
     "RequestId",
     "SamplingParams",
+    "SystemBlock",
     "SystemMessage",
+    "TextBlock",
+    "ThinkingBlock",
     "ToolCall",
+    "ToolCallBlock",
     "ToolCallChunk",
     "ToolResultMessage",
+    "UserBlock",
     "UserMessage",
     "new_message_id",
     "new_request_id",
@@ -83,6 +94,85 @@ class InvalidToolCall(BaseModel):
 
 
 # --------------------------------------------------------------------- #
+# Content blocks (внутри Message.blocks)
+# --------------------------------------------------------------------- #
+
+
+class _Block(BaseModel):
+    """База блока: frozen, extra=forbid, discriminator по полю `type`."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class TextBlock(_Block):
+    """Текстовый блок — базовый, доступен любой роли."""
+
+    type: Literal["text"] = "text"
+    content: str
+
+
+class ImageBlock(_Block):
+    """Изображение для vision-моделей (URL или data URI)."""
+
+    type: Literal["image"] = "image"
+    source: str
+    mime: str = "image/png"
+
+
+class FileBlock(_Block):
+    """Файл, загруженный через provider file API."""
+
+    type: Literal["file"] = "file"
+    file_id: str
+    name: str = ""
+
+
+class ToolCallBlock(_Block):
+    """Tool-call от ассистента; args уже распарсены."""
+
+    type: Literal["tool_call"] = "tool_call"
+    call: ToolCall
+
+
+class InvalidToolCallBlock(_Block):
+    """Tool-call с невалидным JSON в args."""
+
+    type: Literal["invalid_tool_call"] = "invalid_tool_call"
+    invalid: InvalidToolCall
+
+
+class ThinkingBlock(_Block):
+    """Reasoning / extended thinking; signature нужен Anthropic для echo-back."""
+
+    type: Literal["thinking"] = "thinking"
+    content: str
+    signature: str = ""
+
+
+class RefusalBlock(_Block):
+    """Модель отказалась отвечать (OpenAI refusal / Anthropic stop_reason=refusal)."""
+
+    type: Literal["refusal"] = "refusal"
+    content: str
+
+
+SystemBlock: TypeAlias = TextBlock
+"""Блок system-сообщения; пока только текст (cache_control блока — позже)."""
+
+UserBlock: TypeAlias = Annotated[
+    TextBlock | ImageBlock | FileBlock,
+    Field(discriminator="type"),
+]
+"""Блок user-сообщения: text + мультимодальные."""
+
+AssistantBlock: TypeAlias = Annotated[
+    TextBlock | ToolCallBlock | InvalidToolCallBlock | ThinkingBlock | RefusalBlock,
+    Field(discriminator="type"),
+]
+"""Блок assistant-сообщения: всё, что генерирует модель в одной генерации."""
+
+
+# --------------------------------------------------------------------- #
 # Message hierarchy (Pydantic discriminated union)
 # --------------------------------------------------------------------- #
 
@@ -96,26 +186,106 @@ class Message(BaseModel, ABC):
 
 
 class SystemMessage(Message):
-    """System-prompt; всегда text-only."""
+    """System-prompt; список text-блоков."""
 
     type: Literal["system"] = "system"
-    content: str
+    blocks: tuple[SystemBlock, ...]
+
+    @classmethod
+    def from_text(
+        cls,
+        content: str,
+        *,
+        id: MessageId | None = None,  # noqa: A002 — совпадает с полем Message.id
+    ) -> SystemMessage:
+        """Удобный конструктор text-only сообщения."""
+        kwargs: dict[str, Any] = {"blocks": (TextBlock(content=content),)}
+        if id is not None:
+            kwargs["id"] = id
+        return cls(**kwargs)
+
+    @property
+    def content(self) -> str:
+        """Конкатенация всех TextBlock — convenience для существующих читателей."""
+        return "".join(b.content for b in self.blocks if isinstance(b, TextBlock))
 
 
 class UserMessage(Message):
-    """Сообщение пользователя (вход или синтетический critique от агента)."""
+    """Сообщение пользователя; может содержать текст + мультимодальные блоки."""
 
     type: Literal["user"] = "user"
-    content: str
+    blocks: tuple[UserBlock, ...]
+
+    @classmethod
+    def from_text(
+        cls,
+        content: str,
+        *,
+        id: MessageId | None = None,  # noqa: A002 — совпадает с полем Message.id
+    ) -> UserMessage:
+        """Удобный конструктор text-only сообщения."""
+        kwargs: dict[str, Any] = {"blocks": (TextBlock(content=content),)}
+        if id is not None:
+            kwargs["id"] = id
+        return cls(**kwargs)
+
+    @property
+    def content(self) -> str:
+        """Конкатенация всех TextBlock."""
+        return "".join(b.content for b in self.blocks if isinstance(b, TextBlock))
 
 
 class AssistantMessage(Message):
-    """Ответ модели; text + tool_calls + invalid_tool_calls."""
+    """Ответ модели; упорядоченный список блоков одной генерации.
+
+    Блоки сохраняют порядок выдачи моделью (для Anthropic extended thinking
+    + tool_use это критично — подпись thinking должна echo'ься в той же
+    последовательности). OpenAI Chat Completions терпит любой порядок:
+    адаптер flatten'ит блоки в `content` + `tool_calls`.
+    """
 
     type: Literal["assistant"] = "assistant"
-    content: str = ""
-    tool_calls: tuple[ToolCall, ...] = ()
-    invalid_tool_calls: tuple[InvalidToolCall, ...] = ()
+    blocks: tuple[AssistantBlock, ...]
+
+    @classmethod
+    def from_text(
+        cls,
+        content: str,
+        *,
+        id: MessageId | None = None,  # noqa: A002 — совпадает с полем Message.id
+    ) -> AssistantMessage:
+        """Удобный конструктор text-only ответа (без tool_call'ов)."""
+        kwargs: dict[str, Any] = {"blocks": (TextBlock(content=content),)}
+        if id is not None:
+            kwargs["id"] = id
+        return cls(**kwargs)
+
+    @property
+    def content(self) -> str:
+        """Склеенный текст всех TextBlock — convenience для существующих читателей."""
+        return "".join(b.content for b in self.blocks if isinstance(b, TextBlock))
+
+    @property
+    def tool_calls(self) -> tuple[ToolCall, ...]:
+        """Распакованные ToolCall из ToolCallBlock-ов в порядке появления."""
+        return tuple(b.call for b in self.blocks if isinstance(b, ToolCallBlock))
+
+    @property
+    def invalid_tool_calls(self) -> tuple[InvalidToolCall, ...]:
+        """Распакованные InvalidToolCall из InvalidToolCallBlock-ов."""
+        return tuple(
+            b.invalid for b in self.blocks if isinstance(b, InvalidToolCallBlock)
+        )
+
+    @property
+    def thinking(self) -> str:
+        """Склеенный текст всех ThinkingBlock."""
+        return "".join(b.content for b in self.blocks if isinstance(b, ThinkingBlock))
+
+    @property
+    def refusal(self) -> str:
+        """Склеенный текст всех RefusalBlock."""
+        return "".join(b.content for b in self.blocks if isinstance(b, RefusalBlock))
 
 
 class ToolResultMessage(Message):
@@ -144,6 +314,16 @@ TypeAdapter для (де)сериализации Message через discriminat
 Использование:
     line: str = MessageAdapter.dump_json(message).decode("utf-8")
     msg: Message = MessageAdapter.validate_json(line)
+"""
+
+
+DialogMessage: TypeAlias = UserMessage | AssistantMessage | ToolResultMessage
+"""Сообщение диалога — всё, что не SystemMessage.
+
+В `LLMRequest.messages` лежат только эти типы; `SystemMessage` живёт
+отдельно в `LLMRequest.system_messages`, чтобы Anthropic-адаптер мог
+прокидывать их в top-level `system` параметр, а OpenAI-адаптер —
+префиксовать обычный список сообщений.
 """
 
 
@@ -277,20 +457,29 @@ class AssistantMessageChunk:
         )
 
     def finalize(self, *, message_id: MessageId | None = None) -> AssistantMessage:
-        """Замкнуть чанк в финальный AssistantMessage; tool-call'ы парсятся."""
-        valid: list[ToolCall] = []
-        invalid: list[InvalidToolCall] = []
+        """Замкнуть чанк в финальный AssistantMessage.
+
+        Собирает блоки в каноническом порядке: thinking → text → tool_calls
+        → invalid_tool_calls → refusal. Чанк не отслеживает interleaving
+        провайдера (OpenAI Chat не interleav'ит), поэтому порядок здесь —
+        конвенция. Для Anthropic streaming (block_start/delta/stop) этот
+        механизм потребует доработки.
+        """
+        blocks: list[AssistantBlock] = []
+        if self.thinking:
+            blocks.append(ThinkingBlock(content=self.thinking))
+        if self.content:
+            blocks.append(TextBlock(content=self.content))
         for tcc in sorted(self.tool_call_chunks, key=lambda c: c.index):
-            result = tcc.finalize()
-            if isinstance(result, ToolCall):
-                valid.append(result)
+            tc = tcc.finalize()
+            if isinstance(tc, ToolCall):
+                blocks.append(ToolCallBlock(call=tc))
             else:
-                invalid.append(result)
-        kwargs: dict[str, Any] = {
-            "content": self.content,
-            "tool_calls": tuple(valid),
-            "invalid_tool_calls": tuple(invalid),
-        }
+                blocks.append(InvalidToolCallBlock(invalid=tc))
+        if self.refusal:
+            blocks.append(RefusalBlock(content=self.refusal))
+
+        kwargs: dict[str, Any] = {"blocks": tuple(blocks)}
         if message_id is not None:
             kwargs["id"] = message_id
         return AssistantMessage(**kwargs)
@@ -327,23 +516,14 @@ class LLMToolRequest:
 class LLMRequest:
     request_id: RequestId
     model: str
-    system_message: SystemMessage
-    messages: tuple[Message, ...] = ()
+    system_messages: tuple[SystemMessage, ...] = ()
+    messages: tuple[DialogMessage, ...] = ()
     tools: LLMToolRequest = field(default_factory=LLMToolRequest)
     sampling: SamplingParams = field(default_factory=SamplingParams)
     response_format: Mapping[str, Any] | None = None
 
-    def messages_count(self) -> int:
-        """Всего сообщений в запросе (без system)."""
-        return len(self.messages)
-
     def has_tools(self) -> bool:
         return bool(self.tools.tools)
-
-    def all_messages(self) -> Iterable[Message]:
-        """Итератор: system + остальные сообщения в порядке отправки."""
-        yield self.system_message
-        yield from self.messages
 
 
 @dataclass(frozen=True)
