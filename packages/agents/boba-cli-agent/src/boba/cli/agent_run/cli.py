@@ -100,9 +100,11 @@ def _run() -> int:
         .with_extension(ProjectWorkspaceShell, project_workspace)
         .use_tools_plugins_discovered()
     )
+
     sampling = run_cfg.to_sampling_params()
     if sampling is not None:
         builder = builder.with_sampling(sampling)
+
     agent = builder.build()
     sink = ConsoleSink(sys.stdout, sys.stderr)
 
