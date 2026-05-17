@@ -7,21 +7,14 @@ from pathlib import Path
 from boba.agent import AgentBuilder, TurnBuilder
 from boba.agent.agent import Agent
 from boba.agent.history import HistoryService
-
-# from boba.agent.turn.reducers import (
-#     RememberUserQueryReducer,
-# )
 from boba.agent.workspace_fs import FsPromptWorkspaceRegistry
+from boba.chainlit.agent.config import AppConfig, ChainlitConfig
+from boba.chainlit.agent.logging import log_context
+from boba.chainlit.agent.rendering.bridge import ChainlitBridgeSink
 from boba.llm.builder import LLMBuilder
 from boba.provider.openai import (
     CurlTraceChatCompletionObserver,
     use_openai,
-)
-from boba.web.chainlit.bridge import ChainlitBridgeSink
-from boba.web.chainlit.config import ChainlitConfig
-from boba.web.chainlit.infra import (
-    AppConfig,
-    log_context,
 )
 from boba.workspace.contract import (
     HistoryWorkspaceRegistry,
@@ -30,6 +23,8 @@ from boba.workspace.contract import (
     PromptWorkspaceId,
     WorkspaceId,
 )
+
+__all__ = ["ChatSession"]
 
 
 class ChatSession:
@@ -69,11 +64,8 @@ class ChatSession:
             root=Path(app.system_prompt_dir),
         ).get_or_create(PromptWorkspaceId("prompts"))
 
-        turn = (
-            TurnBuilder(self._chainlit_config.model).system_prompt_from_directory(
-                system_prompt_workspace
-            )
-            # .use_reducer(RememberUserQueryReducer())
+        turn = TurnBuilder(self._chainlit_config.model).system_prompt_from_directory(
+            system_prompt_workspace
         )
         self._agent: Agent = (
             builder.with_extension(ProjectWorkspaceShell, project_shell)

@@ -1,4 +1,4 @@
-"""Bootstrap chainlit-приложения."""
+"""Composition root: сборка зависимостей и запуск chainlit-сервера."""
 
 from __future__ import annotations
 
@@ -9,27 +9,23 @@ from pathlib import Path
 from typing import cast
 
 from boba.agent.builder import AgentBuilder
-from boba.agent.history import HistoryService, InMemoryHistoryService
+from boba.agent.history import HistoryService, JsonLinesHistoryService
 from boba.agent.workspace_fs import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
 )
-from boba.web.chainlit.auth import (
-    AuthenticateUser,
-    StaticUserRepository,
+from boba.chainlit.agent.auth import AuthenticateUser, StaticUserRepository
+from boba.chainlit.agent.config import AppConfig, ChainlitConfig
+from boba.chainlit.agent.data_layer import BobaDataLayer
+from boba.chainlit.agent.logging import configure_logging
+from boba.chainlit.agent.sessions import (
+    ChatSession,
+    ChatSessionPool,
+    OpenChatSession,
 )
-from boba.web.chainlit.bootstrap import set_app_state
-from boba.web.chainlit.config import ChainlitConfig
-from boba.web.chainlit.data_layer import (
-    BobaDataLayer,
-    FsThreadRepository,
-    FsUserCatalog,
-    ThreadDerivedWorkspaceOwnership,
-)
-from boba.web.chainlit.infra import AppConfig, configure_logging
-from boba.web.chainlit.session import ChatSession
-from boba.web.chainlit.ui_overrides import UIOverrideTomlConverter
-from boba.web.chainlit.usecase import ChatSessionPool, OpenChatSession
+from boba.chainlit.agent.state import set_app_state
+from boba.chainlit.agent.storage import FsThreadRepository, FsUserCatalog
+from boba.chainlit.agent.ui_overrides import UIOverrideTomlConverter
 from boba.workspace.contract import (
     HistoryWorkspaceRegistry,
     HistoryWorkspaceShell,
@@ -37,11 +33,13 @@ from boba.workspace.contract import (
     WorkspaceId,
 )
 
+__all__ = ["main"]
+
 _SYSTEM_WORKSPACE_ID = WorkspaceId("_chainlit_system")
 """Workspace для системных файлов chainlit (users.json, threads-index.json)."""
 
 
-def bridge_chainlit_env(cfg: ChainlitConfig) -> Path:
+def _bridge_chainlit_env(cfg: ChainlitConfig) -> Path:
     """Прокидывает ChainlitConfig в CHAINLIT_* env; возвращает абсолютный app_root."""
     os.environ.setdefault("CHAINLIT_HOST", cfg.host)
     os.environ.setdefault("CHAINLIT_PORT", cfg.port)
@@ -56,7 +54,7 @@ def bridge_chainlit_env(cfg: ChainlitConfig) -> Path:
     return app_root
 
 
-def write_ui_config_overrides(cfg: ChainlitConfig, app_root: Path) -> None:
+def _write_ui_config_overrides(cfg: ChainlitConfig, app_root: Path) -> None:
     """Рендерит app_root/.chainlit/config.toml из UI-полей конфига."""
     content = UIOverrideTomlConverter().convert(cfg)
     if not content:
@@ -119,8 +117,8 @@ def main() -> int:
     auth_secret = _resolve_auth_secret(chainlit_cfg.auth_secret, app_root.parent)
     os.environ["CHAINLIT_AUTH_SECRET"] = auth_secret
 
-    bridge_chainlit_env(chainlit_cfg)
-    write_ui_config_overrides(chainlit_cfg, app_root)
+    _bridge_chainlit_env(chainlit_cfg)
+    _write_ui_config_overrides(chainlit_cfg, app_root)
 
     workspaces_base = Path(app.workspaces.base_dir)
     project_workspaces = FsProjectWorkspaceRegistry(
@@ -132,10 +130,13 @@ def main() -> int:
         subdir=app.workspaces.system_subdir,
     )
 
-    def make_history_service(_workspace_id: WorkspaceId) -> HistoryService:
-        # InMemory: контекст агента живёт в RAM ChatSession. Chainlit-уровень
-        # отдельно персистит steps.jsonl через data_layer для UI/sidebar.
-        return InMemoryHistoryService()
+    def make_history_service(workspace_id: WorkspaceId) -> HistoryService:
+        """JSONL per-workspace: chainlit и агент видят один и тот же журнал."""
+        shell = cast(
+            "HistoryWorkspaceShell",
+            history_workspaces.get_or_create(workspace_id),
+        )
+        return JsonLinesHistoryService(shell)
 
     user_repository = StaticUserRepository(
         {chainlit_cfg.auth_username: chainlit_cfg.auth_password},
@@ -159,27 +160,23 @@ def main() -> int:
         history_workspaces.get_or_create(_SYSTEM_WORKSPACE_ID),
     )
     user_catalog = FsUserCatalog(system_shell)
-    thread_repository = FsThreadRepository(
-        history_workspaces=history_workspaces,
-        system_shell=system_shell,
+    thread_repository = FsThreadRepository(system_shell=system_shell)
+    data_layer = BobaDataLayer(
+        user_catalog,
+        thread_repository,
+        make_history_service,
     )
-    data_layer = BobaDataLayer(user_catalog, thread_repository)
-    workspace_ownership = ThreadDerivedWorkspaceOwnership(thread_repository)
 
     set_app_state(
         authenticate_user,
         open_chat_session,
         data_layer,
-        workspace_ownership,
+        thread_repository,
     )
 
     # chainlit импортируется только после bootstrap — он читает env при загрузке.
     from chainlit.cli import run_chainlit  # noqa: PLC0415
 
-    app_path = Path(__file__).with_name("app.py")
-    run_chainlit(str(app_path))
+    callbacks_path = Path(__file__).with_name("callbacks.py")
+    run_chainlit(str(callbacks_path))
     return 0
-
-
-if __name__ == "__main__":
-    main()

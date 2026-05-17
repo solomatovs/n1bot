@@ -9,6 +9,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 
+__all__ = ["configure_logging", "log_context"]
+
 _LOG_LEVELS: dict[str, int] = {
     "DEBUG": logging.DEBUG,
     "INFO": logging.INFO,
@@ -72,9 +74,7 @@ def configure_logging(
     if log_file:
         path = Path(log_file)
         path.parent.mkdir(parents=True, exist_ok=True)
-        handler: logging.Handler = logging.FileHandler(
-            path, mode="a", encoding="utf-8"
-        )
+        handler: logging.Handler = logging.FileHandler(path, mode="a", encoding="utf-8")
     else:
         handler = logging.StreamHandler(sys.stdout)
 

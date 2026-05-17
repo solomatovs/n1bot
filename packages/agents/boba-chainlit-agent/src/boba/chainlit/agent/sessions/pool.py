@@ -8,8 +8,8 @@ from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from boba.web.chainlit.auth import User
-from boba.web.chainlit.session import ChatSession
+from boba.chainlit.agent.models import User
+from boba.chainlit.agent.sessions.chat_session import ChatSession
 from boba.workspace.contract import WorkspaceId
 
 __all__ = ["ChatSessionPool", "OpenChatSession"]
