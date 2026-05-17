@@ -103,13 +103,38 @@ enable = false
 # description = ""
 # fields = {}
 
-# shell-tool (выполнение команд в project workspace)
+# shell-tool — LLM-имя всегда `bash`. Реализаций две, выбирается через
+# `variant`:
+#   - "sandbox": запуск в bubblewrap-песочнице с явным реестром профилей
+#     (FS-binds, tmpfs, network namespace, env_set).
+#   - "local":   прямой subprocess.Popen без изоляции (под доверенный dev).
 [tool.shell]
 enable = false
-# timeout_sec = 30.0
-# [tool.shell.bash]
-# description = ""
-# fields = {}
+# variant = "sandbox"          # sandbox | local — обязателен при enable=true
+# workspace_root = "."         # обязателен при enable=true; RW-bind для bwrap
+
+# --- variant = "sandbox" (требует пакет `bubblewrap` на хосте) ---------------
+# [tool.shell.sandbox]
+# default_profile = "default"  # имя default-профиля из profiles ниже
+#
+# [tool.shell.sandbox.profiles.default]
+# ro_binds = ["/usr", "/bin", "/sbin", "/lib", "/lib64",
+#             "/etc/alternatives", "/etc/resolv.conf"]
+# rw_binds = []                # workspace_root добавляется автоматически
+# tmpfs = ["/tmp"]
+# network = false              # false → --unshare-net (нет сети)
+# env_set = { PATH = "/usr/bin:/bin" }  # host-env НЕ наследуется
+# timeout_sec = 30             # 1..3600
+# max_output_bytes = 262144    # ≥1024; отдельно для stdout/stderr
+# cwd = ""                     # пусто → workspace_root
+
+# --- variant = "local" (без изоляции; не использовать в проде) ---------------
+# [tool.shell.local]
+# cwd = ""                     # пусто → workspace_root
+# env_passthrough = ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM"]
+# env_set = {}
+# timeout_sec = 30             # 1..3600
+# max_output_bytes = 262144    # ≥1024
 
 # confluence_search + confluence_page_outline + confluence_page_section
 # (общий connection-блок на корне плагина; base_url/auth_token обычно из env)

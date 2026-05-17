@@ -1,47 +1,160 @@
-"""ShellPlugin: точка регистрации sandboxed bash tool."""
+"""ShellPlugin: регистрирует ровно один bash-tool в одном из двух режимов.
+
+LLM-имя инструмента всегда `bash` — какой именно реализацией он подкреплён,
+выбирает оператор через `variant`:
+- `"sandbox"` — bwrap-изоляция, реестр именованных профилей с разными
+  политиками FS/network;
+- `"local"` — прямой `subprocess.Popen` без изоляции, плоский policy-конфиг.
+
+Где живёт валидация:
+- Range-checks числовых полей и path-canonicalize bind-путей —
+  на DTO (`SandboxProfile`, `LocalToolConfig`) через pydantic
+  `Field(ge=,le=)` / `@field_validator`. Срабатывают при парсинге.
+- Структурные cross-field инварианты (registry профилей,
+  существование `workspace_root`) — на `SandboxToolConfig` и
+  `ShellPluginConfig` через `@model_validator(mode="after")`.
+"""
 
 from __future__ import annotations
 
-import shutil
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from pathlib import Path
-from typing import ClassVar, Self
+from typing import ClassVar, Literal, Self
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.plugin import ExtensionContext, Plugin
 from boba.plugin.prompt import PromptOverlay
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.shell._profile import SandboxProfile
-from boba.tool.shell.bash import BashTool, BashToolConfig
-from boba.tools.domain import Tool, ToolSourceId
+from boba.tool.shell._profile_local import DEFAULT_PASSTHROUGH
+from boba.tool.shell.bash_local import BashTool, BashToolConfig
+from boba.tool.shell.bash_sandbox import BashSandboxTool, BashSandboxToolConfig
+from boba.tools.domain import ToolSourceId
 from boba.tools.framework import StaticToolSource, ToolSource
 
-__all__ = ["ShellPlugin", "ShellPluginConfig"]
+__all__ = [
+    "LocalToolConfig",
+    "SandboxToolConfig",
+    "ShellPlugin",
+    "ShellPluginConfig",
+]
 
 
-_REQUIRED_WHEN_ENABLED: frozenset[str] = frozenset(
-    {"workspace_root", "profiles", "default_profile"},
-)
+_SANDBOX_VARIANT = "sandbox"
+_LOCAL_VARIANT = "local"
+Variant = Literal["sandbox", "local"]
+
+
+class SandboxToolConfig(BaseModel):
+    """Конфиг sandbox-варианта (`bash_sandbox`).
+
+    Применяется, только если `bash_sandbox` входит в выбранные tool'ы
+    плагина (см. `ShellPluginConfig.tools`).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    profiles: dict[str, SandboxProfile] = Field(
+        default_factory=dict,
+        description=(
+            "Реестр sandbox-профилей по имени. Требуется непустым, если "
+            "tool `bash_sandbox` активен."
+        ),
+    )
+    default_profile: str = Field(
+        default="",
+        description=(
+            "Имя профиля, выбираемого по умолчанию для `bash_sandbox`."
+        ),
+    )
+    prompt: PromptOverlay = Field(default_factory=PromptOverlay)
+
+    @model_validator(mode="after")
+    def _check_registry(self) -> Self:
+        """Cross-field инвариант реестра профилей.
+
+        Пустая секция (ни `profiles`, ни `default_profile` не заданы)
+        валидна — это «sandbox не настроен, может быть неактивен».
+        Но как только хоть что-то задано, требуется консистентная пара.
+        """
+        if not self.profiles and not self.default_profile:
+            return self
+        if not self.profiles:
+            msg = "sandbox.profiles обязателен непустым, если задан default_profile"
+            raise ValueError(msg)
+        if not self.default_profile:
+            msg = "sandbox.default_profile обязателен, если заданы profiles"
+            raise ValueError(msg)
+        if self.default_profile not in self.profiles:
+            msg = (
+                f"sandbox.default_profile={self.default_profile!r} отсутствует "
+                f"в sandbox.profiles; доступные: {sorted(self.profiles)}"
+            )
+            raise ValueError(msg)
+        return self
+
+
+class LocalToolConfig(BaseModel):
+    """Конфиг local-варианта (`bash`, без bwrap).
+
+    Применяется, только если `bash` входит в выбранные tool'ы плагина.
+    В отличие от sandbox здесь нет реестра именованных профилей: при
+    отсутствии изоляции переключать нечего, поэтому policy-поля живут
+    плоско.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cwd: str = Field(
+        default="",
+        description=(
+            "Рабочая директория для процесса. Пустая строка = "
+            "workspace_root плагина. Путь не валидируется на "
+            "существование — subprocess.Popen вернёт ошибку, если "
+            "что-то не так."
+        ),
+    )
+    env_passthrough: tuple[str, ...] = Field(
+        default=DEFAULT_PASSTHROUGH,
+        description=(
+            "Host-env переменные, видимые внутри процесса. По умолчанию "
+            "— безопасный минимум (PATH/HOME/USER/LANG/LC_ALL/TERM). "
+            "Пустой tuple = не наследовать ничего."
+        ),
+    )
+    env_set: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Явно заданные env-переменные. Перекрывают значения из "
+            "env_passthrough при совпадении имён."
+        ),
+    )
+    timeout_sec: int = Field(
+        default=30,
+        ge=1,
+        le=3600,
+        description="Жёсткий таймаут выполнения процесса (1..3600 сек).",
+    )
+    max_output_bytes: int = Field(
+        default=256 * 1024,
+        ge=1024,
+        description=(
+            "Лимит размера stdout И stderr по отдельности (мин. 1024). "
+            "Превышение → обрезка и `truncated=True` в результате."
+        ),
+    )
+    prompt: PromptOverlay = Field(default_factory=PromptOverlay)
 
 
 class ShellPluginConfig(BobaFlatSettings):
-    """Sandboxed bash tool (bubblewrap-based).
+    """Один bash-tool в одном из режимов; имя для LLM всегда `bash`.
 
-    Один tool `bash`. Профили песочницы задаются в `profiles`; LLM
-    выбирает профиль по имени, но не может менять его параметры.
-
-    При `enable=true` обязательны: `workspace_root`, непустой
-    `profiles` и `default_profile`, ссылающийся на ключ из `profiles`.
-
-    Типы полей объявлены строго (`Path`, `dict[...]`, `str`) без
-    `Optional` — downstream-код после загрузки конфига работает с
-    конкретными типами без рантайм-проверок. Обязательность при
-    `enable=true` проверяется через `__pydantic_fields_set__`: поле
-    считается заданным только если оно явно присутствует во входных
-    данных (TOML/env). При `enable=false` все три поля можно опустить —
-    их placeholder-значения не используются, потому что `build()` не
-    вызывается.
+    Какой вариант поднимать — определяет `variant`: `"sandbox"` или
+    `"local"`. При `enable=true` `variant` и `workspace_root` обязательны.
+    Для `sandbox` дополнительно нужен непустой `sandbox.profiles` и
+    валидный `sandbox.default_profile`; для `local` достаточно
+    дефолтов `LocalToolConfig`.
     """
 
     model_config = BobaSettingsConfigDict(
@@ -59,48 +172,35 @@ class ShellPluginConfig(BobaFlatSettings):
         default=Path(),
         description=(
             "Host-путь к корню проекта. Обязателен при enable=true. "
-            "Резолвится до абсолютного/каноничного. Монтируется RW в "
-            "песочницу и используется как cwd по умолчанию."
+            "Резолвится до абсолютного/каноничного. Используется как "
+            "RW-bind для bwrap и как cwd по умолчанию для обоих tool'ов."
         ),
     )
-    profiles: dict[str, SandboxProfile] = Field(
-        default_factory=dict,
-        description=(
-            "Реестр профилей песочницы по имени. При enable=true должен "
-            "содержать хотя бы один профиль."
-        ),
-    )
-    default_profile: str = Field(
-        default="",
-        description=(
-            "Имя профиля, выбираемого если LLM не указал явно. "
-            "Обязателен при enable=true, должен быть ключом `profiles`."
-        ),
-    )
-    tools: StringList | None = Field(
+    variant: Variant | None = Field(
         default=None,
         description=(
-            "Allowlist tool-имён внутри плагина: None — все включены. "
+            "Какой из двух bash-вариантов поднять: 'sandbox' (bwrap) или "
+            "'local' (без изоляции). LLM-имя tool'а всегда `bash`, "
+            "поэтому одновременно активен только один вариант. None при "
+            "enable=true — ошибка."
         ),
     )
-    bash: PromptOverlay = Field(default_factory=PromptOverlay)
+    sandbox: SandboxToolConfig = Field(default_factory=SandboxToolConfig)
+    local: LocalToolConfig = Field(default_factory=LocalToolConfig)
 
     @model_validator(mode="after")
     def _validate(self) -> Self:
         if not self.enable:
             return self
-        missing = _REQUIRED_WHEN_ENABLED - self.model_fields_set
-        if missing:
-            msg = (
-                f"при enable=true обязательны поля: {sorted(missing)}"
-            )
+
+        if self.variant is None:
+            msg = "при enable=true обязателен variant ('sandbox' или 'local')"
             raise ValueError(msg)
-        if self.default_profile not in self.profiles:
-            msg = (
-                f"default_profile={self.default_profile!r} отсутствует в "
-                f"profiles; доступные: {sorted(self.profiles)}"
-            )
+
+        if "workspace_root" not in self.model_fields_set:
+            msg = "при enable=true обязателен workspace_root"
             raise ValueError(msg)
+
         resolved = self.workspace_root.expanduser().resolve(strict=False)
         if not resolved.exists():
             msg = f"workspace_root не существует: {resolved}"
@@ -113,7 +213,7 @@ class ShellPluginConfig(BobaFlatSettings):
 
 
 class ShellPlugin(Plugin[ShellPluginConfig, ToolSource]):
-    """Plugin sandboxed-bash; один tool, один source."""
+    """Plugin одного bash-tool'а в одном из режимов — sandbox или local."""
 
     NAME: ClassVar[str] = "shell"
     SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("plugin.shell")
@@ -124,46 +224,30 @@ class ShellPlugin(Plugin[ShellPluginConfig, ToolSource]):
         cfg: ShellPluginConfig,
         ctx: ExtensionContext,
     ) -> Iterable[ToolSource]:
-        cls._check_bwrap_available()
         sid = cls.SOURCE_ID
-        factories: dict[str, Callable[[], Tool]] = {
-            "bash": lambda: BashTool(
-                BashToolConfig(prompt=cfg.bash),
-                ctx,
-                sid,
-                workspace_root=str(cfg.workspace_root),
-                profiles=dict(cfg.profiles),
-                default_profile=cfg.default_profile,
-            ),
-        }
-        names = cls._select(cfg.tools, factories.keys())
-        yield StaticToolSource(
-            source_id=sid,
-            tools=[factories[n]() for n in names],
-        )
+        if not cfg.enable or cfg.variant is None:
+            return
 
-    @staticmethod
-    def _check_bwrap_available() -> None:
-        if shutil.which("bwrap") is None:
-            msg = (
-                "ShellPlugin: bubblewrap (`bwrap`) не найден в PATH. "
-                "Установи пакет (apt: bubblewrap) или отключи плагин."
-            )
-            raise RuntimeError(msg)
+        workspace_root = str(cfg.workspace_root)
 
-    @staticmethod
-    def _select(
-        allowlist: list[str] | None,
-        all_names: Iterable[str],
-    ) -> list[str]:
-        available = list(all_names)
-        if not allowlist:
-            return available
-        unknown = [n for n in allowlist if n not in available]
-        if unknown:
-            msg = (
-                f"ShellPlugin.tools: unknown names {unknown!r}, "
-                f"available: {available!r}"
+        if cfg.variant == _SANDBOX_VARIANT:
+            sandbox_cfg = BashSandboxToolConfig(
+                prompt=cfg.sandbox.prompt,
+                workspace_root=workspace_root,
+                profiles=dict(cfg.sandbox.profiles),
+                default_profile=cfg.sandbox.default_profile,
             )
-            raise ValueError(msg)
-        return [n for n in available if n in allowlist]
+            tool = BashSandboxTool(sandbox_cfg, ctx, sid)
+        else:
+            local_cfg = BashToolConfig(
+                prompt=cfg.local.prompt,
+                workspace_root=workspace_root,
+                cwd=cfg.local.cwd,
+                env_passthrough=cfg.local.env_passthrough,
+                env_set=dict(cfg.local.env_set),
+                timeout_sec=cfg.local.timeout_sec,
+                max_output_bytes=cfg.local.max_output_bytes,
+            )
+            tool = BashTool(local_cfg, ctx, sid)
+
+        yield StaticToolSource(source_id=sid, tools=[tool])

@@ -1,7 +1,17 @@
-"""Boba extension: sandboxed bash tool (bubblewrap-based)."""
+"""Boba extension: два bash-tool'а — sandboxed (bwrap) и local."""
 
 from __future__ import annotations
 
-from boba.tool.shell.plugin import ShellPlugin, ShellPluginConfig
+from boba.tool.shell.plugin import (
+    LocalToolConfig,
+    SandboxToolConfig,
+    ShellPlugin,
+    ShellPluginConfig,
+)
 
-__all__ = ["ShellPlugin", "ShellPluginConfig"]
+__all__ = [
+    "LocalToolConfig",
+    "SandboxToolConfig",
+    "ShellPlugin",
+    "ShellPluginConfig",
+]
