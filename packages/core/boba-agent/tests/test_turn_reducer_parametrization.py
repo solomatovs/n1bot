@@ -17,7 +17,7 @@ from boba.agent.turn.reducers import (
     RememberUserQueryReducer,
     SamplingReducer,
     SystemPromptReducer,
-    ToolsReducer,
+    ToolsDefinitionReducer,
     UserQueryReducer,
 )
 from boba.agent.turn.spec import TurnState
@@ -97,7 +97,7 @@ def test_turn_builder_full_set(agent_ctx: AgentContext):
         SystemPromptReducer.ID,
         HistoryReducer.ID,
         UserQueryReducer.ID,
-        ToolsReducer.ID,
+        ToolsDefinitionReducer.ID,
         SamplingReducer.ID,
     }
 
@@ -176,11 +176,7 @@ def test_turn_builder_system_prompt_from_dir(
     (tmp_path / "02_rules.md").write_text("Отвечай по-русски.", encoding="utf-8")
     (tmp_path / "empty.md").write_text("", encoding="utf-8")
 
-    turn = (
-        TurnBuilder()
-        .with_model("test-model")
-        .system_prompt_from_dir(tmp_path)
-    )
+    turn = TurnBuilder().with_model("test-model").system_prompt_from_dir(tmp_path)
     spec = turn.build_spec_builder().build(agent_ctx)
     state = TurnState()
     for p in sorted(spec.providers(), key=lambda r: r.priority()):
@@ -223,11 +219,7 @@ def test_turn_builder_extra_overrides_built_in_by_id(agent_ctx: AgentContext):
             return state
 
     override = _OverrideModel()
-    turn = (
-        TurnBuilder()
-        .with_model("test-model")
-        .use_reducer(override)
-    )
+    turn = TurnBuilder().with_model("test-model").use_reducer(override)
     spec = turn.build_spec_builder().build(agent_ctx)
     providers = {p.id(): p for p in spec.providers()}
     assert providers[ModelReducer.ID] is override
@@ -260,11 +252,7 @@ def test_agent_builder_use_turn_autowires_messages_and_catalog():
 def test_agent_builder_use_turn_respects_explicit_resources():
     """Явно заданное в TurnBuilder не перетирается AgentBuilder'ом."""
     explicit_messages = InMemoryMessageService()
-    turn = (
-        TurnBuilder()
-        .with_model("test-model")
-        .with_messages(explicit_messages)
-    )
+    turn = TurnBuilder().with_model("test-model").with_messages(explicit_messages)
     other_messages = InMemoryMessageService()
     builder = AgentBuilder().with_messages(other_messages).use_turn(turn)
     if not turn.has_messages():

@@ -114,7 +114,7 @@ from boba.agent.turn.reducers import (
     RememberUserQueryReducer,
     SamplingReducer,
     SystemPromptReducer,
-    ToolsReducer,
+    ToolsDefinitionReducer,
     TurnReducer,
 )
 from boba.agent.turn.spec import TurnSpec, TurnState
@@ -214,7 +214,7 @@ __all__ = [
     "ToolExecutionStarted",
     "ToolPart",
     "ToolResultReady",
-    "ToolsReducer",
+    "ToolsDefinitionReducer",
     "TurnBuilder",
     "TurnReducer",
     "TurnReducerFactory",
