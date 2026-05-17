@@ -7,9 +7,9 @@ from typing import ClassVar
 from boba.agent.agent import AgentContext
 from boba.agent.builder import AgentBuilder
 from boba.agent.history import InMemoryHistoryService
-from boba.agent.history_view import HistoryDialogView
 from boba.agent.middleware.llm import LLMPort
 from boba.agent.turn.builder import TurnBuilder
+from boba.agent.turn.history_view import HistoryDialogView
 from boba.agent.turn.reducers import (
     HistoryReducer,
     ModelReducer,

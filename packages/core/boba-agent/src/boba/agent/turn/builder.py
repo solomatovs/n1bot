@@ -27,13 +27,13 @@ from collections.abc import Callable, Iterable
 from typing import Self, cast
 
 from boba.agent.agent import AgentContext
-from boba.agent.history_view import HistoryDialogView
 from boba.agent.prompt import PromptId, PromptProvider
 from boba.agent.prompt_providers import (
     DirectoryPromptProvider,
     FilePromptProvider,
     StaticPromptProvider,
 )
+from boba.agent.turn.history_view import HistoryDialogView
 from boba.agent.turn.reducers import (
     HistoryReducer,
     ModelReducer,

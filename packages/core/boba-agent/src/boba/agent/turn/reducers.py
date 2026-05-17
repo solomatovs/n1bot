@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, ClassVar, TypeAlias
 
-from boba.agent.history_view import HistoryDialogView
 from boba.agent.prompt import PromptFactory, PromptProvider
+from boba.agent.turn.history_view import HistoryDialogView
 from boba.agent.turn.spec import TurnState
 from boba.llm.models import (
     LLMToolDefinition,

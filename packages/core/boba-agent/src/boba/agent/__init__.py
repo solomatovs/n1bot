@@ -66,7 +66,6 @@ from boba.agent.history import (
     InMemoryHistoryService,
     JsonLinesHistoryService,
 )
-from boba.agent.history_view import HistoryDialogView
 from boba.agent.middleware import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
@@ -99,6 +98,7 @@ from boba.agent.prompt import (
     PromptState,
 )
 from boba.agent.turn.builder import TurnBuilder, TurnReducerFactory
+from boba.agent.turn.history_view import HistoryDialogView
 from boba.agent.turn.reducers import (
     HistoryReducer,
     ModelReducer,
