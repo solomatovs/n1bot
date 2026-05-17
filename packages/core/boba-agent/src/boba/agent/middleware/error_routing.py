@@ -44,7 +44,7 @@ class AgentErrorRouter:
                 self._writer.add(UserMessage.from_text(c))
             case ToolCallRejection(tool_call_id=tid, content=c):
                 self._writer.add(
-                    ToolResultMessage(
+                    ToolResultMessage.from_result(
                         tool_call_id=tid,
                         result=ErrorResult(
                             message=c,

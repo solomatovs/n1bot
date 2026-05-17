@@ -13,14 +13,12 @@ from boba.provider.openai.terminal import OpenAITerminal, build_openai_client
 from boba.provider.openai.tool_call_reindexer import (
     DuplicateToolCallIndexReindexer,
 )
-from boba.provider.openai.visitor import OpenAIChatVisitor
 
 __all__ = [
     "CurlTraceChatCompletionObserver",
     "DuplicateToolCallIndexReindexer",
     "MetricsChatCompletionObserver",
     "MultiKeyReasoningExtractor",
-    "OpenAIChatVisitor",
     "OpenAIConfig",
     "OpenAIEmbedder",
     "OpenAITerminal",

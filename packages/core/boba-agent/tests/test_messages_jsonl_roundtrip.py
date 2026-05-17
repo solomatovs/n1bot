@@ -44,10 +44,10 @@ _ITC = InvalidToolCall(
 
 def _all_messages() -> list[Any]:
     return [
-        SystemMessage.from_text("be helpful", id=_MID),
-        UserMessage.from_text("hi", id=_MID),
+        SystemMessage.from_text_with_id("be helpful", id=_MID),
+        UserMessage.from_text_with_id("hi", id=_MID),
         # AssistantMessage только с текстом
-        AssistantMessage.from_text("hello", id=_MID),
+        AssistantMessage.from_text_with_id("hello", id=_MID),
         # AssistantMessage с разнородными блоками: text + tool_call + invalid_tool_call
         AssistantMessage(
             id=_MID,
@@ -57,18 +57,18 @@ def _all_messages() -> list[Any]:
                 InvalidToolCallBlock(invalid=_ITC),
             ),
         ),
-        # ToolResultMessage с каждым ToolResult-вариантом
-        ToolResultMessage(
+        # ToolResultMessage: from_result_with_id рендерит ToolResult в blocks
+        ToolResultMessage.from_result_with_id(
             id=_MID,
             tool_call_id="c1",
             result=TextResult(text="ok", metadata={"src": "x"}),
         ),
-        ToolResultMessage(
+        ToolResultMessage.from_result_with_id(
             id=_MID,
             tool_call_id="c1",
             result=JsonResult(payload={"a": [1, 2]}, metadata={}),
         ),
-        ToolResultMessage(
+        ToolResultMessage.from_result_with_id(
             id=_MID,
             tool_call_id="c1",
             result=ErrorResult(message="boom", error_kind="X", metadata={}),
@@ -94,7 +94,7 @@ def test_message_default_id_factory() -> None:
 
 def test_assistant_text_only_serializes_as_single_text_block() -> None:
     """Только текст → один TextBlock в `blocks`, без tool_call/invalid блоков."""
-    a = AssistantMessage.from_text("x", id=_MID)
+    a = AssistantMessage.from_text_with_id("x", id=_MID)
     line = MessageAdapter.dump_json(a).decode("utf-8")
     assert '"type":"text"' in line
     assert '"content":"x"' in line
@@ -133,15 +133,18 @@ def test_golden_jsonl_assistant_with_tools() -> None:
 
 
 def test_golden_jsonl_tool_result() -> None:
+    """Канонический wire-формат: tool_result с блоками + is_error."""
     golden = (
         '{"id":"00000000-0000-0000-0000-000000000aaa",'
         '"type":"tool_result","tool_call_id":"c1",'
-        '"result":{"kind":"text","text":"ok","metadata":{}}}'
+        '"blocks":[{"type":"text","content":"ok"}],"is_error":false}'
     )
     parsed = MessageAdapter.validate_json(golden)
     assert isinstance(parsed, ToolResultMessage)
-    assert isinstance(parsed.result, TextResult)
-    assert parsed.result.text == "ok"
+    assert len(parsed.blocks) == 1
+    assert isinstance(parsed.blocks[0], TextBlock)
+    assert parsed.blocks[0].content == "ok"
+    assert parsed.is_error is False
 
 
 def test_in_memory_message_service() -> None:
@@ -163,7 +166,7 @@ def test_jsonlines_message_e2e(history_workspace: FsHistoryWorkspaceShell) -> No
         SystemMessage.from_text("be helpful"),
         UserMessage.from_text("hi"),
         AssistantMessage.from_text("hello"),
-        ToolResultMessage(
+        ToolResultMessage.from_result(
             tool_call_id="c1",
             result=TextResult(text="ok", metadata={}),
         ),

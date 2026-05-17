@@ -18,8 +18,7 @@ from boba.llm.models import (
     UserMessage,
 )
 from boba.patterns import Converter
-from boba.provider.openai.visitor import OpenAIChatVisitor
-from boba.tools.domain import ToolResultVisitor, ToolSchema
+from boba.tools.domain import ToolSchema
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
     ChatCompletionMessageParam,
@@ -47,18 +46,11 @@ class ToOpenAIToolConverter(Converter[ToolSchema, ChatCompletionToolParam]):
 class ToOpenAIMessageConverter(Converter[Message, ChatCompletionMessageParam]):
     """Конвертация Message-иерархии → OpenAI message param (visitor по типу).
 
-    Для `ToolResultMessage` доменный `ToolResult` рендерится через переданный
-    `ToolResultVisitor[str]` — это граница между домен-моделью и wire-форматом
-    конкретного провайдера.
+    Все Message-типы block-based; конвертер flatten'ит блоки в wire-формат
+    OpenAI Chat Completions (плоский content + tool_calls). Image/file блоки
+    в system/user/tool пока игнорируются — добавим, когда понадобится
+    мультимодальный content-array.
     """
-
-    def __init__(
-        self,
-        tool_result_visitor: ToolResultVisitor[str] | None = None,
-    ) -> None:
-        self._tool_result_visitor: ToolResultVisitor[str] = (
-            tool_result_visitor or OpenAIChatVisitor()
-        )
 
     def convert(self, value: Message) -> ChatCompletionMessageParam:
         """Flatten доменных блоков в OpenAI Chat Completions wire-shape.
@@ -111,10 +103,14 @@ class ToOpenAIMessageConverter(Converter[Message, ChatCompletionMessageParam]):
                 if tool_calls:
                     param["tool_calls"] = tool_calls
                 return param
-            case ToolResultMessage(tool_call_id=tcid, result=result):
+            case ToolResultMessage(tool_call_id=tcid, blocks=blocks):
+                # OpenAI Chat: tool message content — одна строка.
+                # Image-блоки tool_result в Chat API не поддерживаются —
+                # игнорируем (для Responses API/Anthropic — отдельный адаптер).
+                text_parts = [b.content for b in blocks if isinstance(b, TextBlock)]
                 return ChatCompletionToolMessageParam(
                     role="tool",
-                    content=result.accept(self._tool_result_visitor),
+                    content="".join(text_parts),
                     tool_call_id=tcid,
                 )
             case _:
@@ -125,11 +121,8 @@ class ToOpenAIMessageConverter(Converter[Message, ChatCompletionMessageParam]):
 class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
     """LLMRequest → kwargs для client.chat.completions.create."""
 
-    def __init__(
-        self,
-        tool_result_visitor: ToolResultVisitor[str] | None = None,
-    ) -> None:
-        self._to_message = ToOpenAIMessageConverter(tool_result_visitor)
+    def __init__(self) -> None:
+        self._to_message = ToOpenAIMessageConverter()
         self._to_tool = ToOpenAIToolConverter()
 
     def convert(self, value: LLMRequest) -> dict[str, Any]:

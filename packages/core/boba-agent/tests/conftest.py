@@ -39,7 +39,7 @@ def make_tool_result_message() -> Callable[..., ToolResultMessage]:
     """Фабрика `ToolResultMessage` c `TextResult`-payload по умолчанию."""
 
     def _factory(call_id: str = "c1", text: str = "ok") -> ToolResultMessage:
-        return ToolResultMessage(
+        return ToolResultMessage.from_result(
             tool_call_id=call_id,
             result=TextResult(text=text),
         )

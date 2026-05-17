@@ -12,7 +12,13 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from boba.llm.errors import LLMProtocolError
-from boba.tools.domain import ToolResult, ToolSchema
+from boba.tools.domain import (
+    ErrorResult,
+    JsonResult,
+    TextResult,
+    ToolResult,
+    ToolSchema,
+)
 
 __all__ = [
     "AssistantBlock",
@@ -29,6 +35,11 @@ __all__ = [
     "Message",
     "MessageAdapter",
     "MessageId",
+    "PartialAssistantBlock",
+    "PartialRefusalBlock",
+    "PartialTextBlock",
+    "PartialThinkingBlock",
+    "PartialToolCallBlock",
     "RefusalBlock",
     "RequestId",
     "SamplingParams",
@@ -38,7 +49,7 @@ __all__ = [
     "ThinkingBlock",
     "ToolCall",
     "ToolCallBlock",
-    "ToolCallChunk",
+    "ToolResultContentBlock",
     "ToolResultMessage",
     "UserBlock",
     "UserMessage",
@@ -142,7 +153,7 @@ class InvalidToolCallBlock(_Block):
 
 
 class ThinkingBlock(_Block):
-    """Reasoning / extended thinking; signature нужен Anthropic для echo-back."""
+    """Reasoning / extended thinking"""
 
     type: Literal["thinking"] = "thinking"
     content: str
@@ -171,6 +182,12 @@ AssistantBlock: TypeAlias = Annotated[
 ]
 """Блок assistant-сообщения: всё, что генерирует модель в одной генерации."""
 
+ToolResultContentBlock: TypeAlias = Annotated[
+    TextBlock | ImageBlock,
+    Field(discriminator="type"),
+]
+"""Блок содержимого tool-result: текст или изображение (Anthropic-совместимо)."""
+
 
 # --------------------------------------------------------------------- #
 # Message hierarchy (Pydantic discriminated union)
@@ -192,17 +209,19 @@ class SystemMessage(Message):
     blocks: tuple[SystemBlock, ...]
 
     @classmethod
-    def from_text(
+    def from_text(cls, content: str) -> SystemMessage:
+        """Text-only сообщение со свежим id."""
+        return cls(id=new_message_id(), blocks=(TextBlock(content=content),))
+
+    @classmethod
+    def from_text_with_id(
         cls,
         content: str,
         *,
-        id: MessageId | None = None,  # noqa: A002 — совпадает с полем Message.id
+        id: MessageId,  # noqa: A002 — совпадает с полем Message.id
     ) -> SystemMessage:
-        """Удобный конструктор text-only сообщения."""
-        kwargs: dict[str, Any] = {"blocks": (TextBlock(content=content),)}
-        if id is not None:
-            kwargs["id"] = id
-        return cls(**kwargs)
+        """Text-only сообщение с заданным id (replay/тесты)."""
+        return cls(id=id, blocks=(TextBlock(content=content),))
 
     @property
     def content(self) -> str:
@@ -217,17 +236,19 @@ class UserMessage(Message):
     blocks: tuple[UserBlock, ...]
 
     @classmethod
-    def from_text(
+    def from_text(cls, content: str) -> UserMessage:
+        """Text-only сообщение со свежим id."""
+        return cls(id=new_message_id(), blocks=(TextBlock(content=content),))
+
+    @classmethod
+    def from_text_with_id(
         cls,
         content: str,
         *,
-        id: MessageId | None = None,  # noqa: A002 — совпадает с полем Message.id
+        id: MessageId,  # noqa: A002 — совпадает с полем Message.id
     ) -> UserMessage:
-        """Удобный конструктор text-only сообщения."""
-        kwargs: dict[str, Any] = {"blocks": (TextBlock(content=content),)}
-        if id is not None:
-            kwargs["id"] = id
-        return cls(**kwargs)
+        """Text-only сообщение с заданным id (replay/тесты)."""
+        return cls(id=id, blocks=(TextBlock(content=content),))
 
     @property
     def content(self) -> str:
@@ -248,17 +269,19 @@ class AssistantMessage(Message):
     blocks: tuple[AssistantBlock, ...]
 
     @classmethod
-    def from_text(
+    def from_text(cls, content: str) -> AssistantMessage:
+        """Text-only ответ (без tool_call'ов) со свежим id."""
+        return cls(id=new_message_id(), blocks=(TextBlock(content=content),))
+
+    @classmethod
+    def from_text_with_id(
         cls,
         content: str,
         *,
-        id: MessageId | None = None,  # noqa: A002 — совпадает с полем Message.id
+        id: MessageId,  # noqa: A002 — совпадает с полем Message.id
     ) -> AssistantMessage:
-        """Удобный конструктор text-only ответа (без tool_call'ов)."""
-        kwargs: dict[str, Any] = {"blocks": (TextBlock(content=content),)}
-        if id is not None:
-            kwargs["id"] = id
-        return cls(**kwargs)
+        """Text-only ответ с заданным id (replay/тесты)."""
+        return cls(id=id, blocks=(TextBlock(content=content),))
 
     @property
     def content(self) -> str:
@@ -289,17 +312,78 @@ class AssistantMessage(Message):
 
 
 class ToolResultMessage(Message):
-    """Результат выполнения tool-call в слот id-вызова.
+    """
+    Результат выполнения tool-call в слот id-вызова — block-based.
 
-    Несёт доменный `ToolResult` (sealed).
-    Провайдер-adapter рендерит его в свой wire-формат
-    через `ToolResultVisitor[T]` при конвертации сообщения в API-параметры.
-    Признак ошибки — `isinstance(result, ErrorResult)`.
+    Содержимое — упорядоченные блоки (text + image) совместимо с Anthropic
+    multi-block tool_result. `is_error: True` сигнализирует провайдеру об
+    отказе tool'а (Anthropic выставляет одноимённый wire-флаг; OpenAI Chat
+    его игнорирует, ошибка попадает в content).
+
+    Конструктор `from_result(...)` принимает доменный `ToolResult` и
+    конвертирует в blocks — это граница между tool-execution domain и
+    wire-message domain. Прямой `ToolResultMessage(blocks=..., is_error=...)`
+    остаётся для случаев, когда блоки строятся независимо (replay, image-tool).
     """
 
     type: Literal["tool_result"] = "tool_result"
     tool_call_id: str
-    result: ToolResult
+    blocks: tuple[ToolResultContentBlock, ...]
+    is_error: bool = False
+
+    @staticmethod
+    def _result_to_blocks(
+        result: ToolResult,
+    ) -> tuple[tuple[ToolResultContentBlock, ...], bool]:
+        """
+        Граница tools-domain ↔ wire-message-domain: `ToolResult` → blocks + is_error
+        """
+
+        match result:
+            case TextResult(text=t):
+                return (TextBlock(content=t),), False
+            case JsonResult(payload=p):
+                return (TextBlock(content=json.dumps(p, ensure_ascii=False)),), False
+            case ErrorResult(message=m):
+                return (TextBlock(content=m),), True
+
+    @classmethod
+    def from_result(
+        cls,
+        *,
+        tool_call_id: str,
+        result: ToolResult,
+    ) -> ToolResultMessage:
+        """Convert доменный `ToolResult` → blocks + is_error со свежим id.
+
+        Граница tools-domain ↔ wire-message-domain: tool продолжают
+        возвращать `ToolResult`, а сообщение хранит уже block-форму.
+        Pyright проверяет exhaustiveness через discriminator `kind`.
+        """
+        blocks, is_error = cls._result_to_blocks(result)
+        return cls(
+            id=new_message_id(),
+            tool_call_id=tool_call_id,
+            blocks=blocks,
+            is_error=is_error,
+        )
+
+    @classmethod
+    def from_result_with_id(
+        cls,
+        *,
+        tool_call_id: str,
+        result: ToolResult,
+        id: MessageId,  # noqa: A002 — совпадает с полем Message.id
+    ) -> ToolResultMessage:
+        """Тот же `from_result`, но с заданным id (replay/тесты)."""
+        blocks, is_error = cls._result_to_blocks(result)
+        return cls(
+            id=id,
+            tool_call_id=tool_call_id,
+            blocks=blocks,
+            is_error=is_error,
+        )
 
 
 MessageAdapter: TypeAdapter[Message] = TypeAdapter(
@@ -328,86 +412,152 @@ DialogMessage: TypeAlias = UserMessage | AssistantMessage | ToolResultMessage
 
 
 @dataclass(frozen=True)
-class ToolCallChunk:
-    """
-    Накопленное состояние одного tool-call в стриме
-    """
+class PartialTextBlock:
+    """Частично собранный TextBlock в стриме."""
 
-    index: int
-    id: str
-    name: str
+    type: Literal["text"] = "text"
+    content: str = ""
+
+    def with_token(self, token: str) -> PartialTextBlock:
+        return PartialTextBlock(content=self.content + token)
+
+    def finalize(self) -> TextBlock:
+        return TextBlock(content=self.content)
+
+
+@dataclass(frozen=True)
+class PartialThinkingBlock:
+    """Частично собранный ThinkingBlock в стриме."""
+
+    type: Literal["thinking"] = "thinking"
+    content: str = ""
+    signature: str = ""
+
+    def with_token(self, token: str) -> PartialThinkingBlock:
+        return PartialThinkingBlock(
+            content=self.content + token,
+            signature=self.signature,
+        )
+
+    def with_signature(self, signature: str) -> PartialThinkingBlock:
+        return PartialThinkingBlock(content=self.content, signature=signature)
+
+    def finalize(self) -> ThinkingBlock:
+        return ThinkingBlock(content=self.content, signature=self.signature)
+
+
+@dataclass(frozen=True)
+class PartialRefusalBlock:
+    """Частично собранный RefusalBlock в стриме."""
+
+    type: Literal["refusal"] = "refusal"
+    content: str = ""
+
+    def with_token(self, token: str) -> PartialRefusalBlock:
+        return PartialRefusalBlock(content=self.content + token)
+
+    def finalize(self) -> RefusalBlock:
+        return RefusalBlock(content=self.content)
+
+
+@dataclass(frozen=True)
+class PartialToolCallBlock:
+    """Частично собранный tool-call: args накапливаются как сырая JSON-строка."""
+
+    type: Literal["tool_call"] = "tool_call"
+    index: int = 0
+    id: str = ""
+    name: str = ""
     args: str = ""
 
-    def append_args(self, args_chunk: str) -> ToolCallChunk:
-        """Дописать substring JSON в args."""
-        return ToolCallChunk(
+    def with_args(self, args_chunk: str) -> PartialToolCallBlock:
+        return PartialToolCallBlock(
             index=self.index,
             id=self.id,
             name=self.name,
             args=self.args + args_chunk,
         )
 
-    def finalize(self) -> ToolCall | InvalidToolCall:
-        """Парсить args в dict; вернуть ToolCall или InvalidToolCall."""
+    def finalize(self) -> ToolCallBlock | InvalidToolCallBlock:
+        """Парсить args в dict; вернуть ToolCallBlock или InvalidToolCallBlock."""
         try:
             parsed = json.loads(self.args) if self.args else {}
         except json.JSONDecodeError as e:
-            return InvalidToolCall(
-                id=self.id,
-                name=self.name,
-                raw_args=self.args,
-                error=f"invalid JSON arguments: {e}",
+            return InvalidToolCallBlock(
+                invalid=InvalidToolCall(
+                    id=self.id,
+                    name=self.name,
+                    raw_args=self.args,
+                    error=f"invalid JSON arguments: {e}",
+                ),
             )
-
         if not isinstance(parsed, dict):
-            return InvalidToolCall(
-                id=self.id,
-                name=self.name,
-                raw_args=self.args,
-                error=f"args must be JSON object, got {type(parsed).__name__}",
+            return InvalidToolCallBlock(
+                invalid=InvalidToolCall(
+                    id=self.id,
+                    name=self.name,
+                    raw_args=self.args,
+                    error=f"args must be JSON object, got {type(parsed).__name__}",
+                ),
             )
+        return ToolCallBlock(call=ToolCall(id=self.id, name=self.name, args=parsed))
 
-        return ToolCall(id=self.id, name=self.name, args=parsed)
+
+PartialAssistantBlock: TypeAlias = (
+    PartialTextBlock | PartialThinkingBlock | PartialRefusalBlock | PartialToolCallBlock
+)
+"""Растущий-в-стриме блок ассистента."""
 
 
 @dataclass(frozen=True)
 class AssistantMessageChunk:
-    """Накопительный чанк AssistantMessage в стриме."""
+    """
+    Накопительный чанк AssistantMessage в стриме как ordered-list partial-блоков.
 
-    content: str = ""
-    thinking: str = ""
-    refusal: str = ""
-    tool_call_chunks: tuple[ToolCallChunk, ...] = ()
+    Token-style события (text/thinking/refusal) — находят соответствующий
+    тип блока (один блок-на-тип для OpenAI Chat, где нет явных границ) либо
+    создают новый, если такого ещё нет. Tool-call события явно адресуют
+    блок по `index`. Финализация: каждый partial → финальный AssistantBlock
+    в порядке хранения.
+
+    Когда подключим Anthropic streaming с явными `content_block_start/delta/
+    stop` событиями, методы можно расширить block-index'ом для произвольного
+    interleaving (text → tool_call → text) — структура уже готова.
+    """
+
+    blocks: tuple[PartialAssistantBlock, ...] = ()
 
     @classmethod
     def empty(cls) -> AssistantMessageChunk:
         return cls()
 
     def with_text(self, token: str) -> AssistantMessageChunk:
-        """Прибавить токен в content."""
-        return AssistantMessageChunk(
-            content=self.content + token,
-            thinking=self.thinking,
-            refusal=self.refusal,
-            tool_call_chunks=self.tool_call_chunks,
-        )
+        """Прибавить text-токен (find-or-create PartialTextBlock)."""
+        return self._append_token(PartialTextBlock, token)
 
     def with_thinking(self, token: str) -> AssistantMessageChunk:
-        """Прибавить thinking-токен."""
-        return AssistantMessageChunk(
-            content=self.content,
-            thinking=self.thinking + token,
-            refusal=self.refusal,
-            tool_call_chunks=self.tool_call_chunks,
-        )
+        """Прибавить thinking-токен (find-or-create PartialThinkingBlock)."""
+        return self._append_token(PartialThinkingBlock, token)
 
     def with_refusal(self, token: str) -> AssistantMessageChunk:
-        """Прибавить refusal-токен."""
+        """Прибавить refusal-токен (find-or-create PartialRefusalBlock)."""
+        return self._append_token(PartialRefusalBlock, token)
+
+    def _append_token(
+        self,
+        block_cls: type[PartialTextBlock]
+        | type[PartialThinkingBlock]
+        | type[PartialRefusalBlock],
+        token: str,
+    ) -> AssistantMessageChunk:
+        for i, b in enumerate(self.blocks):
+            if isinstance(b, block_cls):
+                updated = b.with_token(token)
+                return AssistantMessageChunk(
+                    blocks=(*self.blocks[:i], updated, *self.blocks[i + 1 :]),
+                )
         return AssistantMessageChunk(
-            content=self.content,
-            thinking=self.thinking,
-            refusal=self.refusal + token,
-            tool_call_chunks=self.tool_call_chunks,
+            blocks=(*self.blocks, block_cls().with_token(token)),
         )
 
     def with_tool_call_start(
@@ -418,19 +568,16 @@ class AssistantMessageChunk:
         tool_name: str,
     ) -> AssistantMessageChunk:
         """Зарегистрировать новый tool-call slot (из ToolCallStreamStarted)."""
-        for existing in self.tool_call_chunks:
-            if existing.index == index:
+        for b in self.blocks:
+            if isinstance(b, PartialToolCallBlock) and b.index == index:
                 raise LLMProtocolError(
                     f"with_tool_call_start: дубликат index={index} "
-                    f"(уже зарегистрирован id={existing.id!r}, name={existing.name!r})"
+                    f"(уже зарегистрирован id={b.id!r}, name={b.name!r})"
                 )
         return AssistantMessageChunk(
-            content=self.content,
-            thinking=self.thinking,
-            refusal=self.refusal,
-            tool_call_chunks=(
-                *self.tool_call_chunks,
-                ToolCallChunk(index=index, id=tool_call_id, name=tool_name),
+            blocks=(
+                *self.blocks,
+                PartialToolCallBlock(index=index, id=tool_call_id, name=tool_name),
             ),
         )
 
@@ -441,57 +588,34 @@ class AssistantMessageChunk:
         args_chunk: str,
     ) -> AssistantMessageChunk:
         """Дописать args в зарегистрированный tool-call (из ToolCallArgumentDelta)."""
-        updated = list(self.tool_call_chunks)
-        for i, existing in enumerate(updated):
-            if existing.index == index:
-                updated[i] = existing.append_args(args_chunk)
+        for i, b in enumerate(self.blocks):
+            if isinstance(b, PartialToolCallBlock) and b.index == index:
+                updated = b.with_args(args_chunk)
                 return AssistantMessageChunk(
-                    content=self.content,
-                    thinking=self.thinking,
-                    refusal=self.refusal,
-                    tool_call_chunks=tuple(updated),
+                    blocks=(*self.blocks[:i], updated, *self.blocks[i + 1 :]),
                 )
         raise LLMProtocolError(
             f"with_tool_call_args: index={index} не зарегистрирован — "
             f"ToolCallArgumentDelta пришла без предшествующего ToolCallStreamStarted"
         )
 
-    def finalize(self, *, message_id: MessageId | None = None) -> AssistantMessage:
-        """Замкнуть чанк в финальный AssistantMessage.
+    def finalize(self) -> AssistantMessage:
+        """Замкнуть чанк в финальный AssistantMessage со свежим id."""
+        return AssistantMessage(
+            id=new_message_id(),
+            blocks=tuple(b.finalize() for b in self.blocks),
+        )
 
-        Собирает блоки в каноническом порядке: thinking → text → tool_calls
-        → invalid_tool_calls → refusal. Чанк не отслеживает interleaving
-        провайдера (OpenAI Chat не interleav'ит), поэтому порядок здесь —
-        конвенция. Для Anthropic streaming (block_start/delta/stop) этот
-        механизм потребует доработки.
-        """
-        blocks: list[AssistantBlock] = []
-        if self.thinking:
-            blocks.append(ThinkingBlock(content=self.thinking))
-        if self.content:
-            blocks.append(TextBlock(content=self.content))
-        for tcc in sorted(self.tool_call_chunks, key=lambda c: c.index):
-            tc = tcc.finalize()
-            if isinstance(tc, ToolCall):
-                blocks.append(ToolCallBlock(call=tc))
-            else:
-                blocks.append(InvalidToolCallBlock(invalid=tc))
-        if self.refusal:
-            blocks.append(RefusalBlock(content=self.refusal))
-
-        kwargs: dict[str, Any] = {"blocks": tuple(blocks)}
-        if message_id is not None:
-            kwargs["id"] = message_id
-        return AssistantMessage(**kwargs)
+    def finalize_with_id(self, *, message_id: MessageId) -> AssistantMessage:
+        """Тот же `finalize`, но с заданным id (replay/тесты)."""
+        return AssistantMessage(
+            id=message_id,
+            blocks=tuple(b.finalize() for b in self.blocks),
+        )
 
     def is_empty(self) -> bool:
-        """True если ни текста, ни thinking, ни refusal, ни tool-call'ов."""
-        return (
-            not self.content
-            and not self.thinking
-            and not self.refusal
-            and not self.tool_call_chunks
-        )
+        """True если ни одного partial-блока не накоплено."""
+        return not self.blocks
 
 
 @dataclass(frozen=True)

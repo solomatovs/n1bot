@@ -106,14 +106,13 @@ class AssistantSnapshotMiddleware(StreamSource[AgentContext, AgentEvent]):
         if chunk.is_empty():
             return
 
-        if chunk.thinking:
-            yield ThinkingComplete(request_id=rid, content=chunk.thinking)
-        if chunk.content:
-            yield AnswerComplete(request_id=rid, content=chunk.content)
-        if chunk.refusal:
-            yield RefusalComplete(request_id=rid, content=chunk.refusal)
-
         message = chunk.finalize()
+        if message.thinking:
+            yield ThinkingComplete(request_id=rid, content=message.thinking)
+        if message.content:
+            yield AnswerComplete(request_id=rid, content=message.content)
+        if message.refusal:
+            yield RefusalComplete(request_id=rid, content=message.refusal)
         for tc in message.tool_calls:
             yield ToolCallComplete(request_id=rid, call=tc)
         for itc in message.invalid_tool_calls:
