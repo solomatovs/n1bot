@@ -12,7 +12,6 @@ from chainlit.context import local_steps
 from chainlit.types import ThreadDict
 
 from boba.agent.events import AgentEvent
-from boba.chainlit.agent.files import save_upload
 from boba.chainlit.agent.models import ThreadId, ThreadMeta, User, UserId
 from boba.chainlit.agent.rendering import (
     AgentEventDispatcher,
@@ -209,21 +208,7 @@ async def on_message(message: cl.Message) -> None:
         workspace_id,
     )
 
-    saved: list[str] = []
-    if message.elements:
-        shell = session.project_workspace()
-        for el in message.elements:
-            src_path = getattr(el, "path", None)
-            name = getattr(el, "name", None)
-            if not src_path or not name:
-                continue
-            rel = await asyncio.to_thread(save_upload, shell, src_path, name)
-            saved.append(rel)
-
     query = message.content
-    if saved:
-        listing = ", ".join(saved)
-        query = f"{query}\n\n[attached files in workspace root: {listing}]"
 
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue()
