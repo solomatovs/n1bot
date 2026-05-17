@@ -127,7 +127,7 @@ class HistoryReducer(PrioritySource[str, TurnState]):
         return state
 
 
-class ToolsReducer(PrioritySource[str, TurnState]):
+class ToolsDefinitionReducer(PrioritySource[str, TurnState]):
     """Каталог tools из ToolCatalog."""
 
     ID: ClassVar[str] = "tools"

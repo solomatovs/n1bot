@@ -33,7 +33,7 @@ from boba.agent.turn.reducers import (
     ModelReducer,
     SamplingReducer,
     SystemPromptReducer,
-    ToolsReducer,
+    ToolsDefinitionReducer,
     TurnReducer,
     UserQueryReducer,
 )
@@ -145,7 +145,7 @@ class TurnBuilder:
     def with_tool_catalog(self, catalog: ToolCatalog) -> Self:
         """`ToolCatalog` → `ToolsReducer`. Стандартно прокидывает Agent."""
         self._tool_catalog = catalog
-        self._ensure(ToolsReducer.ID, self._make_tools)
+        self._ensure(ToolsDefinitionReducer.ID, self._make_tools)
         return self
 
     def with_user_query(self) -> Self:
@@ -229,8 +229,8 @@ class TurnBuilder:
     def _make_history(self, _ctx: AgentContext) -> HistoryReducer:
         return HistoryReducer(cast("MessageReader", self._messages))
 
-    def _make_tools(self, _ctx: AgentContext) -> ToolsReducer:
-        return ToolsReducer(cast("ToolCatalog", self._tool_catalog))
+    def _make_tools(self, _ctx: AgentContext) -> ToolsDefinitionReducer:
+        return ToolsDefinitionReducer(cast("ToolCatalog", self._tool_catalog))
 
     def _make_user_query(self, ctx: AgentContext) -> UserQueryReducer:
         return UserQueryReducer(ctx.query)
