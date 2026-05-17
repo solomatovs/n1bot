@@ -75,8 +75,7 @@ def build_bwrap_argv(
     for name, value in env.items():
         argv += ["--setenv", name, value]
 
-    cwd = profile.cwd if profile.cwd is not None else workspace_root
-    argv += ["--chdir", cwd]
+    argv += ["--chdir", profile.cwd or workspace_root]
 
     argv += ["--", _BASH_BIN, "-c", command]
     return argv

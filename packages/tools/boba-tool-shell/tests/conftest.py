@@ -22,14 +22,13 @@ def ext_ctx() -> ExtensionContext:
 
 
 def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in (
-        "BOBA_TOOL__SHELL__ENABLE",
-        "BOBA_TOOL__SHELL__TOOLS",
-        "BOBA_TOOL__SHELL__WORKSPACE_ROOT",
-        "BOBA_TOOL__SHELL__DEFAULT_PROFILE",
-        "BOBA_CONFIG_PATH",
-    ):
-        monkeypatch.delenv(key, raising=False)
+    """Снять все env-варсы, влияющие на загрузку ShellPluginConfig."""
+    prefix = "BOBA_TOOL__SHELL__"
+    import os  # noqa: PLC0415 — локальный импорт, чтобы не дёргать на load
+    for key in list(os.environ):
+        if key.startswith(prefix):
+            monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("BOBA_CONFIG_PATH", raising=False)
 
 
 @pytest.fixture
@@ -61,15 +60,27 @@ def make_shell_tool_names(
 
 
 @pytest.fixture
-def enabled_toml_body(tmp_path: Path) -> str:
-    """Минимальный валидный TOML-блок для enable=true.
+def enabled_sandbox_body(tmp_path: Path) -> str:
+    """Минимальный валидный TOML-блок: enable=true + variant=sandbox.
 
-    Использует `tmp_path` как workspace_root (директория гарантированно
-    существует), один профиль `default` со значениями по умолчанию.
+    Использует `tmp_path` как workspace_root, один профиль sandbox
+    `default` со значениями по умолчанию.
     """
     return (
         "enable = true\n"
         f'workspace_root = "{tmp_path}"\n'
+        'variant = "sandbox"\n'
+        "[tool.shell.sandbox]\n"
         'default_profile = "default"\n'
-        "[tool.shell.profiles.default]\n"
+        "[tool.shell.sandbox.profiles.default]\n"
+    )
+
+
+@pytest.fixture
+def enabled_local_body(tmp_path: Path) -> str:
+    """Минимальный валидный TOML-блок: enable=true + variant=local."""
+    return (
+        "enable = true\n"
+        f'workspace_root = "{tmp_path}"\n'
+        'variant = "local"\n'
     )

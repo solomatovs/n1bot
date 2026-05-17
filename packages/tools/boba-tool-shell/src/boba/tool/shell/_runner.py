@@ -1,13 +1,21 @@
 """Subprocess-обёртка: запуск argv с timeout, size-cap, streaming-сбором.
 
 Принципы:
-- argv приходит уже готовый (см. `_sandbox.build_bwrap_argv`).
-- stdout и stderr читаются параллельно, обрезаются по байтам на каждый
-  поток отдельно.
-- При таймауте: `Popen.kill()` — благодаря `bwrap --die-with-parent`
-  всё дерево потомков внутри песочницы умирает.
+- argv приходит уже готовый (см. `_sandbox.build_bwrap_argv` для sandbox-
+  варианта; для regular shell argv = `[/bin/bash, -c, command]`).
+- Все параметры процесса (`stdin_data`, `cwd`, `env`) обязательные и
+  типизированы строго, без `Optional`-инвариантов. Caller отвечает за
+  то, чтобы значения были корректными: пустой stdin = `b""`, для
+  sandbox-вызова в качестве `env` обычно передаётся `os.environ` (bwrap
+  внутри сделает `--clearenv` и поставит свой набор через `--setenv`).
+- stdout/stderr читаются параллельно через select, обрезаются по байтам
+  на каждый поток отдельно (см. `_pump`).
+- При таймауте: `Popen.kill()`. Для sandbox-варианта
+  `bwrap --die-with-parent` гарантирует, что всё дерево потомков внутри
+  песочницы умирает.
 - Результат — простой dataclass, без зависимости от ToolResult/JsonResult.
-  Обёртывание в `JsonResult` делает caller (`BashTool.execute`).
+  Обёртывание в `JsonResult` делает caller (`BashSandboxTool.execute` /
+  `BashTool.execute`).
 """
 
 from __future__ import annotations
@@ -16,9 +24,10 @@ import os
 import select
 import subprocess
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 
-__all__ = ["RunResult", "ShellRunnerInvariantError", "run_sandboxed"]
+__all__ = ["RunResult", "ShellRunnerInvariantError", "run_subprocess"]
 
 
 class ShellRunnerInvariantError(Exception):
@@ -42,37 +51,49 @@ class RunResult:
     timed_out: bool
 
 
-def run_sandboxed(
+def run_subprocess(
     argv: list[str],
     *,
-    stdin: str | None,
+    stdin_data: bytes,
     timeout_sec: int,
     max_output_bytes: int,
+    cwd: str,
+    env: Mapping[str, str],
 ) -> RunResult:
     """Запустить `argv` дочерним процессом и собрать его stdout/stderr.
 
+    Все параметры обязательны и валидируются на входе:
+    - `argv` — non-empty list, первый элемент — абсолютный путь к бинарю;
+    - `stdin_data=b""` означает «нет stdin» (пайп закрывается без записи);
+    - `cwd` — non-empty абсолютный путь к существующей директории;
+    - `env` — финальный dict env для дочернего процесса.
+
     Контракт:
-    - возвращает `RunResult` даже на таймаут (`exit_code=-9`, `timed_out=True`);
-    - не бросает `CalledProcessError`: non-zero exit — это валидный результат;
+    - возвращает `RunResult` даже на таймаут (`exit_code=-9`,
+      `timed_out=True`);
+    - не бросает `CalledProcessError`: non-zero exit — это валидный
+      результат;
     - `stdout`/`stderr` декодируются как utf-8 с `errors='replace'`.
     """
+    if not argv:
+        msg = "run_subprocess: argv не может быть пустым"
+        raise ValueError(msg)
+    if not cwd:
+        msg = "run_subprocess: cwd должен быть непустой строкой"
+        raise ValueError(msg)
+
     started = time.monotonic()
     proc = subprocess.Popen(  # noqa: S603 — argv приходит готовый из builder'а
         argv,
-        stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         bufsize=0,
         close_fds=True,
+        cwd=cwd,
+        env=dict(env),
     )
-    if stdin is not None and proc.stdin is not None:
-        try:
-            proc.stdin.write(stdin.encode("utf-8"))
-        except BrokenPipeError:
-            pass
-        finally:
-            proc.stdin.close()
-
+    _feed_stdin(proc, stdin_data)
     out_bytes, err_bytes, trunc_out, trunc_err, timed_out = _pump(
         proc, timeout_sec, max_output_bytes,
     )
@@ -87,6 +108,25 @@ def run_sandboxed(
         duration_ms=duration_ms,
         timed_out=timed_out,
     )
+
+
+def _feed_stdin(proc: subprocess.Popen[bytes], data: bytes) -> None:
+    """Записать `data` в stdin процесса и закрыть пайп.
+
+    `data=b""` — корректный кейс: stdin закрывается без записи, дочерний
+    процесс получает EOF на первом же read.
+    """
+    if proc.stdin is None:
+        raise ShellRunnerInvariantError(
+            "_feed_stdin: ожидался proc.stdin (Popen запущен с PIPE)",
+        )
+    try:
+        if data:
+            proc.stdin.write(data)
+    except BrokenPipeError:
+        pass
+    finally:
+        proc.stdin.close()
 
 
 def _pump(

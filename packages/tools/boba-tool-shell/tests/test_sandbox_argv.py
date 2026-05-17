@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from boba.tool.shell._profile import SandboxProfile
@@ -63,12 +61,15 @@ def test_ro_binds_emitted_with_ro_bind_try():
         assert argv[idx + 1] == path
 
 
-def test_ro_binds_are_canonicalized():
-    # /lib на Debian-like — symlink на /usr/lib; validator должен резолвить.
-    profile = SandboxProfile(ro_binds=("/lib",))
+def test_ro_binds_passed_through_unchanged():
+    # build_bwrap_argv не делает path-canonicalize; это работа
+    # `SandboxProfile._canonicalize_paths` (field_validator). Поэтому
+    # путь в argv — это уже резолвенный из профиля, без модификации
+    # builder'ом.
+    profile = SandboxProfile(ro_binds=("/usr",))
     argv = build_bwrap_argv(profile, "true", workspace_root=_WS, env={})
-    resolved = str(Path("/lib").resolve(strict=False))
-    idx = argv.index(resolved)
+    expected = profile.ro_binds[0]
+    idx = argv.index(expected)
     assert argv[idx - 1] == "--ro-bind-try"
 
 

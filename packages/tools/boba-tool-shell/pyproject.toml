@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-tool-shell"
 version = "0.1.0"
-description = "Sandboxed bash tool for the Boba agent (bubblewrap-based)."
+description = "Bash tools for the Boba agent: sandboxed (bubblewrap) and local."
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-patterns",

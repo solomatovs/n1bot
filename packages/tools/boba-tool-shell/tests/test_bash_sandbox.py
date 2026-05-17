@@ -1,4 +1,4 @@
-"""Integration-тесты BashTool: реально запускают bwrap.
+"""Integration-тесты BashSandboxTool: реально запускают bwrap.
 
 Skipif если bubblewrap не установлен. Установка на Debian-like:
     sudo apt install bubblewrap
@@ -14,7 +14,11 @@ import pytest
 
 from boba.plugin.prompt import PromptOverlay
 from boba.tool.shell._profile import SandboxProfile
-from boba.tool.shell.bash import BashArgs, BashTool, BashToolConfig
+from boba.tool.shell.bash_sandbox import (
+    BashSandboxArgs,
+    BashSandboxTool,
+    BashSandboxToolConfig,
+)
 from boba.tools.domain import JsonResult, ToolContext, ToolSourceId
 
 pytestmark = [
@@ -31,23 +35,27 @@ _SID = ToolSourceId("plugin.shell")
 def _make_tool(
     workspace_root: Path,
     profile: SandboxProfile | None = None,
-) -> BashTool:
-    profiles = {"default": profile or SandboxProfile()}
-    return BashTool(
-        BashToolConfig(prompt=PromptOverlay()),
-        MagicMock(),
-        _SID,
+) -> BashSandboxTool:
+    cfg = BashSandboxToolConfig(
+        prompt=PromptOverlay(),
         workspace_root=str(workspace_root),
-        profiles=profiles,
+        profiles={"default": profile or SandboxProfile()},
         default_profile="default",
     )
+    return BashSandboxTool(cfg, MagicMock(), _SID)
 
 
-def _exec(tool: BashTool, **kwargs) -> dict:
-    args = BashArgs(**kwargs)
+def _exec(tool: BashSandboxTool, **kwargs) -> dict:
+    args = BashSandboxArgs(**kwargs)
     result = tool.execute(ToolContext(), args)
     assert isinstance(result, JsonResult)
     return result.payload
+
+
+def test_tool_name_is_bash(tmp_path: Path):
+    # LLM видит одно имя `bash` независимо от варианта (sandbox|local).
+    tool = _make_tool(tmp_path)
+    assert tool.name() == "bash"
 
 
 def test_echo_inside_sandbox(tmp_path: Path):
@@ -121,3 +129,5 @@ def test_pid_namespace_isolation(tmp_path: Path):
     # внутри PID-ns хост-процессы не видны; только bash + ps.
     count = int(payload["stdout"].strip())
     assert count < 10
+
+
