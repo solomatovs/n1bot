@@ -7,7 +7,6 @@ import platform
 import subprocess
 from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
-from pathlib import Path
 
 from boba.agent.prompt import (
     PromptBlock,
@@ -15,22 +14,47 @@ from boba.agent.prompt import (
     PromptProvider,
     PromptState,
 )
-from boba.workspace.contract import HistoryWorkspaceShell
+from boba.workspace.contract import PromptWorkspaceShell
 
 
-class FilePromptProvider(PromptProvider):
-    """Читает блок промпта из файла; отсутствующий файл → default_prompt."""
+class StaticPromptProvider(PromptProvider):
+    """Фиксированный текст, зашитый в конфигурацию DI."""
 
     def __init__(
         self,
         prompt_id: PromptId,
         priority: int,
-        path: Path,
+        content: str,
+    ) -> None:
+        self._id = prompt_id
+        self._priority = priority
+        self._content = content
+
+    def id(self) -> PromptId:
+        return self._id
+
+    def priority(self) -> int:
+        return self._priority
+
+    def blocks(self, state: PromptState) -> Iterable[PromptBlock]:
+        yield PromptBlock(name=self._id, content=self._content)
+
+
+class FilePromptProvider(PromptProvider):
+    """Читает блок промпта из файла workspace; отсутствующий файл → default_prompt."""
+
+    def __init__(
+        self,
+        prompt_id: PromptId,
+        priority: int,
+        workspace: PromptWorkspaceShell,
+        rel_path: str,
         default_prompt: str = "",
     ) -> None:
         self._id = prompt_id
         self._priority = priority
-        self._path = path
+        self._workspace = workspace
+        self._rel_path = rel_path
         self._default_prompt = default_prompt
 
     def id(self) -> PromptId:
@@ -40,8 +64,9 @@ class FilePromptProvider(PromptProvider):
         return self._priority
 
     def blocks(self, state: PromptState) -> Iterable[PromptBlock]:
-        if self._path.exists():
-            content = self._path.read_text(encoding="utf-8")
+        if self._workspace.exists(self._rel_path):
+            with self._workspace.read_text(self._rel_path) as f:
+                content = f.read()
         else:
             content = self._default_prompt
         yield PromptBlock(name=self._id, content=content)
@@ -111,58 +136,33 @@ class GitPromptProvider(PromptProvider):
 
 
 class DirectoryPromptProvider(PromptProvider):
-    """Читает все файлы из директории; каждый файл — отдельный `PromptBlock`.
+    """Читает файлы верхнего уровня workspace; каждый файл — отдельный `PromptBlock`.
+
+    Корень поиска — корень самого `workspace`. Если нужна другая директория,
+    создай отдельный `PromptWorkspaceShell`, указывающий на неё.
 
     После 1:1-маппинга `PromptBlock` → `SystemMessage` в SystemPromptReducer
     несколько файлов разворачиваются в несколько system-сообщений, что
-    1-в-1 ложится на Anthropic multi-block system. Несуществующая
-    директория молча даёт ноль блоков (как `FilePromptProvider` с default).
+    1-в-1 ложится на Anthropic multi-block system.
+
+    Порядок блоков — лексикографический по относительному пути; чтобы
+    задать порядок, именуй файлы префиксом (`01-persona.md`, `02-rules.md`).
+
+    Фильтр `extensions` оставляет только файлы с этими расширениями.
     """
 
     def __init__(
         self,
         prompt_id: PromptId,
         priority: int,
-        directory: Path,
+        workspace: PromptWorkspaceShell,
         *,
-        glob: str = "*",
-    ) -> None:
-        self._id = prompt_id
-        self._priority = priority
-        self._directory = directory
-        self._glob = glob
-
-    def id(self) -> PromptId:
-        return self._id
-
-    def priority(self) -> int:
-        return self._priority
-
-    def blocks(self, state: PromptState) -> Iterator[PromptBlock]:
-        if not self._directory.is_dir():
-            return
-        for path in sorted(self._directory.glob(self._glob)):
-            if not path.is_file():
-                continue
-            content = path.read_text(encoding="utf-8").strip()
-            if content:
-                yield PromptBlock(name=str(path), content=content)
-
-
-class WorkspaceSystemPromptProvider(PromptProvider):
-    """Собирает system-промпт из файлов директории workspace'а."""
-
-    def __init__(
-        self,
-        prompt_id: PromptId,
-        priority: int,
-        workspace: HistoryWorkspaceShell,
-        directory: str,
+        extensions: tuple[str, ...] = (".md", ".txt"),
     ) -> None:
         self._id = prompt_id
         self._priority = priority
         self._workspace = workspace
-        self._directory = directory
+        self._extensions = extensions
 
     def id(self) -> PromptId:
         return self._id
@@ -171,8 +171,10 @@ class WorkspaceSystemPromptProvider(PromptProvider):
         return self._priority
 
     def blocks(self, state: PromptState) -> Iterator[PromptBlock]:
-        for path in sorted(self._workspace.ls(self._directory)):
-            with self._workspace.read_text(path) as f:
-                content = f.read().strip()
+        for rel_path in sorted(self._workspace.ls()):
+            if self._extensions and not rel_path.endswith(self._extensions):
+                continue
+            with self._workspace.read_text(rel_path) as f:
+                content = f.read().rstrip("\n")
             if content:
-                yield PromptBlock(name=path, content=content)
+                yield PromptBlock(name=rel_path, content=content)

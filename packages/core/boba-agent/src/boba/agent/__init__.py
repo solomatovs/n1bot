@@ -97,9 +97,8 @@ from boba.agent.prompt import (
     PromptProviderError,
     PromptResult,
     PromptState,
-    StaticPromptProvider,
 )
-from boba.agent.turn.builder import TurnBuilder, TurnReducerFactory, TurnSpecBuilder
+from boba.agent.turn.builder import TurnBuilder, TurnReducerFactory
 from boba.agent.turn.reducers import (
     HistoryReducer,
     ModelReducer,
@@ -109,7 +108,7 @@ from boba.agent.turn.reducers import (
     ToolsDefinitionReducer,
     TurnReducer,
 )
-from boba.agent.turn.spec import TurnSpec, TurnState
+from boba.agent.turn.spec import LLMRequestFactory, TurnState
 
 __all__ = [
     "AdvisoryEvent",
@@ -156,6 +155,7 @@ __all__ = [
     "LLMFeedback",
     "LLMGenerationFailedError",
     "LLMPort",
+    "LLMRequestFactory",
     "MaxIterationsExceededError",
     "MaxIterationsReached",
     "ModelReducer",
@@ -179,7 +179,6 @@ __all__ = [
     "ResponseStarted",
     "SamplingReducer",
     "Severity",
-    "StaticPromptProvider",
     "StopOnAnyFailure",
     "StopOnFinished",
     "StreamKind",
@@ -203,8 +202,6 @@ __all__ = [
     "TurnBuilder",
     "TurnReducer",
     "TurnReducerFactory",
-    "TurnSpec",
-    "TurnSpecBuilder",
     "TurnState",
     "UnknownAgentEvent",
     "UserQueryReceived",

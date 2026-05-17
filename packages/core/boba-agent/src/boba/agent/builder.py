@@ -26,7 +26,7 @@ from boba.agent.middleware import (
     ToolExecutionMiddleware,
     UserQueryRecorderMiddleware,
 )
-from boba.agent.turn.builder import TurnBuilder, TurnSpecBuilder
+from boba.agent.turn.builder import TurnBuilder
 from boba.llm.builder import LLM
 from boba.patterns import (
     StreamSource,
@@ -219,13 +219,12 @@ class AgentBuilder:
             self._turn.with_history_view(HistoryDialogView(history_service))
         if not self._turn.has_tool_catalog():
             self._turn.with_tool_catalog(registry.catalog())
-        turn_spec_builder = self._turn.build_spec_builder()
 
         chain = self._build_chain(
             llm=self._llm,
             history_writer=history_service,
             tool_executor=registry.executor(),
-            turn_spec_builder=turn_spec_builder,
+            turn=self._turn,
             event_stamper_factory=self._event_stamper_factory,
             builder_config=self._builder_config,
         )
@@ -321,7 +320,7 @@ class AgentBuilder:
         llm: LLM,
         history_writer: HistoryWriter,
         tool_executor: ToolExecutor,
-        turn_spec_builder: TurnSpecBuilder,
+        turn: TurnBuilder,
         event_stamper_factory: EventStamperFactory,
         builder_config: AgentBuilderConfig,
     ) -> StreamSource[AgentContext, AgentEvent]:
@@ -348,4 +347,4 @@ class AgentBuilder:
         # UserQueryRecorder — самый внутренний wrapper над LLMPort: эмитит
         # UserQueryReceived один раз на request_id раньше любых LLM-событий.
         builder.use(UserQueryRecorderMiddleware)
-        return builder.terminal(LLMPort(llm, turn_spec_builder))
+        return builder.terminal(LLMPort(llm, turn))

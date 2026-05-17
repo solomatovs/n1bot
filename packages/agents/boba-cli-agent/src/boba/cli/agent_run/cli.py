@@ -11,7 +11,6 @@ from boba.agent import (
     InMemoryHistoryService,
     TurnBuilder,
 )
-from boba.agent.prompt_providers import PromptLoader
 from boba.agent.turn.reducers import (
     RememberUserQueryReducer,
 )
@@ -63,7 +62,6 @@ def _run() -> int:
     prompt_workspace = FsPromptWorkspaceRegistry(
         root=Path(app.prompts.dir),
     ).get_or_create(PromptWorkspaceId("prompts"))
-    prompt_loader = PromptLoader(prompt_workspace)
 
     project_workspace = FsProjectWorkspaceRegistry(
         base_dir=Path(app.workspaces.base_dir),
@@ -92,9 +90,8 @@ def _run() -> int:
 
     history_service = InMemoryHistoryService()
     turn = (
-        TurnBuilder()
-        .with_model(run_cfg.model)
-        .with_prompts(prompt_loader.prompt_providers())
+        TurnBuilder(run_cfg.model)
+        .system_prompt_from_directory(prompt_workspace)
         .use_reducer(RememberUserQueryReducer())
     )
     sampling = run_cfg.to_sampling_params()

@@ -85,28 +85,6 @@ class PromptProvider(PrioritySource[PromptId, PromptState]):
         return state
 
 
-class StaticPromptProvider(PromptProvider):
-    """Фиксированный текст, зашитый в конфигурацию DI."""
-
-    def __init__(
-        self,
-        prompt_id: PromptId,
-        priority: int,
-        content: str,
-    ) -> None:
-        self._id = prompt_id
-        self._priority = priority
-        self._content = content
-
-    def id(self) -> PromptId:
-        return self._id
-
-    def priority(self) -> int:
-        return self._priority
-
-    def blocks(self, state: PromptState) -> Iterable[PromptBlock]:
-        yield PromptBlock(name=self._id, content=self._content)
-
 
 class PromptFactory(FoldFactory[PromptId, PromptState, PromptResult]):
     """Собирает PromptResult из зарегистрированных провайдеров."""
