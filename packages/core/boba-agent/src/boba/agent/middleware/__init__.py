@@ -18,6 +18,7 @@ from boba.agent.middleware.tools import (
     RepeatedToolCallGuardMiddleware,
     ToolExecutionMiddleware,
 )
+from boba.agent.middleware.user_query import UserQueryRecorderMiddleware
 
 __all__ = [
     "AgentErrorRouter",
@@ -32,4 +33,5 @@ __all__ = [
     "StopOnAnyFailure",
     "StopOnFinished",
     "ToolExecutionMiddleware",
+    "UserQueryRecorderMiddleware",
 ]

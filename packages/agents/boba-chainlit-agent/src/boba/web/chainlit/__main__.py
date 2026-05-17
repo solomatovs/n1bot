@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import cast
 
 from boba.agent.builder import AgentBuilder
-from boba.agent.messages import InMemoryMessageService, MessageService
+from boba.agent.history import HistoryService, InMemoryHistoryService
 from boba.agent.workspace_fs import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
@@ -79,7 +79,7 @@ def _make_chat_session_builder(
     make_builder: Callable[[], AgentBuilder],
     project_workspaces: ProjectWorkspaceRegistry,
     history_workspaces: HistoryWorkspaceRegistry,
-    make_message_service: Callable[[WorkspaceId], MessageService],
+    make_history_service: Callable[[WorkspaceId], HistoryService],
 ) -> Callable[[WorkspaceId], ChatSession]:
     """Замыкание над deps; возвращает фабрику ChatSession по workspace_id."""
 
@@ -89,7 +89,7 @@ def _make_chat_session_builder(
             make_builder(),
             project_workspaces,
             history_workspaces,
-            make_message_service(workspace_id),
+            make_history_service(workspace_id),
         )
 
     return build
@@ -132,10 +132,10 @@ def main() -> int:
         subdir=app.workspaces.system_subdir,
     )
 
-    def make_message_service(_workspace_id: WorkspaceId) -> MessageService:
+    def make_history_service(_workspace_id: WorkspaceId) -> HistoryService:
         # InMemory: контекст агента живёт в RAM ChatSession. Chainlit-уровень
         # отдельно персистит steps.jsonl через data_layer для UI/sidebar.
-        return InMemoryMessageService()
+        return InMemoryHistoryService()
 
     user_repository = StaticUserRepository(
         {chainlit_cfg.auth_username: chainlit_cfg.auth_password},
@@ -148,7 +148,7 @@ def main() -> int:
             builder_factory,
             project_workspaces,
             history_workspaces,
-            make_message_service,
+            make_history_service,
         ),
         capacity=chainlit_cfg.chat_session_pool_capacity,
     )

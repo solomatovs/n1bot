@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from boba.agent.agent import Agent, AgentContext
 from boba.agent.events import AgentEvent
 from boba.agent.history import HistoryService, HistoryWriter, InMemoryHistoryService
-from boba.agent.messages import InMemoryMessageService, MessageService, MessageWriter
+from boba.agent.history_view import HistoryDialogView
 from boba.agent.middleware import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
@@ -24,6 +24,7 @@ from boba.agent.middleware import (
     StopOnAnyFailure,
     StopOnFinished,
     ToolExecutionMiddleware,
+    UserQueryRecorderMiddleware,
 )
 from boba.agent.turn.builder import TurnBuilder, TurnSpecBuilder
 from boba.llm.builder import LLM
@@ -67,7 +68,7 @@ class AgentBuilderConfig(BaseModel):
 class AgentBuilder:
     """Fluent-фасад: собирает Agent с дефолтной middleware-цепью.
 
-    Owns: LLM, message store, history journal, tool registry (sources +
+    Owns: LLM, history journal, tool registry (sources +
     lifecycle), bootstrap-конфиг middleware-цепочки, event-stamper.
     Turn-side (model/prompts/sampling/reducers) живёт в `TurnBuilder` и
     подаётся одним методом `.use_turn(turn_builder)`.
@@ -83,7 +84,6 @@ class AgentBuilder:
         self._discover_groups: list[str] = []
         self._extensions: dict[type, object] = {}
         self._resolved_tool_registry: ToolRegistry | None = None
-        self._message_service: MessageService = InMemoryMessageService()
         self._history_service: HistoryService = InMemoryHistoryService()
         self._turn: TurnBuilder | None = None
         self._event_stamper_factory: EventStamperFactory = EventStamperMiddleware
@@ -167,11 +167,6 @@ class AgentBuilder:
         """Extension-style: `fn(self, *args, **kwargs) -> Self`."""
         return fn(self, *args, **kwargs)
 
-    def with_messages(self, service: MessageService) -> Self:
-        """Хранилище истории; дефолт — InMemoryMessageService()."""
-        self._message_service = service
-        return self
-
     def with_history(self, service: HistoryService) -> Self:
         """Журнал AgentEvent; дефолт — InMemoryHistoryService()."""
         self._history_service = service
@@ -180,10 +175,10 @@ class AgentBuilder:
     def use_turn(self, turn: TurnBuilder) -> Self:
         """Описание следующего хода. Обязательно до `.build()`.
 
-        Auto-wiring: если `turn` не задал `messages`/`tool_catalog` явно,
-        AgentBuilder при `.build()` прокидывает свои `MessageService` и
-        `ToolRegistry.catalog()`. Явно заданное в `turn` уважается —
-        удобная override-точка для тестов.
+        Auto-wiring: если `turn` не задал `history_view`/`tool_catalog` явно,
+        AgentBuilder при `.build()` подкладывает `HistoryDialogView` поверх
+        собственного `HistoryService` и `ToolRegistry.catalog()`. Явно
+        заданное в `turn` уважается — удобная override-точка для тестов.
         """
         self._turn = turn
         return self
@@ -218,18 +213,16 @@ class AgentBuilder:
             raise ValueError(msg)
 
         registry = self._resolve_tool_registry()
-        message_service = self._message_service
         history_service = self._history_service
 
-        if not self._turn.has_messages():
-            self._turn.with_messages(message_service)
+        if not self._turn.has_history_view():
+            self._turn.with_history_view(HistoryDialogView(history_service))
         if not self._turn.has_tool_catalog():
             self._turn.with_tool_catalog(registry.catalog())
         turn_spec_builder = self._turn.build_spec_builder()
 
         chain = self._build_chain(
             llm=self._llm,
-            message_writer=message_service,
             history_writer=history_service,
             tool_executor=registry.executor(),
             turn_spec_builder=turn_spec_builder,
@@ -326,14 +319,13 @@ class AgentBuilder:
     def _build_chain(
         *,
         llm: LLM,
-        message_writer: MessageWriter,
         history_writer: HistoryWriter,
         tool_executor: ToolExecutor,
         turn_spec_builder: TurnSpecBuilder,
         event_stamper_factory: EventStamperFactory,
         builder_config: AgentBuilderConfig,
     ) -> StreamSource[AgentContext, AgentEvent]:
-        error_router = AgentErrorRouter(message_writer)
+        error_router = AgentErrorRouter()
         builder = StreamSourceChainBuilder[AgentContext, AgentEvent]()
         # HistoryRecorder самым внешним — журналит уже стампленные события.
         builder.use(
@@ -350,11 +342,10 @@ class AgentBuilder:
             ),
         )
         builder.use(
-            lambda inner: ToolExecutionMiddleware(
-                inner,
-                tool_executor,
-                message_writer,
-            ),
+            lambda inner: ToolExecutionMiddleware(inner, tool_executor),
         )
         builder.use(AssistantSnapshotMiddleware)
+        # UserQueryRecorder — самый внутренний wrapper над LLMPort: эмитит
+        # UserQueryReceived один раз на request_id раньше любых LLM-событий.
+        builder.use(UserQueryRecorderMiddleware)
         return builder.terminal(LLMPort(llm, turn_spec_builder))

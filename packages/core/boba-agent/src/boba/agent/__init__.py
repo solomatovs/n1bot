@@ -66,16 +66,7 @@ from boba.agent.history import (
     InMemoryHistoryService,
     JsonLinesHistoryService,
 )
-from boba.agent.messages import (
-    InMemoryMessageService,
-    JsonLinesMessageService,
-    MessageReader,
-    MessageService,
-    MessageStoreError,
-    MessageStoreReadError,
-    MessageStoreWriteError,
-    MessageWriter,
-)
+from boba.agent.history_view import HistoryDialogView
 from boba.agent.middleware import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
@@ -87,6 +78,7 @@ from boba.agent.middleware import (
     StopOnAnyFailure,
     StopOnFinished,
     ToolExecutionMiddleware,
+    UserQueryRecorderMiddleware,
 )
 from boba.agent.models import (
     LLMCritique,
@@ -145,6 +137,7 @@ __all__ = [
     "GenerationFailed",
     "GenerationRetried",
     "GenerationStarted",
+    "HistoryDialogView",
     "HistoryReader",
     "HistoryRecorderMiddleware",
     "HistoryReducer",
@@ -154,25 +147,17 @@ __all__ = [
     "HistoryStoreWriteError",
     "HistoryWriter",
     "InMemoryHistoryService",
-    "InMemoryMessageService",
     "InvalidToolCallReceived",
     "IsContentDelta",
     "IterationCounterMiddleware",
     "IterationStarted",
     "JsonLinesHistoryService",
-    "JsonLinesMessageService",
     "LLMCritique",
     "LLMFeedback",
     "LLMGenerationFailedError",
     "LLMPort",
     "MaxIterationsExceededError",
     "MaxIterationsReached",
-    "MessageReader",
-    "MessageService",
-    "MessageStoreError",
-    "MessageStoreReadError",
-    "MessageStoreWriteError",
-    "MessageWriter",
     "ModelReducer",
     "PermanentPromptError",
     "PersistenceFailed",
@@ -223,4 +208,5 @@ __all__ = [
     "TurnState",
     "UnknownAgentEvent",
     "UserQueryReceived",
+    "UserQueryRecorderMiddleware",
 ]

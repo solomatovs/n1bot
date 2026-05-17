@@ -5,11 +5,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, ClassVar, TypeAlias
 
-from boba.agent.messages import MessageReader
+from boba.agent.history_view import HistoryDialogView
 from boba.agent.prompt import PromptFactory, PromptProvider
 from boba.agent.turn.spec import TurnState
 from boba.llm.models import (
-    AssistantMessage,
     LLMToolDefinition,
     SamplingParams,
     SystemMessage,
@@ -98,18 +97,19 @@ class UserQueryReducer(PrioritySource[str, TurnState]):
 
 
 class HistoryReducer(PrioritySource[str, TurnState]):
-    """Копирует диалог из MessageReader в state.
+    """Копирует диалог из `HistoryDialogView` в `state.dialog_messages`.
 
-    SystemMessage из истории отбрасывается — system-блоки строятся каждый
-    turn через `SystemPromptReducer`, а не персистятся вместе с диалогом.
-    Store остаётся общим (может хранить любые `Message` для replay/snapshot),
-    но в `LLMRequest.messages` попадают только `DialogMessage`-ы.
+    Источник — журнал `HistoryService`, отфильтрованный view'хой до тех
+    `AgentEvent`, которые относятся к диалогу пользователь ↔ чатбот:
+    `UserMessage`, `AssistantMessage` (склеенный из снапшотов одной
+    генерации) и `ToolResultMessage`. SystemMessage не сохраняется в
+    истории — system-блоки собираются каждый turn `SystemPromptReducer`.
     """
 
     ID: ClassVar[str] = "history"
 
-    def __init__(self, message_reader: MessageReader, priority: int = 30) -> None:
-        self._message_reader = message_reader
+    def __init__(self, history_view: HistoryDialogView, priority: int = 30) -> None:
+        self._history_view = history_view
         self._priority = priority
 
     def id(self) -> str:
@@ -119,11 +119,7 @@ class HistoryReducer(PrioritySource[str, TurnState]):
         return self._priority
 
     def apply(self, state: TurnState) -> TurnState:
-        state.dialog_messages = tuple(
-            m
-            for m in self._message_reader.message_iter()
-            if isinstance(m, (UserMessage, AssistantMessage, ToolResultMessage))
-        )
+        state.dialog_messages = tuple(self._history_view.dialog_message_iter())
         return state
 
 
@@ -188,7 +184,7 @@ class RememberUserQueryReducer(PrioritySource[str, TurnState]):
     ToolResultMessage, т.е. LLM сейчас будет решать «звать ещё tool
     или отвечать». Цель — удержать фокус LLM на текущей задаче, чтобы
     она не уходила в сторону после длинной серии tool-вызовов.
-    Reducer не мутирует сам MessageReader — добавление происходит
+    Reducer не мутирует сам журнал — добавление происходит
     в state каждую итерацию, без persistence.
     """
 

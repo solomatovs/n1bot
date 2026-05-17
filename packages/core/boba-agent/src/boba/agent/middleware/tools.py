@@ -13,9 +13,7 @@ from boba.agent.events import (
     ToolExecutionStarted,
     ToolResultReady,
 )
-from boba.agent.messages import MessageWriter
 from boba.agent.models import ToolCallFailure, ToolCallResult
-from boba.llm.tool_result_render import tool_result_to_message
 from boba.patterns import StreamSource
 from boba.tools.domain import (
     ErrorResult,
@@ -34,11 +32,9 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
         self,
         inner: StreamSource[AgentContext, AgentEvent],
         tool_executor: ToolExecutor,
-        writer: MessageWriter,
     ) -> None:
         self._inner = inner
         self._tool_executor = tool_executor
-        self._writer = writer
 
     def name(self) -> str:
         return "ToolExecution"
@@ -78,9 +74,6 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
             )
         except ToolExecutionError as e:
             error = ErrorResult(message=e.message, error_kind=type(e).__name__)
-            self._writer.add(
-                tool_result_to_message(tool_call_id=call.id, result=error),
-            )
             yield ToolExecutionFailed(
                 request_id=tc.request_id,
                 call=call,
@@ -91,9 +84,6 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
             )
             return
 
-        self._writer.add(
-            tool_result_to_message(tool_call_id=call.id, result=result),
-        )
         yield ToolResultReady(
             request_id=tc.request_id,
             call=call,
@@ -108,11 +98,9 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
         self,
         inner: StreamSource[AgentContext, AgentEvent],
         max_consecutive: int,
-        writer: MessageWriter,
     ) -> None:
         self._inner = inner
         self._max_consecutive = max_consecutive
-        self._writer = writer
         self._last: tuple[str, str] | None = None
         self._count = 0
 
@@ -151,9 +139,6 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
                 error = ErrorResult(
                     message=message,
                     error_kind="RepeatedToolCallError",
-                )
-                self._writer.add(
-                    tool_result_to_message(tool_call_id=call.id, result=error),
                 )
                 yield FeedbackToLLMAdded(
                     request_id=event.request_id,

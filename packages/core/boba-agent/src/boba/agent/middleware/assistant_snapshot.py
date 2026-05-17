@@ -10,8 +10,9 @@ tool_calls) per-request_id в `AssistantMessageChunk`, и на `GenerationDone`
     ToolCallStreamStarted + ToolCallArgumentDelta*
                             → ToolCallComplete | InvalidToolCallReceived
 
-Persistence (запись Message'ей в `MessageService`) и журналирование событий
-(`HistoryRecorderMiddleware`) — вне зоны ответственности этого middleware.
+Журналирование событий (`HistoryRecorderMiddleware`) и реконструкция
+`AssistantMessage` из снапшотов (`HistoryDialogView`) — вне зоны
+ответственности этого middleware.
 """
 
 from __future__ import annotations

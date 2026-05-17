@@ -8,7 +8,7 @@ from pathlib import Path
 from boba.agent import (
     Agent,
     AgentBuilder,
-    InMemoryMessageService,
+    InMemoryHistoryService,
     TurnBuilder,
 )
 from boba.agent.prompt_providers import PromptLoader
@@ -90,12 +90,11 @@ def _run() -> int:
         .build()
     )
 
-    message_service = InMemoryMessageService()
+    history_service = InMemoryHistoryService()
     turn = (
         TurnBuilder()
         .with_model(run_cfg.model)
         .with_prompts(prompt_loader.prompt_providers())
-        .with_user_query()
         .use_reducer(RememberUserQueryReducer())
     )
     sampling = run_cfg.to_sampling_params()
@@ -104,7 +103,7 @@ def _run() -> int:
 
     agent = (
         builder.with_llm(llm)
-        .with_messages(message_service)
+        .with_history(history_service)
         .with_extension(ProjectWorkspaceShell, project_workspace)
         .use_tools_plugins_discovered()
         .use_turn(turn)
@@ -116,7 +115,7 @@ def _run() -> int:
         _run_turn(agent, sink, run_cfg.query)
         return 0
 
-    return _run_repl(agent, sink, run_cfg, message_service)
+    return _run_repl(agent, sink, run_cfg, history_service)
 
 
 def _run_turn(
@@ -124,7 +123,7 @@ def _run_turn(
     sink: ConsoleSink,
     query: str,
 ) -> None:
-    """Один ход: общий message_service хранит историю между запросами."""
+    """Один ход: общий history_service хранит журнал событий между запросами."""
     for event in agent.stream(query):
         sink.handle(event)
 
@@ -133,7 +132,7 @@ def _run_repl(
     agent: Agent,
     sink: ConsoleSink,
     run_cfg: AgentRunConfig,
-    message_service: InMemoryMessageService,
+    history_service: InMemoryHistoryService,
 ) -> int:
     """Интерактивный цикл: читает запрос → прогоняет агента → повторяет."""
     banner = (
@@ -160,7 +159,7 @@ def _run_repl(
         if query in _REPL_EXIT_COMMANDS:
             return 0
         if query == "/clear":
-            message_service.clear()
+            history_service.clear()
             sys.stderr.write("(история очищена)\n")
             continue
 
