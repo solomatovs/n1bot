@@ -52,17 +52,6 @@ class ChainlitConfig(BobaFlatSettings):
         ),
         min_length=1,
     )
-    auth_username: str = Field(
-        default="admin",
-        description=(
-            "Имя единственного пользователя "
-            "(multi-user будет в отдельной [auth.users])."
-        ),
-    )
-    auth_password: str = Field(
-        default="admin",
-        description="Пароль единственного пользователя.",
-    )
     headless: bool = Field(
         default=True,
         description="true — не пытаться открыть браузер при старте.",
