@@ -46,27 +46,23 @@ model = ""
 # presence_penalty = 0.0
 
 # --- boba-chainlit-agent ---
-# model обязателен (используется для всех запросов из UI).
+# model и auth_secret обязательны.
 [chainlit]
 model = ""
 host = "0.0.0.0"
-port = "8501"
+port = 8502
 root_path = ""
-# auth_secret обычно из env (openssl rand -hex 32); если пусто,
-# bootstrap сгенерирует и сохранит в local/.auth_secret (0600).
-# auth_secret = ""
+# Секрет для подписи user-session cookie. Обязателен.
+# Сгенерировать: `openssl rand -hex 32`. В проде задавать через env
+# BOBA_CHAINLIT__AUTH_SECRET, чтобы не коммитить в TOML.
+auth_secret = ""
 # Единственный user — для multi-user будет отдельная [auth.users].
 auth_username = "admin"
 auth_password = "admin"
-headless = "true"
+headless = true
 app_root = "./local/chainlit"
 # Сколько ChatSession держать в RAM одновременно (LRU eviction).
 chat_session_pool_capacity = 32
-# ui_name = ""
-# enable_telemetry = false
-# upload_max_size_mb = 25
-# upload_max_files = 5
-# upload_accept = ["text/*", "application/pdf"]
 
 # --- tool-плагины (entry_points discovery; enable=false => плагин пропускается) ---
 # env-конвенции:
