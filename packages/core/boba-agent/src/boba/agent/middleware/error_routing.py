@@ -5,14 +5,30 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 
 from boba.agent.agent import AgentContext
-from boba.agent.errors import AgentLLMFeedbackError, RoutableError, UserFeedbackError
-from boba.agent.events import AgentEvent, FeedbackToLLMAdded
+from boba.agent.errors import (
+    AgentLLMFeedbackError,
+    RoutableError,
+    UserFeedbackError,
+    extract_error_context,
+)
+from boba.agent.events import (
+    AdvisoryEvent,
+    AgentEvent,
+    FeedbackToLLMAdded,
+    TerminalEvent,
+)
 from boba.llm.models import RequestId
 from boba.patterns import StreamSource
 
 
 class AgentErrorRouter:
-    """Маршрутизирует RoutableError по маркерам."""
+    """Маршрутизирует RoutableError по маркерам.
+
+    Любое выпущенное `UserFeedbackError` авто-обогащается контекстом из
+    самого исключения: HTTP-статус и цепочка `__cause__`/`__context__`
+    подкладываются в событие, чтобы автору ошибки не нужно было
+    плумбить эти подробности вручную через свой `to_user_feedback`.
+    """
 
     def route(
         self,
@@ -27,7 +43,31 @@ class AgentErrorRouter:
             )
 
         if isinstance(err, UserFeedbackError):
-            yield err.to_user_feedback(request_id)
+            yield _enrich_with_error_context(err.to_user_feedback(request_id), err)
+
+
+def _enrich_with_error_context(
+    event: AgentEvent,
+    err: BaseException,
+) -> AgentEvent:
+    """Прокинуть status_code + cause_chain из exc в event (если событие — ошибка).
+
+    Перегоняем через `model_validate`, чтобы переиграть `_derive` подкласса
+    и пересобрать `body` через `compose_error_body` с подмешанными
+    деталями. На не-error событиях — no-op.
+    """
+    if not isinstance(event, (TerminalEvent, AdvisoryEvent)):
+        return event
+    status_code, cause_chain = extract_error_context(err)
+    if status_code is None and not cause_chain:
+        return event
+    return type(event).model_validate(
+        {
+            **event.model_dump(),
+            "status_code": status_code,
+            "cause_chain": list(cause_chain),
+        },
+    )
 
 
 class AgentErrorRouterMiddleware(StreamSource[AgentContext, AgentEvent]):

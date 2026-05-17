@@ -156,6 +156,9 @@ class LLMPort(StreamSource[AgentContext, AgentEvent]):
             for event in self._llm.stream(LLMContext(request=request)):
                 yield from LLMToAgentConverter().convert(event)
         except LLMError as e:
+            # Подробности (status_code + цепочка причин) автоматически
+            # обогащаются в `AgentErrorRouter` из `__cause__` — здесь
+            # достаточно бросить ошибку «from e».
             raise LLMGenerationFailedError(
                 str(e),
                 error_kind=type(e).__name__,

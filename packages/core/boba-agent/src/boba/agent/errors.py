@@ -13,9 +13,55 @@ from boba.agent.events import (
 from boba.agent.models import LLMFeedback
 from boba.llm.models import RequestId
 
+__all__ = [
+    "AgentLLMFeedbackError",
+    "LLMFeedbackError",
+    "LLMGenerationFailedError",
+    "MaxIterationsExceededError",
+    "RoutableError",
+    "TerminalError",
+    "UserFeedbackError",
+    "extract_error_context",
+]
+
 TReqId = TypeVar("TReqId")
 TUserEvent = TypeVar("TUserEvent")
 TFeedback = TypeVar("TFeedback")
+
+
+def extract_error_context(
+    exc: BaseException,
+) -> tuple[int | None, tuple[str, ...]]:
+    """Свести исключение к (status_code, cause_chain) для error-событий.
+
+    `status_code` — первый int-атрибут с этим именем во всей цепочке (сам exc
+    + его `__cause__`/`__context__`).
+    `cause_chain` — список «Type: message» начиная с `exc.__cause__` (или
+    `__context__`) и глубже. Сам `exc` в цепочку не попадает — его текст
+    уже несёт обёртка `RoutableError` (str(self)). Сообщения, дословно
+    повторяющие уже виденное, пропускаются — типична ситуация, когда
+    `RoutableError(str(e)) from e` создаёт ровно ту же строку, что у `e`.
+    """
+    items: list[str] = []
+    sc: int | None = _status_code_of(exc)
+    seen_ids: set[int] = {id(exc)}
+    seen_messages: set[str] = {str(exc)}
+    current: BaseException | None = exc.__cause__ or exc.__context__
+    while current is not None and id(current) not in seen_ids:
+        seen_ids.add(id(current))
+        message = str(current)
+        if message not in seen_messages:
+            items.append(f"{type(current).__name__}: {message}")
+            seen_messages.add(message)
+        if sc is None:
+            sc = _status_code_of(current)
+        current = current.__cause__ or current.__context__
+    return sc, tuple(items)
+
+
+def _status_code_of(exc: BaseException) -> int | None:
+    sc = getattr(exc, "status_code", None)
+    return sc if isinstance(sc, int) else None
 
 
 class RoutableError(Exception):
