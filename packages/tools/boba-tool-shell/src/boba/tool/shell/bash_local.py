@@ -46,11 +46,8 @@ _TOOL_NAME = ToolName("bash")
 
 
 class BashArgs(BaseModel):
-    """Выполнить shell-команду через `bash -c` напрямую на хосте.
-
-    В отличие от `bash_sandbox`, изоляции нет: процесс наследует
-    доступ к ФС и сети от агента. Лимиты — только timeout и размер
-    собираемого вывода (из конфига плагина).
+    """
+    Выполнить shell-команду через `bash -c`
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
