@@ -1,18 +1,18 @@
-"""Bootstrap-канал между `__main__.main()` и Chainlit-callback'ами в `app.py`.
+"""Application-state канал между `composition.main()` и Chainlit-callback'ами.
 
-Chainlit владеет жизненным циклом: импортирует `app.py` уже после `main()`,
-зовёт callback'и сам. Прямого способа прокинуть deps нет — нужен явный
-shared-state канал. Этот модуль и есть канал; AppState содержит только то,
-что нужно Chainlit-слою (use cases, авторизация, data_layer, ownership).
+Chainlit владеет жизненным циклом: импортирует callback-модуль уже после
+`main()`, зовёт callback'и сам. Прямого способа прокинуть deps нет —
+нужен явный shared-state канал. Этот модуль и есть канал.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from boba.web.chainlit.auth import AuthenticateUser
-from boba.web.chainlit.data_layer import BobaDataLayer, WorkspaceOwnership
-from boba.web.chainlit.usecase import OpenChatSession
+from boba.chainlit.agent.auth import AuthenticateUser
+from boba.chainlit.agent.data_layer import BobaDataLayer
+from boba.chainlit.agent.sessions import OpenChatSession
+from boba.chainlit.agent.storage import ThreadRepository
 
 __all__ = ["AppState", "app_state", "set_app_state"]
 
@@ -24,7 +24,7 @@ class AppState:
     authenticate_user: AuthenticateUser
     open_chat_session: OpenChatSession
     data_layer: BobaDataLayer
-    workspace_ownership: WorkspaceOwnership
+    thread_repository: ThreadRepository
 
 
 @dataclass
@@ -41,21 +41,21 @@ def set_app_state(
     authenticate_user: AuthenticateUser,
     open_chat_session: OpenChatSession,
     data_layer: BobaDataLayer,
-    workspace_ownership: WorkspaceOwnership,
+    thread_repository: ThreadRepository,
 ) -> None:
     """Зафиксировать deps до `run_chainlit(...)`."""
     _holder.state = AppState(
         authenticate_user=authenticate_user,
         open_chat_session=open_chat_session,
         data_layer=data_layer,
-        workspace_ownership=workspace_ownership,
+        thread_repository=thread_repository,
     )
 
 
 def app_state() -> AppState:
-    """Прочитать deps из `app.py`-callback'ов."""
+    """Прочитать deps из chainlit-callback'ов."""
     if _holder.state is None:
-        msg = "bootstrap.set_app_state(...) не вызван до run_chainlit(...)"
+        msg = "state.set_app_state(...) не вызван до run_chainlit(...)"
         raise RuntimeError(msg)
 
     return _holder.state

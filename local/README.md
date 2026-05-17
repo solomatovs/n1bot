@@ -35,7 +35,51 @@ env `BOBA_<P1>_..._<PN>`, TOML `[<P1>...<P_{N-1}>] <PN>`.
 cp local/.env.example local/.env
 cp local/config.toml.example local/config.toml
 cp -r local/prompts.example local/prompts
+# Установить пакеты монорепо в venv:
+pip install -r dev-install.txt
 ```
+
+В `local/.env` подставьте `BOBA_AGENT__API_KEY` и (опционально)
+`BOBA_AGENT__BASE_URL`. В `local/config.toml` укажите `model` для
+`[cli]` и `[chainlit]`.
+
+## Запуск
+
+`.env` сам не подгружается (это просто список `KEY=VALUE`), его надо
+экспортировать в окружение перед запуском:
+
+```bash
+set -a && . local/.env && set +a
+```
+
+или через `direnv` (`echo 'dotenv local/.env' >> .envrc && direnv allow`).
+
+### boba-cli-agent — REPL/single-shot
+
+```bash
+# REPL (если в [cli].query пусто):
+.venv/bin/boba-cli-agent
+
+# Single-shot (через argv, перекрывает [cli].query):
+.venv/bin/boba-cli-agent --model qwen3.5-35b --query "hello"
+```
+
+CLI argv > env (`BOBA_CLI__…`) > TOML `[cli]`. REPL-команды: `/exit`,
+`/quit`, `:q`, `/clear` (сбросить in-memory историю).
+
+### boba-chainlit-agent — UI
+
+```bash
+.venv/bin/boba-chainlit-agent
+```
+
+Откроется на `http://<host>:<port>` из `[chainlit]` (по умолчанию
+`0.0.0.0:8501`). Логин — `[chainlit].auth_username` / `auth_password`
+(дефолт `admin/admin`). Каждый chainlit-thread = отдельный workspace
+(history.jsonl per chat).
+
+Конкретные пути к окружению (auth secret, app-state, workspaces) идут
+из `local/config.toml` → `[chainlit].app_root` и `[agent].base_dir`.
 
 ## Mapping local-paths
 

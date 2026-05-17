@@ -5,7 +5,7 @@
             "name": "Agent: run query",
             "type": "debugpy",
             "request": "launch",
-            "module": "boba.cli.agent_run",
+            "module": "boba.cli.agent",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
@@ -18,7 +18,7 @@
             "name": "Chainlit: Boba UI",
             "type": "debugpy",
             "request": "launch",
-            "module": "boba.web.chainlit",
+            "module": "boba.chainlit.agent",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
@@ -54,7 +54,8 @@
             "args": [
                 "-v",
                 "-rs",
-                "-m", "integration",
+                "-m",
+                "integration",
                 "${file}"
             ],
             "envFile": "${workspaceFolder}/local/.env"

@@ -6,6 +6,8 @@ import asyncio
 
 from boba.agent.events import AgentEvent
 
+__all__ = ["ChainlitBridgeSink"]
+
 
 class ChainlitBridgeSink:
     """Sink, перекладывающий AgentEvent в async-очередь из рабочего потока."""
@@ -17,9 +19,6 @@ class ChainlitBridgeSink:
     ) -> None:
         self._loop = loop
         self._queue = queue
-
-    def name(self) -> str:
-        return "ChainlitBridge"
 
     def handle(self, event: AgentEvent) -> None:
         self._loop.call_soon_threadsafe(self._queue.put_nowait, event)

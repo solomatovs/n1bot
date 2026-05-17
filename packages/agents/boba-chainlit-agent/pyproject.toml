@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.scripts]
-boba-chainlit-agent = "boba.web.chainlit.__main__:main"
+boba-chainlit-agent = "boba.chainlit.agent.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

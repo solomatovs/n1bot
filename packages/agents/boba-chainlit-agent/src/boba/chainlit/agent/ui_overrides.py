@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import ClassVar
 
+from boba.chainlit.agent.config import ChainlitConfig
 from boba.patterns import (
     AllMatchesDispatcher,
     Converter,
     Specification,
 )
-from boba.web.chainlit.config import ChainlitConfig
 
 __all__ = ["UIOverrideTomlConverter"]
 
@@ -66,9 +66,7 @@ class UIOverrideTomlConverter(Converter[ChainlitConfig, str]):
     """ChainlitConfig → TOML-строка для .chainlit/config.toml; пусто = не писать."""
 
     # chainlit падает, если [meta] generated_by <= "0.3.0" лексикографически.
-    _META: ClassVar[str] = "\n".join(
-        ["[meta]", 'generated_by = "boba-chainlit"', ""]
-    )
+    _META: ClassVar[str] = "\n".join(["[meta]", 'generated_by = "boba-chainlit"', ""])
 
     _ROUTES: ClassVar[
         list[tuple[Specification[ChainlitConfig], Converter[ChainlitConfig, str]]]

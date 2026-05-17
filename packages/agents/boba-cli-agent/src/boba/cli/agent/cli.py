@@ -19,9 +19,9 @@ from boba.agent.workspace_fs import (
     FsProjectWorkspaceRegistry,
     FsPromptWorkspaceRegistry,
 )
-from boba.cli.agent_run.config import AgentRunConfig
-from boba.cli.agent_run.console_sink import ConsoleSink
-from boba.cli.agent_run.infra import (
+from boba.cli.agent.config import AgentRunConfig
+from boba.cli.agent.console_sink import ConsoleSink
+from boba.cli.agent.infra import (
     AppConfig,
     configure_logging,
 )

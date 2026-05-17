@@ -1,13 +1,23 @@
 # Шаблон local/config.toml. Скопируйте в local/config.toml и подставьте значения.
 #
 # Секции:
-#   [agent.core/workspaces/openai/prompts/runtime] — AppConfig (cli + chainlit).
+#   [agent]       — AppConfig (cli + chainlit) — плоская: поля распределяются
+#                   валидатором по sub-моделям core/workspaces/openai.
 #   [cli]         — AgentRunConfig (boba-cli-agent).
 #   [chainlit]    — ChainlitConfig (boba-chainlit-agent).
 #   [tool.<name>] — конфиги tool-плагинов (discovery + enable-флаг).
+#
+# Источник: $BOBA_CONFIG_PATH (по умолчанию ./local/config.toml).
+# Env override:
+#   BOBA_AGENT__BASE_URL=...      → openai.base_url
+#   BOBA_AGENT__LOG_LEVEL=DEBUG   → core.log_level
+#   BOBA_CLI__MODEL=...           → AgentRunConfig.model
+#   BOBA_CHAINLIT__MODEL=...      → ChainlitConfig.model
 
-# --- AppConfig: плоский [agent] (поля собираются в core/workspaces/openai/prompts/runtime) ---
+# --- AppConfig: плоский [agent] (поля собираются в core/workspaces/openai) -----
 [agent]
+# system_prompt_dir — обязательное поле верхнего уровня.
+system_prompt_dir = "./local/prompts"
 # core
 log_level = "INFO"
 ssl_verify = false
@@ -20,17 +30,13 @@ tmp_subdir = "tmp"
 # openai (base_url/api_key обычно перекрываются env'ом)
 base_url = "http://localhost:4000"
 api_key = "ollama"
-# prompts
-dir = "./local/prompts"
-# runtime
-max_iterations = 20
-max_consecutive_tool_calls = 3
 
 # --- boba-cli-agent ---
-# model обязателен; query пусто → REPL, query задан → single-shot
+# model обязателен; query пусто → REPL, query задан → single-shot.
+# Эти же поля можно перебить через CLI argv: boba-cli-agent --model X --query "..."
 [cli]
 model = ""
-query = ""
+# query = ""
 # temperature = 0.7
 # top_p = 0.9
 # max_tokens = 4096
@@ -40,15 +46,22 @@ query = ""
 # presence_penalty = 0.0
 
 # --- boba-chainlit-agent ---
-# model обязателен (используется для всех запросов из UI)
+# model обязателен (используется для всех запросов из UI).
 [chainlit]
 model = ""
 host = "0.0.0.0"
 port = "8501"
 root_path = ""
-# auth_secret обычно из env (openssl rand -hex 32)
+# auth_secret обычно из env (openssl rand -hex 32); если пусто,
+# bootstrap сгенерирует и сохранит в local/.auth_secret (0600).
+# auth_secret = ""
+# Единственный user — для multi-user будет отдельная [auth.users].
+auth_username = "admin"
+auth_password = "admin"
 headless = "true"
 app_root = "./local/chainlit"
+# Сколько ChatSession держать в RAM одновременно (LRU eviction).
+chat_session_pool_capacity = 32
 # ui_name = ""
 # enable_telemetry = false
 # upload_max_size_mb = 25
@@ -96,6 +109,14 @@ enable = false
 # description = ""
 # fields = {}
 
+# shell-tool (выполнение команд в project workspace)
+[tool.shell]
+enable = false
+# timeout_sec = 30.0
+# [tool.shell.bash]
+# description = ""
+# fields = {}
+
 # confluence_search + confluence_page_outline + confluence_page_section
 # (общий connection-блок на корне плагина; base_url/auth_token обычно из env)
 [tool.confluence]
@@ -116,3 +137,12 @@ body_format = "view"         # view | export_view | storage
 # [tool.confluence.confluence_page_section]
 # description = ""
 # fields = {}
+
+# Postgres FTS — kb-поиск по предзаполненной БД (читает [tool.postgres_fts] + env)
+[tool.postgres_fts]
+enable = false
+# dsn = "postgresql://user:pass@localhost:5432/db"
+# schema = "public"
+# table = "documents"
+# snippet_chars = 300
+# max_top_k = 20
