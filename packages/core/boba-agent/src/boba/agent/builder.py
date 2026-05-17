@@ -11,7 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from boba.agent.agent import Agent, AgentContext
 from boba.agent.events import AgentEvent
 from boba.agent.history import HistoryService, HistoryWriter, InMemoryHistoryService
-from boba.agent.history_view import HistoryDialogView
 from boba.agent.middleware import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
@@ -27,6 +26,7 @@ from boba.agent.middleware import (
     UserQueryRecorderMiddleware,
 )
 from boba.agent.turn.builder import TurnBuilder
+from boba.agent.turn.history_view import HistoryDialogView
 from boba.llm.builder import LLM
 from boba.patterns import (
     StreamSource,
