@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import httpx
 
 import openai
@@ -18,28 +16,49 @@ from boba.llm.errors import (
     LLMTimeoutError,
     LLMUnknownError,
 )
-from boba.patterns import (
-    ExceptionSpecification,
-    FirstMatchConverter,
-    IsInstance,
-    Specification,
-)
+from boba.patterns import Converter
+
+_HTTP_TOO_MANY_REQUESTS = 429
+_HTTP_SERVER_ERROR_MIN = 500
+_HTTP_SERVER_ERROR_MAX = 600
 
 
-class IsContextLengthError(ExceptionSpecification):
-    """Матчит openai.BadRequestError с маркером context_length_exceeded."""
+class OpenAIErrorConverter(Converter[Exception, LLMError]):
+    """Сырые openai/httpx исключения → доменные LLMError.
 
-    def check(self, candidate: Exception) -> bool:
-        if not isinstance(candidate, openai.BadRequestError):
-            return False
-        body = getattr(candidate, "body", None)
+    Порядок case-веток отражает иерархию openai/httpx:
+      * subclass-ветка идёт раньше своего parent'а (APITimeoutError до
+        APIConnectionError; RateLimitError до APIStatusError);
+      * специфический guard на `status_code` идёт раньше «голого» APIStatusError;
+      * httpx.TimeoutException до httpx.RequestError; httpx.RequestError до
+        httpx.HTTPError; httpx.HTTPError до fallback.
+    """
+
+    @staticmethod
+    def _describe_openai(exc: openai.APIError) -> str:
+        """
+        `str(exc) + ' (METHOD URL)'`. Инвариант: `openai.APIError` всегда несёт `.request`
+        """
+        return f"{exc} ({exc.request.method} {exc.request.url})"
+
+    @staticmethod
+    def _describe_httpx_request(exc: httpx.RequestError) -> str:
+        """
+        `str(exc) + ' (METHOD URL)'`. Инвариант: `httpx.RequestError` всегда несёт .request
+        """
+        return f"{exc} ({exc.request.method} {exc.request.url})"
+
+    @staticmethod
+    def _is_context_length(exc: openai.BadRequestError) -> bool:
+        """openai.BadRequestError со специфическим маркером context_length_exceeded."""
+        body = exc.body
         if isinstance(body, dict):
             if body.get("code") == "context_length_exceeded":
                 return True
             err = body.get("error")
             if isinstance(err, dict) and err.get("code") == "context_length_exceeded":
                 return True
-        msg = str(candidate).lower()
+        msg = str(exc).lower()
         return (
             "context length" in msg
             or "maximum context" in msg
@@ -47,106 +66,59 @@ class IsContextLengthError(ExceptionSpecification):
             or "contextwindowexceeded" in msg
         )
 
-
-class IsServerError(ExceptionSpecification):
-    """Матчит openai.APIStatusError с 5xx."""
-
-    _HTTP_SERVER_ERROR_MIN = 500
-    _HTTP_SERVER_ERROR_MAX = 600
-
-    def check(self, candidate: Exception) -> bool:
-        if not isinstance(candidate, openai.APIStatusError):
-            return False
-
-        sc = candidate.status_code
-        return (
-            sc is not None
-            and self._HTTP_SERVER_ERROR_MIN <= sc < self._HTTP_SERVER_ERROR_MAX
-        )
-
-
-class IsStatusCode(ExceptionSpecification):
-    """Матчит openai.APIStatusError с конкретным HTTP-статусом."""
-
-    def __init__(self, code: int) -> None:
-        self._code = code
-
-    def check(self, candidate: Exception) -> bool:
-        return (
-            isinstance(candidate, openai.APIStatusError)
-            and candidate.status_code == self._code
-        )
-
-
-class OpenAIErrorConverter(FirstMatchConverter[Exception, LLMError]):
-    """Сырые openai/httpx исключения → доменные LLMError."""
-
-    _HTTP_TOO_MANY_REQUESTS = 429
-
-    def __init__(self) -> None:
-        super().__init__(
-            routes=self.default_rules(),
-            fallback_route=lambda e: LLMUnknownError(f"{type(e).__name__}: {e}"),
-        )
-
-    @staticmethod
-    def status_code(exc: Exception) -> int:
-        """HTTP-статус из APIStatusError."""
-        if not isinstance(exc, openai.APIStatusError):  # pragma: no cover — инвариант
-            raise LLMUnknownError(
-                "OpenAIErrorConverter.status_code invariant broken: "
-                f"expected APIStatusError, got {type(exc).__name__}"
-            )
-        return exc.status_code
-
-    @classmethod
-    def default_rules(
-        cls,
-    ) -> list[tuple[Specification[Exception], Callable[[Exception], LLMError]]]:
-        sc = cls.status_code
-        return [
-            (
-                IsInstance(openai.APITimeoutError),
-                lambda e: LLMTimeoutError(str(e)),
-            ),
-            (
-                IsInstance(openai.APIConnectionError),
-                lambda e: LLMConnectionError(str(e)),
-            ),
-            (
-                IsInstance(openai.RateLimitError),
-                lambda e: LLMRateLimitError(str(e), status_code=sc(e)),
-            ),
-            (
-                IsInstance(openai.AuthenticationError, openai.PermissionDeniedError),
-                lambda e: LLMAuthError(str(e), status_code=sc(e)),
-            ),
-            (
-                IsInstance(openai.BadRequestError).and_(IsContextLengthError()),
-                lambda e: LLMContextLengthError(str(e), status_code=sc(e)),
-            ),
-            (
-                IsInstance(openai.BadRequestError, openai.NotFoundError),
-                lambda e: LLMInvalidRequestError(str(e), status_code=sc(e)),
-            ),
-            (
-                IsInstance(openai.InternalServerError).or_(IsServerError()),
-                lambda e: LLMProviderInternalError(str(e), status_code=sc(e)),
-            ),
-            (
-                IsStatusCode(cls._HTTP_TOO_MANY_REQUESTS),
-                lambda e: LLMRateLimitError(str(e), status_code=sc(e)),
-            ),
-            (
-                IsInstance(openai.APIStatusError),
-                lambda e: LLMInvalidRequestError(str(e), status_code=sc(e)),
-            ),
-            (
-                IsInstance(httpx.TimeoutException),
-                lambda e: LLMTimeoutError(str(e)),
-            ),
-            (
-                IsInstance(httpx.HTTPError),
-                lambda e: LLMConnectionError(str(e)),
-            ),
-        ]
+    def convert(self, value: Exception) -> LLMError:  # noqa: C901, PLR0911, PLR0912
+        match value:
+            case openai.APITimeoutError() as e:
+                return LLMTimeoutError(self._describe_openai(e))
+            case openai.APIConnectionError() as e:
+                return LLMConnectionError(self._describe_openai(e))
+            case openai.RateLimitError() as e:
+                return LLMRateLimitError(
+                    self._describe_openai(e), status_code=e.status_code
+                )
+            case openai.AuthenticationError() | openai.PermissionDeniedError() as e:
+                return LLMAuthError(self._describe_openai(e), status_code=e.status_code)
+            case openai.BadRequestError() as e if self._is_context_length(e):
+                return LLMContextLengthError(
+                    self._describe_openai(e),
+                    status_code=e.status_code,
+                )
+            case openai.BadRequestError() | openai.NotFoundError() as e:
+                return LLMInvalidRequestError(
+                    self._describe_openai(e),
+                    status_code=e.status_code,
+                )
+            case openai.InternalServerError() as e:
+                return LLMProviderInternalError(
+                    self._describe_openai(e),
+                    status_code=e.status_code,
+                )
+            case openai.APIStatusError() as e if (
+                _HTTP_SERVER_ERROR_MIN <= e.status_code < _HTTP_SERVER_ERROR_MAX
+            ):
+                return LLMProviderInternalError(
+                    self._describe_openai(e),
+                    status_code=e.status_code,
+                )
+            case openai.APIStatusError() as e if (
+                e.status_code == _HTTP_TOO_MANY_REQUESTS
+            ):
+                return LLMRateLimitError(
+                    self._describe_openai(e), status_code=e.status_code
+                )
+            case openai.APIStatusError() as e:
+                return LLMInvalidRequestError(
+                    self._describe_openai(e),
+                    status_code=e.status_code,
+                )
+            # httpx.TimeoutException ⊂ httpx.RequestError — обе несут `.request`.
+            case httpx.TimeoutException() as e:
+                return LLMTimeoutError(self._describe_httpx_request(e))
+            case httpx.RequestError() as e:
+                return LLMConnectionError(self._describe_httpx_request(e))
+            # httpx.HTTPError без `.request` (InvalidURL, CookieConflict) —
+            # дотягиваться до URL некуда, оставляем голый текст.
+            case httpx.HTTPError() as e:
+                return LLMConnectionError(str(e))
+            case _:
+                return LLMUnknownError(f"{type(value).__name__}: {value}")

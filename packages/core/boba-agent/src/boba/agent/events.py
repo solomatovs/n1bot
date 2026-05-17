@@ -319,6 +319,9 @@ class AdvisoryEvent(AgentEventBase):
     """
     Нефатальное уведомление (но некая ошибка)
     агентский цикл бдет продолжен
+
+    `status_code` и `cause_chain` авто-проставляются `AgentErrorRouter`'ом
+    из исключения; концы цепочки видны в `body` через `compose_error_body`.
     """
 
     category: Literal[EventCategory.ADVISORY] = EventCategory.ADVISORY
@@ -327,12 +330,17 @@ class AdvisoryEvent(AgentEventBase):
     severity: Severity = Severity.WARN
     details: Mapping[str, str] = Field(default_factory=dict)
     body: str | None = None
+    status_code: int | None = None
+    cause_chain: tuple[str, ...] = ()
 
 
 class TerminalEvent(AgentEventBase):
     """
     Фатальное уведомление
     агентский цикл будет остановлен
+
+    `status_code` и `cause_chain` авто-проставляются `AgentErrorRouter`'ом
+    из исключения; концы цепочки видны в `body` через `compose_error_body`.
     """
 
     category: Literal[EventCategory.TERMINAL] = EventCategory.TERMINAL
@@ -342,6 +350,38 @@ class TerminalEvent(AgentEventBase):
     details: Mapping[str, str] = Field(default_factory=dict)
     body: str | None = None
     error_kind: str = ""
+    status_code: int | None = None
+    cause_chain: tuple[str, ...] = ()
+
+
+def _error_details(error_kind: str, status_code: int | None) -> dict[str, str]:
+    """Стандартный `details` для error-событий: kind + status_code если есть."""
+    out: dict[str, str] = {"kind": error_kind}
+    if status_code is not None:
+        out["status_code"] = str(status_code)
+    return out
+
+
+def compose_error_body(
+    primary: str,
+    status_code: int | None,
+    cause_chain: tuple[str, ...],
+) -> str:
+    """Стандартный body для error-событий: основное сообщение + status + цепочка.
+
+    Любое event-конкретное `_derive` собирает свой `primary` (message,
+    args+error, raw_args+error), а добавление `status` и `Caused by:` —
+    единое для всех ошибок.
+    """
+    lines: list[str] = [primary] if primary else []
+    if status_code is not None:
+        lines.append(f"status: {status_code}")
+    if cause_chain:
+        if lines:
+            lines.append("")
+        lines.append("Caused by:")
+        lines.extend(f"  {item}" for item in cause_chain)
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------- #
@@ -713,8 +753,15 @@ class InvalidToolCallReceived(AdvisoryEvent):
     @model_validator(mode="after")
     def _derive(self) -> Self:
         self.headline = f"invalid tool call: {self.invalid.name}"
-        self.details = {"id": self.invalid.id, "name": self.invalid.name}
-        self.body = f"raw_args: {self.invalid.raw_args}\nerror: {self.invalid.error}"
+        details: dict[str, str] = {
+            "id": self.invalid.id,
+            "name": self.invalid.name,
+        }
+        if self.status_code is not None:
+            details["status_code"] = str(self.status_code)
+        self.details = details
+        primary = f"raw_args: {self.invalid.raw_args}\nerror: {self.invalid.error}"
+        self.body = compose_error_body(primary, self.status_code, self.cause_chain)
         return self
 
 
@@ -728,12 +775,16 @@ class ToolExecutionFailed(AdvisoryEvent):
     @model_validator(mode="after")
     def _derive(self) -> Self:
         self.headline = f"tool failed: {self.call.name}"
-        self.details = {
+        details: dict[str, str] = {
             "id": self.call.id,
             "name": self.call.name,
             "kind": self.failure.error_kind,
         }
-        self.body = f"args: {self.call.args_json()}\nerror: {self.failure.message}"
+        if self.status_code is not None:
+            details["status_code"] = str(self.status_code)
+        self.details = details
+        primary = f"args: {self.call.args_json()}\nerror: {self.failure.message}"
+        self.body = compose_error_body(primary, self.status_code, self.cause_chain)
         return self
 
 
@@ -751,8 +802,10 @@ class GenerationFailed(TerminalEvent):
     @model_validator(mode="after")
     def _derive(self) -> Self:
         self.headline = f"generation failed: {self.error_kind}"
-        self.details = {"kind": self.error_kind}
-        self.body = self.message
+        self.details = _error_details(self.error_kind, self.status_code)
+        self.body = compose_error_body(
+            self.message, self.status_code, self.cause_chain,
+        )
         return self
 
 
@@ -766,11 +819,12 @@ class PromptFailed(TerminalEvent):
     @model_validator(mode="after")
     def _derive(self) -> Self:
         self.headline = f"prompt failed: {self.provider or 'unknown'}"
-        self.details = {
-            "kind": self.error_kind,
-            "provider": self.provider or "",
-        }
-        self.body = self.message
+        details = _error_details(self.error_kind, self.status_code)
+        details["provider"] = self.provider or ""
+        self.details = details
+        self.body = compose_error_body(
+            self.message, self.status_code, self.cause_chain,
+        )
         return self
 
 
@@ -785,12 +839,13 @@ class MaxIterationsReached(TerminalEvent):
     @model_validator(mode="after")
     def _derive(self) -> Self:
         self.headline = f"max iterations: {self.iteration_count}/{self.limit}"
-        self.details = {
-            "kind": self.error_kind,
-            "limit": str(self.limit),
-            "iteration": str(self.iteration_count),
-        }
-        self.body = self.message
+        details = _error_details(self.error_kind, self.status_code)
+        details["limit"] = str(self.limit)
+        details["iteration"] = str(self.iteration_count)
+        self.details = details
+        self.body = compose_error_body(
+            self.message, self.status_code, self.cause_chain,
+        )
         return self
 
 
@@ -803,8 +858,10 @@ class PersistenceFailed(TerminalEvent):
     @model_validator(mode="after")
     def _derive(self) -> Self:
         self.headline = f"persistence failed: {self.error_kind}"
-        self.details = {"kind": self.error_kind}
-        self.body = self.message
+        self.details = _error_details(self.error_kind, self.status_code)
+        self.body = compose_error_body(
+            self.message, self.status_code, self.cause_chain,
+        )
         return self
 
 
