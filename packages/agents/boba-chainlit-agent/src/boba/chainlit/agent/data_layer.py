@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar, cast
 
 import chainlit as cl
+from chainlit.context import ChainlitContextException
 from chainlit.data.base import BaseDataLayer
 from chainlit.element import Element, ElementDict
 from chainlit.step import StepDict
@@ -275,11 +276,12 @@ class BobaDataLayer(BaseDataLayer):
                     return WorkspaceId(raw)
                 except ValueError:
                     pass
-        # cl.user_session завязан на request-контекст: вне него обращение
-        # кидает LookupError/RuntimeError.
+        # cl.user_session завязан на websocket-контекст; REST-эндпоинты
+        # (rename, share, …) зовут data_layer вне него — chainlit бросает
+        # ChainlitContextException, иногда LookupError/RuntimeError.
         try:
             ws = cl.user_session.get(self._WORKSPACE_META_KEY)
-        except (LookupError, RuntimeError):
+        except (ChainlitContextException, LookupError, RuntimeError):
             return None
         if isinstance(ws, str):
             return WorkspaceId(ws)
@@ -289,7 +291,7 @@ class BobaDataLayer(BaseDataLayer):
     def _current_user_identifier() -> str | None:
         try:
             session_user = cl.context.session.user
-        except (LookupError, RuntimeError, AttributeError):
+        except (ChainlitContextException, LookupError, RuntimeError, AttributeError):
             return None
         return session_user.identifier if session_user else None
 
