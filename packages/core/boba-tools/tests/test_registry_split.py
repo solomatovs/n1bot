@@ -7,6 +7,7 @@ import pytest
 from boba.tools.domain import (
     TextResult,
     ToolContext,
+    ToolId,
     ToolName,
     ToolResult,
     ToolSourceId,
@@ -55,6 +56,7 @@ def test_catalog_and_executor_share_state():
     assert expected in catalog_ids
     # executor найдёт тот же id (не упадёт с unknown_tool):
     from boba.tools.domain import ToolCall
+
     result = registry.executor().execute(
         ToolContext(),
         ToolCall(tool_id=expected, arguments={"text": "hi"}),
@@ -68,10 +70,11 @@ def test_executor_unknown_tool_lists_available():
     executor = registry.executor()
 
     from boba.tools.domain import ToolCall, ToolExecutionError
+
     with pytest.raises(ToolExecutionError) as ei:
         executor.execute(
             ToolContext(),
-            ToolCall(tool_id="src/missing", arguments={}),
+            ToolCall(tool_id=ToolId("src/missing"), arguments={}),
         )
     assert "not found" in str(ei.value)
     assert "src/echo" in str(ei.value)

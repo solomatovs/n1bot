@@ -33,6 +33,7 @@ from boba.llm.models import (
     ToolResultMessage,
     UserMessage,
 )
+from boba.llm.tool_result_render import tool_result_to_message
 from boba.tools.domain import ErrorResult, JsonResult, TextResult
 
 _MID = MessageId(UUID("00000000-0000-0000-0000-000000000aaa"))
@@ -44,10 +45,10 @@ _ITC = InvalidToolCall(
 
 def _all_messages() -> list[Any]:
     return [
-        SystemMessage.from_text_with_id("be helpful", id=_MID),
-        UserMessage.from_text_with_id("hi", id=_MID),
+        SystemMessage.from_text("be helpful").set_id(_MID),
+        UserMessage.from_text("hi").set_id(_MID),
         # AssistantMessage только с текстом
-        AssistantMessage.from_text_with_id("hello", id=_MID),
+        AssistantMessage.from_text("hello").set_id(_MID),
         # AssistantMessage с разнородными блоками: text + tool_call + invalid_tool_call
         AssistantMessage(
             id=_MID,
@@ -57,22 +58,19 @@ def _all_messages() -> list[Any]:
                 InvalidToolCallBlock(invalid=_ITC),
             ),
         ),
-        # ToolResultMessage: from_result_with_id рендерит ToolResult в blocks
-        ToolResultMessage.from_result_with_id(
-            id=_MID,
+        # ToolResultMessage: from_result рендерит ToolResult, set_id фиксирует id
+        tool_result_to_message(
             tool_call_id="c1",
             result=TextResult(text="ok", metadata={"src": "x"}),
-        ),
-        ToolResultMessage.from_result_with_id(
-            id=_MID,
+        ).set_id(_MID),
+        tool_result_to_message(
             tool_call_id="c1",
             result=JsonResult(payload={"a": [1, 2]}, metadata={}),
-        ),
-        ToolResultMessage.from_result_with_id(
-            id=_MID,
+        ).set_id(_MID),
+        tool_result_to_message(
             tool_call_id="c1",
             result=ErrorResult(message="boom", error_kind="X", metadata={}),
-        ),
+        ).set_id(_MID),
     ]
 
 
@@ -94,7 +92,7 @@ def test_message_default_id_factory() -> None:
 
 def test_assistant_text_only_serializes_as_single_text_block() -> None:
     """Только текст → один TextBlock в `blocks`, без tool_call/invalid блоков."""
-    a = AssistantMessage.from_text_with_id("x", id=_MID)
+    a = AssistantMessage.from_text("x").set_id(_MID)
     line = MessageAdapter.dump_json(a).decode("utf-8")
     assert '"type":"text"' in line
     assert '"content":"x"' in line
@@ -166,7 +164,7 @@ def test_jsonlines_message_e2e(history_workspace: FsHistoryWorkspaceShell) -> No
         SystemMessage.from_text("be helpful"),
         UserMessage.from_text("hi"),
         AssistantMessage.from_text("hello"),
-        ToolResultMessage.from_result(
+        tool_result_to_message(
             tool_call_id="c1",
             result=TextResult(text="ok", metadata={}),
         ),

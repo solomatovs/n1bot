@@ -104,7 +104,7 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
                 request_id=ctx.request.request_id,
                 model=ctx.request.model,
                 messages_count=len(ctx.request.system_messages)
-                + len(ctx.request.messages),
+                + len(ctx.request.dialog_messages),
                 has_tools=ctx.request.has_tools(),
                 monotonic_ns=time.monotonic_ns(),
             )

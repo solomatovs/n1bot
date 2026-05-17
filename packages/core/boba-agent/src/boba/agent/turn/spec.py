@@ -13,7 +13,7 @@ from boba.llm.errors import (
 from boba.llm.models import (
     DialogMessage,
     LLMRequest,
-    LLMToolRequest,
+    LLMToolDefinition,
     RequestId,
     SamplingParams,
     SystemMessage,
@@ -26,7 +26,7 @@ class TurnState:
     model: str | None = None
     system_messages: tuple[SystemMessage, ...] = ()
     dialog_messages: tuple[DialogMessage, ...] = ()
-    tools: LLMToolRequest = field(default_factory=LLMToolRequest)
+    tools: LLMToolDefinition = field(default_factory=LLMToolDefinition)
     sampling: SamplingParams = field(default_factory=SamplingParams)
     response_format: Mapping[str, Any] | None = None
 
@@ -51,8 +51,8 @@ class TurnSpec(
             request_id=self._request_id,
             model=state.model,
             system_messages=state.system_messages,
-            messages=state.dialog_messages,
-            tools=state.tools,
+            dialog_messages=state.dialog_messages,
+            tools_definition=state.tools,
             sampling=state.sampling,
             response_format=state.response_format,
         )

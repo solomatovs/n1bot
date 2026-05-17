@@ -10,7 +10,8 @@ from boba.agent.errors import AgentLLMFeedbackError, RoutableError, UserFeedback
 from boba.agent.events import AgentEvent, FeedbackToLLMAdded
 from boba.agent.messages import MessageWriter
 from boba.agent.models import LLMCritique, LLMFeedback, ToolCallRejection
-from boba.llm.models import RequestId, ToolResultMessage, UserMessage
+from boba.llm.models import RequestId, UserMessage
+from boba.llm.tool_result_render import tool_result_to_message
 from boba.patterns import StreamSource
 from boba.tools.domain import ErrorResult
 
@@ -44,7 +45,7 @@ class AgentErrorRouter:
                 self._writer.add(UserMessage.from_text(c))
             case ToolCallRejection(tool_call_id=tid, content=c):
                 self._writer.add(
-                    ToolResultMessage.from_result(
+                    tool_result_to_message(
                         tool_call_id=tid,
                         result=ErrorResult(
                             message=c,

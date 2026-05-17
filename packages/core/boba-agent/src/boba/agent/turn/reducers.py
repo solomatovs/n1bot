@@ -10,7 +10,7 @@ from boba.agent.prompt import PromptFactory, PromptProvider
 from boba.agent.turn.spec import TurnState
 from boba.llm.models import (
     AssistantMessage,
-    LLMToolRequest,
+    LLMToolDefinition,
     SamplingParams,
     SystemMessage,
     ToolResultMessage,
@@ -149,7 +149,7 @@ class ToolsReducer(PrioritySource[str, TurnState]):
         return self._priority
 
     def apply(self, state: TurnState) -> TurnState:
-        state.tools = LLMToolRequest(
+        state.tools = LLMToolDefinition(
             tools=tuple(self._catalog.definitions()),
             parallel_tool_calls=self._parallel,
         )

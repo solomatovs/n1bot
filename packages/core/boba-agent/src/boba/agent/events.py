@@ -171,6 +171,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -191,7 +192,7 @@ from boba.agent.models import (
 )
 from boba.llm.events import FinishReason
 from boba.llm.models import InvalidToolCall, RequestId, ToolCall
-from boba.tools.domain import DefaultTextVisitor
+from boba.tools.domain import ErrorResult, JsonResult, TextResult
 
 # --------------------------------------------------------------------- #
 # Enums
@@ -664,8 +665,6 @@ class ToolCallComplete(ContentSnapshotEvent):
 class ToolResultReady(ContentSnapshotEvent):
     """Результат выполнения tool — вызов и результат."""
 
-    _TEXT_VISITOR: ClassVar[DefaultTextVisitor] = DefaultTextVisitor()
-
     type: Literal["ToolResultReady"] = "ToolResultReady"
     stream_kind: Literal[StreamKind.TOOL_INVOCATION] = StreamKind.TOOL_INVOCATION
     part: Literal[ToolPart.RESULT] = ToolPart.RESULT
@@ -676,7 +675,13 @@ class ToolResultReady(ContentSnapshotEvent):
     def _derive(self) -> Self:
         self.stream_id = self.call.id
         self.headline = self.call.name
-        self.body = self.result.result.accept(self._TEXT_VISITOR)
+        match self.result.result:
+            case TextResult(text=t):
+                self.body = t
+            case JsonResult(payload=p):
+                self.body = json.dumps(p, ensure_ascii=False)
+            case ErrorResult(message=m):
+                self.body = m
         return self
 
 
