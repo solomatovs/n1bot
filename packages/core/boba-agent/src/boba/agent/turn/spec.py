@@ -31,7 +31,7 @@ class TurnState:
     response_format: Mapping[str, Any] | None = None
 
 
-class TurnSpec(
+class LLMRequestFactory(
     FoldFactory[str, TurnState, LLMRequest],
 ):
     def __init__(self, request_id: RequestId) -> None:

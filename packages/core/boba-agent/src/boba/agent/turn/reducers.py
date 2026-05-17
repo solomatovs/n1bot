@@ -22,7 +22,7 @@ TurnReducer: TypeAlias = PrioritySource[str, TurnState]
 """Alias для reducer'а TurnSpec — стадия сборки TurnState."""
 
 
-class ModelReducer(PrioritySource[str, TurnState]):
+class ModelReducer(TurnReducer):
     """Берёт модель из ctx.agent.agent_request.model."""
 
     ID: ClassVar[str] = "model"
@@ -42,7 +42,7 @@ class ModelReducer(PrioritySource[str, TurnState]):
         return state
 
 
-class SystemPromptReducer(PrioritySource[str, TurnState]):
+class SystemPromptReducer(TurnReducer):
     """Собирает system-сообщения через PromptFactory каждую итерацию."""
 
     ID: ClassVar[str] = "system"
@@ -71,7 +71,7 @@ class SystemPromptReducer(PrioritySource[str, TurnState]):
         return state
 
 
-class UserQueryReducer(PrioritySource[str, TurnState]):
+class UserQueryReducer(TurnReducer):
     """
     Добавляет `UserMessage.from_text(ctx.query)` к dialog_messages
     """
@@ -96,7 +96,7 @@ class UserQueryReducer(PrioritySource[str, TurnState]):
         return state
 
 
-class HistoryReducer(PrioritySource[str, TurnState]):
+class HistoryReducer(TurnReducer):
     """Копирует диалог из `HistoryDialogView` в `state.dialog_messages`.
 
     Источник — журнал `HistoryService`, отфильтрованный view'хой до тех
@@ -123,7 +123,7 @@ class HistoryReducer(PrioritySource[str, TurnState]):
         return state
 
 
-class ToolsDefinitionReducer(PrioritySource[str, TurnState]):
+class ToolsDefinitionReducer(TurnReducer):
     """Каталог tools из ToolCatalog."""
 
     ID: ClassVar[str] = "tools"
@@ -152,7 +152,7 @@ class ToolsDefinitionReducer(PrioritySource[str, TurnState]):
         return state
 
 
-class SamplingReducer(PrioritySource[str, TurnState]):
+class SamplingReducer(TurnReducer):
     """Кладёт SamplingParams в state. Конфигурируется один раз на этапе сборки."""
 
     ID: ClassVar[str] = "sampling"
@@ -177,7 +177,7 @@ class SamplingReducer(PrioritySource[str, TurnState]):
         return state
 
 
-class RememberUserQueryReducer(PrioritySource[str, TurnState]):
+class RememberUserQueryReducer(TurnReducer):
     """После tool-output дублирует последний UserMessage в хвост истории.
 
     Срабатывает только когда последнее сообщение в state.messages —

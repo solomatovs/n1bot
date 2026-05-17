@@ -7,7 +7,6 @@ from pathlib import Path
 from boba.agent import AgentBuilder, TurnBuilder
 from boba.agent.agent import Agent
 from boba.agent.history import HistoryService
-from boba.agent.prompt_providers import PromptLoader
 
 # from boba.agent.turn.reducers import (
 #     RememberUserQueryReducer,
@@ -69,12 +68,11 @@ class ChatSession:
         prompt_workspace = FsPromptWorkspaceRegistry(
             root=Path(app.prompts.dir),
         ).get_or_create(PromptWorkspaceId("prompts"))
-        prompt_loader = PromptLoader(prompt_workspace)
 
         turn = (
-            TurnBuilder()
-            .with_model(self._chainlit_config.model)
-            .with_prompts(prompt_loader.prompt_providers())
+            TurnBuilder(self._chainlit_config.model).system_prompt_from_directory(
+                prompt_workspace
+            )
             # .use_reducer(RememberUserQueryReducer())
         )
         self._agent: Agent = (

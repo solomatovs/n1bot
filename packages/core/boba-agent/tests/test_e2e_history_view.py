@@ -97,7 +97,7 @@ def test_history_journal_contains_user_query_and_assistant_snapshots():
         .with_llm(llm)
         .with_history(history)
         .with_tools(_empty_registry())
-        .use_turn(TurnBuilder().with_model("stub-model"))
+        .use_turn(TurnBuilder("stub-model"))
         .build()
     )
 
@@ -127,7 +127,7 @@ def test_history_view_reconstructs_full_dialog_after_run():
         .with_llm(llm)
         .with_history(history)
         .with_tools(_empty_registry())
-        .use_turn(TurnBuilder().with_model("stub-model"))
+        .use_turn(TurnBuilder("stub-model"))
         .build()
     )
 
@@ -149,7 +149,7 @@ def test_second_turn_sees_prior_dialog_in_llm_request():
         .with_llm(llm)
         .with_history(history)
         .with_tools(_empty_registry())
-        .use_turn(TurnBuilder().with_model("stub-model"))
+        .use_turn(TurnBuilder("stub-model"))
         .build()
     )
 
@@ -179,7 +179,7 @@ def test_clear_history_resets_dialog_for_subsequent_turn():
         .with_llm(llm)
         .with_history(history)
         .with_tools(_empty_registry())
-        .use_turn(TurnBuilder().with_model("stub-model"))
+        .use_turn(TurnBuilder("stub-model"))
         .build()
     )
 

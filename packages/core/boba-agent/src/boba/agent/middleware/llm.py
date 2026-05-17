@@ -27,7 +27,7 @@ from boba.agent.events import (
     ToolCallStreamStarted,
 )
 from boba.agent.events import RequestStart as AgentLLMRequestSent
-from boba.agent.turn.builder import TurnSpecBuilder
+from boba.agent.turn.builder import TurnBuilder
 from boba.llm.builder import LLM
 from boba.llm.errors import LLMError
 from boba.llm.events import (
@@ -141,16 +141,16 @@ class LLMPort(StreamSource[AgentContext, AgentEvent]):
     def __init__(
         self,
         llm: LLM,
-        turn_spec_builder: TurnSpecBuilder,
+        turn: TurnBuilder,
     ) -> None:
         self._llm = llm
-        self._turn_spec_builder = turn_spec_builder
+        self._turn = turn
 
     def name(self) -> str:
         return "LLMPort"
 
     def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
-        request = self._turn_spec_builder.build(ctx).build()
+        request = self._turn.build(ctx).build()
 
         try:
             for event in self._llm.stream(LLMContext(request=request)):
