@@ -57,8 +57,6 @@ root_path = ""
 # BOBA_CHAINLIT__AUTH_SECRET, чтобы не коммитить в TOML.
 auth_secret = ""
 # Единственный user — для multi-user будет отдельная [auth.users].
-auth_username = "admin"
-auth_password = "admin"
 headless = true
 app_root = "./local/chainlit"
 # Сколько ChatSession держать в RAM одновременно (LRU eviction).

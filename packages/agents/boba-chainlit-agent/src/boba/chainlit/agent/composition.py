@@ -102,10 +102,9 @@ def main() -> int:
         """JSONL per-workspace: chainlit и агент видят один и тот же журнал."""
         return JsonLinesHistoryService(history_workspaces.get_or_create(workspace_id))
 
-    user_repository = StaticUserRepository(
-        {chainlit_cfg.auth_username: chainlit_cfg.auth_password},
+    authenticate_user = AuthenticateUser(
+        StaticUserRepository({"admin": "admin"})
     )
-    authenticate_user = AuthenticateUser(user_repository)
 
     builder_factory = _make_builder_factory()
     chat_session_pool = ChatSessionPool(
@@ -121,7 +120,7 @@ def main() -> int:
 
     system_shell = history_workspaces.get_or_create(_SYSTEM_WORKSPACE_ID)
     user_catalog = FsUserCatalog(system_shell)
-    thread_repository = FsThreadRepository(system_shell=system_shell)
+    thread_repository = FsThreadRepository(system_shell)
     data_layer = BobaDataLayer(
         user_catalog,
         thread_repository,
