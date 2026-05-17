@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Self, cast
 
 from boba.agent.agent import AgentContext
-from boba.agent.messages import MessageReader
+from boba.agent.history_view import HistoryDialogView
 from boba.agent.prompt import PromptId, PromptProvider, StaticPromptProvider
 from boba.agent.prompt_providers import DirectoryPromptProvider
 from boba.agent.turn.reducers import (
@@ -103,15 +103,15 @@ class TurnBuilder:
     не попадают в LLMRequest — например, без `.with_tool_catalog(...)`
     запрос отправляется без tools.
 
-    Ресурсы `MessageReader` и `ToolCatalog` задаются либо явно через
-    `.with_messages()` / `.with_tool_catalog()`, либо прокидываются
+    Ресурсы `HistoryDialogView` и `ToolCatalog` задаются либо явно через
+    `.with_history_view()` / `.with_tool_catalog()`, либо прокидываются
     `AgentBuilder.use_turn()` (он уважает явно заданное).
     """
 
     def __init__(self) -> None:
         self._spec_builder = TurnSpecBuilder()
         self._prompt_providers: list[PromptProvider] = []
-        self._messages: MessageReader | None = None
+        self._history_view: HistoryDialogView | None = None
         self._tool_catalog: ToolCatalog | None = None
         self._model: str | None = None
         self._sampling: SamplingParams | None = None
@@ -136,9 +136,9 @@ class TurnBuilder:
         self._ensure(SamplingReducer.ID, self._make_sampling)
         return self
 
-    def with_messages(self, messages: MessageReader) -> Self:
-        """`MessageReader` → `HistoryReducer`. Стандартно прокидывает Agent."""
-        self._messages = messages
+    def with_history_view(self, view: HistoryDialogView) -> Self:
+        """`HistoryDialogView` → `HistoryReducer`. Стандартно прокидывает Agent."""
+        self._history_view = view
         self._ensure(HistoryReducer.ID, self._make_history)
         return self
 
@@ -197,9 +197,9 @@ class TurnBuilder:
         self._spec_builder.add(reducer_or_factory)
         return self
 
-    def has_messages(self) -> bool:
-        """True, если пользователь уже задал `MessageReader` явно."""
-        return self._messages is not None
+    def has_history_view(self) -> bool:
+        """True, если пользователь уже задал `HistoryDialogView` явно."""
+        return self._history_view is not None
 
     def has_tool_catalog(self) -> bool:
         """True, если пользователь уже задал `ToolCatalog` явно."""
@@ -227,7 +227,7 @@ class TurnBuilder:
         return SamplingReducer(self._sampling)
 
     def _make_history(self, _ctx: AgentContext) -> HistoryReducer:
-        return HistoryReducer(cast("MessageReader", self._messages))
+        return HistoryReducer(cast("HistoryDialogView", self._history_view))
 
     def _make_tools(self, _ctx: AgentContext) -> ToolsDefinitionReducer:
         return ToolsDefinitionReducer(cast("ToolCatalog", self._tool_catalog))

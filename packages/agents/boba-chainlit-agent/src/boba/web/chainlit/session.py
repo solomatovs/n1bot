@@ -6,7 +6,7 @@ from pathlib import Path
 
 from boba.agent import AgentBuilder, TurnBuilder
 from boba.agent.agent import Agent
-from boba.agent.messages import MessageService
+from boba.agent.history import HistoryService
 from boba.agent.prompt_providers import PromptLoader
 
 # from boba.agent.turn.reducers import (
@@ -42,7 +42,7 @@ class ChatSession:
         builder: AgentBuilder,
         project_workspaces: ProjectWorkspaceRegistry,
         history_workspaces: HistoryWorkspaceRegistry,
-        message_service: MessageService,
+        history_service: HistoryService,
     ) -> None:
         app = AppConfig.load()
 
@@ -75,13 +75,12 @@ class ChatSession:
             TurnBuilder()
             .with_model(self._chainlit_config.model)
             .with_prompts(prompt_loader.prompt_providers())
-            .with_user_query()
             # .use_reducer(RememberUserQueryReducer())
         )
         self._agent: Agent = (
             builder.with_extension(ProjectWorkspaceShell, project_shell)
             .with_llm(llm)
-            .with_messages(message_service)
+            .with_history(history_service)
             .use_turn(turn)
             .build()
         )

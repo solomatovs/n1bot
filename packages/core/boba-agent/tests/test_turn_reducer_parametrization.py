@@ -8,7 +8,8 @@ import pytest
 
 from boba.agent.agent import AgentContext
 from boba.agent.builder import AgentBuilder
-from boba.agent.messages import InMemoryMessageService
+from boba.agent.history import InMemoryHistoryService
+from boba.agent.history_view import HistoryDialogView
 from boba.agent.middleware.llm import LLMPort
 from boba.agent.turn.builder import TurnBuilder, TurnSpecBuilder
 from boba.agent.turn.reducers import (
@@ -25,6 +26,10 @@ from boba.llm.models import SamplingParams
 from boba.patterns import PrioritySource
 from boba.tools.domain import ToolSourceId
 from boba.tools.framework import StaticToolSource, ToolRegistry
+
+
+def _empty_history_view() -> HistoryDialogView:
+    return HistoryDialogView(InMemoryHistoryService())
 
 
 class _MarkerReducer(PrioritySource[str, TurnState]):
@@ -84,7 +89,7 @@ def test_turn_builder_full_set(agent_ctx: AgentContext):
     turn = (
         TurnBuilder()
         .with_model("test-model")
-        .with_messages(InMemoryMessageService())
+        .with_history_view(_empty_history_view())
         .with_tool_catalog(registry.catalog())
         .with_sampling(SamplingParams())
         .with_user_query()
@@ -140,7 +145,7 @@ def test_turn_builder_with_plus_use_reducer(agent_ctx: AgentContext):
     turn = (
         TurnBuilder()
         .with_model("test-model")
-        .with_messages(InMemoryMessageService())
+        .with_history_view(_empty_history_view())
         .with_tool_catalog(registry.catalog())
         .use_reducer(RememberUserQueryReducer())
     )
@@ -233,29 +238,29 @@ def test_turn_builder_empty_raises():
 # AgentBuilder.use_turn() auto-wiring
 
 
-def test_agent_builder_use_turn_autowires_messages_and_catalog():
-    """Если TurnBuilder не задал messages/catalog — AgentBuilder подкладывает свои."""
-    messages = InMemoryMessageService()
+def test_agent_builder_use_turn_autowires_history_view_and_catalog():
+    """Если TurnBuilder не задал history_view/catalog — AgentBuilder подкладывает свои."""
+    history = InMemoryHistoryService()
     turn = TurnBuilder().with_model("test-model")
     registry = _empty_catalog()
-    builder = AgentBuilder().with_messages(messages).with_tools(registry).use_turn(turn)
+    builder = AgentBuilder().with_history(history).with_tools(registry).use_turn(turn)
     # Имитируем wiring, который происходит внутри build():
     resolved = builder.tool_registry()
-    if not turn.has_messages():
-        turn.with_messages(messages)
+    if not turn.has_history_view():
+        turn.with_history_view(HistoryDialogView(history))
     if not turn.has_tool_catalog():
         turn.with_tool_catalog(resolved.catalog())
-    assert turn.has_messages()
+    assert turn.has_history_view()
     assert turn.has_tool_catalog()
 
 
 def test_agent_builder_use_turn_respects_explicit_resources():
     """Явно заданное в TurnBuilder не перетирается AgentBuilder'ом."""
-    explicit_messages = InMemoryMessageService()
-    turn = TurnBuilder().with_model("test-model").with_messages(explicit_messages)
-    other_messages = InMemoryMessageService()
-    builder = AgentBuilder().with_messages(other_messages).use_turn(turn)
-    if not turn.has_messages():
-        turn.with_messages(builder._message_service)
-    # has_messages был True, перетирания не было.
-    assert turn._messages is explicit_messages
+    explicit_view = _empty_history_view()
+    turn = TurnBuilder().with_model("test-model").with_history_view(explicit_view)
+    other_history = InMemoryHistoryService()
+    builder = AgentBuilder().with_history(other_history).use_turn(turn)
+    if not turn.has_history_view():
+        turn.with_history_view(HistoryDialogView(builder._history_service))
+    # has_history_view был True, перетирания не было.
+    assert turn._history_view is explicit_view

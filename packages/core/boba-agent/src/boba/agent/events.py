@@ -686,7 +686,7 @@ class ToolResultReady(ContentSnapshotEvent):
 
 
 class FeedbackToLLMAdded(ContentSnapshotEvent):
-    """Feedback от агента к LLM записан в MessageService."""
+    """Feedback от агента к LLM зарегистрирован в журнале HistoryService."""
 
     type: Literal["FeedbackToLLMAdded"] = "FeedbackToLLMAdded"
     stream_kind: Literal[StreamKind.FEEDBACK] = StreamKind.FEEDBACK
