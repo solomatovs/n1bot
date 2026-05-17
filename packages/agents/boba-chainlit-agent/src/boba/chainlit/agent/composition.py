@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -30,6 +31,8 @@ from boba.workspace.contract import (
 )
 
 __all__ = ["main"]
+
+logger = logging.getLogger(__name__)
 
 _SYSTEM_WORKSPACE_ID = WorkspaceId("_chainlit_system")
 """Workspace для системных файлов chainlit (users.json, threads-index.json)."""
@@ -107,6 +110,19 @@ def main() -> int:
     )
 
     builder_factory = _make_builder_factory()
+    # Eager-валидация tool-plugin конфигов: чтобы плохие имена в `tool.*.tools`,
+    # отсутствующие env и прочее не выстрелили на первом сообщении пользователя
+    # (где они молча терялись внутри Chainlit), а валили процесс на старте
+    # с понятным логом.
+    try:
+        builder_factory().tool_registry()
+    except Exception:
+        logger.exception(
+            "Startup validation failed: tool-plugin config is invalid. "
+            "Fix configuration and restart."
+        )
+        return 1
+
     chat_session_pool = ChatSessionPool(
         _make_chat_session_builder(
             builder_factory,
