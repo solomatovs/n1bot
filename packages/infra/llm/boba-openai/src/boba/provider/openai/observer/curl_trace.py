@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import json
 import shlex
+import traceback
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from boba.llm.observer import LLMRequestObserver, RequestOutcome
+from boba.llm.observer import LLMRequestObserver, RequestOutcome, RequestOutcomeKind
 from boba.workspace.contract import WorkspaceShell
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
@@ -97,7 +98,26 @@ class CurlTraceChatCompletionObserver(
         if self._usage is not None:
             p, c, t = self._usage
             self._append(f"_usage prompt={p} completion={c} total={t}_\n\n")
+        if outcome.kind is RequestOutcomeKind.RAISED and outcome.exception is not None:
+            self._render_error(outcome.exception)
         self._append(f"## end: {outcome.label()}\n\n---\n\n")
+
+    def _render_error(self, exc: BaseException) -> None:
+        """Полный дамп ошибки: тип, сообщение, status_code, traceback с цепочкой."""
+        self._append("## Error\n\n")
+        self._append(f"**{type(exc).__name__}:** {exc}\n\n")
+        status_code = getattr(exc, "status_code", None)
+        if isinstance(status_code, int):
+            self._append(f"_status_code:_ {status_code}\n\n")
+        body = getattr(exc, "body", None)
+        if body is not None:
+            try:
+                body_text = json.dumps(body, ensure_ascii=False, indent=2)
+            except (TypeError, ValueError):
+                body_text = repr(body)
+            self._append(f"_body:_\n\n```\n{body_text}\n```\n\n")
+        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        self._append(f"```\n{tb}```\n\n")
 
     def _emit_section(self, title: str, text: str) -> None:
         if self._current_section != title:

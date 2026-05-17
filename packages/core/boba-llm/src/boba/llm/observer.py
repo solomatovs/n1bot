@@ -29,17 +29,17 @@ class RequestOutcomeKind(Enum):
 
 @dataclass(frozen=True, slots=True)
 class RequestOutcome:
-    """Исход запроса LLM на wire-слое; exception_name только при RAISED."""
+    """Исход запроса LLM на wire-слое; exception хранится целиком при RAISED."""
 
     kind: RequestOutcomeKind
-    exception_name: str | None = None
+    exception: BaseException | None = None
 
     def __post_init__(self) -> None:
         is_raised = self.kind is RequestOutcomeKind.RAISED
-        if is_raised and not self.exception_name:
-            raise ValueError("RAISED requires exception_name")
-        if not is_raised and self.exception_name is not None:
-            raise ValueError(f"{self.kind.name} must not carry exception_name")
+        if is_raised and self.exception is None:
+            raise ValueError("RAISED requires exception")
+        if not is_raised and self.exception is not None:
+            raise ValueError(f"{self.kind.name} must not carry exception")
 
     @classmethod
     def ok(cls) -> RequestOutcome:
@@ -51,7 +51,14 @@ class RequestOutcome:
 
     @classmethod
     def raised(cls, exc: BaseException) -> RequestOutcome:
-        return cls(RequestOutcomeKind.RAISED, type(exc).__name__)
+        return cls(RequestOutcomeKind.RAISED, exception=exc)
+
+    @property
+    def exception_name(self) -> str | None:
+        """Имя класса исключения; None при OK/CANCELLED."""
+        if self.exception is None:
+            return None
+        return type(self.exception).__name__
 
     def label(self) -> str:
         """Человеко-читаемая метка: ok / cancelled / raised:<Exc>."""
