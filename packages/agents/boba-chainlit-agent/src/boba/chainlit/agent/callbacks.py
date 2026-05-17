@@ -86,49 +86,41 @@ class _WarmupTasks:
             )
 
 
-async def _ensure_thread_meta(
+async def _ensure_thread_registered(
     thread_id: ThreadId,
     workspace_id: WorkspaceId,
     user_identifier: str,
+    first_message: str,
 ) -> None:
-    """Зарегистрировать тред в репо сразу при on_chat_start.
+    """Регистрируем тред в репо при первом сообщении.
 
-    Пустой тред должен появиться в sidebar до первого сообщения.
-    user_id берём через FsUserCatalog (chainlit к этому моменту уже
-    создал PersistedUser через create_user).
+    on_chat_start этого не делает: пока юзер не написал ни строки,
+    в sidebar/на диске не должно появляться пустых записей и workspace'ов.
+    Здесь создаём `ThreadMeta` при первом сообщении, либо проставляем
+    имя у уже существующей меты, если оно ещё пустое (resume сценарий).
     """
-    persisted = await app_state().data_layer.get_user(user_identifier)
-    user_id = UserId(persisted.id) if persisted is not None else None
+    existing = await app_state().thread_repository.get_meta(thread_id)
+    if existing is not None and existing.name:
+        return
+    name = _trim(first_message) or None
     now = datetime.now(UTC).isoformat()
-    meta = ThreadMeta(
-        id=thread_id,
-        workspace_id=workspace_id,
-        user_id=user_id,
-        user_identifier=user_identifier,
-        name=None,
-        tags=[],
-        metadata={"workspace_id": workspace_id},
-        created_at=now,
-        updated_at=now,
-    )
+    if existing is None:
+        persisted = await app_state().data_layer.get_user(user_identifier)
+        user_id = UserId(persisted.id) if persisted is not None else None
+        meta = ThreadMeta(
+            id=thread_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            user_identifier=user_identifier,
+            name=name,
+            tags=[],
+            metadata={"workspace_id": workspace_id},
+            created_at=now,
+            updated_at=now,
+        )
+    else:
+        meta = existing.model_copy(update={"name": name, "updated_at": now})
     await app_state().thread_repository.upsert_meta(meta)
-
-
-async def _maybe_set_thread_name(thread_id: ThreadId, first_message: str) -> None:
-    """Если имя ещё не задано — взять обрезанный текст первого сообщения."""
-    meta = await app_state().thread_repository.get_meta(thread_id)
-    if meta is None or meta.name:
-        return
-    name = _trim(first_message)
-    if not name:
-        return
-    updated = meta.model_copy(
-        update={
-            "name": name,
-            "updated_at": datetime.now(UTC).isoformat(),
-        }
-    )
-    await app_state().thread_repository.upsert_meta(updated)
 
 
 def _trim(text: str) -> str:
@@ -140,15 +132,12 @@ def _trim(text: str) -> str:
 
 @cl.on_chat_start
 async def on_chat_start() -> None:
-    # Каждый chainlit-thread = свой workspace (= свой "чат").
+    # Каждый chainlit-thread = свой workspace, но создаём его лениво:
+    # workspace_id просто резервируем, ThreadMeta и каталоги на диске
+    # появятся только при первом on_message. Так пустые "просто открыл
+    # приложение" не пачкают sidebar и local/workspaces/.
     workspace_id = new_workspace_id()
     cl.user_session.set("workspace_id", workspace_id)
-
-    thread_id = _current_thread_id()
-    user = _current_user()
-    await _ensure_thread_meta(thread_id, workspace_id, user.username)
-    # Прогрев пула в фоне: к моменту первого on_message сессия часто уже готова.
-    _WarmupTasks.spawn(user, workspace_id)
 
 
 @cl.on_chat_resume
@@ -199,12 +188,16 @@ async def on_message(message: cl.Message) -> None:
         return
 
     thread_id = _current_thread_id()
-    # Имя треда задаём по первому сообщению. Делаем до запуска агента,
-    # чтобы sidebar обновился сразу.
-    await _maybe_set_thread_name(thread_id, message.content)
+    user = _current_user()
+    # Ленивая регистрация: если меты ещё нет — создаём, имя берём из
+    # первого сообщения. Делаем до запуска агента, чтобы sidebar
+    # обновился сразу.
+    await _ensure_thread_registered(
+        thread_id, workspace_id, user.username, message.content
+    )
 
     session = await app_state().open_chat_session.execute(
-        _current_user(),
+        user,
         workspace_id,
     )
 
