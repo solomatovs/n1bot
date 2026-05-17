@@ -1,4 +1,4 @@
-"""Параметризация LLMRequestFactory через TurnBuilder + AgentBuilder.use_turn()."""
+"""Параметризация LLMRequest через TurnBuilder + AgentBuilder.use_turn()."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from boba.agent.turn.reducers import (
     HistoryReducer,
     ModelReducer,
     RememberUserQueryReducer,
+    RequestIdReducer,
     SamplingReducer,
     SystemPromptReducer,
     ToolsDefinitionReducer,
@@ -78,10 +79,9 @@ def test_middleware_delegates_spec_construction_to_builder(
         llm=None,  # type: ignore[arg-type]
         turn=turn,
     )
-    spec = mw._turn.build(agent_ctx)
+    request = mw._turn.build(agent_ctx)
 
-    ids = {p.id() for p in spec.providers()}
-    assert _MarkerReducer.ID in ids
+    assert request.model == "test-model"
     assert captured == [agent_ctx]
 
 
@@ -89,15 +89,12 @@ def test_middleware_delegates_spec_construction_to_builder(
 
 
 def test_turn_builder_model_required_at_construction(agent_ctx: AgentContext):
-    """`model` обязателен в конструкторе — `ModelReducer` зарегистрирован сразу."""
+    """`model` обязателен в конструкторе — `ModelReducer` и `RequestIdReducer` сразу."""
     turn = TurnBuilder("test-model")
-    spec = turn.build(agent_ctx)
-    ids = {p.id() for p in spec.providers()}
-    assert ids == {ModelReducer.ID}
-    state = TurnState()
-    for p in sorted(spec.providers(), key=lambda r: r.priority()):
-        state = p.apply(state)
-    assert state.model == "test-model"
+    assert set(turn._factories.keys()) == {ModelReducer.ID, RequestIdReducer.ID}
+    request = turn.build(agent_ctx)
+    assert request.model == "test-model"
+    assert request.request_id == agent_ctx.request_id
 
 
 def test_turn_builder_full_set(agent_ctx: AgentContext):
@@ -111,9 +108,8 @@ def test_turn_builder_full_set(agent_ctx: AgentContext):
         .with_user_query()
         .system_prompt("static")
     )
-    spec = turn.build(agent_ctx)
-    ids = {p.id() for p in spec.providers()}
-    assert ids == {
+    assert set(turn._factories.keys()) == {
+        RequestIdReducer.ID,
         ModelReducer.ID,
         SystemPromptReducer.ID,
         HistoryReducer.ID,
@@ -124,39 +120,36 @@ def test_turn_builder_full_set(agent_ctx: AgentContext):
 
 
 def test_turn_builder_minimal_only_registers_called(agent_ctx: AgentContext):
-    """Только вызванные методы — только их reducer'ы; ничего лишнего."""
+    """Только вызванные методы (+ обязательные request_id/model) — ничего лишнего."""
     turn = TurnBuilder("test-model").with_user_query()
-    spec = turn.build(agent_ctx)
-    ids = {p.id() for p in spec.providers()}
-    assert ids == {ModelReducer.ID, UserQueryReducer.ID}
+    assert set(turn._factories.keys()) == {
+        RequestIdReducer.ID,
+        ModelReducer.ID,
+        UserQueryReducer.ID,
+    }
 
 
 def test_turn_builder_with_model_latest_wins(agent_ctx: AgentContext):
     """`.with_model(...)` обновляет значение, заданное в конструкторе."""
     turn = TurnBuilder("first").with_model("second")
-    spec = turn.build(agent_ctx)
-    state = TurnState()
-    for p in sorted(spec.providers(), key=lambda r: r.priority()):
-        state = p.apply(state)
-    assert state.model == "second"
+    request = turn.build(agent_ctx)
+    assert request.model == "second"
 
 
 def test_turn_builder_use_reducer_accepts_ready(agent_ctx: AgentContext):
+    """`use_reducer(ready)` регистрирует фабрику, возвращающую тот же инстанс."""
     marker = _MarkerReducer()
     turn = TurnBuilder("test-model").use_reducer(marker)
-    spec = turn.build(agent_ctx)
-    providers = {p.id(): p for p in spec.providers()}
-    assert providers[_MarkerReducer.ID] is marker
+    assert turn._factories[_MarkerReducer.ID](agent_ctx) is marker
 
 
 def test_turn_builder_use_factory_accepts_factory(agent_ctx: AgentContext):
+    """`use_factory(id, fn)` регистрирует фабрику под явный id."""
     turn = TurnBuilder("test-model").use_factory(
         _MarkerReducer.ID,
         lambda _ctx: _MarkerReducer(),
     )
-    spec = turn.build(agent_ctx)
-    ids = {p.id() for p in spec.providers()}
-    assert _MarkerReducer.ID in ids
+    assert _MarkerReducer.ID in turn._factories
 
 
 def test_turn_builder_with_plus_use_reducer(agent_ctx: AgentContext):
@@ -167,8 +160,7 @@ def test_turn_builder_with_plus_use_reducer(agent_ctx: AgentContext):
         .with_tool_catalog(registry.catalog())
         .use_reducer(RememberUserQueryReducer())
     )
-    spec = turn.build(agent_ctx)
-    ids = {p.id() for p in spec.providers()}
+    ids = set(turn._factories.keys())
     assert ModelReducer.ID in ids
     assert RememberUserQueryReducer.ID in ids
 
@@ -180,12 +172,8 @@ def test_turn_builder_system_prompt_static(agent_ctx: AgentContext):
         .system_prompt("Ты — Claude.")
         .system_prompt("Отвечай по-русски.")
     )
-    spec = turn.build(agent_ctx)
-    state = TurnState()
-    for p in sorted(spec.providers(), key=lambda r: r.priority()):
-        if p.id() == SystemPromptReducer.ID:
-            state = p.apply(state)
-    contents = [m.content for m in state.system_messages]
+    request = turn.build(agent_ctx)
+    contents = [m.content for m in request.system_messages]
     assert contents == ["Ты — Claude.", "Отвечай по-русски."]
 
 
@@ -193,17 +181,13 @@ def test_turn_builder_system_prompt_file(
     agent_ctx: AgentContext,
     tmp_path,
 ):
-    """`.system_prompt_file(workspace, rel_path)` читает блок из файла."""
+    """`.system_prompt_from_file(workspace, rel_path)` читает блок из файла."""
     (tmp_path / "persona.md").write_text("Ты — Claude.", encoding="utf-8")
     workspace = _prompt_workspace(tmp_path)
 
     turn = TurnBuilder("test-model").system_prompt_from_file(workspace, "persona.md")
-    spec = turn.build(agent_ctx)
-    state = TurnState()
-    for p in sorted(spec.providers(), key=lambda r: r.priority()):
-        if p.id() == SystemPromptReducer.ID:
-            state = p.apply(state)
-    contents = [m.content for m in state.system_messages]
+    request = turn.build(agent_ctx)
+    contents = [m.content for m in request.system_messages]
     assert contents == ["Ты — Claude."]
 
 
@@ -219,12 +203,8 @@ def test_turn_builder_system_prompt_file_missing_uses_default(
         "missing.md",
         default_prompt="(no prompt)",
     )
-    spec = turn.build(agent_ctx)
-    state = TurnState()
-    for p in sorted(spec.providers(), key=lambda r: r.priority()):
-        if p.id() == SystemPromptReducer.ID:
-            state = p.apply(state)
-    contents = [m.content for m in state.system_messages]
+    request = turn.build(agent_ctx)
+    contents = [m.content for m in request.system_messages]
     assert contents == ["(no prompt)"]
 
 
@@ -232,19 +212,15 @@ def test_turn_builder_system_prompt_dir(
     agent_ctx: AgentContext,
     tmp_path,
 ):
-    """`.system_prompt_dir(workspace)` читает файлы как отдельные блоки."""
+    """`.system_prompt_from_directory(workspace)` читает файлы как отдельные блоки."""
     (tmp_path / "01-persona.md").write_text("Ты — Claude.", encoding="utf-8")
     (tmp_path / "02-rules.md").write_text("Отвечай по-русски.", encoding="utf-8")
     (tmp_path / "empty.md").write_text("", encoding="utf-8")
     workspace = _prompt_workspace(tmp_path)
 
     turn = TurnBuilder("test-model").system_prompt_from_directory(workspace)
-    spec = turn.build(agent_ctx)
-    state = TurnState()
-    for p in sorted(spec.providers(), key=lambda r: r.priority()):
-        if p.id() == SystemPromptReducer.ID:
-            state = p.apply(state)
-    contents = [m.content for m in state.system_messages]
+    request = turn.build(agent_ctx)
+    contents = [m.content for m in request.system_messages]
     assert contents == ["Ты — Claude.", "Отвечай по-русски."]
 
 
@@ -258,12 +234,8 @@ def test_turn_builder_system_prompt_dir_extension_filter(
     workspace = _prompt_workspace(tmp_path)
 
     turn = TurnBuilder("test-model").system_prompt_from_directory(workspace)
-    spec = turn.build(agent_ctx)
-    state = TurnState()
-    for p in sorted(spec.providers(), key=lambda r: r.priority()):
-        if p.id() == SystemPromptReducer.ID:
-            state = p.apply(state)
-    contents = [m.content for m in state.system_messages]
+    request = turn.build(agent_ctx)
+    contents = [m.content for m in request.system_messages]
     assert contents == ["kept"]
 
 
@@ -274,12 +246,8 @@ def test_turn_builder_system_prompt_dir_empty_workspace(
     """Пустой workspace — ноль блоков, без ошибки."""
     workspace = _prompt_workspace(tmp_path)
     turn = TurnBuilder("test-model").system_prompt_from_directory(workspace)
-    spec = turn.build(agent_ctx)
-    state = TurnState()
-    for p in sorted(spec.providers(), key=lambda r: r.priority()):
-        if p.id() == SystemPromptReducer.ID:
-            state = p.apply(state)
-    assert state.system_messages == ()
+    request = turn.build(agent_ctx)
+    assert request.system_messages == ()
 
 
 def test_turn_builder_system_prompt_mix_all_three(
@@ -303,16 +271,14 @@ def test_turn_builder_system_prompt_mix_all_three(
         .system_prompt_from_file(ws_persona, "persona.md")
         .system_prompt_from_directory(ws_rules)
     )
-    spec = turn.build(agent_ctx)
-    state = TurnState()
-    for p in sorted(spec.providers(), key=lambda r: r.priority()):
-        if p.id() == SystemPromptReducer.ID:
-            state = p.apply(state)
-    contents = [m.content for m in state.system_messages]
+    request = turn.build(agent_ctx)
+    contents = [m.content for m in request.system_messages]
     assert contents == ["static-block", "persona-from-file", "rule-from-file"]
 
 
 def test_turn_builder_extra_overrides_built_in_by_id(agent_ctx: AgentContext):
+    """`use_reducer` с id встроенного reducer'а заменяет его эффект в запросе."""
+
     class _OverrideModel(PrioritySource[str, TurnState]):
         ID: ClassVar[str] = ModelReducer.ID
 
@@ -328,9 +294,8 @@ def test_turn_builder_extra_overrides_built_in_by_id(agent_ctx: AgentContext):
 
     override = _OverrideModel()
     turn = TurnBuilder("test-model").use_reducer(override)
-    spec = turn.build(agent_ctx)
-    providers = {p.id(): p for p in spec.providers()}
-    assert providers[ModelReducer.ID] is override
+    request = turn.build(agent_ctx)
+    assert request.model == "overridden"
 
 
 # AgentBuilder.use_turn() auto-wiring

@@ -65,13 +65,13 @@ class ChatSession:
             .build()
         )
 
-        prompt_workspace = FsPromptWorkspaceRegistry(
-            root=Path(app.prompts.dir),
+        system_prompt_workspace = FsPromptWorkspaceRegistry(
+            root=Path(app.system_prompt_dir),
         ).get_or_create(PromptWorkspaceId("prompts"))
 
         turn = (
             TurnBuilder(self._chainlit_config.model).system_prompt_from_directory(
-                prompt_workspace
+                system_prompt_workspace
             )
             # .use_reducer(RememberUserQueryReducer())
         )

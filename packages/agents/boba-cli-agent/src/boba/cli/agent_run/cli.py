@@ -60,7 +60,7 @@ def _run() -> int:
     workspace_id = WorkspaceId("00000000-0000-0000-0000-000000000001")
 
     prompt_workspace = FsPromptWorkspaceRegistry(
-        root=Path(app.prompts.dir),
+        root=Path(app.system_prompt_dir),
     ).get_or_create(PromptWorkspaceId("prompts"))
 
     project_workspace = FsProjectWorkspaceRegistry(

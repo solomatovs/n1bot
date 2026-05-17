@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import platform
 import subprocess
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from datetime import UTC, datetime
 
 from boba.agent.prompt import (
@@ -178,3 +178,75 @@ class DirectoryPromptProvider(PromptProvider):
                 content = f.read().rstrip("\n")
             if content:
                 yield PromptBlock(name=rel_path, content=content)
+
+
+class CallablePromptProvider(PromptProvider):
+    """Computed-at-runtime блок: `fn()` вызывается на каждом turn.
+
+    Покрывает кейсы «текущая дата», «model capabilities», «runtime-вычисленный
+    кусок текста». Если значение статичное — используй `StaticPromptProvider`.
+    """
+
+    def __init__(
+        self,
+        prompt_id: PromptId,
+        priority: int,
+        fn: Callable[[], str],
+    ) -> None:
+        self._id = prompt_id
+        self._priority = priority
+        self._fn = fn
+
+    def id(self) -> PromptId:
+        return self._id
+
+    def priority(self) -> int:
+        return self._priority
+
+    def blocks(self, state: PromptState) -> Iterable[PromptBlock]:
+        yield PromptBlock(name=self._id, content=self._fn())
+
+
+class WrappingPromptProvider(PromptProvider):
+    """Decorator: оборачивает каждый блок inner-провайдера в prefix/suffix.
+
+    Удобно для XML-обёрток вокруг **динамического** содержимого:
+
+        WrappingPromptProvider(
+            PromptId("role"), priority=10,
+            inner=FilePromptProvider(..., rel_path="role.md"),
+            prefix="<your_role>\\n", suffix="\\n</your_role>",
+        )
+
+    Для статичного текста проще писать теги прямо в `StaticPromptProvider`.
+    `id()` и `priority()` берутся у обёртки, а не у inner — это позволяет
+    регистрировать оба независимо при необходимости.
+    """
+
+    def __init__(
+        self,
+        prompt_id: PromptId,
+        priority: int,
+        inner: PromptProvider,
+        *,
+        prefix: str = "",
+        suffix: str = "",
+    ) -> None:
+        self._id = prompt_id
+        self._priority = priority
+        self._inner = inner
+        self._prefix = prefix
+        self._suffix = suffix
+
+    def id(self) -> PromptId:
+        return self._id
+
+    def priority(self) -> int:
+        return self._priority
+
+    def blocks(self, state: PromptState) -> Iterable[PromptBlock]:
+        for block in self._inner.blocks(state):
+            yield PromptBlock(
+                name=block.name,
+                content=f"{self._prefix}{block.content}{self._suffix}",
+            )

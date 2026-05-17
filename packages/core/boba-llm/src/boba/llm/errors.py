@@ -120,6 +120,13 @@ class LLMRequestModelNoneError(LLMRequestValidationError):
         super().__init__("LLMRequest.model is None")
 
 
+class LLMRequestRequestIdNoneError(LLMRequestValidationError):
+    """LLM-запрос собран без request_id."""
+
+    def __init__(self) -> None:
+        super().__init__("LLMRequest.request_id is None")
+
+
 class LLMRequestEmptyMessagesError(LLMRequestValidationError):
     """LLM-запрос собран с пустым списком сообщений."""
 

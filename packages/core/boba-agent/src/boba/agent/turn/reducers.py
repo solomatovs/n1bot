@@ -10,6 +10,7 @@ from boba.agent.prompt import PromptFactory, PromptProvider
 from boba.agent.turn.spec import TurnState
 from boba.llm.models import (
     LLMToolDefinition,
+    RequestId,
     SamplingParams,
     SystemMessage,
     ToolResultMessage,
@@ -20,6 +21,26 @@ from boba.tools.framework import ToolCatalog
 
 TurnReducer: TypeAlias = PrioritySource[str, TurnState]
 """Alias для reducer'а TurnSpec — стадия сборки TurnState."""
+
+
+class RequestIdReducer(TurnReducer):
+    """Кладёт `request_id` в `TurnState` — берётся из `ctx.request_id`."""
+
+    ID: ClassVar[str] = "request_id"
+
+    def __init__(self, request_id: RequestId, priority: int = 5) -> None:
+        self._request_id = request_id
+        self._priority = priority
+
+    def id(self) -> str:
+        return self.ID
+
+    def priority(self) -> int:
+        return self._priority
+
+    def apply(self, state: TurnState) -> TurnState:
+        state.request_id = self._request_id
+        return state
 
 
 class ModelReducer(TurnReducer):
