@@ -29,7 +29,7 @@ def _ctx() -> LLMContext:
         request_id=new_request_id(),
         model="m",
         system_messages=(SystemMessage.from_text("s"),),
-        messages=(UserMessage.from_text("hi"),),
+        dialog_messages=(UserMessage.from_text("hi"),),
     )
     return LLMContext(request=req)
 

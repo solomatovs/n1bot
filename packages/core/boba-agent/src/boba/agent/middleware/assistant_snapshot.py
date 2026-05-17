@@ -65,13 +65,13 @@ class AssistantSnapshotMiddleware(StreamSource[AgentContext, AgentEvent]):
                     self._chunks.pop(rid, None)
                     yield event
                 case ThinkingToken(request_id=rid, token=t):
-                    self._chunks[rid] = self._chunks[rid].with_thinking(t)
+                    self._chunks[rid].append_thinking(t)
                     yield event
                 case AnswerToken(request_id=rid, token=t):
-                    self._chunks[rid] = self._chunks[rid].with_text(t)
+                    self._chunks[rid].append_text(t)
                     yield event
                 case RefusalToken(request_id=rid, token=t):
-                    self._chunks[rid] = self._chunks[rid].with_refusal(t)
+                    self._chunks[rid].append_refusal(t)
                     yield event
                 case ToolCallStreamStarted(
                     request_id=rid,
@@ -79,7 +79,7 @@ class AssistantSnapshotMiddleware(StreamSource[AgentContext, AgentEvent]):
                     tool_call_id=tid,
                     tool_name=tn,
                 ):
-                    self._chunks[rid] = self._chunks[rid].with_tool_call_start(
+                    self._chunks[rid].start_tool_call(
                         index=i,
                         tool_call_id=tid,
                         tool_name=tn,
@@ -90,7 +90,7 @@ class AssistantSnapshotMiddleware(StreamSource[AgentContext, AgentEvent]):
                     index=i,
                     arguments_chunk=a,
                 ):
-                    self._chunks[rid] = self._chunks[rid].with_tool_call_args(
+                    self._chunks[rid].append_tool_call_args(
                         index=i,
                         args_chunk=a,
                     )

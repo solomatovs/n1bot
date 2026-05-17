@@ -3,13 +3,13 @@
 Содержит:
 - Identity: ToolName (локальное), ToolSourceId, ToolId (qualified wire).
 - Tool ABC + ToolCall, ToolContext, JsonSchemaOverlay-protocol.
-- ToolResult sealed family + ToolResultVisitor (double-dispatch).
+- ToolResult sealed family (TextResult / JsonResult / ErrorResult).
 - доменные ошибки: ToolExecutionError, InvalidToolArgumentError, etc.
 
 Application-фреймворк (registry, ToolRegistry, ToolCatalog, ToolExecutor,
-plugin_loader) — в `boba-tools`.
-LLM-adapter'ы (`boba-adapter-*`) реализуют `ToolResultVisitor` под свой
-target-формат (str, multi-part, structured-output).
+plugin_loader) — в `boba-tools`. Адаптеры под конкретные LLM-API живут
+в `boba-adapter-*` и работают с `ToolResult` через `match`-разбор по
+discriminator `kind`.
 """
 
 from __future__ import annotations
@@ -30,12 +30,10 @@ from boba.tools.domain.ids import (
     parse_tool_id,
 )
 from boba.tools.domain.result import (
-    DefaultTextVisitor,
     ErrorResult,
     JsonResult,
     TextResult,
     ToolResult,
-    ToolResultVisitor,
 )
 from boba.tools.domain.tool import (
     JsonSchemaOverlay,
@@ -46,7 +44,6 @@ from boba.tools.domain.tool import (
 )
 
 __all__ = [
-    "DefaultTextVisitor",
     "ErrorResult",
     "InvalidSchemaInvariantError",
     "InvalidToolArgumentError",
@@ -62,7 +59,6 @@ __all__ = [
     "ToolName",
     "ToolOutputTooLargeError",
     "ToolResult",
-    "ToolResultVisitor",
     "ToolSchema",
     "ToolSourceCollisionError",
     "ToolSourceId",

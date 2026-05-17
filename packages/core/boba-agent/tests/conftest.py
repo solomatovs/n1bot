@@ -11,6 +11,7 @@ from boba.agent.agent import AgentContext
 from boba.agent.turn.spec import TurnState
 from boba.agent.workspace_fs.shell import FsHistoryWorkspaceShell
 from boba.llm.models import DialogMessage, ToolResultMessage, new_request_id
+from boba.llm.tool_result_render import tool_result_to_message
 from boba.tools.domain import TextResult
 from boba.workspace.contract import WorkspaceId
 
@@ -39,7 +40,7 @@ def make_tool_result_message() -> Callable[..., ToolResultMessage]:
     """Фабрика `ToolResultMessage` c `TextResult`-payload по умолчанию."""
 
     def _factory(call_id: str = "c1", text: str = "ok") -> ToolResultMessage:
-        return ToolResultMessage.from_result(
+        return tool_result_to_message(
             tool_call_id=call_id,
             result=TextResult(text=text),
         )

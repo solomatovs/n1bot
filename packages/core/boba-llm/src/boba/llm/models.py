@@ -2,23 +2,18 @@
 
 from __future__ import annotations
 
+import io
 import json
 from abc import ABC
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Literal, NewType, TypeAlias
+from typing import Annotated, Any, Literal, NewType, Self, TypeAlias
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from boba.llm.errors import LLMProtocolError
-from boba.tools.domain import (
-    ErrorResult,
-    JsonResult,
-    TextResult,
-    ToolResult,
-    ToolSchema,
-)
+from boba.tools.domain import ToolSchema
 
 __all__ = [
     "AssistantBlock",
@@ -31,7 +26,7 @@ __all__ = [
     "InvalidToolCallBlock",
     "LLMContext",
     "LLMRequest",
-    "LLMToolRequest",
+    "LLMToolDefinition",
     "Message",
     "MessageAdapter",
     "MessageId",
@@ -201,6 +196,14 @@ class Message(BaseModel, ABC):
 
     id: MessageId = Field(default_factory=new_message_id)
 
+    def set_id(self, id: MessageId) -> Self:  # noqa: A002 — совпадает с полем
+        """
+        Копия сообщения с заменённым id (для replay/тестов).
+        Используется model_copy потому что модель уже frozen
+        поэтому изменение невозможно
+        """
+        return self.model_copy(update={"id": id})
+
 
 class SystemMessage(Message):
     """System-prompt; список text-блоков."""
@@ -210,23 +213,21 @@ class SystemMessage(Message):
 
     @classmethod
     def from_text(cls, content: str) -> SystemMessage:
-        """Text-only сообщение со свежим id."""
+        """Text-only сообщение со свежим id.
+
+        Для replay/тестов с заданным id: `SystemMessage.from_text(...).set_id(my_id)`.
+        """
         return cls(id=new_message_id(), blocks=(TextBlock(content=content),))
 
-    @classmethod
-    def from_text_with_id(
-        cls,
-        content: str,
-        *,
-        id: MessageId,  # noqa: A002 — совпадает с полем Message.id
-    ) -> SystemMessage:
-        """Text-only сообщение с заданным id (replay/тесты)."""
-        return cls(id=id, blocks=(TextBlock(content=content),))
+    @property
+    def text_blocks(self) -> tuple[TextBlock, ...]:
+        """Только text-блоки (всегда все, других в SystemBlock нет)."""
+        return tuple(b for b in self.blocks if isinstance(b, TextBlock))
 
     @property
     def content(self) -> str:
         """Конкатенация всех TextBlock — convenience для существующих читателей."""
-        return "".join(b.content for b in self.blocks if isinstance(b, TextBlock))
+        return "".join(b.content for b in self.text_blocks)
 
 
 class UserMessage(Message):
@@ -237,23 +238,28 @@ class UserMessage(Message):
 
     @classmethod
     def from_text(cls, content: str) -> UserMessage:
-        """Text-only сообщение со свежим id."""
+        """Text-only сообщение со свежим id.
+
+        Для replay/тестов с заданным id: `UserMessage.from_text(...).set_id(my_id)`.
+        """
         return cls(id=new_message_id(), blocks=(TextBlock(content=content),))
 
-    @classmethod
-    def from_text_with_id(
-        cls,
-        content: str,
-        *,
-        id: MessageId,  # noqa: A002 — совпадает с полем Message.id
-    ) -> UserMessage:
-        """Text-only сообщение с заданным id (replay/тесты)."""
-        return cls(id=id, blocks=(TextBlock(content=content),))
+    @property
+    def text_blocks(self) -> tuple[TextBlock, ...]:
+        return tuple(b for b in self.blocks if isinstance(b, TextBlock))
+
+    @property
+    def image_blocks(self) -> tuple[ImageBlock, ...]:
+        return tuple(b for b in self.blocks if isinstance(b, ImageBlock))
+
+    @property
+    def file_blocks(self) -> tuple[FileBlock, ...]:
+        return tuple(b for b in self.blocks if isinstance(b, FileBlock))
 
     @property
     def content(self) -> str:
         """Конкатенация всех TextBlock."""
-        return "".join(b.content for b in self.blocks if isinstance(b, TextBlock))
+        return "".join(b.content for b in self.text_blocks)
 
 
 class AssistantMessage(Message):
@@ -270,60 +276,66 @@ class AssistantMessage(Message):
 
     @classmethod
     def from_text(cls, content: str) -> AssistantMessage:
-        """Text-only ответ (без tool_call'ов) со свежим id."""
+        """Text-only ответ (без tool_call'ов) со свежим id.
+
+        Для replay/тестов: `AssistantMessage.from_text(...).set_id(my_id)`.
+        """
         return cls(id=new_message_id(), blocks=(TextBlock(content=content),))
 
-    @classmethod
-    def from_text_with_id(
-        cls,
-        content: str,
-        *,
-        id: MessageId,  # noqa: A002 — совпадает с полем Message.id
-    ) -> AssistantMessage:
-        """Text-only ответ с заданным id (replay/тесты)."""
-        return cls(id=id, blocks=(TextBlock(content=content),))
+    @property
+    def text_blocks(self) -> tuple[TextBlock, ...]:
+        return tuple(b for b in self.blocks if isinstance(b, TextBlock))
+
+    @property
+    def tool_call_blocks(self) -> tuple[ToolCallBlock, ...]:
+        return tuple(b for b in self.blocks if isinstance(b, ToolCallBlock))
+
+    @property
+    def invalid_tool_call_blocks(self) -> tuple[InvalidToolCallBlock, ...]:
+        return tuple(b for b in self.blocks if isinstance(b, InvalidToolCallBlock))
+
+    @property
+    def thinking_blocks(self) -> tuple[ThinkingBlock, ...]:
+        return tuple(b for b in self.blocks if isinstance(b, ThinkingBlock))
+
+    @property
+    def refusal_blocks(self) -> tuple[RefusalBlock, ...]:
+        return tuple(b for b in self.blocks if isinstance(b, RefusalBlock))
 
     @property
     def content(self) -> str:
         """Склеенный текст всех TextBlock — convenience для существующих читателей."""
-        return "".join(b.content for b in self.blocks if isinstance(b, TextBlock))
+        return "".join(b.content for b in self.text_blocks)
 
     @property
     def tool_calls(self) -> tuple[ToolCall, ...]:
         """Распакованные ToolCall из ToolCallBlock-ов в порядке появления."""
-        return tuple(b.call for b in self.blocks if isinstance(b, ToolCallBlock))
+        return tuple(b.call for b in self.tool_call_blocks)
 
     @property
     def invalid_tool_calls(self) -> tuple[InvalidToolCall, ...]:
         """Распакованные InvalidToolCall из InvalidToolCallBlock-ов."""
-        return tuple(
-            b.invalid for b in self.blocks if isinstance(b, InvalidToolCallBlock)
-        )
+        return tuple(b.invalid for b in self.invalid_tool_call_blocks)
 
     @property
     def thinking(self) -> str:
         """Склеенный текст всех ThinkingBlock."""
-        return "".join(b.content for b in self.blocks if isinstance(b, ThinkingBlock))
+        return "".join(b.content for b in self.thinking_blocks)
 
     @property
     def refusal(self) -> str:
         """Склеенный текст всех RefusalBlock."""
-        return "".join(b.content for b in self.blocks if isinstance(b, RefusalBlock))
+        return "".join(b.content for b in self.refusal_blocks)
 
 
 class ToolResultMessage(Message):
     """
-    Результат выполнения tool-call в слот id-вызова — block-based.
+    Результат выполнения tool-call
 
-    Содержимое — упорядоченные блоки (text + image) совместимо с Anthropic
-    multi-block tool_result. `is_error: True` сигнализирует провайдеру об
-    отказе tool'а (Anthropic выставляет одноимённый wire-флаг; OpenAI Chat
-    его игнорирует, ошибка попадает в content).
-
-    Конструктор `from_result(...)` принимает доменный `ToolResult` и
-    конвертирует в blocks — это граница между tool-execution domain и
-    wire-message domain. Прямой `ToolResultMessage(blocks=..., is_error=...)`
-    остаётся для случаев, когда блоки строятся независимо (replay, image-tool).
+    Содержимое — упорядоченные блоки (text + image). Для конвертации из
+    доменного `ToolResult` (tools-domain) → `ToolResultMessage` используй
+    `boba.llm.tool_result_render.tool_result_to_message(...)` — он живёт
+    отдельным модулем, чтобы `models.py` не знал про варианты ToolResult.
     """
 
     type: Literal["tool_result"] = "tool_result"
@@ -331,59 +343,18 @@ class ToolResultMessage(Message):
     blocks: tuple[ToolResultContentBlock, ...]
     is_error: bool = False
 
-    @staticmethod
-    def _result_to_blocks(
-        result: ToolResult,
-    ) -> tuple[tuple[ToolResultContentBlock, ...], bool]:
-        """
-        Граница tools-domain ↔ wire-message-domain: `ToolResult` → blocks + is_error
-        """
+    @property
+    def text_blocks(self) -> tuple[TextBlock, ...]:
+        return tuple(b for b in self.blocks if isinstance(b, TextBlock))
 
-        match result:
-            case TextResult(text=t):
-                return (TextBlock(content=t),), False
-            case JsonResult(payload=p):
-                return (TextBlock(content=json.dumps(p, ensure_ascii=False)),), False
-            case ErrorResult(message=m):
-                return (TextBlock(content=m),), True
+    @property
+    def image_blocks(self) -> tuple[ImageBlock, ...]:
+        return tuple(b for b in self.blocks if isinstance(b, ImageBlock))
 
-    @classmethod
-    def from_result(
-        cls,
-        *,
-        tool_call_id: str,
-        result: ToolResult,
-    ) -> ToolResultMessage:
-        """Convert доменный `ToolResult` → blocks + is_error со свежим id.
-
-        Граница tools-domain ↔ wire-message-domain: tool продолжают
-        возвращать `ToolResult`, а сообщение хранит уже block-форму.
-        Pyright проверяет exhaustiveness через discriminator `kind`.
-        """
-        blocks, is_error = cls._result_to_blocks(result)
-        return cls(
-            id=new_message_id(),
-            tool_call_id=tool_call_id,
-            blocks=blocks,
-            is_error=is_error,
-        )
-
-    @classmethod
-    def from_result_with_id(
-        cls,
-        *,
-        tool_call_id: str,
-        result: ToolResult,
-        id: MessageId,  # noqa: A002 — совпадает с полем Message.id
-    ) -> ToolResultMessage:
-        """Тот же `from_result`, но с заданным id (replay/тесты)."""
-        blocks, is_error = cls._result_to_blocks(result)
-        return cls(
-            id=id,
-            tool_call_id=tool_call_id,
-            blocks=blocks,
-            is_error=is_error,
-        )
+    @property
+    def content(self) -> str:
+        """Конкатенация всех TextBlock — для OpenAI-Chat-style плоского tool-content."""
+        return "".join(b.content for b in self.text_blocks)
 
 
 MessageAdapter: TypeAdapter[Message] = TypeAdapter(
@@ -411,95 +382,92 @@ DialogMessage: TypeAlias = UserMessage | AssistantMessage | ToolResultMessage
 """
 
 
-@dataclass(frozen=True)
+@dataclass
 class PartialTextBlock:
-    """Частично собранный TextBlock в стриме."""
+    """Mutable buffer для растущего TextBlock в стриме."""
 
-    type: Literal["text"] = "text"
-    content: str = ""
+    content: io.StringIO = field(default_factory=io.StringIO)
 
-    def with_token(self, token: str) -> PartialTextBlock:
-        return PartialTextBlock(content=self.content + token)
+    def append_token(self, token: str) -> None:
+        self.content.write(token)
 
     def finalize(self) -> TextBlock:
-        return TextBlock(content=self.content)
+        return TextBlock(content=self.content.getvalue())
 
 
-@dataclass(frozen=True)
+@dataclass
 class PartialThinkingBlock:
-    """Частично собранный ThinkingBlock в стриме."""
+    """Mutable buffer для растущего ThinkingBlock в стриме."""
 
-    type: Literal["thinking"] = "thinking"
-    content: str = ""
+    content: io.StringIO = field(default_factory=io.StringIO)
     signature: str = ""
 
-    def with_token(self, token: str) -> PartialThinkingBlock:
-        return PartialThinkingBlock(
-            content=self.content + token,
+    def append_token(self, token: str) -> None:
+        self.content.write(token)
+
+    def set_signature(self, signature: str) -> None:
+        self.signature = signature
+
+    def finalize(self) -> ThinkingBlock:
+        return ThinkingBlock(
+            content=self.content.getvalue(),
             signature=self.signature,
         )
 
-    def with_signature(self, signature: str) -> PartialThinkingBlock:
-        return PartialThinkingBlock(content=self.content, signature=signature)
 
-    def finalize(self) -> ThinkingBlock:
-        return ThinkingBlock(content=self.content, signature=self.signature)
-
-
-@dataclass(frozen=True)
+@dataclass
 class PartialRefusalBlock:
-    """Частично собранный RefusalBlock в стриме."""
+    """Mutable buffer для растущего RefusalBlock в стриме."""
 
-    type: Literal["refusal"] = "refusal"
-    content: str = ""
+    content: io.StringIO = field(default_factory=io.StringIO)
 
-    def with_token(self, token: str) -> PartialRefusalBlock:
-        return PartialRefusalBlock(content=self.content + token)
+    def append_token(self, token: str) -> None:
+        self.content.write(token)
 
     def finalize(self) -> RefusalBlock:
-        return RefusalBlock(content=self.content)
+        return RefusalBlock(content=self.content.getvalue())
 
 
-@dataclass(frozen=True)
+@dataclass
 class PartialToolCallBlock:
-    """Частично собранный tool-call: args накапливаются как сырая JSON-строка."""
+    """Mutable buffer для растущего tool-call.
 
-    type: Literal["tool_call"] = "tool_call"
-    index: int = 0
-    id: str = ""
-    name: str = ""
-    args: str = ""
+    `args` накапливаются как сырая JSON-строка (фрагменты пишутся в StringIO).
+    """
 
-    def with_args(self, args_chunk: str) -> PartialToolCallBlock:
-        return PartialToolCallBlock(
-            index=self.index,
-            id=self.id,
-            name=self.name,
-            args=self.args + args_chunk,
-        )
+    index: int
+    id: str
+    name: str
+    args: io.StringIO = field(default_factory=io.StringIO)
+
+    def append_args(self, args_chunk: str) -> None:
+        self.args.write(args_chunk)
 
     def finalize(self) -> ToolCallBlock | InvalidToolCallBlock:
         """Парсить args в dict; вернуть ToolCallBlock или InvalidToolCallBlock."""
+        raw = self.args.getvalue()
         try:
-            parsed = json.loads(self.args) if self.args else {}
+            parsed = json.loads(raw) if raw else {}
         except json.JSONDecodeError as e:
             return InvalidToolCallBlock(
                 invalid=InvalidToolCall(
                     id=self.id,
                     name=self.name,
-                    raw_args=self.args,
+                    raw_args=raw,
                     error=f"invalid JSON arguments: {e}",
                 ),
             )
+
         if not isinstance(parsed, dict):
             return InvalidToolCallBlock(
                 invalid=InvalidToolCall(
                     id=self.id,
                     name=self.name,
-                    raw_args=self.args,
+                    raw_args=raw,
                     error=f"args must be JSON object, got {type(parsed).__name__}",
                 ),
             )
+
         return ToolCallBlock(call=ToolCall(id=self.id, name=self.name, args=parsed))
 
 
@@ -508,108 +476,85 @@ PartialAssistantBlock: TypeAlias = (
 )
 """Растущий-в-стриме блок ассистента."""
 
-
-@dataclass(frozen=True)
+@dataclass
 class AssistantMessageChunk:
     """
-    Накопительный чанк AssistantMessage в стриме как ordered-list partial-блоков.
-
-    Token-style события (text/thinking/refusal) — находят соответствующий
-    тип блока (один блок-на-тип для OpenAI Chat, где нет явных границ) либо
-    создают новый, если такого ещё нет. Tool-call события явно адресуют
-    блок по `index`. Финализация: каждый partial → финальный AssistantBlock
-    в порядке хранения.
-
-    Когда подключим Anthropic streaming с явными `content_block_start/delta/
-    stop` событиями, методы можно расширить block-index'ом для произвольного
-    interleaving (text → tool_call → text) — структура уже готова.
+    аккумулятор AssistantMessage
+    blocks содержит список из разных типов блоков
     """
 
-    blocks: tuple[PartialAssistantBlock, ...] = ()
+    blocks: list[PartialAssistantBlock] = field(default_factory=list)
 
     @classmethod
     def empty(cls) -> AssistantMessageChunk:
         return cls()
 
-    def with_text(self, token: str) -> AssistantMessageChunk:
-        """Прибавить text-токен (find-or-create PartialTextBlock)."""
-        return self._append_token(PartialTextBlock, token)
+    def append_text(self, token: str) -> None:
+        """Прибавить text-токен в существующий PartialTextBlock или создать новый."""
+        for b in self.blocks:
+            if isinstance(b, PartialTextBlock):
+                b.append_token(token)
+                return
+        block = PartialTextBlock()
+        block.append_token(token)
+        self.blocks.append(block)
 
-    def with_thinking(self, token: str) -> AssistantMessageChunk:
-        """Прибавить thinking-токен (find-or-create PartialThinkingBlock)."""
-        return self._append_token(PartialThinkingBlock, token)
+    def append_thinking(self, token: str) -> None:
+        """Прибавить thinking-токен в существующий PartialThinkingBlock или создать."""
+        for b in self.blocks:
+            if isinstance(b, PartialThinkingBlock):
+                b.append_token(token)
+                return
+        block = PartialThinkingBlock()
+        block.append_token(token)
+        self.blocks.append(block)
 
-    def with_refusal(self, token: str) -> AssistantMessageChunk:
-        """Прибавить refusal-токен (find-or-create PartialRefusalBlock)."""
-        return self._append_token(PartialRefusalBlock, token)
+    def append_refusal(self, token: str) -> None:
+        """Прибавить refusal-токен в существующий PartialRefusalBlock или создать."""
+        for b in self.blocks:
+            if isinstance(b, PartialRefusalBlock):
+                b.append_token(token)
+                return
+        block = PartialRefusalBlock()
+        block.append_token(token)
+        self.blocks.append(block)
 
-    def _append_token(
-        self,
-        block_cls: type[PartialTextBlock]
-        | type[PartialThinkingBlock]
-        | type[PartialRefusalBlock],
-        token: str,
-    ) -> AssistantMessageChunk:
-        for i, b in enumerate(self.blocks):
-            if isinstance(b, block_cls):
-                updated = b.with_token(token)
-                return AssistantMessageChunk(
-                    blocks=(*self.blocks[:i], updated, *self.blocks[i + 1 :]),
-                )
-        return AssistantMessageChunk(
-            blocks=(*self.blocks, block_cls().with_token(token)),
-        )
-
-    def with_tool_call_start(
+    def start_tool_call(
         self,
         *,
         index: int,
         tool_call_id: str,
         tool_name: str,
-    ) -> AssistantMessageChunk:
+    ) -> None:
         """Зарегистрировать новый tool-call slot (из ToolCallStreamStarted)."""
         for b in self.blocks:
             if isinstance(b, PartialToolCallBlock) and b.index == index:
                 raise LLMProtocolError(
-                    f"with_tool_call_start: дубликат index={index} "
+                    f"start_tool_call: дубликат index={index} "
                     f"(уже зарегистрирован id={b.id!r}, name={b.name!r})"
                 )
-        return AssistantMessageChunk(
-            blocks=(
-                *self.blocks,
-                PartialToolCallBlock(index=index, id=tool_call_id, name=tool_name),
-            ),
+        self.blocks.append(
+            PartialToolCallBlock(index=index, id=tool_call_id, name=tool_name),
         )
 
-    def with_tool_call_args(
-        self,
-        *,
-        index: int,
-        args_chunk: str,
-    ) -> AssistantMessageChunk:
+    def append_tool_call_args(self, *, index: int, args_chunk: str) -> None:
         """Дописать args в зарегистрированный tool-call (из ToolCallArgumentDelta)."""
-        for i, b in enumerate(self.blocks):
+        for b in self.blocks:
             if isinstance(b, PartialToolCallBlock) and b.index == index:
-                updated = b.with_args(args_chunk)
-                return AssistantMessageChunk(
-                    blocks=(*self.blocks[:i], updated, *self.blocks[i + 1 :]),
-                )
+                b.append_args(args_chunk)
+                return
         raise LLMProtocolError(
-            f"with_tool_call_args: index={index} не зарегистрирован — "
+            f"append_tool_call_args: index={index} не зарегистрирован — "
             f"ToolCallArgumentDelta пришла без предшествующего ToolCallStreamStarted"
         )
 
     def finalize(self) -> AssistantMessage:
-        """Замкнуть чанк в финальный AssistantMessage со свежим id."""
+        """Замкнуть чанк в финальный AssistantMessage со свежим id.
+
+        Для replay/тестов: `chunk.finalize().set_id(my_id)`.
+        """
         return AssistantMessage(
             id=new_message_id(),
-            blocks=tuple(b.finalize() for b in self.blocks),
-        )
-
-    def finalize_with_id(self, *, message_id: MessageId) -> AssistantMessage:
-        """Тот же `finalize`, но с заданным id (replay/тесты)."""
-        return AssistantMessage(
-            id=message_id,
             blocks=tuple(b.finalize() for b in self.blocks),
         )
 
@@ -630,7 +575,7 @@ class SamplingParams:
 
 
 @dataclass(frozen=True)
-class LLMToolRequest:
+class LLMToolDefinition:
     tools: tuple[ToolSchema, ...] = ()
     tool_choice: str | None = None
     parallel_tool_calls: bool | None = None
@@ -641,13 +586,13 @@ class LLMRequest:
     request_id: RequestId
     model: str
     system_messages: tuple[SystemMessage, ...] = ()
-    messages: tuple[DialogMessage, ...] = ()
-    tools: LLMToolRequest = field(default_factory=LLMToolRequest)
+    dialog_messages: tuple[DialogMessage, ...] = ()
+    tools_definition: LLMToolDefinition = field(default_factory=LLMToolDefinition)
     sampling: SamplingParams = field(default_factory=SamplingParams)
     response_format: Mapping[str, Any] | None = None
 
     def has_tools(self) -> bool:
-        return bool(self.tools.tools)
+        return bool(self.tools_definition.tools)
 
 
 @dataclass(frozen=True)

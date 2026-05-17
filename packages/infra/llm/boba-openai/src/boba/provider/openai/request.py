@@ -12,8 +12,7 @@ from boba.llm.models import (
     LLMRequest,
     Message,
     SystemMessage,
-    TextBlock,
-    ToolCallBlock,
+    ToolCall,
     ToolResultMessage,
     UserMessage,
 )
@@ -21,6 +20,7 @@ from boba.patterns import Converter
 from boba.tools.domain import ToolSchema
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
+    ChatCompletionMessageFunctionToolCallParam,
     ChatCompletionMessageParam,
     ChatCompletionSystemMessageParam,
     ChatCompletionToolMessageParam,
@@ -43,8 +43,24 @@ class ToOpenAIToolConverter(Converter[ToolSchema, ChatCompletionToolParam]):
         }
 
 
+class ToOpenAIToolCallConverter(
+    Converter[ToolCall, ChatCompletionMessageFunctionToolCallParam],
+):
+    """Конвертация ToolCall → OpenAI tool_call dict для assistant-message."""
+
+    def convert(self, value: ToolCall) -> ChatCompletionMessageFunctionToolCallParam:
+        return {
+            "id": value.id,
+            "type": "function",
+            "function": {
+                "name": value.name,
+                "arguments": value.args_json(),
+            },
+        }
+
+
 class ToOpenAIMessageConverter(Converter[Message, ChatCompletionMessageParam]):
-    """Конвертация Message-иерархии → OpenAI message param (visitor по типу).
+    """Конвертация Message-иерархии → OpenAI message param.
 
     Все Message-типы block-based; конвертер flatten'ит блоки в wire-формат
     OpenAI Chat Completions (плоский content + tool_calls). Image/file блоки
@@ -52,15 +68,17 @@ class ToOpenAIMessageConverter(Converter[Message, ChatCompletionMessageParam]):
     мультимодальный content-array.
     """
 
+    def __init__(self) -> None:
+        self._to_tool_call = ToOpenAIToolCallConverter()
+
     def convert(self, value: Message) -> ChatCompletionMessageParam:
         """Flatten доменных блоков в OpenAI Chat Completions wire-shape.
 
         OpenAI Chat не interleav'ит блоки — `content` это одна строка, а
         tool_calls — поле параллельное content. Поэтому: для system/user
         склеиваем все TextBlock; для assistant — текст в content, tool_calls
-        в одноимённое поле. Не-text блоки в system/user пока игнорируются
-        (image/file требуют отдельной формы content-array — добавим, когда
-        мультимодальность станет use-case'ом).
+        в одноимённое поле. Thinking/refusal/invalid_tool_call живут в домене
+        для replay/audit, в OpenAI Chat не отправляются.
         """
         match value:
             case SystemMessage():
@@ -73,48 +91,30 @@ class ToOpenAIMessageConverter(Converter[Message, ChatCompletionMessageParam]):
                     role="user",
                     content=value.content,
                 )
-            case AssistantMessage(blocks=blocks):
-                text_parts: list[str] = []
-                tool_calls: list[Any] = []
-                for block in blocks:
-                    match block:
-                        case TextBlock(content=c):
-                            text_parts.append(c)
-                        case ToolCallBlock(call=tc):
-                            tool_calls.append(
-                                {
-                                    "id": tc.id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": tc.name,
-                                        "arguments": tc.args_json(),
-                                    },
-                                },
-                            )
-                        case _:
-                            # thinking / refusal / invalid_tool_call —
-                            # для replay/audit держим в домене, в OpenAI
-                            # Chat не отправляем.
-                            pass
+            case AssistantMessage():
                 param = ChatCompletionAssistantMessageParam(
                     role="assistant",
-                    content="".join(text_parts),
+                    content=value.content,
                 )
+
+                tool_calls = [
+                    self._to_tool_call.convert(b.call) for b in value.tool_call_blocks
+                ]
                 if tool_calls:
                     param["tool_calls"] = tool_calls
+
                 return param
-            case ToolResultMessage(tool_call_id=tcid, blocks=blocks):
-                # OpenAI Chat: tool message content — одна строка.
-                # Image-блоки tool_result в Chat API не поддерживаются —
-                # игнорируем (для Responses API/Anthropic — отдельный адаптер).
-                text_parts = [b.content for b in blocks if isinstance(b, TextBlock)]
+            case ToolResultMessage(tool_call_id=tcid):
                 return ChatCompletionToolMessageParam(
                     role="tool",
-                    content="".join(text_parts),
+                    content=value.content,
                     tool_call_id=tcid,
                 )
             case _:
-                msg = f"ToOpenAIMessageConverter: неизвестный Message-тип: {type(value).__name__}"
+                msg = (
+                    "ToOpenAIMessageConverter: неизвестный Message-тип: "
+                    f"{type(value).__name__}"
+                )
                 raise LLMProtocolError(msg)
 
 
@@ -140,7 +140,7 @@ class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
     def _apply_messages(self, kwargs: dict[str, Any], r: LLMRequest) -> None:
         """Склеивает в OpenAI-порядок: system_messages → messages."""
         kwargs["messages"] = list(
-            self._convert_messages(chain(r.system_messages, r.messages))
+            self._convert_messages(chain(r.system_messages, r.dialog_messages))
         )
 
     def _convert_messages(
@@ -165,7 +165,7 @@ class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
                 kwargs[key] = val
 
     def _apply_tools(self, kwargs: dict[str, Any], r: LLMRequest) -> None:
-        t = r.tools
+        t = r.tools_definition
         if t.tools:
             kwargs["tools"] = [self._to_tool.convert(tool) for tool in t.tools]
         if t.tool_choice is not None:
