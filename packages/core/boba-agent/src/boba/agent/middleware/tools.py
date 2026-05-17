@@ -79,7 +79,7 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
         except ToolExecutionError as e:
             error = ErrorResult(message=e.message, error_kind=type(e).__name__)
             self._writer.add(
-                ToolResultMessage(tool_call_id=call.id, result=error),
+                ToolResultMessage.from_result(tool_call_id=call.id, result=error),
             )
             yield ToolExecutionFailed(
                 request_id=tc.request_id,
@@ -92,7 +92,7 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
             return
 
         self._writer.add(
-            ToolResultMessage(tool_call_id=call.id, result=result),
+            ToolResultMessage.from_result(tool_call_id=call.id, result=result),
         )
         yield ToolResultReady(
             request_id=tc.request_id,
@@ -153,7 +153,7 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
                     error_kind="RepeatedToolCallError",
                 )
                 self._writer.add(
-                    ToolResultMessage(tool_call_id=call.id, result=error),
+                    ToolResultMessage.from_result(tool_call_id=call.id, result=error),
                 )
                 yield FeedbackToLLMAdded(
                     request_id=event.request_id,

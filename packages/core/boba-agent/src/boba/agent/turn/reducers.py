@@ -73,14 +73,8 @@ class SystemPromptReducer(PrioritySource[str, TurnState]):
 
 
 class UserQueryReducer(PrioritySource[str, TurnState]):
-    """Префиксует `UserMessage.from_text(ctx.query)` к dialog_messages.
-
-    Исходный запрос пользователя живёт в AgentContext, а не в истории:
-    `HistoryReducer` собирает диалог как view над событийным журналом
-    (assistant/tool_result, генерируемые внутри agent loop), а query —
-    это input текущего request_id и инжектится per-turn в начало диалога.
-    Приоритет между `HistoryReducer` (30) и `RememberUserQueryReducer` (35),
-    чтобы напоминание добавлялось уже после исходного запроса.
+    """
+    Добавляет `UserMessage.from_text(ctx.query)` к dialog_messages
     """
 
     ID: ClassVar[str] = "user_query"
