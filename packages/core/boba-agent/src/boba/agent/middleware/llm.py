@@ -150,7 +150,7 @@ class LLMPort(StreamSource[AgentContext, AgentEvent]):
         return "LLMPort"
 
     def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
-        request = self._turn.build(ctx).build()
+        request = self._turn.build(ctx)
 
         try:
             for event in self._llm.stream(LLMContext(request=request)):

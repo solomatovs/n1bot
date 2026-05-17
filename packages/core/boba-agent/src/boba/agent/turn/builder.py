@@ -37,13 +37,14 @@ from boba.agent.prompt_providers import (
 from boba.agent.turn.reducers import (
     HistoryReducer,
     ModelReducer,
+    RequestIdReducer,
     SamplingReducer,
     SystemPromptReducer,
     ToolsDefinitionReducer,
     TurnReducer,
     UserQueryReducer,
 )
-from boba.agent.turn.spec import LLMRequestFactory
+from boba.agent.turn.spec import LLMRequest, LLMRequestFactory
 from boba.llm.models import SamplingParams
 from boba.tools.framework import ToolCatalog
 from boba.workspace.contract import PromptWorkspaceShell
@@ -68,6 +69,7 @@ class TurnBuilder:
         self._tool_catalog: ToolCatalog | None = None
         self._model: str = model
         self._sampling: SamplingParams | None = None
+        self._factories[RequestIdReducer.ID] = self._make_request_id
         self._factories[ModelReducer.ID] = self._make_model
 
     def with_model(self, model: str) -> Self:
@@ -99,21 +101,27 @@ class TurnBuilder:
         self._factories[UserQueryReducer.ID] = self._make_user_query
         return self
 
-    def with_prompts(self, providers: Iterable[PromptProvider]) -> Self:
+    def system_prompt_from_providers(self, providers: Iterable[PromptProvider]) -> Self:
         """Полная замена списка system-prompt провайдеров + `SystemPromptReducer`.
 
         Для добавления отдельных источников — `.system_prompt(...)`,
         `.system_prompt_file(...)`, `.system_prompt_dir(...)`.
         """
-        self._system_prompt_providers = list(providers)
+        self._system_prompt_providers.extend(providers)
         self._factories[SystemPromptReducer.ID] = self._make_system_prompt
         return self
 
     def system_prompt(self, text: str, *, priority: int = 100) -> Self:
         """Добавить статичный system-prompt блок (отдельным `SystemMessage`)."""
-        pid = PromptId(f"static_{len(self._system_prompt_providers)}")
-        self._system_prompt_providers.append(StaticPromptProvider(pid, priority, text))
-        self._factories[SystemPromptReducer.ID] = self._make_system_prompt
+        self.system_prompt_from_providers(
+            [
+                StaticPromptProvider(
+                    PromptId(f"static_{len(self._system_prompt_providers)}"),
+                    priority,
+                    text,
+                )
+            ]
+        )
         return self
 
     def system_prompt_from_file(
@@ -125,17 +133,17 @@ class TurnBuilder:
         default_prompt: str = "",
     ) -> Self:
         """Добавить provider, читающий system-prompt из одного файла workspace."""
-        pid = PromptId(f"file_{len(self._system_prompt_providers)}_{rel_path}")
-        self._system_prompt_providers.append(
-            FilePromptProvider(
-                pid,
-                priority,
-                workspace,
-                rel_path,
-                default_prompt=default_prompt,
-            ),
+        self.system_prompt_from_providers(
+            [
+                FilePromptProvider(
+                    PromptId(f"file_{len(self._system_prompt_providers)}_{rel_path}"),
+                    priority,
+                    workspace,
+                    rel_path,
+                    default_prompt=default_prompt,
+                ),
+            ]
         )
-        self._factories[SystemPromptReducer.ID] = self._make_system_prompt
         return self
 
     def system_prompt_from_directory(
@@ -146,16 +154,16 @@ class TurnBuilder:
         extensions: tuple[str, ...] = (".md", ".txt"),
     ) -> Self:
         """Добавить provider, читающий файлы из workspace как отдельные блоки."""
-        pid = PromptId(f"dir_{len(self._system_prompt_providers)}")
-        self._system_prompt_providers.append(
-            DirectoryPromptProvider(
-                pid,
-                priority,
-                workspace,
-                extensions=extensions,
-            ),
+        self.system_prompt_from_providers(
+            [
+                DirectoryPromptProvider(
+                    PromptId(f"dir_{len(self._system_prompt_providers)}"),
+                    priority,
+                    workspace,
+                    extensions=extensions,
+                ),
+            ]
         )
-        self._factories[SystemPromptReducer.ID] = self._make_system_prompt
         return self
 
     def use_reducer(self, reducer: TurnReducer) -> Self:
@@ -188,14 +196,19 @@ class TurnBuilder:
         """True, если пользователь уже задал `ToolCatalog` явно."""
         return self._tool_catalog is not None
 
-    def build(self, ctx: AgentContext) -> LLMRequestFactory:
-        """Свежий LLMRequestFactory под `ctx`: прогнать фабрики, заполнить spec."""
-        spec = LLMRequestFactory(ctx.request_id)
+    def build(self, ctx: AgentContext) -> LLMRequest:
+        """Прогнать все фабрики над `ctx`, заполнить spec, отдать LLMRequest."""
+        spec = LLMRequestFactory()
+
         for factory in self._factories.values():
             spec.register(factory(ctx))
-        return spec
 
-    # --- фабрики reducer'ов (читают live state self.*) ------------------
+        return spec.build()
+
+    # --- фабрики reducer'ов (читают live state self.* и ctx) -----------
+
+    def _make_request_id(self, ctx: AgentContext) -> RequestIdReducer:
+        return RequestIdReducer(ctx.request_id)
 
     def _make_model(self, _ctx: AgentContext) -> ModelReducer:
         return ModelReducer(self._model)

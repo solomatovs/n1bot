@@ -17,7 +17,6 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.agent.prompt_providers import PromptsConfig
 from boba.agent.workspace_fs import WorkspaceLayout
 from boba.provider.openai import OpenAIConfig
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
@@ -57,4 +56,6 @@ class AppConfig(BobaFlatSettings):
     core: AppCoreConfig = Field(default_factory=AppCoreConfig)
     workspaces: WorkspaceLayout = Field(default_factory=WorkspaceLayout)
     openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
-    prompts: PromptsConfig
+    system_prompt_dir: str = Field(
+        description="Корневая директория .md/.txt-файлов с system-prompt",
+    )
