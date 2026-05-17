@@ -196,10 +196,23 @@ async def on_message(message: cl.Message) -> None:
         thread_id, workspace_id, user.username, message.content
     )
 
-    session = await app_state().open_chat_session.execute(
-        user,
-        workspace_id,
-    )
+    try:
+        session = await app_state().open_chat_session.execute(
+            user,
+            workspace_id,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Failed to open chat session for workspace=%s", workspace_id
+        )
+        await cl.Message(
+            content=(
+                f"Не удалось открыть сессию: {type(exc).__name__}: {exc}\n\n"
+                "Подробности — в логах сервера."
+            ),
+            author="system",
+        ).send()
+        return
 
     query = message.content
 
@@ -213,10 +226,22 @@ async def on_message(message: cl.Message) -> None:
         finally:
             bridge.close()
 
-    await asyncio.gather(
-        asyncio.to_thread(_run_agent),
-        _render_events(queue),
-    )
+    try:
+        await asyncio.gather(
+            asyncio.to_thread(_run_agent),
+            _render_events(queue),
+        )
+    except Exception as exc:
+        logger.exception(
+            "Agent run failed for workspace=%s", workspace_id
+        )
+        await cl.Message(
+            content=(
+                f"Ошибка при выполнении агента: {type(exc).__name__}: {exc}\n\n"
+                "Подробности — в логах сервера."
+            ),
+            author="system",
+        ).send()
 
 
 def _current_run_step_id() -> str | None:
