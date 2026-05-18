@@ -21,13 +21,15 @@ __all__ = ["LLM", "LLMBuilder"]
 
 TRequest = TypeVar("TRequest")
 TChunk = TypeVar("TChunk")
+TApiError = TypeVar("TApiError", bound=Exception)
+THttpError = TypeVar("THttpError", bound=Exception)
 
 MiddlewareFactory = Callable[
     [StreamSource[LLMContext, LLMEvent]],
     StreamSource[LLMContext, LLMEvent],
 ]
 TerminalFactory = Callable[
-    [LLMRequestObserver[Any, Any]],
+    [LLMRequestObserver[Any, Any, Any, Any]],
     StreamSource[LLMContext, LLMEvent],
 ]
 
@@ -51,7 +53,9 @@ class LLM:
         yield from self._source.stream(ctx)
 
 
-class LLMBuilder(FactoryMethod[LLM], Generic[TRequest, TChunk]):
+class LLMBuilder(
+    FactoryMethod[LLM], Generic[TRequest, TChunk, TApiError, THttpError]
+):
     """
     Fluent-фасад LLM-слоя: middleware + observers + provider-terminal
     - `.use(...)`           — добавление конкретного middleware в цепочку
@@ -61,13 +65,15 @@ class LLMBuilder(FactoryMethod[LLM], Generic[TRequest, TChunk]):
     """
 
     def __init__(self) -> None:
-        self._observers: list[LLMRequestObserver[TRequest, TChunk]] = []
+        self._observers: list[
+            LLMRequestObserver[TRequest, TChunk, TApiError, THttpError]
+        ] = []
         self._terminal_factory: TerminalFactory | None = None
         self._middlewares: list[MiddlewareFactory] = []
 
     def add_observer(
         self,
-        observer: LLMRequestObserver[TRequest, TChunk],
+        observer: LLMRequestObserver[TRequest, TChunk, TApiError, THttpError],
     ) -> Self:
         """Подключить наблюдатель wire-уровня; склеиваются в Composite."""
         self._observers.append(observer)
