@@ -33,7 +33,7 @@ def _make_tool(shell):
         prompt=PromptOverlay(),
     )
     ctx = ExtensionContext({ProjectWorkspaceShell: shell})
-    return ConfluencePageDownloadTool(cfg, ctx, ToolSourceId("plugin.confluence"))
+    return ConfluencePageDownloadTool(cfg, ctx, ToolSourceId("plugin_confluence"))
 
 
 def test_downloads_pages_to_workspace_files(

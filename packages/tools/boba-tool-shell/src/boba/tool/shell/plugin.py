@@ -216,7 +216,7 @@ class ShellPlugin(Plugin[ShellPluginConfig, ToolSource]):
     """Plugin одного bash-tool'а в одном из режимов — sandbox или local."""
 
     NAME: ClassVar[str] = "shell"
-    SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("plugin.shell")
+    SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("plugin_shell")
 
     @classmethod
     def build(

@@ -12,7 +12,7 @@ from boba.tool.postgres_fts.errors import IndexNotFoundError
 from boba.tool.postgres_fts.models import IndexSpec
 from boba.tools.domain import ToolName, ToolSourceId, compose_tool_id
 
-_TOOL_ID = compose_tool_id(ToolSourceId("plugin.postgres_fts"), ToolName("fts_search"))
+_TOOL_ID = compose_tool_id(ToolSourceId("plugin_postgres_fts"), ToolName("fts_search"))
 _Column = namedtuple("_Column", ["name"])
 
 

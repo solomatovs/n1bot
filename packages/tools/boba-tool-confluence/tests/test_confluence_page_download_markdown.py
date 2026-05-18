@@ -34,7 +34,7 @@ def _make_tool(shell):
     )
     ctx = ExtensionContext({ProjectWorkspaceShell: shell})
     return ConfluencePageDownloadMarkdownTool(
-        cfg, ctx, ToolSourceId("plugin.confluence"),
+        cfg, ctx, ToolSourceId("plugin_confluence"),
     )
 
 

@@ -18,7 +18,7 @@ from boba.tool.postgres_fts.models import IndexSpec
 from boba.tools.domain import JsonResult, ToolContext, ToolSourceId
 from boba.tools.domain.errors import InvalidToolArgumentError
 
-_SOURCE = ToolSourceId("plugin.postgres_fts")
+_SOURCE = ToolSourceId("plugin_postgres_fts")
 _Column = namedtuple("_Column", ["name"])
 
 
