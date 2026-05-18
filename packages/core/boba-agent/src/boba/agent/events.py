@@ -191,7 +191,7 @@ from boba.agent.models import (
     ToolCallResult,
 )
 from boba.llm.events import FinishReason
-from boba.llm.models import InvalidToolCall, RequestId, ToolCall
+from boba.llm.models import AssistantMessage, InvalidToolCall, RequestId, ToolCall
 from boba.tools.domain import ErrorResult, JsonResult, TextResult
 
 # --------------------------------------------------------------------- #
@@ -360,6 +360,17 @@ def _error_details(error_kind: str, status_code: int | None) -> dict[str, str]:
     if status_code is not None:
         out["status_code"] = str(status_code)
     return out
+
+
+def _severity_for_finish_reason(reason: FinishReason) -> Severity:
+    """Визуальная приоритизация finish_reason для PhaseEvent.severity."""
+    match reason:
+        case FinishReason.LENGTH:
+            return Severity.WARN
+        case FinishReason.CONTENT_FILTER:
+            return Severity.ERROR
+        case FinishReason.STOP | FinishReason.TOOL_CALLS:
+            return Severity.INFO
 
 
 def compose_error_body(
@@ -539,6 +550,11 @@ class GenerationRetried(PhaseEvent):
 class GenerationDone(PhaseEvent):
     """
     Прогон завершён — пришёл finish_reason
+
+    Поле `finish_reason` — то, что реально прислал провайдер на wire,
+    без подмен. Решения о терминальности агентского цикла принимаются
+    выше — на отдельных `StopIf*` спецификациях, читающих агрегированный
+    `GenerationResult`.
     """
 
     type: Literal["GenerationDone"] = "GenerationDone"
@@ -548,6 +564,53 @@ class GenerationDone(PhaseEvent):
     def _derive(self) -> Self:
         self.label = f"generation done ({self.finish_reason.value})"
         self.details = {"finish_reason": self.finish_reason.value}
+        return self
+
+
+class GenerationResult(PhaseEvent):
+    """
+    Итог одной генерации LLM — собранный AssistantMessage и raw finish_reason.
+
+    Эмитится строго после `GenerationDone` и после всех per-field
+    `*Complete`/`InvalidToolCallReceived` событий. Несёт всё, что пришло
+    от провайдера в режиме streaming, в форме обычного `stream=False` ответа:
+
+    - `message` — собранный AssistantMessage со всеми блоками
+      (thinking / text / refusal / tool_calls / invalid_tool_calls).
+      Пустой message (без блоков) — валидное состояние, когда модель
+      завершилась без контента.
+    - `finish_reason` — то, что реально прислал провайдер; без подмен.
+
+    Единственное событие, на котором принимается решение об остановке
+    агентского цикла — см. `StopIfNotToolCall`, `StopIfLengthReached`,
+    `StopIfContentFilter`.
+    """
+
+    type: Literal["GenerationResult"] = "GenerationResult"
+    message: AssistantMessage
+    finish_reason: FinishReason
+
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        n_blocks = len(self.message.blocks)
+        n_tools = len(self.message.tool_calls)
+        self.label = (
+            f"generation result ({self.finish_reason.value}, "
+            f"blocks={n_blocks}, tool_calls={n_tools})"
+        )
+        self.details = {
+            "finish_reason": self.finish_reason.value,
+            "blocks": str(n_blocks),
+            "tool_calls": str(n_tools),
+            "has_answer": str(bool(self.message.content)),
+            "has_thinking": str(bool(self.message.thinking)),
+            "has_refusal": str(bool(self.message.refusal)),
+        }
+        # Severity подсказывает sink'ам визуальный приоритет:
+        # LENGTH — ответ обрезан, есть смысл показать предупреждение;
+        # CONTENT_FILTER — провайдер заблокировал, ошибка для пользователя;
+        # STOP / TOOL_CALLS — обычный финал, INFO.
+        self.severity = _severity_for_finish_reason(self.finish_reason)
         return self
 
 
@@ -900,6 +963,7 @@ AgentEvent = (
     | ToolExecutionStarted
     | GenerationRetried
     | GenerationDone
+    | GenerationResult
     # ContentDeltaEvent
     | ThinkingToken
     | AnswerToken
@@ -935,6 +999,7 @@ AgentEventName: TypeAlias = Literal[
     "ToolExecutionStarted",
     "GenerationRetried",
     "GenerationDone",
+    "GenerationResult",
     "ThinkingToken",
     "AnswerToken",
     "RefusalToken",
@@ -1072,6 +1137,7 @@ def _register_core_events() -> None:
         ToolExecutionStarted,
         GenerationRetried,
         GenerationDone,
+        GenerationResult,
         ThinkingToken,
         AnswerToken,
         RefusalToken,

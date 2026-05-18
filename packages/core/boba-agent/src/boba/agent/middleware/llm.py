@@ -14,16 +14,22 @@ from boba.agent.agent import AgentContext
 from boba.agent.errors import LLMGenerationFailedError
 from boba.agent.events import (
     AgentEvent,
+    AnswerComplete,
     AnswerStarted,
     AnswerToken,
     GenerationDone,
+    GenerationResult,
     GenerationRetried,
     GenerationStarted,
+    InvalidToolCallReceived,
+    RefusalComplete,
     RefusalToken,
     ResponseStarted,
+    ThinkingComplete,
     ThinkingStarted,
     ThinkingToken,
     ToolCallArgumentDelta,
+    ToolCallComplete,
     ToolCallStreamStarted,
 )
 from boba.agent.events import RequestStart as AgentLLMRequestSent
@@ -31,19 +37,25 @@ from boba.agent.turn.builder import TurnBuilder
 from boba.llm.builder import LLM
 from boba.llm.errors import LLMError
 from boba.llm.events import (
+    LLMAnswerComplete,
     LLMAnswerStarted,
     LLMAnswerToken,
     LLMEvent,
     LLMGenerationDone,
+    LLMGenerationResult,
     LLMGenerationStarted,
+    LLMInvalidToolCallReceived,
+    LLMRefusalComplete,
     LLMRefusalToken,
     LLMRequestStarted,
     LLMResponseStarted,
     LLMRetryAttempt,
+    LLMThinkingComplete,
     LLMThinkingStarted,
     LLMThinkingToken,
     LLMToolCallArgumentDelta,
     LLMToolCallBegin,
+    LLMToolCallComplete,
 )
 from boba.llm.models import LLMContext
 from boba.patterns import StreamSource
@@ -120,6 +132,26 @@ class LLMToAgentConverter:
                 )
             case LLMGenerationDone(request_id=rid, finish_reason=fr):
                 yield GenerationDone(request_id=rid, finish_reason=fr)
+            case LLMThinkingComplete(request_id=rid, content=c):
+                yield ThinkingComplete(request_id=rid, content=c)
+            case LLMAnswerComplete(request_id=rid, content=c):
+                yield AnswerComplete(request_id=rid, content=c)
+            case LLMRefusalComplete(request_id=rid, content=c):
+                yield RefusalComplete(request_id=rid, content=c)
+            case LLMToolCallComplete(request_id=rid, call=call):
+                yield ToolCallComplete(request_id=rid, call=call)
+            case LLMInvalidToolCallReceived(request_id=rid, invalid=invalid):
+                yield InvalidToolCallReceived(request_id=rid, invalid=invalid)
+            case LLMGenerationResult(
+                request_id=rid,
+                message=msg,
+                finish_reason=fr,
+            ):
+                yield GenerationResult(
+                    request_id=rid,
+                    message=msg,
+                    finish_reason=fr,
+                )
             case _:
                 assert_never(event)
 

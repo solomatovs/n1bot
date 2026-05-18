@@ -20,7 +20,7 @@ UserMessage от LLMCritique или ToolResultMessage от ToolCallRejection);
 семантику нужно расщеплять отдельным шагом.
 
 Группировка блоков AssistantMessage идёт по `(request_id, iteration)`:
-снапшоты ассистента эмитятся `AssistantSnapshotMiddleware` в фиксированном
+снапшоты ассистента эмитятся `AssistantAggregator` в LLM-слое в фиксированном
 порядке (thinking → answer → refusal → tool_calls → invalid), а
 `GenerationDone` закрывает генерацию.
 """

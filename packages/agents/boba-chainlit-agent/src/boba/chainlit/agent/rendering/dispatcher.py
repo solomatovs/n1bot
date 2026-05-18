@@ -34,6 +34,7 @@ from boba.agent.events import (
     ContentSnapshotEvent,
     FeedbackToLLMAdded,
     GenerationDone,
+    GenerationResult,
     InvalidToolCallReceived,
     IterationStarted,
     PhaseEvent,
@@ -53,6 +54,7 @@ from boba.agent.events import (
     ToolResultReady,
     UserQueryReceived,
 )
+from boba.llm.events import FinishReason
 from boba.tools.domain import ErrorResult, JsonResult, TextResult, ToolResult
 
 if TYPE_CHECKING:
@@ -201,6 +203,8 @@ class AgentEventDispatcher:
                 await self._target.tool_execution_started(call.id)
             case AnswerStarted() | ThinkingStarted() | GenerationDone():
                 await self._target.generation_milestone()
+            case GenerationResult():
+                await self._handle_generation_result(event)
 
             # --- AdvisoryEvent ----------------------------------------
             case InvalidToolCallReceived(invalid=invalid):
@@ -238,6 +242,52 @@ class AgentEventDispatcher:
                 # ContentDelta без специализации (StreamKind, который мы
                 # не выделили выше) — игнорируем.
                 return
+
+    async def _handle_generation_result(self, event: GenerationResult) -> None:
+        """Подсветить «не-нормальный» исход генерации в UI.
+
+        Для STOP / TOOL_CALLS — тихий no-op: per-field *Complete события
+        уже отрисовали контент, и `GenerationResult` несёт лишь агрегат,
+        который без аномалии не нуждается в отдельной отрисовке.
+
+        Для LENGTH — system-advisory: ответ обрезан, пользователь должен
+        об этом узнать. Для CONTENT_FILTER — terminal: ответ заблокирован
+        фильтром провайдера, повторение с тем же промптом обычно
+        бесполезно.
+
+        Тексты — на русском, как и весь UI Chainlit-агента; severity
+        события уже выставлен по finish_reason в `_derive`.
+        """
+        match event.finish_reason:
+            case FinishReason.LENGTH:
+                body = self._fmt_outcome_body(event)
+                await self._target.advisory(
+                    "Ответ обрезан: достигнут лимит токенов",
+                    body,
+                )
+            case FinishReason.CONTENT_FILTER:
+                body = self._fmt_outcome_body(event)
+                await self._target.terminal(
+                    "Ответ заблокирован фильтром провайдера",
+                    body,
+                )
+            case FinishReason.STOP | FinishReason.TOOL_CALLS:
+                # Нормальный путь — контент уже отрисован per-field событиями.
+                return
+
+    @staticmethod
+    def _fmt_outcome_body(event: GenerationResult) -> str:
+        msg = event.message
+        parts: list[str] = [f"finish_reason: {event.finish_reason.value}"]
+        if msg.content:
+            parts.append(f"answer length: {len(msg.content)} chars")
+        if msg.thinking:
+            parts.append(f"thinking length: {len(msg.thinking)} chars")
+        if msg.tool_calls:
+            parts.append(f"tool_calls: {len(msg.tool_calls)}")
+        if msg.invalid_tool_calls:
+            parts.append(f"invalid_tool_calls: {len(msg.invalid_tool_calls)}")
+        return "\n".join(parts)
 
     async def _handle_unmatched_snapshot(
         self,
