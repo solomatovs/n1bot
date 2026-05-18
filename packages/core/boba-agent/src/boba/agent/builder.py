@@ -14,14 +14,15 @@ from boba.agent.history import HistoryService, HistoryWriter, InMemoryHistorySer
 from boba.agent.middleware import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
-    AssistantSnapshotMiddleware,
     EventStamperMiddleware,
     HistoryRecorderMiddleware,
     IterationCounterConfig,
     IterationCounterMiddleware,
     LLMPort,
+    StopIfContentFilter,
+    StopIfLengthReached,
+    StopIfReasonStop,
     StopOnAnyFailure,
-    StopOnFinished,
     ToolExecutionMiddleware,
     UserQueryRecorderMiddleware,
 )
@@ -230,7 +231,12 @@ class AgentBuilder:
         )
         source = StreamSourceLoop(
             source=chain,
-            stop_if=StopOnFinished().or_(StopOnAnyFailure()),
+            stop_if=(
+                StopIfReasonStop()
+                .or_(StopIfLengthReached())
+                .or_(StopIfContentFilter())
+                .or_(StopOnAnyFailure())
+            ),
         )
         return Agent(source=source)
 
@@ -324,7 +330,6 @@ class AgentBuilder:
         event_stamper_factory: EventStamperFactory,
         builder_config: AgentBuilderConfig,
     ) -> StreamSource[AgentContext, AgentEvent]:
-        error_router = AgentErrorRouter()
         builder = StreamSourceChainBuilder[AgentContext, AgentEvent]()
         # HistoryRecorder самым внешним — журналит уже стампленные события.
         builder.use(
@@ -333,7 +338,7 @@ class AgentBuilder:
         # EventStamper — сразу под HistoryRecorder: стампит ВСЁ, что приходит
         # от внутренних middleware, до записи в журнал и отдачи в sink'и.
         builder.use(event_stamper_factory)
-        builder.use(lambda inner: AgentErrorRouterMiddleware(inner, error_router))
+        builder.use(lambda inner: AgentErrorRouterMiddleware(inner, AgentErrorRouter()))
         builder.use(
             lambda inner: IterationCounterMiddleware(
                 inner,
@@ -343,8 +348,7 @@ class AgentBuilder:
         builder.use(
             lambda inner: ToolExecutionMiddleware(inner, tool_executor),
         )
-        builder.use(AssistantSnapshotMiddleware)
-        # UserQueryRecorder — самый внутренний wrapper над LLMPort: эмитит
-        # UserQueryReceived один раз на request_id раньше любых LLM-событий.
+
         builder.use(UserQueryRecorderMiddleware)
+
         return builder.terminal(LLMPort(llm, turn))

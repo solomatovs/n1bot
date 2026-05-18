@@ -8,10 +8,11 @@ from boba.agent.agent import AgentContext
 from boba.agent.errors import MaxIterationsExceededError
 from boba.agent.events import (
     AgentEvent,
-    GenerationDone,
+    GenerationResult,
     IterationStarted,
     TerminalEvent,
 )
+from boba.llm.events import FinishReason
 from boba.patterns import Specification, StreamSource
 
 
@@ -69,14 +70,80 @@ class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
         yield from self._inner.stream(ctx)
 
 
-class StopOnFinished(Specification[tuple[AgentContext, AgentEvent]]):
-    """Останавливает цикл при terminal finish_reason от LLM."""
+class StopIfReasonStop(Specification[tuple[AgentContext, AgentEvent]]):
+    """
+    Стопает цикл, если модель отдала финальный текстовый ответ.
+
+    Срабатывает на `GenerationResult`, у которого:
+        - `finish_reason == STOP` (модель сама решила, что закончила)
+        - в `message.tool_calls` пусто (модель не зовёт инструменты)
+
+    Если tool_calls есть — `finish_reason=stop` игнорируется (мелкие модели
+    часто отдают `stop` вместо `tool_calls`, нам важен факт вызова tool'а,
+    а не подменный finish_reason).
+
+    Это «нормальный» путь завершения круга вопрос-ответ.
+    """
 
     def check(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
         _ctx, event = candidate
-        if isinstance(event, GenerationDone):
-            return event.finish_reason.is_terminal
-        return False
+
+        if not isinstance(event, GenerationResult):
+            return False
+
+        # тут лайфхак!
+        # не все модели шлют finish_reason: tool_calls
+        # многие присылают tool_call но в конце все равно отдают finish_reason=stop
+        # именно такую ситуацию я здесь обрабатываю
+        # она означает, что агентский цикл нельзя завершать
+        # так как модель хотела вызвать tool, хоть и сообщила stop
+        if event.message.tool_calls:
+            return False
+
+        return event.finish_reason is FinishReason.STOP
+
+
+class StopIfLengthReached(Specification[tuple[AgentContext, AgentEvent]]):
+    """
+    Стопает цикл, если генерация упёрлась в лимит токенов.
+
+    Срабатывает на `GenerationResult` с `finish_reason == LENGTH` независимо
+    от tool_calls. Tool-call, обрезанный по длине, выполнять опасно — args
+    могут оказаться невалидным JSON или с потерей хвоста; лучше остановить
+    цикл и дать вышестоящему коду решить, что делать (поднять max_tokens,
+    попросить «continue», вернуть пользователю что есть).
+
+    Если в твоём приложении нужна авто-продолжающаяся стратегия — не подключай
+    этот spec в `stop_if`, и пусть цикл крутится дальше (но тогда нужен
+    отдельный механизм, который добавит «continue» в историю).
+    """
+
+    def check(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
+        _ctx, event = candidate
+
+        if not isinstance(event, GenerationResult):
+            return False
+
+        return event.finish_reason is FinishReason.LENGTH
+
+
+class StopIfContentFilter(Specification[tuple[AgentContext, AgentEvent]]):
+    """
+    Стопает цикл, если провайдерский фильтр заблокировал генерацию.
+
+    Срабатывает на `GenerationResult` с `finish_reason == CONTENT_FILTER`.
+    Повторять с тем же промптом смысла нет — фильтр сработает снова.
+    Решение об альтернативном промпте или эскалации пользователю — за
+    вышестоящим слоем.
+    """
+
+    def check(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
+        _ctx, event = candidate
+
+        if not isinstance(event, GenerationResult):
+            return False
+
+        return event.finish_reason is FinishReason.CONTENT_FILTER
 
 
 class StopOnAnyFailure(Specification[tuple[AgentContext, AgentEvent]]):
@@ -84,4 +151,5 @@ class StopOnAnyFailure(Specification[tuple[AgentContext, AgentEvent]]):
 
     def check(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
         _ctx, event = candidate
+
         return isinstance(event, TerminalEvent)

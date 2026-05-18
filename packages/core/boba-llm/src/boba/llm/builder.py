@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterator
 from typing import Any, Generic, Self, TypeVar
 
 from boba.llm.events import LLMEvent
+from boba.llm.middleware import AssistantAggregator
 from boba.llm.models import LLMContext
 from boba.llm.observer import CompositeLLMRequestObserver, LLMRequestObserver
 from boba.patterns import FactoryMethod, StreamSource, StreamSourceChainBuilder
@@ -102,7 +103,14 @@ class LLMBuilder(FactoryMethod[LLM], Generic[TRequest, TChunk]):
         return fn(self, *args, **kwargs)
 
     def build(self) -> LLM:
-        """Собрать LLM: composite-observer → terminal → middleware-chain → обёртка."""
+        """Собрать LLM: observer → terminal → aggregator → middleware-chain → обёртка.
+
+        `AssistantAggregator` подключается обязательно как ближайшая обёртка
+        над provider-terminal, чтобы гарантировать наличие `LLMGenerationResult`
+        в любом LLM-выводе. Пользовательские middleware (включая retry) лежат
+        снаружи аггрегатора — retry между попытками сбрасывает аккумулятор
+        через `reset()`-цепочку.
+        """
         if self._terminal_factory is None:
             msg = (
                 "LLMBuilder.build: terminal не задан — "
@@ -115,8 +123,7 @@ class LLMBuilder(FactoryMethod[LLM], Generic[TRequest, TChunk]):
         for mw in self._middlewares:
             chain_builder.use(mw)
 
-        return LLM(
-            chain_builder.terminal(
-                self._terminal_factory(CompositeLLMRequestObserver(self._observers))
-            )
+        terminal = self._terminal_factory(
+            CompositeLLMRequestObserver(self._observers),
         )
+        return LLM(chain_builder.terminal(AssistantAggregator(terminal)))

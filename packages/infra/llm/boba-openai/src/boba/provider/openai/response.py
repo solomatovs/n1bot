@@ -142,6 +142,7 @@ class ToolCallSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
         for choice in stream:
             if not choice.delta.tool_calls:
                 continue
+
             for tc in choice.delta.tool_calls:
                 if (
                     tc.index not in self._tool_calls
@@ -174,24 +175,22 @@ class ToolCallSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
 
 
 class FinishSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
-    """Эмитит LLMGenerationDone при появлении finish_reason."""
+    """Эмитит LLMGenerationDone с raw finish_reason от провайдера.
+
+    Никаких подмен finish_reason: что прислал провайдер — то и эмитим.
+    Решения о терминальности агентского цикла принимаются выше — на
+    отдельных `StopIf*` спецификациях, читающих агрегированный
+    `LLMGenerationResult`.
+    """
 
     def __init__(self, request_id: RequestId) -> None:
         self._request_id = request_id
-        self._saw_tool_call = False
 
     def name(self) -> str:
         return "Finish"
 
-    def reset(self) -> None:
-        self._saw_tool_call = False
-
     def stream(self, ctx: LLMContext, stream: Iterable[Choice]) -> Iterable[LLMEvent]:
-        """Подменяет finish_reason=stop на tool_calls если были tool_calls."""
         for choice in stream:
-            if choice.delta.tool_calls:
-                self._saw_tool_call = True
-
             if choice.finish_reason:
                 try:
                     reason = FinishReason(choice.finish_reason)
@@ -199,10 +198,6 @@ class FinishSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
                     raise LLMProtocolError(
                         f"unknown finish_reason from provider: {choice.finish_reason!r}"
                     ) from e
-
-                # Lifehack: если были tool_calls, принудительно ставим TOOL_CALLS.
-                if self._saw_tool_call and reason is not FinishReason.TOOL_CALLS:
-                    reason = FinishReason.TOOL_CALLS
 
                 yield LLMGenerationDone(
                     request_id=self._request_id,
