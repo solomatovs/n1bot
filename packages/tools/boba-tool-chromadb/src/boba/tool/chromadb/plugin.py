@@ -7,10 +7,16 @@ from typing import Any, ClassVar, Self
 
 from pydantic import Field, model_validator
 
+from boba.indexing.embedder import Embedder
 from boba.plugin import ExtensionContext, Plugin
 from boba.plugin.prompt import PromptOverlay
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
+from boba.tool.chromadb.embedder_factory import (
+    EmbedderFactory,
+    EmbeddingModelNotConfiguredError,
+)
 from boba.tool.chromadb.kb import get_knowledge_base
+from boba.tool.chromadb.kb_ingest import KbIngestTool, KbIngestToolConfig
 from boba.tool.chromadb.kb_list_collections import (
     KbListCollectionsTool,
     KbListCollectionsToolConfig,
@@ -54,8 +60,7 @@ class ChromadbPluginConfig(BobaFlatSettings):
     embedding_base_url: str = Field(
         default="",
         description=(
-            "OpenAI-совместимый endpoint embeddings. "
-            "Игнорируется при model=default."
+            "OpenAI-совместимый endpoint embeddings. Игнорируется при model=default."
         ),
     )
     embedding_api_key: str = Field(
@@ -72,8 +77,35 @@ class ChromadbPluginConfig(BobaFlatSettings):
         ge=1,
         description="Жёсткий потолок параметра top_k.",
     )
+    ingest_folder: str = Field(
+        default="",
+        description=(
+            "Папка с .md чанками для индексации. Использует и LLM-tool "
+            "kb_ingest, и интеграционный тест `test_operator_real_ingest`. "
+            "Оператор закрепляет выбор папки за собой — LLM не выбирает "
+            "(защита от случайного индексирования чужих файлов). Пустая "
+            "строка = ingest выключен (kb_ingest вернёт ошибку, "
+            "operator-mode тест skip'ается)."
+        ),
+    )
+    ingest_collection: str = Field(
+        default="kb",
+        description=(
+            "Имя коллекции, в которую индексируется ingest_folder. "
+            "Оператор закрепляет имя за собой, чтобы LLM не создавал "
+            "коллекции на лету и не перезаписывал чужие."
+        ),
+    )
+    ingest_collection_description: str = Field(
+        default="",
+        description=(
+            "Description коллекции (видно в kb_list_collections). Прописывается "
+            "при первом создании коллекции через `ensure_collection`."
+        ),
+    )
     kb_search: PromptOverlay = Field(default_factory=PromptOverlay)
     kb_list_collections: PromptOverlay = Field(default_factory=PromptOverlay)
+    kb_ingest: PromptOverlay = Field(default_factory=PromptOverlay)
 
     @model_validator(mode="after")
     def _check_persist_path_when_enabled(self) -> Self:
@@ -101,6 +133,7 @@ class ChromadbPlugin(Plugin[ChromadbPluginConfig, ToolSource]):
             embedding_function=cls._embedding_function(cfg),
         )
         sid = cls.SOURCE_ID
+        embedder = cls._resolve_embedder(cfg, ctx)
         yield StaticToolSource(
             source_id=sid,
             tools=[
@@ -119,8 +152,57 @@ class ChromadbPlugin(Plugin[ChromadbPluginConfig, ToolSource]):
                     ctx,
                     sid,
                 ),
+                KbIngestTool(
+                    # Шарим тот же PersistentClient, что и read-side: одна
+                    # инстанция chromadb на persist_path по конвенции
+                    # (file-lock contention при двух клиентах).
+                    kb.client,
+                    embedder,
+                    KbIngestToolConfig(
+                        ingest_folder=cfg.ingest_folder,
+                        ingest_collection=cfg.ingest_collection,
+                        ingest_collection_description=(
+                            cfg.ingest_collection_description
+                        ),
+                        prompt=cfg.kb_ingest,
+                    ),
+                    ctx,
+                    sid,
+                ),
             ],
         )
+
+    @staticmethod
+    def _resolve_embedder(
+        cfg: ChromadbPluginConfig,
+        ctx: ExtensionContext,
+    ) -> Embedder[str] | None:
+        """`Embedder[str]` для ingest-пути либо None, если модель не задана.
+
+        Resolution: factory достаётся из `ExtensionContext` по типу
+        `EmbedderFactory` (DI: агент может зарегистрировать кастомную
+        factory через `AgentBuilder.with_extension`). Default — встроенный
+        `EmbedderFactory()` (stateless).
+
+        Возвращает None, если `embedding_model` пуст — KbIngestTool
+        потом отдаст ErrorResult c понятным error_kind. Остальные
+        ошибки factory пробрасываем наружу (некорректный embedding
+        endpoint должен убить plugin.load, а не падать каждый раз
+        при вызове tool'а).
+        """
+        factory = (
+            ctx.get(EmbedderFactory)
+            if ctx.has(EmbedderFactory)
+            else EmbedderFactory()
+        )
+        try:
+            return factory.create(
+                model=cfg.embedding_model,
+                base_url=cfg.embedding_base_url,
+                api_key=cfg.embedding_api_key,
+            )
+        except EmbeddingModelNotConfiguredError:
+            return None
 
     @staticmethod
     def _embedding_function(cfg: ChromadbPluginConfig) -> Any:

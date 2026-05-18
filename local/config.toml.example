@@ -67,21 +67,48 @@ chat_session_pool_capacity = 32
 #   BOBA_TOOL__<PLUGIN_NAME>__<FIELD>=...
 # Например: BOBA_TOOL__CONFLUENCE__BASE_URL=https://confluence.example.com
 
-# kb_search + kb_list_collections (read-only)
+# kb_search + kb_list_collections (read) + kb_ingest (write — папка .md → коллекция)
 [tool.chromadb]
 enable = false
 persist_path = "./local/chroma"
-# "default" = built-in ONNX all-MiniLM-L6-v2 (локально, без сети).
-# Иначе — модель LiteLLM/OpenAI-API; base_url/api_key обычно из env.
-embedding_model = "default"
+# Embedding model (общая для read и write пути).
+#
+# Варианты:
+#   multilingual-e5-large    — intfloat, 1024-dim. Сильный baseline для ru-en
+#                               RAG; раздаётся через LiteLLM proxy / vLLM / HF.
+#                               Требует поднятой LiteLLM/Ollama по embedding_base_url.
+#   bge-m3                   — BAAI, multilingual, 1024-dim, dense+sparse.
+#   text-embedding-3-large   — OpenAI, 3072-dim (через base_url=https://api.openai.com).
+#   default                  — built-in ONNX all-MiniLM-L6-v2; ~80MB модель
+#                               скачивается ONE-TIME при первом импорте, далее
+#                               локально без сети. Подходит для тестов и dev,
+#                               когда LiteLLM/Ollama не запущены. Для русского
+#                               работает посредственно (модель английская).
+#   ""                       — НЕ разрешено: kb_ingest и read-side с пустым
+#                               значением падают (оператор обязан задуматься).
+embedding_model = "multilingual-e5-large"
 embedding_base_url = ""
 embedding_api_key = ""
 snippet_chars = 300
 max_top_k = 20
+# Параметры ingest, заранее закреплённые оператором. Используют и LLM-tool
+# kb_ingest, и интеграционный тест `test_operator_real_ingest`. LLM не
+# выбирает folder/collection самостоятельно — это защита от случайного
+# индексирования чужих файлов и создания мусорных коллекций. LLM может
+# только включить prune_missing через args.
+# Пустой ingest_folder = ingest выключен (kb_ingest вернёт ошибку,
+# operator-mode тест skip'нется).
+ingest_folder = ""
+ingest_collection = "kb"
+ingest_collection_description = ""
 # per-tool PromptOverlay: description + fields:
 #   [tool.chromadb.kb_search]
 #   description = ""
 #   fields = {}
+#   [tool.chromadb.kb_list_collections]
+#   description = ""
+#   [tool.chromadb.kb_ingest]
+#   description = ""
 
 # 15 файловых tools под общим enable-флагом
 [tool.files]

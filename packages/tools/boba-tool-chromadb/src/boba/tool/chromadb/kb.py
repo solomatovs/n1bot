@@ -37,6 +37,16 @@ class ChromaKnowledgeBase:
             type(embedding_function).__name__ if embedding_function else "default",
         )
 
+    @property
+    def client(self) -> Any:
+        """PersistentClient, инкапсулированный этим KB.
+
+        Расшариваем для write-side tool'ов (kb_ingest): один процесс на
+        один persist_path должен держать единственный chromadb-клиент,
+        иначе возможна contention за file-lock SQLite-бэкэнда.
+        """
+        return self._client
+
     def list_collections(self) -> list[CollectionInfo]:
         result: list[CollectionInfo] = []
         for c in self._client.list_collections():

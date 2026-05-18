@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-tool-chromadb"
 version = "0.1.0"
-description = "Boba ChromaDB: read-only kb-tools (kb_search, kb_list_collections) + write-side ChromaVectorStore (VectorStoreReader/Writer + CollectionsAdmin)."
+description = "Boba ChromaDB: kb-tools (kb_search, kb_list_collections, kb_ingest) + ChromaVectorStore (VectorStoreReader/Writer + CollectionsAdmin)."
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-patterns",
@@ -13,6 +13,7 @@ dependencies = [
     "boba-tools",
     "boba-settings",
     "boba-indexing",
+    "boba-markdown",
     "chromadb>=0.5",
 ]
 
