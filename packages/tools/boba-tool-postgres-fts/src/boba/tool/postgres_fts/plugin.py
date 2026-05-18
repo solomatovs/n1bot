@@ -97,7 +97,7 @@ class PostgresFtsPlugin(Plugin[PostgresFtsPluginConfig, ToolSource]):
     """Plugin PG FTS read-tools: fts_search + fts_list_indexes."""
 
     NAME: ClassVar[str] = "postgres_fts"
-    SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("plugin.postgres_fts")
+    SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("plugin_postgres_fts")
 
     @classmethod
     def build(

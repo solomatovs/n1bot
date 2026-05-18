@@ -140,7 +140,7 @@ class ConfluencePlugin(Plugin[ConfluencePluginConfig, ToolSource]):
     """Plugin Confluence-tools: search + page_outline + page_section."""
 
     NAME: ClassVar[str] = "confluence"
-    SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("plugin.confluence")
+    SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("plugin_confluence")
 
     @classmethod
     def build(

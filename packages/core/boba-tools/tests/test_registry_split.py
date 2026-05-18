@@ -74,10 +74,10 @@ def test_executor_unknown_tool_lists_available():
     with pytest.raises(ToolExecutionError) as ei:
         executor.execute(
             ToolContext(),
-            ToolCall(tool_id=ToolId("src/missing"), arguments={}),
+            ToolCall(tool_id=ToolId("src__missing"), arguments={}),
         )
     assert "not found" in str(ei.value)
-    assert "src/echo" in str(ei.value)
+    assert "src__echo" in str(ei.value)
 
 
 def test_registry_close_caskades_to_sources():

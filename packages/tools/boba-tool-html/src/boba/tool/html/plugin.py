@@ -50,7 +50,7 @@ class HtmlPlugin(Plugin[HtmlPluginConfig, ToolSource]):
     """Plugin HTML-tools: outline + section."""
 
     NAME: ClassVar[str] = "html"
-    SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("plugin.html")
+    SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("plugin_html")
 
     @classmethod
     def build(

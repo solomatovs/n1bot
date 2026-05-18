@@ -87,7 +87,7 @@ class ChromadbPlugin(Plugin[ChromadbPluginConfig, ToolSource]):
     """Plugin ChromaDB read-tools: kb_search + kb_list_collections."""
 
     NAME: ClassVar[str] = "chromadb"
-    SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("plugin.chromadb")
+    SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("plugin_chromadb")
 
     @classmethod
     def build(

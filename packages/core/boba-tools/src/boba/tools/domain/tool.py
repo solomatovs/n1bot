@@ -135,7 +135,7 @@ class Tool(
       объект, реализующий `JsonSchemaOverlay`), он применяется поверх
       авто-сгенерированной JSON-schema через `apply_to_json_schema`.
 
-    Identity: tool_id = `<source>/<name>`. По умолчанию `name()` —
+    Identity: tool_id = `<source>__<name>`. По умолчанию `name()` —
     snake_case имени класса без суффикса `Tool` (CatTool → "cat").
     """
 

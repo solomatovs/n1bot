@@ -29,7 +29,7 @@ pytestmark = [
     ),
 ]
 
-_SID = ToolSourceId("plugin.shell")
+_SID = ToolSourceId("plugin_shell")
 
 
 def _make_tool(

@@ -77,7 +77,7 @@ class FilesPlugin(Plugin[FilesPluginConfig, ToolSource]):
     """Plugin файловых tools: 15 tools, без connection."""
 
     NAME: ClassVar[str] = "files"
-    SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("plugin.files")
+    SOURCE_ID: ClassVar[ToolSourceId] = ToolSourceId("plugin_files")
 
     @classmethod
     def build(
