@@ -29,6 +29,7 @@ from boba.llm.builder import LLMBuilder
 from boba.patterns import ConverterInputError
 from boba.provider.openai import (
     CurlTraceChatCompletionObserver,
+    HttpTraceChatCompletionObserver,
     use_openai,
 )
 from boba.workspace.contract import (
@@ -81,9 +82,8 @@ def _run() -> int:
 
     llm = (
         LLMBuilder()
-        .add_observer(
-            CurlTraceChatCompletionObserver(history_workspace),
-        )
+        .add_observer(CurlTraceChatCompletionObserver(history_workspace))
+        .add_observer(HttpTraceChatCompletionObserver(history_workspace))
         .pipe(use_openai, app.openai)
         .build()
     )

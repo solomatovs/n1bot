@@ -14,6 +14,7 @@ from boba.chainlit.agent.rendering.bridge import ChainlitBridgeSink
 from boba.llm.builder import LLMBuilder
 from boba.provider.openai import (
     CurlTraceChatCompletionObserver,
+    HttpTraceChatCompletionObserver,
     use_openai,
 )
 from boba.workspace.contract import (
@@ -56,6 +57,7 @@ class ChatSession:
         llm = (
             LLMBuilder()
             .add_observer(CurlTraceChatCompletionObserver(history_shell))
+            .add_observer(HttpTraceChatCompletionObserver(history_shell))
             .pipe(use_openai, app.openai)
             .build()
         )
