@@ -69,8 +69,6 @@ from boba.llm.models import (
 from boba.llm.observer import (
     CompositeLLMRequestObserver,
     LLMRequestObserver,
-    RequestOutcome,
-    RequestOutcomeKind,
 )
 
 __all__ = [
@@ -129,8 +127,6 @@ __all__ = [
     "PartialToolCallBlock",
     "PermanentLLMError",
     "RequestId",
-    "RequestOutcome",
-    "RequestOutcomeKind",
     "RetryMiddleware",
     "RetryableLLMError",
     "SamplingParams",

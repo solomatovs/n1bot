@@ -4,71 +4,33 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from enum import Enum
 from typing import Generic, TypeVar
 
 __all__ = [
     "CompositeLLMRequestObserver",
     "LLMRequestObserver",
-    "RequestOutcome",
-    "RequestOutcomeKind",
 ]
 
 TRequest = TypeVar("TRequest")
 TChunk = TypeVar("TChunk")
+TApiError = TypeVar("TApiError", bound=Exception)
+THttpError = TypeVar("THttpError", bound=Exception)
 
 
-class RequestOutcomeKind(Enum):
-    """Дискриминатор RequestOutcome."""
+class LLMRequestObserver(
+    ABC, Generic[TRequest, TChunk, TApiError, THttpError]
+):
+    """Наблюдатель сырого LLM-вызова на границе адаптера.
 
-    OK = "ok"
-    CANCELLED = "cancelled"
-    RAISED = "raised"
+    Жизненный цикл:
+        on_request →
+            [on_http_request → on_http_response → on_response_chunk*] →
+            терминал.
 
-
-@dataclass(frozen=True, slots=True)
-class RequestOutcome:
-    """Исход запроса LLM на wire-слое; exception хранится целиком при RAISED."""
-
-    kind: RequestOutcomeKind
-    exception: BaseException | None = None
-
-    def __post_init__(self) -> None:
-        is_raised = self.kind is RequestOutcomeKind.RAISED
-        if is_raised and self.exception is None:
-            raise ValueError("RAISED requires exception")
-        if not is_raised and self.exception is not None:
-            raise ValueError(f"{self.kind.name} must not carry exception")
-
-    @classmethod
-    def ok(cls) -> RequestOutcome:
-        return cls(RequestOutcomeKind.OK)
-
-    @classmethod
-    def cancelled(cls) -> RequestOutcome:
-        return cls(RequestOutcomeKind.CANCELLED)
-
-    @classmethod
-    def raised(cls, exc: BaseException) -> RequestOutcome:
-        return cls(RequestOutcomeKind.RAISED, exception=exc)
-
-    @property
-    def exception_name(self) -> str | None:
-        """Имя класса исключения; None при OK/CANCELLED."""
-        if self.exception is None:
-            return None
-        return type(self.exception).__name__
-
-    def label(self) -> str:
-        """Человеко-читаемая метка: ok / cancelled / raised:<Exc>."""
-        if self.kind is RequestOutcomeKind.RAISED:
-            return f"{self.kind.value}:{self.exception_name}"
-        return self.kind.value
-
-
-class LLMRequestObserver(ABC, Generic[TRequest, TChunk]):
-    """Наблюдатель сырого LLM-вызова на границе адаптера."""
+    Терминал — ровно один из: on_request_end (OK), on_request_cancel (отмена),
+    on_api_exception (ошибка API-протокола), on_http_exception (транспорт).
+    Конкретные типы исключений фиксируются провайдером через TApiError/THttpError.
+    """
 
     @abstractmethod
     def on_request(self, request: TRequest) -> None:
@@ -81,8 +43,13 @@ class LLMRequestObserver(ABC, Generic[TRequest, TChunk]):
         ...
 
     @abstractmethod
-    def on_request_end(self, outcome: RequestOutcome) -> None:
-        """Вызывается ровно один раз по завершении потока (любой исход)."""
+    def on_request_end(self) -> None:
+        """Терминал: запрос успешно завершён."""
+        ...
+
+    @abstractmethod
+    def on_request_cancel(self) -> None:
+        """Терминал: потребитель прервал чтение потока."""
         ...
 
     def on_http_request(
@@ -101,12 +68,25 @@ class LLMRequestObserver(ABC, Generic[TRequest, TChunk]):
     ) -> None:
         """Сырой входящий HTTP-ответ (без тела); по умолчанию no-op."""
 
+    def on_api_exception(self, exception: TApiError) -> None:
+        """Терминал: ошибка API-протокола (конкретный тип задаёт провайдер);
+        наблюдатель не подавляет — вызывающий код re-raise; по умолчанию no-op."""
 
-class CompositeLLMRequestObserver(LLMRequestObserver[TRequest, TChunk]):
+    def on_http_exception(self, exception: THttpError) -> None:
+        """Терминал: транспортный сбой (конкретный тип задаёт провайдер);
+        наблюдатель не подавляет — вызывающий код re-raise; по умолчанию no-op."""
+
+
+class CompositeLLMRequestObserver(
+    LLMRequestObserver[TRequest, TChunk, TApiError, THttpError]
+):
     """Fan-out из нескольких LLMRequestObserver в порядке регистрации."""
 
     def __init__(
-        self, observers: Sequence[LLMRequestObserver[TRequest, TChunk]]
+        self,
+        observers: Sequence[
+            LLMRequestObserver[TRequest, TChunk, TApiError, THttpError]
+        ],
     ) -> None:
         self._observers = observers
 
@@ -118,9 +98,13 @@ class CompositeLLMRequestObserver(LLMRequestObserver[TRequest, TChunk]):
         for o in self._observers:
             o.on_response_chunk(chunk)
 
-    def on_request_end(self, outcome: RequestOutcome) -> None:
+    def on_request_end(self) -> None:
         for o in self._observers:
-            o.on_request_end(outcome)
+            o.on_request_end()
+
+    def on_request_cancel(self) -> None:
+        for o in self._observers:
+            o.on_request_cancel()
 
     def on_http_request(
         self,
@@ -139,3 +123,11 @@ class CompositeLLMRequestObserver(LLMRequestObserver[TRequest, TChunk]):
     ) -> None:
         for o in self._observers:
             o.on_http_response(status_code, headers)
+
+    def on_api_exception(self, exception: TApiError) -> None:
+        for o in self._observers:
+            o.on_api_exception(exception)
+
+    def on_http_exception(self, exception: THttpError) -> None:
+        for o in self._observers:
+            o.on_http_exception(exception)

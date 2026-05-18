@@ -17,7 +17,7 @@ from boba.llm.events import (
     LLMResponseStarted,
 )
 from boba.llm.models import LLMContext
-from boba.llm.observer import LLMRequestObserver, RequestOutcome
+from boba.llm.observer import LLMRequestObserver
 from boba.patterns import StreamSource
 from boba.provider.openai.dto import OpenAIConfig
 from boba.provider.openai.errors import OpenAIErrorConverter
@@ -29,7 +29,9 @@ from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 def build_openai_client(
     config: OpenAIConfig,
-    observer: LLMRequestObserver[dict[str, Any], ChatCompletionChunk] | None = None,
+    observer: LLMRequestObserver[
+        dict[str, Any], ChatCompletionChunk, openai.APIError, httpx.HTTPError
+    ] | None = None,
 ) -> OpenAI:
     """Строит OpenAI-клиент из конфига; observer получает сырые HTTP req/resp."""
     if observer is None:
@@ -58,22 +60,24 @@ def build_openai_client(
 
 @contextmanager
 def _observe_request(
-    observer: LLMRequestObserver[dict[str, Any], ChatCompletionChunk],
+    observer: LLMRequestObserver[
+        dict[str, Any], ChatCompletionChunk, openai.APIError, httpx.HTTPError
+    ],
     kwargs: dict[str, Any],
 ) -> Iterator[None]:
-    """Оборачивает тело стрима парой on_request / on_request_end."""
+    """Оборачивает тело стрима парой on_request / on_request_end|cancel.
+
+    Исключительные исходы (api/http) фиксируются в catch-сайтах вызывающего кода
+    через on_api_exception / on_http_exception — здесь не дублируются."""
 
     observer.on_request(kwargs)
     try:
         yield
     except GeneratorExit:
-        observer.on_request_end(RequestOutcome.cancelled())
-        raise
-    except BaseException as e:
-        observer.on_request_end(RequestOutcome.raised(e))
+        observer.on_request_cancel()
         raise
     else:
-        observer.on_request_end(RequestOutcome.ok())
+        observer.on_request_end()
 
 
 class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
@@ -82,15 +86,17 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
     def __init__(
         self,
         client: OpenAI,
-        observer: LLMRequestObserver[dict[str, Any], ChatCompletionChunk],
-        *,
-        reindex_tool_calls: bool = True,
+        observer: LLMRequestObserver[
+            dict[str, Any],
+            ChatCompletionChunk,
+            openai.APIError,
+            httpx.HTTPError,
+        ],
     ) -> None:
         self._client = client
         self._to_request = ToOpenAIRequestConverter()
         self._error_converter = OpenAIErrorConverter()
         self._observer = observer
-        self._reindex_tool_calls = reindex_tool_calls
 
     def name(self) -> str:
         return "OpenAITerminal"
@@ -113,7 +119,11 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
                 response = self._client.chat.completions.create(**kwargs)
             except LLMError:
                 raise
-            except (openai.APIError, httpx.HTTPError) as e:
+            except openai.APIError as e:
+                self._observer.on_api_exception(e)
+                raise self._error_converter.convert(e) from e
+            except httpx.HTTPError as e:
+                self._observer.on_http_exception(e)
                 raise self._error_converter.convert(e) from e
 
             # event после запроса и перед получением ответа
@@ -126,11 +136,14 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
                 # стримим чанки из ответа, конвертируя их в LLM-события на лету
                 yield from FromOpenAIChunkConverter(
                     ctx.request.request_id,
-                    reindex_tool_calls=self._reindex_tool_calls,
                 ).stream(ctx, self._observe_chunks(response))
             except LLMError:
                 raise
-            except (openai.APIError, httpx.HTTPError) as e:
+            except openai.APIError as e:
+                self._observer.on_api_exception(e)
+                raise self._error_converter.convert(e) from e
+            except httpx.HTTPError as e:
+                self._observer.on_http_exception(e)
                 raise self._error_converter.convert(e) from e
 
     def _observe_chunks(

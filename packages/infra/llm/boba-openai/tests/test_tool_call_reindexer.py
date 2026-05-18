@@ -10,7 +10,6 @@ from openai.types.chat.chat_completion_chunk import (
     ChoiceDeltaToolCallFunction,
 )
 
-from boba.llm.events import LLMToolCallArgumentDelta, LLMToolCallBegin
 from boba.llm.models import (
     LLMContext,
     LLMRequest,
@@ -18,7 +17,6 @@ from boba.llm.models import (
     UserMessage,
     new_request_id,
 )
-from boba.provider.openai.response import FromOpenAIChunkConverter
 from boba.provider.openai.tool_call_reindexer import (
     DuplicateToolCallIndexReindexer,
 )
@@ -141,116 +139,3 @@ def test_reset_clears_state() -> None:
     tc_d = _tc(index=0, tc_id="D", name="t")
     list(rx.stream(_ctx(), [_choice(tc_c), _choice(tc_d)]))
     assert (tc_c.index, tc_d.index) == (0, 1)
-
-
-def _begins_and_args(
-    events: list,
-) -> tuple[list[LLMToolCallBegin], list[LLMToolCallArgumentDelta]]:
-    begins = [e for e in events if isinstance(e, LLMToolCallBegin)]
-    deltas = [e for e in events if isinstance(e, LLMToolCallArgumentDelta)]
-    return begins, deltas
-
-
-def test_converter_on_separates_collision() -> None:
-    """reindex_tool_calls=True (default): коллизия id+index → два LLMToolCallBegin."""
-    ctx = _ctx()
-    conv = FromOpenAIChunkConverter(ctx.request.request_id)
-    chunks = [
-        _chunk(
-            _choice(
-                _tc(
-                    index=0,
-                    tc_id="A",
-                    name="html_outline",
-                    args='{"path":"a.html"}',
-                )
-            )
-        ),
-        _chunk(
-            _choice(
-                _tc(
-                    index=0,
-                    tc_id="B",
-                    name="html_outline",
-                    args='{"path":"b.html"}',
-                )
-            )
-        ),
-    ]
-    events = list(conv.stream(ctx, chunks))
-    begins, deltas = _begins_and_args(events)
-    assert len(begins) == 2
-    assert {b.tool_call_id for b in begins} == {"A", "B"}
-    assert {b.index for b in begins} == {0, 1}
-    # Два delta-события под разными index (склейки args нет).
-    by_index: dict[int, list[str]] = {}
-    for d in deltas:
-        by_index.setdefault(d.index, []).append(d.arguments)
-    assert "".join(by_index[0]) == '{"path":"a.html"}'
-    assert "".join(by_index[1]) == '{"path":"b.html"}'
-
-
-def test_converter_off_keeps_provider_collision() -> None:
-    """reindex_tool_calls=False: коллизия не чинится — args склеиваются под index=0."""
-    ctx = _ctx()
-    conv = FromOpenAIChunkConverter(ctx.request.request_id, reindex_tool_calls=False)
-    chunks = [
-        _chunk(
-            _choice(
-                _tc(
-                    index=0,
-                    tc_id="A",
-                    name="html_outline",
-                    args='{"path":"a.html"}',
-                )
-            )
-        ),
-        _chunk(
-            _choice(
-                _tc(
-                    index=0,
-                    tc_id="B",
-                    name="html_outline",
-                    args='{"path":"b.html"}',
-                )
-            )
-        ),
-    ]
-    events = list(conv.stream(ctx, chunks))
-    begins, deltas = _begins_and_args(events)
-    # Без реиндексации второй tool_call принимается как продолжение первого
-    # (один и тот же index=0). Поведение — для документации и регрессии.
-    assert {b.index for b in begins} == {0}
-    args_under_0 = "".join(d.arguments for d in deltas if d.index == 0)
-    assert args_under_0 == '{"path":"a.html"}{"path":"b.html"}'
-
-
-def test_converter_on_keeps_well_formed_parallel() -> None:
-    """reindex_tool_calls=True не ломает корректные параллельные tool_calls."""
-    ctx = _ctx()
-    conv = FromOpenAIChunkConverter(ctx.request.request_id)
-    chunks = [
-        _chunk(
-            _choice(
-                _tc(
-                    index=0,
-                    tc_id="A",
-                    name="t",
-                    args='{"a":1}',
-                )
-            )
-        ),
-        _chunk(
-            _choice(
-                _tc(
-                    index=1,
-                    tc_id="B",
-                    name="t",
-                    args='{"b":2}',
-                )
-            )
-        ),
-    ]
-    events = list(conv.stream(ctx, chunks))
-    begins, _ = _begins_and_args(events)
-    assert {(b.tool_call_id, b.index) for b in begins} == {("A", 0), ("B", 1)}

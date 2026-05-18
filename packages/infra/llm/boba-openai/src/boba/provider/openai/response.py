@@ -213,14 +213,10 @@ class FromOpenAIChunkConverter(
     def __init__(
         self,
         request_id: RequestId,
-        *,
-        reindex_tool_calls: bool = True,
     ) -> None:
         # Чинит коллизии index у параллельных tool_calls до их сборки;
         # None — фича отключена, choices идут в pipeline без модификации.
-        self._reindexer: DuplicateToolCallIndexReindexer | None = (
-            DuplicateToolCallIndexReindexer() if reindex_tool_calls else None
-        )
+        self._reindexer = DuplicateToolCallIndexReindexer()
         # Строгая последовательность вызова.
         self._pipeline = StreamTransformerPipeline[LLMContext, Choice, LLMEvent](
             [

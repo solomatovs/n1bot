@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
+
+import openai
 from boba.llm.builder import LLMBuilder
 from boba.llm.events import LLMEvent
 from boba.llm.models import LLMContext
@@ -17,23 +20,27 @@ __all__ = ["use_openai"]
 
 
 def use_openai(
-    builder: LLMBuilder[dict[str, Any], ChatCompletionChunk],
+    builder: LLMBuilder[
+        dict[str, Any], ChatCompletionChunk, openai.APIError, httpx.HTTPError
+    ],
     config: OpenAIConfig,
-    *,
-    reindex_tool_calls: bool = True,
-) -> LLMBuilder[dict[str, Any], ChatCompletionChunk]:
-    """Подключить OpenAI-terminal к LLMBuilder.
-
-    reindex_tool_calls=False отключает починку коллизий index у параллельных
-    tool_calls в стриме — для случаев, когда провайдер уже корректен.
+) -> LLMBuilder[
+    dict[str, Any], ChatCompletionChunk, openai.APIError, httpx.HTTPError
+]:
+    """
+    Подключить OpenAI-terminal к LLMBuilder
     """
     def terminal_factory(
-        observer: LLMRequestObserver[dict[str, Any], ChatCompletionChunk],
+        observer: LLMRequestObserver[
+            dict[str, Any],
+            ChatCompletionChunk,
+            openai.APIError,
+            httpx.HTTPError,
+        ],
     ) -> StreamSource[LLMContext, LLMEvent]:
         return OpenAITerminal(
             build_openai_client(config, observer),
             observer=observer,
-            reindex_tool_calls=reindex_tool_calls,
         )
 
     return builder.use_terminal(terminal_factory)

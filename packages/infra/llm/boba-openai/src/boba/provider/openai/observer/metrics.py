@@ -6,7 +6,10 @@ import logging
 import time
 from typing import Any
 
-from boba.llm.observer import LLMRequestObserver, RequestOutcome
+import httpx
+
+import openai
+from boba.llm.observer import LLMRequestObserver
 from boba.patterns import Converter
 from boba.provider.openai.observer.reasoning import MultiKeyReasoningExtractor
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk, ChoiceDelta
@@ -15,7 +18,12 @@ logger = logging.getLogger(__name__)
 
 
 class MetricsChatCompletionObserver(
-    LLMRequestObserver[dict[str, Any], ChatCompletionChunk]
+    LLMRequestObserver[
+        dict[str, Any],
+        ChatCompletionChunk,
+        openai.APIError,
+        httpx.HTTPError,
+    ]
 ):
     """Пишет одну строку-сводку в logger по завершении запроса."""
 
@@ -63,12 +71,24 @@ class MetricsChatCompletionObserver(
             if choice.finish_reason:
                 self._finish_reason = choice.finish_reason
 
-    def on_request_end(self, outcome: RequestOutcome) -> None:
+    def on_request_end(self) -> None:
+        self._log_done("ok")
+
+    def on_request_cancel(self) -> None:
+        self._log_done("cancelled")
+
+    def on_api_exception(self, exception: openai.APIError) -> None:
+        self._log_done(f"raised:{type(exception).__name__}")
+
+    def on_http_exception(self, exception: httpx.HTTPError) -> None:
+        self._log_done(f"raised:{type(exception).__name__}")
+
+    def _log_done(self, label: str) -> None:
         elapsed = time.monotonic() - self._start if self._start else 0.0
         logger.info(
             "LLM done: %s, model=%s, chunks=%d, content=%d ch, "
             "reasoning=%d ch, tool_calls=%d (args=%d ch), finish=%s, elapsed=%.2fs",
-            outcome.label(),
+            label,
             self._model,
             self._chunks,
             self._content_chars,

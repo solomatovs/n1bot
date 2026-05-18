@@ -15,13 +15,21 @@ import traceback
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from boba.llm.observer import LLMRequestObserver, RequestOutcome, RequestOutcomeKind
+import httpx
+
+import openai
+from boba.llm.observer import LLMRequestObserver
 from boba.workspace.contract import WorkspaceShell
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 
 class CurlTraceChatCompletionObserver(
-    LLMRequestObserver[dict[str, Any], ChatCompletionChunk]
+    LLMRequestObserver[
+        dict[str, Any],
+        ChatCompletionChunk,
+        openai.APIError,
+        httpx.HTTPError,
+    ]
 ):
     """Пишет curl-команду + статус/заголовки/чанки ответа в markdown-файл."""
 
@@ -84,10 +92,68 @@ class CurlTraceChatCompletionObserver(
             u = chunk.usage
             self._usage = (u.prompt_tokens, u.completion_tokens, u.total_tokens)
 
-    def on_request_end(self, outcome: RequestOutcome) -> None:
+    def on_request_end(self) -> None:
+        self._close_open_section()
+        self._dump_tool_calls()
+        self._dump_usage()
+        self._append("## end: ok\n\n---\n\n")
+
+    def on_request_cancel(self) -> None:
+        self._close_open_section()
+        self._dump_tool_calls()
+        self._dump_usage()
+        self._append("## end: cancelled\n\n---\n\n")
+
+    def on_api_exception(self, exception: openai.APIError) -> None:
+        self._close_open_section()
+        self._dump_tool_calls()
+        self._dump_usage()
+        self._append("## Error\n\n")
+        self._append(f"**{type(exception).__name__}:** {exception}\n\n")
+        status_code = getattr(exception, "status_code", None)
+        if isinstance(status_code, int):
+            self._append(f"_status_code:_ {status_code}\n\n")
+        body = getattr(exception, "body", None)
+        if body is not None:
+            try:
+                body_text = json.dumps(body, ensure_ascii=False, indent=2)
+            except (TypeError, ValueError):
+                body_text = repr(body)
+            self._append(f"_body:_\n\n```\n{body_text}\n```\n\n")
+        tb = "".join(
+            traceback.format_exception(
+                type(exception), exception, exception.__traceback__
+            )
+        )
+        self._append(f"```\n{tb}```\n\n")
+        self._append(f"## end: raised:{type(exception).__name__}\n\n---\n\n")
+
+    def on_http_exception(self, exception: httpx.HTTPError) -> None:
+        self._close_open_section()
+        self._dump_tool_calls()
+        self._dump_usage()
+        self._append("## Error\n\n")
+        self._append(f"**{type(exception).__name__}:** {exception}\n\n")
+        response = getattr(exception, "response", None)
+        if isinstance(response, httpx.Response):
+            self._append(f"_status_code:_ {response.status_code}\n\n")
+            text = response.text
+            if text:
+                self._append(f"_body:_\n\n```\n{text}\n```\n\n")
+        tb = "".join(
+            traceback.format_exception(
+                type(exception), exception, exception.__traceback__
+            )
+        )
+        self._append(f"```\n{tb}```\n\n")
+        self._append(f"## end: raised:{type(exception).__name__}\n\n---\n\n")
+
+    def _close_open_section(self) -> None:
         if self._current_section is not None:
             self._append("\n\n")
             self._current_section = None
+
+    def _dump_tool_calls(self) -> None:
         for idx in sorted(self._tool_calls):
             tc = self._tool_calls[idx]
             name = tc["name"] or "(none)"
@@ -95,29 +161,12 @@ class CurlTraceChatCompletionObserver(
             args_text = "".join(tc["args"])
             self._append(f"## Tool call #{idx}: {name} (id={tc_id})\n\n")
             self._append(f"```json\n{args_text}\n```\n\n")
-        if self._usage is not None:
-            p, c, t = self._usage
-            self._append(f"_usage prompt={p} completion={c} total={t}_\n\n")
-        if outcome.kind is RequestOutcomeKind.RAISED and outcome.exception is not None:
-            self._render_error(outcome.exception)
-        self._append(f"## end: {outcome.label()}\n\n---\n\n")
 
-    def _render_error(self, exc: BaseException) -> None:
-        """Полный дамп ошибки: тип, сообщение, status_code, traceback с цепочкой."""
-        self._append("## Error\n\n")
-        self._append(f"**{type(exc).__name__}:** {exc}\n\n")
-        status_code = getattr(exc, "status_code", None)
-        if isinstance(status_code, int):
-            self._append(f"_status_code:_ {status_code}\n\n")
-        body = getattr(exc, "body", None)
-        if body is not None:
-            try:
-                body_text = json.dumps(body, ensure_ascii=False, indent=2)
-            except (TypeError, ValueError):
-                body_text = repr(body)
-            self._append(f"_body:_\n\n```\n{body_text}\n```\n\n")
-        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-        self._append(f"```\n{tb}```\n\n")
+    def _dump_usage(self) -> None:
+        if self._usage is None:
+            return
+        p, c, t = self._usage
+        self._append(f"_usage prompt={p} completion={c} total={t}_\n\n")
 
     def _emit_section(self, title: str, text: str) -> None:
         if self._current_section != title:
