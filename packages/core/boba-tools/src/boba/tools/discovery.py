@@ -38,7 +38,7 @@ def discover_plugins(
     for ep in importlib.metadata.entry_points(group=group):
         try:
             obj = ep.load()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning(
                 "plugin entry-point %r load failed: %s: %s; skipped",
                 ep.name,

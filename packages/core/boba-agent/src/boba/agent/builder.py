@@ -65,13 +65,6 @@ from boba.patterns import (
     StreamSourceChainBuilder,
     StreamSourceLoop,
 )
-from boba.tools.domain.ids import ToolSourceId
-from boba.tools.framework.registry import (
-    StaticToolSource,
-    ToolExecutor,
-    ToolRegistry,
-    ToolSource,
-)
 from boba.tools import (
     DEFAULT_PLUGIN_GROUP,
     DuplicateProviderError,
@@ -87,6 +80,13 @@ from boba.tools.decorators import (
     is_provider,
     is_tool,
     provider_scope,
+)
+from boba.tools.domain.ids import ToolSourceId
+from boba.tools.framework.registry import (
+    StaticToolSource,
+    ToolExecutor,
+    ToolRegistry,
+    ToolSource,
 )
 from boba.tools.introspect import CallPlan, introspect_callable
 from boba.tools.scope import to_dishka_scope
@@ -254,15 +254,19 @@ class AgentBuilder:
         for attr_name in dir(plugin_module):
             if attr_name.startswith("_"):
                 continue
+
             obj = getattr(plugin_module, attr_name, None)
             if obj is None:
                 continue
+
             if is_tool(obj) or is_provider(obj):
                 self._absorb_item(obj, component)
+
         return self
 
     def use_plugins(
-        self, group: str = DEFAULT_PLUGIN_GROUP,
+        self,
+        group: str = DEFAULT_PLUGIN_GROUP,
     ) -> Self:
         """Подцепить v2-плагины через entry-points group."""
         self._discover_groups.append(group)
@@ -338,7 +342,9 @@ class AgentBuilder:
         """Маршрутизировать item (@tool / @provides) в внутренние pool'ы."""
         if is_provider(obj):
             self.register_provider(
-                obj, scope=provider_scope(obj), component=component,
+                obj,
+                scope=provider_scope(obj),
+                component=component,
             )
         elif is_tool(obj):
             plan = introspect_callable(obj)
@@ -440,14 +446,17 @@ class AgentBuilder:
 
         default_entries = components.pop(_DEFAULT_COMPONENT, [])
         default_provider = self._build_default_dishka_provider(
-            default_entries, config_types,
+            default_entries,
+            config_types,
         )
         plugin_providers = [
             self._build_plugin_dishka_provider(component_name, entries)
             for component_name, entries in components.items()
         ]
         return make_container(
-            default_provider, *plugin_providers, context=configs,
+            default_provider,
+            *plugin_providers,
+            context=configs,
         )
 
     # --- Config resolution + enable_if filter ----------------------------- #
@@ -491,9 +500,7 @@ class AgentBuilder:
         self._providers = [
             p for p in self._providers if self._is_entry_enabled(p.fn, configs)
         ]
-        self._tools = [
-            t for t in self._tools if self._is_entry_enabled(t.obj, configs)
-        ]
+        self._tools = [t for t in self._tools if self._is_entry_enabled(t.obj, configs)]
 
     def _enable_if_targets(self) -> Iterable[Any]:
         """Все накопленные entries (provider-fn'ы + tool-callables)
@@ -541,11 +548,13 @@ class AgentBuilder:
         provider = Provider(scope=to_dishka_scope(Scope.APP))
         for cfg_type in config_types:
             provider.from_context(
-                provides=cfg_type, scope=to_dishka_scope(Scope.APP),
+                provides=cfg_type,
+                scope=to_dishka_scope(Scope.APP),
             )
         for entry in entries:
             provider.provide(
-                source=entry.fn, scope=to_dishka_scope(entry.scope),
+                source=entry.fn,
+                scope=to_dishka_scope(entry.scope),
             )
         return provider
 
@@ -574,7 +583,8 @@ class AgentBuilder:
             provider.alias(source=ct, component=Component(_DEFAULT_COMPONENT))
         for entry in entries:
             provider.provide(
-                source=entry.fn, scope=to_dishka_scope(entry.scope),
+                source=entry.fn,
+                scope=to_dishka_scope(entry.scope),
             )
         return provider
 
@@ -603,7 +613,8 @@ class AgentBuilder:
     # --- Chain assembly via DI -------------------------------------------- #
 
     def _build_chain_via_di(
-        self, container: Container,
+        self,
+        container: Container,
     ) -> StreamSource[AgentContext, AgentEvent]:
         """Construct middleware-цепочку, резолвя non-`inner` deps через DI."""
         chain_builder = StreamSourceChainBuilder[AgentContext, AgentEvent]()
@@ -612,7 +623,9 @@ class AgentBuilder:
             # при `chain_builder.terminal(...)`-разворачивании.
             chain_builder.use(
                 lambda inner, _cls=middleware_cls: self._make_middleware(
-                    _cls, inner, container,
+                    _cls,
+                    inner,
+                    container,
                 ),
             )
         terminal = self._make_terminal(self._terminal_cls, container)
@@ -626,7 +639,9 @@ class AgentBuilder:
     ) -> StreamSource[AgentContext, AgentEvent]:
         """Сконструировать middleware: inner позиционно, остальное — из DI."""
         kwargs = _resolve_init_kwargs(
-            middleware_cls, container, exclude={"inner"},
+            middleware_cls,
+            container,
+            exclude={"inner"},
         )
         return middleware_cls(inner, **kwargs)
 
@@ -641,7 +656,10 @@ class AgentBuilder:
 
 
 def _resolve_init_kwargs(
-    cls: type, container: Container, *, exclude: set[str],
+    cls: type,
+    container: Container,
+    *,
+    exclude: set[str],
 ) -> dict[str, Any]:
     """`cls.__init__` → kwargs, резолвя каждый non-excluded param из DI.
 

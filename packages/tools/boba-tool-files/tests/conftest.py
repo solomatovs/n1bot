@@ -14,7 +14,7 @@ from boba.workspace.contract import ProjectWorkspaceShell
 
 def _clear_files_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Сброс всех BOBA_TOOL__FILES__* и BOBA_CONFIG_PATH."""
-    import os  # noqa: PLC0415
+    import os
 
     for key in list(os.environ):
         if key.startswith("BOBA_TOOL__FILES__"):

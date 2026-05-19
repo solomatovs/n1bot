@@ -129,12 +129,16 @@ def provides(
 
     def _decorate(func: Callable[..., T]) -> Callable[..., T]:
         setattr(func, PROVIDES_SCOPE_MARKER, scope)
+
         if enable_if is not None:
             setattr(func, ENABLE_IF_MARKER, enable_if)
+
         return func
+
 
     if fn is not None:
         return _decorate(fn)
+
     return _decorate
 
 
