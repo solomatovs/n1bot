@@ -69,8 +69,18 @@ class ChatSession:
         turn = TurnBuilder(self._chainlit_config.model).system_prompt_from_directory(
             system_prompt_workspace
         )
+
+        def _provide_project_workspace() -> ProjectWorkspaceShell:
+            """DI factory для pre-built `ProjectWorkspaceShell`.
+
+            Замыкание над per-session shell'ом: каждый ChatSession имеет
+            свой `project_shell`, привязанный к своему workspace_id, и
+            свой `AgentBuilder` → свой DI-контейнер.
+            """
+            return project_shell
+
         self._agent: Agent = (
-            builder.with_extension(ProjectWorkspaceShell, project_shell)
+            builder.register_provider(_provide_project_workspace)
             .with_llm(llm)
             .with_history(history_service)
             .use_turn(turn)

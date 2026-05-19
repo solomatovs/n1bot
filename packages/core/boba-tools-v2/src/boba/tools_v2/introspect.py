@@ -23,7 +23,7 @@ from typing import Annotated, Any, get_args, get_origin, get_type_hints
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from boba.tools_v2.errors import ToolDeclarationError
-from boba.tools_v2.markers import InjectMarker
+from boba.tools_v2.markers import FromConfig, FromDI
 
 __all__ = [
     "CallPlan",
@@ -39,12 +39,15 @@ class DiDep:
 
     `param_name` — имя kwarg'а в callable.
     `target_type` — тип, который надо резолвить из контейнера.
-    `marker` — `FromDI(scope=...)` или `FromConfig(scope=...)`.
+    `marker` — `FromDI(scope=...)` или `FromConfig()`.
+        Различие в семантике регистрации (FromConfig авто-загружается,
+        FromDI ищется среди registered providers'ов), резолюция через
+        `container.get(T)` одинаковая.
     """
 
     param_name: str
     target_type: type
-    marker: InjectMarker
+    marker: FromDI | FromConfig
 
 
 @dataclass(frozen=True)
@@ -165,7 +168,7 @@ def _resolve_callable_meta(obj: Any) -> _CallableMeta:
         skip_self = False
     elif inspect.isclass(obj):
         raw_name = obj.__name__
-        if not hasattr(obj, "__call__"):
+        if not callable(obj):
             msg = f"{raw_name}: класс должен иметь `__call__`"
             raise ToolDeclarationError(msg)
         sig_target = obj.__call__
@@ -198,21 +201,23 @@ def _resolve_callable_meta(obj: Any) -> _CallableMeta:
     )
 
 
-def _extract_inject_marker(annotation: Any) -> InjectMarker | None:
+def _extract_inject_marker(annotation: Any) -> FromDI | FromConfig | None:
     """Найти `FromDI`/`FromConfig` в Annotated-метаданных.
 
-    Возвращает первый встреченный InjectMarker. Если в метаданных два маркера
+    Возвращает первый встреченный маркер. Если в метаданных два маркера
     (например, FromDI и FromConfig одновременно) — это decl-ошибка.
     """
     if get_origin(annotation) is not Annotated:
         return None
     _, *metadata = get_args(annotation)
-    found: list[InjectMarker] = [m for m in metadata if isinstance(m, InjectMarker)]
+    found: list[FromDI | FromConfig] = [
+        m for m in metadata if isinstance(m, (FromDI, FromConfig))
+    ]
     if not found:
         return None
     if len(found) > 1:
         msg = (
-            f"параметр имеет несколько InjectMarker'ов "
+            f"параметр имеет несколько inject-маркеров "
             f"({[type(m).__name__ for m in found]}); должен быть один"
         )
         raise ToolDeclarationError(msg)
