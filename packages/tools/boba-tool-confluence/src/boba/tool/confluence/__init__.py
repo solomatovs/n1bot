@@ -1,4 +1,4 @@
-"""boba-tool-confluence — v2 плагин: 5 онлайн-tools поверх Confluence REST.
+"""boba-tool-confluence — плагин: 5 онлайн-tools поверх Confluence REST.
 
 Tools:
 - `confluence_search`                  — CQL-поиск по тексту.
@@ -16,19 +16,19 @@ allowlist `tools` сужает. `confluence_page_download*` тулзы треб�
 from __future__ import annotations
 
 from boba.tool.confluence.config import ConfluencePluginConfig
-from boba.tool.confluence.page_download import ConfluencePageDownloadTool
+from boba.tool.confluence.page_download import confluence_page_download
 from boba.tool.confluence.page_download_markdown import (
-    ConfluencePageDownloadMarkdownTool,
+    confluence_page_download_markdown,
 )
-from boba.tool.confluence.page_outline import ConfluencePageOutlineTool
-from boba.tool.confluence.page_section import ConfluencePageSectionTool
-from boba.tool.confluence.search import ConfluenceSearchTool
+from boba.tool.confluence.page_outline import confluence_page_outline
+from boba.tool.confluence.page_section import confluence_page_section
+from boba.tool.confluence.search import confluence_search
 
 __all__ = [
-    "ConfluencePageDownloadMarkdownTool",
-    "ConfluencePageDownloadTool",
-    "ConfluencePageOutlineTool",
-    "ConfluencePageSectionTool",
     "ConfluencePluginConfig",
-    "ConfluenceSearchTool",
+    "confluence_page_download",
+    "confluence_page_download_markdown",
+    "confluence_page_outline",
+    "confluence_page_section",
+    "confluence_search",
 ]

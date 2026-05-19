@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import httpx
 
 from boba.tool.confluence.config import ConfluencePluginConfig
-from boba.tool.confluence.page_download import ConfluencePageDownloadTool
+from boba.tool.confluence.page_download import confluence_page_download
 from boba.workspace.contract import ProjectWorkspaceShell
 
 _HTTPX_TARGET = "boba.transport.http.transport.httpx.Client"
@@ -72,7 +72,7 @@ def test_downloads_pages_to_workspace_files(
     shell.exists.return_value = False
     shell.write_binary.side_effect = _write_binary
 
-    result = ConfluencePageDownloadTool()(
+    result = confluence_page_download(
         page_ids=["111", "222"],
         dest_dir="downloads",
         shell=shell,
@@ -112,7 +112,7 @@ def test_dest_dir_not_created_if_exists(
     shell.exists.return_value = True
     shell.write_binary.side_effect = lambda _path: BytesIO()
 
-    ConfluencePageDownloadTool()(
+    confluence_page_download(
         page_ids=["1"], dest_dir="existing", shell=shell, cfg=_make_cfg(),
     )
 
@@ -132,7 +132,7 @@ def test_trailing_slash_in_dest_dir_is_stripped(
     captured: list[str] = []
     shell.write_binary.side_effect = lambda path: (captured.append(path), BytesIO())[1]
 
-    result = ConfluencePageDownloadTool()(
+    result = confluence_page_download(
         page_ids=["7"], dest_dir="dl/", shell=shell, cfg=_make_cfg(),
     )
 

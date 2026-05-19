@@ -5,10 +5,9 @@ collection за собой через `[tool.chromadb]` (поля `ingest_folder
 `ingest_collection` / `ingest_collection_description`) — LLM не выбирает,
 во что и откуда индексировать, только опционально включает `prune_missing`.
 
-В v2 граф зависимостей (Embedder, ClientAPI, MdChunkParser,
-ChromaVectorStore, MdFolderIndexer) живёт в общем DI-Container'е агента
-и собирается лениво — при первом резолве `MdFolderIndexer`. Tool сам
-ничего не строит.
+Граф зависимостей (Embedder, ClientAPI, MdChunkParser, ChromaVectorStore,
+MdFolderIndexer) живёт в общем DI-Container'е агента и собирается лениво —
+при первом резолве `MdFolderIndexer`. Tool сам ничего не строит.
 """
 
 from __future__ import annotations
@@ -24,52 +23,49 @@ from boba.tool.chromadb.enable import chromadb_enable_if
 from boba.tool.chromadb.md_folder_ingest import MdFolderIndexer
 from boba.tools import FromConfig, FromDI, Scope, tool
 
-__all__ = ["KbIngestTool"]
+__all__ = ["kb_ingest"]
 
 
 @tool(enable_if=chromadb_enable_if("kb_ingest"))
-class KbIngestTool:
+def kb_ingest(
+    indexer: Annotated[MdFolderIndexer, FromDI(Scope.APP)],
+    cfg: Annotated[ChromadbPluginConfig, FromConfig()],
+    prune_missing: Annotated[
+        bool,
+        Field(
+            description=(
+                "Если true, удалить из коллекции чанки, чьих source_id "
+                "нет среди индексируемых файлов (cleanup удалённых документов)."
+            ),
+        ),
+    ] = False,
+) -> dict[str, Any]:
     """Индексирует pre-настроенную оператором папку в pre-настроенную коллекцию.
 
     Возвращает JSON: {folder, collection, indexed, skipped_unchanged,
     pruned, failed: [{path, error}]}.
     """
-
-    def __call__(
-        self,
-        indexer: Annotated[MdFolderIndexer, FromDI(Scope.APP)],
-        cfg: Annotated[ChromadbPluginConfig, FromConfig()],
-        prune_missing: Annotated[
-            bool,
-            Field(
-                description=(
-                    "Если true, удалить из коллекции чанки, чьих source_id "
-                    "нет среди индексируемых файлов (cleanup удалённых документов)."
-                ),
+    try:
+        stats = indexer.index(
+            folder=Path(cfg.ingest_folder),
+            collection=CollectionId(cfg.ingest_collection),
+            collection_description=(
+                cfg.ingest_collection_description or None
             ),
-        ] = False,
-    ) -> dict[str, Any]:
-        try:
-            stats = indexer.index(
-                folder=Path(cfg.ingest_folder),
-                collection=CollectionId(cfg.ingest_collection),
-                collection_description=(
-                    cfg.ingest_collection_description or None
-                ),
-                prune_missing=prune_missing,
-            )
-        except FileNotFoundError as e:
-            raise RuntimeError(f"folder_not_found: {e}") from e
-        except NotADirectoryError as e:
-            raise RuntimeError(f"folder_not_a_directory: {e}") from e
+            prune_missing=prune_missing,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError(f"folder_not_found: {e}") from e
+    except NotADirectoryError as e:
+        raise RuntimeError(f"folder_not_a_directory: {e}") from e
 
-        return {
-            "folder": stats.folder,
-            "collection": stats.collection,
-            "indexed": stats.indexed,
-            "skipped_unchanged": stats.skipped_unchanged,
-            "pruned": stats.pruned,
-            "failed": [
-                {"path": f.path, "error": f.error} for f in stats.failed
-            ],
-        }
+    return {
+        "folder": stats.folder,
+        "collection": stats.collection,
+        "indexed": stats.indexed,
+        "skipped_unchanged": stats.skipped_unchanged,
+        "pruned": stats.pruned,
+        "failed": [
+            {"path": f.path, "error": f.error} for f in stats.failed
+        ],
+    }

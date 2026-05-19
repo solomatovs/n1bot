@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any
 
 import httpx
 from pydantic import Field
@@ -28,86 +28,82 @@ from boba.tool.confluence.request_sources.pages import (
 from boba.tools import FromConfig, tool
 from boba.transport.http import HttpKeys
 
-__all__ = ["ConfluencePageOutlineTool"]
+__all__ = ["confluence_page_outline"]
+
+
+_PIPELINE_ID: PipelineId = PipelineId("confluence.page_outline")
 
 
 @tool(enable_if=confluence_enable_if("confluence_page_outline"))
-class ConfluencePageOutlineTool:
-    """Online-outline страницы Confluence: page_id → структура заголовков.
+def confluence_page_outline(
+    page_id: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "ID страницы Confluence (число; виден в URL "
+                "viewpage.action?pageId=...)."
+            ),
+        ),
+    ],
+    max_headings: Annotated[
+        int,
+        Field(
+            ge=1, le=500,
+            description="Максимум заголовков в ответе (защита от длинных страниц).",
+        ),
+    ],
+    cfg: Annotated[ConfluencePluginConfig, FromConfig()],
+) -> dict[str, Any]:
+    """Online-outline страницы Confluence: page_id → структура заголовков h1..h6.
 
-    Получает структуру заголовков (h1..h6) страницы Confluence по page_id.
-    Возвращает title, метаданные и список секций с anchor'ами для последующего
-    вызова confluence_page_section.
+    Возвращает title + метаданные + список секций с anchor'ами; anchor
+    нужен для `confluence_page_section`.
     """
+    pipeline = RuntimePipeline(
+        request_source=ConfluencePagesRequestSource(
+            base_url=cfg.base_url,
+            auth=ConfluenceConnection.make_auth(cfg),
+            page_ids=[page_id],
+            body_format=cfg.body_format,
+        ),
+        transport=ConfluenceConnection.make_transport(cfg),
+        decoder=ConfluenceJsonDecoder(body_format=cfg.body_format),
+        reader=ConfluenceReader(),
+    )
 
-    _PIPELINE_ID: ClassVar[PipelineId] = PipelineId("confluence.page_outline")
-
-    def __call__(
-        self,
-        page_id: Annotated[
-            str,
-            Field(
-                min_length=1,
-                description=(
-                    "ID страницы Confluence (число; виден в URL "
-                    "viewpage.action?pageId=...)."
-                ),
-            ),
-        ],
-        max_headings: Annotated[
-            int,
-            Field(
-                ge=1,
-                le=500,
-                description="Максимум заголовков в ответе (защита от длинных страниц).",
-            ),
-        ],
-        cfg: Annotated[ConfluencePluginConfig, FromConfig()],
-    ) -> dict[str, Any]:
-        pipeline = RuntimePipeline(
-            request_source=ConfluencePagesRequestSource(
-                base_url=cfg.base_url,
-                auth=ConfluenceConnection.make_auth(cfg),
-                page_ids=[page_id],
-                body_format=cfg.body_format,
-            ),
-            transport=ConfluenceConnection.make_transport(cfg),
-            decoder=ConfluenceJsonDecoder(body_format=cfg.body_format),
-            reader=ConfluenceReader(),
+    try:
+        sections = list(
+            pipeline.stream(PipelineContext(pipeline_id=_PIPELINE_ID)),
         )
+    except httpx.HTTPError as e:
+        raise RuntimeError(
+            f"Confluence page outline failed: {type(e).__name__}: {e}",
+        ) from e
 
-        try:
-            sections = list(
-                pipeline.stream(PipelineContext(pipeline_id=self._PIPELINE_ID)),
-            )
-        except httpx.HTTPError as e:
-            raise RuntimeError(
-                f"Confluence page outline failed: {type(e).__name__}: {e}",
-            ) from e
+    headings = [s for s in sections if s.metadata.has(HtmlKeys.HEADING_LEVEL)]
+    total = len(headings)
+    truncated = total > max_headings
+    meta = _page_meta(sections)
 
-        headings = [s for s in sections if s.metadata.has(HtmlKeys.HEADING_LEVEL)]
-        total = len(headings)
-        truncated = total > max_headings
-        meta = _page_meta(sections)
-
-        return {
-            "page_id": page_id,
-            "title": meta["title"],
-            "space_key": meta["space_key"],
-            "url": meta["url"],
-            "version": meta["version"],
-            "last_modified": meta["last_modified"],
-            "sections": [
-                {
-                    "level": h.metadata.get(HtmlKeys.HEADING_LEVEL) or 0,
-                    "text": h.metadata.get(HtmlKeys.HEADING_TEXT) or "",
-                    "anchor": h.metadata.get(SectionKeys.ANCHOR) or "",
-                }
-                for h in headings[:max_headings]
-            ],
-            "truncated": truncated,
-            "total_headings": total,
-        }
+    return {
+        "page_id": page_id,
+        "title": meta["title"],
+        "space_key": meta["space_key"],
+        "url": meta["url"],
+        "version": meta["version"],
+        "last_modified": meta["last_modified"],
+        "sections": [
+            {
+                "level": h.metadata.get(HtmlKeys.HEADING_LEVEL) or 0,
+                "text": h.metadata.get(HtmlKeys.HEADING_TEXT) or "",
+                "anchor": h.metadata.get(SectionKeys.ANCHOR) or "",
+            }
+            for h in headings[:max_headings]
+        ],
+        "truncated": truncated,
+        "total_headings": total,
+    }
 
 
 def _page_meta(sections: list[Section[str]]) -> dict[str, Any]:

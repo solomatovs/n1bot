@@ -1,4 +1,4 @@
-"""boba-tool-chromadb — v2 плагин: ChromaDB knowledge-base tools.
+"""boba-tool-chromadb — плагин: ChromaDB knowledge-base tools.
 
 Tools:
 - `kb_search`            — semantic search по коллекции (FromDI ChromaKnowledgeBase).
@@ -19,9 +19,9 @@ allowlist `tools` сужает.
 from __future__ import annotations
 
 from boba.tool.chromadb.config import ChromadbPluginConfig
-from boba.tool.chromadb.kb_ingest import KbIngestTool
-from boba.tool.chromadb.kb_list_collections import KbListCollectionsTool
-from boba.tool.chromadb.kb_search import KbSearchTool
+from boba.tool.chromadb.kb_ingest import kb_ingest
+from boba.tool.chromadb.kb_list_collections import kb_list_collections
+from boba.tool.chromadb.kb_search import kb_search
 from boba.tool.chromadb.providers import (
     provide_chroma_client,
     provide_embedder,
@@ -36,9 +36,9 @@ from boba.tool.chromadb.vector_store import ChromaVectorStore
 __all__ = [
     "ChromaVectorStore",
     "ChromadbPluginConfig",
-    "KbIngestTool",
-    "KbListCollectionsTool",
-    "KbSearchTool",
+    "kb_ingest",
+    "kb_list_collections",
+    "kb_search",
     "provide_chroma_client",
     "provide_embedder",
     "provide_embedder_factory",

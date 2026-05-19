@@ -8,22 +8,19 @@ from boba.tool.postgres_fts.db import PgFtsKnowledgeBase
 from boba.tool.postgres_fts.enable import pg_fts_enable_if
 from boba.tools import FromDI, Scope, tool
 
-__all__ = ["FtsListIndexesTool"]
+__all__ = ["fts_list_indexes"]
 
 
 @tool(enable_if=pg_fts_enable_if("fts_list_indexes"))
-class FtsListIndexesTool:
+def fts_list_indexes(
+    kb: Annotated[PgFtsKnowledgeBase, FromDI(Scope.APP)],
+) -> list[dict[str, Any]]:
     """Список доступных PostgreSQL FTS-индексов.
 
     Возвращает JSON-массив объектов {name, description}. Используй перед
     fts_search чтобы выбрать подходящий индекс.
     """
-
-    def __call__(
-        self,
-        kb: Annotated[PgFtsKnowledgeBase, FromDI(Scope.APP)],
-    ) -> list[dict[str, Any]]:
-        return [
-            {"name": i.name, "description": i.description}
-            for i in kb.list_indexes()
-        ]
+    return [
+        {"name": i.name, "description": i.description}
+        for i in kb.list_indexes()
+    ]

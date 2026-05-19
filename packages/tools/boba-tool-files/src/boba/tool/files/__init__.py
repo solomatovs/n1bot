@@ -1,4 +1,4 @@
-"""boba-tool-files — v2 плагин с 15 builtin file-system tools.
+"""boba-tool-files — плагин с 15 builtin file-system tools.
 
 Entry-point модуль для `AgentBuilder.use_plugin(boba.tool.files)` или
 discovery через `[project.entry-points."boba.plugins"]`.
@@ -12,38 +12,38 @@ discovery через `[project.entry-points."boba.plugins"]`.
 
 from __future__ import annotations
 
-from boba.tool.files.append import AppendTool
-from boba.tool.files.cat import CatTool
-from boba.tool.files.cd import CdTool
+from boba.tool.files.append import append
+from boba.tool.files.cat import cat
+from boba.tool.files.cd import cd
 from boba.tool.files.config import FilesPluginConfig
-from boba.tool.files.cp import CpTool
-from boba.tool.files.edit import EditTool
-from boba.tool.files.grep import GrepTool
-from boba.tool.files.ls import LsTool
-from boba.tool.files.mkdir import MkdirTool
-from boba.tool.files.mv import MvTool
-from boba.tool.files.pwd import PwdTool
-from boba.tool.files.rm import RmTool
-from boba.tool.files.stat import StatTool
-from boba.tool.files.touch import TouchTool
-from boba.tool.files.tree import TreeTool
-from boba.tool.files.write import WriteTool
+from boba.tool.files.cp import cp
+from boba.tool.files.edit import edit
+from boba.tool.files.grep import grep
+from boba.tool.files.ls import ls
+from boba.tool.files.mkdir import mkdir
+from boba.tool.files.mv import mv
+from boba.tool.files.pwd import pwd
+from boba.tool.files.rm import rm
+from boba.tool.files.stat import stat
+from boba.tool.files.touch import touch
+from boba.tool.files.tree import tree
+from boba.tool.files.write import write
 
 __all__ = [
-    "AppendTool",
-    "CatTool",
-    "CdTool",
-    "CpTool",
-    "EditTool",
     "FilesPluginConfig",
-    "GrepTool",
-    "LsTool",
-    "MkdirTool",
-    "MvTool",
-    "PwdTool",
-    "RmTool",
-    "StatTool",
-    "TouchTool",
-    "TreeTool",
-    "WriteTool",
+    "append",
+    "cat",
+    "cd",
+    "cp",
+    "edit",
+    "grep",
+    "ls",
+    "mkdir",
+    "mv",
+    "pwd",
+    "rm",
+    "stat",
+    "touch",
+    "tree",
+    "write",
 ]

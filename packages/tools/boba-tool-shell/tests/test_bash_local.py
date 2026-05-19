@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from boba.tool.shell._profile_local import DEFAULT_PASSTHROUGH, resolve_local_env
-from boba.tool.shell.bash_local import BashLocalTool
+from boba.tool.shell.bash_local import bash_local
 from boba.tool.shell.config import BashLocalConfig
 
 pytestmark = pytest.mark.skipif(
@@ -44,7 +44,7 @@ def _make_cfg(
 
 def _exec(cfg: BashLocalConfig, **kwargs) -> dict:
     """Вызов tool как обычного callable. Возвращает payload (dict)."""
-    return BashLocalTool()(cfg=cfg, **kwargs)
+    return bash_local(cfg=cfg, **kwargs)
 
 
 def test_echo_runs(tmp_path: Path):

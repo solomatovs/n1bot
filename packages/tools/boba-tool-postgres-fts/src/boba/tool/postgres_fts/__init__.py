@@ -1,4 +1,4 @@
-"""boba.tool.postgres_fts — read-only PG FTS tools (v2 plugin).
+"""boba.tool.postgres_fts — read-only PG FTS tools.
 
 Tools:
 - `fts_search(index, query, top_k)` — websearch_to_tsquery по whitelist-индексу.
@@ -10,26 +10,26 @@ Whitelist индексов задаётся через `PostgresFtsPluginConfig.
 не делается.
 
 Plugin-module для `AgentBuilder.use_plugin(boba.tool.postgres_fts)` и
-discovery через `[project.entry-points."boba.plugins"]`. На module
-scope экспортируются `@tool` классы и `@provides` factories — `AgentBuilder`
+discovery через `[project.entry-points."boba.plugins"]`. На module-scope
+экспортируются `@tool`-функции и `@provides` factories — `AgentBuilder`
 обходит и регистрирует помеченные объекты.
 """
 
 from __future__ import annotations
 
 from boba.tool.postgres_fts.config import PostgresFtsPluginConfig
-from boba.tool.postgres_fts.fts_list_indexes import FtsListIndexesTool
-from boba.tool.postgres_fts.fts_search import FtsSearchTool
+from boba.tool.postgres_fts.fts_list_indexes import fts_list_indexes
+from boba.tool.postgres_fts.fts_search import fts_search
 from boba.tool.postgres_fts.models import FtsHit, IndexInfo, IndexSpec
 from boba.tool.postgres_fts.providers import provide_kb, provide_pool
 
 __all__ = [
     "FtsHit",
-    "FtsListIndexesTool",
-    "FtsSearchTool",
     "IndexInfo",
     "IndexSpec",
     "PostgresFtsPluginConfig",
+    "fts_list_indexes",
+    "fts_search",
     "provide_kb",
     "provide_pool",
 ]
