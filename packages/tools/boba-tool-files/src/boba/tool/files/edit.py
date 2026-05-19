@@ -6,7 +6,6 @@ from typing import Annotated
 
 from pydantic import Field
 
-from boba.tool.files.enable import files_enable_if
 from boba.tools import FromDI, Scope, tool
 from boba.workspace.contract import (
     ProjectWorkspaceShell,
@@ -17,7 +16,7 @@ from boba.workspace.contract import (
 __all__ = ["edit"]
 
 
-@tool(enable_if=files_enable_if("edit"))
+@tool
 def edit(
     path: Annotated[str, Field(min_length=1, description="Путь к файлу.")],
     old_string: Annotated[

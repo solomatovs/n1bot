@@ -1,54 +1,51 @@
-"""AgentBuilder — composition root агента.
+"""AgentBuilder — composition root агента, симметричный `LLMBuilder`.
 
-Владеет Dishka `Container` — общим DI-реестром всех служб агента,
-который собирается на `.build()` и передаётся в `Agent`. Container
-наполняется через единую точку — `register_provider(...)`.
+Архитектура:
+    AgentBuilder — flat fluent facade. Внутри держит три ортогональных аккумулятора:
 
-Tool registration API:
+      * `_DIRegistry`    — providers / classes / aliases / tools / plugins → Container
+      * `_PipelineSpec`  — mandatory-слоты + user middleware → onion-цепочка
+      * `_LoopPolicy`    — stop conditions → Specification для StreamSourceLoop
 
-- `register_provider(fn, *, scope=Scope.APP, component="")` — единственный
-  способ добавить factory в DI. Используется и из user-кода (app-level),
-  и внутренне из `use_tools/use_plugin` (с component=имя_плагина).
+Mandatory-слоты (фиксированный порядок, outer → inner):
+    HistoryRecorder → EventStamper → AgentErrorRouter
+        → [user middleware в порядке регистрации]
+            → ToolExecutor → UserQueryRecorder → terminal
 
-- `use_tools([...])` — inline список `@tool`/`@provides` callables.
-  `@provides` маршрутизируется через `register_provider(..., component="inline")`,
-  `@tool` копится для последующей обёртки в `DishkaTool`.
-
-- `use_plugin(module)` — то же что `use_tools`, но обходит атрибуты
-  модуля. component'ом плагина становится `module.__name__`.
-
-- `use_plugins(group=...)` — entry-points discovery: для каждого модуля
-  из group вызывает `use_plugin`.
-
-хел`_middlewares: list[type]`, для каждого класса резолвит non-`inner`
-параметры `__init__` через `container.get(T)` и конструирует. Никаких
-явных lambdoй или ручной wiring'и зависимостей — единый механизм
-резолюции.
+Терминал (по аналогии с `LLMBuilder.build(factory)`) — обязательный
+аргумент `build(terminal_cls)`. Все non-`inner` параметры __init__
+терминала и middleware резолвятся из Container через DI.
 """
 
 from __future__ import annotations
 
+import importlib.metadata
 import inspect
+import logging
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from enum import Enum
 from inspect import Parameter
 from typing import Any, Self, get_type_hints
 
 from dishka import Container, Provider, make_container
 from dishka.entities.component import Component
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from boba.agent.agent import Agent, AgentContext
 from boba.agent.events import AgentEvent
-from boba.agent.history import HistoryService, HistoryWriter, InMemoryHistoryService
+from boba.agent.history import (
+    HistoryReader,
+    HistoryService,
+    HistoryWriter,
+    InMemoryHistoryService,
+)
 from boba.agent.middleware import (
     AgentErrorRouter,
     AgentErrorRouterMiddleware,
     EventStamperMiddleware,
     HistoryRecorderMiddleware,
-    IterationCounterConfig,
-    IterationCounterMiddleware,
     LLMPort,
     StopIfContentFilter,
     StopIfLengthReached,
@@ -59,28 +56,27 @@ from boba.agent.middleware import (
 )
 from boba.agent.turn.builder import TurnBuilder
 from boba.agent.turn.history_view import HistoryDialogView
-from boba.llm.builder import LLM
+from boba.llm.builder import LLM, LLMBuilder
 from boba.patterns import (
+    Specification,
     StreamSource,
-    StreamSourceChainBuilder,
     StreamSourceLoop,
 )
-from boba.settings import ConfigSource, TomlEnvConfigSource
+from boba.provider.openai import OpenAIConfig, use_openai
+from boba.settings import ConfigSource, StringList, TomlEnvConfigSource
 from boba.tools import (
-    DEFAULT_PLUGIN_GROUP,
+    DEFAULT_PLUGIN_ENTRY_POINT,
     DuplicateProviderError,
     FromConfig,
     Scope,
     ToolDeclarationError,
-    discover_plugins,
 )
 from boba.tools.adapter import DishkaTool
 from boba.tools.decorators import (
-    enable_if_predicate,
-    has_enable_if,
     is_provider,
     is_tool,
     provider_scope,
+    tool_explicit_name,
 )
 from boba.tools.domain.ids import ToolSourceId
 from boba.tools.framework.registry import (
@@ -92,40 +88,89 @@ from boba.tools.framework.registry import (
 from boba.tools.introspect import CallPlan, introspect_callable
 from boba.tools.scope import to_dishka_scope
 
+__all__ = ["AgentBuilder", "AgentBuilderConfig", "PluginConfigBase"]
+
+_logger = logging.getLogger(__name__)
+
 _DEFAULT_COMPONENT: str = ""
 """Dishka default-component (app-level services)."""
 
-_INLINE_COMPONENT: str = "inline"
-"""Component для tools/providers, добавленных через `use_tools(...)`."""
 
-_DEFAULT_MIDDLEWARES: tuple[type, ...] = (
-    HistoryRecorderMiddleware,
-    EventStamperMiddleware,
-    AgentErrorRouterMiddleware,
-    IterationCounterMiddleware,
-    ToolExecutionMiddleware,
-    UserQueryRecorderMiddleware,
-)
-"""Default chain от внешнего к внутреннему — порядок имеет значение."""
+# --------------------------------------------------------------------------- #
+# Конфиги
+# --------------------------------------------------------------------------- #
+
+
+class PluginConfigBase(BaseModel):
+    """Meta-config плагина: что framework читает из `[tool.<plugin_name>]`."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enable: bool = False
+    tools: StringList | None = None
 
 
 class AgentBuilderConfig(BaseModel):
-    """DTO bootstrap-конфига AgentBuilder.
-
-    Агрегирует per-middleware конфиги, нужные на этапе сборки агента.
-    """
+    """Bootstrap-конфиг агрегатор."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    iteration_counter: IterationCounterConfig = Field(
-        default_factory=IterationCounterConfig,
-    )
+
+# --------------------------------------------------------------------------- #
+# Слоты pipeline
+# --------------------------------------------------------------------------- #
+
+
+class _Slot(Enum):
+    """Mandatory-позиции в pipeline. Порядок определён в `_OUTER` / `_INNER`."""
+
+    HISTORY_RECORDER = "history_recorder"
+    EVENT_STAMPER = "event_stamper"
+    ERROR_ROUTER = "error_router"
+    TOOL_EXECUTOR = "tool_executor"
+    USER_QUERY_RECORDER = "user_query_recorder"
+
+
+_OUTER: tuple[_Slot, ...] = (
+    _Slot.HISTORY_RECORDER,
+    _Slot.EVENT_STAMPER,
+    _Slot.ERROR_ROUTER,
+)
+"""Outer envelope: ровно эти три слота, в этом порядке, оборачивают всё внутри.
+
+Их инварианты:
+    HistoryRecorder — каждое событие должно попасть в журнал.
+    EventStamper    — каждое событие имеет seq/iteration/emitted_at.
+    ErrorRouter     — RoutableError превращается в TerminalEvent, не пробрасывается.
+"""
+
+_INNER: tuple[_Slot, ...] = (
+    _Slot.TOOL_EXECUTOR,
+    _Slot.USER_QUERY_RECORDER,
+)
+"""Inner envelope: эти слоты сидят между user middleware и terminal.
+
+Их инварианты:
+    ToolExecutor       — `ToolCallComplete` исполняется (passthrough если tools нет).
+    UserQueryRecorder  — `ctx.query` эмитится как `UserQueryReceived` один раз.
+"""
+
+_DEFAULT_SLOT_CLASSES: dict[_Slot, type[StreamSource[AgentContext, AgentEvent]]] = {
+    _Slot.HISTORY_RECORDER: HistoryRecorderMiddleware,
+    _Slot.EVENT_STAMPER: EventStamperMiddleware,
+    _Slot.ERROR_ROUTER: AgentErrorRouterMiddleware,
+    _Slot.TOOL_EXECUTOR: ToolExecutionMiddleware,
+    _Slot.USER_QUERY_RECORDER: UserQueryRecorderMiddleware,
+}
+
+
+# --------------------------------------------------------------------------- #
+# DI registrations (data records)
+# --------------------------------------------------------------------------- #
 
 
 @dataclass(frozen=True)
 class _ProviderEntry:
-    """Регистрационная единица: factory + scope + component + cached план вызова."""
-
     fn: Callable[..., Any]
     scope: Scope
     component: str
@@ -133,81 +178,59 @@ class _ProviderEntry:
 
 
 @dataclass(frozen=True)
-class _ToolEntry:
-    """Зарегистрированный `@tool` callable: объект + component + cached план."""
+class _ClassEntry:
+    cls: type
+    provides: type | None
+    scope: Scope
+    component: str
 
+
+@dataclass(frozen=True)
+class _AliasEntry:
+    source: type
+    provides: type
+    component: str
+
+
+@dataclass(frozen=True)
+class _ToolEntry:
     obj: Any
     component: str
     plan: CallPlan
 
 
-class AgentBuilder:
-    """Fluent-фасад: собирает Agent через единый DI-резолвер.
+# --------------------------------------------------------------------------- #
+# DI sub-builder
+# --------------------------------------------------------------------------- #
 
-    Owns: LLM, history journal, Dishka `Container` (через накопленные
-    providers), bootstrap-конфиг middleware-цепочки, middleware list.
-    Turn-side (model/prompts/sampling/reducers) живёт в `TurnBuilder` и
-    подаётся одним методом `.use_turn(...)`.
+
+class _DIRegistry:
+    """Аккумулятор DI-регистраций. `build_container(...)` собирает Dishka Container.
+
+    `replace=True` в register_* перетирает существующую регистрацию того же
+    `(provides, component)`, вместо `DuplicateProviderError`. Это явный
+    opt-in, чтобы случайные коллизии не маскировались.
     """
 
     def __init__(self) -> None:
-        self._llm: LLM | None = None
         self._providers: list[_ProviderEntry] = []
+        self._classes: list[_ClassEntry] = []
+        self._aliases: list[_AliasEntry] = []
         self._tools: list[_ToolEntry] = []
-        self._discover_groups: list[str] = []
-        self._history_service: HistoryService = InMemoryHistoryService()
-        self._turn: TurnBuilder | None = None
-        self._middlewares: list[type] = list(_DEFAULT_MIDDLEWARES)
-        self._terminal_cls: type = LLMPort
-        self._builder_config: AgentBuilderConfig = AgentBuilderConfig()
-        # Единый источник конфигурации для всех FromConfig-загрузок.
-        # Default — TOML из $BOBA_CONFIG_PATH + os.environ; для тестов или
-        # custom-flow можно подменить через `use_config(...)`.
         self._config_source: ConfigSource = TomlEnvConfigSource()
-        # Заполняется внутри build() перед сборкой chain — closure ToolExecutor
-        # provider'а ищет здесь свежий registry.
-        self._registry: ToolRegistry | None = None
-        # Заполняется внутри `_register_internal_providers` — синглтон на сессию.
-        self._error_router: AgentErrorRouter = AgentErrorRouter()
 
-    # --- LLM / lifecycle --------------------------------------------------- #
-
-    def with_llm(self, llm: LLM) -> Self:
-        """Готовый LLM (обязательно; см. LLMBuilder)."""
-        self._llm = llm
-        return self
-
-    def with_history(self, service: HistoryService) -> Self:
-        """Журнал AgentEvent; дефолт — InMemoryHistoryService()."""
-        self._history_service = service
-        return self
-
-    def use_turn(self, turn: TurnBuilder) -> Self:
-        """Описание следующего хода. Обязательно до `.build()`."""
-        self._turn = turn
-        return self
-
+    # ---- config source --------------------------------------------------- #
 
     def use_config(self, source: ConfigSource) -> Self:
-        """
-        Переопределить ConfigSource
-        """
+        """Override ConfigSource (TOML/env). Используется для `discover_plugins`."""
         self._config_source = source
         return self
 
-    def use_event_stamper(self, cls: type) -> Self:
-        """
-        Заменить класс EventStamper в middleware
-        """
-        try:
-            idx = self._middlewares.index(EventStamperMiddleware)
-        except ValueError:
-            self._middlewares.append(cls)
-        else:
-            self._middlewares[idx] = cls
-        return self
+    @property
+    def config_source(self) -> ConfigSource:
+        return self._config_source
 
-    # --- DI / Tools registration ------------------------------------------ #
+    # ---- register_* ------------------------------------------------------ #
 
     def register_provider(
         self,
@@ -215,124 +238,158 @@ class AgentBuilder:
         *,
         scope: Scope = Scope.APP,
         component: str = _DEFAULT_COMPONENT,
+        replace: bool = False,
     ) -> Self:
-        """
-        Точка регистрации provider в DI
-        """
         plan = introspect_callable(fn)
-        self._validate_provider(fn, plan)
-        for existing in self._providers:
-            if (
-                existing.component == component
-                and existing.plan.return_type is plan.return_type
-            ):
-                msg = (
-                    f"component {component!r}: тип {plan.return_type!r} "
-                    f"уже зарегистрирован другим provider'ом — в одной "
-                    f"component-зоне один provider на тип"
-                )
-                raise DuplicateProviderError(msg)
+        _validate_provider_return(fn, plan)
+        if replace:
+            self._remove(plan.return_type, component)
+        else:
+            self._raise_if_taken(plan.return_type, component)
         self._providers.append(
             _ProviderEntry(fn=fn, scope=scope, component=component, plan=plan),
         )
         return self
 
-    def use_tools(self, items: Iterable[Any]) -> Self:
-        """Зарегистрировать tool"""
-        for item in items:
-            self._absorb_item(item, _INLINE_COMPONENT)
-        return self
-
-    def use_plugin(self, plugin_module: object) -> Self:
-        """Подцепить v2-плагин — Python-модуль с `@tool`/`@provides`."""
-        component = getattr(plugin_module, "__name__", repr(plugin_module))
-        for attr_name in dir(plugin_module):
-            if attr_name.startswith("_"):
-                continue
-
-            obj = getattr(plugin_module, attr_name, None)
-            if obj is None:
-                continue
-
-            if is_tool(obj) or is_provider(obj):
-                self._absorb_item(obj, component)
-
-        return self
-
-    def use_plugins(
+    def register_class(
         self,
-        group: str = DEFAULT_PLUGIN_GROUP,
+        cls: type,
+        *,
+        provides: type | None = None,
+        scope: Scope = Scope.APP,
+        component: str = _DEFAULT_COMPONENT,
+        replace: bool = False,
     ) -> Self:
-        """Подцепить плагины через entry-points group."""
-        self._discover_groups.append(group)
-        return self
-
-    def pipe(
-        self,
-        fn: Callable[..., Self],
-        /,
-        *args: Any,
-        **kwargs: Any,
-    ) -> Self:
-        """Extension-style: `fn(self, *args, **kwargs) -> Self`."""
-        return fn(self, *args, **kwargs)
-
-    def build(self) -> Agent:
-        """Собрать Agent. Требуются `.with_llm(...)` и `.use_turn(...)`."""
-        if self._llm is None:
-            msg = "AgentBuilder.build: .with_llm(...) обязателен до .build()"
-            raise ValueError(msg)
-        if self._turn is None:
-            msg = "AgentBuilder.build: .use_turn(...) обязателен до .build()"
-            raise ValueError(msg)
-
-        # 1. Discovery откладывалась до build'а.
-        for group in self._discover_groups:
-            for module in discover_plugins(group):
-                self.use_plugin(module)
-        self._discover_groups.clear()
-
-        # 2. Регистрируем internal-провайдеры: LLM, History, ToolExecutor, etc.
-        self._register_internal_providers()
-
-        # 3. Резолвим FromConfig-инстансы (один раз) и отсеиваем entries
-        #    с `enable_if`, вернувшим False. Делается ДО сборки контейнера —
-        #    выключенные tools/providers вообще не попадают в DI.
-        configs = self._instantiate_configs()
-        self._apply_enable_if_filter(configs)
-
-        # 4. Собираем Container из всех уцелевших providers + configs.
-        container = self._build_container(configs)
-
-        # 5. Строим ToolRegistry (DishkaTool'ы) — нужен Container, но НЕ
-        #    нужен ToolExecutor (closure-провайдер найдёт self._registry).
-        self._registry = self._build_registry(container)
-
-        # 6. Auto-wire turn'а: history_view и tool_catalog подкладываем по
-        #    умолчанию, если turn их не задал явно.
-        if not self._turn.has_history_view():
-            self._turn.with_history_view(HistoryDialogView(self._history_service))
-        if not self._turn.has_tool_catalog():
-            self._turn.with_tool_catalog(self._registry.catalog())
-
-        # 7. Собираем middleware-chain через DI: каждый класс конструируется
-        #    container.get(...) для своих non-inner параметров.
-        chain = self._build_chain_via_di(container)
-        source = StreamSourceLoop(
-            source=chain,
-            stop_if=(
-                StopIfReasonStop()
-                .or_(StopIfLengthReached())
-                .or_(StopIfContentFilter())
-                .or_(StopOnAnyFailure())
-            ),
+        target = provides if provides is not None else cls
+        if replace:
+            self._remove(target, component)
+        else:
+            self._raise_if_taken(target, component)
+        self._classes.append(
+            _ClassEntry(cls=cls, provides=provides, scope=scope, component=component),
         )
-        return Agent(source=source, container=container)
+        return self
 
-    # --- Internal helpers -------------------------------------------------- #
+    def register_instance(
+        self,
+        instance: Any,
+        *,
+        provides: type | None = None,
+        scope: Scope = Scope.APP,
+        component: str = _DEFAULT_COMPONENT,
+        replace: bool = False,
+    ) -> Self:
+        target = provides if provides is not None else type(instance)
 
-    def _absorb_item(self, obj: Any, component: str) -> None:
-        """Маршрутизировать item (@tool / @provides) в внутренние pool'ы."""
+        def _factory() -> Any:
+            return instance
+
+        _factory.__annotations__ = {"return": target}
+        _factory.__name__ = f"_provide_{target.__name__}"
+        return self.register_provider(
+            _factory,
+            scope=scope,
+            component=component,
+            replace=replace,
+        )
+
+    def register_alias(
+        self,
+        *,
+        source: type,
+        provides: type,
+        component: str = _DEFAULT_COMPONENT,
+        replace: bool = False,
+    ) -> Self:
+        if replace:
+            self._remove(provides, component)
+        else:
+            self._raise_if_taken(provides, component)
+        self._aliases.append(
+            _AliasEntry(source=source, provides=provides, component=component),
+        )
+        return self
+
+    # ---- tools / plugins ------------------------------------------------- #
+
+    def use_tools(self, items: Iterable[Any]) -> Self:
+        for item in items:
+            self._absorb(item, "inline")
+        return self
+
+    def use_plugin(self, module: object) -> Self:
+        self._scan_module(module, allowlist=None)
+        return self
+
+    def discover_plugins(self, entry_point: str) -> Self:
+        for ep in importlib.metadata.entry_points(group=entry_point):
+            raw = self._config_source.for_path(("tool", ep.name))
+            meta = PluginConfigBase.model_validate(raw)
+            if not meta.enable:
+                continue
+            try:
+                module = ep.load()
+            except Exception as exc:
+                _logger.warning(
+                    "plugin entry-point %r load failed: %s: %s; skipped",
+                    ep.name,
+                    type(exc).__name__,
+                    exc,
+                )
+                continue
+            self._scan_module(module, allowlist=meta.tools)
+        return self
+
+    # ---- container assembly ---------------------------------------------- #
+
+    def build_container(self) -> Container:
+        """Резолвит FromConfig-зависимости и собирает Container."""
+        configs = self._instantiate_configs()
+        config_types = set(configs.keys())
+
+        components: dict[str, list[_ProviderEntry]] = {}
+        for p in self._providers:
+            components.setdefault(p.component, []).append(p)
+        for t in self._tools:
+            components.setdefault(t.component, [])
+        for c in self._classes:
+            components.setdefault(c.component, [])
+        for a in self._aliases:
+            components.setdefault(a.component, [])
+
+        default_entries = components.pop(_DEFAULT_COMPONENT, [])
+        default_classes = [
+            c for c in self._classes if c.component == _DEFAULT_COMPONENT
+        ]
+        default_aliases = [
+            a for a in self._aliases if a.component == _DEFAULT_COMPONENT
+        ]
+
+        default_provider = self._build_default_provider(
+            default_entries,
+            default_classes,
+            default_aliases,
+            config_types,
+        )
+        plugin_providers = [
+            self._build_plugin_provider(name, entries)
+            for name, entries in components.items()
+        ]
+        return make_container(default_provider, *plugin_providers, context=configs)
+
+    @property
+    def tools(self) -> list[_ToolEntry]:
+        """Read-only снимок зарегистрированных tool'ов."""
+        return list(self._tools)
+
+    @property
+    def providers(self) -> list[_ProviderEntry]:
+        """Read-only снимок зарегистрированных provider-фабрик."""
+        return list(self._providers)
+
+    # ---- internals ------------------------------------------------------- #
+
+    def _absorb(self, obj: Any, component: str) -> None:
         if is_provider(obj):
             self.register_provider(
                 obj,
@@ -349,127 +406,67 @@ class AgentBuilder:
             )
             raise ToolDeclarationError(msg)
 
-    @staticmethod
-    def _validate_provider(fn: Callable[..., Any], plan: CallPlan) -> None:
-        """Provider обязан иметь return type annotation."""
-        if plan.return_type is Parameter.empty or plan.return_type is None:
-            msg = (
-                f"@provides function {getattr(fn, '__name__', repr(fn))!r}: "
-                f"return type обязателен — это тип, под которым служба "
-                f"регистрируется в DI"
-            )
-            raise ToolDeclarationError(msg)
+    def _scan_module(self, module: object, *, allowlist: list[str] | None) -> None:
+        component = getattr(module, "__name__", repr(module))
+        for attr_name in dir(module):
+            if attr_name.startswith("_"):
+                continue
+            obj = getattr(module, attr_name, None)
+            if obj is None:
+                continue
+            if is_tool(obj):
+                if allowlist is not None and _tool_wire_name(obj) not in allowlist:
+                    continue
+                self._absorb(obj, component)
+            elif is_provider(obj):
+                self._absorb(obj, component)
 
-    # --- Internal providers (agent core services) ------------------------- #
-
-    def _register_internal_providers(self) -> None:
-        """Зарегистрировать в DI всё, что нужно middleware/agent'у.
-
-        Это «склейка» между явными полями builder'а (with_llm/with_history)
-        и DI-резолюцией middleware'ов. Каждое поле оборачивается в
-        bound-метод с типизированным return — `register_provider`
-        интроспектирует подпись без `self`.
-        """
-        internal_factories: tuple[Callable[..., Any], ...] = (
-            self._provide_history_service,
-            self._provide_history_writer,
-            self._provide_llm,
-            self._provide_turn,
-            self._provide_agent_builder_config,
-            self._provide_iteration_counter_config,
-            self._provide_error_router,
-            self._provide_tool_executor,
-        )
-        for fn in internal_factories:
-            self.register_provider(fn, scope=Scope.APP)
-
-    def _provide_history_service(self) -> HistoryService:
-        return self._history_service
-
-    def _provide_history_writer(self) -> HistoryWriter:
-        return self._history_service
-
-    def _provide_llm(self) -> LLM:
-        if self._llm is None:
-            msg = "_provide_llm called before with_llm() — invariant broken"
-            raise RuntimeError(msg)
-        return self._llm
-
-    def _provide_turn(self) -> TurnBuilder:
-        if self._turn is None:
-            msg = "_provide_turn called before use_turn() — invariant broken"
-            raise RuntimeError(msg)
-        return self._turn
-
-    def _provide_agent_builder_config(self) -> AgentBuilderConfig:
-        return self._builder_config
-
-    def _provide_iteration_counter_config(self) -> IterationCounterConfig:
-        return self._builder_config.iteration_counter
-
-    def _provide_error_router(self) -> AgentErrorRouter:
-        return self._error_router
-
-    def _provide_tool_executor(self) -> ToolExecutor:
-        """Lazy: registry строится после регистрации provider'а, но ДО
-        первого `container.get(ToolExecutor)` при сборке chain'а.
-        На этот момент `self._registry` уже выставлен в `build()`.
-        """
-        if self._registry is None:
-            msg = "ToolExecutor запрошен раньше, чем построен ToolRegistry"
-            raise RuntimeError(msg)
-        return self._registry.executor()
-
-    # --- Container assembly ----------------------------------------------- #
-
-    def _build_container(self, configs: dict[type, object]) -> Container:
-        """Собрать Dishka Container из накопленных providers и configs.
-
-        `configs` — pre-instantiated FromConfig-инстансы (см.
-        `_instantiate_configs`). Передаются в `make_container(context=...)`
-        и регистрируются `from_context()` в default-provider'е.
-        """
-        config_types = set(configs.keys())
-
-        components: dict[str, list[_ProviderEntry]] = {}
+    def _raise_if_taken(self, target: type, component: str) -> None:
         for p in self._providers:
-            components.setdefault(p.component, []).append(p)
-        for t in self._tools:
-            components.setdefault(t.component, [])
+            if p.component == component and p.plan.return_type is target:
+                msg = (
+                    f"component {component!r}: тип {target!r} уже "
+                    f"зарегистрирован provider'ом"
+                )
+                raise DuplicateProviderError(msg)
+        for c in self._classes:
+            existing = c.provides if c.provides is not None else c.cls
+            if c.component == component and existing is target:
+                msg = (
+                    f"component {component!r}: тип {target!r} уже "
+                    f"зарегистрирован классом"
+                )
+                raise DuplicateProviderError(msg)
+        for a in self._aliases:
+            if a.component == component and a.provides is target:
+                msg = (
+                    f"component {component!r}: тип {target!r} уже "
+                    f"зарегистрирован alias'ом"
+                )
+                raise DuplicateProviderError(msg)
 
-        default_entries = components.pop(_DEFAULT_COMPONENT, [])
-        default_provider = self._build_default_dishka_provider(
-            default_entries,
-            config_types,
-        )
-        plugin_providers = [
-            self._build_plugin_dishka_provider(component_name, entries)
-            for component_name, entries in components.items()
+    def _remove(self, target: type, component: str) -> None:
+        self._providers = [
+            p
+            for p in self._providers
+            if not (p.component == component and p.plan.return_type is target)
         ]
-        return make_container(
-            default_provider,
-            *plugin_providers,
-            context=configs,
-        )
-
-    # --- Config resolution + enable_if filter ----------------------------- #
+        self._classes = [
+            c
+            for c in self._classes
+            if not (
+                c.component == component
+                and (c.provides if c.provides is not None else c.cls) is target
+            )
+        ]
+        self._aliases = [
+            a
+            for a in self._aliases
+            if not (a.component == component and a.provides is target)
+        ]
 
     def _instantiate_configs(self) -> dict[type, object]:
-        """Собрать ВСЕ FromConfig-типы (из tools, providers И из
-        `enable_if`-предикатов) и инстанцировать каждый ровно один раз.
-
-        Каждый cfg-тип загружается через `self._config_source.for_path(...)`,
-        path извлекается из `cfg_type.model_config["boba_config_path"]`.
-        Полученный dict проходит через `cfg_type.model_validate(...)` —
-        pydantic-валидация + flat-redistribute, но БЕЗ внутренней
-        source-машинерии `BaseSettings.__init__`. Это значит, что
-        единственный читатель TOML/env — `ConfigSource`.
-
-        Один инстанс одновременно используется для evaluate enable_if
-        и для регистрации в Container — никогда не создаём конфиг дважды.
-        """
         cfg_types: set[type] = set()
-
         for p in self._providers:
             for dep in p.plan.di_deps:
                 if isinstance(dep.marker, FromConfig):
@@ -478,107 +475,36 @@ class AgentBuilder:
             for dep in t.plan.di_deps:
                 if isinstance(dep.marker, FromConfig):
                     cfg_types.add(dep.target_type)
-
-        # FromConfig-типы из предикатов enable_if — нужны ещё на стадии
-        # фильтра, до Container'а. Если предикат использует FromDI — это
-        # decl-ошибка, проверяется в _is_enabled.
-        for target in self._enable_if_targets():
-            predicate_plan = introspect_callable(enable_if_predicate(target))
-            for dep in predicate_plan.di_deps:
-                if isinstance(dep.marker, FromConfig):
-                    cfg_types.add(dep.target_type)
-
         return {ct: self._load_config(ct) for ct in cfg_types}
 
     def _load_config(self, cfg_type: type) -> object:
-        """Загрузить один cfg через ConfigSource → `model_validate`."""
-        path = self._config_path_for(cfg_type)
+        path = _config_path_for(cfg_type)
         data = self._config_source.for_path(path)
         return cfg_type.model_validate(data)
 
     @staticmethod
-    def _config_path_for(cfg_type: type) -> tuple[str, ...]:
-        """Извлечь `ConfigPath` из `cfg_type.model_config.boba_config_path`.
-
-        `boba_config_path` может быть строкой ("tool.files") или
-        кортежем сегментов (("tool", "files")). Если не задан — путь
-        пуст, ConfigSource вернёт пустой dict → cfg получит все default'ы.
-        """
-        mc = getattr(cfg_type, "model_config", {})
-        section = mc.get("boba_config_path", "") if isinstance(mc, dict) else ""
-        if isinstance(section, str):
-            return tuple(s for s in section.split(".") if s)
-        return tuple(section)
-
-    def _apply_enable_if_filter(self, configs: dict[type, object]) -> None:
-        """Удалить из накопленных entries те, чьи `enable_if` вернули False.
-
-        Удаление идёт по `self._providers` и `self._tools` — выключенные
-        не попадут ни в DI-Container, ни в ToolRegistry. Internal-providers
-        (LLM, History, ToolExecutor, …) лишены `enable_if` и не отсеиваются.
-        """
-        self._providers = [
-            p for p in self._providers if self._is_entry_enabled(p.fn, configs)
-        ]
-        self._tools = [t for t in self._tools if self._is_entry_enabled(t.obj, configs)]
-
-    def _enable_if_targets(self) -> Iterable[Any]:
-        """Все накопленные entries (provider-fn'ы + tool-callables)
-        с пометкой `enable_if`. Используется в `_instantiate_configs`,
-        чтобы знать какие FromConfig-типы нужно инстанцировать заранее.
-        """
-        for p in self._providers:
-            if has_enable_if(p.fn):
-                yield p.fn
-        for t in self._tools:
-            if has_enable_if(t.obj):
-                yield t.obj
-
-    @staticmethod
-    def _is_entry_enabled(target: Any, configs: dict[type, object]) -> bool:
-        """Запустить `enable_if`-predicate, если он есть.
-
-        Predicate должен использовать только FromConfig-deps — на момент
-        проверки DI-Container ещё не построен. FromDI в подписи predicate'а
-        → `ToolDeclarationError`.
-        """
-        if not has_enable_if(target):
-            return True
-        predicate = enable_if_predicate(target)
-        plan = introspect_callable(predicate)
-        kwargs: dict[str, Any] = {}
-        for dep in plan.di_deps:
-            if not isinstance(dep.marker, FromConfig):
-                pred_name = getattr(predicate, "__name__", repr(predicate))
-                msg = (
-                    f"enable_if {pred_name!r}: параметр {dep.param_name!r} "
-                    f"использует {type(dep.marker).__name__} — в enable_if "
-                    f"допустимы только FromConfig (DI ещё не существует на "
-                    f"стадии фильтра)"
-                )
-                raise ToolDeclarationError(msg)
-            kwargs[dep.param_name] = configs[dep.target_type]
-        return bool(predicate(**kwargs))
-
-    @staticmethod
-    def _build_default_dishka_provider(
+    def _build_default_provider(
         entries: list[_ProviderEntry],
+        classes: list[_ClassEntry],
+        aliases: list[_AliasEntry],
         config_types: set[type],
     ) -> Provider:
         provider = Provider(scope=to_dishka_scope(Scope.APP))
         for cfg_type in config_types:
-            provider.from_context(
-                provides=cfg_type,
-                scope=to_dishka_scope(Scope.APP),
-            )
+            provider.from_context(provides=cfg_type, scope=to_dishka_scope(Scope.APP))
         for entry in entries:
+            provider.provide(source=entry.fn, scope=to_dishka_scope(entry.scope))
+        for ce in classes:
             provider.provide(
-                source=entry.fn,
-                scope=to_dishka_scope(entry.scope),
+                source=ce.cls,
+                provides=ce.provides,
+                scope=to_dishka_scope(ce.scope),
             )
+        for ae in aliases:
+            provider.alias(source=ae.source, provides=ae.provides)
         return provider
 
-    def _build_plugin_dishka_provider(
+    def _build_plugin_provider(
         self,
         component_name: str,
         entries: list[_ProviderEntry],
@@ -602,128 +528,429 @@ class AgentBuilder:
         for ct in alias_types:
             provider.alias(source=ct, component=Component(_DEFAULT_COMPONENT))
         for entry in entries:
-            provider.provide(
-                source=entry.fn,
-                scope=to_dishka_scope(entry.scope),
-            )
+            provider.provide(source=entry.fn, scope=to_dishka_scope(entry.scope))
         return provider
 
-    def _build_registry(self, container: Container) -> ToolRegistry:
-        """Обернуть `@tool` callables в `DishkaTool` и собрать ToolSource'ы."""
-        by_component: dict[str, list[_ToolEntry]] = {}
-        for t in self._tools:
-            by_component.setdefault(t.component, []).append(t)
 
-        sources: list[ToolSource] = []
-        for component_name, tool_entries in by_component.items():
-            sid = ToolSourceId(_component_to_source_id(component_name))
-            dishka_tools = [
-                DishkaTool(
-                    target=_resolve_callable(t.obj),
-                    plan=t.plan,
-                    container=container,
-                    component=component_name,
-                    source_id=sid,
-                )
-                for t in tool_entries
-            ]
-            sources.append(StaticToolSource(sid, dishka_tools))
-        return ToolRegistry.from_sources(sources)
+# --------------------------------------------------------------------------- #
+# Pipeline sub-builder
+# --------------------------------------------------------------------------- #
 
-    # --- Chain assembly via DI -------------------------------------------- #
 
-    def _build_chain_via_di(
+class _PipelineSpec:
+    """Mandatory-слоты + user middleware → onion-цепочка над terminal.
+
+    Сборка фиксирована: `_OUTER → middlewares → _INNER → terminal`.
+    Слот переопределяется через `set_slot(slot, cls)`; user middleware
+    добавляется через `use_middleware(cls)` в порядке регистрации.
+    """
+
+    def __init__(self) -> None:
+        self._slots: dict[_Slot, type] = dict(_DEFAULT_SLOT_CLASSES)
+        self._middlewares: list[type] = []
+
+    def set_slot(self, slot: _Slot, cls: type) -> Self:
+        self._slots[slot] = cls
+        return self
+
+    def use_middleware(self, cls: type) -> Self:
+        self._middlewares.append(cls)
+        return self
+
+    def build(
         self,
-        container: Container,
-    ) -> StreamSource[AgentContext, AgentEvent]:
-        """Construct middleware-цепочку, резолвя non-`inner` deps через DI."""
-        chain_builder = StreamSourceChainBuilder[AgentContext, AgentEvent]()
-        for middleware_cls in self._middlewares:
-            # Замыкание над cls и container — каждый middleware конструируется
-            # при `chain_builder.terminal(...)`-разворачивании.
-            chain_builder.use(
-                lambda inner, _cls=middleware_cls: self._make_middleware(
-                    _cls,
-                    inner,
-                    container,
-                ),
-            )
-        terminal = self._make_terminal(self._terminal_cls, container)
-        return chain_builder.terminal(terminal)
-
-    @staticmethod
-    def _make_middleware(
-        middleware_cls: type,
-        inner: StreamSource[AgentContext, AgentEvent],
-        container: Container,
-    ) -> StreamSource[AgentContext, AgentEvent]:
-        """Сконструировать middleware: inner позиционно, остальное — из DI."""
-        kwargs = _resolve_init_kwargs(
-            middleware_cls,
-            container,
-            exclude={"inner"},
-        )
-        return middleware_cls(inner, **kwargs)
-
-    @staticmethod
-    def _make_terminal(
         terminal_cls: type,
         container: Container,
     ) -> StreamSource[AgentContext, AgentEvent]:
-        """Terminal middleware — нет inner, все params через DI."""
-        kwargs = _resolve_init_kwargs(terminal_cls, container, exclude=set())
-        return terminal_cls(**kwargs)
+        """Собрать onion-цепочку. inner-most → outer-most:
+
+        terminal()                              ← аргумент build()
+        UserQueryRecorder(terminal)             ← _INNER (reverse iterate)
+        ToolExecutor(UserQueryRecorder(...))
+        <user middleware in reverse order>      ← reversed self._middlewares
+        AgentErrorRouter(...)                   ← _OUTER (reverse iterate)
+        EventStamper(...)
+        HistoryRecorder(...)                    ← outermost
+        """
+        chain: StreamSource[AgentContext, AgentEvent] = _construct(
+            terminal_cls,
+            container,
+            with_inner=False,
+        )
+
+        for slot in reversed(_INNER):
+            chain = _construct(
+                self._slots[slot], container, with_inner=True, inner=chain
+            )
+
+        for mw_cls in reversed(self._middlewares):
+            chain = _construct(mw_cls, container, with_inner=True, inner=chain)
+
+        for slot in reversed(_OUTER):
+            chain = _construct(
+                self._slots[slot], container, with_inner=True, inner=chain
+            )
+
+        return chain
+
+
+# --------------------------------------------------------------------------- #
+# Loop policy
+# --------------------------------------------------------------------------- #
+
+_DEFAULT_STOPS: tuple[Specification[tuple[AgentContext, AgentEvent]], ...] = (
+    StopIfReasonStop(),
+    StopIfLengthReached(),
+    StopIfContentFilter(),
+    StopOnAnyFailure(),
+)
+"""Дефолтные стоп-условия. Применяются всегда поверх пользовательских."""
+
+
+class _LoopPolicy:
+    """Аккумулятор `Specification[tuple[AgentContext, AgentEvent]]` (stop_if)."""
+
+    def __init__(self) -> None:
+        self._extra: list[Specification[tuple[AgentContext, AgentEvent]]] = []
+
+    def stop_if(self, spec: Specification[tuple[AgentContext, AgentEvent]]) -> Self:
+        self._extra.append(spec)
+        return self
+
+    def build_spec(self) -> Specification[tuple[AgentContext, AgentEvent]]:
+        spec = _DEFAULT_STOPS[0]
+        for s in _DEFAULT_STOPS[1:]:
+            spec = spec.or_(s)
+        for s in self._extra:
+            spec = spec.or_(s)
+        return spec
+
+
+# --------------------------------------------------------------------------- #
+# AgentBuilder (flat facade)
+# --------------------------------------------------------------------------- #
+
+
+def _openai_provider() -> LLM:
+    """Дефолтная сборка LLM — OpenAI-совместимый terminal без observers."""
+    return LLMBuilder().build(use_openai(OpenAIConfig()))
+
+
+class AgentBuilder:
+    """Flat fluent facade. Делегирует в три ortogonal sub-builder'а.
+
+    Sub-builder'ы доступны через `.di`, `.pipeline`, `.loop` — для случаев,
+    которые не покрыты shortcut'ами фасада. Большинство пользовательских
+    сценариев решается верхним API без обращения к sub-builder'ам.
+    """
+
+    def __init__(self) -> None:
+        self.di = _DIRegistry()
+        self.pipeline = _PipelineSpec()
+        self.loop = _LoopPolicy()
+        self._turn: TurnBuilder | None = None
+        self._error_router: AgentErrorRouter = AgentErrorRouter()
+
+        # Дефолты:
+        self.use_history(InMemoryHistoryService)
+        self.di.register_provider(_openai_provider)
+        self.di.register_instance(
+            AgentBuilderConfig(),
+            provides=AgentBuilderConfig,
+        )
+
+    def use_llm(self, llm: LLM) -> Self:
+        """Override default LLM уже собранным экземпляром."""
+        self.di.register_instance(llm, provides=LLM, replace=True)
+        return self
+
+    def use_history(self, cls: type[HistoryService]) -> Self:
+        """Заменить `HistoryService` класс. Alias'ы reader/writer привязаны к нему."""
+        self.di.register_class(cls, provides=HistoryService, replace=True)
+        self.di.register_alias(
+            source=HistoryService,
+            provides=HistoryReader,
+            replace=True,
+        )
+        self.di.register_alias(
+            source=HistoryService,
+            provides=HistoryWriter,
+            replace=True,
+        )
+        return self
+
+    def use_turn(self, turn: TurnBuilder) -> Self:
+        """Описание следующего хода. Обязательно до `.build()`."""
+        self._turn = turn
+        return self
+
+    def use_tools(self, items: Iterable[Any]) -> Self:
+        self.di.use_tools(items)
+        return self
+
+    def use_plugin(self, module: object) -> Self:
+        self.di.use_plugin(module)
+        return self
+
+    def discover_plugins(
+        self,
+        entry_point: str = DEFAULT_PLUGIN_ENTRY_POINT,
+    ) -> Self:
+        self.di.discover_plugins(entry_point)
+        return self
+
+    def use_config(self, source: ConfigSource) -> Self:
+        """Override ConfigSource (TOML/env). Используется для `discover_plugins`."""
+        self.di.use_config(source)
+        return self
+
+    def register_provider(
+        self,
+        fn: Callable[..., Any],
+        *,
+        scope: Scope = Scope.APP,
+        component: str = _DEFAULT_COMPONENT,
+        replace: bool = False,
+    ) -> Self:
+        self.di.register_provider(fn, scope=scope, component=component, replace=replace)
+        return self
+
+    def register_class(
+        self,
+        cls: type,
+        *,
+        provides: type | None = None,
+        scope: Scope = Scope.APP,
+        component: str = _DEFAULT_COMPONENT,
+        replace: bool = False,
+    ) -> Self:
+        self.di.register_class(
+            cls,
+            provides=provides,
+            scope=scope,
+            component=component,
+            replace=replace,
+        )
+        return self
+
+    def register_instance(
+        self,
+        instance: Any,
+        *,
+        provides: type | None = None,
+        scope: Scope = Scope.APP,
+        component: str = _DEFAULT_COMPONENT,
+        replace: bool = False,
+    ) -> Self:
+        self.di.register_instance(
+            instance,
+            provides=provides,
+            scope=scope,
+            component=component,
+            replace=replace,
+        )
+        return self
+
+    def register_alias(
+        self,
+        *,
+        source: type,
+        provides: type,
+        component: str = _DEFAULT_COMPONENT,
+        replace: bool = False,
+    ) -> Self:
+        self.di.register_alias(
+            source=source,
+            provides=provides,
+            component=component,
+            replace=replace,
+        )
+        return self
+
+    def use_history_recorder(self, cls: type) -> Self:
+        self.pipeline.set_slot(_Slot.HISTORY_RECORDER, cls)
+        return self
+
+    def use_event_stamper(self, cls: type) -> Self:
+        self.pipeline.set_slot(_Slot.EVENT_STAMPER, cls)
+        return self
+
+    def use_error_router(self, cls: type) -> Self:
+        self.pipeline.set_slot(_Slot.ERROR_ROUTER, cls)
+        return self
+
+    def use_tool_executor(self, cls: type) -> Self:
+        self.pipeline.set_slot(_Slot.TOOL_EXECUTOR, cls)
+        return self
+
+    def use_user_query_recorder(self, cls: type) -> Self:
+        self.pipeline.set_slot(_Slot.USER_QUERY_RECORDER, cls)
+        return self
+
+    def use_middleware(self, cls: type) -> Self:
+        """Добавить optional middleware в цепочку (между OUTER и INNER слотами)."""
+        self.pipeline.use_middleware(cls)
+        return self
+
+    def stop_if(
+        self,
+        spec: Specification[tuple[AgentContext, AgentEvent]],
+    ) -> Self:
+        """Добавить пользовательское stop-условие (additive поверх дефолтов)."""
+        self.loop.stop_if(spec)
+        return self
+
+    def build(self, terminal: type = LLMPort) -> Agent:
+        """Собрать Agent. `terminal` — класс terminal-stage (дефолт `LLMPort`).
+
+        `.use_turn(...)` обязателен. Перед сборкой Container регистрируются
+        internal-сервисы (TurnBuilder, AgentErrorRouter, HistoryDialogView,
+        ToolExecutor late-binding).
+        """
+        if self._turn is None:
+            msg = "AgentBuilder.build: .use_turn(...) обязателен до .build()"
+            raise ValueError(msg)
+
+        self._register_internals()
+
+        registry_cell: list[ToolRegistry] = []
+
+        def _provide_tool_executor() -> ToolExecutor:
+            return registry_cell[0].executor()
+
+        self.di.register_provider(_provide_tool_executor, scope=Scope.APP)
+
+        container = self.di.build_container()
+
+        registry = _build_registry(self.di.tools, container)
+        registry_cell.append(registry)
+
+        if not self._turn.has_history_view():
+            self._turn.with_history_view(container.get(HistoryDialogView))
+        if not self._turn.has_tool_catalog():
+            self._turn.with_tool_catalog(registry.catalog())
+
+        chain = self.pipeline.build(terminal, container)
+        source = StreamSourceLoop(source=chain, stop_if=self.loop.build_spec())
+        return Agent(source=source, container=container)
+
+    # ---- internals ------------------------------------------------------- #
+
+    def _register_internals(self) -> None:
+        """
+        Зарегистрировать core-сервисы (TurnBuilder, ErrorRouter, HistoryDialogView)
+        """
+        self.di.register_provider(self._provide_turn)
+        self.di.register_provider(self._provide_error_router)
+        self.di.register_class(HistoryDialogView)
+
+    def _provide_turn(self) -> TurnBuilder:
+        if self._turn is None:
+            raise RuntimeError(
+                "_provide_turn called before use_turn() — invariant broken"
+            )
+        return self._turn
+
+    def _provide_error_router(self) -> AgentErrorRouter:
+        return self._error_router
+
+
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
+
+
+def _construct(
+    cls: type,
+    container: Container,
+    *,
+    with_inner: bool,
+    inner: StreamSource[AgentContext, AgentEvent] | None = None,
+) -> StreamSource[AgentContext, AgentEvent]:
+    """Сконструировать stage: `inner` позиционно (если with_inner), остальное — DI."""
+    exclude = {"self", "inner"} if with_inner else {"self"}
+    kwargs = _resolve_init_kwargs(cls, container, exclude=exclude)
+    if with_inner:
+        return cls(inner, **kwargs)
+    return cls(**kwargs)
 
 
 def _resolve_init_kwargs(
     cls: type,
     container: Container,
-    *,
     exclude: set[str],
 ) -> dict[str, Any]:
-    """`cls.__init__` → kwargs, резолвя каждый non-excluded param из DI.
-
-    Конвенция: каждый параметр (кроме `self` и `exclude`) — типизирован,
-    его тип используется как DI-ключ для `container.get(T)`. Annotated-
-    маркеры не требуются: для middleware'ов «всё что в подписи — это DI».
-    """
+    """Резолвит non-`exclude` параметры `__init__` через `container.get(T)`."""
     sig = inspect.signature(cls.__init__)
     hints = get_type_hints(cls.__init__)
     kwargs: dict[str, Any] = {}
-    skip = exclude | {"self"}
     for name, param in sig.parameters.items():
-        if name in skip:
+        if name in exclude:
             continue
         annotation = hints.get(name, param.annotation)
         if annotation is Parameter.empty:
-            msg = (
-                f"{cls.__name__}: параметр {name!r} без аннотации; "
-                f"middleware-конструктор должен типизировать все non-inner deps"
-            )
-            raise TypeError(msg)
+            raise TypeError(f"{cls.__name__}: param {name!r} without annotation")
         kwargs[name] = container.get(annotation)
     return kwargs
 
 
+def _validate_provider_return(fn: Callable[..., Any], plan: CallPlan) -> None:
+    if plan.return_type is Parameter.empty or plan.return_type is None:
+        msg = (
+            f"@provides function {getattr(fn, '__name__', repr(fn))!r}: "
+            f"return type обязателен — это тип, под которым служба "
+            f"регистрируется в DI"
+        )
+        raise ToolDeclarationError(msg)
+
+
+def _config_path_for(cfg_type: type) -> tuple[str, ...]:
+    mc = getattr(cfg_type, "model_config", {})
+    section = mc.get("config_path", "") if isinstance(mc, dict) else ""
+    if isinstance(section, str):
+        return tuple(s for s in section.split(".") if s)
+    return tuple(section)
+
+
+def _build_registry(tools: Iterable[_ToolEntry], container: Container) -> ToolRegistry:
+    """Обернуть `@tool` callables в `DishkaTool` и собрать `ToolRegistry`."""
+    by_component: dict[str, list[_ToolEntry]] = {}
+    for t in tools:
+        by_component.setdefault(t.component, []).append(t)
+
+    sources: list[ToolSource] = []
+    for component_name, tool_entries in by_component.items():
+        sid = ToolSourceId(_component_to_source_id(component_name))
+        dishka_tools = [
+            DishkaTool(
+                target=_resolve_callable(t.obj),
+                plan=t.plan,
+                container=container,
+                component=component_name,
+                source_id=sid,
+            )
+            for t in tool_entries
+        ]
+        sources.append(StaticToolSource(sid, dishka_tools))
+
+    return ToolRegistry.from_sources(sources)
+
+
 def _resolve_callable(obj: Any) -> Any:
-    """`@tool`-class → instance (`obj()`), функция/instance — as-is."""
     if inspect.isclass(obj):
         return obj()
     return obj
 
 
-_SID_INVALID_CHAR = re.compile(r"[^A-Za-z0-9_-]")
+def _tool_wire_name(obj: Any) -> str:
+    explicit = tool_explicit_name(obj)
+    if explicit is not None:
+        return explicit
+    return getattr(obj, "__name__", None) or type(obj).__name__
 
 
 def _component_to_source_id(component_name: str) -> str:
-    """Превратить имя компонента (модуля плагина) в валидный `ToolSourceId`.
-
-    `ToolSourceId` ограничен `[A-Za-z0-9][A-Za-z0-9_-]*`, а discovered
-    component обычно равен `module.__name__` (например `boba.tool.shell`)
-    с точками. Заменяем всё не-валидное на `_`, обеспечивая стартовый
-    alphanumeric.
-    """
-    sanitized = _SID_INVALID_CHAR.sub("_", component_name)
+    sanitized = re.compile(r"[^A-Za-z0-9_-]").sub("_", component_name)
     if not sanitized or not sanitized[0].isalnum():
         sanitized = "p_" + sanitized
     return sanitized

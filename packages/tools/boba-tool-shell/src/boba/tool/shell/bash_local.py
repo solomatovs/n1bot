@@ -32,14 +32,7 @@ _MAX_STDIN_LEN = 1 * 1024 * 1024  # 1 MiB
 _BASH_BIN = "/bin/bash"
 
 
-def _bash_local_enabled(
-    cfg: Annotated[BashLocalConfig, FromConfig()],
-) -> bool:
-    """Predicate `enable_if`: tool регистрируется при `cfg.enable=True`."""
-    return cfg.enable
-
-
-@tool(enable_if=_bash_local_enabled)
+@tool
 def bash_local(
     command: Annotated[
         str,

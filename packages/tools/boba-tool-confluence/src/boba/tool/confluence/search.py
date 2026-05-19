@@ -17,7 +17,6 @@ from boba.indexing import (
 )
 from boba.tool.confluence.config import ConfluencePluginConfig
 from boba.tool.confluence.connection import ConfluenceConnection
-from boba.tool.confluence.enable import confluence_enable_if
 from boba.tool.confluence.keys import ConfluenceKeys
 from boba.tool.confluence.request_sources.search import (
     ConfluenceCqlSearchRequestSource,
@@ -33,7 +32,7 @@ _PIPELINE_ID: PipelineId = PipelineId("confluence.search")
 _SNIPPET_CHARS: int = 300
 
 
-@tool(enable_if=confluence_enable_if("confluence_search"))
+@tool
 def confluence_search(
     query: Annotated[
         str,

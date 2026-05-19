@@ -1,44 +1,32 @@
-"""Конфиг плагина files (v2).
+"""Конфиг плагина files.
 
-Один `BobaFlatSettings` на все 15 tools: `[tool.files]` /
-`BOBA_TOOL__FILES__*`. Используется в каждом `@tool` через FromConfig
-(в основном — для проверки `enable_if`, а в `CatTool` ещё и для
-`cat_max_lines`).
+`[tool.files]` / `BOBA_TOOL__FILES__*`. Используется в каждом `@tool`
+через FromConfig (в основном для `cat_max_lines` в `cat`).
+
+Поля `enable` / `tools` — забота framework'а; они читаются из той же
+TOML-секции, но через `AgentBuilder.discover_plugins`, не через
+плагин-конфиг. `extra="ignore"` позволяет им сосуществовать в одной
+TOML-секции без ValidationError.
 """
 
 from __future__ import annotations
 
 from pydantic import Field
 
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 
 __all__ = ["FilesPluginConfig"]
 
 
 class FilesPluginConfig(BobaFlatSettings):
-    """Builtin file-system tools.
-
-    cat/ls/grep/edit/write/append/cp/mv/rm/mkdir/touch/cd/pwd/stat/tree.
-    """
+    """Builtin file-system tools (cat/ls/grep/edit/write/...)."""
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
-        extra="forbid",
+        extra="ignore",
         config_path="tool.files",
     )
 
-    enable: bool = Field(
-        default=False,
-        description="Регистрировать ли files-tools в DI/каталоге LLM.",
-    )
-    tools: StringList | None = Field(
-        default=None,
-        description=(
-            "Allowlist tool-имён внутри плагина: None (default) — все "
-            "включены; иначе создаются только перечисленные. Имена — "
-            "snake_case без суффикса Tool: 'cat', 'grep', 'ls', ..."
-        ),
-    )
     cat_max_lines: int = Field(
         default=2000,
         ge=1,

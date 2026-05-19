@@ -54,13 +54,13 @@ def _bridge_chainlit_env(cfg: ChainlitConfig) -> None:
 def _make_builder_factory() -> Callable[[], AgentBuilder]:
     """Свежий builder под per-session ChatSession (свои plugins).
 
-    `use_plugins()` подцепляет v2-плагины через entry-points group
+    `discover_plugins()` подцепляет v2-плагины через entry-points group
     `boba.plugins`. Пока v2-плагины не созданы — это no-op; будут
     появляться по мере миграции старых плагинов.
     """
 
     def factory() -> AgentBuilder:
-        return AgentBuilder().use_plugins()
+        return AgentBuilder().discover_plugins()
 
     return factory
 
@@ -69,7 +69,6 @@ def _make_chat_session_builder(
     make_builder: Callable[[], AgentBuilder],
     project_workspaces: ProjectWorkspaceRegistry,
     history_workspaces: HistoryWorkspaceRegistry,
-    make_history_service: Callable[[WorkspaceId], HistoryService],
 ) -> Callable[[WorkspaceId], ChatSession]:
     """Замыкание над deps; возвращает фабрику ChatSession по workspace_id."""
 
@@ -79,7 +78,6 @@ def _make_chat_session_builder(
             make_builder(),
             project_workspaces,
             history_workspaces,
-            make_history_service(workspace_id),
         )
 
     return build
@@ -117,7 +115,6 @@ def main() -> int:
             builder_factory,
             project_workspaces,
             history_workspaces,
-            make_history_service,
         ),
         capacity=chainlit_cfg.chat_session_pool_capacity,
     )

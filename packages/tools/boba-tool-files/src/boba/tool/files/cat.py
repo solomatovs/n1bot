@@ -8,7 +8,6 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from boba.tool.files.config import FilesPluginConfig
-from boba.tool.files.enable import files_enable_if
 from boba.tools import FromConfig, FromDI, Scope, tool
 from boba.workspace.contract import (
     ProjectWorkspaceShell,
@@ -19,7 +18,7 @@ from boba.workspace.contract import (
 __all__ = ["cat"]
 
 
-@tool(enable_if=files_enable_if("cat"))
+@tool
 def cat(  # noqa: PLR0913
     shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
     cfg: Annotated[FilesPluginConfig, FromConfig()],

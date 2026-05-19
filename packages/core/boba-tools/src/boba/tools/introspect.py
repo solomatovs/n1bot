@@ -22,6 +22,7 @@ from typing import Annotated, Any, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
+from boba.tools.decorators import tool_explicit_name
 from boba.tools.errors import ToolDeclarationError
 from boba.tools.markers import FromConfig, FromDI
 
@@ -54,7 +55,11 @@ class DiDep:
 class CallPlan:
     """Разобранная сигнатура callable'а — план для runtime invoke.
 
-    `name` — local name (snake_case, без `Tool` суффикса).
+    `name` — wire-имя tool'а. Источник:
+        - `@tool(name="...")` если указан,
+        - иначе — `obj.__name__` для функций / `type(obj).__name__` для
+          классов и инстансов (без модификации: классы остаются в
+          CamelCase, функции — в snake_case по Python-конвенции).
     `description` — docstring.
     `args_model` — pydantic-модель LLM-args. Может быть пустой моделью,
         если все параметры — DI.
@@ -124,7 +129,7 @@ def introspect_callable(obj: Any) -> CallPlan:
         **fields,
     )
     return CallPlan(
-        name=auto_tool_name(meta.raw_name),
+        name=tool_explicit_name(obj) or meta.raw_name,
         description=meta.docstring,
         args_model=args_model,
         di_deps=tuple(di_deps),

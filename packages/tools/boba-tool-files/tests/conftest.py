@@ -1,25 +1,16 @@
-"""Pytest-фикстуры пакета boba-tool-files (v2)."""
+"""Pytest-фикстуры пакета boba-tool-files."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
-import boba.tool.files as files_module
 from boba.agent.builder import AgentBuilder
+from boba.settings import DictConfigSource
 from boba.workspace.contract import ProjectWorkspaceShell
-
-
-def _clear_files_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Сброс всех BOBA_TOOL__FILES__* и BOBA_CONFIG_PATH."""
-    import os
-
-    for key in list(os.environ):
-        if key.startswith("BOBA_TOOL__FILES__"):
-            monkeypatch.delenv(key, raising=False)
-    monkeypatch.delenv("BOBA_CONFIG_PATH", raising=False)
 
 
 @pytest.fixture
@@ -30,21 +21,17 @@ def mock_workspace() -> ProjectWorkspaceShell:
 
 @pytest.fixture
 def make_files_tool_names(
-    monkeypatch: pytest.MonkeyPatch,
     mock_workspace: ProjectWorkspaceShell,
-) -> Callable[[dict[str, str]], list[str]]:
-    """Фабрика: env → имена tool'ов, отдаваемых файловым плагином.
+) -> Callable[[dict[str, Any]], list[str]]:
+    """Фабрика: meta-секция → имена tool'ов, зарегистрированных плагином.
 
-    Очищает `BOBA_TOOL__FILES__*` и `BOBA_CONFIG_PATH`, ставит переданный
-    env, прогоняет минимальный AgentBuilder.build() и возвращает список
-    зарегистрированных tool-имён (т.е. с применением enable_if).
+    На вход — dict для `[tool.files]` (поля `enable`/`tools`). Внутри
+    создаётся `AgentBuilder` с `DictConfigSource` поверх этого dict'а
+    и запускается `discover_plugins("boba.plugins")` — entry-points
+    discovery с config-gate.
     """
 
-    def _factory(env: dict[str, str]) -> list[str]:
-        _clear_files_env(monkeypatch)
-        for k, v in env.items():
-            monkeypatch.setenv(k, v)
-
+    def _factory(meta_section: dict[str, Any]) -> list[str]:
         llm = MagicMock()
         turn = MagicMock()
         turn.has_history_view = lambda: True
@@ -53,11 +40,13 @@ def make_files_tool_names(
         def _provide_ws() -> ProjectWorkspaceShell:
             return mock_workspace
 
+        source = DictConfigSource({"tool.files": meta_section})
         ab = (
             AgentBuilder()
-            .with_llm(llm)
+            .use_llm(llm)
             .use_turn(turn)
-            .use_plugin(files_module)
+            .use_config(source)
+            .discover_plugins(entry_point="boba.plugins")
             .register_provider(_provide_ws)
         )
         agent = ab.build()

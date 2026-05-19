@@ -1,8 +1,5 @@
-"""Граница (port) между Agent-слоем и LLM-слоем.
-
-`LLMPort` — adapter в смысле ports-and-adapters: единственное место, где
-Agent-слой знает про существование LLM-слоя. Слой LLM в обратную сторону
-ничего про Agent не знает.
+"""
+Граница (port) между Agent-слоем и LLM-слоем
 """
 
 from __future__ import annotations
@@ -158,13 +155,13 @@ class LLMToAgentConverter:
 
 class LLMPort(StreamSource[AgentContext, AgentEvent]):
     """
-    Agent программа собирает LLMRequest и отправляет на обработку в LLM программе
+    Agent собирает LLMRequest и отправляет на обработку в LLM
 
-    LLMPort выполняет две функции:
-    - собирает LLMRequest и отправляет в LLM слой
-    - конвертирует события приходящие от LLM в агентские события
-        LLMEvent -> AgentEvent
-    - конвертирует ошибки приходящие от LLM в агентские ошибки
+    LLMPort выполняет функции:
+        * собирает LLMRequest и отправляет в LLM слой
+        * конвертирует события приходящие от LLM в агентские события
+            LLMEvent -> AgentEvent
+        * конвертирует ошибки приходящие от LLM в агентские ошибки
 
     LLMPort это единственное место в Agent-цепочке,
     которое знает об существовании LLM

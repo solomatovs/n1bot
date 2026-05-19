@@ -8,7 +8,6 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from boba.tool.chromadb.config import ChromadbPluginConfig
-from boba.tool.chromadb.enable import chromadb_enable_if
 from boba.tool.chromadb.errors import (
     CollectionNotFoundError,
     KnowledgeBaseError,
@@ -19,7 +18,7 @@ from boba.tools import FromConfig, FromDI, Scope, tool
 __all__ = ["kb_search"]
 
 
-@tool(enable_if=chromadb_enable_if("kb_search"))
+@tool
 def kb_search(
     collection: Annotated[
         str,

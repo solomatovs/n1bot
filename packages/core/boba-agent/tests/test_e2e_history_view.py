@@ -14,10 +14,10 @@ from boba.agent import (
     AgentBuilder,
     AnswerComplete,
     HistoryDialogView,
-    InMemoryHistoryService,
     TurnBuilder,
     UserQueryReceived,
 )
+from boba.agent.history import HistoryReader, HistoryWriter
 from boba.llm.builder import LLM
 from boba.llm.events import (
     FinishReason,
@@ -85,12 +85,10 @@ def test_history_journal_contains_user_query_and_assistant_snapshots():
     """Журнал должен содержать UserQueryReceived + AnswerComplete после одного хода."""
     stub = _StubLLMSource(answers=["hi back"])
     llm = LLM(source=AssistantAggregator(stub))
-    history = InMemoryHistoryService()
 
     agent = (
         AgentBuilder()
-        .with_llm(llm)
-        .with_history(history)
+        .use_llm(llm)
         .use_turn(TurnBuilder("stub-model"))
         .build()
     )
@@ -101,6 +99,7 @@ def test_history_journal_contains_user_query_and_assistant_snapshots():
     assert "UserQueryReceived" in types
     assert "AnswerComplete" in types
 
+    history = agent.container.get(HistoryReader)
     user_queries = [e for e in history.events() if isinstance(e, UserQueryReceived)]
     assert len(user_queries) == 1
     assert user_queries[0].query == "hi"
@@ -114,19 +113,17 @@ def test_history_view_reconstructs_full_dialog_after_run():
     """HistoryDialogView отдаёт UserMessage + AssistantMessage из журнала одного хода"""
     stub = _StubLLMSource(answers=["pong"])
     llm = LLM(source=AssistantAggregator(stub))
-    history = InMemoryHistoryService()
 
     agent = (
         AgentBuilder()
-        .with_llm(llm)
-        .with_history(history)
+        .use_llm(llm)
         .use_turn(TurnBuilder("stub-model"))
         .build()
     )
 
     list(agent.stream("ping"))
 
-    view = HistoryDialogView(history)
+    view = HistoryDialogView(agent.container.get(HistoryReader))
     dialog = list(view.dialog_message_iter())
     assert _dialog_texts(tuple(dialog)) == [("user", "ping"), ("assistant", "pong")]
 
@@ -135,12 +132,10 @@ def test_second_turn_sees_prior_dialog_in_llm_request():
     """Второй .stream(...) должен видеть весь предыдущий диалог в LLMContext."""
     stub = _StubLLMSource(answers=["A1", "A2"])
     llm = LLM(source=AssistantAggregator(stub))
-    history = InMemoryHistoryService()
 
     agent = (
         AgentBuilder()
-        .with_llm(llm)
-        .with_history(history)
+        .use_llm(llm)
         .use_turn(TurnBuilder("stub-model"))
         .build()
     )
@@ -164,18 +159,16 @@ def test_clear_history_resets_dialog_for_subsequent_turn():
     """history.clear() стирает контекст; следующий ход видит только свой query."""
     stub = _StubLLMSource(answers=["A1", "A2"])
     llm = LLM(source=AssistantAggregator(stub))
-    history = InMemoryHistoryService()
 
     agent = (
         AgentBuilder()
-        .with_llm(llm)
-        .with_history(history)
+        .use_llm(llm)
         .use_turn(TurnBuilder("stub-model"))
         .build()
     )
 
     list(agent.stream("q1"))
-    history.clear()
+    agent.container.get(HistoryWriter).clear()
     list(agent.stream("q2"))
 
     assert _dialog_texts(stub.contexts[1].request.dialog_messages) == [("user", "q2")]

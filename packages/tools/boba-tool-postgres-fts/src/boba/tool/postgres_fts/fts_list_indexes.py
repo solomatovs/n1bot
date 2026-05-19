@@ -5,13 +5,12 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from boba.tool.postgres_fts.db import PgFtsKnowledgeBase
-from boba.tool.postgres_fts.enable import pg_fts_enable_if
 from boba.tools import FromDI, Scope, tool
 
 __all__ = ["fts_list_indexes"]
 
 
-@tool(enable_if=pg_fts_enable_if("fts_list_indexes"))
+@tool
 def fts_list_indexes(
     kb: Annotated[PgFtsKnowledgeBase, FromDI(Scope.APP)],
 ) -> list[dict[str, Any]]:

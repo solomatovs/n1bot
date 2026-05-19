@@ -1,9 +1,13 @@
-"""Конфиг плагина confluence (v2).
+"""Конфиг плагина confluence.
 
 Connection-поля на корне (`base_url`, `auth_method`, `auth_user`,
 `auth_token`, `timeout_sec`, `body_format`) — общие для всех 5 tools'ов.
 Каждый tool получает целиком `ConfluencePluginConfig` через FromConfig
 и забирает оттуда поля, нужные конкретно ему.
+
+Плагин-уровневое включение/allowlist (`enable`, `tools`) — забота
+framework'а (`AgentBuilder.discover_plugins`); конфиг плагина их не
+объявляет (`extra="ignore"`).
 
 `ConfluenceConnection.make_auth(cfg)` / `make_transport(cfg)` принимают
 любой объект, удовлетворяющий `ConfluenceConnectionConfig`-Protocol —
@@ -16,7 +20,7 @@ from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 
 __all__ = ["ConfluencePluginConfig"]
 
@@ -26,30 +30,17 @@ class ConfluencePluginConfig(BobaFlatSettings):
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
-        extra="forbid",
+        extra="ignore",
         config_path="tool.confluence",
     )
 
-    enable: bool = Field(
-        default=False,
-        description="Регистрировать ли confluence-tools в DI/каталоге LLM.",
-    )
-    tools: StringList | None = Field(
-        default=None,
-        description=(
-            "Allowlist tool-имён: None — все включены; иначе только "
-            "перечисленные. Имена: 'confluence_search', "
-            "'confluence_page_outline', 'confluence_page_section', "
-            "'confluence_page_download', 'confluence_page_download_markdown'."
-        ),
-    )
     base_url: str = Field(
         default="",
-        description="URL Confluence (обязателен при enable=True).",
+        description="URL Confluence. Обязателен.",
     )
     auth_token: str = Field(
         default="",
-        description="PAT или пароль (обязателен при enable=True).",
+        description="PAT или пароль. Обязателен.",
     )
     auth_method: Literal["pat", "basic"] = Field(
         default="pat",
@@ -78,16 +69,20 @@ class ConfluencePluginConfig(BobaFlatSettings):
     )
 
     @model_validator(mode="after")
-    def _check_invariants(self) -> Self:
-        if not self.enable:
-            return self
+    def _validate(self) -> Self:
+        """Проверка консистентности — срабатывает при загрузке конфига.
+
+        Под discover-flow плагин загружается только если оператор явно
+        включил его (`[tool.confluence] enable=true`). Значит при load-time
+        connection-поля должны быть валидно заполнены.
+        """
         if not self.base_url:
-            msg = "base_url обязателен при enable=True"
+            msg = "confluence.base_url обязателен"
             raise ValueError(msg)
         if not self.auth_token:
-            msg = "auth_token обязателен при enable=True"
+            msg = "confluence.auth_token обязателен"
             raise ValueError(msg)
         if self.auth_method == "basic" and not self.auth_user:
-            msg = "auth_user обязателен при auth_method='basic'"
+            msg = "confluence.auth_user обязателен при auth_method='basic'"
             raise ValueError(msg)
         return self

@@ -91,7 +91,7 @@ class BobaFlatSettings(BaseSettings):
             model_config = BobaSettingsConfigDict(
                 case_sensitive=False,
                 extra="forbid",
-                boba_config_path="agent",
+                config_path="agent",
             )
             core:       AppCoreConfig   = Field(default_factory=AppCoreConfig)
             workspaces: WorkspaceLayout = Field(default_factory=WorkspaceLayout)
@@ -141,7 +141,7 @@ class BobaFlatSettings(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         del env_settings, dotenv_settings, file_secret_settings
         cfg = settings_cls.model_config
-        toml_section = cfg.get("boba_config_path")
+        toml_section = cfg.get("config_path")
         cli_enabled = bool(cfg.get("boba_cli", False))
 
         sources: list[PydanticBaseSettingsSource] = []

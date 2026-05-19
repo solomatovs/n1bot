@@ -7,7 +7,6 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from boba.tool.html._parse import anchor_for, collect_headings, load_soup
-from boba.tool.html.enable import html_enable_if
 from boba.tools import FromDI, Scope, tool
 from boba.workspace.contract import (
     ProjectWorkspaceShell,
@@ -18,7 +17,7 @@ from boba.workspace.contract import (
 __all__ = ["html_outline"]
 
 
-@tool(enable_if=html_enable_if("html_outline"))
+@tool
 def html_outline(
     path: Annotated[
         str, Field(min_length=1, description="Путь к HTML-файлу в workspace."),

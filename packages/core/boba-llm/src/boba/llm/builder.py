@@ -14,7 +14,7 @@ from boba.llm.events import LLMEvent
 from boba.llm.middleware import AssistantAggregator
 from boba.llm.models import LLMContext
 from boba.llm.observer import CompositeLLMRequestObserver, LLMRequestObserver
-from boba.patterns import FactoryMethod, StreamSource, StreamSourceChainBuilder
+from boba.patterns import StreamSource, StreamSourceChainBuilder
 
 __all__ = ["LLM", "LLMBuilder"]
 
@@ -53,22 +53,19 @@ class LLM:
         yield from self._source.stream(ctx)
 
 
-class LLMBuilder(
-    FactoryMethod[LLM], Generic[TRequest, TChunk, TApiError, THttpError]
-):
+class LLMBuilder(Generic[TRequest, TChunk, TApiError, THttpError]):
     """
     Fluent-фасад LLM-слоя: middleware + observers + provider-terminal
-    - `.use(...)`           — добавление конкретного middleware в цепочку
-    - `.add_observer(...)`  — добавление наблюдателя запросов/ответов llm
-                                например метрика, логирование, подсчеты
-    - `.use_terminal(...)`  — терминальная стадия с указанием провайдера для обработки
+    - `.use_middleware(...)` — добавление конкретного middleware в цепочку
+    - `.add_observer(...)`   — добавление наблюдателя запросов/ответов llm
+                                 например метрика, логирование, подсчеты
+    - `.build(factory)`      — собрать LLM, terminal-фабрика обязательна
     """
 
     def __init__(self) -> None:
         self._observers: list[
             LLMRequestObserver[TRequest, TChunk, TApiError, THttpError]
         ] = []
-        self._terminal_factory: TerminalFactory | None = None
         self._middlewares: list[MiddlewareFactory] = []
 
     def add_observer(
@@ -79,57 +76,26 @@ class LLMBuilder(
         self._observers.append(observer)
         return self
 
-    def use(self, factory: MiddlewareFactory) -> Self:
-        """Зарегистрировать middleware-factory.
-
-        Семантика — как `AgentBuilder`/`StreamSourceChainBuilder.use`:
-        `factory(inner) -> StreamSource`. Порядок регистрации = порядок
-        «снаружи внутрь»: первый `use` оказывается самым внешним.
+    def use_middleware(self, factory: MiddlewareFactory) -> Self:
+        """
+        Зарегистрировать middleware
         """
         self._middlewares.append(factory)
         return self
 
-    def use_terminal(self, factory: TerminalFactory) -> Self:
-        """Зарегистрировать provider-terminal (factory принимает observer)."""
-        if self._terminal_factory is not None:
-            msg = "LLMBuilder.use_terminal: terminal уже задан"
-            raise ValueError(msg)
-
-        self._terminal_factory = factory
-        return self
-
-    def pipe(
-        self,
-        fn: Callable[..., Self],
-        /,
-        *args: Any,
-        **kwargs: Any,
-    ) -> Self:
-        """Extension-style: fn(self, *args, **kwargs) -> Self."""
-        return fn(self, *args, **kwargs)
-
-    def build(self) -> LLM:
-        """Собрать LLM: observer → terminal → aggregator → middleware-chain → обёртка.
-
-        `AssistantAggregator` подключается обязательно как ближайшая обёртка
-        над provider-terminal, чтобы гарантировать наличие `LLMGenerationResult`
-        в любом LLM-выводе. Пользовательские middleware (включая retry) лежат
-        снаружи аггрегатора — retry между попытками сбрасывает аккумулятор
-        через `reset()`-цепочку.
+    def build(self, factory: TerminalFactory) -> LLM:
         """
-        if self._terminal_factory is None:
-            msg = (
-                "LLMBuilder.build: terminal не задан — "
-                "вызовите .use_terminal(...) или provider-extension "
-                "(например, use_openai)"
-            )
-            raise ValueError(msg)
-
+        Собрать LLM. `factory` — terminal-фабрика провайдера,
+        получает composite-observer и возвращает provider-terminal
+        (см. `use_openai` и аналоги в provider-пакетах).
+        """
         chain_builder = StreamSourceChainBuilder[LLMContext, LLMEvent]()
+
         for mw in self._middlewares:
             chain_builder.use(mw)
 
-        terminal = self._terminal_factory(
+        terminal = factory(
             CompositeLLMRequestObserver(self._observers),
         )
+
         return LLM(chain_builder.terminal(AssistantAggregator(terminal)))

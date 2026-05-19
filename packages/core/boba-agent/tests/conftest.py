@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from dishka import make_container
 
 from boba.agent.agent import AgentContext
 from boba.agent.turn.spec import TurnState
@@ -18,10 +19,15 @@ from boba.workspace.contract import WorkspaceId
 
 @pytest.fixture
 def agent_ctx() -> AgentContext:
-    """Минимальный `AgentContext` для тестов reducer'ов/middleware."""
+    """Минимальный `AgentContext` для тестов reducer'ов/middleware.
+
+    Container — пустой Dishka-контейнер без provider'ов; тестам в этом
+    файле он нужен только как формальный аргумент AgentContext.
+    """
     return AgentContext(
         request_id=new_request_id(),
         query="hi",
+        container=make_container(),
     )
 
 

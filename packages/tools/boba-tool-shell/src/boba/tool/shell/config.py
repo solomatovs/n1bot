@@ -1,16 +1,12 @@
 """Конфиги bash-tool'ов: `BashLocalConfig` и `BashSandboxConfig`.
 
-Каждый — самостоятельный `BobaFlatSettings`, авто-загружаемый
-framework'ом через FromConfig-маркер. Свой TOML-section:
-`[tool.bash_local]` и `[tool.bash_sandbox]` (env-prefix
-`BOBA_TOOL__BASH_LOCAL__*` / `BOBA_TOOL__BASH_SANDBOX__*` выводится
-из section по конвенции ConfigSource).
+Каждый — самостоятельный `BobaFlatSettings` со своей TOML-секцией
+(`[tool.bash_local]` / `[tool.bash_sandbox]`).
 
-Поле `enable: bool` — флаг условной регистрации tool'а. Читается
-predicate'ом, передаваемым в `@tool(enable_if=...)`. Если оба
-tool'а имеют `enable=True` одновременно — оба зарегистрируются и
-LLM увидит оба имени (`bash_local`, `bash_sandbox`); это не
-запрещено, но обычно оператор включает один.
+Плагин-уровневое включение/allowlist — забота framework'а через
+`[tool.shell] enable=true, tools=["bash_local"]` (см.
+`AgentBuilder.discover_plugins`). Плагин про эти поля не знает,
+`extra="ignore"` позволяет им жить в общей TOML-иерархии.
 """
 
 from __future__ import annotations
@@ -31,25 +27,20 @@ class BashLocalConfig(BobaFlatSettings):
     """Конфиг `bash_local`: subprocess без bwrap-изоляции.
 
     Все поля — operator-controlled. LLM выбирает только `command`/`stdin`,
-    остальное задано здесь. `workspace_root` обязателен при `enable=True`.
+    остальное задано здесь.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
-        extra="forbid",
+        extra="ignore",
         config_path="tool.bash_local",
     )
 
-    enable: bool = Field(
-        default=False,
-        description="Регистрировать tool в DI/каталоге LLM.",
-    )
     workspace_root: Path = Field(
         default=Path(),
         description=(
-            "Host-путь к корню проекта. Обязателен при enable=true. "
-            "Резолвится до абсолютного/каноничного. Используется как "
-            "cwd по умолчанию для subprocess'а."
+            "Host-путь к корню проекта. Резолвится до абсолютного. "
+            "Используется как cwd по умолчанию для subprocess'а."
         ),
     )
     cwd: str = Field(
@@ -63,8 +54,7 @@ class BashLocalConfig(BobaFlatSettings):
         default=DEFAULT_PASSTHROUGH,
         description=(
             "Host-env переменные, наследуемые внутрь процесса. По "
-            "умолчанию — безопасный минимум. Пустой tuple = ничего "
-            "не наследовать."
+            "умолчанию — безопасный минимум. Пустой tuple = ничего не наследовать."
         ),
     )
     env_set: dict[str, str] = Field(
@@ -90,11 +80,7 @@ class BashLocalConfig(BobaFlatSettings):
 
     @model_validator(mode="after")
     def _validate(self) -> Self:
-        if not self.enable:
-            return self
-        if "workspace_root" not in self.model_fields_set:
-            msg = "bash_local.enable=true: workspace_root обязателен"
-            raise ValueError(msg)
+        """workspace_root резолвится до абсолютного пути и проверяется."""
         resolved = self.workspace_root.expanduser().resolve(strict=False)
         if not resolved.exists():
             msg = f"bash_local.workspace_root не существует: {resolved}"
@@ -111,54 +97,42 @@ class BashSandboxConfig(BobaFlatSettings):
 
     `profiles` — реестр именованных профилей песочницы (FS-маунты,
     network, env, timeouts). LLM выбирает профиль по имени из этого
-    реестра, поля профиля менять не может. При `enable=True`
-    `profiles` обязан быть непустым и содержать `default_profile`.
+    реестра, поля профиля менять не может.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
-        extra="forbid",
+        extra="ignore",
         config_path="tool.bash_sandbox",
     )
 
-    enable: bool = Field(
-        default=False,
-        description="Регистрировать tool в DI/каталоге LLM.",
-    )
     workspace_root: Path = Field(
         default=Path(),
         description=(
-            "Host-путь к корню проекта. Обязателен при enable=true. "
-            "Резолвится до абсолютного/каноничного. RW-bind в "
-            "песочнице + cwd для запуска bwrap."
+            "Host-путь к корню проекта. RW-bind в песочнице + cwd "
+            "для запуска bwrap."
         ),
     )
     profiles: dict[str, SandboxProfile] = Field(
         default_factory=dict,
-        description=(
-            "Реестр sandbox-профилей по имени. Обязан быть непустым при enable=true."
-        ),
+        description="Реестр sandbox-профилей по имени.",
     )
     default_profile: str = Field(
         default="",
         description=(
-            "Профиль по умолчанию, если LLM не указал `profile` в "
-            "args. Обязан быть среди ключей `profiles` при enable=true."
+            "Профиль по умолчанию, если LLM не указал `profile` в args. "
+            "Обязан быть среди ключей `profiles`."
         ),
     )
 
     @model_validator(mode="after")
     def _validate(self) -> Self:
-        if not self.enable:
-            return self
-        if "workspace_root" not in self.model_fields_set:
-            msg = "bash_sandbox.enable=true: workspace_root обязателен"
-            raise ValueError(msg)
+        """profiles + default_profile + workspace_root консистентны."""
         if not self.profiles:
-            msg = "bash_sandbox.enable=true: profiles обязан быть непустым"
+            msg = "bash_sandbox.profiles обязан быть непустым"
             raise ValueError(msg)
         if not self.default_profile:
-            msg = "bash_sandbox.enable=true: default_profile обязателен"
+            msg = "bash_sandbox.default_profile обязателен"
             raise ValueError(msg)
         if self.default_profile not in self.profiles:
             msg = (

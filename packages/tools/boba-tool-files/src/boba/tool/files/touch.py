@@ -6,14 +6,13 @@ from typing import Annotated
 
 from pydantic import Field
 
-from boba.tool.files.enable import files_enable_if
 from boba.tools import FromDI, Scope, tool
 from boba.workspace.contract import ProjectWorkspaceShell, WorkspaceError
 
 __all__ = ["touch"]
 
 
-@tool(enable_if=files_enable_if("touch"))
+@tool
 def touch(
     path: Annotated[str, Field(min_length=1, description="Путь к файлу.")],
     shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
