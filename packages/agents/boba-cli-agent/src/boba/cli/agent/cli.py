@@ -98,11 +98,20 @@ def _run() -> int:
     if sampling is not None:
         turn = turn.with_sampling(sampling)
 
+    def _provide_project_workspace() -> ProjectWorkspaceShell:
+        """DI factory для pre-built `ProjectWorkspaceShell`.
+
+        Замыкание над уже-построенным инстансом: ToolKit ожидает
+        callable с типизированным return, а не готовый объект.
+        Scope.APP — singleton на lifetime агента.
+        """
+        return project_workspace
+
     agent = (
         builder.with_llm(llm)
         .with_history(history_service)
-        .with_extension(ProjectWorkspaceShell, project_workspace)
-        .use_tools_plugins_discovered()
+        .register_provider(_provide_project_workspace)
+        .use_plugins()
         .use_turn(turn)
         .build()
     )

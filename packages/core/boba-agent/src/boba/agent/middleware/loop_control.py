@@ -37,10 +37,10 @@ class IterationCounterMiddleware(StreamSource[AgentContext, AgentEvent]):
     def __init__(
         self,
         inner: StreamSource[AgentContext, AgentEvent],
-        max_iterations: int,
+        cfg: IterationCounterConfig,
     ) -> None:
         self._inner = inner
-        self._max_iterations = max_iterations
+        self._max_iterations = cfg.max_iterations
         self._iteration = 0
 
     def name(self) -> str:

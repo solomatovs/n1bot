@@ -8,15 +8,14 @@ version = "0.1.0"
 description = "Bash tools for the Boba agent: sandboxed (bubblewrap) and local."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-patterns",
-    "boba-plugin",
-    "boba-workspace",
     "boba-tools",
+    "boba-tools-v2",
     "boba-settings",
+    "pydantic",
 ]
 
-[project.entry-points."boba.plugins"]
-shell = "boba.tool.shell.plugin:ShellPlugin"
+[project.entry-points."boba.plugins.v2"]
+shell = "boba.tool.shell"
 
 [tool.setuptools.packages.find]
 where = ["src"]

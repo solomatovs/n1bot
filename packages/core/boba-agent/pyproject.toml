@@ -9,10 +9,10 @@ description = "Boba agent: orchestrator + builder + middleware + turn-spec + pro
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-patterns",
-    "boba-plugin",
     "boba-workspace",
     "boba-llm",
     "boba-tools",
+    "boba-tools-v2",
     # Синхронизировано с boba-chainlit-agent: chainlit 2.11+ ломает
     # ForwardRef-резолв на pydantic 2.11+
     "pydantic>=2.10,<2.11",

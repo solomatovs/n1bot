@@ -8,18 +8,12 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
-from boba.plugin.prompt import PromptOverlay
 from boba.tool.shell._profile import SandboxProfile
-from boba.tool.shell.bash_sandbox import (
-    BashSandboxArgs,
-    BashSandboxTool,
-    BashSandboxToolConfig,
-)
-from boba.tools.domain import JsonResult, ToolContext, ToolSourceId
+from boba.tool.shell.bash_sandbox import BashSandboxTool
+from boba.tool.shell.config import BashSandboxConfig
 
 pytestmark = [
     pytest.mark.integration,
@@ -29,105 +23,89 @@ pytestmark = [
     ),
 ]
 
-_SID = ToolSourceId("plugin_shell")
 
-
-def _make_tool(
+def _make_cfg(
     workspace_root: Path,
     profile: SandboxProfile | None = None,
-) -> BashSandboxTool:
-    cfg = BashSandboxToolConfig(
-        prompt=PromptOverlay(),
-        workspace_root=str(workspace_root),
+) -> BashSandboxConfig:
+    return BashSandboxConfig(
+        enable=True,
+        workspace_root=workspace_root,
         profiles={"default": profile or SandboxProfile()},
         default_profile="default",
     )
-    return BashSandboxTool(cfg, MagicMock(), _SID)
 
 
-def _exec(tool: BashSandboxTool, **kwargs) -> dict:
-    args = BashSandboxArgs(**kwargs)
-    result = tool.execute(ToolContext(), args)
-    assert isinstance(result, JsonResult)
-    return result.payload
-
-
-def test_tool_name_is_bash(tmp_path: Path):
-    # LLM видит одно имя `bash` независимо от варианта (sandbox|local).
-    tool = _make_tool(tmp_path)
-    assert tool.name() == "bash"
+def _exec(cfg: BashSandboxConfig, **kwargs) -> dict:
+    """Tool как обычный callable. Возвращает payload (dict)."""
+    return BashSandboxTool()(cfg=cfg, **kwargs)
 
 
 def test_echo_inside_sandbox(tmp_path: Path):
-    tool = _make_tool(tmp_path)
-    payload = _exec(tool, command="echo hello")
+    payload = _exec(_make_cfg(tmp_path), command="echo hello")
     assert payload["exit_code"] == 0
     assert payload["stdout"].rstrip() == "hello"
     assert not payload["timed_out"]
 
 
 def test_cwd_is_workspace_root(tmp_path: Path):
-    tool = _make_tool(tmp_path)
-    payload = _exec(tool, command="pwd")
-    assert payload["stdout"].rstrip() == str(tmp_path)
+    payload = _exec(_make_cfg(tmp_path), command="pwd")
+    assert payload["stdout"].rstrip() == str(tmp_path.resolve())
 
 
 def test_workspace_writes_persist_on_host(tmp_path: Path):
-    tool = _make_tool(tmp_path)
-    payload = _exec(tool, command="echo content > out.txt")
+    payload = _exec(_make_cfg(tmp_path), command="echo content > out.txt")
     assert payload["exit_code"] == 0
     assert (tmp_path / "out.txt").read_text() == "content\n"
 
 
 def test_outside_workspace_write_denied(tmp_path: Path):
-    tool = _make_tool(tmp_path)
     # /etc недоступен RW (ro-bind), запись должна свалиться с non-zero.
-    payload = _exec(tool, command="echo x > /etc/from-sandbox 2>&1")
+    payload = _exec(
+        _make_cfg(tmp_path),
+        command="echo x > /etc/from-sandbox 2>&1",
+    )
     assert payload["exit_code"] != 0
 
 
 def test_network_disabled_by_default(tmp_path: Path):
-    tool = _make_tool(tmp_path)
     # getent hosts требует резолва; в network-namespace без сети — фейл.
     payload = _exec(
-        tool,
+        _make_cfg(tmp_path),
         command="getent hosts example.com 2>&1; echo done-$?",
     )
     assert "done-2" in payload["stdout"] or "done-1" in payload["stdout"]
 
 
 def test_timeout_marks_timed_out(tmp_path: Path):
-    tool = _make_tool(
-        tmp_path,
-        profile=SandboxProfile(timeout_sec=1),
+    payload = _exec(
+        _make_cfg(tmp_path, profile=SandboxProfile(timeout_sec=1)),
+        command="sleep 10",
     )
-    payload = _exec(tool, command="sleep 10")
     assert payload["timed_out"]
     assert payload["duration_ms"] < 5000
 
 
 def test_output_truncation(tmp_path: Path):
-    tool = _make_tool(
-        tmp_path,
-        profile=SandboxProfile(max_output_bytes=1024),
+    payload = _exec(
+        _make_cfg(tmp_path, profile=SandboxProfile(max_output_bytes=1024)),
+        command="yes x | head -c 10240",
     )
-    payload = _exec(tool, command="yes x | head -c 10240")
     assert payload["truncated_stdout"]
     assert len(payload["stdout"].encode("utf-8")) == 1024
 
 
 def test_unknown_profile_returns_error_payload(tmp_path: Path):
-    tool = _make_tool(tmp_path)
-    payload = _exec(tool, command="echo x", profile="no-such")
+    payload = _exec(_make_cfg(tmp_path), command="echo x", profile="no-such")
     assert payload["error_kind"] == "unknown_profile"
     assert payload["exit_code"] == -1
 
 
 def test_pid_namespace_isolation(tmp_path: Path):
-    tool = _make_tool(tmp_path)
-    payload = _exec(tool, command="ps -e --no-headers | wc -l")
+    payload = _exec(
+        _make_cfg(tmp_path),
+        command="ps -e --no-headers | wc -l",
+    )
     # внутри PID-ns хост-процессы не видны; только bash + ps.
     count = int(payload["stdout"].strip())
     assert count < 10
-
-
