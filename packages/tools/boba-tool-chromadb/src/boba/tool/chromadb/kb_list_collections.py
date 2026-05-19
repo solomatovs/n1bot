@@ -8,7 +8,10 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from boba.plugin.prompt import PromptOverlay
-from boba.tool.chromadb.kb import ChromaKnowledgeBase
+from boba.tool.chromadb.embedder_factory import (
+    build_chromadb_embedding_function,
+)
+from boba.tool.chromadb.kb import ChromaKnowledgeBase, get_knowledge_base
 from boba.tools.domain import (
     JsonResult,
     Tool,
@@ -36,8 +39,13 @@ class KbListCollectionsArgs(BaseModel):
 
 @dataclass(frozen=True)
 class KbListCollectionsToolConfig:
-    """DTO tool'а: только prompt overlay."""
+    """DTO tool'а: cfg-поля для самостоятельной сборки KB + prompt overlay."""
 
+    persist_path: str
+    snippet_chars: int
+    embedding_model: str
+    embedding_base_url: str
+    embedding_api_key: str
     prompt: PromptOverlay
 
 
@@ -48,20 +56,32 @@ class KbListCollectionsTool(
 
     def __init__(
         self,
-        kb: ChromaKnowledgeBase,
         cfg: KbListCollectionsToolConfig,
         ctx: Any,
         source_id: ToolSourceId,
     ) -> None:
         super().__init__(cfg, ctx, source_id)
-        self._kb = kb
+        self._kb: ChromaKnowledgeBase | None = None
 
     def execute(
-        self, ctx: ToolContext, req: KbListCollectionsArgs
+        self, ctx: ToolContext, req: KbListCollectionsArgs,
     ) -> ToolResult:
         del ctx, req
         items = [
             {"name": c.name, "description": c.description}
-            for c in self._kb.list_collections()
+            for c in self._get_or_build_kb().list_collections()
         ]
         return JsonResult(payload=items)
+
+    def _get_or_build_kb(self) -> ChromaKnowledgeBase:
+        if self._kb is None:
+            self._kb = get_knowledge_base(
+                self._cfg.persist_path,
+                self._cfg.snippet_chars,
+                embedding_function=build_chromadb_embedding_function(
+                    model=self._cfg.embedding_model,
+                    base_url=self._cfg.embedding_base_url,
+                    api_key=self._cfg.embedding_api_key,
+                ),
+            )
+        return self._kb

@@ -9,7 +9,10 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from boba.plugin.prompt import PromptOverlay
-from boba.tool.chromadb.kb import ChromaKnowledgeBase
+from boba.tool.chromadb.embedder_factory import (
+    build_chromadb_embedding_function,
+)
+from boba.tool.chromadb.kb import ChromaKnowledgeBase, get_knowledge_base
 from boba.tools.domain import (
     JsonResult,
     Tool,
@@ -66,24 +69,33 @@ class KbSearchArgs(BaseModel):
 
 @dataclass(frozen=True)
 class KbSearchToolConfig:
-    """DTO tool'а: max_top_k предел + prompt overlay."""
+    """DTO tool'а: все cfg-поля, чтобы tool построил KB сам."""
 
+    persist_path: str
+    snippet_chars: int
+    embedding_model: str
+    embedding_base_url: str
+    embedding_api_key: str
     max_top_k: int
     prompt: PromptOverlay
 
 
 class KbSearchTool(Tool[KbSearchArgs, KbSearchToolConfig]):
-    """Возвращает JSON [{id, distance, metadata, snippet}] top-k hits."""
+    """Возвращает JSON [{id, distance, metadata, snippet}] top-k hits.
+
+    `ChromaKnowledgeBase` собирается lazily внутри tool через
+    process-singleton `get_knowledge_base` — один и тот же client на
+    persist_path для read- и write-сторон.
+    """
 
     def __init__(
         self,
-        kb: ChromaKnowledgeBase,
         cfg: KbSearchToolConfig,
         ctx: Any,
         source_id: ToolSourceId,
     ) -> None:
         super().__init__(cfg, ctx, source_id)
-        self._kb = kb
+        self._kb: ChromaKnowledgeBase | None = None
 
     def _validation_context(self) -> dict[str, Any]:
         """Прокидываем runtime-лимит `max_top_k` в `@field_validator`."""
@@ -91,7 +103,7 @@ class KbSearchTool(Tool[KbSearchArgs, KbSearchToolConfig]):
 
     def execute(self, ctx: ToolContext, req: KbSearchArgs) -> ToolResult:
         del ctx
-        hits = self._kb.search(
+        hits = self._get_or_build_kb().search(
             tool_id=self.tool_id(),
             collection=req.collection,
             query=req.query,
@@ -108,6 +120,19 @@ class KbSearchTool(Tool[KbSearchArgs, KbSearchToolConfig]):
             for h in hits
         ]
         return JsonResult(payload=payload)
+
+    def _get_or_build_kb(self) -> ChromaKnowledgeBase:
+        if self._kb is None:
+            self._kb = get_knowledge_base(
+                self._cfg.persist_path,
+                self._cfg.snippet_chars,
+                embedding_function=build_chromadb_embedding_function(
+                    model=self._cfg.embedding_model,
+                    base_url=self._cfg.embedding_base_url,
+                    api_key=self._cfg.embedding_api_key,
+                ),
+            )
+        return self._kb
 
     @staticmethod
     def _build_link(metadata: Mapping[str, str]) -> str:

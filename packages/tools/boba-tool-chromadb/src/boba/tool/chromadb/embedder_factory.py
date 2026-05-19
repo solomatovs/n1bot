@@ -22,7 +22,37 @@ __all__ = [
     "ChromaEmbeddingFunctionAdapter",
     "EmbedderFactory",
     "EmbeddingModelNotConfiguredError",
+    "build_chromadb_embedding_function",
 ]
+
+
+def build_chromadb_embedding_function(
+    *,
+    model: str,
+    base_url: str,
+    api_key: str,
+) -> Any:
+    """Chromadb-native `EmbeddingFunction` для read-side kb-tools.
+
+    Read-side (kb_search) использует `Collection.query(query_texts=...)` —
+    chromadb сам зовёт EF на стороне коллекции, поэтому нужен EF, а не
+    `Embedder[str]`. Routing совпадает с `EmbedderFactory.create`:
+    - `""` / `"default"` → None (chromadb использует built-in ONNX);
+    - иначе → `OpenAIEmbeddingFunction` поверх base_url/api_key.
+
+    `None` означает «chromadb сам подставит DefaultEmbeddingFunction».
+    """
+    if model in ("", "default"):
+        return None
+    from chromadb.utils.embedding_functions import (  # noqa: PLC0415
+        OpenAIEmbeddingFunction,
+    )
+
+    return OpenAIEmbeddingFunction(
+        api_key=api_key or "unused",
+        api_base=base_url or None,
+        model_name=model,
+    )
 
 
 class EmbeddingModelNotConfiguredError(ValueError):

@@ -25,11 +25,8 @@ class ChromaKnowledgeBase:
         *,
         embedding_function: Any = None,
     ) -> None:
-        # Ленивый импорт chromadb — модуль грузится без runtime-deps.
-        import chromadb  # noqa: PLC0415
-
         self._snippet_chars = snippet_chars
-        self._client = chromadb.PersistentClient(path=persist_path)
+        self._client = get_chroma_client(persist_path)
         self._embedding_function = embedding_function
         logger.info(
             "ChromaKnowledgeBase opened persist_path=%r ef=%s",
@@ -122,8 +119,32 @@ def _truncate(text: str, limit: int) -> str:
     return text[:limit].rstrip() + "…"
 
 
-# Process-singleton по (persist_path, snippet_chars, ef-id).
+# Process-singleton chromadb.PersistentClient по persist_path: один клиент
+# на путь во всём процессе. Иначе SQLite-бэкэнд chromadb словит file-lock
+# contention при двух параллельных клиентах. И read-side (kb_search,
+# kb_list_collections), и write-side (kb_ingest) должны проходить через
+# этот кеш.
+_CLIENT_CACHE: dict[str, Any] = {}
+
+# Process-singleton ChromaKnowledgeBase по (persist_path, snippet_chars, ef-id).
 _KB_CACHE: dict[tuple[str, int, int], ChromaKnowledgeBase] = {}
+
+
+def get_chroma_client(persist_path: str) -> Any:
+    """Process-singleton `chromadb.PersistentClient` по `persist_path`.
+
+    Шарится между read-side `ChromaKnowledgeBase` и write-side
+    `KbIngestTool`. Ленивый импорт chromadb — модуль `kb.py` грузится
+    без runtime-deps.
+    """
+    client = _CLIENT_CACHE.get(persist_path)
+    if client is None:
+        import chromadb  # noqa: PLC0415
+
+        client = chromadb.PersistentClient(path=persist_path)
+        _CLIENT_CACHE[persist_path] = client
+        logger.info("chromadb.PersistentClient opened persist_path=%r", persist_path)
+    return client
 
 
 def get_knowledge_base(

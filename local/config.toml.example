@@ -99,7 +99,7 @@ max_top_k = 20
 # Пустой ingest_folder = ingest выключен (kb_ingest вернёт ошибку,
 # operator-mode тест skip'нется).
 ingest_folder = ""
-ingest_collection = "kb"
+ingest_collection = "knowledge_base"
 ingest_collection_description = ""
 # per-tool PromptOverlay: description + fields:
 #   [tool.chromadb.kb_search]
