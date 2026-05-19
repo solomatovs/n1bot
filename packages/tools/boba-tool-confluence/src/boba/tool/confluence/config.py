@@ -27,8 +27,7 @@ class ConfluencePluginConfig(BobaFlatSettings):
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="forbid",
-        boba_env_prefix="BOBA_TOOL__CONFLUENCE__",
-        boba_toml_section="tool.confluence",
+        config_path="tool.confluence",
     )
 
     enable: bool = Field(
@@ -59,8 +58,7 @@ class ConfluencePluginConfig(BobaFlatSettings):
     auth_user: str = Field(
         default="",
         description=(
-            "Логин для basic-auth; обязателен при auth_method=basic. "
-            "Для PAT — пусто."
+            "Логин для basic-auth; обязателен при auth_method=basic. Для PAT — пусто."
         ),
     )
     timeout_sec: float = Field(

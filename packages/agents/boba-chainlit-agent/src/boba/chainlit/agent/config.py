@@ -25,8 +25,7 @@ class ChainlitConfig(BobaFlatSettings):
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="forbid",
-        boba_env_prefix="BOBA_CHAINLIT__",
-        boba_toml_section="chainlit",
+        config_path="chainlit",
     )
 
     model: str = Field(
@@ -95,8 +94,7 @@ class AppConfig(BobaFlatSettings):
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="forbid",
-        boba_env_prefix="BOBA_AGENT__",
-        boba_toml_section="agent",
+        config_path="agent",
     )
 
     core: AppCoreConfig = Field(default_factory=AppCoreConfig)
