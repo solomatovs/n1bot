@@ -2,48 +2,33 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
-from boba.plugin.prompt import PromptOverlay
-from boba.tool.files._base import FsToolBase
-from boba.tools.domain import (
-    TextResult,
-    ToolContext,
-    ToolExecutionError,
-    ToolResult,
-)
-from boba.workspace.contract import WorkspaceError
+from boba.tool.files.enable import files_enable_if
+from boba.tools import FromDI, Scope, tool
+from boba.workspace.contract import ProjectWorkspaceShell, WorkspaceError
 
-__all__ = ["MkdirArgs", "MkdirTool", "MkdirToolConfig"]
+__all__ = ["MkdirTool"]
 
 
-class MkdirArgs(BaseModel):
+@tool(enable_if=files_enable_if("mkdir"))
+class MkdirTool:
     """Создать директорию (включая промежуточные).
 
     Если уже существует — no-op. Если по пути файл — ошибка.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    path: str = Field(min_length=1, description="Путь создаваемой директории.")
-
-
-@dataclass(frozen=True)
-class MkdirToolConfig:
-    prompt: PromptOverlay
-
-
-class MkdirTool(FsToolBase[MkdirArgs, MkdirToolConfig]):
-    """Создать директорию."""
-
-    def execute(self, ctx: ToolContext, req: MkdirArgs) -> ToolResult:
+    def __call__(
+        self,
+        path: Annotated[
+            str, Field(min_length=1, description="Путь создаваемой директории."),
+        ],
+        shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
+    ) -> str:
         try:
-            self._shell.mkdir(req.path)
+            shell.mkdir(path)
         except WorkspaceError as e:
-            raise ToolExecutionError(
-                tool_id=self.tool_id(),
-                message=f"Ошибка mkdir: {e}",
-            ) from e
-        return TextResult(text=f"Директория создана: {req.path}")
+            raise RuntimeError(f"Ошибка mkdir: {e}") from e
+        return f"Директория создана: {path}"

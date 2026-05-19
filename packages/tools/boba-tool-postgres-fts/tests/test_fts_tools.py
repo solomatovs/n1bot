@@ -1,4 +1,9 @@
-"""Юнит-тесты FtsSearchTool/FtsListIndexesTool: invoke → JsonResult."""
+"""Юнит-тесты FtsSearchTool/FtsListIndexesTool: callable → list/dict payload.
+
+Tools конструируются напрямую (без AgentBuilder) и вызываются как обычные
+callable-классы. DI-инжекция эмулируется передачей `kb=...`, `cfg=...`
+kwargs'ами — это контракт `@tool`-классов после миграции на v2.
+"""
 
 from __future__ import annotations
 
@@ -7,18 +12,12 @@ from typing import Any
 
 import pytest
 
-from boba.plugin.prompt import PromptOverlay
+from boba.tool.postgres_fts.config import PostgresFtsPluginConfig
 from boba.tool.postgres_fts.db import PgFtsKnowledgeBase
-from boba.tool.postgres_fts.fts_list_indexes import (
-    FtsListIndexesTool,
-    FtsListIndexesToolConfig,
-)
-from boba.tool.postgres_fts.fts_search import FtsSearchTool, FtsSearchToolConfig
+from boba.tool.postgres_fts.fts_list_indexes import FtsListIndexesTool
+from boba.tool.postgres_fts.fts_search import FtsSearchTool
 from boba.tool.postgres_fts.models import IndexSpec
-from boba.tools.domain import JsonResult, ToolContext, ToolSourceId
-from boba.tools.domain.errors import InvalidToolArgumentError
 
-_SOURCE = ToolSourceId("plugin_postgres_fts")
 _Column = namedtuple("_Column", ["name"])
 
 
@@ -86,34 +85,33 @@ def _kb(rows: list[tuple[Any, ...]], names: list[str]) -> PgFtsKnowledgeBase:
     )
 
 
-def test_list_indexes_tool_returns_json_payload():
-    kb = _kb([], [])
-    tool = FtsListIndexesTool(
-        kb,
-        FtsListIndexesToolConfig(prompt=PromptOverlay()),
-        ctx=None,
-        source_id=_SOURCE,
+def _cfg(max_top_k: int = 20) -> PostgresFtsPluginConfig:
+    """Минимальный валидный конфиг для FtsSearchTool (enable=False допустим в тестах)."""
+    return PostgresFtsPluginConfig.model_construct(
+        enable=False,
+        dsn="",
+        indexes=[],
+        max_top_k=max_top_k,
+        snippet_options="MaxWords=20",
+        min_pool_size=1,
+        max_pool_size=4,
+        connect_timeout_sec=10.0,
     )
-    result = tool.invoke(ToolContext(), {})
-    assert isinstance(result, JsonResult)
-    assert result.payload == [{"name": "docs", "description": "Docs index"}]
+
+
+def test_list_indexes_tool_returns_items():
+    kb = _kb([], [])
+    result = FtsListIndexesTool()(kb=kb)
+    assert result == [{"name": "docs", "description": "Docs index"}]
 
 
 def test_search_tool_invokes_kb_and_serialises_hits():
     rows = [("1", 0.5, "snippet", "Title A")]
     kb = _kb(rows, ["_id", "_score", "_snippet", "title"])
-    tool = FtsSearchTool(
-        kb,
-        FtsSearchToolConfig(max_top_k=20, prompt=PromptOverlay()),
-        ctx=None,
-        source_id=_SOURCE,
+    result = FtsSearchTool()(
+        index="docs", query="auth", kb=kb, cfg=_cfg(), top_k=3,
     )
-    result = tool.invoke(
-        ToolContext(),
-        {"index": "docs", "query": "auth", "top_k": 3},
-    )
-    assert isinstance(result, JsonResult)
-    assert result.payload == [
+    assert result == [
         {
             "id": "1",
             "score": 0.5,
@@ -125,35 +123,18 @@ def test_search_tool_invokes_kb_and_serialises_hits():
 
 def test_search_tool_uses_default_top_k_when_missing():
     kb = _kb([], ["_id", "_score", "_snippet"])
-    tool = FtsSearchTool(
-        kb,
-        FtsSearchToolConfig(max_top_k=20, prompt=PromptOverlay()),
-        ctx=None,
-        source_id=_SOURCE,
-    )
-    result = tool.invoke(ToolContext(), {"index": "docs", "query": "x"})
-    assert isinstance(result, JsonResult)
+    result = FtsSearchTool()(index="docs", query="x", kb=kb, cfg=_cfg())
+    assert result == []
 
 
 def test_search_tool_rejects_top_k_above_max():
-    kb = _kb([], ["_id", "_score", "_snippet"])
-    tool = FtsSearchTool(
-        kb,
-        FtsSearchToolConfig(max_top_k=5, prompt=PromptOverlay()),
-        ctx=None,
-        source_id=_SOURCE,
-    )
-    with pytest.raises(InvalidToolArgumentError):
-        tool.invoke(ToolContext(), {"index": "docs", "query": "x", "top_k": 100})
+    """В v2 top_k > max_top_k → RuntimeError (вместо v1 InvalidToolArgumentError).
 
-
-def test_search_tool_rejects_missing_required_arg():
+    Pydantic-валидатор в v2 не имеет runtime-доступа к max_top_k (это поле
+    конфига, не args-модели), поэтому проверка перенесена в тело tool'а.
+    """
     kb = _kb([], ["_id", "_score", "_snippet"])
-    tool = FtsSearchTool(
-        kb,
-        FtsSearchToolConfig(max_top_k=5, prompt=PromptOverlay()),
-        ctx=None,
-        source_id=_SOURCE,
-    )
-    with pytest.raises(InvalidToolArgumentError):
-        tool.invoke(ToolContext(), {"query": "x"})
+    with pytest.raises(RuntimeError, match="превышает max_top_k"):
+        FtsSearchTool()(
+            index="docs", query="x", kb=kb, cfg=_cfg(max_top_k=5), top_k=100,
+        )

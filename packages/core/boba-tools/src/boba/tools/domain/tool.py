@@ -9,11 +9,9 @@ from functools import cached_property
 from typing import (
     Any,
     Generic,
-    Protocol,
     TypeVar,
     get_args,
     get_origin,
-    runtime_checkable,
 )
 
 from pydantic import BaseModel, ValidationError
@@ -33,7 +31,6 @@ from boba.tools.domain.llm_schema import LLMSchemaGenerator
 from boba.tools.domain.result import ToolResult
 
 __all__ = [
-    "JsonSchemaOverlay",
     "Tool",
     "ToolCall",
     "ToolContext",
@@ -45,27 +42,12 @@ TArgs = TypeVar("TArgs", bound=BaseModel)
 TConfig = TypeVar("TConfig")
 
 
-@runtime_checkable
-class JsonSchemaOverlay(Protocol):
-    """Структурный protocol overlay'я для JSON-schema dict.
-
-    Реализуется `boba.plugin.prompt.PromptOverlay`. Domain-слой не знает
-    про plugin-слой — duck-typed Protocol через метод
-    `apply_to_json_schema`.
-    """
-
-    def apply_to_json_schema(
-        self,
-        schema: dict[str, Any],
-    ) -> dict[str, Any]: ...
-
-
 @dataclass(frozen=True)
 class ToolContext:
     """Per-call контекст вызова tool'а.
 
     Сейчас пуст: все стабильные tool-зависимости (workspace, HTTP-клиенты,
-    БД-коннекшены) привязываются на build-time через `ExtensionContext`.
+    БД-коннекшены) привязываются на build-time через DI-Container агента.
     Тип сохранён как seam для будущих **реально per-call** концепций.
 
     Чтобы попасть сюда, концепция должна (1) меняться от вызова к вызову
@@ -129,12 +111,6 @@ class Tool(
     - `name()`, `tool_id()`, `definition()` имеют дефолтные реализации
       на базе TArgs/TConfig и могут быть переопределены.
 
-    Соглашения по cfg:
-    - конфиг хранится в `self._cfg`;
-    - если у конфига есть атрибут `prompt: PromptOverlay` (или любой
-      объект, реализующий `JsonSchemaOverlay`), он применяется поверх
-      авто-сгенерированной JSON-schema через `apply_to_json_schema`.
-
     Identity: tool_id = `<source>__<name>`. По умолчанию `name()` —
     snake_case имени класса без суффикса `Tool` (CatTool → "cat").
     """
@@ -175,16 +151,12 @@ class Tool(
         args_model берётся из `_args_model_class()` (instance-hook; default
         резолвит TArgs из `Tool[XArgs, XConfig]` через `__orig_bases__`).
         Схема эмитится `LLMSchemaGenerator`-ом сразу плоской (без `$defs`/
-        `$ref`/`title`); `cfg.prompt` (если реализует `JsonSchemaOverlay`)
-        патчит её через `apply_to_json_schema`. `description` переезжает в
-        одноимённое поле `ToolSchema`, остальное идёт в `parameters_schema`.
+        `$ref`/`title`). `description` переезжает в одноимённое поле
+        `ToolSchema`, остальное идёт в `parameters_schema`.
         """
         schema = self._args_model_class().model_json_schema(
             schema_generator=LLMSchemaGenerator,
         )
-        prompt = getattr(self._cfg, "prompt", None)
-        if isinstance(prompt, JsonSchemaOverlay):
-            schema = prompt.apply_to_json_schema(schema)
         description = str(schema.pop("description", ""))
         return ToolSchema(
             name=self.tool_id(),

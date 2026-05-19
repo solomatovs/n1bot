@@ -2,63 +2,46 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
-from boba.plugin.prompt import PromptOverlay
-from boba.tool.files._base import FsToolBase
-from boba.tools.domain import (
-    JsonResult,
-    ToolContext,
-    ToolExecutionError,
-    ToolResult,
+from boba.tool.files.enable import files_enable_if
+from boba.tools import FromDI, Scope, tool
+from boba.workspace.contract import (
+    ProjectWorkspaceShell,
+    WorkspaceError,
+    WorkspaceNotFoundError,
 )
-from boba.workspace.contract import WorkspaceError, WorkspaceNotFoundError
 
-__all__ = ["StatArgs", "StatTool", "StatToolConfig"]
+__all__ = ["StatTool"]
 
 
-class StatArgs(BaseModel):
-    """Вернуть метаданные ресурса.
+@tool(enable_if=files_enable_if("stat"))
+class StatTool:
+    """Метаданные файла или директории.
 
     Тип (file/directory/other), размер в байтах, время модификации. Если
     ресурса нет — ошибка. Для директорий size — размер inode-блока ФС, не
     количество файлов; для содержимого директории — ls/tree.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    path: str = Field(min_length=1, description="Путь к файлу или директории.")
-
-
-@dataclass(frozen=True)
-class StatToolConfig:
-    prompt: PromptOverlay
-
-
-class StatTool(FsToolBase[StatArgs, StatToolConfig]):
-    """Метаданные файла или директории."""
-
-    def execute(self, ctx: ToolContext, req: StatArgs) -> ToolResult:
+    def __call__(
+        self,
+        path: Annotated[
+            str, Field(min_length=1, description="Путь к файлу или директории."),
+        ],
+        shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
+    ) -> dict[str, Any]:
         try:
-            meta = self._shell.meta(req.path)
+            meta = shell.meta(path)
         except WorkspaceNotFoundError as e:
-            raise ToolExecutionError(
-                tool_id=self.tool_id(),
-                message=f"Не найдено: {req.path}",
-            ) from e
+            raise RuntimeError(f"Не найдено: {path}") from e
         except WorkspaceError as e:
-            raise ToolExecutionError(
-                tool_id=self.tool_id(),
-                message=f"Ошибка stat: {e}",
-            ) from e
-
-        body = {
+            raise RuntimeError(f"Ошибка stat: {e}") from e
+        return {
             "path": meta.path,
             "kind": meta.kind,
             "size": meta.size,
             "modified": meta.modified.isoformat(),
         }
-
-        return JsonResult(payload=body)

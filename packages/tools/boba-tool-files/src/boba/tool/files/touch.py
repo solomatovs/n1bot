@@ -2,48 +2,31 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
-from boba.plugin.prompt import PromptOverlay
-from boba.tool.files._base import FsToolBase
-from boba.tools.domain import (
-    TextResult,
-    ToolContext,
-    ToolExecutionError,
-    ToolResult,
-)
-from boba.workspace.contract import WorkspaceError
+from boba.tool.files.enable import files_enable_if
+from boba.tools import FromDI, Scope, tool
+from boba.workspace.contract import ProjectWorkspaceShell, WorkspaceError
 
-__all__ = ["TouchArgs", "TouchTool", "TouchToolConfig"]
+__all__ = ["TouchTool"]
 
 
-class TouchArgs(BaseModel):
+@tool(enable_if=files_enable_if("touch"))
+class TouchTool:
     """Создать пустой файл (включая промежуточные директории).
 
     Если уже существует — обновить время модификации, содержимое не трогать.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    path: str = Field(min_length=1, description="Путь к файлу.")
-
-
-@dataclass(frozen=True)
-class TouchToolConfig:
-    prompt: PromptOverlay
-
-
-class TouchTool(FsToolBase[TouchArgs, TouchToolConfig]):
-    """Создать пустой файл или обновить mtime существующего."""
-
-    def execute(self, ctx: ToolContext, req: TouchArgs) -> ToolResult:
+    def __call__(
+        self,
+        path: Annotated[str, Field(min_length=1, description="Путь к файлу.")],
+        shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
+    ) -> str:
         try:
-            self._shell.touch(req.path)
+            shell.touch(path)
         except WorkspaceError as e:
-            raise ToolExecutionError(
-                tool_id=self.tool_id(),
-                message=f"Ошибка touch: {e}",
-            ) from e
-        return TextResult(text=f"touch: {req.path}")
+            raise RuntimeError(f"Ошибка touch: {e}") from e
+        return f"touch: {path}"

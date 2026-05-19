@@ -2,67 +2,52 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from itertools import islice
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
-from boba.plugin.prompt import PromptOverlay
-from boba.tool.files._base import FsToolBase
-from boba.tools.domain import (
-    JsonResult,
-    ToolContext,
-    ToolExecutionError,
-    ToolResult,
-)
-from boba.workspace.contract import WorkspaceError
+from boba.tool.files.enable import files_enable_if
+from boba.tools import FromDI, Scope, tool
+from boba.workspace.contract import ProjectWorkspaceShell, WorkspaceError
 
-__all__ = ["TreeArgs", "TreeTool", "TreeToolConfig"]
+__all__ = ["TreeTool"]
 
 
-class TreeArgs(BaseModel):
-    """Рекурсивно перечислить все файлы под директорией.
+@tool(enable_if=files_enable_if("tree"))
+class TreeTool:
+    """Рекурсивный обход всех файлов workspace.
 
-    Плоский список путей. При переполнении limit ответ обрезается с маркером
-    '(truncated at limit=N)'. Для одного уровня — ls.
+    Плоский список путей. При переполнении limit ответ обрезается с маркером.
+    Для одного уровня — ls.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    limit: int = Field(ge=1, description="Максимум путей в ответе.")
-    path: str | None = Field(
-        default=None,
-        min_length=1,
-        description="Корень обхода. Без значения — корень workspace.",
-    )
-
-
-@dataclass(frozen=True)
-class TreeToolConfig:
-    prompt: PromptOverlay
-
-
-class TreeTool(FsToolBase[TreeArgs, TreeToolConfig]):
-    """Рекурсивный обход всех файлов workspace."""
-
-    def execute(self, ctx: ToolContext, req: TreeArgs) -> ToolResult:
+    def __call__(
+        self,
+        limit: Annotated[int, Field(ge=1, description="Максимум путей в ответе.")],
+        shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
+        path: Annotated[
+            str | None,
+            Field(
+                min_length=1,
+                description="Корень обхода. Без значения — корень workspace.",
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
         try:
-            iterator = self._shell.tree(req.path)
-            items = list(islice(iterator, req.limit + 1))
+            iterator = shell.tree(path)
+            items = list(islice(iterator, limit + 1))
         except WorkspaceError as e:
-            raise ToolExecutionError(
-                tool_id=self.tool_id(), message=f"Ошибка обхода: {e}",
-            ) from e
+            raise RuntimeError(f"Ошибка обхода: {e}") from e
 
-        total = len(items)
-        truncated = total > req.limit
+        truncated = len(items) > limit
         if truncated:
-            items = items[: req.limit]
+            items = items[:limit]
 
-        return JsonResult(payload={
-            "location": req.path or "/",
+        return {
+            "location": path or "/",
             "items": items,
             "count": len(items),
             "truncated": truncated,
-            "limit": req.limit,
-        })
+            "limit": limit,
+        }

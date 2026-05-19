@@ -1,24 +1,17 @@
-"""Доменные ошибки KB-tools."""
+"""Доменные ошибки KB-tools (v2: без `tool_id` в конструкторах)."""
 
 from __future__ import annotations
 
-from boba.tools.domain import (
-    ToolExecutionError,
-    ToolId,
-)
+__all__ = ["CollectionNotFoundError", "KnowledgeBaseError"]
 
 
-class KnowledgeBaseError(ToolExecutionError):
+class KnowledgeBaseError(RuntimeError):
     """База для всех ошибок ChromaKnowledgeBase."""
 
 
-class CollectionNotFoundError(KnowledgeBaseError):
+class CollectionNotFoundError(KeyError):
     """Коллекция с таким именем не зарегистрирована в БД."""
 
-    def __init__(self, tool_id: ToolId, name: str) -> None:
-        super().__init__(
-            tool_id,
-            f"collection {name!r} not found; "
-            f"call kb_list_collections to see available ones",
-        )
+    def __init__(self, name: str) -> None:
+        super().__init__(name)
         self.name = name

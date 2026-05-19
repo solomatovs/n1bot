@@ -1,9 +1,18 @@
-"""Smoke-тесты разделения ToolRegistry / ToolCatalog / ToolExecutor."""
+"""Smoke-тесты разделения ToolRegistry / ToolCatalog / ToolExecutor.
+
+Tool конструируется как `DishkaTool` поверх минимального Dishka-контейнера
+— естественный путь после v2 миграции.
+"""
 
 from __future__ import annotations
 
-import pytest
+from dataclasses import replace
 
+import pytest
+from dishka import make_container
+
+from boba.tools import tool
+from boba.tools.adapter import DishkaTool
 from boba.tools.domain import (
     TextResult,
     ToolContext,
@@ -18,16 +27,30 @@ from boba.tools.framework import (
     ToolCatalog,
     ToolExecutor,
     ToolRegistry,
-    tool_factory,
 )
+from boba.tools.introspect import introspect_callable
 
 
-def _make_tool(source: ToolSourceId, name: str):
-    def _impl(text: str) -> ToolResult:
+@tool
+class _EchoTool:
+    """Echo tool: вернуть переданный текст как TextResult."""
+
+    def __call__(self, text: str) -> ToolResult:
         return TextResult(text=text)
 
-    factory = tool_factory(_impl, name=name)
-    return factory.build(source)
+
+def _make_tool(source: ToolSourceId, name: str = "echo") -> DishkaTool:
+    plan = introspect_callable(_EchoTool)
+    # Подменяем имя в плане, чтобы тест мог собрать несколько tool'ов под разные имена.
+    plan = replace(plan, name=name)
+    container = make_container()
+    return DishkaTool(
+        target=_EchoTool(),
+        plan=plan,
+        container=container,
+        component="",
+        source_id=source,
+    )
 
 
 def _registry_with_one(source_id: str = "src") -> ToolRegistry:
@@ -43,7 +66,6 @@ def test_catalog_returns_definitions_for_all_sources():
 
     schemas = list(catalog.definitions())
     assert len(schemas) == 1
-    # ToolSchema.name — wire-id
     assert schemas[0].name == compose_tool_id(ToolSourceId("src"), ToolName("echo"))
 
 
@@ -54,7 +76,7 @@ def test_catalog_and_executor_share_state():
     expected = compose_tool_id(ToolSourceId("src"), ToolName("echo"))
 
     assert expected in catalog_ids
-    # executor найдёт тот же id (не упадёт с unknown_tool):
+
     from boba.tools.domain import ToolCall
 
     result = registry.executor().execute(
@@ -99,7 +121,6 @@ def test_catalog_is_lightweight_view():
     registry = _registry_with_one()
     a = registry.catalog()
     b = registry.catalog()
-    # разные инстансы, но видят одинаковые definitions
     assert isinstance(a, ToolCatalog)
     assert isinstance(b, ToolCatalog)
     assert [s.name for s in a.definitions()] == [s.name for s in b.definitions()]

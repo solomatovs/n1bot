@@ -12,7 +12,6 @@ dependencies = [
     "boba-workspace",
     "boba-llm",
     "boba-tools",
-    "boba-tools-v2",
     # Синхронизировано с boba-chainlit-agent: chainlit 2.11+ ломает
     # ForwardRef-резолв на pydantic 2.11+
     "pydantic>=2.10,<2.11",

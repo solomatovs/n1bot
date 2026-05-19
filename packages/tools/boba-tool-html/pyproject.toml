@@ -8,17 +8,16 @@ version = "0.1.0"
 description = "Boba HTML navigation tools: outline + section reading via workspace files."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-patterns",
-    "boba-plugin",
-    "boba-workspace",
     "boba-tools",
+    "boba-workspace",
     "boba-settings",
+    "pydantic",
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
 ]
 
 [project.entry-points."boba.plugins"]
-html = "boba.tool.html.plugin:HtmlPlugin"
+html = "boba.tool.html"
 
 [tool.setuptools.packages.find]
 where = ["src"]

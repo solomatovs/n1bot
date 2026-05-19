@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from boba.tools_v2.scope import Scope
+from boba.tools.scope import Scope
 
 __all__ = ["FromConfig", "FromDI"]
 

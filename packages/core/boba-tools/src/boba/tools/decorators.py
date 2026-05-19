@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TypeVar, overload
 
-from boba.tools_v2.scope import Scope
+from boba.tools.scope import Scope
 
 __all__ = [
     "ENABLE_IF_MARKER",
@@ -37,13 +37,13 @@ __all__ = [
 ]
 
 
-TOOL_MARKER = "__boba_tools_v2_tool__"
+TOOL_MARKER = "__boba_tools_tool__"
 """Атрибут-маркер: класс/функция помечена как tool."""
 
-PROVIDES_SCOPE_MARKER = "__boba_tools_v2_provides_scope__"
+PROVIDES_SCOPE_MARKER = "__boba_tools_provides_scope__"
 """Атрибут-маркер: функция помечена как service provider; значение — Scope."""
 
-ENABLE_IF_MARKER = "__boba_tools_v2_enable_if__"
+ENABLE_IF_MARKER = "__boba_tools_enable_if__"
 """Атрибут-маркер: предикат `Callable[..., bool]` для условной регистрации."""
 
 

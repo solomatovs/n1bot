@@ -1,9 +1,4 @@
-"""`ChromadbPluginConfig` — DTO секции `[tool.chromadb]`.
-
-Вынесен из `plugin.py` в отдельный модуль, чтобы `di.py` мог
-импортировать его без циркулярной зависимости (plugin.py → di.py →
-plugin.py). И plugin.py, и di.py теперь зависят только от `config.py`.
-"""
+"""`ChromadbPluginConfig` — конфиг секции `[tool.chromadb]` (v2)."""
 
 from __future__ import annotations
 
@@ -11,17 +6,17 @@ from typing import Self
 
 from pydantic import Field, model_validator
 
-from boba.plugin.prompt import PromptOverlay
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
 
 __all__ = ["ChromadbPluginConfig"]
 
 
 class ChromadbPluginConfig(BobaFlatSettings):
-    """ChromaDB read-tools: kb_search + kb_list_collections + kb_ingest.
+    """ChromaDB tools: kb_search + kb_list_collections + kb_ingest.
 
     `persist_path` обязателен при `enable=True`. `embedding_model='default'` —
-    built-in ONNX (без сети).
+    built-in ONNX (offline). Используется и tool'ами (через FromConfig),
+    и DI-provider'ами (Client/KB/Indexer).
     """
 
     model_config = BobaSettingsConfigDict(
@@ -33,7 +28,14 @@ class ChromadbPluginConfig(BobaFlatSettings):
 
     enable: bool = Field(
         default=False,
-        description="Подключить плагин в discovery.",
+        description="Регистрировать ли chromadb-tools в DI/каталоге LLM.",
+    )
+    tools: StringList | None = Field(
+        default=None,
+        description=(
+            "Allowlist tool-имён: None — все включены; иначе только "
+            "перечисленные ('kb_search', 'kb_list_collections', 'kb_ingest')."
+        ),
     )
     persist_path: str = Field(
         default="",
@@ -70,12 +72,9 @@ class ChromadbPluginConfig(BobaFlatSettings):
     ingest_folder: str = Field(
         default="",
         description=(
-            "Папка с .md чанками для индексации. Использует и LLM-tool "
-            "kb_ingest, и интеграционный тест `test_operator_real_ingest`. "
-            "Оператор закрепляет выбор папки за собой — LLM не выбирает "
-            "(защита от случайного индексирования чужих файлов). Пустая "
-            "строка = ingest выключен (kb_ingest вернёт ошибку, "
-            "operator-mode тест skip'ается)."
+            "Папка с .md чанками для индексации. Оператор закрепляет выбор "
+            "папки за собой — LLM не выбирает (защита от случайного "
+            "индексирования чужих файлов). Пустая строка = ingest выключен."
         ),
     )
     ingest_collection: str = Field(
@@ -84,23 +83,16 @@ class ChromadbPluginConfig(BobaFlatSettings):
         max_length=512,
         description=(
             "Имя коллекции, в которую индексируется ingest_folder. "
-            "Оператор закрепляет имя за собой, чтобы LLM не создавал "
-            "коллекции на лету и не перезаписывал чужие. ChromaDB-"
-            "ограничение: 3..512 символов из [a-zA-Z0-9._-], начало "
-            "и конец — буквы/цифры."
+            "ChromaDB-ограничение: 3..512 символов."
         ),
     )
     ingest_collection_description: str = Field(
         default="",
         description=(
             "Description коллекции (видно в kb_list_collections). "
-            "Прописывается при первом создании коллекции через "
-            "`ensure_collection`."
+            "Прописывается при первом создании коллекции."
         ),
     )
-    kb_search: PromptOverlay = Field(default_factory=PromptOverlay)
-    kb_list_collections: PromptOverlay = Field(default_factory=PromptOverlay)
-    kb_ingest: PromptOverlay = Field(default_factory=PromptOverlay)
 
     @model_validator(mode="after")
     def _check_persist_path_when_enabled(self) -> Self:
