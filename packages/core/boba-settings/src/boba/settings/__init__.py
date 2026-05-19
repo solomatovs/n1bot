@@ -1,30 +1,44 @@
-"""boba.settings: общая база pydantic-settings.
+"""boba.settings: единый ConfigSource + pydantic-schema с flat→nested.
 
-Точки входа:
-- `BobaFlatSettings` — `BaseSettings`-наследник с двумя готовыми вещами:
-    * `model_validator(mode='before')`, который flat-input распределяет по
-      nested BaseModel-полям (`Inline()`-семантика старого boba.schema).
-    * `settings_customise_sources` по умолчанию читает конфиг через
-      `BobaSettingsConfigDict`-параметры (env-префикс + TOML-секция).
-- `BobaSettingsConfigDict` — расширение `SettingsConfigDict` с boba-специфичными
-   полями `boba_env_prefix`, `boba_env_delimiter`, `boba_toml_path_env`,
-   `boba_toml_section`.
-- `PrefixedFlatEnvSource`, `SectionTomlSource` — публичные source-классы,
-   полезные если нужен кастомный `settings_customise_sources`.
+Чёткое разделение ответственности:
+
+- `boba.settings.source` — ИСТОЧНИК конфиг-данных:
+    * `ConfigPath` — каноническое представление ключа конфиг-секции.
+    * `ConfigSource` Protocol — единый контракт `for_path(path) -> dict`.
+    * `TomlEnvConfigSource` — default-реализация (`$BOBA_CONFIG_PATH` + `os.environ`).
+    * `DictConfigSource` — in-memory, для тестов.
+    * `ConfigSourcePydanticAdapter` — мост к pydantic-settings.
+    * `to_config_path` — utility для нормализации ключа.
+
+- `boba.settings.flat` — SCHEMA:
+    * `BobaFlatSettings` — `BaseSettings`-наследник с flat→nested redistribute.
+       Source-чтение делегирует через `ConfigSourcePydanticAdapter`.
+    * `BobaSettingsConfigDict` — расширение `SettingsConfigDict` с
+       schema-уровневыми полями `boba_config_path` и `boba_cli`.
 """
 
 from boba.settings.flat import (
     BobaFlatSettings,
     BobaSettingsConfigDict,
-    PrefixedFlatEnvSource,
-    SectionTomlSource,
+)
+from boba.settings.source import (
+    ConfigPath,
+    ConfigSource,
+    ConfigSourcePydanticAdapter,
+    DictConfigSource,
+    TomlEnvConfigSource,
+    to_config_path,
 )
 from boba.settings.types import StringList
 
 __all__ = [
     "BobaFlatSettings",
     "BobaSettingsConfigDict",
-    "PrefixedFlatEnvSource",
-    "SectionTomlSource",
+    "ConfigPath",
+    "ConfigSource",
+    "ConfigSourcePydanticAdapter",
+    "DictConfigSource",
     "StringList",
+    "TomlEnvConfigSource",
+    "to_config_path",
 ]

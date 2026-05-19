@@ -29,8 +29,7 @@ class PostgresFtsPluginConfig(BobaFlatSettings):
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="forbid",
-        boba_env_prefix="BOBA_TOOL__POSTGRES_FTS__",
-        boba_toml_section="tool.postgres_fts",
+        config_path="tool.postgres_fts",
     )
 
     enable: bool = Field(

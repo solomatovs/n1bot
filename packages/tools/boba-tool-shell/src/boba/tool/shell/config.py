@@ -1,8 +1,10 @@
 """Конфиги bash-tool'ов: `BashLocalConfig` и `BashSandboxConfig`.
 
 Каждый — самостоятельный `BobaFlatSettings`, авто-загружаемый
-framework'ом через FromConfig-маркер. Свой `boba_env_prefix` и свой
-TOML-section: `[tool.bash_local]` и `[tool.bash_sandbox]`.
+framework'ом через FromConfig-маркер. Свой TOML-section:
+`[tool.bash_local]` и `[tool.bash_sandbox]` (env-prefix
+`BOBA_TOOL__BASH_LOCAL__*` / `BOBA_TOOL__BASH_SANDBOX__*` выводится
+из section по конвенции ConfigSource).
 
 Поле `enable: bool` — флаг условной регистрации tool'а. Читается
 predicate'ом, передаваемым в `@tool(enable_if=...)`. Если оба
@@ -35,8 +37,7 @@ class BashLocalConfig(BobaFlatSettings):
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="forbid",
-        boba_env_prefix="BOBA_TOOL__BASH_LOCAL__",
-        boba_toml_section="tool.bash_local",
+        config_path="tool.bash_local",
     )
 
     enable: bool = Field(
@@ -69,8 +70,7 @@ class BashLocalConfig(BobaFlatSettings):
     env_set: dict[str, str] = Field(
         default_factory=dict,
         description=(
-            "Явные env-переменные. Перекрывают env_passthrough при "
-            "совпадении имён."
+            "Явные env-переменные. Перекрывают env_passthrough при совпадении имён."
         ),
     )
     timeout_sec: int = Field(
@@ -118,8 +118,7 @@ class BashSandboxConfig(BobaFlatSettings):
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="forbid",
-        boba_env_prefix="BOBA_TOOL__BASH_SANDBOX__",
-        boba_toml_section="tool.bash_sandbox",
+        config_path="tool.bash_sandbox",
     )
 
     enable: bool = Field(
@@ -137,8 +136,7 @@ class BashSandboxConfig(BobaFlatSettings):
     profiles: dict[str, SandboxProfile] = Field(
         default_factory=dict,
         description=(
-            "Реестр sandbox-профилей по имени. Обязан быть непустым "
-            "при enable=true."
+            "Реестр sandbox-профилей по имени. Обязан быть непустым при enable=true."
         ),
     )
     default_profile: str = Field(

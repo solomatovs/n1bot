@@ -24,8 +24,7 @@ class FilesPluginConfig(BobaFlatSettings):
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="forbid",
-        boba_env_prefix="BOBA_TOOL__FILES__",
-        boba_toml_section="tool.files",
+        config_path="tool.files",
     )
 
     enable: bool = Field(

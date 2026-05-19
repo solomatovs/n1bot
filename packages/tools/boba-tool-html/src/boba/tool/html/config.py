@@ -19,8 +19,7 @@ class HtmlPluginConfig(BobaFlatSettings):
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="forbid",
-        boba_env_prefix="BOBA_TOOL__HTML__",
-        boba_toml_section="tool.html",
+        config_path="tool.html",
     )
 
     enable: bool = Field(

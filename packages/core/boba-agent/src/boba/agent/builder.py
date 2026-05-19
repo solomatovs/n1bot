@@ -65,6 +65,7 @@ from boba.patterns import (
     StreamSourceChainBuilder,
     StreamSourceLoop,
 )
+from boba.settings import ConfigSource, TomlEnvConfigSource
 from boba.tools import (
     DEFAULT_PLUGIN_GROUP,
     DuplicateProviderError,
@@ -159,6 +160,10 @@ class AgentBuilder:
         self._middlewares: list[type] = list(_DEFAULT_MIDDLEWARES)
         self._terminal_cls: type = LLMPort
         self._builder_config: AgentBuilderConfig = AgentBuilderConfig()
+        # Единый источник конфигурации для всех FromConfig-загрузок.
+        # Default — TOML из $BOBA_CONFIG_PATH + os.environ; для тестов или
+        # custom-flow можно подменить через `use_config(...)`.
+        self._config_source: ConfigSource = TomlEnvConfigSource()
         # Заполняется внутри build() перед сборкой chain — closure ToolExecutor
         # provider'а ищет здесь свежий registry.
         self._registry: ToolRegistry | None = None
@@ -182,16 +187,17 @@ class AgentBuilder:
         self._turn = turn
         return self
 
-    def use_config(self, config: AgentBuilderConfig) -> Self:
-        """Заменить bootstrap-конфиг builder'а целиком."""
-        self._builder_config = config
+
+    def use_config(self, source: ConfigSource) -> Self:
+        """
+        Переопределить ConfigSource
+        """
+        self._config_source = source
         return self
 
     def use_event_stamper(self, cls: type) -> Self:
-        """Заменить класс EventStamper в middleware-цепочке.
-
-        Cls должен иметь signature `__init__(self, inner, ...)`. Не-`inner`
-        параметры будут резолвиться через DI.
+        """
+        Заменить класс EventStamper в middleware
         """
         try:
             idx = self._middlewares.index(EventStamperMiddleware)
@@ -211,13 +217,7 @@ class AgentBuilder:
         component: str = _DEFAULT_COMPONENT,
     ) -> Self:
         """
-        ЕДИНСТВЕННАЯ точка регистрации provider в DI.
-
-        Используется и из user-кода (app-level, `component=""`), и
-        внутренне из `use_tools/use_plugin` (с component=имя_плагина)
-
-        Тип, под которым служба регистрируется — return annotation `fn`
-        Параметры `fn` — её DI-зависимости (через `FromDI`/`FromConfig`)
+        Точка регистрации provider в DI
         """
         plan = introspect_callable(fn)
         self._validate_provider(fn, plan)
@@ -238,12 +238,7 @@ class AgentBuilder:
         return self
 
     def use_tools(self, items: Iterable[Any]) -> Self:
-        """Inline `@tool`/`@provides` callables.
-
-        Component'ом всех inline items становится `"inline"`. `@provides`
-        маршрутизируются через `register_provider`, `@tool` копятся для
-        обёртки в `DishkaTool` на `.build()`.
-        """
+        """Зарегистрировать tool"""
         for item in items:
             self._absorb_item(item, _INLINE_COMPONENT)
         return self
@@ -268,11 +263,9 @@ class AgentBuilder:
         self,
         group: str = DEFAULT_PLUGIN_GROUP,
     ) -> Self:
-        """Подцепить v2-плагины через entry-points group."""
+        """Подцепить плагины через entry-points group."""
         self._discover_groups.append(group)
         return self
-
-    # --- Composition ------------------------------------------------------- #
 
     def pipe(
         self,
@@ -465,6 +458,13 @@ class AgentBuilder:
         """Собрать ВСЕ FromConfig-типы (из tools, providers И из
         `enable_if`-предикатов) и инстанцировать каждый ровно один раз.
 
+        Каждый cfg-тип загружается через `self._config_source.for_path(...)`,
+        path извлекается из `cfg_type.model_config["boba_config_path"]`.
+        Полученный dict проходит через `cfg_type.model_validate(...)` —
+        pydantic-валидация + flat-redistribute, но БЕЗ внутренней
+        source-машинерии `BaseSettings.__init__`. Это значит, что
+        единственный читатель TOML/env — `ConfigSource`.
+
         Один инстанс одновременно используется для evaluate enable_if
         и для регистрации в Container — никогда не создаём конфиг дважды.
         """
@@ -488,7 +488,27 @@ class AgentBuilder:
                 if isinstance(dep.marker, FromConfig):
                     cfg_types.add(dep.target_type)
 
-        return {ct: ct() for ct in cfg_types}
+        return {ct: self._load_config(ct) for ct in cfg_types}
+
+    def _load_config(self, cfg_type: type) -> object:
+        """Загрузить один cfg через ConfigSource → `model_validate`."""
+        path = self._config_path_for(cfg_type)
+        data = self._config_source.for_path(path)
+        return cfg_type.model_validate(data)
+
+    @staticmethod
+    def _config_path_for(cfg_type: type) -> tuple[str, ...]:
+        """Извлечь `ConfigPath` из `cfg_type.model_config.boba_config_path`.
+
+        `boba_config_path` может быть строкой ("tool.files") или
+        кортежем сегментов (("tool", "files")). Если не задан — путь
+        пуст, ConfigSource вернёт пустой dict → cfg получит все default'ы.
+        """
+        mc = getattr(cfg_type, "model_config", {})
+        section = mc.get("boba_config_path", "") if isinstance(mc, dict) else ""
+        if isinstance(section, str):
+            return tuple(s for s in section.split(".") if s)
+        return tuple(section)
 
     def _apply_enable_if_filter(self, configs: dict[type, object]) -> None:
         """Удалить из накопленных entries те, чьи `enable_if` вернули False.

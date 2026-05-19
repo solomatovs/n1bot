@@ -22,8 +22,7 @@ class ChromadbPluginConfig(BobaFlatSettings):
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="forbid",
-        boba_env_prefix="BOBA_TOOL__CHROMADB__",
-        boba_toml_section="tool.chromadb",
+        config_path="tool.chromadb",
     )
 
     enable: bool = Field(
@@ -51,8 +50,7 @@ class ChromadbPluginConfig(BobaFlatSettings):
     embedding_base_url: str = Field(
         default="",
         description=(
-            "OpenAI-совместимый endpoint embeddings. "
-            "Игнорируется при model=default."
+            "OpenAI-совместимый endpoint embeddings. Игнорируется при model=default."
         ),
     )
     embedding_api_key: str = Field(

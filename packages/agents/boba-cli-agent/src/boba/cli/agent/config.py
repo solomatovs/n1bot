@@ -23,9 +23,8 @@ class AgentRunConfig(BobaFlatSettings):
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="forbid",
-        boba_env_prefix="BOBA_CLI__",
-        boba_toml_section="cli",
-        boba_cli=True,
+        config_path="cli",
+        use_cli=True,
     )
 
     model: str = Field(description="LLM-модель (напр. qwen3.5-35b). Обязательно.")
