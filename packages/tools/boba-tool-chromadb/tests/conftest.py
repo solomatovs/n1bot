@@ -12,7 +12,7 @@ import pytest
 
 from boba.indexing.context import CollectionId
 from boba.indexing.embedder import Embedder
-from boba.tool.chromadb.plugin import ChromadbPluginConfig
+from boba.tool.chromadb.config import ChromadbPluginConfig
 
 
 @pytest.fixture

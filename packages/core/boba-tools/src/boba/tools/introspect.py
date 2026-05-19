@@ -22,8 +22,8 @@ from typing import Annotated, Any, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
-from boba.tools_v2.errors import ToolDeclarationError
-from boba.tools_v2.markers import FromConfig, FromDI
+from boba.tools.errors import ToolDeclarationError
+from boba.tools.markers import FromConfig, FromDI
 
 __all__ = [
     "CallPlan",
@@ -190,7 +190,9 @@ def _resolve_callable_meta(obj: Any) -> _CallableMeta:
         params = params[1:]
 
     hints = get_type_hints(hint_target, include_extras=True)
-    return_type = hints.get("return", inspect.Parameter.empty)
+    return_type = _unwrap_generator_return(
+        hints.get("return", inspect.Parameter.empty),
+    )
 
     return _CallableMeta(
         raw_name=raw_name,
@@ -200,6 +202,33 @@ def _resolve_callable_meta(obj: Any) -> _CallableMeta:
         hints=hints,
         return_type=return_type,
     )
+
+
+def _unwrap_generator_return(rt: Any) -> Any:
+    """`Iterator[T]` / `Generator[T, ...]` → `T`; иначе — без изменений.
+
+    Generator-providers объявляют return как `Iterator[T]`, чтобы фреймворк
+    (и Dishka) поняли, что нужно сделать `yield` + cleanup. Но «provided
+    тип» — это T, не `Iterator[T]`. Унификация: framework везде работает
+    с T, а сам generator-факт Dishka детектит по yield в теле функции.
+    """
+    if rt is inspect.Parameter.empty or rt is None:
+        return rt
+    origin = get_origin(rt)
+    if origin is None:
+        return rt
+    from collections.abc import (  # noqa: PLC0415
+        AsyncGenerator,
+        AsyncIterator,
+        Generator,
+        Iterator,
+    )
+
+    if origin in (Iterator, Generator, AsyncIterator, AsyncGenerator):
+        args = get_args(rt)
+        if args:
+            return args[0]
+    return rt
 
 
 def _extract_inject_marker(annotation: Any) -> FromDI | FromConfig | None:
@@ -251,7 +280,7 @@ def _build_pydantic_field(annotation: Any, default: Any) -> tuple[Any, Any]:
                 continue
             kept_meta.append(m)
         if description is not None:
-            # Реколструируем Annotated без голой строки, добавив Field.
+            # Реконструируем Annotated без голой строки, добавив Field.
             field = Field(
                 default=default if has_default else ...,
                 description=description,

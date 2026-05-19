@@ -5,18 +5,16 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-tool-confluence"
 version = "0.1.0"
-description = "Boba Confluence: онлайн-tools (search, page outline/section), domain-парсер/декодер/reader, offline indexing pipelines (cql/pages/space)."
+description = "Boba Confluence: онлайн-tools (search, page outline/section, downloads) поверх REST API."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-patterns",
-    "boba-plugin",
     "boba-tools",
     "boba-settings",
     "boba-workspace",
     "boba-indexing",
-    "boba-tool-chromadb",
     "boba-transport-http",
     "boba-html",
+    "pydantic",
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
     "httpx>=0.27",
@@ -29,7 +27,7 @@ test = [
 ]
 
 [project.entry-points."boba.plugins"]
-confluence = "boba.tool.confluence.plugin:ConfluencePlugin"
+confluence = "boba.tool.confluence"
 
 [tool.setuptools.packages.find]
 where = ["src"]

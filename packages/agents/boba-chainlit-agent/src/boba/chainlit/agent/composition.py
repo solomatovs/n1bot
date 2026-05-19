@@ -55,7 +55,7 @@ def _make_builder_factory() -> Callable[[], AgentBuilder]:
     """Свежий builder под per-session ChatSession (свои plugins).
 
     `use_plugins()` подцепляет v2-плагины через entry-points group
-    `boba.plugins.v2`. Пока v2-плагины не созданы — это no-op; будут
+    `boba.plugins`. Пока v2-плагины не созданы — это no-op; будут
     появляться по мере миграции старых плагинов.
     """
 

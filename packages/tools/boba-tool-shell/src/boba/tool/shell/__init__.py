@@ -1,7 +1,7 @@
 """boba-tool-shell — v2 плагин с двумя bash-tool'ами.
 
 Entry-point модуль для `AgentBuilder.use_plugin(boba.tool.shell)` /
-discovery через `[project.entry-points."boba.plugins.v2"]`.
+discovery через `[project.entry-points."boba.plugins"]`.
 
 Экспортирует на module-scope сами `@tool`-классы — `AgentBuilder`
 обходит `dir(module)`, забирает помеченные объекты, оборачивает

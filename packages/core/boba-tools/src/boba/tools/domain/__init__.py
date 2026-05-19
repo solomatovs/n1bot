@@ -2,7 +2,7 @@
 
 Содержит:
 - Identity: ToolName (локальное), ToolSourceId, ToolId (qualified wire).
-- Tool ABC + ToolCall, ToolContext, JsonSchemaOverlay-protocol.
+- Tool ABC + ToolCall, ToolContext.
 - ToolResult sealed family (TextResult / JsonResult / ErrorResult).
 - доменные ошибки: ToolExecutionError, InvalidToolArgumentError, etc.
 
@@ -36,7 +36,6 @@ from boba.tools.domain.result import (
     ToolResult,
 )
 from boba.tools.domain.tool import (
-    JsonSchemaOverlay,
     Tool,
     ToolCall,
     ToolContext,
@@ -48,7 +47,6 @@ __all__ = [
     "InvalidSchemaInvariantError",
     "InvalidToolArgumentError",
     "JsonResult",
-    "JsonSchemaOverlay",
     "TextResult",
     "Tool",
     "ToolCall",

@@ -22,7 +22,7 @@ from pydantic import Field
 from boba.tool.shell._profile_local import resolve_local_env
 from boba.tool.shell._runner import RunResult, run_subprocess
 from boba.tool.shell.config import BashLocalConfig
-from boba.tools_v2 import FromConfig, tool
+from boba.tools import FromConfig, tool
 
 __all__ = ["BashLocalTool"]
 

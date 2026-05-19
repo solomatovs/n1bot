@@ -1,4 +1,4 @@
-"""ConfluencePageDownloadMarkdownTool: HTML → Markdown → workspace-файл."""
+"""ConfluencePageDownloadMarkdownTool: HTML → Markdown → workspace-файл (v2)."""
 
 from __future__ import annotations
 
@@ -8,33 +8,26 @@ from unittest.mock import MagicMock
 
 import httpx
 
-from boba.plugin import ExtensionContext
-from boba.plugin.prompt import PromptOverlay
+from boba.tool.confluence.config import ConfluencePluginConfig
 from boba.tool.confluence.page_download_markdown import (
     ConfluencePageDownloadMarkdownTool,
-    ConfluencePageDownloadMarkdownToolConfig,
-    PageDownloadMarkdownArgs,
 )
-from boba.tools.domain import JsonResult, ToolContext, ToolSourceId
 from boba.workspace.contract import ProjectWorkspaceShell
 
 _HTTPX_TARGET = "boba.transport.http.transport.httpx.Client"
 
 
-def _make_tool(shell):
-    cfg = ConfluencePageDownloadMarkdownToolConfig(
+def _make_cfg() -> ConfluencePluginConfig:
+    return ConfluencePluginConfig.model_construct(
+        enable=True,
         base_url="https://confl.test",
         auth_method="pat",
         auth_user="",
         auth_token="tok",
         timeout_sec=30.0,
-        body_format="view",
         ssl_verify=False,
-        prompt=PromptOverlay(),
-    )
-    ctx = ExtensionContext({ProjectWorkspaceShell: shell})
-    return ConfluencePageDownloadMarkdownTool(
-        cfg, ctx, ToolSourceId("plugin_confluence"),
+        body_format="view",
+        tools=None,
     )
 
 
@@ -77,37 +70,33 @@ def test_downloads_pages_as_markdown(
     shell.exists.return_value = False
     shell.write_binary.side_effect = _write_binary
 
-    tool = _make_tool(shell)
-    result = tool.execute(
-        ToolContext(),
-        PageDownloadMarkdownArgs(
-            page_ids=["111", "222"],
-            dest_dir="downloads",
-        ),
+    result = ConfluencePageDownloadMarkdownTool()(
+        page_ids=["111", "222"],
+        dest_dir="downloads",
+        shell=shell,
+        cfg=_make_cfg(),
     )
 
-    assert isinstance(result, JsonResult)
-    payload = result.payload
-    assert payload["dest_dir"] == "downloads"
-    assert payload["total"] == 2
-    assert {item["page_id"] for item in payload["saved"]} == {"111", "222"}
-    assert {item["path"] for item in payload["saved"]} == {
+    assert result["dest_dir"] == "downloads"
+    assert result["total"] == 2
+    assert {item["page_id"] for item in result["saved"]} == {"111", "222"}
+    assert {item["path"] for item in result["saved"]} == {
         "downloads/111.md",
         "downloads/222.md",
     }
-    assert {item["title"] for item in payload["saved"]} == {"Alpha", "Beta"}
-    assert {item["space_key"] for item in payload["saved"]} == {"DOC"}
-    urls = {item["url"] for item in payload["saved"]}
+    assert {item["title"] for item in result["saved"]} == {"Alpha", "Beta"}
+    assert {item["space_key"] for item in result["saved"]} == {"DOC"}
+    urls = {item["url"] for item in result["saved"]}
     assert "https://confl.test/pages/viewpage.action?pageId=111" in urls
     assert "https://confl.test/pages/viewpage.action?pageId=222" in urls
 
     md_111 = written["downloads/111.md"].decode("utf-8")
     md_222 = written["downloads/222.md"].decode("utf-8")
-    # YAML frontmatter с источником
-    assert md_111.startswith("---\nsource: https://confl.test/pages/viewpage.action?pageId=111\n")
+    assert md_111.startswith(
+        "---\nsource: https://confl.test/pages/viewpage.action?pageId=111\n",
+    )
     assert "page_id: 111" in md_111
     assert "space: DOC" in md_111
-    # markdownify рендерит h1 как `# Heading`, **bold** для <b>.
     assert "# Heading" in md_111
     assert "**bold**" in md_111
     assert "## Sub" in md_222
@@ -131,12 +120,9 @@ def test_trailing_slash_stripped(
     captured: list[str] = []
     shell.write_binary.side_effect = lambda path: (captured.append(path), BytesIO())[1]
 
-    tool = _make_tool(shell)
-    result = tool.execute(
-        ToolContext(),
-        PageDownloadMarkdownArgs(page_ids=["7"], dest_dir="dl/"),
+    result = ConfluencePageDownloadMarkdownTool()(
+        page_ids=["7"], dest_dir="dl/", shell=shell, cfg=_make_cfg(),
     )
 
-    assert isinstance(result, JsonResult)
     assert captured == ["dl/7.md"]
-    assert result.payload["dest_dir"] == "dl"
+    assert result["dest_dir"] == "dl"

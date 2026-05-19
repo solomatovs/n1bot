@@ -2,55 +2,39 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
-from boba.plugin.prompt import PromptOverlay
-from boba.tool.files._base import FsToolBase
-from boba.tools.domain import (
-    TextResult,
-    ToolContext,
-    ToolExecutionError,
-    ToolResult,
+from boba.tool.files.enable import files_enable_if
+from boba.tools import FromDI, Scope, tool
+from boba.workspace.contract import (
+    ProjectWorkspaceShell,
+    WorkspaceError,
+    WorkspaceNotFoundError,
 )
-from boba.workspace.contract import WorkspaceError, WorkspaceNotFoundError
 
-__all__ = ["CpArgs", "CpTool", "CpToolConfig"]
+__all__ = ["CpTool"]
 
 
-class CpArgs(BaseModel):
+@tool(enable_if=files_enable_if("cp"))
+class CpTool:
     """Скопировать файл или директорию. Для директорий требуется recursive=true."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    src: str = Field(min_length=1, description="Путь источника.")
-    dst: str = Field(min_length=1, description="Путь назначения.")
-    recursive: bool = Field(
-        default=False,
-        description="Рекурсивное копирование директории. По умолчанию false.",
-    )
-
-
-@dataclass(frozen=True)
-class CpToolConfig:
-    prompt: PromptOverlay
-
-
-class CpTool(FsToolBase[CpArgs, CpToolConfig]):
-    """Скопировать файл или директорию."""
-
-    def execute(self, ctx: ToolContext, req: CpArgs) -> ToolResult:
+    def __call__(
+        self,
+        src: Annotated[str, Field(min_length=1, description="Путь источника.")],
+        dst: Annotated[str, Field(min_length=1, description="Путь назначения.")],
+        shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
+        recursive: Annotated[
+            bool,
+            Field(description="Рекурсивное копирование директории. По умолчанию false."),
+        ] = False,
+    ) -> str:
         try:
-            self._shell.copy(req.src, req.dst, recursive=req.recursive)
+            shell.copy(src, dst, recursive=recursive)
         except WorkspaceNotFoundError as e:
-            raise ToolExecutionError(
-                tool_id=self.tool_id(),
-                message=f"Источник не найден: {req.src}",
-            ) from e
+            raise RuntimeError(f"Источник не найден: {src}") from e
         except WorkspaceError as e:
-            raise ToolExecutionError(
-                tool_id=self.tool_id(),
-                message=f"Ошибка копирования: {e}",
-            ) from e
-        return TextResult(text=f"Скопировано: {req.src} → {req.dst}")
+            raise RuntimeError(f"Ошибка копирования: {e}") from e
+        return f"Скопировано: {src} → {dst}"

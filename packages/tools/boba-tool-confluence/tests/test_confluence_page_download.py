@@ -1,4 +1,4 @@
-"""ConfluencePageDownloadTool: HTML каждой страницы → workspace-файл."""
+"""ConfluencePageDownloadTool: HTML каждой страницы → workspace-файл (v2)."""
 
 from __future__ import annotations
 
@@ -8,32 +8,25 @@ from unittest.mock import MagicMock
 
 import httpx
 
-from boba.plugin import ExtensionContext
-from boba.plugin.prompt import PromptOverlay
-from boba.tool.confluence.page_download import (
-    ConfluencePageDownloadTool,
-    ConfluencePageDownloadToolConfig,
-    PageDownloadArgs,
-)
-from boba.tools.domain import JsonResult, ToolContext, ToolSourceId
+from boba.tool.confluence.config import ConfluencePluginConfig
+from boba.tool.confluence.page_download import ConfluencePageDownloadTool
 from boba.workspace.contract import ProjectWorkspaceShell
 
 _HTTPX_TARGET = "boba.transport.http.transport.httpx.Client"
 
 
-def _make_tool(shell):
-    cfg = ConfluencePageDownloadToolConfig(
+def _make_cfg() -> ConfluencePluginConfig:
+    return ConfluencePluginConfig.model_construct(
+        enable=True,
         base_url="https://confl.test",
         auth_method="pat",
         auth_user="",
         auth_token="tok",
         timeout_sec=30.0,
-        body_format="view",
         ssl_verify=False,
-        prompt=PromptOverlay(),
+        body_format="view",
+        tools=None,
     )
-    ctx = ExtensionContext({ProjectWorkspaceShell: shell})
-    return ConfluencePageDownloadTool(cfg, ctx, ToolSourceId("plugin_confluence"))
 
 
 def test_downloads_pages_to_workspace_files(
@@ -79,34 +72,31 @@ def test_downloads_pages_to_workspace_files(
     shell.exists.return_value = False
     shell.write_binary.side_effect = _write_binary
 
-    tool = _make_tool(shell)
-    result = tool.execute(
-        ToolContext(),
-        PageDownloadArgs(page_ids=["111", "222"], dest_dir="downloads"),
+    result = ConfluencePageDownloadTool()(
+        page_ids=["111", "222"],
+        dest_dir="downloads",
+        shell=shell,
+        cfg=_make_cfg(),
     )
 
-    assert isinstance(result, JsonResult)
-    payload = result.payload
-    assert payload["dest_dir"] == "downloads"
-    assert payload["total"] == 2
-    assert {item["page_id"] for item in payload["saved"]} == {"111", "222"}
-    assert {item["path"] for item in payload["saved"]} == {
+    assert result["dest_dir"] == "downloads"
+    assert result["total"] == 2
+    assert {item["page_id"] for item in result["saved"]} == {"111", "222"}
+    assert {item["path"] for item in result["saved"]} == {
         "downloads/111.html",
         "downloads/222.html",
     }
-    assert {item["title"] for item in payload["saved"]} == {"A", "B"}
-    assert {item["space_key"] for item in payload["saved"]} == {"DOC"}
-    urls = {item["url"] for item in payload["saved"]}
+    assert {item["title"] for item in result["saved"]} == {"A", "B"}
+    assert {item["space_key"] for item in result["saved"]} == {"DOC"}
+    urls = {item["url"] for item in result["saved"]}
     assert "https://confl.test/pages/viewpage.action?pageId=111" in urls
     assert "https://confl.test/pages/viewpage.action?pageId=222" in urls
-    # Файлы начинаются с HTML-комментария с метаданными и заканчиваются телом
     for pid in ("111", "222"):
         content = written[f"downloads/{pid}.html"]
         assert content.startswith(b"<!--")
         assert f"page_id: {pid}".encode() in content
         assert b"space: DOC" in content
         assert content.endswith(html[pid])
-    # mkdir вызван один раз, поскольку exists()=False
     shell.mkdir.assert_called_once_with("downloads")
 
 
@@ -122,10 +112,8 @@ def test_dest_dir_not_created_if_exists(
     shell.exists.return_value = True
     shell.write_binary.side_effect = lambda _path: BytesIO()
 
-    tool = _make_tool(shell)
-    tool.execute(
-        ToolContext(),
-        PageDownloadArgs(page_ids=["1"], dest_dir="existing"),
+    ConfluencePageDownloadTool()(
+        page_ids=["1"], dest_dir="existing", shell=shell, cfg=_make_cfg(),
     )
 
     shell.mkdir.assert_not_called()
@@ -144,12 +132,9 @@ def test_trailing_slash_in_dest_dir_is_stripped(
     captured: list[str] = []
     shell.write_binary.side_effect = lambda path: (captured.append(path), BytesIO())[1]
 
-    tool = _make_tool(shell)
-    result = tool.execute(
-        ToolContext(),
-        PageDownloadArgs(page_ids=["7"], dest_dir="dl/"),
+    result = ConfluencePageDownloadTool()(
+        page_ids=["7"], dest_dir="dl/", shell=shell, cfg=_make_cfg(),
     )
 
-    assert isinstance(result, JsonResult)
     assert captured == ["dl/7.html"]
-    assert result.payload["dest_dir"] == "dl"
+    assert result["dest_dir"] == "dl"

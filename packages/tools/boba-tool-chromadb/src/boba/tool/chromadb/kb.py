@@ -1,4 +1,10 @@
-"""Read-only адаптер ChromaDB для KB-tools."""
+"""Read-only адаптер ChromaDB для KB-tools (v2: без глобальных кешей).
+
+Process-singleton PersistentClient'а раньше жил здесь как module-level
+`_CLIENT_CACHE`; теперь lifecycle управляет Dishka (`Scope.APP` +
+generator-provider с teardown). Один контейнер на агент = один клиент
+на persist_path, всё корректно закрывается на `Agent.close()`.
+"""
 
 from __future__ import annotations
 
@@ -10,9 +16,10 @@ from boba.tool.chromadb.errors import (
     KnowledgeBaseError,
 )
 from boba.tool.chromadb.models import CollectionInfo, SearchHit
-from boba.tools.domain import ToolId
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["ChromaKnowledgeBase"]
 
 
 class ChromaKnowledgeBase:
@@ -20,28 +27,22 @@ class ChromaKnowledgeBase:
 
     def __init__(
         self,
-        persist_path: str,
+        client: Any,
         snippet_chars: int,
         *,
         embedding_function: Any = None,
     ) -> None:
+        self._client = client
         self._snippet_chars = snippet_chars
-        self._client = get_chroma_client(persist_path)
         self._embedding_function = embedding_function
         logger.info(
-            "ChromaKnowledgeBase opened persist_path=%r ef=%s",
-            persist_path,
+            "ChromaKnowledgeBase opened ef=%s",
             type(embedding_function).__name__ if embedding_function else "default",
         )
 
     @property
     def client(self) -> Any:
-        """PersistentClient, инкапсулированный этим KB.
-
-        Расшариваем для write-side tool'ов (kb_ingest): один процесс на
-        один persist_path должен держать единственный chromadb-клиент,
-        иначе возможна contention за file-lock SQLite-бэкэнда.
-        """
+        """PersistentClient, инкапсулированный этим KB."""
         return self._client
 
     def list_collections(self) -> list[CollectionInfo]:
@@ -57,17 +58,15 @@ class ChromaKnowledgeBase:
 
     def search(
         self,
-        tool_id: ToolId,
         collection: str,
         query: str,
         top_k: int,
     ) -> list[SearchHit]:
-        col = self._get_collection(tool_id, collection)
+        col = self._get_collection(collection)
         try:
             raw = col.query(query_texts=[query], n_results=top_k)
         except Exception as e:
             raise KnowledgeBaseError(
-                tool_id,
                 f"chromadb query failed for collection {collection!r}: "
                 f"{type(e).__name__}: {e}",
             ) from e
@@ -92,7 +91,7 @@ class ChromaKnowledgeBase:
             )
         return hits
 
-    def _get_collection(self, tool_id: ToolId, name: str):
+    def _get_collection(self, name: str) -> Any:
         try:
             return self._client.get_collection(
                 name=name,
@@ -100,10 +99,10 @@ class ChromaKnowledgeBase:
             )
         except Exception as e:
             if "does not exist" in str(e) or "not found" in str(e).lower():
-                raise CollectionNotFoundError(tool_id, name) from e
+                raise CollectionNotFoundError(name) from e
             raise KnowledgeBaseError(
-                tool_id,
-                f"chromadb get_collection({name!r}) failed: {type(e).__name__}: {e}",
+                f"chromadb get_collection({name!r}) failed: "
+                f"{type(e).__name__}: {e}",
             ) from e
 
 
@@ -117,48 +116,3 @@ def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + "…"
-
-
-# Process-singleton chromadb.PersistentClient по persist_path: один клиент
-# на путь во всём процессе. Иначе SQLite-бэкэнд chromadb словит file-lock
-# contention при двух параллельных клиентах. И read-side (kb_search,
-# kb_list_collections), и write-side (kb_ingest) должны проходить через
-# этот кеш.
-_CLIENT_CACHE: dict[str, Any] = {}
-
-# Process-singleton ChromaKnowledgeBase по (persist_path, snippet_chars, ef-id).
-_KB_CACHE: dict[tuple[str, int, int], ChromaKnowledgeBase] = {}
-
-
-def get_chroma_client(persist_path: str) -> Any:
-    """Process-singleton `chromadb.PersistentClient` по `persist_path`.
-
-    Шарится между read-side `ChromaKnowledgeBase` и write-side
-    `KbIngestTool`. Ленивый импорт chromadb — модуль `kb.py` грузится
-    без runtime-deps.
-    """
-    client = _CLIENT_CACHE.get(persist_path)
-    if client is None:
-        import chromadb  # noqa: PLC0415
-
-        client = chromadb.PersistentClient(path=persist_path)
-        _CLIENT_CACHE[persist_path] = client
-        logger.info("chromadb.PersistentClient opened persist_path=%r", persist_path)
-    return client
-
-
-def get_knowledge_base(
-    persist_path: str,
-    snippet_chars: int,
-    *,
-    embedding_function: Any = None,
-) -> ChromaKnowledgeBase:
-    """Process-singleton ChromaKnowledgeBase по (persist_path, snippet_chars, ef)."""
-    key = (persist_path, snippet_chars, id(embedding_function))
-    kb = _KB_CACHE.get(key)
-    if kb is None:
-        kb = ChromaKnowledgeBase(
-            persist_path, snippet_chars, embedding_function=embedding_function,
-        )
-        _KB_CACHE[key] = kb
-    return kb

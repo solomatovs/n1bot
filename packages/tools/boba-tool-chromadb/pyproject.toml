@@ -5,21 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-tool-chromadb"
 version = "0.1.0"
-description = "Boba ChromaDB: kb-tools (kb_search, kb_list_collections, kb_ingest) + ChromaVectorStore (VectorStoreReader/Writer + CollectionsAdmin)."
+description = "Boba ChromaDB: kb-tools (kb_search, kb_list_collections, kb_ingest) + ChromaVectorStore + MdFolderIndexer."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-patterns",
-    "boba-plugin",
     "boba-tools",
     "boba-settings",
     "boba-indexing",
     "boba-markdown",
     "chromadb>=0.5",
-    "dishka>=1.9",
+    "pydantic",
 ]
 
 [project.entry-points."boba.plugins"]
-chromadb = "boba.tool.chromadb.plugin:ChromadbPlugin"
+chromadb = "boba.tool.chromadb"
 
 [tool.setuptools.packages.find]
 where = ["src"]

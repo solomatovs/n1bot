@@ -2,80 +2,68 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
-from boba.plugin.prompt import PromptOverlay
-from boba.tool.html._base import HtmlToolBase
 from boba.tool.html._parse import anchor_for, collect_headings, load_soup
-from boba.tools.domain import (
-    JsonResult,
-    ToolContext,
-    ToolExecutionError,
-    ToolResult,
-)
+from boba.tool.html.enable import html_enable_if
+from boba.tools import FromDI, Scope, tool
 from boba.workspace.contract import (
+    ProjectWorkspaceShell,
     WorkspaceError,
     WorkspaceNotFoundError,
 )
 
-__all__ = ["HtmlOutlineTool", "HtmlOutlineToolConfig", "OutlineArgs"]
+__all__ = ["HtmlOutlineTool"]
 
 
-class OutlineArgs(BaseModel):
-    """Оглавление HTML-файла: иерархия <h1>..<h6> с anchor'ами.
+@tool(enable_if=html_enable_if("html_outline"))
+class HtmlOutlineTool:
+    """Иерархия <h1>..<h6> HTML-документа с anchor'ами для html_section.
 
     Anchor — либо #<id> атрибута заголовка, либо #idx:N (порядковый номер).
     Используется как вход в html_section.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    path: str = Field(min_length=1, description="Путь к HTML-файлу в workspace.")
-    max_depth: int | None = Field(
-        default=None,
-        ge=1,
-        le=6,
-        description=(
-            "Максимальный уровень заголовков (1=h1..6=h6). Без значения — все 6."
-        ),
-    )
-    limit: int = Field(default=200, ge=1, description="Максимум заголовков в ответе.")
-
-
-@dataclass(frozen=True)
-class HtmlOutlineToolConfig:
-    """DTO tool'а: только prompt overlay (workspace передаётся через ToolContext)."""
-
-    prompt: PromptOverlay
-
-
-class HtmlOutlineTool(HtmlToolBase[OutlineArgs, HtmlOutlineToolConfig]):
-    """Иерархия <h1>..<h6> HTML-документа с anchor'ами для html_section."""
-
-    def execute(self, ctx: ToolContext, req: OutlineArgs) -> ToolResult:
+    def __call__(
+        self,
+        path: Annotated[
+            str, Field(min_length=1, description="Путь к HTML-файлу в workspace."),
+        ],
+        shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
+        max_depth: Annotated[
+            int | None,
+            Field(
+                ge=1,
+                le=6,
+                description=(
+                    "Максимальный уровень заголовков (1=h1..6=h6). "
+                    "Без значения — все 6."
+                ),
+            ),
+        ] = None,
+        limit: Annotated[
+            int, Field(ge=1, description="Максимум заголовков в ответе."),
+        ] = 200,
+    ) -> dict[str, Any]:
         try:
-            soup = load_soup(self._shell, req.path)
+            soup = load_soup(shell, path)
         except WorkspaceNotFoundError as e:
-            raise ToolExecutionError(
-                tool_id=self.tool_id(), message=f"Файл не найден: {req.path}"
-            ) from e
+            raise RuntimeError(f"Файл не найден: {path}") from e
         except WorkspaceError as e:
-            raise ToolExecutionError(
-                tool_id=self.tool_id(), message=f"Ошибка чтения: {e}"
-            ) from e
+            raise RuntimeError(f"Ошибка чтения: {e}") from e
 
-        all_headings = collect_headings(soup, max_depth=req.max_depth)
+        all_headings = collect_headings(soup, max_depth=max_depth)
         total = len(all_headings)
-        truncated = total > req.limit
-        headings = all_headings[: req.limit] if truncated else all_headings
+        truncated = total > limit
+        headings = all_headings[:limit] if truncated else all_headings
 
         title = soup.title.get_text(strip=True) if soup.title else ""
         charset = soup.original_encoding or ""
 
-        return JsonResult(payload={
-            "path": req.path,
+        return {
+            "path": path,
             "title": title,
             "charset": charset,
             "headings": [
@@ -90,5 +78,5 @@ class HtmlOutlineTool(HtmlToolBase[OutlineArgs, HtmlOutlineToolConfig]):
             "count": len(headings),
             "total": total,
             "truncated": truncated,
-            "limit": req.limit,
-        })
+            "limit": limit,
+        }

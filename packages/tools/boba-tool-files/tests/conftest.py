@@ -1,72 +1,69 @@
-"""Pytest-фикстуры пакета boba-tool-files."""
+"""Pytest-фикстуры пакета boba-tool-files (v2)."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from boba.plugin import ExtensionContext, install_plugins
-from boba.tool.files import FilesPlugin
-from boba.tool.files.cat import CatTool
+import boba.tool.files as files_module
+from boba.agent.builder import AgentBuilder
 from boba.workspace.contract import ProjectWorkspaceShell
 
 
+def _clear_files_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Сброс всех BOBA_TOOL__FILES__* и BOBA_CONFIG_PATH."""
+    import os  # noqa: PLC0415
+
+    for key in list(os.environ):
+        if key.startswith("BOBA_TOOL__FILES__"):
+            monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("BOBA_CONFIG_PATH", raising=False)
+
+
 @pytest.fixture
-def ext_ctx() -> ExtensionContext:
-    """`ExtensionContext` с замоканным `ProjectWorkspaceShell`."""
-    return ExtensionContext({
-        ProjectWorkspaceShell: MagicMock(spec=ProjectWorkspaceShell),
-    })
+def mock_workspace() -> ProjectWorkspaceShell:
+    """Замоканный `ProjectWorkspaceShell` для DI."""
+    return MagicMock(spec=ProjectWorkspaceShell)
 
 
 @pytest.fixture
 def make_files_tool_names(
     monkeypatch: pytest.MonkeyPatch,
-    ext_ctx: ExtensionContext,
+    mock_workspace: ProjectWorkspaceShell,
 ) -> Callable[[dict[str, str]], list[str]]:
-    """Фабрика: env → имена tool'ов, отдаваемых `FilesPlugin`.
+    """Фабрика: env → имена tool'ов, отдаваемых файловым плагином.
 
-    Очищает `BOBA_TOOL__FILES__*` и `BOBA_CONFIG_PATH`, устанавливает
-    переданный env, прогоняет `install_plugins([FilesPlugin], ...)`.
+    Очищает `BOBA_TOOL__FILES__*` и `BOBA_CONFIG_PATH`, ставит переданный
+    env, прогоняет минимальный AgentBuilder.build() и возвращает список
+    зарегистрированных tool-имён (т.е. с применением enable_if).
     """
 
     def _factory(env: dict[str, str]) -> list[str]:
-        monkeypatch.delenv("BOBA_TOOL__FILES__ENABLE", raising=False)
-        monkeypatch.delenv("BOBA_TOOL__FILES__TOOLS", raising=False)
-        monkeypatch.delenv("BOBA_CONFIG_PATH", raising=False)
+        _clear_files_env(monkeypatch)
         for k, v in env.items():
             monkeypatch.setenv(k, v)
-        sources = list(install_plugins([FilesPlugin], ext_ctx))
-        return [t.name() for src in sources for t in src.tools()]
 
-    return _factory
+        llm = MagicMock()
+        turn = MagicMock()
+        turn.has_history_view = lambda: True
+        turn.has_tool_catalog = lambda: True
 
+        def _provide_ws() -> ProjectWorkspaceShell:
+            return mock_workspace
 
-@pytest.fixture
-def make_cat_tool(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    ext_ctx: ExtensionContext,
-) -> Callable[..., CatTool]:
-    """Фабрика `CatTool`: TOML c включённым FilesPlugin + overlay-блок."""
-
-    def _factory(toml_body: str = "") -> CatTool:
-        cfg_path = tmp_path / "boba.toml"
-        cfg_path.write_text(
-            "[tool.files]\nenable = true\n" + toml_body,
-            encoding="utf-8",
+        ab = (
+            AgentBuilder()
+            .with_llm(llm)
+            .use_turn(turn)
+            .use_plugin(files_module)
+            .register_provider(_provide_ws)
         )
-        monkeypatch.setenv("BOBA_CONFIG_PATH", str(cfg_path))
-        monkeypatch.delenv("BOBA_TOOL__FILES__ENABLE", raising=False)
-        monkeypatch.delenv("BOBA_TOOL__FILES__TOOLS", raising=False)
-        sources = list(install_plugins([FilesPlugin], ext_ctx))
-        found = next(
-            t for src in sources for t in src.tools() if t.name() == "cat"
-        )
-        assert isinstance(found, CatTool)
-        return found
+        agent = ab.build()
+        try:
+            return sorted(t.plan.name for t in ab._tools)
+        finally:
+            agent.close()
 
     return _factory

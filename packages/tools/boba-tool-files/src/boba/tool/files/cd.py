@@ -2,51 +2,36 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
-from boba.plugin.prompt import PromptOverlay
-from boba.tool.files._base import FsToolBase
-from boba.tools.domain import (
-    TextResult,
-    ToolContext,
-    ToolExecutionError,
-    ToolResult,
+from boba.tool.files.enable import files_enable_if
+from boba.tools import FromDI, Scope, tool
+from boba.workspace.contract import (
+    ProjectWorkspaceShell,
+    WorkspaceError,
+    WorkspaceNotFoundError,
 )
-from boba.workspace.contract import WorkspaceError, WorkspaceNotFoundError
 
-__all__ = ["CdArgs", "CdTool", "CdToolConfig"]
+__all__ = ["CdTool"]
 
 
-class CdArgs(BaseModel):
+@tool(enable_if=files_enable_if("cd"))
+class CdTool:
     """Сменить текущую директорию."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    path: str = Field(min_length=1, description="Путь директории.")
-
-
-@dataclass(frozen=True)
-class CdToolConfig:
-    prompt: PromptOverlay
-
-
-class CdTool(FsToolBase[CdArgs, CdToolConfig]):
-    """Сменить текущую директорию."""
-
-    def execute(self, ctx: ToolContext, req: CdArgs) -> ToolResult:
-        shell = self._shell
+    def __call__(
+        self,
+        path: Annotated[
+            str, Field(min_length=1, description="Путь директории."),
+        ],
+        shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
+    ) -> str:
         try:
-            shell.cd(req.path)
+            shell.cd(path)
         except WorkspaceNotFoundError as e:
-            raise ToolExecutionError(
-                tool_id=self.tool_id(),
-                message=f"Директория не найдена: {req.path}",
-            ) from e
+            raise RuntimeError(f"Директория не найдена: {path}") from e
         except WorkspaceError as e:
-            raise ToolExecutionError(
-                tool_id=self.tool_id(),
-                message=f"Ошибка cd: {e}",
-            ) from e
-        return TextResult(text=f"Текущая директория: {shell.cwd}")
+            raise RuntimeError(f"Ошибка cd: {e}") from e
+        return f"Текущая директория: {shell.cwd}"

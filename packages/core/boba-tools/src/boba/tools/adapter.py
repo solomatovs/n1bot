@@ -1,8 +1,8 @@
 """
-`DishkaTool` — bridge между новым декларативным callable-стилем и
+`DishkaTool` — bridge между декларативным callable-стилем (`@tool`) и
 существующим `Tool[Args, Cfg]` ABC из `boba.tools.domain`.
 
-Снаружи неотличим от старых tools — `ToolRegistry`/`ToolCatalog`/
+Снаружи неотличим от обычных tools — `ToolRegistry`/`ToolCatalog`/
 `ToolExecutor` не знают, что внутри Dishka и Annotated-маркеры.
 
 В invoke:
@@ -41,7 +41,7 @@ from boba.tools.domain.result import (
     ToolResult,
 )
 from boba.tools.domain.tool import Tool, ToolContext, ToolSchema
-from boba.tools_v2.introspect import CallPlan
+from boba.tools.introspect import CallPlan
 
 __all__ = ["DishkaTool"]
 
@@ -101,9 +101,7 @@ class DishkaTool(Tool[BaseModel, None]):
         return self._plan.args_model
 
     def invoke(self, ctx: ToolContext, raw: dict[str, Any]) -> ToolResult:
-        """
-        Полный invoke: validate args → open request scope → resolve DI → call → close
-        """
+        """Полный invoke: validate → open request → resolve DI → call → close."""
         args = self._parse_args(raw)
         return self.execute(ctx, args)
 
@@ -148,11 +146,7 @@ class DishkaTool(Tool[BaseModel, None]):
 def _coerce_to_tool_result(  # noqa: PLR0911
     tool_id: ToolId, value: Any,
 ) -> ToolResult:
-    """Привести возврат callable'а к `ToolResult` или бросить.
-
-    Контракт совпадает с `@tool`-декоратором из существующего framework'а —
-    единые правила сериализации в проекте.
-    """
+    """Привести возврат callable'а к `ToolResult` или бросить."""
     match value:
         case None:
             return TextResult(text="null")

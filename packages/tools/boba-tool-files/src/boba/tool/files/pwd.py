@@ -2,31 +2,21 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict
+from boba.tool.files.enable import files_enable_if
+from boba.tools import FromDI, Scope, tool
+from boba.workspace.contract import ProjectWorkspaceShell
 
-from boba.plugin.prompt import PromptOverlay
-from boba.tool.files._base import FsToolBase
-from boba.tools.domain import TextResult, ToolContext, ToolResult
-
-__all__ = ["PwdArgs", "PwdTool", "PwdToolConfig"]
+__all__ = ["PwdTool"]
 
 
-class PwdArgs(BaseModel):
-    """Вернуть путь текущей директории."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-
-@dataclass(frozen=True)
-class PwdToolConfig:
-    prompt: PromptOverlay
-
-
-class PwdTool(FsToolBase[PwdArgs, PwdToolConfig]):
+@tool(enable_if=files_enable_if("pwd"))
+class PwdTool:
     """Возвращает путь текущей директории."""
 
-    def execute(self, ctx: ToolContext, req: PwdArgs) -> ToolResult:
-        del req
-        return TextResult(text=self._shell.cwd)
+    def __call__(
+        self,
+        shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
+    ) -> str:
+        return shell.cwd

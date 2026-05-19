@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Annotated, Any, ClassVar
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from boba.html import HtmlKeys
 from boba.indexing import (
@@ -17,142 +16,117 @@ from boba.indexing import (
     Section,
     SectionKeys,
 )
-from boba.plugin.prompt import PromptOverlay
-from boba.tool.confluence.connection import (
-    ConfluenceConnection,
-)
+from boba.tool.confluence.config import ConfluencePluginConfig
+from boba.tool.confluence.connection import ConfluenceConnection
 from boba.tool.confluence.decoder import ConfluenceJsonDecoder
+from boba.tool.confluence.enable import confluence_enable_if
 from boba.tool.confluence.keys import ConfluenceKeys
 from boba.tool.confluence.reader import ConfluenceReader
 from boba.tool.confluence.request_sources.pages import (
     ConfluencePagesRequestSource,
 )
-from boba.tools.domain import (
-    JsonResult,
-    Tool,
-    ToolContext,
-    ToolExecutionError,
-    ToolResult,
-)
+from boba.tools import FromConfig, tool
 from boba.transport.http import HttpKeys
 
-__all__ = [
-    "ConfluencePageOutlineTool",
-    "ConfluencePageOutlineToolConfig",
-    "PageOutlineArgs",
-]
+__all__ = ["ConfluencePageOutlineTool"]
 
 
-class PageOutlineArgs(BaseModel):
-    """Получает структуру заголовков (h1..h6) страницы Confluence по page_id.
+@tool(enable_if=confluence_enable_if("confluence_page_outline"))
+class ConfluencePageOutlineTool:
+    """Online-outline страницы Confluence: page_id → структура заголовков.
 
+    Получает структуру заголовков (h1..h6) страницы Confluence по page_id.
     Возвращает title, метаданные и список секций с anchor'ами для последующего
     вызова confluence_page_section.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    page_id: str = Field(
-        min_length=1,
-        description=(
-            "ID страницы Confluence (число; виден в URL "
-            "viewpage.action?pageId=...)."
-        ),
-    )
-    max_headings: int = Field(
-        ge=1,
-        le=500,
-        description="Максимум заголовков в ответе (защита от длинных страниц).",
-    )
-
-
-@dataclass(frozen=True)
-class ConfluencePageOutlineToolConfig:
-    """DTO tool'а: connection + body_format + prompt overlay."""
-
-    base_url: str
-    auth_method: str
-    auth_user: str
-    auth_token: str
-    timeout_sec: float
-    ssl_verify: bool
-    body_format: str
-    prompt: PromptOverlay
-
-
-class ConfluencePageOutlineTool(Tool[PageOutlineArgs, ConfluencePageOutlineToolConfig]):
-    """Online-outline страницы Confluence: page_id → структура заголовков."""
-
     _PIPELINE_ID: ClassVar[PipelineId] = PipelineId("confluence.page_outline")
 
-    def execute(self, ctx: ToolContext, req: PageOutlineArgs) -> ToolResult:
-        del ctx
-        pipeline: RuntimePipeline = RuntimePipeline(
-            request_source=ConfluencePagesRequestSource(
-                base_url=self._cfg.base_url,
-                auth=ConfluenceConnection.make_auth(self._cfg),
-                page_ids=[req.page_id],
-                body_format=self._cfg.body_format,
+    def __call__(
+        self,
+        page_id: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description=(
+                    "ID страницы Confluence (число; виден в URL "
+                    "viewpage.action?pageId=...)."
+                ),
             ),
-            transport=ConfluenceConnection.make_transport(self._cfg),
-            decoder=ConfluenceJsonDecoder(body_format=self._cfg.body_format),
+        ],
+        max_headings: Annotated[
+            int,
+            Field(
+                ge=1,
+                le=500,
+                description="Максимум заголовков в ответе (защита от длинных страниц).",
+            ),
+        ],
+        cfg: Annotated[ConfluencePluginConfig, FromConfig()],
+    ) -> dict[str, Any]:
+        pipeline = RuntimePipeline(
+            request_source=ConfluencePagesRequestSource(
+                base_url=cfg.base_url,
+                auth=ConfluenceConnection.make_auth(cfg),
+                page_ids=[page_id],
+                body_format=cfg.body_format,
+            ),
+            transport=ConfluenceConnection.make_transport(cfg),
+            decoder=ConfluenceJsonDecoder(body_format=cfg.body_format),
             reader=ConfluenceReader(),
         )
 
         try:
             sections = list(
-                pipeline.stream(PipelineContext(pipeline_id=self._PIPELINE_ID))
+                pipeline.stream(PipelineContext(pipeline_id=self._PIPELINE_ID)),
             )
         except httpx.HTTPError as e:
-            raise ToolExecutionError(
-                tool_id=self.tool_id(),
-                message=f"Confluence page outline failed: {type(e).__name__}: {e}",
+            raise RuntimeError(
+                f"Confluence page outline failed: {type(e).__name__}: {e}",
             ) from e
 
         headings = [s for s in sections if s.metadata.has(HtmlKeys.HEADING_LEVEL)]
         total = len(headings)
-        truncated = total > req.max_headings
-        meta = self._page_meta(sections, req.page_id)
+        truncated = total > max_headings
+        meta = _page_meta(sections)
 
-        return JsonResult(
-            payload={
-                "page_id": req.page_id,
-                "title": meta["title"],
-                "space_key": meta["space_key"],
-                "url": meta["url"],
-                "version": meta["version"],
-                "last_modified": meta["last_modified"],
-                "sections": [
-                    {
-                        "level": h.metadata.get(HtmlKeys.HEADING_LEVEL) or 0,
-                        "text": h.metadata.get(HtmlKeys.HEADING_TEXT) or "",
-                        "anchor": h.metadata.get(SectionKeys.ANCHOR) or "",
-                    }
-                    for h in headings[: req.max_headings]
-                ],
-                "truncated": truncated,
-                "total_headings": total,
-            }
-        )
-
-    @staticmethod
-    def _page_meta(sections: list[Section[str]], page_id: str) -> dict[str, Any]:
-        """Page-level метаданные. Все секции одной страницы делят metadata."""
-        if not sections:
-            return {
-                "title": "",
-                "space_key": "",
-                "url": "",
-                "version": "",
-                "last_modified": "",
-            }
-        first = sections[0]
-        m = first.metadata
-        version = m.get(ConfluenceKeys.VERSION)
         return {
-            "title": m.get(ReaderKeys.PAGE_TITLE) or "",
-            "space_key": m.get(ConfluenceKeys.SPACE_KEY) or "",
-            "url": str(first.source_id),
-            "version": str(version) if version is not None else "",
-            "last_modified": m.get(HttpKeys.LAST_MODIFIED) or "",
+            "page_id": page_id,
+            "title": meta["title"],
+            "space_key": meta["space_key"],
+            "url": meta["url"],
+            "version": meta["version"],
+            "last_modified": meta["last_modified"],
+            "sections": [
+                {
+                    "level": h.metadata.get(HtmlKeys.HEADING_LEVEL) or 0,
+                    "text": h.metadata.get(HtmlKeys.HEADING_TEXT) or "",
+                    "anchor": h.metadata.get(SectionKeys.ANCHOR) or "",
+                }
+                for h in headings[:max_headings]
+            ],
+            "truncated": truncated,
+            "total_headings": total,
         }
+
+
+def _page_meta(sections: list[Section[str]]) -> dict[str, Any]:
+    """Page-level метаданные. Все секции одной страницы делят metadata."""
+    if not sections:
+        return {
+            "title": "",
+            "space_key": "",
+            "url": "",
+            "version": "",
+            "last_modified": "",
+        }
+    first = sections[0]
+    m = first.metadata
+    version = m.get(ConfluenceKeys.VERSION)
+    return {
+        "title": m.get(ReaderKeys.PAGE_TITLE) or "",
+        "space_key": m.get(ConfluenceKeys.SPACE_KEY) or "",
+        "url": str(first.source_id),
+        "version": str(version) if version is not None else "",
+        "last_modified": m.get(HttpKeys.LAST_MODIFIED) or "",
+    }

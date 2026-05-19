@@ -9,16 +9,23 @@ from typing import Any
 from psycopg.sql import Composable, Composed
 
 from boba.db.postgres import PostgresPool
-from boba.tool.postgres_fts.errors import (
-    FtsKnowledgeBaseError,
-    IndexNotFoundError,
-)
 from boba.tool.postgres_fts.models import FtsHit, IndexInfo, IndexSpec
-from boba.tools.domain import ToolId
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["PgFtsKnowledgeBase"]
+__all__ = ["FtsQueryError", "IndexNotFoundError", "PgFtsKnowledgeBase"]
+
+
+class IndexNotFoundError(KeyError):
+    """Индекс не зарегистрирован в whitelist'е плагина."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(name)
+        self.name = name
+
+
+class FtsQueryError(RuntimeError):
+    """Ошибка выполнения FTS-запроса (psycopg-side)."""
 
 
 class PgFtsKnowledgeBase:
@@ -53,14 +60,13 @@ class PgFtsKnowledgeBase:
 
     def search(
         self,
-        tool_id: ToolId,
         index: str,
         query: str,
         top_k: int,
     ) -> list[FtsHit]:
         spec = self._indexes.get(index)
         if spec is None:
-            raise IndexNotFoundError(tool_id, index)
+            raise IndexNotFoundError(index)
 
         stmt, params = self._build_query(spec, query, top_k)
         try:
@@ -69,8 +75,7 @@ class PgFtsKnowledgeBase:
                 rows = cur.fetchall()
                 column_names = [d.name for d in (cur.description or [])]
         except Exception as e:
-            raise FtsKnowledgeBaseError(
-                tool_id,
+            raise FtsQueryError(
                 f"fts query failed for index {index!r}: {type(e).__name__}: {e}",
             ) from e
 

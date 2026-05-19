@@ -72,24 +72,24 @@ from boba.tools.framework.registry import (
     ToolRegistry,
     ToolSource,
 )
-from boba.tools_v2 import (
-    DEFAULT_V2_PLUGIN_GROUP,
+from boba.tools import (
+    DEFAULT_PLUGIN_GROUP,
     DuplicateProviderError,
     FromConfig,
     Scope,
     ToolDeclarationError,
-    discover_v2_plugins,
+    discover_plugins,
 )
-from boba.tools_v2.adapter import DishkaTool
-from boba.tools_v2.decorators import (
+from boba.tools.adapter import DishkaTool
+from boba.tools.decorators import (
     enable_if_predicate,
     has_enable_if,
     is_provider,
     is_tool,
     provider_scope,
 )
-from boba.tools_v2.introspect import CallPlan, introspect_callable
-from boba.tools_v2.scope import to_dishka_scope
+from boba.tools.introspect import CallPlan, introspect_callable
+from boba.tools.scope import to_dishka_scope
 
 _DEFAULT_COMPONENT: str = ""
 """Dishka default-component (app-level services)."""
@@ -262,7 +262,7 @@ class AgentBuilder:
         return self
 
     def use_plugins(
-        self, group: str = DEFAULT_V2_PLUGIN_GROUP,
+        self, group: str = DEFAULT_PLUGIN_GROUP,
     ) -> Self:
         """Подцепить v2-плагины через entry-points group."""
         self._discover_groups.append(group)
@@ -291,7 +291,7 @@ class AgentBuilder:
 
         # 1. Discovery откладывалась до build'а.
         for group in self._discover_groups:
-            for module in discover_v2_plugins(group):
+            for module in discover_plugins(group):
                 self.use_plugin(module)
         self._discover_groups.clear()
 
