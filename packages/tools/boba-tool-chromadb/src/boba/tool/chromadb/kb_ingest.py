@@ -5,10 +5,14 @@ collection за собой через `[tool.chromadb]` (поля `ingest_folder
 `ingest_collection` / `ingest_collection_description`) — LLM не выбирает,
 во что и откуда индексировать, только опционально включает `prune_missing`.
 
-`Embedder[str]` инжектится снаружи (через DI: `ExtensionContext` →
-`EmbedderFactory` → resolve в Plugin.build). Tool принимает уже готовый
-`Embedder` либо `None` (если оператор не сконфигурировал модель). При
-попытке вызова в no-embedder режиме — fail-fast с понятным сообщением.
+Всё, кроме самого tool'а — `Embedder[str]`, chromadb client, парсер,
+ChromaVectorStore, MdFolderIndexer — собирается Dishka-контейнером по
+графу зависимостей в `di.ChromadbProvider`. Tool достаёт верхушку
+графа (`MdFolderIndexer`) в `execute()` и не знает про слои.
+
+`container.get(MdFolderIndexer)` ленив: при первом execute Dishka
+рекурсивно собирает graph и кеширует на `Scope.APP`. Последующие
+execute получают тот же indexer без работы.
 """
 
 from __future__ import annotations
@@ -17,13 +21,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from dishka import Container, make_container
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.indexing.context import CollectionId
-from boba.indexing.embedder import Embedder
 from boba.plugin.prompt import PromptOverlay
+from boba.tool.chromadb.embedder_factory import EmbeddingModelNotConfiguredError
 from boba.tool.chromadb.md_folder_ingest import MdFolderIndexer
-from boba.tool.chromadb.vector_store import ChromaVectorStore
 from boba.tools.domain import (
     ErrorResult,
     JsonResult,
@@ -60,13 +64,12 @@ class KbIngestArgs(BaseModel):
 
 @dataclass(frozen=True)
 class KbIngestToolConfig:
-    """DTO tool'а: pre-resolved параметры из `ChromadbPluginConfig`.
+    """DTO tool'а: все cfg-поля, которые провайдер использует для сборки графа."""
 
-    embedding_* сюда не входят — `Embedder[str]` уже резолвлен снаружи
-    (DI через `ExtensionContext`) и передан как отдельный конструкторный
-    параметр. Tool остаётся «чистым»: не знает про factory.
-    """
-
+    persist_path: str
+    embedding_model: str
+    embedding_base_url: str
+    embedding_api_key: str
     ingest_folder: str
     ingest_collection: str
     ingest_collection_description: str
@@ -76,53 +79,43 @@ class KbIngestToolConfig:
 class KbIngestTool(Tool[KbIngestArgs, KbIngestToolConfig]):
     """Индексирует pre-настроенную оператором папку в pre-настроенную коллекцию.
 
-    Зависимости (передаются в конструктор готовыми):
-
-    - `client` — chromadb `ClientAPI`, тот же что у read-side `kb_search`
-      (один PersistentClient на persist_path, иначе file-lock contention).
-    - `embedder` — уже построенный `Embedder[str]` либо `None`. None
-      означает, что оператор не задал `embedding_model` — execute вернёт
-      ErrorResult без попытки построить store.
-
-    `ChromaVectorStore` и `MdFolderIndexer` собираются lazily при первом
-    execute (это просто in-memory объекты, ничего не делают до upsert'а).
+    Конструктор `(cfg, ctx, source_id)` — никаких extra-параметров.
+    Внутри только Dishka-контейнер: всё остальное (parser, embedder,
+    client, store, indexer) приходит из него через `container.get(...)`
+    в `execute()`.
     """
 
     def __init__(
         self,
-        client: Any,
-        embedder: Embedder[str] | None,
         cfg: KbIngestToolConfig,
         ctx: Any,
         source_id: ToolSourceId,
     ) -> None:
         super().__init__(cfg, ctx, source_id)
-        self._client = client
-        self._embedder = embedder
-        self._indexer: MdFolderIndexer | None = None
+        # Локальный импорт чтобы разорвать циркуляцию kb_ingest ↔ di
+        # (di.py тащит `KbIngestToolConfig` из этого модуля).
+        from boba.tool.chromadb.di import (  # noqa: PLC0415
+            ChromadbProvider,
+        )
+
+        self._container: Container = make_container(
+            ChromadbProvider(),
+            context={KbIngestToolConfig: cfg},
+        )
 
     def execute(self, ctx: ToolContext, req: KbIngestArgs) -> ToolResult:
         del ctx
-        if not self._cfg.ingest_folder:
+
+        try:
+            indexer = self._container.get(MdFolderIndexer)
+        except EmbeddingModelNotConfiguredError as e:
             return ErrorResult(
-                message=(
-                    "ingest_folder не задан в [tool.chromadb]; "
-                    "kb_ingest требует pre-configured папку (LLM не выбирает)."
-                ),
-                error_kind="ingest_folder_not_configured",
-            )
-        if self._embedder is None:
-            return ErrorResult(
-                message=(
-                    "embedding_model не сконфигурирован в [tool.chromadb]; "
-                    "kb_ingest требует явный выбор модели "
-                    "(или 'default' для built-in ONNX)."
-                ),
+                message=str(e),
                 error_kind="embedding_model_not_configured",
             )
 
         try:
-            stats = self._get_or_build_indexer().index(
+            stats = indexer.index(
                 folder=Path(self._cfg.ingest_folder),
                 collection=CollectionId(self._cfg.ingest_collection),
                 collection_description=(
@@ -149,12 +142,3 @@ class KbIngestTool(Tool[KbIngestArgs, KbIngestToolConfig]):
                 ],
             },
         )
-
-    def _get_or_build_indexer(self) -> MdFolderIndexer:
-        if self._indexer is None:
-            assert self._embedder is not None  # проверено в execute
-            store = ChromaVectorStore(
-                client=self._client, embedder=self._embedder,
-            )
-            self._indexer = MdFolderIndexer(store=store)
-        return self._indexer

@@ -15,6 +15,7 @@ dependencies = [
     "boba-indexing",
     "boba-markdown",
     "chromadb>=0.5",
+    "dishka>=1.9",
 ]
 
 [project.entry-points."boba.plugins"]
