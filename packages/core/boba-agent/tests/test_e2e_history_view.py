@@ -37,8 +37,6 @@ from boba.llm.models import (
     UserMessage,
 )
 from boba.patterns import StreamSource
-from boba.tools.domain import ToolSourceId
-from boba.tools.framework import StaticToolSource, ToolRegistry
 
 
 class _StubLLMSource(StreamSource[LLMContext, LLMEvent]):
@@ -73,10 +71,6 @@ class _StubLLMSource(StreamSource[LLMContext, LLMEvent]):
         yield LLMGenerationDone(request_id=rid, finish_reason=FinishReason.STOP)
 
 
-def _empty_registry() -> ToolRegistry:
-    return ToolRegistry.from_sources([StaticToolSource(ToolSourceId("empty"), [])])
-
-
 def _dialog_texts(messages: tuple[DialogMessage, ...]) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     for m in messages:
@@ -97,7 +91,6 @@ def test_history_journal_contains_user_query_and_assistant_snapshots():
         AgentBuilder()
         .with_llm(llm)
         .with_history(history)
-        .with_tools(_empty_registry())
         .use_turn(TurnBuilder("stub-model"))
         .build()
     )
@@ -118,7 +111,7 @@ def test_history_journal_contains_user_query_and_assistant_snapshots():
 
 
 def test_history_view_reconstructs_full_dialog_after_run():
-    """HistoryDialogView отдаёт UserMessage + AssistantMessage из журнала одного хода."""
+    """HistoryDialogView отдаёт UserMessage + AssistantMessage из журнала одного хода"""
     stub = _StubLLMSource(answers=["pong"])
     llm = LLM(source=AssistantAggregator(stub))
     history = InMemoryHistoryService()
@@ -127,7 +120,6 @@ def test_history_view_reconstructs_full_dialog_after_run():
         AgentBuilder()
         .with_llm(llm)
         .with_history(history)
-        .with_tools(_empty_registry())
         .use_turn(TurnBuilder("stub-model"))
         .build()
     )
@@ -149,7 +141,6 @@ def test_second_turn_sees_prior_dialog_in_llm_request():
         AgentBuilder()
         .with_llm(llm)
         .with_history(history)
-        .with_tools(_empty_registry())
         .use_turn(TurnBuilder("stub-model"))
         .build()
     )
@@ -179,7 +170,6 @@ def test_clear_history_resets_dialog_for_subsequent_turn():
         AgentBuilder()
         .with_llm(llm)
         .with_history(history)
-        .with_tools(_empty_registry())
         .use_turn(TurnBuilder("stub-model"))
         .build()
     )

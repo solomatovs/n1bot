@@ -1,11 +1,10 @@
-"""Параметризация LLMRequest через TurnBuilder + AgentBuilder.use_turn()."""
+"""Параметризация LLMRequest через TurnBuilder."""
 
 from __future__ import annotations
 
 from typing import ClassVar
 
 from boba.agent.agent import AgentContext
-from boba.agent.builder import AgentBuilder
 from boba.agent.history import InMemoryHistoryService
 from boba.agent.middleware.llm import LLMPort
 from boba.agent.turn.builder import TurnBuilder
@@ -298,32 +297,3 @@ def test_turn_builder_extra_overrides_built_in_by_id(agent_ctx: AgentContext):
     assert request.model == "overridden"
 
 
-# AgentBuilder.use_turn() auto-wiring
-
-
-def test_agent_builder_use_turn_autowires_history_view_and_catalog():
-    """Если TurnBuilder не задал history_view/catalog — AgentBuilder ставит свои."""
-    history = InMemoryHistoryService()
-    turn = TurnBuilder("test-model")
-    registry = _empty_catalog()
-    builder = AgentBuilder().with_history(history).with_tools(registry).use_turn(turn)
-    # Имитируем wiring, который происходит внутри build():
-    resolved = builder.tool_registry()
-    if not turn.has_history_view():
-        turn.with_history_view(HistoryDialogView(history))
-    if not turn.has_tool_catalog():
-        turn.with_tool_catalog(resolved.catalog())
-    assert turn.has_history_view()
-    assert turn.has_tool_catalog()
-
-
-def test_agent_builder_use_turn_respects_explicit_resources():
-    """Явно заданное в TurnBuilder не перетирается AgentBuilder'ом."""
-    explicit_view = _empty_history_view()
-    turn = TurnBuilder("test-model").with_history_view(explicit_view)
-    other_history = InMemoryHistoryService()
-    builder = AgentBuilder().with_history(other_history).use_turn(turn)
-    if not turn.has_history_view():
-        turn.with_history_view(HistoryDialogView(builder._history_service))
-    # has_history_view был True, перетирания не было.
-    assert turn._history_view is explicit_view
