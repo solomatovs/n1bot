@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any
 from urllib.parse import quote
 
 import httpx
@@ -26,62 +26,60 @@ from boba.tool.confluence.search_reader import ConfluenceSearchHitsReader
 from boba.tools import FromConfig, tool
 from boba.transport.http import HttpKeys
 
-__all__ = ["ConfluenceSearchTool"]
+__all__ = ["confluence_search"]
+
+
+_PIPELINE_ID: PipelineId = PipelineId("confluence.search")
+_SNIPPET_CHARS: int = 300
 
 
 @tool(enable_if=confluence_enable_if("confluence_search"))
-class ConfluenceSearchTool:
+def confluence_search(
+    query: Annotated[
+        str,
+        Field(min_length=1, description="Строка полнотекстового поиска в Confluence."),
+    ],
+    limit: Annotated[
+        int, Field(ge=1, le=50, description="Максимум hits в ответе."),
+    ],
+    cfg: Annotated[ConfluencePluginConfig, FromConfig()],
+    space: Annotated[
+        str | None,
+        Field(description="Ограничение поиска по space."),
+    ] = None,
+) -> dict[str, Any]:
     """Полнотекстовый поиск страниц Confluence (CQL).
 
     Возвращает список (title, space, page_id, url, excerpt). Перед
     последующим чтением вызывайте `confluence_page_outline`.
     """
+    pipeline = RuntimePipeline(
+        request_source=ConfluenceCqlSearchRequestSource(
+            base_url=cfg.base_url,
+            auth=ConfluenceConnection.make_auth(cfg),
+            cql=_build_cql(query=query, space=space),
+            limit=limit,
+        ),
+        transport=ConfluenceConnection.make_transport(cfg),
+        reader=ConfluenceSearchHitsReader(
+            base_url=cfg.base_url,
+            snippet_chars=_SNIPPET_CHARS,
+        ),
+    )
 
-    _PIPELINE_ID: ClassVar[PipelineId] = PipelineId("confluence.search")
-    _SNIPPET_CHARS: ClassVar[int] = 300
-
-    def __call__(
-        self,
-        query: Annotated[
-            str,
-            Field(min_length=1, description="Строка полнотекстового поиска в Confluence."),
-        ],
-        limit: Annotated[
-            int, Field(ge=1, le=50, description="Максимум hits в ответе."),
-        ],
-        cfg: Annotated[ConfluencePluginConfig, FromConfig()],
-        space: Annotated[
-            str | None,
-            Field(description="Ограничение поиска по space."),
-        ] = None,
-    ) -> dict[str, Any]:
-        pipeline = RuntimePipeline(
-            request_source=ConfluenceCqlSearchRequestSource(
-                base_url=cfg.base_url,
-                auth=ConfluenceConnection.make_auth(cfg),
-                cql=_build_cql(query=query, space=space),
-                limit=limit,
-            ),
-            transport=ConfluenceConnection.make_transport(cfg),
-            reader=ConfluenceSearchHitsReader(
-                base_url=cfg.base_url,
-                snippet_chars=self._SNIPPET_CHARS,
-            ),
+    try:
+        sections = list(
+            pipeline.stream(PipelineContext(pipeline_id=_PIPELINE_ID)),
         )
+    except httpx.HTTPError as e:
+        raise RuntimeError(
+            f"Confluence search failed: {type(e).__name__}: {e}",
+        ) from e
 
-        try:
-            sections = list(
-                pipeline.stream(PipelineContext(pipeline_id=self._PIPELINE_ID)),
-            )
-        except httpx.HTTPError as e:
-            raise RuntimeError(
-                f"Confluence search failed: {type(e).__name__}: {e}",
-            ) from e
-
-        return {
-            "cql": query,
-            "hits": [_hit(s) for s in sections],
-        }
+    return {
+        "cql": query,
+        "hits": [_hit(s) for s in sections],
+    }
 
 
 def _hit(section: Section[str]) -> dict[str, str]:

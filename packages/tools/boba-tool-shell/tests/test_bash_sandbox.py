@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from boba.tool.shell._profile import SandboxProfile
-from boba.tool.shell.bash_sandbox import BashSandboxTool
+from boba.tool.shell.bash_sandbox import bash_sandbox
 from boba.tool.shell.config import BashSandboxConfig
 
 pytestmark = [
@@ -38,7 +38,7 @@ def _make_cfg(
 
 def _exec(cfg: BashSandboxConfig, **kwargs) -> dict:
     """Tool как обычный callable. Возвращает payload (dict)."""
-    return BashSandboxTool()(cfg=cfg, **kwargs)
+    return bash_sandbox(cfg=cfg, **kwargs)
 
 
 def test_echo_inside_sandbox(tmp_path: Path):

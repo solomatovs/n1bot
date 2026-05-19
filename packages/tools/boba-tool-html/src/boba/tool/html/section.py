@@ -21,83 +21,80 @@ from boba.workspace.contract import (
     WorkspaceNotFoundError,
 )
 
-__all__ = ["HtmlSectionTool"]
+__all__ = ["html_section"]
 
 
 @tool(enable_if=html_enable_if("html_section"))
-class HtmlSectionTool:
+def html_section(
+    path: Annotated[
+        str, Field(min_length=1, description="Путь к HTML-файлу в workspace."),
+    ],
+    anchor: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Anchor заголовка из html_outline (idx:N или html id). "
+                "Ведущий '#' необязателен."
+            ),
+        ),
+    ],
+    shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
+    include_subsections: Annotated[
+        bool,
+        Field(
+            description=(
+                "true — включать вложенные подзаголовки (стоп на следующем "
+                "заголовке того же или меньшего уровня); false — стоп на "
+                "любом следующем заголовке."
+            ),
+        ),
+    ] = True,
+    max_chars: Annotated[
+        int, Field(ge=100, description="Лимит длины ответа в символах."),
+    ] = 8000,
+) -> dict[str, Any]:
     """HTML фрагмент раздела от выбранного заголовка до следующего.
 
     anchor берётся из html_outline (idx:N или html-id; ведущий '#'
     необязателен). Содержимое возвращается как есть, без преобразований
     в markdown/текст.
     """
+    try:
+        soup = load_soup(shell, path)
+    except WorkspaceNotFoundError as e:
+        raise RuntimeError(f"Файл не найден: {path}") from e
+    except WorkspaceError as e:
+        raise RuntimeError(f"Ошибка чтения: {e}") from e
 
-    def __call__(
-        self,
-        path: Annotated[
-            str, Field(min_length=1, description="Путь к HTML-файлу в workspace."),
-        ],
-        anchor: Annotated[
-            str,
-            Field(
-                min_length=1,
-                description=(
-                    "Anchor заголовка из html_outline (idx:N или html id). "
-                    "Ведущий '#' необязателен."
-                ),
-            ),
-        ],
-        shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
-        include_subsections: Annotated[
-            bool,
-            Field(
-                description=(
-                    "true — включать вложенные подзаголовки (стоп на следующем "
-                    "заголовке того же или меньшего уровня); false — стоп на "
-                    "любом следующем заголовке."
-                ),
-            ),
-        ] = True,
-        max_chars: Annotated[
-            int, Field(ge=100, description="Лимит длины ответа в символах."),
-        ] = 8000,
-    ) -> dict[str, Any]:
-        try:
-            soup = load_soup(shell, path)
-        except WorkspaceNotFoundError as e:
-            raise RuntimeError(f"Файл не найден: {path}") from e
-        except WorkspaceError as e:
-            raise RuntimeError(f"Ошибка чтения: {e}") from e
+    headings = collect_headings(soup)
+    target = resolve_anchor(headings, anchor)
+    if target is None:
+        raise RuntimeError(
+            f"Заголовок с anchor={anchor!r} не найден; "
+            "получи актуальные anchor'ы через html_outline.",
+        )
 
-        headings = collect_headings(soup)
-        target = resolve_anchor(headings, anchor)
-        if target is None:
-            raise RuntimeError(
-                f"Заголовок с anchor={anchor!r} не найден; "
-                "получи актуальные anchor'ы через html_outline.",
-            )
+    target_idx = headings.index(target)
+    stop = _find_stop_heading(headings, target_idx, include_subsections)
+    html = _collect_section_html(target.tag, stop.tag if stop else None)
 
-        target_idx = headings.index(target)
-        stop = _find_stop_heading(headings, target_idx, include_subsections)
-        html = _collect_section_html(target.tag, stop.tag if stop else None)
+    total_chars = len(html)
+    truncated = total_chars > max_chars
+    if truncated:
+        html = html[:max_chars]
 
-        total_chars = len(html)
-        truncated = total_chars > max_chars
-        if truncated:
-            html = html[:max_chars]
-
-        return {
-            "path": path,
-            "anchor": anchor,
-            "level": target.level,
-            "text": target.text,
-            "html": html,
-            "chars": len(html),
-            "total_chars": total_chars,
-            "truncated": truncated,
-            "max_chars": max_chars,
-        }
+    return {
+        "path": path,
+        "anchor": anchor,
+        "level": target.level,
+        "text": target.text,
+        "html": html,
+        "chars": len(html),
+        "total_chars": total_chars,
+        "truncated": truncated,
+        "max_chars": max_chars,
+    }
 
 
 def _find_stop_heading(

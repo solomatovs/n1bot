@@ -1,4 +1,4 @@
-"""`BashSandboxTool`: запуск команды в bubblewrap-песочнице.
+"""`bash_sandbox`: запуск команды в bubblewrap-песочнице.
 
 LLM передаёт `command` (обязательное), `stdin` (опционально, по умолчанию
 пустая строка) и `profile` (опционально, имя из реестра профилей).
@@ -24,7 +24,7 @@ from boba.tool.shell._sandbox import build_bwrap_argv
 from boba.tool.shell.config import BashSandboxConfig
 from boba.tools import FromConfig, tool
 
-__all__ = ["BashSandboxTool"]
+__all__ = ["bash_sandbox"]
 
 
 _MAX_COMMAND_LEN = 16_384
@@ -53,67 +53,63 @@ def _bash_sandbox_enabled(
 
 
 @tool(enable_if=_bash_sandbox_enabled)
-class BashSandboxTool:
+def bash_sandbox(
+    command: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=_MAX_COMMAND_LEN,
+            description="Shell-команда (передаётся в `bash -c`).",
+        ),
+    ],
+    cfg: Annotated[BashSandboxConfig, FromConfig()],
+    stdin: Annotated[
+        str,
+        Field(
+            max_length=_MAX_STDIN_LEN,
+            description=(
+                "Stdin для команды (UTF-8). Пустая строка = нет stdin."
+            ),
+        ),
+    ] = "",
+    profile: Annotated[
+        str,
+        Field(
+            description=(
+                "Имя профиля песочницы. Пустая строка = default из конфига."
+            ),
+        ),
+    ] = "",
+) -> dict[str, Any]:
     """Выполнить shell-команду через `bash -c` в bubblewrap-песочнице.
 
-    Команда выполняется в bwrap: пользователь, PID, IPC, UTS, сеть
-    (если выключена в профиле) — всё в отдельных namespace'ах. Доступ
-    к файловой системе ограничен выбранным профилем.
+    Команда выполняется в bwrap: пользователь, PID, IPC, UTS, сеть (если
+    выключена в профиле) — всё в отдельных namespace'ах. Доступ к файловой
+    системе ограничен выбранным профилем.
     """
+    profile_name = profile or cfg.default_profile
+    profile_dto = cfg.profiles.get(profile_name)
+    if profile_dto is None:
+        return _unknown_profile_payload(profile_name, sorted(cfg.profiles))
 
-    def __call__(
-        self,
-        command: Annotated[
-            str,
-            Field(
-                min_length=1,
-                max_length=_MAX_COMMAND_LEN,
-                description="Shell-команда (передаётся в `bash -c`).",
-            ),
-        ],
-        cfg: Annotated[BashSandboxConfig, FromConfig()],
-        stdin: Annotated[
-            str,
-            Field(
-                max_length=_MAX_STDIN_LEN,
-                description=(
-                    "Stdin для команды (UTF-8). Пустая строка = нет stdin."
-                ),
-            ),
-        ] = "",
-        profile: Annotated[
-            str,
-            Field(
-                description=(
-                    "Имя профиля песочницы. Пустая строка = default "
-                    "из конфига."
-                ),
-            ),
-        ] = "",
-    ) -> dict[str, Any]:
-        profile_name = profile or cfg.default_profile
-        profile_dto = cfg.profiles.get(profile_name)
-        if profile_dto is None:
-            return _unknown_profile_payload(profile_name, sorted(cfg.profiles))
-
-        workspace_root = str(cfg.workspace_root)
-        argv = build_bwrap_argv(
-            profile_dto,
-            command,
-            workspace_root=workspace_root,
-            env=profile_dto.env_set,
-        )
-        result = run_subprocess(
-            argv,
-            stdin_data=stdin.encode("utf-8"),
-            timeout_sec=profile_dto.timeout_sec,
-            max_output_bytes=profile_dto.max_output_bytes,
-            # bwrap внутри делает --chdir/--clearenv, но Popen всё равно
-            # требует валидные cwd/env для запуска самого bwrap.
-            cwd=workspace_root,
-            env=os.environ,
-        )
-        return _result_to_payload(result, profile_name)
+    workspace_root = str(cfg.workspace_root)
+    argv = build_bwrap_argv(
+        profile_dto,
+        command,
+        workspace_root=workspace_root,
+        env=profile_dto.env_set,
+    )
+    result = run_subprocess(
+        argv,
+        stdin_data=stdin.encode("utf-8"),
+        timeout_sec=profile_dto.timeout_sec,
+        max_output_bytes=profile_dto.max_output_bytes,
+        # bwrap внутри делает --chdir/--clearenv, но Popen всё равно
+        # требует валидные cwd/env для запуска самого bwrap.
+        cwd=workspace_root,
+        env=os.environ,
+    )
+    return _result_to_payload(result, profile_name)
 
 
 def _unknown_profile_payload(name: str, available: list[str]) -> dict[str, Any]:

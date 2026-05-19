@@ -14,27 +14,24 @@ from boba.workspace.contract import (
     WorkspaceNotFoundError,
 )
 
-__all__ = ["MvTool"]
+__all__ = ["mv"]
 
 
 @tool(enable_if=files_enable_if("mv"))
-class MvTool:
+def mv(
+    src: Annotated[str, Field(min_length=1, description="Путь источника.")],
+    dst: Annotated[str, Field(min_length=1, description="Путь назначения.")],
+    shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
+) -> str:
     """Переместить/переименовать файл или директорию.
 
     Если dst — существующая директория, src переносится внутрь. Файл по пути
     dst перезаписывается. Промежуточные директории не создаются.
     """
-
-    def __call__(
-        self,
-        src: Annotated[str, Field(min_length=1, description="Путь источника.")],
-        dst: Annotated[str, Field(min_length=1, description="Путь назначения.")],
-        shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
-    ) -> str:
-        try:
-            shell.move(src, dst)
-        except WorkspaceNotFoundError as e:
-            raise RuntimeError(f"Источник не найден: {src}") from e
-        except WorkspaceError as e:
-            raise RuntimeError(f"Ошибка перемещения: {e}") from e
-        return f"Перемещено: {src} → {dst}"
+    try:
+        shell.move(src, dst)
+    except WorkspaceNotFoundError as e:
+        raise RuntimeError(f"Источник не найден: {src}") from e
+    except WorkspaceError as e:
+        raise RuntimeError(f"Ошибка перемещения: {e}") from e
+    return f"Перемещено: {src} → {dst}"

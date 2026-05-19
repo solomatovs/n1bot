@@ -1,4 +1,4 @@
-"""boba-tool-html — v2 плагин: outline + section HTML-навигатор.
+"""boba-tool-html — плагин: outline + section HTML-навигатор.
 
 Entry-point модуль для `AgentBuilder.use_plugin(boba.tool.html)` или
 discovery через `[project.entry-points."boba.plugins"]`.
@@ -11,11 +11,11 @@ Tools шарят `HtmlPluginConfig` (`[tool.html]`, `BOBA_TOOL__HTML__*`);
 from __future__ import annotations
 
 from boba.tool.html.config import HtmlPluginConfig
-from boba.tool.html.outline import HtmlOutlineTool
-from boba.tool.html.section import HtmlSectionTool
+from boba.tool.html.outline import html_outline
+from boba.tool.html.section import html_section
 
 __all__ = [
-    "HtmlOutlineTool",
     "HtmlPluginConfig",
-    "HtmlSectionTool",
+    "html_outline",
+    "html_section",
 ]

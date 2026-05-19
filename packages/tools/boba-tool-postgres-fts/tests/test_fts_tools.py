@@ -1,4 +1,4 @@
-"""Юнит-тесты FtsSearchTool/FtsListIndexesTool: callable → list/dict payload.
+"""Юнит-тесты fts_search/fts_list_indexes: callable → list/dict payload.
 
 Tools конструируются напрямую (без AgentBuilder) и вызываются как обычные
 callable-классы. DI-инжекция эмулируется передачей `kb=...`, `cfg=...`
@@ -14,8 +14,8 @@ import pytest
 
 from boba.tool.postgres_fts.config import PostgresFtsPluginConfig
 from boba.tool.postgres_fts.db import PgFtsKnowledgeBase
-from boba.tool.postgres_fts.fts_list_indexes import FtsListIndexesTool
-from boba.tool.postgres_fts.fts_search import FtsSearchTool
+from boba.tool.postgres_fts.fts_list_indexes import fts_list_indexes
+from boba.tool.postgres_fts.fts_search import fts_search
 from boba.tool.postgres_fts.models import IndexSpec
 
 _Column = namedtuple("_Column", ["name"])
@@ -86,7 +86,7 @@ def _kb(rows: list[tuple[Any, ...]], names: list[str]) -> PgFtsKnowledgeBase:
 
 
 def _cfg(max_top_k: int = 20) -> PostgresFtsPluginConfig:
-    """Минимальный валидный конфиг для FtsSearchTool (enable=False допустим в тестах)."""
+    """Минимальный валидный конфиг для fts_search (enable=False допустим в тестах)."""
     return PostgresFtsPluginConfig.model_construct(
         enable=False,
         dsn="",
@@ -101,14 +101,14 @@ def _cfg(max_top_k: int = 20) -> PostgresFtsPluginConfig:
 
 def test_list_indexes_tool_returns_items():
     kb = _kb([], [])
-    result = FtsListIndexesTool()(kb=kb)
+    result = fts_list_indexes(kb=kb)
     assert result == [{"name": "docs", "description": "Docs index"}]
 
 
 def test_search_tool_invokes_kb_and_serialises_hits():
     rows = [("1", 0.5, "snippet", "Title A")]
     kb = _kb(rows, ["_id", "_score", "_snippet", "title"])
-    result = FtsSearchTool()(
+    result = fts_search(
         index="docs", query="auth", kb=kb, cfg=_cfg(), top_k=3,
     )
     assert result == [
@@ -123,7 +123,7 @@ def test_search_tool_invokes_kb_and_serialises_hits():
 
 def test_search_tool_uses_default_top_k_when_missing():
     kb = _kb([], ["_id", "_score", "_snippet"])
-    result = FtsSearchTool()(index="docs", query="x", kb=kb, cfg=_cfg())
+    result = fts_search(index="docs", query="x", kb=kb, cfg=_cfg())
     assert result == []
 
 
@@ -135,6 +135,6 @@ def test_search_tool_rejects_top_k_above_max():
     """
     kb = _kb([], ["_id", "_score", "_snippet"])
     with pytest.raises(RuntimeError, match="превышает max_top_k"):
-        FtsSearchTool()(
+        fts_search(
             index="docs", query="x", kb=kb, cfg=_cfg(max_top_k=5), top_k=100,
         )

@@ -8,15 +8,12 @@ from boba.tool.files.enable import files_enable_if
 from boba.tools import FromDI, Scope, tool
 from boba.workspace.contract import ProjectWorkspaceShell
 
-__all__ = ["PwdTool"]
+__all__ = ["pwd"]
 
 
 @tool(enable_if=files_enable_if("pwd"))
-class PwdTool:
+def pwd(
+    shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
+) -> str:
     """Возвращает путь текущей директории."""
-
-    def __call__(
-        self,
-        shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
-    ) -> str:
-        return shell.cwd
+    return shell.cwd
