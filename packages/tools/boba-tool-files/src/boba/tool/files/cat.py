@@ -20,17 +20,18 @@ __all__ = ["cat"]
 
 
 @tool(enable_if=files_enable_if("cat"))
-def cat(
+def cat(  # noqa: PLR0913
+    shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
+    cfg: Annotated[FilesPluginConfig, FromConfig()],
     path: Annotated[str, Field(min_length=1, description="Путь к файлу.")],
     start_line: Annotated[
-        int, Field(ge=1, description="Первая строка окна. 1 = начало файла."),
+        int,
+        Field(ge=1, description="Первая строка окна. 1 = начало файла."),
     ],
     end_line: Annotated[
         int,
         Field(ge=1, description="Последняя строка окна, включительно >= start_line."),
     ],
-    shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
-    cfg: Annotated[FilesPluginConfig, FromConfig()],
     encoding: Annotated[
         str,
         Field(min_length=1, description="Кодировка файла. По умолчанию 'utf-8'."),
