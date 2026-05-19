@@ -159,7 +159,8 @@ def _resolve_callable_meta(obj: Any) -> _CallableMeta:
     Различает три формы:
     1. Функция: hints с `obj`, sig с `obj`.
     2. Класс: hints с `cls.__call__`, sig с `cls.__call__`, self отбрасывается.
-    3. Инстанс: hints с `type(obj).__call__`, sig с `type(obj).__call__`, self отбрасывается.
+    3. Инстанс: hints с `type(obj).__call__`, sig с `type(obj).__call__`,
+    self отбрасывается
     """
     if inspect.isfunction(obj) or inspect.ismethod(obj):
         raw_name = obj.__name__
