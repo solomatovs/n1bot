@@ -18,7 +18,6 @@ from boba.indexing import (
 from boba.tool.confluence.config import ConfluencePluginConfig
 from boba.tool.confluence.connection import ConfluenceConnection
 from boba.tool.confluence.decoder import ConfluenceJsonDecoder
-from boba.tool.confluence.enable import confluence_enable_if
 from boba.tool.confluence.reader import ConfluenceReader
 from boba.tool.confluence.request_sources.pages import (
     ConfluencePagesRequestSource,
@@ -31,7 +30,7 @@ __all__ = ["confluence_page_section"]
 _PIPELINE_ID: PipelineId = PipelineId("confluence.page_section")
 
 
-@tool(enable_if=confluence_enable_if("confluence_page_section"))
+@tool
 def confluence_page_section(
     page_id: Annotated[
         str,

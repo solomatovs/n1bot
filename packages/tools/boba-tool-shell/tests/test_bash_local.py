@@ -32,7 +32,6 @@ def _make_cfg(
     max_output_bytes: int = 256 * 1024,
 ) -> BashLocalConfig:
     return BashLocalConfig(
-        enable=True,
         workspace_root=workspace_root,
         cwd=cwd,
         env_passthrough=env_passthrough,

@@ -31,24 +31,23 @@ from boba.patterns import StreamSource
 
 @dataclass(frozen=True)
 class AgentContext:
-    """Контекст одного прогона: request_id, query, DI Container.
-
-    `container` опционален для совместимости с тестами/middleware'ами,
-    которые не зависят от DI. В рабочем агенте Container всегда есть —
-    `AgentBuilder.build()` его проставляет, `Agent.stream(...)` передаёт
-    каждому tick'у через AgentContext.
+    """
+    Контекст одного прогона:
+        request_id      - новый id запроса
+        query           - запрос пользователя
+        DI Container    - DI контейнер
     """
 
     request_id: RequestId
     query: str
-    container: Container | None = None
+    container: Container
 
 
 class Agent:
-    """Тонкий оркестратор: прогоняет source-стрим, отдаёт AgentEvent.
-
-    Владеет `Container` — общим DI-реестром всех служб агента. Закрывает
-    его на `close()` / выходе из `with`-блока.
+    """
+    Тонкий оркестратор:
+        stream - генерирует AgentEvent в процессе работы
+        invoke - ждет итоговый ответ модели
     """
 
     def __init__(
@@ -58,6 +57,12 @@ class Agent:
     ) -> None:
         self._source = source
         self._container = container
+
+    @property
+    def container(self) -> Container:
+        """DI-контейнер агента. Тесты/UI могут вытянуть из него любые
+        зарегистрированные сервисы (HistoryReader, HistoryWriter, ...)."""
+        return self._container
 
     def name(self) -> str:
         return "Agent"

@@ -7,7 +7,6 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from boba.tool.files.enable import files_enable_if
 from boba.tools import FromDI, Scope, tool
 from boba.workspace.contract import (
     ProjectWorkspaceShell,
@@ -18,7 +17,7 @@ from boba.workspace.contract import (
 __all__ = ["grep"]
 
 
-@tool(enable_if=files_enable_if("grep"))
+@tool
 def grep(
     pattern: Annotated[
         str,

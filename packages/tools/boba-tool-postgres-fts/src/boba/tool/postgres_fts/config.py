@@ -1,8 +1,10 @@
-"""Конфиг плагина postgres_fts (v2).
+"""Конфиг плагина postgres_fts.
 
-Один `BobaFlatSettings`, секция `[tool.postgres_fts]`, env-prefix
-`BOBA_TOOL__POSTGRES_FTS__`. Используется и tools (через FromConfig),
+Секция `[tool.postgres_fts]`. Используется tools (через FromConfig)
 и provider'ами PostgresPool/PgFtsKnowledgeBase.
+
+Плагин-уровневое включение/allowlist (`enable`, `tools`) — забота
+framework'а; конфиг плагина их не объявляет (`extra="ignore"`).
 """
 
 from __future__ import annotations
@@ -11,7 +13,7 @@ from typing import Self
 
 from pydantic import Field, model_validator
 
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.postgres_fts.models import IndexSpec
 
 __all__ = ["PostgresFtsPluginConfig"]
@@ -28,26 +30,15 @@ class PostgresFtsPluginConfig(BobaFlatSettings):
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
-        extra="forbid",
+        extra="ignore",
         config_path="tool.postgres_fts",
     )
 
-    enable: bool = Field(
-        default=False,
-        description="Регистрировать ли FTS-tools в DI/каталоге LLM.",
-    )
-    tools: StringList | None = Field(
-        default=None,
-        description=(
-            "Allowlist tool-имён: None — оба включены; иначе только "
-            "перечисленные ('fts_search', 'fts_list_indexes')."
-        ),
-    )
     dsn: str = Field(
         default="",
         description=(
             "libpq DSN; read-only/statement_timeout задаются параметрами "
-            "в самом DSN. Обязателен при enable=True."
+            "в самом DSN. Обязателен — без него Pool не создать."
         ),
     )
     indexes: list[IndexSpec] = Field(default_factory=list)
@@ -67,13 +58,17 @@ class PostgresFtsPluginConfig(BobaFlatSettings):
     )
 
     @model_validator(mode="after")
-    def _check_when_enabled(self) -> Self:
-        if not self.enable:
-            return self
+    def _validate(self) -> Self:
+        """Проверка консистентности — срабатывает при загрузке конфига.
+
+        Под discover-flow плагин загружается только если оператор явно
+        включил его (`[tool.postgres_fts] enable=true`). Значит при
+        load-time `dsn` + `indexes` должны быть валидно заполнены.
+        """
         if not self.dsn:
-            msg = "dsn обязателен при enable=True"
+            msg = "postgres_fts.dsn обязателен"
             raise ValueError(msg)
         if not self.indexes:
-            msg = "indexes должен содержать хотя бы один IndexSpec при enable=True"
+            msg = "postgres_fts.indexes должен содержать хотя бы один IndexSpec"
             raise ValueError(msg)
         return self

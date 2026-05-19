@@ -18,9 +18,10 @@
 
 Все провайдеры `Scope.APP` — синглтоны на lifetime агента. `ClientAPI`
 оформлен как generator-provider: на teardown контейнера Dishka зовёт
-cleanup. Provider'ы навешены на `chromadb_active` predicate — при
-выключенном плагине ни client не открывается, ни ONNX модель не
-скачивается.
+cleanup. Включение/отключение плагина целиком — забота framework'а
+(`AgentBuilder.discover_plugins` читает `[tool.chromadb]` enable);
+если плагин не enabled, его модуль не импортируется → providers не
+видны → PersistentClient не открывается, ONNX-модель не скачивается.
 """
 
 from __future__ import annotations
@@ -34,7 +35,6 @@ from boba.tool.chromadb.embedder_factory import (
     EmbedderFactory,
     build_chromadb_embedding_function,
 )
-from boba.tool.chromadb.enable import chromadb_active
 from boba.tool.chromadb.kb import ChromaKnowledgeBase
 from boba.tool.chromadb.md_chunk import MdChunkParser
 from boba.tool.chromadb.md_folder_ingest import MdFolderIndexer
@@ -53,7 +53,7 @@ __all__ = [
 ]
 
 
-@provides(scope=Scope.APP, enable_if=chromadb_active)
+@provides(scope=Scope.APP)
 def provide_chroma_client(
     cfg: Annotated[ChromadbPluginConfig, FromConfig()],
 ) -> Iterator[ClientAPI]:
@@ -73,13 +73,13 @@ def provide_chroma_client(
         pass
 
 
-@provides(scope=Scope.APP, enable_if=chromadb_active)
+@provides(scope=Scope.APP)
 def provide_embedder_factory() -> EmbedderFactory:
     """Stateless factory; легко переопределить subclass-провайдером."""
     return EmbedderFactory()
 
 
-@provides(scope=Scope.APP, enable_if=chromadb_active)
+@provides(scope=Scope.APP)
 def provide_embedder(
     factory: Annotated[EmbedderFactory, FromDI(Scope.APP)],
     cfg: Annotated[ChromadbPluginConfig, FromConfig()],
@@ -96,7 +96,7 @@ def provide_embedder(
     )
 
 
-@provides(scope=Scope.APP, enable_if=chromadb_active)
+@provides(scope=Scope.APP)
 def provide_knowledge_base(
     client: Annotated[ClientAPI, FromDI(Scope.APP)],
     cfg: Annotated[ChromadbPluginConfig, FromConfig()],
@@ -119,13 +119,13 @@ def provide_knowledge_base(
     )
 
 
-@provides(scope=Scope.APP, enable_if=chromadb_active)
+@provides(scope=Scope.APP)
 def provide_md_chunk_parser() -> MdChunkParser:
     """Stateless markdown-парсер."""
     return MdChunkParser()
 
 
-@provides(scope=Scope.APP, enable_if=chromadb_active)
+@provides(scope=Scope.APP)
 def provide_vector_store(
     client: Annotated[ClientAPI, FromDI(Scope.APP)],
     embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
@@ -134,7 +134,7 @@ def provide_vector_store(
     return ChromaVectorStore(client=client, embedder=embedder)
 
 
-@provides(scope=Scope.APP, enable_if=chromadb_active)
+@provides(scope=Scope.APP)
 def provide_md_folder_indexer(
     store: Annotated[ChromaVectorStore, FromDI(Scope.APP)],
     parser: Annotated[MdChunkParser, FromDI(Scope.APP)],

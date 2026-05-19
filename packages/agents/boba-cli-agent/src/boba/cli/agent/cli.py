@@ -8,9 +8,9 @@ from pathlib import Path
 from boba.agent import (
     Agent,
     AgentBuilder,
-    InMemoryHistoryService,
     TurnBuilder,
 )
+from boba.agent.history import HistoryWriter
 from boba.agent.turn.reducers import (
     RememberUserQueryReducer,
 )
@@ -84,11 +84,9 @@ def _run() -> int:
         LLMBuilder()
         .add_observer(CurlTraceChatCompletionObserver(history_workspace))
         .add_observer(HttpTraceChatCompletionObserver(history_workspace))
-        .pipe(use_openai, app.openai)
-        .build()
+        .build(use_openai(app.openai))
     )
 
-    history_service = InMemoryHistoryService()
     turn = (
         TurnBuilder(run_cfg.model)
         .system_prompt_from_directory(prompt_workspace)
@@ -108,10 +106,9 @@ def _run() -> int:
         return project_workspace
 
     agent = (
-        builder.with_llm(llm)
-        .with_history(history_service)
+        builder.use_llm(llm)
         .register_provider(_provide_project_workspace)
-        .use_plugins()
+        .discover_plugins()
         .use_turn(turn)
         .build()
     )
@@ -121,7 +118,7 @@ def _run() -> int:
         _run_turn(agent, sink, run_cfg.query)
         return 0
 
-    return _run_repl(agent, sink, run_cfg, history_service)
+    return _run_repl(agent, sink, run_cfg)
 
 
 def _run_turn(
@@ -138,7 +135,6 @@ def _run_repl(
     agent: Agent,
     sink: ConsoleSink,
     run_cfg: AgentRunConfig,
-    history_service: InMemoryHistoryService,
 ) -> int:
     """Интерактивный цикл: читает запрос → прогоняет агента → повторяет."""
     banner = (
@@ -165,7 +161,7 @@ def _run_repl(
         if query in _REPL_EXIT_COMMANDS:
             return 0
         if query == "/clear":
-            history_service.clear()
+            agent.container.get(HistoryWriter).clear()
             sys.stderr.write("(история очищена)\n")
             continue
 

@@ -1,24 +1,16 @@
-"""Pytest-фикстуры пакета boba-tool-html (v2)."""
+"""Pytest-фикстуры пакета boba-tool-html."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
-import boba.tool.html as html_module
 from boba.agent.builder import AgentBuilder
+from boba.settings import DictConfigSource
 from boba.workspace.contract import ProjectWorkspaceShell
-
-
-def _clear_html_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    import os
-
-    for key in list(os.environ):
-        if key.startswith("BOBA_TOOL__HTML__"):
-            monkeypatch.delenv(key, raising=False)
-    monkeypatch.delenv("BOBA_CONFIG_PATH", raising=False)
 
 
 @pytest.fixture
@@ -28,16 +20,15 @@ def mock_workspace() -> ProjectWorkspaceShell:
 
 @pytest.fixture
 def make_html_tool_names(
-    monkeypatch: pytest.MonkeyPatch,
     mock_workspace: ProjectWorkspaceShell,
-) -> Callable[[dict[str, str]], list[str]]:
-    """Фабрика: env → имена tool'ов, отдаваемых html-плагином."""
+) -> Callable[[dict[str, Any]], list[str]]:
+    """Фабрика: meta-секция `[tool.html]` → имена зарегистрированных tool'ов.
 
-    def _factory(env: dict[str, str]) -> list[str]:
-        _clear_html_env(monkeypatch)
-        for k, v in env.items():
-            monkeypatch.setenv(k, v)
+    Идёт через `discover_plugins("boba.plugins")` + `DictConfigSource`,
+    без monkeypatch'инга env.
+    """
 
+    def _factory(meta_section: dict[str, Any]) -> list[str]:
         llm = MagicMock()
         turn = MagicMock()
         turn.has_history_view = lambda: True
@@ -46,11 +37,13 @@ def make_html_tool_names(
         def _provide_ws() -> ProjectWorkspaceShell:
             return mock_workspace
 
+        source = DictConfigSource({"tool.html": meta_section})
         ab = (
             AgentBuilder()
-            .with_llm(llm)
+            .use_llm(llm)
             .use_turn(turn)
-            .use_plugin(html_module)
+            .use_config(source)
+            .discover_plugins(entry_point="boba.plugins")
             .register_provider(_provide_ws)
         )
         agent = ab.build()

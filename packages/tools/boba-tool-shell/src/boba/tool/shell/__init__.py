@@ -5,8 +5,8 @@ discovery через `[project.entry-points."boba.plugins"]`.
 
 Экспортирует на module-scope сами `@tool`-функции — `AgentBuilder`
 обходит `dir(module)`, забирает помеченные объекты, оборачивает
-в `DishkaTool`, регистрирует в DI (если предикат `enable_if`
-вернул `True`).
+в `DishkaTool`, регистрирует в DI. `bash_sandbox` помечается `@tool`
+только если на хосте есть `bwrap` (см. `bash_sandbox._has_bwrap`).
 
 `bash_local` ↔ `[tool.bash_local]` / `BOBA_TOOL__BASH_LOCAL__*`.
 `bash_sandbox` ↔ `[tool.bash_sandbox]` / `BOBA_TOOL__BASH_SANDBOX__*`.

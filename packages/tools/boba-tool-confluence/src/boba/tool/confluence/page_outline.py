@@ -19,7 +19,6 @@ from boba.indexing import (
 from boba.tool.confluence.config import ConfluencePluginConfig
 from boba.tool.confluence.connection import ConfluenceConnection
 from boba.tool.confluence.decoder import ConfluenceJsonDecoder
-from boba.tool.confluence.enable import confluence_enable_if
 from boba.tool.confluence.keys import ConfluenceKeys
 from boba.tool.confluence.reader import ConfluenceReader
 from boba.tool.confluence.request_sources.pages import (
@@ -34,7 +33,7 @@ __all__ = ["confluence_page_outline"]
 _PIPELINE_ID: PipelineId = PipelineId("confluence.page_outline")
 
 
-@tool(enable_if=confluence_enable_if("confluence_page_outline"))
+@tool
 def confluence_page_outline(
     page_id: Annotated[
         str,

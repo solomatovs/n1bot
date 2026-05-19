@@ -1,10 +1,13 @@
-"""Конфиг плагина html (v2): `[tool.html]` / `BOBA_TOOL__HTML__*`."""
+"""Конфиг плагина html: `[tool.html]` / `BOBA_TOOL__HTML__*`.
+
+Плагин-уровневое включение/allowlist (`enable`, `tools`) — забота
+framework'а (`AgentBuilder.discover_plugins`), плагин про них не знает.
+`extra="ignore"` позволяет им жить в той же TOML-секции.
+"""
 
 from __future__ import annotations
 
-from pydantic import Field
-
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 
 __all__ = ["HtmlPluginConfig"]
 
@@ -13,23 +16,12 @@ class HtmlPluginConfig(BobaFlatSettings):
     """HTML multi-tool plugin: outline + section.
 
     Работает с workspace (через `ProjectWorkspaceShell`), без сетевого
-    connection.
+    connection. На данный момент plugin-specific полей нет — конфиг
+    нужен в первую очередь как FromConfig-якорь.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
-        extra="forbid",
+        extra="ignore",
         config_path="tool.html",
-    )
-
-    enable: bool = Field(
-        default=False,
-        description="Регистрировать ли html-tools в DI/каталоге LLM.",
-    )
-    tools: StringList | None = Field(
-        default=None,
-        description=(
-            "Allowlist tool-имён: None — оба включены; иначе только "
-            "перечисленные ('html_outline', 'html_section')."
-        ),
     )

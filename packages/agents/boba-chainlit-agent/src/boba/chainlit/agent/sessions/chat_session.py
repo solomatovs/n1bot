@@ -6,7 +6,7 @@ from pathlib import Path
 
 from boba.agent import AgentBuilder, TurnBuilder
 from boba.agent.agent import Agent
-from boba.agent.history import HistoryService
+from boba.agent.history import JsonLinesHistoryService
 from boba.agent.workspace_fs import FsPromptWorkspaceRegistry
 from boba.chainlit.agent.config import AppConfig, ChainlitConfig
 from boba.chainlit.agent.logging import log_context
@@ -19,6 +19,7 @@ from boba.provider.openai import (
 )
 from boba.workspace.contract import (
     HistoryWorkspaceRegistry,
+    HistoryWorkspaceShell,
     ProjectWorkspaceRegistry,
     ProjectWorkspaceShell,
     PromptWorkspaceId,
@@ -37,7 +38,6 @@ class ChatSession:
         builder: AgentBuilder,
         project_workspaces: ProjectWorkspaceRegistry,
         history_workspaces: HistoryWorkspaceRegistry,
-        history_service: HistoryService,
     ) -> None:
         app = AppConfig.load()
 
@@ -54,12 +54,17 @@ class ChatSession:
         self._project_shell = project_shell
 
         history_shell = history_workspaces.get_or_create(workspace_id)
+        if not isinstance(history_shell, HistoryWorkspaceShell):
+            msg = (
+                f"FsHistoryWorkspaceRegistry returned {type(history_shell).__name__},"
+                f" expected HistoryWorkspaceShell"
+            )
+            raise TypeError(msg)
         llm = (
             LLMBuilder()
             .add_observer(CurlTraceChatCompletionObserver(history_shell))
             .add_observer(HttpTraceChatCompletionObserver(history_shell))
-            .pipe(use_openai, app.openai)
-            .build()
+            .build(use_openai(app.openai))
         )
 
         system_prompt_workspace = FsPromptWorkspaceRegistry(
@@ -79,10 +84,20 @@ class ChatSession:
             """
             return project_shell
 
+        def _provide_history_workspace() -> HistoryWorkspaceShell:
+            """DI factory для per-session history workspace.
+
+            Используется `JsonLinesHistoryService` (через `use_history` ниже),
+            который Dishka конструирует рекурсивно — резолвит `workspace`
+            через эту factory.
+            """
+            return history_shell
+
         self._agent: Agent = (
             builder.register_provider(_provide_project_workspace)
-            .with_llm(llm)
-            .with_history(history_service)
+            .register_provider(_provide_history_workspace)
+            .use_history(JsonLinesHistoryService)
+            .use_llm(llm)
             .use_turn(turn)
             .build()
         )

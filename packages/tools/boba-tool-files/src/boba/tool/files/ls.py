@@ -7,14 +7,13 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from boba.tool.files.enable import files_enable_if
 from boba.tools import FromDI, Scope, tool
 from boba.workspace.contract import ProjectWorkspaceShell, WorkspaceError
 
 __all__ = ["ls"]
 
 
-@tool(enable_if=files_enable_if("ls"))
+@tool
 def ls(
     shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
     path: Annotated[

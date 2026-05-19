@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from boba.indexing.context import CollectionId
 from boba.indexing.embedder import Embedder
@@ -110,7 +111,10 @@ def operator_run() -> OperatorRunSpec | None:
     Поля cfg (persist_path, embedding_*) при этом берутся из того же
     источника — что плагин использует в run-time.
     """
-    cfg = ChromadbPluginConfig()
+    try:
+        cfg = ChromadbPluginConfig()
+    except ValidationError:
+        return None
     if not cfg.ingest_folder:
         return None
     return OperatorRunSpec(

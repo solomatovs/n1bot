@@ -14,7 +14,7 @@
     * `BobaFlatSettings` — `BaseSettings`-наследник с flat→nested redistribute.
        Source-чтение делегирует через `ConfigSourcePydanticAdapter`.
     * `BobaSettingsConfigDict` — расширение `SettingsConfigDict` с
-       schema-уровневыми полями `boba_config_path` и `boba_cli`.
+       schema-уровневыми полями `config_path` и `boba_cli`.
 """
 
 from boba.settings.flat import (

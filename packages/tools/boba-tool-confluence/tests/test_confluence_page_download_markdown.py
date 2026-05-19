@@ -19,7 +19,6 @@ _HTTPX_TARGET = "boba.transport.http.transport.httpx.Client"
 
 def _make_cfg() -> ConfluencePluginConfig:
     return ConfluencePluginConfig.model_construct(
-        enable=True,
         base_url="https://confl.test",
         auth_method="pat",
         auth_user="",

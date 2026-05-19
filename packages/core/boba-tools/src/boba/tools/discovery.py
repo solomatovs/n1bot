@@ -18,17 +18,17 @@ import importlib.metadata
 import logging
 from collections.abc import Iterable
 
-__all__ = ["DEFAULT_PLUGIN_GROUP", "discover_plugins"]
+__all__ = ["DEFAULT_PLUGIN_ENTRY_POINT", "discover_plugins"]
 
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_PLUGIN_GROUP: str = "boba.plugins"
+DEFAULT_PLUGIN_ENTRY_POINT: str = "boba.plugins"
 """Default entry-point group для плагинов."""
 
 
 def discover_plugins(
-    group: str = DEFAULT_PLUGIN_GROUP,
+    group: str = DEFAULT_PLUGIN_ENTRY_POINT,
 ) -> Iterable[object]:
     """Загрузить плагины (модули) из указанной entry-point group.
 

@@ -29,7 +29,6 @@ def _make_cfg(
     profile: SandboxProfile | None = None,
 ) -> BashSandboxConfig:
     return BashSandboxConfig(
-        enable=True,
         workspace_root=workspace_root,
         profiles={"default": profile or SandboxProfile()},
         default_profile="default",

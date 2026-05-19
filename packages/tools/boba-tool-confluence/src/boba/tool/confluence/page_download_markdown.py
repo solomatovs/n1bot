@@ -16,7 +16,6 @@ from boba.indexing import PipelineContext, PipelineId, ReaderKeys
 from boba.tool.confluence.config import ConfluencePluginConfig
 from boba.tool.confluence.connection import ConfluenceConnection
 from boba.tool.confluence.decoder import ConfluenceJsonDecoder
-from boba.tool.confluence.enable import confluence_enable_if
 from boba.tool.confluence.keys import ConfluenceKeys
 from boba.tool.confluence.request_sources.pages import (
     ConfluencePagesRequestSource,
@@ -30,7 +29,7 @@ __all__ = ["confluence_page_download_markdown"]
 _PIPELINE_ID: PipelineId = PipelineId("confluence.page_download_markdown")
 
 
-@tool(enable_if=confluence_enable_if("confluence_page_download_markdown"))
+@tool
 def confluence_page_download_markdown(
     page_ids: Annotated[
         list[str],

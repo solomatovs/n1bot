@@ -12,13 +12,12 @@ from boba.tool.postgres_fts.db import (
     IndexNotFoundError,
     PgFtsKnowledgeBase,
 )
-from boba.tool.postgres_fts.enable import pg_fts_enable_if
 from boba.tools import FromConfig, FromDI, Scope, tool
 
 __all__ = ["fts_search"]
 
 
-@tool(enable_if=pg_fts_enable_if("fts_search"))
+@tool
 def fts_search(
     index: Annotated[
         str, Field(min_length=1, description="Имя индекса из fts_list_indexes."),

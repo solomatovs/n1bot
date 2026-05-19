@@ -31,28 +31,16 @@ _MAX_COMMAND_LEN = 16_384
 _MAX_STDIN_LEN = 1 * 1024 * 1024  # 1 MiB
 
 
-def _bash_sandbox_enabled(
-    cfg: Annotated[BashSandboxConfig, FromConfig()],
-) -> bool:
-    """Predicate `enable_if`: проверяет cfg.enable И наличие bwrap в PATH.
+def _has_bwrap() -> bool:
+    """Platform-check: `bwrap` присутствует в PATH.
 
-    Если оператор включил sandbox, но `bwrap` не установлен — tool не
-    регистрируется (вместо падения runtime на первом запуске). Оператор
-    увидит, что tool не зарегистрирован, и поймёт причину.
+    Если bubblewrap не установлен на хосте — tool не регистрируется на
+    module-load: `bash_sandbox` остаётся обычной функцией без `@tool`-
+    маркера, и `AgentBuilder._scan_module` его пропустит.
     """
-    if not cfg.enable:
-        return False
-    if shutil.which("bwrap") is None:
-        msg = (
-            "bash_sandbox.enable=true, но `bwrap` не найден в PATH. "
-            "Установите bubblewrap (apt: bubblewrap) или выключите "
-            "bash_sandbox в конфиге."
-        )
-        raise RuntimeError(msg)
-    return True
+    return shutil.which("bwrap") is not None
 
 
-@tool(enable_if=_bash_sandbox_enabled)
 def bash_sandbox(
     command: Annotated[
         str,
@@ -139,3 +127,7 @@ def _result_to_payload(result: RunResult, profile: str) -> dict[str, Any]:
         "timed_out": result.timed_out,
         "profile": profile,
     }
+
+
+if _has_bwrap():
+    bash_sandbox = tool(bash_sandbox)

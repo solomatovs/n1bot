@@ -1,4 +1,9 @@
-"""`ChromadbPluginConfig` — конфиг секции `[tool.chromadb]` (v2)."""
+"""`ChromadbPluginConfig` — конфиг секции `[tool.chromadb]`.
+
+Плагин-уровневое включение/allowlist (`enable`, `tools`) — забота
+framework'а (`AgentBuilder.discover_plugins`); конфиг плагина их не
+объявляет (`extra="ignore"`).
+"""
 
 from __future__ import annotations
 
@@ -6,39 +11,23 @@ from typing import Self
 
 from pydantic import Field, model_validator
 
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 
 __all__ = ["ChromadbPluginConfig"]
 
 
 class ChromadbPluginConfig(BobaFlatSettings):
-    """ChromaDB tools: kb_search + kb_list_collections + kb_ingest.
-
-    `persist_path` обязателен при `enable=True`. `embedding_model='default'` —
-    built-in ONNX (offline). Используется и tool'ами (через FromConfig),
-    и DI-provider'ами (Client/KB/Indexer).
-    """
+    """ChromaDB tools: kb_search + kb_list_collections + kb_ingest."""
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
-        extra="forbid",
+        extra="ignore",
         config_path="tool.chromadb",
     )
 
-    enable: bool = Field(
-        default=False,
-        description="Регистрировать ли chromadb-tools в DI/каталоге LLM.",
-    )
-    tools: StringList | None = Field(
-        default=None,
-        description=(
-            "Allowlist tool-имён: None — все включены; иначе только "
-            "перечисленные ('kb_search', 'kb_list_collections', 'kb_ingest')."
-        ),
-    )
     persist_path: str = Field(
         default="",
-        description="Путь к persistent ChromaDB (обязателен при enable=True).",
+        description="Путь к persistent ChromaDB. Обязателен.",
     )
     embedding_model: str = Field(
         default="default",
@@ -93,8 +82,11 @@ class ChromadbPluginConfig(BobaFlatSettings):
     )
 
     @model_validator(mode="after")
-    def _check_persist_path_when_enabled(self) -> Self:
-        if self.enable and not self.persist_path:
-            msg = "persist_path обязателен при enable=True"
+    def _validate(self) -> Self:
+        """Под discover-flow плагин загружается только если включён —
+        значит при load-time `persist_path` должен быть валидно заполнен.
+        """
+        if not self.persist_path:
+            msg = "chromadb.persist_path обязателен"
             raise ValueError(msg)
         return self

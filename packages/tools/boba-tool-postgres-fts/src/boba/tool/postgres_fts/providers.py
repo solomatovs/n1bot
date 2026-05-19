@@ -1,11 +1,13 @@
-"""DI-провайдеры PostgresPool и PgFtsKnowledgeBase для v2.
+"""DI-провайдеры PostgresPool и PgFtsKnowledgeBase.
 
 `@provides`-функции конструируются framework'ом один раз на жизнь
 агента (Scope.APP). `provide_pool` — generator-provider: на teardown
 контейнера Dishka вызовет `pool.close()`, освободив все connection'ы.
 
-Оба провайдера навешены на `enable_if=_pg_fts_active` — если плагин
-выключен, ни pool, ни KB не создаются (Postgres-соединение не открывается).
+Включение/отключение плагина целиком — забота framework'а
+(`AgentBuilder.discover_plugins` читает `[tool.postgres_fts]` enable).
+Если плагин не enabled, его модуль не импортируется → providers не
+видны → pool не создаётся.
 """
 
 from __future__ import annotations
@@ -21,14 +23,7 @@ from boba.tools import FromConfig, FromDI, Scope, provides
 __all__ = ["provide_kb", "provide_pool"]
 
 
-def _pg_fts_active(
-    cfg: Annotated[PostgresFtsPluginConfig, FromConfig()],
-) -> bool:
-    """Provider включён при `enable=True`. dsn/indexes валидируются конфигом."""
-    return cfg.enable
-
-
-@provides(scope=Scope.APP, enable_if=_pg_fts_active)
+@provides(scope=Scope.APP)
 def provide_pool(
     cfg: Annotated[PostgresFtsPluginConfig, FromConfig()],
 ) -> Iterator[PostgresPool]:
@@ -47,7 +42,7 @@ def provide_pool(
         pool.close()
 
 
-@provides(scope=Scope.APP, enable_if=_pg_fts_active)
+@provides(scope=Scope.APP)
 def provide_kb(
     cfg: Annotated[PostgresFtsPluginConfig, FromConfig()],
     pool: Annotated[PostgresPool, FromDI(Scope.APP)],

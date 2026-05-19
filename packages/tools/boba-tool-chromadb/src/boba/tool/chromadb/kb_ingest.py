@@ -19,14 +19,13 @@ from pydantic import Field
 
 from boba.indexing.context import CollectionId
 from boba.tool.chromadb.config import ChromadbPluginConfig
-from boba.tool.chromadb.enable import chromadb_enable_if
 from boba.tool.chromadb.md_folder_ingest import MdFolderIndexer
 from boba.tools import FromConfig, FromDI, Scope, tool
 
 __all__ = ["kb_ingest"]
 
 
-@tool(enable_if=chromadb_enable_if("kb_ingest"))
+@tool
 def kb_ingest(
     indexer: Annotated[MdFolderIndexer, FromDI(Scope.APP)],
     cfg: Annotated[ChromadbPluginConfig, FromConfig()],

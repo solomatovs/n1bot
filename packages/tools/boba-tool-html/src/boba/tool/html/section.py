@@ -13,7 +13,6 @@ from boba.tool.html._parse import (
     load_soup,
     resolve_anchor,
 )
-from boba.tool.html.enable import html_enable_if
 from boba.tools import FromDI, Scope, tool
 from boba.workspace.contract import (
     ProjectWorkspaceShell,
@@ -24,7 +23,7 @@ from boba.workspace.contract import (
 __all__ = ["html_section"]
 
 
-@tool(enable_if=html_enable_if("html_section"))
+@tool
 def html_section(
     path: Annotated[
         str, Field(min_length=1, description="Путь к HTML-файлу в workspace."),

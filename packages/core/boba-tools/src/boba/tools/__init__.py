@@ -20,7 +20,7 @@ Runtime-сущности (`Tool`, `ToolRegistry`, `ToolCatalog`, `ToolExecutor`)
 from __future__ import annotations
 
 from boba.tools.decorators import provides, tool
-from boba.tools.discovery import DEFAULT_PLUGIN_GROUP, discover_plugins
+from boba.tools.discovery import DEFAULT_PLUGIN_ENTRY_POINT, discover_plugins
 from boba.tools.errors import (
     DuplicateProviderError,
     ToolDeclarationError,
@@ -30,7 +30,7 @@ from boba.tools.markers import FromConfig, FromDI
 from boba.tools.scope import Scope
 
 __all__ = [
-    "DEFAULT_PLUGIN_GROUP",
+    "DEFAULT_PLUGIN_ENTRY_POINT",
     "DuplicateProviderError",
     "FromConfig",
     "FromDI",
