@@ -166,8 +166,9 @@ class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
 
     def _apply_tools(self, kwargs: dict[str, Any], r: LLMRequest) -> None:
         t = r.tools_definition
-        if t.tools:
-            kwargs["tools"] = [self._to_tool.convert(tool) for tool in t.tools]
+        if not t.tools:
+            return
+        kwargs["tools"] = [self._to_tool.convert(tool) for tool in t.tools]
         if t.tool_choice is not None:
             kwargs["tool_choice"] = t.tool_choice
         if t.parallel_tool_calls is not None:

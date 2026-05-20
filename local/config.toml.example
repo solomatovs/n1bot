@@ -130,21 +130,36 @@ enable = false
 # description = ""
 # fields = {}
 
-# shell-tool — LLM-имя всегда `bash`. Реализаций две, выбирается через
-# `variant`:
-#   - "sandbox": запуск в bubblewrap-песочнице с явным реестром профилей
-#     (FS-binds, tmpfs, network namespace, env_set).
-#   - "local":   прямой subprocess.Popen без изоляции (под доверенный dev).
+# shell-плагин — два независимых @tool:
+#   - bash_local:   прямой subprocess.Popen без изоляции (под доверенный dev).
+#   - bash_sandbox: bubblewrap-песочница с явным реестром профилей.
+#                   Регистрируется только если на хосте есть `bwrap`.
+#
+# Селекция — через `tools=[...]` allowlist (стандартный PluginConfigBase).
+# Конфиги обоих tool'ов живут отдельными секциями [tool.bash_local] и
+# [tool.bash_sandbox]; при отсутствии в TOML — берутся дефолты (для
+# bash_sandbox пустые profiles означают: tool зарегистрирован, но при
+# вызове вернёт unknown_profile-payload).
 [tool.shell]
 enable = false
-# variant = "sandbox"          # sandbox | local — обязателен при enable=true
-# workspace_root = "."         # обязателен при enable=true; RW-bind для bwrap
+# Allowlist по wire-имени tool'а. Если опущен — регистрируются оба.
+# tools = ["bash_local"]
 
-# --- variant = "sandbox" (требует пакет `bubblewrap` на хосте) ---------------
-# [tool.shell.sandbox]
+# --- bash_local: subprocess без изоляции (dev-only) --------------------------
+# [tool.bash_local]
+# workspace_root = "."         # cwd по умолчанию для subprocess
+# cwd = ""                     # пусто → workspace_root
+# env_passthrough = ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM"]
+# env_set = {}                 # перекрывает env_passthrough при коллизии имён
+# timeout_sec = 30             # 1..3600
+# max_output_bytes = 262144    # ≥1024; отдельно для stdout/stderr
+
+# --- bash_sandbox: bubblewrap (требует `bwrap` на хосте) ---------------------
+# [tool.bash_sandbox]
+# workspace_root = "."         # RW-bind в песочнице + cwd для запуска bwrap
 # default_profile = "default"  # имя default-профиля из profiles ниже
 #
-# [tool.shell.sandbox.profiles.default]
+# [tool.bash_sandbox.profiles.default]
 # ro_binds = ["/usr", "/bin", "/sbin", "/lib", "/lib64",
 #             "/etc/alternatives", "/etc/resolv.conf"]
 # rw_binds = []                # workspace_root добавляется автоматически
@@ -154,14 +169,6 @@ enable = false
 # timeout_sec = 30             # 1..3600
 # max_output_bytes = 262144    # ≥1024; отдельно для stdout/stderr
 # cwd = ""                     # пусто → workspace_root
-
-# --- variant = "local" (без изоляции; не использовать в проде) ---------------
-# [tool.shell.local]
-# cwd = ""                     # пусто → workspace_root
-# env_passthrough = ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM"]
-# env_set = {}
-# timeout_sec = 30             # 1..3600
-# max_output_bytes = 262144    # ≥1024
 
 # confluence_search + confluence_page_outline + confluence_page_section
 # (общий connection-блок на корне плагина; base_url/auth_token обычно из env)
