@@ -41,7 +41,10 @@ import pytest
 from boba.indexing.context import CollectionId
 from boba.indexing.embedder import Embedder
 from boba.indexing.sections import SourceId
-from boba.tool.chromadb.embedder_factory import EmbedderFactory
+from boba.tool.chromadb.embedder_factory import (
+    EmbedderFactory,
+    build_chromadb_embedding_function,
+)
 from boba.tool.chromadb.md_chunk import MdChunkParser
 from boba.tool.chromadb.md_folder_ingest import MdFolderIndexer
 from boba.tool.chromadb.vector_store import ChromaVectorStore
@@ -275,8 +278,21 @@ def test_operator_real_ingest(operator_run: OperatorRunSpec | None) -> None:
         base_url=cfg.embedding_base_url,
         api_key=cfg.embedding_api_key,
     )
+    # Тот же EF, что read-side (`kb_search`) построит в provider'е — чтобы
+    # Chroma записала в persisted-конфиг коллекции совпадающее имя EF
+    # (например, `openai`). Без этого read-side падает с "Embedding
+    # function conflict: new: openai vs persisted: default".
+    ef = build_chromadb_embedding_function(
+        model=cfg.embedding_model,
+        base_url=cfg.embedding_base_url,
+        api_key=cfg.embedding_api_key,
+    )
     client = chromadb.PersistentClient(path=cfg.persist_path)
-    store = ChromaVectorStore(client=client, embedder=embedder)
+    store = ChromaVectorStore(
+        client=client,
+        embedder=embedder,
+        embedding_function=ef,
+    )
     indexer = MdFolderIndexer(store=store)
 
     stats = indexer.index(

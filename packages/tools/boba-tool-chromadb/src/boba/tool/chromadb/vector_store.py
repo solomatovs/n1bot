@@ -84,10 +84,20 @@ class ChromaVectorStore(
         self,
         client: ClientAPI,
         embedder: Embedder[str],
+        *,
+        embedding_function: Any = None,
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> None:
+        # `embedding_function` — chromadb-native EF, который пробрасывается в
+        # `get_or_create_collection`, чтобы Chroma записала в persisted-конфиг
+        # коллекции правильное имя EF (например, `openai`). Без него Chroma
+        # подставляет DefaultEmbeddingFunction и persisted-label = `default`,
+        # что потом ломает read-side (`kb_search`), который передаёт EF явно.
+        # Сами вектора всё равно считает `embedder` и кладёт через
+        # `coll.upsert(..., embeddings=...)`, EF на write-side не вызывается.
         self._client = client
         self._embedder = embedder
+        self._embedding_function = embedding_function
         self._batch_size = batch_size
 
     def get_by_ids(
@@ -247,13 +257,19 @@ class ChromaVectorStore(
         description: str | None,
     ) -> None:
         meta = {self.DESCRIPTION_KEY: description} if description else None
-        self._client.get_or_create_collection(name=str(name), metadata=meta)
+        kwargs: dict[str, Any] = {"name": str(name), "metadata": meta}
+        if self._embedding_function is not None:
+            kwargs["embedding_function"] = self._embedding_function
+        self._client.get_or_create_collection(**kwargs)
 
     def delete_collection(self, name: CollectionId) -> None:
         self._client.delete_collection(name=str(name))
 
     def _open(self, collection: CollectionId) -> Collection:
-        return self._client.get_or_create_collection(name=str(collection))
+        kwargs: dict[str, Any] = {"name": str(collection)}
+        if self._embedding_function is not None:
+            kwargs["embedding_function"] = self._embedding_function
+        return self._client.get_or_create_collection(**kwargs)
 
     def _collection_info(self, coll: Collection) -> CollectionInfo:
         meta = coll.metadata or {}

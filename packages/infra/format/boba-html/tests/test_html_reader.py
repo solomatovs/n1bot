@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from io import BytesIO
+from collections.abc import Callable
 
 import pytest
 
@@ -25,21 +25,9 @@ from boba.indexing import (
     ReaderId,
     ReaderKeys,
     SectionKeys,
-    SourceId,
 )
 
-
-def _doc(
-    html: str,
-    *,
-    source_id: str = "fs:/x",
-    metadata: Metadata | None = None,
-) -> RawDocument:
-    return RawDocument(
-        handle=BytesIO(html.encode("utf-8")),
-        source_id=SourceId(source_id),
-        metadata=metadata or Metadata.empty(),
-    )
+_MakeDoc = Callable[..., RawDocument]
 
 
 # ------------------------------ HtmlReader -------------------------------------
@@ -49,7 +37,7 @@ def test_reader_id():
     assert HtmlReader().reader_id() == ReaderId("ext.html")
 
 
-def test_reader_emits_typed_sections_in_document_order():
+def test_reader_emits_typed_sections_in_document_order(make_raw_doc: _MakeDoc):
     """Все 7 типов в правильном порядке."""
     html = (
         "<html><body>\n"
@@ -65,7 +53,7 @@ def test_reader_emits_typed_sections_in_document_order():
         "<hr>\n"
         "</body></html>"
     )
-    sections = list(HtmlReader().convert(_doc(html)))
+    sections = list(HtmlReader().convert(make_raw_doc(html)))
     types = [type(s).__name__ for s in sections]
     assert types == [
         "HeadingSection",
@@ -78,9 +66,9 @@ def test_reader_emits_typed_sections_in_document_order():
     ]
 
 
-def test_heading_section_has_typed_fields_and_anchor():
+def test_heading_section_has_typed_fields_and_anchor(make_raw_doc: _MakeDoc):
     html = '<html><body><h1 id="intro">Intro</h1></body></html>'
-    [s] = list(HtmlReader().convert(_doc(html)))
+    [s] = list(HtmlReader().convert(make_raw_doc(html)))
     assert isinstance(s, HeadingSection)
     assert s.level == 1
     assert s.text == "Intro"
@@ -90,31 +78,31 @@ def test_heading_section_has_typed_fields_and_anchor():
     assert md.get(SectionKeys.HEADING_TEXT) == "Intro"
 
 
-def test_heading_anchor_falls_back_to_slug():
+def test_heading_anchor_falls_back_to_slug(make_raw_doc: _MakeDoc):
     html = "<html><body><h2>My Section</h2></body></html>"
-    [s] = list(HtmlReader().convert(_doc(html)))
+    [s] = list(HtmlReader().convert(make_raw_doc(html)))
     assert isinstance(s, HeadingSection)
     assert s.metadata.get(SectionKeys.ANCHOR) == "my-section"
 
 
-def test_list_section_typed_fields():
+def test_list_section_typed_fields(make_raw_doc: _MakeDoc):
     html = "<html><body><ol><li>one</li><li>two</li><li>three</li></ol></body></html>"
-    [s] = list(HtmlReader().convert(_doc(html)))
+    [s] = list(HtmlReader().convert(make_raw_doc(html)))
     assert isinstance(s, HtmlListSection)
     assert s.ordered is True
     assert s.items == ("one", "two", "three")
 
 
-def test_unordered_list_section():
+def test_unordered_list_section(make_raw_doc: _MakeDoc):
     html = "<html><body><ul><li>a</li><li>b</li></ul></body></html>"
-    [s] = list(HtmlReader().convert(_doc(html)))
+    [s] = list(HtmlReader().convert(make_raw_doc(html)))
     assert isinstance(s, HtmlListSection)
     assert s.ordered is False
     md = s.to_chunk_metadata()
     assert md.get(HtmlKeys.LIST_ORDERED) is False
 
 
-def test_table_section_typed_fields():
+def test_table_section_typed_fields(make_raw_doc: _MakeDoc):
     html = (
         "<html><body><table>"
         "<thead><tr><th>name</th><th>type</th></tr></thead>"
@@ -124,54 +112,54 @@ def test_table_section_typed_fields():
         "</tbody>"
         "</table></body></html>"
     )
-    [s] = list(HtmlReader().convert(_doc(html)))
+    [s] = list(HtmlReader().convert(make_raw_doc(html)))
     assert isinstance(s, HtmlTableSection)
     assert s.header == ("name", "type")
     assert s.rows == (("id", "int"), ("foo", "str"))
 
 
-def test_code_block_language_from_class():
+def test_code_block_language_from_class(make_raw_doc: _MakeDoc):
     html = (
         '<html><body><pre><code class="language-py">def hi(): pass</code></pre>'
         "</body></html>"
     )
-    [s] = list(HtmlReader().convert(_doc(html)))
+    [s] = list(HtmlReader().convert(make_raw_doc(html)))
     assert isinstance(s, HtmlCodeBlockSection)
     assert s.language == "py"
     assert "def hi()" in s.code
 
 
-def test_code_block_lang_prefix_also_recognized():
+def test_code_block_lang_prefix_also_recognized(make_raw_doc: _MakeDoc):
     html = (
         '<html><body><pre><code class="lang-rust">fn x() {}</code></pre>'
         "</body></html>"
     )
-    [s] = list(HtmlReader().convert(_doc(html)))
+    [s] = list(HtmlReader().convert(make_raw_doc(html)))
     assert isinstance(s, HtmlCodeBlockSection)
     assert s.language == "rust"
 
 
-def test_code_block_no_language():
+def test_code_block_no_language(make_raw_doc: _MakeDoc):
     html = "<html><body><pre><code>plain</code></pre></body></html>"
-    [s] = list(HtmlReader().convert(_doc(html)))
+    [s] = list(HtmlReader().convert(make_raw_doc(html)))
     assert isinstance(s, HtmlCodeBlockSection)
     assert s.language is None
 
 
-def test_blockquote_section():
+def test_blockquote_section(make_raw_doc: _MakeDoc):
     html = "<html><body><blockquote>quoted</blockquote></body></html>"
-    [s] = list(HtmlReader().convert(_doc(html)))
+    [s] = list(HtmlReader().convert(make_raw_doc(html)))
     assert isinstance(s, HtmlBlockquoteSection)
     assert "quoted" in s.content
 
 
-def test_hr_section():
+def test_hr_section(make_raw_doc: _MakeDoc):
     html = "<html><body><hr></body></html>"
-    [s] = list(HtmlReader().convert(_doc(html)))
+    [s] = list(HtmlReader().convert(make_raw_doc(html)))
     assert isinstance(s, HtmlHorizontalRuleSection)
 
 
-def test_wrapper_tags_are_transparent():
+def test_wrapper_tags_are_transparent(make_raw_doc: _MakeDoc):
     """`<div>`/`<section>`/`<article>` обходятся транзитивно."""
     html = (
         "<html><body>"
@@ -180,12 +168,12 @@ def test_wrapper_tags_are_transparent():
         "<article><ul><li>x</li></ul></article>"
         "</body></html>"
     )
-    sections = list(HtmlReader().convert(_doc(html)))
+    sections = list(HtmlReader().convert(make_raw_doc(html)))
     types = [type(s).__name__ for s in sections]
     assert types == ["HeadingSection", "HtmlParagraphSection", "HtmlListSection"]
 
 
-def test_script_and_style_are_dropped():
+def test_script_and_style_are_dropped(make_raw_doc: _MakeDoc):
     html = (
         "<html><body>"
         "<script>alert('x')</script>"
@@ -194,7 +182,7 @@ def test_script_and_style_are_dropped():
         "<p>body</p>"
         "</body></html>"
     )
-    sections = list(HtmlReader().convert(_doc(html)))
+    sections = list(HtmlReader().convert(make_raw_doc(html)))
     combined = "\n".join(s.content for s in sections)
     assert "alert" not in combined
     assert "h1{}" not in combined
@@ -202,7 +190,7 @@ def test_script_and_style_are_dropped():
     assert "body" in combined
 
 
-def test_location_invariant_holds_per_section():
+def test_location_invariant_holds_per_section(make_raw_doc: _MakeDoc):
     """`text[loc.start:loc.end]` покрывает HTML-разметку секции."""
     html = (
         "<html><body>\n"
@@ -211,7 +199,7 @@ def test_location_invariant_holds_per_section():
         "</body></html>"
     )
     text = html
-    for s in HtmlReader().convert(_doc(html)):
+    for s in HtmlReader().convert(make_raw_doc(html)):
         start = s.metadata.get(SectionKeys.LOCATION_START)
         end = s.metadata.get(SectionKeys.LOCATION_END)
         assert start is not None and end is not None
@@ -219,10 +207,10 @@ def test_location_invariant_holds_per_section():
         assert 0 <= start <= end <= len(text)
 
 
-def test_metadata_merge_from_raw_document():
+def test_metadata_merge_from_raw_document(make_raw_doc: _MakeDoc):
     html = "<html><body><h1>A</h1><p>x</p></body></html>"
     upstream = Metadata.from_wire({"source_url": "https://example.com/page"})
-    sections = list(HtmlReader().convert(_doc(html, metadata=upstream)))
+    sections = list(HtmlReader().convert(make_raw_doc(html, metadata=upstream)))
     for s in sections:
         assert (
             s.metadata.to_wire()["source_url"] == "https://example.com/page"
@@ -230,18 +218,18 @@ def test_metadata_merge_from_raw_document():
         assert s.metadata.get(ReaderKeys.DOC_TYPE) == "html"
 
 
-def test_title_in_metadata():
+def test_title_in_metadata(make_raw_doc: _MakeDoc):
     html = (
         "<html><head><title>Page</title></head>"
         "<body><h1>X</h1></body></html>"
     )
-    sections = list(HtmlReader().convert(_doc(html)))
+    sections = list(HtmlReader().convert(make_raw_doc(html)))
     for s in sections:
         assert s.metadata.get(ReaderKeys.PAGE_TITLE) == "Page"
 
 
-def test_empty_payload_yields_nothing():
-    assert list(HtmlReader().convert(_doc(""))) == []
+def test_empty_payload_yields_nothing(make_raw_doc: _MakeDoc):
+    assert list(HtmlReader().convert(make_raw_doc(""))) == []
 
 
 # ------------------------------ HtmlPlainReader --------------------------------
@@ -251,12 +239,12 @@ def test_plain_reader_id():
     assert HtmlPlainReader().reader_id() == ReaderId("ext.html.plain")
 
 
-def test_plain_yields_single_section_with_full_body():
+def test_plain_yields_single_section_with_full_body(make_raw_doc: _MakeDoc):
     html = (
         "<html><head><title>Page</title></head>"
         "<body><h1>X</h1><p>first</p><p>second</p></body></html>"
     )
-    sections = list(HtmlPlainReader().convert(_doc(html)))
+    sections = list(HtmlPlainReader().convert(make_raw_doc(html)))
     assert len(sections) == 1
     s = sections[0]
     assert isinstance(s, ParagraphSection)
@@ -269,19 +257,19 @@ def test_plain_yields_single_section_with_full_body():
     assert s.metadata.get(ReaderKeys.PAGE_TITLE) == "Page"
 
 
-def test_plain_drops_script_and_style():
+def test_plain_drops_script_and_style(make_raw_doc: _MakeDoc):
     html = (
         "<html><body><script>alert('x')</script>"
         "<style>h1{}</style><p>real</p></body></html>"
     )
-    sections = list(HtmlPlainReader().convert(_doc(html)))
+    sections = list(HtmlPlainReader().convert(make_raw_doc(html)))
     assert "alert" not in sections[0].content
     assert "h1{}" not in sections[0].content
     assert "real" in sections[0].content
 
 
-def test_plain_empty_payload_yields_nothing():
-    assert list(HtmlPlainReader().convert(_doc(""))) == []
+def test_plain_empty_payload_yields_nothing(make_raw_doc: _MakeDoc):
+    assert list(HtmlPlainReader().convert(make_raw_doc(""))) == []
 
 
 # ----------------------------- HtmlReadabilityReader ---------------------------
@@ -295,7 +283,9 @@ def test_readability_reader_id():
     assert HtmlReadabilityReader().reader_id() == ReaderId("ext.html.readability")
 
 
-def test_readability_extracts_main_content_skipping_boilerplate():
+def test_readability_extracts_main_content_skipping_boilerplate(
+    make_raw_doc: _MakeDoc,
+):
     html = (
         "<html><head><title>News page</title></head><body>"
         "<nav>Menu | Home | About</nav>"
@@ -306,7 +296,7 @@ def test_readability_extracts_main_content_skipping_boilerplate():
         "<footer>(c) 2026 example.com</footer>"
         "</body></html>"
     )
-    sections = list(HtmlReadabilityReader().convert(_doc(html)))
+    sections = list(HtmlReadabilityReader().convert(make_raw_doc(html)))
     assert len(sections) == 1
     s = sections[0]
     assert "main story" in s.content
@@ -315,5 +305,5 @@ def test_readability_extracts_main_content_skipping_boilerplate():
     assert s.metadata.get(SectionKeys.ANCHOR) is None
 
 
-def test_readability_empty_payload_yields_nothing():
-    assert list(HtmlReadabilityReader().convert(_doc(""))) == []
+def test_readability_empty_payload_yields_nothing(make_raw_doc: _MakeDoc):
+    assert list(HtmlReadabilityReader().convert(make_raw_doc(""))) == []
