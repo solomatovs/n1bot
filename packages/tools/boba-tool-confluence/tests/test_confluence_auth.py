@@ -2,40 +2,35 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import httpx
 
 from boba.indexing import SourceId
-from boba.indexing.context import PipelineContext, PipelineId
+from boba.indexing.context import PipelineContext
 from boba.tool.confluence.auth import PatAuth
 from boba.transport.http import HttpRequest, HttpTransport
 
+_HTTPX_TARGET = "boba.transport.http.transport.httpx.Client"
 
-def _ctx() -> PipelineContext:
-    return PipelineContext(pipeline_id=PipelineId("t"))
-
-
-def _patch(monkeypatch, handler):
-    real_client = httpx.Client
-
-    def mock_client(**kwargs):
-        kwargs["transport"] = httpx.MockTransport(handler)
-        return real_client(**kwargs)
-
-    monkeypatch.setattr("boba.transport.http.transport.httpx.Client", mock_client)
+_PatchHttpx = Callable[[str, Callable[[httpx.Request], httpx.Response]], None]
 
 
-def test_pat_auth_applies_bearer(monkeypatch):
+def test_pat_auth_applies_bearer(
+    pipeline_ctx: PipelineContext,
+    patch_httpx: _PatchHttpx,
+):
     seen_headers = {}
 
     def handler(req):
         seen_headers.update(req.headers)
         return httpx.Response(200, content=b"ok")
 
-    _patch(monkeypatch, handler)
+    patch_httpx(_HTTPX_TARGET, handler)
 
     list(
         HttpTransport().stream(
-            _ctx(),
+            pipeline_ctx,
             iter(
                 [
                     HttpRequest(

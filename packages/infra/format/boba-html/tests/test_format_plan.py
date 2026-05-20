@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from io import BytesIO
+from collections.abc import Callable
 
 import pytest
 
@@ -17,22 +17,17 @@ from boba.html import (
 )
 from boba.indexing import (
     HeadingSection,
-    Metadata,
     RawDocument,
     SourceId,
 )
 
+_MakeDoc = Callable[..., RawDocument]
 
-def _doc(html: str) -> RawDocument:
-    return RawDocument(
-        handle=BytesIO(html.encode("utf-8")),
-        source_id=SourceId("fs:/x"),
-        metadata=Metadata.empty(),
+
+def _section_by_type(make_raw_doc: _MakeDoc, html, cls):
+    return next(
+        s for s in HtmlReader().convert(make_raw_doc(html)) if isinstance(s, cls)
     )
-
-
-def _section_by_type(html, cls):
-    return next(s for s in HtmlReader().convert(_doc(html)) if isinstance(s, cls))
 
 
 # ---------------- HeadingSection (домен) ---------------------------------------
@@ -57,10 +52,10 @@ def test_heading_format_plan_emits_markdown_and_breadcrumb():
 # ---------------- HtmlParagraphSection -----------------------------------------
 
 
-def test_paragraph_format_plan_uses_text_for_embedder():
+def test_paragraph_format_plan_uses_text_for_embedder(make_raw_doc: _MakeDoc):
     """format_content — markdown/plain text; raw_content — оригинальный HTML."""
     html = "<html><body><p>hello <strong>world</strong></p></body></html>"
-    s = _section_by_type(html, HtmlParagraphSection)
+    s = _section_by_type(make_raw_doc, html, HtmlParagraphSection)
     [block] = s.to_format_plan().blocks
     assert "<p>" not in block.format_content
     assert "<strong>" not in block.format_content
@@ -71,9 +66,9 @@ def test_paragraph_format_plan_uses_text_for_embedder():
 # ---------------- HtmlListSection ----------------------------------------------
 
 
-def test_list_format_plan_per_item_atomic_blocks_with_raw():
+def test_list_format_plan_per_item_atomic_blocks_with_raw(make_raw_doc: _MakeDoc):
     html = "<html><body><ul><li>a</li><li>b</li></ul></body></html>"
-    s = _section_by_type(html, HtmlListSection)
+    s = _section_by_type(make_raw_doc, html, HtmlListSection)
     plan = s.to_format_plan()
     assert plan.block_glue == "\n"
     fmt = [b.format_content for b in plan.blocks]
@@ -83,9 +78,9 @@ def test_list_format_plan_per_item_atomic_blocks_with_raw():
     assert all(r.startswith("<li>") for r in raw)
 
 
-def test_ordered_list_uses_numbered_bullets():
+def test_ordered_list_uses_numbered_bullets(make_raw_doc: _MakeDoc):
     html = "<html><body><ol><li>x</li><li>y</li><li>z</li></ol></body></html>"
-    s = _section_by_type(html, HtmlListSection)
+    s = _section_by_type(make_raw_doc, html, HtmlListSection)
     fmt = [b.format_content for b in s.to_format_plan().blocks]
     assert fmt == ["1. x", "2. y", "3. z"]
 
@@ -93,7 +88,7 @@ def test_ordered_list_uses_numbered_bullets():
 # ---------------- HtmlTableSection ---------------------------------------------
 
 
-def test_table_format_plan_replicates_header_and_per_row_raw():
+def test_table_format_plan_replicates_header_and_per_row_raw(make_raw_doc: _MakeDoc):
     html = (
         "<html><body><table>"
         "<thead><tr><th>name</th><th>type</th></tr></thead>"
@@ -102,7 +97,7 @@ def test_table_format_plan_replicates_header_and_per_row_raw():
         "<tr><td>foo</td><td>str</td></tr>"
         "</tbody></table></body></html>"
     )
-    s = _section_by_type(html, HtmlTableSection)
+    s = _section_by_type(make_raw_doc, html, HtmlTableSection)
     plan = s.to_format_plan()
     assert plan.repeat_header.startswith("| name | type |")
     assert "| --- | --- |" in plan.repeat_header
@@ -114,13 +109,13 @@ def test_table_format_plan_replicates_header_and_per_row_raw():
     assert raw[0] != raw[1]
 
 
-def test_table_without_header_emits_empty_repeat_header():
+def test_table_without_header_emits_empty_repeat_header(make_raw_doc: _MakeDoc):
     html = (
         "<html><body><table><tbody>"
         "<tr><td>a</td><td>b</td></tr>"
         "</tbody></table></body></html>"
     )
-    s = _section_by_type(html, HtmlTableSection)
+    s = _section_by_type(make_raw_doc, html, HtmlTableSection)
     plan = s.to_format_plan()
     assert plan.repeat_header == ""
     [block] = plan.blocks
@@ -130,9 +125,9 @@ def test_table_without_header_emits_empty_repeat_header():
 # ---------------- HtmlCodeBlockSection -----------------------------------------
 
 
-def test_code_block_format_plan_wraps_in_fence():
+def test_code_block_format_plan_wraps_in_fence(make_raw_doc: _MakeDoc):
     html = '<html><body><pre><code class="language-py">x = 1</code></pre></body></html>'
-    s = _section_by_type(html, HtmlCodeBlockSection)
+    s = _section_by_type(make_raw_doc, html, HtmlCodeBlockSection)
     plan = s.to_format_plan()
     assert plan.repeat_header == "```py\n"
     assert plan.repeat_footer == "\n```"
@@ -141,9 +136,9 @@ def test_code_block_format_plan_wraps_in_fence():
     assert block.is_atomic is False
 
 
-def test_code_block_no_language_uses_empty_fence():
+def test_code_block_no_language_uses_empty_fence(make_raw_doc: _MakeDoc):
     html = "<html><body><pre><code>plain</code></pre></body></html>"
-    s = _section_by_type(html, HtmlCodeBlockSection)
+    s = _section_by_type(make_raw_doc, html, HtmlCodeBlockSection)
     plan = s.to_format_plan()
     assert plan.repeat_header == "```\n"
 
@@ -151,9 +146,9 @@ def test_code_block_no_language_uses_empty_fence():
 # ---------------- HtmlBlockquoteSection ----------------------------------------
 
 
-def test_blockquote_format_plan_quotes_each_line():
+def test_blockquote_format_plan_quotes_each_line(make_raw_doc: _MakeDoc):
     html = "<html><body><blockquote>quoted</blockquote></body></html>"
-    s = _section_by_type(html, HtmlBlockquoteSection)
+    s = _section_by_type(make_raw_doc, html, HtmlBlockquoteSection)
     [block] = s.to_format_plan().blocks
     assert block.format_content.startswith("> quoted")
 
@@ -161,22 +156,22 @@ def test_blockquote_format_plan_quotes_each_line():
 # ---------------- HtmlHorizontalRuleSection ------------------------------------
 
 
-def test_hr_format_plan_is_empty_so_chunker_skips():
+def test_hr_format_plan_is_empty_so_chunker_skips(make_raw_doc: _MakeDoc):
     html = "<html><body><hr></body></html>"
-    s = _section_by_type(html, HtmlHorizontalRuleSection)
+    s = _section_by_type(make_raw_doc, html, HtmlHorizontalRuleSection)
     assert s.to_format_plan().blocks == ()
 
 
 # ---------------- markdownify-specific (only when installed) -------------------
 
 
-def test_paragraph_inline_markdown_when_markdownify_available():
+def test_paragraph_inline_markdown_when_markdownify_available(make_raw_doc: _MakeDoc):
     pytest.importorskip("markdownify")
     html = (
         '<html><body><p>see <a href="https://x.io">link</a> and '
         "<strong>bold</strong></p></body></html>"
     )
-    s = _section_by_type(html, HtmlParagraphSection)
+    s = _section_by_type(make_raw_doc, html, HtmlParagraphSection)
     [block] = s.to_format_plan().blocks
     assert "**bold**" in block.format_content
     assert "[link](https://x.io)" in block.format_content
@@ -185,13 +180,13 @@ def test_paragraph_inline_markdown_when_markdownify_available():
 # ---------------- HtmlPlainReader ----------------------------------------------
 
 
-def test_plain_reader_separates_blocks_with_double_newline():
+def test_plain_reader_separates_blocks_with_double_newline(make_raw_doc: _MakeDoc):
     from boba.html import HtmlPlainReader
 
     html = (
         "<html><head><title>T</title></head>"
         "<body><h1>H</h1><p>first</p><p>second</p></body></html>"
     )
-    [s] = list(HtmlPlainReader().convert(_doc(html)))
+    [s] = list(HtmlPlainReader().convert(make_raw_doc(html)))
     # Оба параграфа в content, разделены пустой строкой (а не пробелом).
     assert "first\n\nsecond" in s.content

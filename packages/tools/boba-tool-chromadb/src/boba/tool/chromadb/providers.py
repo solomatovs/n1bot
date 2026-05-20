@@ -129,9 +129,26 @@ def provide_md_chunk_parser() -> MdChunkParser:
 def provide_vector_store(
     client: Annotated[ClientAPI, FromDI(Scope.APP)],
     embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
+    cfg: Annotated[ChromadbPluginConfig, FromConfig()],
 ) -> ChromaVectorStore:
-    """ChromaDB-бэкэнд VectorStore[str] для upsert/search/delete."""
-    return ChromaVectorStore(client=client, embedder=embedder)
+    """ChromaDB-бэкэнд VectorStore[str] для upsert/search/delete.
+
+    EF строится из cfg тем же `build_chromadb_embedding_function`, что и
+    read-side (`provide_knowledge_base`) — это гарантирует, что persisted
+    EF-label коллекции при создании совпадёт с EF, который позже передаст
+    `kb_search` в `get_collection(..., embedding_function=...)`. Без этого
+    Chroma на read-side падает с "Embedding function conflict".
+    """
+    ef = build_chromadb_embedding_function(
+        model=cfg.embedding_model,
+        base_url=cfg.embedding_base_url,
+        api_key=cfg.embedding_api_key,
+    )
+    return ChromaVectorStore(
+        client=client,
+        embedder=embedder,
+        embedding_function=ef,
+    )
 
 
 @provides(scope=Scope.APP)

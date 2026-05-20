@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -121,4 +122,43 @@ def operator_run() -> OperatorRunSpec | None:
         cfg=cfg,
         folder=Path(cfg.ingest_folder),
         collection=CollectionId(cfg.ingest_collection),
+    )
+
+
+@dataclass(frozen=True)
+class KbSearchRunSpec:
+    """Параметры одного интеграционного прогона kb_search.
+
+    `cfg` — реальный `ChromadbPluginConfig` (persist_path, embedding_*,
+    ingest_collection). `query`/`top_k` — per-run параметры, в plugin-конфиг
+    не входят (`extra="ignore"` запрещает посторонние ключи), читаются из
+    отдельных env-варсов вне chromadb-префикса.
+    """
+
+    cfg: ChromadbPluginConfig
+    query: str
+    top_k: int
+
+
+@pytest.fixture
+def kb_search_run() -> KbSearchRunSpec | None:
+    """Operator-mode spec для kb_search. None, если плагин не настроен.
+
+    Триггер режима: `ChromadbPluginConfig()` успешно сконструировался
+    (т.е. хотя бы `persist_path` задан). Без него тест skip-ается —
+    в CI/dev без локального config.toml ничего не падает.
+
+    Параметры запроса:
+
+        BOBA_KB_SEARCH_QUERY=<строка>    # по умолчанию "test"
+        BOBA_KB_SEARCH_TOP_K=<int>       # по умолчанию 5
+    """
+    try:
+        cfg = ChromadbPluginConfig()
+    except ValidationError:
+        return None
+    return KbSearchRunSpec(
+        cfg=cfg,
+        query=os.environ.get("BOBA_KB_SEARCH_QUERY", "test"),
+        top_k=int(os.environ.get("BOBA_KB_SEARCH_TOP_K", "5")),
     )
