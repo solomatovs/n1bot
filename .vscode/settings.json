@@ -11,5 +11,6 @@
     "ruff.path": [
         "${workspaceFolder}/.venv/bin/ruff"
     ],
-    "python.analysis.diagnosticMode": "workspace"
+    "python.analysis.diagnosticMode": "workspace",
+    "vectorExplorer.pythonPath": "${workspaceFolder}/.venv/bin/python"
 }
