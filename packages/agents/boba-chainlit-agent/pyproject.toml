@@ -12,6 +12,9 @@ dependencies = [
     "boba-patterns",
     "boba-workspace",
     "boba-settings",
+    "boba-llm",
+    "boba-openai",
+    "boba-tools",
     "chainlit>=2.11,<3",
     # chainlit 2.11+ ломает ForwardRef-резолв на pydantic 2.11+
     # ("CodeSettings is not fully defined"). Держим 2.10.x до апдейта chainlit.

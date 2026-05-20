@@ -5,7 +5,6 @@
 # core/foundation
 -e ./packages/core/boba-patterns
 -e ./packages/core/boba-settings
--e ./packages/core/boba-plugin
 -e ./packages/core/boba-workspace
 -e ./packages/core/boba-indexing
 -e ./packages/core/boba-tools
@@ -35,6 +34,7 @@
 -e ./packages/tools/boba-tool-files
 -e ./packages/tools/boba-tool-html
 -e ./packages/tools/boba-tool-postgres-fts
+-e ./packages/tools/boba-tool-shell
 
 # entry-point apps
 -e ./packages/agents/boba-cli-agent
