@@ -127,23 +127,21 @@ class BashSandboxConfig(BobaFlatSettings):
 
     @model_validator(mode="after")
     def _validate(self) -> Self:
-        """profiles + default_profile + workspace_root консистентны."""
-        if not self.profiles:
-            msg = "bash_sandbox.profiles обязан быть непустым"
-            raise ValueError(msg)
-        if not self.default_profile:
-            msg = "bash_sandbox.default_profile обязателен"
-            raise ValueError(msg)
-        if self.default_profile not in self.profiles:
+        """Консистентность default_profile↔profiles + резолв workspace_root.
+
+        Пустые `profiles` валидны: если оператор включил `[tool.shell]`,
+        но не настраивал сандбокс, `bash_sandbox` всё равно регистрируется
+        (bwrap присутствует), а при первом вызове tool отдаст
+        `unknown_profile`-payload через `_unknown_profile_payload`. Eager-
+        валидация эту ситуацию ломала и блокировала запуск `bash_local`.
+        """
+        if self.default_profile and self.default_profile not in self.profiles:
             msg = (
                 f"bash_sandbox.default_profile={self.default_profile!r} "
                 f"отсутствует в profiles; доступные: {sorted(self.profiles)}"
             )
             raise ValueError(msg)
         resolved = self.workspace_root.expanduser().resolve(strict=False)
-        if not resolved.exists():
-            msg = f"bash_sandbox.workspace_root не существует: {resolved}"
-            raise ValueError(msg)
         if not resolved.is_dir():
             msg = f"bash_sandbox.workspace_root не директория: {resolved}"
             raise ValueError(msg)
