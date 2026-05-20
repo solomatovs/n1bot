@@ -157,7 +157,7 @@ class MdFolderIndexer:
                 chunks.append(
                     self._parser.build_chunk_from_file(f, root=folder),
                 )
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 failed.append(
                     FailedFile(
                         path=str(f),

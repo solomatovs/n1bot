@@ -20,10 +20,10 @@ __all__ = ["kb_search"]
 
 @tool
 def kb_search(
-    collection: Annotated[
-        str,
-        Field(min_length=1, description="Имя коллекции из kb_list_collections."),
-    ],
+    # collection: Annotated[
+    #     str,
+    #     Field(min_length=1, description="Имя коллекции из kb_list_collections."),
+    # ],
     query: Annotated[
         str,
         Field(
@@ -58,7 +58,7 @@ def kb_search(
             f"top_k={top_k} превышает max_top_k={cfg.max_top_k}",
         )
     try:
-        hits = kb.search(collection=collection, query=query, top_k=top_k)
+        hits = kb.search(collection=cfg.ingest_collection, query=query, top_k=top_k)
     except CollectionNotFoundError as e:
         raise RuntimeError(
             f"collection {e.name!r} not found; "
