@@ -15,6 +15,26 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
+            "name": "Index: chromadb operator ingest",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            // Operator-mode прогон test_md_folder_ingest.py::test_operator_real_ingest:
+            // читает [tool.chromadb] из local/config.toml — persist_path,
+            // embedding_model, embedding_base_url, ingest_folder, ingest_collection.
+            // `-s` нужен, чтобы тест распечатал stats (см. _emit() внутри теста).
+            "args": [
+                "-v",
+                "-s",
+                "packages/tools/boba-tool-chromadb/tests/test_md_folder_ingest.py::test_operator_real_ingest"
+            ],
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
             "name": "Chainlit: Boba UI",
             "type": "debugpy",
             "request": "launch",
