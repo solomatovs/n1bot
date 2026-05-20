@@ -142,7 +142,7 @@ class BobaFlatSettings(BaseSettings):
         del env_settings, dotenv_settings, file_secret_settings
         cfg = settings_cls.model_config
         toml_section = cfg.get("config_path")
-        cli_enabled = bool(cfg.get("boba_cli", False))
+        cli_enabled = bool(cfg.get("use_cli", False))
 
         sources: list[PydanticBaseSettingsSource] = []
         if cli_enabled:
