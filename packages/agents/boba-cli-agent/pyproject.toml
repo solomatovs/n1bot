@@ -12,6 +12,8 @@ dependencies = [
     "boba-patterns",
     "boba-workspace",
     "boba-settings",
+    "boba-llm",
+    "boba-openai",
     "pydantic-settings>=2.13,<3",
 ]
 

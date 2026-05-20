@@ -3,7 +3,6 @@ testpaths = ["packages"]
 python_files = ["test_*.py"]
 pythonpath = [
     "packages/core/boba-agent/src",
-    "packages/boba-chunkers/src",
     "packages/infra/llm/boba-openai/src",
     "packages/infra/format/boba-html/src",
     "packages/infra/format/boba-markdown/src",
@@ -40,7 +39,6 @@ exclude = [
     "**/.*",
 ]
 extraPaths = [
-    "packages/boba-chunkers/src",
     "packages/infra/llm/boba-openai/src",
     "packages/infra/format/boba-html/src",
     "packages/infra/format/boba-markdown/src",
