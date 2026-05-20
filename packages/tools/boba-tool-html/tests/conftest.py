@@ -48,7 +48,7 @@ def make_html_tool_names(
         )
         agent = ab.build()
         try:
-            return sorted(t.plan.name for t in ab._tools)
+            return sorted(t.plan.name for t in ab.di.tools)
         finally:
             agent.close()
 
