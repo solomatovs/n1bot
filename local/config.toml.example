@@ -67,19 +67,23 @@ chat_session_pool_capacity = 32
 #   BOBA_TOOL__<PLUGIN_NAME>__<FIELD>=...
 # Например: BOBA_TOOL__KB__CONFLUENCE__BASE_URL=https://confluence.example.com
 
-# KB-плагин (8 tools, см. boba.tool.kb.__init__ для деталей):
+# KB-плагин (13 tools, см. boba.tool.kb.__init__ для деталей):
 #  - files_ingest                  — FS-папка → kb_chunks.
-#  - confluence_space_ingest       — Confluence space → kb_chunks.
+#  - confluence_space_ingest       — один или несколько spaces → kb_chunks.
 #  - confluence_page_ingest        — Confluence pages → kb_chunks.
 #  - kb_search                     — hybrid vector+FTS+RRF по kb_chunks.
 #  - vector_search                 — pure vector (cosine) по kb_chunks.
 #  - confluence_search             — online CQL по Confluence.
+#  - confluence_list_spaces        — список spaces на сервере (markdown).
 #  - fts_search                    — pure FTS по pre-настроенной таблице.
 #  - confluence_page_download      — pages → workspace (HTML/Markdown).
 #  - confluence_space_download     — все страницы space → workspace.
+#  - sql_list_tables               — таблицы/view (read-only).
+#  - sql_describe_table            — колонки/типы.
+#  - sql_query                     — произвольный SELECT → markdown table.
 [tool.kb]
 enable = false
-# Allowlist по wire-имени tool'а. Если опущен — регистрируются все 9.
+# Allowlist по wire-имени tool'а. Если опущен — регистрируются все 13.
 tools = [
     "files_ingest",
     "confluence_space_ingest",
@@ -87,9 +91,13 @@ tools = [
     "kb_search",
     "vector_search",
     "confluence_search",
+    "confluence_list_spaces",
     "fts_search",
     "confluence_page_download",
     "confluence_space_download",
+    "sql_list_tables",
+    "sql_describe_table",
+    "sql_query",
 ]
 # Pinned collection в kb_chunks: target для ingest, source для kb_search.
 collection = "knowledge_base"
@@ -160,6 +168,28 @@ max_top_k = 20
 # snippet_column = "body"
 # language = "russian"
 # metadata_columns = ["title", "source_url"]
+
+# Ad-hoc SQL-tools (sql_query / sql_list_tables / sql_describe_table) —
+# read-only exploratory-аналитика. Отдельный DSN от [tool.kb.postgres]:
+# рекомендуется LLM-only роль с `GRANT SELECT ON ...`. Защита делегирована
+# Postgres: права роли + libpq `options='-c default_transaction_read_only=on
+# -c statement_timeout=<ms>'`, зашитый в DSN при коннекте. Нет tool-side
+# keyword-валидатора и LIMIT-injection. DDL/DML отклоняются PG-side как
+# `permission denied` / `cannot execute X in a read-only transaction`.
+[tool.kb.sql]
+host = ""                    # обязателен
+port = 5432
+user = ""                    # обязателен — рекомендуется read-only роль
+password = ""                # из env: BOBA_TOOL__KB__SQL__PASSWORD
+database = ""                # обязателен
+sslmode = "prefer"
+application_name = "boba-tool-kb-sql"
+pool_min_size = 1
+pool_max_size = 4
+connect_timeout_sec = 10.0
+max_rows = 100               # потолок строк в результате
+max_cell_chars = 200         # длина одной cell'ки (длинные обрезаются)
+statement_timeout_ms = 5000  # PG statement_timeout (мс)
 
 # Integration-test параметры для пакета boba-tool-kb. Читаются классом
 # KbIntegrationTestConfig из tests/conftest.py. Все поля опциональны:

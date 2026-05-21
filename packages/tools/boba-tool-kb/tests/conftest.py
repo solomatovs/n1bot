@@ -21,6 +21,7 @@ endpoint, реальный Confluence. Параметры конфигураци
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -37,6 +38,7 @@ from boba.indexing import (
     FixedDigestPrefix,
     PipelineContext,
     PipelineId,
+    RawDocument,
     ReaderId,
     Sha256TextEncoder,
     SourceBasedChunkId,
@@ -55,6 +57,8 @@ from boba.tool.kb.fts.db import PgFtsKnowledgeBase
 from boba.tool.kb.kb import PostgresKnowledgeBase
 from boba.tool.kb.migrations import apply_bootstrap
 from boba.tool.kb.postgres_config import PostgresConnectionConfig
+from boba.tool.kb.sql.config import SqlConfig
+from boba.tool.kb.sql.executor import SqlExecutor
 from boba.tool.kb.vector_store import PostgresVectorStore
 from boba.transport.fs import FsKeys
 from boba.transport.http import HttpTransport
@@ -168,6 +172,15 @@ def fts_cfg() -> FtsConfig:
 
 
 @pytest.fixture
+def sql_cfg() -> SqlConfig:
+    """`SqlConfig` из `[tool.kb.sql]`; skip при ошибке."""
+    try:
+        return SqlConfig()
+    except ValidationError as e:
+        pytest.skip(f"[tool.kb.sql] не сконфигурирован: {e}")
+
+
+@pytest.fixture
 def test_cfg() -> KbIntegrationTestConfig:
     """`KbIntegrationTestConfig` из `[test.kb]`; skip при ошибке валидации."""
     try:
@@ -276,6 +289,22 @@ def kb_chunker(kb_cfg: KbConfig) -> StructuralChunker:
 
 
 @pytest.fixture
+def sql_executor(sql_cfg: SqlConfig) -> SqlExecutor:
+    """`SqlExecutor` поверх своего `PostgresPool` (DSN из `[tool.kb.sql]`).
+
+    Read-only + `statement_timeout` зашиты в DSN через libpq
+    `options=`-параметр (см. `SqlConfig.session_options`). Close НЕ зовём
+    — singleton-cache `PostgresPool.get` живёт до process exit.
+    """
+    pool = PostgresPool.get(sql_cfg.to_pool_config())
+    return SqlExecutor(
+        pool=pool,
+        max_rows=sql_cfg.max_rows,
+        max_cell_chars=sql_cfg.max_cell_chars,
+    )
+
+
+@pytest.fixture
 def pg_fts_kb(
     fts_cfg: FtsConfig,
     kb_pool: PostgresPool,
@@ -300,6 +329,69 @@ def confluence_transport(
 ) -> HttpTransport:
     """Real HttpTransport с timeout/ssl_verify из `[tool.kb.confluence]`."""
     return ConfluenceConnection.make_transport(confluence_cfg)
+
+
+@pytest.fixture
+def confluence_raw_doc(
+    confluence_cfg: ConfluenceConnectionConfig,
+    confluence_auth: httpx.Auth | None,
+    confluence_transport: HttpTransport,
+    test_cfg,
+    pipeline_ctx: PipelineContext,
+):
+    """Реальный `RawDocument` с одной страницы Confluence (до декодинга).
+
+    Берёт первый `page_id` из `[test.kb].confluence_page_ids` (по
+    умолчанию cwiki.apache.org "Apache Kafka Index"). Используется
+    тестами `ConfluenceJsonDecoder` — они получают raw REST-JSON в
+    `RawDocument.handle` и проверяют extraction в metadata + handle-rewind.
+
+    Тело httpx-response материализуется в `BytesIO` ещё внутри generator'а
+    transport'а (пока httpx-context открыт) — иначе при выходе из
+    generator'а стрим закрывается, и `decoder.convert(...)` падает с
+    `httpx.StreamClosed`.
+    """
+    from io import BytesIO
+
+    from boba.tool.kb.confluence.request_sources.pages import (
+        ConfluencePagesRequestSource,
+    )
+
+    if not test_cfg.confluence_page_ids:
+        pytest.skip("test.kb.confluence_page_ids пусто")
+
+    page_id = test_cfg.confluence_page_ids[0]
+    src = ConfluencePagesRequestSource(
+        base_url=confluence_cfg.base_url,
+        auth=confluence_auth,
+        page_ids=[page_id],
+        body_format=confluence_cfg.body_format,
+    )
+    requests = list(src.stream(pipeline_ctx))
+    assert len(requests) == 1
+
+    materialized: RawDocument | None = None
+    for rd in confluence_transport.stream(pipeline_ctx, requests):
+        body = rd.handle.read()
+        materialized = replace(rd, handle=BytesIO(body))
+    assert materialized is not None
+    return materialized
+
+
+@pytest.fixture
+def confluence_decoded_doc(
+    confluence_cfg: ConfluenceConnectionConfig,
+    confluence_raw_doc,
+):
+    """Реальный `RawDocument` после `ConfluenceJsonDecoder` (HTML + metadata).
+
+    Используется тестами `ConfluenceReader` — они получают HTML-handle
+    с реальной cwiki-страницы и проверяют heading-split / metadata-carry.
+    """
+    from boba.tool.kb.confluence.decoder import ConfluenceJsonDecoder
+
+    decoder = ConfluenceJsonDecoder(body_format=confluence_cfg.body_format)
+    return decoder.convert(confluence_raw_doc)
 
 
 @pytest.fixture
