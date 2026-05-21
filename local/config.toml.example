@@ -72,18 +72,20 @@ chat_session_pool_capacity = 32
 #  - confluence_space_ingest       — Confluence space → kb_chunks.
 #  - confluence_page_ingest        — Confluence pages → kb_chunks.
 #  - kb_search                     — hybrid vector+FTS+RRF по kb_chunks.
+#  - vector_search                 — pure vector (cosine) по kb_chunks.
 #  - confluence_search             — online CQL по Confluence.
 #  - fts_search                    — pure FTS по pre-настроенной таблице.
 #  - confluence_page_download      — pages → workspace (HTML/Markdown).
 #  - confluence_space_download     — все страницы space → workspace.
 [tool.kb]
 enable = false
-# Allowlist по wire-имени tool'а. Если опущен — регистрируются все 8.
+# Allowlist по wire-имени tool'а. Если опущен — регистрируются все 9.
 tools = [
     "files_ingest",
     "confluence_space_ingest",
     "confluence_page_ingest",
     "kb_search",
+    "vector_search",
     "confluence_search",
     "fts_search",
     "confluence_page_download",
@@ -169,6 +171,8 @@ max_top_k = 20
 # confluence_page_ids = ["123456", "654321"]
 # confluence_space_key = "DOCS"
 # confluence_cql = "space = DOCS AND label = api"
+# confluence_search_query = "consumer"      # plain-text query (внутри обернётся в CQL)
+# confluence_search_space = "DOCS"          # optional space filter
 # fts_query = "auth"
 
 # per-tool PromptOverlay (опционально, описание/fields LLM'у):

@@ -18,7 +18,7 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from typing import Generic, Protocol, TypeVar, runtime_checkable
 
-from boba.indexing.chunks import ChunkId
+from boba.indexing.chunks import ChunkId, chunk_id_from_digest
 from boba.indexing.key_encoder import KeyEncoder
 from boba.indexing.sections import Section
 
@@ -71,7 +71,7 @@ class SourceBasedChunkId(ChunkIdStrategy[T]):
 
     def compute(self, section: Section[T], chunk_index: int) -> ChunkId:
         hash_obj = self._encoder.encode(section.source_id)
-        return ChunkId.from_digest(
+        return chunk_id_from_digest(
             hash_obj.to_wire(),
             chunk_index=chunk_index,
             prefix_length=self._prefix.length(),

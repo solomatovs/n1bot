@@ -1,8 +1,11 @@
-"""Integration: `files_ingest` — FS-папка → KB-коллекция через настоящий pipeline.
+"""Integration: `files_ingest` — FS-папка → KB-коллекция через tool-обёртку.
 
-Берёт `files_folder`/`collection` из `[tool.kb]` напрямую (LLM-tool сам
-читает их через FromConfig). Все общие объекты (store, dispatch reader,
-chunker) — из conftest-фикстур.
+Вызывает сам `files_ingest(store=, dispatch_reader=, chunker=, cfg=,
+prune_missing=)` — это проверяет и tool-валидаторы (`folder_not_found`,
+`folder_not_a_directory`), и `store.ensure_collection`, и полный pipeline.
+
+Общие объекты (kb_cfg, kb_store, kb_dispatch_reader, kb_chunker) приходят
+из conftest-фикстур.
 """
 
 from __future__ import annotations
@@ -11,21 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from boba.indexing import (
-    CollectionScopedView,
-    DispatchReader,
-    FullCleanup,
-    IndexerConfig,
-    NoneCleanup,
-    PipelineContext,
-    Sha256TextEncoder,
-    StreamingIndexer,
-)
-from boba.indexing.context import CollectionId, PipelineId
+from boba.indexing import DispatchReader
 from boba.text import StructuralChunker
 from boba.tool.kb.config import KbConfig
+from boba.tool.kb.files_ingest import files_ingest
 from boba.tool.kb.vector_store import PostgresVectorStore
-from boba.transport.fs import FsTransport, FsWalkRequestSource
 
 pytestmark = pytest.mark.integration
 
@@ -36,7 +29,7 @@ def test_files_ingest_real(
     kb_dispatch_reader: DispatchReader[str],
     kb_chunker: StructuralChunker,
 ) -> None:
-    """Реальная индексация в postgres + pgvector через `files_ingest` pipeline."""
+    """Реальный вызов `files_ingest(...)` — проверяем shape ответа и failed=0."""
     folder = Path(kb_cfg.files_folder)
     if not folder.exists() or not folder.is_dir():
         pytest.skip(
@@ -45,33 +38,27 @@ def test_files_ingest_real(
             "./local/docs",
         )
 
-    collection = CollectionId(kb_cfg.collection)
-    indexer = _build_indexer(
+    result = files_ingest(
         store=kb_store,
-        reader=kb_dispatch_reader,
+        dispatch_reader=kb_dispatch_reader,
         chunker=kb_chunker,
-        folder=folder,
-        collection=collection,
-    )
-    stats = indexer.invoke(
-        PipelineContext(pipeline_id=PipelineId("kb-files-ingest-test")),
-        IndexerConfig(
-            key_encoder=Sha256TextEncoder(),
-            cleanup=NoneCleanup(),
-            force_update=False,
-        ),
+        cfg=kb_cfg,
+        prune_missing=False,
     )
 
     _emit("")
-    _emit(f"folder:            {folder}")
-    _emit(f"collection:        {collection}")
+    _emit(f"folder:            {result['folder']}")
+    _emit(f"collection:        {result['collection']}")
     _emit(f"embedding_model:   {kb_cfg.embedding_model}")
-    _emit(f"sources_processed: {stats.sources_processed}")
-    _emit(f"sources_failed:    {stats.sources_failed}")
-    _emit(f"skipped unchanged: {stats.sources_skipped_unchanged}")
-    _emit(f"chunks upserted:   {stats.chunks_upserted}")
-    _emit(f"chunks deleted:    {stats.chunks_deleted}")
-    assert stats.sources_failed == 0, "some sources failed; see logs"
+    _emit(f"indexed:           {result['indexed']}")
+    _emit(f"skipped_unchanged: {result['skipped_unchanged']}")
+    _emit(f"pruned:            {result['pruned']}")
+    _emit(f"failed:            {result['failed']}")
+    assert {"folder", "collection", "indexed", "skipped_unchanged", "pruned",
+            "failed"} <= result.keys()
+    assert result["folder"] == str(folder)
+    assert result["collection"] == kb_cfg.collection
+    assert result["failed"] == 0, "some sources failed; see logs"
 
 
 def test_files_ingest_is_idempotent_second_run_skips_all(
@@ -85,79 +72,63 @@ def test_files_ingest_is_idempotent_second_run_skips_all(
     if not folder.exists() or not folder.is_dir():
         pytest.skip("files_folder отсутствует")
 
-    indexer = _build_indexer(
+    _first = files_ingest(
         store=kb_store,
-        reader=kb_dispatch_reader,
+        dispatch_reader=kb_dispatch_reader,
         chunker=kb_chunker,
-        folder=folder,
-        collection=CollectionId(kb_cfg.collection),
+        cfg=kb_cfg,
+        prune_missing=False,
     )
-    ctx = PipelineContext(pipeline_id=PipelineId("kb-files-ingest-test"))
-    config: IndexerConfig[str] = IndexerConfig(
-        key_encoder=Sha256TextEncoder(),
-        cleanup=NoneCleanup(),
+    second = files_ingest(
+        store=kb_store,
+        dispatch_reader=kb_dispatch_reader,
+        chunker=kb_chunker,
+        cfg=kb_cfg,
+        prune_missing=False,
     )
-
-    first = indexer.invoke(ctx, config)
-    second = indexer.invoke(ctx, config)
-    assert second.chunks_upserted == 0, (
-        f"expected zero re-indexed, got {second.chunks_upserted} "
-        f"(first chunks_upserted={first.chunks_upserted})"
+    assert second["indexed"] == 0, (
+        f"expected zero re-indexed на втором запуске, got {second['indexed']!r}"
     )
 
 
-def test_files_ingest_full_cleanup_prunes_missing_sources(
+def test_files_ingest_full_cleanup_returns_pruned_count(
     kb_cfg: KbConfig,
     kb_store: PostgresVectorStore,
     kb_dispatch_reader: DispatchReader[str],
     kb_chunker: StructuralChunker,
 ) -> None:
-    """С `FullCleanup` чанки удалённых файлов уходят из коллекции (нулевой prune ок)."""
+    """`prune_missing=True` возвращает поле `pruned >= 0` (без падений)."""
     folder = Path(kb_cfg.files_folder)
     if not folder.exists() or not folder.is_dir():
         pytest.skip("files_folder отсутствует")
 
-    indexer = _build_indexer(
+    result = files_ingest(
         store=kb_store,
-        reader=kb_dispatch_reader,
+        dispatch_reader=kb_dispatch_reader,
         chunker=kb_chunker,
-        folder=folder,
-        collection=CollectionId(kb_cfg.collection),
+        cfg=kb_cfg,
+        prune_missing=True,
     )
-    stats = indexer.invoke(
-        PipelineContext(pipeline_id=PipelineId("kb-files-ingest-test")),
-        IndexerConfig(
-            key_encoder=Sha256TextEncoder(),
-            cleanup=FullCleanup(),
-        ),
-    )
-    assert stats.chunks_deleted >= 0
+    assert result["pruned"] >= 0
 
 
-def _build_indexer(
-    *,
-    store: PostgresVectorStore,
-    reader: DispatchReader[str],
-    chunker: StructuralChunker,
-    folder: Path,
-    collection: CollectionId,
-) -> StreamingIndexer:
-    view: CollectionScopedView[str] = CollectionScopedView(
-        store_reader=store,
-        store_writer=store,
-        collection=collection,
-    )
-    return StreamingIndexer(
-        request_source=FsWalkRequestSource(
-            paths=[str(folder)],
-            include=["*.md", "*.html", "*.htm"],
-        ),
-        transport=FsTransport(),
-        reader=reader,
-        chunker=chunker,
-        sink=view,
-        query=view,
-    )
+def test_files_ingest_missing_folder_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    kb_cfg: KbConfig,
+    kb_store: PostgresVectorStore,
+    kb_dispatch_reader: DispatchReader[str],
+    kb_chunker: StructuralChunker,
+) -> None:
+    """Tool-валидатор: несуществующий `files_folder` → `RuntimeError`."""
+    monkeypatch.setattr(kb_cfg, "files_folder", "/nonexistent/path/xyz")
+    with pytest.raises(RuntimeError, match="folder_not_found"):
+        files_ingest(
+            store=kb_store,
+            dispatch_reader=kb_dispatch_reader,
+            chunker=kb_chunker,
+            cfg=kb_cfg,
+            prune_missing=False,
+        )
 
 
 def _emit(msg: str) -> None:

@@ -105,6 +105,20 @@ class KbIntegrationTestConfig(BobaFlatSettings):
             "Пусто = skip."
         ),
     )
+    confluence_search_query: str = Field(
+        default="",
+        description=(
+            "Plain-text запрос для test_confluence_search "
+            "(оборачивается в CQL `text ~ \"...\"` внутри tool'а). Пусто = skip."
+        ),
+    )
+    confluence_search_space: str = Field(
+        default="",
+        description=(
+            "Опциональное `space=` ограничение для test_confluence_search "
+            "(чтобы ограничить выдачу одним space-ом). Пусто = без ограничения."
+        ),
+    )
 
     fts_query: str = Field(
         default="",

@@ -9,8 +9,9 @@
 
 **Search** (read-only):
 - `kb_search`               — hybrid (vector + FTS, RRF) по `[tool.kb].collection`.
-- `confluence_search`       — online CQL по реальному Confluence.
+- `vector_search`           — pure vector (cosine) по `[tool.kb].collection`.
 - `fts_search`              — pure FTS по таблице из `[tool.kb.fts].index`.
+- `confluence_search`       — online CQL по реальному Confluence.
 
 **Confluence work** (online + workspace):
 - `confluence_page_download(page_ids, dest_dir, as_markdown=False)`
@@ -65,6 +66,7 @@ from boba.tool.kb.providers import (
     provide_postgres_pool,
     provide_vector_store,
 )
+from boba.tool.kb.vector_search import vector_search
 from boba.tool.kb.vector_store import PostgresVectorStore
 
 __all__ = [
@@ -91,4 +93,5 @@ __all__ = [
     "provide_knowledge_base",
     "provide_postgres_pool",
     "provide_vector_store",
+    "vector_search",
 ]

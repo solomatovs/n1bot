@@ -46,11 +46,14 @@ def confluence_search(
         str | None,
         Field(description="Ограничение поиска по space."),
     ] = None,
-) -> dict[str, Any]:
+) -> list[dict[str, Any]]:
     """Полнотекстовый поиск страниц Confluence (CQL).
 
-    Возвращает список (title, space, page_id, url, excerpt). Перед
-    последующим чтением вызывайте `confluence_page_outline`.
+    Возвращает плоский список hits: `[{page_id, title, space_key, url,
+    snippet, last_modified}, ...]`. Совместимо по shape с `kb_search` и
+    `fts_search` (тоже `list[dict]`). Для последующей работы:
+    `confluence_page_download` (HTML/Markdown → workspace) или
+    `confluence_page_ingest` (страницы → KB-коллекцию для kb_search).
     """
     pipeline = RuntimePipeline(
         request_source=ConfluenceCqlSearchRequestSource(
@@ -75,10 +78,7 @@ def confluence_search(
             f"Confluence search failed: {type(e).__name__}: {e}",
         ) from e
 
-    return {
-        "cql": query,
-        "hits": [_hit(s) for s in sections],
-    }
+    return [_hit(s) for s in sections]
 
 
 def _hit(section: Section[str]) -> dict[str, str]:
@@ -88,7 +88,7 @@ def _hit(section: Section[str]) -> dict[str, str]:
         "title": m.get(ReaderKeys.PAGE_TITLE) or "",
         "space_key": m.get(ConfluenceKeys.SPACE_KEY) or "",
         "url": str(section.source_id),
-        "excerpt": section.content,
+        "snippet": section.content,
         "last_modified": m.get(HttpKeys.LAST_MODIFIED) or "",
     }
 
