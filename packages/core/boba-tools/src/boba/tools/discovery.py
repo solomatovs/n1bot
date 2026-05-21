@@ -5,7 +5,7 @@
 entry-point group `boba.plugins`:
 
     [project.entry-points."boba.plugins"]
-    postgres = "boba.tool.postgres"
+    kb = "boba.tool.kb"
 
 Value entry-point'а — путь к модулю (не к классу). `ep.load()`
 импортирует модуль и возвращает его — этот объект

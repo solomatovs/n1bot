@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-tool-kb"
+version = "0.1.0"
+description = "Boba KB: knowledge-base tools (kb_search, kb_list_collections, kb_ingest, kb_ingest_confluence) поверх postgres+pgvector с гибридным RRF-поиском, плюс Confluence read-side tools."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-tools",
+    "boba-settings",
+    "boba-workspace",
+    "boba-indexing",
+    "boba-db-postgres",
+    "boba-transport-fs",
+    "boba-transport-http",
+    "boba-text",
+    "boba-markdown",
+    "boba-html",
+    "boba-kbdoc",
+    "boba-openai",
+    "psycopg[binary,pool]>=3.2",
+    "pgvector>=0.3",
+    "pydantic",
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "markdownify>=0.11,<1.0",
+]
+
+[project.entry-points."boba.plugins"]
+kb = "boba.tool.kb"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"boba.tool.kb" = ["migrations/*.sql"]
