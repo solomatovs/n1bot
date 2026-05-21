@@ -65,50 +65,134 @@ chat_session_pool_capacity = 32
 # --- tool-плагины (entry_points discovery; enable=false => плагин пропускается) ---
 # env-конвенции:
 #   BOBA_TOOL__<PLUGIN_NAME>__<FIELD>=...
-# Например: BOBA_TOOL__CONFLUENCE__BASE_URL=https://confluence.example.com
+# Например: BOBA_TOOL__KB__CONFLUENCE__BASE_URL=https://confluence.example.com
 
-# kb_search + kb_list_collections (read) + kb_ingest (write — папка .md → коллекция)
-[tool.chromadb]
+# Postgres + pgvector KB-плагин: KB-tools (kb_search/kb_list_collections/
+# kb_ingest/kb_ingest_confluence) + Confluence read-side tools (search,
+# page_outline, page_section, page_download, page_download_markdown) +
+# External-FTS tools (fts_search/fts_list_indexes — read-only по чужим
+# таблицам оператора).
+[tool.kb]
 enable = false
-persist_path = "./local/chroma"
-# Embedding model (общая для read и write пути).
-#
-# Варианты:
-#   multilingual-e5-large    — intfloat, 1024-dim. Сильный baseline для ru-en
-#                               RAG; раздаётся через LiteLLM proxy / vLLM / HF.
-#                               Требует поднятой LiteLLM/Ollama по embedding_base_url.
-#   bge-m3                   — BAAI, multilingual, 1024-dim, dense+sparse.
-#   text-embedding-3-large   — OpenAI, 3072-dim (через base_url=https://api.openai.com).
-#   default                  — built-in ONNX all-MiniLM-L6-v2; ~80MB модель
-#                               скачивается ONE-TIME при первом импорте, далее
-#                               локально без сети. Подходит для тестов и dev,
-#                               когда LiteLLM/Ollama не запущены. Для русского
-#                               работает посредственно (модель английская).
-#   ""                       — НЕ разрешено: kb_ingest и read-side с пустым
-#                               значением падают (оператор обязан задуматься).
-embedding_model = "multilingual-e5-large"
+# Allowlist по wire-имени tool'а. Если опущен — регистрируются все 11.
+# Здесь перечислены все доступные tools — закомментируйте лишние или
+# замените на суженный список.
+tools = [
+    "kb_search",
+    "kb_list_collections",
+    "kb_ingest",
+    "kb_ingest_confluence",
+    "confluence_search",
+    "confluence_page_outline",
+    "confluence_page_section",
+    "confluence_page_download",
+    "confluence_page_download_markdown",
+    "fts_search",
+    "fts_list_indexes",
+]
+# DSN PostgreSQL (с pgvector + tsvector). Обязателен.
+dsn = ""
+# Минимальный/максимальный размер connection pool'а (psycopg_pool).
+pool_min_size = 1
+pool_max_size = 8
+# PostgreSQL text search configuration для tsvector. Меняется только
+# пересозданием kb_chunks (см. migrations/001_init.sql).
+fts_language = "russian"
+# Embedding model (общая для ingest и kb_search). OpenAI-совместимый endpoint
+# (LiteLLM / OpenAI / vLLM / Ollama). Пустая строка — ingest и kb_search
+# падают fail-fast (оператор обязан задуматься).
+embedding_model = ""
 embedding_base_url = ""
 embedding_api_key = ""
 snippet_chars = 300
 max_top_k = 20
-# Параметры ingest, заранее закреплённые оператором. Используют и LLM-tool
-# kb_ingest, и интеграционный тест `test_operator_real_ingest`. LLM не
-# выбирает folder/collection самостоятельно — это защита от случайного
-# индексирования чужих файлов и создания мусорных коллекций. LLM может
-# только включить prune_missing через args.
-# Пустой ingest_folder = ingest выключен (kb_ingest вернёт ошибку,
-# operator-mode тест skip'нется).
+# RRF (Reciprocal Rank Fusion): k=60 — стандарт литературы; pool=40 — сколько
+# top-K брать из каждого канала (vector + FTS) перед склейкой.
+rrf_k = 60
+rrf_pool = 40
+# Chunking. chunk_size — целевой размер `format_content` чанка в символах;
+# chunk_overlap — перекрытие между соседними чанками (0 = без перекрытия).
+chunk_size = 4000
+chunk_overlap = 0
+# Параметры FS-ingest (`kb_ingest`), заранее закреплённые оператором. LLM не
+# выбирает folder/collection — это защита от случайного индексирования чужих
+# файлов. Пустой ingest_folder = FS-ingest выключен.
 ingest_folder = ""
 ingest_collection = "knowledge_base"
 ingest_collection_description = ""
-# per-tool PromptOverlay: description + fields:
-#   [tool.chromadb.kb_search]
+
+# Confluence connection-блок (общий для всех confluence-tools и для
+# kb_ingest_confluence). Секреты обычно из env: BOBA_TOOL__KB__CONFLUENCE__*.
+#
+# auth_method:
+#   - "pat"    — Bearer-токен (Atlassian Personal Access Token); auth_token обязателен.
+#   - "basic"  — login+password; auth_user + auth_token обязательны.
+#   - "none"   — anonymous read (для публичных Confluence — cwiki.apache.org и т.п.).
+#                Удобно для integration-тестов без секретов:
+#                  base_url = "https://cwiki.apache.org/confluence"
+#                  auth_method = "none"
+[tool.kb.confluence]
+base_url = ""
+auth_method = "pat"          # pat | basic | none
+auth_token = ""              # требуется при pat/basic
+auth_user = ""               # требуется при basic
+timeout_sec = 30.0
+ssl_verify = false
+body_format = "view"         # view | export_view | storage
+
+# Параметры Confluence-ingest (`kb_ingest_confluence`), заранее закреплённые
+# оператором. source_type выбирает обязательное поле (space_key/cql/page_ids).
+[tool.kb.confluence_ingest]
+source_type = "space"        # space | cql | pages
+space_key = ""               # обязателен при source_type=space
+cql = ""                     # обязателен при source_type=cql
+page_ids = []                # обязателен при source_type=pages
+collection = "confluence_kb"
+collection_description = ""
+
+# External-FTS: read-only поиск по чужим таблицам оператора через
+# whitelist tsvector-индексов. Не путать с FTS-каналом kb_search,
+# который работает по `kb_chunks` (наполняется нашими ingest-tools).
+# DSN пуст → переиспользуется [tool.kb].dsn (тот же PostgresPool).
+[tool.kb.external_fts]
+# dsn = ""                  # если задан, должен включать ?default_transaction_read_only=on
+snippet_options = "MaxFragments=2,MaxWords=35,MinWords=15"
+max_top_k = 20
+# Whitelist индексов — массив таблиц [[tool.kb.external_fts.indexes]]:
+# [[tool.kb.external_fts.indexes]]
+# name = "docs"
+# description = "Документация продукта; для подсказок по фичам."
+# schema = "public"
+# table = "documents"
+# id_column = "id"
+# tsv_column = "tsv"
+# snippet_column = "body"
+# language = "russian"
+# metadata_columns = ["title", "source_url"]
+
+# Integration-test параметры для пакета boba-tool-kb. Читаются классом
+# KbIntegrationTestConfig из tests/conftest.py. Все поля опциональны:
+# конкретный тест скипается, если нужное поле пусто. Запуск:
+#   pytest packages/tools/boba-tool-kb -m integration -s
+[test.kb]
+# kb_search_query = "как оформить возврат?"
+# kb_search_top_k = 5
+# confluence_page_ids = ["123456", "654321"]
+# confluence_space_key = "DOCS"
+# confluence_cql = "space = DOCS AND label = api"
+# fts_index_name = "docs"
+# fts_query = "auth"
+
+# per-tool PromptOverlay (опционально, описание/fields LLM'у):
+#   [tool.kb.kb_search]
 #   description = ""
 #   fields = {}
-#   [tool.chromadb.kb_list_collections]
+#   [tool.kb.kb_ingest_confluence]
 #   description = ""
-#   [tool.chromadb.kb_ingest]
+#   fields = {}
+#   [tool.kb.fts_search]
 #   description = ""
+#   fields = {}
 
 # 15 файловых tools под общим enable-флагом
 [tool.files]
@@ -170,32 +254,6 @@ enable = false
 # max_output_bytes = 262144    # ≥1024; отдельно для stdout/stderr
 # cwd = ""                     # пусто → workspace_root
 
-# confluence_search + confluence_page_outline + confluence_page_section
-# (общий connection-блок на корне плагина; base_url/auth_token обычно из env)
-[tool.confluence]
-enable = false
-base_url = ""
-auth_token = ""
-auth_method = "pat"          # pat | basic
-auth_user = ""               # только для basic-auth
-timeout_sec = 30.0
-ssl_verify = false
-body_format = "view"         # view | export_view | storage
-# [tool.confluence.confluence_search]
-# description = ""
-# fields = {}
-# [tool.confluence.confluence_page_outline]
-# description = ""
-# fields = {}
-# [tool.confluence.confluence_page_section]
-# description = ""
-# fields = {}
-
-# Postgres FTS — kb-поиск по предзаполненной БД (читает [tool.postgres_fts] + env)
-[tool.postgres_fts]
-enable = false
-# dsn = "postgresql://user:pass@localhost:5432/db"
-# schema = "public"
-# table = "documents"
-# snippet_chars = 300
-# max_top_k = 20
+# Все KB-каналы (наша KB + Confluence + External-FTS) живут под зонтиком
+# [tool.kb]. См. секции [tool.kb] / [tool.kb.confluence] /
+# [tool.kb.confluence_ingest] / [tool.kb.external_fts] выше.

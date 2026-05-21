@@ -5,12 +5,17 @@ Per-source pipeline собран как ленивая цепочка генер
 
     request
       └─ transport.stream(ctx, [request])    → Iterable[RawDocument]
-          └─ reader.convert(raw)             → Iterable[Section[T]]
-              └─ chunker.stream(ctx, ...)    → Iterable[Chunk[T]]
-                  └─ enrich content_hash     → Iterable[Chunk[T]]
-                      └─ sink.narrow(...).reconcile(chunks, ...)
-                              ↓
-                          ReconcileSummary
+          └─ decoders[0..N].convert(raw)     → RawDocument (по порядку)
+              └─ reader.convert(decoded)     → Iterable[Section[T]]
+                  └─ chunker.stream(ctx, ...) → Iterable[Chunk[T]]
+                      └─ enrich content_hash  → Iterable[Chunk[T]]
+                          └─ sink.narrow(...).reconcile(chunks, ...)
+                                  ↓
+                              ReconcileSummary
+
+`decoders` — опциональная цепочка `RawDocument → RawDocument`-преобразований
+между transport и reader (JSON-payload → HTML-handle, base64 → bytes,
+gzip-decompress, и т.п.). По умолчанию пустой кортеж — identity.
 
 `reconcile` принимает `Iterable[Chunk[T]]`
 Реализация сама решает, потреблять поток chunk-за-chunk'ом или собирать в list внутри.
@@ -39,7 +44,7 @@ StreamingIndexer не знает про scope (collection / namespace / tag / ..
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from typing import TypeVar
 
@@ -47,6 +52,7 @@ from boba.indexing.chunker import Chunker
 from boba.indexing.chunks import Chunk
 from boba.indexing.cleanup import CleanupContext
 from boba.indexing.context import PipelineContext
+from boba.indexing.decoder import Decoder
 from boba.indexing.errors import IndexingError
 from boba.indexing.events import (
     ChunksDeleted,
@@ -92,7 +98,7 @@ class StreamingIndexer(Indexer[ReqT, T]):
     он инкапсулирован в view-impl'е при его конструировании.
     """
 
-    def __init__(  # noqa: PLR0913 — оркестратор честно нуждается в шести deps
+    def __init__(  # noqa: PLR0913 — оркестратор честно нуждается в этих deps
         self,
         request_source: RequestSource[ReqT],
         transport: Transport[ReqT],
@@ -100,6 +106,7 @@ class StreamingIndexer(Indexer[ReqT, T]):
         chunker: Chunker[T],
         sink: IndexSink[T],
         query: IndexQuery[T],
+        decoders: Sequence[Decoder] = (),
     ) -> None:
         self._request_source = request_source
         self._transport = transport
@@ -107,6 +114,7 @@ class StreamingIndexer(Indexer[ReqT, T]):
         self._chunker = chunker
         self._sink = sink
         self._query = query
+        self._decoders: tuple[Decoder, ...] = tuple(decoders)
 
     def stream(
         self,
@@ -230,9 +238,17 @@ class StreamingIndexer(Indexer[ReqT, T]):
         ctx: PipelineContext,
         request: ReqT,
     ) -> Iterator[Section[T]]:
-        """transport → reader → yield Section[T]'ы по одной."""
+        """transport → decoders (in order) → reader → yield Section[T]'ы по одной.
+
+        `decoders` — цепочка `RawDocument → RawDocument`-преобразований
+        (например, JSON-payload → HTML-handle); применяются по порядку,
+        пустой список = identity.
+        """
         for raw_doc in self._transport.stream(ctx, [request]):
-            yield from self._reader.convert(raw_doc)
+            decoded = raw_doc
+            for decoder in self._decoders:
+                decoded = decoder.convert(decoded)
+            yield from self._reader.convert(decoded)
 
     def _run_cleanup(
         self,
