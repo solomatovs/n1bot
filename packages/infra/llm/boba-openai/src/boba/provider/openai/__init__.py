@@ -1,5 +1,6 @@
 """OpenAI-совместимый LLM-адаптер."""
 
+from boba.provider.openai.compat_embedder import OpenAICompatEmbedder
 from boba.provider.openai.config import use_openai
 from boba.provider.openai.dto import OpenAIConfig
 from boba.provider.openai.embedder import OpenAIEmbedder
@@ -20,6 +21,7 @@ __all__ = [
     "HttpTraceChatCompletionObserver",
     "MetricsChatCompletionObserver",
     "MultiKeyReasoningExtractor",
+    "OpenAICompatEmbedder",
     "OpenAIConfig",
     "OpenAIEmbedder",
     "OpenAITerminal",

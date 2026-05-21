@@ -56,16 +56,9 @@ class PostgresPluginConfig(BobaFlatSettings):
         description=(
             "Имя embedding-модели для OpenAI-совместимого endpoint'а "
             "(LiteLLM / OpenAI / vLLM / Ollama). Пустая строка — ingest и "
-            "kb_search будут падать fail-fast."
-        ),
-    )
-    embedding_dim: int = Field(
-        default=0,
-        ge=0,
-        description=(
-            "Размерность embedding-вектора модели. Должна совпадать с "
-            "`vector(N)` колонки `embedding` в `kb_chunks` (см. "
-            "migrations/001_init.sql). 0 — не настроено, fail-fast."
+            "kb_search будут падать fail-fast. Размерность вектора "
+            "определяется автоматически по первому ответу модели "
+            "(см. `OpenAICompatEmbedder.dim()`)."
         ),
     )
     embedding_base_url: str = Field(
@@ -103,42 +96,24 @@ class PostgresPluginConfig(BobaFlatSettings):
             "склейкой через RRF. Обычно 2-4x от итогового top_k."
         ),
     )
-    html_split_levels: list[int] = Field(
-        default_factory=lambda: [1, 2],
+    chunk_size: int = Field(
+        default=4000,
+        ge=1,
         description=(
-            "Уровни H-тэгов, на которых HtmlChunkParser режет документ "
-            "на чанки. По умолчанию H1+H2: чанк = заголовок + всё до "
-            "следующего разделителя того же или верхнего уровня. "
-            "Подзаголовки (не из списка) сохраняются в body как "
-            "markdown-prefix'ы (`### Title`)."
+            "Целевой размер `format_content` чанка в символах (передаётся "
+            "в `OverlapCharSplitter.chunk_size`). `StructuralChunker` "
+            "уменьшает effective-budget на длину `prefix + repeat_header + "
+            "repeat_footer`, чтобы итоговый чанк влез в лимит."
         ),
     )
-    html_min_chunk_chars: int = Field(
+    chunk_overlap: int = Field(
         default=0,
         ge=0,
         description=(
-            "Минимальная длина `format_content` чанка (включая заголовок). "
-            "Чанки короче — пропускаются (защита от пустых разделов с "
-            "одним заголовком). 0 = выключено."
-        ),
-    )
-    html_max_chunk_chars: int = Field(
-        default=4000,
-        ge=0,
-        description=(
-            "Soft-cap длины `format_content`. При превышении чанк "
-            "разбивается по границам `<p>` / `<pre>` / `<table>` / "
-            "`<ul>` (sub-chunk наследует metadata разделителя, chunk_index "
-            "растёт). 0 = выключено (длинные секции остаются одним чанком)."
-        ),
-    )
-    html_extract_canonical_url: bool = Field(
-        default=True,
-        description=(
-            "Извлекать `source_url` из `<link rel=\"canonical\">` или "
-            "`<meta property=\"og:url\">` / `<meta name=\"canonical\">`. "
-            "Если ничего не нашлось — поле остаётся пустым, link в "
-            "kb_search будет пустой строкой."
+            "Перекрытие между соседними чанками в символах (передаётся в "
+            "`OverlapCharSplitter.chunk_overlap`). 0 = без перекрытия "
+            "(дефолт). Полезно для длинных контекстов, где разрыв "
+            "посередине абзаца ухудшает retrieval."
         ),
     )
     ingest_folder: str = Field(
