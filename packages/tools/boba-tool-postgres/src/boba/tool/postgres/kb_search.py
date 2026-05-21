@@ -1,4 +1,4 @@
-"""Tool: semantic search по одной KB-коллекции."""
+"""Tool: гибридный (vector + FTS, RRF) semantic search по одной KB-коллекции."""
 
 from __future__ import annotations
 
@@ -7,12 +7,9 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from boba.tool.chromadb.config import ChromadbPluginConfig
-from boba.tool.chromadb.errors import (
-    CollectionNotFoundError,
-    KnowledgeBaseError,
-)
-from boba.tool.chromadb.kb import ChromaKnowledgeBase
+from boba.tool.postgres.config import PostgresPluginConfig
+from boba.tool.postgres.errors import KnowledgeBaseError
+from boba.tool.postgres.kb import PostgresKnowledgeBase
 from boba.tools import FromConfig, FromDI, Scope, tool
 
 __all__ = ["kb_search"]
@@ -20,22 +17,19 @@ __all__ = ["kb_search"]
 
 @tool
 def kb_search(
-    # collection: Annotated[
-    #     str,
-    #     Field(min_length=1, description="Имя коллекции из kb_list_collections."),
-    # ],
     query: Annotated[
         str,
         Field(
             min_length=1,
             description=(
                 "Поисковый запрос на естественном языке — будет преобразован "
-                "в embedding и сопоставлен с документами коллекции."
+                "в embedding (для vector-канала) и в plainto_tsquery (для "
+                "FTS-канала). Гибридный результат склеивается через RRF."
             ),
         ),
     ],
-    kb: Annotated[ChromaKnowledgeBase, FromDI(Scope.APP)],
-    cfg: Annotated[ChromadbPluginConfig, FromConfig()],
+    kb: Annotated[PostgresKnowledgeBase, FromDI(Scope.APP)],
+    cfg: Annotated[PostgresPluginConfig, FromConfig()],
     top_k: Annotated[
         int,
         Field(
@@ -47,23 +41,22 @@ def kb_search(
         ),
     ] = 5,
 ) -> list[dict[str, Any]]:
-    """Semantic search по KB-коллекции ChromaDB.
+    """Hybrid semantic search по KB-коллекции (vector + FTS + RRF).
 
     Возвращает JSON-массив hits {id, distance, link, metadata, snippet},
-    упорядоченный по релевантности (меньшее distance = ближе). Перед
-    вызовом узнай доступные коллекции через kb_list_collections.
+    упорядоченный по релевантности (меньшее distance = ближе/релевантнее).
+    Перед вызовом узнай доступные коллекции через kb_list_collections.
     """
     if top_k > cfg.max_top_k:
         raise RuntimeError(
             f"top_k={top_k} превышает max_top_k={cfg.max_top_k}",
         )
     try:
-        hits = kb.search(collection=cfg.ingest_collection, query=query, top_k=top_k)
-    except CollectionNotFoundError as e:
-        raise RuntimeError(
-            f"collection {e.name!r} not found; "
-            f"call kb_list_collections to see available ones",
-        ) from e
+        hits = kb.search(
+            collection=cfg.ingest_collection,
+            query=query,
+            top_k=top_k,
+        )
     except KnowledgeBaseError as e:
         raise RuntimeError(str(e)) from e
 

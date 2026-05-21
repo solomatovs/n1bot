@@ -1,10 +1,10 @@
-"""Tool: показать агенту список доступных KB-коллекций."""
+"""Tool: показать агенту список доступных KB-коллекций (postgres)."""
 
 from __future__ import annotations
 
 from typing import Annotated, Any
 
-from boba.tool.chromadb.kb import ChromaKnowledgeBase
+from boba.tool.postgres.kb import PostgresKnowledgeBase
 from boba.tools import FromDI, Scope, tool
 
 __all__ = ["kb_list_collections"]
@@ -12,9 +12,9 @@ __all__ = ["kb_list_collections"]
 
 @tool
 def kb_list_collections(
-    kb: Annotated[ChromaKnowledgeBase, FromDI(Scope.APP)],
+    kb: Annotated[PostgresKnowledgeBase, FromDI(Scope.APP)],
 ) -> list[dict[str, Any]]:
-    """Список доступных knowledge-base коллекций ChromaDB.
+    """Список доступных knowledge-base коллекций (postgres + pgvector).
 
     Возвращает JSON-массив объектов {name, description}. Используй перед
     kb_search чтобы выбрать подходящую коллекцию.
