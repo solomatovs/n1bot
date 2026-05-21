@@ -1,13 +1,15 @@
-"""DI-провайдеры postgres KB-плагина.
+"""DI-провайдеры KB-плагина.
 
 Граф зависимостей:
 
-    KbPluginConfig (FromConfig)
+    PostgresConnectionConfig (FromConfig)
         │
-        ├──> PostgresPool (boba-db-postgres, configure=register_vector)
-        │       │
-        │       └──> apply_bootstrap(conn) на первом подключении
-        │            (создаёт kb_chunks/kb_collections если их нет)
+        └──> PostgresPool (boba-db-postgres, configure=register_vector)
+                │
+                └──> apply_bootstrap(conn) на первом подключении
+                     (создаёт kb_chunks/kb_collections если их нет)
+
+    KbConfig (FromConfig)
         │
         ├──> Embedder[str]                 # OpenAICompatEmbedder
         ├──> PostgresVectorStore
@@ -17,13 +19,13 @@
         ├──> DispatchReader[str]           # by FsKeys.SUFFIX
         └──> StructuralChunker             # heading-aware + OverlapCharSplitter
 
-StreamingIndexer и CollectionScopedView собираются inline в `kb_ingest`
-tool — они зависят от per-call параметров (collection / folder / cleanup),
-которые не имеют смысла фиксировать в APP-scope синглтоне.
+`StreamingIndexer` и `CollectionScopedView` собираются inline в ingest-tool'ах
+— они зависят от per-call параметров (source/collection/cleanup), которые
+не имеют смысла фиксировать в APP-scope синглтоне.
 
 pgvector-типы регистрируются на каждом connection через `configure`-hook
-PostgresPool'а — без этого psycopg вернёт `embedding` как plain
-строку, а INSERT vector упадёт.
+PostgresPool'а — без этого psycopg вернёт `embedding` как plain строку,
+а INSERT vector упадёт.
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ from typing import Annotated
 from openai import OpenAI
 from pgvector.psycopg import register_vector
 
-from boba.db.postgres import PostgresConfig, PostgresPool
+from boba.db.postgres import PostgresPool
 from boba.html import HtmlReader
 from boba.indexing import (
     ChunkerId,
@@ -50,9 +52,10 @@ from boba.markdown import MarkdownReader
 from boba.provider.openai import OpenAICompatEmbedder
 from boba.text import OverlapCharSplitter, StructuralChunker
 from boba.text.structural_chunker import SplitterFactory
-from boba.tool.kb.config import KbPluginConfig
+from boba.tool.kb.config import KbConfig
 from boba.tool.kb.kb import PostgresKnowledgeBase
 from boba.tool.kb.migrations import apply_bootstrap
+from boba.tool.kb.postgres_config import PostgresConnectionConfig
 from boba.tool.kb.vector_store import PostgresVectorStore
 from boba.tools import FromConfig, FromDI, Scope, provides
 from boba.transport.fs import FsKeys
@@ -75,22 +78,18 @@ _CHUNK_ID_PREFIX_LENGTH: int = 16
 
 @provides(scope=Scope.APP)
 def provide_postgres_pool(
-    cfg: Annotated[KbPluginConfig, FromConfig()],
+    pg_cfg: Annotated[PostgresConnectionConfig, FromConfig()],
 ) -> Iterator[PostgresPool]:
     """PostgresPool с register_vector configure-hook и bootstrap-миграциями.
 
-    На первом полученном соединении выполняется `apply_bootstrap`:
-    идемпотентные CREATE TABLE/INDEX/EXTENSION. pgvector-types
-    регистрируются на каждом свежем connection через configure-callback —
-    без этого `embedding`-колонка приходит как plain str, upsert vector
-    падает на cast.
+    DSN/pool sizes — из `[tool.kb.postgres]` (структурированно). На первом
+    полученном соединении выполняется `apply_bootstrap`: идемпотентные
+    CREATE TABLE/INDEX/EXTENSION. pgvector-types регистрируются на каждом
+    свежем connection через configure-callback — без этого `embedding`-
+    колонка приходит как plain str, upsert vector падает на cast.
     """
     pool = PostgresPool.get(
-        PostgresConfig(
-            dsn=cfg.dsn,
-            min_size=cfg.pool_min_size,
-            max_size=cfg.pool_max_size,
-        ),
+        pg_cfg.to_pool_config(),
         configure=register_vector,
     )
     try:
@@ -103,7 +102,7 @@ def provide_postgres_pool(
 
 @provides(scope=Scope.APP)
 def provide_embedder(
-    cfg: Annotated[KbPluginConfig, FromConfig()],
+    cfg: Annotated[KbConfig, FromConfig()],
 ) -> Embedder[str]:
     """`Embedder[str]` для ingest и read-side путей.
 
@@ -150,7 +149,7 @@ def provide_vector_store(
 def provide_knowledge_base(
     pool: Annotated[PostgresPool, FromDI(Scope.APP)],
     embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
-    cfg: Annotated[KbPluginConfig, FromConfig()],
+    cfg: Annotated[KbConfig, FromConfig()],
 ) -> PostgresKnowledgeBase:
     """Read-side KB: list_collections + гибридный search (RRF)."""
     return PostgresKnowledgeBase(
@@ -200,7 +199,7 @@ def provide_dispatch_reader(
 
 @provides(scope=Scope.APP)
 def provide_chunker(
-    cfg: Annotated[KbPluginConfig, FromConfig()],
+    cfg: Annotated[KbConfig, FromConfig()],
 ) -> StructuralChunker:
     """Heading-aware Chunker с `OverlapCharSplitter` для size-cap."""
     return StructuralChunker(

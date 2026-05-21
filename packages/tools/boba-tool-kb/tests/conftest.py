@@ -1,22 +1,22 @@
 """Pytest fixtures для пакета boba-tool-kb (integration-mode).
 
-ВСЕ тесты в пакете — integration: ходят в реальный postgres, реальный
-embeddings endpoint, реальный Confluence. Параметры конфигурации читаются
-через систему конфигурирования (BobaFlatSettings) из:
+ВСЕ тесты — integration: ходят в реальный postgres, реальный embeddings
+endpoint, реальный Confluence. Параметры конфигурации читаются через
+систему конфигурирования (BobaFlatSettings) из:
 
-- `[tool.kb]`                  → KbPluginConfig (dsn, embedder, ingest_*)
-- `[tool.kb.confluence]`       → ConfluencePluginConfig (Confluence connection)
-- `[tool.kb.confluence_ingest]` → ConfluenceIngestConfig (Confluence ingest source)
-- `[tool.kb.external_fts]`     → ExternalFtsConfig (whitelist FTS-индексов)
-- `[test.kb]`                  → KbIntegrationTestConfig (тестовые параметры:
-                                  page_ids, search-query, fts-index/query, ...)
+- `[tool.kb]`              → `KbConfig` (collection, files_folder, embedder,
+                              search params, chunker).
+- `[tool.kb.postgres]`     → `PostgresConnectionConfig` (host/port/user/...).
+- `[tool.kb.confluence]`   → `ConfluenceConnectionConfig` (base_url/auth/...).
+- `[tool.kb.fts]`          → `FtsConfig` (одна whitelist-таблица).
+- `[test.kb]`              → `KbIntegrationTestConfig` (тестовые параметры:
+                              page_ids, search-query, space_key, ...).
 
 Каждая конфиг-фикстура skip-ает тест с понятной причиной, если секция
-не сконструировалась (validation failed) — это значит оператор не
-заполнил соответствующую секцию.
+не сконструировалась (validation failed) — оператор не заполнил секцию.
 
 `pytest -m integration` для запуска; default-режим (`-m "not integration"`)
-их исключает — см. root pyproject.toml.
+их исключает (см. root pyproject.toml).
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from openai import OpenAI
 from pgvector.psycopg import register_vector
 from pydantic import Field, ValidationError
 
-from boba.db.postgres import PostgresConfig, PostgresPool
+from boba.db.postgres import PostgresPool
 from boba.html import HtmlReader
 from boba.indexing import (
     ChunkerId,
@@ -47,14 +47,14 @@ from boba.provider.openai import OpenAICompatEmbedder
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.text import OverlapCharSplitter, StructuralChunker
 from boba.text.structural_chunker import SplitterFactory
-from boba.tool.kb.config import KbPluginConfig
-from boba.tool.kb.confluence.config import ConfluencePluginConfig
+from boba.tool.kb.config import KbConfig
+from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence_ingest_config import ConfluenceIngestConfig
-from boba.tool.kb.external_fts.config import ExternalFtsConfig
-from boba.tool.kb.external_fts.db import PgFtsKnowledgeBase
+from boba.tool.kb.fts.config import FtsConfig
+from boba.tool.kb.fts.db import PgFtsKnowledgeBase
 from boba.tool.kb.kb import PostgresKnowledgeBase
 from boba.tool.kb.migrations import apply_bootstrap
+from boba.tool.kb.postgres_config import PostgresConnectionConfig
 from boba.tool.kb.vector_store import PostgresVectorStore
 from boba.transport.fs import FsKeys
 from boba.transport.http import HttpTransport
@@ -66,13 +66,7 @@ from boba.workspace.contract import WorkspaceId
 
 
 class KbIntegrationTestConfig(BobaFlatSettings):
-    """Параметры integration-тестов KB-плагина (секция `[test.kb]`).
-
-    Отдельный namespace от `[tool.kb.*]`, чтобы тестовые параметры не
-    смешивались с продакшен-конфигом плагина. Все поля имеют дефолты или
-    отмечены как «нужно для подмножества тестов» — тесты, которым поле
-    необходимо, скипаются, если значение пусто.
-    """
+    """Параметры integration-тестов KB-плагина (секция `[test.kb]`)."""
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
@@ -80,12 +74,9 @@ class KbIntegrationTestConfig(BobaFlatSettings):
         config_path="test.kb",
     )
 
-    # kb_search
     kb_search_query: str = Field(
         default="",
-        description=(
-            "Search-запрос для test_kb_search. Пусто = тест skip'нется."
-        ),
+        description="Search-запрос для test_kb_search. Пусто = skip.",
     )
     kb_search_top_k: int = Field(
         default=5,
@@ -93,40 +84,31 @@ class KbIntegrationTestConfig(BobaFlatSettings):
         description="top_k для test_kb_search.",
     )
 
-    # confluence (page_download / page_outline / page_section / requests)
     confluence_page_ids: list[str] = Field(
         default_factory=list,
         description=(
-            "Реальные page_id для test_confluence_page_download[_markdown]. "
+            "Реальные page_id для test_confluence_page_download / page_ingest. "
             "Пусто = тесты скипаются."
         ),
     )
     confluence_space_key: str = Field(
         default="",
         description=(
-            "Реальный space_key для test_space_source_paginates_via_discovery. "
-            "Пусто = тест skip'нется."
+            "Реальный space_key для test_confluence_space_download / "
+            "space_ingest / discovery. Пусто = skip."
         ),
     )
     confluence_cql: str = Field(
         default="",
         description=(
-            "Реальный CQL-запрос для test_cql_source_uses_search_endpoint. "
-            "Пусто = тест skip'нется."
+            "Реальный CQL для test_cql_source_returns_pages_for_real_cql. "
+            "Пусто = skip."
         ),
     )
 
-    # external_fts
-    fts_index_name: str = Field(
-        default="",
-        description=(
-            "Имя индекса из [tool.kb.external_fts].indexes для тестов FTS. "
-            "Пусто = FTS-интеграционные тесты скипаются (если такие есть)."
-        ),
-    )
     fts_query: str = Field(
         default="",
-        description="Запрос для тестов FTS. Пусто = FTS-тесты скипаются.",
+        description="Запрос для тестов FTS (`fts_search`). Пусто = skip.",
     )
 
 
@@ -136,51 +118,44 @@ class KbIntegrationTestConfig(BobaFlatSettings):
 
 
 @pytest.fixture
-def kb_cfg() -> KbPluginConfig:
-    """KbPluginConfig из `[tool.kb]`; skip, если секция не сконструировалась."""
+def kb_cfg() -> KbConfig:
+    """`KbConfig` из `[tool.kb]`; skip при ошибке валидации."""
     try:
-        return KbPluginConfig()
+        return KbConfig()
     except ValidationError as e:
-        pytest.skip(
-            f"[tool.kb] не сконфигурирован (нужны dsn и embedding_model): {e}",
-        )
+        pytest.skip(f"[tool.kb] не сконфигурирован: {e}")
 
 
 @pytest.fixture
-def confluence_cfg() -> ConfluencePluginConfig:
-    """ConfluencePluginConfig из `[tool.kb.confluence]`; skip при ошибке."""
+def pg_cfg() -> PostgresConnectionConfig:
+    """`PostgresConnectionConfig` из `[tool.kb.postgres]`; skip при ошибке."""
     try:
-        return ConfluencePluginConfig()
+        return PostgresConnectionConfig()
+    except ValidationError as e:
+        pytest.skip(f"[tool.kb.postgres] не сконфигурирован: {e}")
+
+
+@pytest.fixture
+def confluence_cfg() -> ConfluenceConnectionConfig:
+    """`ConfluenceConnectionConfig` из `[tool.kb.confluence]`; skip при ошибке."""
+    try:
+        return ConfluenceConnectionConfig()
     except ValidationError as e:
         pytest.skip(f"[tool.kb.confluence] не сконфигурирован: {e}")
 
 
 @pytest.fixture
-def confluence_ingest_cfg() -> ConfluenceIngestConfig:
-    """ConfluenceIngestConfig из `[tool.kb.confluence_ingest]`; skip при ошибке."""
+def fts_cfg() -> FtsConfig:
+    """`FtsConfig` из `[tool.kb.fts]`; skip при ошибке."""
     try:
-        return ConfluenceIngestConfig()
+        return FtsConfig()
     except ValidationError as e:
-        pytest.skip(f"[tool.kb.confluence_ingest] не сконфигурирован: {e}")
-
-
-@pytest.fixture
-def external_fts_cfg() -> ExternalFtsConfig:
-    """ExternalFtsConfig из `[tool.kb.external_fts]`; skip при ошибке."""
-    try:
-        return ExternalFtsConfig()
-    except ValidationError as e:
-        pytest.skip(f"[tool.kb.external_fts] не сконфигурирован: {e}")
+        pytest.skip(f"[tool.kb.fts] не сконфигурирован: {e}")
 
 
 @pytest.fixture
 def test_cfg() -> KbIntegrationTestConfig:
-    """KbIntegrationTestConfig из `[test.kb]`; skip при ошибке валидации.
-
-    Сам класс почти все поля имеет с дефолтами — load-time validation
-    обычно не падает; конкретные тесты сами проверяют непустоту
-    нужных им полей и skip'аются точечно.
-    """
+    """`KbIntegrationTestConfig` из `[test.kb]`; skip при ошибке валидации."""
     try:
         return KbIntegrationTestConfig()
     except ValidationError as e:
@@ -188,24 +163,20 @@ def test_cfg() -> KbIntegrationTestConfig:
 
 
 # --------------------------------------------------------------------------- #
-# Реальные backend-фикстуры (зависят от config-фикстур; те уже скипают тест)
+# Реальные backend-фикстуры
 # --------------------------------------------------------------------------- #
 
 
 @pytest.fixture
-def kb_pool(kb_cfg: KbPluginConfig) -> PostgresPool:
-    """PostgresPool на DSN из `[tool.kb]` с register_vector + bootstrap-миграциями.
+def kb_pool(pg_cfg: PostgresConnectionConfig) -> PostgresPool:
+    """`PostgresPool` из `[tool.kb.postgres]` с register_vector + bootstrap.
 
     Singleton-cached `PostgresPool.get(...)` — повторный вызов с тем же
     DSN+pool-sizes возвращает тот же инстанс. Close НЕ зовём здесь
     (cache живёт до process exit; повторное использование между тестами).
     """
     pool = PostgresPool.get(
-        PostgresConfig(
-            dsn=kb_cfg.dsn,
-            min_size=kb_cfg.pool_min_size,
-            max_size=kb_cfg.pool_max_size,
-        ),
+        pg_cfg.to_pool_config(),
         configure=register_vector,
     )
     with pool.connection() as conn:
@@ -214,8 +185,8 @@ def kb_pool(kb_cfg: KbPluginConfig) -> PostgresPool:
 
 
 @pytest.fixture
-def kb_embedder(kb_cfg: KbPluginConfig) -> OpenAICompatEmbedder:
-    """OpenAI-совместимый embedder для kb_search/kb_ingest."""
+def kb_embedder(kb_cfg: KbConfig) -> OpenAICompatEmbedder:
+    """OpenAI-совместимый embedder для kb_search/files_ingest."""
     client = OpenAI(
         base_url=kb_cfg.embedding_base_url or None,
         api_key=kb_cfg.embedding_api_key or "unused",
@@ -225,12 +196,10 @@ def kb_embedder(kb_cfg: KbPluginConfig) -> OpenAICompatEmbedder:
 
 @pytest.fixture
 def kb_store(
-    kb_cfg: KbPluginConfig,
     kb_pool: PostgresPool,
     kb_embedder: OpenAICompatEmbedder,
 ) -> PostgresVectorStore:
-    """Write-side store для kb_ingest. `embedding_dim` — lazy probe у embedder'а."""
-    del kb_cfg  # явно: store не читает cfg, всё уже в pool/embedder
+    """Write-side store для ingest-тулов."""
     return PostgresVectorStore(
         pool=kb_pool,
         embedder=kb_embedder,
@@ -240,7 +209,7 @@ def kb_store(
 
 @pytest.fixture
 def kb_knowledge_base(
-    kb_cfg: KbPluginConfig,
+    kb_cfg: KbConfig,
     kb_pool: PostgresPool,
     kb_embedder: OpenAICompatEmbedder,
 ) -> PostgresKnowledgeBase:
@@ -258,11 +227,7 @@ def kb_knowledge_base(
 
 @pytest.fixture
 def kb_dispatch_reader() -> DispatchReader[str]:
-    """DispatchReader для kb_ingest: md → KbDocReader, html/htm → HtmlReader.
-
-    Тот же набор route'ов, что и `provide_dispatch_reader` (см. providers.py)
-    — фикстура дублирует, чтобы тест не тянул DI-контейнер.
-    """
+    """DispatchReader для files_ingest: md → KbDocReader, html/htm → HtmlReader."""
     return DispatchReader(
         by=FsKeys.SUFFIX,
         routes={
@@ -270,12 +235,12 @@ def kb_dispatch_reader() -> DispatchReader[str]:
             "html": HtmlReader(),
             "htm": HtmlReader(),
         },
-        reader_id=ReaderId("postgres-kb-dispatch"),
+        reader_id=ReaderId("kb-dispatch"),
     )
 
 
 @pytest.fixture
-def kb_chunker(kb_cfg: KbPluginConfig) -> StructuralChunker:
+def kb_chunker(kb_cfg: KbConfig) -> StructuralChunker:
     """StructuralChunker с chunk_size/overlap из `[tool.kb]`."""
 
     def splitter_factory(extra_overhead: int) -> OverlapCharSplitter:
@@ -287,7 +252,7 @@ def kb_chunker(kb_cfg: KbPluginConfig) -> StructuralChunker:
 
     factory: SplitterFactory = splitter_factory
     return StructuralChunker(
-        chunker_id=ChunkerId("postgres-kb-structural"),
+        chunker_id=ChunkerId("kb-structural"),
         splitter_factory=factory,
         id_strategy=SourceBasedChunkId(
             encoder=Sha256TextEncoder(),
@@ -298,36 +263,28 @@ def kb_chunker(kb_cfg: KbPluginConfig) -> StructuralChunker:
 
 @pytest.fixture
 def pg_fts_kb(
-    external_fts_cfg: ExternalFtsConfig,
+    fts_cfg: FtsConfig,
     kb_pool: PostgresPool,
 ) -> PgFtsKnowledgeBase:
-    """Read-side FTS KB по whitelist-индексам оператора.
-
-    Pool шарится с `kb_pool` (тот же PostgresPool из singleton-cache —
-    `external_fts_cfg.dsn=""` фолбэчится на `[tool.kb].dsn`).
-    """
+    """`PgFtsKnowledgeBase` поверх kb_pool (DSN-fallback на `[tool.kb.postgres]`)."""
     return PgFtsKnowledgeBase(
         pool=kb_pool,
-        indexes=external_fts_cfg.indexes,
-        snippet_options=external_fts_cfg.snippet_options,
+        index=fts_cfg.index,
+        snippet_options=fts_cfg.snippet_options,
     )
 
 
 @pytest.fixture
-def confluence_auth(confluence_cfg: ConfluencePluginConfig) -> httpx.Auth | None:
-    """Real httpx.Auth (PatAuth | BasicAuth | None) из `ConfluenceConnection.make_auth`.
-
-    `None` при `auth_method=none` — anonymous-доступ к публичному Confluence
-    (cwiki.apache.org и т.п.).
-    """
+def confluence_auth(confluence_cfg: ConfluenceConnectionConfig) -> httpx.Auth | None:
+    """`httpx.Auth | None` (PatAuth | BasicAuth | None для anonymous)."""
     return ConfluenceConnection.make_auth(confluence_cfg)
 
 
 @pytest.fixture
 def confluence_transport(
-    confluence_cfg: ConfluencePluginConfig,
+    confluence_cfg: ConfluenceConnectionConfig,
 ) -> HttpTransport:
-    """Real HttpTransport с timeout/ssl_verify из конфига Confluence."""
+    """Real HttpTransport с timeout/ssl_verify из `[tool.kb.confluence]`."""
     return ConfluenceConnection.make_transport(confluence_cfg)
 
 
@@ -335,9 +292,8 @@ def confluence_transport(
 def workspace_shell(tmp_path: Path):
     """Real `FsProjectWorkspaceShell` на pytest tmp_path.
 
-    Концретная реализация ProjectWorkspaceShell лежит в `boba.agent.workspace_fs`
-    (плагин-инфраструктура). Импорт — внутри фикстуры, чтобы не тащить
-    `boba.agent` как обязательную тест-dep, если фикстура не используется.
+    Импорт `boba.agent.workspace_fs` — внутри фикстуры, чтобы не тащить
+    `boba-agent` как обязательную тест-dep при выключенных фикстурах.
     """
     from boba.agent.workspace_fs.shell import FsProjectWorkspaceShell
 

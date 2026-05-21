@@ -1,20 +1,10 @@
 """Confluence connection-config внутри секции `[tool.kb.confluence]`.
 
 Connection-поля (`base_url`, `auth_method`, `auth_user`, `auth_token`,
-`timeout_sec`, `body_format`) — общие для всех confluence-tools'ов
-(`confluence_search/page_outline/page_section/page_download[_markdown]`)
-плюс новый `kb_ingest_confluence`. Каждый tool получает этот класс
-через FromConfig и берёт нужные ему поля.
-
-Не «плагин-конфиг»: плагин теперь один — `tool.kb` — и его
-включение/allowlist (`enable`, `tools`) рулится `KbPluginConfig`'ом.
-Этот класс — просто sub-section, дочерний к нему. `extra="ignore"`
-оставлен, чтобы соседние sub-section'ы (`[tool.kb.confluence_ingest]`)
-не мешали при загрузке.
-
-`ConfluenceConnection.make_auth(cfg)` / `make_transport(cfg)` принимают
-любой объект, удовлетворяющий `ConfluenceConnectionConfig`-Protocol
-(см. `connection.py`) — этот класс ему удовлетворяет (duck typing).
+`timeout_sec`, `ssl_verify`, `body_format`) — общие для всех
+confluence-tools'ов. Каждый tool получает этот класс через FromConfig
+и берёт нужные ему поля. Фабрики httpx.Auth / HttpTransport — в
+`connection.py` (`ConfluenceConnection.make_auth`/`make_transport`).
 """
 
 from __future__ import annotations
@@ -25,10 +15,10 @@ from pydantic import Field, model_validator
 
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 
-__all__ = ["ConfluencePluginConfig"]
+__all__ = ["ConfluenceConnectionConfig"]
 
 
-class ConfluencePluginConfig(BobaFlatSettings):
+class ConfluenceConnectionConfig(BobaFlatSettings):
     """Confluence connection-config: общий для всех confluence-tools'ов."""
 
     model_config = BobaSettingsConfigDict(

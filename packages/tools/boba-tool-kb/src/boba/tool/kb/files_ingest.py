@@ -1,19 +1,19 @@
-"""Tool: индексация заранее настроенной оператором папки в коллекцию.
+"""Tool `files_ingest`: индексация pre-настроенной оператором папки в KB.
 
-LLM-facing wrapper над `StreamingIndexer` из `boba.indexing`. Оператор
-закрепляет folder и collection за собой через `[tool.kb]` (поля
-`ingest_folder` / `ingest_collection` / `ingest_collection_description`) —
-LLM не выбирает, во что и откуда индексировать, только опционально
-включает `prune_missing`.
+LLM-facing wrapper над `StreamingIndexer`. Оператор закрепляет folder
+(`[tool.kb].files_folder`, default `./local/docs`) и collection
+(`[tool.kb].collection`, default `knowledge_base`) — LLM не выбирает,
+во что и откуда индексировать, только опционально включает
+`prune_missing` для cleanup'а удалённых файлов.
 
 Поддерживаемые форматы (диспатч по `FsKeys.SUFFIX` через `DispatchReader`):
 - `.md`         → `KbDocReader(inner=MarkdownReader)` (header + body)
 - `.html/.htm`  → `HtmlReader` (heading-aware)
 
 Pipeline собирается inline здесь, потому что зависит от per-call
-параметров (folder, collection, cleanup-стратегия). Backend-deps
-(`PostgresVectorStore`, `Embedder`, `DispatchReader`, `StructuralChunker`)
-живут как APP-scope синглтоны в [providers.py](providers.py).
+параметров (cleanup-стратегия). Backend-deps (`PostgresVectorStore`,
+`Embedder`, `DispatchReader`, `StructuralChunker`) живут как APP-scope
+синглтоны в [providers.py](providers.py).
 """
 
 from __future__ import annotations
@@ -35,23 +35,23 @@ from boba.indexing import (
 )
 from boba.indexing.context import CollectionId, PipelineId
 from boba.text import StructuralChunker
-from boba.tool.kb.config import KbPluginConfig
+from boba.tool.kb.config import KbConfig
 from boba.tool.kb.vector_store import PostgresVectorStore
 from boba.tools import FromConfig, FromDI, Scope, tool
 from boba.transport.fs import FsRequest, FsTransport, FsWalkRequestSource
 
-__all__ = ["kb_ingest"]
+__all__ = ["files_ingest"]
 
-_PIPELINE_ID: PipelineId = PipelineId("postgres-kb-ingest")
+_PIPELINE_ID: PipelineId = PipelineId("kb.files_ingest")
 _INCLUDE_PATTERNS: tuple[str, ...] = ("*.md", "*.html", "*.htm")
 
 
 @tool
-def kb_ingest(
+def files_ingest(
     store: Annotated[PostgresVectorStore, FromDI(Scope.APP)],
     dispatch_reader: Annotated[DispatchReader[str], FromDI(Scope.APP)],
     chunker: Annotated[StructuralChunker, FromDI(Scope.APP)],
-    cfg: Annotated[KbPluginConfig, FromConfig()],
+    cfg: Annotated[KbConfig, FromConfig()],
     prune_missing: Annotated[
         bool,
         Field(
@@ -62,15 +62,13 @@ def kb_ingest(
         ),
     ] = False,
 ) -> dict[str, Any]:
-    """Индексирует pre-настроенную оператором папку в pre-настроенную коллекцию.
+    """Индексирует pre-настроенную оператором папку (`[tool.kb].files_folder`)
+    в pre-настроенную коллекцию (`[tool.kb].collection`).
 
     Возвращает JSON: {folder, collection, indexed, skipped_unchanged,
     pruned, failed}.
     """
-    folder = Path(cfg.ingest_folder)
-    if not cfg.ingest_folder:
-        msg = "kb.ingest_folder is empty; ingest disabled"
-        raise RuntimeError(msg)
+    folder = Path(cfg.files_folder)
     if not folder.exists():
         msg = f"folder_not_found: {folder}"
         raise RuntimeError(msg)
@@ -78,10 +76,10 @@ def kb_ingest(
         msg = f"folder_not_a_directory: {folder}"
         raise RuntimeError(msg)
 
-    collection = CollectionId(cfg.ingest_collection)
+    collection = CollectionId(cfg.collection)
     store.ensure_collection(
         collection,
-        description=cfg.ingest_collection_description or None,
+        description=cfg.collection_description or None,
     )
 
     view: CollectionScopedView[str] = CollectionScopedView(

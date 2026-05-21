@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from boba.tool.kb.config import KbPluginConfig
+from boba.tool.kb.config import KbConfig
 from boba.tool.kb.kb import PostgresKnowledgeBase
 from boba.tool.kb.kb_search import kb_search
 
@@ -25,7 +25,7 @@ pytestmark = pytest.mark.integration
 
 
 def test_kb_search_real(
-    kb_cfg: KbPluginConfig,
+    kb_cfg: KbConfig,
     kb_knowledge_base: PostgresKnowledgeBase,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
@@ -45,8 +45,7 @@ def test_kb_search_real(
     )
 
     _emit("")
-    _emit(f"dsn:             {_mask_dsn(kb_cfg.dsn)}")
-    _emit(f"collection:      {kb_cfg.ingest_collection}")
+    _emit(f"collection:      {kb_cfg.collection}")
     _emit(f"embedding_model: {kb_cfg.embedding_model}")
     _emit(f"fts_language:    {kb_cfg.fts_language}")
     _emit(f"rrf_k:           {kb_cfg.rrf_k}")
@@ -69,7 +68,7 @@ def test_kb_search_real(
 
 
 def test_kb_search_top_k_ceiling(
-    kb_cfg: KbPluginConfig,
+    kb_cfg: KbConfig,
     kb_knowledge_base: PostgresKnowledgeBase,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
@@ -82,17 +81,6 @@ def test_kb_search_top_k_ceiling(
             cfg=kb_cfg,
             top_k=kb_cfg.max_top_k + 1,
         )
-
-
-def _mask_dsn(dsn: str) -> str:
-    if "@" not in dsn or "://" not in dsn:
-        return dsn
-    scheme, rest = dsn.split("://", 1)
-    creds, host = rest.split("@", 1)
-    if ":" in creds:
-        user, _ = creds.split(":", 1)
-        return f"{scheme}://{user}:***@{host}"
-    return dsn
 
 
 def _emit(msg: str) -> None:

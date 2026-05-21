@@ -1,31 +1,24 @@
-"""Tool: скачать HTML-страницы Confluence в workspace-директорию.
+"""Tool `confluence_page_download`: явный список Confluence-страниц → workspace.
 
-Каждая страница из списка page_ids сохраняется как `{dest_dir}/{page_id}.html` —
-тело страницы в выбранной body_format-репрезентации (storage/view/export_view/...).
-Дальше по этим файлам можно ходить html-tools (html_outline/html_section) или
-обычными file-tools (cat/grep/...).
+HTML по умолчанию; `as_markdown=True` конвертирует HTML через `markdownify`
+(ATX-заголовки) и пишет `.md` с YAML-frontmatter.
 """
 
 from __future__ import annotations
 
 from typing import Annotated, Any
 
-import httpx
 from pydantic import Field
 
-from boba.indexing import PipelineContext, PipelineId, ReaderKeys
-from boba.tool.kb.confluence.config import ConfluencePluginConfig
+from boba.indexing import PipelineId
+from boba.tool.kb.confluence._download_common import download_pages
+from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.decoder import ConfluenceJsonDecoder
-from boba.tool.kb.confluence.keys import ConfluenceKeys
-from boba.tool.kb.confluence.request_sources.pages import (
-    ConfluencePagesRequestSource,
-)
+from boba.tool.kb.confluence.request_sources.pages import ConfluencePagesRequestSource
 from boba.tools import FromConfig, FromDI, Scope, tool
-from boba.workspace.contract import ProjectWorkspaceShell, WorkspaceError
+from boba.workspace.contract import ProjectWorkspaceShell
 
 __all__ = ["confluence_page_download"]
-
 
 _PIPELINE_ID: PipelineId = PipelineId("confluence.page_download")
 
@@ -36,9 +29,7 @@ def confluence_page_download(
         list[str],
         Field(
             min_length=1,
-            description=(
-                "ID страниц для скачивания. JSON-массив строк."
-            ),
+            description="ID страниц для скачивания. JSON-массив строк.",
         ),
     ],
     dest_dir: Annotated[
@@ -46,93 +37,40 @@ def confluence_page_download(
         Field(
             min_length=1,
             description=(
-                "Директория внутри workspace, куда сохранять файлы "
+                "Директория внутри workspace для сохранения "
                 "(создаётся, если не существует)."
             ),
         ),
     ],
     shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
-    cfg: Annotated[ConfluencePluginConfig, FromConfig()],
+    cfg: Annotated[ConfluenceConnectionConfig, FromConfig()],
+    as_markdown: Annotated[
+        bool,
+        Field(
+            description=(
+                "Если true — конвертирует HTML в Markdown (`markdownify`, "
+                "ATX-заголовки) и пишет `.md` с YAML-frontmatter. По умолчанию "
+                "сохраняется HTML с `<!--`-frontmatter."
+            ),
+        ),
+    ] = False,
 ) -> dict[str, Any]:
-    """Скачивает указанные страницы Confluence как HTML-файлы в workspace.
+    """Скачивает указанные страницы Confluence в workspace.
 
-    На каждую страницу создаётся файл `{dest_dir}/{page_id}.html` с HTML-телом
-    в выбранной body_format-репрезентации. Дальше — html_outline/html_section
-    или обычные file-tools.
+    Файлы: `{dest_dir}/{page_id}.html` (HTML) или `{dest_dir}/{page_id}.md`
+    (Markdown). Дальше — html_outline/html_section/file-tools.
     """
-    dest_dir = dest_dir.rstrip("/")
-    try:
-        if not shell.exists(dest_dir):
-            shell.mkdir(dest_dir)
-    except WorkspaceError as e:
-        raise RuntimeError(
-            f"Не удалось создать директорию {dest_dir!r}: {e}",
-        ) from e
-
     source = ConfluencePagesRequestSource(
         base_url=cfg.base_url,
         auth=ConfluenceConnection.make_auth(cfg),
         page_ids=page_ids,
         body_format=cfg.body_format,
     )
-    transport = ConfluenceConnection.make_transport(cfg)
-    decoder = ConfluenceJsonDecoder(body_format=cfg.body_format)
-    pctx = PipelineContext(pipeline_id=_PIPELINE_ID)
-
-    saved: list[dict[str, str]] = []
-    try:
-        for http_req in source.stream(pctx):
-            page_id = http_req.metadata.get(ConfluenceKeys.PAGE_ID) or ""
-            for raw in transport.stream(pctx, [http_req]):
-                decoded = decoder.convert(raw)
-                title = decoded.metadata.get(ReaderKeys.PAGE_TITLE) or ""
-                url = decoded.source_id
-                space_key = decoded.metadata.get(ConfluenceKeys.SPACE_KEY) or ""
-                header = _html_header(
-                    url=url, title=title, page_id=page_id, space_key=space_key,
-                )
-                html_bytes = header + decoded.handle.read()
-                path = f"{dest_dir}/{page_id}.html"
-                _write(shell, path, html_bytes)
-                saved.append({
-                    "page_id": page_id,
-                    "title": title,
-                    "url": url,
-                    "space_key": space_key,
-                    "path": path,
-                    "bytes": str(len(html_bytes)),
-                })
-    except httpx.HTTPError as e:
-        raise RuntimeError(
-            f"Confluence page download failed: {type(e).__name__}: {e}",
-        ) from e
-    except WorkspaceError as e:
-        raise RuntimeError(f"Ошибка записи в workspace: {e}") from e
-
-    return {
-        "dest_dir": dest_dir,
-        "saved": saved,
-        "total": len(saved),
-    }
-
-
-def _write(shell: ProjectWorkspaceShell, path: str, payload: bytes) -> None:
-    with shell.write_binary(path) as f:
-        f.write(payload)
-
-
-def _html_header(
-    *, url: str, title: str, page_id: str, space_key: str,
-) -> bytes:
-    """HTML-комментарий с источником страницы — для цитирования LLM."""
-    lines = [
-        "<!--",
-        f"source: {url}",
-        f"title: {title}",
-        f"page_id: {page_id}",
-    ]
-    if space_key:
-        lines.append(f"space: {space_key}")
-    lines.append("-->")
-    lines.append("")
-    return "\n".join(lines).encode("utf-8")
+    return download_pages(
+        request_source=source,
+        cfg=cfg,
+        shell=shell,
+        dest_dir=dest_dir,
+        as_markdown=as_markdown,
+        pipeline_id=_PIPELINE_ID,
+    )

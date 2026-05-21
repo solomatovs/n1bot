@@ -15,7 +15,7 @@ from boba.indexing import (
     RuntimePipeline,
     Section,
 )
-from boba.tool.kb.confluence.config import ConfluencePluginConfig
+from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.keys import ConfluenceKeys
 from boba.tool.kb.confluence.request_sources.search import (
@@ -41,7 +41,7 @@ def confluence_search(
     limit: Annotated[
         int, Field(ge=1, le=50, description="Максимум hits в ответе."),
     ],
-    cfg: Annotated[ConfluencePluginConfig, FromConfig()],
+    cfg: Annotated[ConfluenceConnectionConfig, FromConfig()],
     space: Annotated[
         str | None,
         Field(description="Ограничение поиска по space."),

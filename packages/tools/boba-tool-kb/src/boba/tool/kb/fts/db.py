@@ -1,4 +1,9 @@
-"""PgFtsKnowledgeBase: read-only обёртка над PostgresPool + whitelist FTS-индексов."""
+"""PgFtsKnowledgeBase: read-only обёртка над PostgresPool + ОДИН whitelist-индекс.
+
+Таблица для FTS задаётся оператором через `FtsConfig.index` (IndexSpec).
+`search(query, top_k)` собирает безопасный SQL через `psycopg.sql.Identifier`
+(никакая часть identifier-ов не приходит от LLM).
+"""
 
 from __future__ import annotations
 
@@ -9,19 +14,11 @@ from typing import Any
 from psycopg.sql import Composable, Composed
 
 from boba.db.postgres import PostgresPool
-from boba.tool.kb.external_fts.models import FtsHit, IndexInfo, IndexSpec
+from boba.tool.kb.fts.models import FtsHit, IndexSpec
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["FtsQueryError", "IndexNotFoundError", "PgFtsKnowledgeBase"]
-
-
-class IndexNotFoundError(KeyError):
-    """Индекс не зарегистрирован в whitelist'е плагина."""
-
-    def __init__(self, name: str) -> None:
-        super().__init__(name)
-        self.name = name
+__all__ = ["FtsQueryError", "PgFtsKnowledgeBase"]
 
 
 class FtsQueryError(RuntimeError):
@@ -29,46 +26,31 @@ class FtsQueryError(RuntimeError):
 
 
 class PgFtsKnowledgeBase:
-    """Whitelist FTS-индексов поверх PostgresPool.
+    """FTS-поиск по одной whitelist-таблице (`IndexSpec`).
 
-    `list_indexes()` — статичный список из конфига; не ходит в БД.
-    `search(...)` — выполняет один `websearch_to_tsquery`-запрос
-    к конкретному индексу. Identifier'ы (schema/table/column) собраны
-    из конфига (TOML), не от LLM, и подставляются через `psycopg.sql`.
+    Identifier'ы (schema/table/column) приходят из конфига (TOML), не от
+    LLM, и подставляются через `psycopg.sql`. Параметры запроса (`query`,
+    `top_k`) — всегда через placeholder'ы, без склейки.
     """
 
     def __init__(
         self,
         pool: PostgresPool,
-        indexes: Sequence[IndexSpec],
+        index: IndexSpec,
         snippet_options: str,
     ) -> None:
         self._pool = pool
-        self._indexes: dict[str, IndexSpec] = {idx.name: idx for idx in indexes}
+        self._index = index
         self._snippet_options = snippet_options
         logger.info(
-            "PgFtsKnowledgeBase opened: %d index(es) [%s]",
-            len(self._indexes),
-            ", ".join(sorted(self._indexes)),
+            "PgFtsKnowledgeBase opened: index=%s (%s.%s)",
+            index.name,
+            index.schema,
+            index.table,
         )
 
-    def list_indexes(self) -> list[IndexInfo]:
-        return [
-            IndexInfo(name=idx.name, description=idx.description)
-            for idx in self._indexes.values()
-        ]
-
-    def search(
-        self,
-        index: str,
-        query: str,
-        top_k: int,
-    ) -> list[FtsHit]:
-        spec = self._indexes.get(index)
-        if spec is None:
-            raise IndexNotFoundError(index)
-
-        stmt, params = self._build_query(spec, query, top_k)
+    def search(self, query: str, top_k: int) -> list[FtsHit]:
+        stmt, params = self._build_query(query, top_k)
         try:
             with self._pool.connection() as conn, conn.cursor() as cur:
                 cur.execute(stmt, params)
@@ -76,19 +58,20 @@ class PgFtsKnowledgeBase:
                 column_names = [d.name for d in (cur.description or [])]
         except Exception as e:
             raise FtsQueryError(
-                f"fts query failed for index {index!r}: {type(e).__name__}: {e}",
+                f"fts query failed for index {self._index.name!r}: "
+                f"{type(e).__name__}: {e}",
             ) from e
 
         return [self._row_to_hit(row, column_names) for row in rows]
 
     def _build_query(
         self,
-        spec: IndexSpec,
         query: str,
         top_k: int,
     ) -> tuple[Composed, tuple[Any, ...]]:
         from psycopg import sql  # noqa: PLC0415
 
+        spec = self._index
         meta_select: Composable = sql.SQL("")
         if spec.metadata_columns:
             meta_select = sql.SQL(", ") + sql.SQL(", ").join(

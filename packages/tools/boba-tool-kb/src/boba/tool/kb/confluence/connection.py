@@ -1,61 +1,36 @@
-"""Общий connection-конфиг для Confluence (base_url + auth + timeout).
+"""Helpers поверх `ConfluenceConnectionConfig`: auth + transport фабрики.
 
-Доменный слой: конфиг-схема + auth/transport фабрики, БЕЗ httpx-клиента.
-httpx-фабрики живут в ext-пакетах (`http_client.py` в runtime/indexing).
+Доменный слой: фабрики auth/transport, БЕЗ httpx-клиента. httpx-клиенты
+живут глубже в pipeline (`HttpTransport`, RequestSources). Прокси-Protocol
+вокруг конфига больше не нужен — есть единственный концертный класс
+`ConfluenceConnectionConfig` (см. `config.py`).
 """
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import TYPE_CHECKING
 
 import httpx
 
 from boba.tool.kb.confluence.auth import PatAuth
 from boba.transport.http import HttpTransport
 
-__all__ = [
-    "ConfluenceConnection",
-    "ConfluenceConnectionConfig",
-]
+if TYPE_CHECKING:
+    from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 
-
-class ConfluenceConnectionConfig(Protocol):
-    """Минимальный контракт DTO с connection-полями.
-
-    Любой `@dataclass(frozen=True)`, у которого есть эти поля, удовлетворяет
-    протоколу — каждый pipeline-плагин сам объявляет свой Config с
-    дополнительными специфичными полями (cql, space_key, page_ids, ...) и
-    автоматически подходит как аргумент `ConfluenceConnection.make_*`.
-
-    Поля объявлены как `@property` (read-only), чтобы протокол был совместим
-    с frozen-dataclass-атрибутами (которые тоже read-only).
-    """
-
-    @property
-    def base_url(self) -> str: ...
-    @property
-    def auth_method(self) -> str: ...
-    @property
-    def auth_user(self) -> str: ...
-    @property
-    def auth_token(self) -> str: ...
-    @property
-    def timeout_sec(self) -> float: ...
-    @property
-    def ssl_verify(self) -> bool: ...
+__all__ = ["ConfluenceConnection"]
 
 
 class ConfluenceConnection:
     """Helpers поверх `ConfluenceConnectionConfig`: auth/transport.
 
-    Object-level invariant `при auth_method=basic обязателен auth_user`
-    реализован прямо в `ConfluencePluginConfig._check_invariants`
-    (`@model_validator(mode='after')`); см. `plugin.py`.
+    Object-level invariant (`при auth_method=basic обязателен auth_user`)
+    проверяется в `ConfluenceConnectionConfig._validate`.
     """
 
     @staticmethod
     def make_auth(cfg: ConfluenceConnectionConfig) -> httpx.Auth | None:
-        """`auth_method=none` → `None` (anonymous-доступ к публичному Confluence).
+        """`auth_method=none` → `None` (anonymous для публичного Confluence).
 
         Downstream (`HttpRequest.auth`, `httpx.Client(auth=...)`, RequestSources)
         принимают `httpx.Auth | None`, поэтому None прокидывается до конца pipeline.
@@ -78,5 +53,5 @@ class ConfluenceConnection:
     def make_transport(cfg: ConfluenceConnectionConfig) -> HttpTransport:
         return HttpTransport(
             timeout_sec=cfg.timeout_sec,
-            verify=cfg.ssl_verify
+            verify=cfg.ssl_verify,
         )

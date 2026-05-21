@@ -67,70 +67,70 @@ chat_session_pool_capacity = 32
 #   BOBA_TOOL__<PLUGIN_NAME>__<FIELD>=...
 # Например: BOBA_TOOL__KB__CONFLUENCE__BASE_URL=https://confluence.example.com
 
-# Postgres + pgvector KB-плагин: KB-tools (kb_search/kb_list_collections/
-# kb_ingest/kb_ingest_confluence) + Confluence read-side tools (search,
-# page_outline, page_section, page_download, page_download_markdown) +
-# External-FTS tools (fts_search/fts_list_indexes — read-only по чужим
-# таблицам оператора).
+# KB-плагин (8 tools, см. boba.tool.kb.__init__ для деталей):
+#  - files_ingest                  — FS-папка → kb_chunks.
+#  - confluence_space_ingest       — Confluence space → kb_chunks.
+#  - confluence_page_ingest        — Confluence pages → kb_chunks.
+#  - kb_search                     — hybrid vector+FTS+RRF по kb_chunks.
+#  - confluence_search             — online CQL по Confluence.
+#  - fts_search                    — pure FTS по pre-настроенной таблице.
+#  - confluence_page_download      — pages → workspace (HTML/Markdown).
+#  - confluence_space_download     — все страницы space → workspace.
 [tool.kb]
 enable = false
-# Allowlist по wire-имени tool'а. Если опущен — регистрируются все 11.
-# Здесь перечислены все доступные tools — закомментируйте лишние или
-# замените на суженный список.
+# Allowlist по wire-имени tool'а. Если опущен — регистрируются все 8.
 tools = [
+    "files_ingest",
+    "confluence_space_ingest",
+    "confluence_page_ingest",
     "kb_search",
-    "kb_list_collections",
-    "kb_ingest",
-    "kb_ingest_confluence",
     "confluence_search",
-    "confluence_page_outline",
-    "confluence_page_section",
-    "confluence_page_download",
-    "confluence_page_download_markdown",
     "fts_search",
-    "fts_list_indexes",
+    "confluence_page_download",
+    "confluence_space_download",
 ]
-# DSN PostgreSQL (с pgvector + tsvector). Обязателен.
-dsn = ""
-# Минимальный/максимальный размер connection pool'а (psycopg_pool).
-pool_min_size = 1
-pool_max_size = 8
-# PostgreSQL text search configuration для tsvector. Меняется только
-# пересозданием kb_chunks (см. migrations/001_init.sql).
-fts_language = "russian"
-# Embedding model (общая для ingest и kb_search). OpenAI-совместимый endpoint
-# (LiteLLM / OpenAI / vLLM / Ollama). Пустая строка — ingest и kb_search
-# падают fail-fast (оператор обязан задуматься).
+# Pinned collection в kb_chunks: target для ingest, source для kb_search.
+collection = "knowledge_base"
+collection_description = ""
+# Папка для files_ingest. LLM не выбирает.
+files_folder = "./local/docs"
+# Embedder (OpenAI-compatible endpoint). embedding_model обязателен.
 embedding_model = ""
 embedding_base_url = ""
 embedding_api_key = ""
+# Search params.
+fts_language = "russian"
 snippet_chars = 300
 max_top_k = 20
-# RRF (Reciprocal Rank Fusion): k=60 — стандарт литературы; pool=40 — сколько
-# top-K брать из каждого канала (vector + FTS) перед склейкой.
+# RRF: k=60 стандарт; pool=40 — сколько top-K брать из каждого канала
+# (vector + FTS) перед склейкой.
 rrf_k = 60
 rrf_pool = 40
-# Chunking. chunk_size — целевой размер `format_content` чанка в символах;
-# chunk_overlap — перекрытие между соседними чанками (0 = без перекрытия).
+# Chunker.
 chunk_size = 4000
 chunk_overlap = 0
-# Параметры FS-ingest (`kb_ingest`), заранее закреплённые оператором. LLM не
-# выбирает folder/collection — это защита от случайного индексирования чужих
-# файлов. Пустой ingest_folder = FS-ingest выключен.
-ingest_folder = ""
-ingest_collection = "knowledge_base"
-ingest_collection_description = ""
 
-# Confluence connection-блок (общий для всех confluence-tools и для
-# kb_ingest_confluence). Секреты обычно из env: BOBA_TOOL__KB__CONFLUENCE__*.
+# Подключение к Postgres структурированными полями. DSN собирается через
+# `psycopg.conninfo.make_conninfo` — спецсимволы в password не требуют
+# URL-encoding. Пароль обычно из env: BOBA_TOOL__KB__POSTGRES__PASSWORD.
+[tool.kb.postgres]
+host = ""                    # обязателен (можно через env)
+port = 5432
+user = ""                    # обязателен
+password = ""                # обычно из env
+database = ""                # обязателен
+sslmode = "prefer"           # disable | allow | prefer | require | verify-ca | verify-full
+application_name = "boba-tool-kb"
+pool_min_size = 1
+pool_max_size = 8
+connect_timeout_sec = 10.0
+
+# Подключение к Confluence (общий блок для всех confluence-tools).
 #
 # auth_method:
-#   - "pat"    — Bearer-токен (Atlassian Personal Access Token); auth_token обязателен.
-#   - "basic"  — login+password; auth_user + auth_token обязательны.
-#   - "none"   — anonymous read (для публичных Confluence — cwiki.apache.org и т.п.).
-#                Удобно для integration-тестов без секретов:
-#                  base_url = "https://cwiki.apache.org/confluence"
-#                  auth_method = "none"
+#   - "pat"   — Bearer-токен (Atlassian Personal Access Token); auth_token обязателен.
+#   - "basic" — login+password; auth_user + auth_token обязательны.
+#   - "none"  — anonymous read (для публичных Confluence — cwiki.apache.org и т.п.).
 [tool.kb.confluence]
 base_url = ""
 auth_method = "pat"          # pat | basic | none
@@ -140,26 +140,15 @@ timeout_sec = 30.0
 ssl_verify = false
 body_format = "view"         # view | export_view | storage
 
-# Параметры Confluence-ingest (`kb_ingest_confluence`), заранее закреплённые
-# оператором. source_type выбирает обязательное поле (space_key/cql/page_ids).
-[tool.kb.confluence_ingest]
-source_type = "space"        # space | cql | pages
-space_key = ""               # обязателен при source_type=space
-cql = ""                     # обязателен при source_type=cql
-page_ids = []                # обязателен при source_type=pages
-collection = "confluence_kb"
-collection_description = ""
-
-# External-FTS: read-only поиск по чужим таблицам оператора через
-# whitelist tsvector-индексов. Не путать с FTS-каналом kb_search,
-# который работает по `kb_chunks` (наполняется нашими ingest-tools).
-# DSN пуст → переиспользуется [tool.kb].dsn (тот же PostgresPool).
-[tool.kb.external_fts]
-# dsn = ""                  # если задан, должен включать ?default_transaction_read_only=on
+# FTS-поиск по одной чужой таблице оператора (`fts_search`). LLM таблицу
+# не выбирает — она pinned оператором. DSN пуст = fallback на
+# [tool.kb.postgres] (тот же PostgresPool).
+[tool.kb.fts]
+# dsn = ""                  # отдельная БД (опц.); ?default_transaction_read_only=on
 snippet_options = "MaxFragments=2,MaxWords=35,MinWords=15"
 max_top_k = 20
-# Whitelist индексов — массив таблиц [[tool.kb.external_fts.indexes]]:
-# [[tool.kb.external_fts.indexes]]
+# Один IndexSpec — оператор закрепляет таблицу:
+# [tool.kb.fts.index]
 # name = "docs"
 # description = "Документация продукта; для подсказок по фичам."
 # schema = "public"
@@ -180,14 +169,13 @@ max_top_k = 20
 # confluence_page_ids = ["123456", "654321"]
 # confluence_space_key = "DOCS"
 # confluence_cql = "space = DOCS AND label = api"
-# fts_index_name = "docs"
 # fts_query = "auth"
 
 # per-tool PromptOverlay (опционально, описание/fields LLM'у):
 #   [tool.kb.kb_search]
 #   description = ""
 #   fields = {}
-#   [tool.kb.kb_ingest_confluence]
+#   [tool.kb.confluence_space_ingest]
 #   description = ""
 #   fields = {}
 #   [tool.kb.fts_search]
