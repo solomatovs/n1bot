@@ -65,10 +65,10 @@ def test_confluence_space_ingest_real(
         chunker=kb_chunker,
         kb_cfg=kb_cfg,
         conn_cfg=confluence_cfg,
-        space_key=test_cfg.confluence_space_key,
+        space_keys=[test_cfg.confluence_space_key],
         prune_missing=False,
     )
 
     assert result["collection"] == kb_cfg.collection
-    assert result["space_key"] == test_cfg.confluence_space_key
+    assert result["space_keys"] == [test_cfg.confluence_space_key]
     assert result["failed"] == 0, f"some sources failed: {result}"

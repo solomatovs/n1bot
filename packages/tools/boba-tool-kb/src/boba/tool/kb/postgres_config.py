@@ -12,7 +12,7 @@ fts_search) получают DSN через `.to_pool_config()`.
 
 from __future__ import annotations
 
-from typing import Self
+from typing import Any, Self
 
 from psycopg.conninfo import make_conninfo
 from pydantic import Field, model_validator
@@ -112,21 +112,36 @@ class PostgresConnectionConfig(BobaFlatSettings):
             raise ValueError(msg)
         return self
 
+    def session_options(self) -> dict[str, str]:
+        """Session-level GUC, ставящиеся при коннекте через libpq `options=`.
+
+        По умолчанию пустой — подклассы (`SqlConfig`) переопределяют, чтобы
+        зашить `default_transaction_read_only=on` / `statement_timeout=...`
+        прямо в DSN. PG применяет их в момент open-connection — нет нужды
+        в `SET`-statement'ах или `configure`-callback'е.
+        """
+        return {}
+
     def to_dsn(self) -> str:
         """libpq-DSN через `psycopg.conninfo.make_conninfo`.
 
         `dbname` — стандартное libpq-имя для базы (не `database`). Пустые
-        строковые поля опускаются.
+        строковые поля опускаются. Если `session_options()` непуст — все
+        пары пакуются в libpq-параметр `options='-c k=v ...'`.
         """
-        return make_conninfo(
-            host=self.host,
-            port=self.port,
-            user=self.user,
-            password=self.password or None,
-            dbname=self.database,
-            sslmode=self.sslmode,
-            application_name=self.application_name,
-        )
+        kwargs: dict[str, Any] = {
+            "host": self.host,
+            "port": self.port,
+            "user": self.user,
+            "password": self.password or None,
+            "dbname": self.database,
+            "sslmode": self.sslmode,
+            "application_name": self.application_name,
+        }
+        opts = self.session_options()
+        if opts:
+            kwargs["options"] = " ".join(f"-c {k}={v}" for k, v in opts.items())
+        return make_conninfo(**kwargs)
 
     def to_pool_config(self) -> PostgresConfig:
         """`PostgresConfig` для `PostgresPool.get(...)` — drop-in."""

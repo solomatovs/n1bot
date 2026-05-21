@@ -1,4 +1,4 @@
-"""Tool `confluence_space_ingest`: индексация целого Confluence space в KB."""
+"""Tool `confluence_space_ingest`: индексация одного/нескольких space'ов в KB."""
 
 from __future__ import annotations
 
@@ -12,7 +12,9 @@ from boba.tool.kb.config import KbConfig
 from boba.tool.kb.confluence._ingest_common import run_confluence_ingest
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.request_sources import ConfluenceSpaceRequestSource
+from boba.tool.kb.confluence.request_sources import (
+    ConfluenceMultiSpaceRequestSource,
+)
 from boba.tool.kb.vector_store import PostgresVectorStore
 from boba.tools import FromConfig, FromDI, Scope, tool
 
@@ -27,13 +29,16 @@ def confluence_space_ingest(  # noqa: PLR0913 — tool с явным набор�
     chunker: Annotated[StructuralChunker, FromDI(Scope.APP)],
     kb_cfg: Annotated[KbConfig, FromConfig()],
     conn_cfg: Annotated[ConfluenceConnectionConfig, FromConfig()],
-    space_key: Annotated[
-        str,
+    space_keys: Annotated[
+        list[str],
         Field(
             min_length=1,
             description=(
-                "Confluence space key (например, `KAFKA`, `DOCS`). "
-                "Скачиваются ВСЕ страницы space-а (с пагинацией)."
+                "Список Confluence space-keys (например, `[\"KAFKA\"]` или "
+                "`[\"KAFKA\", \"INFRA\"]`). Все страницы каждого space "
+                "(c пагинацией) объединяются в один pipeline-run и "
+                "индексируются в `[tool.kb].collection`. Для одного space "
+                "передавай список из одного элемента."
             ),
         ),
     ],
@@ -42,20 +47,23 @@ def confluence_space_ingest(  # noqa: PLR0913 — tool с явным набор�
         Field(
             description=(
                 "Если true, удалить из коллекции чанки, чьих source_id "
-                "нет среди скачанных страниц (cleanup удалённых)."
+                "нет среди скачанных страниц union'а всех `space_keys` "
+                "(чистит удалённое в перечисленных spaces; страницы из "
+                "других spaces в этой же коллекции не трогаются — у "
+                "них не было source_id в текущем run'е)."
             ),
         ),
     ] = False,
 ) -> dict[str, Any]:
-    """Индексирует все страницы указанного Confluence space в KB-коллекцию.
+    """Индексирует все страницы перечисленных Confluence space'ов в KB-коллекцию.
 
     Target collection — `[tool.kb].collection` (pinned оператором). Возвращает
-    JSON {space_key, collection, indexed, skipped_unchanged, pruned, failed}.
+    JSON `{space_keys, collection, indexed, skipped_unchanged, pruned, failed}`.
     """
-    request_source = ConfluenceSpaceRequestSource(
+    request_source = ConfluenceMultiSpaceRequestSource(
         base_url=conn_cfg.base_url,
         auth=ConfluenceConnection.make_auth(conn_cfg),
-        space_key=space_key,
+        space_keys=space_keys,
         body_format=conn_cfg.body_format,
         timeout_sec=conn_cfg.timeout_sec,
     )
@@ -69,4 +77,4 @@ def confluence_space_ingest(  # noqa: PLR0913 — tool с явным набор�
         prune_missing=prune_missing,
         pipeline_id=_PIPELINE_ID,
     )
-    return {"space_key": space_key, **result}
+    return {"space_keys": list(space_keys), **result}
