@@ -1,42 +1,29 @@
-"""Confluence-сабпакет внутри boba-tool-kb: онлайн-tools поверх Confluence REST.
+"""Confluence-сабпакет внутри boba-tool-kb.
 
 Tools:
-- `confluence_search`                  — CQL-поиск по тексту.
-- `confluence_page_outline`            — структура заголовков страницы.
-- `confluence_page_section`            — текст одной секции по page_id+anchor.
-- `confluence_page_download`           — скачать страницы как HTML.
-- `confluence_page_download_markdown`  — скачать страницы как Markdown.
+- `confluence_search`         — CQL-поиск по реальному Confluence (online).
+- `confluence_page_download`  — скачать список page_ids (HTML или Markdown).
+- `confluence_space_download` — скачать все страницы space-а (HTML или Markdown).
+- `confluence_space_ingest`   — индексация всех страниц space в KB.
+- `confluence_page_ingest`    — индексация явного списка page_ids в KB.
 
-Плагин-уровневое включение управляется секцией `[tool.kb]` родителя
-(вместе с kb_search/kb_list_collections/kb_ingest). Confluence-tools шарят
-`ConfluenceConnectionConfig` (`[tool.kb.confluence]`,
-`BOBA_TOOL__KB__CONFLUENCE__*`) — connection (base_url/auth/timeout).
-`confluence_page_download*` дополнительно требуют `ProjectWorkspaceShell`
-через FromDI.
-
-Те же `ConfluenceJsonDecoder`/`ConfluenceReader`/`ConfluenceConnection` +
-`ConfluencePages|Cql|SpaceRequestSource` переиспользуются tool'ом
-`kb_ingest_confluence` (см. соседний `kb_ingest_confluence.py`) для
-индексации Confluence-страниц в pgvector-коллекцию через тот же
-`StreamingIndexer` pipeline, что и FS-ingest.
+Общий connection — `[tool.kb.confluence]` (`ConfluenceConnectionConfig`).
 """
 
 from __future__ import annotations
 
-from boba.tool.kb.confluence.config import ConfluencePluginConfig
+from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.page_download import confluence_page_download
-from boba.tool.kb.confluence.page_download_markdown import (
-    confluence_page_download_markdown,
-)
-from boba.tool.kb.confluence.page_outline import confluence_page_outline
-from boba.tool.kb.confluence.page_section import confluence_page_section
+from boba.tool.kb.confluence.page_ingest import confluence_page_ingest
 from boba.tool.kb.confluence.search import confluence_search
+from boba.tool.kb.confluence.space_download import confluence_space_download
+from boba.tool.kb.confluence.space_ingest import confluence_space_ingest
 
 __all__ = [
-    "ConfluencePluginConfig",
+    "ConfluenceConnectionConfig",
     "confluence_page_download",
-    "confluence_page_download_markdown",
-    "confluence_page_outline",
-    "confluence_page_section",
+    "confluence_page_ingest",
     "confluence_search",
+    "confluence_space_download",
+    "confluence_space_ingest",
 ]

@@ -1,4 +1,10 @@
-"""`KbPluginConfig` — конфиг секции `[tool.kb]`.
+"""`KbConfig` — конфиг секции `[tool.kb]` (домен KB, без подключений).
+
+Только параметры embedding/search/chunker и pinned-коллекция/папка.
+Подключения вынесены в отдельные секции:
+
+- `[tool.kb.postgres]`     → `PostgresConnectionConfig` (структурированно)
+- `[tool.kb.confluence]`   → `ConfluenceConnectionConfig` (base_url + auth)
 
 Плагин-уровневое включение/allowlist (`enable`, `tools`) — забота
 framework'а (`AgentBuilder.discover_plugins`); конфиг плагина их не
@@ -7,17 +13,15 @@ framework'а (`AgentBuilder.discover_plugins`); конфиг плагина их
 
 from __future__ import annotations
 
-from typing import Self
-
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 
-__all__ = ["KbPluginConfig"]
+__all__ = ["KbConfig"]
 
 
-class KbPluginConfig(BobaFlatSettings):
-    """Postgres + pgvector KB tools: kb_search + kb_list_collections + kb_ingest."""
+class KbConfig(BobaFlatSettings):
+    """Domain-config KB-плагина: embedder, search params, chunker, pinned collection."""
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
@@ -25,54 +29,51 @@ class KbPluginConfig(BobaFlatSettings):
         config_path="tool.kb",
     )
 
-    dsn: str = Field(
-        default="",
+    # --- pinned collection (read+write target) -------------------------------
+    collection: str = Field(
+        default="knowledge_base",
+        min_length=1,
+        max_length=255,
         description=(
-            "PostgreSQL DSN. Поддерживается `postgres://user:pass@host:port/db` "
-            "или libpq key-value. Обязателен."
+            "Имя коллекции (значение колонки `collection` в `kb_chunks`), "
+            "в которую пишут все ingest-tools (`files_ingest`, "
+            "`confluence_space_ingest`, `confluence_page_ingest`) и из "
+            "которой читает `kb_search`. Один pinned-targent — оператор "
+            "не даёт LLM создавать произвольные коллекции."
         ),
     )
-    pool_min_size: int = Field(
-        default=1,
-        ge=0,
-        description="Минимальный размер connection pool'а (psycopg_pool).",
+    collection_description: str = Field(
+        default="",
+        description=(
+            "Description коллекции; прописывается при первом "
+            "`ensure_collection` (видно в служебных запросах)."
+        ),
     )
-    pool_max_size: int = Field(
-        default=8,
-        ge=1,
-        description="Максимальный размер connection pool'а.",
+
+    # --- files_ingest (FS-источник) ------------------------------------------
+    files_folder: str = Field(
+        default="./local/docs",
+        description=(
+            "Папка с файлами для `files_ingest` (`.md`/`.html`/`.htm`). "
+            "Оператор закрепляет выбор папки за собой — LLM не выбирает "
+            "(защита от индексирования чужих файлов). Дефолт `./local/docs`."
+        ),
     )
+
+    # --- FTS / search ---------------------------------------------------------
     fts_language: str = Field(
         default="russian",
         description=(
             "PostgreSQL text search configuration для tsvector колонки. "
             "Должен быть установленным `pg_ts_config` именем (`russian`, "
             "`english`, `simple`, ...). Меняется только пересозданием "
-            "kb_chunks (см. migrations/001_init.sql)."
+            "kb_chunks (см. `migrations/001_init.sql`)."
         ),
-    )
-    embedding_model: str = Field(
-        default="",
-        description=(
-            "Имя embedding-модели для OpenAI-совместимого endpoint'а "
-            "(LiteLLM / OpenAI / vLLM / Ollama). Пустая строка — ingest и "
-            "kb_search будут падать fail-fast. Размерность вектора "
-            "определяется автоматически по первому ответу модели "
-            "(см. `OpenAICompatEmbedder.dim()`)."
-        ),
-    )
-    embedding_base_url: str = Field(
-        default="",
-        description="OpenAI-совместимый endpoint embeddings.",
-    )
-    embedding_api_key: str = Field(
-        default="",
-        description="API key embeddings endpoint'а.",
     )
     snippet_chars: int = Field(
         default=300,
         ge=1,
-        description="Максимальная длина сниппета документа в kb_search.",
+        description="Максимальная длина сниппета документа в `kb_search`.",
     )
     max_top_k: int = Field(
         default=20,
@@ -96,6 +97,28 @@ class KbPluginConfig(BobaFlatSettings):
             "склейкой через RRF. Обычно 2-4x от итогового top_k."
         ),
     )
+
+    # --- embedder -------------------------------------------------------------
+    embedding_model: str = Field(
+        default="",
+        description=(
+            "Имя embedding-модели для OpenAI-совместимого endpoint'а "
+            "(LiteLLM / OpenAI / vLLM / Ollama). Пустая строка — ingest и "
+            "kb_search будут падать fail-fast. Размерность вектора "
+            "определяется автоматически по первому ответу модели "
+            "(см. `OpenAICompatEmbedder.dim()`)."
+        ),
+    )
+    embedding_base_url: str = Field(
+        default="",
+        description="OpenAI-совместимый endpoint embeddings.",
+    )
+    embedding_api_key: str = Field(
+        default="",
+        description="API key embeddings endpoint'а.",
+    )
+
+    # --- chunker --------------------------------------------------------------
     chunk_size: int = Field(
         default=4000,
         ge=1,
@@ -111,42 +134,6 @@ class KbPluginConfig(BobaFlatSettings):
         ge=0,
         description=(
             "Перекрытие между соседними чанками в символах (передаётся в "
-            "`OverlapCharSplitter.chunk_overlap`). 0 = без перекрытия "
-            "(дефолт). Полезно для длинных контекстов, где разрыв "
-            "посередине абзаца ухудшает retrieval."
+            "`OverlapCharSplitter.chunk_overlap`). 0 = без перекрытия."
         ),
     )
-    ingest_folder: str = Field(
-        default="",
-        description=(
-            "Папка с .md чанками для индексации. Оператор закрепляет "
-            "выбор папки за собой — LLM не выбирает (защита от случайного "
-            "индексирования чужих файлов). Пустая строка = ingest выключен."
-        ),
-    )
-    ingest_collection: str = Field(
-        default="knowledge_base",
-        min_length=1,
-        max_length=255,
-        description=(
-            "Имя коллекции (значение колонки `collection` в `kb_chunks`), "
-            "в которую индексируется `ingest_folder`."
-        ),
-    )
-    ingest_collection_description: str = Field(
-        default="",
-        description=(
-            "Description коллекции (видно в kb_list_collections). "
-            "Прописывается при первом ensure_collection."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _validate(self) -> Self:
-        """Под discover-flow плагин загружается только если включён —
-        значит при load-time `dsn` должен быть валидно заполнен.
-        """
-        if not self.dsn:
-            msg = "kb.dsn обязателен"
-            raise ValueError(msg)
-        return self

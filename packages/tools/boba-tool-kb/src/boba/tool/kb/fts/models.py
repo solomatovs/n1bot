@@ -1,4 +1,4 @@
-"""Value-objects PG-FTS: IndexSpec, IndexInfo, FtsHit."""
+"""Value-objects PG-FTS: IndexSpec, FtsHit."""
 
 from __future__ import annotations
 
@@ -7,11 +7,11 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, Field
 
-__all__ = ["FtsHit", "IndexInfo", "IndexSpec"]
+__all__ = ["FtsHit", "IndexSpec"]
 
 
 class IndexSpec(BaseModel):
-    """Декларация одного FTS-индекса в whitelist'е плагина.
+    """Декларация одной FTS-таблицы оператора (`FtsConfig.index`).
 
     Имена колонок/таблицы приходят из конфига (TOML), не от LLM, и
     подставляются в SQL через `psycopg.sql.Identifier`. Параметры запроса
@@ -27,7 +27,7 @@ class IndexSpec(BaseModel):
         protected_namespaces=(),
     )
 
-    name: str = Field(description="Имя индекса для агента (видно в fts_list_indexes).")
+    name: str = Field(description="Имя индекса (для логов/идентификации).")
     description: str = Field(description="Что лежит в этом индексе — для LLM.")
     table: str = Field(description="Имя таблицы (без schema).")
     id_column: str = Field(description="Колонка-PK; её значение возвращается в hit.id.")
@@ -48,14 +48,6 @@ class IndexSpec(BaseModel):
             "Колонки, отдаваемые как hit.metadata (например title, source_url)."
         ),
     )
-
-
-@dataclass(frozen=True)
-class IndexInfo:
-    """Краткое описание индекса для fts_list_indexes."""
-
-    name: str
-    description: str
 
 
 @dataclass(frozen=True)

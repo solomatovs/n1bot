@@ -19,7 +19,7 @@ import pytest
 
 from boba.indexing import PipelineContext
 from boba.tool.kb.confluence.auth import PatAuth
-from boba.tool.kb.confluence.config import ConfluencePluginConfig
+from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.keys import ConfluenceKeys
 from boba.tool.kb.confluence.request_sources import (
     ConfluenceCqlRequestSource,
@@ -156,7 +156,7 @@ def test_host_extraction(
 
 def test_space_source_returns_pages_from_real_space(
     pipeline_ctx: PipelineContext,
-    confluence_cfg: ConfluencePluginConfig,
+    confluence_cfg: ConfluenceConnectionConfig,
     confluence_auth: httpx.Auth | None,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
@@ -192,7 +192,7 @@ def test_space_source_returns_pages_from_real_space(
 
 def test_cql_source_returns_pages_for_real_cql(
     pipeline_ctx: PipelineContext,
-    confluence_cfg: ConfluencePluginConfig,
+    confluence_cfg: ConfluenceConnectionConfig,
     confluence_auth: httpx.Auth | None,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:

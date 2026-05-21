@@ -1,7 +1,7 @@
-"""Tool `confluence_page_download`: явный список Confluence-страниц → workspace.
+"""Tool `confluence_space_download`: все страницы Confluence space → workspace.
 
-HTML по умолчанию; `as_markdown=True` конвертирует HTML через `markdownify`
-(ATX-заголовки) и пишет `.md` с YAML-frontmatter.
+Discovery через `/rest/api/space/{key}/content` с пагинацией; каждая
+страница пишется в workspace как HTML (default) или Markdown.
 """
 
 from __future__ import annotations
@@ -14,22 +14,27 @@ from boba.indexing import PipelineId
 from boba.tool.kb.confluence._download_common import download_pages
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.request_sources.pages import ConfluencePagesRequestSource
+from boba.tool.kb.confluence.request_sources.space import (
+    ConfluenceSpaceRequestSource,
+)
 from boba.tools import FromConfig, FromDI, Scope, tool
 from boba.workspace.contract import ProjectWorkspaceShell
 
-__all__ = ["confluence_page_download"]
+__all__ = ["confluence_space_download"]
 
-_PIPELINE_ID: PipelineId = PipelineId("confluence.page_download")
+_PIPELINE_ID: PipelineId = PipelineId("confluence.space_download")
 
 
 @tool
-def confluence_page_download(
-    page_ids: Annotated[
-        list[str],
+def confluence_space_download(
+    space_key: Annotated[
+        str,
         Field(
             min_length=1,
-            description="ID страниц для скачивания. JSON-массив строк.",
+            description=(
+                "Confluence space key (например, `KAFKA`, `DOCS`). "
+                "Скачиваются ВСЕ страницы space-а с пагинацией."
+            ),
         ),
     ],
     dest_dir: Annotated[
@@ -55,18 +60,19 @@ def confluence_page_download(
         ),
     ] = False,
 ) -> dict[str, Any]:
-    """Скачивает указанные страницы Confluence в workspace.
+    """Скачивает все страницы указанного Confluence space в workspace.
 
-    Файлы: `{dest_dir}/{page_id}.html` (HTML) или `{dest_dir}/{page_id}.md`
-    (Markdown). Дальше — html_outline/html_section/file-tools.
+    Файлы: `{dest_dir}/{page_id}.html` (HTML) или `{dest_dir}/{page_id}.md`.
+    Возвращает `{dest_dir, space_key, saved, total}`.
     """
-    source = ConfluencePagesRequestSource(
+    source = ConfluenceSpaceRequestSource(
         base_url=cfg.base_url,
         auth=ConfluenceConnection.make_auth(cfg),
-        page_ids=page_ids,
+        space_key=space_key,
         body_format=cfg.body_format,
+        timeout_sec=cfg.timeout_sec,
     )
-    return download_pages(
+    result = download_pages(
         request_source=source,
         cfg=cfg,
         shell=shell,
@@ -74,3 +80,4 @@ def confluence_page_download(
         as_markdown=as_markdown,
         pipeline_id=_PIPELINE_ID,
     )
+    return {"space_key": space_key, **result}
