@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -18,18 +18,34 @@ __all__ = ["PostgresPool"]
 logger = logging.getLogger(__name__)
 
 
+ConfigureConnection = Callable[["psycopg.Connection[Any]"], None]
+"""Hook на каждое новое соединение pool'а (pgvector/hstore type registration)."""
+
+
 class PostgresPool:
     """Read-only-обёртка над `psycopg_pool.ConnectionPool` с process-singleton'ом.
 
-    Не предполагает write-операций: контракт read-only задаётся параметрами DSN
-    (`default_transaction_read_only=on`, `statement_timeout=...`). Pool ничего
-    дополнительно не выставляет — это держит инфра-слой dumb.
+    Контракт read-only задаётся параметрами DSN
+    (`default_transaction_read_only=on`, `statement_timeout=...`); pool сам
+    ничего read-only не выставляет — это держит инфра-слой dumb.
+
+    Опциональный `configure`-callback вызывается psycopg_pool'ом на каждое
+    свежее соединение (type-codec registration: `pgvector.psycopg.register_vector`,
+    hstore и т.п.). Идентичность кэширования по cfg НЕ учитывает callback —
+    разные tool-пакеты с одинаковым DSN получают один и тот же pool. Если
+    нужны разные configure-hook'и на одном DSN, разводите их через разные
+    DSN (например `?application_name=...`).
     """
 
     _CacheKey = tuple[str, int, int, float]
     _CACHE: ClassVar[dict[_CacheKey, PostgresPool]] = {}
 
-    def __init__(self, cfg: PostgresConfig) -> None:
+    def __init__(
+        self,
+        cfg: PostgresConfig,
+        *,
+        configure: ConfigureConnection | None = None,
+    ) -> None:
         from psycopg_pool import ConnectionPool  # noqa: PLC0415
 
         self._cfg = cfg
@@ -38,13 +54,15 @@ class PostgresPool:
             min_size=cfg.min_size,
             max_size=cfg.max_size,
             timeout=cfg.connect_timeout_sec,
+            configure=configure,
             open=True,
         )
         self._closed = False
         logger.info(
-            "PostgresPool opened min_size=%d max_size=%d",
+            "PostgresPool opened min_size=%d max_size=%d configure=%s",
             cfg.min_size,
             cfg.max_size,
+            "yes" if configure is not None else "no",
         )
 
     @contextmanager
@@ -64,8 +82,18 @@ class PostgresPool:
         logger.info("PostgresPool closed")
 
     @classmethod
-    def get(cls, cfg: PostgresConfig) -> PostgresPool:
-        """Process-singleton по полному состоянию `cfg`; пересоздаёт закрытый."""
+    def get(
+        cls,
+        cfg: PostgresConfig,
+        *,
+        configure: ConfigureConnection | None = None,
+    ) -> PostgresPool:
+        """Process-singleton по полному состоянию `cfg`; пересоздаёт закрытый.
+
+        `configure` применяется при первом создании pool'а для данного cfg;
+        при повторном `.get(...)` с тем же DSN значение игнорируется
+        (cache-hit). См. docstring класса.
+        """
         key: PostgresPool._CacheKey = (
             cfg.dsn,
             cfg.min_size,
@@ -74,6 +102,6 @@ class PostgresPool:
         )
         pool = cls._CACHE.get(key)
         if pool is None or pool._closed:
-            pool = cls(cfg)
+            pool = cls(cfg, configure=configure)
             cls._CACHE[key] = pool
         return pool

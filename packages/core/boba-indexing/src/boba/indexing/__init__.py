@@ -12,6 +12,7 @@ from boba.indexing.chunk_id import (
 )
 from boba.indexing.chunk_sink import ChunkSink, VectorStoreChunkSink
 from boba.indexing.chunker import Chunker, ChunkerId
+from boba.indexing.collection_scoped_view import CollectionScopedView
 from boba.indexing.chunks import Chunk, ChunkId, ChunkKeys, ChunkLocation, ChunkSummary
 from boba.indexing.cleanup import (
     CleanupContext,
@@ -33,6 +34,7 @@ from boba.indexing.context import (
     PipelineId,
 )
 from boba.indexing.decoder import Decoder, DecoderId, PassThroughDecoder
+from boba.indexing.dispatch_reader import DispatchReader
 from boba.indexing.embedder import Embedder
 from boba.indexing.errors import (
     IncompatibleContentError,
@@ -142,6 +144,7 @@ __all__ = [
     "CleanupStrategy",
     "CollectionId",
     "CollectionInfo",
+    "CollectionScopedView",
     "CollectionsAdminReader",
     "CollectionsAdminWriter",
     "CompletedItem",
@@ -149,6 +152,7 @@ __all__ = [
     "Decoder",
     "DecoderId",
     "DigestPrefix",
+    "DispatchReader",
     "Embedder",
     "Eq",
     "Filter",

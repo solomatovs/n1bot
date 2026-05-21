@@ -20,8 +20,8 @@ from typing import Any, ClassVar
 
 from psycopg import sql
 from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
 
+from boba.db.postgres import PostgresPool
 from boba.indexing.embedder import Embedder
 from boba.tool.postgres.errors import KnowledgeBaseError
 from boba.tool.postgres.models import CollectionInfo, SearchHit
@@ -41,7 +41,7 @@ class PostgresKnowledgeBase:
 
     def __init__(
         self,
-        pool: ConnectionPool[Any],
+        pool: PostgresPool,
         embedder: Embedder[str],
         *,
         embedding_dim: int,

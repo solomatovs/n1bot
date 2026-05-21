@@ -20,61 +20,50 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
+from openai import OpenAI
+from pgvector.psycopg import register_vector
 
-from boba.tool.postgres.embedder_factory import EmbedderFactory
+from boba.db.postgres import PostgresConfig, PostgresPool
+from boba.provider.openai import OpenAICompatEmbedder
 from boba.tool.postgres.kb import PostgresKnowledgeBase
 from boba.tool.postgres.kb_search import kb_search
 from boba.tool.postgres.migrations import apply_bootstrap
 
 if TYPE_CHECKING:
-    # pytest резолвит conftest.py-фикстуры по имени; `tests.conftest`
-    # — special-loaded модуль pytest'а, в runtime не импортируется как
-    # пакет.
     from tests.conftest import KbSearchRunSpec
 
 pytestmark = pytest.mark.integration
 
 
 def test_kb_search_real(kb_search_run: KbSearchRunSpec | None) -> None:
-    """Реальный kb_search на персистентном postgres оператора.
-
-    Печатает hits через print (требует `pytest -s`) — оператор видит, что
-    реально нашлось по его запросу, без копания в логах.
-    """
+    """Реальный kb_search на персистентном postgres оператора."""
     if kb_search_run is None:
         pytest.skip(
             "kb_search integration disabled: set [tool.postgres] dsn "
             "in config or BOBA_TOOL__POSTGRES__DSN env",
         )
 
-    from pgvector.psycopg import register_vector
-    from psycopg_pool import ConnectionPool
-
     cfg = kb_search_run.cfg
-    embedder = EmbedderFactory().create(
-        model=cfg.embedding_model,
-        dim=cfg.embedding_dim,
-        base_url=cfg.embedding_base_url,
-        api_key=cfg.embedding_api_key,
-    )
-    pool: ConnectionPool[Any] = ConnectionPool(
-        conninfo=cfg.dsn,
-        min_size=cfg.pool_min_size,
-        max_size=cfg.pool_max_size,
-        configure=register_vector,
-        open=True,
-    )
+    pool = _open_pool(cfg.dsn, cfg.pool_min_size, cfg.pool_max_size)
     try:
         with pool.connection() as conn:
             apply_bootstrap(conn)
 
+        client = OpenAI(
+            base_url=cfg.embedding_base_url or None,
+            api_key=cfg.embedding_api_key or "unused",
+        )
+        embedder = OpenAICompatEmbedder(
+            client=client,
+            model=cfg.embedding_model,
+        )
         kb = PostgresKnowledgeBase(
             pool=pool,
             embedder=embedder,
-            embedding_dim=cfg.embedding_dim,
+            embedding_dim=embedder.dim(),
             snippet_chars=cfg.snippet_chars,
             fts_language=cfg.fts_language,
             rrf_k=cfg.rrf_k,
@@ -92,7 +81,7 @@ def test_kb_search_real(kb_search_run: KbSearchRunSpec | None) -> None:
         _emit(f"dsn:             {_mask_dsn(cfg.dsn)}")
         _emit(f"collection:      {cfg.ingest_collection}")
         _emit(f"embedding_model: {cfg.embedding_model}")
-        _emit(f"embedding_dim:   {cfg.embedding_dim}")
+        _emit(f"embedding_dim:   {embedder.dim()}")
         _emit(f"fts_language:    {cfg.fts_language}")
         _emit(f"rrf_k:           {cfg.rrf_k}")
         _emit(f"rrf_pool:        {cfg.rrf_pool}")
@@ -124,28 +113,21 @@ def test_kb_search_top_k_ceiling(
     if kb_search_run is None:
         pytest.skip("kb_search integration disabled")
 
-    from pgvector.psycopg import register_vector
-    from psycopg_pool import ConnectionPool
-
     cfg = kb_search_run.cfg
-    embedder = EmbedderFactory().create(
-        model=cfg.embedding_model,
-        dim=cfg.embedding_dim,
-        base_url=cfg.embedding_base_url,
-        api_key=cfg.embedding_api_key,
-    )
-    pool: ConnectionPool[Any] = ConnectionPool(
-        conninfo=cfg.dsn,
-        min_size=1,
-        max_size=1,
-        configure=register_vector,
-        open=True,
-    )
+    pool = _open_pool(cfg.dsn, min_size=1, max_size=1)
     try:
+        client = OpenAI(
+            base_url=cfg.embedding_base_url or None,
+            api_key=cfg.embedding_api_key or "unused",
+        )
+        embedder = OpenAICompatEmbedder(
+            client=client,
+            model=cfg.embedding_model,
+        )
         kb = PostgresKnowledgeBase(
             pool=pool,
             embedder=embedder,
-            embedding_dim=cfg.embedding_dim,
+            embedding_dim=embedder.dim(),
             snippet_chars=cfg.snippet_chars,
             fts_language=cfg.fts_language,
             rrf_k=cfg.rrf_k,
@@ -160,6 +142,13 @@ def test_kb_search_top_k_ceiling(
             )
     finally:
         pool.close()
+
+
+def _open_pool(dsn: str, min_size: int, max_size: int) -> PostgresPool:
+    return PostgresPool(
+        PostgresConfig(dsn=dsn, min_size=min_size, max_size=max_size),
+        configure=register_vector,
+    )
 
 
 def _mask_dsn(dsn: str) -> str:

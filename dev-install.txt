@@ -18,6 +18,7 @@
 
 # infra: format readers
 -e ./packages/infra/format/boba-html
+-e ./packages/infra/format/boba-kbdoc
 -e ./packages/infra/format/boba-markdown
 -e ./packages/infra/format/boba-text
 

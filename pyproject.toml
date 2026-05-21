@@ -5,6 +5,7 @@ pythonpath = [
     "packages/core/boba-agent/src",
     "packages/infra/llm/boba-openai/src",
     "packages/infra/format/boba-html/src",
+    "packages/infra/format/boba-kbdoc/src",
     "packages/infra/format/boba-markdown/src",
     "packages/infra/format/boba-text/src",
     "packages/infra/transport/boba-transport-fs/src",
@@ -41,6 +42,7 @@ exclude = [
 extraPaths = [
     "packages/infra/llm/boba-openai/src",
     "packages/infra/format/boba-html/src",
+    "packages/infra/format/boba-kbdoc/src",
     "packages/infra/format/boba-markdown/src",
     "packages/infra/format/boba-text/src",
     "packages/infra/transport/boba-transport-fs/src",

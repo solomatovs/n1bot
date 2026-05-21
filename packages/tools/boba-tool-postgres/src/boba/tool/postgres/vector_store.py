@@ -32,8 +32,8 @@ from typing import Any, ClassVar
 
 from psycopg import sql
 from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
 
+from boba.db.postgres import PostgresPool
 from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary
 from boba.indexing.content_hash import StringContentHash
 from boba.indexing.context import CollectionId
@@ -92,7 +92,7 @@ class PostgresVectorStore(
 
     def __init__(
         self,
-        pool: ConnectionPool[Any],
+        pool: PostgresPool,
         embedder: Embedder[str],
         *,
         embedding_dim: int,

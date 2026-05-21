@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-kbdoc"
+version = "0.1.0"
+description = "Boba KB-document format: Reader-обёртка с header'ом (**key:** value) поверх произвольного inner Reader[str]."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-indexing",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

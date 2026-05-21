@@ -59,7 +59,7 @@ def ensure_vector_index(conn: Any, *, dim: int) -> None:
 
     Args:
         conn: psycopg sync Connection.
-        dim: размерность вектора (= cfg.embedding_dim).
+        dim: размерность вектора (= `embedder.dim()`).
     """
     if dim <= 0:
         msg = f"ensure_vector_index: dim must be positive, got {dim}"
