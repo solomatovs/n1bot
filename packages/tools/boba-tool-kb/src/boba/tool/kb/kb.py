@@ -1,21 +1,25 @@
-"""Read-only KB-обёртка для postgres KB-tools.
+"""Read-only KB-обёртка над postgres+pgvector — для search-tools'ов.
 
-`PostgresKnowledgeBase` параллельна `ChromaKnowledgeBase` из chromadb-плагина:
-тонкий wrapper над connection pool + embedder, который умеет два операции
-для tools уровня:
+`PostgresKnowledgeBase` — тонкий wrapper над connection pool + embedder,
+с двумя операциями tool-уровня:
 
-- `list_collections()` — sweep по `kb_collections` (с counts чанков).
-- `search(...)` — **гибридный** retrieval: top-K от pgvector + top-K от FTS,
-  склейка через Reciprocal Rank Fusion. См. `ChromadbPluginConfig.rrf_*`.
+- `search(...)`         — **гибридный** retrieval: top-K от pgvector +
+                          top-K от FTS, склейка через Reciprocal Rank
+                          Fusion. Используется `kb_search`-tool'ом.
+                          RRF-параметры — `KbConfig.rrf_k`/`rrf_pool`.
+- `vector_search(...)`  — **чистый** semantic top-K от pgvector (cosine
+                          via `<=>`). Используется `vector_search`-tool'ом.
+                          Полезен, когда FTS-канал шумит/мешает (короткие
+                          запросы, эмбеддинг лучше ловит синонимы).
 
-В отличие от `PostgresVectorStore.similarity_search` (чистый vector,
-часть ABC), здесь логика kb-tools-уровня — для агента, не для индексатора.
+В отличие от `PostgresVectorStore.similarity_search` (часть ABC), здесь
+snippet обрезан по `snippet_chars` и метадата нормализована под формат
+tool'ов (тот же shape, что и у `search`).
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
 from typing import Any, ClassVar
 
 from psycopg import sql
@@ -24,7 +28,7 @@ from psycopg.rows import dict_row
 from boba.db.postgres import PostgresPool
 from boba.indexing.embedder import Embedder
 from boba.tool.kb.errors import KnowledgeBaseError
-from boba.tool.kb.models import CollectionInfo, SearchHit
+from boba.tool.kb.models import SearchHit
 
 logger = logging.getLogger(__name__)
 
@@ -61,24 +65,6 @@ class PostgresKnowledgeBase:
             "PostgresKnowledgeBase opened dim=%d fts=%s rrf_k=%d pool=%d",
             embedding_dim, fts_language, rrf_k, rrf_pool,
         )
-
-    def list_collections(self) -> Iterable[CollectionInfo]:
-        with (
-            self._pool.connection() as conn,
-            conn.cursor(row_factory=dict_row) as cur,
-        ):
-            cur.execute(
-                """
-                SELECT name, description
-                FROM kb_collections
-                ORDER BY name
-                """,
-            )
-            for row in cur:
-                yield CollectionInfo(
-                    name=row["name"],
-                    description=row["description"] or "",
-                )
 
     def search(
         self,
@@ -136,6 +122,57 @@ class PostgresKnowledgeBase:
             SearchHit(
                 id=row["chunk_id"],
                 distance=-float(row["rrf"]),
+                metadata=self._row_metadata(row),
+                snippet=row["snippet"] or "",
+            )
+            for row in rows
+        ]
+
+    def vector_search(
+        self,
+        *,
+        collection: str,
+        query: str,
+        top_k: int,
+    ) -> list[SearchHit]:
+        """Чистый vector top-K (cosine via `<=>`) без FTS-канала.
+
+        `distance` — cosine-distance pgvector'а (меньше = ближе, диапазон
+        [0..2]). Семантика consistent с `search`'ем (тоже меньше = ближе),
+        но физический смысл другой (cosine, не отрицательный RRF).
+
+        Snippet режется до `snippet_chars` (как и в `search`), метадата
+        нормализуется тем же `_row_metadata`.
+        """
+        embedding = list(self._embedder.embed_query(query))
+        query_sql = self._VECTOR_SEARCH_SQL.format(
+            dim=sql.Literal(self._embedding_dim),
+        )
+        try:
+            with (
+                self._pool.connection() as conn,
+                conn.cursor(row_factory=dict_row) as cur,
+            ):
+                cur.execute(
+                    query_sql,
+                    {
+                        "collection": collection,
+                        "embedding": embedding,
+                        "snippet_chars": self._snippet_chars,
+                        "top_k": top_k,
+                    },
+                )
+                rows = cur.fetchall()
+        except Exception as e:
+            raise KnowledgeBaseError(
+                f"postgres vector search failed for collection "
+                f"{collection!r}: {type(e).__name__}: {e}",
+            ) from e
+
+        return [
+            SearchHit(
+                id=row["chunk_id"],
+                distance=float(row["distance"]),
                 metadata=self._row_metadata(row),
                 snippet=row["snippet"] or "",
             )
@@ -207,5 +244,22 @@ class PostgresKnowledgeBase:
     JOIN kb_chunks c USING (chunk_id)
     WHERE c.collection = %(collection)s
     ORDER BY fused.rrf DESC
+    LIMIT %(top_k)s
+    """)
+
+    # Vector-only SQL: cosine via `<=>`, без FTS-канала и RRF.
+    # `distance` — настоящий cosine-distance (меньше = ближе).
+    _VECTOR_SEARCH_SQL: ClassVar[sql.SQL] = sql.SQL("""
+    SELECT c.chunk_id,
+           c.source_id,
+           c.chunk_index,
+           c.content_hash,
+           c.metadata,
+           c.tags,
+           LEFT(c.format_content, %(snippet_chars)s) AS snippet,
+           (c.embedding::vector({dim})) <=> %(embedding)s::vector AS distance
+    FROM kb_chunks c
+    WHERE c.collection = %(collection)s AND c.embedding IS NOT NULL
+    ORDER BY distance ASC
     LIMIT %(top_k)s
     """)

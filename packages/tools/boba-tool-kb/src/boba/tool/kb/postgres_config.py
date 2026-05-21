@@ -6,8 +6,8 @@
 символов спецсимволов в паролях и query-параметрах.
 
 Никакой обратной совместимости с raw-`dsn`-строкой: оператор указывает
-поля явно, а pipeline-стороны (`PostgresPool`, `external_fts`-pool)
-получают DSN через `.to_pool_config()`.
+поля явно, а pipeline-стороны (`PostgresPool` для kb_search / files_ingest /
+fts_search) получают DSN через `.to_pool_config()`.
 """
 
 from __future__ import annotations

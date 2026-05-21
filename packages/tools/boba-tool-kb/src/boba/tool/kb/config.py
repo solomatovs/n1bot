@@ -29,7 +29,7 @@ class KbConfig(BobaFlatSettings):
         config_path="tool.kb",
     )
 
-    # --- pinned collection (read+write target) -------------------------------
+    # pinned collection (read+write target)
     collection: str = Field(
         default="knowledge_base",
         min_length=1,
@@ -38,7 +38,7 @@ class KbConfig(BobaFlatSettings):
             "Имя коллекции (значение колонки `collection` в `kb_chunks`), "
             "в которую пишут все ingest-tools (`files_ingest`, "
             "`confluence_space_ingest`, `confluence_page_ingest`) и из "
-            "которой читает `kb_search`. Один pinned-targent — оператор "
+            "которой читает `kb_search`. Один pinned-target — оператор "
             "не даёт LLM создавать произвольные коллекции."
         ),
     )
@@ -50,7 +50,7 @@ class KbConfig(BobaFlatSettings):
         ),
     )
 
-    # --- files_ingest (FS-источник) ------------------------------------------
+    # files_ingest (FS-источник)
     files_folder: str = Field(
         default="./local/docs",
         description=(
@@ -60,7 +60,7 @@ class KbConfig(BobaFlatSettings):
         ),
     )
 
-    # --- FTS / search ---------------------------------------------------------
+    # FTS / search
     fts_language: str = Field(
         default="russian",
         description=(
@@ -98,7 +98,7 @@ class KbConfig(BobaFlatSettings):
         ),
     )
 
-    # --- embedder -------------------------------------------------------------
+    # embedder
     embedding_model: str = Field(
         default="",
         description=(
@@ -118,7 +118,7 @@ class KbConfig(BobaFlatSettings):
         description="API key embeddings endpoint'а.",
     )
 
-    # --- chunker --------------------------------------------------------------
+    # chunker
     chunk_size: int = Field(
         default=4000,
         ge=1,

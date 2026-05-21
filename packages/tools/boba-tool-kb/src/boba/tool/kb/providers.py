@@ -151,7 +151,7 @@ def provide_knowledge_base(
     embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
     cfg: Annotated[KbConfig, FromConfig()],
 ) -> PostgresKnowledgeBase:
-    """Read-side KB: list_collections + гибридный search (RRF)."""
+    """Read-side KB: гибридный search (vector + FTS, RRF) для `kb_search`."""
     return PostgresKnowledgeBase(
         pool=pool,
         embedder=embedder,
