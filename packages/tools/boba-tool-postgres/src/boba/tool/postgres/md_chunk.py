@@ -34,12 +34,17 @@ Parsing pre-chunked .md files into `Chunk[str]`.
 - `anchor` пишется и как `anchor` (для kb_search), и как `chunk.anchor`
   (для типизированного read-back через ChunkKeys).
 - Если `---` отсутствует, тело = всё после H1, метаданных нет.
+
+NB: модуль backend-agnostic (работает на сырых `MarkdownSectionParser` +
+`KeyEncoder` без какой-либо postgres-завязки). В будущем стоит вынести
+в общий пакет (boba-md-chunk), сейчас живёт здесь ради независимости
+плагина.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -75,24 +80,16 @@ class ParsedMdChunk:
 class MdChunkParser:
     """Парсер pre-chunked `.md` файлов в `Chunk[str]`.
 
-    Состояние:
-        - `_encoder` — KeyEncoder для chunk_id (из source_id) и content_hash
-          (из format_content).
-        - `_md_parser` — `MarkdownSectionParser` (markdown-it-py).
-
-    Stateless по входу: один и тот же экземпляр можно использовать для
-    параллельного парсинга разных файлов.
+    Реализует протокол `ChunkParser` — выдаёт ровно один чанк на файл
+    (формат «один .md = один чанк» с обязательным `# H1` + опциональным
+    блоком метаданных до `---`).
     """
+
+    extensions: ClassVar[tuple[str, ...]] = (".md",)
 
     _INLINE_META_RE: ClassVar[re.Pattern[str]] = re.compile(
         r"\*\*(?P<key>[\w][\w.-]*?)\s*:\s*\*\*\s*(?P<value>[^\n]+)",
     )
-    """Извлечение `**key:** value` из inline markdown-текста параграфа.
-
-    Действует на raw-content параграфа уже после block-level разбора
-    (`MarkdownSectionParser` гарантировал, что это именно paragraph, а не
-    заголовок / code-fence / hr). Каждый match — одна метадата-строка.
-    """
 
     _RECOGNIZED_KEYS: ClassVar[frozenset[str]] = frozenset(
         {"tags", "source", "anchor"},
@@ -112,14 +109,6 @@ class MdChunkParser:
         )
 
     def parse(self, text: str) -> ParsedMdChunk:
-        """Разобрать текст .md файла в `ParsedMdChunk`.
-
-        Использует `MarkdownSectionParser` для block-level AST. Inline-метадата
-        из параграфов между H1 и `---` парсится regex'ом по `**key:** value`.
-
-        Raises:
-            ValueError: если файл пустой, или первая секция не H1.
-        """
         if not text.strip():
             msg = "file is empty"
             raise ValueError(msg)
@@ -161,15 +150,6 @@ class MdChunkParser:
         *,
         source_id: SourceId,
     ) -> Chunk[str]:
-        """Распарсить .md текст и собрать `Chunk[str]` для VectorStore.
-
-        `chunk_id` детерминируется только из `source_id` (стабилен между
-        запусками для того же файла; изменение тела файла НЕ меняет id —
-        это позволяет upsert'у заменить чанк, а не создать дубликат).
-
-        `content_hash` детерминируется из `format_content` (`title + body`)
-        — используется для skip-if-unchanged в `MdFolderIndexer.index`.
-        """
         parsed = self.parse(text)
         format_content = f"# {parsed.title}\n\n{parsed.body}".strip()
         content_hash = self._encoder.encode(format_content)
@@ -194,15 +174,24 @@ class MdChunkParser:
         *,
         root: Path,
     ) -> Chunk[str]:
-        """Прочитать .md файл с диска и построить `Chunk[str]`.
+        """Один чанк из одного файла (legacy, отдельная не-iterable форма).
 
-        `source_id` = относительный путь файла от `root` (posix-формат,
-        стабильно между OS). При повторной индексации того же дерева —
-        тот же source_id и тот же chunk_id.
+        Используется кодом, который ожидает строгий `Chunk[str]`. Новые
+        вызовы через `FolderIndexer` идут через `build_chunks_from_file`
+        (yields один и тот же чанк).
         """
         text = file_path.read_text(encoding="utf-8")
         rel = file_path.resolve().relative_to(root.resolve()).as_posix()
         return self.build_chunk_from_text(text, source_id=SourceId(rel))
+
+    def build_chunks_from_file(
+        self,
+        file_path: Path,
+        *,
+        root: Path,
+    ) -> Iterator[Chunk[str]]:
+        """Реализация `ChunkParser.build_chunks_from_file` — yields единственный чанк."""
+        yield self.build_chunk_from_file(file_path, root=root)
 
     @staticmethod
     def _extract_title(sections: Sequence[Section[str]]) -> str:
@@ -229,12 +218,6 @@ class MdChunkParser:
 
     @staticmethod
     def _slice_body_after_section(text: str, section: Section[str]) -> str:
-        """Текст исходника, начинающийся сразу после `section`.
-
-        Использует `SectionKeys.LOCATION_END` (offset в исходном тексте,
-        парсер гарантирует `text[start:end] == section.content`). Если по
-        какой-то причине offset не проставлен — возвращает пустую строку.
-        """
         end = section.metadata.get(SectionKeys.LOCATION_END)
         if end is None:
             return ""
@@ -245,13 +228,6 @@ class MdChunkParser:
         cls,
         sections: Sequence[Section[str]],
     ) -> tuple[frozenset[str], dict[str, str]]:
-        """Собрать `**key:** value` пары из content'ов параграфов.
-
-        `MarkdownSectionParser` уже отделил block-level структуру — здесь
-        нам остаётся пройтись только по тексту параграфных секций
-        (включая HTML-блоки, представленные как ParagraphSection). Regex
-        смотрит на inline markdown `**key:** value` и извлекает пары.
-        """
         tags: frozenset[str] = frozenset()
         metadata: dict[str, str] = {}
         for s in sections:

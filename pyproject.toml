@@ -18,10 +18,10 @@ pythonpath = [
     "packages/core/boba-workspace/src",
     "packages/agents/boba-cli-agent/src",
     "packages/agents/boba-chainlit-agent/src",
-    "packages/tools/boba-tool-chromadb/src",
     "packages/tools/boba-tool-confluence/src",
     "packages/tools/boba-tool-files/src",
     "packages/tools/boba-tool-html/src",
+    "packages/tools/boba-tool-postgres/src",
     "packages/tools/boba-tool-postgres-fts/src",
     "packages/tools/boba-tool-shell/src",
 ]
@@ -55,10 +55,10 @@ extraPaths = [
     "packages/core/boba-agent/src",
     "packages/agents/boba-cli-agent/src",
     "packages/agents/boba-chainlit-agent/src",
-    "packages/tools/boba-tool-chromadb/src",
     "packages/tools/boba-tool-confluence/src",
     "packages/tools/boba-tool-files/src",
     "packages/tools/boba-tool-html/src",
+    "packages/tools/boba-tool-postgres/src",
     "packages/tools/boba-tool-postgres-fts/src",
     "packages/tools/boba-tool-shell/src",
 ]

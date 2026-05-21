@@ -1,13 +1,18 @@
-"""Tool: индексация заранее настроенной оператором папки `.md` в коллекцию.
+"""Tool: индексация заранее настроенной оператором папки в коллекцию.
 
-LLM-facing wrapper над `MdFolderIndexer`. Оператор закрепляет folder и
-collection за собой через `[tool.chromadb]` (поля `ingest_folder` /
+LLM-facing wrapper над `FolderIndexer`. Оператор закрепляет folder и
+collection за собой через `[tool.postgres]` (поля `ingest_folder` /
 `ingest_collection` / `ingest_collection_description`) — LLM не выбирает,
 во что и откуда индексировать, только опционально включает `prune_missing`.
 
-Граф зависимостей (Embedder, ClientAPI, MdChunkParser, ChromaVectorStore,
-MdFolderIndexer) живёт в общем DI-Container'е агента и собирается лениво —
-при первом резолве `MdFolderIndexer`. Tool сам ничего не строит.
+Поддерживаемые форматы (диспатч по расширению):
+- `.md`         → `MdChunkParser` (один файл = один чанк, pre-chunked)
+- `.html/.htm`  → `HtmlChunkParser` (auto-split по H1/H2)
+
+Граф зависимостей (Embedder, ConnectionPool, MdChunkParser, HtmlChunkParser,
+PostgresVectorStore, FolderIndexer) живёт в общем DI-Container'е и
+собирается лениво — при первом резолве `FolderIndexer`. Tool сам ничего
+не строит.
 """
 
 from __future__ import annotations
@@ -18,8 +23,8 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from boba.indexing.context import CollectionId
-from boba.tool.chromadb.config import ChromadbPluginConfig
-from boba.tool.chromadb.md_folder_ingest import MdFolderIndexer
+from boba.tool.postgres.config import PostgresPluginConfig
+from boba.tool.postgres.folder_indexer import FolderIndexer
 from boba.tools import FromConfig, FromDI, Scope, tool
 
 __all__ = ["kb_ingest"]
@@ -27,8 +32,8 @@ __all__ = ["kb_ingest"]
 
 @tool
 def kb_ingest(
-    indexer: Annotated[MdFolderIndexer, FromDI(Scope.APP)],
-    cfg: Annotated[ChromadbPluginConfig, FromConfig()],
+    indexer: Annotated[FolderIndexer, FromDI(Scope.APP)],
+    cfg: Annotated[PostgresPluginConfig, FromConfig()],
     prune_missing: Annotated[
         bool,
         Field(

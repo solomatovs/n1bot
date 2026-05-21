@@ -15,7 +15,7 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
-            "name": "Index: chromadb operator ingest",
+            "name": "Index: postgres operator ingest",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -23,14 +23,36 @@
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
-            // Operator-mode прогон test_md_folder_ingest.py::test_operator_real_ingest:
-            // читает [tool.chromadb] из local/config.toml — persist_path,
-            // embedding_model, embedding_base_url, ingest_folder, ingest_collection.
-            // `-s` нужен, чтобы тест распечатал stats (см. _emit() внутри теста).
+            // Operator-mode прогон test_folder_indexer.py::test_operator_real_ingest:
+            // читает [tool.postgres] из local/config.toml — dsn, embedding_model,
+            // embedding_dim, embedding_base_url, ingest_folder, ingest_collection.
+            // Индексирует и .md (pre-chunked), и .html (auto-split по H1/H2).
+            // `-s` нужен, чтобы тест распечатал stats
             "args": [
                 "-v",
                 "-s",
-                "packages/tools/boba-tool-chromadb/tests/test_md_folder_ingest.py::test_operator_real_ingest"
+                "-m", "integration",
+                "packages/tools/boba-tool-postgres/tests/test_folder_indexer.py::test_operator_real_ingest"
+            ],
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "Search: postgres kb_search",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            // Operator-mode прогон test_kb_search.py::test_kb_search_real:
+            // читает [tool.postgres] + BOBA_KB_SEARCH_QUERY/TOP_K из env.
+            // Гоняет гибридный (vector + FTS + RRF) поиск и печатает hits.
+            "args": [
+                "-v",
+                "-s",
+                "-m", "integration",
+                "packages/tools/boba-tool-postgres/tests/test_kb_search.py::test_kb_search_real"
             ],
             "envFile": "${workspaceFolder}/local/.env"
         },

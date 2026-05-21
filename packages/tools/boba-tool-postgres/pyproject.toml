@@ -3,23 +3,28 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "boba-tool-chromadb"
+name = "boba-tool-postgres"
 version = "0.1.0"
-description = "Boba ChromaDB: kb-tools (kb_search, kb_list_collections, kb_ingest) + ChromaVectorStore + MdFolderIndexer."
+description = "Boba Postgres: kb-tools (kb_search, kb_list_collections, kb_ingest) поверх pgvector + FTS с гибридным RRF-поиском."
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-tools",
     "boba-settings",
     "boba-indexing",
     "boba-markdown",
-    "chromadb>=0.5",
+    "boba-openai",
+    "psycopg[binary,pool]>=3.2",
+    "pgvector>=0.3",
     "pydantic",
 ]
 
 [project.entry-points."boba.plugins"]
-chromadb = "boba.tool.chromadb"
+postgres = "boba.tool.postgres"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["boba*"]
 namespaces = true
+
+[tool.setuptools.package-data]
+"boba.tool.postgres" = ["migrations/*.sql"]
