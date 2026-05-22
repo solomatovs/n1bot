@@ -39,7 +39,7 @@ class SearchInKbConfig(BobaFlatSettings):
 
     knowledge_base: PostgresKnowledgeBaseConfig
     collections: StringList = Field(
-        default_factory=lambda: ["kb_files", "kb_confluence"],
+        default_factory=lambda: ["kb_kbdoc", "kb_confluence"],
         description=(
             "Список коллекций (`collection` в `kb_chunks`), по объединению "
             "которых выполняется hybrid-search. SQL: "
@@ -82,7 +82,7 @@ def kb_search(
     """Hybrid semantic search (vector + FTS + RRF) по KB-коллекциям.
 
     Ищет внутри коллекций, наполненных через `confluence_*_ingest` или
-    оператором (например, CLI `boba.tool.kb.cli.files_ingest`). Список
+    оператором (например, CLI `boba.tool.kb.cli.kbdoc_ingest`). Список
     целевых коллекций — pre-настроенный оператором (`cfg.collections`);
     LLM их не выбирает. SQL-уровень: `WHERE collection = ANY(...)` —
     поиск по объединению.
