@@ -26,8 +26,9 @@ from boba.indexing import (
     Chunk,
     Chunker,
     ChunkerId,
-    ChunkIdStrategy,
+    ChunkIdGenerator,
     FormatPlan,
+    KeyEncoder,
     PipelineContext,
     Section,
     SectionKeys,
@@ -53,12 +54,14 @@ class StructuralChunker(Chunker[str]):
         self,
         chunker_id: ChunkerId,
         splitter_factory: SplitterFactory,
-        id_strategy: ChunkIdStrategy[str],
+        chunk_id_generator: ChunkIdGenerator[str],
+        content_hasher: KeyEncoder[str],
         breadcrumb_separator: str = DEFAULT_BREADCRUMB_SEPARATOR,
     ) -> None:
         self._chunker_id = chunker_id
         self._splitter_factory = splitter_factory
-        self._id_strategy = id_strategy
+        self._id_strategy = chunk_id_generator
+        self._content_hasher = content_hasher
         self._breadcrumb_separator = breadcrumb_separator
 
     def name(self) -> str:
@@ -115,6 +118,7 @@ class StructuralChunker(Chunker[str]):
                     format_content=fc,
                     raw_content=rc,
                     chunk_index=idx,
+                    content_hash=self._content_hasher.encode(fc),
                     metadata=base_meta,
                     tags=section.tags,
                 )

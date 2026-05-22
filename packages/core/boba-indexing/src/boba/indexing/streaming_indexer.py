@@ -8,10 +8,10 @@ Per-source pipeline собран как ленивая цепочка генер
           └─ decoders[0..N].convert(raw)     → RawDocument (по порядку)
               └─ reader.convert(decoded)     → Iterable[Section[T]]
                   └─ chunker.stream(ctx, ...) → Iterable[Chunk[T]]
-                      └─ enrich content_hash  → Iterable[Chunk[T]]
-                          └─ sink.narrow(...).reconcile(chunks, ...)
-                                  ↓
-                              ReconcileSummary
+                                                (content_hash уже заполнен)
+                      └─ sink.narrow(...).reconcile(chunks, ...)
+                              ↓
+                          ReconcileSummary
 
 `decoders` — опциональная цепочка `RawDocument → RawDocument`-преобразований
 между transport и reader (JSON-payload → HTML-handle, base64 → bytes,
@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterator, Sequence
-from dataclasses import replace
 from typing import TypeVar
 
 from boba.indexing.chunker import Chunker
@@ -224,17 +223,15 @@ class StreamingIndexer(Indexer[ReqT, T]):
         request: ReqT,
         config: IndexerConfig[T],
     ) -> Iterator[Chunk[T]]:
-        """transport → reader → chunker → enrich content_hash → yield."""
+        """transport → reader → chunker → yield.
+
+        `Chunker.stream` обязан эмитить чанки с уже заполненным
+        `content_hash` (через свой injected `KeyEncoder[T]`). Никаких
+        post-enrichment'ов на этом уровне нет.
+        """
+        del config
         sections = self._sections_stream(ctx, request)
-        for chunk in self._chunker.stream(ctx, sections):
-            enriched = replace(
-                chunk,
-                content_hash=config.key_encoder.encode(chunk.format_content),
-            )
-
-            self._verify_hash(enriched)
-
-            yield enriched
+        yield from self._chunker.stream(ctx, sections)
 
     def _sections_stream(
         self,
@@ -308,11 +305,3 @@ class StreamingIndexer(Indexer[ReqT, T]):
 
         elif isinstance(event, ChunksDeleted):
             stats.chunks_deleted_add(event.count)
-
-    @staticmethod
-    def _verify_hash(chunk: Chunk[T]) -> None:
-        if chunk.content_hash is None:
-            raise IndexingError(
-                "StreamingIndexer invariant: chunk.content_hash must be set "
-                "by key_encoder before reconcile"
-            )

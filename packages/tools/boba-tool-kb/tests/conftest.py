@@ -57,6 +57,7 @@ from boba.tool.kb.core.kb import PostgresKnowledgeBase
 from boba.tool.kb.core.migrations import apply_bootstrap, ensure_vector_index
 from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
 from boba.tool.kb.core.vector_store import PostgresVectorStore
+from boba.tool.kb.core.vector_store_config import VectorStoreSchemaConfig
 from boba.tool.kb.fts.config import FtsConfig
 from boba.tool.kb.fts.db import PgFtsKnowledgeBase
 from boba.tool.kb.sql.config import SqlConfig
@@ -106,15 +107,14 @@ class KbIntegrationTestConfig(BobaFlatSettings):
     confluence_cql: str = Field(
         default="",
         description=(
-            "Реальный CQL для test_cql_source_returns_pages_for_real_cql. "
-            "Пусто = skip."
+            "Реальный CQL для test_cql_source_returns_pages_for_real_cql. Пусто = skip."
         ),
     )
     confluence_search_query: str = Field(
         default="",
         description=(
             "Plain-text запрос для test_confluence_search "
-            "(оборачивается в CQL `text ~ \"...\"` внутри tool'а). Пусто = skip."
+            '(оборачивается в CQL `text ~ "..."` внутри tool\'а). Пусто = skip.'
         ),
     )
     confluence_search_space: str = Field(
@@ -152,6 +152,22 @@ def pg_cfg() -> PostgresConnectionConfig:
         return PostgresConnectionConfig()
     except ValidationError as e:
         pytest.skip(f"[tool.kb.postgres] не сконфигурирован: {e}")
+
+
+@pytest.fixture
+def vector_store_cfg() -> VectorStoreSchemaConfig:
+    """`VectorStoreSchemaConfig` из `[tool.kb.vector_store]`; skip при ошибке.
+
+    Тот же конфиг получает и bootstrap (`apply_bootstrap` + `ensure_vector_index`
+    в фикстурах ниже), и runtime-сторона (`PostgresVectorStore` /
+    `PostgresKnowledgeBase`). Тестовая обвязка mimic'ирует операторский
+    bootstrap-CLI: одна и та же `schema/chunks_table/collections_table`
+    проходит сквозным маршрутом.
+    """
+    try:
+        return VectorStoreSchemaConfig()
+    except ValidationError as e:
+        pytest.skip(f"[tool.kb.vector_store] не сконфигурирован: {e}")
 
 
 @pytest.fixture
@@ -209,19 +225,26 @@ def test_cfg() -> KbIntegrationTestConfig:
 
 
 @pytest.fixture
-def kb_pool(pg_cfg: PostgresConnectionConfig) -> PostgresPool:
+def kb_pool(
+    pg_cfg: PostgresConnectionConfig,
+    vector_store_cfg: VectorStoreSchemaConfig,
+) -> PostgresPool:
     """`PostgresPool` из `[tool.kb.postgres]` с register_vector + bootstrap.
 
     Singleton-cached `PostgresPool.get(...)` — повторный вызов с тем же
     DSN+pool-sizes возвращает тот же инстанс. Close НЕ зовём здесь
     (cache живёт до process exit; повторное использование между тестами).
+
+    Bootstrap-миграция (`apply_bootstrap`) применяется с теми же
+    `schema/chunks_table/collections_table`, что и `PostgresVectorStore`
+    в фикстуре `kb_store` ниже — единый `vector_store_cfg`.
     """
     pool = PostgresPool.get(
         pg_cfg.to_pool_config(),
         configure=register_vector,
     )
     with pool.connection() as conn:
-        apply_bootstrap(conn)
+        apply_bootstrap(conn, schema_cfg=vector_store_cfg)
     return pool
 
 
@@ -239,6 +262,7 @@ def kb_embedder(embedding_cfg: EmbeddingConfig) -> OpenAICompatEmbedder:
 def kb_store(
     kb_pool: PostgresPool,
     kb_embedder: OpenAICompatEmbedder,
+    vector_store_cfg: VectorStoreSchemaConfig,
 ) -> PostgresVectorStore:
     """Write-side store для ingest-тулов.
 
@@ -246,13 +270,20 @@ def kb_store(
     `boba.tool.kb.core.cli.bootstrap`): `apply_bootstrap` уже отработал
     в `kb_pool`, здесь добавляется HNSW-индекс под текущий embedder.dim().
     В runtime store-у схема считается данностью; в тестах мы её строим
-    сами, чтобы fixture-граф не зависел от внешнего CLI-шага.
+    сами, чтобы fixture-граф не зависел от внешнего CLI-шага. Один и
+    тот же `vector_store_cfg` идёт в bootstrap (`kb_pool`), в
+    `ensure_vector_index` и в сам store — иначе fixture-граф разъедется.
     """
     with kb_pool.connection() as conn:
-        ensure_vector_index(conn, dim=kb_embedder.dim())
+        ensure_vector_index(
+            conn,
+            dim=kb_embedder.dim(),
+            schema_cfg=vector_store_cfg,
+        )
     return PostgresVectorStore(
         pool=kb_pool,
         embedding_dim=kb_embedder.dim(),
+        schema_cfg=vector_store_cfg,
     )
 
 
@@ -261,6 +292,7 @@ def kb_knowledge_base(
     kb_cfg: KbConfig,
     kb_pool: PostgresPool,
     kb_embedder: OpenAICompatEmbedder,
+    vector_store_cfg: VectorStoreSchemaConfig,
 ) -> PostgresKnowledgeBase:
     """Read-side KB для kb_search (hybrid RRF)."""
     return PostgresKnowledgeBase(
@@ -271,6 +303,7 @@ def kb_knowledge_base(
         fts_language=kb_cfg.fts_language,
         rrf_k=kb_cfg.rrf_k,
         rrf_pool=kb_cfg.rrf_pool,
+        schema_cfg=vector_store_cfg,
     )
 
 
@@ -303,10 +336,11 @@ def kb_chunker(kb_cfg: KbConfig) -> StructuralChunker:
     return StructuralChunker(
         chunker_id=ChunkerId("kb-structural"),
         splitter_factory=factory,
-        id_strategy=SourceBasedChunkId(
+        chunk_id_generator=SourceBasedChunkId(
             encoder=Sha256TextEncoder(),
             prefix=FixedDigestPrefix(chars=16),
         ),
+        content_hasher=Sha256TextEncoder(),
     )
 
 

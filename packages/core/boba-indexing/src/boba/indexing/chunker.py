@@ -44,6 +44,9 @@ class Chunker(
     - `chunk_id` не должен меняться для одной и той-же секции Section[T], он должен быть детерменирован что бы можно было выполнить re-index
     - `chunk_index` — позиция чанка внутри его `source_id` (не внутри `Section[T]`), уникален в паре с anchor
     - `location.start`/`end` — offset в `Section.content`, не во всём документе.
+    - `content_hash` — обязан быть заполнен Chunker'ом через injected
+      `KeyEncoder[T]`. На выход уходит уже-готовый `Chunk[T]` без
+      pending-полей; post-enrichment'а в pipeline'е нет.
 
     **Пример**:
     ```python
@@ -81,7 +84,7 @@ class Chunker(
             location=ChunkLocation(start=0, end=8),   # новое: offset в Section.content
             anchor="#intro",                          # pass из Section
             chunk_index=0,                            # новое: позиция per source_id
-            content_hash=None,                        # новое: ставится дальше pipeline'ом
+            content_hash=BytesContentHash(raw=b"..."), # новое: KeyEncoder.encode(format_content)
             metadata=Metadata.empty(),                # merge из Section.metadata (тут пусто)
             tags=frozenset(),                         # pass из Section.tags (тут пусто)
         ),
@@ -92,7 +95,7 @@ class Chunker(
             location=ChunkLocation(start=3, end=11),  # overlap с предыдущим chunk'ом (chunk_overlap=5)
             anchor="#intro",
             chunk_index=1,
-            content_hash=None,
+            content_hash=BytesContentHash(raw=b"..."),
             metadata=Metadata.empty(),
             tags=frozenset(),
         ),
@@ -103,7 +106,7 @@ class Chunker(
             location=ChunkLocation(start=0, end=5),   # offset внутри Section.content — снова с 0
             anchor="#api",
             chunk_index=2,                            # не 0! счётчик сквозной per source_id
-            content_hash=None,
+            content_hash=BytesContentHash(raw=b"..."),
             metadata=Metadata.empty(),
             tags=frozenset(),
         ),

@@ -36,7 +36,6 @@ __all__ = [
     "ChunkLocation",
     "ChunkSummary",
     "EmbeddedChunk",
-    "chunk_id_from_digest",
 ]
 
 T = TypeVar("T")
@@ -48,13 +47,6 @@ ChunkId = NewType("ChunkId", str)
 Канонический wire-формат: `{digest_prefix}:{chunk_index}`.
 Конструируется через `chunk_id_from_digest(...)` — единая точка форматирования.
 """
-
-
-def chunk_id_from_digest(
-    digest: str, chunk_index: int, prefix_length: int,
-) -> ChunkId:
-    """Скомпоновать ChunkId из digest'а и индекса чанка."""
-    return ChunkId(f"{digest[:prefix_length]}:{chunk_index}")
 
 
 class ChunkKeys:
@@ -106,8 +98,10 @@ class Chunk(Generic[T]):
     `chunk_index`    — порядковый номер чанка внутри своего `source_id`;
                        детерминирует chunk_id (`{digest}:{chunk_index}`).
     `content_hash`   — fingerprint, для idempotency-check'а в
-                       `IndexSink.reconcile`. `None` пока pipeline не enrich'нул
-                       чанк через `KeyEncoder.encode`.
+                       `IndexSink.reconcile`. Не Optional: Chunker[T]
+                       обязан вычислить через свой `KeyEncoder[T]` ещё в
+                       момент эмиссии чанка. Контракт type-enforced —
+                       никаких "не-обогащённых" чанков в pipeline'е нет.
     `metadata`       — произвольная Metadata: пробрасывается из Section
                        (`section.metadata + section.to_chunk_metadata()`),
                        плюс chunker-добавки. Format-specific атрибуты типа
@@ -119,27 +113,58 @@ class Chunk(Generic[T]):
     source_id: SourceId
     format_content: T
     raw_content: T
-    chunk_index: int = 0
-    content_hash: ContentHash | None = None
+    chunk_index: int
+    content_hash: ContentHash
     metadata: Metadata = field(default_factory=Metadata.empty)
     tags: frozenset[str] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
 class EmbeddedChunk(Generic[T]):
-    """DTO готовый к upsert в VectorStoreWriter: чанк + посчитанный embedding.
+    """Insert-ready DTO для `VectorStoreWriter.upsert`.
 
-    Embedding-вектор считает caller (обычно `IndexSink.reconcile`-impl)
-    через `Embedder.embed_documents(...)`. VectorStoreWriter принимает уже
-    embedded-DTO и не знает про `Embedder` — store отвечает только за
-    persistence, embedder инжектится сверху в pipeline-orchestrator.
+    Композиция `Chunk[T] + embedding`. Все инварианты payload'а (включая
+    non-null `content_hash`) уже гарантирует сам `Chunk[T]` — здесь
+    ничего проверять не нужно. Store доверяет EmbeddedChunk полностью.
 
-    Композиция (а не flat) — `chunk` единственный источник правды для
-    payload-полей; добавляется ровно одно новое поле `embedding`.
+    Flat-структура (а не вложенный Chunk) — чтобы Store работал с одним
+    плоским объектом без двойного dereference в горячем upsert-loop'е.
+    Embedding-вектор считает caller выше по pipeline'у (обычно
+    `IndexSink.reconcile`-impl) через `Embedder.embed_documents(...)`;
+    store про Embedder не знает.
+
+    Конструировать через `EmbeddedChunk.of(chunk, embedding)` — переносит
+    поля из Chunk в одном месте. Прямой `EmbeddedChunk(...)` тоже работает.
     """
 
-    chunk: Chunk[T]
+    chunk_id: ChunkId
+    source_id: SourceId
+    format_content: T
+    raw_content: T
+    chunk_index: int
+    content_hash: ContentHash
+    metadata: Metadata
+    tags: frozenset[str]
     embedding: tuple[float, ...]
+
+    @classmethod
+    def of(
+        cls,
+        chunk: Chunk[T],
+        embedding: tuple[float, ...],
+    ) -> EmbeddedChunk[T]:
+        """Собрать `EmbeddedChunk` из `Chunk` + готового embedding."""
+        return cls(
+            chunk_id=chunk.chunk_id,
+            source_id=chunk.source_id,
+            format_content=chunk.format_content,
+            raw_content=chunk.raw_content,
+            chunk_index=chunk.chunk_index,
+            content_hash=chunk.content_hash,
+            metadata=chunk.metadata,
+            tags=chunk.tags,
+            embedding=embedding,
+        )
 
 
 @dataclass(frozen=True)

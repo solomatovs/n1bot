@@ -29,6 +29,7 @@ from boba.db.postgres import PostgresPool
 from boba.indexing.embedder import Embedder
 from boba.tool.kb.core.errors import KnowledgeBaseError
 from boba.tool.kb.core.models import SearchHit
+from boba.tool.kb.core.vector_store_config import VectorStoreSchemaConfig
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ class PostgresKnowledgeBase:
         fts_language: str,
         rrf_k: int,
         rrf_pool: int,
+        schema_cfg: VectorStoreSchemaConfig,
     ) -> None:
         self._pool = pool
         self._embedder = embedder
@@ -61,9 +63,18 @@ class PostgresKnowledgeBase:
         self._fts_language = fts_language
         self._rrf_k = rrf_k
         self._rrf_pool = rrf_pool
+        self._schema_cfg = schema_cfg
+        self._chunks_table = schema_cfg.chunks_ident()
+        self._schema_ident = schema_cfg.schema_ident()
         logger.info(
-            "PostgresKnowledgeBase opened dim=%d fts=%s rrf_k=%d pool=%d",
-            embedding_dim, fts_language, rrf_k, rrf_pool,
+            "PostgresKnowledgeBase opened dim=%d fts=%s rrf_k=%d pool=%d "
+            "chunks=%s.%s",
+            embedding_dim,
+            fts_language,
+            rrf_k,
+            rrf_pool,
+            schema_cfg.schema,
+            schema_cfg.chunks_table,
         )
 
     def search(
@@ -89,9 +100,13 @@ class PostgresKnowledgeBase:
         embedding = list(self._embedder.embed_query(query))
         # `vector(N)` — pgvector type modifier, N обязан быть литералом
         # (parse-time-known), параметризовать нельзя. Инлайним dim через
-        # sql.Literal (значение из cfg, не из юзера).
+        # sql.Literal (значение из cfg, не из юзера). chunks_table и
+        # schema — Identifier'ы, тоже подставляются в parse-time-known
+        # позиции (имя таблицы / квалифицированной функции).
         query_sql = self._SEARCH_SQL.format(
             dim=sql.Literal(self._embedding_dim),
+            chunks_table=self._chunks_table,
+            schema=self._schema_ident,
         )
         try:
             with (
@@ -147,6 +162,7 @@ class PostgresKnowledgeBase:
         embedding = list(self._embedder.embed_query(query))
         query_sql = self._VECTOR_SEARCH_SQL.format(
             dim=sql.Literal(self._embedding_dim),
+            chunks_table=self._chunks_table,
         )
         try:
             with (
@@ -195,18 +211,15 @@ class PostgresKnowledgeBase:
                 out.setdefault(key, str(value))
         return out
 
-    # SQL вынесен в class-level: длинный, но без mid-string-substitution
-    # (всё через named-параметры — нет SQL-injection-risk'а и нет
-    # пересборки строки на каждый запрос). `sql.SQL(...)` валидируется
-    # пиратом как LiteralString — поэтому хранится сразу как Composable,
-    # а не как str.
+    # SQL для поиска векторов совместно с полнотекстовым поисков
+    # возвращает единный набор
     _SEARCH_SQL: ClassVar[sql.SQL] = sql.SQL("""
     WITH vec AS (
         SELECT chunk_id,
                row_number() OVER (
                    ORDER BY (embedding::vector({dim})) <=> %(embedding)s::vector
                ) AS rk
-        FROM kb_chunks
+        FROM {chunks_table}
         WHERE collection = %(collection)s AND embedding IS NOT NULL
         ORDER BY (embedding::vector({dim})) <=> %(embedding)s::vector
         LIMIT %(rrf_pool)s
@@ -216,8 +229,8 @@ class PostgresKnowledgeBase:
                row_number() OVER (
                    ORDER BY ts_rank_cd(tsv, q) DESC
                ) AS rk
-        FROM kb_chunks,
-             plainto_tsquery(%(lang)s::regconfig, immutable_unaccent(%(query)s)) q
+        FROM {chunks_table},
+             plainto_tsquery(%(lang)s::regconfig, {schema}.immutable_unaccent(%(query)s)) q
         WHERE collection = %(collection)s AND tsv @@ q
         ORDER BY ts_rank_cd(tsv, q) DESC
         LIMIT %(rrf_pool)s
@@ -241,14 +254,13 @@ class PostgresKnowledgeBase:
            LEFT(c.format_content, %(snippet_chars)s) AS snippet,
            fused.rrf AS rrf
     FROM fused
-    JOIN kb_chunks c USING (chunk_id)
+    JOIN {chunks_table} c USING (chunk_id)
     WHERE c.collection = %(collection)s
     ORDER BY fused.rrf DESC
     LIMIT %(top_k)s
     """)
 
-    # Vector-only SQL: cosine via `<=>`, без FTS-канала и RRF.
-    # `distance` — настоящий cosine-distance (меньше = ближе).
+    # SQL для поиска только в векторной таблицу
     _VECTOR_SEARCH_SQL: ClassVar[sql.SQL] = sql.SQL("""
     SELECT c.chunk_id,
            c.source_id,
@@ -258,7 +270,7 @@ class PostgresKnowledgeBase:
            c.tags,
            LEFT(c.format_content, %(snippet_chars)s) AS snippet,
            (c.embedding::vector({dim})) <=> %(embedding)s::vector AS distance
-    FROM kb_chunks c
+    FROM {chunks_table} c
     WHERE c.collection = %(collection)s AND c.embedding IS NOT NULL
     ORDER BY distance ASC
     LIMIT %(top_k)s

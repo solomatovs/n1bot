@@ -11,6 +11,11 @@
     EmbeddingConfig (FromConfig)
         └──> Embedder[str]                 # OpenAICompatEmbedder
 
+    VectorStoreSchemaConfig (FromConfig)   # [tool.kb.vector_store]
+        │                                  # schema + chunks/collections table
+        ├──> PostgresVectorStore           # WRITE-side: тот же конфиг,
+        └──> PostgresKnowledgeBase         # что у bootstrap-CLI
+
     KbConfig (FromConfig)
         │
         ├──> PostgresVectorStore           # уже подцепляет Embedder из DI
@@ -57,6 +62,7 @@ from boba.tool.kb.core.embedding_config import EmbeddingConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
 from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
 from boba.tool.kb.core.vector_store import PostgresVectorStore
+from boba.tool.kb.core.vector_store_config import VectorStoreSchemaConfig
 from boba.tools import FromConfig, FromDI, Scope, provides
 from boba.transport.fs import FsKeys
 
@@ -128,6 +134,7 @@ def provide_embedder(
 def provide_vector_store(
     pool: Annotated[PostgresPool, FromDI(Scope.APP)],
     embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
+    schema_cfg: Annotated[VectorStoreSchemaConfig, FromConfig()],
 ) -> PostgresVectorStore:
     """Postgres-бэкэнд VectorStore[str] + CollectionsAdmin.
 
@@ -135,10 +142,15 @@ def provide_vector_store(
     тут только чтобы спросить `dim()` для конфигурации vector-колонки;
     вызов embedder'а на write/read делается в pipeline-orchestrator'е
     (`CollectionScopedView` и `PostgresKnowledgeBase`).
+
+    `schema_cfg` ([tool.kb.vector_store]) — тот же конфиг, что получает
+    bootstrap-CLI; гарантирует, что store ходит в те же таблицы, которые
+    создал bootstrap.
     """
     return PostgresVectorStore(
         pool=pool,
         embedding_dim=embedder.dim(),
+        schema_cfg=schema_cfg,
     )
 
 
@@ -147,8 +159,13 @@ def provide_knowledge_base(
     pool: Annotated[PostgresPool, FromDI(Scope.APP)],
     embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
     cfg: Annotated[KbConfig, FromConfig()],
+    schema_cfg: Annotated[VectorStoreSchemaConfig, FromConfig()],
 ) -> PostgresKnowledgeBase:
-    """Read-side KB: гибридный search (vector + FTS, RRF) для `kb_search`."""
+    """Read-side KB: гибридный search (vector + FTS, RRF) для `kb_search`.
+
+    `schema_cfg` — тот же, что в `provide_vector_store` и bootstrap-CLI;
+    hybrid SQL ходит в `chunks_table` и зовёт `schema.immutable_unaccent`.
+    """
     return PostgresKnowledgeBase(
         pool=pool,
         embedder=embedder,
@@ -157,6 +174,7 @@ def provide_knowledge_base(
         fts_language=cfg.fts_language,
         rrf_k=cfg.rrf_k,
         rrf_pool=cfg.rrf_pool,
+        schema_cfg=schema_cfg,
     )
 
 
@@ -198,17 +216,24 @@ def provide_dispatch_reader(
 def provide_chunker(
     cfg: Annotated[KbConfig, FromConfig()],
 ) -> StructuralChunker:
-    """Heading-aware Chunker с `OverlapCharSplitter` для size-cap."""
+    """Heading-aware Chunker с `OverlapCharSplitter` для size-cap.
+
+    `key_encoder=Sha256TextEncoder()` хэширует `format_content` каждого
+    чанка в `content_hash` — это то по чему `IndexSink.reconcile` решает
+    skip vs upsert. Отдельный от `id_strategy.encoder` инстанс (тот хэширует
+    `source_id` для `chunk_id`), хотя оба используют SHA-256.
+    """
     return StructuralChunker(
         chunker_id=_CHUNKER_ID,
         splitter_factory=_make_splitter_factory(
             chunk_size=cfg.chunk_size,
             chunk_overlap=cfg.chunk_overlap,
         ),
-        id_strategy=SourceBasedChunkId(
+        chunk_id_generator=SourceBasedChunkId(
             encoder=Sha256TextEncoder(),
             prefix=FixedDigestPrefix(chars=_CHUNK_ID_PREFIX_LENGTH),
         ),
+        content_hasher=Sha256TextEncoder(),
     )
 
 

@@ -9,7 +9,7 @@ from boba.html import HtmlReader
 from boba.indexing import (
     ChunkerId,
     ChunkId,
-    ChunkIdStrategy,
+    ChunkIdGenerator,
     ChunkLocation,
     HeadingSection,
     Metadata,
@@ -18,6 +18,7 @@ from boba.indexing import (
     RawDocument,
     Section,
     SectionKeys,
+    Sha256TextEncoder,
     SourceId,
     SplitPiece,
     Splitter,
@@ -25,7 +26,7 @@ from boba.indexing import (
 from boba.text import OverlapCharSplitter, StructuralChunker
 
 
-class _StaticIdStrategy(ChunkIdStrategy[str]):
+class _StaticIdGenerator(ChunkIdGenerator[str]):
     def compute(self, section: Section[str], chunk_index: int) -> ChunkId:
         del section
         return ChunkId(f"sc:{chunk_index}")
@@ -52,7 +53,8 @@ def _chunker(splitter_factory=_identity_factory) -> StructuralChunker:
     return StructuralChunker(
         chunker_id=ChunkerId("structural"),
         splitter_factory=splitter_factory,
-        id_strategy=_StaticIdStrategy(),
+        chunk_id_generator=_StaticIdGenerator(),
+        content_hasher=Sha256TextEncoder(),
     )
 
 

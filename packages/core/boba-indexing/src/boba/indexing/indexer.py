@@ -11,13 +11,17 @@ Request[ReqT] →
 
 За одну сессию запуска `Indexer.stream(ctx, config)` обязан выполнить:
 
-1. для каждого Chunk[T] вычислить hash через `KeyEncoder[T]` → отдать
-   в `IndexSink.reconcile()` — он сам решит skip vs upsert по idempotency-check'у;
+1. отдать `Chunk[T]` в `IndexSink.reconcile()` — он сам решит skip vs upsert
+   по idempotency-check'у (через `Chunk.content_hash`, вычисленный Chunker'ом);
 
 2. новые/изменённые → upsert в `VectorStore[T]` + refresh tracking-metadata
    автоматически внутри `IndexSink.reconcile`;
 
 3. cleanup в конце прогона через `IndexerConfig.cleanup` (CleanupStrategy).
+
+`KeyEncoder[T]` инжектится в Chunker'а — не в IndexerConfig. Chunker
+эмитит `Chunk[T]` уже с заполненным `content_hash`, никакого
+post-enrichment'а в pipeline'е нет.
 
 API выполнен в режиме stream-style (как Agent.stream()):
     `stream()` yield `IndexEvent`
@@ -40,7 +44,6 @@ from typing import Generic, TypeVar
 from boba.indexing.cleanup import CleanupStrategy, NoneCleanup
 from boba.indexing.context import PipelineContext
 from boba.indexing.events import IndexEvent
-from boba.indexing.key_encoder import KeyEncoder
 from boba.indexing.request import Request
 from boba.indexing.stats import IndexStats
 
@@ -54,7 +57,6 @@ T = TypeVar("T")
 class IndexerConfig(Generic[T]):
     """Параметры одного прогона Indexer.stream."""
 
-    key_encoder: KeyEncoder[T]
     cleanup: CleanupStrategy = field(default_factory=NoneCleanup)
     batch_size: int = 100
     force_update: bool = False

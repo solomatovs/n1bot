@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from boba.indexing import (
     ChunkerId,
     ChunkId,
-    ChunkIdStrategy,
+    ChunkIdGenerator,
     ChunkLocation,
     HeadingSection,
     Metadata,
@@ -15,6 +15,7 @@ from boba.indexing import (
     PipelineId,
     Section,
     SectionKeys,
+    Sha256TextEncoder,
     SourceId,
     SplitPiece,
     Splitter,
@@ -29,7 +30,7 @@ class _IdentitySplitter(Splitter[str]):
         yield SplitPiece(content=value, location=ChunkLocation(start=0, end=len(value)))
 
 
-class _StaticIdStrategy(ChunkIdStrategy[str]):
+class _StaticIdGenerator(ChunkIdGenerator[str]):
     def compute(self, section: Section[str], chunk_index: int) -> ChunkId:
         del section
         return ChunkId(f"static:{chunk_index}")
@@ -51,7 +52,8 @@ def test_to_chunk_metadata_is_merged_into_chunk():
     chunker = SectionChunker(
         chunker_id=ChunkerId("test"),
         splitter=_IdentitySplitter(),
-        id_strategy=_StaticIdStrategy(),
+        id_strategy=_StaticIdGenerator(),
+        content_hasher=Sha256TextEncoder(),
     )
     [chunk] = list(chunker.stream(_ctx(), iter([section])))
     assert chunk.metadata.get(SectionKeys.HEADING_LEVEL) == 1
@@ -77,7 +79,8 @@ def test_section_metadata_overrides_typed_keys_on_collision():
     chunker = SectionChunker(
         chunker_id=ChunkerId("test"),
         splitter=_IdentitySplitter(),
-        id_strategy=_StaticIdStrategy(),
+        id_strategy=_StaticIdGenerator(),
+        content_hasher=Sha256TextEncoder(),
     )
     [chunk] = list(chunker.stream(_ctx(), iter([section])))
     assert chunk.metadata.get(SectionKeys.HEADING_LEVEL) == 2

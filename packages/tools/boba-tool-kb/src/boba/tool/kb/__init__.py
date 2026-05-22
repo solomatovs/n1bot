@@ -96,6 +96,7 @@ from boba.tool.kb.core.tools.files_ingest import files_ingest
 from boba.tool.kb.core.tools.kb_search import kb_search
 from boba.tool.kb.core.tools.vector_search import vector_search
 from boba.tool.kb.core.vector_store import PostgresVectorStore
+from boba.tool.kb.core.vector_store_config import VectorStoreSchemaConfig
 from boba.tool.kb.fts.config import FtsConfig
 from boba.tool.kb.fts.providers import provide_fts_kb
 from boba.tool.kb.fts.tools.fts_search import fts_search
@@ -114,6 +115,7 @@ __all__ = [
     "PostgresKnowledgeBase",
     "PostgresVectorStore",
     "SqlConfig",
+    "VectorStoreSchemaConfig",
     "confluence_list_spaces",
     "confluence_page_download",
     "confluence_page_ingest",

@@ -129,16 +129,14 @@ class NamespacedView(IndexQuery[T], IndexSink[T]):
             dirty: list[Chunk[T]] = [by_id[i] for i in to_upsert_ids]
 
             if dirty:
-                documents = [c.format_content for c in dirty]
-                embeddings = list(self._embedder.embed_documents(documents))
-                if len(embeddings) != len(dirty):
-                    msg = (
-                        f"embedder returned {len(embeddings)} vectors "
-                        f"for {len(dirty)} chunks"
+                embeddings = list(
+                    self._embedder.embed_documents(
+                        [c.format_content for c in dirty]
                     )
-                    raise RuntimeError(msg)
+                )
+
                 embedded = [
-                    EmbeddedChunk(chunk=c, embedding=tuple(e))
+                    EmbeddedChunk.of(c, tuple(e))
                     for c, e in zip(dirty, embeddings, strict=True)
                 ]
                 self._writer.upsert(self._collection, embedded)
