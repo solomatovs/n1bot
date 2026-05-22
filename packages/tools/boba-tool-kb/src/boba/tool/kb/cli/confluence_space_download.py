@@ -1,18 +1,5 @@
-"""CLI-runner: скачать все страницы Confluence-space'а на ФС.
-
-Параллель LLM-tool'а `confluence_space_download` — операторский скрипт без
-`@tool` декоратора (не попадает в tool-allowlist'ы). Делает то же тело:
-discovery через `/rest/api/space/{key}/content` + per-page запись HTML/MD
-в `cfg.dest_dir`.
-
-Применение:
-    BOBA_CONFIG_PATH=./local/config.toml \\
-        .venv/bin/python -m boba.tool.kb.cli.confluence_space_download \\
-            --space-key KAFKA [--as-markdown]
-
-Все параметры (confluence connection, dest_dir) фиксируются оператором в
-TOML-секции `[cli.kb.confluence.download.space]`. `space_key` и
-`as_markdown` приходят через CLI argv (или TOML-default).
+"""
+CLI-runner: скачать все страницы Confluence-space'а на ФС.
 """
 
 from __future__ import annotations

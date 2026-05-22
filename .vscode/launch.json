@@ -24,7 +24,7 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
-            "name": "KB CLI: bootstrap (migrations + HNSW)",
+            "name": "KB CLI: bootstrap",
             "type": "debugpy",
             "request": "launch",
             "module": "boba.tool.kb.cli.bootstrap",
@@ -35,7 +35,7 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
-            "name": "KB CLI: files_ingest (FS → KB)",
+            "name": "KB CLI: files_ingest",
             "type": "debugpy",
             "request": "launch",
             "module": "boba.tool.kb.cli.files_ingest",
@@ -46,7 +46,7 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
-            "name": "KB CLI: ingest_confluence_spaces (bulk)",
+            "name": "KB CLI: ingest_confluence_spaces",
             "type": "debugpy",
             "request": "launch",
             "module": "boba.tool.kb.cli.ingest_confluence_spaces",
@@ -57,10 +57,32 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
-            "name": "KB CLI: confluence_space_download (space → FS)",
+            "name": "KB CLI: confluence_space_download",
             "type": "debugpy",
             "request": "launch",
             "module": "boba.tool.kb.cli.confluence_space_download",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "KB CLI: download_confluence_spaces",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.tool.kb.cli.download_confluence_spaces",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "KB CLI: confluence_page_download",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.tool.kb.cli.confluence_page_download",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",

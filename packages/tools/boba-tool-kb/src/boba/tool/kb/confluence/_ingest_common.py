@@ -25,8 +25,8 @@ from boba.indexing import (
 from boba.indexing.context import CollectionId, PipelineId
 from boba.indexing.embedder import Embedder
 from boba.text import StructuralChunker
+from boba.tool.kb.confluence._pipeline_common import make_confluence_stages
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.decoder import ConfluenceJsonDecoder
 from boba.tool.kb.confluence.reader import ConfluenceReader
 from boba.tool.kb.core.postgres_store import (
     PostgresChunkStore,
@@ -54,8 +54,7 @@ def run_confluence_ingest(  # noqa: PLR0913 — keyword-only helper, явный 
     Возвращает JSON-stats с полями collection/indexed/skipped_unchanged/
     pruned/failed. Caller добавляет свои поля (space_key/page_ids/...).
     """
-    transport = conn.make_transport()
-    decoder = ConfluenceJsonDecoder(body_format=conn.body_format)
+    transport, decoder = make_confluence_stages(conn)
     reader = ConfluenceReader()
 
     collection_id = CollectionId(collection)

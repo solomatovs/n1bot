@@ -42,9 +42,15 @@ class ChainlitConfig(BobaFlatSettings):
         default=8501,
         description="Порт chainlit-сервера.",
     )
-    root_path: str = Field(
+    url_prefix: str = Field(
         default="",
-        description="HTTP root path под reverse-proxy. Пусто — chainlit на корне.",
+        description=(
+            "URL-prefix для HTTP-роутинга под reverse-proxy "
+            "(например, `/chat` если chainlit доступен по "
+            "`https://example.com/chat/`). Пусто — chainlit на корне домена. "
+            "Это сетевой path, к файловой системе отношения не имеет — "
+            "не путать с `app_root` (директория на диске)."
+        ),
     )
     auth_secret: str = Field(
         description=(

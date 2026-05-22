@@ -43,7 +43,7 @@ def _bridge_chainlit_env(cfg: ChainlitConfig) -> None:
     """
     os.environ["CHAINLIT_HOST"] = cfg.host
     os.environ["CHAINLIT_PORT"] = str(cfg.port)
-    os.environ["CHAINLIT_ROOT_PATH"] = cfg.root_path
+    os.environ["CHAINLIT_ROOT_PATH"] = cfg.url_prefix
     os.environ["CHAINLIT_AUTH_SECRET"] = cfg.auth_secret
     os.environ["CHAINLIT_HEADLESS"] = "true" if cfg.headless else "false"
     app_root = Path(cfg.app_root).resolve()
