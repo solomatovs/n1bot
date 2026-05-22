@@ -54,15 +54,17 @@ from boba.text.structural_chunker import SplitterFactory
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.ingest_config import ConfluenceIngestConfig
-from boba.tool.kb.core.chunk_store import PostgresChunkStore
-from boba.tool.kb.core.chunk_store_config import ChunkStoreSchemaConfig
-from boba.tool.kb.core.collections_store import PostgresCollectionsStore
 from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.embedding_config import EmbeddingConfig
 from boba.tool.kb.core.files_ingest_config import IngestFilesConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
 from boba.tool.kb.core.migrations import apply_bootstrap, ensure_vector_index
 from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
+from boba.tool.kb.core.postgres_store import (
+    PostgresChunkStore,
+    PostgresCollectionsStore,
+    PostgresStoreConfig,
+)
 from boba.tool.kb.core.search_config import SearchConfig
 from boba.tool.kb.fts.config import FtsConfig
 from boba.tool.kb.fts.db import PgFtsKnowledgeBase
@@ -188,7 +190,7 @@ def pg_cfg() -> PostgresConnectionConfig:
 
 
 @pytest.fixture
-def vector_store_cfg() -> ChunkStoreSchemaConfig:
+def vector_store_cfg() -> PostgresStoreConfig:
     """`ChunkStoreSchemaConfig` из `[tool.kb.chunk_store]`; skip при ошибке.
 
     Тот же конфиг получает и bootstrap (`apply_bootstrap` + `ensure_vector_index`
@@ -198,7 +200,7 @@ def vector_store_cfg() -> ChunkStoreSchemaConfig:
     проходит сквозным маршрутом.
     """
     try:
-        return ChunkStoreSchemaConfig()
+        return PostgresStoreConfig()
     except ValidationError as e:
         pytest.skip(f"[tool.kb.chunk_store] не сконфигурирован: {e}")
 
@@ -260,7 +262,7 @@ def test_cfg() -> KbIntegrationTestConfig:
 @pytest.fixture
 def kb_pool(
     pg_cfg: PostgresConnectionConfig,
-    vector_store_cfg: ChunkStoreSchemaConfig,
+    vector_store_cfg: PostgresStoreConfig,
 ) -> PostgresPool:
     """`PostgresPool` из `[tool.kb.postgres]` с register_vector + bootstrap.
 
@@ -295,7 +297,7 @@ def kb_embedder(embedding_cfg: EmbeddingConfig) -> OpenAICompatEmbedder:
 def kb_store(
     kb_pool: PostgresPool,
     kb_embedder: OpenAICompatEmbedder,
-    vector_store_cfg: ChunkStoreSchemaConfig,
+    vector_store_cfg: PostgresStoreConfig,
 ) -> PostgresChunkStore:
     """Write-side store для ingest-тулов.
 
@@ -316,14 +318,14 @@ def kb_store(
     return PostgresChunkStore(
         pool=kb_pool,
         embedding_dim=kb_embedder.dim(),
-        chunk_store_cfg=vector_store_cfg,
+        cfg=vector_store_cfg,
     )
 
 
 @pytest.fixture
 def kb_collections_store(
     kb_pool: PostgresPool,
-    vector_store_cfg: ChunkStoreSchemaConfig,
+    vector_store_cfg: PostgresStoreConfig,
 ) -> PostgresCollectionsStore:
     """Collections-CRUD store для ingest-тулов (`ensure_collection`).
 
@@ -332,7 +334,7 @@ def kb_collections_store(
     """
     return PostgresCollectionsStore(
         pool=kb_pool,
-        schema_cfg=vector_store_cfg,
+        cfg=vector_store_cfg,
     )
 
 
@@ -341,7 +343,7 @@ def kb_knowledge_base(
     kb_cfg: KbConfig,
     kb_pool: PostgresPool,
     kb_embedder: OpenAICompatEmbedder,
-    vector_store_cfg: ChunkStoreSchemaConfig,
+    vector_store_cfg: PostgresStoreConfig,
 ) -> PostgresKnowledgeBase:
     """Read-side KB для kb_search (hybrid RRF)."""
     return PostgresKnowledgeBase(

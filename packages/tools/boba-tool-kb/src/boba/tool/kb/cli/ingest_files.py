@@ -32,9 +32,11 @@ from boba.indexing import DispatchReader
 from boba.indexing.embedder import Embedder
 from boba.text import StructuralChunker
 from boba.tool.kb.core import providers as kb_providers
-from boba.tool.kb.core.chunk_store import PostgresChunkStore
-from boba.tool.kb.core.collections_store import PostgresCollectionsStore
 from boba.tool.kb.core.files_ingest_config import IngestFilesConfig
+from boba.tool.kb.core.postgres_store import (
+    PostgresChunkStore,
+    PostgresCollectionsStore,
+)
 from boba.tool.kb.core.tools.ingest_files import ingest_files
 
 __all__ = ["main"]

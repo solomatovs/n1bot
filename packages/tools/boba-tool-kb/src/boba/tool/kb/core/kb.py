@@ -26,9 +26,9 @@ from psycopg.rows import dict_row
 
 from boba.db.postgres import PostgresPool
 from boba.indexing.embedder import Embedder
-from boba.tool.kb.core.chunk_store_config import ChunkStoreSchemaConfig
 from boba.tool.kb.core.errors import KnowledgeBaseError
 from boba.tool.kb.core.models import SearchHit
+from boba.tool.kb.core.postgres_store import PostgresStoreConfig
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ class PostgresKnowledgeBase:
         fts_language: str,
         rrf_k: int,
         rrf_pool: int,
-        schema_cfg: ChunkStoreSchemaConfig,
+        schema_cfg: PostgresStoreConfig,
     ) -> None:
         self._pool = pool
         self._embedder = embedder

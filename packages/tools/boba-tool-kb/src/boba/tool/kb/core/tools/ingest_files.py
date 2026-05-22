@@ -22,9 +22,11 @@ from boba.indexing import (
 from boba.indexing.context import CollectionId, PipelineId
 from boba.indexing.embedder import Embedder
 from boba.text import StructuralChunker
-from boba.tool.kb.core.chunk_store import PostgresChunkStore
-from boba.tool.kb.core.collections_store import PostgresCollectionsStore
 from boba.tool.kb.core.files_ingest_config import IngestFilesConfig
+from boba.tool.kb.core.postgres_store import (
+    PostgresChunkStore,
+    PostgresCollectionsStore,
+)
 from boba.tools import FromConfig, FromDI, Scope, tool
 from boba.transport.fs import FsRequest, FsTransport, FsWalkRequestSource
 

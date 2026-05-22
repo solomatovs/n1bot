@@ -15,8 +15,10 @@ from boba.tool.kb.confluence.ingest_config import ConfluenceIngestConfig
 from boba.tool.kb.confluence.request_sources import (
     ConfluenceMultiSpaceRequestSource,
 )
-from boba.tool.kb.core.chunk_store import PostgresChunkStore
-from boba.tool.kb.core.collections_store import PostgresCollectionsStore
+from boba.tool.kb.core.postgres_store import (
+    PostgresChunkStore,
+    PostgresCollectionsStore,
+)
 from boba.tools import FromConfig, FromDI, Scope, tool
 
 __all__ = ["confluence_space_ingest"]

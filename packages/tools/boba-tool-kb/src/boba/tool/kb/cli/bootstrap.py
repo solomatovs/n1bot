@@ -35,8 +35,8 @@ from boba.agent import AgentBuilder
 from boba.db.postgres import PostgresPool
 from boba.indexing.embedder import Embedder
 from boba.tool.kb.core import providers as kb_providers
-from boba.tool.kb.core.chunk_store_config import ChunkStoreSchemaConfig
 from boba.tool.kb.core.migrations import apply_bootstrap, ensure_vector_index
+from boba.tool.kb.core.postgres_store import PostgresStoreConfig
 
 __all__ = ["main"]
 
@@ -59,7 +59,7 @@ def main() -> int:
             pool = req.get(PostgresPool, component=_KB_COMPONENT)
             embedder = req.get(Embedder[str], component=_KB_COMPONENT)
 
-            schema_cfg = ChunkStoreSchemaConfig()
+            schema_cfg = PostgresStoreConfig()
             logger.info(
                 "vector_store schema=%s chunks=%s collections=%s",
                 schema_cfg.schema,

@@ -44,7 +44,7 @@ from typing import Any, LiteralString, cast
 
 from psycopg import sql
 
-from boba.tool.kb.core.chunk_store_config import ChunkStoreSchemaConfig
+from boba.tool.kb.core.postgres_store import PostgresStoreConfig
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 def _render_migration(
     text: str,
     *,
-    schema_cfg: ChunkStoreSchemaConfig,
+    schema_cfg: PostgresStoreConfig,
 ) -> sql.Composable:
     """Подставить идентификаторы / литералы из `schema_cfg` в SQL-шаблон.
 
@@ -87,7 +87,7 @@ def _render_migration(
 def apply_bootstrap(
     conn: Any,
     *,
-    schema_cfg: ChunkStoreSchemaConfig,
+    schema_cfg: PostgresStoreConfig,
 ) -> None:
     """Применить все миграции из `migrations/*.sql` в alphabetical order.
 
@@ -121,7 +121,7 @@ def ensure_vector_index(
     conn: Any,
     *,
     dim: int,
-    schema_cfg: ChunkStoreSchemaConfig,
+    schema_cfg: PostgresStoreConfig,
 ) -> None:
     """Создать HNSW-индекс по `(embedding::vector(dim))` если ещё нет.
 

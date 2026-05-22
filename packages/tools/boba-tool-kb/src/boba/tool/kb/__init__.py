@@ -85,14 +85,16 @@ from boba.tool.kb.confluence.tools.page_ingest import confluence_page_ingest
 from boba.tool.kb.confluence.tools.search import confluence_search
 from boba.tool.kb.confluence.tools.space_download import confluence_space_download
 from boba.tool.kb.confluence.tools.space_ingest import confluence_space_ingest
-from boba.tool.kb.core.chunk_store import PostgresChunkStore
-from boba.tool.kb.core.chunk_store_config import ChunkStoreSchemaConfig
-from boba.tool.kb.core.collections_store import PostgresCollectionsStore
 from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.embedding_config import EmbeddingConfig
 from boba.tool.kb.core.files_ingest_config import IngestFilesConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
 from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
+from boba.tool.kb.core.postgres_store import (
+    PostgresChunkStore,
+    PostgresCollectionsStore,
+    PostgresStoreConfig,
+)
 from boba.tool.kb.core.providers import (
     provide_chunk_store,
     provide_chunker,
@@ -118,7 +120,6 @@ from boba.tool.kb.sql.tools.list_tables import sql_list_tables
 from boba.tool.kb.sql.tools.query import sql_query
 
 __all__ = [
-    "ChunkStoreSchemaConfig",
     "ConfluenceConnectionConfig",
     "ConfluenceIngestConfig",
     "EmbeddingConfig",
@@ -129,6 +130,7 @@ __all__ = [
     "PostgresCollectionsStore",
     "PostgresConnectionConfig",
     "PostgresKnowledgeBase",
+    "PostgresStoreConfig",
     "SearchConfig",
     "SqlConfig",
     "confluence_list_spaces",
