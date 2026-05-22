@@ -3,8 +3,8 @@
 Две ортогональные оси:
 
 1. Document-уровень — VectorStore[T] (чанки внутри коллекции):
-   - VectorStoreReader[T]: get_by_ids, similarity_search, peek
-   - VectorStoreWriter[T]: upsert, delete
+   - VectorStoreReader[T]: get_by_ids, similarity_search, peek, find, diff_by_hash
+   - VectorStoreWriter[T]: upsert, update_metadata, delete
    - VectorStore[T]: композиция
 
 2. Collection-уровень — CollectionsAdmin (CRUD над коллекциями целиком):
@@ -19,7 +19,10 @@
 
 Pipeline-уровень встраивается отдельной обёрткой - `boba.indexing.chunk_sink.ChunkSink`
 
-Embedder[T] инжектится в конкретный backend-impl, не часть контракта.
+Embedder[T] НЕ входит в контракт Store: store принимает уже готовый
+embedding (через `EmbeddedChunk[T]` на write и `Sequence[float]` на
+similarity-search). Embedder инжектится в pipeline-orchestrator
+(`CollectionScopedView`, `NamespacedView` и т.п.).
 
 Конкретный backend обычно реализует и VectorStore[T], и CollectionsAdmin
 одной сущностью: например ChromaDBClient — единый класс, реализующий оба
@@ -29,11 +32,12 @@ Embedder[T] инжектится в конкретный backend-impl, не ча
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Generic, TypeVar
 
-from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary
+from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary, EmbeddedChunk
+from boba.indexing.content_hash import ContentHash
 from boba.indexing.context import CollectionId
 from boba.indexing.filter import Filter
 from boba.indexing.metadata import Metadata
@@ -43,6 +47,7 @@ __all__ = [
     "CollectionInfo",
     "CollectionsAdminReader",
     "CollectionsAdminWriter",
+    "HashDiff",
     "SearchHit",
     "VectorStoreReader",
     "VectorStoreWriter",
@@ -81,6 +86,27 @@ class SearchHit(Generic[T]):
 
 
 @dataclass(frozen=True)
+class HashDiff:
+    """План действий для батча кандидатов после сверки по content_hash.
+
+    `to_upsert` — chunk_id'ы, для которых нужно посчитать embedding и
+                  записать в Store: либо отсутствуют в коллекции, либо
+                  существуют, но с другим content_hash. Order сохраняется
+                  относительно порядка кандидатов на входе.
+    `unchanged` — chunk_id'ы уже в Store с тем же content_hash. Store
+                  только бампает `updated_at` через `update_metadata` —
+                  re-embed и payload не трогаем.
+
+    `to_delete` отсутствует намеренно: per-run cleanup устаревших чанков —
+    отдельная задача `CleanupStrategy`, работает на per-run уровне через
+    `Lt(updated_at, run_start)`, а не по per-batch diff'у.
+    """
+
+    to_upsert: list[ChunkId]
+    unchanged: list[ChunkId]
+
+
+@dataclass(frozen=True)
 class CollectionInfo:
     """Логическая группа векторов в Store (collection в Chroma/Qdrant и т.п.)."""
 
@@ -106,10 +132,16 @@ class VectorStoreReader(ABC, Generic[T]):
         self,
         collection: CollectionId,
         *,
-        query: T,
+        query_embedding: Sequence[float],
         k: int,
     ) -> Iterable[SearchHit[T]]:
-        """Семантический поиск top-k в коллекции; query→embedding делает impl."""
+        """Семантический поиск top-k по уже посчитанному embedding'у запроса.
+
+        Caller отвечает за `Embedder.embed_query(...)` сам: Store не знает
+        про `Embedder` и не делает embedding на read-стороне. Размерность
+        `query_embedding` должна совпадать с embedding'ом коллекции;
+        несовпадение — ошибка backend'а.
+        """
         ...
 
     @abstractmethod
@@ -147,6 +179,32 @@ class VectorStoreReader(ABC, Generic[T]):
         """
         ...
 
+    @abstractmethod
+    def diff_by_hash(
+        self,
+        collection: CollectionId,
+        candidates: Iterable[tuple[ChunkId, ContentHash | None]],
+    ) -> HashDiff:
+        """
+        Сравнить кандидатов со Store по content_hash; вернуть план записи.
+
+        `candidates` — пары `(chunk_id, content_hash)`, обычно один батч,
+        приехавший в `IndexSink.reconcile`. Backend читает только
+        `(chunk_id, content_hash)` — без payload и embedding'а; типично
+        один SELECT по `chunk_id = ANY(...)`.
+
+        Семантика split'а:
+          - chunk_id отсутствует в коллекции → `to_upsert`
+          - chunk_id есть, hash совпадает    → `unchanged`
+          - chunk_id есть, hash отличается   → `to_upsert`
+          - оба хэша `None`                  → `unchanged`
+          - один из хэшей `None`             → `to_upsert` (defensive)
+
+        Order сохраняется относительно `candidates`. `to_delete` сюда не
+        входит — это работа `CleanupStrategy`.
+        """
+        ...
+
 
 class VectorStoreWriter(ABC, Generic[T]):
     """Write-side порт: upsert/delete документов в коллекции."""
@@ -155,10 +213,14 @@ class VectorStoreWriter(ABC, Generic[T]):
     def upsert(
         self,
         collection: CollectionId,
-        chunks: Iterable[Chunk[T]],
+        chunks: Iterable[EmbeddedChunk[T]],
     ) -> None:
         """
-        Bulk-upsert чанков в коллекцию
+        Bulk-upsert чанков в коллекцию.
+
+        Принимает `EmbeddedChunk[T]` — chunk + уже посчитанный embedding.
+        Embedder в Store больше не инжектится: caller сам вызывает
+        `Embedder.embed_documents(...)` (обычно — в `IndexSink.reconcile`).
 
         Полная замена по chunk_id: existing запись (если есть) перезаписывается
         целиком — embedding, document, metadata. Ключи metadata, бывшие у старой

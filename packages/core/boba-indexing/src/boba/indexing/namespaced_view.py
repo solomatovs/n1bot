@@ -8,9 +8,9 @@ from collections.abc import Iterable, Iterator
 from itertools import islice
 from typing import ClassVar, TypeVar
 
-from boba.indexing.chunks import Chunk, ChunkSummary
-from boba.indexing.content_hash import ContentHash
+from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary, EmbeddedChunk
 from boba.indexing.context import CollectionId, NamespaceId
+from boba.indexing.embedder import Embedder
 from boba.indexing.filter import And, Eq, Filter
 from boba.indexing.index_views import (
     IndexQuery,
@@ -38,6 +38,7 @@ class NamespacedView(IndexQuery[T], IndexSink[T]):
         self,
         store_reader: VectorStoreReader[T],
         store_writer: VectorStoreWriter[T],
+        embedder: Embedder[T],
         collection: CollectionId,
         namespace: NamespaceId,
         *,
@@ -46,6 +47,7 @@ class NamespacedView(IndexQuery[T], IndexSink[T]):
     ) -> None:
         self._reader = store_reader
         self._writer = store_writer
+        self._embedder = embedder
         self._collection = collection
         self._namespace = namespace
         self._scope_extra = scope_extra
@@ -89,7 +91,18 @@ class NamespacedView(IndexQuery[T], IndexSink[T]):
         force: bool = False,
     ) -> ReconcileSummary:
         """
-        Стримит входящие chunks батчами
+        Привести Store в соответствие с пришедшими chunk'ами.
+
+        Per-batch:
+          1. `diff_by_hash` (один SELECT) делит батч на to_upsert/unchanged
+          2. embedder только на to_upsert
+          3. upsert(EmbeddedChunk) пишет dirty + ставит updated_at=now() и
+             scope-tag namespace в metadata
+          4. update_metadata(scope_patch) для всех — нужен и для dirty,
+             потому что namespace-тэг инжектится здесь и должен прописаться
+             даже на свежевставленных чанках (в metadata через merge)
+
+        `force=True` обходит diff и треатит весь батч как dirty.
         """
         total = 0
         upserted = 0
@@ -102,14 +115,38 @@ class NamespacedView(IndexQuery[T], IndexSink[T]):
 
         for batch in self._batched(chunks, self._batch_size):
             if force:
-                dirty = batch
-                batch_unchanged = 0
+                to_upsert_ids = [c.chunk_id for c in batch]
+                unchanged_ids: list[ChunkId] = []
             else:
-                dirty, batch_unchanged = self._partition_dirty(batch)
+                diff = self._reader.diff_by_hash(
+                    self._collection,
+                    [(c.chunk_id, c.content_hash) for c in batch],
+                )
+                to_upsert_ids = diff.to_upsert
+                unchanged_ids = diff.unchanged
+
+            by_id: dict[ChunkId, Chunk[T]] = {c.chunk_id: c for c in batch}
+            dirty: list[Chunk[T]] = [by_id[i] for i in to_upsert_ids]
 
             if dirty:
-                self._writer.upsert(self._collection, dirty)
+                documents = [c.format_content for c in dirty]
+                embeddings = list(self._embedder.embed_documents(documents))
+                if len(embeddings) != len(dirty):
+                    msg = (
+                        f"embedder returned {len(embeddings)} vectors "
+                        f"for {len(dirty)} chunks"
+                    )
+                    raise RuntimeError(msg)
+                embedded = [
+                    EmbeddedChunk(chunk=c, embedding=tuple(e))
+                    for c, e in zip(dirty, embeddings, strict=True)
+                ]
+                self._writer.upsert(self._collection, embedded)
 
+            # namespace-тэг инжектится здесь — ему нужно прописаться и для
+            # dirty (upsert метадату затирает целиком, но namespace в DTO
+            # не входит — это property view'а, не Chunk'а), и для unchanged
+            # (вместе с heartbeat updated_at).
             self._writer.update_metadata(
                 self._collection,
                 [c.chunk_id for c in batch],
@@ -118,7 +155,7 @@ class NamespacedView(IndexQuery[T], IndexSink[T]):
 
             total += len(batch)
             upserted += len(dirty)
-            unchanged += batch_unchanged
+            unchanged += len(unchanged_ids)
 
         return ReconcileSummary(
             total=total,
@@ -133,6 +170,7 @@ class NamespacedView(IndexQuery[T], IndexSink[T]):
         return NamespacedView(
             store_reader=self._reader,
             store_writer=self._writer,
+            embedder=self._embedder,
             collection=self._collection,
             namespace=self._namespace,
             scope_extra=new_extra,
@@ -155,29 +193,6 @@ class NamespacedView(IndexQuery[T], IndexSink[T]):
 
         return And(parts)
 
-    def _partition_dirty(
-        self,
-        chunks: list[Chunk[T]],
-    ) -> tuple[list[Chunk[T]], int]:
-        chunk_ids = [c.chunk_id for c in chunks]
-        existing: dict[str, Chunk[T]] = {
-            c.chunk_id: c
-            for c in self._reader.get_by_ids(self._collection, chunk_ids)
-        }
-        dirty: list[Chunk[T]] = []
-        unchanged_count = 0
-        for c in chunks:
-            stored = existing.get(c.chunk_id)
-            if stored is None:
-                dirty.append(c)
-                continue
-            if self._hashes_equal(stored.content_hash, c.content_hash):
-                unchanged_count += 1
-            else:
-                dirty.append(c)
-
-        return dirty, unchanged_count
-
     @staticmethod
     def _batched(
         items: Iterable[_E],
@@ -193,13 +208,3 @@ class NamespacedView(IndexQuery[T], IndexSink[T]):
                 return
 
             yield batch
-
-    @staticmethod
-    def _hashes_equal(
-        a: ContentHash | None,
-        b: ContentHash | None,
-    ) -> bool:
-        if a is None or b is None:
-            return a is None and b is None
-
-        return a.to_wire() == b.to_wire()

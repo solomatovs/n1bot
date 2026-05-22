@@ -24,6 +24,7 @@ from boba.indexing import (
     StreamingIndexer,
 )
 from boba.indexing.context import CollectionId, PipelineId
+from boba.indexing.embedder import Embedder
 from boba.text import StructuralChunker
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
@@ -40,6 +41,7 @@ def run_confluence_ingest(  # noqa: PLR0913 — keyword-only helper, явный 
     request_source: RequestSource[HttpRequest],
     conn_cfg: ConfluenceConnectionConfig,
     store: PostgresVectorStore,
+    embedder: Embedder[str],
     chunker: StructuralChunker,
     collection: str,
     collection_description: str,
@@ -64,6 +66,7 @@ def run_confluence_ingest(  # noqa: PLR0913 — keyword-only helper, явный 
     view: CollectionScopedView[str] = CollectionScopedView(
         store_reader=store,
         store_writer=store,
+        embedder=embedder,
         collection=collection_id,
     )
     indexer: StreamingIndexer[HttpRequest, str] = StreamingIndexer(

@@ -1,5 +1,5 @@
 """
-ChunkSink[T] - потребитель Chunk[T] в pipeline
+ChunkSink[T] - потребитель EmbeddedChunk[T] в pipeline
 кладёт чанки в backend (с возможной буферизацией) и flush по команде
 
 Отделяет pipeline-лимиты (batching, transactional flush) от чистой логики
@@ -23,6 +23,10 @@ upsert + refresh updated_at), а ChunkSink — просто batched raw upsert.
 Используются для разных целей. Pipeline indexing идёт через IndexSink;
 ChunkSink — для специфических case'ов вроде fan-out на несколько backend'ов
 или log-only debug-трасс.
+
+ChunkSink работает с `EmbeddedChunk[T]` (chunk + готовый embedding):
+embedder в Store не инжектится, его дёргает caller (или верхний sink-слой)
+перед `handle`.
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from typing import Generic, TypeVar
 
-from boba.indexing.chunks import Chunk
+from boba.indexing.chunks import EmbeddedChunk
 from boba.indexing.context import CollectionId, PipelineContext
 from boba.indexing.vector_store import VectorStoreWriter
 from boba.patterns import StreamSink
@@ -41,9 +45,9 @@ __all__ = ["ChunkSink", "VectorStoreChunkSink"]
 T = TypeVar("T")
 
 
-class ChunkSink(StreamSink[PipelineContext, Chunk[T]], ABC, Generic[T]):
+class ChunkSink(StreamSink[PipelineContext, EmbeddedChunk[T]], ABC, Generic[T]):
     """
-    Терминальный потребитель Chunk[T] в pipeline
+    Терминальный потребитель `EmbeddedChunk[T]` в pipeline.
 
     `handle(ctx, chunk)` — кладёт чанк в backend (с возможной буферизацией)
     `flush(ctx)` — сбрасывает буфер; обязан вызываться pipeline в конце
@@ -57,10 +61,10 @@ class ChunkSink(StreamSink[PipelineContext, Chunk[T]], ABC, Generic[T]):
 
 class VectorStoreChunkSink(ChunkSink[T], Generic[T]):
     """
-    ChunkSink, который батчит чанки до `batch_size` и автоматически flush'ит
-    их через `VectorStoreWriter.upsert(collection, batch)`. Collection связан
-    с sink'ом при конструировании — каждая VectorStoreChunkSink-инстанция
-    пишет в одну фиксированную коллекцию.
+    ChunkSink, который батчит `EmbeddedChunk[T]` до `batch_size` и
+    автоматически flush'ит их через `VectorStoreWriter.upsert(collection, batch)`.
+    Collection связан с sink'ом при конструировании — каждая
+    VectorStoreChunkSink-инстанция пишет в одну фиксированную коллекцию.
 
     `flush(ctx)` вручную — для остатка буфера в конце прогона.
 
@@ -80,12 +84,12 @@ class VectorStoreChunkSink(ChunkSink[T], Generic[T]):
         self._store = store
         self._collection = collection
         self._batch_size = batch_size
-        self._buffer: list[Chunk[T]] = []
+        self._buffer: list[EmbeddedChunk[T]] = []
 
     def name(self) -> str:
         return f"VectorStoreChunkSink(batch={self._batch_size})"
 
-    def handle(self, ctx: PipelineContext, event: Chunk[T]) -> None:
+    def handle(self, ctx: PipelineContext, event: EmbeddedChunk[T]) -> None:
         del ctx
         self._buffer.append(event)
         if len(self._buffer) >= self._batch_size:
@@ -98,5 +102,5 @@ class VectorStoreChunkSink(ChunkSink[T], Generic[T]):
             self._flush_batch(self._buffer)
             self._buffer = []
 
-    def _flush_batch(self, batch: Iterable[Chunk[T]]) -> None:
+    def _flush_batch(self, batch: Iterable[EmbeddedChunk[T]]) -> None:
         self._store.upsert(self._collection, batch)

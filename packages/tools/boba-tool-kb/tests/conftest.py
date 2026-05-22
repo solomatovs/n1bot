@@ -252,7 +252,6 @@ def kb_store(
         ensure_vector_index(conn, dim=kb_embedder.dim())
     return PostgresVectorStore(
         pool=kb_pool,
-        embedder=kb_embedder,
         embedding_dim=kb_embedder.dim(),
     )
 

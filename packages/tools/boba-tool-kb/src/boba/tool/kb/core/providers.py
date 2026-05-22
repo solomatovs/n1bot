@@ -131,12 +131,13 @@ def provide_vector_store(
 ) -> PostgresVectorStore:
     """Postgres-бэкэнд VectorStore[str] + CollectionsAdmin.
 
-    `embedding_dim` берётся у самого `Embedder.dim()` — lazy probe
-    при первом вызове, потом кэш.
+    Store сам про Embedder не знает — это чистый layer хранения. Embedder
+    тут только чтобы спросить `dim()` для конфигурации vector-колонки;
+    вызов embedder'а на write/read делается в pipeline-orchestrator'е
+    (`CollectionScopedView` и `PostgresKnowledgeBase`).
     """
     return PostgresVectorStore(
         pool=pool,
-        embedder=embedder,
         embedding_dim=embedder.dim(),
     )
 

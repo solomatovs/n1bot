@@ -22,15 +22,17 @@ from boba.tool.kb.core.tools.files_ingest import files_ingest
 from boba.tool.kb.core.vector_store import PostgresVectorStore
 
 if TYPE_CHECKING:
+    from boba.provider.openai import OpenAICompatEmbedder
     from boba.tool.kb.core.embedding_config import EmbeddingConfig
 
 pytestmark = pytest.mark.integration
 
 
-def test_files_ingest_real(
+def test_files_ingest_real(  # noqa: PLR0913 — integration test
     kb_cfg: KbConfig,
     embedding_cfg: EmbeddingConfig,
     kb_store: PostgresVectorStore,
+    kb_embedder: OpenAICompatEmbedder,
     kb_dispatch_reader: DispatchReader[str],
     kb_chunker: StructuralChunker,
 ) -> None:
@@ -45,6 +47,7 @@ def test_files_ingest_real(
 
     result = files_ingest(
         store=kb_store,
+        embedder=kb_embedder,
         dispatch_reader=kb_dispatch_reader,
         chunker=kb_chunker,
         cfg=kb_cfg,
@@ -69,6 +72,7 @@ def test_files_ingest_real(
 def test_files_ingest_is_idempotent_second_run_skips_all(
     kb_cfg: KbConfig,
     kb_store: PostgresVectorStore,
+    kb_embedder: OpenAICompatEmbedder,
     kb_dispatch_reader: DispatchReader[str],
     kb_chunker: StructuralChunker,
 ) -> None:
@@ -79,6 +83,7 @@ def test_files_ingest_is_idempotent_second_run_skips_all(
 
     _first = files_ingest(
         store=kb_store,
+        embedder=kb_embedder,
         dispatch_reader=kb_dispatch_reader,
         chunker=kb_chunker,
         cfg=kb_cfg,
@@ -86,6 +91,7 @@ def test_files_ingest_is_idempotent_second_run_skips_all(
     )
     second = files_ingest(
         store=kb_store,
+        embedder=kb_embedder,
         dispatch_reader=kb_dispatch_reader,
         chunker=kb_chunker,
         cfg=kb_cfg,
@@ -99,6 +105,7 @@ def test_files_ingest_is_idempotent_second_run_skips_all(
 def test_files_ingest_full_cleanup_returns_pruned_count(
     kb_cfg: KbConfig,
     kb_store: PostgresVectorStore,
+    kb_embedder: OpenAICompatEmbedder,
     kb_dispatch_reader: DispatchReader[str],
     kb_chunker: StructuralChunker,
 ) -> None:
@@ -109,6 +116,7 @@ def test_files_ingest_full_cleanup_returns_pruned_count(
 
     result = files_ingest(
         store=kb_store,
+        embedder=kb_embedder,
         dispatch_reader=kb_dispatch_reader,
         chunker=kb_chunker,
         cfg=kb_cfg,
@@ -117,10 +125,11 @@ def test_files_ingest_full_cleanup_returns_pruned_count(
     assert result["pruned"] >= 0
 
 
-def test_files_ingest_missing_folder_raises(
+def test_files_ingest_missing_folder_raises(  # noqa: PLR0913 — integration test
     monkeypatch: pytest.MonkeyPatch,
     kb_cfg: KbConfig,
     kb_store: PostgresVectorStore,
+    kb_embedder: OpenAICompatEmbedder,
     kb_dispatch_reader: DispatchReader[str],
     kb_chunker: StructuralChunker,
 ) -> None:
@@ -129,6 +138,7 @@ def test_files_ingest_missing_folder_raises(
     with pytest.raises(RuntimeError, match="folder_not_found"):
         files_ingest(
             store=kb_store,
+            embedder=kb_embedder,
             dispatch_reader=kb_dispatch_reader,
             chunker=kb_chunker,
             cfg=kb_cfg,

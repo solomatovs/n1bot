@@ -7,6 +7,7 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from boba.indexing.context import PipelineId
+from boba.indexing.embedder import Embedder
 from boba.text import StructuralChunker
 from boba.tool.kb.confluence._ingest_common import run_confluence_ingest
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
@@ -25,6 +26,7 @@ _PIPELINE_ID: PipelineId = PipelineId("kb.confluence_space_ingest")
 @tool
 def confluence_space_ingest(  # noqa: PLR0913
     store: Annotated[PostgresVectorStore, FromDI(Scope.APP)],
+    embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
     chunker: Annotated[StructuralChunker, FromDI(Scope.APP)],
     kb_cfg: Annotated[KbConfig, FromConfig()],
     conn_cfg: Annotated[ConfluenceConnectionConfig, FromConfig()],
@@ -68,6 +70,7 @@ def confluence_space_ingest(  # noqa: PLR0913
         request_source=request_source,
         conn_cfg=conn_cfg,
         store=store,
+        embedder=embedder,
         chunker=chunker,
         collection=kb_cfg.collection,
         collection_description=kb_cfg.collection_description,

@@ -32,6 +32,7 @@ from pydantic import Field
 
 from boba.agent import AgentBuilder
 from boba.indexing import DispatchReader
+from boba.indexing.embedder import Embedder
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.text import StructuralChunker
 from boba.tool.kb.core import providers as kb_providers
@@ -81,6 +82,7 @@ def main() -> int:
         with container() as req:
             kb_cfg = req.get(KbConfig, component=_KB_COMPONENT)
             store = req.get(PostgresVectorStore, component=_KB_COMPONENT)
+            embedder = req.get(Embedder[str], component=_KB_COMPONENT)
             dispatch_reader = req.get(
                 DispatchReader[str],
                 component=_KB_COMPONENT,
@@ -98,6 +100,7 @@ def main() -> int:
             try:
                 result = files_ingest(
                     store=store,
+                    embedder=embedder,
                     dispatch_reader=dispatch_reader,
                     chunker=chunker,
                     cfg=kb_cfg,

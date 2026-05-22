@@ -21,13 +21,16 @@ from boba.tool.kb.core.vector_store import PostgresVectorStore
 if TYPE_CHECKING:
     from tests.conftest import KbIntegrationTestConfig
 
+    from boba.provider.openai import OpenAICompatEmbedder
+
 pytestmark = pytest.mark.integration
 
 
-def test_confluence_page_ingest_real(
+def test_confluence_page_ingest_real(  # noqa: PLR0913 — integration test
     kb_cfg: KbConfig,
     confluence_cfg: ConfluenceConnectionConfig,
     kb_store: PostgresVectorStore,
+    kb_embedder: OpenAICompatEmbedder,
     kb_chunker: StructuralChunker,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
@@ -37,6 +40,7 @@ def test_confluence_page_ingest_real(
 
     result = confluence_page_ingest(
         store=kb_store,
+        embedder=kb_embedder,
         chunker=kb_chunker,
         kb_cfg=kb_cfg,
         conn_cfg=confluence_cfg,
@@ -49,10 +53,11 @@ def test_confluence_page_ingest_real(
     assert result["failed"] == 0, f"some sources failed: {result}"
 
 
-def test_confluence_space_ingest_real(
+def test_confluence_space_ingest_real(  # noqa: PLR0913 — integration test
     kb_cfg: KbConfig,
     confluence_cfg: ConfluenceConnectionConfig,
     kb_store: PostgresVectorStore,
+    kb_embedder: OpenAICompatEmbedder,
     kb_chunker: StructuralChunker,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
@@ -62,6 +67,7 @@ def test_confluence_space_ingest_real(
 
     result = confluence_space_ingest(
         store=kb_store,
+        embedder=kb_embedder,
         chunker=kb_chunker,
         kb_cfg=kb_cfg,
         conn_cfg=confluence_cfg,

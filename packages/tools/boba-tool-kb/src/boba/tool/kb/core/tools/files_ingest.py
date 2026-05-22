@@ -34,6 +34,7 @@ from boba.indexing import (
     StreamingIndexer,
 )
 from boba.indexing.context import CollectionId, PipelineId
+from boba.indexing.embedder import Embedder
 from boba.text import StructuralChunker
 from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.vector_store import PostgresVectorStore
@@ -47,8 +48,9 @@ _INCLUDE_PATTERNS: tuple[str, ...] = ("*.md", "*.html", "*.htm")
 
 
 @tool
-def files_ingest(
+def files_ingest(  # noqa: PLR0913 — tool с явным набором FromDI/FromConfig deps
     store: Annotated[PostgresVectorStore, FromDI(Scope.APP)],
+    embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
     dispatch_reader: Annotated[DispatchReader[str], FromDI(Scope.APP)],
     chunker: Annotated[StructuralChunker, FromDI(Scope.APP)],
     cfg: Annotated[KbConfig, FromConfig()],
@@ -85,6 +87,7 @@ def files_ingest(
     view: CollectionScopedView[str] = CollectionScopedView(
         store_reader=store,
         store_writer=store,
+        embedder=embedder,
         collection=collection,
     )
     indexer: StreamingIndexer[FsRequest, str] = StreamingIndexer(

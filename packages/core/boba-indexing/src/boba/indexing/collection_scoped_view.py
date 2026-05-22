@@ -16,9 +16,9 @@ from collections.abc import Iterable, Iterator
 from itertools import islice
 from typing import ClassVar, TypeVar
 
-from boba.indexing.chunks import Chunk, ChunkSummary
-from boba.indexing.content_hash import ContentHash
+from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary, EmbeddedChunk
 from boba.indexing.context import CollectionId
+from boba.indexing.embedder import Embedder
 from boba.indexing.filter import And, Filter
 from boba.indexing.index_views import (
     IndexQuery,
@@ -46,10 +46,11 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
 
     DEFAULT_BATCH_SIZE: ClassVar[int] = 100
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — orchestrator: store split + embedder + scope
         self,
         store_reader: VectorStoreReader[T],
         store_writer: VectorStoreWriter[T],
+        embedder: Embedder[T],
         collection: CollectionId,
         *,
         scope_extra: Filter | None = None,
@@ -57,6 +58,7 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
     ) -> None:
         self._reader = store_reader
         self._writer = store_writer
+        self._embedder = embedder
         self._collection = collection
         self._scope_extra = scope_extra
         self._batch_size = batch_size
@@ -92,41 +94,71 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
         force: bool = False,
     ) -> ReconcileSummary:
         """
-        Выполняет merge переданных chunk с теми, что уже содержаться с базе
+        Привести Store в соответствие с пришедшими chunk'ами.
+
+        Per-batch flow:
+          1. `diff_by_hash` — один SELECT по (chunk_id, content_hash),
+             разделяет батч на to_upsert/unchanged
+          2. embedder.embed_documents — только для to_upsert
+          3. writer.upsert — пишет dirty с уже посчитанным embedding'ом;
+             `updated_at` в той же INSERT/UPDATE
+          4. writer.update_metadata — heartbeat для unchanged
+             (нужно для IncrementalCleanup/FullCleanup, иначе их сметёт)
+
+        `force=True` обходит diff и трактует весь батч как dirty.
         """
         total = 0
         upserted = 0
         unchanged = 0
 
-        # время pipeline обновления
-        # используется для FullCleanup/IncrementalCleanup стратегий
-        # boba/indexing/cleanup.py
+        # время pipeline обновления для FullCleanup/IncrementalCleanup
+        # стратегий (boba/indexing/cleanup.py).
         refresh_patch: dict[str, str | int | float | bool] = {
             TrackingKeys.UPDATED_AT: float(time_at_least),
         }
 
         for batch in self._batched(chunks, self._batch_size):
             if force:
-                changed = batch
-                unchanged = 0
+                to_upsert_ids = [c.chunk_id for c in batch]
+                unchanged_ids: list[ChunkId] = []
             else:
-                changed, unchanged = self._split_changed_and_unchanged(batch)
+                diff = self._reader.diff_by_hash(
+                    self._collection,
+                    [(c.chunk_id, c.content_hash) for c in batch],
+                )
+                to_upsert_ids = diff.to_upsert
+                unchanged_ids = diff.unchanged
 
-            if changed:
-                self._writer.upsert(self._collection, changed)
+            by_id: dict[ChunkId, Chunk[T]] = {c.chunk_id: c for c in batch}
+            dirty: list[Chunk[T]] = [by_id[i] for i in to_upsert_ids]
 
-            # в каждый чанкт, даже тот у которого небыло обновлено содержимое
-            # записываеся время прохода pipeline'а - TrackingKeys.UPDATED_AT
-            # это необходимо для выполнения IncrementalCleanup
-            self._writer.update_metadata(
-                self._collection,
-                [c.chunk_id for c in batch],
-                refresh_patch,
-            )
+            if dirty:
+                documents = [c.format_content for c in dirty]
+                embeddings = list(self._embedder.embed_documents(documents))
+                if len(embeddings) != len(dirty):
+                    msg = (
+                        f"embedder returned {len(embeddings)} vectors "
+                        f"for {len(dirty)} chunks"
+                    )
+                    raise RuntimeError(msg)
+                embedded = [
+                    EmbeddedChunk(chunk=c, embedding=tuple(e))
+                    for c, e in zip(dirty, embeddings, strict=True)
+                ]
+                self._writer.upsert(self._collection, embedded)
+
+            # heartbeat только для unchanged — для dirty `updated_at = now()`
+            # уже выставил upsert в INSERT ... ON CONFLICT.
+            if unchanged_ids:
+                self._writer.update_metadata(
+                    self._collection,
+                    unchanged_ids,
+                    refresh_patch,
+                )
 
             total += len(batch)
-            upserted += len(changed)
-            unchanged += unchanged
+            upserted += len(dirty)
+            unchanged += len(unchanged_ids)
 
         return ReconcileSummary(
             total=total,
@@ -143,6 +175,7 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
         return CollectionScopedView(
             store_reader=self._reader,
             store_writer=self._writer,
+            embedder=self._embedder,
             collection=self._collection,
             scope_extra=new_extra,
             batch_size=self._batch_size,
@@ -161,28 +194,6 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
             return parts[0]
         return And(parts)
 
-    def _split_changed_and_unchanged(
-        self,
-        chunks: list[Chunk[T]],
-    ) -> tuple[list[Chunk[T]], int]:
-        chunk_ids = [c.chunk_id for c in chunks]
-        existing: dict[str, Chunk[T]] = {
-            c.chunk_id: c
-            for c in self._reader.get_by_ids(self._collection, chunk_ids)
-        }
-        dirty: list[Chunk[T]] = []
-        unchanged_count = 0
-        for c in chunks:
-            stored = existing.get(c.chunk_id)
-            if stored is None:
-                dirty.append(c)
-                continue
-            if self._hashes_equal(stored.content_hash, c.content_hash):
-                unchanged_count += 1
-            else:
-                dirty.append(c)
-        return dirty, unchanged_count
-
     @staticmethod
     def _batched(
         items: Iterable[_E],
@@ -194,12 +205,3 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
             if not batch:
                 return
             yield batch
-
-    @staticmethod
-    def _hashes_equal(
-        a: ContentHash | None,
-        b: ContentHash | None,
-    ) -> bool:
-        if a is None or b is None:
-            return a is None and b is None
-        return a.to_wire() == b.to_wire()
