@@ -37,6 +37,7 @@ class ConfluencePageDownloadConfig(BobaFlatSettings):
         case_sensitive=False,
         extra="ignore",
         config_path="tool.kb.confluence_download.page",
+        defaults_from=("confluence",),
     )
 
     confluence: ConfluenceConnection

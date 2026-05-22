@@ -9,7 +9,10 @@
         .venv/bin/python -m boba.tool.kb.cli.files_ingest
 
 Все параметры (folder, collection, prune, connection, tables, embedding,
-chunker) фиксируются оператором в TOML-секции `[tool.kb.files_ingest]`.
+chunker) фиксируются оператором в TOML-секции `[cli.kb.files_ingest]`.
+Секция отдельная от `[tool.kb.files_ingest]` (которую читает сама
+tool-функция при вызове из LLM), чтобы CLI и LLM-вызов могли иметь
+независимые настройки (например, разные `folder`/`collection`).
 """
 
 from __future__ import annotations
@@ -21,10 +24,27 @@ from dishka.entities.component import Component
 
 from boba.agent import AgentBuilder
 from boba.indexing import DispatchReader
+from boba.settings import BobaSettingsConfigDict
 from boba.tool.kb.core import providers as kb_providers
 from boba.tool.kb.core.tools.files_ingest import FilesIngestConfig, files_ingest
 
-__all__ = ["main"]
+__all__ = ["FilesIngestCliConfig", "main"]
+
+
+class FilesIngestCliConfig(FilesIngestConfig):
+    """CLI-вариант `FilesIngestConfig` — читает `[cli.kb.files_ingest]`.
+
+    Наследует все поля tool-конфига (store/embedding/chunker/folder/
+    collection/prune), только переопределяет `config_path`, чтобы
+    CLI-runner и сам tool читали независимые TOML-секции.
+    """
+
+    model_config = BobaSettingsConfigDict(
+        case_sensitive=False,
+        extra="ignore",
+        config_path="cli.kb.files_ingest",
+        defaults_from=("postgres", "kb.storage", "embedding"),
+    )
 
 logger = logging.getLogger("boba.tool.kb.cli.files_ingest")
 
@@ -42,7 +62,7 @@ def main() -> int:
 
     try:
         with container() as req:
-            cfg = req.get(FilesIngestConfig, component=_KB_COMPONENT)
+            cfg = req.get(FilesIngestCliConfig, component=_KB_COMPONENT)
             dispatch_reader = req.get(
                 DispatchReader[str],
                 component=_KB_COMPONENT,

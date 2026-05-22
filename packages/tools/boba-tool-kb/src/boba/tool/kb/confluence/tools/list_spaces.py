@@ -40,6 +40,7 @@ class ConfluenceListSpacesConfig(BobaFlatSettings):
         case_sensitive=False,
         extra="ignore",
         config_path="tool.kb.confluence_search.list_spaces",
+        defaults_from=("confluence",),
     )
 
     confluence: ConfluenceConnection

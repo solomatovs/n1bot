@@ -44,10 +44,13 @@ Tools (что LLM реально вызывает) — каждый со сво�
 - `sql_list_tables`         → `[tool.kb.sql_list_tables]`
 - `sql_describe_table`      → `[tool.kb.sql_describe_table]`
 
-**CLI runners** (не tool'ы, операторские скрипты):
-- `cli/bootstrap`               — миграции + HNSW-индекс (`[tool.kb.bootstrap]`).
-- `cli/files_ingest`            — wrapper над `files_ingest`.
-- `cli/ingest_confluence_spaces` — bulk-discovery + per-space ingest.
+**CLI runners** (не tool'ы, операторские скрипты — читают `[cli.kb.*]`):
+- `cli/bootstrap`               — миграции + HNSW-индекс (`[cli.kb.bootstrap]`).
+- `cli/files_ingest`            — wrapper над `files_ingest` (`[cli.kb.files_ingest]`).
+- `cli/ingest_confluence_spaces` — bulk-discovery + per-space ingest
+                                   (`[cli.kb.ingest_confluence_spaces]` +
+                                   CLI-флаги; per-space ingest читает
+                                   `[tool.kb.confluence_ingest.space]`).
 
 DI остаётся только для stateless `DispatchReader[str]` / `KbDocReader` /
 `HtmlReader` — они шарятся ingest-tool'ами без зависимости от конфигов.

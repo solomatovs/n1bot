@@ -29,6 +29,7 @@ class SqlDescribeTableConfig(BobaFlatSettings):
         case_sensitive=False,
         extra="ignore",
         config_path="tool.kb.sql_describe_table",
+        defaults_from=("postgres",),
     )
 
     executor: SqlExecutorConfig

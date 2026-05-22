@@ -32,6 +32,7 @@ class SqlListTablesConfig(BobaFlatSettings):
         case_sensitive=False,
         extra="ignore",
         config_path="tool.kb.sql_list_tables",
+        defaults_from=("postgres",),
     )
 
     executor: SqlExecutorConfig

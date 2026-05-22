@@ -39,6 +39,7 @@ class ConfluenceSpaceDownloadConfig(BobaFlatSettings):
         case_sensitive=False,
         extra="ignore",
         config_path="tool.kb.confluence_download.space",
+        defaults_from=("confluence",),
     )
 
     confluence: ConfluenceConnection
@@ -52,34 +53,25 @@ def confluence_space_download(
         str,
         Field(
             min_length=1,
-            description=(
-                "Confluence space key (например, `KAFKA`, `DOCS`). "
-                "Скачиваются ВСЕ страницы space-а с пагинацией."
-            ),
+            description=("Confluence space key"),
         ),
     ],
     dest_dir: Annotated[
         str,
         Field(
             min_length=1,
-            description=(
-                "Директория внутри workspace для сохранения "
-                "(создаётся, если не существует)."
-            ),
+            description=("Директория внутри workspace для сохранения"),
         ),
     ],
     as_markdown: Annotated[
         bool,
         Field(
-            description=(
-                "Если true — конвертирует HTML в Markdown (`markdownify`, "
-                "ATX-заголовки) и пишет `.md` с YAML-frontmatter. По умолчанию "
-                "сохраняется HTML с `<!--`-frontmatter."
-            ),
+            description=("конвертирует HTML в Markdown если true"),
         ),
     ] = False,
 ) -> dict[str, Any]:
-    """Скачивает все страницы указанного Confluence space в workspace.
+    """
+    Скачивает все страницы указанного Confluence space в workspace.
 
     Файлы: `{dest_dir}/{page_id}.html` (HTML) или `{dest_dir}/{page_id}.md`.
     Возвращает `{dest_dir, space_key, saved, total}`.

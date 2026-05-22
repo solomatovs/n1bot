@@ -56,6 +56,7 @@ class FilesIngestConfig(BobaFlatSettings):
         case_sensitive=False,
         extra="ignore",
         config_path="tool.kb.files_ingest",
+        defaults_from=("postgres", "kb.storage", "embedding"),
     )
 
     store: PostgresStoreConfig
