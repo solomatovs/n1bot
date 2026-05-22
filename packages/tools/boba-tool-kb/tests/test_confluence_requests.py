@@ -67,7 +67,8 @@ def test_pages_source_sets_viewpage_source_id_and_rest_url(
     requests = list(src.stream(pipeline_ctx))
     assert len(requests) == len(page_ids)
     assert all("rest/api/content/" in r.url for r in requests)
-    assert all(f"expand=body.{confluence_connection.body_format}" in r.url for r in requests)
+    body_fmt = confluence_connection.body_format
+    assert all(f"expand=body.{body_fmt}" in r.url for r in requests)
     # source_id — viewpage URL, отличается от REST url.
     for r, pid in zip(requests, page_ids, strict=True):
         assert r.source_id == viewpage_url(base, pid)
