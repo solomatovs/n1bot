@@ -34,13 +34,13 @@ _PIPELINE_ID: PipelineId = PipelineId("kb.confluence_page_ingest")
 class ConfluencePageIngestConfig(BobaFlatSettings):
     """Self-contained конфиг tool'а `confluence_page_ingest`.
 
-    Config-секция: `[tool.kb.confluence_ingest.page]`.
+    Config-секция: `[tool.kb.confluence.ingest.page]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.confluence_ingest.page",
+        config_path="tool.kb.confluence.ingest.page",
         defaults_from=("postgres", "kb.storage", "embedding", "confluence"),
     )
 

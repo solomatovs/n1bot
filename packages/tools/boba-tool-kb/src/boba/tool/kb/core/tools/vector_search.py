@@ -28,13 +28,13 @@ __all__ = ["VectorSearchConfig", "vector_search"]
 class VectorSearchConfig(BobaFlatSettings):
     """Self-contained конфиг tool'а `vector_search`.
 
-    Config-секция: `[tool.kb.vector_search]`.
+    Config-секция: `[tool.kb.search.vector]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.vector_search",
+        config_path="tool.kb.search.vector",
         defaults_from=("postgres", "kb.storage", "embedding"),
     )
 

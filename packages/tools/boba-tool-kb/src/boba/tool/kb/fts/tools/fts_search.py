@@ -49,7 +49,7 @@ def fts_search(
 
     Это НЕ поиск по нашей KB (для неё — `kb_search`, hybrid vector+FTS+RRF
     по `kb_chunks`). Здесь — read-only websearch по таблице оператора,
-    описанной в `cfg.index`. Таблица фиксирована, LLM передаёт только
+    описанной в `cfg.whitelist`. Таблица фиксирована, LLM передаёт только
     `query` + `top_k`.
 
     Возвращает JSON-массив hits `{id, score, metadata, snippet}`,

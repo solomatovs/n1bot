@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from boba.tool.kb.core.tools.kb_search import KbSearchConfig, kb_search
+from boba.tool.kb.core.tools.kb_search import SearchInKbConfig, kb_search
 
 if TYPE_CHECKING:
     from tests.conftest import KbIntegrationTestConfig
@@ -16,7 +16,7 @@ pytestmark = pytest.mark.integration
 
 
 def test_kb_search_real(
-    kb_search_cfg: KbSearchConfig,
+    kb_search_cfg: SearchInKbConfig,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
     """Реальный kb_search."""
@@ -53,7 +53,7 @@ def test_kb_search_real(
 
 
 def test_kb_search_top_k_ceiling(
-    kb_search_cfg: KbSearchConfig,
+    kb_search_cfg: SearchInKbConfig,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
     """`top_k > cfg.max_top_k` → RuntimeError. Защита от перегрузки KB."""

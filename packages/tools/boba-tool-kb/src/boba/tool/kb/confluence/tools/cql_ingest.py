@@ -6,7 +6,7 @@
 
 LLM передаёт CQL-запрос; остальное (connection, tables, embedding,
 chunker, target collection) — из TOML-секции
-`[tool.kb.confluence_ingest.cql]`.
+`[tool.kb.confluence.ingest.cql]`.
 """
 
 from __future__ import annotations
@@ -39,13 +39,13 @@ _PIPELINE_ID: PipelineId = PipelineId("kb.confluence_cql_ingest")
 class ConfluenceCqlIngestConfig(BobaFlatSettings):
     """Self-contained конфиг tool'а `confluence_cql_ingest`.
 
-    Config-секция: `[tool.kb.confluence_ingest.cql]`.
+    Config-секция: `[tool.kb.confluence.ingest.cql]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.confluence_ingest.cql",
+        config_path="tool.kb.confluence.ingest.cql",
         defaults_from=("postgres", "kb.storage", "embedding", "confluence"),
     )
 

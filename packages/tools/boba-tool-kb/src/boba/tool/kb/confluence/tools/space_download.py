@@ -5,7 +5,7 @@
 как HTML (default) или Markdown.
 
 LLM передаёт `space_key` + `dest_dir` + опц. `as_markdown`; connection —
-из TOML-секции `[tool.kb.confluence_download.space]`.
+из TOML-секции `[tool.kb.confluence.download.space]`.
 """
 
 from __future__ import annotations
@@ -32,13 +32,13 @@ _PIPELINE_ID: PipelineId = PipelineId("confluence.space_download")
 class ConfluenceSpaceDownloadConfig(BobaFlatSettings):
     """Self-contained конфиг tool'а `confluence_space_download`.
 
-    Config-секция: `[tool.kb.confluence_download.space]`.
+    Config-секция: `[tool.kb.confluence.download.space]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.confluence_download.space",
+        config_path="tool.kb.confluence.download.space",
         defaults_from=("confluence",),
     )
 

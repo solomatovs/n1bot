@@ -33,13 +33,13 @@ _MAX_CELL_CHARS = 200
 class ConfluenceListSpacesConfig(BobaFlatSettings):
     """Self-contained конфиг tool'а `confluence_list_spaces`.
 
-    Config-секция: `[tool.kb.confluence_search.list_spaces]`.
+    Config-секция: `[tool.kb.confluence.list_spaces]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.confluence_search.list_spaces",
+        config_path="tool.kb.confluence.list_spaces",
         defaults_from=("confluence",),
     )
 

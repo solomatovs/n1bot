@@ -9,7 +9,7 @@
 `connection` + `tables`). Pool открывают сами через `open_kb_pool(cfg.connection)`
 (singleton по DSN — store'ы с одним и тем же connection делят один pool).
 Никакого корневого settings-класса — composite-cfg встраивается как
-nested-поле в tool-конфиги (`FilesIngestConfig`, `KbSearchConfig`, ...).
+nested-поле в tool-конфиги (`FilesIngestConfig`, `SearchInKbConfig`, ...).
 
 Чисто chunk-уровневые операции (документы внутри коллекции):
 - read:  get_by_ids / peek / find / diff_by_hash

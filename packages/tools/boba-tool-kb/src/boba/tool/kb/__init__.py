@@ -24,20 +24,20 @@ Tools (что LLM реально вызывает) — каждый со сво�
 
 **Ingest** (наполнение `kb_chunks`):
 - `files_ingest`            → `[tool.kb.files_ingest]`
-- `confluence_space_ingest` → `[tool.kb.confluence_ingest.space]`
-- `confluence_page_ingest`  → `[tool.kb.confluence_ingest.page]`
-- `confluence_cql_ingest`   → `[tool.kb.confluence_ingest.cql]`
+- `confluence_space_ingest` → `[tool.kb.confluence.ingest.space]`
+- `confluence_page_ingest`  → `[tool.kb.confluence.ingest.page]`
+- `confluence_cql_ingest`   → `[tool.kb.confluence.ingest.cql]`
 
 **Search**:
-- `kb_search`               → `[tool.kb.kb_search]`
-- `vector_search`           → `[tool.kb.vector_search]`
-- `fts_search`              → `[tool.kb.fts_search]`
-- `confluence_cql_search`   → `[tool.kb.confluence_search.cql]`
-- `confluence_list_spaces`  → `[tool.kb.confluence_search.list_spaces]`
+- `kb_search`               → `[tool.kb.search_in_kb]`
+- `vector_search`           → `[tool.kb.search.vector]`
+- `fts_search`              → `[tool.kb.search.fts]`
+- `confluence_cql_search`   → `[tool.kb.confluence.search.cql]`
+- `confluence_list_spaces`  → `[tool.kb.confluence.list_spaces]`
 
 **Download** (Confluence → workspace):
-- `confluence_page_download`  → `[tool.kb.confluence_download.page]`
-- `confluence_space_download` → `[tool.kb.confluence_download.space]`
+- `confluence_page_download`  → `[tool.kb.confluence.download.page]`
+- `confluence_space_download` → `[tool.kb.confluence.download.space]`
 
 **SQL** (ad-hoc read-only):
 - `sql_query`               → `[tool.kb.sql_query]`
@@ -48,9 +48,9 @@ Tools (что LLM реально вызывает) — каждый со сво�
 - `cli/bootstrap`               — миграции + HNSW-индекс (`[cli.kb.bootstrap]`).
 - `cli/files_ingest`            — wrapper над `files_ingest` (`[cli.kb.files_ingest]`).
 - `cli/ingest_confluence_spaces` — bulk-discovery + per-space ingest
-                                   (`[cli.kb.ingest_confluence_spaces]` +
+                                   (`[cli.kb.confluence_spaces]` +
                                    CLI-флаги; per-space ingest читает
-                                   `[tool.kb.confluence_ingest.space]`).
+                                   `[tool.kb.confluence.ingest.space]`).
 
 DI остаётся только для stateless `DispatchReader[str]` / `KbDocReader` /
 `HtmlReader` — они шарятся ingest-tool'ами без зависимости от конфигов.
@@ -103,7 +103,7 @@ from boba.tool.kb.core.providers import (
     provide_kbdoc_reader,
 )
 from boba.tool.kb.core.tools.files_ingest import FilesIngestConfig, files_ingest
-from boba.tool.kb.core.tools.kb_search import KbSearchConfig, kb_search
+from boba.tool.kb.core.tools.kb_search import SearchInKbConfig, kb_search
 from boba.tool.kb.core.tools.vector_search import VectorSearchConfig, vector_search
 from boba.tool.kb.fts.db import FtsSearchConfig
 from boba.tool.kb.fts.models import IndexSpec
@@ -130,7 +130,6 @@ __all__ = [
     "FilesIngestConfig",
     "FtsSearchConfig",
     "IndexSpec",
-    "KbSearchConfig",
     "PostgresChunkStore",
     "PostgresCollectionsStore",
     "PostgresConnection",
@@ -138,6 +137,7 @@ __all__ = [
     "PostgresKnowledgeBaseConfig",
     "PostgresStoreConfig",
     "PostgresStoreSchema",
+    "SearchInKbConfig",
     "SqlDescribeTableConfig",
     "SqlExecutor",
     "SqlExecutorConfig",
