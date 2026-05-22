@@ -1,4 +1,4 @@
-"""CLI-runner: bulk-ingest Confluence-space'ов в KB через `confluence_space_ingest`.
+"""CLI-runner: bulk-ingest Confluence-space'ов в KB через `confluence_ingest_space`.
 
 Обёртка над одноимённым tool'ом: discovery всех spaces через
 `confluence_discover_spaces` (или `--only`-override) и per-space loop с
@@ -6,7 +6,7 @@
 
 Применение:
     BOBA_CONFIG_PATH=./local/config.toml \\
-        .venv/bin/python -m boba.tool.kb.cli.ingest_confluence_spaces
+        .venv/bin/python -m boba.tool.kb.cli.confluence.ingest.spaces
 
 Опции (CLI-флаги через `use_cli=True`):
     --type {global|personal|any}  фильтр по типу space (default: global)
@@ -31,22 +31,22 @@ from boba.settings import BobaSettingsConfigDict, StringList
 from boba.tool.kb.confluence.request_sources._common import (
     confluence_discover_spaces,
 )
-from boba.tool.kb.confluence.tools.space_ingest import (
-    ConfluenceSpaceIngestConfig,
-    confluence_space_ingest,
+from boba.tool.kb.confluence.tools.ingest.space import (
+    ConfluenceIngestSpaceConfig,
+    confluence_ingest_space,
 )
 
-__all__ = ["IngestAllSpacesConfig", "main"]
+__all__ = ["ConfluenceIngestSpacesCliConfig", "main"]
 
-logger = logging.getLogger("boba.tool.kb.cli.ingest_confluence_spaces")
+logger = logging.getLogger("boba.tool.kb.cli.confluence.ingest.spaces")
 
 
-class IngestAllSpacesConfig(ConfluenceSpaceIngestConfig):
+class ConfluenceIngestSpacesCliConfig(ConfluenceIngestSpaceConfig):
     """Self-contained CLI-конфиг bulk-ingest runner'а.
 
-    Наследует все поля `ConfluenceSpaceIngestConfig`
+    Наследует все поля `ConfluenceIngestSpaceConfig`
     (store/embedding/chunker/confluence/collection) — runner передаёт `self`
-    в tool-функцию `confluence_space_ingest` (IS-A парент). Сверху —
+    в tool-функцию `confluence_ingest_space` (IS-A парент). Сверху —
     runner-флаги, доступные ещё и через CLI (`use_cli=True`).
 
     Config-секция: `[cli.kb.confluence.ingest.spaces]`.
@@ -94,7 +94,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    cfg = IngestAllSpacesConfig()  # pyright: ignore[reportCallIssue]
+    cfg = ConfluenceIngestSpacesCliConfig()  # pyright: ignore[reportCallIssue]
 
     if cfg.only:
         logger.info("using --only override: %d space-keys", len(cfg.only))
@@ -114,7 +114,6 @@ def main() -> int:
         )
         keys = (k for k in keys if k not in skip_set)
 
-    # Per-space loop (streaming, без материализации списка)
     totals = {
         "indexed": 0,
         "skipped_unchanged": 0,
@@ -127,7 +126,7 @@ def main() -> int:
         processed = i
         space_start = time.monotonic()
         try:
-            result: dict[str, Any] = confluence_space_ingest(
+            result: dict[str, Any] = confluence_ingest_space(
                 cfg=cfg,
                 space_keys=[key],
                 prune_missing=cfg.prune,

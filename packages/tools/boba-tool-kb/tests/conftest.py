@@ -13,14 +13,14 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from boba.tool.kb.confluence.tools.spaces_list import ConfluenceSpacesListConfig
+from boba.tool.kb.confluence.tools.list.spaces import ConfluenceListSpacesConfig
 
 
 @pytest.fixture
-def confluence_spaces_list_cfg() -> ConfluenceSpacesListConfig:
+def confluence_list_spaces_cfg() -> ConfluenceListSpacesConfig:
     try:
-        return ConfluenceSpacesListConfig()
+        return ConfluenceListSpacesConfig()
     except ValidationError as e:
         pytest.skip(
-            f"[tool.kb.confluence.spaces_list] не сконфигурирован: {e}",
+            f"[tool.kb.confluence.list.spaces] не сконфигурирован: {e}",
         )

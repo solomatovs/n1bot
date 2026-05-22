@@ -1,12 +1,9 @@
-"""Tool `confluence_cql_ingest` + `ConfluenceCqlIngestConfig`.
+"""Tool `confluence_ingest_space` + `ConfluenceIngestSpaceConfig`.
 
-Индексирует страницы Confluence, найденные по CQL-запросу (например,
-`space = DOCS AND lastModified > '2024-01-01'`). Discovery — через
-`/rest/api/content/search?cql=...` с пагинацией.
-
-LLM передаёт CQL-запрос; остальное (connection, tables, embedding,
-chunker, target collection) — из TOML-секции
-`[tool.kb.confluence.ingest.cql]`.
+Индексирует все страницы перечисленных Confluence space'ов в KB-коллекцию.
+LLM передаёт `space_keys` + опц. `prune_missing`; остальное (connection,
+tables, embedding, chunker, target collection) — из TOML-секции
+`[tool.kb.confluence.ingest.space]`.
 """
 
 from __future__ import annotations
@@ -19,7 +16,9 @@ from boba.indexing.context import PipelineId
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.confluence._ingest_common import run_confluence_ingest
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.request_sources import ConfluenceCqlRequestSource
+from boba.tool.kb.confluence.request_sources import (
+    ConfluenceMultiSpaceRequestSource,
+)
 from boba.tool.kb.core.chunker_factory import build_chunker
 from boba.tool.kb.core.chunker_params import ChunkerParams
 from boba.tool.kb.core.embedder_factory import build_embedder
@@ -31,21 +30,21 @@ from boba.tool.kb.core.postgres_store import (
 )
 from boba.tools import FromConfig, tool
 
-__all__ = ["ConfluenceCqlIngestConfig", "confluence_cql_ingest"]
+__all__ = ["ConfluenceIngestSpaceConfig", "confluence_ingest_space"]
 
-_PIPELINE_ID: PipelineId = PipelineId("kb.confluence_cql_ingest")
+_PIPELINE_ID: PipelineId = PipelineId("kb.confluence_ingest_space")
 
 
-class ConfluenceCqlIngestConfig(BobaFlatSettings):
-    """Self-contained конфиг tool'а `confluence_cql_ingest`.
+class ConfluenceIngestSpaceConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `confluence_ingest_space`.
 
-    Config-секция: `[tool.kb.confluence.ingest.cql]`.
+    Config-секция: `[tool.kb.confluence.ingest.space]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.confluence.ingest.cql",
+        config_path="tool.kb.confluence.ingest.space",
         defaults_from=("postgres", "kb.storage", "embedding", "confluence"),
     )
 
@@ -62,16 +61,14 @@ class ConfluenceCqlIngestConfig(BobaFlatSettings):
 
 
 @tool
-def confluence_cql_ingest(
-    cfg: Annotated[ConfluenceCqlIngestConfig, FromConfig()],
-    cql: Annotated[
-        str,
+def confluence_ingest_space(
+    cfg: Annotated[ConfluenceIngestSpaceConfig, FromConfig()],
+    space_keys: Annotated[
+        list[str],
         Field(
             min_length=1,
             description=(
-                "CQL-запрос для отбора страниц "
-                '(например, `space = DOCS AND lastModified > "2024-01-01"`). '
-                "Discovery — через `/rest/api/content/search?cql=...` с пагинацией."
+                'Список Confluence space-keys'
             ),
         ),
     ],
@@ -80,23 +77,24 @@ def confluence_cql_ingest(
         Field(
             description=(
                 "Если true, удалить из коллекции чанки, чьих source_id "
-                "нет среди страниц, найденных по CQL в текущем run'е."
+                "нет среди скачанных страниц union'а всех `space_keys`."
             ),
         ),
     ] = False,
 ) -> dict[str, Any]:
-    """Индексирует страницы Confluence, отобранные CQL-запросом, в KB-коллекцию.
+    """Индексирует все страницы перечисленных Confluence space'ов в KB-коллекцию.
 
-    Возвращает JSON `{cql, collection, indexed, skipped_unchanged, pruned, failed}`.
+    Возвращает JSON `{space_keys, collection, indexed, skipped_unchanged,
+    pruned, failed}`.
     """
     chunk_store = PostgresChunkStore(cfg=cfg.store)
     collections_store = PostgresCollectionsStore(cfg=cfg.store)
     embedder = build_embedder(cfg.embedding)
     chunker = build_chunker(cfg.chunker)
 
-    request_source = ConfluenceCqlRequestSource(
+    request_source = ConfluenceMultiSpaceRequestSource(
         conn=cfg.confluence,
-        cql=cql,
+        space_keys=space_keys,
         body_format=cfg.confluence.body_format,
     )
     result = run_confluence_ingest(
@@ -110,4 +108,4 @@ def confluence_cql_ingest(
         prune_missing=prune_missing,
         pipeline_id=_PIPELINE_ID,
     )
-    return {"cql": cql, **result}
+    return {"space_keys": list(space_keys), **result}

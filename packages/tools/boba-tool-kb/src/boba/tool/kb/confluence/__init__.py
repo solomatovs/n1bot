@@ -3,23 +3,25 @@
 Tools (каждый — self-contained tool-конфиг в своей TOML-секции):
 
 Ingest (Confluence → kb_chunks):
-- `confluence_space_ingest`   — все страницы перечисленных space'ов.
+- `confluence_ingest_space`   — все страницы перечисленных space'ов.
                                 Секция `[tool.kb.confluence.ingest.space]`.
-- `confluence_page_ingest`    — явный список page_ids.
+- `confluence_ingest_page`    — явный список page_ids.
                                 Секция `[tool.kb.confluence.ingest.page]`.
-- `confluence_cql_ingest`     — страницы, отобранные CQL-запросом.
+- `confluence_ingest_cql`     — страницы, отобранные CQL-запросом.
                                 Секция `[tool.kb.confluence.ingest.cql]`.
 
 Search (online):
-- `confluence_cql_search`     — CQL-search по реальному Confluence.
+- `confluence_search_cql`     — CQL-search по реальному Confluence.
                                 Секция `[tool.kb.confluence.search.cql]`.
-- `confluence_spaces_list`    — список доступных spaces (markdown).
-                                Секция `[tool.kb.confluence.spaces_list]`.
+
+List/Discovery:
+- `confluence_list_spaces`    — список доступных spaces (markdown).
+                                Секция `[tool.kb.confluence.list.spaces]`.
 
 Download (Confluence → workspace):
-- `confluence_page_download`  — скачать список page_ids (HTML или Markdown).
+- `confluence_download_page`  — скачать список page_ids (HTML или Markdown).
                                 Секция `[tool.kb.confluence.download.page]`.
-- `confluence_space_download` — скачать все страницы space (HTML или Markdown).
+- `confluence_download_space` — скачать все страницы space (HTML или Markdown).
                                 Секция `[tool.kb.confluence.download.space]`.
 
 `ConfluenceConnection` (basemodel из `connection.py`) встраивается как
@@ -30,49 +32,49 @@ tool полностью изолирован.
 from __future__ import annotations
 
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.tools.cql_ingest import (
-    ConfluenceCqlIngestConfig,
-    confluence_cql_ingest,
+from boba.tool.kb.confluence.tools.download.page import (
+    ConfluenceDownloadPageConfig,
+    confluence_download_page,
 )
-from boba.tool.kb.confluence.tools.cql_search import (
-    ConfluenceCqlSearchConfig,
-    confluence_cql_search,
+from boba.tool.kb.confluence.tools.download.space import (
+    ConfluenceDownloadSpaceConfig,
+    confluence_download_space,
 )
-from boba.tool.kb.confluence.tools.page_download import (
-    ConfluencePageDownloadConfig,
-    confluence_page_download,
+from boba.tool.kb.confluence.tools.ingest.cql import (
+    ConfluenceIngestCqlConfig,
+    confluence_ingest_cql,
 )
-from boba.tool.kb.confluence.tools.page_ingest import (
-    ConfluencePageIngestConfig,
-    confluence_page_ingest,
+from boba.tool.kb.confluence.tools.ingest.page import (
+    ConfluenceIngestPageConfig,
+    confluence_ingest_page,
 )
-from boba.tool.kb.confluence.tools.space_download import (
-    ConfluenceSpaceDownloadConfig,
-    confluence_space_download,
+from boba.tool.kb.confluence.tools.ingest.space import (
+    ConfluenceIngestSpaceConfig,
+    confluence_ingest_space,
 )
-from boba.tool.kb.confluence.tools.space_ingest import (
-    ConfluenceSpaceIngestConfig,
-    confluence_space_ingest,
+from boba.tool.kb.confluence.tools.list.spaces import (
+    ConfluenceListSpacesConfig,
+    confluence_list_spaces,
 )
-from boba.tool.kb.confluence.tools.spaces_list import (
-    ConfluenceSpacesListConfig,
-    confluence_spaces_list,
+from boba.tool.kb.confluence.tools.search.cql import (
+    ConfluenceSearchCqlConfig,
+    confluence_search_cql,
 )
 
 __all__ = [
     "ConfluenceConnection",
-    "ConfluenceCqlIngestConfig",
-    "ConfluenceCqlSearchConfig",
-    "ConfluencePageDownloadConfig",
-    "ConfluencePageIngestConfig",
-    "ConfluenceSpaceDownloadConfig",
-    "ConfluenceSpaceIngestConfig",
-    "ConfluenceSpacesListConfig",
-    "confluence_cql_ingest",
-    "confluence_cql_search",
-    "confluence_page_download",
-    "confluence_page_ingest",
-    "confluence_space_download",
-    "confluence_space_ingest",
-    "confluence_spaces_list",
+    "ConfluenceDownloadPageConfig",
+    "ConfluenceDownloadSpaceConfig",
+    "ConfluenceIngestCqlConfig",
+    "ConfluenceIngestPageConfig",
+    "ConfluenceIngestSpaceConfig",
+    "ConfluenceListSpacesConfig",
+    "ConfluenceSearchCqlConfig",
+    "confluence_download_page",
+    "confluence_download_space",
+    "confluence_ingest_cql",
+    "confluence_ingest_page",
+    "confluence_ingest_space",
+    "confluence_list_spaces",
+    "confluence_search_cql",
 ]

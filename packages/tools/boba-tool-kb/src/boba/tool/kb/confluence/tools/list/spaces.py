@@ -1,7 +1,7 @@
-"""Tool `confluence_spaces_list` + `ConfluenceSpacesListConfig`.
+"""Tool `confluence_list_spaces` + `ConfluenceListSpacesConfig`.
 
 LLM-callable read-only tool: возвращает markdown-таблицу спейсов,
-доступных текущей роли. Используется перед `confluence_space_ingest`,
+доступных текущей роли. Используется перед `confluence_ingest_space`,
 чтобы LLM мог увидеть существующие space-ключи и выбрать релевантные.
 
 Endpoint: `GET /rest/api/space` с query-параметрами `limit=N&start=0`,
@@ -25,21 +25,21 @@ from boba.tool.kb.confluence.request_sources._common import (
 )
 from boba.tools import FromConfig, tool
 
-__all__ = ["ConfluenceSpacesListConfig", "confluence_spaces_list"]
+__all__ = ["ConfluenceListSpacesConfig", "confluence_list_spaces"]
 
 _MAX_CELL_CHARS = 200
 
 
-class ConfluenceSpacesListConfig(BobaFlatSettings):
-    """Self-contained конфиг tool'а `confluence_spaces_list`.
+class ConfluenceListSpacesConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `confluence_list_spaces`.
 
-    Config-секция: `[tool.kb.confluence.spaces_list]`.
+    Config-секция: `[tool.kb.confluence.list.spaces]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.confluence.spaces_list",
+        config_path="tool.kb.confluence.list.spaces",
         defaults_from=("confluence",),
     )
 
@@ -47,8 +47,8 @@ class ConfluenceSpacesListConfig(BobaFlatSettings):
 
 
 @tool
-def confluence_spaces_list(
-    cfg: Annotated[ConfluenceSpacesListConfig, FromConfig()],
+def confluence_list_spaces(
+    cfg: Annotated[ConfluenceListSpacesConfig, FromConfig()],
     space_type: Annotated[
         Literal["global", "personal", "any"],
         Field(
@@ -76,7 +76,7 @@ def confluence_spaces_list(
 
     Возвращает markdown с колонками `key, name, type, description`. LLM
     использует это, чтобы решить, какой space передать в
-    `confluence_space_ingest` или `confluence_space_download`.
+    `confluence_ingest_space` или `confluence_download_space`.
     """
     auth = cfg.confluence.make_auth()
 

@@ -1,9 +1,9 @@
-"""Tool `kb_search` + `SearchInKbConfig`: hybrid (vector + FTS + RRF) поверх KB.
+"""Tool `kb_search_hybrid` + `KbSearchHybridConfig`: vector + FTS + RRF поверх KB.
 
 Self-contained tool-конфиг: содержит всё необходимое для построения
 `PostgresKnowledgeBase` inline. LLM передаёт только `query` + опц.
 `top_k`. Список целевых коллекций и потолок top_k пинятся оператором
-в TOML-секции `[tool.kb.search_in_kb]`.
+в TOML-секции `[tool.kb.search.hybrid]`.
 """
 
 from __future__ import annotations
@@ -21,19 +21,19 @@ from boba.tool.kb.core.kb import (
 )
 from boba.tools import FromConfig, tool
 
-__all__ = ["SearchInKbConfig", "kb_search"]
+__all__ = ["KbSearchHybridConfig", "kb_search_hybrid"]
 
 
-class SearchInKbConfig(BobaFlatSettings):
-    """Self-contained конфиг tool'а `kb_search`.
+class KbSearchHybridConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `kb_search_hybrid`.
 
-    Config-секция: `[tool.kb.search_in_kb]`.
+    Config-секция: `[tool.kb.search.hybrid]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.search_in_kb",
+        config_path="tool.kb.search.hybrid",
         defaults_from=("postgres", "kb.storage", "embedding"),
     )
 
@@ -55,8 +55,8 @@ class SearchInKbConfig(BobaFlatSettings):
 
 
 @tool
-def kb_search(
-    cfg: Annotated[SearchInKbConfig, FromConfig()],
+def kb_search_hybrid(
+    cfg: Annotated[KbSearchHybridConfig, FromConfig()],
     query: Annotated[
         str,
         Field(
@@ -81,8 +81,8 @@ def kb_search(
 ) -> list[dict[str, Any]]:
     """Hybrid semantic search (vector + FTS + RRF) по KB-коллекциям.
 
-    Ищет внутри коллекций, наполненных через `confluence_*_ingest` или
-    оператором (например, CLI `boba.tool.kb.cli.kbdoc_ingest`). Список
+    Ищет внутри коллекций, наполненных через `confluence_ingest_*` или
+    оператором (например, CLI `boba.tool.kb.cli.kbdoc.ingest`). Список
     целевых коллекций — pre-настроенный оператором (`cfg.collections`);
     LLM их не выбирает. SQL-уровень: `WHERE collection = ANY(...)` —
     поиск по объединению.

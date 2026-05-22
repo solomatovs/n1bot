@@ -1,7 +1,7 @@
-"""Общая запись Confluence-страниц и их вложений на ФС для `confluence_*_download`-тулов.
+"""Общая запись Confluence-страниц и их вложений на ФС для `confluence_download_*`-тулов.
 
-`confluence_page_download` (явный список page_ids) и
-`confluence_space_download` (весь space через discovery) делают одно и
+`confluence_download_page` (явный список page_ids) и
+`confluence_download_space` (весь space через discovery) делают одно и
 то же тело: для каждого `HttpRequest` из переданного `RequestSource`
 `ConfluenceContentTransport` сначала отдаёт декодированную HTML-страницу,
 а затем все её вложения как бинарные `RawDocument`'ы (по очереди).

@@ -1,7 +1,12 @@
-"""Tool `confluence_page_ingest` + `ConfluencePageIngestConfig`.
+"""Tool `confluence_ingest_cql` + `ConfluenceIngestCqlConfig`.
 
-Индексирует явный список Confluence-страниц (page_ids) в KB-коллекцию.
-LLM передаёт `page_ids` + опц. `prune_missing`.
+Индексирует страницы Confluence, найденные по CQL-запросу (например,
+`space = DOCS AND lastModified > '2024-01-01'`). Discovery — через
+`/rest/api/content/search?cql=...` с пагинацией.
+
+LLM передаёт CQL-запрос; остальное (connection, tables, embedding,
+chunker, target collection) — из TOML-секции
+`[tool.kb.confluence.ingest.cql]`.
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ from boba.indexing.context import PipelineId
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.confluence._ingest_common import run_confluence_ingest
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.request_sources import ConfluencePagesRequestSource
+from boba.tool.kb.confluence.request_sources import ConfluenceCqlRequestSource
 from boba.tool.kb.core.chunker_factory import build_chunker
 from boba.tool.kb.core.chunker_params import ChunkerParams
 from boba.tool.kb.core.embedder_factory import build_embedder
@@ -26,21 +31,21 @@ from boba.tool.kb.core.postgres_store import (
 )
 from boba.tools import FromConfig, tool
 
-__all__ = ["ConfluencePageIngestConfig", "confluence_page_ingest"]
+__all__ = ["ConfluenceIngestCqlConfig", "confluence_ingest_cql"]
 
-_PIPELINE_ID: PipelineId = PipelineId("kb.confluence_page_ingest")
+_PIPELINE_ID: PipelineId = PipelineId("kb.confluence_ingest_cql")
 
 
-class ConfluencePageIngestConfig(BobaFlatSettings):
-    """Self-contained конфиг tool'а `confluence_page_ingest`.
+class ConfluenceIngestCqlConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `confluence_ingest_cql`.
 
-    Config-секция: `[tool.kb.confluence.ingest.page]`.
+    Config-секция: `[tool.kb.confluence.ingest.cql]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.confluence.ingest.page",
+        config_path="tool.kb.confluence.ingest.cql",
         defaults_from=("postgres", "kb.storage", "embedding", "confluence"),
     )
 
@@ -57,15 +62,16 @@ class ConfluencePageIngestConfig(BobaFlatSettings):
 
 
 @tool
-def confluence_page_ingest(
-    cfg: Annotated[ConfluencePageIngestConfig, FromConfig()],
-    page_ids: Annotated[
-        list[str],
+def confluence_ingest_cql(
+    cfg: Annotated[ConfluenceIngestCqlConfig, FromConfig()],
+    cql: Annotated[
+        str,
         Field(
             min_length=1,
             description=(
-                "Список Confluence page_id для индексации. Каждый id — "
-                "строка из URL `viewpage.action?pageId=<id>`."
+                "CQL-запрос для отбора страниц "
+                '(например, `space = DOCS AND lastModified > "2024-01-01"`). '
+                "Discovery — через `/rest/api/content/search?cql=...` с пагинацией."
             ),
         ),
     ],
@@ -74,25 +80,23 @@ def confluence_page_ingest(
         Field(
             description=(
                 "Если true, удалить из коллекции чанки, чьих source_id "
-                "нет среди явно перечисленных страниц."
+                "нет среди страниц, найденных по CQL в текущем run'е."
             ),
         ),
     ] = False,
 ) -> dict[str, Any]:
-    """Индексирует явный список Confluence-страниц в KB-коллекцию.
+    """Индексирует страницы Confluence, отобранные CQL-запросом, в KB-коллекцию.
 
-    Возвращает JSON `{page_ids, collection, indexed, skipped_unchanged,
-    pruned, failed}`.
+    Возвращает JSON `{cql, collection, indexed, skipped_unchanged, pruned, failed}`.
     """
     chunk_store = PostgresChunkStore(cfg=cfg.store)
     collections_store = PostgresCollectionsStore(cfg=cfg.store)
     embedder = build_embedder(cfg.embedding)
     chunker = build_chunker(cfg.chunker)
 
-    request_source = ConfluencePagesRequestSource(
-        base_url=cfg.confluence.base_url,
-        auth=cfg.confluence.make_auth(),
-        page_ids=page_ids,
+    request_source = ConfluenceCqlRequestSource(
+        conn=cfg.confluence,
+        cql=cql,
         body_format=cfg.confluence.body_format,
     )
     result = run_confluence_ingest(
@@ -106,4 +110,4 @@ def confluence_page_ingest(
         prune_missing=prune_missing,
         pipeline_id=_PIPELINE_ID,
     )
-    return {"page_ids": page_ids, **result}
+    return {"cql": cql, **result}

@@ -10,7 +10,7 @@ __all__ = ["SearchHit"]
 
 @dataclass(frozen=True)
 class SearchHit:
-    """Один результат kb_search.
+    """Один результат kb_search_hybrid.
 
     `distance` в гибридной выдаче не имеет «единого» физического смысла:
     это **отрицательный RRF-скор** (`-rrf`), семантика «меньше = ближе/

@@ -20,21 +20,21 @@ from boba.tool.kb.confluence.request_sources._common import (
 from boba.tool.kb.confluence.request_sources.space import (
     ConfluenceSpaceRequestSource,
 )
-from boba.tool.kb.confluence.tools.space_download import (
-    ConfluenceSpaceDownloadConfig,
+from boba.tool.kb.confluence.tools.download.space import (
+    ConfluenceDownloadSpaceConfig,
 )
 
-__all__ = ["DownloadAllSpacesConfig", "main"]
+__all__ = ["ConfluenceDownloadSpacesCliConfig", "main"]
 
-logger = logging.getLogger("boba.tool.kb.cli.download_confluence_spaces")
+logger = logging.getLogger("boba.tool.kb.cli.confluence.download.spaces")
 
-_PIPELINE_ID: PipelineId = PipelineId("cli.confluence_spaces_download")
+_PIPELINE_ID: PipelineId = PipelineId("cli.confluence.download.spaces")
 
 
-class DownloadAllSpacesConfig(ConfluenceSpaceDownloadConfig):
+class ConfluenceDownloadSpacesCliConfig(ConfluenceDownloadSpaceConfig):
     """Self-contained CLI-конфиг bulk-download runner'а.
 
-    Наследует поля `ConfluenceSpaceDownloadConfig` (`confluence`, `dest_dir`)
+    Наследует поля `ConfluenceDownloadSpaceConfig` (`confluence`, `dest_dir`)
     — runner делает то же тело через `download_pages` для каждого
     discovered space-ключа. Сверху — runner-флаги через CLI (`use_cli=True`).
 
@@ -86,7 +86,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    cfg = DownloadAllSpacesConfig()  # pyright: ignore[reportCallIssue]
+    cfg = ConfluenceDownloadSpacesCliConfig()  # pyright: ignore[reportCallIssue]
 
     if cfg.only:
         logger.info("using --only override: %d space-keys", len(cfg.only))

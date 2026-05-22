@@ -1,9 +1,11 @@
-"""
-CLI-runner: индексация папки confluence-download'ов в KB
+"""CLI-runner: индексация папки KbDoc-файлов в KB.
+
+Оператор готовит md чанки и они по возможности индексируются как есть
+если умещаются в максимальный размер чанка
 
 Применение:
     BOBA_CONFIG_PATH=./local/config.toml \\
-        .venv/bin/python -m boba.tool.kb.cli.confluence_folder_ingest
+        .venv/bin/python -m boba.tool.kb.cli.kbdoc.ingest
 """
 
 from __future__ import annotations
@@ -17,18 +19,15 @@ from pydantic import Field
 
 from boba.indexing import (
     CollectionScopedView,
-    DispatchReader,
     FullCleanup,
     IndexerConfig,
     NoneCleanup,
     PipelineContext,
-    ReaderId,
     StreamingIndexer,
 )
 from boba.indexing.context import CollectionId, PipelineId
-from boba.markdown import MarkdownReader
+from boba.kbdoc import KbDocReader
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
-from boba.tool.kb.confluence.reader import ConfluenceReader
 from boba.tool.kb.core.chunker_factory import build_chunker
 from boba.tool.kb.core.chunker_params import ChunkerParams
 from boba.tool.kb.core.embedder_factory import build_embedder
@@ -38,26 +37,23 @@ from boba.tool.kb.core.postgres_store import (
     PostgresCollectionsStore,
     PostgresStoreConfig,
 )
-from boba.transport.fs import FsKeys, FsRequest, FsTransport, FsWalkRequestSource
+from boba.transport.fs import FsRequest, FsTransport, FsWalkRequestSource
 
-__all__ = ["ConfluenceFolderIngestCliConfig", "main"]
+__all__ = ["KbdocIngestCliConfig", "main"]
 
-logger = logging.getLogger("boba.tool.kb.cli.confluence_folder_ingest")
-
-_PIPELINE_ID: PipelineId = PipelineId("kb.confluence_folder_ingest")
-_FS_DISPATCH_READER_ID: ReaderId = ReaderId("ext.confluence_folder_dispatch")
+logger = logging.getLogger("boba.tool.kb.cli.kbdoc.ingest")
 
 
-class ConfluenceFolderIngestCliConfig(BobaFlatSettings):
-    """Self-contained CLI-конфиг индексатора confluence-download'ов с ФС.
+class KbdocIngestCliConfig(BobaFlatSettings):
+    """Self-contained CLI-конфиг индексатора папки KbDoc-файлов.
 
-    Config-секция: `[cli.kb.confluence.ingest.folder]`.
+    Config-секция: `[cli.kb.kbdoc.ingest]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="cli.kb.confluence.ingest.folder",
+        config_path="cli.kb.kbdoc.ingest",
         defaults_from=("postgres", "kb.storage", "embedding"),
     )
 
@@ -65,15 +61,10 @@ class ConfluenceFolderIngestCliConfig(BobaFlatSettings):
     embedding: EmbeddingModel
     chunker: ChunkerParams
     folder: str = Field(
-        default="./local/downloads",
-        description=(
-            "Папка с confluence-download'ами; обходится рекурсивно. "
-            "Файлы `.html`/`.htm` идут через `ConfluenceReader`, `.md` — "
-            "через `MarkdownReader`; остальное (attachments) skip."
-        ),
+        description="Папка с KbDoc-файлами (`.md`) для индексации.",
     )
     collection: str = Field(
-        default="kb_confluence",
+        default="kb_kbdoc",
         min_length=1,
         max_length=255,
         description="Имя target-коллекции в `kb_chunks`.",
@@ -93,7 +84,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    cfg = ConfluenceFolderIngestCliConfig()  # pyright: ignore[reportCallIssue]
+    cfg = KbdocIngestCliConfig()  # pyright: ignore[reportCallIssue]
 
     logger.info(
         "ingesting folder=%s → collection=%s (prune=%s)",
@@ -106,7 +97,7 @@ def main() -> int:
     try:
         result = _run_ingest(cfg)
     except Exception:
-        logger.exception("confluence_folder_ingest FAILED")
+        logger.exception("kbdoc.ingest FAILED")
         return 1
     elapsed = time.monotonic() - start
 
@@ -121,7 +112,7 @@ def main() -> int:
     return 0 if result["failed"] == 0 else 1
 
 
-def _run_ingest(cfg: ConfluenceFolderIngestCliConfig) -> dict[str, Any]:
+def _run_ingest(cfg: KbdocIngestCliConfig) -> dict[str, Any]:
     folder = Path(cfg.folder)
     if not folder.exists():
         msg = f"folder_not_found: {folder}"
@@ -135,19 +126,6 @@ def _run_ingest(cfg: ConfluenceFolderIngestCliConfig) -> dict[str, Any]:
     embedder = build_embedder(cfg.embedding)
     chunker = build_chunker(cfg.chunker)
 
-    confluence_reader = ConfluenceReader()
-    markdown_reader = MarkdownReader()
-    reader: DispatchReader[str] = DispatchReader(
-        by=FsKeys.SUFFIX,
-        routes={
-            "html": confluence_reader,
-            "htm": confluence_reader,
-            "md": markdown_reader,
-        },
-        reader_id=_FS_DISPATCH_READER_ID,
-        on_unknown="skip",
-    )
-
     collection = CollectionId(cfg.collection)
     collections_store.ensure_collection(collection, description=None)
 
@@ -159,10 +137,10 @@ def _run_ingest(cfg: ConfluenceFolderIngestCliConfig) -> dict[str, Any]:
     indexer: StreamingIndexer[FsRequest, str] = StreamingIndexer(
         request_source=FsWalkRequestSource(
             paths=[str(folder)],
-            include=["*.html", "*.htm", "*.md"],
+            include=["*.md"],
         ),
         transport=FsTransport(),
-        reader=reader,
+        reader=KbDocReader(),
         chunker=chunker,
         sink=view,
         query=view,
@@ -172,7 +150,7 @@ def _run_ingest(cfg: ConfluenceFolderIngestCliConfig) -> dict[str, Any]:
         force_update=False,
     )
     stats = indexer.invoke(
-        PipelineContext(pipeline_id=_PIPELINE_ID),
+        PipelineContext(pipeline_id=PipelineId("kb.kbdoc.ingest")),
         indexer_config,
     )
 

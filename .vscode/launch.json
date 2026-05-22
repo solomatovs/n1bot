@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Chainlit: Boba UI",
+            "name": "Chainlit: agent",
             "type": "debugpy",
             "request": "launch",
             "module": "boba.chainlit.agent",
@@ -13,7 +13,7 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
-            "name": "Agent CLI: run query",
+            "name": "Agent CLI: agent",
             "type": "debugpy",
             "request": "launch",
             "module": "boba.cli.agent",
@@ -24,10 +24,10 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
-            "name": "KB CLI: bootstrap",
+            "name": "KB CLI: kb_bootstrap",
             "type": "debugpy",
             "request": "launch",
-            "module": "boba.tool.kb.cli.bootstrap",
+            "module": "boba.tool.kb.cli.kb_bootstrap",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
@@ -35,10 +35,10 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
-            "name": "KB CLI: files_ingest",
+            "name": "KB CLI: kbdoc.ingest",
             "type": "debugpy",
             "request": "launch",
-            "module": "boba.tool.kb.cli.files_ingest",
+            "module": "boba.tool.kb.cli.kbdoc.ingest",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
@@ -46,10 +46,10 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
-            "name": "KB CLI: ingest_confluence_spaces",
+            "name": "KB CLI: confluence.ingest.folder",
             "type": "debugpy",
             "request": "launch",
-            "module": "boba.tool.kb.cli.ingest_confluence_spaces",
+            "module": "boba.tool.kb.cli.confluence.ingest.folder",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
@@ -57,10 +57,10 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
-            "name": "KB CLI: confluence_space_download",
+            "name": "KB CLI: confluence.ingest.spaces",
             "type": "debugpy",
             "request": "launch",
-            "module": "boba.tool.kb.cli.confluence_space_download",
+            "module": "boba.tool.kb.cli.confluence.ingest.spaces",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
@@ -68,10 +68,10 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
-            "name": "KB CLI: download_confluence_spaces",
+            "name": "KB CLI: confluence.download.page",
             "type": "debugpy",
             "request": "launch",
-            "module": "boba.tool.kb.cli.download_confluence_spaces",
+            "module": "boba.tool.kb.cli.confluence.download.page",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
@@ -79,10 +79,21 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
-            "name": "KB CLI: confluence_page_download",
+            "name": "KB CLI: confluence.download.space",
             "type": "debugpy",
             "request": "launch",
-            "module": "boba.tool.kb.cli.confluence_page_download",
+            "module": "boba.tool.kb.cli.confluence.download.space",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "KB CLI: confluence.download.spaces",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.tool.kb.cli.confluence.download.spaces",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",

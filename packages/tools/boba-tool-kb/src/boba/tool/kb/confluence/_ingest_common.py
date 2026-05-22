@@ -1,9 +1,9 @@
-"""Общая сборка Confluence-ingest pipeline для `confluence_*_ingest`-тулов.
+"""Общая сборка Confluence-ingest pipeline для `confluence_ingest_*`-тулов.
 
-Различные tool'ы (`confluence_space_ingest`, `confluence_page_ingest`)
-делают одно и то же: берут `RequestSource` (по своему типу источника),
-гонят через `ConfluenceContentTransport` (HTTP + JSON-decode +
-attachment fan-out) → `DispatchReader` по `CONTENT_TYPE` →
+Различные tool'ы (`confluence_ingest_space`, `confluence_ingest_page`,
+`confluence_ingest_cql`) делают одно и то же: берут `RequestSource` (по
+своему типу источника), гонят через `ConfluenceContentTransport`
+(HTTP + JSON-decode + attachment fan-out) → `DispatchReader` по `CONTENT_TYPE` →
 `StructuralChunker` → `CollectionScopedView` → `PostgresChunkStore`.
 
 `DispatchReader.on_unknown="skip"` — поток смешанный (HTML-страницы +

@@ -1,5 +1,7 @@
 """Core-tools: tool-функции, не привязанные к одному внешнему домену.
 
-- `kb_search`       — hybrid (vector + FTS, RRF) по `[tool.kb.search_in_kb].collections`.
-- `vector_search`   — pure vector (cosine) по `[tool.kb.search.vector].collections`.
+- `search/hybrid` — `kb_search_hybrid` (vector + FTS, RRF) по
+                    `[tool.kb.search.hybrid].collections`.
+- `search/vector` — `kb_search_vector` (pure vector, cosine) по
+                    `[tool.kb.search.vector].collections`.
 """
