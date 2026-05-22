@@ -2,8 +2,13 @@
 
 Различные tool'ы (`confluence_space_ingest`, `confluence_page_ingest`)
 делают одно и то же: берут `RequestSource` (по своему типу источника),
-гонят через `HttpTransport` → `ConfluenceJsonDecoder` → `ConfluenceReader`
-→ `StructuralChunker` → `CollectionScopedView` → `PostgresChunkStore`.
+гонят через `ConfluenceContentTransport` (HTTP + JSON-decode +
+attachment fan-out) → `DispatchReader` по `CONTENT_TYPE` →
+`StructuralChunker` → `CollectionScopedView` → `PostgresChunkStore`.
+
+`DispatchReader.on_unknown="skip"` — поток смешанный (HTML-страницы +
+произвольные attachment'ы); индексируем только то, для чего знаем Reader.
+PDF/картинки/прочие бинари молча пропускаются — это not-an-error.
 
 Эта функция инкапсулирует общий хвост — каждый tool сам выбирает
 конкретный `RequestSource` и зовёт `run_confluence_ingest`.
@@ -15,17 +20,20 @@ from typing import Any
 
 from boba.indexing import (
     CollectionScopedView,
+    DispatchReader,
     FullCleanup,
     IndexerConfig,
     NoneCleanup,
     PipelineContext,
     RequestSource,
     StreamingIndexer,
+    TransportKeys,
 )
 from boba.indexing.context import CollectionId, PipelineId
 from boba.indexing.embedder import Embedder
+from boba.indexing.reader import ReaderId
 from boba.text import StructuralChunker
-from boba.tool.kb.confluence._pipeline_common import make_confluence_stages
+from boba.tool.kb.confluence._pipeline_common import make_confluence_transport
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.reader import ConfluenceReader
 from boba.tool.kb.core.postgres_store import (
@@ -35,6 +43,11 @@ from boba.tool.kb.core.postgres_store import (
 from boba.transport.http import HttpRequest
 
 __all__ = ["run_confluence_ingest"]
+
+
+_CONFLUENCE_HTML_CONTENT_TYPES = ("text/html",)
+"""CONTENT_TYPE-значения, которые `ConfluenceJsonDecoder` ставит после
+распаковки JSON→HTML; всё, что попадает под эти ключи, идёт в HTML-Reader."""
 
 
 def run_confluence_ingest(  # noqa: PLR0913 — keyword-only helper, явный набор deps
@@ -53,9 +66,19 @@ def run_confluence_ingest(  # noqa: PLR0913 — keyword-only helper, явный 
 
     Возвращает JSON-stats с полями collection/indexed/skipped_unchanged/
     pruned/failed. Caller добавляет свои поля (space_key/page_ids/...).
+
+    Reader — `DispatchReader` по `TransportKeys.CONTENT_TYPE`: HTML
+    обрабатывается `ConfluenceReader`'ом, всё остальное (attachment'ы PDF/
+    image/etc.) молча пропускается. Когда появятся Reader'ы для PDF или
+    картинок, их можно подключить добавив entry в `routes`-mapping.
     """
-    transport, decoder = make_confluence_stages(conn)
-    reader = ConfluenceReader()
+    confluence_reader = ConfluenceReader()
+    reader: DispatchReader[str] = DispatchReader(
+        by=TransportKeys.CONTENT_TYPE,
+        routes={ct: confluence_reader for ct in _CONFLUENCE_HTML_CONTENT_TYPES},
+        reader_id=ReaderId("ext.confluence_dispatch"),
+        on_unknown="skip",
+    )
 
     collection_id = CollectionId(collection)
     collections_store.ensure_collection(collection_id, description=None)
@@ -67,8 +90,8 @@ def run_confluence_ingest(  # noqa: PLR0913 — keyword-only helper, явный 
     )
     indexer: StreamingIndexer[HttpRequest, str] = StreamingIndexer(
         request_source=request_source,
-        transport=transport,
-        decoders=[decoder],
+        transport=make_confluence_transport(conn),
+        decoders=(),
         reader=reader,
         chunker=chunker,
         sink=view,

@@ -8,14 +8,23 @@ DispatchReader — Reader[T], выбирающий sub-Reader по MetadataKey[s
 или `TransportKeys.CONTENT_TYPE`) и делегирует.
 
 Ключ ищется в `RawDocument.metadata`. Если ключ отсутствует или его
-значение не покрыто routes — `IncompatibleContentError`: ошибка
-сборки pipeline, не transient.
+значение не покрыто routes — поведение задаётся `on_unknown`:
+
+- `"error"` (default) — `IncompatibleContentError`: ошибка сборки pipeline,
+  не transient. Используется когда unknown-формат в потоке — это баг
+  конфигурации (например, FsWalkRequestSource неожиданно вернул .docx,
+  для которого нет Reader'а).
+- `"skip"` — yield ничего, документ молча игнорируется. Используется
+  для multi-format потоков, где наличие неподдерживаемых форматов —
+  это норма (например, Confluence-pipeline стримит HTML + произвольные
+  attachment'ы, и мы хотим индексировать только HTML, остальное
+  пропускать без шума).
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 from boba.indexing.errors import IncompatibleContentError
 from boba.indexing.metadata import MetadataKey
@@ -34,6 +43,7 @@ class DispatchReader(Reader[T]):
     `by` — типизированный ключ, по которому различаем формат
     (`FsKeys.SUFFIX`, `TransportKeys.CONTENT_TYPE` и т.п.).
     `routes` — отображение «значение ключа → Reader[T]».
+    `on_unknown` — поведение при unknown-формате; см. module docstring.
 
     Pipeline остаётся честно один: один Indexer, один cleanup-scope,
     один stats-builder. Format-выбор инкапсулирован в одном узле.
@@ -45,6 +55,7 @@ class DispatchReader(Reader[T]):
         by: MetadataKey[str],
         routes: Mapping[str, Reader[T]],
         reader_id: ReaderId,
+        on_unknown: Literal["error", "skip"] = "error",
     ) -> None:
         if not routes:
             msg = "DispatchReader: routes must be non-empty"
@@ -52,6 +63,7 @@ class DispatchReader(Reader[T]):
         self._by = by
         self._routes = dict(routes)
         self._reader_id = reader_id
+        self._on_unknown = on_unknown
 
     def name(self) -> str:
         return "DispatchReader"
@@ -62,6 +74,8 @@ class DispatchReader(Reader[T]):
     def convert(self, value: RawDocument) -> Iterable[Section[T]]:
         key_value = value.metadata.get(self._by)
         if key_value is None:
+            if self._on_unknown == "skip":
+                return
             raise IncompatibleContentError(
                 reader_id=str(self._reader_id),
                 canonical_id=str(value.source_id),
@@ -73,6 +87,8 @@ class DispatchReader(Reader[T]):
 
         inner = self._routes.get(key_value)
         if inner is None:
+            if self._on_unknown == "skip":
+                return
             supported = ", ".join(sorted(self._routes))
             raise IncompatibleContentError(
                 reader_id=str(self._reader_id),
