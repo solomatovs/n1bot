@@ -19,7 +19,10 @@ __all__ = ["FilesPluginConfig"]
 
 
 class FilesPluginConfig(BobaFlatSettings):
-    """Builtin file-system tools (cat/ls/grep/edit/write/...)."""
+    """Builtin file-system tools (cat/ls/grep/edit/write/...).
+
+    Config-секция: `[tool.files]`.
+    """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,

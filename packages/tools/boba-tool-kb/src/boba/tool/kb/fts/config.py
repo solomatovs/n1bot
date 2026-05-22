@@ -22,9 +22,9 @@ __all__ = ["FtsConfig"]
 class FtsConfig(BobaFlatSettings):
     """FTS-поиск по одной whitelist-таблице оператора.
 
-    Sub-section к `[tool.kb]`. Загружается, только если `fts_search`
-    присутствует в `[tool.kb].tools` allowlist (Framework лениво грузит
-    FromConfig-типы).
+    Config-секция: `[tool.kb.fts]` (sub-section к `[tool.kb]`).
+    Загружается, только если `fts_search` присутствует в `[tool.kb].tools`
+    allowlist (Framework лениво грузит FromConfig-типы).
     """
 
     model_config = BobaSettingsConfigDict(

@@ -18,7 +18,10 @@ __all__ = ["AgentRunConfig"]
 
 
 class AgentRunConfig(BobaFlatSettings):
-    """Параметры одного запуска CLI-агента: model + sampling."""
+    """Параметры одного запуска CLI-агента: model + sampling.
+
+    Config-секция: `[cli]` (+ CLI-флаги через `use_cli=True`).
+    """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,

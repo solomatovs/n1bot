@@ -48,6 +48,11 @@ logger = logging.getLogger("boba.tool.kb.confluence.cli.ingest_all_spaces")
 
 
 class IngestAllSpacesConfig(BobaFlatSettings):
+    """CLI-аргументы для `ingest_all_spaces`-runner'а.
+
+    Config-секция: `[tool.kb.ingest_all_spaces]` (+ CLI-флаги через `use_cli=True`).
+    """
+
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="forbid",

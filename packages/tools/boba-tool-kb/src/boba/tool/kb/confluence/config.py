@@ -19,7 +19,10 @@ __all__ = ["ConfluenceConnectionConfig"]
 
 
 class ConfluenceConnectionConfig(BobaFlatSettings):
-    """Confluence connection-config: общий для всех confluence-tools'ов."""
+    """Confluence connection-config: общий для всех confluence-tools'ов.
+
+    Config-секция: `[tool.kb.confluence]`.
+    """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,

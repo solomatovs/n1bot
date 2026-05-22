@@ -22,7 +22,10 @@ __all__ = ["EmbeddingConfig"]
 
 
 class EmbeddingConfig(BobaFlatSettings):
-    """Embedding connection-config: общий для ingest и read-side путей."""
+    """Embedding connection-config: общий для ingest и read-side путей.
+
+    Config-секция: `[tool.kb.embedding]`.
+    """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,

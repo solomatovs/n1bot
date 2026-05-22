@@ -22,7 +22,10 @@ __all__ = ["KbConfig"]
 
 
 class KbConfig(BobaFlatSettings):
-    """Domain-config KB-плагина: search params, chunker, pinned collection/folder."""
+    """Domain-config KB-плагина: search params, chunker, pinned collection/folder.
+
+    Config-секция: `[tool.kb]`.
+    """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
