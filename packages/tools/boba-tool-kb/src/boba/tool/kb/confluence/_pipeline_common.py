@@ -1,29 +1,33 @@
-"""Общие стадии Confluence-pipeline'ов: Transport + JSON-Decoder + fan-out attachments.
+"""Общий Confluence-pipeline стейдж: HTTP + JSON-decode + attachment fan-out.
 
-`confluence_*_download` и `confluence_*_ingest`-тулы делят первые две
-стадии — `HttpTransport` (через `conn.make_transport()`) и
-`ConfluenceJsonDecoder` (JSON-payload → HTML-handle + enriched metadata).
+`ConfluenceContentTransport` — единый `Transport[HttpRequest]`, через который
+ходят и download, и ingest. Внутри:
 
-Различаются они дальше: download читает `decoded.handle` как HTML и пишет
-файл; ingest подключает Reader → Chunker → Sink через `StreamingIndexer`.
+1. Если `HttpRequest.metadata` содержит `ConfluenceKeys.ATTACHMENT_INFO` —
+   это уже attachment-request (его сгенерировал сам transport на предыдущей
+   итерации page-request'а). Прозрачно делегируется во внутренний
+   `HttpTransport`, без декодирования.
+2. Иначе — page-request: внутренний transport отдаёт JSON →
+   `ConfluenceJsonDecoder` извлекает HTML и обогащает metadata (включая
+   `ConfluenceKeys.ATTACHMENTS` и обновлённый `TransportKeys.CONTENT_TYPE`
+   = `text/html`) → yield декодированной страницы → для каждого вложения
+   из `ATTACHMENTS` строится attachment-`HttpRequest` через
+   `make_attachment_request` и тоже стримится через внутренний transport.
 
-Этот модуль — единственная точка конструирования этой пары стадий.
-download потребляет готовый `Iterator[RawDocument]` через
-`iter_confluence_documents`. ingest берёт `transport, decoder` через
-`make_confluence_stages` и передаёт их внутрь `StreamingIndexer` (тот
-сам гоняет per-source iter внутри).
+Yield-порядок per page-request: сам page (HTML), потом вложения в порядке
+из Confluence JSON. Никаких list'ов между стадиями: stream-pipeline через
+yield/yield from.
 
-`iter_confluence_documents` — единственное место, где разворачивается
-1 page → 1 HTML + N attachment'ов: после декодирования основной страницы
-из её metadata (`ConfluenceKeys.ATTACHMENTS`) сразу же создаются
-attachment-requests и тут же стримятся через тот же `HttpTransport`
-(без декодера — бинарь это не JSON). Yield-порядок: сначала page,
-потом её attachments по очереди. Никаких list'ов между стадиями.
+Download потребляет результат через `iter_confluence_documents`-обёртку,
+ingest подключает `ConfluenceContentTransport` напрямую в `StreamingIndexer`
+(с `decoders=()` — декодинг уже выполнен внутри transport'а; reader должен
+быть `DispatchReader`, потому что поток смешанный: HTML + произвольные
+attachment-media-types).
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 
 import httpx
 
@@ -32,60 +36,58 @@ from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.decoder import ConfluenceJsonDecoder
 from boba.tool.kb.confluence.keys import ConfluenceKeys
 from boba.tool.kb.confluence.request_sources._common import make_attachment_request
-from boba.transport.http import HttpRequest, HttpTransport
+from boba.transport.http import HttpRequest
 
-__all__ = ["iter_confluence_documents", "make_confluence_stages"]
+__all__ = [
+    "ConfluenceContentTransport",
+    "iter_confluence_documents",
+    "make_confluence_transport",
+]
 
 
-def make_confluence_stages(
-    conn: ConfluenceConnection,
-) -> tuple[HttpTransport, ConfluenceJsonDecoder]:
-    """`(transport, decoder)`-пара для Confluence-pipeline'а.
+class ConfluenceContentTransport(Transport[HttpRequest]):
+    """`Transport[HttpRequest]`, разворачивающий 1 page-request → page + N attachments.
 
-    `body_format` берётся из `conn` — единственная точка, где он связывает
-    Transport и Decoder вместе.
+    Один экземпляр держит per-`conn`-конфигурацию (base_url, auth, body_format)
+    плюс внутренний `HttpTransport`. Reuse между несколькими `.stream()`-вызовами
+    безопасен — внутри нет mutable state.
     """
-    return conn.make_transport(), ConfluenceJsonDecoder(
-        body_format=conn.body_format,
-    )
 
+    def __init__(
+        self,
+        *,
+        inner: Transport[HttpRequest],
+        body_format: str,
+        base_url: str,
+        auth: httpx.Auth | None,
+    ) -> None:
+        self._inner = inner
+        self._decoder = ConfluenceJsonDecoder(body_format=body_format)
+        self._base_url = base_url
+        self._auth = auth
 
-def iter_confluence_documents(
-    *,
-    request_source: RequestSource[HttpRequest],
-    conn: ConfluenceConnection,
-    pctx: PipelineContext,
-) -> Iterator[RawDocument]:
-    """Стрим `RawDocument` из Confluence: source → transport → decoder (+attachments).
+    def name(self) -> str:
+        return "ConfluenceContentTransport"
 
-    Per page-request: 1 HTTP → 1 JSON → 1 page-`RawDocument` (HTML-handle,
-    metadata page_id/host/version/title/space_key/ancestors + список
-    `ATTACHMENTS`), затем для каждой записи из `ATTACHMENTS` — 1 HTTP →
-    1 attachment-`RawDocument` (binary handle, metadata `ATTACHMENT_INFO` +
-    унаследованные от родителя `PAGE_ID`/`HOST`/`SPACE_KEY`/`ANCESTORS_TITLES`).
-
-    Yield-контракт: page yield'ится первой, потом её attachments по одному —
-    consumer должен полностью прочитать handle текущего документа до того,
-    как пулить следующий (стандартный streaming-Transport-контракт).
-
-    `httpx.HTTPError` пробрасывается наверх — caller сам решает, как
-    оборачивать (download → RuntimeError, ingest → StreamingIndexer
-    через `IndexingError`). Ошибка скачивания одного attachment'а валит
-    всю страницу; per-attachment skip — отдельная политика, сейчас не реализована.
-    """
-    transport, decoder = make_confluence_stages(conn)
-    auth = conn.make_auth()
-    for http_req in request_source.stream(pctx):
-        for raw in transport.stream(pctx, [http_req]):
-            decoded = decoder.convert(raw)
-            yield decoded
-            yield from _iter_attachments(
-                parent=decoded,
-                base_url=conn.base_url,
-                auth=auth,
-                transport=transport,
-                pctx=pctx,
-            )
+    def stream(
+        self,
+        ctx: PipelineContext,
+        stream: Iterable[HttpRequest],
+    ) -> Iterable[RawDocument]:
+        for req in stream:
+            if req.metadata.has(ConfluenceKeys.ATTACHMENT_INFO):
+                yield from self._inner.stream(ctx, [req])
+                continue
+            for raw in self._inner.stream(ctx, [req]):
+                decoded = self._decoder.convert(raw)
+                yield decoded
+                yield from _iter_attachments(
+                    parent=decoded,
+                    base_url=self._base_url,
+                    auth=self._auth,
+                    transport=self._inner,
+                    pctx=ctx,
+                )
 
 
 def _iter_attachments(
@@ -103,6 +105,9 @@ def _iter_attachments(
     ничего не yield'ит. Декодер по бинарям НЕ запускается — Confluence
     отдаёт raw bytes с правильным `Content-Type` в response-header,
     HttpTransport кладёт его в `TransportKeys.CONTENT_TYPE`.
+
+    Free-function (а не метод): тесты из шага 2 драйвят его напрямую с
+    фейк-транспортом, без необходимости поднимать весь `ConfluenceContentTransport`.
     """
     attachments = parent.metadata.get(ConfluenceKeys.ATTACHMENTS)
     if not attachments:
@@ -115,3 +120,44 @@ def _iter_attachments(
             attachment=att,
         )
         yield from transport.stream(pctx, [req])
+
+
+def make_confluence_transport(conn: ConfluenceConnection) -> ConfluenceContentTransport:
+    """Factory: `ConfluenceConnection` → готовый unified transport.
+
+    Единственная точка, где `body_format`/`base_url`/`auth`-параметры из
+    `conn` собираются в один Transport. И download, и ingest должны
+    конструировать transport через эту функцию — чтобы fan-out + decode
+    были общими между ними.
+    """
+    return ConfluenceContentTransport(
+        inner=conn.make_transport(),
+        body_format=conn.body_format,
+        base_url=conn.base_url,
+        auth=conn.make_auth(),
+    )
+
+
+def iter_confluence_documents(
+    *,
+    request_source: RequestSource[HttpRequest],
+    conn: ConfluenceConnection,
+    pctx: PipelineContext,
+) -> Iterator[RawDocument]:
+    """Стрим `RawDocument` из Confluence: source → ConfluenceContentTransport.
+
+    Per page-request: 1 HTTP-JSON → 1 декодированная HTML-`RawDocument` +
+    N attachment-`RawDocument`'ов (по `_links.download` каждого вложения,
+    с media_type из ответа в `TransportKeys.CONTENT_TYPE`).
+
+    Yield-контракт: page yield'ится первой, потом её attachments по одному —
+    consumer должен полностью прочитать handle текущего документа до того,
+    как пулить следующий.
+
+    `httpx.HTTPError` пробрасывается наверх — caller сам решает, как
+    оборачивать (download → RuntimeError, ingest → StreamingIndexer
+    через `IndexingError`).
+    """
+    transport = make_confluence_transport(conn)
+    for http_req in request_source.stream(pctx):
+        yield from transport.stream(pctx, [http_req])

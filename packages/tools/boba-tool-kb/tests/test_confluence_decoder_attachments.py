@@ -12,7 +12,7 @@ import json
 from io import BytesIO
 from typing import Any
 
-from boba.indexing import Metadata, RawDocument, SourceId
+from boba.indexing import Metadata, RawDocument, SourceId, TransportKeys
 from boba.tool.kb.confluence.attachments import AttachmentInfo
 from boba.tool.kb.confluence.decoder import ConfluenceJsonDecoder
 from boba.tool.kb.confluence.keys import ConfluenceKeys
@@ -96,6 +96,26 @@ def test_attachments_absent_when_no_children_block() -> None:
         "body": {"export_view": {"value": "<p>hi</p>"}},
     })
     assert not decoded.metadata.has(ConfluenceKeys.ATTACHMENTS)
+
+
+def test_decoded_content_type_is_html_not_json() -> None:
+    """После JSON→HTML распаковки `TransportKeys.CONTENT_TYPE` должен быть `text/html`.
+
+    HttpTransport ставит `application/json` (Confluence-ответ), но handle
+    содержит уже HTML — DispatchReader должен роутить через HTML-Reader,
+    а не пытаться найти Reader для JSON.
+    """
+    raw = RawDocument(
+        handle=BytesIO(json.dumps({
+            "id": "42",
+            "title": "Page",
+            "body": {"export_view": {"value": "<p>hi</p>"}},
+        }).encode("utf-8")),
+        source_id=SourceId("https://x/pages/viewpage.action?pageId=42"),
+        metadata=Metadata.empty().set(TransportKeys.CONTENT_TYPE, "application/json"),
+    )
+    decoded = ConfluenceJsonDecoder().convert(raw)
+    assert decoded.metadata.get(TransportKeys.CONTENT_TYPE) == "text/html"
 
 
 def test_attachments_absent_when_empty_results() -> None:

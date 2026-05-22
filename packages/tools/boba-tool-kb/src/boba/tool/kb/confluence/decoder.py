@@ -30,6 +30,7 @@ from boba.indexing import (
     Metadata,
     RawDocument,
     ReaderKeys,
+    TransportKeys,
 )
 from boba.tool.kb.confluence.attachments import AttachmentInfo
 from boba.tool.kb.confluence.errors import ConfluencePayloadError
@@ -37,6 +38,12 @@ from boba.tool.kb.confluence.keys import ConfluenceKeys
 from boba.transport.http import HttpKeys
 
 __all__ = ["ConfluenceJsonDecoder"]
+
+
+_HTML_CONTENT_TYPE = "text/html"
+"""После JSON→HTML распаковки handle содержит HTML; CONTENT_TYPE приводим к
+этому факту, чтобы DispatchReader мог честно роутить страницы через
+`HTMLReader` (а не через несуществующий JSONReader)."""
 
 
 class ConfluenceJsonDecoder(Decoder):
@@ -67,7 +74,7 @@ class ConfluenceJsonDecoder(Decoder):
         body_block = body.get(self._body_format) or {}
         html = str(body_block.get("value", "")) if isinstance(body_block, dict) else ""
 
-        meta = value.metadata
+        meta = value.metadata.set(TransportKeys.CONTENT_TYPE, _HTML_CONTENT_TYPE)
         if title := data.get("title"):
             meta = meta.set(ReaderKeys.PAGE_TITLE, str(title))
         version = data.get("version") or {}
