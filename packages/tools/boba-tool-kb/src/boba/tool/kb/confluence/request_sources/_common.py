@@ -48,8 +48,18 @@ def viewpage_url(base_url: str, page_id: str) -> str:
 
 
 def page_fetch_path(page_id: str, *, body_format: str) -> str:
-    """`/rest/api/content/{id}?expand=…` — выгрузка одной страницы с expand-полями."""
-    expand = f"body.{body_format},version,ancestors,space,metadata.labels"
+    """`/rest/api/content/{id}?expand=…` — выгрузка одной страницы с expand-полями.
+
+    `children.attachment` раскрывает список вложений (`results[]` с
+    `id`/`title`/`extensions.mediaType`/`extensions.fileSize`/`_links.download`/
+    `version.number`) прямо в основном ответе — это позволяет Decoder'у
+    положить их в `ConfluenceKeys.ATTACHMENTS` для последующего fan-out'а
+    без дополнительного round-trip'а на `/child/attachment`.
+    """
+    expand = (
+        f"body.{body_format},version,ancestors,space,metadata.labels,"
+        "children.attachment.version,children.attachment.extensions"
+    )
     return f"/rest/api/content/{page_id}?expand={expand}"
 
 
