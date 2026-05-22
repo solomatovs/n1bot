@@ -1,15 +1,22 @@
-"""Bootstrap-миграции схемы при старте плагина.
+"""Bootstrap-миграции схемы KB-БД (apply_bootstrap + ensure_vector_index).
 
-Подход: лениво применяем все `migrations/*.sql` в лексикографическом
-порядке на каждом старте. Каждый SQL ОБЯЗАН быть идемпотентным
-(`CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS` через
-`DO $$ ... $$`). Полноценная migration framework (alembic) — overkill
-на этапе одной-двух структурных правок.
+Обе функции — DDL-only-операции, вызываются **одноразово** оператором
+через CLI `boba.tool.kb.core.cli.bootstrap`. Раньше `apply_bootstrap`
+крутилось на каждом старте процесса в `provide_postgres_pool`, а
+`ensure_vector_index` лениво на первом `upsert` — оба варианта плодили
+runtime DDL при каждом запуске tool'а. Теперь runtime'у схема считается
+данностью; bootstrap-CLI — отдельный шаг оператора.
 
-Per-dim HNSW-индекс на `embedding` — отдельная функция
-`ensure_vector_index`, вызывается из `PostgresVectorStore` при первом
-upsert в коллекцию (а не на старте — на старте мы не знаем, какие
-коллекции/dim'ы будут).
+`apply_bootstrap` применяет все `migrations/*.sql` в лексикографическом
+порядке. Каждый SQL ОБЯЗАН быть идемпотентным (`CREATE TABLE IF NOT
+EXISTS`, `ADD COLUMN IF NOT EXISTS` через `DO $$ ... $$`) — полноценная
+migration framework (alembic) на одной-двух структурных правках overkill.
+
+`ensure_vector_index` создаёт HNSW-индекс на выражение
+`embedding::vector(N)` (pgvector не индексирует vector-колонку без
+фиксированной размерности). Один индекс = одна dim; при смене модели на
+другую dim — оператор перезапускает bootstrap-CLI, новый индекс создастся
+рядом со старым.
 """
 
 from __future__ import annotations

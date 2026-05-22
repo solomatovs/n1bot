@@ -7,7 +7,7 @@ LLM-facing wrapper над `StreamingIndexer`. Оператор закрепля�
 `prune_missing` для cleanup'а удалённых файлов.
 
 Поддерживаемые форматы (диспатч по `FsKeys.SUFFIX` через `DispatchReader`):
-- `.md`         → `KbDocReader(inner=MarkdownReader)` (header + body)
+- `.md`         → `KbDocReader` (header + body как одна Section)
 - `.html/.htm`  → `HtmlReader` (heading-aware)
 
 Pipeline собирается inline здесь, потому что зависит от per-call

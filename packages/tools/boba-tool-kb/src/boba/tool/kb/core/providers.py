@@ -5,9 +5,8 @@
     PostgresConnectionConfig (FromConfig)
         │
         └──> PostgresPool (boba-db-postgres, configure=register_vector)
-                │
-                └──> apply_bootstrap(conn) на первом подключении
-                     (создаёт kb_chunks/kb_collections если их нет)
+             (схема + HNSW-индекс не накатываются здесь — это отдельный
+              операторский шаг через CLI `boba.tool.kb.core.cli.bootstrap`)
 
     EmbeddingConfig (FromConfig)
         └──> Embedder[str]                 # OpenAICompatEmbedder
@@ -16,7 +15,7 @@
         │
         ├──> PostgresVectorStore           # уже подцепляет Embedder из DI
         ├──> PostgresKnowledgeBase         # hybrid RRF search
-        ├──> KbDocReader(inner=MarkdownReader())
+        ├──> KbDocReader                   # header + body как одна Section
         ├──> HtmlReader
         ├──> DispatchReader[str]           # by FsKeys.SUFFIX
         └──> StructuralChunker             # heading-aware + OverlapCharSplitter
@@ -50,14 +49,12 @@ from boba.indexing import (
 )
 from boba.indexing.embedder import Embedder
 from boba.kbdoc import KbDocReader
-from boba.markdown import MarkdownReader
 from boba.provider.openai import OpenAICompatEmbedder
 from boba.text import OverlapCharSplitter, StructuralChunker
 from boba.text.structural_chunker import SplitterFactory
 from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.embedding_config import EmbeddingConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
-from boba.tool.kb.core.migrations import apply_bootstrap
 from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
 from boba.tool.kb.core.vector_store import PostgresVectorStore
 from boba.tools import FromConfig, FromDI, Scope, provides
@@ -83,21 +80,23 @@ _CHUNK_ID_PREFIX_LENGTH: int = 16
 def provide_postgres_pool(
     pg_cfg: Annotated[PostgresConnectionConfig, FromConfig()],
 ) -> Iterator[PostgresPool]:
-    """PostgresPool с register_vector configure-hook и bootstrap-миграциями.
+    """PostgresPool с register_vector configure-hook.
 
-    DSN/pool sizes — из `[tool.kb.postgres]` (структурированно). На первом
-    полученном соединении выполняется `apply_bootstrap`: идемпотентные
-    CREATE TABLE/INDEX/EXTENSION. pgvector-types регистрируются на каждом
-    свежем connection через configure-callback — без этого `embedding`-
-    колонка приходит как plain str, upsert vector падает на cast.
+    DSN/pool sizes — из `[tool.kb.postgres]` (структурированно).
+    pgvector-types регистрируются на каждом свежем connection через
+    configure-callback — без этого `embedding`-колонка приходит как
+    plain str, upsert vector падает на cast.
+
+    Схема БД (миграции + HNSW-индекс) **не** накатывается здесь — это
+    одноразовый операторский шаг: `python -m boba.tool.kb.core.cli.bootstrap`.
+    Если схемы нет, ingest/search упадут на SQL-ошибке (table not found) —
+    это и есть сигнал оператору запустить bootstrap.
     """
     pool = PostgresPool.get(
         pg_cfg.to_pool_config(),
         configure=register_vector,
     )
     try:
-        with pool.connection() as conn:
-            apply_bootstrap(conn)
         yield pool
     finally:
         pool.close()
@@ -162,8 +161,8 @@ def provide_knowledge_base(
 
 @provides(scope=Scope.APP)
 def provide_kbdoc_reader() -> KbDocReader:
-    """KbDoc-формат (`**key:** value` header + body) с markdown-body."""
-    return KbDocReader(inner=MarkdownReader())
+    """KbDoc-формат (`**key:** value` header + body). Один файл = одна Section."""
+    return KbDocReader()
 
 
 @provides(scope=Scope.APP)
@@ -180,7 +179,7 @@ def provide_dispatch_reader(
     """DispatchReader по `FsKeys.SUFFIX` (значения от `FsTransport`).
 
     Поддерживаемые форматы:
-    - `md`        → KbDocReader (header + markdown body)
+    - `md`        → KbDocReader (header + body как одна Section)
     - `html/htm`  → HtmlReader (heading-aware)
     """
     return DispatchReader(

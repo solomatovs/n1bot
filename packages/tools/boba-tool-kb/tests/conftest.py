@@ -45,7 +45,6 @@ from boba.indexing import (
     SourceBasedChunkId,
 )
 from boba.kbdoc import KbDocReader
-from boba.markdown import MarkdownReader
 from boba.provider.openai import OpenAICompatEmbedder
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.text import OverlapCharSplitter, StructuralChunker
@@ -55,7 +54,7 @@ from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.embedding_config import EmbeddingConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
-from boba.tool.kb.core.migrations import apply_bootstrap
+from boba.tool.kb.core.migrations import apply_bootstrap, ensure_vector_index
 from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
 from boba.tool.kb.core.vector_store import PostgresVectorStore
 from boba.tool.kb.fts.config import FtsConfig
@@ -241,7 +240,16 @@ def kb_store(
     kb_pool: PostgresPool,
     kb_embedder: OpenAICompatEmbedder,
 ) -> PostgresVectorStore:
-    """Write-side store для ingest-тулов."""
+    """Write-side store для ingest-тулов.
+
+    Тесты mimic'ируют операторский bootstrap-шаг (CLI
+    `boba.tool.kb.core.cli.bootstrap`): `apply_bootstrap` уже отработал
+    в `kb_pool`, здесь добавляется HNSW-индекс под текущий embedder.dim().
+    В runtime store-у схема считается данностью; в тестах мы её строим
+    сами, чтобы fixture-граф не зависел от внешнего CLI-шага.
+    """
+    with kb_pool.connection() as conn:
+        ensure_vector_index(conn, dim=kb_embedder.dim())
     return PostgresVectorStore(
         pool=kb_pool,
         embedder=kb_embedder,
@@ -273,7 +281,7 @@ def kb_dispatch_reader() -> DispatchReader[str]:
     return DispatchReader(
         by=FsKeys.SUFFIX,
         routes={
-            "md": KbDocReader(inner=MarkdownReader()),
+            "md": KbDocReader(),
             "html": HtmlReader(),
             "htm": HtmlReader(),
         },

@@ -57,7 +57,9 @@ tool, использующий их через FromConfig.
 
 Pipeline-граф:
 - `PostgresConnectionConfig.to_pool_config()` → `PostgresPool.get(...)`
-  с `register_vector`-hook'ом + `apply_bootstrap` (idempotent migrations).
+  с `register_vector`-hook'ом. Схема БД (миграции + HNSW-индекс) — это
+  отдельный операторский шаг через CLI `boba.tool.kb.core.cli.bootstrap`;
+  runtime DDL в провайдере не делает.
 - `PostgresPool` шарится между kb_search и fts_search (DSN-fallback в FtsConfig).
 - Ingest-tools собирают `StreamingIndexer` inline:
   - FS:        `FsWalkRequestSource` + `FsTransport` + `DispatchReader` (md/html).
