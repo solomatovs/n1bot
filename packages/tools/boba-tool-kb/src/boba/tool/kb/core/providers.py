@@ -52,11 +52,11 @@ from boba.markdown import MarkdownReader
 from boba.provider.openai import OpenAICompatEmbedder
 from boba.text import OverlapCharSplitter, StructuralChunker
 from boba.text.structural_chunker import SplitterFactory
-from boba.tool.kb.config import KbConfig
-from boba.tool.kb.kb import PostgresKnowledgeBase
-from boba.tool.kb.migrations import apply_bootstrap
-from boba.tool.kb.postgres_config import PostgresConnectionConfig
-from boba.tool.kb.vector_store import PostgresVectorStore
+from boba.tool.kb.core.config import KbConfig
+from boba.tool.kb.core.kb import PostgresKnowledgeBase
+from boba.tool.kb.core.migrations import apply_bootstrap
+from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
+from boba.tool.kb.core.vector_store import PostgresVectorStore
 from boba.tools import FromConfig, FromDI, Scope, provides
 from boba.transport.fs import FsKeys
 

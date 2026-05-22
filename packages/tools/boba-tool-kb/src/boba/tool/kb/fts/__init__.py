@@ -15,7 +15,7 @@ Pool шарится с основной KB через DI-инжекцию `Postg
 from __future__ import annotations
 
 from boba.tool.kb.fts.config import FtsConfig
-from boba.tool.kb.fts.fts_search import fts_search
+from boba.tool.kb.fts.tools.fts_search import fts_search
 from boba.tool.kb.fts.models import FtsHit, IndexSpec
 from boba.tool.kb.fts.providers import provide_fts_kb
 

@@ -38,4 +38,4 @@ include = ["boba*"]
 namespaces = true
 
 [tool.setuptools.package-data]
-"boba.tool.kb" = ["migrations/*.sql"]
+"boba.tool.kb.core" = ["migrations/*.sql"]

@@ -27,9 +27,9 @@ from __future__ import annotations
 from boba.tool.kb.sql.config import SqlConfig
 from boba.tool.kb.sql.executor import SqlExecutor, SqlQueryError, SqlResult
 from boba.tool.kb.sql.providers import provide_sql_executor
-from boba.tool.kb.sql.sql_describe_table import sql_describe_table
-from boba.tool.kb.sql.sql_list_tables import sql_list_tables
-from boba.tool.kb.sql.sql_query import sql_query
+from boba.tool.kb.sql.tools.describe_table import sql_describe_table
+from boba.tool.kb.sql.tools.list_tables import sql_list_tables
+from boba.tool.kb.sql.tools.query import sql_query
 
 __all__ = [
     "SqlConfig",

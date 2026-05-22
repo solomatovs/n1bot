@@ -16,9 +16,9 @@ import pytest
 
 from boba.indexing import DispatchReader
 from boba.text import StructuralChunker
-from boba.tool.kb.config import KbConfig
-from boba.tool.kb.files_ingest import files_ingest
-from boba.tool.kb.vector_store import PostgresVectorStore
+from boba.tool.kb.core.config import KbConfig
+from boba.tool.kb.core.tools.files_ingest import files_ingest
+from boba.tool.kb.core.vector_store import PostgresVectorStore
 
 pytestmark = pytest.mark.integration
 

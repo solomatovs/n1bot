@@ -35,8 +35,8 @@ from boba.indexing import (
 )
 from boba.indexing.context import CollectionId, PipelineId
 from boba.text import StructuralChunker
-from boba.tool.kb.config import KbConfig
-from boba.tool.kb.vector_store import PostgresVectorStore
+from boba.tool.kb.core.config import KbConfig
+from boba.tool.kb.core.vector_store import PostgresVectorStore
 from boba.tools import FromConfig, FromDI, Scope, tool
 from boba.transport.fs import FsRequest, FsTransport, FsWalkRequestSource
 

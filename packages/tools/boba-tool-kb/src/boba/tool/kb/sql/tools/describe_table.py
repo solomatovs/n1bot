@@ -11,7 +11,7 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from boba.tool.kb._markdown import format_markdown_table
+from boba.tool.kb.core._markdown import format_markdown_table
 from boba.tool.kb.sql.executor import SqlExecutor, SqlQueryError
 from boba.tools import FromDI, Scope, tool
 

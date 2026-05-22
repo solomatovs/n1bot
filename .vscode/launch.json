@@ -110,7 +110,8 @@
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
-            "program": "${file}"
+            "program": "${file}",
+            "envFile": "${workspaceFolder}/local/.env"
         }
     ]
 }

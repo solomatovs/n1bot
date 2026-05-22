@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
-from boba.tool.kb.confluence.list_spaces import confluence_list_spaces
+from boba.tool.kb.confluence.tools.list_spaces import confluence_list_spaces
 
 pytestmark = pytest.mark.integration
 

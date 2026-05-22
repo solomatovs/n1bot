@@ -17,7 +17,7 @@ import pytest
 
 from boba.tool.kb.fts.config import FtsConfig
 from boba.tool.kb.fts.db import PgFtsKnowledgeBase
-from boba.tool.kb.fts.fts_search import fts_search
+from boba.tool.kb.fts.tools.fts_search import fts_search
 
 if TYPE_CHECKING:
     from tests.conftest import KbIntegrationTestConfig

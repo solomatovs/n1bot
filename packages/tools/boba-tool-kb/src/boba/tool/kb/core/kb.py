@@ -27,8 +27,8 @@ from psycopg.rows import dict_row
 
 from boba.db.postgres import PostgresPool
 from boba.indexing.embedder import Embedder
-from boba.tool.kb.errors import KnowledgeBaseError
-from boba.tool.kb.models import SearchHit
+from boba.tool.kb.core.errors import KnowledgeBaseError
+from boba.tool.kb.core.models import SearchHit
 
 logger = logging.getLogger(__name__)
 

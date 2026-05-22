@@ -9,15 +9,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 
-import httpx
-
 from boba.indexing import PipelineContext, RequestSource
+from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
+from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.request_sources._common import (
+    confluence_discover_space_pages,
     extract_host,
-    iter_paginated,
-    make_discovery_client,
     make_page_request,
-    viewpage_url,
 )
 from boba.transport.http import HttpRequest
 
@@ -26,99 +24,68 @@ __all__ = [
     "ConfluenceSpaceRequestSource",
 ]
 
-_LIST_LIMIT = 50
-_LIST_PATH = "/rest/api/space/{key}/content?type=page&limit={limit}&start=0"
-
 
 class ConfluenceSpaceRequestSource(RequestSource[HttpRequest]):
-    """
-    Все страницы space через `/rest/api/space/{key}/content`
-    """
+    """Все страницы space через `/rest/api/space/{key}/content`."""
 
     def __init__(
         self,
         *,
-        base_url: str,
-        auth: httpx.Auth | None,
+        conn_cfg: ConfluenceConnectionConfig,
         space_key: str,
         body_format: str = "export_view",
-        timeout_sec: float = 30.0,
     ) -> None:
-        self._base_url = base_url
-        self._host = extract_host(base_url)
-        self._auth = auth
+        self._conn_cfg = conn_cfg
         self._space_key = space_key
         self._body_format = body_format
-        self._timeout = timeout_sec
+        self._host = extract_host(conn_cfg.base_url)
 
     def name(self) -> str:
         return f"ConfluenceSpaceRequestSource({self._host}/{self._space_key})"
 
     def stream(self, ctx: PipelineContext) -> Iterable[HttpRequest]:
         del ctx
-        for page_id in self._iter_page_ids():
+        auth = ConfluenceConnection.make_auth(self._conn_cfg)
+        for page_id in confluence_discover_space_pages(
+            self._conn_cfg, self._space_key,
+        ):
             yield make_page_request(
-                base_url=self._base_url,
+                base_url=self._conn_cfg.base_url,
                 host=self._host,
-                auth=self._auth,
+                auth=auth,
                 page_id=page_id,
                 body_format=self._body_format,
             )
 
-    def list_source_ids(self, ctx: PipelineContext) -> Iterable[str]:
-        """Перечисление source_id = viewpage URL"""
-        del ctx
-        for page_id in self._iter_page_ids():
-            yield viewpage_url(self._base_url, page_id)
-
-    def _iter_page_ids(self) -> Iterable[str]:
-        """Discovery: пагинирует /space/{key}/content и возвращает только page-id"""
-        path = _LIST_PATH.format(key=self._space_key, limit=_LIST_LIMIT)
-        with make_discovery_client(self._base_url, self._auth, self._timeout) as client:
-            for raw in iter_paginated(client, path):
-                page_id = str(raw.get("id") or "").strip()
-                if page_id:
-                    yield page_id
-
 
 class ConfluenceMultiSpaceRequestSource(RequestSource[HttpRequest]):
-    """
-    Все страницы из НЕСКОЛЬКИХ space'ов — последовательно через
+    """Все страницы из НЕСКОЛЬКИХ space'ов — последовательно через
     `ConfluenceSpaceRequestSource` для каждого ключа.
 
-    Pipeline-семантика: всё ведёт себя как ОДНА выгрузка над union
-    страниц. Skip-if-unchanged работает по `source_id` (viewpage URL),
-    он одинаков между runs. Prune (`FullCleanup`) сравнивает с
-    `list_source_ids()` — т.е. чистит страницы, которых нет в текущем
-    union'е по всем переданным spaces (страницы из не-указанных spaces
-    в KB остаются нетронутыми, потому что их source_id не было в
-    `list_source_ids` — но `FullCleanup` чистит ТОЛЬКО среди тех, что
-    были увидены pipeline'ом ранее в collection, см. CollectionScopedView).
+    Pipeline-семантика: всё ведёт себя как ОДНА выгрузка над union страниц.
+    Cleanup идёт через touch-based mark (reconcile refresh'ит updated_at для
+    всех виденных chunk'ов; `FullCleanup` сносит остальные).
     """
 
     def __init__(
         self,
         *,
-        base_url: str,
-        auth: httpx.Auth | None,
+        conn_cfg: ConfluenceConnectionConfig,
         space_keys: Sequence[str],
         body_format: str = "export_view",
-        timeout_sec: float = 30.0,
     ) -> None:
         if not space_keys:
             raise ValueError("space_keys пуст")
         self._inner = [
             ConfluenceSpaceRequestSource(
-                base_url=base_url,
-                auth=auth,
+                conn_cfg=conn_cfg,
                 space_key=k,
                 body_format=body_format,
-                timeout_sec=timeout_sec,
             )
             for k in space_keys
         ]
         self._space_keys = tuple(space_keys)
-        self._host = extract_host(base_url)
+        self._host = extract_host(conn_cfg.base_url)
 
     def name(self) -> str:
         keys = ",".join(self._space_keys)
@@ -127,7 +94,3 @@ class ConfluenceMultiSpaceRequestSource(RequestSource[HttpRequest]):
     def stream(self, ctx: PipelineContext) -> Iterable[HttpRequest]:
         for src in self._inner:
             yield from src.stream(ctx)
-
-    def list_source_ids(self, ctx: PipelineContext) -> Iterable[str]:
-        for src in self._inner:
-            yield from src.list_source_ids(ctx)

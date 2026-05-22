@@ -49,17 +49,17 @@ from boba.provider.openai import OpenAICompatEmbedder
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.text import OverlapCharSplitter, StructuralChunker
 from boba.text.structural_chunker import SplitterFactory
-from boba.tool.kb.config import KbConfig
+from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.fts.config import FtsConfig
 from boba.tool.kb.fts.db import PgFtsKnowledgeBase
-from boba.tool.kb.kb import PostgresKnowledgeBase
-from boba.tool.kb.migrations import apply_bootstrap
-from boba.tool.kb.postgres_config import PostgresConnectionConfig
+from boba.tool.kb.core.kb import PostgresKnowledgeBase
+from boba.tool.kb.core.migrations import apply_bootstrap
+from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
 from boba.tool.kb.sql.config import SqlConfig
 from boba.tool.kb.sql.executor import SqlExecutor
-from boba.tool.kb.vector_store import PostgresVectorStore
+from boba.tool.kb.core.vector_store import PostgresVectorStore
 from boba.transport.fs import FsKeys
 from boba.transport.http import HttpTransport
 from boba.workspace.contract import WorkspaceId
@@ -164,9 +164,13 @@ def confluence_cfg() -> ConfluenceConnectionConfig:
 
 @pytest.fixture
 def fts_cfg() -> FtsConfig:
-    """`FtsConfig` из `[tool.kb.fts]`; skip при ошибке."""
+    """`FtsConfig` из `[tool.kb.fts]`; skip при ошибке.
+
+    `index` — required, грузится из TOML через pydantic-settings; pyright
+    не видит config-source loading и считает аргумент обязательным.
+    """
     try:
-        return FtsConfig()
+        return FtsConfig()  # pyright: ignore[reportCallIssue]
     except ValidationError as e:
         pytest.skip(f"[tool.kb.fts] не сконфигурирован: {e}")
 

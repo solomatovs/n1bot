@@ -13,7 +13,6 @@ from pydantic import Field
 from boba.indexing import PipelineId
 from boba.tool.kb.confluence._download_common import download_pages
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
-from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.request_sources.space import (
     ConfluenceSpaceRequestSource,
 )
@@ -66,11 +65,9 @@ def confluence_space_download(
     Возвращает `{dest_dir, space_key, saved, total}`.
     """
     source = ConfluenceSpaceRequestSource(
-        base_url=cfg.base_url,
-        auth=ConfluenceConnection.make_auth(cfg),
+        conn_cfg=cfg,
         space_key=space_key,
         body_format=cfg.body_format,
-        timeout_sec=cfg.timeout_sec,
     )
     result = download_pages(
         request_source=source,

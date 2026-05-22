@@ -80,12 +80,6 @@ class FsWalkRequestSource(RequestSource[FsRequest]):
             ),
         ),
     ]
-
-    # list_source_ids — те же canonical id, но без раскрытия в Request:
-    list(source.list_source_ids(ctx)) == [
-        "fs:/abs/docs/api.md",
-        "fs:/abs/docs/intro.md",
-    ]
     ```
     """  # noqa: E501
 
@@ -118,11 +112,6 @@ class FsWalkRequestSource(RequestSource[FsRequest]):
                     .set(FsKeys.NAME, p.name)
                 ),
             )
-
-    def list_source_ids(self, ctx: PipelineContext) -> Iterable[str]:
-        del ctx
-        for path in self._iter_files():
-            yield f"fs:{Path(path).resolve()}"
 
     def _iter_files(self) -> Iterator[str]:
         for raw in self._paths:

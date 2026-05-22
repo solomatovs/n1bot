@@ -24,12 +24,9 @@ source_id формирует RequestSource
 
 from __future__ import annotations
 
-from abc import abstractmethod
-from collections.abc import Iterable
 from typing import Protocol, TypeVar, runtime_checkable
 
 from boba.indexing.context import PipelineContext
-from boba.indexing.errors import SyncUnsupportedError
 from boba.indexing.metadata import Metadata
 from boba.indexing.sections import SourceId
 from boba.patterns import StreamSource
@@ -102,12 +99,3 @@ class RequestSource(StreamSource[PipelineContext, ReqT]):
     ]
     ```
     """  # noqa: E501
-
-    @abstractmethod
-    def list_source_ids(self, ctx: PipelineContext) -> Iterable[str]:
-        """
-        Перечисляет canonical source_id
-        `SyncUnsupportedError` если не реализовано
-        """
-        del ctx
-        raise SyncUnsupportedError(self.name())

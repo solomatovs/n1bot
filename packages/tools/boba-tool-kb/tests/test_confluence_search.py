@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
-from boba.tool.kb.confluence.search import confluence_search
+from boba.tool.kb.confluence.tools.search import confluence_search
 
 if TYPE_CHECKING:
     from tests.conftest import KbIntegrationTestConfig

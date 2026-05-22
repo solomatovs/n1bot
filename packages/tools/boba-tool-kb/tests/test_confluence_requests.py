@@ -80,25 +80,6 @@ def test_pages_source_sets_viewpage_source_id_and_rest_url(
         assert all(r.auth is not None for r in requests)
 
 
-def test_pages_list_source_ids_returns_viewpage_urls(
-    pipeline_ctx: PipelineContext,
-    confluence_cfg: ConfluenceConnectionConfig,
-    test_cfg: KbIntegrationTestConfig,
-) -> None:
-    """`list_source_ids` — те же viewpage URL'ы, что и в `stream`."""
-    if not test_cfg.confluence_page_ids:
-        pytest.skip("test.kb.confluence_page_ids пусто")
-
-    page_ids = test_cfg.confluence_page_ids
-    src = ConfluencePagesRequestSource(
-        base_url=confluence_cfg.base_url,
-        auth=None,
-        page_ids=page_ids,
-    )
-    ids = list(src.list_source_ids(pipeline_ctx))
-    assert ids == [viewpage_url(confluence_cfg.base_url, pid) for pid in page_ids]
-
-
 def test_pages_request_url_includes_expand_for_body_format(
     pipeline_ctx: PipelineContext,
     confluence_cfg: ConfluenceConnectionConfig,
@@ -187,44 +168,30 @@ def test_real_base_url_host_extraction(
 def test_space_source_returns_pages_from_real_space(
     pipeline_ctx: PipelineContext,
     confluence_cfg: ConfluenceConnectionConfig,
-    confluence_auth: httpx.Auth | None,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
-    """Реальная discovery: SpaceRequestSource перечисляет страницы space-а.
-
-    Если в space ≥1 страница, `list_source_ids` отдаёт ≥1 viewpage-URL, и
-    `stream` эмитит соответствующее количество `HttpRequest`'ов.
+    """Реальная discovery: SpaceRequestSource эмитит HttpRequest'ы со
+    стабильным viewpage source_id и REST URL для каждой страницы space-а.
     """
     if not test_cfg.confluence_space_key:
         pytest.skip("test.kb.confluence_space_key пусто")
 
     src = ConfluenceSpaceRequestSource(
-        base_url=confluence_cfg.base_url,
-        auth=confluence_auth,
+        conn_cfg=confluence_cfg,
         space_key=test_cfg.confluence_space_key,
         body_format=confluence_cfg.body_format,
-        timeout_sec=confluence_cfg.timeout_sec,
     )
-    ids = list(src.list_source_ids(pipeline_ctx))
-    assert ids, f"space {test_cfg.confluence_space_key!r} вернул 0 страниц"
-    base = confluence_cfg.base_url.rstrip("/")
-    assert all(
-        i.startswith(f"{base}/pages/viewpage.action?pageId=")
-        for i in ids
-    )
-
-    # stream() должен дать тот же набор страниц (через тот же discovery)
     requests = list(src.stream(pipeline_ctx))
-    assert len(requests) == len(ids)
+    assert requests, f"space {test_cfg.confluence_space_key!r} вернул 0 страниц"
+    base = confluence_cfg.base_url.rstrip("/")
     for r in requests:
         assert "rest/api/content/" in r.url
-        assert r.source_id in ids
+        assert r.source_id.startswith(f"{base}/pages/viewpage.action?pageId=")
 
 
 def test_multi_space_source_single_key_matches_single(
     pipeline_ctx: PipelineContext,
     confluence_cfg: ConfluenceConnectionConfig,
-    confluence_auth: httpx.Auth | None,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
     """`MultiSpace(space_keys=[k])` ≡ `Space(space_key=k)` по source_ids.
@@ -236,21 +203,17 @@ def test_multi_space_source_single_key_matches_single(
         pytest.skip("test.kb.confluence_space_key пусто")
 
     single = ConfluenceSpaceRequestSource(
-        base_url=confluence_cfg.base_url,
-        auth=confluence_auth,
+        conn_cfg=confluence_cfg,
         space_key=test_cfg.confluence_space_key,
         body_format=confluence_cfg.body_format,
-        timeout_sec=confluence_cfg.timeout_sec,
     )
     multi = ConfluenceMultiSpaceRequestSource(
-        base_url=confluence_cfg.base_url,
-        auth=confluence_auth,
+        conn_cfg=confluence_cfg,
         space_keys=[test_cfg.confluence_space_key],
         body_format=confluence_cfg.body_format,
-        timeout_sec=confluence_cfg.timeout_sec,
     )
-    single_ids = list(single.list_source_ids(pipeline_ctx))
-    multi_ids = list(multi.list_source_ids(pipeline_ctx))
+    single_ids = [r.source_id for r in single.stream(pipeline_ctx)]
+    multi_ids = [r.source_id for r in multi.stream(pipeline_ctx)]
     assert single_ids
     assert multi_ids == single_ids
 
@@ -258,7 +221,6 @@ def test_multi_space_source_single_key_matches_single(
 def test_multi_space_source_concatenates_two_keys(
     pipeline_ctx: PipelineContext,
     confluence_cfg: ConfluenceConnectionConfig,
-    confluence_auth: httpx.Auth | None,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
     """`MultiSpace([k, k])` ⇒ 2× source_ids одного space — проверка chain'а.
@@ -272,13 +234,11 @@ def test_multi_space_source_concatenates_two_keys(
 
     key = test_cfg.confluence_space_key
     multi = ConfluenceMultiSpaceRequestSource(
-        base_url=confluence_cfg.base_url,
-        auth=confluence_auth,
+        conn_cfg=confluence_cfg,
         space_keys=[key, key],
         body_format=confluence_cfg.body_format,
-        timeout_sec=confluence_cfg.timeout_sec,
     )
-    ids = list(multi.list_source_ids(pipeline_ctx))
+    ids = [r.source_id for r in multi.stream(pipeline_ctx)]
     # Пагинация двух space'ов с одинаковым key даёт ровно 2× страниц
     # (composite не дедуплицирует — это работа downstream'а).
     half = len(ids) // 2
@@ -287,12 +247,13 @@ def test_multi_space_source_concatenates_two_keys(
     assert ids[:half] == ids[half:]
 
 
-def test_multi_space_source_empty_keys_raises() -> None:
+def test_multi_space_source_empty_keys_raises(
+    confluence_cfg: ConfluenceConnectionConfig,
+) -> None:
     """`space_keys=[]` — ValueError на конструировании (нет no-op'а)."""
     with pytest.raises(ValueError, match="space_keys"):
         ConfluenceMultiSpaceRequestSource(
-            base_url="https://example.com",
-            auth=None,
+            conn_cfg=confluence_cfg,
             space_keys=[],
         )
 
@@ -300,7 +261,6 @@ def test_multi_space_source_empty_keys_raises() -> None:
 def test_cql_source_returns_pages_for_real_cql(
     pipeline_ctx: PipelineContext,
     confluence_cfg: ConfluenceConnectionConfig,
-    confluence_auth: httpx.Auth | None,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
     """Реальный CQL-search: возвращает ≥1 страницу + правильные HttpRequest'ы.
@@ -313,17 +273,12 @@ def test_cql_source_returns_pages_for_real_cql(
         pytest.skip("test.kb.confluence_cql пусто")
 
     src = ConfluenceCqlRequestSource(
-        base_url=confluence_cfg.base_url,
-        auth=confluence_auth,
+        conn_cfg=confluence_cfg,
         cql=test_cfg.confluence_cql,
         body_format=confluence_cfg.body_format,
-        timeout_sec=confluence_cfg.timeout_sec,
     )
-    ids = list(src.list_source_ids(pipeline_ctx))
-    assert ids, f"cql {test_cfg.confluence_cql!r} вернул 0 страниц"
-
     requests = list(src.stream(pipeline_ctx))
-    assert len(requests) == len(ids)
+    assert requests, f"cql {test_cfg.confluence_cql!r} вернул 0 страниц"
     for r in requests:
         assert "rest/api/content/" in r.url
-        assert r.source_id in ids
+        assert "/pages/viewpage.action?pageId=" in r.source_id

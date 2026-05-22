@@ -93,15 +93,6 @@ def test_walk_exclude_filter(tmp_path: Path):
     assert requests[0].path.endswith(".txt")
 
 
-def test_walk_list_source_ids(tmp_path: Path):
-    (tmp_path / "a.txt").write_text("a")
-    (tmp_path / "b.md").write_text("b")
-    src = FsWalkRequestSource(paths=[str(tmp_path)])
-    ids = sorted(src.list_source_ids(_ctx()))
-    assert all(s.startswith("fs:") for s in ids)
-    assert len(ids) == 2
-
-
 def test_walk_request_source_to_transport_pipeline(tmp_path: Path):
     (tmp_path / "a.txt").write_text("ALPHA")
     src = FsWalkRequestSource(paths=[str(tmp_path)])

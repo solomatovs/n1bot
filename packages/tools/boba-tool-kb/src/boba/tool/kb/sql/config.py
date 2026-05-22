@@ -22,7 +22,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from boba.settings import BobaSettingsConfigDict
-from boba.tool.kb.postgres_config import PostgresConnectionConfig
+from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
 
 __all__ = ["SqlConfig"]
 
