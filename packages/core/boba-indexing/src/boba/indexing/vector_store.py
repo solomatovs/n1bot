@@ -183,22 +183,22 @@ class VectorStoreReader(ABC, Generic[T]):
     def diff_by_hash(
         self,
         collection: CollectionId,
-        candidates: Iterable[tuple[ChunkId, ContentHash | None]],
+        candidates: Iterable[tuple[ChunkId, ContentHash]],
     ) -> HashDiff:
         """
         Сравнить кандидатов со Store по content_hash; вернуть план записи.
 
         `candidates` — пары `(chunk_id, content_hash)`, обычно один батч,
-        приехавший в `IndexSink.reconcile`. Backend читает только
-        `(chunk_id, content_hash)` — без payload и embedding'а; типично
-        один SELECT по `chunk_id = ANY(...)`.
+        приехавший в `IndexSink.reconcile`. `content_hash` гарантированно
+        non-null: его обязан вычислить Chunker через свой `KeyEncoder[T]`
+        в момент эмиссии чанка. Backend читает только `(chunk_id,
+        content_hash)` — без payload и embedding'а; типично один SELECT
+        по `chunk_id = ANY(...)`.
 
         Семантика split'а:
           - chunk_id отсутствует в коллекции → `to_upsert`
           - chunk_id есть, hash совпадает    → `unchanged`
           - chunk_id есть, hash отличается   → `to_upsert`
-          - оба хэша `None`                  → `unchanged`
-          - один из хэшей `None`             → `to_upsert` (defensive)
 
         Order сохраняется относительно `candidates`. `to_delete` сюда не
         входит — это работа `CleanupStrategy`.

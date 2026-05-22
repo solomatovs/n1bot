@@ -119,30 +119,24 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
 
         for batch in self._batched(chunks, self._batch_size):
             if force:
-                to_upsert_ids = [c.chunk_id for c in batch]
+                changed_ids = [c.chunk_id for c in batch]
                 unchanged_ids: list[ChunkId] = []
             else:
                 diff = self._reader.diff_by_hash(
                     self._collection,
                     [(c.chunk_id, c.content_hash) for c in batch],
                 )
-                to_upsert_ids = diff.to_upsert
+                changed_ids = diff.to_upsert
                 unchanged_ids = diff.unchanged
 
             by_id: dict[ChunkId, Chunk[T]] = {c.chunk_id: c for c in batch}
-            dirty: list[Chunk[T]] = [by_id[i] for i in to_upsert_ids]
+            dirty: list[Chunk[T]] = [by_id[i] for i in changed_ids]
 
             if dirty:
                 documents = [c.format_content for c in dirty]
                 embeddings = list(self._embedder.embed_documents(documents))
-                if len(embeddings) != len(dirty):
-                    msg = (
-                        f"embedder returned {len(embeddings)} vectors "
-                        f"for {len(dirty)} chunks"
-                    )
-                    raise RuntimeError(msg)
                 embedded = [
-                    EmbeddedChunk(chunk=c, embedding=tuple(e))
+                    EmbeddedChunk.of(c, tuple(e))
                     for c, e in zip(dirty, embeddings, strict=True)
                 ]
                 self._writer.upsert(self._collection, embedded)

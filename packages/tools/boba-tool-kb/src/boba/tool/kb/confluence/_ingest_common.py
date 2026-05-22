@@ -20,7 +20,6 @@ from boba.indexing import (
     NoneCleanup,
     PipelineContext,
     RequestSource,
-    Sha256TextEncoder,
     StreamingIndexer,
 )
 from boba.indexing.context import CollectionId, PipelineId
@@ -79,7 +78,6 @@ def run_confluence_ingest(  # noqa: PLR0913 — keyword-only helper, явный 
         query=view,
     )
     config: IndexerConfig[str] = IndexerConfig(
-        key_encoder=Sha256TextEncoder(),
         cleanup=FullCleanup() if prune_missing else NoneCleanup(),
         force_update=False,
     )

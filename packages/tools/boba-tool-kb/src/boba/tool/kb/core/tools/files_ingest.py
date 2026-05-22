@@ -30,7 +30,6 @@ from boba.indexing import (
     IndexerConfig,
     NoneCleanup,
     PipelineContext,
-    Sha256TextEncoder,
     StreamingIndexer,
 )
 from boba.indexing.context import CollectionId, PipelineId
@@ -102,7 +101,6 @@ def files_ingest(  # noqa: PLR0913 — tool с явным набором FromDI/
         query=view,
     )
     config: IndexerConfig[str] = IndexerConfig(
-        key_encoder=Sha256TextEncoder(),
         cleanup=FullCleanup() if prune_missing else NoneCleanup(),
         force_update=False,
     )

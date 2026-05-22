@@ -5,7 +5,7 @@ boba.indexing — абстракции для индексации докуме�
 from __future__ import annotations
 
 from boba.indexing.chunk_id import (
-    ChunkIdStrategy,
+    ChunkIdGenerator,
     DigestPrefix,
     FixedDigestPrefix,
     SourceBasedChunkId,
@@ -137,7 +137,7 @@ __all__ = [
     "BytesContentHash",
     "Chunk",
     "ChunkId",
-    "ChunkIdStrategy",
+    "ChunkIdGenerator",
     "ChunkKeys",
     "ChunkLocation",
     "ChunkSink",

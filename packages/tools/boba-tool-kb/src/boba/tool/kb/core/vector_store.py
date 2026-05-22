@@ -9,14 +9,20 @@ PostgresVectorStore — реализация boba.indexing.VectorStore + Collect
 - CollectionsAdminWriter:   ensure_collection / delete_collection
 
 Хранение:
-- Все коллекции в одной таблице `kb_chunks`, разделение по колонке
-  `collection`.
+- Все коллекции в одной таблице (по дефолту `kb_chunks`, имя/схема —
+  через `VectorStoreSchemaConfig` [tool.kb.vector_store]). Разделение по
+  колонке `collection`.
 - Системные поля (source_id, chunk_index, content_hash) — отдельные колонки
   таблицы. Тэги — `text[]`. Остальная metadata — `jsonb`.
 - Embedding — `vector` (без фиксированной dim в столбце); HNSW-индекс
   per-dim создаётся оператором заранее через CLI
   `boba.tool.kb.core.cli.bootstrap`. Store предполагает, что схема и
   индекс уже на месте — runtime DDL не делает.
+
+`VectorStoreSchemaConfig` — единый источник правды по именам таблиц,
+который получает и bootstrap-CLI, и этот store. Любое расхождение
+приведёт к `relation does not exist` в рантайме — лучше так, чем тихое
+расхождение схемы.
 
 Embedder в Store не инжектится: store принимает `EmbeddedChunk[str]` на
 write и `Sequence[float]` на similarity_search. Embedder живёт в
@@ -71,6 +77,7 @@ from boba.indexing.vector_store import (
     VectorStoreReader,
     VectorStoreWriter,
 )
+from boba.tool.kb.core.vector_store_config import VectorStoreSchemaConfig
 
 logger = logging.getLogger(__name__)
 
@@ -101,10 +108,14 @@ class PostgresVectorStore(
         pool: PostgresPool,
         *,
         embedding_dim: int,
+        schema_cfg: VectorStoreSchemaConfig,
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> None:
         self._pool = pool
         self._embedding_dim = embedding_dim
+        self._schema_cfg = schema_cfg
+        self._chunks_table = schema_cfg.chunks_ident()
+        self._collections_table = schema_cfg.collections_ident()
         self._batch_size = batch_size
 
     # ------------------------------------------------------------------ #
@@ -120,21 +131,21 @@ class PostgresVectorStore(
         if not ids:
             return
 
+        query = sql.SQL(
+            """
+            SELECT chunk_id, source_id, chunk_index, content_hash,
+                   raw_content, format_content, metadata, tags
+            FROM {chunks_table}
+            WHERE collection = %s AND chunk_id = ANY(%s)
+            """,
+        ).format(chunks_table=self._chunks_table)
         with (
             self._pool.connection() as conn,
             conn.cursor(
                 row_factory=dict_row,
             ) as cur,
         ):
-            cur.execute(
-                """
-                SELECT chunk_id, source_id, chunk_index, content_hash,
-                       raw_content, format_content, metadata, tags
-                FROM kb_chunks
-                WHERE collection = %s AND chunk_id = ANY(%s)
-                """,
-                (str(collection), ids),
-            )
+            cur.execute(query, (str(collection), ids))
             for row in cur:
                 yield self._row_to_chunk(row)
 
@@ -154,12 +165,15 @@ class PostgresVectorStore(
                    format_content AS snippet,
                    metadata, tags,
                    (embedding::vector({dim})) <=> %s::vector AS distance
-            FROM kb_chunks
+            FROM {chunks_table}
             WHERE collection = %s AND embedding IS NOT NULL
             ORDER BY distance ASC
             LIMIT %s
             """,
-        ).format(dim=sql.Literal(self._embedding_dim))
+        ).format(
+            dim=sql.Literal(self._embedding_dim),
+            chunks_table=self._chunks_table,
+        )
         with (
             self._pool.connection() as conn,
             conn.cursor(
@@ -189,29 +203,29 @@ class PostgresVectorStore(
             ) as cur,
         ):
             if source_id is None:
-                cur.execute(
+                query = sql.SQL(
                     """
                     SELECT chunk_id, source_id, chunk_index,
                            format_content AS snippet, metadata, tags
-                    FROM kb_chunks
+                    FROM {chunks_table}
                     WHERE collection = %s
                     ORDER BY source_id, chunk_index
                     LIMIT %s
                     """,
-                    (str(collection), limit),
-                )
+                ).format(chunks_table=self._chunks_table)
+                cur.execute(query, (str(collection), limit))
             else:
-                cur.execute(
+                query = sql.SQL(
                     """
                     SELECT chunk_id, source_id, chunk_index,
                            format_content AS snippet, metadata, tags
-                    FROM kb_chunks
+                    FROM {chunks_table}
                     WHERE collection = %s AND source_id = %s
                     ORDER BY chunk_index
                     LIMIT %s
                     """,
-                    (str(collection), str(source_id), limit),
-                )
+                ).format(chunks_table=self._chunks_table)
+                cur.execute(query, (str(collection), str(source_id), limit))
             for row in cur:
                 yield self._row_to_summary(row)
 
@@ -233,11 +247,11 @@ class PostgresVectorStore(
             """
             SELECT chunk_id, source_id, chunk_index,
                    format_content AS snippet, metadata, tags
-            FROM kb_chunks
+            FROM {chunks_table}
             WHERE {where}
             ORDER BY source_id, chunk_index
             """,
-        ).format(where=where_clause)
+        ).format(chunks_table=self._chunks_table, where=where_clause)
         if limit is not None:
             query = sql.SQL("{q} LIMIT {lim}").format(
                 q=query,
@@ -256,28 +270,28 @@ class PostgresVectorStore(
     def diff_by_hash(
         self,
         collection: CollectionId,
-        candidates: Iterable[tuple[ChunkId, ContentHash | None]],
+        candidates: Iterable[tuple[ChunkId, ContentHash]],
     ) -> HashDiff:
         # Сохраняем порядок кандидатов; SELECT возвращает только
         # (chunk_id, content_hash) — без payload и embedding'а.
-        items: list[tuple[ChunkId, ContentHash | None]] = list(candidates)
+        items: list[tuple[ChunkId, ContentHash]] = list(candidates)
         if not items:
             return HashDiff(to_upsert=[], unchanged=[])
 
         ids = [str(cid) for cid, _ in items]
+        query = sql.SQL(
+            """
+            SELECT chunk_id, content_hash
+            FROM {chunks_table}
+            WHERE collection = %s AND chunk_id = ANY(%s)
+            """,
+        ).format(chunks_table=self._chunks_table)
         with (
             self._pool.connection() as conn,
             conn.cursor() as cur,
         ):
-            cur.execute(
-                """
-                SELECT chunk_id, content_hash
-                FROM kb_chunks
-                WHERE collection = %s AND chunk_id = ANY(%s)
-                """,
-                (str(collection), ids),
-            )
-            stored: dict[str, str] = {row[0]: row[1] or "" for row in cur}
+            cur.execute(query, (str(collection), ids))
+            stored: dict[str, str] = {row[0]: row[1] for row in cur}
 
         to_upsert: list[ChunkId] = []
         unchanged: list[ChunkId] = []
@@ -285,20 +299,15 @@ class PostgresVectorStore(
             stored_wire = stored.get(str(chunk_id))
             if stored_wire is None:
                 to_upsert.append(chunk_id)
-                continue
-            candidate_wire = (
-                candidate_hash.to_wire() if candidate_hash is not None else ""
-            )
-            # Defensive: stored="" (legacy без hash) или candidate=None
-            # трактуются как mismatch — re-embed, чтобы перестраховаться.
-            if stored_wire and candidate_wire and stored_wire == candidate_wire:
-                unchanged.append(chunk_id)
-            elif not stored_wire and not candidate_wire:
-                # оба пустые — считаем "то же ничто"; unchanged
+            elif stored_wire == candidate_hash.to_wire():
                 unchanged.append(chunk_id)
             else:
                 to_upsert.append(chunk_id)
-        return HashDiff(to_upsert=to_upsert, unchanged=unchanged)
+
+        return HashDiff(
+            to_upsert=to_upsert,
+            unchanged=unchanged,
+        )
 
     # ------------------------------------------------------------------ #
     # VectorStoreWriter[str]                                             #
@@ -309,26 +318,45 @@ class PostgresVectorStore(
         collection: CollectionId,
         chunks: Iterable[EmbeddedChunk[str]],
     ) -> None:
+        upsert_sql = sql.SQL(
+            """
+            INSERT INTO {chunks_table} (
+                chunk_id, collection, source_id, chunk_index,
+                content_hash, raw_content, format_content,
+                embedding, metadata, tags, updated_at
+            )
+            VALUES (
+                %s, %s, %s, %s, %s, %s, %s,
+                %s::vector, %s::jsonb, %s, now()
+            )
+            ON CONFLICT (chunk_id) DO UPDATE SET
+                collection     = EXCLUDED.collection,
+                source_id      = EXCLUDED.source_id,
+                chunk_index    = EXCLUDED.chunk_index,
+                content_hash   = EXCLUDED.content_hash,
+                raw_content    = EXCLUDED.raw_content,
+                format_content = EXCLUDED.format_content,
+                embedding      = EXCLUDED.embedding,
+                metadata       = EXCLUDED.metadata,
+                tags           = EXCLUDED.tags,
+                updated_at     = now()
+            """,
+        ).format(chunks_table=self._chunks_table)
         for batch in self._batched(chunks):
             rows: list[tuple[Any, ...]] = []
             for ec in batch:
-                c = ec.chunk
                 rows.append(
                     (
-                        str(c.chunk_id),
+                        str(ec.chunk_id),
                         str(collection),
-                        str(c.source_id),
-                        c.chunk_index,
-                        (
-                            c.content_hash.to_wire()
-                            if c.content_hash is not None
-                            else ""
-                        ),
-                        c.raw_content,
-                        c.format_content,
+                        str(ec.source_id),
+                        ec.chunk_index,
+                        ec.content_hash.to_wire(),
+                        ec.raw_content,
+                        ec.format_content,
                         list(ec.embedding),
-                        json.dumps(dict(c.metadata.to_wire())),
-                        sorted(c.tags),
+                        json.dumps(dict(ec.metadata.to_wire())),
+                        sorted(ec.tags),
                     ),
                 )
             with (
@@ -336,31 +364,7 @@ class PostgresVectorStore(
                 conn.transaction(),
                 conn.cursor() as cur,
             ):
-                cur.executemany(
-                    """
-                        INSERT INTO kb_chunks (
-                            chunk_id, collection, source_id, chunk_index,
-                            content_hash, raw_content, format_content,
-                            embedding, metadata, tags, updated_at
-                        )
-                        VALUES (
-                            %s, %s, %s, %s, %s, %s, %s,
-                            %s::vector, %s::jsonb, %s, now()
-                        )
-                        ON CONFLICT (chunk_id) DO UPDATE SET
-                            collection     = EXCLUDED.collection,
-                            source_id      = EXCLUDED.source_id,
-                            chunk_index    = EXCLUDED.chunk_index,
-                            content_hash   = EXCLUDED.content_hash,
-                            raw_content    = EXCLUDED.raw_content,
-                            format_content = EXCLUDED.format_content,
-                            embedding      = EXCLUDED.embedding,
-                            metadata       = EXCLUDED.metadata,
-                            tags           = EXCLUDED.tags,
-                            updated_at     = now()
-                        """,
-                    rows,
-                )
+                cur.executemany(upsert_sql, rows)
 
     def delete(
         self,
@@ -370,11 +374,11 @@ class PostgresVectorStore(
         ids = [str(c) for c in chunk_ids]
         if not ids:
             return
+        query = sql.SQL(
+            "DELETE FROM {chunks_table} WHERE collection = %s AND chunk_id = ANY(%s)",
+        ).format(chunks_table=self._chunks_table)
         with self._pool.connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM kb_chunks WHERE collection = %s AND chunk_id = ANY(%s)",
-                (str(collection), ids),
-            )
+            cur.execute(query, (str(collection), ids))
 
     def update_metadata(
         self,
@@ -389,42 +393,46 @@ class PostgresVectorStore(
         # перезаписываются, остальные значения metadata остаются. Embedding
         # и content не трогаем (контракт ABC.update_metadata).
         wire_patch = {k: str(v) for k, v in patch.items()}
+        query = sql.SQL(
+            """
+            UPDATE {chunks_table}
+            SET metadata = metadata || %s::jsonb,
+                updated_at = now()
+            WHERE collection = %s AND chunk_id = ANY(%s)
+            """,
+        ).format(chunks_table=self._chunks_table)
         with self._pool.connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE kb_chunks
-                SET metadata = metadata || %s::jsonb,
-                    updated_at = now()
-                WHERE collection = %s AND chunk_id = ANY(%s)
-                """,
-                (json.dumps(wire_patch), str(collection), ids),
-            )
+            cur.execute(query, (json.dumps(wire_patch), str(collection), ids))
 
     # ------------------------------------------------------------------ #
     # CollectionsAdminReader                                             #
     # ------------------------------------------------------------------ #
 
     def list_collections(self) -> Iterable[CollectionInfo]:
+        query = sql.SQL(
+            """
+            SELECT c.name,
+                   c.description,
+                   COALESCE(cnt.count, 0) AS count
+            FROM {collections_table} c
+            LEFT JOIN (
+                SELECT collection, count(*)::int AS count
+                FROM {chunks_table}
+                GROUP BY collection
+            ) cnt ON cnt.collection = c.name
+            ORDER BY c.name
+            """,
+        ).format(
+            collections_table=self._collections_table,
+            chunks_table=self._chunks_table,
+        )
         with (
             self._pool.connection() as conn,
             conn.cursor(
                 row_factory=dict_row,
             ) as cur,
         ):
-            cur.execute(
-                """
-                SELECT c.name,
-                       c.description,
-                       COALESCE(cnt.count, 0) AS count
-                FROM kb_collections c
-                LEFT JOIN (
-                    SELECT collection, count(*)::int AS count
-                    FROM kb_chunks
-                    GROUP BY collection
-                ) cnt ON cnt.collection = c.name
-                ORDER BY c.name
-                """,
-            )
+            cur.execute(query)
             for row in cur:
                 yield CollectionInfo(
                     name=CollectionId(row["name"]),
@@ -433,22 +441,25 @@ class PostgresVectorStore(
                 )
 
     def collection_info(self, name: CollectionId) -> CollectionInfo:
+        query = sql.SQL(
+            """
+            SELECT c.name, c.description,
+                   (SELECT count(*)::int FROM {chunks_table}
+                    WHERE collection = c.name) AS count
+            FROM {collections_table} c
+            WHERE c.name = %s
+            """,
+        ).format(
+            chunks_table=self._chunks_table,
+            collections_table=self._collections_table,
+        )
         with (
             self._pool.connection() as conn,
             conn.cursor(
                 row_factory=dict_row,
             ) as cur,
         ):
-            cur.execute(
-                """
-                SELECT c.name, c.description,
-                       (SELECT count(*)::int FROM kb_chunks
-                        WHERE collection = c.name) AS count
-                FROM kb_collections c
-                WHERE c.name = %s
-                """,
-                (str(name),),
-            )
+            cur.execute(query, (str(name),))
             row = cur.fetchone()
             if row is None:
                 return CollectionInfo(
@@ -476,46 +487,43 @@ class PostgresVectorStore(
         # перетираем description (тестируется в chromadb-аналоге, держим
         # совместимым поведение). Description ставится только при первом
         # создании.
+        query = sql.SQL(
+            """
+            INSERT INTO {collections_table} (name, description)
+            VALUES (%s, %s)
+            ON CONFLICT (name) DO NOTHING
+            """,
+        ).format(collections_table=self._collections_table)
         with self._pool.connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO kb_collections (name, description)
-                VALUES (%s, %s)
-                ON CONFLICT (name) DO NOTHING
-                """,
-                (str(name), description or ""),
-            )
+            cur.execute(query, (str(name), description or ""))
 
     def delete_collection(self, name: CollectionId) -> None:
+        delete_chunks = sql.SQL(
+            "DELETE FROM {chunks_table} WHERE collection = %s",
+        ).format(chunks_table=self._chunks_table)
+        delete_catalog = sql.SQL(
+            "DELETE FROM {collections_table} WHERE name = %s",
+        ).format(collections_table=self._collections_table)
         with (
             self._pool.connection() as conn,
             conn.transaction(),
             conn.cursor() as cur,
         ):
-            cur.execute(
-                "DELETE FROM kb_chunks WHERE collection = %s",
-                (str(name),),
-            )
-            cur.execute(
-                "DELETE FROM kb_collections WHERE name = %s",
-                (str(name),),
-            )
+            cur.execute(delete_chunks, (str(name),))
+            cur.execute(delete_catalog, (str(name),))
 
     # ------------------------------------------------------------------ #
     # Internals                                                          #
     # ------------------------------------------------------------------ #
 
     def _row_to_chunk(self, row: Mapping[str, Any]) -> Chunk[str]:
-        content_hash_wire = row.get("content_hash") or ""
         return Chunk(
             chunk_id=ChunkId(row["chunk_id"]),
             source_id=SourceId(row["source_id"]),
             format_content=row["format_content"] or "",
             raw_content=row["raw_content"] or "",
             chunk_index=int(row["chunk_index"]),
-            content_hash=(
-                StringContentHash(text=content_hash_wire) if content_hash_wire else None
-            ),
+            content_hash=StringContentHash(text=row["content_hash"]),
             metadata=self._row_to_metadata(row),
             tags=frozenset(row.get("tags") or ()),
         )
