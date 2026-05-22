@@ -22,13 +22,11 @@ import logging
 from typing import Any, ClassVar
 
 from psycopg import sql
-from psycopg.rows import dict_row
 
-from boba.db.postgres import PostgresPool
 from boba.indexing.embedder import Embedder
 from boba.tool.kb.core.errors import KnowledgeBaseError
 from boba.tool.kb.core.models import SearchHit
-from boba.tool.kb.core.postgres_store import PostgresStoreConfig
+from boba.tool.kb.core.postgres_store import PostgresChunkStore, PostgresStoreConfig
 
 logger = logging.getLogger(__name__)
 
@@ -36,43 +34,39 @@ __all__ = ["PostgresKnowledgeBase"]
 
 
 class PostgresKnowledgeBase:
-    """Read-only обёртка над postgres-пулом для kb-tools.
-
-    Не реализует ABC `ChunkStore` намеренно: для индексатора
-    есть `PostgresChunkStore`, а здесь — application-уровень с
-    гибридным поиском, который нужен только tools'у.
+    """
+    Доступ к хранилищу kb
     """
 
     def __init__(
         self,
-        pool: PostgresPool,
-        embedder: Embedder[str],
         *,
+        cfg: PostgresStoreConfig,
+        embedder: Embedder[str],
         embedding_dim: int,
         snippet_chars: int,
         fts_language: str,
         rrf_k: int,
         rrf_pool: int,
-        schema_cfg: PostgresStoreConfig,
     ) -> None:
-        self._pool = pool
+        self._cfg = cfg
+        self._pool = PostgresChunkStore.open_pool(cfg)
         self._embedder = embedder
         self._embedding_dim = embedding_dim
         self._snippet_chars = snippet_chars
         self._fts_language = fts_language
         self._rrf_k = rrf_k
         self._rrf_pool = rrf_pool
-        self._schema_cfg = schema_cfg
-        self._chunks_table = schema_cfg.chunks_ident()
-        self._schema_ident = schema_cfg.schema_ident()
+        self._chunks_table = cfg.chunks_ident()
+        self._schema_ident = cfg.schema_ident()
         logger.info(
             "PostgresKnowledgeBase opened dim=%d fts=%s rrf_k=%d pool=%d chunks=%s.%s",
             embedding_dim,
             fts_language,
             rrf_k,
             rrf_pool,
-            schema_cfg.schema,
-            schema_cfg.chunks_table,
+            cfg.schema,
+            cfg.chunks_table,
         )
 
     def search(
@@ -107,10 +101,7 @@ class PostgresKnowledgeBase:
             schema=self._schema_ident,
         )
         try:
-            with (
-                self._pool.connection() as conn,
-                conn.cursor(row_factory=dict_row) as cur,
-            ):
+            with self._pool.dict_cursor() as cur:
                 cur.execute(
                     query_sql,
                     {
@@ -166,10 +157,7 @@ class PostgresKnowledgeBase:
             chunks_table=self._chunks_table,
         )
         try:
-            with (
-                self._pool.connection() as conn,
-                conn.cursor(row_factory=dict_row) as cur,
-            ):
+            with self._pool.dict_cursor() as cur:
                 cur.execute(
                     query_sql,
                     {
@@ -233,7 +221,8 @@ class PostgresKnowledgeBase:
                    ORDER BY ts_rank_cd(tsv, q) DESC
                ) AS rk
         FROM {chunks_table},
-             plainto_tsquery(%(lang)s::regconfig, {schema}.immutable_unaccent(%(query)s)) q
+             plainto_tsquery(%(lang)s::regconfig,
+             {schema}.immutable_unaccent(%(query)s)) q
         WHERE collection = ANY(%(collections)s) AND tsv @@ q
         ORDER BY ts_rank_cd(tsv, q) DESC
         LIMIT %(rrf_pool)s

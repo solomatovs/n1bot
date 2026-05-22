@@ -4,16 +4,16 @@
 endpoint, реальный Confluence. Параметры конфигурации читаются через
 систему конфигурирования (BobaFlatSettings) из:
 
-- `[tool.kb]`               → `KbConfig` (RRF / FTS-params / chunker).
-- `[tool.kb.files]`         → `FilesIngestConfig` (collection + folder).
+- `[tool.kb]`                 → `KbConfig` (RRF / FTS-params / chunker).
+- `[tool.kb.files_ingest]`    → `IngestFilesConfig` (collection + folder + prune).
 - `[tool.kb.confluence_ingest]` → `ConfluenceIngestConfig` (collection).
-- `[tool.kb.search]`        → `SearchConfig` (collections list).
-- `[tool.kb.postgres]`      → `PostgresConnectionConfig` (host/port/user/...).
-- `[tool.kb.confluence]`    → `ConfluenceConnectionConfig` (base_url/auth/...).
-- `[tool.kb.embedding]`     → `EmbeddingConfig` (model/base_url/api_key).
-- `[tool.kb.fts]`           → `FtsConfig` (одна whitelist-таблица).
-- `[test.kb]`               → `KbIntegrationTestConfig` (тестовые параметры:
-                              page_ids, search-query, space_key, ...).
+- `[tool.kb.search]`          → `SearchConfig` (collections list).
+- `[tool.kb.postgres_store]`  → `PostgresStoreConfig` (connection + schema + tables).
+- `[tool.kb.confluence]`      → `ConfluenceConnectionConfig` (base_url/auth/...).
+- `[tool.kb.embedding]`       → `EmbeddingConfig` (model/base_url/api_key).
+- `[tool.kb.fts]`             → `FtsConfig` (одна whitelist-таблица).
+- `[test.kb]`                 → `KbIntegrationTestConfig` (тестовые параметры:
+                                 page_ids, search-query, space_key, ...).
 
 Каждая конфиг-фикстура skip-ает тест с понятной причиной, если секция
 не сконструировалась (validation failed) — оператор не заполнил секцию.
@@ -30,7 +30,6 @@ from pathlib import Path
 import httpx
 import pytest
 from openai import OpenAI
-from pgvector.psycopg import register_vector
 from pydantic import Field, ValidationError
 
 from boba.db.postgres import PostgresPool
@@ -59,7 +58,6 @@ from boba.tool.kb.core.embedding_config import EmbeddingConfig
 from boba.tool.kb.core.files_ingest_config import IngestFilesConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
 from boba.tool.kb.core.migrations import apply_bootstrap, ensure_vector_index
-from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
 from boba.tool.kb.core.postgres_store import (
     PostgresChunkStore,
     PostgresCollectionsStore,
@@ -181,28 +179,19 @@ def search_cfg() -> SearchConfig:
 
 
 @pytest.fixture
-def pg_cfg() -> PostgresConnectionConfig:
-    """`PostgresConnectionConfig` из `[tool.kb.postgres]`; skip при ошибке."""
-    try:
-        return PostgresConnectionConfig()
-    except ValidationError as e:
-        pytest.skip(f"[tool.kb.postgres] не сконфигурирован: {e}")
+def pg_store_cfg() -> PostgresStoreConfig:
+    """`PostgresStoreConfig` из `[tool.kb.postgres_store]`; skip при ошибке.
 
-
-@pytest.fixture
-def vector_store_cfg() -> PostgresStoreConfig:
-    """`ChunkStoreSchemaConfig` из `[tool.kb.chunk_store]`; skip при ошибке.
-
-    Тот же конфиг получает и bootstrap (`apply_bootstrap` + `ensure_vector_index`
+    Содержит и `connection` (host/port/...), и schema/имена таблиц. Один
+    конфиг получает и bootstrap (`apply_bootstrap` + `ensure_vector_index`
     в фикстурах ниже), и runtime-сторона (`PostgresChunkStore` /
-    `PostgresKnowledgeBase`). Тестовая обвязка mimic'ирует операторский
-    bootstrap-CLI: одна и та же `schema/chunks_table/collections_table`
-    проходит сквозным маршрутом.
+    `PostgresCollectionsStore` / `PostgresKnowledgeBase`) — обе ходят через
+    `cfg.open_pool()` в один singleton-cached pool.
     """
     try:
-        return PostgresStoreConfig()
+        return PostgresStoreConfig()  # pyright: ignore[reportCallIssue]
     except ValidationError as e:
-        pytest.skip(f"[tool.kb.chunk_store] не сконфигурирован: {e}")
+        pytest.skip(f"[tool.kb.postgres_store] не сконфигурирован: {e}")
 
 
 @pytest.fixture
@@ -240,7 +229,7 @@ def fts_cfg() -> FtsConfig:
 def sql_cfg() -> SqlConfig:
     """`SqlConfig` из `[tool.kb.sql]`; skip при ошибке."""
     try:
-        return SqlConfig()
+        return SqlConfig()  # pyright: ignore[reportCallIssue]
     except ValidationError as e:
         pytest.skip(f"[tool.kb.sql] не сконфигурирован: {e}")
 
@@ -261,25 +250,21 @@ def test_cfg() -> KbIntegrationTestConfig:
 
 @pytest.fixture
 def kb_pool(
-    pg_cfg: PostgresConnectionConfig,
-    vector_store_cfg: PostgresStoreConfig,
+    pg_store_cfg: PostgresStoreConfig,
 ) -> PostgresPool:
-    """`PostgresPool` из `[tool.kb.postgres]` с register_vector + bootstrap.
+    """`PostgresPool` из `[tool.kb.postgres_store]` + bootstrap.
 
-    Singleton-cached `PostgresPool.get(...)` — повторный вызов с тем же
-    DSN+pool-sizes возвращает тот же инстанс. Close НЕ зовём здесь
-    (cache живёт до process exit; повторное использование между тестами).
+    Pool открывается через `cfg.open_pool()` (singleton-cached по DSN +
+    `register_vector` configure-hook). Close НЕ зовём здесь — cache живёт
+    до process exit; повторное использование между тестами.
 
-    Bootstrap-миграция (`apply_bootstrap`) применяется с теми же
-    `schema/chunks_table/collections_table`, что и `PostgresChunkStore`
-    в фикстуре `kb_store` ниже — единый `vector_store_cfg`.
+    Bootstrap-миграция (`apply_bootstrap`) применяется с тем же `cfg`,
+    что и `PostgresChunkStore` в фикстуре `kb_store` ниже — единая точка
+    правды по schema/таблицам.
     """
-    pool = PostgresPool.get(
-        pg_cfg.to_pool_config(),
-        configure=register_vector,
-    )
+    pool = PostgresChunkStore.open_pool(pg_store_cfg)
     with pool.connection() as conn:
-        apply_bootstrap(conn, schema_cfg=vector_store_cfg)
+        apply_bootstrap(conn, schema_cfg=pg_store_cfg)
     return pool
 
 
@@ -297,45 +282,39 @@ def kb_embedder(embedding_cfg: EmbeddingConfig) -> OpenAICompatEmbedder:
 def kb_store(
     kb_pool: PostgresPool,
     kb_embedder: OpenAICompatEmbedder,
-    vector_store_cfg: PostgresStoreConfig,
+    pg_store_cfg: PostgresStoreConfig,
 ) -> PostgresChunkStore:
     """Write-side store для ingest-тулов.
 
     Тесты mimic'ируют операторский bootstrap-шаг (CLI
-    `boba.tool.kb.core.cli.bootstrap`): `apply_bootstrap` уже отработал
+    `boba.tool.kb.cli.bootstrap`): `apply_bootstrap` уже отработал
     в `kb_pool`, здесь добавляется HNSW-индекс под текущий embedder.dim().
     В runtime store-у схема считается данностью; в тестах мы её строим
     сами, чтобы fixture-граф не зависел от внешнего CLI-шага. Один и
-    тот же `vector_store_cfg` идёт в bootstrap (`kb_pool`), в
+    тот же `pg_store_cfg` идёт в bootstrap (`kb_pool`), в
     `ensure_vector_index` и в сам store — иначе fixture-граф разъедется.
     """
     with kb_pool.connection() as conn:
         ensure_vector_index(
             conn,
             dim=kb_embedder.dim(),
-            schema_cfg=vector_store_cfg,
+            schema_cfg=pg_store_cfg,
         )
-    return PostgresChunkStore(
-        pool=kb_pool,
-        embedding_dim=kb_embedder.dim(),
-        cfg=vector_store_cfg,
-    )
+    return PostgresChunkStore(cfg=pg_store_cfg)
 
 
 @pytest.fixture
 def kb_collections_store(
     kb_pool: PostgresPool,
-    vector_store_cfg: PostgresStoreConfig,
+    pg_store_cfg: PostgresStoreConfig,
 ) -> PostgresCollectionsStore:
     """Collections-CRUD store для ingest-тулов (`ensure_collection`).
 
-    Тот же `kb_pool` и `vector_store_cfg`, что у `kb_store` — обе фикстуры
-    смотрят в одну и ту же схему/таблицы.
+    Pool тот же, что у `kb_store` — `cfg.open_pool()` singleton по DSN.
+    `kb_pool` фикстура в depend'ах нужна, чтобы `apply_bootstrap` отработал
+    до `ensure_collection` (иначе таблицы ещё нет).
     """
-    return PostgresCollectionsStore(
-        pool=kb_pool,
-        cfg=vector_store_cfg,
-    )
+    return PostgresCollectionsStore(cfg=pg_store_cfg)
 
 
 @pytest.fixture
@@ -343,18 +322,17 @@ def kb_knowledge_base(
     kb_cfg: KbConfig,
     kb_pool: PostgresPool,
     kb_embedder: OpenAICompatEmbedder,
-    vector_store_cfg: PostgresStoreConfig,
+    pg_store_cfg: PostgresStoreConfig,
 ) -> PostgresKnowledgeBase:
     """Read-side KB для kb_search (hybrid RRF)."""
     return PostgresKnowledgeBase(
-        pool=kb_pool,
+        cfg=pg_store_cfg,
         embedder=kb_embedder,
         embedding_dim=kb_embedder.dim(),
         snippet_chars=kb_cfg.snippet_chars,
         fts_language=kb_cfg.fts_language,
         rrf_k=kb_cfg.rrf_k,
         rrf_pool=kb_cfg.rrf_pool,
-        schema_cfg=vector_store_cfg,
     )
 
 

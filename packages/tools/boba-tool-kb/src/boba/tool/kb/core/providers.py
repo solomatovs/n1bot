@@ -2,38 +2,29 @@
 
 Граф зависимостей:
 
-    PostgresConnectionConfig (FromConfig)
-        │
-        └──> PostgresPool (boba-db-postgres, configure=register_vector)
-             (схема + HNSW-индекс не накатываются здесь — это отдельный
-              операторский шаг через CLI `boba.tool.kb.core.cli.bootstrap`)
+    PostgresStoreConfig (FromConfig)    # [tool.kb.postgres_store]
+        │                                # connection + schema + tables
+        ├──> PostgresPool                # cfg.open_pool() — для fts/sql/...
+        ├──> PostgresChunkStore          # сам открывает pool через cfg
+        ├──> PostgresCollectionsStore    # сам открывает pool через cfg
+        └──> PostgresKnowledgeBase       # сам открывает pool через cfg
 
     EmbeddingConfig (FromConfig)
-        └──> Embedder[str]                 # OpenAICompatEmbedder
+        └──> Embedder[str]               # OpenAICompatEmbedder
 
-    ChunkStoreSchemaConfig (FromConfig)   # [tool.kb.chunk_store]
-        │                                  # schema + chunks/collections table
-        ├──> PostgresChunkStore            # document-уровень (upsert/find/...)
-        ├──> PostgresCollectionsStore      # collection-уровень (ensure/delete)
-        └──> PostgresKnowledgeBase         # hybrid RRF search
-
-    KbConfig (FromConfig)
+    KbConfig (FromConfig)                # [tool.kb] — общие search/chunker
         │
-        ├──> PostgresChunkStore            # уже подцепляет Embedder из DI
-        ├──> PostgresCollectionsStore      # collections-CRUD
-        ├──> PostgresKnowledgeBase         # hybrid RRF search
-        ├──> KbDocReader                   # header + body как одна Section
-        ├──> HtmlReader
-        ├──> DispatchReader[str]           # by FsKeys.SUFFIX
-        └──> StructuralChunker             # heading-aware + OverlapCharSplitter
+        ├──> PostgresKnowledgeBase       # search params (RRF, snippet_chars)
+        ├──> KbDocReader / HtmlReader / DispatchReader[str]
+        └──> StructuralChunker           # heading-aware + OverlapCharSplitter
+
+Pool-граф: `cfg.open_pool()` использует `PostgresPool.get(...)`-singleton
+по DSN, поэтому store / collections-store / KB / fts получают **один и
+тот же** pool, пока используют один `PostgresStoreConfig`.
 
 `StreamingIndexer` и `CollectionScopedView` собираются inline в ingest-tool'ах
 — они зависят от per-call параметров (source/collection/cleanup), которые
 не имеют смысла фиксировать в APP-scope синглтоне.
-
-pgvector-типы регистрируются на каждом connection через `configure`-hook
-PostgresPool'а — без этого psycopg вернёт `embedding` как plain строку,
-а INSERT vector упадёт.
 """
 
 from __future__ import annotations
@@ -42,7 +33,6 @@ from collections.abc import Iterator
 from typing import Annotated
 
 from openai import OpenAI
-from pgvector.psycopg import register_vector
 
 from boba.db.postgres import PostgresPool
 from boba.html import HtmlReader
@@ -89,24 +79,21 @@ _CHUNK_ID_PREFIX_LENGTH: int = 16
 
 @provides(scope=Scope.APP)
 def provide_postgres_pool(
-    pg_cfg: Annotated[PostgresConnectionConfig, FromConfig()],
+    cfg: Annotated[PostgresStoreConfig, FromConfig()],
 ) -> Iterator[PostgresPool]:
-    """PostgresPool с register_vector configure-hook.
+    """`PostgresPool` под `[tool.kb.postgres_store].connection`.
 
-    DSN/pool sizes — из `[tool.kb.postgres]` (структурированно).
-    pgvector-types регистрируются на каждом свежем connection через
-    configure-callback — без этого `embedding`-колонка приходит как
-    plain str, upsert vector падает на cast.
+    Тот же объект, что получают `PostgresChunkStore` / `PostgresCollectionsStore` /
+    `PostgresKnowledgeBase` через `cfg.open_pool()` — `PostgresPool.get(...)`
+    singleton-кэшируется по DSN. Провайдер нужен сторонним подписчикам
+    (например, `fts_search`), которые хотят шарить pool через DI.
 
     Схема БД (миграции + HNSW-индекс) **не** накатывается здесь — это
-    одноразовый операторский шаг: `python -m boba.tool.kb.core.cli.bootstrap`.
+    одноразовый операторский шаг: `python -m boba.tool.kb.cli.bootstrap`.
     Если схемы нет, ingest/search упадут на SQL-ошибке (table not found) —
     это и есть сигнал оператору запустить bootstrap.
     """
-    pool = PostgresPool.get(
-        pg_cfg.to_pool_config(),
-        configure=register_vector,
-    )
+    pool = PostgresChunkStore.open_pool(cfg)
     try:
         yield pool
     finally:
@@ -137,66 +124,51 @@ def provide_embedder(
 
 @provides(scope=Scope.APP)
 def provide_chunk_store(
-    pool: Annotated[PostgresPool, FromDI(Scope.APP)],
-    embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
-    schema_cfg: Annotated[PostgresStoreConfig, FromConfig()],
+    cfg: Annotated[PostgresStoreConfig, FromConfig()],
 ) -> PostgresChunkStore:
     """Postgres-бэкэнд `ChunkStore[str]` (document-уровень).
 
-    Store сам про Embedder не знает — это чистый layer хранения. Embedder
-    тут только чтобы спросить `dim()` для конфигурации vector-колонки;
-    вызов embedder'а на write/read делается в pipeline-orchestrator'е
+    Store сам открывает pool через `cfg.open_pool()` (singleton по DSN).
+    Embedder в Store не нужен — это чистый layer хранения; вызов
+    embedder'а на write/read делается в pipeline-orchestrator'е
     (`CollectionScopedView` и `PostgresKnowledgeBase`).
-
-    `schema_cfg` ([tool.kb.chunk_store]) — тот же конфиг, что получает
-    bootstrap-CLI; гарантирует, что store ходит в те же таблицы, которые
-    создал bootstrap.
     """
-    return PostgresChunkStore(
-        pool=pool,
-        embedding_dim=embedder.dim(),
-        cfg=schema_cfg,
-    )
+    return PostgresChunkStore(cfg=cfg)
 
 
 @provides(scope=Scope.APP)
 def provide_collections_store(
-    pool: Annotated[PostgresPool, FromDI(Scope.APP)],
-    schema_cfg: Annotated[PostgresStoreConfig, FromConfig()],
+    cfg: Annotated[PostgresStoreConfig, FromConfig()],
 ) -> PostgresCollectionsStore:
     """Postgres-бэкэнд `CollectionsStore` (collection-уровень CRUD).
 
     Используется ingest-tool'ами для `ensure_collection(...)` перед
-    запуском pipeline. `schema_cfg` тот же, что у `provide_chunk_store`
-    и bootstrap-CLI.
+    запуском pipeline. Pool тот же, что у `provide_chunk_store` —
+    singleton по DSN.
     """
-    return PostgresCollectionsStore(
-        pool=pool,
-        cfg=schema_cfg,
-    )
+    return PostgresCollectionsStore(cfg=cfg)
 
 
 @provides(scope=Scope.APP)
 def provide_knowledge_base(
-    pool: Annotated[PostgresPool, FromDI(Scope.APP)],
+    cfg: Annotated[PostgresStoreConfig, FromConfig()],
+    kb_cfg: Annotated[KbConfig, FromConfig()],
     embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
-    cfg: Annotated[KbConfig, FromConfig()],
-    schema_cfg: Annotated[PostgresStoreConfig, FromConfig()],
 ) -> PostgresKnowledgeBase:
     """Read-side KB: гибридный search (vector + FTS, RRF) для `kb_search`.
 
-    `schema_cfg` — тот же, что в `provide_chunk_store` и bootstrap-CLI;
-    hybrid SQL ходит в `chunks_table` и зовёт `schema.immutable_unaccent`.
+    `cfg` — тот же `PostgresStoreConfig`, что у `provide_chunk_store` и
+    bootstrap-CLI; hybrid SQL ходит в `chunks_table` и зовёт
+    `schema.immutable_unaccent`.
     """
     return PostgresKnowledgeBase(
-        pool=pool,
+        cfg=cfg,
         embedder=embedder,
         embedding_dim=embedder.dim(),
-        snippet_chars=cfg.snippet_chars,
-        fts_language=cfg.fts_language,
-        rrf_k=cfg.rrf_k,
-        rrf_pool=cfg.rrf_pool,
-        schema_cfg=schema_cfg,
+        snippet_chars=kb_cfg.snippet_chars,
+        fts_language=kb_cfg.fts_language,
+        rrf_k=kb_cfg.rrf_k,
+        rrf_pool=kb_cfg.rrf_pool,
     )
 
 

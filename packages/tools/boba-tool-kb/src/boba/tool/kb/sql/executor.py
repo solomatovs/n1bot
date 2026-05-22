@@ -114,7 +114,7 @@ class SqlExecutor:
         fetch_limit = effective_limit + 1
 
         try:
-            with self._pool.connection() as conn, conn.cursor() as cur:
+            with self._pool.cursor() as cur:
                 # psycopg ожидает LiteralString для query; здесь runtime-string
                 # от LLM/internal tool'ов — runtime psycopg принимает str без
                 # проблем, тип-check выключаем.

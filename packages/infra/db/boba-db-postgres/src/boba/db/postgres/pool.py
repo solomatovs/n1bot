@@ -7,6 +7,8 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from psycopg.rows import DictRow, dict_row
+
 from boba.db.postgres.config import PostgresConfig
 from boba.db.postgres.errors import PostgresPoolClosedError
 
@@ -23,18 +25,12 @@ ConfigureConnection = Callable[["psycopg.Connection[Any]"], None]
 
 
 class PostgresPool:
-    """Read-only-обёртка над `psycopg_pool.ConnectionPool` с process-singleton'ом.
+    """
+    обёртка над `psycopg_pool.ConnectionPool` - singleton
 
     Контракт read-only задаётся параметрами DSN
-    (`default_transaction_read_only=on`, `statement_timeout=...`); pool сам
-    ничего read-only не выставляет — это держит инфра-слой dumb.
-
-    Опциональный `configure`-callback вызывается psycopg_pool'ом на каждое
-    свежее соединение (type-codec registration: `pgvector.psycopg.register_vector`,
-    hstore и т.п.). Идентичность кэширования по cfg НЕ учитывает callback —
-    разные tool-пакеты с одинаковым DSN получают один и тот же pool. Если
-    нужны разные configure-hook'и на одном DSN, разводите их через разные
-    DSN (например `?application_name=...`).
+        `default_transaction_read_only=on`
+        `statement_timeout=...`
     """
 
     _CacheKey = tuple[str, int, int, float]
@@ -67,11 +63,42 @@ class PostgresPool:
 
     @contextmanager
     def connection(self) -> Iterator[psycopg.Connection[Any]]:
-        """Взять connection из pool'а; auto-return по выходу из контекста."""
+        """Взять connection из pool'а"""
         if self._closed:
             raise PostgresPoolClosedError("PostgresPool is closed")
+
         with self._pool.connection() as conn:
             yield conn
+
+    @contextmanager
+    def cursor(self) -> Iterator[psycopg.Cursor[Any]]:
+        """Connection + tuple-cursor — для одиночных запросов без row_factory.
+
+        Короткая запись частого паттерна:
+
+            with pool.connection() as conn, conn.cursor() as cur:
+                cur.execute(...)
+
+        Если нужна транзакция, явно `with pool.connection() as conn:
+        conn.transaction(); ...` — там pool.cursor() не подходит.
+        """
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            yield cur
+
+    @contextmanager
+    def dict_cursor(self) -> Iterator[psycopg.Cursor[DictRow]]:
+        """Connection + dict-cursor (`row_factory=dict_row`) — `cur` рядного словаря.
+
+        Короткая запись частого паттерна:
+
+            with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(...)
+        """
+        with (
+            self._pool.connection() as conn,
+            conn.cursor(row_factory=dict_row) as cur,
+        ):
+            yield cur
 
     def close(self) -> None:
         """Закрыть pool. Идемпотентно."""
@@ -88,11 +115,12 @@ class PostgresPool:
         *,
         configure: ConfigureConnection | None = None,
     ) -> PostgresPool:
-        """Process-singleton по полному состоянию `cfg`; пересоздаёт закрытый.
+        """
+        Process-singleton по полному состоянию `cfg`
+        пересоздаёт закрытый pool
 
-        `configure` применяется при первом создании pool'а для данного cfg;
-        при повторном `.get(...)` с тем же DSN значение игнорируется
-        (cache-hit). См. docstring класса.
+        configure применяется при первом создании pool'а
+        для данного cfg при повторном с тем же DSN значение игнорируется
         """
         key: PostgresPool._CacheKey = (
             cfg.dsn,
@@ -101,7 +129,9 @@ class PostgresPool:
             cfg.connect_timeout_sec,
         )
         pool = cls._CACHE.get(key)
+
         if pool is None or pool._closed:
             pool = cls(cfg, configure=configure)
             cls._CACHE[key] = pool
+
         return pool
