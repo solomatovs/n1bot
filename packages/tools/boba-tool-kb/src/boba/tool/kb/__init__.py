@@ -21,14 +21,16 @@
 
 Tools по назначению (что LLM реально вызывает):
 
-**Ingest** (наполнение нашей KB → `kb_chunks`, pinned collection):
-- `files_ingest`            — FS-папка (`[tool.kb].files_folder`).
-- `confluence_space_ingest` — один или несколько spaces (LLM передаёт `space_keys`).
-- `confluence_page_ingest`  — явный список page_ids (LLM выбирает).
+**Ingest** (наполнение нашей KB → `kb_chunks`; files и confluence пишут
+в разные коллекции, чтобы операторская FS-индексация и автоматический
+Confluence-ingest не перемешивались):
+- `files_ingest`            — FS-папка → `[tool.kb.files].collection`.
+- `confluence_space_ingest` — N spaces → `[tool.kb.confluence_ingest].collection`.
+- `confluence_page_ingest`  — page_ids → `[tool.kb.confluence_ingest].collection`.
 
 **Search** (read-only):
-- `kb_search`               — hybrid (vector + FTS, RRF) по `[tool.kb].collection`.
-- `vector_search`           — pure vector (cosine) по `[tool.kb].collection`.
+- `kb_search`               — hybrid (RRF) по `[tool.kb.search].collections`.
+- `vector_search`           — pure vector по `[tool.kb.search].collections`.
 - `fts_search`              — pure FTS по таблице из `[tool.kb.fts].index`.
 - `confluence_search`       — online CQL по реальному Confluence.
 - `confluence_list_spaces`  — list of spaces (markdown). Помогает LLM с space_keys.
@@ -43,12 +45,16 @@ Tools по назначению (что LLM реально вызывает):
 - `sql_query(query, row_limit=20)`     — произвольный SELECT → markdown table.
 
 **Конфиг-секции:**
-- `[tool.kb]`              → `KbConfig` (collection, files_folder, RRF, chunker).
-- `[tool.kb.postgres]`     → `PostgresConnectionConfig` (host/port/user/...).
-- `[tool.kb.confluence]`   → `ConfluenceConnectionConfig` (base_url/auth/...).
-- `[tool.kb.embedding]`    → `EmbeddingConfig` (model/base_url/api_key).
-- `[tool.kb.fts]`          → `FtsConfig` (одна whitelist-таблица для fts_search).
-- `[tool.kb.sql]`          → `SqlConfig` (отдельный read-only DSN + safety-limits).
+- `[tool.kb]`               → `KbConfig` (RRF / FTS-params / chunker).
+- `[tool.kb.files]`         → `FilesIngestConfig` (collection + folder).
+- `[tool.kb.confluence_ingest]` → `ConfluenceIngestConfig` (collection).
+- `[tool.kb.search]`        → `SearchConfig` (collections list).
+- `[tool.kb.postgres]`      → `PostgresConnectionConfig` (host/port/user/...).
+- `[tool.kb.confluence]`    → `ConfluenceConnectionConfig` (base_url/auth/...).
+- `[tool.kb.embedding]`     → `EmbeddingConfig` (model/base_url/api_key).
+- `[tool.kb.chunk_store]`  → `ChunkStoreSchemaConfig` (schema + tables).
+- `[tool.kb.fts]`           → `FtsConfig` (whitelist-таблица для fts_search).
+- `[tool.kb.sql]`           → `SqlConfig` (read-only DSN + safety-limits).
 
 Плагин-уровневое включение — через `[tool.kb].enable` + `[tool.kb].tools`
 allowlist (PluginConfigBase). Connection-конфиги (postgres/confluence)
@@ -72,6 +78,7 @@ Pipeline-граф:
 from __future__ import annotations
 
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
+from boba.tool.kb.confluence.ingest_config import ConfluenceIngestConfig
 from boba.tool.kb.confluence.tools.list_spaces import confluence_list_spaces
 from boba.tool.kb.confluence.tools.page_download import confluence_page_download
 from boba.tool.kb.confluence.tools.page_ingest import confluence_page_ingest
@@ -79,9 +86,11 @@ from boba.tool.kb.confluence.tools.search import confluence_search
 from boba.tool.kb.confluence.tools.space_download import confluence_space_download
 from boba.tool.kb.confluence.tools.space_ingest import confluence_space_ingest
 from boba.tool.kb.core.chunk_store import PostgresChunkStore
+from boba.tool.kb.core.chunk_store_config import ChunkStoreSchemaConfig
 from boba.tool.kb.core.collections_store import PostgresCollectionsStore
 from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.embedding_config import EmbeddingConfig
+from boba.tool.kb.core.files_ingest_config import IngestFilesConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
 from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
 from boba.tool.kb.core.providers import (
@@ -95,10 +104,10 @@ from boba.tool.kb.core.providers import (
     provide_knowledge_base,
     provide_postgres_pool,
 )
-from boba.tool.kb.core.tools.files_ingest import files_ingest
+from boba.tool.kb.core.search_config import SearchConfig
+from boba.tool.kb.core.tools.ingest_files import ingest_files
 from boba.tool.kb.core.tools.kb_search import kb_search
 from boba.tool.kb.core.tools.vector_search import vector_search
-from boba.tool.kb.core.vector_store_config import VectorStoreSchemaConfig
 from boba.tool.kb.fts.config import FtsConfig
 from boba.tool.kb.fts.providers import provide_fts_kb
 from boba.tool.kb.fts.tools.fts_search import fts_search
@@ -109,24 +118,27 @@ from boba.tool.kb.sql.tools.list_tables import sql_list_tables
 from boba.tool.kb.sql.tools.query import sql_query
 
 __all__ = [
+    "ChunkStoreSchemaConfig",
     "ConfluenceConnectionConfig",
+    "ConfluenceIngestConfig",
     "EmbeddingConfig",
     "FtsConfig",
+    "IngestFilesConfig",
     "KbConfig",
     "PostgresChunkStore",
     "PostgresCollectionsStore",
     "PostgresConnectionConfig",
     "PostgresKnowledgeBase",
+    "SearchConfig",
     "SqlConfig",
-    "VectorStoreSchemaConfig",
     "confluence_list_spaces",
     "confluence_page_download",
     "confluence_page_ingest",
     "confluence_search",
     "confluence_space_download",
     "confluence_space_ingest",
-    "files_ingest",
     "fts_search",
+    "ingest_files",
     "kb_search",
     "provide_chunk_store",
     "provide_chunker",

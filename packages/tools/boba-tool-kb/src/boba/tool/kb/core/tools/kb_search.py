@@ -1,4 +1,4 @@
-"""Tool: гибридный (vector + FTS, RRF) semantic search по одной KB-коллекции."""
+"""Tool: гибридный (vector + FTS, RRF) semantic search по KB-коллекциям."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from pydantic import Field
 from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.errors import KnowledgeBaseError
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
+from boba.tool.kb.core.search_config import SearchConfig
 from boba.tools import FromConfig, FromDI, Scope, tool
 
 __all__ = ["kb_search"]
@@ -30,6 +31,7 @@ def kb_search(
     ],
     kb: Annotated[PostgresKnowledgeBase, FromDI(Scope.APP)],
     cfg: Annotated[KbConfig, FromConfig()],
+    search_cfg: Annotated[SearchConfig, FromConfig()],
     top_k: Annotated[
         int,
         Field(
@@ -41,13 +43,14 @@ def kb_search(
         ),
     ] = 5,
 ) -> list[dict[str, Any]]:
-    """Hybrid semantic search (vector + FTS + RRF) по нашей KB-коллекции.
+    """Hybrid semantic search (vector + FTS + RRF) по KB-коллекциям.
 
-    Ищет внутри коллекции, наполненной через `files_ingest` (FS),
+    Ищет внутри коллекций, наполненных через `files_ingest` (FS),
     `confluence_space_ingest` или `confluence_page_ingest` — это
     таблица `kb_chunks`, разбитая на коллекции колонкой `collection`.
-    Целевая коллекция — pre-настроенная оператором (`[tool.kb].collection`,
-    default `knowledge_base`); LLM её не выбирает.
+    Список целевых коллекций — pre-настроенный оператором
+    (`[tool.kb.search].collections`); LLM их не выбирает. SQL-уровень:
+    `WHERE collection = ANY(...)` — поиск по объединению.
 
     Когда выбирать `kb_search` vs `fts_search`:
     - **kb_search** — наша KB; нужны embedding-релевантность и
@@ -65,7 +68,7 @@ def kb_search(
         )
     try:
         hits = kb.search(
-            collection=cfg.collection,
+            collections=list(search_cfg.collections),
             query=query,
             top_k=top_k,
         )

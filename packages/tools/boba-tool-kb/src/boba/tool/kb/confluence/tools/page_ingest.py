@@ -12,10 +12,10 @@ from boba.text import StructuralChunker
 from boba.tool.kb.confluence._ingest_common import run_confluence_ingest
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
+from boba.tool.kb.confluence.ingest_config import ConfluenceIngestConfig
 from boba.tool.kb.confluence.request_sources import ConfluencePagesRequestSource
 from boba.tool.kb.core.chunk_store import PostgresChunkStore
 from boba.tool.kb.core.collections_store import PostgresCollectionsStore
-from boba.tool.kb.core.config import KbConfig
 from boba.tools import FromConfig, FromDI, Scope, tool
 
 __all__ = ["confluence_page_ingest"]
@@ -29,7 +29,7 @@ def confluence_page_ingest(  # noqa: PLR0913 — tool с явным наборо
     collections_store: Annotated[PostgresCollectionsStore, FromDI(Scope.APP)],
     embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
     chunker: Annotated[StructuralChunker, FromDI(Scope.APP)],
-    kb_cfg: Annotated[KbConfig, FromConfig()],
+    ingest_cfg: Annotated[ConfluenceIngestConfig, FromConfig()],
     conn_cfg: Annotated[ConfluenceConnectionConfig, FromConfig()],
     page_ids: Annotated[
         list[str],
@@ -53,8 +53,10 @@ def confluence_page_ingest(  # noqa: PLR0913 — tool с явным наборо
 ) -> dict[str, Any]:
     """Индексирует явный список Confluence-страниц в KB-коллекцию.
 
-    Target collection — `[tool.kb].collection` (pinned оператором). Возвращает
-    JSON {page_ids, collection, indexed, skipped_unchanged, pruned, failed}.
+    Target collection — `[tool.kb.confluence_ingest].collection` (pinned
+    оператором; отдельная от FS-коллекции `[tool.kb.files].collection`).
+    Возвращает JSON {page_ids, collection, indexed, skipped_unchanged,
+    pruned, failed}.
     """
     request_source = ConfluencePagesRequestSource(
         base_url=conn_cfg.base_url,
@@ -69,8 +71,7 @@ def confluence_page_ingest(  # noqa: PLR0913 — tool с явным наборо
         collections_store=collections_store,
         embedder=embedder,
         chunker=chunker,
-        collection=kb_cfg.collection,
-        collection_description=kb_cfg.collection_description,
+        collection=ingest_cfg.collection,
         prune_missing=prune_missing,
         pipeline_id=_PIPELINE_ID,
     )

@@ -1,13 +1,9 @@
 """
 CLI-runner: индексация Confluence-space'ов в KB.
 
-Не tool-функция (`@tool` нет), а операторский скрипт-обёртка над
-`confluence_space_ingest`. Лежит в `confluence/cli/`, отдельно от tools,
-чтобы не попадать в tool-allowlist'ы и не путаться при поиске.
-
 Применение:
     BOBA_CONFIG_PATH=./local/config.toml \
-        .venv/bin/python -m boba.tool.kb.confluence.cli.ingest_all_spaces
+        .venv/bin/python -m boba.tool.kb.cli.ingest_all_spaces
 
 Опции:
     --type {global|personal|any}  фильтр по типу space (default: global)
@@ -33,6 +29,7 @@ from boba.indexing.embedder import Embedder
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
 from boba.text import StructuralChunker
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
+from boba.tool.kb.confluence.ingest_config import ConfluenceIngestConfig
 from boba.tool.kb.confluence.request_sources._common import (
     confluence_discover_spaces,
 )
@@ -40,11 +37,10 @@ from boba.tool.kb.confluence.tools.space_ingest import confluence_space_ingest
 from boba.tool.kb.core import providers as kb_providers
 from boba.tool.kb.core.chunk_store import PostgresChunkStore
 from boba.tool.kb.core.collections_store import PostgresCollectionsStore
-from boba.tool.kb.core.config import KbConfig
 
 __all__ = ["IngestAllSpacesConfig", "main"]
 
-logger = logging.getLogger("boba.tool.kb.confluence.cli.ingest_all_spaces")
+logger = logging.getLogger("boba.tool.kb.cli.ingest_all_spaces")
 
 
 class IngestAllSpacesConfig(BobaFlatSettings):
@@ -122,7 +118,9 @@ def main() -> int:
                 keys = (k for k in keys if k not in skip_set)
 
             # Resolve heavy KB-deps из DI
-            kb_cfg = req.get(KbConfig, component=_KB_COMPONENT)
+            ingest_cfg = req.get(
+                ConfluenceIngestConfig, component=_KB_COMPONENT,
+            )
             chunk_store = req.get(PostgresChunkStore, component=_KB_COMPONENT)
             collections_store = req.get(
                 PostgresCollectionsStore, component=_KB_COMPONENT,
@@ -148,7 +146,7 @@ def main() -> int:
                         collections_store=collections_store,
                         embedder=embedder,
                         chunker=chunker,
-                        kb_cfg=kb_cfg,
+                        ingest_cfg=ingest_cfg,
                         conn_cfg=conn_cfg,
                         space_keys=[key],
                         prune_missing=args.prune,

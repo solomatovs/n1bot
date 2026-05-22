@@ -1,10 +1,10 @@
-"""Tool `vector_search`: pure vector (cosine) semantic search по KB-коллекции.
+"""Tool `vector_search`: pure vector (cosine) semantic search по KB-коллекциям.
 
 Параллелен `kb_search` (hybrid RRF) и `fts_search` (pure FTS) — четвёртый
 поисковый tool, на этот раз только vector-канал. Полезен, когда FTS-канал
 шумит/мешает (короткие запросы, эмбеддинг лучше ловит синонимы).
 
-Target collection — pinned `[tool.kb].collection` (как у `kb_search`).
+Список целевых коллекций — `[tool.kb.search].collections` (как у `kb_search`).
 LLM передаёт только `query` + `top_k`.
 """
 
@@ -18,6 +18,7 @@ from pydantic import Field
 from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.errors import KnowledgeBaseError
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
+from boba.tool.kb.core.search_config import SearchConfig
 from boba.tools import FromConfig, FromDI, Scope, tool
 
 __all__ = ["vector_search"]
@@ -38,6 +39,7 @@ def vector_search(
     ],
     kb: Annotated[PostgresKnowledgeBase, FromDI(Scope.APP)],
     cfg: Annotated[KbConfig, FromConfig()],
+    search_cfg: Annotated[SearchConfig, FromConfig()],
     top_k: Annotated[
         int,
         Field(
@@ -49,12 +51,12 @@ def vector_search(
         ),
     ] = 5,
 ) -> list[dict[str, Any]]:
-    """Pure vector (cosine) semantic search по нашей KB-коллекции.
+    """Pure vector (cosine) semantic search по KB-коллекциям.
 
-    Ищет внутри коллекции, наполненной через `files_ingest` /
-    `confluence_space_ingest` / `confluence_page_ingest`. Целевая
-    коллекция — pre-настроенная оператором (`[tool.kb].collection`);
-    LLM её не выбирает.
+    Ищет внутри коллекций, наполненных через `files_ingest` /
+    `confluence_space_ingest` / `confluence_page_ingest`. Список целевых
+    коллекций — pre-настроенный оператором (`[tool.kb.search].collections`);
+    LLM их не выбирает. SQL-уровень: `WHERE collection = ANY(...)`.
 
     Когда выбирать `vector_search` vs остальные:
     - **vector_search** — наша KB, чистый vector (cosine). `distance` —
@@ -75,7 +77,7 @@ def vector_search(
         )
     try:
         hits = kb.vector_search(
-            collection=cfg.collection,
+            collections=list(search_cfg.collections),
             query=query,
             top_k=top_k,
         )

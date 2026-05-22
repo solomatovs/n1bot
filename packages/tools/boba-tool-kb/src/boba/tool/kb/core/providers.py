@@ -11,7 +11,7 @@
     EmbeddingConfig (FromConfig)
         └──> Embedder[str]                 # OpenAICompatEmbedder
 
-    VectorStoreSchemaConfig (FromConfig)   # [tool.kb.vector_store]
+    ChunkStoreSchemaConfig (FromConfig)   # [tool.kb.chunk_store]
         │                                  # schema + chunks/collections table
         ├──> PostgresChunkStore            # document-уровень (upsert/find/...)
         ├──> PostgresCollectionsStore      # collection-уровень (ensure/delete)
@@ -60,12 +60,12 @@ from boba.provider.openai import OpenAICompatEmbedder
 from boba.text import OverlapCharSplitter, StructuralChunker
 from boba.text.structural_chunker import SplitterFactory
 from boba.tool.kb.core.chunk_store import PostgresChunkStore
+from boba.tool.kb.core.chunk_store_config import ChunkStoreSchemaConfig
 from boba.tool.kb.core.collections_store import PostgresCollectionsStore
 from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.embedding_config import EmbeddingConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
 from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
-from boba.tool.kb.core.vector_store_config import VectorStoreSchemaConfig
 from boba.tools import FromConfig, FromDI, Scope, provides
 from boba.transport.fs import FsKeys
 
@@ -138,7 +138,7 @@ def provide_embedder(
 def provide_chunk_store(
     pool: Annotated[PostgresPool, FromDI(Scope.APP)],
     embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
-    schema_cfg: Annotated[VectorStoreSchemaConfig, FromConfig()],
+    schema_cfg: Annotated[ChunkStoreSchemaConfig, FromConfig()],
 ) -> PostgresChunkStore:
     """Postgres-бэкэнд `ChunkStore[str]` (document-уровень).
 
@@ -147,21 +147,21 @@ def provide_chunk_store(
     вызов embedder'а на write/read делается в pipeline-orchestrator'е
     (`CollectionScopedView` и `PostgresKnowledgeBase`).
 
-    `schema_cfg` ([tool.kb.vector_store]) — тот же конфиг, что получает
+    `schema_cfg` ([tool.kb.chunk_store]) — тот же конфиг, что получает
     bootstrap-CLI; гарантирует, что store ходит в те же таблицы, которые
     создал bootstrap.
     """
     return PostgresChunkStore(
         pool=pool,
         embedding_dim=embedder.dim(),
-        schema_cfg=schema_cfg,
+        chunk_store_cfg=schema_cfg,
     )
 
 
 @provides(scope=Scope.APP)
 def provide_collections_store(
     pool: Annotated[PostgresPool, FromDI(Scope.APP)],
-    schema_cfg: Annotated[VectorStoreSchemaConfig, FromConfig()],
+    schema_cfg: Annotated[ChunkStoreSchemaConfig, FromConfig()],
 ) -> PostgresCollectionsStore:
     """Postgres-бэкэнд `CollectionsStore` (collection-уровень CRUD).
 
@@ -180,7 +180,7 @@ def provide_knowledge_base(
     pool: Annotated[PostgresPool, FromDI(Scope.APP)],
     embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
     cfg: Annotated[KbConfig, FromConfig()],
-    schema_cfg: Annotated[VectorStoreSchemaConfig, FromConfig()],
+    schema_cfg: Annotated[ChunkStoreSchemaConfig, FromConfig()],
 ) -> PostgresKnowledgeBase:
     """Read-side KB: гибридный search (vector + FTS, RRF) для `kb_search`.
 

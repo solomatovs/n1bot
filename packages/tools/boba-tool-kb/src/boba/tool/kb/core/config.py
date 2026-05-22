@@ -1,11 +1,20 @@
 """`KbConfig` — конфиг секции `[tool.kb]` (домен KB, без подключений).
 
-Только параметры search/chunker и pinned-коллекция/папка. Подключения
-вынесены в отдельные секции:
+Только общие search-params (FTS/RRF/snippet) и chunker-параметры —
+поля, которые шарятся между всеми KB-tools и не привязаны к одному
+источнику или одной коллекции. Pinned-коллекции вынесены в отдельные
+секции:
 
-- `[tool.kb.postgres]`     → `PostgresConnectionConfig` (структурированно)
+- `[tool.kb.files]`             → `FilesIngestConfig` (collection + folder)
+- `[tool.kb.confluence_ingest]` → `ConfluenceIngestConfig` (collection)
+- `[tool.kb.search]`            → `SearchConfig` (collections list)
+
+Подключения и схема — тоже отдельными секциями:
+
+- `[tool.kb.postgres]`     → `PostgresConnectionConfig`
 - `[tool.kb.confluence]`   → `ConfluenceConnectionConfig` (base_url + auth)
-- `[tool.kb.embedding]`    → `EmbeddingConfig` (model + base_url + api_key)
+- `[tool.kb.embedding]`    → `EmbeddingConfig`
+- `[tool.kb.chunk_store]` → `ChunkStoreSchemaConfig`
 
 Плагин-уровневое включение/allowlist (`enable`, `tools`) — забота
 framework'а (`AgentBuilder.discover_plugins`); конфиг плагина их не
@@ -22,7 +31,7 @@ __all__ = ["KbConfig"]
 
 
 class KbConfig(BobaFlatSettings):
-    """Domain-config KB-плагина: search params, chunker, pinned collection/folder.
+    """Domain-config KB-плагина: общие search params + chunker.
 
     Config-секция: `[tool.kb]`.
     """
@@ -31,37 +40,6 @@ class KbConfig(BobaFlatSettings):
         case_sensitive=False,
         extra="ignore",
         config_path="tool.kb",
-    )
-
-    # pinned collection (read+write target)
-    collection: str = Field(
-        default="knowledge_base",
-        min_length=1,
-        max_length=255,
-        description=(
-            "Имя коллекции (значение колонки `collection` в `kb_chunks`), "
-            "в которую пишут все ingest-tools (`files_ingest`, "
-            "`confluence_space_ingest`, `confluence_page_ingest`) и из "
-            "которой читает `kb_search`. Один pinned-target — оператор "
-            "не даёт LLM создавать произвольные коллекции."
-        ),
-    )
-    collection_description: str = Field(
-        default="",
-        description=(
-            "Description коллекции; прописывается при первом "
-            "`ensure_collection` (видно в служебных запросах)."
-        ),
-    )
-
-    # files_ingest (FS-источник)
-    files_folder: str = Field(
-        default="./local/docs",
-        description=(
-            "Папка с файлами для `files_ingest` (`.md`/`.html`/`.htm`). "
-            "Оператор закрепляет выбор папки за собой — LLM не выбирает "
-            "(защита от индексирования чужих файлов). Дефолт `./local/docs`."
-        ),
     )
 
     # FTS / search
@@ -101,8 +79,6 @@ class KbConfig(BobaFlatSettings):
             "склейкой через RRF. Обычно 2-4x от итогового top_k."
         ),
     )
-
-    # embedder — вынесен в [tool.kb.embedding] (`EmbeddingConfig`)
 
     # chunker
     chunk_size: int = Field(

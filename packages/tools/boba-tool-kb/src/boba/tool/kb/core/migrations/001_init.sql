@@ -2,8 +2,8 @@
 --
 -- ВНИМАНИЕ: имена `{{chunks_table}}` / `{{collections_table}}` / `{{schema_name}}`
 -- — это плейсхолдеры `psycopg.sql.SQL(...).format(...)`. Реальные значения
--- подставляются в `migrations.apply_bootstrap` из `VectorStoreSchemaConfig`
--- ([tool.kb.vector_store]). Все литералы `{{}}` (jsonb default, array default)
+-- подставляются в `migrations.apply_bootstrap` из `ChunkStoreSchemaConfig`
+-- ([tool.kb.chunk_store]). Все литералы `{{}}` (jsonb default, array default)
 -- удвоены до `{{{{}}}}` — это требование psycopg.sql.SQL'овского format'а.
 --
 -- ВАЖНО про идемпотентность: миграция выполняется при каждом запуске

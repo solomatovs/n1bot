@@ -1,18 +1,14 @@
 """
-PostgresChunkStore — реализация `boba.indexing.ChunkStore[str]` поверх
-postgres + pgvector.
+PostgresChunkStore — реализация
+`boba.indexing.ChunkStore[str]` поверх postgres + pgvector.
 
 Чисто chunk-уровневые операции (документы внутри коллекции):
 - read:  get_by_ids / peek / find / diff_by_hash
 - write: upsert / delete / update_metadata
 
-Коллекция-уровневый CRUD (`ensure_collection` / `delete_collection` /
-`list_collections` / `collection_info`) живёт отдельно в
-[`PostgresCollectionsStore`](collections_store.py) — это другая ось ABC.
-
 Хранение:
 - Все коллекции в одной таблице (по дефолту `kb_chunks`, имя/схема —
-  через `VectorStoreSchemaConfig` [tool.kb.vector_store]). Разделение по
+  через `ChunkStoreSchemaConfig` [tool.kb.chunk_store]). Разделение по
   колонке `collection`.
 - Системные поля (source_id, chunk_index, content_hash) — отдельные колонки
   таблицы. Тэги — `text[]`. Остальная metadata — `jsonb`.
@@ -65,7 +61,7 @@ from boba.indexing.filter import (
 )
 from boba.indexing.metadata import Metadata
 from boba.indexing.sections import SourceId
-from boba.tool.kb.core.vector_store_config import VectorStoreSchemaConfig
+from boba.tool.kb.core.chunk_store_config import ChunkStoreSchemaConfig
 
 logger = logging.getLogger(__name__)
 
@@ -75,13 +71,13 @@ _E = TypeVar("_E")
 
 
 class PostgresChunkStore(ChunkStore[str]):
-    """Postgres-реализация `ChunkStore[str]` (только document-уровень)."""
+    """Postgres-реализация `ChunkStore[str]`"""
 
     DEFAULT_BATCH_SIZE: ClassVar[int] = 100
     BACKEND_NAME: ClassVar[str] = "postgres"
 
-    # Колонки-системники: на них завязан admin и schema.sql. Если меняешь
-    # имя — синхронизируй с 001_init.sql и `_columns_select`.
+    # Колонки-системники: на них завязан admin и schema.sql.
+    # Если меняешь имя — синхронизируй с 001_init.sql и `_columns_select`.
     _SYSTEM_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {"chunk_id", "collection", "source_id", "chunk_index", "content_hash"},
     )
@@ -91,18 +87,13 @@ class PostgresChunkStore(ChunkStore[str]):
         pool: PostgresPool,
         *,
         embedding_dim: int,
-        schema_cfg: VectorStoreSchemaConfig,
+        chunk_store_cfg: ChunkStoreSchemaConfig,
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> None:
         self._pool = pool
         self._embedding_dim = embedding_dim
-        self._schema_cfg = schema_cfg
-        self._chunks_table = schema_cfg.chunks_ident()
+        self._chunk_store_cfg = chunk_store_cfg
         self._batch_size = batch_size
-
-    # ------------------------------------------------------------------ #
-    # ChunkStore[str] — read-side                                         #
-    # ------------------------------------------------------------------ #
 
     def get_by_ids(
         self,
@@ -120,7 +111,7 @@ class PostgresChunkStore(ChunkStore[str]):
             FROM {chunks_table}
             WHERE collection = %s AND chunk_id = ANY(%s)
             """,
-        ).format(chunks_table=self._chunks_table)
+        ).format(chunks_table=self._chunk_store_cfg.chunks_ident())
         with (
             self._pool.connection() as conn,
             conn.cursor(
@@ -154,7 +145,7 @@ class PostgresChunkStore(ChunkStore[str]):
                     ORDER BY source_id, chunk_index
                     LIMIT %s
                     """,
-                ).format(chunks_table=self._chunks_table)
+                ).format(chunks_table=self._chunk_store_cfg.chunks_ident())
                 cur.execute(query, (str(collection), limit))
             else:
                 query = sql.SQL(
@@ -166,7 +157,7 @@ class PostgresChunkStore(ChunkStore[str]):
                     ORDER BY chunk_index
                     LIMIT %s
                     """,
-                ).format(chunks_table=self._chunks_table)
+                ).format(chunks_table=self._chunk_store_cfg.chunks_ident())
                 cur.execute(query, (str(collection), str(source_id), limit))
             for row in cur:
                 yield self._row_to_summary(row)
@@ -193,7 +184,7 @@ class PostgresChunkStore(ChunkStore[str]):
             WHERE {where}
             ORDER BY source_id, chunk_index
             """,
-        ).format(chunks_table=self._chunks_table, where=where_clause)
+        ).format(chunks_table=self._chunk_store_cfg.chunks_ident(), where=where_clause)
         if limit is not None:
             query = sql.SQL("{q} LIMIT {lim}").format(
                 q=query,
@@ -227,7 +218,7 @@ class PostgresChunkStore(ChunkStore[str]):
             FROM {chunks_table}
             WHERE collection = %s AND chunk_id = ANY(%s)
             """,
-        ).format(chunks_table=self._chunks_table)
+        ).format(chunks_table=self._chunk_store_cfg.chunks_ident())
         with (
             self._pool.connection() as conn,
             conn.cursor() as cur,
@@ -250,10 +241,6 @@ class PostgresChunkStore(ChunkStore[str]):
             to_upsert=to_upsert,
             unchanged=unchanged,
         )
-
-    # ------------------------------------------------------------------ #
-    # ChunkStore[str] — write-side                                        #
-    # ------------------------------------------------------------------ #
 
     def upsert(
         self,
@@ -283,7 +270,7 @@ class PostgresChunkStore(ChunkStore[str]):
                 tags           = EXCLUDED.tags,
                 updated_at     = now()
             """,
-        ).format(chunks_table=self._chunks_table)
+        ).format(chunks_table=self._chunk_store_cfg.chunks_ident())
         for batch in self._batched(chunks):
             rows: list[tuple[Any, ...]] = []
             for ec in batch:
@@ -318,7 +305,7 @@ class PostgresChunkStore(ChunkStore[str]):
             return
         query = sql.SQL(
             "DELETE FROM {chunks_table} WHERE collection = %s AND chunk_id = ANY(%s)",
-        ).format(chunks_table=self._chunks_table)
+        ).format(chunks_table=self._chunk_store_cfg.chunks_ident())
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(query, (str(collection), ids))
 
@@ -342,13 +329,9 @@ class PostgresChunkStore(ChunkStore[str]):
                 updated_at = now()
             WHERE collection = %s AND chunk_id = ANY(%s)
             """,
-        ).format(chunks_table=self._chunks_table)
+        ).format(chunks_table=self._chunk_store_cfg.chunks_ident())
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(query, (json.dumps(wire_patch), str(collection), ids))
-
-    # ------------------------------------------------------------------ #
-    # Internals                                                          #
-    # ------------------------------------------------------------------ #
 
     def _row_to_chunk(self, row: Mapping[str, Any]) -> Chunk[str]:
         return Chunk(
@@ -390,10 +373,6 @@ class PostgresChunkStore(ChunkStore[str]):
             if not batch:
                 return
             yield batch
-
-    # ------------------------------------------------------------------ #
-    # Filter → SQL                                                        #
-    # ------------------------------------------------------------------ #
 
     @classmethod
     def _compile_filter(
