@@ -52,7 +52,7 @@ class PgFtsKnowledgeBase:
     def search(self, query: str, top_k: int) -> list[FtsHit]:
         stmt, params = self._build_query(query, top_k)
         try:
-            with self._pool.connection() as conn, conn.cursor() as cur:
+            with self._pool.cursor() as cur:
                 cur.execute(stmt, params)
                 rows = cur.fetchall()
                 column_names = [d.name for d in (cur.description or [])]

@@ -45,27 +45,28 @@ Confluence-ingest не перемешивались):
 - `sql_query(query, row_limit=20)`     — произвольный SELECT → markdown table.
 
 **Конфиг-секции:**
-- `[tool.kb]`               → `KbConfig` (RRF / FTS-params / chunker).
-- `[tool.kb.files]`         → `FilesIngestConfig` (collection + folder).
+- `[tool.kb]`                 → `KbConfig` (RRF / FTS-params / chunker).
+- `[tool.kb.files_ingest]`    → `IngestFilesConfig` (collection + folder + prune).
 - `[tool.kb.confluence_ingest]` → `ConfluenceIngestConfig` (collection).
-- `[tool.kb.search]`        → `SearchConfig` (collections list).
-- `[tool.kb.postgres]`      → `PostgresConnectionConfig` (host/port/user/...).
-- `[tool.kb.confluence]`    → `ConfluenceConnectionConfig` (base_url/auth/...).
-- `[tool.kb.embedding]`     → `EmbeddingConfig` (model/base_url/api_key).
-- `[tool.kb.chunk_store]`  → `ChunkStoreSchemaConfig` (schema + tables).
-- `[tool.kb.fts]`           → `FtsConfig` (whitelist-таблица для fts_search).
-- `[tool.kb.sql]`           → `SqlConfig` (read-only DSN + safety-limits).
+- `[tool.kb.search]`          → `SearchConfig` (collections list).
+- `[tool.kb.postgres_store]`  → `PostgresStoreConfig` (schema + tables + nested
+                                 `connection` под-секция: host/port/user/...).
+- `[tool.kb.confluence]`      → `ConfluenceConnectionConfig` (base_url/auth/...).
+- `[tool.kb.embedding]`       → `EmbeddingConfig` (model/base_url/api_key).
+- `[tool.kb.fts]`             → `FtsConfig` (whitelist-таблица для fts_search).
+- `[tool.kb.sql]`             → `SqlConfig` (read-only DSN + safety-limits).
 
 Плагин-уровневое включение — через `[tool.kb].enable` + `[tool.kb].tools`
-allowlist (PluginConfigBase). Connection-конфиги (postgres/confluence)
+allowlist (PluginConfigBase). Connection-конфиги (postgres_store/confluence)
 загружаются framework'ом лениво — только если в allowlist есть хоть один
 tool, использующий их через FromConfig.
 
 Pipeline-граф:
-- `PostgresConnectionConfig.to_pool_config()` → `PostgresPool.get(...)`
-  с `register_vector`-hook'ом. Схема БД (миграции + HNSW-индекс) — это
-  отдельный операторский шаг через CLI `boba.tool.kb.core.cli.bootstrap`;
-  runtime DDL в провайдере не делает.
+- `PostgresStoreConfig.open_pool()` → `PostgresPool.get(...)` с
+  `register_vector`-hook'ом, singleton-cached по DSN. Store-ы и KB сами
+  открывают pool — pool-граф следует за конфигом, а не за DI. Схема БД
+  (миграции + HNSW-индекс) — отдельный операторский шаг через CLI
+  `boba.tool.kb.cli.bootstrap`; runtime DDL не делает.
 - `PostgresPool` шарится между kb_search и fts_search (DSN-fallback в FtsConfig).
 - Ingest-tools собирают `StreamingIndexer` inline:
   - FS:        `FsWalkRequestSource` + `FsTransport` + `DispatchReader` (md/html).
@@ -89,10 +90,10 @@ from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.embedding_config import EmbeddingConfig
 from boba.tool.kb.core.files_ingest_config import IngestFilesConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
-from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
 from boba.tool.kb.core.postgres_store import (
     PostgresChunkStore,
     PostgresCollectionsStore,
+    PostgresConnectionConfig,
     PostgresStoreConfig,
 )
 from boba.tool.kb.core.providers import (

@@ -19,7 +19,7 @@ runtime DDL при каждом запуске tool'а. Теперь runtime'у 
 - `{chunks_*_idx_name}` — производные имена индексов на `chunks_table`,
                           уникальные при переименовании таблицы.
 
-Значения подставляются из `ChunkStoreSchemaConfig` ([tool.kb.chunk_store]) —
+Значения подставляются из `PostgresStoreConfig` ([tool.kb.postgres_store]) —
 тот же конфиг, который потом получают `PostgresChunkStore` и
 `PostgresKnowledgeBase`. Это гарантирует, что bootstrap создаёт таблицы под
 теми же именами, под которыми store будет к ним обращаться в рантайме.

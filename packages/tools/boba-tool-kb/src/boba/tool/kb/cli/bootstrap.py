@@ -32,11 +32,10 @@ import time
 from dishka.entities.component import Component
 
 from boba.agent import AgentBuilder
-from boba.db.postgres import PostgresPool
 from boba.indexing.embedder import Embedder
 from boba.tool.kb.core import providers as kb_providers
 from boba.tool.kb.core.migrations import apply_bootstrap, ensure_vector_index
-from boba.tool.kb.core.postgres_store import PostgresStoreConfig
+from boba.tool.kb.core.postgres_store import PostgresChunkStore, PostgresStoreConfig
 
 __all__ = ["main"]
 
@@ -56,27 +55,29 @@ def main() -> int:
 
     try:
         with container() as req:
-            pool = req.get(PostgresPool, component=_KB_COMPONENT)
             embedder = req.get(Embedder[str], component=_KB_COMPONENT)
 
-            schema_cfg = PostgresStoreConfig()
+            cfg = PostgresStoreConfig()  # pyright: ignore[reportCallIssue]
+            pool = PostgresChunkStore.open_pool(cfg)
             logger.info(
-                "vector_store schema=%s chunks=%s collections=%s",
-                schema_cfg.schema,
-                schema_cfg.chunks_table,
-                schema_cfg.collections_table,
+                "postgres_store schema=%s chunks=%s collections=%s host=%s db=%s",
+                cfg.schema,
+                cfg.chunks_table,
+                cfg.collections_table,
+                cfg.connection.host,
+                cfg.connection.database,
             )
 
             start = time.monotonic()
 
             logger.info("step 1/2: applying migrations…")
             with pool.connection() as conn:
-                apply_bootstrap(conn, schema_cfg=schema_cfg)
+                apply_bootstrap(conn, schema_cfg=cfg)
 
             dim = embedder.dim()
             logger.info("step 2/2: ensuring HNSW index for dim=%d…", dim)
             with pool.connection() as conn:
-                ensure_vector_index(conn, dim=dim, schema_cfg=schema_cfg)
+                ensure_vector_index(conn, dim=dim, schema_cfg=cfg)
 
             logger.info("DONE in %.1fs — KB-DB ready", time.monotonic() - start)
             return 0
