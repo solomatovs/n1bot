@@ -41,7 +41,7 @@ pip install -r dev-install.txt
 
 В `local/.env` подставьте `BOBA_AGENT__API_KEY` и (опционально)
 `BOBA_AGENT__BASE_URL`. В `local/config.toml` укажите `model` для
-`[cli]` и `[chainlit]`.
+`[cli.agent]` и `[chainlit]`.
 
 ## Запуск
 
@@ -57,14 +57,14 @@ set -a && . local/.env && set +a
 ### boba-cli-agent — REPL/single-shot
 
 ```bash
-# REPL (если в [cli].query пусто):
+# REPL (если в [cli.agent].query пусто):
 .venv/bin/boba-cli-agent
 
-# Single-shot (через argv, перекрывает [cli].query):
+# Single-shot (через argv, перекрывает [cli.agent].query):
 .venv/bin/boba-cli-agent --model qwen3.5-35b --query "hello"
 ```
 
-CLI argv > env (`BOBA_CLI__…`) > TOML `[cli]`. REPL-команды: `/exit`,
+CLI argv > env (`BOBA_CLI__AGENT__…`) > TOML `[cli.agent]`. REPL-команды: `/exit`,
 `/quit`, `:q`, `/clear` (сбросить in-memory историю).
 
 ### boba-chainlit-agent — UI
