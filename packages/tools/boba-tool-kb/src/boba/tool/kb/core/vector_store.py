@@ -13,9 +13,10 @@ PostgresVectorStore — реализация boba.indexing.VectorStore + Collect
   `collection`.
 - Системные поля (source_id, chunk_index, content_hash) — отдельные колонки
   таблицы. Тэги — `text[]`. Остальная metadata — `jsonb`.
-- Embedding — `vector` (без фиксированной dim в столбце), HNSW-индекс
-  per-dim создаётся `migrations.ensure_vector_index` лениво при первом
-  upsert.
+- Embedding — `vector` (без фиксированной dim в столбце); HNSW-индекс
+  per-dim создаётся оператором заранее через CLI
+  `boba.tool.kb.core.cli.bootstrap`. Store предполагает, что схема и
+  индекс уже на месте — runtime DDL не делает.
 
 Similarity-search здесь — чистый vector (cosine, `<=>`). Гибридный
 search (vector + FTS, RRF) живёт в `PostgresKnowledgeBase.search` и
@@ -66,8 +67,6 @@ from boba.indexing.vector_store import (
     VectorStoreReader,
     VectorStoreWriter,
 )
-from boba.tool.kb.core.migrations import ensure_vector_index
-
 logger = logging.getLogger(__name__)
 
 __all__ = ["PostgresVectorStore"]
@@ -102,10 +101,6 @@ class PostgresVectorStore(
         self._embedder = embedder
         self._embedding_dim = embedding_dim
         self._batch_size = batch_size
-        # Лениво следим, для каких dim уже создан HNSW-индекс — в текущем
-        # single-model развёртывании всегда одна и та же dim, индекс
-        # создаётся один раз и переиспользуется.
-        self._vector_index_ready: bool = False
 
     # ------------------------------------------------------------------ #
     # VectorStoreReader[str]                                             #
@@ -119,6 +114,7 @@ class PostgresVectorStore(
         ids = [str(c) for c in chunk_ids]
         if not ids:
             return
+
         with (
             self._pool.connection() as conn,
             conn.cursor(
@@ -262,10 +258,6 @@ class PostgresVectorStore(
         collection: CollectionId,
         chunks: Iterable[Chunk[str]],
     ) -> None:
-        # Лениво создаём HNSW для текущей dim перед первым массовым insert.
-        # Без индекса similarity_search будет seq-scan'ить — формально
-        # работает, но медленно.
-        self._ensure_vector_index_once()
         for batch in self._batched(chunks):
             documents = [c.format_content for c in batch]
             embeddings = list(self._embedder.embed_documents(documents))
@@ -466,13 +458,6 @@ class PostgresVectorStore(
     # ------------------------------------------------------------------ #
     # Internals                                                          #
     # ------------------------------------------------------------------ #
-
-    def _ensure_vector_index_once(self) -> None:
-        if self._vector_index_ready:
-            return
-        with self._pool.connection() as conn:
-            ensure_vector_index(conn, dim=self._embedding_dim)
-        self._vector_index_ready = True
 
     def _row_to_chunk(self, row: Mapping[str, Any]) -> Chunk[str]:
         content_hash_wire = row.get("content_hash") or ""

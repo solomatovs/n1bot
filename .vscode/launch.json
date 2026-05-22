@@ -37,6 +37,21 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
+            "name": "KB: bootstrap DB (operator CLI)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.tool.kb.core.cli.bootstrap",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            // Одноразовый шаг: применяет migrations/*.sql + создаёт HNSW-индекс
+            // под dim текущего EmbeddingConfig. Запускать после первого
+            // `docker compose up postgres` и после смены embedding-модели.
+            // Аргументов нет — конфиг берётся из local/config.toml.
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
             "name": "KB: ingest files (operator CLI)",
             "type": "debugpy",
             "request": "launch",

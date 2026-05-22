@@ -1,4 +1,4 @@
-"""KbDocReader — Reader-обёртка над форматом KB-документа.
+"""KbDocReader — Reader для формата KB-документа.
 
 Формат:
 
@@ -10,16 +10,19 @@
 
     ---
 
-    body content — передаётся в inner Reader как есть.
+    body content — markdown-текст оператора, индексируется
+    целиком как одна Section.
 
-Header-блок (всё до строки `---`) парсится сюда — title, tags,
-source, anchor, и любые `**key:** value` строки. Body отдаётся
-во вложенный `inner: Reader[str]` (`MarkdownReader`, `PlainTextReader`,
-`HtmlReader` — что угодно) через под-RawDocument с тем же
-`source_id` и обогащённой `metadata`.
+Header-блок (всё до строки `---`) парсится: title, tags, source,
+anchor, и любые `**key:** value` строки → попадают в metadata.
 
-Возвращённые из inner Section[str] дополняются `tags` из header'а
-(объединение, не замена).
+**Body — единая `ParagraphSection`**. Это намеренный выбор: KB-документы
+оператора — это короткие атомарные карточки знаний, и оператор хочет,
+чтобы каждый файл был ровно одним чанком (а не разбивался по
+параграфам/секциям как делает MarkdownReader для длинных markdown'ов).
+Если body превышает chunk_size, splitter (`OverlapCharSplitter` с
+`DEFAULT_SEPARATORS = ("\\n\\n", "\\n", " ", "")`) сам уйдёт в
+paragraph-split в порядке убывания крупности разделителя.
 
 `---` обязателен, если в файле есть header — без разделителя весь
 файл считается body без metadata. Это сознательно простой формат:
@@ -30,12 +33,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass, replace
-from io import BytesIO
+from dataclasses import dataclass
 from typing import ClassVar
 
 from boba.indexing import (
     Metadata,
+    ParagraphSection,
     RawDocument,
     Reader,
     ReaderId,
@@ -82,25 +85,20 @@ class ParsedKbDocHeader:
 
 
 class KbDocReader(Reader[str]):
-    """Reader[str] для KB-document формата с делегированием body в inner.
+    """Reader[str] для KB-document формата — один файл = одна Section.
 
-    Конструктор принимает `inner: Reader[str]` — Reader для body
-    (`MarkdownReader`, `PlainTextReader`, `HtmlReader`, ...). KbDocReader
-    сам парсит header, формирует обогащённую metadata, отдаёт body
-    во вложенный Reader, и приписывает header-tags к каждой
-    возвращённой Section.
+    Парсит header (title, tags, source, anchor, custom `**k:** v`) в
+    metadata; body отдаёт **одной `ParagraphSection`** без дальнейшей
+    разбивки по структуре markdown. Это операторская KB-конвенция:
+    каждый документ — атомарная единица. Внутреннюю нарезку (если файл
+    > chunk_size) делает уже splitter в `StructuralChunker`.
     """
 
     READER_ID: ClassVar[ReaderId] = ReaderId("ext.kbdoc")
+    DOC_TYPE: ClassVar[str] = "kbdoc"
     DEFAULT_ENCODING: ClassVar[str] = "utf-8"
 
-    def __init__(
-        self,
-        *,
-        inner: Reader[str],
-        encoding: str = DEFAULT_ENCODING,
-    ) -> None:
-        self._inner = inner
+    def __init__(self, *, encoding: str = DEFAULT_ENCODING) -> None:
         self._encoding = encoding
 
     def name(self) -> str:
@@ -113,18 +111,21 @@ class KbDocReader(Reader[str]):
         text = value.handle.read().decode(self._encoding, errors="replace")
         parsed = self.parse(text)
 
-        meta = self._enrich_metadata(value.metadata, parsed)
-        sub_doc = RawDocument(
-            handle=BytesIO(parsed.body.encode(self._encoding)),
-            source_id=value.source_id,
-            metadata=meta,
+        if not parsed.body:
+            return
+
+        meta = self._enrich_metadata(value.metadata, parsed).set(
+            ReaderKeys.DOC_TYPE,
+            self.DOC_TYPE,
         )
 
-        for section in self._inner.convert(sub_doc):
-            if parsed.tags:
-                yield replace(section, tags=section.tags | parsed.tags)
-            else:
-                yield section
+        yield ParagraphSection(
+            source_id=value.source_id,
+            content=parsed.body,
+            order=0,
+            metadata=meta,
+            tags=parsed.tags,
+        )
 
     @classmethod
     def parse(cls, text: str) -> ParsedKbDocHeader:

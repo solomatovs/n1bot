@@ -1,18 +1,20 @@
-"""boba.kbdoc — формат KB-документа поверх произвольного inner Reader[str].
+"""boba.kbdoc — формат KB-документа (один файл = одна Section).
 
 Содержимое:
 
-- `reader.py` — `KbDocReader(inner: Reader[str])`: парсит header
-  (`# Title`, `**tags:**`, `**source:**`, `**anchor:**`, `---`) и
-  делегирует body во вложенный Reader (`MarkdownReader`,
-  `PlainTextReader`, `HtmlReader` — что угодно).
+- `reader.py` — `KbDocReader`: парсит header (`# Title`, `**tags:**`,
+  `**source:**`, `**anchor:**`, `---`) → metadata; body отдаёт одной
+  `ParagraphSection` без структурной разбивки (операторская KB-конвенция:
+  каждый документ — атомарная единица). Размерный fallback делает
+  splitter в `StructuralChunker`.
 - `keys.py`   — `KbDocKeys`: typed `MetadataKey`-и (`SOURCE_URL` —
   top-level для citation; `CUSTOM_PREFIX="reader.kbdoc."` для
   произвольных header-ключей).
 
 Зависимости:
 
-- `boba-indexing` — `Reader[str]`, `Section`, `Metadata`, `MetadataKey`.
+- `boba-indexing` — `Reader[str]`, `Section`, `ParagraphSection`,
+  `Metadata`, `MetadataKey`.
 """
 
 from __future__ import annotations
