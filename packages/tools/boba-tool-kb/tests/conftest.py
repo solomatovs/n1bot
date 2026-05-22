@@ -49,17 +49,17 @@ from boba.provider.openai import OpenAICompatEmbedder
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.text import OverlapCharSplitter, StructuralChunker
 from boba.text.structural_chunker import SplitterFactory
-from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.fts.config import FtsConfig
-from boba.tool.kb.fts.db import PgFtsKnowledgeBase
+from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
 from boba.tool.kb.core.migrations import apply_bootstrap
 from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
+from boba.tool.kb.core.vector_store import PostgresVectorStore
+from boba.tool.kb.fts.config import FtsConfig
+from boba.tool.kb.fts.db import PgFtsKnowledgeBase
 from boba.tool.kb.sql.config import SqlConfig
 from boba.tool.kb.sql.executor import SqlExecutor
-from boba.tool.kb.core.vector_store import PostgresVectorStore
 from boba.transport.fs import FsKeys
 from boba.transport.http import HttpTransport
 from boba.workspace.contract import WorkspaceId

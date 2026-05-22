@@ -8,11 +8,11 @@ from pydantic import Field
 
 from boba.indexing.context import PipelineId
 from boba.text import StructuralChunker
-from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.confluence._ingest_common import run_confluence_ingest
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.request_sources import ConfluencePagesRequestSource
+from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.vector_store import PostgresVectorStore
 from boba.tools import FromConfig, FromDI, Scope, tool
 
