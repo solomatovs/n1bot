@@ -19,6 +19,7 @@ from boba.tool.kb.core.kb import PostgresKnowledgeBase
 from boba.tool.kb.core.tools.kb_search import kb_search
 
 if TYPE_CHECKING:
+    from boba.tool.kb.core.embedding_config import EmbeddingConfig
     from tests.conftest import KbIntegrationTestConfig
 
 pytestmark = pytest.mark.integration
@@ -26,6 +27,7 @@ pytestmark = pytest.mark.integration
 
 def test_kb_search_real(
     kb_cfg: KbConfig,
+    embedding_cfg: EmbeddingConfig,
     kb_knowledge_base: PostgresKnowledgeBase,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
@@ -46,7 +48,7 @@ def test_kb_search_real(
 
     _emit("")
     _emit(f"collection:      {kb_cfg.collection}")
-    _emit(f"embedding_model: {kb_cfg.embedding_model}")
+    _emit(f"embedding_model: {embedding_cfg.model}")
     _emit(f"fts_language:    {kb_cfg.fts_language}")
     _emit(f"rrf_k:           {kb_cfg.rrf_k}")
     _emit(f"rrf_pool:        {kb_cfg.rrf_pool}")

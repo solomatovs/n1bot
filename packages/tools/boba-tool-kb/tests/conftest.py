@@ -4,10 +4,11 @@
 endpoint, реальный Confluence. Параметры конфигурации читаются через
 систему конфигурирования (BobaFlatSettings) из:
 
-- `[tool.kb]`              → `KbConfig` (collection, files_folder, embedder,
-                              search params, chunker).
+- `[tool.kb]`              → `KbConfig` (collection, files_folder, search
+                              params, chunker).
 - `[tool.kb.postgres]`     → `PostgresConnectionConfig` (host/port/user/...).
 - `[tool.kb.confluence]`   → `ConfluenceConnectionConfig` (base_url/auth/...).
+- `[tool.kb.embedding]`    → `EmbeddingConfig` (model/base_url/api_key).
 - `[tool.kb.fts]`          → `FtsConfig` (одна whitelist-таблица).
 - `[test.kb]`              → `KbIntegrationTestConfig` (тестовые параметры:
                               page_ids, search-query, space_key, ...).
@@ -52,6 +53,7 @@ from boba.text.structural_chunker import SplitterFactory
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.core.config import KbConfig
+from boba.tool.kb.core.embedding_config import EmbeddingConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
 from boba.tool.kb.core.migrations import apply_bootstrap
 from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
@@ -163,6 +165,15 @@ def confluence_cfg() -> ConfluenceConnectionConfig:
 
 
 @pytest.fixture
+def embedding_cfg() -> EmbeddingConfig:
+    """`EmbeddingConfig` из `[tool.kb.embedding]`; skip при ошибке."""
+    try:
+        return EmbeddingConfig()
+    except ValidationError as e:
+        pytest.skip(f"[tool.kb.embedding] не сконфигурирован: {e}")
+
+
+@pytest.fixture
 def fts_cfg() -> FtsConfig:
     """`FtsConfig` из `[tool.kb.fts]`; skip при ошибке.
 
@@ -216,13 +227,13 @@ def kb_pool(pg_cfg: PostgresConnectionConfig) -> PostgresPool:
 
 
 @pytest.fixture
-def kb_embedder(kb_cfg: KbConfig) -> OpenAICompatEmbedder:
+def kb_embedder(embedding_cfg: EmbeddingConfig) -> OpenAICompatEmbedder:
     """OpenAI-совместимый embedder для kb_search/files_ingest."""
     client = OpenAI(
-        base_url=kb_cfg.embedding_base_url or None,
-        api_key=kb_cfg.embedding_api_key or "unused",
+        base_url=embedding_cfg.base_url or None,
+        api_key=embedding_cfg.api_key or "unused",
     )
-    return OpenAICompatEmbedder(client=client, model=kb_cfg.embedding_model)
+    return OpenAICompatEmbedder(client=client, model=embedding_cfg.model)
 
 
 @pytest.fixture
