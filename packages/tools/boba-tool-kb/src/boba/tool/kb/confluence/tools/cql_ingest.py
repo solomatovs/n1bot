@@ -46,6 +46,7 @@ class ConfluenceCqlIngestConfig(BobaFlatSettings):
         case_sensitive=False,
         extra="ignore",
         config_path="tool.kb.confluence_ingest.cql",
+        defaults_from=("postgres", "kb.storage", "embedding", "confluence"),
     )
 
     store: PostgresStoreConfig

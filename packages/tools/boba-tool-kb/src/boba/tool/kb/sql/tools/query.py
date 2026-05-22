@@ -22,6 +22,7 @@ class SqlQueryConfig(BobaFlatSettings):
         case_sensitive=False,
         extra="ignore",
         config_path="tool.kb.sql_query",
+        defaults_from=("postgres",),
     )
 
     executor: SqlExecutorConfig

@@ -46,6 +46,7 @@ class ConfluenceCqlSearchConfig(BobaFlatSettings):
         case_sensitive=False,
         extra="ignore",
         config_path="tool.kb.confluence_search.cql",
+        defaults_from=("confluence",),
     )
 
     confluence: ConfluenceConnection

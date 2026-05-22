@@ -42,6 +42,7 @@ class FtsSearchConfig(BobaFlatSettings):
         case_sensitive=False,
         extra="ignore",
         config_path="tool.kb.fts_search",
+        defaults_from=("postgres",),
     )
 
     connection: PostgresConnection

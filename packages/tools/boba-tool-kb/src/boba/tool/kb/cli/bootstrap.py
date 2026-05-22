@@ -21,7 +21,7 @@
         .venv/bin/python -m boba.tool.kb.cli.bootstrap
 
 CLI-флагов нет — всё берётся из конфига оператора
-(`[tool.kb.bootstrap]`).
+(`[cli.kb.bootstrap]`).
 """
 
 from __future__ import annotations
@@ -56,7 +56,8 @@ class BootstrapConfig(BobaFlatSettings):
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.bootstrap",
+        config_path="cli.kb.bootstrap",
+        defaults_from=("postgres", "kb.storage", "embedding"),
     )
 
     connection: PostgresConnection

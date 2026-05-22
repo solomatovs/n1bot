@@ -34,6 +34,7 @@ class KbSearchConfig(BobaFlatSettings):
         case_sensitive=False,
         extra="ignore",
         config_path="tool.kb.kb_search",
+        defaults_from=("postgres", "kb.storage", "embedding"),
     )
 
     knowledge_base: PostgresKnowledgeBaseConfig

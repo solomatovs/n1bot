@@ -35,6 +35,7 @@ class VectorSearchConfig(BobaFlatSettings):
         case_sensitive=False,
         extra="ignore",
         config_path="tool.kb.vector_search",
+        defaults_from=("postgres", "kb.storage", "embedding"),
     )
 
     knowledge_base: PostgresKnowledgeBaseConfig

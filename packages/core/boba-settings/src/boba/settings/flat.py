@@ -62,12 +62,19 @@ __all__ = [
 
 class BobaSettingsConfigDict(SettingsConfigDict, total=False):
     """
-    config_path - путь к секции конфига (канонический путь)
-    use_cli     - подключить `CliSettingsSource` (argparse интеграция)
+    config_path   - путь к секции конфига (канонический путь).
+    use_cli       - подключить `CliSettingsSource` (argparse интеграция).
+    defaults_from - кортеж TOML-путей, из которых брать fallback-значения,
+                    если ключ отсутствует в основной секции `config_path`.
+                    Порядок задаёт приоритет fallback'ов (раньше — выше).
+                    Локальная секция `config_path` всегда override'нёт shared.
+                    Пример: `defaults_from=("postgres", "embedding")` для
+                    KB-tool/CLI, чьи поля берутся из этих shared-секций.
     """
 
     config_path: str | tuple[str, ...]
     use_cli: bool
+    defaults_from: tuple[str | tuple[str, ...], ...]
 
 
 def _as_submodel(annotation: Any) -> type[BaseModel] | None:
@@ -242,6 +249,7 @@ class BobaFlatSettings(BaseSettings):
         cfg = settings_cls.model_config
         toml_section = cfg.get("config_path")
         cli_enabled = bool(cfg.get("use_cli", False))
+        defaults_from = cfg.get("defaults_from", ())
 
         sources: list[PydanticBaseSettingsSource] = []
         if cli_enabled:
@@ -256,13 +264,33 @@ class BobaFlatSettings(BaseSettings):
 
         sources.append(init_settings)
 
+        # Shared TOML-source — один экземпляр на все adapter'ы, читает
+        # `$BOBA_CONFIG_PATH` по требованию.
+        toml_source = TomlEnvConfigSource()
+
         path = to_config_path(toml_section)
         if path:
             sources.append(
                 ConfigSourcePydanticAdapter(
                     settings_cls,
-                    source=TomlEnvConfigSource(),
+                    source=toml_source,
                     path=path,
                 ),
             )
+
+        # Fallback-секции: каждая дочитывает только те ключи, которых нет
+        # в более приоритетных source'ах. Pydantic-settings мержит state'ы
+        # через deep_update — early-source-wins.
+        for base in defaults_from:
+            base_path = to_config_path(base)
+            if not base_path:
+                continue
+            sources.append(
+                ConfigSourcePydanticAdapter(
+                    settings_cls,
+                    source=toml_source,
+                    path=base_path,
+                ),
+            )
+
         return tuple(sources)
