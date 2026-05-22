@@ -13,11 +13,11 @@ Decoder → Reader), но без Chunker/IndexSink — caller сам решае�
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from typing import Generic, TypeVar
 
 from boba.indexing.context import PipelineContext
-from boba.indexing.decoder import Decoder, PassThroughDecoder
+from boba.indexing.decoder import Decoder
 from boba.indexing.reader import Reader
 from boba.indexing.request import Request, RequestSource
 from boba.indexing.sections import Section
@@ -38,15 +38,17 @@ class RuntimePipeline(Generic[ReqT, T]):
         request_source: RequestSource[ReqT],
         transport: Transport[ReqT],
         reader: Reader[T],
-        decoder: Decoder | None = None,
+        decoders: Sequence[Decoder] = (),
     ) -> None:
         self._request_source = request_source
         self._transport = transport
         self._reader = reader
-        self._decoder = decoder or PassThroughDecoder()
+        self._decoders: tuple[Decoder, ...] = tuple(decoders)
 
     def stream(self, ctx: PipelineContext) -> Iterator[Section[T]]:
         for request in self._request_source.stream(ctx):
             for raw in self._transport.stream(ctx, [request]):
-                decoded = self._decoder.convert(raw)
+                decoded = raw
+                for decoder in self._decoders:
+                    decoded = decoder.convert(decoded)
                 yield from self._reader.convert(decoded)
