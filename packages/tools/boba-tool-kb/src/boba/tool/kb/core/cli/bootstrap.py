@@ -66,7 +66,7 @@ def main() -> int:
 
             # `schema_cfg` грузится здесь же напрямую (BobaFlatSettings
             # самостоятельно читает из env/toml). Этот же конфиг получают
-            # `PostgresVectorStore` и `PostgresKnowledgeBase` через FromConfig
+            # `PostgresChunkStore` и `PostgresKnowledgeBase` через FromConfig
             # в `provide_vector_store` / `provide_knowledge_base` — оба пути
             # дают идентичные значения (источник один). Если разъедутся —
             # bootstrap создаст одни таблицы, store будет ходить в другие.

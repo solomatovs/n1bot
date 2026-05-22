@@ -3,7 +3,8 @@
 Содержит cross-domain код, переиспользуемый всеми доменами (confluence/fts/sql):
 
 - `kb.py`              — `PostgresKnowledgeBase` (главный фасад над pgvector + FTS).
-- `vector_store.py`    — `PostgresVectorStore` (запись chunks + индексы).
+- `chunk_store.py`       — `PostgresChunkStore` (document-уровень: upsert/find).
+- `collections_store.py` — `PostgresCollectionsStore` (collection-CRUD).
 - `providers.py`       — DI-providers (pool, embedder, chunker, reader, kb).
 - `migrations.py`      — bootstrap-loader для SQL-миграций из `core/migrations/`.
 - `postgres_config.py` — `PostgresConnectionConfig` (общий для kb + fts).

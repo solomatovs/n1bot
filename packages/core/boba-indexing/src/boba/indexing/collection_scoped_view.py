@@ -16,6 +16,7 @@ from collections.abc import Iterable, Iterator
 from itertools import islice
 from typing import ClassVar, TypeVar
 
+from boba.indexing.chunk_store import ChunkStore
 from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary, EmbeddedChunk
 from boba.indexing.context import CollectionId
 from boba.indexing.embedder import Embedder
@@ -26,7 +27,6 @@ from boba.indexing.index_views import (
     ReconcileSummary,
     TrackingKeys,
 )
-from boba.indexing.vector_store import VectorStoreReader, VectorStoreWriter
 
 __all__ = ["CollectionScopedView"]
 
@@ -46,18 +46,16 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
 
     DEFAULT_BATCH_SIZE: ClassVar[int] = 100
 
-    def __init__(  # noqa: PLR0913 — orchestrator: store split + embedder + scope
+    def __init__(
         self,
-        store_reader: VectorStoreReader[T],
-        store_writer: VectorStoreWriter[T],
+        store: ChunkStore[T],
         embedder: Embedder[T],
         collection: CollectionId,
         *,
         scope_extra: Filter | None = None,
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> None:
-        self._reader = store_reader
-        self._writer = store_writer
+        self._store = store
         self._embedder = embedder
         self._collection = collection
         self._scope_extra = scope_extra
@@ -74,15 +72,15 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
         limit: int | None = None,
     ) -> Iterable[ChunkSummary[T]]:
         composed = self._compose_filter(where)
-        return self._reader.find(self._collection, where=composed, limit=limit)
+        return self._store.find(self._collection, where=composed, limit=limit)
 
     def clean(self, where: Filter) -> int:
         full = self._compose_filter(where)
         deleted = 0
-        summaries = self._reader.find(self._collection, where=full, limit=None)
+        summaries = self._store.find(self._collection, where=full, limit=None)
         for batch in self._batched(summaries, self._batch_size):
             ids = [s.chunk_id for s in batch]
-            self._writer.delete(self._collection, ids)
+            self._store.delete(self._collection, ids)
             deleted += len(ids)
         return deleted
 
@@ -122,7 +120,7 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
                 changed_ids = [c.chunk_id for c in batch]
                 unchanged_ids: list[ChunkId] = []
             else:
-                diff = self._reader.diff_by_hash(
+                diff = self._store.diff_by_hash(
                     self._collection,
                     [(c.chunk_id, c.content_hash) for c in batch],
                 )
@@ -139,12 +137,12 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
                     EmbeddedChunk.of(c, tuple(e))
                     for c, e in zip(dirty, embeddings, strict=True)
                 ]
-                self._writer.upsert(self._collection, embedded)
+                self._store.upsert(self._collection, embedded)
 
             # heartbeat только для unchanged — для dirty `updated_at = now()`
             # уже выставил upsert в INSERT ... ON CONFLICT.
             if unchanged_ids:
-                self._writer.update_metadata(
+                self._store.update_metadata(
                     self._collection,
                     unchanged_ids,
                     refresh_patch,
@@ -162,13 +160,10 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
 
     def narrow(self, where: Filter) -> CollectionScopedView[T]:
         new_extra: Filter = (
-            And([self._scope_extra, where])
-            if self._scope_extra is not None
-            else where
+            And([self._scope_extra, where]) if self._scope_extra is not None else where
         )
         return CollectionScopedView(
-            store_reader=self._reader,
-            store_writer=self._writer,
+            store=self._store,
             embedder=self._embedder,
             collection=self._collection,
             scope_extra=new_extra,

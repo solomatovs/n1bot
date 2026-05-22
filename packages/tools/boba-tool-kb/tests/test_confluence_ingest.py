@@ -15,8 +15,9 @@ from boba.text import StructuralChunker
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.tools.page_ingest import confluence_page_ingest
 from boba.tool.kb.confluence.tools.space_ingest import confluence_space_ingest
+from boba.tool.kb.core.chunk_store import PostgresChunkStore
+from boba.tool.kb.core.collections_store import PostgresCollectionsStore
 from boba.tool.kb.core.config import KbConfig
-from boba.tool.kb.core.vector_store import PostgresVectorStore
 
 if TYPE_CHECKING:
     from tests.conftest import KbIntegrationTestConfig
@@ -29,7 +30,8 @@ pytestmark = pytest.mark.integration
 def test_confluence_page_ingest_real(  # noqa: PLR0913 — integration test
     kb_cfg: KbConfig,
     confluence_cfg: ConfluenceConnectionConfig,
-    kb_store: PostgresVectorStore,
+    kb_store: PostgresChunkStore,
+    kb_collections_store: PostgresCollectionsStore,
     kb_embedder: OpenAICompatEmbedder,
     kb_chunker: StructuralChunker,
     test_cfg: KbIntegrationTestConfig,
@@ -39,7 +41,8 @@ def test_confluence_page_ingest_real(  # noqa: PLR0913 — integration test
         pytest.skip("test.kb.confluence_page_ids пусто")
 
     result = confluence_page_ingest(
-        store=kb_store,
+        chunk_store=kb_store,
+        collections_store=kb_collections_store,
         embedder=kb_embedder,
         chunker=kb_chunker,
         kb_cfg=kb_cfg,
@@ -56,7 +59,8 @@ def test_confluence_page_ingest_real(  # noqa: PLR0913 — integration test
 def test_confluence_space_ingest_real(  # noqa: PLR0913 — integration test
     kb_cfg: KbConfig,
     confluence_cfg: ConfluenceConnectionConfig,
-    kb_store: PostgresVectorStore,
+    kb_store: PostgresChunkStore,
+    kb_collections_store: PostgresCollectionsStore,
     kb_embedder: OpenAICompatEmbedder,
     kb_chunker: StructuralChunker,
     test_cfg: KbIntegrationTestConfig,
@@ -66,7 +70,8 @@ def test_confluence_space_ingest_real(  # noqa: PLR0913 — integration test
         pytest.skip("test.kb.confluence_space_key пусто")
 
     result = confluence_space_ingest(
-        store=kb_store,
+        chunk_store=kb_store,
+        collections_store=kb_collections_store,
         embedder=kb_embedder,
         chunker=kb_chunker,
         kb_cfg=kb_cfg,

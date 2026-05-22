@@ -3,7 +3,7 @@
 Различные tool'ы (`confluence_space_ingest`, `confluence_page_ingest`)
 делают одно и то же: берут `RequestSource` (по своему типу источника),
 гонят через `HttpTransport` → `ConfluenceJsonDecoder` → `ConfluenceReader`
-→ `StructuralChunker` → `CollectionScopedView` → `PostgresVectorStore`.
+→ `StructuralChunker` → `CollectionScopedView` → `PostgresChunkStore`.
 
 Эта функция инкапсулирует общий хвост — каждый tool сам выбирает
 конкретный `RequestSource` и зовёт `run_confluence_ingest`.
@@ -29,7 +29,8 @@ from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.decoder import ConfluenceJsonDecoder
 from boba.tool.kb.confluence.reader import ConfluenceReader
-from boba.tool.kb.core.vector_store import PostgresVectorStore
+from boba.tool.kb.core.chunk_store import PostgresChunkStore
+from boba.tool.kb.core.collections_store import PostgresCollectionsStore
 from boba.transport.http import HttpRequest
 
 __all__ = ["run_confluence_ingest"]
@@ -39,7 +40,8 @@ def run_confluence_ingest(  # noqa: PLR0913 — keyword-only helper, явный 
     *,
     request_source: RequestSource[HttpRequest],
     conn_cfg: ConfluenceConnectionConfig,
-    store: PostgresVectorStore,
+    chunk_store: PostgresChunkStore,
+    collections_store: PostgresCollectionsStore,
     embedder: Embedder[str],
     chunker: StructuralChunker,
     collection: str,
@@ -57,14 +59,13 @@ def run_confluence_ingest(  # noqa: PLR0913 — keyword-only helper, явный 
     reader = ConfluenceReader()
 
     collection_id = CollectionId(collection)
-    store.ensure_collection(
+    collections_store.ensure_collection(
         collection_id,
         description=collection_description or None,
     )
 
     view: CollectionScopedView[str] = CollectionScopedView(
-        store_reader=store,
-        store_writer=store,
+        store=chunk_store,
         embedder=embedder,
         collection=collection_id,
     )

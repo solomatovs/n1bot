@@ -144,7 +144,7 @@ class RunStarted(PhaseTransition):
 
 @dataclass(frozen=True)
 class BatchStarted(PhaseTransition):
-    """Старт upsert-батча в VectorStore."""
+    """Старт upsert-батча в ChunkStore."""
 
     batch_index: int
     size: int
@@ -286,7 +286,7 @@ class SourceSkippedUnchanged(CompletedItem):
 
 @dataclass(frozen=True)
 class BatchUpserted(CompletedItem):
-    """Батч чанков успешно upsert'нут в VectorStore."""
+    """Батч чанков успешно upsert'нут в ChunkStore."""
 
     batch_index: int
     count: int

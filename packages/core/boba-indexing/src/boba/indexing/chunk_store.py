@@ -1,30 +1,26 @@
-"""VectorStore[T] + CollectionsAdmin — все чистые абстракции работы с векторной базой.
+"""ChunkStore[T] + CollectionsStore — все чистые абстракции хранения чанков.
 
 Две ортогональные оси:
 
-1. Document-уровень — VectorStore[T] (чанки внутри коллекции):
-   - VectorStoreReader[T]: get_by_ids, similarity_search, peek, find, diff_by_hash
-   - VectorStoreWriter[T]: upsert, update_metadata, delete
-   - VectorStore[T]: композиция
+1. Document-уровень — ChunkStore[T] (чанки внутри коллекции):
+   read-side:  get_by_ids, peek, find, diff_by_hash
+   write-side: upsert, update_metadata, delete
 
-2. Collection-уровень — CollectionsAdmin (CRUD над коллекциями целиком):
-   - CollectionsAdminReader: list_collections, collection_info
-   - CollectionsAdminWriter: ensure_collection, delete_collection
-   - CollectionsAdmin: композиция
+2. Collection-уровень — CollectionsStore (CRUD над коллекциями целиком):
+   list_collections, collection_info, ensure_collection, delete_collection
 
 Коллекция идентифицируется явным параметром `collection: CollectionId` в
-каждом методе VectorStore.
+каждом методе ChunkStore.
 
 Один store-instance обслуживает много коллекций.
 
 Pipeline-уровень встраивается отдельной обёрткой - `boba.indexing.chunk_sink.ChunkSink`
 
 Embedder[T] НЕ входит в контракт Store: store принимает уже готовый
-embedding (через `EmbeddedChunk[T]` на write и `Sequence[float]` на
-similarity-search). Embedder инжектится в pipeline-orchestrator
-(`CollectionScopedView`, `NamespacedView` и т.п.).
+embedding через `EmbeddedChunk[T]` на write. Embedder инжектится в
+pipeline-orchestrator (`CollectionScopedView`, `NamespacedView` и т.п.).
 
-Конкретный backend обычно реализует и VectorStore[T], и CollectionsAdmin
+Конкретный backend обычно реализует и ChunkStore[T], и CollectionsStore
 одной сущностью: например ChromaDBClient — единый класс, реализующий оба
 интерфейса.
 """
@@ -32,57 +28,24 @@ similarity-search). Embedder инжектится в pipeline-orchestrator
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from typing import Generic, TypeVar
 
 from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary, EmbeddedChunk
 from boba.indexing.content_hash import ContentHash
 from boba.indexing.context import CollectionId
 from boba.indexing.filter import Filter
-from boba.indexing.metadata import Metadata
 from boba.indexing.sections import SourceId
 
 __all__ = [
+    "ChunkStore",
     "CollectionInfo",
-    "CollectionsAdminReader",
-    "CollectionsAdminWriter",
+    "CollectionsStore",
     "HashDiff",
-    "SearchHit",
-    "VectorStoreReader",
-    "VectorStoreWriter",
 ]
 
 T = TypeVar("T")
-
-
-@dataclass(frozen=True)
-class SearchHit(Generic[T]):
-    """
-    Один результат поиска над `VectorStore[T]`
-
-    Содержит:
-    - `chunk_id`: id найденного чанка, через него можно получить полный
-      `Chunk[T]` через `VectorStoreReader.get_by_ids([chunk_id])`
-
-    - `distance`: метрика proximity к query. Семантика **зависит от backend'а**:
-      у Chroma — squared-L2 / cosine-distance (меньше = ближе);
-      у других провайдеров может быть similarity-score (больше = ближе).
-      Backend документирует свою метрику; единого контракта нет.
-
-    - `snippet`: preview выдержка content'а чанка (тип совпадает с T `VectorStore[T]`)
-      Для T=str — обрезанный/highlighted текст для UI;
-      для T=bytes — thumbnail или сжатый sample.
-      Не обязательно равно полному `Chunk.content` — backend решает что класть.
-
-    - `metadata`: метадата чанка (`source_id`, `anchor`, transport/reader/
-      chunker-keys и т.п.) для отрисовки в UI без re-fetch'а Chunk'а.
-    """
-
-    chunk_id: ChunkId
-    distance: float
-    snippet: T
-    metadata: Metadata = field(default_factory=Metadata.empty)
 
 
 @dataclass(frozen=True)
@@ -115,8 +78,12 @@ class CollectionInfo:
     count: int
 
 
-class VectorStoreReader(ABC, Generic[T]):
-    """Read-side порт: search + inspect документов в коллекции."""
+class ChunkStore(ABC, Generic[T]):
+    """Порт хранения чанков внутри коллекции (read + write).
+
+    Read-side:  get_by_ids, peek, find, diff_by_hash
+    Write-side: upsert, update_metadata, delete
+    """
 
     @abstractmethod
     def get_by_ids(
@@ -125,23 +92,6 @@ class VectorStoreReader(ABC, Generic[T]):
         chunk_ids: Iterable[ChunkId],
     ) -> Iterable[Chunk[T]]:
         """Получить чанки по id из коллекции; пропускает несуществующие."""
-        ...
-
-    @abstractmethod
-    def similarity_search(
-        self,
-        collection: CollectionId,
-        *,
-        query_embedding: Sequence[float],
-        k: int,
-    ) -> Iterable[SearchHit[T]]:
-        """Семантический поиск top-k по уже посчитанному embedding'у запроса.
-
-        Caller отвечает за `Embedder.embed_query(...)` сам: Store не знает
-        про `Embedder` и не делает embedding на read-стороне. Размерность
-        `query_embedding` должна совпадать с embedding'ом коллекции;
-        несовпадение — ошибка backend'а.
-        """
         ...
 
     @abstractmethod
@@ -205,10 +155,6 @@ class VectorStoreReader(ABC, Generic[T]):
         """
         ...
 
-
-class VectorStoreWriter(ABC, Generic[T]):
-    """Write-side порт: upsert/delete документов в коллекции."""
-
     @abstractmethod
     def upsert(
         self,
@@ -266,7 +212,7 @@ class VectorStoreWriter(ABC, Generic[T]):
         ...
 
 
-class CollectionsAdminReader(ABC):
+class CollectionsStore(ABC):
     """Read-side admin: перечисление и инспекция коллекций."""
 
     @abstractmethod
@@ -278,10 +224,6 @@ class CollectionsAdminReader(ABC):
     def collection_info(self, name: CollectionId) -> CollectionInfo:
         """Сводка одной коллекции по имени."""
         ...
-
-
-class CollectionsAdminWriter(ABC):
-    """Write-side admin: создание и удаление коллекций."""
 
     @abstractmethod
     def ensure_collection(

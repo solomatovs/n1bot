@@ -116,6 +116,18 @@ rrf_pool = 40
 chunk_size = 4000
 chunk_overlap = 0
 
+# Схема + имена таблиц KB-хранилища. Один и тот же конфиг получают и
+# bootstrap-CLI (`python -m boba.tool.kb.core.cli.bootstrap` — создаёт
+# таблицы), и runtime-сторона (PostgresVectorStore, PostgresKnowledgeBase
+# — пишут/читают). Если разъедутся — bootstrap создаст одни таблицы,
+# store будет ходить в другие, и запросы упадут на `relation does not
+# exist`. Значения — валидные postgres-идентификаторы (без кавычек,
+# точек, пробелов; ≤ 63 символа).
+[tool.kb.vector_store]
+schema = "public"               # схема, в которой живут таблицы и функция immutable_unaccent
+chunks_table = "kb_chunks"      # таблица чанков (embedding + metadata + tsvector)
+collections_table = "kb_collections"  # каталог коллекций (one row per collection)
+
 # Подключение к Postgres структурированными полями. DSN собирается через
 # `psycopg.conninfo.make_conninfo` — спецсимволы в password не требуют
 # URL-encoding. Пароль обычно из env: BOBA_TOOL__KB__POSTGRES__PASSWORD.

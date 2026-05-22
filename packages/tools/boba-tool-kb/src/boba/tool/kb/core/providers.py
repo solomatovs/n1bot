@@ -13,12 +13,14 @@
 
     VectorStoreSchemaConfig (FromConfig)   # [tool.kb.vector_store]
         │                                  # schema + chunks/collections table
-        ├──> PostgresVectorStore           # WRITE-side: тот же конфиг,
-        └──> PostgresKnowledgeBase         # что у bootstrap-CLI
+        ├──> PostgresChunkStore            # document-уровень (upsert/find/...)
+        ├──> PostgresCollectionsStore      # collection-уровень (ensure/delete)
+        └──> PostgresKnowledgeBase         # hybrid RRF search
 
     KbConfig (FromConfig)
         │
-        ├──> PostgresVectorStore           # уже подцепляет Embedder из DI
+        ├──> PostgresChunkStore            # уже подцепляет Embedder из DI
+        ├──> PostgresCollectionsStore      # collections-CRUD
         ├──> PostgresKnowledgeBase         # hybrid RRF search
         ├──> KbDocReader                   # header + body как одна Section
         ├──> HtmlReader
@@ -57,24 +59,26 @@ from boba.kbdoc import KbDocReader
 from boba.provider.openai import OpenAICompatEmbedder
 from boba.text import OverlapCharSplitter, StructuralChunker
 from boba.text.structural_chunker import SplitterFactory
+from boba.tool.kb.core.chunk_store import PostgresChunkStore
+from boba.tool.kb.core.collections_store import PostgresCollectionsStore
 from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.embedding_config import EmbeddingConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
 from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
-from boba.tool.kb.core.vector_store import PostgresVectorStore
 from boba.tool.kb.core.vector_store_config import VectorStoreSchemaConfig
 from boba.tools import FromConfig, FromDI, Scope, provides
 from boba.transport.fs import FsKeys
 
 __all__ = [
+    "provide_chunk_store",
     "provide_chunker",
+    "provide_collections_store",
     "provide_dispatch_reader",
     "provide_embedder",
     "provide_html_reader",
     "provide_kbdoc_reader",
     "provide_knowledge_base",
     "provide_postgres_pool",
-    "provide_vector_store",
 ]
 
 _DISPATCH_READER_ID: ReaderId = ReaderId("postgres-kb-dispatch")
@@ -131,12 +135,12 @@ def provide_embedder(
 
 
 @provides(scope=Scope.APP)
-def provide_vector_store(
+def provide_chunk_store(
     pool: Annotated[PostgresPool, FromDI(Scope.APP)],
     embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
     schema_cfg: Annotated[VectorStoreSchemaConfig, FromConfig()],
-) -> PostgresVectorStore:
-    """Postgres-бэкэнд VectorStore[str] + CollectionsAdmin.
+) -> PostgresChunkStore:
+    """Postgres-бэкэнд `ChunkStore[str]` (document-уровень).
 
     Store сам про Embedder не знает — это чистый layer хранения. Embedder
     тут только чтобы спросить `dim()` для конфигурации vector-колонки;
@@ -147,9 +151,26 @@ def provide_vector_store(
     bootstrap-CLI; гарантирует, что store ходит в те же таблицы, которые
     создал bootstrap.
     """
-    return PostgresVectorStore(
+    return PostgresChunkStore(
         pool=pool,
         embedding_dim=embedder.dim(),
+        schema_cfg=schema_cfg,
+    )
+
+
+@provides(scope=Scope.APP)
+def provide_collections_store(
+    pool: Annotated[PostgresPool, FromDI(Scope.APP)],
+    schema_cfg: Annotated[VectorStoreSchemaConfig, FromConfig()],
+) -> PostgresCollectionsStore:
+    """Postgres-бэкэнд `CollectionsStore` (collection-уровень CRUD).
+
+    Используется ingest-tool'ами для `ensure_collection(...)` перед
+    запуском pipeline. `schema_cfg` тот же, что у `provide_chunk_store`
+    и bootstrap-CLI.
+    """
+    return PostgresCollectionsStore(
+        pool=pool,
         schema_cfg=schema_cfg,
     )
 
@@ -163,7 +184,7 @@ def provide_knowledge_base(
 ) -> PostgresKnowledgeBase:
     """Read-side KB: гибридный search (vector + FTS, RRF) для `kb_search`.
 
-    `schema_cfg` — тот же, что в `provide_vector_store` и bootstrap-CLI;
+    `schema_cfg` — тот же, что в `provide_chunk_store` и bootstrap-CLI;
     hybrid SQL ходит в `chunks_table` и зовёт `schema.immutable_unaccent`.
     """
     return PostgresKnowledgeBase(

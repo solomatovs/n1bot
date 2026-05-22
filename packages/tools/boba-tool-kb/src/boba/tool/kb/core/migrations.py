@@ -20,7 +20,7 @@ runtime DDL при каждом запуске tool'а. Теперь runtime'у 
                           уникальные при переименовании таблицы.
 
 Значения подставляются из `VectorStoreSchemaConfig` ([tool.kb.vector_store]) —
-тот же конфиг, который потом получают `PostgresVectorStore` и
+тот же конфиг, который потом получают `PostgresChunkStore` и
 `PostgresKnowledgeBase`. Это гарантирует, что bootstrap создаёт таблицы под
 теми же именами, под которыми store будет к ним обращаться в рантайме.
 
@@ -95,7 +95,7 @@ def apply_bootstrap(
         conn: psycopg-совместимый Connection (sync). Будет вызван
             `conn.execute(sql)` для каждого файла.
         schema_cfg: схема + имена таблиц (тот же конфиг, который потом
-            получит `PostgresVectorStore`).
+            получит `PostgresChunkStore`).
     """
     if not _MIGRATIONS_DIR.is_dir():
         msg = f"migrations dir not found: {_MIGRATIONS_DIR}"

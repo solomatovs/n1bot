@@ -11,7 +11,7 @@ LLM-facing wrapper над `StreamingIndexer`. Оператор закрепля�
 - `.html/.htm`  → `HtmlReader` (heading-aware)
 
 Pipeline собирается inline здесь, потому что зависит от per-call
-параметров (cleanup-стратегия). Backend-deps (`PostgresVectorStore`,
+параметров (cleanup-стратегия). Backend-deps (`PostgresChunkStore`,
 `Embedder`, `DispatchReader`, `StructuralChunker`) живут как APP-scope
 синглтоны в [providers.py](providers.py).
 """
@@ -35,8 +35,9 @@ from boba.indexing import (
 from boba.indexing.context import CollectionId, PipelineId
 from boba.indexing.embedder import Embedder
 from boba.text import StructuralChunker
+from boba.tool.kb.core.chunk_store import PostgresChunkStore
+from boba.tool.kb.core.collections_store import PostgresCollectionsStore
 from boba.tool.kb.core.config import KbConfig
-from boba.tool.kb.core.vector_store import PostgresVectorStore
 from boba.tools import FromConfig, FromDI, Scope, tool
 from boba.transport.fs import FsRequest, FsTransport, FsWalkRequestSource
 
@@ -48,7 +49,8 @@ _INCLUDE_PATTERNS: tuple[str, ...] = ("*.md", "*.html", "*.htm")
 
 @tool
 def files_ingest(  # noqa: PLR0913 — tool с явным набором FromDI/FromConfig deps
-    store: Annotated[PostgresVectorStore, FromDI(Scope.APP)],
+    chunk_store: Annotated[PostgresChunkStore, FromDI(Scope.APP)],
+    collections_store: Annotated[PostgresCollectionsStore, FromDI(Scope.APP)],
     embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
     dispatch_reader: Annotated[DispatchReader[str], FromDI(Scope.APP)],
     chunker: Annotated[StructuralChunker, FromDI(Scope.APP)],
@@ -78,14 +80,13 @@ def files_ingest(  # noqa: PLR0913 — tool с явным набором FromDI/
         raise RuntimeError(msg)
 
     collection = CollectionId(cfg.collection)
-    store.ensure_collection(
+    collections_store.ensure_collection(
         collection,
         description=cfg.collection_description or None,
     )
 
     view: CollectionScopedView[str] = CollectionScopedView(
-        store_reader=store,
-        store_writer=store,
+        store=chunk_store,
         embedder=embedder,
         collection=collection,
     )

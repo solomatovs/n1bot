@@ -13,8 +13,9 @@ from boba.tool.kb.confluence._ingest_common import run_confluence_ingest
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.request_sources import ConfluencePagesRequestSource
+from boba.tool.kb.core.chunk_store import PostgresChunkStore
+from boba.tool.kb.core.collections_store import PostgresCollectionsStore
 from boba.tool.kb.core.config import KbConfig
-from boba.tool.kb.core.vector_store import PostgresVectorStore
 from boba.tools import FromConfig, FromDI, Scope, tool
 
 __all__ = ["confluence_page_ingest"]
@@ -24,7 +25,8 @@ _PIPELINE_ID: PipelineId = PipelineId("kb.confluence_page_ingest")
 
 @tool
 def confluence_page_ingest(  # noqa: PLR0913 — tool с явным набором FromDI/FromConfig deps
-    store: Annotated[PostgresVectorStore, FromDI(Scope.APP)],
+    chunk_store: Annotated[PostgresChunkStore, FromDI(Scope.APP)],
+    collections_store: Annotated[PostgresCollectionsStore, FromDI(Scope.APP)],
     embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
     chunker: Annotated[StructuralChunker, FromDI(Scope.APP)],
     kb_cfg: Annotated[KbConfig, FromConfig()],
@@ -63,7 +65,8 @@ def confluence_page_ingest(  # noqa: PLR0913 — tool с явным наборо
     result = run_confluence_ingest(
         request_source=request_source,
         conn_cfg=conn_cfg,
-        store=store,
+        chunk_store=chunk_store,
+        collections_store=collections_store,
         embedder=embedder,
         chunker=chunker,
         collection=kb_cfg.collection,

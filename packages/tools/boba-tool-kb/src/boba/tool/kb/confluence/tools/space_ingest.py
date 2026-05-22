@@ -14,8 +14,9 @@ from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.request_sources import (
     ConfluenceMultiSpaceRequestSource,
 )
+from boba.tool.kb.core.chunk_store import PostgresChunkStore
+from boba.tool.kb.core.collections_store import PostgresCollectionsStore
 from boba.tool.kb.core.config import KbConfig
-from boba.tool.kb.core.vector_store import PostgresVectorStore
 from boba.tools import FromConfig, FromDI, Scope, tool
 
 __all__ = ["confluence_space_ingest"]
@@ -25,7 +26,8 @@ _PIPELINE_ID: PipelineId = PipelineId("kb.confluence_space_ingest")
 
 @tool
 def confluence_space_ingest(  # noqa: PLR0913
-    store: Annotated[PostgresVectorStore, FromDI(Scope.APP)],
+    chunk_store: Annotated[PostgresChunkStore, FromDI(Scope.APP)],
+    collections_store: Annotated[PostgresCollectionsStore, FromDI(Scope.APP)],
     embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
     chunker: Annotated[StructuralChunker, FromDI(Scope.APP)],
     kb_cfg: Annotated[KbConfig, FromConfig()],
@@ -69,7 +71,8 @@ def confluence_space_ingest(  # noqa: PLR0913
     result = run_confluence_ingest(
         request_source=request_source,
         conn_cfg=conn_cfg,
-        store=store,
+        chunk_store=chunk_store,
+        collections_store=collections_store,
         embedder=embedder,
         chunker=chunker,
         collection=kb_cfg.collection,

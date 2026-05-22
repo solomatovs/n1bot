@@ -12,8 +12,7 @@
                           Полезен, когда FTS-канал шумит/мешает (короткие
                           запросы, эмбеддинг лучше ловит синонимы).
 
-В отличие от `PostgresVectorStore.similarity_search` (часть ABC), здесь
-snippet обрезан по `snippet_chars` и метадата нормализована под формат
+Snippet обрезан по `snippet_chars`, метадата нормализована под формат
 tool'ов (тот же shape, что и у `search`).
 """
 
@@ -39,8 +38,8 @@ __all__ = ["PostgresKnowledgeBase"]
 class PostgresKnowledgeBase:
     """Read-only обёртка над postgres-пулом для kb-tools.
 
-    Не реализует ABC `VectorStoreReader` намеренно: для индексатора
-    есть `PostgresVectorStore`, а здесь — application-уровень с
+    Не реализует ABC `ChunkStore` намеренно: для индексатора
+    есть `PostgresChunkStore`, а здесь — application-уровень с
     гибридным поиском, который нужен только tools'у.
     """
 
@@ -95,14 +94,10 @@ class PostgresKnowledgeBase:
 
         `distance` в результате — **отрицательный RRF-скор**: семантика
         «меньше = ближе/релевантнее», как у chromadb-distance. Чистый
-        cosine-distance остаётся доступен через `PostgresVectorStore`.
+        cosine-distance остаётся доступен через `PostgresChunkStore`.
         """
         embedding = list(self._embedder.embed_query(query))
-        # `vector(N)` — pgvector type modifier, N обязан быть литералом
-        # (parse-time-known), параметризовать нельзя. Инлайним dim через
-        # sql.Literal (значение из cfg, не из юзера). chunks_table и
-        # schema — Identifier'ы, тоже подставляются в parse-time-known
-        # позиции (имя таблицы / квалифицированной функции).
+
         query_sql = self._SEARCH_SQL.format(
             dim=sql.Literal(self._embedding_dim),
             chunks_table=self._chunks_table,

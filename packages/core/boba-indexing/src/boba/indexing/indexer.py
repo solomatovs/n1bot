@@ -7,14 +7,14 @@ Request[ReqT] →
                 Section[T] →
                     Chunk[T] →
                         IndexSink.reconcile →
-                            VectorStore[T] + Embedder[T]
+                            ChunkStore[T] + Embedder[T]
 
 За одну сессию запуска `Indexer.stream(ctx, config)` обязан выполнить:
 
 1. отдать `Chunk[T]` в `IndexSink.reconcile()` — он сам решит skip vs upsert
    по idempotency-check'у (через `Chunk.content_hash`, вычисленный Chunker'ом);
 
-2. новые/изменённые → upsert в `VectorStore[T]` + refresh tracking-metadata
+2. новые/изменённые → upsert в `ChunkStore[T]` + refresh tracking-metadata
    автоматически внутри `IndexSink.reconcile`;
 
 3. cleanup в конце прогона через `IndexerConfig.cleanup` (CleanupStrategy).

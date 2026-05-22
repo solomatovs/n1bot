@@ -82,11 +82,11 @@ class ChunkKeys:
 
 @dataclass(frozen=True)
 class Chunk(Generic[T]):
-    """Один кусок индексируемого контента — единица хранения VectorStore.
+    """Один кусок индексируемого контента — единица хранения ChunkStore.
 
     Поля:
 
-    `chunk_id`       — уникальный id чанка в VectorStore. Application-level
+    `chunk_id`       — уникальный id чанка в ChunkStore. Application-level
                        (тот же source/anchor → тот же id из прогона в прогон).
                        Считается `ChunkIdStrategy`.
     `source_id`      — id source-документа, из которого вырезан чанк. Несколько
@@ -121,7 +121,7 @@ class Chunk(Generic[T]):
 
 @dataclass(frozen=True)
 class EmbeddedChunk(Generic[T]):
-    """Insert-ready DTO для `VectorStoreWriter.upsert`.
+    """Insert-ready DTO для `ChunkStore.upsert`.
 
     Композиция `Chunk[T] + embedding`. Все инварианты payload'а (включая
     non-null `content_hash`) уже гарантирует сам `Chunk[T]` — здесь
