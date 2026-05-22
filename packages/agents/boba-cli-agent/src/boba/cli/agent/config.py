@@ -3,8 +3,8 @@
 Источники (priority high → low):
   1. CLI argv:  --model qwen3.5-35b --temperature 0.7 --query "..." ...
   2. init-kwargs (`AgentRunConfig(model="...")`).
-  3. env:       BOBA_CLI__MODEL, BOBA_CLI__TEMPERATURE, ...
-  4. TOML:      секция [cli] в файле $BOBA_CONFIG_PATH.
+  3. env:       BOBA_CLI__AGENT__MODEL, BOBA_CLI__AGENT__TEMPERATURE, ...
+  4. TOML:      секция [cli.agent] в файле $BOBA_CONFIG_PATH.
 """
 
 from __future__ import annotations
@@ -20,13 +20,13 @@ __all__ = ["AgentRunConfig"]
 class AgentRunConfig(BobaFlatSettings):
     """Параметры одного запуска CLI-агента: model + sampling.
 
-    Config-секция: `[cli]` (+ CLI-флаги через `use_cli=True`).
+    Config-секция: `[cli.agent]` (+ CLI-флаги через `use_cli=True`).
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="forbid",
-        config_path="cli",
+        config_path="cli.agent",
         use_cli=True,
     )
 
