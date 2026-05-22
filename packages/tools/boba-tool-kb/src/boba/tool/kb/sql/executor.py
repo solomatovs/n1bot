@@ -1,16 +1,17 @@
-"""`SqlExecutor` — тонкий wrapper над PostgresPool с safety limits.
+"""`SqlExecutorConfig` + `SqlExecutor` — read-only SQL execute с safety limits.
 
-Tool'ы (`sql_query`, `sql_list_tables`, `sql_describe_table`) получают
-`SqlExecutor` через FromDI и используют единый execute-path.
+Tool'ы (`sql_query`, `sql_list_tables`, `sql_describe_table`) принимают
+`SqlExecutorConfig` (composite-BaseModel: connection + safety limits) как
+nested-поле в своих tool-конфигах, и строят `SqlExecutor` inline через
+`cfg.executor.build()`.
 
 Безопасность — только на уровне доступов (DSN-роли) + libpq
-session-параметров, зашитых в DSN через `options=`-параметр (см.
-`SqlConfig.session_options` / `PostgresConnectionConfig.to_dsn`); никакой
+session-параметров, зашитых в DSN через `options=`-параметр; никакой
 интроспекции SQL'я (keyword-валидатора нет, LIMIT не инжектится — LLM
 пишет запрос как считает нужным):
 
-- DSN роль из `[tool.kb.sql]` должна быть read-only (`GRANT SELECT ON ...`).
-  Это **первичный** guard: PG сам отклонит INSERT/DROP/etc.
+- DSN роль должна быть read-only (`GRANT SELECT ON ...`). Это
+  **первичный** guard: PG сам отклонит INSERT/DROP/etc.
 - `default_transaction_read_only=on` (libpq `options=-c ...`) — двойная
   защита поверх прав роли. PG применяет при коннекте, действует на ВСЕ
   транзакции сессии. Блокирует INSERT/UPDATE/DELETE/COPY (DDL типа
@@ -26,11 +27,77 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 from boba.db.postgres import PostgresPool
+from boba.tool.kb.core.postgres_connection import PostgresConnection
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["SqlExecutor", "SqlQueryError", "SqlResult"]
+__all__ = ["SqlExecutor", "SqlExecutorConfig", "SqlQueryError", "SqlResult"]
+
+
+class SqlExecutorConfig(BaseModel):
+    """Composite-конфиг для `SqlExecutor`: connection + safety limits.
+
+    Не settings (нет `config_path`) — встраивается как nested-поле в
+    tool-конфиги `SqlQueryConfig` / `SqlListTablesConfig` /
+    `SqlDescribeTableConfig`. Благодаря рекурсивному flatten'у все поля
+    (host/port/.../max_rows/max_cell_chars/statement_timeout_ms) лежат
+    плоско в корневой TOML-секции tool'а.
+    """
+
+    connection: PostgresConnection
+    max_rows: int = Field(
+        default=100,
+        ge=1,
+        description=(
+            "Жёсткий потолок числа строк в результате `sql_query`. LLM "
+            "может попросить меньше через `row_limit`, но не больше."
+        ),
+    )
+    max_cell_chars: int = Field(
+        default=200,
+        ge=1,
+        description=(
+            "Максимальная длина одного значения cell в markdown-таблице. "
+            "Длинные строки обрезаются до `max_cell_chars` с суффиксом '…'."
+        ),
+    )
+    statement_timeout_ms: int = Field(
+        default=5000,
+        ge=100,
+        description=(
+            "PG statement_timeout (мс) — зашивается в DSN через libpq "
+            "параметр `options='-c statement_timeout=<ms>'`. PG применяет "
+            "при коннекте, действует на ВСЕ statement'ы сессии."
+        ),
+    )
+
+    def session_options(self) -> dict[str, str]:
+        """Session-level GUC, зашиваемые в `options=`-параметр DSN."""
+        return {
+            "default_transaction_read_only": "on",
+            "statement_timeout": str(self.statement_timeout_ms),
+        }
+
+    def build(self) -> SqlExecutor:
+        """Открыть pool (singleton по DSN) и сконструировать `SqlExecutor`.
+
+        Pool не закрывается explicitly — singleton-кэш `PostgresPool.get(...)`
+        живёт до process exit. Без `register_vector` (sql-tools не используют
+        vector-типы).
+        """
+        pool = PostgresPool.get(
+            self.connection.to_pool_config(
+                session_options=self.session_options(),
+            ),
+        )
+        return SqlExecutor(
+            pool=pool,
+            max_rows=self.max_rows,
+            max_cell_chars=self.max_cell_chars,
+        )
 
 
 class SqlQueryError(RuntimeError):
@@ -100,13 +167,11 @@ class SqlExecutor:
         через `cur.fetchmany(effective_limit + 1)` — `LIMIT` в самом
         SQL'е НЕ инжектится (LLM сам пишет LIMIT, если нужно).
 
-        `params` — для параметризованных запросов tool'ами (например,
-        sql_describe_table подставляет имя таблицы через placeholder).
+        `params` — для параметризованных запросов tool'ами.
 
-        DDL/DML отклоняются PG-side: либо `permission denied` от
-        read-only роли, либо `cannot execute X in a read-only transaction`
-        от session-default `default_transaction_read_only=on` (зашит в
-        DSN через libpq `options=`-параметр, см. `SqlConfig.session_options`).
+        DDL/DML отклоняются PG-side: либо `permission denied` от read-only
+        роли, либо `cannot execute X in a read-only transaction` от
+        session-default `default_transaction_read_only=on` (зашит в DSN).
         Ловим как `SqlQueryError`.
         """
         effective_limit = min(max(row_limit, 1), self._max_rows)

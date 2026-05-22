@@ -1,4 +1,4 @@
-"""Tool `sql_describe_table`: схема одной таблицы (имена/типы колонок).
+"""Tool `sql_describe_table` + `SqlDescribeTableConfig`: схема одной таблицы.
 
 LLM зовёт после `sql_list_tables`, чтобы узнать структуру конкретной
 таблицы перед написанием SQL. Возвращает markdown с колонками
@@ -11,15 +11,32 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.core._markdown import format_markdown_table
-from boba.tool.kb.sql.executor import SqlExecutor, SqlQueryError
-from boba.tools import FromDI, Scope, tool
+from boba.tool.kb.sql.executor import SqlExecutorConfig, SqlQueryError
+from boba.tools import FromConfig, tool
 
-__all__ = ["sql_describe_table"]
+__all__ = ["SqlDescribeTableConfig", "sql_describe_table"]
+
+
+class SqlDescribeTableConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `sql_describe_table`.
+
+    Config-секция: `[tool.kb.sql_describe_table]`.
+    """
+
+    model_config = BobaSettingsConfigDict(
+        case_sensitive=False,
+        extra="ignore",
+        config_path="tool.kb.sql_describe_table",
+    )
+
+    executor: SqlExecutorConfig
 
 
 @tool
 def sql_describe_table(
+    cfg: Annotated[SqlDescribeTableConfig, FromConfig()],
     table: Annotated[
         str,
         Field(
@@ -31,7 +48,6 @@ def sql_describe_table(
             ),
         ),
     ],
-    executor: Annotated[SqlExecutor, FromDI(Scope.APP)],
     schema: Annotated[
         str,
         Field(
@@ -47,6 +63,7 @@ def sql_describe_table(
     с таким именем нет (или у роли DSN'а нет прав на её view'у) —
     результат будет пустым.
     """
+    executor = cfg.executor.build()
     query = (
         "SELECT column_name, data_type, is_nullable, column_default "
         "FROM information_schema.columns "

@@ -19,7 +19,6 @@ import httpx
 import markdownify
 
 from boba.indexing import PipelineContext, PipelineId, ReaderKeys, RequestSource
-from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.decoder import ConfluenceJsonDecoder
 from boba.tool.kb.confluence.keys import ConfluenceKeys
@@ -32,13 +31,15 @@ __all__ = ["download_pages"]
 def download_pages(  # noqa: PLR0913 — keyword-only helper, явный набор deps
     *,
     request_source: RequestSource[HttpRequest],
-    cfg: ConfluenceConnectionConfig,
+    conn: ConfluenceConnection,
     shell: ProjectWorkspaceShell,
     dest_dir: str,
     as_markdown: bool,
     pipeline_id: PipelineId,
 ) -> dict[str, Any]:
-    """Скачивает страницы в workspace; формат — HTML (default) или Markdown.
+    """
+    Скачивает страницы в workspace;
+    формат — HTML (default) или Markdown.
 
     Возвращает `{dest_dir, saved: [{page_id,title,url,space_key,path,bytes}], total}`.
     """
@@ -51,8 +52,8 @@ def download_pages(  # noqa: PLR0913 — keyword-only helper, явный наб�
             f"Не удалось создать директорию {dest_dir!r}: {e}",
         ) from e
 
-    transport = ConfluenceConnection.make_transport(cfg)
-    decoder = ConfluenceJsonDecoder(body_format=cfg.body_format)
+    transport = conn.make_transport()
+    decoder = ConfluenceJsonDecoder(body_format=conn.body_format)
     pctx = PipelineContext(pipeline_id=pipeline_id)
 
     saved: list[dict[str, str]] = []

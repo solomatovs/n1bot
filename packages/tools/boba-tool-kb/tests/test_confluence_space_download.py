@@ -1,8 +1,5 @@
-"""Integration `confluence_space_download`: все страницы Confluence space → workspace.
-
-Скипается, если не заполнены `[tool.kb.confluence]` (connection) или
-`[test.kb].confluence_space_key`.
-"""
+"""Integration `confluence_space_download`."""
+# pyright: reportCallIssue=false
 
 from __future__ import annotations
 
@@ -10,8 +7,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
-from boba.tool.kb.confluence.tools.space_download import confluence_space_download
+from boba.tool.kb.confluence.tools.space_download import (
+    ConfluenceSpaceDownloadConfig,
+    confluence_space_download,
+)
 from boba.workspace.contract import ProjectWorkspaceShell
 
 if TYPE_CHECKING:
@@ -21,26 +20,24 @@ pytestmark = pytest.mark.integration
 
 
 def test_confluence_space_download_writes_files(
-    confluence_cfg: ConfluenceConnectionConfig,
+    confluence_space_download_cfg: ConfluenceSpaceDownloadConfig,
     workspace_shell: ProjectWorkspaceShell,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
-    """Скачиваем все страницы реального space-а в workspace, проверяем файлы."""
+    """Скачиваем все страницы реального space в workspace."""
     if not test_cfg.confluence_space_key:
         pytest.skip("test.kb.confluence_space_key пусто")
 
     result = confluence_space_download(
+        cfg=confluence_space_download_cfg,
+        shell=workspace_shell,
         space_key=test_cfg.confluence_space_key,
         dest_dir="space_dl",
-        shell=workspace_shell,
-        cfg=confluence_cfg,
     )
 
     assert result["dest_dir"] == "space_dl"
     assert result["space_key"] == test_cfg.confluence_space_key
-    assert result["total"] >= 1, (
-        f"space {test_cfg.confluence_space_key!r} вернул 0 страниц"
-    )
+    assert result["total"] >= 1
     for item in result["saved"]:
         assert item["path"] == f"space_dl/{item['page_id']}.html"
         assert int(item["bytes"]) > 0
@@ -48,19 +45,19 @@ def test_confluence_space_download_writes_files(
 
 
 def test_confluence_space_download_as_markdown(
-    confluence_cfg: ConfluenceConnectionConfig,
+    confluence_space_download_cfg: ConfluenceSpaceDownloadConfig,
     workspace_shell: ProjectWorkspaceShell,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
-    """`as_markdown=True` для space — пишет `.md` с frontmatter'ом."""
+    """`as_markdown=True` для space — пишет `.md`."""
     if not test_cfg.confluence_space_key:
         pytest.skip("test.kb.confluence_space_key пусто")
 
     result = confluence_space_download(
+        cfg=confluence_space_download_cfg,
+        shell=workspace_shell,
         space_key=test_cfg.confluence_space_key,
         dest_dir="space_dl_md",
-        shell=workspace_shell,
-        cfg=confluence_cfg,
         as_markdown=True,
     )
 

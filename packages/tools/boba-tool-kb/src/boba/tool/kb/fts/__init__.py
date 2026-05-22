@@ -1,28 +1,22 @@
 """Subpackage `fts`: read-only FTS-поиск по одной таблице оператора.
 
 Tools:
-- `fts_search(query, top_k)`  — websearch_to_tsquery по таблице из конфига.
+- `fts_search(query, top_k)` — websearch_to_tsquery по таблице из конфига.
+  Секция `[tool.kb.fts_search]`. Таблица фиксируется `FtsSearchConfig.index`
+  (`IndexSpec`): один whitelist-индекс на tool. LLM таблицу не выбирает.
 
-Таблица задаётся через `FtsConfig.index` (`[tool.kb.fts]`): один `IndexSpec`
-описывает таблицу/колонки/язык. LLM таблицу не выбирает — она pinned
-оператором.
-
-Pool шарится с основной KB через DI-инжекцию `PostgresPool` (см.
-`providers.py`): если `fts.dsn` пуст, используется тот же singleton-Pool,
-что и у kb_search.
+Каждый tool self-contained: connection + index + snippet_options + max_top_k
+прямо в его TOML-секции (через рекурсивный flatten в `BobaFlatSettings`).
 """
 
 from __future__ import annotations
 
-from boba.tool.kb.fts.config import FtsConfig
 from boba.tool.kb.fts.models import FtsHit, IndexSpec
-from boba.tool.kb.fts.providers import provide_fts_kb
-from boba.tool.kb.fts.tools.fts_search import fts_search
+from boba.tool.kb.fts.tools.fts_search import FtsSearchConfig, fts_search
 
 __all__ = [
-    "FtsConfig",
     "FtsHit",
+    "FtsSearchConfig",
     "IndexSpec",
     "fts_search",
-    "provide_fts_kb",
 ]

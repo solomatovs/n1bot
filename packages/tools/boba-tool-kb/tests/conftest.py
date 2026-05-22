@@ -2,25 +2,22 @@
 
 ВСЕ тесты — integration: ходят в реальный postgres, реальный embeddings
 endpoint, реальный Confluence. Параметры конфигурации читаются через
-систему конфигурирования (BobaFlatSettings) из:
+систему конфигурирования (BobaFlatSettings) из соответствующих секций.
 
-- `[tool.kb]`                 → `KbConfig` (RRF / FTS-params / chunker).
-- `[tool.kb.files_ingest]`    → `IngestFilesConfig` (collection + folder + prune).
-- `[tool.kb.confluence_ingest]` → `ConfluenceIngestConfig` (collection).
-- `[tool.kb.search]`          → `SearchConfig` (collections list).
-- `[tool.kb.postgres_store]`  → `PostgresStoreConfig` (connection + schema + tables).
-- `[tool.kb.confluence]`      → `ConfluenceConnectionConfig` (base_url/auth/...).
-- `[tool.kb.embedding]`       → `EmbeddingConfig` (model/base_url/api_key).
-- `[tool.kb.fts]`             → `FtsConfig` (одна whitelist-таблица).
-- `[test.kb]`                 → `KbIntegrationTestConfig` (тестовые параметры:
-                                 page_ids, search-query, space_key, ...).
-
-Каждая конфиг-фикстура skip-ает тест с понятной причиной, если секция
-не сконструировалась (validation failed) — оператор не заполнил секцию.
+Все tools self-contained: каждая фикстура `*_cfg` грузит свой
+tool-конфиг из его TOML-секции (`[tool.kb.<tool_name>]` / sub-section).
+Сервисы (`PostgresChunkStore`, `PostgresKnowledgeBase`, `PgFtsKnowledgeBase`,
+`SqlExecutor`) строятся внутри tool-функций — фикстуры этих сервисов не
+определяются на уровне conftest, потому что они зависят от конкретного
+tool-конфига.
 
 `pytest -m integration` для запуска; default-режим (`-m "not integration"`)
 их исключает (см. root pyproject.toml).
 """
+# pyright: reportCallIssue=false
+# BobaFlatSettings()-вызовы для config-фикстур: pyright не видит, что поля
+# заполняются source-loader'ом из TOML, и считает обязательные аргументы
+# отсутствующими. Это runtime-фича boba.settings — статически не выразимо.
 
 from __future__ import annotations
 
@@ -29,46 +26,33 @@ from pathlib import Path
 
 import httpx
 import pytest
-from openai import OpenAI
 from pydantic import Field, ValidationError
 
-from boba.db.postgres import PostgresPool
-from boba.html import HtmlReader
 from boba.indexing import (
-    ChunkerId,
-    DispatchReader,
-    FixedDigestPrefix,
     PipelineContext,
     PipelineId,
     RawDocument,
-    ReaderId,
-    Sha256TextEncoder,
-    SourceBasedChunkId,
 )
-from boba.kbdoc import KbDocReader
-from boba.provider.openai import OpenAICompatEmbedder
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
-from boba.text import OverlapCharSplitter, StructuralChunker
-from boba.text.structural_chunker import SplitterFactory
-from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.ingest_config import ConfluenceIngestConfig
-from boba.tool.kb.core.config import KbConfig
-from boba.tool.kb.core.embedding_config import EmbeddingConfig
-from boba.tool.kb.core.files_ingest_config import IngestFilesConfig
-from boba.tool.kb.core.kb import PostgresKnowledgeBase
-from boba.tool.kb.core.migrations import apply_bootstrap, ensure_vector_index
-from boba.tool.kb.core.postgres_store import (
-    PostgresChunkStore,
-    PostgresCollectionsStore,
-    PostgresStoreConfig,
+from boba.tool.kb.confluence.tools.cql_ingest import ConfluenceCqlIngestConfig
+from boba.tool.kb.confluence.tools.cql_search import ConfluenceCqlSearchConfig
+from boba.tool.kb.confluence.tools.list_spaces import ConfluenceListSpacesConfig
+from boba.tool.kb.confluence.tools.page_download import (
+    ConfluencePageDownloadConfig,
 )
-from boba.tool.kb.core.search_config import SearchConfig
-from boba.tool.kb.fts.config import FtsConfig
-from boba.tool.kb.fts.db import PgFtsKnowledgeBase
-from boba.tool.kb.sql.config import SqlConfig
-from boba.tool.kb.sql.executor import SqlExecutor
-from boba.transport.fs import FsKeys
+from boba.tool.kb.confluence.tools.page_ingest import ConfluencePageIngestConfig
+from boba.tool.kb.confluence.tools.space_download import (
+    ConfluenceSpaceDownloadConfig,
+)
+from boba.tool.kb.confluence.tools.space_ingest import ConfluenceSpaceIngestConfig
+from boba.tool.kb.core.tools.files_ingest import FilesIngestConfig
+from boba.tool.kb.core.tools.kb_search import KbSearchConfig
+from boba.tool.kb.core.tools.vector_search import VectorSearchConfig
+from boba.tool.kb.fts.tools.fts_search import FtsSearchConfig
+from boba.tool.kb.sql.tools.describe_table import SqlDescribeTableConfig
+from boba.tool.kb.sql.tools.list_tables import SqlListTablesConfig
+from boba.tool.kb.sql.tools.query import SqlQueryConfig
 from boba.transport.http import HttpTransport
 from boba.workspace.contract import WorkspaceId
 
@@ -113,22 +97,19 @@ class KbIntegrationTestConfig(BobaFlatSettings):
     confluence_cql: str = Field(
         default="",
         description=(
-            "Реальный CQL для test_cql_source_returns_pages_for_real_cql. Пусто = skip."
+            "Реальный CQL для test_cql_source_returns_pages_for_real_cql."
         ),
     )
     confluence_search_query: str = Field(
         default="",
         description=(
-            "Plain-text запрос для test_confluence_search "
-            '(оборачивается в CQL `text ~ "..."` внутри tool\'а). Пусто = skip.'
+            "Plain-text запрос для test_confluence_cql_search "
+            "(оборачивается в CQL внутри tool'а). Пусто = skip."
         ),
     )
     confluence_search_space: str = Field(
         default="",
-        description=(
-            "Опциональное `space=` ограничение для test_confluence_search "
-            "(чтобы ограничить выдачу одним space-ом). Пусто = без ограничения."
-        ),
+        description="`space=` ограничение для test_confluence_cql_search.",
     )
 
     fts_query: str = Field(
@@ -138,100 +119,8 @@ class KbIntegrationTestConfig(BobaFlatSettings):
 
 
 # --------------------------------------------------------------------------- #
-# Config-фикстуры (skip-if-not-configured)
+# Config-фикстуры (skip-if-not-configured) — по одной на каждый tool
 # --------------------------------------------------------------------------- #
-
-
-@pytest.fixture
-def kb_cfg() -> KbConfig:
-    """`KbConfig` из `[tool.kb]`; skip при ошибке валидации."""
-    try:
-        return KbConfig()
-    except ValidationError as e:
-        pytest.skip(f"[tool.kb] не сконфигурирован: {e}")
-
-
-@pytest.fixture
-def files_cfg() -> IngestFilesConfig:
-    """`FilesIngestConfig` из `[tool.kb.files]`; skip при ошибке валидации."""
-    try:
-        return IngestFilesConfig()
-    except ValidationError as e:
-        pytest.skip(f"[tool.kb.files] не сконфигурирован: {e}")
-
-
-@pytest.fixture
-def confluence_ingest_cfg() -> ConfluenceIngestConfig:
-    """`ConfluenceIngestConfig` из `[tool.kb.confluence_ingest]`; skip при ошибке."""
-    try:
-        return ConfluenceIngestConfig()
-    except ValidationError as e:
-        pytest.skip(f"[tool.kb.confluence_ingest] не сконфигурирован: {e}")
-
-
-@pytest.fixture
-def search_cfg() -> SearchConfig:
-    """`SearchConfig` из `[tool.kb.search]`; skip при ошибке валидации."""
-    try:
-        return SearchConfig()
-    except ValidationError as e:
-        pytest.skip(f"[tool.kb.search] не сконфигурирован: {e}")
-
-
-@pytest.fixture
-def pg_store_cfg() -> PostgresStoreConfig:
-    """`PostgresStoreConfig` из `[tool.kb.postgres_store]`; skip при ошибке.
-
-    Содержит и `connection` (host/port/...), и schema/имена таблиц. Один
-    конфиг получает и bootstrap (`apply_bootstrap` + `ensure_vector_index`
-    в фикстурах ниже), и runtime-сторона (`PostgresChunkStore` /
-    `PostgresCollectionsStore` / `PostgresKnowledgeBase`) — обе ходят через
-    `cfg.open_pool()` в один singleton-cached pool.
-    """
-    try:
-        return PostgresStoreConfig()  # pyright: ignore[reportCallIssue]
-    except ValidationError as e:
-        pytest.skip(f"[tool.kb.postgres_store] не сконфигурирован: {e}")
-
-
-@pytest.fixture
-def confluence_cfg() -> ConfluenceConnectionConfig:
-    """`ConfluenceConnectionConfig` из `[tool.kb.confluence]`; skip при ошибке."""
-    try:
-        return ConfluenceConnectionConfig()
-    except ValidationError as e:
-        pytest.skip(f"[tool.kb.confluence] не сконфигурирован: {e}")
-
-
-@pytest.fixture
-def embedding_cfg() -> EmbeddingConfig:
-    """`EmbeddingConfig` из `[tool.kb.embedding]`; skip при ошибке."""
-    try:
-        return EmbeddingConfig()
-    except ValidationError as e:
-        pytest.skip(f"[tool.kb.embedding] не сконфигурирован: {e}")
-
-
-@pytest.fixture
-def fts_cfg() -> FtsConfig:
-    """`FtsConfig` из `[tool.kb.fts]`; skip при ошибке.
-
-    `index` — required, грузится из TOML через pydantic-settings; pyright
-    не видит config-source loading и считает аргумент обязательным.
-    """
-    try:
-        return FtsConfig()  # pyright: ignore[reportCallIssue]
-    except ValidationError as e:
-        pytest.skip(f"[tool.kb.fts] не сконфигурирован: {e}")
-
-
-@pytest.fixture
-def sql_cfg() -> SqlConfig:
-    """`SqlConfig` из `[tool.kb.sql]`; skip при ошибке."""
-    try:
-        return SqlConfig()  # pyright: ignore[reportCallIssue]
-    except ValidationError as e:
-        pytest.skip(f"[tool.kb.sql] не сконфигурирован: {e}")
 
 
 @pytest.fixture
@@ -243,199 +132,162 @@ def test_cfg() -> KbIntegrationTestConfig:
         pytest.skip(f"[test.kb] не сконфигурирован: {e}")
 
 
-# --------------------------------------------------------------------------- #
-# Реальные backend-фикстуры
-# --------------------------------------------------------------------------- #
+@pytest.fixture
+def files_ingest_cfg() -> FilesIngestConfig:
+    """`FilesIngestConfig` из `[tool.kb.files_ingest]`."""
+    try:
+        return FilesIngestConfig()
+    except ValidationError as e:
+        pytest.skip(f"[tool.kb.files_ingest] не сконфигурирован: {e}")
 
 
 @pytest.fixture
-def kb_pool(
-    pg_store_cfg: PostgresStoreConfig,
-) -> PostgresPool:
-    """`PostgresPool` из `[tool.kb.postgres_store]` + bootstrap.
-
-    Pool открывается через `cfg.open_pool()` (singleton-cached по DSN +
-    `register_vector` configure-hook). Close НЕ зовём здесь — cache живёт
-    до process exit; повторное использование между тестами.
-
-    Bootstrap-миграция (`apply_bootstrap`) применяется с тем же `cfg`,
-    что и `PostgresChunkStore` в фикстуре `kb_store` ниже — единая точка
-    правды по schema/таблицам.
-    """
-    pool = PostgresChunkStore.open_pool(pg_store_cfg)
-    with pool.connection() as conn:
-        apply_bootstrap(conn, schema_cfg=pg_store_cfg)
-    return pool
+def confluence_space_ingest_cfg() -> ConfluenceSpaceIngestConfig:
+    try:
+        return ConfluenceSpaceIngestConfig()
+    except ValidationError as e:
+        pytest.skip(f"[tool.kb.confluence_ingest.space] не сконфигурирован: {e}")
 
 
 @pytest.fixture
-def kb_embedder(embedding_cfg: EmbeddingConfig) -> OpenAICompatEmbedder:
-    """OpenAI-совместимый embedder для kb_search/files_ingest."""
-    client = OpenAI(
-        base_url=embedding_cfg.base_url or None,
-        api_key=embedding_cfg.api_key or "unused",
-    )
-    return OpenAICompatEmbedder(client=client, model=embedding_cfg.model)
+def confluence_page_ingest_cfg() -> ConfluencePageIngestConfig:
+    try:
+        return ConfluencePageIngestConfig()
+    except ValidationError as e:
+        pytest.skip(f"[tool.kb.confluence_ingest.page] не сконфигурирован: {e}")
 
 
 @pytest.fixture
-def kb_store(
-    kb_pool: PostgresPool,
-    kb_embedder: OpenAICompatEmbedder,
-    pg_store_cfg: PostgresStoreConfig,
-) -> PostgresChunkStore:
-    """Write-side store для ingest-тулов.
-
-    Тесты mimic'ируют операторский bootstrap-шаг (CLI
-    `boba.tool.kb.cli.bootstrap`): `apply_bootstrap` уже отработал
-    в `kb_pool`, здесь добавляется HNSW-индекс под текущий embedder.dim().
-    В runtime store-у схема считается данностью; в тестах мы её строим
-    сами, чтобы fixture-граф не зависел от внешнего CLI-шага. Один и
-    тот же `pg_store_cfg` идёт в bootstrap (`kb_pool`), в
-    `ensure_vector_index` и в сам store — иначе fixture-граф разъедется.
-    """
-    with kb_pool.connection() as conn:
-        ensure_vector_index(
-            conn,
-            dim=kb_embedder.dim(),
-            schema_cfg=pg_store_cfg,
-        )
-    return PostgresChunkStore(cfg=pg_store_cfg)
+def confluence_cql_ingest_cfg() -> ConfluenceCqlIngestConfig:
+    try:
+        return ConfluenceCqlIngestConfig()
+    except ValidationError as e:
+        pytest.skip(f"[tool.kb.confluence_ingest.cql] не сконфигурирован: {e}")
 
 
 @pytest.fixture
-def kb_collections_store(
-    kb_pool: PostgresPool,
-    pg_store_cfg: PostgresStoreConfig,
-) -> PostgresCollectionsStore:
-    """Collections-CRUD store для ingest-тулов (`ensure_collection`).
-
-    Pool тот же, что у `kb_store` — `cfg.open_pool()` singleton по DSN.
-    `kb_pool` фикстура в depend'ах нужна, чтобы `apply_bootstrap` отработал
-    до `ensure_collection` (иначе таблицы ещё нет).
-    """
-    return PostgresCollectionsStore(cfg=pg_store_cfg)
+def kb_search_cfg() -> KbSearchConfig:
+    try:
+        return KbSearchConfig()
+    except ValidationError as e:
+        pytest.skip(f"[tool.kb.kb_search] не сконфигурирован: {e}")
 
 
 @pytest.fixture
-def kb_knowledge_base(
-    kb_cfg: KbConfig,
-    kb_pool: PostgresPool,
-    kb_embedder: OpenAICompatEmbedder,
-    pg_store_cfg: PostgresStoreConfig,
-) -> PostgresKnowledgeBase:
-    """Read-side KB для kb_search (hybrid RRF)."""
-    return PostgresKnowledgeBase(
-        cfg=pg_store_cfg,
-        embedder=kb_embedder,
-        embedding_dim=kb_embedder.dim(),
-        snippet_chars=kb_cfg.snippet_chars,
-        fts_language=kb_cfg.fts_language,
-        rrf_k=kb_cfg.rrf_k,
-        rrf_pool=kb_cfg.rrf_pool,
-    )
+def vector_search_cfg() -> VectorSearchConfig:
+    try:
+        return VectorSearchConfig()
+    except ValidationError as e:
+        pytest.skip(f"[tool.kb.vector_search] не сконфигурирован: {e}")
 
 
 @pytest.fixture
-def kb_dispatch_reader() -> DispatchReader[str]:
-    """DispatchReader для files_ingest: md → KbDocReader, html/htm → HtmlReader."""
-    return DispatchReader(
-        by=FsKeys.SUFFIX,
-        routes={
-            "md": KbDocReader(),
-            "html": HtmlReader(),
-            "htm": HtmlReader(),
-        },
-        reader_id=ReaderId("kb-dispatch"),
-    )
+def fts_search_cfg() -> FtsSearchConfig:
+    try:
+        return FtsSearchConfig()
+    except ValidationError as e:
+        pytest.skip(f"[tool.kb.fts_search] не сконфигурирован: {e}")
 
 
 @pytest.fixture
-def kb_chunker(kb_cfg: KbConfig) -> StructuralChunker:
-    """StructuralChunker с chunk_size/overlap из `[tool.kb]`."""
+def confluence_cql_search_cfg() -> ConfluenceCqlSearchConfig:
+    try:
+        return ConfluenceCqlSearchConfig()
+    except ValidationError as e:
+        pytest.skip(f"[tool.kb.confluence_search.cql] не сконфигурирован: {e}")
 
-    def splitter_factory(extra_overhead: int) -> OverlapCharSplitter:
-        return OverlapCharSplitter(
-            chunk_size=kb_cfg.chunk_size,
-            chunk_overlap=kb_cfg.chunk_overlap,
-            extra_overhead=extra_overhead,
+
+@pytest.fixture
+def confluence_list_spaces_cfg() -> ConfluenceListSpacesConfig:
+    try:
+        return ConfluenceListSpacesConfig()
+    except ValidationError as e:
+        pytest.skip(
+            f"[tool.kb.confluence_search.list_spaces] не сконфигурирован: {e}",
         )
 
-    factory: SplitterFactory = splitter_factory
-    return StructuralChunker(
-        chunker_id=ChunkerId("kb-structural"),
-        splitter_factory=factory,
-        chunk_id_generator=SourceBasedChunkId(
-            encoder=Sha256TextEncoder(),
-            prefix=FixedDigestPrefix(chars=16),
-        ),
-        content_hasher=Sha256TextEncoder(),
-    )
+
+@pytest.fixture
+def confluence_page_download_cfg() -> ConfluencePageDownloadConfig:
+    try:
+        return ConfluencePageDownloadConfig()
+    except ValidationError as e:
+        pytest.skip(f"[tool.kb.confluence_download.page] не сконфигурирован: {e}")
 
 
 @pytest.fixture
-def sql_executor(sql_cfg: SqlConfig) -> SqlExecutor:
-    """`SqlExecutor` поверх своего `PostgresPool` (DSN из `[tool.kb.sql]`).
-
-    Read-only + `statement_timeout` зашиты в DSN через libpq
-    `options=`-параметр (см. `SqlConfig.session_options`). Close НЕ зовём
-    — singleton-cache `PostgresPool.get` живёт до process exit.
-    """
-    pool = PostgresPool.get(sql_cfg.to_pool_config())
-    return SqlExecutor(
-        pool=pool,
-        max_rows=sql_cfg.max_rows,
-        max_cell_chars=sql_cfg.max_cell_chars,
-    )
+def confluence_space_download_cfg() -> ConfluenceSpaceDownloadConfig:
+    try:
+        return ConfluenceSpaceDownloadConfig()
+    except ValidationError as e:
+        pytest.skip(
+            f"[tool.kb.confluence_download.space] не сконфигурирован: {e}",
+        )
 
 
 @pytest.fixture
-def pg_fts_kb(
-    fts_cfg: FtsConfig,
-    kb_pool: PostgresPool,
-) -> PgFtsKnowledgeBase:
-    """`PgFtsKnowledgeBase` поверх kb_pool (DSN-fallback на `[tool.kb.postgres]`)."""
-    return PgFtsKnowledgeBase(
-        pool=kb_pool,
-        index=fts_cfg.index,
-        snippet_options=fts_cfg.snippet_options,
-    )
+def sql_query_cfg() -> SqlQueryConfig:
+    try:
+        return SqlQueryConfig()
+    except ValidationError as e:
+        pytest.skip(f"[tool.kb.sql_query] не сконфигурирован: {e}")
 
 
 @pytest.fixture
-def confluence_auth(confluence_cfg: ConfluenceConnectionConfig) -> httpx.Auth | None:
+def sql_list_tables_cfg() -> SqlListTablesConfig:
+    try:
+        return SqlListTablesConfig()
+    except ValidationError as e:
+        pytest.skip(f"[tool.kb.sql_list_tables] не сконфигурирован: {e}")
+
+
+@pytest.fixture
+def sql_describe_table_cfg() -> SqlDescribeTableConfig:
+    try:
+        return SqlDescribeTableConfig()
+    except ValidationError as e:
+        pytest.skip(f"[tool.kb.sql_describe_table] не сконфигурирован: {e}")
+
+
+# --------------------------------------------------------------------------- #
+# Confluence-инфраструктура для unit-тестов decoder/reader/requests
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def confluence_connection(
+    confluence_page_download_cfg: ConfluencePageDownloadConfig,
+) -> ConfluenceConnection:
+    """`ConfluenceConnection` — берётся из любого confluence-tool-конфига
+    (выбран page_download как минимальный)."""
+    return confluence_page_download_cfg.confluence
+
+
+@pytest.fixture
+def confluence_auth(
+    confluence_connection: ConfluenceConnection,
+) -> httpx.Auth | None:
     """`httpx.Auth | None` (PatAuth | BasicAuth | None для anonymous)."""
-    return ConfluenceConnection.make_auth(confluence_cfg)
+    return confluence_connection.make_auth()
 
 
 @pytest.fixture
 def confluence_transport(
-    confluence_cfg: ConfluenceConnectionConfig,
+    confluence_connection: ConfluenceConnection,
 ) -> HttpTransport:
-    """Real HttpTransport с timeout/ssl_verify из `[tool.kb.confluence]`."""
-    return ConfluenceConnection.make_transport(confluence_cfg)
+    """Real HttpTransport с timeout/ssl_verify."""
+    return confluence_connection.make_transport()
 
 
 @pytest.fixture
 def confluence_raw_doc(
-    confluence_cfg: ConfluenceConnectionConfig,
+    confluence_connection: ConfluenceConnection,
     confluence_auth: httpx.Auth | None,
     confluence_transport: HttpTransport,
-    test_cfg,
+    test_cfg: KbIntegrationTestConfig,
     pipeline_ctx: PipelineContext,
-):
-    """Реальный `RawDocument` с одной страницы Confluence (до декодинга).
-
-    Берёт первый `page_id` из `[test.kb].confluence_page_ids` (по
-    умолчанию cwiki.apache.org "Apache Kafka Index"). Используется
-    тестами `ConfluenceJsonDecoder` — они получают raw REST-JSON в
-    `RawDocument.handle` и проверяют extraction в metadata + handle-rewind.
-
-    Тело httpx-response материализуется в `BytesIO` ещё внутри generator'а
-    transport'а (пока httpx-context открыт) — иначе при выходе из
-    generator'а стрим закрывается, и `decoder.convert(...)` падает с
-    `httpx.StreamClosed`.
-    """
+) -> RawDocument:
+    """Реальный `RawDocument` с одной страницы Confluence (до декодинга)."""
     from io import BytesIO
 
     from boba.tool.kb.confluence.request_sources.pages import (
@@ -447,10 +299,10 @@ def confluence_raw_doc(
 
     page_id = test_cfg.confluence_page_ids[0]
     src = ConfluencePagesRequestSource(
-        base_url=confluence_cfg.base_url,
+        base_url=confluence_connection.base_url,
         auth=confluence_auth,
         page_ids=[page_id],
-        body_format=confluence_cfg.body_format,
+        body_format=confluence_connection.body_format,
     )
     requests = list(src.stream(pipeline_ctx))
     assert len(requests) == 1
@@ -465,27 +317,19 @@ def confluence_raw_doc(
 
 @pytest.fixture
 def confluence_decoded_doc(
-    confluence_cfg: ConfluenceConnectionConfig,
-    confluence_raw_doc,
-):
-    """Реальный `RawDocument` после `ConfluenceJsonDecoder` (HTML + metadata).
-
-    Используется тестами `ConfluenceReader` — они получают HTML-handle
-    с реальной cwiki-страницы и проверяют heading-split / metadata-carry.
-    """
+    confluence_connection: ConfluenceConnection,
+    confluence_raw_doc: RawDocument,
+) -> RawDocument:
+    """Реальный `RawDocument` после `ConfluenceJsonDecoder`."""
     from boba.tool.kb.confluence.decoder import ConfluenceJsonDecoder
 
-    decoder = ConfluenceJsonDecoder(body_format=confluence_cfg.body_format)
+    decoder = ConfluenceJsonDecoder(body_format=confluence_connection.body_format)
     return decoder.convert(confluence_raw_doc)
 
 
 @pytest.fixture
 def workspace_shell(tmp_path: Path):
-    """Real `FsProjectWorkspaceShell` на pytest tmp_path.
-
-    Импорт `boba.agent.workspace_fs` — внутри фикстуры, чтобы не тащить
-    `boba-agent` как обязательную тест-dep при выключенных фикстурах.
-    """
+    """Real `FsProjectWorkspaceShell` на pytest tmp_path."""
     from boba.agent.workspace_fs.shell import FsProjectWorkspaceShell
 
     return FsProjectWorkspaceShell(

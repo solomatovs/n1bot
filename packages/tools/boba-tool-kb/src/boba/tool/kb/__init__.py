@@ -1,159 +1,158 @@
 """boba-tool-kb — плагин: KB-tools поверх postgres+pgvector + Confluence + FTS.
 
-Физическая структура (domain-first, tools/ внутри каждого домена):
+Архитектура **tool-centric**: каждый tool имеет свой self-contained
+конфиг (`BobaFlatSettings` с собственной `config_path`), внутри которого
+лежат все нужные ему базовые `BaseModel`-блоки (connection / tables /
+embedding / chunker / confluence / ...). Сервисы (`PostgresChunkStore`,
+`PostgresKnowledgeBase`, ...) **не публикуются в DI**: каждый tool строит
+их inline через factory-helpers (`open_kb_pool`, `build_embedder`,
+`build_chunker`). Pool singleton'ится по DSN через `PostgresPool.get(...)`,
+поэтому tools с одним и тем же connection делят один pool.
 
-- `core/`           — общая инфраструктура: kb-фасад, vector_store, providers,
-                      migrations, config/models/errors, _markdown helper.
-  - `core/tools/`   — tools, не привязанные к одному внешнему домену:
-                      `kb_search`, `vector_search`, `files_ingest`.
-- `core/cli/`      — операторские CLI-runner'ы (`ingest_files`), не tools.
-- `confluence/`     — Confluence-домен: api_models, auth, connection, decoder,
-                      keys, parse, reader, search_reader, request_sources/,
-                      _download_common, _ingest_common.
-  - `confluence/tools/` — `confluence_search`, `confluence_list_spaces`,
-                          `confluence_page_download`, `confluence_space_download`,
-                          `confluence_page_ingest`, `confluence_space_ingest`.
-  - `confluence/cli/`   — операторские CLI-runner'ы (`ingest_all_spaces`).
-- `fts/`            — FTS-инфра: db, models, providers, config.
-  - `fts/tools/`    — `fts_search`.
-- `sql/`            — ad-hoc SQL-инфра: executor, providers, config.
-  - `sql/tools/`    — `sql_query` (`query.py`), `sql_list_tables`, `sql_describe_table`.
+Базовые `BaseModel`-блоки (переиспользуемые во всех tool-конфигах):
+- `PostgresConnection`      — host/port/user/.../pool_*/connect_timeout_sec.
+- `PostgresStoreSchema`     — schema/chunks_table/collections_table/batch_size.
+- `EmbeddingModel`          — endpoint/api_key/model (OpenAI-совместимый).
+- `ChunkerParams`           — chunk_size/chunk_overlap.
+- `ConfluenceConnection`    — base_url/auth_*/timeout/ssl/body_format.
+- `IndexSpec`               — whitelist-таблица для FTS-поиска.
+- `PostgresStoreConfig`     — composite (connection + tables) для KB-store.
+- `PostgresKnowledgeBaseConfig` — composite (connection + tables + embedding
+                                   + RRF/FTS-params) для KB read-side.
 
-Tools по назначению (что LLM реально вызывает):
+Tools (что LLM реально вызывает) — каждый со своей TOML-секцией:
 
-**Ingest** (наполнение нашей KB → `kb_chunks`; files и confluence пишут
-в разные коллекции, чтобы операторская FS-индексация и автоматический
-Confluence-ingest не перемешивались):
-- `files_ingest`            — FS-папка → `[tool.kb.files].collection`.
-- `confluence_space_ingest` — N spaces → `[tool.kb.confluence_ingest].collection`.
-- `confluence_page_ingest`  — page_ids → `[tool.kb.confluence_ingest].collection`.
+**Ingest** (наполнение `kb_chunks`):
+- `files_ingest`            → `[tool.kb.files_ingest]`
+- `confluence_space_ingest` → `[tool.kb.confluence_ingest.space]`
+- `confluence_page_ingest`  → `[tool.kb.confluence_ingest.page]`
+- `confluence_cql_ingest`   → `[tool.kb.confluence_ingest.cql]`
 
-**Search** (read-only):
-- `kb_search`               — hybrid (RRF) по `[tool.kb.search].collections`.
-- `vector_search`           — pure vector по `[tool.kb.search].collections`.
-- `fts_search`              — pure FTS по таблице из `[tool.kb.fts].index`.
-- `confluence_search`       — online CQL по реальному Confluence.
-- `confluence_list_spaces`  — list of spaces (markdown). Помогает LLM с space_keys.
+**Search**:
+- `kb_search`               → `[tool.kb.kb_search]`
+- `vector_search`           → `[tool.kb.vector_search]`
+- `fts_search`              → `[tool.kb.fts_search]`
+- `confluence_cql_search`   → `[tool.kb.confluence_search.cql]`
+- `confluence_list_spaces`  → `[tool.kb.confluence_search.list_spaces]`
 
-**Confluence work** (online + workspace):
-- `confluence_page_download(page_ids, dest_dir, as_markdown=False)`
-- `confluence_space_download(space_key, dest_dir, as_markdown=False)`
+**Download** (Confluence → workspace):
+- `confluence_page_download`  → `[tool.kb.confluence_download.page]`
+- `confluence_space_download` → `[tool.kb.confluence_download.space]`
 
 **SQL** (ad-hoc read-only):
-- `sql_list_tables(schema=None)`       — таблицы/view роли DSN.
-- `sql_describe_table(table, schema)`  — колонки/типы.
-- `sql_query(query, row_limit=20)`     — произвольный SELECT → markdown table.
+- `sql_query`               → `[tool.kb.sql_query]`
+- `sql_list_tables`         → `[tool.kb.sql_list_tables]`
+- `sql_describe_table`      → `[tool.kb.sql_describe_table]`
 
-**Конфиг-секции:**
-- `[tool.kb]`                 → `KbConfig` (RRF / FTS-params / chunker).
-- `[tool.kb.files_ingest]`    → `IngestFilesConfig` (collection + folder + prune).
-- `[tool.kb.confluence_ingest]` → `ConfluenceIngestConfig` (collection).
-- `[tool.kb.search]`          → `SearchConfig` (collections list).
-- `[tool.kb.postgres_store]`  → `PostgresStoreConfig` (schema + tables + nested
-                                 `connection` под-секция: host/port/user/...).
-- `[tool.kb.confluence]`      → `ConfluenceConnectionConfig` (base_url/auth/...).
-- `[tool.kb.embedding]`       → `EmbeddingConfig` (model/base_url/api_key).
-- `[tool.kb.fts]`             → `FtsConfig` (whitelist-таблица для fts_search).
-- `[tool.kb.sql]`             → `SqlConfig` (read-only DSN + safety-limits).
+**CLI runners** (не tool'ы, операторские скрипты):
+- `cli/bootstrap`               — миграции + HNSW-индекс (`[tool.kb.bootstrap]`).
+- `cli/files_ingest`            — wrapper над `files_ingest`.
+- `cli/ingest_confluence_spaces` — bulk-discovery + per-space ingest.
 
-Плагин-уровневое включение — через `[tool.kb].enable` + `[tool.kb].tools`
-allowlist (PluginConfigBase). Connection-конфиги (postgres_store/confluence)
-загружаются framework'ом лениво — только если в allowlist есть хоть один
-tool, использующий их через FromConfig.
-
-Pipeline-граф:
-- `PostgresStoreConfig.open_pool()` → `PostgresPool.get(...)` с
-  `register_vector`-hook'ом, singleton-cached по DSN. Store-ы и KB сами
-  открывают pool — pool-граф следует за конфигом, а не за DI. Схема БД
-  (миграции + HNSW-индекс) — отдельный операторский шаг через CLI
-  `boba.tool.kb.cli.bootstrap`; runtime DDL не делает.
-- `PostgresPool` шарится между kb_search и fts_search (DSN-fallback в FtsConfig).
-- Ingest-tools собирают `StreamingIndexer` inline:
-  - FS:        `FsWalkRequestSource` + `FsTransport` + `DispatchReader` (md/html).
-  - Confluence: `{Pages|Space}RequestSource` + `HttpTransport` +
-                `decoders=[ConfluenceJsonDecoder]` + `ConfluenceReader`.
-- Download-tools пишут в `ProjectWorkspaceShell`; формат HTML/Markdown
-  выбирается параметром `as_markdown` (через `markdownify`, ATX-заголовки).
+DI остаётся только для stateless `DispatchReader[str]` / `KbDocReader` /
+`HtmlReader` — они шарятся ingest-tool'ами без зависимости от конфигов.
 """
 
 from __future__ import annotations
 
-from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
-from boba.tool.kb.confluence.ingest_config import ConfluenceIngestConfig
-from boba.tool.kb.confluence.tools.list_spaces import confluence_list_spaces
-from boba.tool.kb.confluence.tools.page_download import confluence_page_download
-from boba.tool.kb.confluence.tools.page_ingest import confluence_page_ingest
-from boba.tool.kb.confluence.tools.search import confluence_search
-from boba.tool.kb.confluence.tools.space_download import confluence_space_download
-from boba.tool.kb.confluence.tools.space_ingest import confluence_space_ingest
-from boba.tool.kb.core.config import KbConfig
-from boba.tool.kb.core.embedding_config import EmbeddingConfig
-from boba.tool.kb.core.files_ingest_config import IngestFilesConfig
-from boba.tool.kb.core.kb import PostgresKnowledgeBase
+from boba.tool.kb.confluence.connection import ConfluenceConnection
+from boba.tool.kb.confluence.tools.cql_ingest import (
+    ConfluenceCqlIngestConfig,
+    confluence_cql_ingest,
+)
+from boba.tool.kb.confluence.tools.cql_search import (
+    ConfluenceCqlSearchConfig,
+    confluence_cql_search,
+)
+from boba.tool.kb.confluence.tools.list_spaces import (
+    ConfluenceListSpacesConfig,
+    confluence_list_spaces,
+)
+from boba.tool.kb.confluence.tools.page_download import (
+    ConfluencePageDownloadConfig,
+    confluence_page_download,
+)
+from boba.tool.kb.confluence.tools.page_ingest import (
+    ConfluencePageIngestConfig,
+    confluence_page_ingest,
+)
+from boba.tool.kb.confluence.tools.space_download import (
+    ConfluenceSpaceDownloadConfig,
+    confluence_space_download,
+)
+from boba.tool.kb.confluence.tools.space_ingest import (
+    ConfluenceSpaceIngestConfig,
+    confluence_space_ingest,
+)
+from boba.tool.kb.core.chunker_params import ChunkerParams
+from boba.tool.kb.core.embedding_model import EmbeddingModel
+from boba.tool.kb.core.kb import PostgresKnowledgeBase, PostgresKnowledgeBaseConfig
+from boba.tool.kb.core.postgres_connection import PostgresConnection
 from boba.tool.kb.core.postgres_store import (
     PostgresChunkStore,
     PostgresCollectionsStore,
-    PostgresConnectionConfig,
     PostgresStoreConfig,
 )
+from boba.tool.kb.core.postgres_store_schema import PostgresStoreSchema
 from boba.tool.kb.core.providers import (
-    provide_chunk_store,
-    provide_chunker,
-    provide_collections_store,
     provide_dispatch_reader,
-    provide_embedder,
     provide_html_reader,
     provide_kbdoc_reader,
-    provide_knowledge_base,
-    provide_postgres_pool,
 )
-from boba.tool.kb.core.search_config import SearchConfig
-from boba.tool.kb.core.tools.ingest_files import ingest_files
-from boba.tool.kb.core.tools.kb_search import kb_search
-from boba.tool.kb.core.tools.vector_search import vector_search
-from boba.tool.kb.fts.config import FtsConfig
-from boba.tool.kb.fts.providers import provide_fts_kb
-from boba.tool.kb.fts.tools.fts_search import fts_search
-from boba.tool.kb.sql.config import SqlConfig
-from boba.tool.kb.sql.providers import provide_sql_executor
-from boba.tool.kb.sql.tools.describe_table import sql_describe_table
-from boba.tool.kb.sql.tools.list_tables import sql_list_tables
-from boba.tool.kb.sql.tools.query import sql_query
+from boba.tool.kb.core.tools.files_ingest import FilesIngestConfig, files_ingest
+from boba.tool.kb.core.tools.kb_search import KbSearchConfig, kb_search
+from boba.tool.kb.core.tools.vector_search import VectorSearchConfig, vector_search
+from boba.tool.kb.fts.models import IndexSpec
+from boba.tool.kb.fts.tools.fts_search import FtsSearchConfig, fts_search
+from boba.tool.kb.sql.executor import SqlExecutor, SqlExecutorConfig
+from boba.tool.kb.sql.tools.describe_table import (
+    SqlDescribeTableConfig,
+    sql_describe_table,
+)
+from boba.tool.kb.sql.tools.list_tables import SqlListTablesConfig, sql_list_tables
+from boba.tool.kb.sql.tools.query import SqlQueryConfig, sql_query
 
 __all__ = [
-    "ConfluenceConnectionConfig",
-    "ConfluenceIngestConfig",
-    "EmbeddingConfig",
-    "FtsConfig",
-    "IngestFilesConfig",
-    "KbConfig",
+    "ChunkerParams",
+    "ConfluenceConnection",
+    "ConfluenceCqlIngestConfig",
+    "ConfluenceCqlSearchConfig",
+    "ConfluenceListSpacesConfig",
+    "ConfluencePageDownloadConfig",
+    "ConfluencePageIngestConfig",
+    "ConfluenceSpaceDownloadConfig",
+    "ConfluenceSpaceIngestConfig",
+    "EmbeddingModel",
+    "FilesIngestConfig",
+    "FtsSearchConfig",
+    "IndexSpec",
+    "KbSearchConfig",
     "PostgresChunkStore",
     "PostgresCollectionsStore",
-    "PostgresConnectionConfig",
+    "PostgresConnection",
     "PostgresKnowledgeBase",
+    "PostgresKnowledgeBaseConfig",
     "PostgresStoreConfig",
-    "SearchConfig",
-    "SqlConfig",
+    "PostgresStoreSchema",
+    "SqlDescribeTableConfig",
+    "SqlExecutor",
+    "SqlExecutorConfig",
+    "SqlListTablesConfig",
+    "SqlQueryConfig",
+    "VectorSearchConfig",
+    "confluence_cql_ingest",
+    "confluence_cql_search",
     "confluence_list_spaces",
     "confluence_page_download",
     "confluence_page_ingest",
-    "confluence_search",
     "confluence_space_download",
     "confluence_space_ingest",
+    "files_ingest",
     "fts_search",
-    "ingest_files",
     "kb_search",
-    "provide_chunk_store",
-    "provide_chunker",
-    "provide_collections_store",
     "provide_dispatch_reader",
-    "provide_embedder",
-    "provide_fts_kb",
     "provide_html_reader",
     "provide_kbdoc_reader",
-    "provide_knowledge_base",
-    "provide_postgres_pool",
-    "provide_sql_executor",
     "sql_describe_table",
     "sql_list_tables",
     "sql_query",

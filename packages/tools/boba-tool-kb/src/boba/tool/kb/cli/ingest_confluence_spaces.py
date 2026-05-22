@@ -1,17 +1,18 @@
-"""
-CLI-runner: индексация Confluence-space'ов в KB.
+"""CLI-runner: bulk-ingest Confluence-space'ов в KB через `confluence_space_ingest`.
+
+Обёртка над одноимённым tool'ом: discovery всех spaces через
+`confluence_discover_spaces` (или `--only`-override) и per-space loop с
+агрегированными метриками.
 
 Применение:
-    BOBA_CONFIG_PATH=./local/config.toml \
-        .venv/bin/python -m boba.tool.kb.cli.ingest_all_spaces
+    BOBA_CONFIG_PATH=./local/config.toml \\
+        .venv/bin/python -m boba.tool.kb.cli.ingest_confluence_spaces
 
-Опции:
+Опции (CLI-флаги через `use_cli=True`):
     --type {global|personal|any}  фильтр по типу space (default: global)
     --only KEY1,KEY2,...          ингестить только эти space-ключи (skip discovery)
     --skip KEY1,KEY2,...          пропустить эти space-ключи
-    --dry-run                     только discover и распечатать список — без ingest
-    --prune                       FullCleanup в каждой коллекции (по умолчанию off)
-
+    --prune                       prune_missing=True для каждого space
 """
 
 from __future__ import annotations
@@ -25,28 +26,23 @@ from dishka.entities.component import Component
 from pydantic import Field
 
 from boba.agent import AgentBuilder
-from boba.indexing.embedder import Embedder
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
-from boba.text import StructuralChunker
-from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
-from boba.tool.kb.confluence.ingest_config import ConfluenceIngestConfig
 from boba.tool.kb.confluence.request_sources._common import (
     confluence_discover_spaces,
 )
-from boba.tool.kb.confluence.tools.space_ingest import confluence_space_ingest
-from boba.tool.kb.core import providers as kb_providers
-from boba.tool.kb.core.postgres_store import (
-    PostgresChunkStore,
-    PostgresCollectionsStore,
+from boba.tool.kb.confluence.tools.space_ingest import (
+    ConfluenceSpaceIngestConfig,
+    confluence_space_ingest,
 )
+from boba.tool.kb.core import providers as kb_providers
 
 __all__ = ["IngestAllSpacesConfig", "main"]
 
-logger = logging.getLogger("boba.tool.kb.cli.ingest_all_spaces")
+logger = logging.getLogger("boba.tool.kb.cli.ingest_confluence_spaces")
 
 
 class IngestAllSpacesConfig(BobaFlatSettings):
-    """CLI-аргументы для `ingest_all_spaces`-runner'а.
+    """CLI-аргументы для bulk-ingest runner'а.
 
     Config-секция: `[tool.kb.ingest_all_spaces]` (+ CLI-флаги через `use_cli=True`).
     """
@@ -95,20 +91,28 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    args = IngestAllSpacesConfig()
+    args = IngestAllSpacesConfig()  # pyright: ignore[reportCallIssue]
 
     builder = AgentBuilder().use_plugin(kb_providers)
     container = builder.di.build_container()
-    conn_cfg = ConfluenceConnectionConfig()
 
     try:
         with container() as req:
+            ingest_cfg = req.get(
+                ConfluenceSpaceIngestConfig,
+                component=_KB_COMPONENT,
+            )
+
             if args.only:
                 logger.info("using --only override: %d space-keys", len(args.only))
                 keys: Iterator[str] = iter(args.only)
             else:
                 logger.info("discovering spaces (type=%s)…", args.space_type)
-                keys = iter(confluence_discover_spaces(conn_cfg, args.space_type))
+                keys = iter(
+                    confluence_discover_spaces(
+                        ingest_cfg.confluence, args.space_type,
+                    ),
+                )
 
             skip_set = set(args.skip)
             if skip_set:
@@ -118,19 +122,6 @@ def main() -> int:
                     sorted(skip_set),
                 )
                 keys = (k for k in keys if k not in skip_set)
-
-            # Resolve heavy KB-deps из DI
-            ingest_cfg = req.get(
-                ConfluenceIngestConfig,
-                component=_KB_COMPONENT,
-            )
-            chunk_store = req.get(PostgresChunkStore, component=_KB_COMPONENT)
-            collections_store = req.get(
-                PostgresCollectionsStore,
-                component=_KB_COMPONENT,
-            )
-            embedder = req.get(Embedder[str], component=_KB_COMPONENT)
-            chunker = req.get(StructuralChunker, component=_KB_COMPONENT)
 
             # Per-space loop (streaming, без материализации списка)
             totals = {
@@ -146,12 +137,7 @@ def main() -> int:
                 space_start = time.monotonic()
                 try:
                     result: dict[str, Any] = confluence_space_ingest(
-                        chunk_store=chunk_store,
-                        collections_store=collections_store,
-                        embedder=embedder,
-                        chunker=chunker,
-                        ingest_cfg=ingest_cfg,
-                        conn_cfg=conn_cfg,
+                        cfg=ingest_cfg,
                         space_keys=[key],
                         prune_missing=args.prune,
                     )

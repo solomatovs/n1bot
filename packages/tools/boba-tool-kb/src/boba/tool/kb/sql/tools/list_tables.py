@@ -1,4 +1,4 @@
-"""Tool `sql_list_tables`: список таблиц (информация из `information_schema`).
+"""Tool `sql_list_tables` + `SqlListTablesConfig`: список таблиц.
 
 Помогает LLM понять, что лежит в БД, прежде чем писать SQL. Возвращает
 markdown-таблицу `{schema, table, kind}` для всех таблиц/view, к которым
@@ -15,16 +15,31 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.core._markdown import format_markdown_table
-from boba.tool.kb.sql.executor import SqlExecutor, SqlQueryError
-from boba.tools import FromDI, Scope, tool
+from boba.tool.kb.sql.executor import SqlExecutorConfig, SqlQueryError
+from boba.tools import FromConfig, tool
 
-__all__ = ["sql_list_tables"]
+__all__ = ["SqlListTablesConfig", "sql_list_tables"]
+
+
+class SqlListTablesConfig(BobaFlatSettings):
+    """
+    sql_list_tables config
+    """
+
+    model_config = BobaSettingsConfigDict(
+        case_sensitive=False,
+        extra="ignore",
+        config_path="tool.kb.sql_list_tables",
+    )
+
+    executor: SqlExecutorConfig
 
 
 @tool
 def sql_list_tables(
-    executor: Annotated[SqlExecutor, FromDI(Scope.APP)],
+    cfg: Annotated[SqlListTablesConfig, FromConfig()],
     schema: Annotated[
         str | None,
         Field(
@@ -35,12 +50,13 @@ def sql_list_tables(
         ),
     ] = None,
 ) -> dict[str, Any]:
-    """Список таблиц/view, к которым у роли DSN'а есть SELECT-права.
-
-    Возвращает markdown с колонками `schema, table, kind` (BASE TABLE /
-    VIEW / MATERIALIZED VIEW). LLM использует это, чтобы выбрать,
-    что вызвать в `sql_describe_table` и затем `sql_query`.
     """
+    Список таблиц/view
+
+    Возвращает markdown с колонками:
+    `schema, table, kind` (BASE TABLE / VIEW / MATERIALIZED VIEW)
+    """
+    executor = cfg.executor.build()
     if schema:
         query = (
             "SELECT table_schema AS schema, table_name AS table, "
@@ -64,7 +80,7 @@ def sql_list_tables(
         params = ("pg_%",)
 
     # row_limit здесь = max_rows: introspection-tool обычно показывает «всё»
-    # в пределах общего safety-капа из [tool.kb.sql].max_rows.
+    # в пределах общего safety-капа.
     try:
         result = executor.execute(
             query, row_limit=executor.max_rows_cap, params=params,
