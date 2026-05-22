@@ -91,24 +91,33 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
         time_at_least: float,
         force: bool = False,
     ) -> ReconcileSummary:
+        """
+        Выполняет merge переданных chunk с теми, что уже содержаться с базе
+        """
         total = 0
         upserted = 0
         unchanged = 0
 
+        # время pipeline обновления
+        # используется для FullCleanup/IncrementalCleanup стратегий
+        # boba/indexing/cleanup.py
         refresh_patch: dict[str, str | int | float | bool] = {
             TrackingKeys.UPDATED_AT: float(time_at_least),
         }
 
         for batch in self._batched(chunks, self._batch_size):
             if force:
-                dirty = batch
-                batch_unchanged = 0
+                changed = batch
+                unchanged = 0
             else:
-                dirty, batch_unchanged = self._partition_dirty(batch)
+                changed, unchanged = self._split_changed_and_unchanged(batch)
 
-            if dirty:
-                self._writer.upsert(self._collection, dirty)
+            if changed:
+                self._writer.upsert(self._collection, changed)
 
+            # в каждый чанкт, даже тот у которого небыло обновлено содержимое
+            # записываеся время прохода pipeline'а - TrackingKeys.UPDATED_AT
+            # это необходимо для выполнения IncrementalCleanup
             self._writer.update_metadata(
                 self._collection,
                 [c.chunk_id for c in batch],
@@ -116,8 +125,8 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
             )
 
             total += len(batch)
-            upserted += len(dirty)
-            unchanged += batch_unchanged
+            upserted += len(changed)
+            unchanged += unchanged
 
         return ReconcileSummary(
             total=total,
@@ -152,7 +161,7 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
             return parts[0]
         return And(parts)
 
-    def _partition_dirty(
+    def _split_changed_and_unchanged(
         self,
         chunks: list[Chunk[T]],
     ) -> tuple[list[Chunk[T]], int]:

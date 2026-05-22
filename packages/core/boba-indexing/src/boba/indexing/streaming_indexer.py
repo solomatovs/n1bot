@@ -183,6 +183,9 @@ class StreamingIndexer(Indexer[ReqT, T]):
         поэтому никакого scope-narrow перед reconcile делать не нужно.
         """
         try:
+            # запускаю обновление chunk'ов
+            # run_start передается как время текущего прохода pipeline'а
+            # и позволяет выполнять инкрементальное обновление
             summary = self._sink.reconcile(
                 chunks=self._chunks_stream(ctx, request, config),
                 time_at_least=run_start,

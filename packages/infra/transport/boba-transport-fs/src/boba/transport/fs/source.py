@@ -105,11 +105,9 @@ class FsWalkRequestSource(RequestSource[FsRequest]):
             p = Path(path)
             yield FsRequest(
                 path=str(p),
-                source_id=SourceId(f"fs:{p.resolve()}"),
+                source_id=SourceId(f"fs:{path}"),
                 metadata=(
-                    Metadata.empty()
-                    .set(FsKeys.PATH, str(p))
-                    .set(FsKeys.NAME, p.name)
+                    Metadata.empty().set(FsKeys.PATH, str(p)).set(FsKeys.NAME, p.name)
                 ),
             )
 

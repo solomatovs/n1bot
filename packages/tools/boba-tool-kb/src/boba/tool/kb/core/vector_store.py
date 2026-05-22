@@ -67,6 +67,7 @@ from boba.indexing.vector_store import (
     VectorStoreReader,
     VectorStoreWriter,
 )
+
 logger = logging.getLogger(__name__)
 
 __all__ = ["PostgresVectorStore"]
@@ -289,10 +290,11 @@ class PostgresVectorStore(
                 )
             with (
                 self._pool.connection() as conn,
-                conn.transaction(), conn.cursor() as cur,
+                conn.transaction(),
+                conn.cursor() as cur,
             ):
-                    cur.executemany(
-                        """
+                cur.executemany(
+                    """
                         INSERT INTO kb_chunks (
                             chunk_id, collection, source_id, chunk_index,
                             content_hash, raw_content, format_content,
@@ -314,8 +316,8 @@ class PostgresVectorStore(
                             tags           = EXCLUDED.tags,
                             updated_at     = now()
                         """,
-                        rows,
-                    )
+                    rows,
+                )
 
     def delete(
         self,
@@ -444,7 +446,8 @@ class PostgresVectorStore(
     def delete_collection(self, name: CollectionId) -> None:
         with (
             self._pool.connection() as conn,
-            conn.transaction(), conn.cursor() as cur,
+            conn.transaction(),
+            conn.cursor() as cur,
         ):
             cur.execute(
                 "DELETE FROM kb_chunks WHERE collection = %s",
