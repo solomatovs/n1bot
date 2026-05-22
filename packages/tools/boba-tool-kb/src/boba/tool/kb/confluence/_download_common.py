@@ -1,4 +1,4 @@
-"""Общая запись Confluence-страниц в workspace для `confluence_*_download`-тулов.
+"""Общая запись Confluence-страниц на ФС для `confluence_*_download`-тулов.
 
 `confluence_page_download` (явный список page_ids) и
 `confluence_space_download` (весь space через discovery) делают одно и
@@ -13,6 +13,7 @@ Caller (tool-обёртка) собирает `RequestSource` (Pages|Space|Cql) 
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -23,33 +24,30 @@ from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.decoder import ConfluenceJsonDecoder
 from boba.tool.kb.confluence.keys import ConfluenceKeys
 from boba.transport.http import HttpRequest
-from boba.workspace.contract import ProjectWorkspaceShell, WorkspaceError
 
 __all__ = ["download_pages"]
 
 
-def download_pages(  # noqa: PLR0913 — keyword-only helper, явный набор deps
+def download_pages(
     *,
     request_source: RequestSource[HttpRequest],
     conn: ConfluenceConnection,
-    shell: ProjectWorkspaceShell,
     dest_dir: str,
     as_markdown: bool,
     pipeline_id: PipelineId,
 ) -> dict[str, Any]:
     """
-    Скачивает страницы в workspace;
+    Скачивает страницы в директорию `dest_dir` на ФС;
     формат — HTML (default) или Markdown.
 
     Возвращает `{dest_dir, saved: [{page_id,title,url,space_key,path,bytes}], total}`.
     """
-    dest_dir = dest_dir.rstrip("/")
+    dest_path = Path(dest_dir.rstrip("/"))
     try:
-        if not shell.exists(dest_dir):
-            shell.mkdir(dest_dir)
-    except WorkspaceError as e:
+        dest_path.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
         raise RuntimeError(
-            f"Не удалось создать директорию {dest_dir!r}: {e}",
+            f"Не удалось создать директорию {str(dest_path)!r}: {e}",
         ) from e
 
     transport = conn.make_transport()
@@ -79,33 +77,31 @@ def download_pages(  # noqa: PLR0913 — keyword-only helper, явный наб�
                     )
                     payload = header + html.encode("utf-8")
                     ext = "html"
-                path = f"{dest_dir}/{page_id}.{ext}"
-                _write(shell, path, payload)
+                file_path = dest_path / f"{page_id}.{ext}"
+                try:
+                    file_path.write_bytes(payload)
+                except OSError as e:
+                    raise RuntimeError(
+                        f"Ошибка записи файла {str(file_path)!r}: {e}",
+                    ) from e
                 saved.append({
                     "page_id": page_id,
                     "title": title,
                     "url": url,
                     "space_key": space_key,
-                    "path": path,
+                    "path": str(file_path),
                     "bytes": str(len(payload)),
                 })
     except httpx.HTTPError as e:
         raise RuntimeError(
             f"Confluence download failed: {type(e).__name__}: {e}",
         ) from e
-    except WorkspaceError as e:
-        raise RuntimeError(f"Ошибка записи в workspace: {e}") from e
 
     return {
-        "dest_dir": dest_dir,
+        "dest_dir": str(dest_path),
         "saved": saved,
         "total": len(saved),
     }
-
-
-def _write(shell: ProjectWorkspaceShell, path: str, payload: bytes) -> None:
-    with shell.write_binary(path) as f:
-        f.write(payload)
 
 
 def _html_header(

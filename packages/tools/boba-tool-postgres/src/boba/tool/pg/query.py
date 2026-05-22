@@ -1,27 +1,29 @@
+"""Tool `query` + `QueryConfig`: произвольный SQL → markdown-таблица."""
+
 from __future__ import annotations
 
 from typing import Annotated, Any
 
 from pydantic import Field
 
+from boba.markdown import format_markdown_table
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
-from boba.tool.kb.core._markdown import format_markdown_table
-from boba.tool.kb.sql.executor import SqlExecutor, SqlExecutorConfig, SqlQueryError
+from boba.tool.pg.executor import SqlExecutor, SqlExecutorConfig, SqlQueryError
 from boba.tools import FromConfig, tool
 
-__all__ = ["SqlQueryConfig", "sql_query"]
+__all__ = ["QueryConfig", "query"]
 
 
-class SqlQueryConfig(BobaFlatSettings):
-    """Self-contained конфиг tool'а `sql_query`.
+class QueryConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `query`.
 
-    Config-секция: `[tool.kb.sql_query]`.
+    Config-секция: `[tool.pg.query]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.sql_query",
+        config_path="tool.pg.query",
         defaults_from=("postgres",),
     )
 
@@ -29,9 +31,9 @@ class SqlQueryConfig(BobaFlatSettings):
 
 
 @tool
-def sql_query(
-    cfg: Annotated[SqlQueryConfig, FromConfig()],
-    query: Annotated[
+def query(
+    cfg: Annotated[QueryConfig, FromConfig()],
+    sql: Annotated[
         str,
         Field(
             min_length=1,
@@ -58,7 +60,7 @@ def sql_query(
     """Выполнить произвольный SQL-запрос; результат — markdown-таблица.
 
     Подходит для exploratory-аналитики и ad-hoc отчётов. Перед вызовом
-    стоит позвать `sql_list_tables` (что доступно) и `sql_describe_table`
+    стоит позвать `list_tables` (что доступно) и `describe_table`
     (схема нужной таблицы).
 
     Возвращает `{table: "<markdown>", columns: [...], row_count: N,
@@ -67,7 +69,7 @@ def sql_query(
     """
     executor = SqlExecutor(cfg=cfg.executor)
     try:
-        result = executor.execute(query, row_limit=row_limit)
+        result = executor.execute(sql, row_limit=row_limit)
     except SqlQueryError as e:
         raise RuntimeError(str(e)) from e
 

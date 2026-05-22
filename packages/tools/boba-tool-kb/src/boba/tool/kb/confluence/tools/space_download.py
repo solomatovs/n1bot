@@ -4,7 +4,7 @@
 `/rest/api/space/{key}/content` с пагинацией; каждая страница пишется
 как HTML (default) или Markdown.
 
-LLM передаёт `space_key` + `dest_dir` + опц. `as_markdown`; connection —
+LLM передаёт `space_key` + опц. `as_markdown`; connection и `dest_dir` —
 из TOML-секции `[tool.kb.confluence.download.space]`.
 """
 
@@ -21,8 +21,7 @@ from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.request_sources.space import (
     ConfluenceSpaceRequestSource,
 )
-from boba.tools import FromConfig, FromDI, Scope, tool
-from boba.workspace.contract import ProjectWorkspaceShell
+from boba.tools import FromConfig, tool
 
 __all__ = ["ConfluenceSpaceDownloadConfig", "confluence_space_download"]
 
@@ -43,24 +42,20 @@ class ConfluenceSpaceDownloadConfig(BobaFlatSettings):
     )
 
     confluence: ConfluenceConnection
+    dest_dir: str = Field(
+        min_length=1,
+        description="Директория внутри workspace для сохранения.",
+    )
 
 
 @tool
 def confluence_space_download(
     cfg: Annotated[ConfluenceSpaceDownloadConfig, FromConfig()],
-    shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
     space_key: Annotated[
         str,
         Field(
             min_length=1,
             description=("Confluence space key"),
-        ),
-    ],
-    dest_dir: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description=("Директория внутри workspace для сохранения"),
         ),
     ],
     as_markdown: Annotated[
@@ -71,10 +66,11 @@ def confluence_space_download(
     ] = False,
 ) -> dict[str, Any]:
     """
-    Скачивает все страницы указанного Confluence space в workspace.
+    Скачивает все страницы указанного Confluence space на ФС.
 
-    Файлы: `{dest_dir}/{page_id}.html` (HTML) или `{dest_dir}/{page_id}.md`.
-    Возвращает `{dest_dir, space_key, saved, total}`.
+    Целевая директория — `cfg.dest_dir`. Файлы: `{dest_dir}/{page_id}.html`
+    (HTML) или `{dest_dir}/{page_id}.md`. Возвращает
+    `{dest_dir, space_key, saved, total}`.
     """
     source = ConfluenceSpaceRequestSource(
         conn=cfg.confluence,
@@ -84,8 +80,7 @@ def confluence_space_download(
     result = download_pages(
         request_source=source,
         conn=cfg.confluence,
-        shell=shell,
-        dest_dir=dest_dir,
+        dest_dir=cfg.dest_dir,
         as_markdown=as_markdown,
         pipeline_id=_PIPELINE_ID,
     )

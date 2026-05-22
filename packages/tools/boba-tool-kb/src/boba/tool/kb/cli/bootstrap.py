@@ -32,12 +32,12 @@ import time
 from dishka.entities.component import Component
 
 from boba.agent import AgentBuilder
+from boba.db.postgres import PostgresConnection
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.core import providers as kb_providers
 from boba.tool.kb.core.embedder_factory import build_embedder
 from boba.tool.kb.core.embedding_model import EmbeddingModel
 from boba.tool.kb.core.migrations import apply_bootstrap, ensure_vector_index
-from boba.tool.kb.core.postgres_connection import PostgresConnection
 from boba.tool.kb.core.postgres_pool import open_kb_pool
 from boba.tool.kb.core.postgres_store_schema import PostgresStoreSchema
 

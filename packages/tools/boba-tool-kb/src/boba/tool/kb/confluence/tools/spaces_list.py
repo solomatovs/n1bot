@@ -1,4 +1,4 @@
-"""Tool `confluence_list_spaces` + `ConfluenceListSpacesConfig`.
+"""Tool `confluence_spaces_list` + `ConfluenceSpacesListConfig`.
 
 LLM-callable read-only tool: возвращает markdown-таблицу спейсов,
 доступных текущей роли. Используется перед `confluence_space_ingest`,
@@ -15,6 +15,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
+from boba.markdown import format_markdown_table
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.confluence.api_models import ConfluenceSpaceItem
 from boba.tool.kb.confluence.connection import ConfluenceConnection
@@ -22,24 +23,23 @@ from boba.tool.kb.confluence.request_sources._common import (
     ConfluencePaginator,
     space_list_path,
 )
-from boba.tool.kb.core._markdown import format_markdown_table
 from boba.tools import FromConfig, tool
 
-__all__ = ["ConfluenceListSpacesConfig", "confluence_list_spaces"]
+__all__ = ["ConfluenceSpacesListConfig", "confluence_spaces_list"]
 
 _MAX_CELL_CHARS = 200
 
 
-class ConfluenceListSpacesConfig(BobaFlatSettings):
-    """Self-contained конфиг tool'а `confluence_list_spaces`.
+class ConfluenceSpacesListConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `confluence_spaces_list`.
 
-    Config-секция: `[tool.kb.confluence.list_spaces]`.
+    Config-секция: `[tool.kb.confluence.spaces_list]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.confluence.list_spaces",
+        config_path="tool.kb.confluence.spaces_list",
         defaults_from=("confluence",),
     )
 
@@ -47,8 +47,8 @@ class ConfluenceListSpacesConfig(BobaFlatSettings):
 
 
 @tool
-def confluence_list_spaces(
-    cfg: Annotated[ConfluenceListSpacesConfig, FromConfig()],
+def confluence_spaces_list(
+    cfg: Annotated[ConfluenceSpacesListConfig, FromConfig()],
     space_type: Annotated[
         Literal["global", "personal", "any"],
         Field(

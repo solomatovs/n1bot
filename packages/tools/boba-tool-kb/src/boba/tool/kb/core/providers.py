@@ -1,8 +1,8 @@
 """DI-провайдеры KB-плагина — только stateless reader'ы.
 
 Reader'ы — простые singleton'ы без конфига; шарятся между ingest-tools
-(files_ingest, confluence_*_ingest) через DI. Они не зависят от подключений
-или схемы.
+(`confluence_*_ingest`) и CLI-runner'ами (`cli/files_ingest`) через DI.
+Они не зависят от подключений или схемы.
 
 Сервисы (`PostgresChunkStore`, `PostgresCollectionsStore`,
 `PostgresKnowledgeBase`, `SqlExecutor`, `PgFtsKnowledgeBase`), embedder

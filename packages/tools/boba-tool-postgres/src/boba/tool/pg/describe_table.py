@@ -1,6 +1,6 @@
-"""Tool `sql_describe_table` + `SqlDescribeTableConfig`: схема одной таблицы.
+"""Tool `describe_table` + `DescribeTableConfig`: схема одной таблицы.
 
-LLM зовёт после `sql_list_tables`, чтобы узнать структуру конкретной
+LLM зовёт после `list_tables`, чтобы узнать структуру конкретной
 таблицы перед написанием SQL. Возвращает markdown с колонками
 `{column_name, data_type, is_nullable, default}`.
 """
@@ -11,24 +11,24 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
+from boba.markdown import format_markdown_table
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
-from boba.tool.kb.core._markdown import format_markdown_table
-from boba.tool.kb.sql.executor import SqlExecutor, SqlExecutorConfig, SqlQueryError
+from boba.tool.pg.executor import SqlExecutor, SqlExecutorConfig, SqlQueryError
 from boba.tools import FromConfig, tool
 
-__all__ = ["SqlDescribeTableConfig", "sql_describe_table"]
+__all__ = ["DescribeTableConfig", "describe_table"]
 
 
-class SqlDescribeTableConfig(BobaFlatSettings):
-    """Self-contained конфиг tool'а `sql_describe_table`.
+class DescribeTableConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `describe_table`.
 
-    Config-секция: `[tool.kb.sql_describe_table]`.
+    Config-секция: `[tool.pg.describe_table]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.sql_describe_table",
+        config_path="tool.pg.describe_table",
         defaults_from=("postgres",),
     )
 
@@ -36,8 +36,8 @@ class SqlDescribeTableConfig(BobaFlatSettings):
 
 
 @tool
-def sql_describe_table(
-    cfg: Annotated[SqlDescribeTableConfig, FromConfig()],
+def describe_table(
+    cfg: Annotated[DescribeTableConfig, FromConfig()],
     table: Annotated[
         str,
         Field(
@@ -65,7 +65,7 @@ def sql_describe_table(
     результат будет пустым.
     """
     executor = SqlExecutor(cfg=cfg.executor)
-    query = (
+    sql = (
         "SELECT column_name, data_type, is_nullable, column_default "
         "FROM information_schema.columns "
         "WHERE table_schema = %s AND table_name = %s "
@@ -73,7 +73,7 @@ def sql_describe_table(
     )
     try:
         result = executor.execute(
-            query,
+            sql,
             row_limit=executor.max_rows_cap,
             params=(schema, table),
         )

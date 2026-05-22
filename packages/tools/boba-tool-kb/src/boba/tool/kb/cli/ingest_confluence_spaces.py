@@ -15,7 +15,7 @@
     --prune                       prune_missing=True для каждого space
 
 Все параметры (store/embedding/chunker/confluence/collection + runner-флаги)
-лежат в секции `[cli.kb.confluence_spaces]`.
+лежат в секции `[cli.kb.confluence.ingest.spaces]`.
 """
 
 from __future__ import annotations
@@ -49,13 +49,13 @@ class IngestAllSpacesConfig(ConfluenceSpaceIngestConfig):
     в tool-функцию `confluence_space_ingest` (IS-A парент). Сверху —
     runner-флаги, доступные ещё и через CLI (`use_cli=True`).
 
-    Config-секция: `[cli.kb.confluence_spaces]`.
+    Config-секция: `[cli.kb.confluence.ingest.spaces]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="cli.kb.confluence_spaces",
+        config_path="cli.kb.confluence.ingest.spaces",
         defaults_from=("postgres", "kb.storage", "embedding", "confluence"),
         use_cli=True,
     )

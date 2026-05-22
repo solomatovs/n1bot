@@ -1,4 +1,4 @@
-"""Tool `sql_list_tables` + `SqlListTablesConfig`: список таблиц.
+"""Tool `list_tables` + `ListTablesConfig`: список таблиц/view.
 
 Помогает LLM понять, что лежит в БД, прежде чем писать SQL. Возвращает
 markdown-таблицу `{schema, table, kind}` для всех таблиц/view, к которым
@@ -15,23 +15,24 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
+from boba.markdown import format_markdown_table
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
-from boba.tool.kb.core._markdown import format_markdown_table
-from boba.tool.kb.sql.executor import SqlExecutor, SqlExecutorConfig, SqlQueryError
+from boba.tool.pg.executor import SqlExecutor, SqlExecutorConfig, SqlQueryError
 from boba.tools import FromConfig, tool
 
-__all__ = ["SqlListTablesConfig", "sql_list_tables"]
+__all__ = ["ListTablesConfig", "list_tables"]
 
 
-class SqlListTablesConfig(BobaFlatSettings):
-    """
-    sql_list_tables config
+class ListTablesConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `list_tables`.
+
+    Config-секция: `[tool.pg.list_tables]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.sql_list_tables",
+        config_path="tool.pg.list_tables",
         defaults_from=("postgres",),
     )
 
@@ -39,8 +40,8 @@ class SqlListTablesConfig(BobaFlatSettings):
 
 
 @tool
-def sql_list_tables(
-    cfg: Annotated[SqlListTablesConfig, FromConfig()],
+def list_tables(
+    cfg: Annotated[ListTablesConfig, FromConfig()],
     schema: Annotated[
         str | None,
         Field(
@@ -59,7 +60,7 @@ def sql_list_tables(
     """
     executor = SqlExecutor(cfg=cfg.executor)
     if schema:
-        query = (
+        sql = (
             "SELECT table_schema AS schema, table_name AS table, "
             "table_type AS kind "
             "FROM information_schema.tables "
@@ -70,7 +71,7 @@ def sql_list_tables(
     else:
         # `'pg_%'`-LIKE передаём параметром (psycopg иначе ловит `%'`
         # как несуществующий placeholder).
-        query = (
+        sql = (
             "SELECT table_schema AS schema, table_name AS table, "
             "table_type AS kind "
             "FROM information_schema.tables "
@@ -84,7 +85,7 @@ def sql_list_tables(
     # в пределах общего safety-капа.
     try:
         result = executor.execute(
-            query, row_limit=executor.max_rows_cap, params=params,
+            sql, row_limit=executor.max_rows_cap, params=params,
         )
     except SqlQueryError as e:
         raise RuntimeError(str(e)) from e
