@@ -23,6 +23,10 @@ __all__ = ["PostgresStoreSchema"]
 class PostgresStoreSchema(BaseModel):
     """Schema + имена таблиц KB-хранилища."""
 
+    batch_size: int = Field(
+        default=100,
+        description="batch_size",
+    )
     schema: str = Field(
         default="public",
         description=(
