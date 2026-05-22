@@ -1,13 +1,11 @@
-"""CLI-runner: индексация локальной папки в KB.
+"""CLI-runner: индексация папки KbDoc-файлов в KB.
 
-Операторский скрипт (нет `@tool` декоратора) — не попадает в LLM
-tool-allowlist'ы. Все параметры (folder, collection, prune, connection,
-tables, embedding, chunker) фиксируются оператором в TOML-секции
-`[cli.kb.files_ingest]`.
+Оператор готовит md чанки и они по возможности индексируются как есть
+если умещаются в максимальный размер чанка
 
 Применение:
     BOBA_CONFIG_PATH=./local/config.toml \\
-        .venv/bin/python -m boba.tool.kb.cli.files_ingest
+        .venv/bin/python -m boba.tool.kb.cli.kbdoc_ingest
 """
 
 from __future__ import annotations
@@ -23,7 +21,6 @@ from pydantic import Field
 from boba.agent import AgentBuilder
 from boba.indexing import (
     CollectionScopedView,
-    DispatchReader,
     FullCleanup,
     IndexerConfig,
     NoneCleanup,
@@ -31,6 +28,7 @@ from boba.indexing import (
     StreamingIndexer,
 )
 from boba.indexing.context import CollectionId, PipelineId
+from boba.kbdoc import KbDocReader
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.core import providers as kb_providers
 from boba.tool.kb.core.chunker_factory import build_chunker
@@ -44,19 +42,19 @@ from boba.tool.kb.core.postgres_store import (
 )
 from boba.transport.fs import FsRequest, FsTransport, FsWalkRequestSource
 
-__all__ = ["FilesIngestCliConfig", "main"]
+__all__ = ["KbDocIngestCliConfig", "main"]
 
 
-class FilesIngestCliConfig(BobaFlatSettings):
-    """Self-contained CLI-конфиг индексатора локальной папки.
+class KbDocIngestCliConfig(BobaFlatSettings):
+    """Self-contained CLI-конфиг индексатора папки KbDoc-файлов.
 
-    Config-секция: `[cli.kb.files_ingest]`.
+    Config-секция: `[cli.kb.kbdoc_ingest]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="cli.kb.files_ingest",
+        config_path="cli.kb.kbdoc_ingest",
         defaults_from=("postgres", "kb.storage", "embedding"),
     )
 
@@ -64,10 +62,10 @@ class FilesIngestCliConfig(BobaFlatSettings):
     embedding: EmbeddingModel
     chunker: ChunkerParams
     folder: str = Field(
-        description="Папка с файлами для индексации (`.md`/`.html`/`.htm`).",
+        description="Папка с KbDoc-файлами (`.md`) для индексации.",
     )
     collection: str = Field(
-        default="kb_files",
+        default="kb_kbdoc",
         min_length=1,
         max_length=255,
         description="Имя target-коллекции в `kb_chunks`.",
@@ -81,7 +79,7 @@ class FilesIngestCliConfig(BobaFlatSettings):
     )
 
 
-logger = logging.getLogger("boba.tool.kb.cli.files_ingest")
+logger = logging.getLogger("boba.tool.kb.cli.kbdoc_ingest")
 
 _KB_COMPONENT = Component(kb_providers.__name__)
 
@@ -97,11 +95,8 @@ def main() -> int:
 
     try:
         with container() as req:
-            cfg = req.get(FilesIngestCliConfig, component=_KB_COMPONENT)
-            dispatch_reader = req.get(
-                DispatchReader[str],
-                component=_KB_COMPONENT,
-            )
+            cfg = req.get(KbDocIngestCliConfig, component=_KB_COMPONENT)
+            kbdoc_reader = req.get(KbDocReader, component=_KB_COMPONENT)
 
             logger.info(
                 "ingesting folder=%s → collection=%s (prune=%s)",
@@ -112,9 +107,9 @@ def main() -> int:
 
             start = time.monotonic()
             try:
-                result = _run_ingest(cfg, dispatch_reader)
+                result = _run_ingest(cfg, kbdoc_reader)
             except Exception:
-                logger.exception("files_ingest FAILED")
+                logger.exception("kbdoc_ingest FAILED")
                 return 1
             elapsed = time.monotonic() - start
 
@@ -132,8 +127,8 @@ def main() -> int:
 
 
 def _run_ingest(
-    cfg: FilesIngestCliConfig,
-    dispatch_reader: DispatchReader[str],
+    cfg: KbDocIngestCliConfig,
+    kbdoc_reader: KbDocReader,
 ) -> dict[str, Any]:
     folder = Path(cfg.folder)
     if not folder.exists():
@@ -159,10 +154,10 @@ def _run_ingest(
     indexer: StreamingIndexer[FsRequest, str] = StreamingIndexer(
         request_source=FsWalkRequestSource(
             paths=[str(folder)],
-            include=["*.md", "*.html", "*.htm"],
+            include=["*.md"],
         ),
         transport=FsTransport(),
-        reader=dispatch_reader,
+        reader=kbdoc_reader,
         chunker=chunker,
         sink=view,
         query=view,
@@ -172,7 +167,7 @@ def _run_ingest(
         force_update=False,
     )
     stats = indexer.invoke(
-        PipelineContext(pipeline_id=PipelineId("kb.files_ingest")),
+        PipelineContext(pipeline_id=PipelineId("kb.kbdoc_ingest")),
         indexer_config,
     )
 

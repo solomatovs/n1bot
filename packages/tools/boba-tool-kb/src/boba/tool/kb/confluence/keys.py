@@ -8,10 +8,11 @@ import json
 from typing import ClassVar
 
 from boba.indexing import MetadataKey
-
 from boba.tool.kb.confluence.attachments import (
     AttachmentInfo,
+    decode_attachment,
     decode_attachments,
+    encode_attachment,
     encode_attachments,
 )
 
@@ -58,4 +59,9 @@ class ConfluenceKeys:
         name="confluence.attachments",
         decode=decode_attachments,
         encode=encode_attachments,
+    )
+    ATTACHMENT_INFO: ClassVar[MetadataKey[AttachmentInfo]] = MetadataKey(
+        name="confluence.attachment_info",
+        decode=decode_attachment,
+        encode=encode_attachment,
     )

@@ -40,7 +40,7 @@ class VectorSearchConfig(BobaFlatSettings):
 
     knowledge_base: PostgresKnowledgeBaseConfig
     collections: StringList = Field(
-        default_factory=lambda: ["kb_files", "kb_confluence"],
+        default_factory=lambda: ["kb_kbdoc", "kb_confluence"],
         description=(
             "Список коллекций для pure vector-search. SQL: "
             "`WHERE collection = ANY(%(collections)s)`."

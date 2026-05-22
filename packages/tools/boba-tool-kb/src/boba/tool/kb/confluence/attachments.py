@@ -19,7 +19,9 @@ from typing import Any
 
 __all__ = [
     "AttachmentInfo",
+    "decode_attachment",
     "decode_attachments",
+    "encode_attachment",
     "encode_attachments",
 ]
 
@@ -61,14 +63,29 @@ def decode_attachments(s: str) -> tuple[AttachmentInfo, ...]:
     взрывали загрузку. Лишние поля игнорируются.
     """
     items: list[dict[str, Any]] = json.loads(s)
-    return tuple(
-        AttachmentInfo(
-            id=str(d.get("id", "")),
-            title=str(d.get("title", "")),
-            media_type=str(d.get("media_type", "")),
-            file_size=int(d.get("file_size") or 0),
-            download_path=str(d.get("download_path", "")),
-            version=int(d.get("version") or 1),
-        )
-        for d in items
+    return tuple(_from_dict(d) for d in items)
+
+
+def encode_attachment(value: AttachmentInfo) -> str:
+    """Один `AttachmentInfo` → JSON-объект.
+
+    Используется для `ConfluenceKeys.ATTACHMENT_INFO` — этот ключ ставится
+    Transport'ом на дочернем `RawDocument` (один вложение = один документ).
+    """
+    return json.dumps(asdict(value), ensure_ascii=False)
+
+
+def decode_attachment(s: str) -> AttachmentInfo:
+    """JSON-объект → `AttachmentInfo`. Симметричен `encode_attachment`."""
+    return _from_dict(json.loads(s))
+
+
+def _from_dict(d: dict[str, Any]) -> AttachmentInfo:
+    return AttachmentInfo(
+        id=str(d.get("id", "")),
+        title=str(d.get("title", "")),
+        media_type=str(d.get("media_type", "")),
+        file_size=int(d.get("file_size") or 0),
+        download_path=str(d.get("download_path", "")),
+        version=int(d.get("version") or 1),
     )

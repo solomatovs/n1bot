@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from boba.indexing import Metadata, SourceId
 from boba.tool.kb.confluence.api_models import ConfluencePageItem, ConfluenceSpaceItem
+from boba.tool.kb.confluence.attachments import AttachmentInfo
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.keys import ConfluenceKeys
 from boba.transport.http import HttpRequest
@@ -26,6 +27,7 @@ __all__ = [
     "confluence_discover_spaces",
     "cql_search_path",
     "extract_host",
+    "make_attachment_request",
     "make_page_request",
     "page_fetch_path",
     "space_list_path",
@@ -138,6 +140,48 @@ def make_page_request(
             .set(ConfluenceKeys.PAGE_ID, page_id)
             .set(ConfluenceKeys.HOST, host)
         ),
+    )
+
+
+def make_attachment_request(
+    *,
+    base_url: str,
+    auth: httpx.Auth | None,
+    parent_metadata: Metadata,
+    attachment: AttachmentInfo,
+) -> HttpRequest:
+    """HttpRequest на бинарную выгрузку одного вложения.
+
+    `url`            — `{base_url}{attachment.download_path}` (Confluence отдаёт
+                       `_links.download` уже с правильным `?version=&modificationDate=`).
+    `source_id`      — тот же абсолютный download-URL: стабильный per-attachment-version,
+                       уникален в pipeline, кликабелен.
+    `metadata`       — `ATTACHMENT_INFO` (полный snapshot одного attachment'а — маркер
+                       того, что этот `RawDocument` — вложение, и носитель всех его
+                       полей для download'а) + `PAGE_ID`/`HOST`/`SPACE_KEY`/
+                       `ANCESTORS_TITLES` родительской страницы (чтобы download мог
+                       положить файл в ту же папку, что и сам page).
+
+    `TransportKeys.CONTENT_TYPE` не пресетим: HttpTransport заполнит из ответа.
+    Если ответ почему-то без `Content-Type`, downstream'у доступен
+    `attachment.media_type` из `ConfluenceKeys.ATTACHMENT_INFO`.
+    """
+    meta = Metadata.empty().set(ConfluenceKeys.ATTACHMENT_INFO, attachment)
+    if (page_id := parent_metadata.get(ConfluenceKeys.PAGE_ID)) is not None:
+        meta = meta.set(ConfluenceKeys.PAGE_ID, page_id)
+    if (host := parent_metadata.get(ConfluenceKeys.HOST)) is not None:
+        meta = meta.set(ConfluenceKeys.HOST, host)
+    if (space := parent_metadata.get(ConfluenceKeys.SPACE_KEY)) is not None:
+        meta = meta.set(ConfluenceKeys.SPACE_KEY, space)
+    if (ancestors := parent_metadata.get(ConfluenceKeys.ANCESTORS_TITLES)) is not None:
+        meta = meta.set(ConfluenceKeys.ANCESTORS_TITLES, ancestors)
+    url = f"{base_url.rstrip('/')}{attachment.download_path}"
+    return HttpRequest(
+        url=url,
+        method="GET",
+        auth=auth,
+        source_id=SourceId(url),
+        metadata=meta,
     )
 
 

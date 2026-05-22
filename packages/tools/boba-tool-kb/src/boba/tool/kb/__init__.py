@@ -42,8 +42,8 @@ SQL- и FTS-tools переехали в отдельный плагин `boba-to
 
 **CLI runners** (не tool'ы, операторские скрипты — читают `[cli.kb.*]`):
 - `cli/bootstrap`                 — миграции + HNSW-индекс (`[cli.kb.bootstrap]`).
-- `cli/files_ingest`              — индексация локальной папки
-                                    (`[cli.kb.files_ingest]`).
+- `cli/kbdoc_ingest`              — индексация папки KbDoc-файлов
+                                    (`[cli.kb.kbdoc_ingest]`).
 - `cli/ingest_confluence_spaces`  — bulk-discovery + per-space ingest
                                     (`[cli.kb.confluence.ingest.spaces]` +
                                     CLI-флаги; per-space ingest читает
@@ -52,8 +52,8 @@ SQL- и FTS-tools переехали в отдельный плагин `boba-to
                                     (`[cli.kb.confluence.download.space]` +
                                     --space-key/--as-markdown).
 
-DI остаётся только для stateless `DispatchReader[str]` / `KbDocReader` /
-`HtmlReader` — они шарятся ingest-tool'ами без зависимости от конфигов.
+DI остаётся только для stateless `KbDocReader` — он шарится ingest-tool'ами
+без зависимости от конфигов.
 """
 
 from __future__ import annotations
@@ -97,11 +97,7 @@ from boba.tool.kb.core.postgres_store import (
     PostgresStoreConfig,
 )
 from boba.tool.kb.core.postgres_store_schema import PostgresStoreSchema
-from boba.tool.kb.core.providers import (
-    provide_dispatch_reader,
-    provide_html_reader,
-    provide_kbdoc_reader,
-)
+from boba.tool.kb.core.providers import provide_kbdoc_reader
 from boba.tool.kb.core.tools.kb_search import SearchInKbConfig, kb_search
 from boba.tool.kb.core.tools.vector_search import VectorSearchConfig, vector_search
 
@@ -133,8 +129,6 @@ __all__ = [
     "confluence_space_ingest",
     "confluence_spaces_list",
     "kb_search",
-    "provide_dispatch_reader",
-    "provide_html_reader",
     "provide_kbdoc_reader",
     "vector_search",
 ]
