@@ -80,21 +80,9 @@ T = TypeVar("T")
 
 
 class StreamingIndexer(Indexer[ReqT, T]):
-    """Streaming `Indexer[ReqT, T]`: генераторы для данных, events для state.
-
-    Альтернативой могли бы быть batched-cross-source / parallel impl'ы;
-    этот делает sequential-per-source через `IndexSink.reconcile`,
-    при этом не материализуя ни sections, ни chunks в промежуточные list'ы.
-
-    Использует обе view-стороны: `IndexSink` для per-source reconcile
-    (через `narrow → reconcile`), `IndexQuery` для CleanupContext (cleanup
-    стратегия делает только filter-based ops). Caller обычно передаёт
-    один и тот же concrete view-объект как оба параметра — он реализует
-    обе ABC.
-
-    Не координирует Store напрямую — вся работа со Store скрыта внутри
-    view-impl'а. Не знает про scope (collection / namespace / tag / ...) —
-    он инкапсулирован в view-impl'е при его конструировании.
+    """
+    Streaming индексатор документов
+    Оркестратор который собирает стадии воединно
     """
 
     def __init__(  # noqa: PLR0913 — оркестратор честно нуждается в этих deps
