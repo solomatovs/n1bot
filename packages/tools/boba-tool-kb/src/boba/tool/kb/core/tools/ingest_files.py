@@ -1,27 +1,14 @@
-"""Tool `files_ingest`: индексация pre-настроенной оператором папки в KB.
+"""Tool `files_ingest`: индексация настроенной оператором папки в KB.
 
-LLM-facing wrapper над `StreamingIndexer`. Оператор закрепляет folder
-(`[tool.kb].files_folder`, default `./local/docs`) и collection
-(`[tool.kb].collection`, default `knowledge_base`) — LLM не выбирает,
-во что и откуда индексировать, только опционально включает
-`prune_missing` для cleanup'а удалённых файлов.
-
-Поддерживаемые форматы (диспатч по `FsKeys.SUFFIX` через `DispatchReader`):
+Поддерживаемые форматы:
 - `.md`         → `KbDocReader` (header + body как одна Section)
 - `.html/.htm`  → `HtmlReader` (heading-aware)
-
-Pipeline собирается inline здесь, потому что зависит от per-call
-параметров (cleanup-стратегия). Backend-deps (`PostgresChunkStore`,
-`Embedder`, `DispatchReader`, `StructuralChunker`) живут как APP-scope
-синглтоны в [providers.py](providers.py).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Annotated, Any
-
-from pydantic import Field
 
 from boba.indexing import (
     CollectionScopedView,
@@ -37,41 +24,29 @@ from boba.indexing.embedder import Embedder
 from boba.text import StructuralChunker
 from boba.tool.kb.core.chunk_store import PostgresChunkStore
 from boba.tool.kb.core.collections_store import PostgresCollectionsStore
-from boba.tool.kb.core.config import KbConfig
+from boba.tool.kb.core.files_ingest_config import IngestFilesConfig
 from boba.tools import FromConfig, FromDI, Scope, tool
 from boba.transport.fs import FsRequest, FsTransport, FsWalkRequestSource
 
-__all__ = ["files_ingest"]
-
-_PIPELINE_ID: PipelineId = PipelineId("kb.files_ingest")
-_INCLUDE_PATTERNS: tuple[str, ...] = ("*.md", "*.html", "*.htm")
+__all__ = ["ingest_files"]
 
 
 @tool
-def files_ingest(  # noqa: PLR0913 — tool с явным набором FromDI/FromConfig deps
+def ingest_files(  # noqa: PLR0913
     chunk_store: Annotated[PostgresChunkStore, FromDI(Scope.APP)],
     collections_store: Annotated[PostgresCollectionsStore, FromDI(Scope.APP)],
     embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
     dispatch_reader: Annotated[DispatchReader[str], FromDI(Scope.APP)],
     chunker: Annotated[StructuralChunker, FromDI(Scope.APP)],
-    cfg: Annotated[KbConfig, FromConfig()],
-    prune_missing: Annotated[
-        bool,
-        Field(
-            description=(
-                "Если true, удалить из коллекции чанки, чьих source_id "
-                "нет среди индексируемых файлов (cleanup удалённых документов)."
-            ),
-        ),
-    ] = False,
+    cfg: Annotated[IngestFilesConfig, FromConfig()],
 ) -> dict[str, Any]:
-    """Индексирует pre-настроенную оператором папку (`[tool.kb].files_folder`)
-    в pre-настроенную коллекцию (`[tool.kb].collection`).
+    """
+    Индексирует папку [kb.ingest_files].folder
 
     Возвращает JSON: {folder, collection, indexed, skipped_unchanged,
     pruned, failed}.
     """
-    folder = Path(cfg.files_folder)
+    folder = Path(cfg.folder)
     if not folder.exists():
         msg = f"folder_not_found: {folder}"
         raise RuntimeError(msg)
@@ -80,10 +55,7 @@ def files_ingest(  # noqa: PLR0913 — tool с явным набором FromDI/
         raise RuntimeError(msg)
 
     collection = CollectionId(cfg.collection)
-    collections_store.ensure_collection(
-        collection,
-        description=cfg.collection_description or None,
-    )
+    collections_store.ensure_collection(collection, description=None)
 
     view: CollectionScopedView[str] = CollectionScopedView(
         store=chunk_store,
@@ -93,7 +65,7 @@ def files_ingest(  # noqa: PLR0913 — tool с явным набором FromDI/
     indexer: StreamingIndexer[FsRequest, str] = StreamingIndexer(
         request_source=FsWalkRequestSource(
             paths=[str(folder)],
-            include=list(_INCLUDE_PATTERNS),
+            include=["*.md", "*.html", "*.htm"],
         ),
         transport=FsTransport(),
         reader=dispatch_reader,
@@ -102,11 +74,11 @@ def files_ingest(  # noqa: PLR0913 — tool с явным набором FromDI/
         query=view,
     )
     config: IndexerConfig[str] = IndexerConfig(
-        cleanup=FullCleanup() if prune_missing else NoneCleanup(),
+        cleanup=FullCleanup() if cfg.prune else NoneCleanup(),
         force_update=False,
     )
     stats = indexer.invoke(
-        PipelineContext(pipeline_id=_PIPELINE_ID),
+        PipelineContext(pipeline_id=PipelineId("kb.ingest_files")),
         config,
     )
 

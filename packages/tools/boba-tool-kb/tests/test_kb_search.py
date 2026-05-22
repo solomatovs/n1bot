@@ -16,6 +16,7 @@ import pytest
 
 from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
+from boba.tool.kb.core.search_config import SearchConfig
 from boba.tool.kb.core.tools.kb_search import kb_search
 
 if TYPE_CHECKING:
@@ -28,6 +29,7 @@ pytestmark = pytest.mark.integration
 
 def test_kb_search_real(
     kb_cfg: KbConfig,
+    search_cfg: SearchConfig,
     embedding_cfg: EmbeddingConfig,
     kb_knowledge_base: PostgresKnowledgeBase,
     test_cfg: KbIntegrationTestConfig,
@@ -44,11 +46,12 @@ def test_kb_search_real(
         query=test_cfg.kb_search_query,
         kb=kb_knowledge_base,
         cfg=kb_cfg,
+        search_cfg=search_cfg,
         top_k=test_cfg.kb_search_top_k,
     )
 
     _emit("")
-    _emit(f"collection:      {kb_cfg.collection}")
+    _emit(f"collections:     {list(search_cfg.collections)}")
     _emit(f"embedding_model: {embedding_cfg.model}")
     _emit(f"fts_language:    {kb_cfg.fts_language}")
     _emit(f"rrf_k:           {kb_cfg.rrf_k}")
@@ -72,6 +75,7 @@ def test_kb_search_real(
 
 def test_kb_search_top_k_ceiling(
     kb_cfg: KbConfig,
+    search_cfg: SearchConfig,
     kb_knowledge_base: PostgresKnowledgeBase,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
@@ -82,6 +86,7 @@ def test_kb_search_top_k_ceiling(
             query=query,
             kb=kb_knowledge_base,
             cfg=kb_cfg,
+            search_cfg=search_cfg,
             top_k=kb_cfg.max_top_k + 1,
         )
 

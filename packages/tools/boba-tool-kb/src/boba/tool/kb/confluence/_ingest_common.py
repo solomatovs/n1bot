@@ -45,7 +45,6 @@ def run_confluence_ingest(  # noqa: PLR0913 — keyword-only helper, явный 
     embedder: Embedder[str],
     chunker: StructuralChunker,
     collection: str,
-    collection_description: str,
     prune_missing: bool,
     pipeline_id: PipelineId,
 ) -> dict[str, Any]:
@@ -59,10 +58,7 @@ def run_confluence_ingest(  # noqa: PLR0913 — keyword-only helper, явный 
     reader = ConfluenceReader()
 
     collection_id = CollectionId(collection)
-    collections_store.ensure_collection(
-        collection_id,
-        description=collection_description or None,
-    )
+    collections_store.ensure_collection(collection_id, description=None)
 
     view: CollectionScopedView[str] = CollectionScopedView(
         store=chunk_store,

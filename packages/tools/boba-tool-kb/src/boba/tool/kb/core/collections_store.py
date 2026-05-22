@@ -15,7 +15,7 @@ Document-уровневые операции с чанками (`upsert`, `find`
 `delete_collection` сносит и связанные чанки, и запись в каталоге в одной
 транзакции, чтобы не оставлять висящих чанков с FK-стороны.
 
-`VectorStoreSchemaConfig` — единый источник правды по именам таблиц,
+`ChunkStoreSchemaConfig` — единый источник правды по именам таблиц,
 который получает и bootstrap-CLI, и этот store. Любое расхождение
 приведёт к `relation does not exist` в рантайме — лучше так, чем тихое
 расхождение схемы.
@@ -32,7 +32,7 @@ from psycopg.rows import dict_row
 from boba.db.postgres import PostgresPool
 from boba.indexing.chunk_store import CollectionInfo, CollectionsStore
 from boba.indexing.context import CollectionId
-from boba.tool.kb.core.vector_store_config import VectorStoreSchemaConfig
+from boba.tool.kb.core.chunk_store_config import ChunkStoreSchemaConfig
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ class PostgresCollectionsStore(CollectionsStore):
         self,
         pool: PostgresPool,
         *,
-        schema_cfg: VectorStoreSchemaConfig,
+        schema_cfg: ChunkStoreSchemaConfig,
     ) -> None:
         self._pool = pool
         self._schema_cfg = schema_cfg

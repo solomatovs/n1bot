@@ -1,8 +1,8 @@
-"""Integration: `vector_search` — pure vector (cosine) по pinned KB-коллекции.
+"""Integration: `vector_search` — pure vector (cosine) по KB-коллекциям.
 
-Использует те же фикстуры, что и `test_kb_search` (kb_cfg, kb_knowledge_base).
-Параметры запроса — из `[test.kb].kb_search_query` (общий с kb_search,
-так как target-коллекция та же).
+Использует те же фикстуры, что и `test_kb_search` (kb_cfg, search_cfg,
+kb_knowledge_base). Параметры запроса — из `[test.kb].kb_search_query`
+(общий с kb_search, так как target-коллекции те же).
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import pytest
 
 from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
+from boba.tool.kb.core.search_config import SearchConfig
 from boba.tool.kb.core.tools.vector_search import vector_search
 
 if TYPE_CHECKING:
@@ -25,11 +26,12 @@ pytestmark = pytest.mark.integration
 
 def test_vector_search_real(
     kb_cfg: KbConfig,
+    search_cfg: SearchConfig,
     embedding_cfg: EmbeddingConfig,
     kb_knowledge_base: PostgresKnowledgeBase,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
-    """Реальный vector_search на pgvector-коллекции оператора.
+    """Реальный vector_search на pgvector-коллекциях оператора.
 
     Контракт: `list[dict]`, в каждом hit — `{id, distance, link, metadata,
     snippet}` (тот же shape, что и у kb_search — упрощает свитч между
@@ -42,11 +44,12 @@ def test_vector_search_real(
         query=test_cfg.kb_search_query,
         kb=kb_knowledge_base,
         cfg=kb_cfg,
+        search_cfg=search_cfg,
         top_k=test_cfg.kb_search_top_k,
     )
 
     _emit("")
-    _emit(f"collection:      {kb_cfg.collection}")
+    _emit(f"collections:     {list(search_cfg.collections)}")
     _emit(f"embedding_model: {embedding_cfg.model}")
     _emit(f"query:           {test_cfg.kb_search_query!r}")
     _emit(f"top_k:           {test_cfg.kb_search_top_k}")
@@ -72,6 +75,7 @@ def test_vector_search_real(
 
 def test_vector_search_top_k_ceiling(
     kb_cfg: KbConfig,
+    search_cfg: SearchConfig,
     kb_knowledge_base: PostgresKnowledgeBase,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
@@ -82,6 +86,7 @@ def test_vector_search_top_k_ceiling(
             query=query,
             kb=kb_knowledge_base,
             cfg=kb_cfg,
+            search_cfg=search_cfg,
             top_k=kb_cfg.max_top_k + 1,
         )
 

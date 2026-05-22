@@ -19,7 +19,7 @@ runtime DDL при каждом запуске tool'а. Теперь runtime'у 
 - `{chunks_*_idx_name}` — производные имена индексов на `chunks_table`,
                           уникальные при переименовании таблицы.
 
-Значения подставляются из `VectorStoreSchemaConfig` ([tool.kb.vector_store]) —
+Значения подставляются из `ChunkStoreSchemaConfig` ([tool.kb.chunk_store]) —
 тот же конфиг, который потом получают `PostgresChunkStore` и
 `PostgresKnowledgeBase`. Это гарантирует, что bootstrap создаёт таблицы под
 теми же именами, под которыми store будет к ним обращаться в рантайме.
@@ -44,7 +44,7 @@ from typing import Any, LiteralString, cast
 
 from psycopg import sql
 
-from boba.tool.kb.core.vector_store_config import VectorStoreSchemaConfig
+from boba.tool.kb.core.chunk_store_config import ChunkStoreSchemaConfig
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 def _render_migration(
     text: str,
     *,
-    schema_cfg: VectorStoreSchemaConfig,
+    schema_cfg: ChunkStoreSchemaConfig,
 ) -> sql.Composable:
     """Подставить идентификаторы / литералы из `schema_cfg` в SQL-шаблон.
 
@@ -67,7 +67,7 @@ def _render_migration(
     user-input'а в SQL). Здесь источник — статический файл миграции из
     собственного пакета (`migrations/*.sql`), а не user-input → cast
     безопасен. Параметры подстановки — Identifier/Literal из validated
-    VectorStoreSchemaConfig, sql-injection невозможен.
+    ChunkStoreSchemaConfig, sql-injection невозможен.
     """
     chunks_name = schema_cfg.chunks_table
     return sql.SQL(cast(LiteralString, text)).format(
@@ -87,7 +87,7 @@ def _render_migration(
 def apply_bootstrap(
     conn: Any,
     *,
-    schema_cfg: VectorStoreSchemaConfig,
+    schema_cfg: ChunkStoreSchemaConfig,
 ) -> None:
     """Применить все миграции из `migrations/*.sql` в alphabetical order.
 
@@ -121,7 +121,7 @@ def ensure_vector_index(
     conn: Any,
     *,
     dim: int,
-    schema_cfg: VectorStoreSchemaConfig,
+    schema_cfg: ChunkStoreSchemaConfig,
 ) -> None:
     """Создать HNSW-индекс по `(embedding::vector(dim))` если ещё нет.
 
@@ -132,7 +132,7 @@ def ensure_vector_index(
     модели в одной таблице — несколько индексов с разной dim сосуществуют.
 
     Имя индекса — `<chunks_table>_embedding_hnsw_<dim>`; уникально и при
-    смене dim, и при смене таблицы в `VectorStoreSchemaConfig`.
+    смене dim, и при смене таблицы в `ChunkStoreSchemaConfig`.
 
     Args:
         conn: psycopg sync Connection.

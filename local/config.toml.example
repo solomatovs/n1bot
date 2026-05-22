@@ -123,7 +123,7 @@ chunk_overlap = 0
 # store будет ходить в другие, и запросы упадут на `relation does not
 # exist`. Значения — валидные postgres-идентификаторы (без кавычек,
 # точек, пробелов; ≤ 63 символа).
-[tool.kb.vector_store]
+[tool.kb.chunk_store]
 schema = "public"               # схема, в которой живут таблицы и функция immutable_unaccent
 chunks_table = "kb_chunks"      # таблица чанков (embedding + metadata + tsvector)
 collections_table = "kb_collections"  # каталог коллекций (one row per collection)

@@ -11,12 +11,12 @@ from boba.indexing.embedder import Embedder
 from boba.text import StructuralChunker
 from boba.tool.kb.confluence._ingest_common import run_confluence_ingest
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
+from boba.tool.kb.confluence.ingest_config import ConfluenceIngestConfig
 from boba.tool.kb.confluence.request_sources import (
     ConfluenceMultiSpaceRequestSource,
 )
 from boba.tool.kb.core.chunk_store import PostgresChunkStore
 from boba.tool.kb.core.collections_store import PostgresCollectionsStore
-from boba.tool.kb.core.config import KbConfig
 from boba.tools import FromConfig, FromDI, Scope, tool
 
 __all__ = ["confluence_space_ingest"]
@@ -30,7 +30,7 @@ def confluence_space_ingest(  # noqa: PLR0913
     collections_store: Annotated[PostgresCollectionsStore, FromDI(Scope.APP)],
     embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
     chunker: Annotated[StructuralChunker, FromDI(Scope.APP)],
-    kb_cfg: Annotated[KbConfig, FromConfig()],
+    ingest_cfg: Annotated[ConfluenceIngestConfig, FromConfig()],
     conn_cfg: Annotated[ConfluenceConnectionConfig, FromConfig()],
     space_keys: Annotated[
         list[str],
@@ -40,8 +40,8 @@ def confluence_space_ingest(  # noqa: PLR0913
                 'Список Confluence space-keys (например, `["KAFKA"]` или '
                 '`["KAFKA", "INFRA"]`). Все страницы каждого space '
                 "(c пагинацией) объединяются в один pipeline-run и "
-                "индексируются в `[tool.kb].collection`. Для одного space "
-                "передавай список из одного элемента."
+                "индексируются в `[tool.kb.confluence_ingest].collection`. "
+                "Для одного space передавай список из одного элемента."
             ),
         ),
     ],
@@ -60,8 +60,10 @@ def confluence_space_ingest(  # noqa: PLR0913
 ) -> dict[str, Any]:
     """Индексирует все страницы перечисленных Confluence space'ов в KB-коллекцию.
 
-    Target collection — `[tool.kb].collection` (pinned оператором). Возвращает
-    JSON `{space_keys, collection, indexed, skipped_unchanged, pruned, failed}`.
+    Target collection — `[tool.kb.confluence_ingest].collection` (pinned
+    оператором; отдельная от FS-коллекции `[tool.kb.files].collection`).
+    Возвращает JSON `{space_keys, collection, indexed, skipped_unchanged,
+    pruned, failed}`.
     """
     request_source = ConfluenceMultiSpaceRequestSource(
         conn_cfg=conn_cfg,
@@ -75,8 +77,7 @@ def confluence_space_ingest(  # noqa: PLR0913
         collections_store=collections_store,
         embedder=embedder,
         chunker=chunker,
-        collection=kb_cfg.collection,
-        collection_description=kb_cfg.collection_description,
+        collection=ingest_cfg.collection,
         prune_missing=prune_missing,
         pipeline_id=_PIPELINE_ID,
     )

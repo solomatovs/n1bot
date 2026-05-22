@@ -1,11 +1,12 @@
 """Integration: `files_ingest` — FS-папка → KB-коллекция через tool-обёртку.
 
-Вызывает сам `files_ingest(chunk_store=, collections_store=, dispatch_reader=,
-chunker=, cfg=, prune_missing=)` — это проверяет и tool-валидаторы
-(`folder_not_found`, `folder_not_a_directory`), и
-`collections_store.ensure_collection`, и полный pipeline.
+Вызывает сам `ingest_files(chunk_store=, collections_store=, dispatch_reader=,
+chunker=, cfg=)` — это проверяет и tool-валидаторы (`folder_not_found`,
+`folder_not_a_directory`), и `collections_store.ensure_collection`, и
+полный pipeline. `prune_missing` теперь не параметр tool'а — оператор
+включает его через `[tool.kb.files_ingest].prune=true`.
 
-Общие объекты (kb_cfg, kb_store, kb_collections_store, kb_dispatch_reader,
+Общие объекты (files_cfg, kb_store, kb_collections_store, kb_dispatch_reader,
 kb_chunker) приходят из conftest-фикстур.
 """
 
@@ -20,8 +21,8 @@ from boba.indexing import DispatchReader
 from boba.text import StructuralChunker
 from boba.tool.kb.core.chunk_store import PostgresChunkStore
 from boba.tool.kb.core.collections_store import PostgresCollectionsStore
-from boba.tool.kb.core.config import KbConfig
-from boba.tool.kb.core.tools.files_ingest import files_ingest
+from boba.tool.kb.core.files_ingest_config import IngestFilesConfig
+from boba.tool.kb.core.tools.ingest_files import ingest_files
 
 if TYPE_CHECKING:
     from boba.provider.openai import OpenAICompatEmbedder
@@ -31,7 +32,7 @@ pytestmark = pytest.mark.integration
 
 
 def test_files_ingest_real(  # noqa: PLR0913 — integration test
-    kb_cfg: KbConfig,
+    files_cfg: IngestFilesConfig,
     embedding_cfg: EmbeddingConfig,
     kb_store: PostgresChunkStore,
     kb_collections_store: PostgresCollectionsStore,
@@ -40,22 +41,21 @@ def test_files_ingest_real(  # noqa: PLR0913 — integration test
     kb_chunker: StructuralChunker,
 ) -> None:
     """Реальный вызов `files_ingest(...)` — проверяем shape ответа и failed=0."""
-    folder = Path(kb_cfg.files_folder)
+    folder = Path(files_cfg.folder)
     if not folder.exists() or not folder.is_dir():
         pytest.skip(
-            f"files_folder {folder!s} не существует — задайте "
-            "[tool.kb].files_folder в конфиге или поместите файлы в default'е "
+            f"folder {folder!s} не существует — задайте "
+            "[tool.kb.files].folder в конфиге или поместите файлы в default'е "
             "./local/docs",
         )
 
-    result = files_ingest(
+    result = ingest_files(
         chunk_store=kb_store,
         collections_store=kb_collections_store,
         embedder=kb_embedder,
         dispatch_reader=kb_dispatch_reader,
         chunker=kb_chunker,
-        cfg=kb_cfg,
-        prune_missing=False,
+        cfg=files_cfg,
     )
 
     _emit("")
@@ -75,12 +75,12 @@ def test_files_ingest_real(  # noqa: PLR0913 — integration test
         "failed",
     } <= result.keys()
     assert result["folder"] == str(folder)
-    assert result["collection"] == kb_cfg.collection
+    assert result["collection"] == files_cfg.collection
     assert result["failed"] == 0, "some sources failed; see logs"
 
 
 def test_files_ingest_is_idempotent_second_run_skips_all(  # noqa: PLR0913
-    kb_cfg: KbConfig,
+    files_cfg: IngestFilesConfig,
     kb_store: PostgresChunkStore,
     kb_collections_store: PostgresCollectionsStore,
     kb_embedder: OpenAICompatEmbedder,
@@ -88,27 +88,25 @@ def test_files_ingest_is_idempotent_second_run_skips_all(  # noqa: PLR0913
     kb_chunker: StructuralChunker,
 ) -> None:
     """Повторный прогон не upsert'ит ничего (content_hash совпадает)."""
-    folder = Path(kb_cfg.files_folder)
+    folder = Path(files_cfg.folder)
     if not folder.exists() or not folder.is_dir():
-        pytest.skip("files_folder отсутствует")
+        pytest.skip("[tool.kb.files].folder отсутствует")
 
-    _first = files_ingest(
+    _first = ingest_files(
         chunk_store=kb_store,
         collections_store=kb_collections_store,
         embedder=kb_embedder,
         dispatch_reader=kb_dispatch_reader,
         chunker=kb_chunker,
-        cfg=kb_cfg,
-        prune_missing=False,
+        cfg=files_cfg,
     )
-    second = files_ingest(
+    second = ingest_files(
         chunk_store=kb_store,
         collections_store=kb_collections_store,
         embedder=kb_embedder,
         dispatch_reader=kb_dispatch_reader,
         chunker=kb_chunker,
-        cfg=kb_cfg,
-        prune_missing=False,
+        cfg=files_cfg,
     )
     assert second["indexed"] == 0, (
         f"expected zero re-indexed на втором запуске, got {second['indexed']!r}"
@@ -116,50 +114,49 @@ def test_files_ingest_is_idempotent_second_run_skips_all(  # noqa: PLR0913
 
 
 def test_files_ingest_full_cleanup_returns_pruned_count(  # noqa: PLR0913
-    kb_cfg: KbConfig,
+    files_cfg: IngestFilesConfig,
     kb_store: PostgresChunkStore,
     kb_collections_store: PostgresCollectionsStore,
     kb_embedder: OpenAICompatEmbedder,
     kb_dispatch_reader: DispatchReader[str],
     kb_chunker: StructuralChunker,
 ) -> None:
-    """`prune_missing=True` возвращает поле `pruned >= 0` (без падений)."""
-    folder = Path(kb_cfg.files_folder)
+    """`prune=True` в конфиге возвращает поле `pruned >= 0` (без падений)."""
+    folder = Path(files_cfg.folder)
     if not folder.exists() or not folder.is_dir():
-        pytest.skip("files_folder отсутствует")
+        pytest.skip("[tool.kb.files_ingest].folder отсутствует")
 
-    result = files_ingest(
+    files_cfg.prune = True
+    result = ingest_files(
         chunk_store=kb_store,
         collections_store=kb_collections_store,
         embedder=kb_embedder,
         dispatch_reader=kb_dispatch_reader,
         chunker=kb_chunker,
-        cfg=kb_cfg,
-        prune_missing=True,
+        cfg=files_cfg,
     )
     assert result["pruned"] >= 0
 
 
 def test_files_ingest_missing_folder_raises(  # noqa: PLR0913 — integration test
     monkeypatch: pytest.MonkeyPatch,
-    kb_cfg: KbConfig,
+    files_cfg: IngestFilesConfig,
     kb_store: PostgresChunkStore,
     kb_collections_store: PostgresCollectionsStore,
     kb_embedder: OpenAICompatEmbedder,
     kb_dispatch_reader: DispatchReader[str],
     kb_chunker: StructuralChunker,
 ) -> None:
-    """Tool-валидатор: несуществующий `files_folder` → `RuntimeError`."""
-    monkeypatch.setattr(kb_cfg, "files_folder", "/nonexistent/path/xyz")
+    """Tool-валидатор: несуществующий `folder` → `RuntimeError`."""
+    monkeypatch.setattr(files_cfg, "folder", "/nonexistent/path/xyz")
     with pytest.raises(RuntimeError, match="folder_not_found"):
-        files_ingest(
+        ingest_files(
             chunk_store=kb_store,
             collections_store=kb_collections_store,
             embedder=kb_embedder,
             dispatch_reader=kb_dispatch_reader,
             chunker=kb_chunker,
-            cfg=kb_cfg,
-            prune_missing=False,
+            cfg=files_cfg,
         )
 
 

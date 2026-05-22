@@ -4,13 +4,15 @@
 endpoint, реальный Confluence. Параметры конфигурации читаются через
 систему конфигурирования (BobaFlatSettings) из:
 
-- `[tool.kb]`              → `KbConfig` (collection, files_folder, search
-                              params, chunker).
-- `[tool.kb.postgres]`     → `PostgresConnectionConfig` (host/port/user/...).
-- `[tool.kb.confluence]`   → `ConfluenceConnectionConfig` (base_url/auth/...).
-- `[tool.kb.embedding]`    → `EmbeddingConfig` (model/base_url/api_key).
-- `[tool.kb.fts]`          → `FtsConfig` (одна whitelist-таблица).
-- `[test.kb]`              → `KbIntegrationTestConfig` (тестовые параметры:
+- `[tool.kb]`               → `KbConfig` (RRF / FTS-params / chunker).
+- `[tool.kb.files]`         → `FilesIngestConfig` (collection + folder).
+- `[tool.kb.confluence_ingest]` → `ConfluenceIngestConfig` (collection).
+- `[tool.kb.search]`        → `SearchConfig` (collections list).
+- `[tool.kb.postgres]`      → `PostgresConnectionConfig` (host/port/user/...).
+- `[tool.kb.confluence]`    → `ConfluenceConnectionConfig` (base_url/auth/...).
+- `[tool.kb.embedding]`     → `EmbeddingConfig` (model/base_url/api_key).
+- `[tool.kb.fts]`           → `FtsConfig` (одна whitelist-таблица).
+- `[test.kb]`               → `KbIntegrationTestConfig` (тестовые параметры:
                               page_ids, search-query, space_key, ...).
 
 Каждая конфиг-фикстура skip-ает тест с понятной причиной, если секция
@@ -51,14 +53,17 @@ from boba.text import OverlapCharSplitter, StructuralChunker
 from boba.text.structural_chunker import SplitterFactory
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
+from boba.tool.kb.confluence.ingest_config import ConfluenceIngestConfig
 from boba.tool.kb.core.chunk_store import PostgresChunkStore
+from boba.tool.kb.core.chunk_store_config import ChunkStoreSchemaConfig
 from boba.tool.kb.core.collections_store import PostgresCollectionsStore
 from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.embedding_config import EmbeddingConfig
+from boba.tool.kb.core.files_ingest_config import IngestFilesConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
 from boba.tool.kb.core.migrations import apply_bootstrap, ensure_vector_index
 from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
-from boba.tool.kb.core.vector_store_config import VectorStoreSchemaConfig
+from boba.tool.kb.core.search_config import SearchConfig
 from boba.tool.kb.fts.config import FtsConfig
 from boba.tool.kb.fts.db import PgFtsKnowledgeBase
 from boba.tool.kb.sql.config import SqlConfig
@@ -147,6 +152,33 @@ def kb_cfg() -> KbConfig:
 
 
 @pytest.fixture
+def files_cfg() -> IngestFilesConfig:
+    """`FilesIngestConfig` из `[tool.kb.files]`; skip при ошибке валидации."""
+    try:
+        return IngestFilesConfig()
+    except ValidationError as e:
+        pytest.skip(f"[tool.kb.files] не сконфигурирован: {e}")
+
+
+@pytest.fixture
+def confluence_ingest_cfg() -> ConfluenceIngestConfig:
+    """`ConfluenceIngestConfig` из `[tool.kb.confluence_ingest]`; skip при ошибке."""
+    try:
+        return ConfluenceIngestConfig()
+    except ValidationError as e:
+        pytest.skip(f"[tool.kb.confluence_ingest] не сконфигурирован: {e}")
+
+
+@pytest.fixture
+def search_cfg() -> SearchConfig:
+    """`SearchConfig` из `[tool.kb.search]`; skip при ошибке валидации."""
+    try:
+        return SearchConfig()
+    except ValidationError as e:
+        pytest.skip(f"[tool.kb.search] не сконфигурирован: {e}")
+
+
+@pytest.fixture
 def pg_cfg() -> PostgresConnectionConfig:
     """`PostgresConnectionConfig` из `[tool.kb.postgres]`; skip при ошибке."""
     try:
@@ -156,8 +188,8 @@ def pg_cfg() -> PostgresConnectionConfig:
 
 
 @pytest.fixture
-def vector_store_cfg() -> VectorStoreSchemaConfig:
-    """`VectorStoreSchemaConfig` из `[tool.kb.vector_store]`; skip при ошибке.
+def vector_store_cfg() -> ChunkStoreSchemaConfig:
+    """`ChunkStoreSchemaConfig` из `[tool.kb.chunk_store]`; skip при ошибке.
 
     Тот же конфиг получает и bootstrap (`apply_bootstrap` + `ensure_vector_index`
     в фикстурах ниже), и runtime-сторона (`PostgresChunkStore` /
@@ -166,9 +198,9 @@ def vector_store_cfg() -> VectorStoreSchemaConfig:
     проходит сквозным маршрутом.
     """
     try:
-        return VectorStoreSchemaConfig()
+        return ChunkStoreSchemaConfig()
     except ValidationError as e:
-        pytest.skip(f"[tool.kb.vector_store] не сконфигурирован: {e}")
+        pytest.skip(f"[tool.kb.chunk_store] не сконфигурирован: {e}")
 
 
 @pytest.fixture
@@ -228,7 +260,7 @@ def test_cfg() -> KbIntegrationTestConfig:
 @pytest.fixture
 def kb_pool(
     pg_cfg: PostgresConnectionConfig,
-    vector_store_cfg: VectorStoreSchemaConfig,
+    vector_store_cfg: ChunkStoreSchemaConfig,
 ) -> PostgresPool:
     """`PostgresPool` из `[tool.kb.postgres]` с register_vector + bootstrap.
 
@@ -263,7 +295,7 @@ def kb_embedder(embedding_cfg: EmbeddingConfig) -> OpenAICompatEmbedder:
 def kb_store(
     kb_pool: PostgresPool,
     kb_embedder: OpenAICompatEmbedder,
-    vector_store_cfg: VectorStoreSchemaConfig,
+    vector_store_cfg: ChunkStoreSchemaConfig,
 ) -> PostgresChunkStore:
     """Write-side store для ingest-тулов.
 
@@ -284,14 +316,14 @@ def kb_store(
     return PostgresChunkStore(
         pool=kb_pool,
         embedding_dim=kb_embedder.dim(),
-        schema_cfg=vector_store_cfg,
+        chunk_store_cfg=vector_store_cfg,
     )
 
 
 @pytest.fixture
 def kb_collections_store(
     kb_pool: PostgresPool,
-    vector_store_cfg: VectorStoreSchemaConfig,
+    vector_store_cfg: ChunkStoreSchemaConfig,
 ) -> PostgresCollectionsStore:
     """Collections-CRUD store для ingest-тулов (`ensure_collection`).
 
@@ -309,7 +341,7 @@ def kb_knowledge_base(
     kb_cfg: KbConfig,
     kb_pool: PostgresPool,
     kb_embedder: OpenAICompatEmbedder,
-    vector_store_cfg: VectorStoreSchemaConfig,
+    vector_store_cfg: ChunkStoreSchemaConfig,
 ) -> PostgresKnowledgeBase:
     """Read-side KB для kb_search (hybrid RRF)."""
     return PostgresKnowledgeBase(

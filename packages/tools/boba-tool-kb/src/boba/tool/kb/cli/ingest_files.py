@@ -1,5 +1,5 @@
 """
-CLI-runner: индексация локальной папки (`[tool.kb].files_folder`) в KB.
+CLI-runner: индексация локальной папки (`[tool.kb.files].folder`) в KB.
 
 Не tool-функция (`@tool` нет), а операторский скрипт-обёртка над
 `files_ingest`. Лежит в `core/cli/`, отдельно от tools, чтобы не
@@ -14,60 +14,32 @@ CLI-runner: индексация локальной папки (`[tool.kb].files
                нет среди индексируемых файлов (по умолчанию off)
 
 Папка и коллекция фиксируются оператором в config:
-    [tool.kb]
-    files_folder = "./local/docs"
-    collection   = "knowledge_base"
-
-CLI их не переопределяет — это by design (см. docstring `files_ingest`).
+    [tool.kb.ingest_files]
+    folder     = "./local/docs"
+    collection = "kb_files"
+    prune      = false
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import Annotated
 
 from dishka.entities.component import Component
-from pydantic import Field
 
 from boba.agent import AgentBuilder
 from boba.indexing import DispatchReader
 from boba.indexing.embedder import Embedder
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.text import StructuralChunker
 from boba.tool.kb.core import providers as kb_providers
 from boba.tool.kb.core.chunk_store import PostgresChunkStore
 from boba.tool.kb.core.collections_store import PostgresCollectionsStore
-from boba.tool.kb.core.config import KbConfig
-from boba.tool.kb.core.tools.files_ingest import files_ingest
+from boba.tool.kb.core.files_ingest_config import IngestFilesConfig
+from boba.tool.kb.core.tools.ingest_files import ingest_files
 
-__all__ = ["IngestFilesConfig", "main"]
+__all__ = ["main"]
 
-logger = logging.getLogger("boba.tool.kb.core.cli.ingest_files")
-
-
-class IngestFilesConfig(BobaFlatSettings):
-    """CLI-аргументы для `ingest_files`-runner'а.
-
-    Config-секция: `[tool.kb.ingest_files]` (+ CLI-флаги через `use_cli=True`).
-    """
-
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="forbid",
-        config_path="tool.kb.ingest_files",
-        use_cli=True,
-    )
-
-    prune: Annotated[
-        bool,
-        Field(
-            description=(
-                "prune_missing=True: удалить из коллекции чанки, чьих "
-                "source_id нет среди файлов в `files_folder`."
-            ),
-        ),
-    ] = False
+logger = logging.getLogger("boba.tool.kb.cli.ingest_files")
 
 
 _KB_COMPONENT = Component(kb_providers.__name__)
@@ -79,17 +51,16 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    args = IngestFilesConfig()
-
     builder = AgentBuilder().use_plugin(kb_providers)
     container = builder.di.build_container()
 
     try:
         with container() as req:
-            kb_cfg = req.get(KbConfig, component=_KB_COMPONENT)
+            cfg = req.get(IngestFilesConfig, component=_KB_COMPONENT)
             chunk_store = req.get(PostgresChunkStore, component=_KB_COMPONENT)
             collections_store = req.get(
-                PostgresCollectionsStore, component=_KB_COMPONENT,
+                PostgresCollectionsStore,
+                component=_KB_COMPONENT,
             )
             embedder = req.get(Embedder[str], component=_KB_COMPONENT)
             dispatch_reader = req.get(
@@ -100,21 +71,20 @@ def main() -> int:
 
             logger.info(
                 "ingesting folder=%s → collection=%s (prune=%s)",
-                kb_cfg.files_folder,
-                kb_cfg.collection,
-                args.prune,
+                cfg.folder,
+                cfg.collection,
+                cfg.prune,
             )
 
             start = time.monotonic()
             try:
-                result = files_ingest(
+                result = ingest_files(
                     chunk_store=chunk_store,
                     collections_store=collections_store,
                     embedder=embedder,
                     dispatch_reader=dispatch_reader,
                     chunker=chunker,
-                    cfg=kb_cfg,
-                    prune_missing=args.prune,
+                    cfg=cfg,
                 )
             except Exception:
                 logger.exception("files_ingest FAILED")

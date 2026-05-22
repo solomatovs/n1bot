@@ -26,9 +26,9 @@ from psycopg.rows import dict_row
 
 from boba.db.postgres import PostgresPool
 from boba.indexing.embedder import Embedder
+from boba.tool.kb.core.chunk_store_config import ChunkStoreSchemaConfig
 from boba.tool.kb.core.errors import KnowledgeBaseError
 from boba.tool.kb.core.models import SearchHit
-from boba.tool.kb.core.vector_store_config import VectorStoreSchemaConfig
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ class PostgresKnowledgeBase:
         fts_language: str,
         rrf_k: int,
         rrf_pool: int,
-        schema_cfg: VectorStoreSchemaConfig,
+        schema_cfg: ChunkStoreSchemaConfig,
     ) -> None:
         self._pool = pool
         self._embedder = embedder
@@ -66,8 +66,7 @@ class PostgresKnowledgeBase:
         self._chunks_table = schema_cfg.chunks_ident()
         self._schema_ident = schema_cfg.schema_ident()
         logger.info(
-            "PostgresKnowledgeBase opened dim=%d fts=%s rrf_k=%d pool=%d "
-            "chunks=%s.%s",
+            "PostgresKnowledgeBase opened dim=%d fts=%s rrf_k=%d pool=%d chunks=%s.%s",
             embedding_dim,
             fts_language,
             rrf_k,
@@ -79,11 +78,15 @@ class PostgresKnowledgeBase:
     def search(
         self,
         *,
-        collection: str,
+        collections: list[str],
         query: str,
         top_k: int,
     ) -> list[SearchHit]:
         """Гибридный hybrid retrieval с Reciprocal Rank Fusion.
+
+        Ищет по объединению переданных коллекций: SQL-фильтр
+        `collection = ANY(%(collections)s)`. Пустой список — ошибка
+        (валидируется в `SearchConfig`).
 
         Алгоритм (один SQL, два CTE):
           1. vec CTE: top-`rrf_pool` по cosine-distance (`<=>`).
@@ -111,7 +114,7 @@ class PostgresKnowledgeBase:
                 cur.execute(
                     query_sql,
                     {
-                        "collection": collection,
+                        "collections": list(collections),
                         "embedding": embedding,
                         "query": query,
                         "lang": self._fts_language,
@@ -124,8 +127,8 @@ class PostgresKnowledgeBase:
                 rows = cur.fetchall()
         except Exception as e:
             raise KnowledgeBaseError(
-                f"postgres hybrid search failed for collection "
-                f"{collection!r}: {type(e).__name__}: {e}",
+                f"postgres hybrid search failed for collections "
+                f"{list(collections)!r}: {type(e).__name__}: {e}",
             ) from e
 
         return [
@@ -141,11 +144,14 @@ class PostgresKnowledgeBase:
     def vector_search(
         self,
         *,
-        collection: str,
+        collections: list[str],
         query: str,
         top_k: int,
     ) -> list[SearchHit]:
         """Чистый vector top-K (cosine via `<=>`) без FTS-канала.
+
+        Ищет по объединению переданных коллекций: SQL-фильтр
+        `collection = ANY(%(collections)s)`.
 
         `distance` — cosine-distance pgvector'а (меньше = ближе, диапазон
         [0..2]). Семантика consistent с `search`'ем (тоже меньше = ближе),
@@ -167,7 +173,7 @@ class PostgresKnowledgeBase:
                 cur.execute(
                     query_sql,
                     {
-                        "collection": collection,
+                        "collections": list(collections),
                         "embedding": embedding,
                         "snippet_chars": self._snippet_chars,
                         "top_k": top_k,
@@ -176,8 +182,8 @@ class PostgresKnowledgeBase:
                 rows = cur.fetchall()
         except Exception as e:
             raise KnowledgeBaseError(
-                f"postgres vector search failed for collection "
-                f"{collection!r}: {type(e).__name__}: {e}",
+                f"postgres vector search failed for collections "
+                f"{list(collections)!r}: {type(e).__name__}: {e}",
             ) from e
 
         return [
@@ -198,7 +204,8 @@ class PostgresKnowledgeBase:
         raw = row.get("metadata") or {}
         out: dict[str, str] = (
             {str(k): str(v) for k, v in raw.items() if v is not None}
-            if isinstance(raw, dict) else {}
+            if isinstance(raw, dict)
+            else {}
         )
         for key in ("source_id", "chunk_index", "content_hash"):
             value = row.get(key)
@@ -207,7 +214,8 @@ class PostgresKnowledgeBase:
         return out
 
     # SQL для поиска векторов совместно с полнотекстовым поисков
-    # возвращает единный набор
+    # возвращает единный набор. WHERE collection = ANY(%(collections)s) —
+    # psycopg сериализует list[str] в text[].
     _SEARCH_SQL: ClassVar[sql.SQL] = sql.SQL("""
     WITH vec AS (
         SELECT chunk_id,
@@ -215,7 +223,7 @@ class PostgresKnowledgeBase:
                    ORDER BY (embedding::vector({dim})) <=> %(embedding)s::vector
                ) AS rk
         FROM {chunks_table}
-        WHERE collection = %(collection)s AND embedding IS NOT NULL
+        WHERE collection = ANY(%(collections)s) AND embedding IS NOT NULL
         ORDER BY (embedding::vector({dim})) <=> %(embedding)s::vector
         LIMIT %(rrf_pool)s
     ),
@@ -226,7 +234,7 @@ class PostgresKnowledgeBase:
                ) AS rk
         FROM {chunks_table},
              plainto_tsquery(%(lang)s::regconfig, {schema}.immutable_unaccent(%(query)s)) q
-        WHERE collection = %(collection)s AND tsv @@ q
+        WHERE collection = ANY(%(collections)s) AND tsv @@ q
         ORDER BY ts_rank_cd(tsv, q) DESC
         LIMIT %(rrf_pool)s
     ),
@@ -250,7 +258,7 @@ class PostgresKnowledgeBase:
            fused.rrf AS rrf
     FROM fused
     JOIN {chunks_table} c USING (chunk_id)
-    WHERE c.collection = %(collection)s
+    WHERE c.collection = ANY(%(collections)s)
     ORDER BY fused.rrf DESC
     LIMIT %(top_k)s
     """)
@@ -266,7 +274,7 @@ class PostgresKnowledgeBase:
            LEFT(c.format_content, %(snippet_chars)s) AS snippet,
            (c.embedding::vector({dim})) <=> %(embedding)s::vector AS distance
     FROM {chunks_table} c
-    WHERE c.collection = %(collection)s AND c.embedding IS NOT NULL
+    WHERE c.collection = ANY(%(collections)s) AND c.embedding IS NOT NULL
     ORDER BY distance ASC
     LIMIT %(top_k)s
     """)

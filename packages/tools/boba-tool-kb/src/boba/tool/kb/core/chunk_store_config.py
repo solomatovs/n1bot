@@ -1,11 +1,12 @@
-"""`VectorStoreSchemaConfig` — схема + имена таблиц KB-хранилища.
+"""`ChunkStoreSchemaConfig` — схема + имена таблиц KB-хранилища.
 
-Секция `[tool.kb.vector_store]`. Один и тот же конфиг используется
+Секция `[tool.kb.chunk_store]`. Один и тот же конфиг используется
 **и** bootstrap-CLI (`apply_bootstrap` + `ensure_vector_index` — создают
 таблицы / индексы), **и** runtime-стороной (`PostgresChunkStore`,
-`PostgresKnowledgeBase` — пишут/читают эти же таблицы). Это инвариант:
-если разъедутся — bootstrap создаст одни таблицы, store будет ходить в
-другие, и пайплайн тихо упадёт на `relation does not exist`.
+`PostgresCollectionsStore`, `PostgresKnowledgeBase` — пишут/читают эти
+же таблицы). Это инвариант: если разъедутся — bootstrap создаст одни
+таблицы, store будет ходить в другие, и пайплайн тихо упадёт на
+`relation does not exist`.
 
 Все идентификаторы (schema/chunks_table/collections_table) — валидные
 postgres-идентификаторы без кавычек/точек/пробелов; psycopg.sql.Identifier
@@ -21,19 +22,19 @@ from pydantic import Field, model_validator
 
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 
-__all__ = ["VectorStoreSchemaConfig"]
+__all__ = ["ChunkStoreSchemaConfig"]
 
 
-class VectorStoreSchemaConfig(BobaFlatSettings):
+class ChunkStoreSchemaConfig(BobaFlatSettings):
     """Schema + имена таблиц KB-хранилища.
 
-    Config-секция: `[tool.kb.vector_store]`.
+    Config-секция: `[tool.kb.chunk_store]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.vector_store",
+        config_path="tool.kb.chunk_store",
     )
 
     schema: str = Field(
@@ -64,7 +65,7 @@ class VectorStoreSchemaConfig(BobaFlatSettings):
     def _validate(self) -> Self:
         if self.chunks_table == self.collections_table:
             msg = (
-                "tool.kb.vector_store.chunks_table == collections_table "
+                "tool.kb.chunk_store.chunks_table == collections_table "
                 f"({self.chunks_table!r}) — должны различаться"
             )
             raise ValueError(msg)
