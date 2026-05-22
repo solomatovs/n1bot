@@ -20,7 +20,10 @@ __all__ = ["AppConfig", "AppCoreConfig", "ChainlitConfig"]
 
 
 class ChainlitConfig(BobaFlatSettings):
-    """Параметры chainlit-приложения: server, runtime-root, LLM-модель, auth."""
+    """Параметры chainlit-приложения: server, runtime-root, LLM-модель, auth.
+
+    Config-секция: `[chainlit]`.
+    """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
@@ -89,7 +92,10 @@ class AppCoreConfig(BaseModel):
 
 
 class AppConfig(BobaFlatSettings):
-    """Конфиг агента: core/workspaces/openai/prompts."""
+    """Конфиг агента: core/workspaces/openai/prompts.
+
+    Config-секция: `[agent]`.
+    """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,

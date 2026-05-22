@@ -24,7 +24,10 @@ __all__ = ["PostgresConnectionConfig"]
 
 
 class PostgresConnectionConfig(BobaFlatSettings):
-    """Структурированное подключение к Postgres ([tool.kb.postgres])."""
+    """Структурированное подключение к Postgres.
+
+    Config-секция: `[tool.kb.postgres]`.
+    """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,

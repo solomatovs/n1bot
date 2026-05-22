@@ -44,7 +44,10 @@ class AppCoreConfig(BaseModel):
 
 
 class AppConfig(BobaFlatSettings):
-    """Конфиг агента: core/workspaces/openai/prompts."""
+    """Конфиг агента: core/workspaces/openai/prompts.
+
+    Config-секция: `[agent]`.
+    """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,

@@ -14,7 +14,6 @@ postgres-идентификаторы без кавычек/точек/проб�
 
 from __future__ import annotations
 
-import re
 from typing import Self
 
 from psycopg import sql
@@ -24,8 +23,12 @@ from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 
 __all__ = ["VectorStoreSchemaConfig"]
 
+
 class VectorStoreSchemaConfig(BobaFlatSettings):
-    """Schema + имена таблиц KB-хранилища ([tool.kb.vector_store])."""
+    """Schema + имена таблиц KB-хранилища.
+
+    Config-секция: `[tool.kb.vector_store]`.
+    """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,

@@ -26,6 +26,7 @@ __all__ = ["BashLocalConfig", "BashSandboxConfig"]
 class BashLocalConfig(BobaFlatSettings):
     """Конфиг `bash_local`: subprocess без bwrap-изоляции.
 
+    Config-секция: `[tool.bash_local]`.
     Все поля — operator-controlled. LLM выбирает только `command`/`stdin`,
     остальное задано здесь.
     """
@@ -95,6 +96,7 @@ class BashLocalConfig(BobaFlatSettings):
 class BashSandboxConfig(BobaFlatSettings):
     """Конфиг `bash_sandbox`: subprocess внутри bubblewrap.
 
+    Config-секция: `[tool.bash_sandbox]`.
     `profiles` — реестр именованных профилей песочницы (FS-маунты,
     network, env, timeouts). LLM выбирает профиль по имени из этого
     реестра, поля профиля менять не может.

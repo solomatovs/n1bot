@@ -28,7 +28,10 @@ __all__ = ["SqlConfig"]
 
 
 class SqlConfig(PostgresConnectionConfig):
-    """Connection + safety-limits для sql_query tool'ов."""
+    """Connection + safety-limits для sql_query tool'ов.
+
+    Config-секция: `[tool.kb.sql]` (override от `[tool.kb.postgres]`).
+    """
 
     # Override section: [tool.kb.sql] вместо [tool.kb.postgres].
     model_config = BobaSettingsConfigDict(

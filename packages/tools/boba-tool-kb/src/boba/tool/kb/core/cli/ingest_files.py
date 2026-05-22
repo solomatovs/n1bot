@@ -47,6 +47,11 @@ logger = logging.getLogger("boba.tool.kb.core.cli.ingest_files")
 
 
 class IngestFilesConfig(BobaFlatSettings):
+    """CLI-аргументы для `ingest_files`-runner'а.
+
+    Config-секция: `[tool.kb.ingest_files]` (+ CLI-флаги через `use_cli=True`).
+    """
+
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="forbid",
