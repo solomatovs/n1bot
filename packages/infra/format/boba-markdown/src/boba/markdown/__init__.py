@@ -28,6 +28,7 @@ from boba.markdown.sections import (
     MarkdownListSection,
     MarkdownTableSection,
 )
+from boba.markdown.table import format_cell, format_markdown_table
 
 __all__ = [
     "MarkdownBlockquoteSection",
@@ -38,5 +39,7 @@ __all__ = [
     "MarkdownReader",
     "MarkdownSectionParser",
     "MarkdownTableSection",
+    "format_cell",
+    "format_markdown_table",
     "slugify",
 ]

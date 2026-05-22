@@ -1,42 +1,56 @@
-"""CLI-runner: индексация локальной папки в KB через `files_ingest`-tool.
+"""CLI-runner: индексация локальной папки в KB.
 
-Не tool-функция (нет `@tool` декоратора), а операторский скрипт-обёртка
-над одноимённой tool-функцией. Лежит в `cli/`, отдельно от `core/tools/`,
-чтобы не попадать в tool-allowlist'ы.
+Операторский скрипт (нет `@tool` декоратора) — не попадает в LLM
+tool-allowlist'ы. Все параметры (folder, collection, prune, connection,
+tables, embedding, chunker) фиксируются оператором в TOML-секции
+`[cli.kb.files_ingest]`.
 
 Применение:
     BOBA_CONFIG_PATH=./local/config.toml \\
         .venv/bin/python -m boba.tool.kb.cli.files_ingest
-
-Все параметры (folder, collection, prune, connection, tables, embedding,
-chunker) фиксируются оператором в TOML-секции `[cli.kb.files_ingest]`.
-Секция отдельная от `[tool.kb.files_ingest]` (которую читает сама
-tool-функция при вызове из LLM), чтобы CLI и LLM-вызов могли иметь
-независимые настройки (например, разные `folder`/`collection`).
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
+from typing import Any
 
 from dishka.entities.component import Component
+from pydantic import Field
 
 from boba.agent import AgentBuilder
-from boba.indexing import DispatchReader
-from boba.settings import BobaSettingsConfigDict
+from boba.indexing import (
+    CollectionScopedView,
+    DispatchReader,
+    FullCleanup,
+    IndexerConfig,
+    NoneCleanup,
+    PipelineContext,
+    StreamingIndexer,
+)
+from boba.indexing.context import CollectionId, PipelineId
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.core import providers as kb_providers
-from boba.tool.kb.core.tools.files_ingest import FilesIngestConfig, files_ingest
+from boba.tool.kb.core.chunker_factory import build_chunker
+from boba.tool.kb.core.chunker_params import ChunkerParams
+from boba.tool.kb.core.embedder_factory import build_embedder
+from boba.tool.kb.core.embedding_model import EmbeddingModel
+from boba.tool.kb.core.postgres_store import (
+    PostgresChunkStore,
+    PostgresCollectionsStore,
+    PostgresStoreConfig,
+)
+from boba.transport.fs import FsRequest, FsTransport, FsWalkRequestSource
 
 __all__ = ["FilesIngestCliConfig", "main"]
 
 
-class FilesIngestCliConfig(FilesIngestConfig):
-    """CLI-вариант `FilesIngestConfig` — читает `[cli.kb.files_ingest]`.
+class FilesIngestCliConfig(BobaFlatSettings):
+    """Self-contained CLI-конфиг индексатора локальной папки.
 
-    Наследует все поля tool-конфига (store/embedding/chunker/folder/
-    collection/prune), только переопределяет `config_path`, чтобы
-    CLI-runner и сам tool читали независимые TOML-секции.
+    Config-секция: `[cli.kb.files_ingest]`.
     """
 
     model_config = BobaSettingsConfigDict(
@@ -45,6 +59,27 @@ class FilesIngestCliConfig(FilesIngestConfig):
         config_path="cli.kb.files_ingest",
         defaults_from=("postgres", "kb.storage", "embedding"),
     )
+
+    store: PostgresStoreConfig
+    embedding: EmbeddingModel
+    chunker: ChunkerParams
+    folder: str = Field(
+        description="Папка с файлами для индексации (`.md`/`.html`/`.htm`).",
+    )
+    collection: str = Field(
+        default="kb_files",
+        min_length=1,
+        max_length=255,
+        description="Имя target-коллекции в `kb_chunks`.",
+    )
+    prune: bool = Field(
+        default=False,
+        description=(
+            "Если true, удалить из коллекции чанки, чьих source_id нет "
+            "среди файлов в `folder` (cleanup удалённых документов)."
+        ),
+    )
+
 
 logger = logging.getLogger("boba.tool.kb.cli.files_ingest")
 
@@ -77,10 +112,7 @@ def main() -> int:
 
             start = time.monotonic()
             try:
-                result = files_ingest(
-                    cfg=cfg,
-                    dispatch_reader=dispatch_reader,
-                )
+                result = _run_ingest(cfg, dispatch_reader)
             except Exception:
                 logger.exception("files_ingest FAILED")
                 return 1
@@ -97,6 +129,61 @@ def main() -> int:
             return 0 if result["failed"] == 0 else 1
     finally:
         container.close()
+
+
+def _run_ingest(
+    cfg: FilesIngestCliConfig,
+    dispatch_reader: DispatchReader[str],
+) -> dict[str, Any]:
+    folder = Path(cfg.folder)
+    if not folder.exists():
+        msg = f"folder_not_found: {folder}"
+        raise RuntimeError(msg)
+    if not folder.is_dir():
+        msg = f"folder_not_a_directory: {folder}"
+        raise RuntimeError(msg)
+
+    chunk_store = PostgresChunkStore(cfg=cfg.store)
+    collections_store = PostgresCollectionsStore(cfg=cfg.store)
+    embedder = build_embedder(cfg.embedding)
+    chunker = build_chunker(cfg.chunker)
+
+    collection = CollectionId(cfg.collection)
+    collections_store.ensure_collection(collection, description=None)
+
+    view: CollectionScopedView[str] = CollectionScopedView(
+        store=chunk_store,
+        embedder=embedder,
+        collection=collection,
+    )
+    indexer: StreamingIndexer[FsRequest, str] = StreamingIndexer(
+        request_source=FsWalkRequestSource(
+            paths=[str(folder)],
+            include=["*.md", "*.html", "*.htm"],
+        ),
+        transport=FsTransport(),
+        reader=dispatch_reader,
+        chunker=chunker,
+        sink=view,
+        query=view,
+    )
+    indexer_config: IndexerConfig[str] = IndexerConfig(
+        cleanup=FullCleanup() if cfg.prune else NoneCleanup(),
+        force_update=False,
+    )
+    stats = indexer.invoke(
+        PipelineContext(pipeline_id=PipelineId("kb.files_ingest")),
+        indexer_config,
+    )
+
+    return {
+        "folder": str(folder),
+        "collection": str(collection),
+        "indexed": stats.chunks_upserted,
+        "skipped_unchanged": stats.sources_skipped_unchanged,
+        "pruned": stats.chunks_deleted,
+        "failed": stats.sources_failed,
+    }
 
 
 if __name__ == "__main__":

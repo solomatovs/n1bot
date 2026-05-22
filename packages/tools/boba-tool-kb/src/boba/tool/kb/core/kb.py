@@ -25,11 +25,11 @@ from typing import Any, ClassVar
 from psycopg import sql
 from pydantic import BaseModel, Field
 
+from boba.db.postgres import PostgresConnection
 from boba.tool.kb.core.embedder_factory import build_embedder
 from boba.tool.kb.core.embedding_model import EmbeddingModel
 from boba.tool.kb.core.errors import KnowledgeBaseError
 from boba.tool.kb.core.models import SearchHit
-from boba.tool.kb.core.postgres_connection import PostgresConnection
 from boba.tool.kb.core.postgres_pool import open_kb_pool
 from boba.tool.kb.core.postgres_store_schema import PostgresStoreSchema
 

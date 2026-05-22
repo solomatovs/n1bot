@@ -1,9 +1,8 @@
 """`SqlExecutorConfig` + `SqlExecutor` — read-only SQL execute с safety limits.
 
-Tool'ы (`sql_query`, `sql_list_tables`, `sql_describe_table`) принимают
+Tool'ы (`query`, `list_tables`, `describe_table`) принимают
 `SqlExecutorConfig` (composite-BaseModel: connection + safety limits) как
-nested-поле в своих tool-конфигах, и строят `SqlExecutor` inline через
-`cfg.executor.build()`.
+nested-поле в своих tool-конфигах, и строят `SqlExecutor` inline.
 
 Безопасность — только на уровне доступов (DSN-роли) + libpq
 session-параметров, зашитых в DSN через `options=`-параметр; никакой
@@ -29,8 +28,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from boba.db.postgres import PostgresPool
-from boba.tool.kb.core.postgres_connection import PostgresConnection
+from boba.db.postgres import PostgresConnection, PostgresPool
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +39,10 @@ class SqlExecutorConfig(BaseModel):
     """Composite-конфиг для `SqlExecutor`: connection + safety limits.
 
     Не settings (нет `config_path`) — встраивается как nested-поле в
-    tool-конфиги `SqlQueryConfig` / `SqlListTablesConfig` /
-    `SqlDescribeTableConfig`. Благодаря рекурсивному flatten'у все поля
-    (host/port/.../max_rows/max_cell_chars/statement_timeout_ms) лежат
-    плоско в корневой TOML-секции tool'а.
+    tool-конфиги `QueryConfig` / `ListTablesConfig` / `DescribeTableConfig`.
+    Благодаря рекурсивному flatten'у все поля (host/port/.../max_rows/
+    max_cell_chars/statement_timeout_ms) лежат плоско в корневой
+    TOML-секции tool'а.
     """
 
     connection: PostgresConnection
@@ -52,7 +50,7 @@ class SqlExecutorConfig(BaseModel):
         default=100,
         ge=1,
         description=(
-            "Жёсткий потолок числа строк в результате `sql_query`. LLM "
+            "Жёсткий потолок числа строк в результате `query`. LLM "
             "может попросить меньше через `row_limit`, но не больше."
         ),
     )
@@ -64,21 +62,16 @@ class SqlExecutorConfig(BaseModel):
             "Длинные строки обрезаются до `max_cell_chars` с суффиксом '…'."
         ),
     )
-    statement_timeout_ms: int = Field(
-        default=5000,
-        ge=100,
-        description=(
-            "PG statement_timeout (мс) — зашивается в DSN через libpq "
-            "параметр `options='-c statement_timeout=<ms>'`. PG применяет "
-            "при коннекте, действует на ВСЕ statement'ы сессии."
-        ),
-    )
 
     def session_options(self) -> dict[str, str]:
-        """Session-level GUC, зашиваемые в `options=`-параметр DSN."""
+        """Session-level GUC, зашиваемые в `options=`-параметр DSN.
+
+        `statement_timeout` тянется из `connection.statement_timeout_ms`
+        (живёт на PostgresConnection — общее для всех PG-tool'ов).
+        """
         return {
             "default_transaction_read_only": "on",
-            "statement_timeout": str(self.statement_timeout_ms),
+            "statement_timeout": str(self.connection.statement_timeout_ms),
         }
 
 
@@ -126,8 +119,8 @@ class SqlExecutor:
 
     @property
     def max_rows_cap(self) -> int:
-        """Hard cap из конфига. Introspection-tools (`sql_list_tables`/
-        `sql_describe_table`) фетчат до этого значения."""
+        """Hard cap из конфига. Introspection-tools (`list_tables`/
+        `describe_table`) фетчат до этого значения."""
         return self._cfg.max_rows
 
     def execute(

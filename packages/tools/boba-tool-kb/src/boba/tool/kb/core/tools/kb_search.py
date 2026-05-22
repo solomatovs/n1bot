@@ -81,10 +81,11 @@ def kb_search(
 ) -> list[dict[str, Any]]:
     """Hybrid semantic search (vector + FTS + RRF) по KB-коллекциям.
 
-    Ищет внутри коллекций, наполненных через `files_ingest` /
-    `confluence_*_ingest`. Список целевых коллекций — pre-настроенный
-    оператором (`cfg.collections`); LLM их не выбирает. SQL-уровень:
-    `WHERE collection = ANY(...)` — поиск по объединению.
+    Ищет внутри коллекций, наполненных через `confluence_*_ingest` или
+    оператором (например, CLI `boba.tool.kb.cli.files_ingest`). Список
+    целевых коллекций — pre-настроенный оператором (`cfg.collections`);
+    LLM их не выбирает. SQL-уровень: `WHERE collection = ANY(...)` —
+    поиск по объединению.
 
     Возвращает JSON-массив hits, упорядоченный по релевантности
     (меньшее distance = ближе/релевантнее). Каждый hit — `{id, distance,

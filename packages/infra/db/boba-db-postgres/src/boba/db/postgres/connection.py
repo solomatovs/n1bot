@@ -17,7 +17,7 @@ from typing import Any, Self
 from psycopg.conninfo import make_conninfo
 from pydantic import BaseModel, Field, model_validator
 
-from boba.db.postgres import PostgresConfig
+from boba.db.postgres.config import PostgresConfig
 
 __all__ = ["PostgresConnection"]
 
@@ -59,7 +59,7 @@ class PostgresConnection(BaseModel):
         ),
     )
     application_name: str = Field(
-        default="boba-tool-kb",
+        default="boba",
         description=(
             "Метка соединения для PG `pg_stat_activity` — удобно "
             "разделять запросы разных приложений."
@@ -80,7 +80,11 @@ class PostgresConnection(BaseModel):
         gt=0,
         description="Таймаут установки соединения (сек).",
     )
-
+    statement_timeout_ms: int = Field(
+        default=5000,
+        ge=100,
+        description="PG statement_timeout (мс)",
+    )
     @model_validator(mode="after")
     def _validate(self) -> Self:
         if not self.host:

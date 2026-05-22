@@ -14,11 +14,13 @@
 from __future__ import annotations
 
 from boba.db.postgres.config import PostgresConfig
+from boba.db.postgres.connection import PostgresConnection
 from boba.db.postgres.errors import PostgresError, PostgresPoolClosedError
 from boba.db.postgres.pool import PostgresPool
 
 __all__ = [
     "PostgresConfig",
+    "PostgresConnection",
     "PostgresError",
     "PostgresPool",
     "PostgresPoolClosedError",

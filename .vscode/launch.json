@@ -2,111 +2,6 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Agent: run query",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.cli.agent",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            // model/query/sampling берутся из секции [cli] в local/config.toml
-            // (или env-варсов BOBA_CLI__MODEL, BOBA_CLI__QUERY и т.п.).
-            "envFile": "${workspaceFolder}/local/.env"
-        },
-        {
-            "name": "Index: postgres operator ingest",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "pytest",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            // Operator-mode прогон test_folder_indexer.py::test_operator_real_ingest:
-            // читает [tool.postgres] из local/config.toml — dsn, embedding_model,
-            // embedding_dim, embedding_base_url, ingest_folder, ingest_collection.
-            // Индексирует и .md (pre-chunked), и .html (auto-split по H1/H2).
-            // `-s` нужен, чтобы тест распечатал stats
-            "args": [
-                "-v",
-                "-s",
-                "-m", "integration",
-                "packages/tools/boba-tool-postgres/tests/test_folder_indexer.py::test_operator_real_ingest"
-            ],
-            "envFile": "${workspaceFolder}/local/.env"
-        },
-        {
-            "name": "KB: bootstrap DB (operator CLI)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.tool.kb.core.cli.bootstrap",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            // Одноразовый шаг: применяет migrations/*.sql + создаёт HNSW-индекс
-            // под dim текущего EmbeddingConfig. Запускать после первого
-            // `docker compose up postgres` и после смены embedding-модели.
-            // Аргументов нет — конфиг берётся из local/config.toml.
-            "envFile": "${workspaceFolder}/local/.env"
-        },
-        {
-            "name": "KB: ingest files (operator CLI)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.tool.kb.core.cli.ingest_files",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            // folder + collection пинятся оператором в local/config.toml ([tool.kb].files_folder, .collection).
-            // В [tool.kb.ingest_files] секции в TOML нет — единственный per-launch флаг ниже.
-            "args": [
-                // "--prune"  // FullCleanup: удалить чанки исчезнувших файлов (destructive — default off)
-            ],
-            "envFile": "${workspaceFolder}/local/.env"
-        },
-        {
-            "name": "KB: ingest all Confluence spaces (operator CLI)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.tool.kb.confluence.cli.ingest_all_spaces",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            // Confluence-connection + collection — в [tool.kb.confluence] и [tool.kb] (config.toml).
-            // В [tool.kb.ingest_all_spaces] секции в TOML нет — все флаги ниже это per-launch override.
-            "args": [
-                "--space-type=global"           // global | personal | any  (default: global)
-                // "--only=KAFKA,INFRA",       // ингестить ТОЛЬКО эти space-keys (skip discovery)
-                // "--skip=DEMO,TEST",         // исключить из discovery
-                // "--prune"                    // FullCleanup в каждой коллекции (destructive — default off)
-            ],
-            "envFile": "${workspaceFolder}/local/.env"
-        },
-        {
-            "name": "Search: postgres kb_search",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "pytest",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            // Operator-mode прогон test_kb_search.py::test_kb_search_real:
-            // читает [tool.postgres] + BOBA_KB_SEARCH_QUERY/TOP_K из env.
-            // Гоняет гибридный (vector + FTS + RRF) поиск и печатает hits.
-            "args": [
-                "-v",
-                "-s",
-                "-m", "integration",
-                "packages/tools/boba-tool-postgres/tests/test_kb_search.py::test_kb_search_real"
-            ],
-            "envFile": "${workspaceFolder}/local/.env"
-        },
-        {
             "name": "Chainlit: Boba UI",
             "type": "debugpy",
             "request": "launch",
@@ -115,8 +10,61 @@
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
-            // ChainlitConfig читается из env (BOBA_CHAINLIT__*) или TOML [chainlit].
-            // CLI-аргументы у ChainlitConfig не подключены (boba_cli=false).
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "Agent CLI: run query",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.cli.agent",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "KB CLI: bootstrap (migrations + HNSW)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.tool.kb.cli.bootstrap",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "KB CLI: files_ingest (FS → KB)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.tool.kb.cli.files_ingest",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "KB CLI: ingest_confluence_spaces (bulk)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.tool.kb.cli.ingest_confluence_spaces",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "KB CLI: confluence_space_download (space → FS)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.tool.kb.cli.confluence_space_download",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
@@ -153,7 +101,7 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
-            "name": "Python current file",
+            "name": "Python: current file",
             "type": "debugpy",
             "request": "launch",
             "console": "integratedTerminal",

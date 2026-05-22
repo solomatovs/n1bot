@@ -9,7 +9,7 @@
 `connection` + `tables`). Pool открывают сами через `open_kb_pool(cfg.connection)`
 (singleton по DSN — store'ы с одним и тем же connection делят один pool).
 Никакого корневого settings-класса — composite-cfg встраивается как
-nested-поле в tool-конфиги (`FilesIngestConfig`, `SearchInKbConfig`, ...).
+nested-поле в tool-конфиги (`SearchInKbConfig`, `ConfluenceSpaceIngestConfig`, ...).
 
 Чисто chunk-уровневые операции (документы внутри коллекции):
 - read:  get_by_ids / peek / find / diff_by_hash
@@ -44,6 +44,7 @@ from typing import Any, ClassVar, TypeVar
 from psycopg import sql
 from pydantic import BaseModel
 
+from boba.db.postgres import PostgresConnection
 from boba.indexing.chunk_store import (
     ChunkStore,
     CollectionInfo,
@@ -73,7 +74,6 @@ from boba.indexing.filter import (
 )
 from boba.indexing.metadata import Metadata
 from boba.indexing.sections import SourceId
-from boba.tool.kb.core.postgres_connection import PostgresConnection
 from boba.tool.kb.core.postgres_pool import open_kb_pool
 from boba.tool.kb.core.postgres_store_schema import PostgresStoreSchema
 

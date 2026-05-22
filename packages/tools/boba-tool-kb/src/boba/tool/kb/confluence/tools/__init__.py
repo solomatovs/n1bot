@@ -2,7 +2,7 @@
 
 Online (read-only API):
 - `confluence_search`        — CQL-поиск.
-- `confluence_list_spaces`   — список доступных spaces (markdown-таблица).
+- `confluence_spaces_list`   — список доступных spaces (markdown-таблица).
 
 Download (в workspace):
 - `confluence_page_download`  — скачать список page_ids (HTML/Markdown).

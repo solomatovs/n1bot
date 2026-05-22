@@ -68,10 +68,7 @@ def confluence_space_ingest(
         Field(
             min_length=1,
             description=(
-                'Список Confluence space-keys (например, `["KAFKA"]` или '
-                '`["KAFKA", "INFRA"]`). Все страницы каждого space '
-                "(с пагинацией) объединяются в один pipeline-run и "
-                "индексируются в `cfg.collection`."
+                'Список Confluence space-keys'
             ),
         ),
     ],

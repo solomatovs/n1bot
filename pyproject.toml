@@ -22,6 +22,7 @@ pythonpath = [
     "packages/tools/boba-tool-files/src",
     "packages/tools/boba-tool-html/src",
     "packages/tools/boba-tool-kb/src",
+    "packages/tools/boba-tool-postgres/src",
     "packages/tools/boba-tool-shell/src",
 ]
 addopts = ["--strict-markers", "-m", "not integration"]
@@ -58,6 +59,7 @@ extraPaths = [
     "packages/tools/boba-tool-files/src",
     "packages/tools/boba-tool-html/src",
     "packages/tools/boba-tool-kb/src",
+    "packages/tools/boba-tool-postgres/src",
     "packages/tools/boba-tool-shell/src",
 ]
 venvPath = "."

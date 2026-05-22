@@ -14,8 +14,7 @@ from __future__ import annotations
 
 from pgvector.psycopg import register_vector
 
-from boba.db.postgres import PostgresPool
-from boba.tool.kb.core.postgres_connection import PostgresConnection
+from boba.db.postgres import PostgresConnection, PostgresPool
 
 __all__ = ["open_kb_pool"]
 

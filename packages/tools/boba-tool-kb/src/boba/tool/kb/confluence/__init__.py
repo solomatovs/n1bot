@@ -13,8 +13,8 @@ Ingest (Confluence → kb_chunks):
 Search (online):
 - `confluence_cql_search`     — CQL-search по реальному Confluence.
                                 Секция `[tool.kb.confluence.search.cql]`.
-- `confluence_list_spaces`    — список доступных spaces (markdown).
-                                Секция `[tool.kb.confluence.list_spaces]`.
+- `confluence_spaces_list`    — список доступных spaces (markdown).
+                                Секция `[tool.kb.confluence.spaces_list]`.
 
 Download (Confluence → workspace):
 - `confluence_page_download`  — скачать список page_ids (HTML или Markdown).
@@ -38,10 +38,6 @@ from boba.tool.kb.confluence.tools.cql_search import (
     ConfluenceCqlSearchConfig,
     confluence_cql_search,
 )
-from boba.tool.kb.confluence.tools.list_spaces import (
-    ConfluenceListSpacesConfig,
-    confluence_list_spaces,
-)
 from boba.tool.kb.confluence.tools.page_download import (
     ConfluencePageDownloadConfig,
     confluence_page_download,
@@ -58,21 +54,25 @@ from boba.tool.kb.confluence.tools.space_ingest import (
     ConfluenceSpaceIngestConfig,
     confluence_space_ingest,
 )
+from boba.tool.kb.confluence.tools.spaces_list import (
+    ConfluenceSpacesListConfig,
+    confluence_spaces_list,
+)
 
 __all__ = [
     "ConfluenceConnection",
     "ConfluenceCqlIngestConfig",
     "ConfluenceCqlSearchConfig",
-    "ConfluenceListSpacesConfig",
     "ConfluencePageDownloadConfig",
     "ConfluencePageIngestConfig",
     "ConfluenceSpaceDownloadConfig",
     "ConfluenceSpaceIngestConfig",
+    "ConfluenceSpacesListConfig",
     "confluence_cql_ingest",
     "confluence_cql_search",
-    "confluence_list_spaces",
     "confluence_page_download",
     "confluence_page_ingest",
     "confluence_space_download",
     "confluence_space_ingest",
+    "confluence_spaces_list",
 ]
