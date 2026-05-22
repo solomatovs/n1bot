@@ -1,4 +1,8 @@
-"""Tool `confluence_page_ingest`: индексация явного списка Confluence-страниц в KB."""
+"""Tool `confluence_page_ingest` + `ConfluencePageIngestConfig`.
+
+Индексирует явный список Confluence-страниц (page_ids) в KB-коллекцию.
+LLM передаёт `page_ids` + опц. `prune_missing`.
+"""
 
 from __future__ import annotations
 
@@ -7,32 +11,53 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from boba.indexing.context import PipelineId
-from boba.indexing.embedder import Embedder
-from boba.text import StructuralChunker
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.confluence._ingest_common import run_confluence_ingest
-from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.ingest_config import ConfluenceIngestConfig
 from boba.tool.kb.confluence.request_sources import ConfluencePagesRequestSource
+from boba.tool.kb.core.chunker_factory import build_chunker
+from boba.tool.kb.core.chunker_params import ChunkerParams
+from boba.tool.kb.core.embedder_factory import build_embedder
+from boba.tool.kb.core.embedding_model import EmbeddingModel
 from boba.tool.kb.core.postgres_store import (
     PostgresChunkStore,
     PostgresCollectionsStore,
+    PostgresStoreConfig,
 )
-from boba.tools import FromConfig, FromDI, Scope, tool
+from boba.tools import FromConfig, tool
 
-__all__ = ["confluence_page_ingest"]
+__all__ = ["ConfluencePageIngestConfig", "confluence_page_ingest"]
 
 _PIPELINE_ID: PipelineId = PipelineId("kb.confluence_page_ingest")
 
 
+class ConfluencePageIngestConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `confluence_page_ingest`.
+
+    Config-секция: `[tool.kb.confluence_ingest.page]`.
+    """
+
+    model_config = BobaSettingsConfigDict(
+        case_sensitive=False,
+        extra="ignore",
+        config_path="tool.kb.confluence_ingest.page",
+    )
+
+    store: PostgresStoreConfig
+    embedding: EmbeddingModel
+    chunker: ChunkerParams
+    confluence: ConfluenceConnection
+    collection: str = Field(
+        default="kb_confluence",
+        min_length=1,
+        max_length=255,
+        description="Target-коллекция в `kb_chunks`.",
+    )
+
+
 @tool
-def confluence_page_ingest(  # noqa: PLR0913 — tool с явным набором FromDI/FromConfig deps
-    chunk_store: Annotated[PostgresChunkStore, FromDI(Scope.APP)],
-    collections_store: Annotated[PostgresCollectionsStore, FromDI(Scope.APP)],
-    embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
-    chunker: Annotated[StructuralChunker, FromDI(Scope.APP)],
-    ingest_cfg: Annotated[ConfluenceIngestConfig, FromConfig()],
-    conn_cfg: Annotated[ConfluenceConnectionConfig, FromConfig()],
+def confluence_page_ingest(
+    cfg: Annotated[ConfluencePageIngestConfig, FromConfig()],
     page_ids: Annotated[
         list[str],
         Field(
@@ -55,25 +80,28 @@ def confluence_page_ingest(  # noqa: PLR0913 — tool с явным наборо
 ) -> dict[str, Any]:
     """Индексирует явный список Confluence-страниц в KB-коллекцию.
 
-    Target collection — `[tool.kb.confluence_ingest].collection` (pinned
-    оператором; отдельная от FS-коллекции `[tool.kb.files].collection`).
-    Возвращает JSON {page_ids, collection, indexed, skipped_unchanged,
-    pruned, failed}.
+    Возвращает JSON `{page_ids, collection, indexed, skipped_unchanged,
+    pruned, failed}`.
     """
+    chunk_store = PostgresChunkStore(cfg=cfg.store)
+    collections_store = PostgresCollectionsStore(cfg=cfg.store)
+    embedder = build_embedder(cfg.embedding)
+    chunker = build_chunker(cfg.chunker)
+
     request_source = ConfluencePagesRequestSource(
-        base_url=conn_cfg.base_url,
-        auth=ConfluenceConnection.make_auth(conn_cfg),
+        base_url=cfg.confluence.base_url,
+        auth=cfg.confluence.make_auth(),
         page_ids=page_ids,
-        body_format=conn_cfg.body_format,
+        body_format=cfg.confluence.body_format,
     )
     result = run_confluence_ingest(
         request_source=request_source,
-        conn_cfg=conn_cfg,
+        conn=cfg.confluence,
         chunk_store=chunk_store,
         collections_store=collections_store,
         embedder=embedder,
         chunker=chunker,
-        collection=ingest_cfg.collection,
+        collection=cfg.collection,
         prune_missing=prune_missing,
         pipeline_id=_PIPELINE_ID,
     )

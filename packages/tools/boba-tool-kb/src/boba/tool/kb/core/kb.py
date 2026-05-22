@@ -19,18 +19,68 @@ tool'ов (тот же shape, что и у `search`).
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from typing import Any, ClassVar
 
 from psycopg import sql
+from pydantic import BaseModel, Field
 
-from boba.indexing.embedder import Embedder
+from boba.tool.kb.core.embedder_factory import build_embedder
+from boba.tool.kb.core.embedding_model import EmbeddingModel
 from boba.tool.kb.core.errors import KnowledgeBaseError
 from boba.tool.kb.core.models import SearchHit
-from boba.tool.kb.core.postgres_store import PostgresChunkStore, PostgresStoreConfig
+from boba.tool.kb.core.postgres_connection import PostgresConnection
+from boba.tool.kb.core.postgres_pool import open_kb_pool
+from boba.tool.kb.core.postgres_store_schema import PostgresStoreSchema
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["PostgresKnowledgeBase"]
+__all__ = [
+    "PostgresKnowledgeBase",
+    "PostgresKnowledgeBaseConfig",
+]
+
+
+class PostgresKnowledgeBaseConfig(BaseModel):
+    """Composite-конфиг для read-side KB.
+
+    Поля: connection + tables + embedding + RRF/FTS-params.
+    """
+
+    connection: PostgresConnection
+    tables: PostgresStoreSchema
+    embedding: EmbeddingModel
+    snippet_chars: int = Field(
+        default=300,
+        ge=1,
+        description="Максимальная длина сниппета документа в search-результатах.",
+    )
+    fts_language: str = Field(
+        default="russian",
+        description=(
+            "PostgreSQL text search configuration для tsvector колонки. "
+            "Должен быть установленным `pg_ts_config` именем (`russian`, "
+            "`english`, `simple`, ...). Меняется только пересозданием "
+            "kb_chunks (см. `migrations/001_init.sql`)."
+        ),
+    )
+    rrf_k: int = Field(
+        default=60,
+        ge=1,
+        description=(
+            "Константа RRF (Reciprocal Rank Fusion). Стандарт литературы — "
+            "60. Больше → плавнее склейка, меньше → агрессивнее доминирует "
+            "первый rank-1 из любого канала."
+        ),
+    )
+    rrf_pool: int = Field(
+        default=40,
+        ge=1,
+        description=(
+            "Сколько top-K брать из каждого канала (vector + FTS) перед "
+            "склейкой через RRF. Обычно 2-4x от итогового top_k."
+        ),
+    )
 
 
 class PostgresKnowledgeBase:
@@ -41,32 +91,19 @@ class PostgresKnowledgeBase:
     def __init__(
         self,
         *,
-        cfg: PostgresStoreConfig,
-        embedder: Embedder[str],
-        embedding_dim: int,
-        snippet_chars: int,
-        fts_language: str,
-        rrf_k: int,
-        rrf_pool: int,
+        cfg: PostgresKnowledgeBaseConfig,
     ) -> None:
         self._cfg = cfg
-        self._pool = PostgresChunkStore.open_pool(cfg)
-        self._embedder = embedder
-        self._embedding_dim = embedding_dim
-        self._snippet_chars = snippet_chars
-        self._fts_language = fts_language
-        self._rrf_k = rrf_k
-        self._rrf_pool = rrf_pool
-        self._chunks_table = cfg.chunks_ident()
-        self._schema_ident = cfg.schema_ident()
+        self._pool = open_kb_pool(cfg.connection)
+        self._embedder = build_embedder(cfg.embedding)
         logger.info(
             "PostgresKnowledgeBase opened dim=%d fts=%s rrf_k=%d pool=%d chunks=%s.%s",
-            embedding_dim,
-            fts_language,
-            rrf_k,
-            rrf_pool,
-            cfg.schema,
-            cfg.chunks_table,
+            self._embedder.dim(),
+            cfg.fts_language,
+            cfg.rrf_k,
+            cfg.rrf_pool,
+            cfg.tables.schema,
+            cfg.tables.chunks_table,
         )
 
     def search(
@@ -96,9 +133,9 @@ class PostgresKnowledgeBase:
         embedding = list(self._embedder.embed_query(query))
 
         query_sql = self._SEARCH_SQL.format(
-            dim=sql.Literal(self._embedding_dim),
-            chunks_table=self._chunks_table,
-            schema=self._schema_ident,
+            dim=sql.Literal(self._embedder.dim()),
+            chunks_table=self._cfg.tables.chunks_ident(),
+            schema=self._cfg.tables.schema_ident(),
         )
         try:
             with self._pool.dict_cursor() as cur:
@@ -108,10 +145,10 @@ class PostgresKnowledgeBase:
                         "collections": list(collections),
                         "embedding": embedding,
                         "query": query,
-                        "lang": self._fts_language,
-                        "rrf_k": self._rrf_k,
-                        "rrf_pool": self._rrf_pool,
-                        "snippet_chars": self._snippet_chars,
+                        "lang": self._cfg.fts_language,
+                        "rrf_k": self._cfg.rrf_k,
+                        "rrf_pool": self._cfg.rrf_pool,
+                        "snippet_chars": self._cfg.snippet_chars,
                         "top_k": top_k,
                     },
                 )
@@ -138,7 +175,7 @@ class PostgresKnowledgeBase:
         collections: list[str],
         query: str,
         top_k: int,
-    ) -> list[SearchHit]:
+    ) -> Iterable[SearchHit]:
         """Чистый vector top-K (cosine via `<=>`) без FTS-канала.
 
         Ищет по объединению переданных коллекций: SQL-фильтр
@@ -153,8 +190,8 @@ class PostgresKnowledgeBase:
         """
         embedding = list(self._embedder.embed_query(query))
         query_sql = self._VECTOR_SEARCH_SQL.format(
-            dim=sql.Literal(self._embedding_dim),
-            chunks_table=self._chunks_table,
+            dim=sql.Literal(self._embedder.dim()),
+            chunks_table=self._cfg.tables.chunks_ident(),
         )
         try:
             with self._pool.dict_cursor() as cur:
@@ -163,26 +200,23 @@ class PostgresKnowledgeBase:
                     {
                         "collections": list(collections),
                         "embedding": embedding,
-                        "snippet_chars": self._snippet_chars,
+                        "snippet_chars": self._cfg.snippet_chars,
                         "top_k": top_k,
                     },
                 )
-                rows = cur.fetchall()
+
+                for row in cur.fetchall():
+                    yield SearchHit(
+                        id=row["chunk_id"],
+                        distance=float(row["distance"]),
+                        metadata=self._row_metadata(row),
+                        snippet=row["snippet"] or "",
+                    )
         except Exception as e:
             raise KnowledgeBaseError(
                 f"postgres vector search failed for collections "
                 f"{list(collections)!r}: {type(e).__name__}: {e}",
             ) from e
-
-        return [
-            SearchHit(
-                id=row["chunk_id"],
-                distance=float(row["distance"]),
-                metadata=self._row_metadata(row),
-                snippet=row["snippet"] or "",
-            )
-            for row in rows
-        ]
 
     @staticmethod
     def _row_metadata(row: dict[str, Any]) -> dict[str, str]:

@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 
 from boba.indexing import PipelineContext, RequestSource
-from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.request_sources._common import (
     confluence_discover_space_pages,
@@ -31,26 +30,26 @@ class ConfluenceSpaceRequestSource(RequestSource[HttpRequest]):
     def __init__(
         self,
         *,
-        conn_cfg: ConfluenceConnectionConfig,
+        conn: ConfluenceConnection,
         space_key: str,
         body_format: str = "export_view",
     ) -> None:
-        self._conn_cfg = conn_cfg
+        self._conn = conn
         self._space_key = space_key
         self._body_format = body_format
-        self._host = extract_host(conn_cfg.base_url)
+        self._host = extract_host(conn.base_url)
 
     def name(self) -> str:
         return f"ConfluenceSpaceRequestSource({self._host}/{self._space_key})"
 
     def stream(self, ctx: PipelineContext) -> Iterable[HttpRequest]:
         del ctx
-        auth = ConfluenceConnection.make_auth(self._conn_cfg)
+        auth = self._conn.make_auth()
         for page_id in confluence_discover_space_pages(
-            self._conn_cfg, self._space_key,
+            self._conn, self._space_key,
         ):
             yield make_page_request(
-                base_url=self._conn_cfg.base_url,
+                base_url=self._conn.base_url,
                 host=self._host,
                 auth=auth,
                 page_id=page_id,
@@ -70,7 +69,7 @@ class ConfluenceMultiSpaceRequestSource(RequestSource[HttpRequest]):
     def __init__(
         self,
         *,
-        conn_cfg: ConfluenceConnectionConfig,
+        conn: ConfluenceConnection,
         space_keys: Sequence[str],
         body_format: str = "export_view",
     ) -> None:
@@ -78,14 +77,14 @@ class ConfluenceMultiSpaceRequestSource(RequestSource[HttpRequest]):
             raise ValueError("space_keys пуст")
         self._inner = [
             ConfluenceSpaceRequestSource(
-                conn_cfg=conn_cfg,
+                conn=conn,
                 space_key=k,
                 body_format=body_format,
             )
             for k in space_keys
         ]
         self._space_keys = tuple(space_keys)
-        self._host = extract_host(conn_cfg.base_url)
+        self._host = extract_host(conn.base_url)
 
     def name(self) -> str:
         keys = ",".join(self._space_keys)

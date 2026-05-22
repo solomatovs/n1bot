@@ -1,9 +1,8 @@
-"""Tool `confluence_list_spaces`: список spaces на Confluence-сервере.
+"""Tool `confluence_list_spaces` + `ConfluenceListSpacesConfig`.
 
 LLM-callable read-only tool: возвращает markdown-таблицу спейсов,
-доступных текущей роли (anonymous/PAT/basic — по `[tool.kb.confluence]`).
-Используется перед `confluence_space_ingest`, чтобы LLM мог увидеть,
-какие space-ключи существуют, и выбрать релевантные.
+доступных текущей роли. Используется перед `confluence_space_ingest`,
+чтобы LLM мог увидеть существующие space-ключи и выбрать релевантные.
 
 Endpoint: `GET /rest/api/space` с query-параметрами `limit=N&start=0`,
 опциональным `&type=global|personal` и `&expand=description.plain` —
@@ -16,8 +15,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.confluence.api_models import ConfluenceSpaceItem
-from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.request_sources._common import (
     ConfluencePaginator,
@@ -26,14 +25,29 @@ from boba.tool.kb.confluence.request_sources._common import (
 from boba.tool.kb.core._markdown import format_markdown_table
 from boba.tools import FromConfig, tool
 
-__all__ = ["confluence_list_spaces"]
+__all__ = ["ConfluenceListSpacesConfig", "confluence_list_spaces"]
 
 _MAX_CELL_CHARS = 200
 
 
+class ConfluenceListSpacesConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `confluence_list_spaces`.
+
+    Config-секция: `[tool.kb.confluence_search.list_spaces]`.
+    """
+
+    model_config = BobaSettingsConfigDict(
+        case_sensitive=False,
+        extra="ignore",
+        config_path="tool.kb.confluence_search.list_spaces",
+    )
+
+    confluence: ConfluenceConnection
+
+
 @tool
 def confluence_list_spaces(
-    conn_cfg: Annotated[ConfluenceConnectionConfig, FromConfig()],
+    cfg: Annotated[ConfluenceListSpacesConfig, FromConfig()],
     space_type: Annotated[
         Literal["global", "personal", "any"],
         Field(
@@ -63,14 +77,14 @@ def confluence_list_spaces(
     использует это, чтобы решить, какой space передать в
     `confluence_space_ingest` или `confluence_space_download`.
     """
-    auth = ConfluenceConnection.make_auth(conn_cfg)
+    auth = cfg.confluence.make_auth()
 
     rows: list[tuple[Any, ...]] = []
     truncated = False
     with ConfluencePaginator(
-        conn_cfg.base_url,
+        cfg.confluence.base_url,
         auth,
-        conn_cfg.timeout_sec,
+        cfg.confluence.timeout_sec,
     ) as x:
         for item in x(
             space_list_path(space_type, expand="description.plain"),

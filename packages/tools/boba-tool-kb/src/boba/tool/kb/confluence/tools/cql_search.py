@@ -1,4 +1,9 @@
-"""Tool: поиск страниц Confluence через REST CQL-search."""
+"""Tool `confluence_cql_search` + `ConfluenceCqlSearchConfig`: online CQL-search.
+
+Полнотекстовый поиск страниц по реальному Confluence (не по KB). LLM
+передаёт строку запроса + опц. `space` ограничение; connection и
+лимиты — из TOML-секции `[tool.kb.confluence_search.cql]`.
+"""
 
 from __future__ import annotations
 
@@ -15,7 +20,7 @@ from boba.indexing import (
     RuntimePipeline,
     Section,
 )
-from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.keys import ConfluenceKeys
 from boba.tool.kb.confluence.request_sources.search import (
@@ -25,29 +30,55 @@ from boba.tool.kb.confluence.search_reader import ConfluenceSearchHitsReader
 from boba.tools import FromConfig, tool
 from boba.transport.http import HttpKeys
 
-__all__ = ["confluence_search"]
+__all__ = ["ConfluenceCqlSearchConfig", "confluence_cql_search"]
 
 
-_PIPELINE_ID: PipelineId = PipelineId("confluence.search")
-_SNIPPET_CHARS: int = 300
+_PIPELINE_ID: PipelineId = PipelineId("confluence.cql_search")
+
+
+class ConfluenceCqlSearchConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `confluence_cql_search`.
+
+    Config-секция: `[tool.kb.confluence_search.cql]`.
+    """
+
+    model_config = BobaSettingsConfigDict(
+        case_sensitive=False,
+        extra="ignore",
+        config_path="tool.kb.confluence_search.cql",
+    )
+
+    confluence: ConfluenceConnection
+    snippet_chars: int = Field(
+        default=300,
+        ge=1,
+        description="Максимальная длина сниппета на каждый hit.",
+    )
+    max_limit: int = Field(
+        default=50,
+        ge=1,
+        le=200,
+        description="Жёсткий потолок параметра `limit` от LLM.",
+    )
 
 
 @tool
-def confluence_search(
+def confluence_cql_search(
+    cfg: Annotated[ConfluenceCqlSearchConfig, FromConfig()],
     query: Annotated[
         str,
         Field(min_length=1, description="Строка полнотекстового поиска в Confluence."),
     ],
     limit: Annotated[
-        int, Field(ge=1, le=50, description="Максимум hits в ответе."),
-    ],
-    cfg: Annotated[ConfluenceConnectionConfig, FromConfig()],
+        int,
+        Field(ge=1, description="Максимум hits в ответе."),
+    ] = 20,
     space: Annotated[
         str | None,
         Field(description="Ограничение поиска по space."),
     ] = None,
 ) -> list[dict[str, Any]]:
-    """Полнотекстовый поиск страниц Confluence (CQL).
+    """Полнотекстовый поиск страниц Confluence (online CQL).
 
     Возвращает плоский список hits: `[{page_id, title, space_key, url,
     snippet, last_modified}, ...]`. Совместимо по shape с `kb_search` и
@@ -55,17 +86,22 @@ def confluence_search(
     `confluence_page_download` (HTML/Markdown → workspace) или
     `confluence_page_ingest` (страницы → KB-коллекцию для kb_search).
     """
+    if limit > cfg.max_limit:
+        raise RuntimeError(
+            f"limit={limit} превышает max_limit={cfg.max_limit}",
+        )
+
     pipeline = RuntimePipeline(
         request_source=ConfluenceCqlSearchRequestSource(
-            base_url=cfg.base_url,
-            auth=ConfluenceConnection.make_auth(cfg),
+            base_url=cfg.confluence.base_url,
+            auth=cfg.confluence.make_auth(),
             cql=_build_cql(query=query, space=space),
             limit=limit,
         ),
-        transport=ConfluenceConnection.make_transport(cfg),
+        transport=cfg.confluence.make_transport(),
         reader=ConfluenceSearchHitsReader(
-            base_url=cfg.base_url,
-            snippet_chars=_SNIPPET_CHARS,
+            base_url=cfg.confluence.base_url,
+            snippet_chars=cfg.snippet_chars,
         ),
     )
 

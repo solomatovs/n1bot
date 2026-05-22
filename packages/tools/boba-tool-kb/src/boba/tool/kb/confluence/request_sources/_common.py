@@ -13,7 +13,6 @@ from pydantic import BaseModel
 
 from boba.indexing import Metadata, SourceId
 from boba.tool.kb.confluence.api_models import ConfluencePageItem, ConfluenceSpaceItem
-from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.keys import ConfluenceKeys
 from boba.transport.http import HttpRequest
@@ -34,13 +33,6 @@ __all__ = [
     "viewpage_url",
 ]
 
-
-# --------------------------------------------------------------------------- #
-# Pure URL/path builders — все запросы к Confluence REST API строятся здесь.
-# Path-функции возвращают relative path для ConfluencePaginator (httpx.Client
-# с настроенным base_url). Absolute URL получается через
-# `f"{base_url.rstrip('/')}{path}"` или через viewpage_url для source_id.
-# --------------------------------------------------------------------------- #
 
 _DEFAULT_PAGE_LIMIT = 50
 
@@ -99,11 +91,6 @@ def cql_search_path(
     """
     expand_q = f"&expand={expand}" if expand else ""
     return f"/rest/api/content/search?cql={quote(cql, safe='')}&limit={limit}{expand_q}"
-
-
-# --------------------------------------------------------------------------- #
-# Helpers / HttpRequest builders.
-# --------------------------------------------------------------------------- #
 
 
 def extract_host(base_url: str) -> str:
@@ -200,15 +187,15 @@ class ConfluencePaginator:
 
 
 def confluence_discover_spaces(
-    conn_cfg: ConfluenceConnectionConfig, space_type: str
+    conn: ConfluenceConnection, space_type: str,
 ) -> Iterable[str]:
     """Yield space-keys через `/rest/api/space`."""
     path = space_list_path(space_type)
 
     with ConfluencePaginator(
-        conn_cfg.base_url,
-        ConfluenceConnection.make_auth(conn_cfg),
-        conn_cfg.timeout_sec,
+        conn.base_url,
+        conn.make_auth(),
+        conn.timeout_sec,
     ) as x:
         for item in x(path, ConfluenceSpaceItem):
             if item.key:
@@ -216,15 +203,15 @@ def confluence_discover_spaces(
 
 
 def confluence_discover_space_pages(
-    conn_cfg: ConfluenceConnectionConfig, space_key: str
+    conn: ConfluenceConnection, space_key: str,
 ) -> Iterable[str]:
     """Yield page-id всех страниц в space через `/rest/api/space/{key}/content`."""
     path = space_pages_path(space_key)
 
     with ConfluencePaginator(
-        conn_cfg.base_url,
-        ConfluenceConnection.make_auth(conn_cfg),
-        conn_cfg.timeout_sec,
+        conn.base_url,
+        conn.make_auth(),
+        conn.timeout_sec,
     ) as x:
         for item in x(path, ConfluencePageItem):
             page_id = item.id.strip()
@@ -233,15 +220,15 @@ def confluence_discover_space_pages(
 
 
 def confluence_discover_pages_by_cql(
-    conn_cfg: ConfluenceConnectionConfig, cql: str
+    conn: ConfluenceConnection, cql: str,
 ) -> Iterable[str]:
     """Yield page-id страниц по CQL-запросу через `/rest/api/content/search`."""
     path = cql_search_path(cql)
 
     with ConfluencePaginator(
-        conn_cfg.base_url,
-        ConfluenceConnection.make_auth(conn_cfg),
-        conn_cfg.timeout_sec,
+        conn.base_url,
+        conn.make_auth(),
+        conn.timeout_sec,
     ) as x:
         for item in x(path, ConfluencePageItem):
             page_id = item.id.strip()

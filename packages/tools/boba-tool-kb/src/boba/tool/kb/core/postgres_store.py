@@ -1,26 +1,23 @@
 """KB-store слой поверх postgres + pgvector — конфиг и реализации.
 
 В одном модуле:
-- `PostgresConnection`     — nested-под-модель: host/port/user/...
-- `PostgresStoreConfig`    — корневой конфиг `[tool.kb.postgres_store]`:
-                              `connection` + schema/table-имена + `open_pool()`.
-- `PostgresChunkStore`     — `ChunkStore[str]`: chunk-уровневые операции.
+- `PostgresStoreConfig`      — composite-конфиг (connection + tables).
+- `PostgresChunkStore`       — `ChunkStore[str]`: chunk-уровневые операции.
 - `PostgresCollectionsStore` — `CollectionsStore`: коллекции (CRUD).
 
-Stores сами открывают `PostgresPool` через `cfg.open_pool()` — это
-`PostgresPool.get(...)`-singleton по DSN, так что все компоненты с одним
-и тем же `PostgresStoreConfig` ходят через один pool. Связка
-«connection ↔ schema ↔ pool» в одном конфиге исключает рассинхрон:
-bootstrap не сможет создать таблицы в одной БД, а store писать в другую.
+Оба сервиса принимают `cfg: PostgresStoreConfig` (composite-модель с
+`connection` + `tables`). Pool открывают сами через `open_kb_pool(cfg.connection)`
+(singleton по DSN — store'ы с одним и тем же connection делят один pool).
+Никакого корневого settings-класса — composite-cfg встраивается как
+nested-поле в tool-конфиги (`FilesIngestConfig`, `KbSearchConfig`, ...).
 
 Чисто chunk-уровневые операции (документы внутри коллекции):
 - read:  get_by_ids / peek / find / diff_by_hash
 - write: upsert / delete / update_metadata
 
 Хранение:
-- Все коллекции в одной таблице (по дефолту `kb_chunks`, имя/схема —
-  через `PostgresStoreConfig` [tool.kb.postgres_store]). Разделение по
-  колонке `collection`.
+- Все коллекции в одной таблице (по дефолту `kb_chunks`, имя/схема — из
+  `PostgresStoreSchema`). Разделение по колонке `collection`.
 - Системные поля (source_id, chunk_index, content_hash) — отдельные колонки
   таблицы. Тэги — `text[]`. Остальная metadata — `jsonb`.
 - Embedding — `vector` (без фиксированной dim в столбце); HNSW-индекс
@@ -42,14 +39,11 @@ import json
 import logging
 from collections.abc import Iterable, Mapping
 from itertools import islice
-from typing import Any, ClassVar, Self, TypeVar
+from typing import Any, ClassVar, TypeVar
 
-from pgvector.psycopg import register_vector
 from psycopg import sql
-from psycopg.conninfo import make_conninfo
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel
 
-from boba.db.postgres import PostgresConfig, PostgresPool
 from boba.indexing.chunk_store import (
     ChunkStore,
     CollectionInfo,
@@ -79,199 +73,26 @@ from boba.indexing.filter import (
 )
 from boba.indexing.metadata import Metadata
 from boba.indexing.sections import SourceId
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
+from boba.tool.kb.core.postgres_connection import PostgresConnection
+from boba.tool.kb.core.postgres_pool import open_kb_pool
+from boba.tool.kb.core.postgres_store_schema import PostgresStoreSchema
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "PostgresChunkStore",
     "PostgresCollectionsStore",
-    "PostgresConnectionConfig",
     "PostgresStoreConfig",
 ]
 
 _E = TypeVar("_E")
 
 
-class PostgresConnectionConfig(BaseModel):
-    """
-    Структурированное подключение к Postgres
-    """
+class PostgresStoreConfig(BaseModel):
+    """Composite-конфиг для KB-store-сервисов: connection + tables."""
 
-    host: str = Field(
-        description="Хост Postgres. Обязателен.",
-    )
-    port: int = Field(
-        default=5432,
-        ge=1,
-        le=65535,
-        description="TCP-порт Postgres.",
-    )
-    user: str = Field(
-        description="Пользователь Postgres. Обязателен.",
-    )
-    password: str = Field(
-        default="",
-        description="Пароль Postgres",
-    )
-    database: str = Field(
-        description="Имя базы данных. Обязателен.",
-    )
-    sslmode: str = Field(
-        default="prefer",
-        description=(
-            "TLS-режим psycopg/libpq: `disable` | `allow` | `prefer` | "
-            "`require` | `verify-ca` | `verify-full`."
-        ),
-    )
-    application_name: str = Field(
-        default="boba-tool-kb",
-        description=(
-            "Метка соединения для PG `pg_stat_activity`"
-        ),
-    )
-    pool_min_size: int = Field(
-        default=1,
-        ge=0,
-        description="Минимальный размер connection-pool'а (psycopg_pool).",
-    )
-    pool_max_size: int = Field(
-        default=8,
-        ge=1,
-        description="Максимальный размер connection-pool'а.",
-    )
-    connect_timeout_sec: float = Field(
-        default=10.0,
-        gt=0,
-        description="Таймаут установки соединения (сек).",
-    )
-
-    @model_validator(mode="after")
-    def _validate(self) -> Self:
-        """Под discover-flow конфиг грузится только если плагин enabled.
-
-        Значит к load-time host/user/database должны быть валидно заполнены
-        (либо через TOML, либо через env).
-        """
-        if self.pool_max_size < self.pool_min_size:
-            msg = (
-                f"pool_max_size ({self.pool_max_size}) "
-                f"должен быть ≥ pool_min_size ({self.pool_min_size})"
-            )
-            raise ValueError(msg)
-
-        return self
-
-    def session_options(self) -> dict[str, str]:
-        """Session-level GUC, ставящиеся при коннекте через libpq `options=`.
-
-        По умолчанию пустой — подклассы (`SqlConfig`) переопределяют, чтобы
-        зашить `default_transaction_read_only=on` / `statement_timeout=...`
-        прямо в DSN. PG применяет их в момент open-connection — нет нужды
-        в `SET`-statement'ах или `configure`-callback'е.
-        """
-        return {}
-
-    def to_dsn(self) -> str:
-        """libpq-DSN через `psycopg.conninfo.make_conninfo`.
-
-        `dbname` — стандартное libpq-имя для базы (не `database`). Пустые
-        строковые поля опускаются. Если `session_options()` непуст — все
-        пары пакуются в libpq-параметр `options='-c k=v ...'`.
-        """
-        kwargs: dict[str, Any] = {
-            "host": self.host,
-            "port": self.port,
-            "user": self.user,
-            "password": self.password or None,
-            "dbname": self.database,
-            "sslmode": self.sslmode,
-            "application_name": self.application_name,
-        }
-        opts = self.session_options()
-        if opts:
-            kwargs["options"] = " ".join(f"-c {k}={v}" for k, v in opts.items())
-        return make_conninfo(**kwargs)
-
-    def to_pool_config(self) -> PostgresConfig:
-        """`PostgresConfig` для `PostgresPool.get(...)` — drop-in."""
-        return PostgresConfig(
-            dsn=self.to_dsn(),
-            min_size=self.pool_min_size,
-            max_size=self.pool_max_size,
-            connect_timeout_sec=self.connect_timeout_sec,
-        )
-
-
-class PostgresStoreConfig(BobaFlatSettings):
-    """Конфиг KB-store: connection + schema/таблицы в одной секции.
-
-    Connection-параметры (host/port/...) живут в nested-секции
-    `[tool.kb.postgres_store.connection]`, schema/имена таблиц — прямо в
-    корневой секции. Один конфиг описывает «куда подключаюсь + куда пишу»,
-    что исключает рассинхрон между bootstrap'ом и runtime-доступом.
-
-    Config-секция: `[tool.kb.postgres_store]`.
-    """
-
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="tool.kb.postgres_store",
-    )
-
-    connection: PostgresConnectionConfig = Field(
-        description=(
-            "Postgres connection (host/port/user/password/database/...). "
-            "Nested-секция `[tool.kb.postgres_store.connection]`."
-        ),
-    )
-    batch_size: int = Field(
-        default=100,
-        description="batch_size",
-    )
-    schema: str = Field(
-        default="public",
-        description=("Postgres schema"),
-    )
-    chunks_table: str = Field(
-        default="kb_chunks",
-        description=("Таблица чанков"),
-    )
-    collections_table: str = Field(
-        default="kb_collections",
-        description=("Таблица каталога коллекций"),
-    )
-
-    @model_validator(mode="after")
-    def _validate(self) -> Self:
-        if self.chunks_table == self.collections_table:
-            msg = (
-                "tool.kb.postgres_store.chunks_table == collections_table "
-                f"({self.chunks_table!r}) — должны различаться"
-            )
-            raise ValueError(msg)
-        return self
-
-    def chunks_ident(self) -> sql.Identifier:
-        """Schema для таблицы чанков"""
-        return sql.Identifier(self.schema, self.chunks_table)
-
-    def collections_ident(self) -> sql.Identifier:
-        """Schema для таблицы коллекций."""
-        return sql.Identifier(self.schema, self.collections_table)
-
-    def schema_ident(self) -> sql.Identifier:
-        """Schema для квалифицированных функций."""
-        return sql.Identifier(self.schema)
-
-    def chunks_name_literal(self) -> sql.Literal:
-        """имя таблицы как SQL-литерал — для information_schema"""
-        return sql.Literal(self.chunks_table)
-
-    def schema_name_literal(self) -> sql.Literal:
-        """Имя схемы как SQL-литерал — для information_schema.table_schema"""
-        return sql.Literal(self.schema)
+    connection: PostgresConnection
+    tables: PostgresStoreSchema
 
 
 class PostgresChunkStore(ChunkStore[str]):
@@ -285,17 +106,12 @@ class PostgresChunkStore(ChunkStore[str]):
 
     def __init__(
         self,
+        *,
         cfg: PostgresStoreConfig,
     ) -> None:
         self._cfg = cfg
-        self._pool = self.open_pool(cfg)
-
-    @staticmethod
-    def open_pool(cfg: PostgresStoreConfig) -> PostgresPool:
-        return PostgresPool.get(
-            cfg.connection.to_pool_config(),
-            configure=register_vector,
-        )
+        self._tables = cfg.tables
+        self._pool = open_kb_pool(cfg.connection)
 
     def get_by_ids(
         self,
@@ -323,7 +139,7 @@ class PostgresChunkStore(ChunkStore[str]):
                 collection = %s
             AND chunk_id = ANY(%s)
             """,
-        ).format(chunks_table=self._cfg.chunks_ident())
+        ).format(chunks_table=self._tables.chunks_ident())
 
         with self._pool.dict_cursor() as cur:
             cur.execute(query, (str(collection), ids))
@@ -348,7 +164,7 @@ class PostgresChunkStore(ChunkStore[str]):
                     ORDER BY source_id, chunk_index
                     LIMIT %s
                     """,
-                ).format(chunks_table=self._cfg.chunks_ident())
+                ).format(chunks_table=self._tables.chunks_ident())
                 cur.execute(query, (str(collection), limit))
             else:
                 query = sql.SQL(
@@ -360,7 +176,7 @@ class PostgresChunkStore(ChunkStore[str]):
                     ORDER BY chunk_index
                     LIMIT %s
                     """,
-                ).format(chunks_table=self._cfg.chunks_ident())
+                ).format(chunks_table=self._tables.chunks_ident())
                 cur.execute(query, (str(collection), str(source_id), limit))
 
             for row in cur:
@@ -397,7 +213,7 @@ class PostgresChunkStore(ChunkStore[str]):
                 source_id,
                 chunk_index
             """,
-        ).format(chunks_table=self._cfg.chunks_ident(), where=where_clause)
+        ).format(chunks_table=self._tables.chunks_ident(), where=where_clause)
 
         if limit is not None:
             query = sql.SQL("{q} LIMIT {lim}").format(
@@ -428,7 +244,7 @@ class PostgresChunkStore(ChunkStore[str]):
             FROM {chunks_table}
             WHERE collection = %s AND chunk_id = ANY(%s)
             """,
-        ).format(chunks_table=self._cfg.chunks_ident())
+        ).format(chunks_table=self._tables.chunks_ident())
         with self._pool.cursor() as cur:
             cur.execute(query, (str(collection), ids))
             stored: dict[str, str] = {row[0]: row[1] for row in cur}
@@ -477,7 +293,7 @@ class PostgresChunkStore(ChunkStore[str]):
                 tags           = EXCLUDED.tags,
                 updated_at     = now()
             """,
-        ).format(chunks_table=self._cfg.chunks_ident())
+        ).format(chunks_table=self._tables.chunks_ident())
 
         for batch in self._batched(chunks):
             rows = [
@@ -509,7 +325,7 @@ class PostgresChunkStore(ChunkStore[str]):
             return
         query = sql.SQL(
             "DELETE FROM {chunks_table} WHERE collection = %s AND chunk_id = ANY(%s)",
-        ).format(chunks_table=self._cfg.chunks_ident())
+        ).format(chunks_table=self._tables.chunks_ident())
         with self._pool.cursor() as cur:
             cur.execute(query, (str(collection), ids))
 
@@ -533,7 +349,7 @@ class PostgresChunkStore(ChunkStore[str]):
                 updated_at = now()
             WHERE collection = %s AND chunk_id = ANY(%s)
             """,
-        ).format(chunks_table=self._cfg.chunks_ident())
+        ).format(chunks_table=self._tables.chunks_ident())
         with self._pool.cursor() as cur:
             cur.execute(query, (json.dumps(wire_patch), str(collection), ids))
 
@@ -573,7 +389,7 @@ class PostgresChunkStore(ChunkStore[str]):
     ) -> Iterable[list[_E]]:
         it = iter(items)
         while True:
-            batch = list(islice(it, self._cfg.batch_size))
+            batch = list(islice(it, self._tables.batch_size))
             if not batch:
                 return
             yield batch
@@ -740,14 +556,8 @@ class PostgresCollectionsStore(CollectionsStore):
         cfg: PostgresStoreConfig,
     ) -> None:
         self._cfg = cfg
-        self._pool = self.open_pool(cfg)
-
-    @staticmethod
-    def open_pool(cfg: PostgresStoreConfig) -> PostgresPool:
-        return PostgresPool.get(
-            cfg.connection.to_pool_config(),
-            configure=register_vector,
-        )
+        self._tables = cfg.tables
+        self._pool = open_kb_pool(cfg.connection)
 
     def list_collections(self) -> Iterable[CollectionInfo]:
         query = sql.SQL(
@@ -764,8 +574,8 @@ class PostgresCollectionsStore(CollectionsStore):
             ORDER BY c.name
             """,
         ).format(
-            collections_table=self._cfg.collections_ident(),
-            chunks_table=self._cfg.chunks_ident(),
+            collections_table=self._tables.collections_ident(),
+            chunks_table=self._tables.chunks_ident(),
         )
         with self._pool.dict_cursor() as cur:
             cur.execute(query)
@@ -786,8 +596,8 @@ class PostgresCollectionsStore(CollectionsStore):
             WHERE c.name = %s
             """,
         ).format(
-            chunks_table=self._cfg.chunks_ident(),
-            collections_table=self._cfg.collections_ident(),
+            chunks_table=self._tables.chunks_ident(),
+            collections_table=self._tables.collections_ident(),
         )
         with self._pool.dict_cursor() as cur:
             cur.execute(query, (str(name),))
@@ -820,7 +630,7 @@ class PostgresCollectionsStore(CollectionsStore):
             VALUES (%s, %s)
             ON CONFLICT (name) DO NOTHING
             """,
-        ).format(collections_table=self._cfg.collections_ident())
+        ).format(collections_table=self._tables.collections_ident())
         with self._pool.cursor() as cur:
             cur.execute(query, (str(name), description or ""))
 
@@ -831,8 +641,8 @@ class PostgresCollectionsStore(CollectionsStore):
                     """DELETE FROM {chunks_table} WHERE collection = %s;
             DELETE FROM {collections_table} WHERE name = %s""",
                 ).format(
-                    chunks_table=self._cfg.chunks_ident(),
-                    collections_table=self._cfg.collections_ident(),
+                    chunks_table=self._tables.chunks_ident(),
+                    collections_table=self._tables.collections_ident(),
                 ),
                 (str(name),),
             )

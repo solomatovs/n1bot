@@ -1,4 +1,10 @@
-"""Tool: гибридный (vector + FTS, RRF) semantic search по KB-коллекциям."""
+"""Tool `kb_search` + `KbSearchConfig`: hybrid (vector + FTS + RRF) поверх KB.
+
+Self-contained tool-конфиг: содержит всё необходимое для построения
+`PostgresKnowledgeBase` inline. LLM передаёт только `query` + опц.
+`top_k`. Список целевых коллекций и потолок top_k пинятся оператором
+в TOML-секции `[tool.kb.kb_search]`.
+"""
 
 from __future__ import annotations
 
@@ -7,17 +13,49 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from boba.tool.kb.core.config import KbConfig
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
 from boba.tool.kb.core.errors import KnowledgeBaseError
-from boba.tool.kb.core.kb import PostgresKnowledgeBase
-from boba.tool.kb.core.search_config import SearchConfig
-from boba.tools import FromConfig, FromDI, Scope, tool
+from boba.tool.kb.core.kb import (
+    PostgresKnowledgeBase,
+    PostgresKnowledgeBaseConfig,
+)
+from boba.tools import FromConfig, tool
 
-__all__ = ["kb_search"]
+__all__ = ["KbSearchConfig", "kb_search"]
+
+
+class KbSearchConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `kb_search`.
+
+    Config-секция: `[tool.kb.kb_search]`.
+    """
+
+    model_config = BobaSettingsConfigDict(
+        case_sensitive=False,
+        extra="ignore",
+        config_path="tool.kb.kb_search",
+    )
+
+    knowledge_base: PostgresKnowledgeBaseConfig
+    collections: StringList = Field(
+        default_factory=lambda: ["kb_files", "kb_confluence"],
+        description=(
+            "Список коллекций (`collection` в `kb_chunks`), по объединению "
+            "которых выполняется hybrid-search. SQL: "
+            "`WHERE collection = ANY(%(collections)s)`. "
+            'CSV в env (`"a,b"`) или TOML-array (`["a", "b"]`).'
+        ),
+    )
+    max_top_k: int = Field(
+        default=20,
+        ge=1,
+        description="Жёсткий потолок параметра `top_k`.",
+    )
 
 
 @tool
 def kb_search(
+    cfg: Annotated[KbSearchConfig, FromConfig()],
     query: Annotated[
         str,
         Field(
@@ -29,46 +67,36 @@ def kb_search(
             ),
         ),
     ],
-    kb: Annotated[PostgresKnowledgeBase, FromDI(Scope.APP)],
-    cfg: Annotated[KbConfig, FromConfig()],
-    search_cfg: Annotated[SearchConfig, FromConfig()],
     top_k: Annotated[
         int,
         Field(
             ge=1,
             description=(
-                "Сколько hits вернуть. По умолчанию 5; жёсткий потолок "
-                "задан в конфиге плагина (`max_top_k`)."
+                "Сколько hits вернуть. По умолчанию 5; жёсткий потолок — "
+                "в `cfg.max_top_k`."
             ),
         ),
     ] = 5,
 ) -> list[dict[str, Any]]:
     """Hybrid semantic search (vector + FTS + RRF) по KB-коллекциям.
 
-    Ищет внутри коллекций, наполненных через `files_ingest` (FS),
-    `confluence_space_ingest` или `confluence_page_ingest` — это
-    таблица `kb_chunks`, разбитая на коллекции колонкой `collection`.
-    Список целевых коллекций — pre-настроенный оператором
-    (`[tool.kb.search].collections`); LLM их не выбирает. SQL-уровень:
+    Ищет внутри коллекций, наполненных через `files_ingest` /
+    `confluence_*_ingest`. Список целевых коллекций — pre-настроенный
+    оператором (`cfg.collections`); LLM их не выбирает. SQL-уровень:
     `WHERE collection = ANY(...)` — поиск по объединению.
 
-    Когда выбирать `kb_search` vs `fts_search`:
-    - **kb_search** — наша KB; нужны embedding-релевантность и
-      контекстные чанки; шкала: меньше distance = ближе. Возвращает
-      `{id, distance, link, metadata, snippet}`.
-    - **fts_search** — pre-настроенная таблица оператора (`[tool.kb.fts].index`);
-      чистый FTS без embedding'ов.
-
     Возвращает JSON-массив hits, упорядоченный по релевантности
-    (меньшее distance = ближе/релевантнее).
+    (меньшее distance = ближе/релевантнее). Каждый hit — `{id, distance,
+    link, metadata, snippet}`. `distance` — отрицательный RRF-скор.
     """
     if top_k > cfg.max_top_k:
         raise RuntimeError(
             f"top_k={top_k} превышает max_top_k={cfg.max_top_k}",
         )
+    kb = PostgresKnowledgeBase(cfg=cfg.knowledge_base)
     try:
         hits = kb.search(
-            collections=list(search_cfg.collections),
+            collections=list(cfg.collections),
             query=query,
             top_k=top_k,
         )
