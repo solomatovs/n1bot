@@ -16,9 +16,9 @@ from __future__ import annotations
 from typing import Annotated
 
 from boba.db.postgres import PostgresConfig, PostgresPool
+from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
 from boba.tool.kb.fts.config import FtsConfig
 from boba.tool.kb.fts.db import PgFtsKnowledgeBase
-from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
 from boba.tools import FromConfig, FromDI, Scope, provides
 
 __all__ = ["provide_fts_kb"]

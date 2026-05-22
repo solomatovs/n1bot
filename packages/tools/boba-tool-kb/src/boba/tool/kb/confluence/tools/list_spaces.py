@@ -16,7 +16,6 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
-from boba.tool.kb.core._markdown import format_markdown_table
 from boba.tool.kb.confluence.api_models import ConfluenceSpaceItem
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
@@ -24,6 +23,7 @@ from boba.tool.kb.confluence.request_sources._common import (
     ConfluencePaginator,
     space_list_path,
 )
+from boba.tool.kb.core._markdown import format_markdown_table
 from boba.tools import FromConfig, tool
 
 __all__ = ["confluence_list_spaces"]

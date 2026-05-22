@@ -8,12 +8,12 @@ from pydantic import Field
 
 from boba.indexing.context import PipelineId
 from boba.text import StructuralChunker
-from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.confluence._ingest_common import run_confluence_ingest
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.request_sources import (
     ConfluenceMultiSpaceRequestSource,
 )
+from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.vector_store import PostgresVectorStore
 from boba.tools import FromConfig, FromDI, Scope, tool
 
@@ -33,8 +33,8 @@ def confluence_space_ingest(  # noqa: PLR0913
         Field(
             min_length=1,
             description=(
-                "Список Confluence space-keys (например, `[\"KAFKA\"]` или "
-                "`[\"KAFKA\", \"INFRA\"]`). Все страницы каждого space "
+                'Список Confluence space-keys (например, `["KAFKA"]` или '
+                '`["KAFKA", "INFRA"]`). Все страницы каждого space '
                 "(c пагинацией) объединяются в один pipeline-run и "
                 "индексируются в `[tool.kb].collection`. Для одного space "
                 "передавай список из одного элемента."

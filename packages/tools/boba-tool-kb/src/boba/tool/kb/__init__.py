@@ -67,7 +67,6 @@ Pipeline-граф:
 
 from __future__ import annotations
 
-from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.tools.list_spaces import confluence_list_spaces
 from boba.tool.kb.confluence.tools.page_download import confluence_page_download
@@ -75,12 +74,8 @@ from boba.tool.kb.confluence.tools.page_ingest import confluence_page_ingest
 from boba.tool.kb.confluence.tools.search import confluence_search
 from boba.tool.kb.confluence.tools.space_download import confluence_space_download
 from boba.tool.kb.confluence.tools.space_ingest import confluence_space_ingest
-from boba.tool.kb.core.tools.files_ingest import files_ingest
-from boba.tool.kb.fts.config import FtsConfig
-from boba.tool.kb.fts.tools.fts_search import fts_search
-from boba.tool.kb.fts.providers import provide_fts_kb
+from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
-from boba.tool.kb.core.tools.kb_search import kb_search
 from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
 from boba.tool.kb.core.providers import (
     provide_chunker,
@@ -92,13 +87,18 @@ from boba.tool.kb.core.providers import (
     provide_postgres_pool,
     provide_vector_store,
 )
+from boba.tool.kb.core.tools.files_ingest import files_ingest
+from boba.tool.kb.core.tools.kb_search import kb_search
+from boba.tool.kb.core.tools.vector_search import vector_search
+from boba.tool.kb.core.vector_store import PostgresVectorStore
+from boba.tool.kb.fts.config import FtsConfig
+from boba.tool.kb.fts.providers import provide_fts_kb
+from boba.tool.kb.fts.tools.fts_search import fts_search
 from boba.tool.kb.sql.config import SqlConfig
 from boba.tool.kb.sql.providers import provide_sql_executor
 from boba.tool.kb.sql.tools.describe_table import sql_describe_table
 from boba.tool.kb.sql.tools.list_tables import sql_list_tables
 from boba.tool.kb.sql.tools.query import sql_query
-from boba.tool.kb.core.tools.vector_search import vector_search
-from boba.tool.kb.core.vector_store import PostgresVectorStore
 
 __all__ = [
     "ConfluenceConnectionConfig",

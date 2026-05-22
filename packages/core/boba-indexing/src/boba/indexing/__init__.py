@@ -12,7 +12,6 @@ from boba.indexing.chunk_id import (
 )
 from boba.indexing.chunk_sink import ChunkSink, VectorStoreChunkSink
 from boba.indexing.chunker import Chunker, ChunkerId
-from boba.indexing.collection_scoped_view import CollectionScopedView
 from boba.indexing.chunks import Chunk, ChunkId, ChunkKeys, ChunkLocation, ChunkSummary
 from boba.indexing.cleanup import (
     CleanupContext,
@@ -21,6 +20,7 @@ from boba.indexing.cleanup import (
     IncrementalCleanup,
     NoneCleanup,
 )
+from boba.indexing.collection_scoped_view import CollectionScopedView
 from boba.indexing.content_hash import (
     BytesContentHash,
     ContentHash,
