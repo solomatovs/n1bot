@@ -3,9 +3,9 @@ DispatchReader — Reader[T], выбирающий sub-Reader по MetadataKey[s
 
 Полезен когда один RequestSource/Transport отдаёт смешанный поток
 документов разных форматов (например `FsWalkRequestSource` по папке
-с .md, .html и .txt). Каждый формат держит собственный Reader[T],
-а DispatchReader смотрит на metadata-ключ (обычно `FsKeys.SUFFIX`
-или `TransportKeys.CONTENT_TYPE`) и делегирует.
+с .md, .html и .txt).
+Каждый формат держит собственный Reader[T], а DispatchReader смотрит
+на metadata-ключ (обычно `FsKeys.SUFFIX` или `TransportKeys.CONTENT_TYPE`) и делегирует.
 
 Ключ ищется в `RawDocument.metadata`. Если ключ отсутствует или его
 значение не покрыто routes — поведение задаётся `on_unknown`:
