@@ -59,13 +59,14 @@ from boba.kbdoc import KbDocReader
 from boba.provider.openai import OpenAICompatEmbedder
 from boba.text import OverlapCharSplitter, StructuralChunker
 from boba.text.structural_chunker import SplitterFactory
-from boba.tool.kb.core.chunk_store import PostgresChunkStore
-from boba.tool.kb.core.chunk_store_config import ChunkStoreSchemaConfig
-from boba.tool.kb.core.collections_store import PostgresCollectionsStore
 from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.embedding_config import EmbeddingConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
-from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
+from boba.tool.kb.core.postgres_store import (
+    PostgresChunkStore,
+    PostgresCollectionsStore,
+    PostgresStoreConfig,
+)
 from boba.tools import FromConfig, FromDI, Scope, provides
 from boba.transport.fs import FsKeys
 
@@ -138,7 +139,7 @@ def provide_embedder(
 def provide_chunk_store(
     pool: Annotated[PostgresPool, FromDI(Scope.APP)],
     embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
-    schema_cfg: Annotated[ChunkStoreSchemaConfig, FromConfig()],
+    schema_cfg: Annotated[PostgresStoreConfig, FromConfig()],
 ) -> PostgresChunkStore:
     """Postgres-бэкэнд `ChunkStore[str]` (document-уровень).
 
@@ -154,14 +155,14 @@ def provide_chunk_store(
     return PostgresChunkStore(
         pool=pool,
         embedding_dim=embedder.dim(),
-        chunk_store_cfg=schema_cfg,
+        cfg=schema_cfg,
     )
 
 
 @provides(scope=Scope.APP)
 def provide_collections_store(
     pool: Annotated[PostgresPool, FromDI(Scope.APP)],
-    schema_cfg: Annotated[ChunkStoreSchemaConfig, FromConfig()],
+    schema_cfg: Annotated[PostgresStoreConfig, FromConfig()],
 ) -> PostgresCollectionsStore:
     """Postgres-бэкэнд `CollectionsStore` (collection-уровень CRUD).
 
@@ -171,7 +172,7 @@ def provide_collections_store(
     """
     return PostgresCollectionsStore(
         pool=pool,
-        schema_cfg=schema_cfg,
+        cfg=schema_cfg,
     )
 
 
@@ -180,7 +181,7 @@ def provide_knowledge_base(
     pool: Annotated[PostgresPool, FromDI(Scope.APP)],
     embedder: Annotated[Embedder[str], FromDI(Scope.APP)],
     cfg: Annotated[KbConfig, FromConfig()],
-    schema_cfg: Annotated[ChunkStoreSchemaConfig, FromConfig()],
+    schema_cfg: Annotated[PostgresStoreConfig, FromConfig()],
 ) -> PostgresKnowledgeBase:
     """Read-side KB: гибридный search (vector + FTS, RRF) для `kb_search`.
 
