@@ -44,6 +44,11 @@ SQL- и FTS-tools переехали в отдельный плагин `boba-to
 - `cli/bootstrap`                 — миграции + HNSW-индекс (`[cli.kb.bootstrap]`).
 - `cli/kbdoc_ingest`              — индексация папки KbDoc-файлов
                                     (`[cli.kb.kbdoc_ingest]`).
+- `cli/confluence_folder_ingest`  — индексация уже-скачанных confluence-файлов
+                                    (.html → ConfluenceReader, .md →
+                                    MarkdownReader); two-step workflow
+                                    после `confluence_*_download`
+                                    (`[cli.kb.confluence.ingest.folder]`).
 - `cli/ingest_confluence_spaces`  — bulk-discovery + per-space ingest
                                     (`[cli.kb.confluence.ingest.spaces]` +
                                     CLI-флаги; per-space ingest читает
@@ -52,8 +57,10 @@ SQL- и FTS-tools переехали в отдельный плагин `boba-to
                                     (`[cli.kb.confluence.download.space]` +
                                     --space-key/--as-markdown).
 
-DI остаётся только для stateless `KbDocReader` — он шарится ingest-tool'ами
-без зависимости от конфигов.
+CLI-runner'ы не используют DI: каждый инстанцирует свой `BobaFlatSettings`-
+конфиг напрямую (`cfg = Config()`) и зовёт factory-helpers/tool-функции
+явно. DI-провайдеров в плагине нет — Reader'ы создаются inline (`KbDocReader()`,
+`ConfluenceReader()`, `MarkdownReader()`).
 """
 
 from __future__ import annotations
@@ -97,7 +104,6 @@ from boba.tool.kb.core.postgres_store import (
     PostgresStoreConfig,
 )
 from boba.tool.kb.core.postgres_store_schema import PostgresStoreSchema
-from boba.tool.kb.core.providers import provide_kbdoc_reader
 from boba.tool.kb.core.tools.kb_search import SearchInKbConfig, kb_search
 from boba.tool.kb.core.tools.vector_search import VectorSearchConfig, vector_search
 
@@ -129,6 +135,5 @@ __all__ = [
     "confluence_space_ingest",
     "confluence_spaces_list",
     "kb_search",
-    "provide_kbdoc_reader",
     "vector_search",
 ]

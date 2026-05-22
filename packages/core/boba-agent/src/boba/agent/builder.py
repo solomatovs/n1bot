@@ -310,7 +310,7 @@ class _DIRegistry:
         )
         return self
 
-    # ---- tools / plugins ------------------------------------------------- #
+    # tools / plugins
 
     def use_tools(self, items: Iterable[Any]) -> Self:
         for item in items:
@@ -340,7 +340,7 @@ class _DIRegistry:
             self._scan_module(module, allowlist=meta.tools)
         return self
 
-    # ---- container assembly ---------------------------------------------- #
+    # container assembly
 
     def build_container(self) -> Container:
         """Резолвит FromConfig-зависимости и собирает Container."""
@@ -387,7 +387,7 @@ class _DIRegistry:
         """Read-only снимок зарегистрированных provider-фабрик."""
         return list(self._providers)
 
-    # ---- internals ------------------------------------------------------- #
+    # internals
 
     def _absorb(self, obj: Any, component: str) -> None:
         if is_provider(obj):
@@ -637,11 +637,10 @@ def _openai_provider() -> LLM:
 
 
 class AgentBuilder:
-    """Flat fluent facade. Делегирует в три ortogonal sub-builder'а.
+    """
+    Fluent facade
 
-    Sub-builder'ы доступны через `.di`, `.pipeline`, `.loop` — для случаев,
-    которые не покрыты shortcut'ами фасада. Большинство пользовательских
-    сценариев решается верхним API без обращения к sub-builder'ам.
+    Sub-builder доступны через `.di`, `.pipeline`, `.loop`
     """
 
     def __init__(self) -> None:

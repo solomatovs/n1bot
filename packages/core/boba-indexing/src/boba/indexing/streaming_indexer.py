@@ -4,9 +4,9 @@ Per-source pipeline собран как ленивая цепочка генер
 чанки текут от transport до reconcile по одному:
 
     request
-      └─ transport.stream(ctx, [request])    → Iterable[RawDocument]
-          └─ decoders[0..N].convert(raw)     → RawDocument (по порядку)
-              └─ reader.convert(decoded)     → Iterable[Section[T]]
+      └─ transport.stream(ctx, [request])     → Iterable[RawDocument]
+          └─ decoders[0..N].convert(raw)      → RawDocument (по порядку)
+              └─ reader.convert(decoded)      → Iterable[Section[T]]
                   └─ chunker.stream(ctx, ...) → Iterable[Chunk[T]]
                                                 (content_hash уже заполнен)
                       └─ sink.narrow(...).reconcile(chunks, ...)

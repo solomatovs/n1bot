@@ -15,10 +15,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from dishka.entities.component import Component
 from pydantic import Field
 
-from boba.agent import AgentBuilder
 from boba.indexing import (
     CollectionScopedView,
     FullCleanup,
@@ -30,7 +28,6 @@ from boba.indexing import (
 from boba.indexing.context import CollectionId, PipelineId
 from boba.kbdoc import KbDocReader
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
-from boba.tool.kb.core import providers as kb_providers
 from boba.tool.kb.core.chunker_factory import build_chunker
 from boba.tool.kb.core.chunker_params import ChunkerParams
 from boba.tool.kb.core.embedder_factory import build_embedder
@@ -43,6 +40,8 @@ from boba.tool.kb.core.postgres_store import (
 from boba.transport.fs import FsRequest, FsTransport, FsWalkRequestSource
 
 __all__ = ["KbDocIngestCliConfig", "main"]
+
+logger = logging.getLogger("boba.tool.kb.cli.kbdoc_ingest")
 
 
 class KbDocIngestCliConfig(BobaFlatSettings):
@@ -79,57 +78,41 @@ class KbDocIngestCliConfig(BobaFlatSettings):
     )
 
 
-logger = logging.getLogger("boba.tool.kb.cli.kbdoc_ingest")
-
-_KB_COMPONENT = Component(kb_providers.__name__)
-
-
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    builder = AgentBuilder().use_plugin(kb_providers)
-    container = builder.di.build_container()
+    cfg = KbDocIngestCliConfig()  # pyright: ignore[reportCallIssue]
 
+    logger.info(
+        "ingesting folder=%s → collection=%s (prune=%s)",
+        cfg.folder,
+        cfg.collection,
+        cfg.prune,
+    )
+
+    start = time.monotonic()
     try:
-        with container() as req:
-            cfg = req.get(KbDocIngestCliConfig, component=_KB_COMPONENT)
-            kbdoc_reader = req.get(KbDocReader, component=_KB_COMPONENT)
+        result = _run_ingest(cfg)
+    except Exception:
+        logger.exception("kbdoc_ingest FAILED")
+        return 1
+    elapsed = time.monotonic() - start
 
-            logger.info(
-                "ingesting folder=%s → collection=%s (prune=%s)",
-                cfg.folder,
-                cfg.collection,
-                cfg.prune,
-            )
-
-            start = time.monotonic()
-            try:
-                result = _run_ingest(cfg, kbdoc_reader)
-            except Exception:
-                logger.exception("kbdoc_ingest FAILED")
-                return 1
-            elapsed = time.monotonic() - start
-
-            logger.info(
-                "DONE in %.1fs — indexed=%d skipped_unchanged=%d pruned=%d failed=%d",
-                elapsed,
-                result["indexed"],
-                result["skipped_unchanged"],
-                result["pruned"],
-                result["failed"],
-            )
-            return 0 if result["failed"] == 0 else 1
-    finally:
-        container.close()
+    logger.info(
+        "DONE in %.1fs — indexed=%d skipped_unchanged=%d pruned=%d failed=%d",
+        elapsed,
+        result["indexed"],
+        result["skipped_unchanged"],
+        result["pruned"],
+        result["failed"],
+    )
+    return 0 if result["failed"] == 0 else 1
 
 
-def _run_ingest(
-    cfg: KbDocIngestCliConfig,
-    kbdoc_reader: KbDocReader,
-) -> dict[str, Any]:
+def _run_ingest(cfg: KbDocIngestCliConfig) -> dict[str, Any]:
     folder = Path(cfg.folder)
     if not folder.exists():
         msg = f"folder_not_found: {folder}"
@@ -157,7 +140,7 @@ def _run_ingest(
             include=["*.md"],
         ),
         transport=FsTransport(),
-        reader=kbdoc_reader,
+        reader=KbDocReader(),
         chunker=chunker,
         sink=view,
         query=view,
