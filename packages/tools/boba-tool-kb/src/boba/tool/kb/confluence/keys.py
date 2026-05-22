@@ -4,11 +4,20 @@ ConfluenceKeys — MetadataKey, проставляемые Confluence
 
 from __future__ import annotations
 
+import json
 from typing import ClassVar
 
 from boba.indexing import MetadataKey
 
 __all__ = ["ConfluenceKeys"]
+
+
+def _decode_titles(s: str) -> tuple[str, ...]:
+    return tuple(str(x) for x in json.loads(s))
+
+
+def _encode_titles(v: tuple[str, ...]) -> str:
+    return json.dumps(list(v), ensure_ascii=False)
 
 
 class ConfluenceKeys:
@@ -33,4 +42,9 @@ class ConfluenceKeys:
         name="confluence.space_key",
         decode=str,
         encode=str,
+    )
+    ANCESTORS_TITLES: ClassVar[MetadataKey[tuple[str, ...]]] = MetadataKey(
+        name="confluence.ancestors_titles",
+        decode=_decode_titles,
+        encode=_encode_titles,
     )

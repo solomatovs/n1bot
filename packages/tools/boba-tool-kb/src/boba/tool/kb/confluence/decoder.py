@@ -78,6 +78,15 @@ class ConfluenceJsonDecoder(Decoder):
         space = data.get("space") or {}
         if isinstance(space, dict) and (space_key := space.get("key")):
             meta = meta.set(ConfluenceKeys.SPACE_KEY, str(space_key))
+        ancestors = data.get("ancestors")
+        if isinstance(ancestors, list):
+            titles = tuple(
+                str(a.get("title", "")).strip()
+                for a in ancestors
+                if isinstance(a, dict) and str(a.get("title", "")).strip()
+            )
+            if titles:
+                meta = meta.set(ConfluenceKeys.ANCESTORS_TITLES, titles)
 
         return replace(
             value,
