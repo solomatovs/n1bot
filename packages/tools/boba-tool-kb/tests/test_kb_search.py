@@ -1,12 +1,5 @@
-"""Интеграционный тест `kb_search`: реальный postgres + pgvector + FTS + RRF.
-
-Гибридный retrieval: vector top-K (cosine via `<=>`) + FTS top-K
-(`plainto_tsquery`+`ts_rank_cd`), склейка через RRF.
-
-Все общие объекты (pool, embedder, knowledge_base, cfg) приходят из
-conftest.py через DI-фикстуры. Параметры запроса — из `[test.kb]`
-(`KbIntegrationTestConfig`).
-"""
+"""Integration: `kb_search` — hybrid (vector + FTS + RRF) поверх kb_chunks."""
+# pyright: reportCallIssue=false
 
 from __future__ import annotations
 
@@ -14,48 +7,34 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from boba.tool.kb.core.config import KbConfig
-from boba.tool.kb.core.kb import PostgresKnowledgeBase
-from boba.tool.kb.core.search_config import SearchConfig
-from boba.tool.kb.core.tools.kb_search import kb_search
+from boba.tool.kb.core.tools.kb_search import KbSearchConfig, kb_search
 
 if TYPE_CHECKING:
     from tests.conftest import KbIntegrationTestConfig
-
-    from boba.tool.kb.core.embedding_config import EmbeddingConfig
 
 pytestmark = pytest.mark.integration
 
 
 def test_kb_search_real(
-    kb_cfg: KbConfig,
-    search_cfg: SearchConfig,
-    embedding_cfg: EmbeddingConfig,
-    kb_knowledge_base: PostgresKnowledgeBase,
+    kb_search_cfg: KbSearchConfig,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
-    """Реальный kb_search на персистентном postgres оператора.
-
-    Фикстуры скипают при отсутствии `[tool.kb]`/`[test.kb]`. Сам тест
-    дополнительно скипается при пустом `test.kb.kb_search_query`.
-    """
+    """Реальный kb_search."""
     if not test_cfg.kb_search_query:
         pytest.skip("test.kb.kb_search_query пуст — задайте запрос для теста")
 
     hits = kb_search(
+        cfg=kb_search_cfg,
         query=test_cfg.kb_search_query,
-        kb=kb_knowledge_base,
-        cfg=kb_cfg,
-        search_cfg=search_cfg,
         top_k=test_cfg.kb_search_top_k,
     )
 
     _emit("")
-    _emit(f"collections:     {list(search_cfg.collections)}")
-    _emit(f"embedding_model: {embedding_cfg.model}")
-    _emit(f"fts_language:    {kb_cfg.fts_language}")
-    _emit(f"rrf_k:           {kb_cfg.rrf_k}")
-    _emit(f"rrf_pool:        {kb_cfg.rrf_pool}")
+    _emit(f"collections:     {list(kb_search_cfg.collections)}")
+    _emit(f"embedding_model: {kb_search_cfg.knowledge_base.embedding.model}")
+    _emit(f"fts_language:    {kb_search_cfg.knowledge_base.fts_language}")
+    _emit(f"rrf_k:           {kb_search_cfg.knowledge_base.rrf_k}")
+    _emit(f"rrf_pool:        {kb_search_cfg.knowledge_base.rrf_pool}")
     _emit(f"query:           {test_cfg.kb_search_query!r}")
     _emit(f"top_k:           {test_cfg.kb_search_top_k}")
     _emit(f"hits:            {len(hits)}")
@@ -74,20 +53,16 @@ def test_kb_search_real(
 
 
 def test_kb_search_top_k_ceiling(
-    kb_cfg: KbConfig,
-    search_cfg: SearchConfig,
-    kb_knowledge_base: PostgresKnowledgeBase,
+    kb_search_cfg: KbSearchConfig,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
     """`top_k > cfg.max_top_k` → RuntimeError. Защита от перегрузки KB."""
     query = test_cfg.kb_search_query or "test"
     with pytest.raises(RuntimeError, match="превышает max_top_k"):
         kb_search(
+            cfg=kb_search_cfg,
             query=query,
-            kb=kb_knowledge_base,
-            cfg=kb_cfg,
-            search_cfg=search_cfg,
-            top_k=kb_cfg.max_top_k + 1,
+            top_k=kb_search_cfg.max_top_k + 1,
         )
 
 

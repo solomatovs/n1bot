@@ -1,7 +1,11 @@
-"""Tool `confluence_page_download`: явный список Confluence-страниц → workspace.
+"""Tool `confluence_page_download` + `ConfluencePageDownloadConfig`.
 
-HTML по умолчанию; `as_markdown=True` конвертирует HTML через `markdownify`
-(ATX-заголовки) и пишет `.md` с YAML-frontmatter.
+Скачивает явный список Confluence-страниц в workspace. HTML по умолчанию;
+`as_markdown=True` конвертирует HTML через `markdownify` (ATX-заголовки)
+и пишет `.md` с YAML-frontmatter.
+
+LLM передаёт `page_ids` + `dest_dir` + опц. `as_markdown`; connection —
+из TOML-секции `[tool.kb.confluence_download.page]`.
 """
 
 from __future__ import annotations
@@ -11,20 +15,37 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from boba.indexing import PipelineId
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.confluence._download_common import download_pages
-from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.request_sources.pages import ConfluencePagesRequestSource
 from boba.tools import FromConfig, FromDI, Scope, tool
 from boba.workspace.contract import ProjectWorkspaceShell
 
-__all__ = ["confluence_page_download"]
+__all__ = ["ConfluencePageDownloadConfig", "confluence_page_download"]
 
 _PIPELINE_ID: PipelineId = PipelineId("confluence.page_download")
 
 
+class ConfluencePageDownloadConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `confluence_page_download`.
+
+    Config-секция: `[tool.kb.confluence_download.page]`.
+    """
+
+    model_config = BobaSettingsConfigDict(
+        case_sensitive=False,
+        extra="ignore",
+        config_path="tool.kb.confluence_download.page",
+    )
+
+    confluence: ConfluenceConnection
+
+
 @tool
 def confluence_page_download(
+    cfg: Annotated[ConfluencePageDownloadConfig, FromConfig()],
+    shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
     page_ids: Annotated[
         list[str],
         Field(
@@ -42,8 +63,6 @@ def confluence_page_download(
             ),
         ),
     ],
-    shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
-    cfg: Annotated[ConfluenceConnectionConfig, FromConfig()],
     as_markdown: Annotated[
         bool,
         Field(
@@ -61,14 +80,14 @@ def confluence_page_download(
     (Markdown). Дальше — html_outline/html_section/file-tools.
     """
     source = ConfluencePagesRequestSource(
-        base_url=cfg.base_url,
-        auth=ConfluenceConnection.make_auth(cfg),
+        base_url=cfg.confluence.base_url,
+        auth=cfg.confluence.make_auth(),
         page_ids=page_ids,
-        body_format=cfg.body_format,
+        body_format=cfg.confluence.body_format,
     )
     return download_pages(
         request_source=source,
-        cfg=cfg,
+        conn=cfg.confluence,
         shell=shell,
         dest_dir=dest_dir,
         as_markdown=as_markdown,

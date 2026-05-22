@@ -1,6 +1,6 @@
 """ConfluenceSpace/Pages/Cql RequestSources: REST URL'ы + viewpage source_id.
 
-Integration: все тесты используют реальный `confluence_cfg.base_url` из
+Integration: все тесты используют реальный `confluence_connection.base_url` из
 `[tool.kb.confluence]` (по умолчанию `https://cwiki.apache.org/confluence`).
 Часть тестов — URL-shape (только конструируют `RequestSource` без HTTP),
 часть — реальная discovery через `[test.kb].confluence_space_key`/`_cql`.
@@ -17,7 +17,7 @@ import httpx
 import pytest
 
 from boba.indexing import PipelineContext
-from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
+from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.keys import ConfluenceKeys
 from boba.tool.kb.confluence.request_sources import (
     ConfluenceCqlRequestSource,
@@ -43,7 +43,7 @@ pytestmark = pytest.mark.integration
 
 def test_pages_source_sets_viewpage_source_id_and_rest_url(
     pipeline_ctx: PipelineContext,
-    confluence_cfg: ConfluenceConnectionConfig,
+    confluence_connection: ConfluenceConnection,
     confluence_auth: httpx.Auth | None,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
@@ -55,19 +55,19 @@ def test_pages_source_sets_viewpage_source_id_and_rest_url(
         pytest.skip("test.kb.confluence_page_ids пусто")
 
     page_ids = test_cfg.confluence_page_ids
-    base = confluence_cfg.base_url
+    base = confluence_connection.base_url
     host = extract_host(base)
 
     src = ConfluencePagesRequestSource(
         base_url=base,
         auth=confluence_auth,
         page_ids=page_ids,
-        body_format=confluence_cfg.body_format,
+        body_format=confluence_connection.body_format,
     )
     requests = list(src.stream(pipeline_ctx))
     assert len(requests) == len(page_ids)
     assert all("rest/api/content/" in r.url for r in requests)
-    assert all(f"expand=body.{confluence_cfg.body_format}" in r.url for r in requests)
+    assert all(f"expand=body.{confluence_connection.body_format}" in r.url for r in requests)
     # source_id — viewpage URL, отличается от REST url.
     for r, pid in zip(requests, page_ids, strict=True):
         assert r.source_id == viewpage_url(base, pid)
@@ -82,7 +82,7 @@ def test_pages_source_sets_viewpage_source_id_and_rest_url(
 
 def test_pages_request_url_includes_expand_for_body_format(
     pipeline_ctx: PipelineContext,
-    confluence_cfg: ConfluenceConnectionConfig,
+    confluence_connection: ConfluenceConnection,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
     """`?expand=body.<body_format>,...` шьётся в REST-URL по body_format-параметру."""
@@ -93,7 +93,7 @@ def test_pages_request_url_includes_expand_for_body_format(
     # Берём storage-формат (отличается от operator-defаulta view) — чтобы
     # явно увидеть, что body_format действительно шьётся в URL.
     src = ConfluencePagesRequestSource(
-        base_url=confluence_cfg.base_url,
+        base_url=confluence_connection.base_url,
         auth=None,
         page_ids=[page_id],
         body_format="storage",
@@ -101,12 +101,12 @@ def test_pages_request_url_includes_expand_for_body_format(
     req = next(iter(src.stream(pipeline_ctx)))
     assert "expand=body.storage" in req.url
     # source_id не зависит от body_format — стабилен.
-    assert req.source_id == viewpage_url(confluence_cfg.base_url, page_id)
+    assert req.source_id == viewpage_url(confluence_connection.base_url, page_id)
 
 
 def test_request_url_strips_trailing_slash_in_base_url(
     pipeline_ctx: PipelineContext,
-    confluence_cfg: ConfluenceConnectionConfig,
+    confluence_connection: ConfluenceConnection,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
     """`base_url` с trailing `/` — корректно нормализуется (нет двойных `//`)."""
@@ -115,7 +115,7 @@ def test_request_url_strips_trailing_slash_in_base_url(
 
     page_id = test_cfg.confluence_page_ids[0]
     src = ConfluencePagesRequestSource(
-        base_url=confluence_cfg.base_url + "/",  # явный trailing slash
+        base_url=confluence_connection.base_url + "/",  # явный trailing slash
         auth=None,
         page_ids=[page_id],
     )
@@ -126,7 +126,7 @@ def test_request_url_strips_trailing_slash_in_base_url(
 
 def test_metadata_carries_page_id_and_host(
     pipeline_ctx: PipelineContext,
-    confluence_cfg: ConfluenceConnectionConfig,
+    confluence_connection: ConfluenceConnection,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
     """structured-данные (`PAGE_ID`, `HOST`) проставляются для downstream'а."""
@@ -134,10 +134,10 @@ def test_metadata_carries_page_id_and_host(
         pytest.skip("test.kb.confluence_page_ids пусто")
 
     page_id = test_cfg.confluence_page_ids[0]
-    expected_host = extract_host(confluence_cfg.base_url)
+    expected_host = extract_host(confluence_connection.base_url)
 
     src = ConfluencePagesRequestSource(
-        base_url=confluence_cfg.base_url,
+        base_url=confluence_connection.base_url,
         auth=None,
         page_ids=[page_id],
     )
@@ -147,17 +147,17 @@ def test_metadata_carries_page_id_and_host(
 
 
 def test_real_base_url_host_extraction(
-    confluence_cfg: ConfluenceConnectionConfig,
+    confluence_connection: ConfluenceConnection,
 ) -> None:
     """`extract_host` на реальном `[tool.kb.confluence].base_url` — netloc only.
 
     Для Apache cwiki это `cwiki.apache.org` (без `/confluence` пути).
     """
-    host = extract_host(confluence_cfg.base_url)
+    host = extract_host(confluence_connection.base_url)
     assert "://" not in host
     assert "/" not in host
     # Базовая sanity: hostname в base_url содержит то же.
-    assert host in confluence_cfg.base_url
+    assert host in confluence_connection.base_url
 
 
 # --------------------------------------------------------------------------- #
@@ -167,7 +167,7 @@ def test_real_base_url_host_extraction(
 
 def test_space_source_returns_pages_from_real_space(
     pipeline_ctx: PipelineContext,
-    confluence_cfg: ConfluenceConnectionConfig,
+    confluence_connection: ConfluenceConnection,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
     """Реальная discovery: SpaceRequestSource эмитит HttpRequest'ы со
@@ -177,13 +177,13 @@ def test_space_source_returns_pages_from_real_space(
         pytest.skip("test.kb.confluence_space_key пусто")
 
     src = ConfluenceSpaceRequestSource(
-        conn_cfg=confluence_cfg,
+        conn=confluence_connection,
         space_key=test_cfg.confluence_space_key,
-        body_format=confluence_cfg.body_format,
+        body_format=confluence_connection.body_format,
     )
     requests = list(src.stream(pipeline_ctx))
     assert requests, f"space {test_cfg.confluence_space_key!r} вернул 0 страниц"
-    base = confluence_cfg.base_url.rstrip("/")
+    base = confluence_connection.base_url.rstrip("/")
     for r in requests:
         assert "rest/api/content/" in r.url
         assert r.source_id.startswith(f"{base}/pages/viewpage.action?pageId=")
@@ -191,7 +191,7 @@ def test_space_source_returns_pages_from_real_space(
 
 def test_multi_space_source_single_key_matches_single(
     pipeline_ctx: PipelineContext,
-    confluence_cfg: ConfluenceConnectionConfig,
+    confluence_connection: ConfluenceConnection,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
     """`MultiSpace(space_keys=[k])` ≡ `Space(space_key=k)` по source_ids.
@@ -203,14 +203,14 @@ def test_multi_space_source_single_key_matches_single(
         pytest.skip("test.kb.confluence_space_key пусто")
 
     single = ConfluenceSpaceRequestSource(
-        conn_cfg=confluence_cfg,
+        conn=confluence_connection,
         space_key=test_cfg.confluence_space_key,
-        body_format=confluence_cfg.body_format,
+        body_format=confluence_connection.body_format,
     )
     multi = ConfluenceMultiSpaceRequestSource(
-        conn_cfg=confluence_cfg,
+        conn=confluence_connection,
         space_keys=[test_cfg.confluence_space_key],
-        body_format=confluence_cfg.body_format,
+        body_format=confluence_connection.body_format,
     )
     single_ids = [r.source_id for r in single.stream(pipeline_ctx)]
     multi_ids = [r.source_id for r in multi.stream(pipeline_ctx)]
@@ -220,7 +220,7 @@ def test_multi_space_source_single_key_matches_single(
 
 def test_multi_space_source_concatenates_two_keys(
     pipeline_ctx: PipelineContext,
-    confluence_cfg: ConfluenceConnectionConfig,
+    confluence_connection: ConfluenceConnection,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
     """`MultiSpace([k, k])` ⇒ 2× source_ids одного space — проверка chain'а.
@@ -234,9 +234,9 @@ def test_multi_space_source_concatenates_two_keys(
 
     key = test_cfg.confluence_space_key
     multi = ConfluenceMultiSpaceRequestSource(
-        conn_cfg=confluence_cfg,
+        conn=confluence_connection,
         space_keys=[key, key],
-        body_format=confluence_cfg.body_format,
+        body_format=confluence_connection.body_format,
     )
     ids = [r.source_id for r in multi.stream(pipeline_ctx)]
     # Пагинация двух space'ов с одинаковым key даёт ровно 2× страниц
@@ -248,19 +248,19 @@ def test_multi_space_source_concatenates_two_keys(
 
 
 def test_multi_space_source_empty_keys_raises(
-    confluence_cfg: ConfluenceConnectionConfig,
+    confluence_connection: ConfluenceConnection,
 ) -> None:
     """`space_keys=[]` — ValueError на конструировании (нет no-op'а)."""
     with pytest.raises(ValueError, match="space_keys"):
         ConfluenceMultiSpaceRequestSource(
-            conn_cfg=confluence_cfg,
+            conn=confluence_connection,
             space_keys=[],
         )
 
 
 def test_cql_source_returns_pages_for_real_cql(
     pipeline_ctx: PipelineContext,
-    confluence_cfg: ConfluenceConnectionConfig,
+    confluence_connection: ConfluenceConnection,
     test_cfg: KbIntegrationTestConfig,
 ) -> None:
     """Реальный CQL-search: возвращает ≥1 страницу + правильные HttpRequest'ы.
@@ -273,9 +273,9 @@ def test_cql_source_returns_pages_for_real_cql(
         pytest.skip("test.kb.confluence_cql пусто")
 
     src = ConfluenceCqlRequestSource(
-        conn_cfg=confluence_cfg,
+        conn=confluence_connection,
         cql=test_cfg.confluence_cql,
-        body_format=confluence_cfg.body_format,
+        body_format=confluence_connection.body_format,
     )
     requests = list(src.stream(pipeline_ctx))
     assert requests, f"cql {test_cfg.confluence_cql!r} вернул 0 страниц"
