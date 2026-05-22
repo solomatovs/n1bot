@@ -1,14 +1,44 @@
-"""BobaFlatSettings: BaseSettings с flat→nested redistribute.
+"""BobaFlatSettings: BaseSettings с рекурсивным flat→nested redistribute.
 
-Чистая pydantic-schema. Источник конфиг-данных (TOML+env) живёт в
-`boba.settings.source` — `BobaFlatSettings.settings_customise_sources`
-делегирует через `ConfigSourcePydanticAdapter`.
+Идея: оператор пишет в TOML **плоскую** секцию, а pydantic-модель строится
+со вложенными `BaseModel`-под-моделями произвольной глубины. Загрузчик
+разворачивает плоские ключи по дереву аннотаций.
+
+Пример:
+
+    class PostgresConnectionConfig(BaseModel):
+        host: str
+        port: int = 5432
+
+    class PostgresStoreConfig(BaseModel):
+        connection: PostgresConnectionConfig
+        schema: str = "public"
+
+    class PostgresKnowledgeBaseConfig(BobaFlatSettings):
+        model_config = BobaSettingsConfigDict(config_path="tool.kb.knowledge_base")
+        store: PostgresStoreConfig
+        rrf_k: int = 60
+
+TOML:
+
+    [tool.kb.knowledge_base]
+    host = "127.0.0.1"      # → store.connection.host
+    schema = "public"       # → store.schema
+    rrf_k = 60              # → rrf_k
+
+Конфликты имён (одно terminal-имя достижимо через несколько путей)
+поднимаются как `ValueError` при инициализации класса (`__init_subclass__`),
+то есть до загрузки конфига — fail-fast на этапе импорта модуля.
+
+Источник конфиг-данных (TOML+env) живёт в `boba.settings.source` —
+`BobaFlatSettings.settings_customise_sources` делегирует через
+`ConfigSourcePydanticAdapter`.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Self
+from typing import Any, ClassVar, Self
 
 from pydantic import BaseModel, model_validator
 from pydantic_settings import (
@@ -48,44 +78,91 @@ def _as_submodel(annotation: Any) -> type[BaseModel] | None:
     return None
 
 
-def _collect_subfield(
-    name: str,
-    sub_model: type[BaseModel],
-    values: Mapping[str, Any],
-    used: set[str],
-) -> dict[str, Any] | Any | None:
+def _build_flat_key_paths(
+    cls: type[BaseModel],
+) -> dict[str, tuple[str, ...]]:
+    """Собрать map `terminal-имя → путь` для всех листовых полей дерева.
+
+    Терминальное поле — поле, чья аннотация **не** является `BaseModel`-под-моделью.
+    Имена submodels'ов (промежуточные ноды) в map не попадают — они доступны
+    как ключи в values только через явные nested-секции.
+
+    Конфликт (одинаковое имя в разных submodel-ветках) → `ValueError`. Это
+    проверка целостности схемы; вызывается один раз при первой нужде и
+    кешируется в `cls.__dict__["_flat_key_paths"]`.
     """
-    Собрать значение для sub-model
+    result: dict[str, tuple[str, ...]] = {}
+    conflicts: dict[str, list[tuple[str, ...]]] = {}
 
-    Возвращает:
-      * dict — собранное содержимое sub-model (flat-keys nested-overlay);
-      * не-dict — passthrough, если на месте `name` лежал готовый объект;
-      * None — для поля нечего собрать (использовать field's default).
+    def walk(model: type[BaseModel], prefix: tuple[str, ...]) -> None:
+        for fname, field in model.model_fields.items():
+            sub = _as_submodel(field.annotation)
+            path = (*prefix, fname)
+            if sub is not None:
+                walk(sub, path)
+                continue
+            existing = result.get(fname)
+            if existing is not None and existing != path:
+                conflicts.setdefault(fname, [existing]).append(path)
+            else:
+                result[fname] = path
+
+    walk(cls, ())
+
+    if conflicts:
+        lines = []
+        for key, paths in conflicts.items():
+            formatted = " vs ".join(".".join(p) for p in paths)
+            lines.append(f"  - {key!r}: {formatted}")
+        msg = (
+            f"{cls.__name__}: flat-key conflicts "
+            "(same leaf-name reachable via multiple paths):\n"
+            + "\n".join(lines)
+        )
+        raise ValueError(msg)
+
+    return result
+
+
+def _set_nested(
+    target: dict[str, Any],
+    path: tuple[str, ...],
+    value: Any,
+) -> None:
+    """Записать value в target по path, создавая промежуточные dict'ы.
+
+    Если на пути встречается non-dict (например, оператор передал готовый
+    объект под этим ключом), он перезаписывается — flat-ключи имеют
+    более низкий приоритет, чем явные nested-секции (см. `_deep_merge`
+    в pass 2), поэтому перезапись здесь безопасна.
     """
-    sub_dict: dict[str, Any] = {}
-    for sub_field in sub_model.model_fields:
-        if sub_field in values:
-            sub_dict[sub_field] = values[sub_field]
-            used.add(sub_field)
+    *parents, leaf = path
+    cur = target
+    for p in parents:
+        existing = cur.get(p)
+        if not isinstance(existing, dict):
+            existing = {}
+            cur[p] = existing
+        cur = existing
+    cur[leaf] = value
 
-    existing = values.get(name)
-    if isinstance(existing, Mapping):
-        merged: dict[str, Any] = dict(sub_dict)
-        merged.update(existing)
-        return merged
 
-    if sub_dict:
-        return sub_dict
+def _deep_merge(target: dict[str, Any], source: Mapping[str, Any]) -> None:
+    """Рекурсивный merge: значения `source` overrides `target` на каждом уровне.
 
-    if name in values:
-        return values[name]
-
-    return None
+    Применяется, когда оператор смешивает flat-ключи и явную nested-секцию
+    для одной submodel — явная секция перекрывает flat-значения.
+    """
+    for k, v in source.items():
+        if isinstance(v, Mapping) and isinstance(target.get(k), dict):
+            _deep_merge(target[k], v)
+        else:
+            target[k] = v
 
 
 class BobaFlatSettings(BaseSettings):
     """
-    Базовая модель конфигурирования pydentic style:
+    Базовая модель конфигурирования pydantic-style:
 
         class AppConfig(BobaFlatSettings):
             model_config = BobaSettingsConfigDict(
@@ -96,7 +173,25 @@ class BobaFlatSettings(BaseSettings):
             core:       AppCoreConfig   = Field(default_factory=AppCoreConfig)
             workspaces: WorkspaceLayout = Field(default_factory=WorkspaceLayout)
             ...
+
+    Поддерживает произвольную вложенность под-моделей: TOML-секция остаётся
+    плоской, validator раскладывает ключи по терминальным полям дерева
+    `model_fields`. Конфликты имён ловятся в `__init_subclass__`.
     """
+
+    # Кэш map `flat-name → path`, строится один раз на класс через
+    # `__pydantic_init_subclass__` — pydantic-hook, который вызывается
+    # ПОСЛЕ того как метакласс заполнил `model_fields`. Обычный
+    # `__init_subclass__` не годится: к моменту его вызова `model_fields`
+    # ещё не построен.
+    _flat_key_paths: ClassVar[dict[str, tuple[str, ...]]] = {}
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        # Fail-fast: конфликт имён ловится при импорте модуля,
+        # а не при первом запуске.
+        cls._flat_key_paths = _build_flat_key_paths(cls)
 
     @classmethod
     def load(cls) -> Self:
@@ -111,21 +206,25 @@ class BobaFlatSettings(BaseSettings):
         if not isinstance(values, Mapping):
             return values
 
+        flat_map = cls._flat_key_paths
         result: dict[str, Any] = {}
-        used: set[str] = set()
-        for name, field in cls.model_fields.items():
-            sub_model = _as_submodel(field.annotation)
-            if sub_model is None:
-                continue
+        leftover: dict[str, Any] = {}
 
-            entry = _collect_subfield(name, sub_model, values, used)
-            if entry is not None:
-                result[name] = entry
-
-            used.add(name)
-
+        # Pass 1: flat-ключи разворачиваем по их пути в дереве.
         for k, v in values.items():
-            if k not in used:
+            if k in flat_map:
+                _set_nested(result, flat_map[k], v)
+            else:
+                leftover[k] = v
+
+        # Pass 2: всё остальное (явные nested-секции под именами submodel'ов
+        # + неизвестные ключи). Nested-dict для уже существующей ветки
+        # deep-merge'им — явная секция перекрывает flat-значения.
+        for k, v in leftover.items():
+            existing = result.get(k)
+            if isinstance(v, Mapping) and isinstance(existing, dict):
+                _deep_merge(existing, v)
+            else:
                 result[k] = v
 
         return result
