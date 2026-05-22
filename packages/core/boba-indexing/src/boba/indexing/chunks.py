@@ -35,6 +35,7 @@ __all__ = [
     "ChunkKeys",
     "ChunkLocation",
     "ChunkSummary",
+    "EmbeddedChunk",
     "chunk_id_from_digest",
 ]
 
@@ -122,6 +123,23 @@ class Chunk(Generic[T]):
     content_hash: ContentHash | None = None
     metadata: Metadata = field(default_factory=Metadata.empty)
     tags: frozenset[str] = field(default_factory=frozenset)
+
+
+@dataclass(frozen=True)
+class EmbeddedChunk(Generic[T]):
+    """DTO готовый к upsert в VectorStoreWriter: чанк + посчитанный embedding.
+
+    Embedding-вектор считает caller (обычно `IndexSink.reconcile`-impl)
+    через `Embedder.embed_documents(...)`. VectorStoreWriter принимает уже
+    embedded-DTO и не знает про `Embedder` — store отвечает только за
+    persistence, embedder инжектится сверху в pipeline-orchestrator.
+
+    Композиция (а не flat) — `chunk` единственный источник правды для
+    payload-полей; добавляется ровно одно новое поле `embedding`.
+    """
+
+    chunk: Chunk[T]
+    embedding: tuple[float, ...]
 
 
 @dataclass(frozen=True)

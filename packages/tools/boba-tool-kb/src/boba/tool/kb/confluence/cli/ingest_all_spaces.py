@@ -29,6 +29,7 @@ from dishka.entities.component import Component
 from pydantic import Field
 
 from boba.agent import AgentBuilder
+from boba.indexing.embedder import Embedder
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
 from boba.text import StructuralChunker
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
@@ -117,6 +118,7 @@ def main() -> int:
             # Resolve heavy KB-deps из DI
             kb_cfg = req.get(KbConfig, component=_KB_COMPONENT)
             store = req.get(PostgresVectorStore, component=_KB_COMPONENT)
+            embedder = req.get(Embedder[str], component=_KB_COMPONENT)
             chunker = req.get(StructuralChunker, component=_KB_COMPONENT)
 
             # Per-space loop (streaming, без материализации списка)
@@ -134,6 +136,7 @@ def main() -> int:
                 try:
                     result: dict[str, Any] = confluence_space_ingest(
                         store=store,
+                        embedder=embedder,
                         chunker=chunker,
                         kb_cfg=kb_cfg,
                         conn_cfg=conn_cfg,

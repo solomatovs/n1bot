@@ -3,7 +3,7 @@ PostgresVectorStore — реализация boba.indexing.VectorStore + Collect
 поверх postgres + pgvector.
 
 Один класс реализует 4 ABC:
-- VectorStoreReader[str]:   get_by_ids / similarity_search / peek / find
+- VectorStoreReader[str]:   get_by_ids / similarity_search / peek / find / diff_by_hash
 - VectorStoreWriter[str]:   upsert / delete / update_metadata
 - CollectionsAdminReader:   list_collections / collection_info
 - CollectionsAdminWriter:   ensure_collection / delete_collection
@@ -18,6 +18,10 @@ PostgresVectorStore — реализация boba.indexing.VectorStore + Collect
   `boba.tool.kb.core.cli.bootstrap`. Store предполагает, что схема и
   индекс уже на месте — runtime DDL не делает.
 
+Embedder в Store не инжектится: store принимает `EmbeddedChunk[str]` на
+write и `Sequence[float]` на similarity_search. Embedder живёт в
+pipeline-orchestrator'е выше (`CollectionScopedView`, `PostgresKnowledgeBase`).
+
 Similarity-search здесь — чистый vector (cosine, `<=>`). Гибридный
 search (vector + FTS, RRF) живёт в `PostgresKnowledgeBase.search` и
 не относится к ABC.
@@ -27,18 +31,17 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from itertools import islice
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeVar
 
 from psycopg import sql
 from psycopg.rows import dict_row
 
 from boba.db.postgres import PostgresPool
-from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary
-from boba.indexing.content_hash import StringContentHash
+from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary, EmbeddedChunk
+from boba.indexing.content_hash import ContentHash, StringContentHash
 from boba.indexing.context import CollectionId
-from boba.indexing.embedder import Embedder
 from boba.indexing.filter import (
     And,
     Eq,
@@ -63,6 +66,7 @@ from boba.indexing.vector_store import (
     CollectionInfo,
     CollectionsAdminReader,
     CollectionsAdminWriter,
+    HashDiff,
     SearchHit,
     VectorStoreReader,
     VectorStoreWriter,
@@ -71,6 +75,8 @@ from boba.indexing.vector_store import (
 logger = logging.getLogger(__name__)
 
 __all__ = ["PostgresVectorStore"]
+
+_E = TypeVar("_E")
 
 
 class PostgresVectorStore(
@@ -93,13 +99,11 @@ class PostgresVectorStore(
     def __init__(
         self,
         pool: PostgresPool,
-        embedder: Embedder[str],
         *,
         embedding_dim: int,
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> None:
         self._pool = pool
-        self._embedder = embedder
         self._embedding_dim = embedding_dim
         self._batch_size = batch_size
 
@@ -138,10 +142,9 @@ class PostgresVectorStore(
         self,
         collection: CollectionId,
         *,
-        query: str,
+        query_embedding: Sequence[float],
         k: int,
     ) -> Iterable[SearchHit[str]]:
-        embedding = list(self._embedder.embed_query(query))
         # pgvector требует `vector(N)` с литералом N (type modifier);
         # параметризовать $1 нельзя — Postgres парсит type modifiers до
         # bind'а. Инлайним через sql.Literal (значение из cfg, не из юзера).
@@ -163,7 +166,7 @@ class PostgresVectorStore(
                 row_factory=dict_row,
             ) as cur,
         ):
-            cur.execute(query_sql, (embedding, str(collection), k))
+            cur.execute(query_sql, (list(query_embedding), str(collection), k))
             for row in cur:
                 yield SearchHit(
                     chunk_id=ChunkId(row["chunk_id"]),
@@ -250,6 +253,53 @@ class PostgresVectorStore(
             for row in cur:
                 yield self._row_to_summary(row)
 
+    def diff_by_hash(
+        self,
+        collection: CollectionId,
+        candidates: Iterable[tuple[ChunkId, ContentHash | None]],
+    ) -> HashDiff:
+        # Сохраняем порядок кандидатов; SELECT возвращает только
+        # (chunk_id, content_hash) — без payload и embedding'а.
+        items: list[tuple[ChunkId, ContentHash | None]] = list(candidates)
+        if not items:
+            return HashDiff(to_upsert=[], unchanged=[])
+
+        ids = [str(cid) for cid, _ in items]
+        with (
+            self._pool.connection() as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                """
+                SELECT chunk_id, content_hash
+                FROM kb_chunks
+                WHERE collection = %s AND chunk_id = ANY(%s)
+                """,
+                (str(collection), ids),
+            )
+            stored: dict[str, str] = {row[0]: row[1] or "" for row in cur}
+
+        to_upsert: list[ChunkId] = []
+        unchanged: list[ChunkId] = []
+        for chunk_id, candidate_hash in items:
+            stored_wire = stored.get(str(chunk_id))
+            if stored_wire is None:
+                to_upsert.append(chunk_id)
+                continue
+            candidate_wire = (
+                candidate_hash.to_wire() if candidate_hash is not None else ""
+            )
+            # Defensive: stored="" (legacy без hash) или candidate=None
+            # трактуются как mismatch — re-embed, чтобы перестраховаться.
+            if stored_wire and candidate_wire and stored_wire == candidate_wire:
+                unchanged.append(chunk_id)
+            elif not stored_wire and not candidate_wire:
+                # оба пустые — считаем "то же ничто"; unchanged
+                unchanged.append(chunk_id)
+            else:
+                to_upsert.append(chunk_id)
+        return HashDiff(to_upsert=to_upsert, unchanged=unchanged)
+
     # ------------------------------------------------------------------ #
     # VectorStoreWriter[str]                                             #
     # ------------------------------------------------------------------ #
@@ -257,19 +307,12 @@ class PostgresVectorStore(
     def upsert(
         self,
         collection: CollectionId,
-        chunks: Iterable[Chunk[str]],
+        chunks: Iterable[EmbeddedChunk[str]],
     ) -> None:
         for batch in self._batched(chunks):
-            documents = [c.format_content for c in batch]
-            embeddings = list(self._embedder.embed_documents(documents))
-            if len(embeddings) != len(batch):
-                msg = (
-                    f"embedder returned {len(embeddings)} vectors "
-                    f"for {len(batch)} chunks"
-                )
-                raise RuntimeError(msg)
             rows: list[tuple[Any, ...]] = []
-            for c, embedding in zip(batch, embeddings, strict=True):
+            for ec in batch:
+                c = ec.chunk
                 rows.append(
                     (
                         str(c.chunk_id),
@@ -283,7 +326,7 @@ class PostgresVectorStore(
                         ),
                         c.raw_content,
                         c.format_content,
-                        list(embedding),
+                        list(ec.embedding),
                         json.dumps(dict(c.metadata.to_wire())),
                         sorted(c.tags),
                     ),
@@ -497,9 +540,9 @@ class PostgresVectorStore(
 
     def _batched(
         self,
-        chunks: Iterable[Chunk[str]],
-    ) -> Iterable[list[Chunk[str]]]:
-        it = iter(chunks)
+        items: Iterable[_E],
+    ) -> Iterable[list[_E]]:
+        it = iter(items)
         while True:
             batch = list(islice(it, self._batch_size))
             if not batch:

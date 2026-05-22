@@ -12,7 +12,14 @@ from boba.indexing.chunk_id import (
 )
 from boba.indexing.chunk_sink import ChunkSink, VectorStoreChunkSink
 from boba.indexing.chunker import Chunker, ChunkerId
-from boba.indexing.chunks import Chunk, ChunkId, ChunkKeys, ChunkLocation, ChunkSummary
+from boba.indexing.chunks import (
+    Chunk,
+    ChunkId,
+    ChunkKeys,
+    ChunkLocation,
+    ChunkSummary,
+    EmbeddedChunk,
+)
 from boba.indexing.cleanup import (
     CleanupContext,
     CleanupStrategy,
@@ -115,6 +122,7 @@ from boba.indexing.vector_store import (
     CollectionInfo,
     CollectionsAdminReader,
     CollectionsAdminWriter,
+    HashDiff,
     SearchHit,
     VectorStoreReader,
     VectorStoreWriter,
@@ -152,6 +160,7 @@ __all__ = [
     "DecoderId",
     "DigestPrefix",
     "DispatchReader",
+    "EmbeddedChunk",
     "Embedder",
     "Eq",
     "Filter",
@@ -164,6 +173,7 @@ __all__ = [
     "HasAllTags",
     "HasAnyTag",
     "HasTag",
+    "HashDiff",
     "HeadingSection",
     "In",
     "IncompatibleContentError",
