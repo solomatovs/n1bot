@@ -15,9 +15,9 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from boba.tool.kb.config import KbConfig
-from boba.tool.kb.errors import KnowledgeBaseError
-from boba.tool.kb.kb import PostgresKnowledgeBase
+from boba.tool.kb.core.config import KbConfig
+from boba.tool.kb.core.errors import KnowledgeBaseError
+from boba.tool.kb.core.kb import PostgresKnowledgeBase
 from boba.tools import FromConfig, FromDI, Scope, tool
 
 __all__ = ["vector_search"]

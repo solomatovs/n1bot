@@ -9,13 +9,15 @@ discovery-фазу для индексатора (выдаёт `HttpRequest` н�
 from __future__ import annotations
 
 from collections.abc import Iterable
-from urllib.parse import quote
 
 import httpx
 
 from boba.indexing import Metadata, PipelineContext, RequestSource, SourceId
 from boba.tool.kb.confluence.keys import ConfluenceKeys
-from boba.tool.kb.confluence.request_sources._common import extract_host
+from boba.tool.kb.confluence.request_sources._common import (
+    cql_search_path,
+    extract_host,
+)
 from boba.transport.http import HttpRequest
 
 __all__ = ["ConfluenceCqlSearchRequestSource"]
@@ -43,15 +45,13 @@ class ConfluenceCqlSearchRequestSource(RequestSource[HttpRequest]):
             f"ConfluenceCqlSearchRequestSource(cql={self._cql!r}, limit={self._limit})"
         )
 
-    def _seatch_path(self, cql: str, limit: int) -> str:
-        return (
-            f"/rest/api/content/search?cql={cql}&limit={limit}"
-            "&expand=body.view,version,space"
-        )
-
     def stream(self, ctx: PipelineContext) -> Iterable[HttpRequest]:
         del ctx
-        path = self._seatch_path(quote(self._cql, safe=""), self._limit)
+        path = cql_search_path(
+            self._cql,
+            limit=self._limit,
+            expand="body.view,version,space",
+        )
 
         yield HttpRequest(
             url=f"{self._base_url}{path}",
@@ -61,6 +61,3 @@ class ConfluenceCqlSearchRequestSource(RequestSource[HttpRequest]):
             metadata=Metadata.empty().set(ConfluenceKeys.HOST, self._host),
         )
 
-    def list_source_ids(self, ctx: PipelineContext) -> Iterable[str]:
-        del ctx
-        yield f"confluence:cql:{self._cql}"

@@ -39,7 +39,6 @@ from boba.indexing.embedder import Embedder
 from boba.indexing.errors import (
     IncompatibleContentError,
     IndexingError,
-    SyncUnsupportedError,
 )
 from boba.indexing.events import (
     BaseIndexEvent,
@@ -221,7 +220,6 @@ __all__ = [
     "Splitter",
     "StreamingIndexer",
     "StringContentHash",
-    "SyncUnsupportedError",
     "TrackingKeys",
     "Transport",
     "TransportKeys",

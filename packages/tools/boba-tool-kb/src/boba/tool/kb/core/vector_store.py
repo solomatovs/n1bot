@@ -66,7 +66,7 @@ from boba.indexing.vector_store import (
     VectorStoreReader,
     VectorStoreWriter,
 )
-from boba.tool.kb.migrations import ensure_vector_index
+from boba.tool.kb.core.migrations import ensure_vector_index
 
 logger = logging.getLogger(__name__)
 

@@ -8,14 +8,13 @@ from pydantic import Field
 
 from boba.indexing.context import PipelineId
 from boba.text import StructuralChunker
-from boba.tool.kb.config import KbConfig
+from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.confluence._ingest_common import run_confluence_ingest
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
-from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.request_sources import (
     ConfluenceMultiSpaceRequestSource,
 )
-from boba.tool.kb.vector_store import PostgresVectorStore
+from boba.tool.kb.core.vector_store import PostgresVectorStore
 from boba.tools import FromConfig, FromDI, Scope, tool
 
 __all__ = ["confluence_space_ingest"]
@@ -24,7 +23,7 @@ _PIPELINE_ID: PipelineId = PipelineId("kb.confluence_space_ingest")
 
 
 @tool
-def confluence_space_ingest(  # noqa: PLR0913 — tool с явным набором FromDI/FromConfig deps
+def confluence_space_ingest(  # noqa: PLR0913
     store: Annotated[PostgresVectorStore, FromDI(Scope.APP)],
     chunker: Annotated[StructuralChunker, FromDI(Scope.APP)],
     kb_cfg: Annotated[KbConfig, FromConfig()],
@@ -61,11 +60,9 @@ def confluence_space_ingest(  # noqa: PLR0913 — tool с явным набор�
     JSON `{space_keys, collection, indexed, skipped_unchanged, pruned, failed}`.
     """
     request_source = ConfluenceMultiSpaceRequestSource(
-        base_url=conn_cfg.base_url,
-        auth=ConfluenceConnection.make_auth(conn_cfg),
+        conn_cfg=conn_cfg,
         space_keys=space_keys,
         body_format=conn_cfg.body_format,
-        timeout_sec=conn_cfg.timeout_sec,
     )
     result = run_confluence_ingest(
         request_source=request_source,

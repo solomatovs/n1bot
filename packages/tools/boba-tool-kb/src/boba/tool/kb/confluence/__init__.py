@@ -14,12 +14,12 @@ Tools:
 from __future__ import annotations
 
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
-from boba.tool.kb.confluence.list_spaces import confluence_list_spaces
-from boba.tool.kb.confluence.page_download import confluence_page_download
-from boba.tool.kb.confluence.page_ingest import confluence_page_ingest
-from boba.tool.kb.confluence.search import confluence_search
-from boba.tool.kb.confluence.space_download import confluence_space_download
-from boba.tool.kb.confluence.space_ingest import confluence_space_ingest
+from boba.tool.kb.confluence.tools.list_spaces import confluence_list_spaces
+from boba.tool.kb.confluence.tools.page_download import confluence_page_download
+from boba.tool.kb.confluence.tools.page_ingest import confluence_page_ingest
+from boba.tool.kb.confluence.tools.search import confluence_search
+from boba.tool.kb.confluence.tools.space_download import confluence_space_download
+from boba.tool.kb.confluence.tools.space_ingest import confluence_space_ingest
 
 __all__ = [
     "ConfluenceConnectionConfig",

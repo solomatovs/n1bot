@@ -1,7 +1,7 @@
 """DI-провайдер `PgFtsKnowledgeBase` (read-only FTS по whitelist-таблице).
 
 Pool НЕ объявляется как отдельный `@provides` (чтобы не было type-clash
-с `provide_postgres_pool` из `boba.tool.kb.providers`), а резолвится
+с `provide_postgres_pool` из `boba.tool.kb.core.providers`), а резолвится
 внутри:
 
 - если `FtsConfig.dsn` пуст → используется `PostgresPool` из DI
@@ -18,7 +18,7 @@ from typing import Annotated
 from boba.db.postgres import PostgresConfig, PostgresPool
 from boba.tool.kb.fts.config import FtsConfig
 from boba.tool.kb.fts.db import PgFtsKnowledgeBase
-from boba.tool.kb.postgres_config import PostgresConnectionConfig
+from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
 from boba.tools import FromConfig, FromDI, Scope, provides
 
 __all__ = ["provide_fts_kb"]

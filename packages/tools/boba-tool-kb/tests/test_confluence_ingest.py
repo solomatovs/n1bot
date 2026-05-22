@@ -12,11 +12,11 @@ from typing import TYPE_CHECKING
 import pytest
 
 from boba.text import StructuralChunker
-from boba.tool.kb.config import KbConfig
+from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
-from boba.tool.kb.confluence.page_ingest import confluence_page_ingest
-from boba.tool.kb.confluence.space_ingest import confluence_space_ingest
-from boba.tool.kb.vector_store import PostgresVectorStore
+from boba.tool.kb.confluence.tools.page_ingest import confluence_page_ingest
+from boba.tool.kb.confluence.tools.space_ingest import confluence_space_ingest
+from boba.tool.kb.core.vector_store import PostgresVectorStore
 
 if TYPE_CHECKING:
     from tests.conftest import KbIntegrationTestConfig

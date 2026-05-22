@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
-from boba.tool.kb.confluence.page_download import confluence_page_download
+from boba.tool.kb.confluence.tools.page_download import confluence_page_download
 from boba.workspace.contract import ProjectWorkspaceShell
 
 if TYPE_CHECKING:

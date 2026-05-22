@@ -29,7 +29,7 @@ from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.decoder import ConfluenceJsonDecoder
 from boba.tool.kb.confluence.reader import ConfluenceReader
-from boba.tool.kb.vector_store import PostgresVectorStore
+from boba.tool.kb.core.vector_store import PostgresVectorStore
 from boba.transport.http import HttpRequest
 
 __all__ = ["run_confluence_ingest"]

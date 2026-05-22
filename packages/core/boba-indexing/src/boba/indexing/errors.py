@@ -5,7 +5,6 @@ from __future__ import annotations
 __all__ = [
     "IncompatibleContentError",
     "IndexingError",
-    "SyncUnsupportedError",
 ]
 
 
@@ -41,13 +40,3 @@ class IncompatibleContentError(IndexingError):
         self.reason = reason
 
 
-class SyncUnsupportedError(IndexingError):
-    """
-    RequestSource не умеет перечислять canonical_id (бесконечный стрим)
-    """
-
-    def __init__(self, source_name: str) -> None:
-        super().__init__(
-            f"request source {source_name!r} does not support listing canonical_ids"
-        )
-        self.source_name = source_name

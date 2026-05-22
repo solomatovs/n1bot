@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from boba.tool.kb.config import KbConfig
-from boba.tool.kb.kb import PostgresKnowledgeBase
-from boba.tool.kb.vector_search import vector_search
+from boba.tool.kb.core.config import KbConfig
+from boba.tool.kb.core.kb import PostgresKnowledgeBase
+from boba.tool.kb.core.tools.vector_search import vector_search
 
 if TYPE_CHECKING:
     from tests.conftest import KbIntegrationTestConfig

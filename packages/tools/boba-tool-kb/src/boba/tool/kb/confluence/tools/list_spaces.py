@@ -16,18 +16,18 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
-from boba.tool.kb._markdown import format_markdown_table
+from boba.tool.kb.core._markdown import format_markdown_table
+from boba.tool.kb.confluence.api_models import ConfluenceSpaceItem
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.request_sources._common import (
-    iter_paginated,
-    make_discovery_client,
+    ConfluencePaginator,
+    space_list_path,
 )
 from boba.tools import FromConfig, tool
 
 __all__ = ["confluence_list_spaces"]
 
-_PAGE_LIMIT = 50
 _MAX_CELL_CHARS = 200
 
 
@@ -65,29 +65,25 @@ def confluence_list_spaces(
     """
     auth = ConfluenceConnection.make_auth(conn_cfg)
 
-    # `?expand=description.plain` — короткое описание; пустое для большинства
-    # space'ов, но иногда заполнено. `type=` фильтр серверный.
-    type_filter = "" if space_type == "any" else f"&type={space_type}"
-    path = (
-        f"/rest/api/space?limit={_PAGE_LIMIT}&start=0"
-        f"{type_filter}"
-        f"&expand=description.plain"
-    )
-
     rows: list[tuple[Any, ...]] = []
     truncated = False
-    with make_discovery_client(
-        conn_cfg.base_url, auth, conn_cfg.timeout_sec,
-    ) as client:
-        for raw in iter_paginated(client, path):
+    with ConfluencePaginator(
+        conn_cfg.base_url,
+        auth,
+        conn_cfg.timeout_sec,
+    ) as x:
+        for item in x(
+            space_list_path(space_type, expand="description.plain"),
+            item=ConfluenceSpaceItem,
+        ):
             if len(rows) >= limit:
                 truncated = True
                 break
             rows.append((
-                str(raw.get("key") or "").strip(),
-                str(raw.get("name") or "").strip(),
-                str(raw.get("type") or "").strip(),
-                _extract_description(raw),
+                item.key.strip(),
+                item.name.strip(),
+                item.type.strip(),
+                item.description_plain,
             ))
 
     table_md = format_markdown_table(
@@ -102,9 +98,3 @@ def confluence_list_spaces(
         "row_count": len(rows),
         "truncated": truncated,
     }
-
-
-def _extract_description(raw: dict[str, Any]) -> str:
-    desc = raw.get("description") or {}
-    plain = desc.get("plain") or {}
-    return str(plain.get("value") or "").strip()
