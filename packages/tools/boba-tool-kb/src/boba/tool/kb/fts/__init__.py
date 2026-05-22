@@ -11,12 +11,14 @@ Tools:
 
 from __future__ import annotations
 
+from boba.tool.kb.fts.db import FtsSearchConfig, PgFtsKnowledgeBase
 from boba.tool.kb.fts.models import FtsHit, IndexSpec
-from boba.tool.kb.fts.tools.fts_search import FtsSearchConfig, fts_search
+from boba.tool.kb.fts.tools.fts_search import fts_search
 
 __all__ = [
     "FtsHit",
     "FtsSearchConfig",
     "IndexSpec",
+    "PgFtsKnowledgeBase",
     "fts_search",
 ]

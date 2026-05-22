@@ -1,8 +1,16 @@
-"""PgFtsKnowledgeBase: read-only обёртка над PostgresPool + ОДИН whitelist-индекс.
+"""`FtsSearchConfig` + `PgFtsKnowledgeBase` — read-only FTS по whitelist-таблице.
 
-Таблица для FTS задаётся оператором через `FtsConfig.index` (IndexSpec).
-`search(query, top_k)` собирает безопасный SQL через `psycopg.sql.Identifier`
-(никакая часть identifier-ов не приходит от LLM).
+В одном модуле:
+- `FtsSearchConfig`     — корневой tool-конфиг (`[tool.kb.fts_search]`).
+- `PgFtsKnowledgeBase`  — runtime-сервис. Принимает `cfg: FtsSearchConfig`,
+                          открывает pool внутри через `open_kb_pool` (singleton
+                          по DSN). `search(query, top_k)` собирает безопасный
+                          SQL через `psycopg.sql.Identifier` (никакая часть
+                          identifier-ов не приходит от LLM).
+
+Таблица для FTS задаётся оператором через `FtsSearchConfig.index`
+(`IndexSpec`). DSN может отличаться от KB-store: оператор может закрепить
+read-only роль с ограниченным `GRANT SELECT` на одну whitelist-таблицу.
 """
 
 from __future__ import annotations
@@ -12,13 +20,44 @@ from collections.abc import Sequence
 from typing import Any
 
 from psycopg.sql import Composable, Composed
+from pydantic import Field
 
-from boba.db.postgres import PostgresPool
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
+from boba.tool.kb.core.postgres_connection import PostgresConnection
+from boba.tool.kb.core.postgres_pool import open_kb_pool
 from boba.tool.kb.fts.models import FtsHit, IndexSpec
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["FtsQueryError", "PgFtsKnowledgeBase"]
+__all__ = ["FtsQueryError", "FtsSearchConfig", "PgFtsKnowledgeBase"]
+
+
+class FtsSearchConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `fts_search` + сервиса `PgFtsKnowledgeBase`.
+
+    Config-секция: `[tool.kb.fts_search]`.
+    """
+
+    model_config = BobaSettingsConfigDict(
+        case_sensitive=False,
+        extra="ignore",
+        config_path="tool.kb.fts_search",
+    )
+
+    connection: PostgresConnection
+    index: IndexSpec
+    snippet_options: str = Field(
+        default="MaxFragments=2,MaxWords=35,MinWords=15",
+        description=(
+            "Опции `ts_headline`: MaxFragments,MaxWords,MinWords,"
+            "StartSel,StopSel,..."
+        ),
+    )
+    max_top_k: int = Field(
+        default=20,
+        ge=1,
+        description="Жёсткий потолок параметра top_k для fts_search.",
+    )
 
 
 class FtsQueryError(RuntimeError):
@@ -35,18 +74,16 @@ class PgFtsKnowledgeBase:
 
     def __init__(
         self,
-        pool: PostgresPool,
-        index: IndexSpec,
-        snippet_options: str,
+        *,
+        cfg: FtsSearchConfig,
     ) -> None:
-        self._pool = pool
-        self._index = index
-        self._snippet_options = snippet_options
+        self._cfg = cfg
+        self._pool = open_kb_pool(cfg.connection)
         logger.info(
             "PgFtsKnowledgeBase opened: index=%s (%s.%s)",
-            index.name,
-            index.schema,
-            index.table,
+            cfg.index.name,
+            cfg.index.schema,
+            cfg.index.table,
         )
 
     def search(self, query: str, top_k: int) -> list[FtsHit]:
@@ -58,7 +95,7 @@ class PgFtsKnowledgeBase:
                 column_names = [d.name for d in (cur.description or [])]
         except Exception as e:
             raise FtsQueryError(
-                f"fts query failed for index {self._index.name!r}: "
+                f"fts query failed for index {self._cfg.index.name!r}: "
                 f"{type(e).__name__}: {e}",
             ) from e
 
@@ -71,7 +108,7 @@ class PgFtsKnowledgeBase:
     ) -> tuple[Composed, tuple[Any, ...]]:
         from psycopg import sql  # noqa: PLC0415
 
-        spec = self._index
+        spec = self._cfg.index
         meta_select: Composable = sql.SQL("")
         if spec.metadata_columns:
             meta_select = sql.SQL(", ") + sql.SQL(", ").join(
@@ -98,7 +135,7 @@ class PgFtsKnowledgeBase:
         )
         params: tuple[Any, ...] = (
             spec.language,
-            self._snippet_options,
+            self._cfg.snippet_options,
             spec.language,
             query,
             top_k,
