@@ -104,10 +104,6 @@ collection = "knowledge_base"
 collection_description = ""
 # Папка для files_ingest. LLM не выбирает.
 files_folder = "./local/docs"
-# Embedder (OpenAI-compatible endpoint). embedding_model обязателен.
-embedding_model = ""
-embedding_base_url = ""
-embedding_api_key = ""
 # Search params.
 fts_language = "russian"
 snippet_chars = 300
@@ -149,6 +145,14 @@ auth_user = ""               # требуется при basic
 timeout_sec = 30.0
 ssl_verify = false
 body_format = "view"         # view | export_view | storage
+
+# Подключение к embedding-провайдеру (OpenAI-совместимый endpoint:
+# LiteLLM / OpenAI / vLLM / Ollama). `model` обязателен.
+# api_key обычно из env: BOBA_TOOL__KB__EMBEDDING__API_KEY.
+[tool.kb.embedding]
+model = ""                   # обязателен
+base_url = ""                # пусто → дефолт OpenAI SDK
+api_key = ""                 # для локального Ollama/vLLM можно пусто
 
 # FTS-поиск по одной чужой таблице оператора (`fts_search`). LLM таблицу
 # не выбирает — она pinned оператором. DSN пуст = fallback на

@@ -37,6 +37,41 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
+            "name": "KB: ingest files (operator CLI)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.tool.kb.core.cli.ingest_files",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            // folder + collection пинятся оператором в local/config.toml ([tool.kb].files_folder, .collection).
+            // В [tool.kb.ingest_files] секции в TOML нет — единственный per-launch флаг ниже.
+            "args": [
+                // "--prune"  // FullCleanup: удалить чанки исчезнувших файлов (destructive — default off)
+            ],
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "KB: ingest all Confluence spaces (operator CLI)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.tool.kb.confluence.cli.ingest_all_spaces",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            // Confluence-connection + collection — в [tool.kb.confluence] и [tool.kb] (config.toml).
+            // В [tool.kb.ingest_all_spaces] секции в TOML нет — все флаги ниже это per-launch override.
+            "args": [
+                "--space-type=global"           // global | personal | any  (default: global)
+                // "--only=KAFKA,INFRA",       // ингестить ТОЛЬКО эти space-keys (skip discovery)
+                // "--skip=DEMO,TEST",         // исключить из discovery
+                // "--prune"                    // FullCleanup в каждой коллекции (destructive — default off)
+            ],
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
             "name": "Search: postgres kb_search",
             "type": "debugpy",
             "request": "launch",

@@ -1,10 +1,11 @@
 """`KbConfig` — конфиг секции `[tool.kb]` (домен KB, без подключений).
 
-Только параметры embedding/search/chunker и pinned-коллекция/папка.
-Подключения вынесены в отдельные секции:
+Только параметры search/chunker и pinned-коллекция/папка. Подключения
+вынесены в отдельные секции:
 
 - `[tool.kb.postgres]`     → `PostgresConnectionConfig` (структурированно)
 - `[tool.kb.confluence]`   → `ConfluenceConnectionConfig` (base_url + auth)
+- `[tool.kb.embedding]`    → `EmbeddingConfig` (model + base_url + api_key)
 
 Плагин-уровневое включение/allowlist (`enable`, `tools`) — забота
 framework'а (`AgentBuilder.discover_plugins`); конфиг плагина их не
@@ -21,7 +22,7 @@ __all__ = ["KbConfig"]
 
 
 class KbConfig(BobaFlatSettings):
-    """Domain-config KB-плагина: embedder, search params, chunker, pinned collection."""
+    """Domain-config KB-плагина: search params, chunker, pinned collection/folder."""
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
@@ -98,25 +99,7 @@ class KbConfig(BobaFlatSettings):
         ),
     )
 
-    # embedder
-    embedding_model: str = Field(
-        default="",
-        description=(
-            "Имя embedding-модели для OpenAI-совместимого endpoint'а "
-            "(LiteLLM / OpenAI / vLLM / Ollama). Пустая строка — ingest и "
-            "kb_search будут падать fail-fast. Размерность вектора "
-            "определяется автоматически по первому ответу модели "
-            "(см. `OpenAICompatEmbedder.dim()`)."
-        ),
-    )
-    embedding_base_url: str = Field(
-        default="",
-        description="OpenAI-совместимый endpoint embeddings.",
-    )
-    embedding_api_key: str = Field(
-        default="",
-        description="API key embeddings endpoint'а.",
-    )
+    # embedder — вынесен в [tool.kb.embedding] (`EmbeddingConfig`)
 
     # chunker
     chunk_size: int = Field(

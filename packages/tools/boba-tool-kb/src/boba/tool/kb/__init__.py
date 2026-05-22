@@ -6,13 +6,14 @@
                       migrations, config/models/errors, _markdown helper.
   - `core/tools/`   — tools, не привязанные к одному внешнему домену:
                       `kb_search`, `vector_search`, `files_ingest`.
+- `core/cli/`      — операторские CLI-runner'ы (`ingest_files`), не tools.
 - `confluence/`     — Confluence-домен: api_models, auth, connection, decoder,
                       keys, parse, reader, search_reader, request_sources/,
                       _download_common, _ingest_common.
   - `confluence/tools/` — `confluence_search`, `confluence_list_spaces`,
                           `confluence_page_download`, `confluence_space_download`,
-                          `confluence_page_ingest`, `confluence_space_ingest`,
-                          + CLI `ingest_all_spaces`.
+                          `confluence_page_ingest`, `confluence_space_ingest`.
+  - `confluence/cli/`   — операторские CLI-runner'ы (`ingest_all_spaces`).
 - `fts/`            — FTS-инфра: db, models, providers, config.
   - `fts/tools/`    — `fts_search`.
 - `sql/`            — ad-hoc SQL-инфра: executor, providers, config.
@@ -42,9 +43,10 @@ Tools по назначению (что LLM реально вызывает):
 - `sql_query(query, row_limit=20)`     — произвольный SELECT → markdown table.
 
 **Конфиг-секции:**
-- `[tool.kb]`              → `KbConfig` (collection, files_folder, embedder, RRF).
+- `[tool.kb]`              → `KbConfig` (collection, files_folder, RRF, chunker).
 - `[tool.kb.postgres]`     → `PostgresConnectionConfig` (host/port/user/...).
 - `[tool.kb.confluence]`   → `ConfluenceConnectionConfig` (base_url/auth/...).
+- `[tool.kb.embedding]`    → `EmbeddingConfig` (model/base_url/api_key).
 - `[tool.kb.fts]`          → `FtsConfig` (одна whitelist-таблица для fts_search).
 - `[tool.kb.sql]`          → `SqlConfig` (отдельный read-only DSN + safety-limits).
 
@@ -75,6 +77,7 @@ from boba.tool.kb.confluence.tools.search import confluence_search
 from boba.tool.kb.confluence.tools.space_download import confluence_space_download
 from boba.tool.kb.confluence.tools.space_ingest import confluence_space_ingest
 from boba.tool.kb.core.config import KbConfig
+from boba.tool.kb.core.embedding_config import EmbeddingConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
 from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
 from boba.tool.kb.core.providers import (
@@ -102,6 +105,7 @@ from boba.tool.kb.sql.tools.query import sql_query
 
 __all__ = [
     "ConfluenceConnectionConfig",
+    "EmbeddingConfig",
     "FtsConfig",
     "KbConfig",
     "PostgresConnectionConfig",

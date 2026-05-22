@@ -9,10 +9,12 @@
                 └──> apply_bootstrap(conn) на первом подключении
                      (создаёт kb_chunks/kb_collections если их нет)
 
+    EmbeddingConfig (FromConfig)
+        └──> Embedder[str]                 # OpenAICompatEmbedder
+
     KbConfig (FromConfig)
         │
-        ├──> Embedder[str]                 # OpenAICompatEmbedder
-        ├──> PostgresVectorStore
+        ├──> PostgresVectorStore           # уже подцепляет Embedder из DI
         ├──> PostgresKnowledgeBase         # hybrid RRF search
         ├──> KbDocReader(inner=MarkdownReader())
         ├──> HtmlReader
@@ -53,6 +55,7 @@ from boba.provider.openai import OpenAICompatEmbedder
 from boba.text import OverlapCharSplitter, StructuralChunker
 from boba.text.structural_chunker import SplitterFactory
 from boba.tool.kb.core.config import KbConfig
+from boba.tool.kb.core.embedding_config import EmbeddingConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
 from boba.tool.kb.core.migrations import apply_bootstrap
 from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
@@ -102,29 +105,23 @@ def provide_postgres_pool(
 
 @provides(scope=Scope.APP)
 def provide_embedder(
-    cfg: Annotated[KbConfig, FromConfig()],
+    cfg: Annotated[EmbeddingConfig, FromConfig()],
 ) -> Embedder[str]:
     """`Embedder[str]` для ingest и read-side путей.
 
     OpenAI-совместимый endpoint (LiteLLM / OpenAI / vLLM / Ollama)
     через `OpenAICompatEmbedder` — без `dimensions=` параметра, чтобы
     работал с Ollama. Размерность модели определяется lazy probe'ом
-    (см. `OpenAICompatEmbedder.dim()`).
+    (см. `OpenAICompatEmbedder.dim()`). Валидация `model` — в
+    `EmbeddingConfig._validate` (fail-fast на load-time).
     """
-    if not cfg.embedding_model:
-        msg = (
-            "kb.embedding_model is empty; задайте "
-            "[tool.kb].embedding_model или "
-            "BOBA_TOOL__KB__EMBEDDING_MODEL."
-        )
-        raise ValueError(msg)
     client = OpenAI(
-        base_url=cfg.embedding_base_url or None,
-        api_key=cfg.embedding_api_key or "unused",
+        base_url=cfg.base_url or None,
+        api_key=cfg.api_key or "unused",
     )
     return OpenAICompatEmbedder(
         client=client,
-        model=cfg.embedding_model,
+        model=cfg.model,
     )
 
 

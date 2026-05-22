@@ -1,12 +1,13 @@
 """
 CLI-runner: индексация Confluence-space'ов в KB.
 
-Не tool-функция (`@tool` нет), а отдельный скрипт-обёртка над
-`confluence_space_ingest`. Лежит рядом с tools для удобства поиска.
+Не tool-функция (`@tool` нет), а операторский скрипт-обёртка над
+`confluence_space_ingest`. Лежит в `confluence/cli/`, отдельно от tools,
+чтобы не попадать в tool-allowlist'ы и не путаться при поиске.
 
 Применение:
     BOBA_CONFIG_PATH=./local/config.toml \
-        .venv/bin/python -m boba.tool.kb.confluence.tools.ingest_all_spaces
+        .venv/bin/python -m boba.tool.kb.confluence.cli.ingest_all_spaces
 
 Опции:
     --type {global|personal|any}  фильтр по типу space (default: global)
@@ -41,7 +42,7 @@ from boba.tool.kb.core.vector_store import PostgresVectorStore
 
 __all__ = ["IngestAllSpacesConfig", "main"]
 
-logger = logging.getLogger("boba.tool.kb.confluence.tools.ingest_all_spaces")
+logger = logging.getLogger("boba.tool.kb.confluence.cli.ingest_all_spaces")
 
 
 class IngestAllSpacesConfig(BobaFlatSettings):

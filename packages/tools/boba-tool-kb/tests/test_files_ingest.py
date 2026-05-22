@@ -11,6 +11,7 @@ prune_missing=)` — это проверяет и tool-валидаторы (`fo
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -20,11 +21,15 @@ from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.tools.files_ingest import files_ingest
 from boba.tool.kb.core.vector_store import PostgresVectorStore
 
+if TYPE_CHECKING:
+    from boba.tool.kb.core.embedding_config import EmbeddingConfig
+
 pytestmark = pytest.mark.integration
 
 
 def test_files_ingest_real(
     kb_cfg: KbConfig,
+    embedding_cfg: EmbeddingConfig,
     kb_store: PostgresVectorStore,
     kb_dispatch_reader: DispatchReader[str],
     kb_chunker: StructuralChunker,
@@ -49,7 +54,7 @@ def test_files_ingest_real(
     _emit("")
     _emit(f"folder:            {result['folder']}")
     _emit(f"collection:        {result['collection']}")
-    _emit(f"embedding_model:   {kb_cfg.embedding_model}")
+    _emit(f"embedding_model:   {embedding_cfg.model}")
     _emit(f"indexed:           {result['indexed']}")
     _emit(f"skipped_unchanged: {result['skipped_unchanged']}")
     _emit(f"pruned:            {result['pruned']}")

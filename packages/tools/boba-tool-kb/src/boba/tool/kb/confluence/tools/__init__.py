@@ -11,5 +11,7 @@ Download (в workspace):
 Ingest (в KB):
 - `confluence_page_ingest`        — индексация явного списка page_ids.
 - `confluence_space_ingest`       — индексация одного/нескольких spaces.
-- `confluence_ingest_all_spaces`  — индексация всех доступных spaces.
+
+Операторские CLI-runner'ы вынесены в `confluence/cli/`:
+- `ingest_all_spaces`             — discover + ingest всех доступных spaces.
 """
