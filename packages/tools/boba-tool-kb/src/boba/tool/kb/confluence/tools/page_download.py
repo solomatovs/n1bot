@@ -5,7 +5,7 @@
 и пишет `.md` с YAML-frontmatter.
 
 LLM передаёт `page_ids` + `dest_dir` + опц. `as_markdown`; connection —
-из TOML-секции `[tool.kb.confluence_download.page]`.
+из TOML-секции `[tool.kb.confluence.download.page]`.
 """
 
 from __future__ import annotations
@@ -30,13 +30,13 @@ _PIPELINE_ID: PipelineId = PipelineId("confluence.page_download")
 class ConfluencePageDownloadConfig(BobaFlatSettings):
     """Self-contained конфиг tool'а `confluence_page_download`.
 
-    Config-секция: `[tool.kb.confluence_download.page]`.
+    Config-секция: `[tool.kb.confluence.download.page]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.confluence_download.page",
+        config_path="tool.kb.confluence.download.page",
         defaults_from=("confluence",),
     )
 

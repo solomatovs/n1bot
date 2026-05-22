@@ -1,16 +1,19 @@
 """`FtsSearchConfig` + `PgFtsKnowledgeBase` — read-only FTS по whitelist-таблице.
 
 В одном модуле:
-- `FtsSearchConfig`     — корневой tool-конфиг (`[tool.kb.fts_search]`).
+- `FtsSearchConfig`     — корневой tool-конфиг (`[tool.kb.search.fts]`).
 - `PgFtsKnowledgeBase`  — runtime-сервис. Принимает `cfg: FtsSearchConfig`,
                           открывает pool внутри через `open_kb_pool` (singleton
                           по DSN). `search(query, top_k)` собирает безопасный
                           SQL через `psycopg.sql.Identifier` (никакая часть
                           identifier-ов не приходит от LLM).
 
-Таблица для FTS задаётся оператором через `FtsSearchConfig.index`
-(`IndexSpec`). DSN может отличаться от KB-store: оператор может закрепить
-read-only роль с ограниченным `GRANT SELECT` на одну whitelist-таблицу.
+Таблица для FTS задаётся оператором через `FtsSearchConfig.whitelist`
+(`IndexSpec`). Поля whitelist-таблицы (schema/table/columns/language)
+лежат плоско в той же секции `[tool.kb.search.fts]` благодаря
+flat-redistribute в `BobaFlatSettings`. DSN может отличаться от KB-store:
+оператор может закрепить read-only роль с ограниченным `GRANT SELECT` на
+одну whitelist-таблицу.
 """
 
 from __future__ import annotations
@@ -35,18 +38,18 @@ __all__ = ["FtsQueryError", "FtsSearchConfig", "PgFtsKnowledgeBase"]
 class FtsSearchConfig(BobaFlatSettings):
     """Self-contained конфиг tool'а `fts_search` + сервиса `PgFtsKnowledgeBase`.
 
-    Config-секция: `[tool.kb.fts_search]`.
+    Config-секция: `[tool.kb.search.fts]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.fts_search",
+        config_path="tool.kb.search.fts",
         defaults_from=("postgres",),
     )
 
     connection: PostgresConnection
-    index: IndexSpec
+    whitelist: IndexSpec
     snippet_options: str = Field(
         default="MaxFragments=2,MaxWords=35,MinWords=15",
         description=(
@@ -81,10 +84,10 @@ class PgFtsKnowledgeBase:
         self._cfg = cfg
         self._pool = open_kb_pool(cfg.connection)
         logger.info(
-            "PgFtsKnowledgeBase opened: index=%s (%s.%s)",
-            cfg.index.name,
-            cfg.index.schema,
-            cfg.index.table,
+            "PgFtsKnowledgeBase opened: whitelist=%s (%s.%s)",
+            cfg.whitelist.name,
+            cfg.whitelist.schema,
+            cfg.whitelist.table,
         )
 
     def search(self, query: str, top_k: int) -> list[FtsHit]:
@@ -96,7 +99,7 @@ class PgFtsKnowledgeBase:
                 column_names = [d.name for d in (cur.description or [])]
         except Exception as e:
             raise FtsQueryError(
-                f"fts query failed for index {self._cfg.index.name!r}: "
+                f"fts query failed for whitelist {self._cfg.whitelist.name!r}: "
                 f"{type(e).__name__}: {e}",
             ) from e
 
@@ -109,7 +112,7 @@ class PgFtsKnowledgeBase:
     ) -> tuple[Composed, tuple[Any, ...]]:
         from psycopg import sql  # noqa: PLC0415
 
-        spec = self._cfg.index
+        spec = self._cfg.whitelist
         meta_select: Composable = sql.SQL("")
         if spec.metadata_columns:
             meta_select = sql.SQL(", ") + sql.SQL(", ").join(

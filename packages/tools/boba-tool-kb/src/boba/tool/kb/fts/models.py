@@ -11,7 +11,7 @@ __all__ = ["FtsHit", "IndexSpec"]
 
 
 class IndexSpec(BaseModel):
-    """Декларация одной FTS-таблицы оператора (`FtsConfig.index`).
+    """Декларация одной FTS-таблицы оператора (`FtsSearchConfig.whitelist`).
 
     Имена колонок/таблицы приходят из конфига (TOML), не от LLM, и
     подставляются в SQL через `psycopg.sql.Identifier`. Параметры запроса

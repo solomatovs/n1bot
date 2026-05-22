@@ -47,7 +47,7 @@ from boba.tool.kb.confluence.tools.space_download import (
 )
 from boba.tool.kb.confluence.tools.space_ingest import ConfluenceSpaceIngestConfig
 from boba.tool.kb.core.tools.files_ingest import FilesIngestConfig
-from boba.tool.kb.core.tools.kb_search import KbSearchConfig
+from boba.tool.kb.core.tools.kb_search import SearchInKbConfig
 from boba.tool.kb.core.tools.vector_search import VectorSearchConfig
 from boba.tool.kb.fts.tools.fts_search import FtsSearchConfig
 from boba.tool.kb.sql.tools.describe_table import SqlDescribeTableConfig
@@ -146,7 +146,7 @@ def confluence_space_ingest_cfg() -> ConfluenceSpaceIngestConfig:
     try:
         return ConfluenceSpaceIngestConfig()
     except ValidationError as e:
-        pytest.skip(f"[tool.kb.confluence_ingest.space] не сконфигурирован: {e}")
+        pytest.skip(f"[tool.kb.confluence.ingest.space] не сконфигурирован: {e}")
 
 
 @pytest.fixture
@@ -154,7 +154,7 @@ def confluence_page_ingest_cfg() -> ConfluencePageIngestConfig:
     try:
         return ConfluencePageIngestConfig()
     except ValidationError as e:
-        pytest.skip(f"[tool.kb.confluence_ingest.page] не сконфигурирован: {e}")
+        pytest.skip(f"[tool.kb.confluence.ingest.page] не сконфигурирован: {e}")
 
 
 @pytest.fixture
@@ -162,15 +162,15 @@ def confluence_cql_ingest_cfg() -> ConfluenceCqlIngestConfig:
     try:
         return ConfluenceCqlIngestConfig()
     except ValidationError as e:
-        pytest.skip(f"[tool.kb.confluence_ingest.cql] не сконфигурирован: {e}")
+        pytest.skip(f"[tool.kb.confluence.ingest.cql] не сконфигурирован: {e}")
 
 
 @pytest.fixture
-def kb_search_cfg() -> KbSearchConfig:
+def kb_search_cfg() -> SearchInKbConfig:
     try:
-        return KbSearchConfig()
+        return SearchInKbConfig()
     except ValidationError as e:
-        pytest.skip(f"[tool.kb.kb_search] не сконфигурирован: {e}")
+        pytest.skip(f"[tool.kb.search_in_kb] не сконфигурирован: {e}")
 
 
 @pytest.fixture
@@ -178,7 +178,7 @@ def vector_search_cfg() -> VectorSearchConfig:
     try:
         return VectorSearchConfig()
     except ValidationError as e:
-        pytest.skip(f"[tool.kb.vector_search] не сконфигурирован: {e}")
+        pytest.skip(f"[tool.kb.search.vector] не сконфигурирован: {e}")
 
 
 @pytest.fixture
@@ -186,7 +186,7 @@ def fts_search_cfg() -> FtsSearchConfig:
     try:
         return FtsSearchConfig()
     except ValidationError as e:
-        pytest.skip(f"[tool.kb.fts_search] не сконфигурирован: {e}")
+        pytest.skip(f"[tool.kb.search.fts] не сконфигурирован: {e}")
 
 
 @pytest.fixture
@@ -194,7 +194,7 @@ def confluence_cql_search_cfg() -> ConfluenceCqlSearchConfig:
     try:
         return ConfluenceCqlSearchConfig()
     except ValidationError as e:
-        pytest.skip(f"[tool.kb.confluence_search.cql] не сконфигурирован: {e}")
+        pytest.skip(f"[tool.kb.confluence.search.cql] не сконфигурирован: {e}")
 
 
 @pytest.fixture
@@ -203,7 +203,7 @@ def confluence_list_spaces_cfg() -> ConfluenceListSpacesConfig:
         return ConfluenceListSpacesConfig()
     except ValidationError as e:
         pytest.skip(
-            f"[tool.kb.confluence_search.list_spaces] не сконфигурирован: {e}",
+            f"[tool.kb.confluence.list_spaces] не сконфигурирован: {e}",
         )
 
 
@@ -212,7 +212,7 @@ def confluence_page_download_cfg() -> ConfluencePageDownloadConfig:
     try:
         return ConfluencePageDownloadConfig()
     except ValidationError as e:
-        pytest.skip(f"[tool.kb.confluence_download.page] не сконфигурирован: {e}")
+        pytest.skip(f"[tool.kb.confluence.download.page] не сконфигурирован: {e}")
 
 
 @pytest.fixture
@@ -221,7 +221,7 @@ def confluence_space_download_cfg() -> ConfluenceSpaceDownloadConfig:
         return ConfluenceSpaceDownloadConfig()
     except ValidationError as e:
         pytest.skip(
-            f"[tool.kb.confluence_download.space] не сконфигурирован: {e}",
+            f"[tool.kb.confluence.download.space] не сконфигурирован: {e}",
         )
 
 

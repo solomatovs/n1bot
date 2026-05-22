@@ -2,7 +2,7 @@
 
 Полнотекстовый поиск страниц по реальному Confluence (не по KB). LLM
 передаёт строку запроса + опц. `space` ограничение; connection и
-лимиты — из TOML-секции `[tool.kb.confluence_search.cql]`.
+лимиты — из TOML-секции `[tool.kb.confluence.search.cql]`.
 """
 
 from __future__ import annotations
@@ -39,13 +39,13 @@ _PIPELINE_ID: PipelineId = PipelineId("confluence.cql_search")
 class ConfluenceCqlSearchConfig(BobaFlatSettings):
     """Self-contained конфиг tool'а `confluence_cql_search`.
 
-    Config-секция: `[tool.kb.confluence_search.cql]`.
+    Config-секция: `[tool.kb.confluence.search.cql]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.confluence_search.cql",
+        config_path="tool.kb.confluence.search.cql",
         defaults_from=("confluence",),
     )
 

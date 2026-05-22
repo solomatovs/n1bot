@@ -3,7 +3,7 @@
 Индексирует все страницы перечисленных Confluence space'ов в KB-коллекцию.
 LLM передаёт `space_keys` + опц. `prune_missing`; остальное (connection,
 tables, embedding, chunker, target collection) — из TOML-секции
-`[tool.kb.confluence_ingest.space]`.
+`[tool.kb.confluence.ingest.space]`.
 """
 
 from __future__ import annotations
@@ -38,13 +38,13 @@ _PIPELINE_ID: PipelineId = PipelineId("kb.confluence_space_ingest")
 class ConfluenceSpaceIngestConfig(BobaFlatSettings):
     """Self-contained конфиг tool'а `confluence_space_ingest`.
 
-    Config-секция: `[tool.kb.confluence_ingest.space]`.
+    Config-секция: `[tool.kb.confluence.ingest.space]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.confluence_ingest.space",
+        config_path="tool.kb.confluence.ingest.space",
         defaults_from=("postgres", "kb.storage", "embedding", "confluence"),
     )
 
