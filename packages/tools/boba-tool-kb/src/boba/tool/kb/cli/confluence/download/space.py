@@ -16,18 +16,18 @@ from boba.tool.kb.confluence._download_common import download_pages
 from boba.tool.kb.confluence.request_sources.space import (
     ConfluenceSpaceRequestSource,
 )
-from boba.tool.kb.confluence.tools.space_download import (
-    ConfluenceSpaceDownloadConfig,
+from boba.tool.kb.confluence.tools.download.space import (
+    ConfluenceDownloadSpaceConfig,
 )
 
-__all__ = ["ConfluenceSpaceDownloadCliConfig", "main"]
+__all__ = ["ConfluenceDownloadSpaceCliConfig", "main"]
 
-logger = logging.getLogger("boba.tool.kb.cli.confluence_space_download")
+logger = logging.getLogger("boba.tool.kb.cli.confluence.download.space")
 
-_PIPELINE_ID: PipelineId = PipelineId("cli.confluence_space_download")
+_PIPELINE_ID: PipelineId = PipelineId("cli.confluence.download.space")
 
 
-class ConfluenceSpaceDownloadCliConfig(ConfluenceSpaceDownloadConfig):
+class ConfluenceDownloadSpaceCliConfig(ConfluenceDownloadSpaceConfig):
     """Self-contained CLI-конфиг скачивания Confluence-space'а.
 
     Наследует поля tool-конфига (`confluence`, `dest_dir`) — runner делает
@@ -70,7 +70,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    cfg = ConfluenceSpaceDownloadCliConfig()  # pyright: ignore[reportCallIssue]
+    cfg = ConfluenceDownloadSpaceCliConfig()  # pyright: ignore[reportCallIssue]
 
     logger.info(
         "downloading space=%s → %s (as_markdown=%s)",
@@ -95,7 +95,7 @@ def main() -> int:
             pipeline_id=_PIPELINE_ID,
         )
     except Exception:
-        logger.exception("confluence_space_download FAILED")
+        logger.exception("confluence.download.space FAILED")
         return 1
     elapsed = time.monotonic() - start
 

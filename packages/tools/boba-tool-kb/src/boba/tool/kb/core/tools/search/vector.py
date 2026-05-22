@@ -1,6 +1,6 @@
-"""Tool `vector_search` + `VectorSearchConfig`: pure vector (cosine) поверх KB.
+"""Tool `kb_search_vector` + `KbSearchVectorConfig`: pure vector (cosine) поверх KB.
 
-Параллелен `kb_search` (hybrid RRF) и `fts_search` (pure FTS) — четвёртый
+Параллелен `kb_search_hybrid` (RRF) и `fts_search` (pure FTS) — четвёртый
 поисковый tool, на этот раз только vector-канал. Полезен, когда FTS-канал
 шумит/мешает (короткие запросы, эмбеддинг лучше ловит синонимы).
 
@@ -22,11 +22,11 @@ from boba.tool.kb.core.kb import (
 )
 from boba.tools import FromConfig, tool
 
-__all__ = ["VectorSearchConfig", "vector_search"]
+__all__ = ["KbSearchVectorConfig", "kb_search_vector"]
 
 
-class VectorSearchConfig(BobaFlatSettings):
-    """Self-contained конфиг tool'а `vector_search`.
+class KbSearchVectorConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `kb_search_vector`.
 
     Config-секция: `[tool.kb.search.vector]`.
     """
@@ -54,8 +54,8 @@ class VectorSearchConfig(BobaFlatSettings):
 
 
 @tool
-def vector_search(
-    cfg: Annotated[VectorSearchConfig, FromConfig()],
+def kb_search_vector(
+    cfg: Annotated[KbSearchVectorConfig, FromConfig()],
     query: Annotated[
         str,
         Field(

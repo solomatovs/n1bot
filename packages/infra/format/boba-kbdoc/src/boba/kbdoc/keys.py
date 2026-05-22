@@ -1,6 +1,6 @@
 """KbDocKeys — типизированные MetadataKey'и формата KB-документа.
 
-`source_url` пишется без namespace-префикса намеренно: kb_search и UI
+`source_url` пишется без namespace-префикса намеренно: kb_search_* tools и UI
 ожидают его как top-level ключ для построения deep-link'ов в выдаче.
 Остальные header-ключи живут под `reader.kbdoc.*`.
 """

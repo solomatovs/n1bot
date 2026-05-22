@@ -1,17 +1,12 @@
 """Confluence-tools: tool-функции, регистрируемые в фреймворке.
 
-Online (read-only API):
-- `confluence_search`        — CQL-поиск.
-- `confluence_spaces_list`   — список доступных spaces (markdown-таблица).
+Каждая подпапка отражает `<verb>` из конфиг-иерархии
+`[tool.kb.confluence.<verb>.<target>]`:
 
-Download (в workspace):
-- `confluence_page_download`  — скачать список page_ids (HTML/Markdown).
-- `confluence_space_download` — скачать все страницы space-а (HTML/Markdown).
+- `ingest/`   — `confluence_ingest_{space,page,cql}` (HTTP → KB chunks).
+- `search/`   — `confluence_search_cql` (online CQL).
+- `download/` — `confluence_download_{page,space}` (HTTP → workspace).
+- `list/`     — `confluence_list_spaces` (discovery markdown-таблица).
 
-Ingest (в KB):
-- `confluence_page_ingest`        — индексация явного списка page_ids.
-- `confluence_space_ingest`       — индексация одного/нескольких spaces.
-
-Операторские CLI-runner'ы вынесены в `confluence/cli/`:
-- `ingest_all_spaces`             — discover + ingest всех доступных spaces.
+Операторские CLI-runner'ы — в `boba.tool.kb.cli.confluence.*`.
 """

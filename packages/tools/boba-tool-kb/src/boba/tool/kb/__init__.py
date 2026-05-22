@@ -19,43 +19,54 @@ embedding / chunker / confluence / ...). Сервисы (`PostgresChunkStore`,
 - `PostgresKnowledgeBaseConfig` — composite (connection + tables + embedding
                                    + RRF/FTS-params) для KB read-side.
 
+**Соглашение об именовании**: tool-функции, конфиг-секции и файлы tools/CLI
+следуют шаблону `<scope>_<verb>_<target>` (snake_case в коде) и зеркалят
+дотированный путь конфига `<scope>.<verb>.<target>` через одноимённую
+file-system иерархию подкаталогов.
+
 Tools (что LLM реально вызывает) — каждый со своей TOML-секцией:
 
 **Ingest** (наполнение `kb_chunks`):
-- `confluence_space_ingest` → `[tool.kb.confluence.ingest.space]`
-- `confluence_page_ingest`  → `[tool.kb.confluence.ingest.page]`
-- `confluence_cql_ingest`   → `[tool.kb.confluence.ingest.cql]`
+- `confluence_ingest_space` → `[tool.kb.confluence.ingest.space]`
+- `confluence_ingest_page`  → `[tool.kb.confluence.ingest.page]`
+- `confluence_ingest_cql`   → `[tool.kb.confluence.ingest.cql]`
 
 **Search**:
-- `kb_search`               → `[tool.kb.search_in_kb]`
-- `vector_search`           → `[tool.kb.search.vector]`
-- `confluence_cql_search`   → `[tool.kb.confluence.search.cql]`
-- `confluence_spaces_list`  → `[tool.kb.confluence.spaces_list]`
+- `kb_search_hybrid`        → `[tool.kb.search.hybrid]`
+- `kb_search_vector`        → `[tool.kb.search.vector]`
+- `confluence_search_cql`   → `[tool.kb.confluence.search.cql]`
+
+**List/Discovery**:
+- `confluence_list_spaces`  → `[tool.kb.confluence.list.spaces]`
 
 **Download** (Confluence → workspace):
-- `confluence_page_download`  → `[tool.kb.confluence.download.page]`
-- `confluence_space_download` → `[tool.kb.confluence.download.space]`
+- `confluence_download_page`  → `[tool.kb.confluence.download.page]`
+- `confluence_download_space` → `[tool.kb.confluence.download.space]`
 
 SQL- и FTS-tools переехали в отдельный плагин `boba-tool-postgres` (секции
 `[tool.pg.query]` / `[tool.pg.list_tables]` / `[tool.pg.describe_table]` /
 `[tool.pg.fts_search]`).
 
 **CLI runners** (не tool'ы, операторские скрипты — читают `[cli.kb.*]`):
-- `cli/bootstrap`                 — миграции + HNSW-индекс (`[cli.kb.bootstrap]`).
-- `cli/kbdoc_ingest`              — индексация папки KbDoc-файлов
-                                    (`[cli.kb.kbdoc_ingest]`).
-- `cli/confluence_folder_ingest`  — индексация уже-скачанных confluence-файлов
-                                    (.html → ConfluenceReader, .md →
-                                    MarkdownReader); two-step workflow
-                                    после `confluence_*_download`
-                                    (`[cli.kb.confluence.ingest.folder]`).
-- `cli/ingest_confluence_spaces`  — bulk-discovery + per-space ingest
-                                    (`[cli.kb.confluence.ingest.spaces]` +
-                                    CLI-флаги; per-space ingest читает
-                                    `[tool.kb.confluence.ingest.space]`).
-- `cli/confluence_space_download` — скачать весь space на ФС
-                                    (`[cli.kb.confluence.download.space]` +
-                                    --space-key/--as-markdown).
+- `cli/kb_bootstrap`                  — миграции + HNSW-индекс
+                                        (`[cli.kb.bootstrap]`).
+- `cli/kbdoc/ingest`                  — индексация папки KbDoc-файлов
+                                        (`[cli.kb.kbdoc.ingest]`).
+- `cli/confluence/ingest/folder`      — индексация уже-скачанных
+                                        confluence-файлов (.html →
+                                        ConfluenceReader, .md →
+                                        MarkdownReader); two-step workflow
+                                        после `confluence/download/*`
+                                        (`[cli.kb.confluence.ingest.folder]`).
+- `cli/confluence/ingest/spaces`      — bulk-discovery + per-space ingest
+                                        через HTTP
+                                        (`[cli.kb.confluence.ingest.spaces]`).
+- `cli/confluence/download/page`      — скачать список page_ids
+                                        (`[cli.kb.confluence.download.page]`).
+- `cli/confluence/download/space`     — скачать весь space
+                                        (`[cli.kb.confluence.download.space]`).
+- `cli/confluence/download/spaces`    — bulk-download всех spaces
+                                        (`[cli.kb.confluence.download.spaces]`).
 
 CLI-runner'ы не используют DI: каждый инстанцирует свой `BobaFlatSettings`-
 конфиг напрямую (`cfg = Config()`) и зовёт factory-helpers/tool-функции
@@ -67,33 +78,33 @@ from __future__ import annotations
 
 from boba.db.postgres import PostgresConnection
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.tools.cql_ingest import (
-    ConfluenceCqlIngestConfig,
-    confluence_cql_ingest,
+from boba.tool.kb.confluence.tools.download.page import (
+    ConfluenceDownloadPageConfig,
+    confluence_download_page,
 )
-from boba.tool.kb.confluence.tools.cql_search import (
-    ConfluenceCqlSearchConfig,
-    confluence_cql_search,
+from boba.tool.kb.confluence.tools.download.space import (
+    ConfluenceDownloadSpaceConfig,
+    confluence_download_space,
 )
-from boba.tool.kb.confluence.tools.page_download import (
-    ConfluencePageDownloadConfig,
-    confluence_page_download,
+from boba.tool.kb.confluence.tools.ingest.cql import (
+    ConfluenceIngestCqlConfig,
+    confluence_ingest_cql,
 )
-from boba.tool.kb.confluence.tools.page_ingest import (
-    ConfluencePageIngestConfig,
-    confluence_page_ingest,
+from boba.tool.kb.confluence.tools.ingest.page import (
+    ConfluenceIngestPageConfig,
+    confluence_ingest_page,
 )
-from boba.tool.kb.confluence.tools.space_download import (
-    ConfluenceSpaceDownloadConfig,
-    confluence_space_download,
+from boba.tool.kb.confluence.tools.ingest.space import (
+    ConfluenceIngestSpaceConfig,
+    confluence_ingest_space,
 )
-from boba.tool.kb.confluence.tools.space_ingest import (
-    ConfluenceSpaceIngestConfig,
-    confluence_space_ingest,
+from boba.tool.kb.confluence.tools.list.spaces import (
+    ConfluenceListSpacesConfig,
+    confluence_list_spaces,
 )
-from boba.tool.kb.confluence.tools.spaces_list import (
-    ConfluenceSpacesListConfig,
-    confluence_spaces_list,
+from boba.tool.kb.confluence.tools.search.cql import (
+    ConfluenceSearchCqlConfig,
+    confluence_search_cql,
 )
 from boba.tool.kb.core.chunker_params import ChunkerParams
 from boba.tool.kb.core.embedding_model import EmbeddingModel
@@ -104,20 +115,28 @@ from boba.tool.kb.core.postgres_store import (
     PostgresStoreConfig,
 )
 from boba.tool.kb.core.postgres_store_schema import PostgresStoreSchema
-from boba.tool.kb.core.tools.kb_search import SearchInKbConfig, kb_search
-from boba.tool.kb.core.tools.vector_search import VectorSearchConfig, vector_search
+from boba.tool.kb.core.tools.search.hybrid import (
+    KbSearchHybridConfig,
+    kb_search_hybrid,
+)
+from boba.tool.kb.core.tools.search.vector import (
+    KbSearchVectorConfig,
+    kb_search_vector,
+)
 
 __all__ = [
     "ChunkerParams",
     "ConfluenceConnection",
-    "ConfluenceCqlIngestConfig",
-    "ConfluenceCqlSearchConfig",
-    "ConfluencePageDownloadConfig",
-    "ConfluencePageIngestConfig",
-    "ConfluenceSpaceDownloadConfig",
-    "ConfluenceSpaceIngestConfig",
-    "ConfluenceSpacesListConfig",
+    "ConfluenceDownloadPageConfig",
+    "ConfluenceDownloadSpaceConfig",
+    "ConfluenceIngestCqlConfig",
+    "ConfluenceIngestPageConfig",
+    "ConfluenceIngestSpaceConfig",
+    "ConfluenceListSpacesConfig",
+    "ConfluenceSearchCqlConfig",
     "EmbeddingModel",
+    "KbSearchHybridConfig",
+    "KbSearchVectorConfig",
     "PostgresChunkStore",
     "PostgresCollectionsStore",
     "PostgresConnection",
@@ -125,15 +144,13 @@ __all__ = [
     "PostgresKnowledgeBaseConfig",
     "PostgresStoreConfig",
     "PostgresStoreSchema",
-    "SearchInKbConfig",
-    "VectorSearchConfig",
-    "confluence_cql_ingest",
-    "confluence_cql_search",
-    "confluence_page_download",
-    "confluence_page_ingest",
-    "confluence_space_download",
-    "confluence_space_ingest",
-    "confluence_spaces_list",
-    "kb_search",
-    "vector_search",
+    "confluence_download_page",
+    "confluence_download_space",
+    "confluence_ingest_cql",
+    "confluence_ingest_page",
+    "confluence_ingest_space",
+    "confluence_list_spaces",
+    "confluence_search_cql",
+    "kb_search_hybrid",
+    "kb_search_vector",
 ]

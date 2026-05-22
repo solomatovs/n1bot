@@ -1,9 +1,7 @@
-"""Tool `confluence_space_ingest` + `ConfluenceSpaceIngestConfig`.
+"""Tool `confluence_ingest_page` + `ConfluenceIngestPageConfig`.
 
-Индексирует все страницы перечисленных Confluence space'ов в KB-коллекцию.
-LLM передаёт `space_keys` + опц. `prune_missing`; остальное (connection,
-tables, embedding, chunker, target collection) — из TOML-секции
-`[tool.kb.confluence.ingest.space]`.
+Индексирует явный список Confluence-страниц (page_ids) в KB-коллекцию.
+LLM передаёт `page_ids` + опц. `prune_missing`.
 """
 
 from __future__ import annotations
@@ -16,9 +14,7 @@ from boba.indexing.context import PipelineId
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.confluence._ingest_common import run_confluence_ingest
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.request_sources import (
-    ConfluenceMultiSpaceRequestSource,
-)
+from boba.tool.kb.confluence.request_sources import ConfluencePagesRequestSource
 from boba.tool.kb.core.chunker_factory import build_chunker
 from boba.tool.kb.core.chunker_params import ChunkerParams
 from boba.tool.kb.core.embedder_factory import build_embedder
@@ -30,21 +26,21 @@ from boba.tool.kb.core.postgres_store import (
 )
 from boba.tools import FromConfig, tool
 
-__all__ = ["ConfluenceSpaceIngestConfig", "confluence_space_ingest"]
+__all__ = ["ConfluenceIngestPageConfig", "confluence_ingest_page"]
 
-_PIPELINE_ID: PipelineId = PipelineId("kb.confluence_space_ingest")
+_PIPELINE_ID: PipelineId = PipelineId("kb.confluence_ingest_page")
 
 
-class ConfluenceSpaceIngestConfig(BobaFlatSettings):
-    """Self-contained конфиг tool'а `confluence_space_ingest`.
+class ConfluenceIngestPageConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `confluence_ingest_page`.
 
-    Config-секция: `[tool.kb.confluence.ingest.space]`.
+    Config-секция: `[tool.kb.confluence.ingest.page]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.confluence.ingest.space",
+        config_path="tool.kb.confluence.ingest.page",
         defaults_from=("postgres", "kb.storage", "embedding", "confluence"),
     )
 
@@ -61,14 +57,15 @@ class ConfluenceSpaceIngestConfig(BobaFlatSettings):
 
 
 @tool
-def confluence_space_ingest(
-    cfg: Annotated[ConfluenceSpaceIngestConfig, FromConfig()],
-    space_keys: Annotated[
+def confluence_ingest_page(
+    cfg: Annotated[ConfluenceIngestPageConfig, FromConfig()],
+    page_ids: Annotated[
         list[str],
         Field(
             min_length=1,
             description=(
-                'Список Confluence space-keys'
+                "Список Confluence page_id для индексации. Каждый id — "
+                "строка из URL `viewpage.action?pageId=<id>`."
             ),
         ),
     ],
@@ -77,14 +74,14 @@ def confluence_space_ingest(
         Field(
             description=(
                 "Если true, удалить из коллекции чанки, чьих source_id "
-                "нет среди скачанных страниц union'а всех `space_keys`."
+                "нет среди явно перечисленных страниц."
             ),
         ),
     ] = False,
 ) -> dict[str, Any]:
-    """Индексирует все страницы перечисленных Confluence space'ов в KB-коллекцию.
+    """Индексирует явный список Confluence-страниц в KB-коллекцию.
 
-    Возвращает JSON `{space_keys, collection, indexed, skipped_unchanged,
+    Возвращает JSON `{page_ids, collection, indexed, skipped_unchanged,
     pruned, failed}`.
     """
     chunk_store = PostgresChunkStore(cfg=cfg.store)
@@ -92,9 +89,10 @@ def confluence_space_ingest(
     embedder = build_embedder(cfg.embedding)
     chunker = build_chunker(cfg.chunker)
 
-    request_source = ConfluenceMultiSpaceRequestSource(
-        conn=cfg.confluence,
-        space_keys=space_keys,
+    request_source = ConfluencePagesRequestSource(
+        base_url=cfg.confluence.base_url,
+        auth=cfg.confluence.make_auth(),
+        page_ids=page_ids,
         body_format=cfg.confluence.body_format,
     )
     result = run_confluence_ingest(
@@ -108,4 +106,4 @@ def confluence_space_ingest(
         prune_missing=prune_missing,
         pipeline_id=_PIPELINE_ID,
     )
-    return {"space_keys": list(space_keys), **result}
+    return {"page_ids": page_ids, **result}

@@ -1,4 +1,4 @@
-"""Tool `confluence_page_download` + `ConfluencePageDownloadConfig`.
+"""Tool `confluence_download_page` + `ConfluenceDownloadPageConfig`.
 
 Скачивает явный список Confluence-страниц в workspace. HTML по умолчанию;
 `as_markdown=True` конвертирует HTML через `markdownify` (ATX-заголовки)
@@ -21,13 +21,13 @@ from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.request_sources.pages import ConfluencePagesRequestSource
 from boba.tools import FromConfig, tool
 
-__all__ = ["ConfluencePageDownloadConfig", "confluence_page_download"]
+__all__ = ["ConfluenceDownloadPageConfig", "confluence_download_page"]
 
-_PIPELINE_ID: PipelineId = PipelineId("confluence.page_download")
+_PIPELINE_ID: PipelineId = PipelineId("confluence.download_page")
 
 
-class ConfluencePageDownloadConfig(BobaFlatSettings):
-    """Self-contained конфиг tool'а `confluence_page_download`.
+class ConfluenceDownloadPageConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `confluence_download_page`.
 
     Config-секция: `[tool.kb.confluence.download.page]`.
     """
@@ -50,8 +50,8 @@ class ConfluencePageDownloadConfig(BobaFlatSettings):
 
 
 @tool
-def confluence_page_download(
-    cfg: Annotated[ConfluencePageDownloadConfig, FromConfig()],
+def confluence_download_page(
+    cfg: Annotated[ConfluenceDownloadPageConfig, FromConfig()],
     page_ids: Annotated[
         list[str],
         Field(

@@ -1,4 +1,4 @@
-"""Tool `confluence_space_download` + `ConfluenceSpaceDownloadConfig`.
+"""Tool `confluence_download_space` + `ConfluenceDownloadSpaceConfig`.
 
 Скачивает все страницы Confluence space в workspace. Discovery через
 `/rest/api/space/{key}/content` с пагинацией; каждая страница пишется
@@ -23,13 +23,13 @@ from boba.tool.kb.confluence.request_sources.space import (
 )
 from boba.tools import FromConfig, tool
 
-__all__ = ["ConfluenceSpaceDownloadConfig", "confluence_space_download"]
+__all__ = ["ConfluenceDownloadSpaceConfig", "confluence_download_space"]
 
-_PIPELINE_ID: PipelineId = PipelineId("confluence.space_download")
+_PIPELINE_ID: PipelineId = PipelineId("confluence.download_space")
 
 
-class ConfluenceSpaceDownloadConfig(BobaFlatSettings):
-    """Self-contained конфиг tool'а `confluence_space_download`.
+class ConfluenceDownloadSpaceConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `confluence_download_space`.
 
     Config-секция: `[tool.kb.confluence.download.space]`.
     """
@@ -49,8 +49,8 @@ class ConfluenceSpaceDownloadConfig(BobaFlatSettings):
 
 
 @tool
-def confluence_space_download(
-    cfg: Annotated[ConfluenceSpaceDownloadConfig, FromConfig()],
+def confluence_download_space(
+    cfg: Annotated[ConfluenceDownloadSpaceConfig, FromConfig()],
     space_key: Annotated[
         str,
         Field(

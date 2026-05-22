@@ -5,10 +5,10 @@
 
 - `search(...)`         — **гибридный** retrieval: top-K от pgvector +
                           top-K от FTS, склейка через Reciprocal Rank
-                          Fusion. Используется `kb_search`-tool'ом.
+                          Fusion. Используется `kb_search_hybrid`-tool'ом.
                           RRF-параметры — `KbConfig.rrf_k`/`rrf_pool`.
 - `vector_search(...)`  — **чистый** semantic top-K от pgvector (cosine
-                          via `<=>`). Используется `vector_search`-tool'ом.
+                          via `<=>`). Используется `kb_search_vector`-tool'ом.
                           Полезен, когда FTS-канал шумит/мешает (короткие
                           запросы, эмбеддинг лучше ловит синонимы).
 

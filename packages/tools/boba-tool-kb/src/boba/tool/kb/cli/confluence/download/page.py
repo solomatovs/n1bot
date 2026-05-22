@@ -14,18 +14,18 @@ from boba.indexing import PipelineId
 from boba.settings import BobaSettingsConfigDict, StringList
 from boba.tool.kb.confluence._download_common import download_pages
 from boba.tool.kb.confluence.request_sources.pages import ConfluencePagesRequestSource
-from boba.tool.kb.confluence.tools.page_download import (
-    ConfluencePageDownloadConfig,
+from boba.tool.kb.confluence.tools.download.page import (
+    ConfluenceDownloadPageConfig,
 )
 
-__all__ = ["ConfluencePageDownloadCliConfig", "main"]
+__all__ = ["ConfluenceDownloadPageCliConfig", "main"]
 
-logger = logging.getLogger("boba.tool.kb.cli.confluence_page_download")
+logger = logging.getLogger("boba.tool.kb.cli.confluence.download.page")
 
-_PIPELINE_ID: PipelineId = PipelineId("cli.confluence_page_download")
+_PIPELINE_ID: PipelineId = PipelineId("cli.confluence.download.page")
 
 
-class ConfluencePageDownloadCliConfig(ConfluencePageDownloadConfig):
+class ConfluenceDownloadPageCliConfig(ConfluenceDownloadPageConfig):
     """Self-contained CLI-конфиг скачивания явного списка page_ids.
 
     Наследует поля tool-конфига (`confluence`, `dest_dir`) — runner делает
@@ -71,7 +71,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    cfg = ConfluencePageDownloadCliConfig()  # pyright: ignore[reportCallIssue]
+    cfg = ConfluenceDownloadPageCliConfig()  # pyright: ignore[reportCallIssue]
 
     if not cfg.page_ids:
         logger.error(
@@ -105,7 +105,7 @@ def main() -> int:
             pipeline_id=_PIPELINE_ID,
         )
     except Exception:
-        logger.exception("confluence_page_download FAILED")
+        logger.exception("confluence.download.page FAILED")
         return 1
     elapsed = time.monotonic() - start
 

@@ -1,4 +1,4 @@
-"""Tool `confluence_cql_search` + `ConfluenceCqlSearchConfig`: online CQL-search.
+"""Tool `confluence_search_cql` + `ConfluenceSearchCqlConfig`: online CQL-search.
 
 Полнотекстовый поиск страниц по реальному Confluence (не по KB). LLM
 передаёт строку запроса + опц. `space` ограничение; connection и
@@ -30,14 +30,14 @@ from boba.tool.kb.confluence.search_reader import ConfluenceSearchHitsReader
 from boba.tools import FromConfig, tool
 from boba.transport.http import HttpKeys
 
-__all__ = ["ConfluenceCqlSearchConfig", "confluence_cql_search"]
+__all__ = ["ConfluenceSearchCqlConfig", "confluence_search_cql"]
 
 
-_PIPELINE_ID: PipelineId = PipelineId("confluence.cql_search")
+_PIPELINE_ID: PipelineId = PipelineId("confluence.search_cql")
 
 
-class ConfluenceCqlSearchConfig(BobaFlatSettings):
-    """Self-contained конфиг tool'а `confluence_cql_search`.
+class ConfluenceSearchCqlConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `confluence_search_cql`.
 
     Config-секция: `[tool.kb.confluence.search.cql]`.
     """
@@ -64,8 +64,8 @@ class ConfluenceCqlSearchConfig(BobaFlatSettings):
 
 
 @tool
-def confluence_cql_search(
-    cfg: Annotated[ConfluenceCqlSearchConfig, FromConfig()],
+def confluence_search_cql(
+    cfg: Annotated[ConfluenceSearchCqlConfig, FromConfig()],
     query: Annotated[
         str,
         Field(min_length=1, description="Строка полнотекстового поиска в Confluence."),
@@ -82,10 +82,10 @@ def confluence_cql_search(
     """Полнотекстовый поиск страниц Confluence (online CQL).
 
     Возвращает плоский список hits: `[{page_id, title, space_key, url,
-    snippet, last_modified}, ...]`. Совместимо по shape с `kb_search` и
-    `fts_search` (тоже `list[dict]`). Для последующей работы:
-    `confluence_page_download` (HTML/Markdown → workspace) или
-    `confluence_page_ingest` (страницы → KB-коллекцию для kb_search).
+    snippet, last_modified}, ...]`. Совместимо по shape с `kb_search_hybrid`
+    и `fts_search` (тоже `list[dict]`). Для последующей работы:
+    `confluence_download_page` (HTML/Markdown → workspace) или
+    `confluence_ingest_page` (страницы → KB-коллекцию для kb_search_*).
     """
     if limit > cfg.max_limit:
         raise RuntimeError(

@@ -18,7 +18,7 @@
 
 Применение:
     BOBA_CONFIG_PATH=./local/config.toml \\
-        .venv/bin/python -m boba.tool.kb.cli.bootstrap
+        .venv/bin/python -m boba.tool.kb.cli.kb_bootstrap
 
 CLI-флагов нет — всё берётся из конфига оператора
 (`[cli.kb.bootstrap]`).
@@ -37,12 +37,12 @@ from boba.tool.kb.core.migrations import apply_bootstrap, ensure_vector_index
 from boba.tool.kb.core.postgres_pool import open_kb_pool
 from boba.tool.kb.core.postgres_store_schema import PostgresStoreSchema
 
-__all__ = ["BootstrapConfig", "main"]
+__all__ = ["KbBootstrapConfig", "main"]
 
-logger = logging.getLogger("boba.tool.kb.cli.bootstrap")
+logger = logging.getLogger("boba.tool.kb.cli.kb_bootstrap")
 
 
-class BootstrapConfig(BobaFlatSettings):
+class KbBootstrapConfig(BobaFlatSettings):
     """
     Self-contained конфиг bootstrap-CLI
     """
@@ -65,7 +65,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    cfg = BootstrapConfig()  # pyright: ignore[reportCallIssue]
+    cfg = KbBootstrapConfig()  # pyright: ignore[reportCallIssue]
 
     pool = open_kb_pool(cfg.connection)
     embedder = build_embedder(cfg.embedding)
