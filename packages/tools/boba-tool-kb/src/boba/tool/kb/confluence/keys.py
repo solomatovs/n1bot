@@ -9,6 +9,12 @@ from typing import ClassVar
 
 from boba.indexing import MetadataKey
 
+from boba.tool.kb.confluence.attachments import (
+    AttachmentInfo,
+    decode_attachments,
+    encode_attachments,
+)
+
 __all__ = ["ConfluenceKeys"]
 
 
@@ -47,4 +53,9 @@ class ConfluenceKeys:
         name="confluence.ancestors_titles",
         decode=_decode_titles,
         encode=_encode_titles,
+    )
+    ATTACHMENTS: ClassVar[MetadataKey[tuple[AttachmentInfo, ...]]] = MetadataKey(
+        name="confluence.attachments",
+        decode=decode_attachments,
+        encode=encode_attachments,
     )

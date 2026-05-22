@@ -27,9 +27,11 @@ from typing import Any
 from boba.indexing import (
     Decoder,
     DecoderId,
+    Metadata,
     RawDocument,
     ReaderKeys,
 )
+from boba.tool.kb.confluence.attachments import AttachmentInfo
 from boba.tool.kb.confluence.errors import ConfluencePayloadError
 from boba.tool.kb.confluence.keys import ConfluenceKeys
 from boba.transport.http import HttpKeys
@@ -87,6 +89,7 @@ class ConfluenceJsonDecoder(Decoder):
             )
             if titles:
                 meta = meta.set(ConfluenceKeys.ANCESTORS_TITLES, titles)
+        meta = _enrich_with_attachments(meta, data)
 
         return replace(
             value,
@@ -96,3 +99,63 @@ class ConfluenceJsonDecoder(Decoder):
 
     def reset(self) -> None:
         pass
+
+
+def _enrich_with_attachments(meta: Metadata, data: dict[str, Any]) -> Metadata:
+    """Put `children.attachment.results[]` into `ConfluenceKeys.ATTACHMENTS`.
+
+    Пустой/отсутствующий список → `meta` без изменений (тот же pattern,
+    что у `ANCESTORS_TITLES`). Структурно непригодный JSON тоже даёт no-op:
+    Decoder не должен взрываться на расхождении схемы — Confluence в
+    разных версиях кладёт expand-блоки по-разному.
+    """
+    children = data.get("children")
+    if not isinstance(children, dict):
+        return meta
+    block = children.get("attachment")
+    if not isinstance(block, dict):
+        return meta
+    results = block.get("results")
+    if not isinstance(results, list):
+        return meta
+    items = tuple(
+        _attachment_from_json(a)
+        for a in results
+        if isinstance(a, dict)
+    )
+    if not items:
+        return meta
+    return meta.set(ConfluenceKeys.ATTACHMENTS, items)
+
+
+def _attachment_from_json(a: dict[str, Any]) -> AttachmentInfo:
+    """Один Confluence-attachment JSON-объект → `AttachmentInfo`.
+
+    Missing/нечисловые `extensions.fileSize` и `version.number` фолбэчатся
+    в `0` и `1` — пользователю download'а размер не критичен, version по
+    умолчанию `1` соответствует Confluence-семантике первой загрузки.
+    """
+    extensions: dict[str, Any] = _dict_or_empty(a.get("extensions"))
+    version: dict[str, Any] = _dict_or_empty(a.get("version"))
+    links: dict[str, Any] = _dict_or_empty(a.get("_links"))
+    return AttachmentInfo(
+        id=str(a.get("id", "")),
+        title=str(a.get("title", "")),
+        media_type=str(extensions.get("mediaType", "")),
+        file_size=_int_or(extensions.get("fileSize"), default=0),
+        download_path=str(links.get("download", "")),
+        version=_int_or(version.get("number"), default=1),
+    )
+
+
+def _dict_or_empty(v: Any) -> dict[str, Any]:
+    return v if isinstance(v, dict) else {}
+
+
+def _int_or(v: Any, *, default: int) -> int:
+    if v is None:
+        return default
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
