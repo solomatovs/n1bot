@@ -78,24 +78,26 @@ from boba.tool.kb.confluence.tools.page_ingest import confluence_page_ingest
 from boba.tool.kb.confluence.tools.search import confluence_search
 from boba.tool.kb.confluence.tools.space_download import confluence_space_download
 from boba.tool.kb.confluence.tools.space_ingest import confluence_space_ingest
+from boba.tool.kb.core.chunk_store import PostgresChunkStore
+from boba.tool.kb.core.collections_store import PostgresCollectionsStore
 from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.embedding_config import EmbeddingConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
 from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
 from boba.tool.kb.core.providers import (
+    provide_chunk_store,
     provide_chunker,
+    provide_collections_store,
     provide_dispatch_reader,
     provide_embedder,
     provide_html_reader,
     provide_kbdoc_reader,
     provide_knowledge_base,
     provide_postgres_pool,
-    provide_vector_store,
 )
 from boba.tool.kb.core.tools.files_ingest import files_ingest
 from boba.tool.kb.core.tools.kb_search import kb_search
 from boba.tool.kb.core.tools.vector_search import vector_search
-from boba.tool.kb.core.vector_store import PostgresVectorStore
 from boba.tool.kb.core.vector_store_config import VectorStoreSchemaConfig
 from boba.tool.kb.fts.config import FtsConfig
 from boba.tool.kb.fts.providers import provide_fts_kb
@@ -111,9 +113,10 @@ __all__ = [
     "EmbeddingConfig",
     "FtsConfig",
     "KbConfig",
+    "PostgresChunkStore",
+    "PostgresCollectionsStore",
     "PostgresConnectionConfig",
     "PostgresKnowledgeBase",
-    "PostgresVectorStore",
     "SqlConfig",
     "VectorStoreSchemaConfig",
     "confluence_list_spaces",
@@ -125,7 +128,9 @@ __all__ = [
     "files_ingest",
     "fts_search",
     "kb_search",
+    "provide_chunk_store",
     "provide_chunker",
+    "provide_collections_store",
     "provide_dispatch_reader",
     "provide_embedder",
     "provide_fts_kb",
@@ -134,7 +139,6 @@ __all__ = [
     "provide_knowledge_base",
     "provide_postgres_pool",
     "provide_sql_executor",
-    "provide_vector_store",
     "sql_describe_table",
     "sql_list_tables",
     "sql_query",

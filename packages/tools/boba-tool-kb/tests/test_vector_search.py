@@ -16,8 +16,9 @@ from boba.tool.kb.core.kb import PostgresKnowledgeBase
 from boba.tool.kb.core.tools.vector_search import vector_search
 
 if TYPE_CHECKING:
-    from boba.tool.kb.core.embedding_config import EmbeddingConfig
     from tests.conftest import KbIntegrationTestConfig
+
+    from boba.tool.kb.core.embedding_config import EmbeddingConfig
 
 pytestmark = pytest.mark.integration
 

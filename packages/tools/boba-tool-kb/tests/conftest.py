@@ -51,12 +51,13 @@ from boba.text import OverlapCharSplitter, StructuralChunker
 from boba.text.structural_chunker import SplitterFactory
 from boba.tool.kb.confluence.config import ConfluenceConnectionConfig
 from boba.tool.kb.confluence.connection import ConfluenceConnection
+from boba.tool.kb.core.chunk_store import PostgresChunkStore
+from boba.tool.kb.core.collections_store import PostgresCollectionsStore
 from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.embedding_config import EmbeddingConfig
 from boba.tool.kb.core.kb import PostgresKnowledgeBase
 from boba.tool.kb.core.migrations import apply_bootstrap, ensure_vector_index
 from boba.tool.kb.core.postgres_config import PostgresConnectionConfig
-from boba.tool.kb.core.vector_store import PostgresVectorStore
 from boba.tool.kb.core.vector_store_config import VectorStoreSchemaConfig
 from boba.tool.kb.fts.config import FtsConfig
 from boba.tool.kb.fts.db import PgFtsKnowledgeBase
@@ -159,7 +160,7 @@ def vector_store_cfg() -> VectorStoreSchemaConfig:
     """`VectorStoreSchemaConfig` из `[tool.kb.vector_store]`; skip при ошибке.
 
     Тот же конфиг получает и bootstrap (`apply_bootstrap` + `ensure_vector_index`
-    в фикстурах ниже), и runtime-сторона (`PostgresVectorStore` /
+    в фикстурах ниже), и runtime-сторона (`PostgresChunkStore` /
     `PostgresKnowledgeBase`). Тестовая обвязка mimic'ирует операторский
     bootstrap-CLI: одна и та же `schema/chunks_table/collections_table`
     проходит сквозным маршрутом.
@@ -236,7 +237,7 @@ def kb_pool(
     (cache живёт до process exit; повторное использование между тестами).
 
     Bootstrap-миграция (`apply_bootstrap`) применяется с теми же
-    `schema/chunks_table/collections_table`, что и `PostgresVectorStore`
+    `schema/chunks_table/collections_table`, что и `PostgresChunkStore`
     в фикстуре `kb_store` ниже — единый `vector_store_cfg`.
     """
     pool = PostgresPool.get(
@@ -263,7 +264,7 @@ def kb_store(
     kb_pool: PostgresPool,
     kb_embedder: OpenAICompatEmbedder,
     vector_store_cfg: VectorStoreSchemaConfig,
-) -> PostgresVectorStore:
+) -> PostgresChunkStore:
     """Write-side store для ingest-тулов.
 
     Тесты mimic'ируют операторский bootstrap-шаг (CLI
@@ -280,9 +281,25 @@ def kb_store(
             dim=kb_embedder.dim(),
             schema_cfg=vector_store_cfg,
         )
-    return PostgresVectorStore(
+    return PostgresChunkStore(
         pool=kb_pool,
         embedding_dim=kb_embedder.dim(),
+        schema_cfg=vector_store_cfg,
+    )
+
+
+@pytest.fixture
+def kb_collections_store(
+    kb_pool: PostgresPool,
+    vector_store_cfg: VectorStoreSchemaConfig,
+) -> PostgresCollectionsStore:
+    """Collections-CRUD store для ingest-тулов (`ensure_collection`).
+
+    Тот же `kb_pool` и `vector_store_cfg`, что у `kb_store` — обе фикстуры
+    смотрят в одну и ту же схему/таблицы.
+    """
+    return PostgresCollectionsStore(
+        pool=kb_pool,
         schema_cfg=vector_store_cfg,
     )
 

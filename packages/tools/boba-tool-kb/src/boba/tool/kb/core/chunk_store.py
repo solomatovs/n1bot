@@ -1,12 +1,14 @@
 """
-PostgresVectorStore — реализация boba.indexing.VectorStore + CollectionsAdmin
-поверх postgres + pgvector.
+PostgresChunkStore — реализация `boba.indexing.ChunkStore[str]` поверх
+postgres + pgvector.
 
-Один класс реализует 4 ABC:
-- VectorStoreReader[str]:   get_by_ids / similarity_search / peek / find / diff_by_hash
-- VectorStoreWriter[str]:   upsert / delete / update_metadata
-- CollectionsAdminReader:   list_collections / collection_info
-- CollectionsAdminWriter:   ensure_collection / delete_collection
+Чисто chunk-уровневые операции (документы внутри коллекции):
+- read:  get_by_ids / peek / find / diff_by_hash
+- write: upsert / delete / update_metadata
+
+Коллекция-уровневый CRUD (`ensure_collection` / `delete_collection` /
+`list_collections` / `collection_info`) живёт отдельно в
+[`PostgresCollectionsStore`](collections_store.py) — это другая ось ABC.
 
 Хранение:
 - Все коллекции в одной таблице (по дефолту `kb_chunks`, имя/схема —
@@ -19,25 +21,19 @@ PostgresVectorStore — реализация boba.indexing.VectorStore + Collect
   `boba.tool.kb.core.cli.bootstrap`. Store предполагает, что схема и
   индекс уже на месте — runtime DDL не делает.
 
-`VectorStoreSchemaConfig` — единый источник правды по именам таблиц,
-который получает и bootstrap-CLI, и этот store. Любое расхождение
-приведёт к `relation does not exist` в рантайме — лучше так, чем тихое
-расхождение схемы.
-
 Embedder в Store не инжектится: store принимает `EmbeddedChunk[str]` на
-write и `Sequence[float]` на similarity_search. Embedder живёт в
-pipeline-orchestrator'е выше (`CollectionScopedView`, `PostgresKnowledgeBase`).
+write. Embedder живёт в pipeline-orchestrator'е выше
+(`CollectionScopedView`, `PostgresKnowledgeBase`).
 
-Similarity-search здесь — чистый vector (cosine, `<=>`). Гибридный
-search (vector + FTS, RRF) живёт в `PostgresKnowledgeBase.search` и
-не относится к ABC.
+Vector-search (cosine `<=>`) и гибридный search (vector + FTS, RRF) живут
+в `PostgresKnowledgeBase` — application-уровень, не часть ABC Store.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from itertools import islice
 from typing import Any, ClassVar, TypeVar
 
@@ -45,6 +41,7 @@ from psycopg import sql
 from psycopg.rows import dict_row
 
 from boba.db.postgres import PostgresPool
+from boba.indexing.chunk_store import ChunkStore, HashDiff
 from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary, EmbeddedChunk
 from boba.indexing.content_hash import ContentHash, StringContentHash
 from boba.indexing.context import CollectionId
@@ -68,31 +65,17 @@ from boba.indexing.filter import (
 )
 from boba.indexing.metadata import Metadata
 from boba.indexing.sections import SourceId
-from boba.indexing.vector_store import (
-    CollectionInfo,
-    CollectionsAdminReader,
-    CollectionsAdminWriter,
-    HashDiff,
-    SearchHit,
-    VectorStoreReader,
-    VectorStoreWriter,
-)
 from boba.tool.kb.core.vector_store_config import VectorStoreSchemaConfig
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["PostgresVectorStore"]
+__all__ = ["PostgresChunkStore"]
 
 _E = TypeVar("_E")
 
 
-class PostgresVectorStore(
-    VectorStoreReader[str],
-    VectorStoreWriter[str],
-    CollectionsAdminReader,
-    CollectionsAdminWriter,
-):
-    """Postgres-реализация VectorStore[str] и CollectionsAdmin."""
+class PostgresChunkStore(ChunkStore[str]):
+    """Postgres-реализация `ChunkStore[str]` (только document-уровень)."""
 
     DEFAULT_BATCH_SIZE: ClassVar[int] = 100
     BACKEND_NAME: ClassVar[str] = "postgres"
@@ -115,11 +98,10 @@ class PostgresVectorStore(
         self._embedding_dim = embedding_dim
         self._schema_cfg = schema_cfg
         self._chunks_table = schema_cfg.chunks_ident()
-        self._collections_table = schema_cfg.collections_ident()
         self._batch_size = batch_size
 
     # ------------------------------------------------------------------ #
-    # VectorStoreReader[str]                                             #
+    # ChunkStore[str] — read-side                                         #
     # ------------------------------------------------------------------ #
 
     def get_by_ids(
@@ -148,46 +130,6 @@ class PostgresVectorStore(
             cur.execute(query, (str(collection), ids))
             for row in cur:
                 yield self._row_to_chunk(row)
-
-    def similarity_search(
-        self,
-        collection: CollectionId,
-        *,
-        query_embedding: Sequence[float],
-        k: int,
-    ) -> Iterable[SearchHit[str]]:
-        # pgvector требует `vector(N)` с литералом N (type modifier);
-        # параметризовать $1 нельзя — Postgres парсит type modifiers до
-        # bind'а. Инлайним через sql.Literal (значение из cfg, не из юзера).
-        query_sql = sql.SQL(
-            """
-            SELECT chunk_id, source_id, chunk_index,
-                   format_content AS snippet,
-                   metadata, tags,
-                   (embedding::vector({dim})) <=> %s::vector AS distance
-            FROM {chunks_table}
-            WHERE collection = %s AND embedding IS NOT NULL
-            ORDER BY distance ASC
-            LIMIT %s
-            """,
-        ).format(
-            dim=sql.Literal(self._embedding_dim),
-            chunks_table=self._chunks_table,
-        )
-        with (
-            self._pool.connection() as conn,
-            conn.cursor(
-                row_factory=dict_row,
-            ) as cur,
-        ):
-            cur.execute(query_sql, (list(query_embedding), str(collection), k))
-            for row in cur:
-                yield SearchHit(
-                    chunk_id=ChunkId(row["chunk_id"]),
-                    distance=float(row["distance"]),
-                    snippet=row["snippet"] or "",
-                    metadata=self._row_to_metadata(row),
-                )
 
     def peek(
         self,
@@ -310,7 +252,7 @@ class PostgresVectorStore(
         )
 
     # ------------------------------------------------------------------ #
-    # VectorStoreWriter[str]                                             #
+    # ChunkStore[str] — write-side                                        #
     # ------------------------------------------------------------------ #
 
     def upsert(
@@ -403,114 +345,6 @@ class PostgresVectorStore(
         ).format(chunks_table=self._chunks_table)
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(query, (json.dumps(wire_patch), str(collection), ids))
-
-    # ------------------------------------------------------------------ #
-    # CollectionsAdminReader                                             #
-    # ------------------------------------------------------------------ #
-
-    def list_collections(self) -> Iterable[CollectionInfo]:
-        query = sql.SQL(
-            """
-            SELECT c.name,
-                   c.description,
-                   COALESCE(cnt.count, 0) AS count
-            FROM {collections_table} c
-            LEFT JOIN (
-                SELECT collection, count(*)::int AS count
-                FROM {chunks_table}
-                GROUP BY collection
-            ) cnt ON cnt.collection = c.name
-            ORDER BY c.name
-            """,
-        ).format(
-            collections_table=self._collections_table,
-            chunks_table=self._chunks_table,
-        )
-        with (
-            self._pool.connection() as conn,
-            conn.cursor(
-                row_factory=dict_row,
-            ) as cur,
-        ):
-            cur.execute(query)
-            for row in cur:
-                yield CollectionInfo(
-                    name=CollectionId(row["name"]),
-                    description=row["description"] or "",
-                    count=int(row["count"]),
-                )
-
-    def collection_info(self, name: CollectionId) -> CollectionInfo:
-        query = sql.SQL(
-            """
-            SELECT c.name, c.description,
-                   (SELECT count(*)::int FROM {chunks_table}
-                    WHERE collection = c.name) AS count
-            FROM {collections_table} c
-            WHERE c.name = %s
-            """,
-        ).format(
-            chunks_table=self._chunks_table,
-            collections_table=self._collections_table,
-        )
-        with (
-            self._pool.connection() as conn,
-            conn.cursor(
-                row_factory=dict_row,
-            ) as cur,
-        ):
-            cur.execute(query, (str(name),))
-            row = cur.fetchone()
-            if row is None:
-                return CollectionInfo(
-                    name=name,
-                    description="",
-                    count=0,
-                )
-            return CollectionInfo(
-                name=CollectionId(row["name"]),
-                description=row["description"] or "",
-                count=int(row["count"]),
-            )
-
-    # ------------------------------------------------------------------ #
-    # CollectionsAdminWriter                                             #
-    # ------------------------------------------------------------------ #
-
-    def ensure_collection(
-        self,
-        name: CollectionId,
-        *,
-        description: str | None,
-    ) -> None:
-        # Семантика «idempotent ensure»: если коллекция есть — НЕ
-        # перетираем description (тестируется в chromadb-аналоге, держим
-        # совместимым поведение). Description ставится только при первом
-        # создании.
-        query = sql.SQL(
-            """
-            INSERT INTO {collections_table} (name, description)
-            VALUES (%s, %s)
-            ON CONFLICT (name) DO NOTHING
-            """,
-        ).format(collections_table=self._collections_table)
-        with self._pool.connection() as conn, conn.cursor() as cur:
-            cur.execute(query, (str(name), description or ""))
-
-    def delete_collection(self, name: CollectionId) -> None:
-        delete_chunks = sql.SQL(
-            "DELETE FROM {chunks_table} WHERE collection = %s",
-        ).format(chunks_table=self._chunks_table)
-        delete_catalog = sql.SQL(
-            "DELETE FROM {collections_table} WHERE name = %s",
-        ).format(collections_table=self._collections_table)
-        with (
-            self._pool.connection() as conn,
-            conn.transaction(),
-            conn.cursor() as cur,
-        ):
-            cur.execute(delete_chunks, (str(name),))
-            cur.execute(delete_catalog, (str(name),))
 
     # ------------------------------------------------------------------ #
     # Internals                                                          #

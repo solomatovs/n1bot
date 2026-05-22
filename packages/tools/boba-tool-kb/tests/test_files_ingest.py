@@ -1,11 +1,12 @@
 """Integration: `files_ingest` — FS-папка → KB-коллекция через tool-обёртку.
 
-Вызывает сам `files_ingest(store=, dispatch_reader=, chunker=, cfg=,
-prune_missing=)` — это проверяет и tool-валидаторы (`folder_not_found`,
-`folder_not_a_directory`), и `store.ensure_collection`, и полный pipeline.
+Вызывает сам `files_ingest(chunk_store=, collections_store=, dispatch_reader=,
+chunker=, cfg=, prune_missing=)` — это проверяет и tool-валидаторы
+(`folder_not_found`, `folder_not_a_directory`), и
+`collections_store.ensure_collection`, и полный pipeline.
 
-Общие объекты (kb_cfg, kb_store, kb_dispatch_reader, kb_chunker) приходят
-из conftest-фикстур.
+Общие объекты (kb_cfg, kb_store, kb_collections_store, kb_dispatch_reader,
+kb_chunker) приходят из conftest-фикстур.
 """
 
 from __future__ import annotations
@@ -17,9 +18,10 @@ import pytest
 
 from boba.indexing import DispatchReader
 from boba.text import StructuralChunker
+from boba.tool.kb.core.chunk_store import PostgresChunkStore
+from boba.tool.kb.core.collections_store import PostgresCollectionsStore
 from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.tools.files_ingest import files_ingest
-from boba.tool.kb.core.vector_store import PostgresVectorStore
 
 if TYPE_CHECKING:
     from boba.provider.openai import OpenAICompatEmbedder
@@ -31,7 +33,8 @@ pytestmark = pytest.mark.integration
 def test_files_ingest_real(  # noqa: PLR0913 — integration test
     kb_cfg: KbConfig,
     embedding_cfg: EmbeddingConfig,
-    kb_store: PostgresVectorStore,
+    kb_store: PostgresChunkStore,
+    kb_collections_store: PostgresCollectionsStore,
     kb_embedder: OpenAICompatEmbedder,
     kb_dispatch_reader: DispatchReader[str],
     kb_chunker: StructuralChunker,
@@ -46,7 +49,8 @@ def test_files_ingest_real(  # noqa: PLR0913 — integration test
         )
 
     result = files_ingest(
-        store=kb_store,
+        chunk_store=kb_store,
+        collections_store=kb_collections_store,
         embedder=kb_embedder,
         dispatch_reader=kb_dispatch_reader,
         chunker=kb_chunker,
@@ -62,16 +66,23 @@ def test_files_ingest_real(  # noqa: PLR0913 — integration test
     _emit(f"skipped_unchanged: {result['skipped_unchanged']}")
     _emit(f"pruned:            {result['pruned']}")
     _emit(f"failed:            {result['failed']}")
-    assert {"folder", "collection", "indexed", "skipped_unchanged", "pruned",
-            "failed"} <= result.keys()
+    assert {
+        "folder",
+        "collection",
+        "indexed",
+        "skipped_unchanged",
+        "pruned",
+        "failed",
+    } <= result.keys()
     assert result["folder"] == str(folder)
     assert result["collection"] == kb_cfg.collection
     assert result["failed"] == 0, "some sources failed; see logs"
 
 
-def test_files_ingest_is_idempotent_second_run_skips_all(
+def test_files_ingest_is_idempotent_second_run_skips_all(  # noqa: PLR0913
     kb_cfg: KbConfig,
-    kb_store: PostgresVectorStore,
+    kb_store: PostgresChunkStore,
+    kb_collections_store: PostgresCollectionsStore,
     kb_embedder: OpenAICompatEmbedder,
     kb_dispatch_reader: DispatchReader[str],
     kb_chunker: StructuralChunker,
@@ -82,7 +93,8 @@ def test_files_ingest_is_idempotent_second_run_skips_all(
         pytest.skip("files_folder отсутствует")
 
     _first = files_ingest(
-        store=kb_store,
+        chunk_store=kb_store,
+        collections_store=kb_collections_store,
         embedder=kb_embedder,
         dispatch_reader=kb_dispatch_reader,
         chunker=kb_chunker,
@@ -90,7 +102,8 @@ def test_files_ingest_is_idempotent_second_run_skips_all(
         prune_missing=False,
     )
     second = files_ingest(
-        store=kb_store,
+        chunk_store=kb_store,
+        collections_store=kb_collections_store,
         embedder=kb_embedder,
         dispatch_reader=kb_dispatch_reader,
         chunker=kb_chunker,
@@ -102,9 +115,10 @@ def test_files_ingest_is_idempotent_second_run_skips_all(
     )
 
 
-def test_files_ingest_full_cleanup_returns_pruned_count(
+def test_files_ingest_full_cleanup_returns_pruned_count(  # noqa: PLR0913
     kb_cfg: KbConfig,
-    kb_store: PostgresVectorStore,
+    kb_store: PostgresChunkStore,
+    kb_collections_store: PostgresCollectionsStore,
     kb_embedder: OpenAICompatEmbedder,
     kb_dispatch_reader: DispatchReader[str],
     kb_chunker: StructuralChunker,
@@ -115,7 +129,8 @@ def test_files_ingest_full_cleanup_returns_pruned_count(
         pytest.skip("files_folder отсутствует")
 
     result = files_ingest(
-        store=kb_store,
+        chunk_store=kb_store,
+        collections_store=kb_collections_store,
         embedder=kb_embedder,
         dispatch_reader=kb_dispatch_reader,
         chunker=kb_chunker,
@@ -128,7 +143,8 @@ def test_files_ingest_full_cleanup_returns_pruned_count(
 def test_files_ingest_missing_folder_raises(  # noqa: PLR0913 — integration test
     monkeypatch: pytest.MonkeyPatch,
     kb_cfg: KbConfig,
-    kb_store: PostgresVectorStore,
+    kb_store: PostgresChunkStore,
+    kb_collections_store: PostgresCollectionsStore,
     kb_embedder: OpenAICompatEmbedder,
     kb_dispatch_reader: DispatchReader[str],
     kb_chunker: StructuralChunker,
@@ -137,7 +153,8 @@ def test_files_ingest_missing_folder_raises(  # noqa: PLR0913 — integration te
     monkeypatch.setattr(kb_cfg, "files_folder", "/nonexistent/path/xyz")
     with pytest.raises(RuntimeError, match="folder_not_found"):
         files_ingest(
-            store=kb_store,
+            chunk_store=kb_store,
+            collections_store=kb_collections_store,
             embedder=kb_embedder,
             dispatch_reader=kb_dispatch_reader,
             chunker=kb_chunker,

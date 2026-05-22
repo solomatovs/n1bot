@@ -11,6 +11,12 @@ from boba.indexing.chunk_id import (
     SourceBasedChunkId,
 )
 from boba.indexing.chunk_sink import ChunkSink, VectorStoreChunkSink
+from boba.indexing.chunk_store import (
+    ChunkStore,
+    CollectionInfo,
+    CollectionsStore,
+    HashDiff,
+)
 from boba.indexing.chunker import Chunker, ChunkerId
 from boba.indexing.chunks import (
     Chunk,
@@ -118,15 +124,6 @@ from boba.indexing.splitter import (
 from boba.indexing.stats import IndexStats, IndexStatsBuilder
 from boba.indexing.streaming_indexer import StreamingIndexer
 from boba.indexing.transport import Transport
-from boba.indexing.vector_store import (
-    CollectionInfo,
-    CollectionsAdminReader,
-    CollectionsAdminWriter,
-    HashDiff,
-    SearchHit,
-    VectorStoreReader,
-    VectorStoreWriter,
-)
 
 __all__ = [
     "And",
@@ -141,6 +138,7 @@ __all__ = [
     "ChunkKeys",
     "ChunkLocation",
     "ChunkSink",
+    "ChunkStore",
     "ChunkSummary",
     "Chunker",
     "ChunkerId",
@@ -152,8 +150,7 @@ __all__ = [
     "CollectionId",
     "CollectionInfo",
     "CollectionScopedView",
-    "CollectionsAdminReader",
-    "CollectionsAdminWriter",
+    "CollectionsStore",
     "CompletedItem",
     "ContentHash",
     "Decoder",
@@ -216,7 +213,6 @@ __all__ = [
     "RunId",
     "RunStarted",
     "RuntimePipeline",
-    "SearchHit",
     "Section",
     "SectionKeys",
     "Severity",
@@ -235,6 +231,4 @@ __all__ = [
     "TransportKeys",
     "UnsupportedFilterError",
     "VectorStoreChunkSink",
-    "VectorStoreReader",
-    "VectorStoreWriter",
 ]

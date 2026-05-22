@@ -2,7 +2,7 @@
 
 Секция `[tool.kb.vector_store]`. Один и тот же конфиг используется
 **и** bootstrap-CLI (`apply_bootstrap` + `ensure_vector_index` — создают
-таблицы / индексы), **и** runtime-стороной (`PostgresVectorStore`,
+таблицы / индексы), **и** runtime-стороной (`PostgresChunkStore`,
 `PostgresKnowledgeBase` — пишут/читают эти же таблицы). Это инвариант:
 если разъедутся — bootstrap создаст одни таблицы, store будет ходить в
 другие, и пайплайн тихо упадёт на `relation does not exist`.
@@ -23,30 +23,6 @@ from pydantic import Field, model_validator
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 
 __all__ = ["VectorStoreSchemaConfig"]
-
-# PG-идентификатор: первая буква/_, далее буквы/цифры/_. Длина ≤ 63
-# (NAMEDATALEN-1 в стандартной сборке Postgres). Намеренно консервативно:
-# квотированные «странные» имена (пробелы, верхний регистр) разрешать не
-# хотим — упрощает дебаг и сравнение в information_schema.
-_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_MAX_IDENT_LEN = 63
-
-
-def _validate_ident(value: str, *, field: str) -> str:
-    if len(value) > _MAX_IDENT_LEN:
-        msg = (
-            f"{field}: длина {len(value)} > {_MAX_IDENT_LEN} "
-            f"(NAMEDATALEN-1 в Postgres)"
-        )
-        raise ValueError(msg)
-    if not _IDENT_RE.match(value):
-        msg = (
-            f"{field}: {value!r} — не валидный postgres-идентификатор "
-            "([A-Za-z_][A-Za-z0-9_]*)"
-        )
-        raise ValueError(msg)
-    return value
-
 
 class VectorStoreSchemaConfig(BobaFlatSettings):
     """Schema + имена таблиц KB-хранилища ([tool.kb.vector_store])."""
@@ -83,15 +59,6 @@ class VectorStoreSchemaConfig(BobaFlatSettings):
 
     @model_validator(mode="after")
     def _validate(self) -> Self:
-        _validate_ident(self.schema, field="tool.kb.vector_store.schema")
-        _validate_ident(
-            self.chunks_table,
-            field="tool.kb.vector_store.chunks_table",
-        )
-        _validate_ident(
-            self.collections_table,
-            field="tool.kb.vector_store.collections_table",
-        )
         if self.chunks_table == self.collections_table:
             msg = (
                 "tool.kb.vector_store.chunks_table == collections_table "

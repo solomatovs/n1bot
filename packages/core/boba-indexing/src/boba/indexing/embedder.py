@@ -1,6 +1,6 @@
 """
 Embedder[T] - интерфейс для векторизации контента типа T
-    в embedding-векторы (Sequence[float]), которые хранятся в VectorStore[T]
+    в embedding-векторы (Sequence[float]), которые хранятся в ChunkStore[T]
     и используются для поиска похожих документов
 
 например, str для текстов, bytes для изображений

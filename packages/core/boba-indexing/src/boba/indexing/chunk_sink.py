@@ -3,20 +3,20 @@ ChunkSink[T] - потребитель EmbeddedChunk[T] в pipeline
 кладёт чанки в backend (с возможной буферизацией) и flush по команде
 
 Отделяет pipeline-лимиты (batching, transactional flush) от чистой логики
-хранения VectorStore[T].
+хранения ChunkStore[T].
 
 Зачем отдельная абстракция? Несколько причин:
 
 1. Заменяемая терминальная стадия:
-    - VectorStoreChunkSink - делегирует raw батч-upsert в VectorStoreWriter[T]
+    - VectorStoreChunkSink - делегирует raw батч-upsert в ChunkStore[T]
       (без idempotency-check'а; это «голая запись», не reconcile)
     - LoggingChunkSink - логирует чанки вместо сохранения (для отладки)
     - MultiChunkSink - рассылает чанки в несколько других ChunkSink (fan-out)
     - MetricsChunkSink - собирает статистику по чанкам, не сохраняя их
 
-2. Логика batching и flush — не загрязняют VectorStore
+2. Логика batching и flush — не загрязняют ChunkStore
 
-3. Тестирование: легко подсунуть InMemoryChunkSink, не реализуя весь VectorStore
+3. Тестирование: легко подсунуть InMemoryChunkSink, не реализуя весь ChunkStore
 
 ChunkSink — НЕ замена IndexSink: IndexSink делает reconcile (idempotency +
 upsert + refresh updated_at), а ChunkSink — просто batched raw upsert.
@@ -35,9 +35,9 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from typing import Generic, TypeVar
 
+from boba.indexing.chunk_store import ChunkStore
 from boba.indexing.chunks import EmbeddedChunk
 from boba.indexing.context import CollectionId, PipelineContext
-from boba.indexing.vector_store import VectorStoreWriter
 from boba.patterns import StreamSink
 
 __all__ = ["ChunkSink", "VectorStoreChunkSink"]
@@ -62,19 +62,19 @@ class ChunkSink(StreamSink[PipelineContext, EmbeddedChunk[T]], ABC, Generic[T]):
 class VectorStoreChunkSink(ChunkSink[T], Generic[T]):
     """
     ChunkSink, который батчит `EmbeddedChunk[T]` до `batch_size` и
-    автоматически flush'ит их через `VectorStoreWriter.upsert(collection, batch)`.
+    автоматически flush'ит их через `ChunkStore.upsert(collection, batch)`.
     Collection связан с sink'ом при конструировании — каждая
     VectorStoreChunkSink-инстанция пишет в одну фиксированную коллекцию.
 
     `flush(ctx)` вручную — для остатка буфера в конце прогона.
 
-    Использует raw `VectorStoreWriter.upsert` без idempotency-check'а; для
+    Использует raw `ChunkStore.upsert` без idempotency-check'а; для
     нормальной indexing-стороны лучше брать `IndexSink.reconcile`.
     """
 
     def __init__(
         self,
-        store: VectorStoreWriter[T],
+        store: ChunkStore[T],
         collection: CollectionId,
         batch_size: int = 100,
     ) -> None:

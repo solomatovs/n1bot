@@ -8,6 +8,7 @@ from collections.abc import Iterable, Iterator
 from itertools import islice
 from typing import ClassVar, TypeVar
 
+from boba.indexing.chunk_store import ChunkStore
 from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary, EmbeddedChunk
 from boba.indexing.context import CollectionId, NamespaceId
 from boba.indexing.embedder import Embedder
@@ -18,7 +19,6 @@ from boba.indexing.index_views import (
     ReconcileSummary,
     TrackingKeys,
 )
-from boba.indexing.vector_store import VectorStoreReader, VectorStoreWriter
 
 __all__ = ["NamespacedView"]
 
@@ -34,10 +34,9 @@ class NamespacedView(IndexQuery[T], IndexSink[T]):
     NAMESPACE_KEY: ClassVar[str] = "namespace"
     DEFAULT_BATCH_SIZE: ClassVar[int] = 100
 
-    def __init__(  # noqa: PLR0913 — честно говоря много входных, но что поделать
+    def __init__(  # noqa: PLR0913 — store + embedder + scope (collection+namespace)
         self,
-        store_reader: VectorStoreReader[T],
-        store_writer: VectorStoreWriter[T],
+        store: ChunkStore[T],
         embedder: Embedder[T],
         collection: CollectionId,
         namespace: NamespaceId,
@@ -45,8 +44,7 @@ class NamespacedView(IndexQuery[T], IndexSink[T]):
         scope_extra: Filter | None = None,
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> None:
-        self._reader = store_reader
-        self._writer = store_writer
+        self._store = store
         self._embedder = embedder
         self._collection = collection
         self._namespace = namespace
@@ -68,7 +66,7 @@ class NamespacedView(IndexQuery[T], IndexSink[T]):
         limit: int | None = None,
     ) -> Iterable[ChunkSummary[T]]:
         where = self._compose_filter(where)
-        return self._reader.find(self._collection, where=where, limit=limit)
+        return self._store.find(self._collection, where=where, limit=limit)
 
     def clean(self, where: Filter) -> int:
         """
@@ -76,10 +74,10 @@ class NamespacedView(IndexQuery[T], IndexSink[T]):
         """
         full = self._compose_filter(where)
         deleted = 0
-        summaries = self._reader.find(self._collection, where=full, limit=None)
+        summaries = self._store.find(self._collection, where=full, limit=None)
         for batch in self._batched(summaries, self._batch_size):
             ids = [s.chunk_id for s in batch]
-            self._writer.delete(self._collection, ids)
+            self._store.delete(self._collection, ids)
             deleted += len(ids)
         return deleted
 
@@ -118,7 +116,7 @@ class NamespacedView(IndexQuery[T], IndexSink[T]):
                 to_upsert_ids = [c.chunk_id for c in batch]
                 unchanged_ids: list[ChunkId] = []
             else:
-                diff = self._reader.diff_by_hash(
+                diff = self._store.diff_by_hash(
                     self._collection,
                     [(c.chunk_id, c.content_hash) for c in batch],
                 )
@@ -130,22 +128,20 @@ class NamespacedView(IndexQuery[T], IndexSink[T]):
 
             if dirty:
                 embeddings = list(
-                    self._embedder.embed_documents(
-                        [c.format_content for c in dirty]
-                    )
+                    self._embedder.embed_documents([c.format_content for c in dirty])
                 )
 
                 embedded = [
                     EmbeddedChunk.of(c, tuple(e))
                     for c, e in zip(dirty, embeddings, strict=True)
                 ]
-                self._writer.upsert(self._collection, embedded)
+                self._store.upsert(self._collection, embedded)
 
             # namespace-тэг инжектится здесь — ему нужно прописаться и для
             # dirty (upsert метадату затирает целиком, но namespace в DTO
             # не входит — это property view'а, не Chunk'а), и для unchanged
             # (вместе с heartbeat updated_at).
-            self._writer.update_metadata(
+            self._store.update_metadata(
                 self._collection,
                 [c.chunk_id for c in batch],
                 scope_patch,
@@ -166,8 +162,7 @@ class NamespacedView(IndexQuery[T], IndexSink[T]):
             And([self._scope_extra, where]) if self._scope_extra is not None else where
         )
         return NamespacedView(
-            store_reader=self._reader,
-            store_writer=self._writer,
+            store=self._store,
             embedder=self._embedder,
             collection=self._collection,
             namespace=self._namespace,

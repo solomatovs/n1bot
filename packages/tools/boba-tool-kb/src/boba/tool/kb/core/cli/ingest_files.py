@@ -36,9 +36,10 @@ from boba.indexing.embedder import Embedder
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.text import StructuralChunker
 from boba.tool.kb.core import providers as kb_providers
+from boba.tool.kb.core.chunk_store import PostgresChunkStore
+from boba.tool.kb.core.collections_store import PostgresCollectionsStore
 from boba.tool.kb.core.config import KbConfig
 from boba.tool.kb.core.tools.files_ingest import files_ingest
-from boba.tool.kb.core.vector_store import PostgresVectorStore
 
 __all__ = ["IngestFilesConfig", "main"]
 
@@ -81,7 +82,10 @@ def main() -> int:
     try:
         with container() as req:
             kb_cfg = req.get(KbConfig, component=_KB_COMPONENT)
-            store = req.get(PostgresVectorStore, component=_KB_COMPONENT)
+            chunk_store = req.get(PostgresChunkStore, component=_KB_COMPONENT)
+            collections_store = req.get(
+                PostgresCollectionsStore, component=_KB_COMPONENT,
+            )
             embedder = req.get(Embedder[str], component=_KB_COMPONENT)
             dispatch_reader = req.get(
                 DispatchReader[str],
@@ -99,7 +103,8 @@ def main() -> int:
             start = time.monotonic()
             try:
                 result = files_ingest(
-                    store=store,
+                    chunk_store=chunk_store,
+                    collections_store=collections_store,
                     embedder=embedder,
                     dispatch_reader=dispatch_reader,
                     chunker=chunker,
@@ -112,8 +117,7 @@ def main() -> int:
             elapsed = time.monotonic() - start
 
             logger.info(
-                "DONE in %.1fs — indexed=%d skipped_unchanged=%d "
-                "pruned=%d failed=%d",
+                "DONE in %.1fs — indexed=%d skipped_unchanged=%d pruned=%d failed=%d",
                 elapsed,
                 result["indexed"],
                 result["skipped_unchanged"],

@@ -1,6 +1,6 @@
 # ruff: noqa: E501 — module docstring с широкими ASCII-таблицами
 """
-Index views — два business-layer ABC поверх VectorStore.
+Index views — два business-layer ABC поверх ChunkStore.
 
 - `IndexQuery[T]` — filter-based операции (`find` / `clean` / `narrow`).
   Принимает `Filter` на вход. Реализация автоматически инжектит scope-фильтр
@@ -18,9 +18,9 @@ Index views — два business-layer ABC поверх VectorStore.
   свой scope-tag при write, caller не задаёт scope извне. `narrow` на
   write-стороне не нужен — primary-key уникален.
 
-Backend-агностично: любой impl работает поверх произвольного VectorStore.
+Backend-агностично: любой impl работает поверх произвольного ChunkStore.
 
-╔═══ VectorStore-payload (primary + raw) ══════════════════════════════════════╗
+╔═══ ChunkStore-payload (primary + raw) ══════════════════════════════════════╗
 ║ chunk_id        — primary key (varchar в pgvector / id в Chroma)             ║
 ║ format_content  — `Chunk.format_content`; то что эмбедится. В Chroma →       ║
 ║                    `document`; в pgvector → TEXT                             ║
@@ -110,7 +110,7 @@ class TrackingKeys:
 
     Это **wire-имена** для projection top-level Chunk-полей
     (`source_id`, `chunk_index`, `content_hash`, `tags`) и tracking-полей
-    (`updated_at`) в плоский metadata-store. VectorStore-impl'ы должны
+    (`updated_at`) в плоский metadata-store. ChunkStore-impl'ы должны
     использовать эти константы при записи и чтении — один источник правды
     на всех backend'ов.
     """
@@ -131,7 +131,7 @@ class ReconcileSummary:
     `upserted`  — новые или изменившиеся (re-embed + write в Store)
     `unchanged` — chunk_id уже был с тем же content_hash;
                   Store re-embed НЕ делает, только refresh `updated_at`
-                  через `VectorStoreWriter.update_metadata(...)`
+                  через `ChunkStore.update_metadata(...)`
     """
 
     total: int

@@ -13,10 +13,8 @@ class SearchHit:
     """Один результат kb_search.
 
     `distance` в гибридной выдаче не имеет «единого» физического смысла:
-    это **отрицательный RRF-скор** (`-rrf`), чтобы сохранить семантику
-    «меньше = ближе/релевантнее», к которой привыкли потребители
-    `boba.indexing.SearchHit`. Чистый cosine-distance остаётся на стороне
-    `PostgresVectorStore.similarity_search` (vector-only путь).
+    это **отрицательный RRF-скор** (`-rrf`), семантика «меньше = ближе/
+    релевантнее». Чистый cosine-distance — у `PostgresKnowledgeBase.vector_search`.
     """
 
     id: str

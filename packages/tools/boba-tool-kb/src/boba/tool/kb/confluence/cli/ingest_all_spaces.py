@@ -38,8 +38,9 @@ from boba.tool.kb.confluence.request_sources._common import (
 )
 from boba.tool.kb.confluence.tools.space_ingest import confluence_space_ingest
 from boba.tool.kb.core import providers as kb_providers
+from boba.tool.kb.core.chunk_store import PostgresChunkStore
+from boba.tool.kb.core.collections_store import PostgresCollectionsStore
 from boba.tool.kb.core.config import KbConfig
-from boba.tool.kb.core.vector_store import PostgresVectorStore
 
 __all__ = ["IngestAllSpacesConfig", "main"]
 
@@ -117,7 +118,10 @@ def main() -> int:
 
             # Resolve heavy KB-deps из DI
             kb_cfg = req.get(KbConfig, component=_KB_COMPONENT)
-            store = req.get(PostgresVectorStore, component=_KB_COMPONENT)
+            chunk_store = req.get(PostgresChunkStore, component=_KB_COMPONENT)
+            collections_store = req.get(
+                PostgresCollectionsStore, component=_KB_COMPONENT,
+            )
             embedder = req.get(Embedder[str], component=_KB_COMPONENT)
             chunker = req.get(StructuralChunker, component=_KB_COMPONENT)
 
@@ -135,7 +139,8 @@ def main() -> int:
                 space_start = time.monotonic()
                 try:
                     result: dict[str, Any] = confluence_space_ingest(
-                        store=store,
+                        chunk_store=chunk_store,
+                        collections_store=collections_store,
                         embedder=embedder,
                         chunker=chunker,
                         kb_cfg=kb_cfg,

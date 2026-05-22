@@ -2,10 +2,10 @@
 (`tags`, `source_id`, `updated_at`, scope-key impl'а вроде `namespace`,
 произвольная business-Metadata — что угодно из payload'а чанка).
 
-Sealed union предикатов. Каждый VectorStore-impl переводит Filter в свой
+Sealed union предикатов. Каждый ChunkStore-impl переводит Filter в свой
 нативный язык запросов:
 - ChromaVectorStore  → chroma `where={...}` syntax
-- PostgresVectorStore → SQL WHERE clause
+- PostgresChunkStore → SQL WHERE clause
 - QdrantVectorStore  → qdrant Filter struct
 - ...
 
