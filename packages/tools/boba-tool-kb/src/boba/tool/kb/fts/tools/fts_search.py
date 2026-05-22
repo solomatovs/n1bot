@@ -1,11 +1,11 @@
-"""Tool `fts_search` + `FtsSearchConfig`: FTS-поиск по таблице оператора.
+"""Tool `fts_search`: FTS-поиск по таблице оператора.
 
 Не имеет отношения к KB — это read-only websearch по чужой таблице
 оператора, описанной через `IndexSpec`. Таблица фиксирована конфигом;
 LLM передаёт только `query` + опц. `top_k`.
 
-DSN может отличаться от KB-store: оператор может закрепить read-only
-роль с ограниченным `GRANT SELECT` на одну whitelist-таблицу.
+Конфиг (`FtsSearchConfig`) и сервис (`PgFtsKnowledgeBase`) живут в одном
+модуле `fts/db.py`.
 """
 
 from __future__ import annotations
@@ -14,42 +14,10 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
-from boba.tool.kb.core.postgres_connection import PostgresConnection
-from boba.tool.kb.core.postgres_pool import open_kb_pool
-from boba.tool.kb.fts.db import FtsQueryError, PgFtsKnowledgeBase
-from boba.tool.kb.fts.models import IndexSpec
+from boba.tool.kb.fts.db import FtsQueryError, FtsSearchConfig, PgFtsKnowledgeBase
 from boba.tools import FromConfig, tool
 
-__all__ = ["FtsSearchConfig", "fts_search"]
-
-
-class FtsSearchConfig(BobaFlatSettings):
-    """Self-contained конфиг tool'а `fts_search`.
-
-    Config-секция: `[tool.kb.fts_search]`.
-    """
-
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="tool.kb.fts_search",
-    )
-
-    connection: PostgresConnection
-    index: IndexSpec
-    snippet_options: str = Field(
-        default="MaxFragments=2,MaxWords=35,MinWords=15",
-        description=(
-            "Опции `ts_headline`: MaxFragments,MaxWords,MinWords,"
-            "StartSel,StopSel,..."
-        ),
-    )
-    max_top_k: int = Field(
-        default=20,
-        ge=1,
-        description="Жёсткий потолок параметра top_k для fts_search.",
-    )
+__all__ = ["fts_search"]
 
 
 @tool
@@ -91,12 +59,7 @@ def fts_search(
         raise RuntimeError(
             f"top_k={top_k} превышает max_top_k={cfg.max_top_k}",
         )
-    pool = open_kb_pool(cfg.connection)
-    kb = PgFtsKnowledgeBase(
-        pool=pool,
-        index=cfg.index,
-        snippet_options=cfg.snippet_options,
-    )
+    kb = PgFtsKnowledgeBase(cfg=cfg)
     try:
         hits = kb.search(query=query, top_k=top_k)
     except FtsQueryError as e:

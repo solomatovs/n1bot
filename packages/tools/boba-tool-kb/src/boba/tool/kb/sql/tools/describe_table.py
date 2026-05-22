@@ -13,7 +13,7 @@ from pydantic import Field
 
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.core._markdown import format_markdown_table
-from boba.tool.kb.sql.executor import SqlExecutorConfig, SqlQueryError
+from boba.tool.kb.sql.executor import SqlExecutor, SqlExecutorConfig, SqlQueryError
 from boba.tools import FromConfig, tool
 
 __all__ = ["SqlDescribeTableConfig", "sql_describe_table"]
@@ -63,7 +63,7 @@ def sql_describe_table(
     с таким именем нет (или у роли DSN'а нет прав на её view'у) —
     результат будет пустым.
     """
-    executor = cfg.executor.build()
+    executor = SqlExecutor(cfg=cfg.executor)
     query = (
         "SELECT column_name, data_type, is_nullable, column_default "
         "FROM information_schema.columns "

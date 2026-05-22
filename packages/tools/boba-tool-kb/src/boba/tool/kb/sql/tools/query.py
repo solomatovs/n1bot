@@ -6,7 +6,7 @@ from pydantic import Field
 
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.core._markdown import format_markdown_table
-from boba.tool.kb.sql.executor import SqlExecutorConfig, SqlQueryError
+from boba.tool.kb.sql.executor import SqlExecutor, SqlExecutorConfig, SqlQueryError
 from boba.tools import FromConfig, tool
 
 __all__ = ["SqlQueryConfig", "sql_query"]
@@ -64,7 +64,7 @@ def sql_query(
     limit_applied: M, truncated: bool}`. `truncated=true` → есть ещё
     строки сверх `row_limit`; увеличь его и повтори запрос.
     """
-    executor = cfg.executor.build()
+    executor = SqlExecutor(cfg=cfg.executor)
     try:
         result = executor.execute(query, row_limit=row_limit)
     except SqlQueryError as e:

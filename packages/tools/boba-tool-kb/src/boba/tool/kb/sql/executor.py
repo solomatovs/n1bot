@@ -81,31 +81,10 @@ class SqlExecutorConfig(BaseModel):
             "statement_timeout": str(self.statement_timeout_ms),
         }
 
-    def build(self) -> SqlExecutor:
-        """Открыть pool (singleton по DSN) и сконструировать `SqlExecutor`.
-
-        Pool не закрывается explicitly — singleton-кэш `PostgresPool.get(...)`
-        живёт до process exit. Без `register_vector` (sql-tools не используют
-        vector-типы).
-        """
-        pool = PostgresPool.get(
-            self.connection.to_pool_config(
-                session_options=self.session_options(),
-            ),
-        )
-        return SqlExecutor(
-            pool=pool,
-            max_rows=self.max_rows,
-            max_cell_chars=self.max_cell_chars,
-        )
-
 
 class SqlQueryError(RuntimeError):
-    """Ошибка выполнения SQL на стороне psycopg/PostgreSQL.
-
-    Включает PG-side отказы read-only роли (`permission denied`,
-    `cannot execute ... in a read-only transaction`) — это
-    единственный механизм отклонения DDL/DML (без LLM-side валидатора).
+    """
+    Ошибка выполнения SQL на стороне psycopg/PostgreSQL
     """
 
 
@@ -121,38 +100,35 @@ class SqlResult:
 
 
 class SqlExecutor:
-    """Execute с safety-нагрузкой (row-cap; read-only/statement_timeout —
-    в DSN через libpq `options=`, не в этом классе).
-
-    Один execute-path, используется всеми sql_*-tool'ами. Возвращает
-    `SqlResult` с column names + rows; форматирование в markdown — забота
-    tool'ов (`format_markdown_table`).
+    """
+    SqlExecutor
     """
 
     def __init__(
         self,
-        pool: PostgresPool,
         *,
-        max_rows: int,
-        max_cell_chars: int,
+        cfg: SqlExecutorConfig,
     ) -> None:
-        self._pool = pool
-        self._max_rows = max_rows
-        self._max_cell_chars = max_cell_chars
+        self._cfg = cfg
+        self._pool = PostgresPool.get(
+            cfg.connection.to_pool_config(
+                session_options=cfg.session_options(),
+            ),
+        )
         logger.info(
             "SqlExecutor opened: max_rows=%d max_cell_chars=%d",
-            max_rows, max_cell_chars,
+            cfg.max_rows, cfg.max_cell_chars,
         )
 
     @property
     def max_cell_chars(self) -> int:
-        return self._max_cell_chars
+        return self._cfg.max_cell_chars
 
     @property
     def max_rows_cap(self) -> int:
         """Hard cap из конфига. Introspection-tools (`sql_list_tables`/
         `sql_describe_table`) фетчат до этого значения."""
-        return self._max_rows
+        return self._cfg.max_rows
 
     def execute(
         self,
@@ -161,28 +137,15 @@ class SqlExecutor:
         row_limit: int,
         params: Sequence[Any] | None = None,
     ) -> SqlResult:
-        """Execute SQL; возвращает rows + meta.
-
-        `row_limit` — soft cap (обрезается до `max_rows`). Cap применяется
-        через `cur.fetchmany(effective_limit + 1)` — `LIMIT` в самом
-        SQL'е НЕ инжектится (LLM сам пишет LIMIT, если нужно).
-
-        `params` — для параметризованных запросов tool'ами.
-
-        DDL/DML отклоняются PG-side: либо `permission denied` от read-only
-        роли, либо `cannot execute X in a read-only transaction` от
-        session-default `default_transaction_read_only=on` (зашит в DSN).
-        Ловим как `SqlQueryError`.
         """
-        effective_limit = min(max(row_limit, 1), self._max_rows)
+        Execute SQL; возвращает rows + meta
+        """
+        effective_limit = min(max(row_limit, 1), self._cfg.max_rows)
         # +1 чтобы определить truncated (есть ли ещё строки сверх лимита).
         fetch_limit = effective_limit + 1
 
         try:
             with self._pool.cursor() as cur:
-                # psycopg ожидает LiteralString для query; здесь runtime-string
-                # от LLM/internal tool'ов — runtime psycopg принимает str без
-                # проблем, тип-check выключаем.
                 cur.execute(query, params or ())  # type: ignore[arg-type]
                 fetched = cur.fetchmany(fetch_limit)
                 columns = [d.name for d in (cur.description or [])]

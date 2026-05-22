@@ -102,8 +102,9 @@ from boba.tool.kb.core.providers import (
 from boba.tool.kb.core.tools.files_ingest import FilesIngestConfig, files_ingest
 from boba.tool.kb.core.tools.kb_search import KbSearchConfig, kb_search
 from boba.tool.kb.core.tools.vector_search import VectorSearchConfig, vector_search
+from boba.tool.kb.fts.db import FtsSearchConfig
 from boba.tool.kb.fts.models import IndexSpec
-from boba.tool.kb.fts.tools.fts_search import FtsSearchConfig, fts_search
+from boba.tool.kb.fts.tools.fts_search import fts_search
 from boba.tool.kb.sql.executor import SqlExecutor, SqlExecutorConfig
 from boba.tool.kb.sql.tools.describe_table import (
     SqlDescribeTableConfig,

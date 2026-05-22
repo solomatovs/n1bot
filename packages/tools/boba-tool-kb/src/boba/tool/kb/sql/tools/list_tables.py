@@ -17,7 +17,7 @@ from pydantic import Field
 
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.core._markdown import format_markdown_table
-from boba.tool.kb.sql.executor import SqlExecutorConfig, SqlQueryError
+from boba.tool.kb.sql.executor import SqlExecutor, SqlExecutorConfig, SqlQueryError
 from boba.tools import FromConfig, tool
 
 __all__ = ["SqlListTablesConfig", "sql_list_tables"]
@@ -56,7 +56,7 @@ def sql_list_tables(
     Возвращает markdown с колонками:
     `schema, table, kind` (BASE TABLE / VIEW / MATERIALIZED VIEW)
     """
-    executor = cfg.executor.build()
+    executor = SqlExecutor(cfg=cfg.executor)
     if schema:
         query = (
             "SELECT table_schema AS schema, table_name AS table, "
