@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from functools import cached_property
 from typing import (
@@ -16,11 +16,12 @@ from typing import (
 
 from pydantic import BaseModel, ValidationError
 
-from boba.patterns import Definition, Executor
+from boba.patterns import Definition
 from boba.tools.domain.errors import (
     InvalidSchemaInvariantError,
     InvalidToolArgumentError,
 )
+from boba.tools.domain.events import ToolEvent
 from boba.tools.domain.ids import (
     ToolId,
     ToolName,
@@ -98,16 +99,22 @@ class ToolSchema:
 
 
 class Tool(
-    Executor[ToolContext, TArgs, ToolResult],
     Definition[ToolSchema],
     Generic[TArgs, TConfig],
 ):
     """Базовый класс tool; application-singleton.
 
+    **Контракт исключительно streaming.** Subclass реализует один метод —
+    `stream(ctx, args: TArgs) -> Iterator[ToolEvent]`. Все вызовы tool'а
+    идут через него. По конвенции последний yield в потоке — `ToolStreamCompleted`
+    с финальным результатом; всё, что до — `ToolProgressReported`
+    (индикативный прогресс). Tool, которому нечего показывать в процессе
+    — yield-ит ровно одно `ToolStreamCompleted`.
+
     Соглашения по subclass'ам:
     - наследуют `Tool[XArgs, XToolConfig]`, где `XArgs` — pydantic
       `BaseModel`-subclass с описанием аргументов tool'а;
-    - реализуют только `execute(ctx, args: XArgs) -> ToolResult`;
+    - реализуют `stream(ctx, args: XArgs) -> Iterator[ToolEvent]`;
     - `name()`, `tool_id()`, `definition()` имеют дефолтные реализации
       на базе TArgs/TConfig и могут быть переопределены.
 
@@ -193,10 +200,31 @@ class Tool(
         )
         raise TypeError(msg)
 
-    def invoke(self, ctx: ToolContext, raw: dict[str, Any]) -> ToolResult:
-        """Распарсить `raw` через TArgs-модель и делегировать в `execute`."""
+    def invoke_stream(
+        self, ctx: ToolContext, raw: dict[str, Any],
+    ) -> Iterator[ToolEvent]:
+        """Public entry-point: парсит `raw` через TArgs-модель и зовёт `stream`.
+
+        `ToolExecutor.stream(...)` зовёт именно этот метод — он отвечает за
+        валидацию аргументов и пробрасывает поток `ToolEvent` от subclass'а.
+        """
         args = self._parse_args(raw)
-        return self.execute(ctx, args)
+        yield from self.stream(ctx, args)
+
+    def stream(
+        self, ctx: ToolContext, args: TArgs,
+    ) -> Iterator[ToolEvent]:
+        """Subclass-hook: yield-ит `ToolEvent`'ы выполнения tool'а.
+
+        Реализация обязана yield-нуть в конце ровно один `ToolStreamCompleted`
+        с финальным результатом. До этого может yield-ить любое число
+        `ToolProgressReported` для индикации прогресса в UI.
+
+        Базовый класс не предоставляет дефолт — каждый subclass решает сам,
+        как выглядит его stream. Адаптер `DishkaTool` реализует обе формы
+        (generator-функция и обычная) поверх этого hook'а.
+        """
+        raise NotImplementedError
 
     def _parse_args(self, raw: dict[str, Any]) -> TArgs:
         """`raw: dict` → typed TArgs через `model_validate`.

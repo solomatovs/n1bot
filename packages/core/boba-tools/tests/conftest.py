@@ -15,7 +15,7 @@ from boba.tools.domain import ToolContext, ToolSourceId
 
 @pytest.fixture
 def tool_ctx() -> ToolContext:
-    """Пустой `ToolContext` для tool.execute(...) вызовов."""
+    """Пустой `ToolContext` для tool.stream(...) вызовов."""
     return ToolContext()
 
 

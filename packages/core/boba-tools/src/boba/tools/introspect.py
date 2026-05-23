@@ -67,6 +67,13 @@ class CallPlan:
     `return_type` — для provider'ов это тип, под которым служба
         регистрируется. Для tools — игнорируется (результат coerce'ится
         в ToolResult).
+    `is_generator` — True, если callable — generator function (т.е. при
+        вызове возвращает `Iterator[...]`). Tool-runtime (`DishkaTool`)
+        читает этот флаг при каждом вызове для выбора режима:
+        generator → yield-ить события напрямую, plain function → обернуть
+        результат в один `ToolStreamCompleted`. Кешируется на этапе
+        introspect, чтобы не делать `inspect.isgeneratorfunction`
+        per-call.
     """
 
     name: str
@@ -74,6 +81,7 @@ class CallPlan:
     args_model: type[BaseModel]
     di_deps: tuple[DiDep, ...]
     return_type: Any
+    is_generator: bool
 
 
 def introspect_callable(obj: Any) -> CallPlan:
@@ -134,6 +142,7 @@ def introspect_callable(obj: Any) -> CallPlan:
         args_model=args_model,
         di_deps=tuple(di_deps),
         return_type=meta.return_type,
+        is_generator=meta.is_generator,
     )
 
 
@@ -156,6 +165,7 @@ class _CallableMeta:
     params: list[inspect.Parameter]
     hints: dict[str, Any]
     return_type: Any
+    is_generator: bool
 
 
 def _resolve_callable_meta(obj: Any) -> _CallableMeta:
@@ -198,6 +208,10 @@ def _resolve_callable_meta(obj: Any) -> _CallableMeta:
     return_type = _unwrap_generator_return(
         hints.get("return", inspect.Parameter.empty),
     )
+    # Generator-detect один раз на этапе introspect — runtime не
+    # делает `inspect.isgeneratorfunction` per-call. Для функций — сам
+    # объект; для класса/инстанса — `__call__`, который и будет вызван.
+    is_generator = inspect.isgeneratorfunction(sig_target)
 
     return _CallableMeta(
         raw_name=raw_name,
@@ -206,6 +220,7 @@ def _resolve_callable_meta(obj: Any) -> _CallableMeta:
         params=params,
         hints=hints,
         return_type=return_type,
+        is_generator=is_generator,
     )
 
 

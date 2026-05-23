@@ -22,6 +22,13 @@ from boba.tools.domain.errors import (
     ToolOutputTooLargeError,
     ToolSourceCollisionError,
 )
+from boba.tools.domain.events import (
+    BaseToolEvent,
+    ToolEvent,
+    ToolProgressReported,
+    ToolSeverity,
+    ToolStreamCompleted,
+)
 from boba.tools.domain.ids import (
     ToolId,
     ToolName,
@@ -43,6 +50,7 @@ from boba.tools.domain.tool import (
 )
 
 __all__ = [
+    "BaseToolEvent",
     "ErrorResult",
     "InvalidSchemaInvariantError",
     "InvalidToolArgumentError",
@@ -51,15 +59,19 @@ __all__ = [
     "Tool",
     "ToolCall",
     "ToolContext",
+    "ToolEvent",
     "ToolExecutionError",
     "ToolId",
     "ToolIdCollisionError",
     "ToolName",
     "ToolOutputTooLargeError",
+    "ToolProgressReported",
     "ToolResult",
     "ToolSchema",
+    "ToolSeverity",
     "ToolSourceCollisionError",
     "ToolSourceId",
+    "ToolStreamCompleted",
     "compose_tool_id",
     "parse_tool_id",
 ]

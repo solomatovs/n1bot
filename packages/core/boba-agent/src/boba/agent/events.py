@@ -574,6 +574,39 @@ class ToolExecutionStarted(PhaseEvent):
         return self
 
 
+class ToolProgress(PhaseEvent):
+    """Прогресс выполнения long-running tool'а (intermediate-индикация для UI).
+
+    Эмитится `ToolExecutionMiddleware`'ом из `ToolProgressReported`-событий
+    tool-слоя. Между `ToolExecutionStarted` (старт) и `ToolResultReady` /
+    `ToolExecutionFailed` (конец) может быть произвольное число
+    `ToolProgress`-событий.
+
+    `tool_call_id` / `tool_name` дублируют `ToolExecutionStarted` — фронт
+    привязывает прогресс к нужному tool-step'у; `headline` — короткая
+    строка от tool-автора (например `indexed 12/100 pages`).
+    """
+
+    type: Literal["ToolProgress"] = "ToolProgress"
+    tool_call_id: str
+    tool_name: str
+    headline: str = ""
+
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        suffix = f" — {self.headline}" if self.headline else ""
+        self.label = f"tool progress: {self.tool_name}{suffix}"
+        if not self.details:
+            base: dict[str, str] = {
+                "id": self.tool_call_id,
+                "name": self.tool_name,
+            }
+            if self.headline:
+                base["headline"] = self.headline
+            self.details = base
+        return self
+
+
 class GenerationRetried(PhaseEvent):
     """
     LLM-слой решил повторить запрос
@@ -1083,6 +1116,7 @@ AgentEvent = (
     | AnswerStarted
     | ToolCallStreamStarted
     | ToolExecutionStarted
+    | ToolProgress
     | GenerationRetried
     | GenerationDone
     | GenerationResult
@@ -1122,6 +1156,7 @@ AgentEventName: TypeAlias = Literal[
     "AnswerStarted",
     "ToolCallStreamStarted",
     "ToolExecutionStarted",
+    "ToolProgress",
     "GenerationRetried",
     "GenerationDone",
     "GenerationResult",
@@ -1262,6 +1297,7 @@ def _register_core_events() -> None:
         AnswerStarted,
         ToolCallStreamStarted,
         ToolExecutionStarted,
+        ToolProgress,
         GenerationRetried,
         GenerationDone,
         GenerationResult,

@@ -19,7 +19,7 @@ class Scope(enum.Enum):
     `APP` — синглтон на весь lifetime агента. Идеально для тяжёлых ресурсов
     (HTTP-клиенты, DB-пулы, embedder-модели).
 
-    `REQUEST` — свежий инстанс на каждый `tool.invoke()`. Идеально для
+    `REQUEST` — свежий инстанс на каждый `tool.stream()`. Идеально для
     концепций, у которых per-call state (транзакции, request-id-bound
     объекты, временные scratch'и).
     """
