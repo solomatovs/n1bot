@@ -21,6 +21,7 @@ constrained decoding у LLM и убирает класс ошибок вида
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from typing import Annotated, Any
 
 from pydantic import Field
@@ -46,6 +47,7 @@ from boba.tool.kb.core.postgres_store import (
     PostgresStoreConfig,
 )
 from boba.tools import FromConfig, tool
+from boba.tools.domain import ToolProgressReported
 from boba.transport.http import HttpRequest
 
 __all__ = [
@@ -112,7 +114,14 @@ def _run(
     request_source: RequestSource[HttpRequest],
     prune_missing: bool,
     pipeline_id: PipelineId,
-) -> dict[str, Any]:
+) -> Generator[ToolProgressReported, None, dict[str, Any]]:
+    """Generator: настраивает stores/embedder/chunker и делегирует в
+    `run_confluence_ingest`. Yield-ит `ToolProgressReported`, возвращает
+    финальный stats-dict через `return` (StopIteration.value).
+
+    Caller (tool-функция) собирает результат через
+    `stats = yield from _run(...)` и добавляет свои discriminator-поля.
+    """
     chunk_store = PostgresChunkStore(cfg=cfg.store)
     collections_store = PostgresCollectionsStore(cfg=cfg.store)
     embedder = build_embedder(cfg.embedding)
@@ -121,7 +130,7 @@ def _run(
         media_types=cfg.attachment_media_types,
         titles=cfg.attachment_titles,
     )
-    return run_confluence_ingest(
+    return (yield from run_confluence_ingest(
         request_source=request_source,
         conn=cfg.confluence,
         chunk_store=chunk_store,
@@ -132,7 +141,7 @@ def _run(
         prune_missing=prune_missing,
         pipeline_id=pipeline_id,
         attachment_filter=att_filter,
-    )
+    ))
 
 
 @tool
@@ -160,18 +169,22 @@ def confluence_ingest_spaces(
             ),
         ),
     ] = False,
-) -> dict[str, Any]:
+) -> Generator[ToolProgressReported, None, dict[str, Any]]:
     """Индексирует ВСЕ страницы перечисленных Confluence-spaces в KB.
 
-    Возвращает JSON `{collection, indexed, skipped_unchanged, pruned, failed}`.
+    По ходу выполнения yield-ит `ToolProgressReported` per source (indexed/
+    skipped/failed). Через `return` отдаёт финальный dict
+    `{space_keys, collection, indexed, skipped_unchanged, pruned, failed}` —
+    `DishkaTool` ловит StopIteration.value и оборачивает в
+    `ToolStreamCompleted` автоматически.
     """
     request_source = ConfluenceMultiSpaceRequestSource(
         conn=cfg.confluence,
         space_keys=space_keys,
         body_format=cfg.confluence.body_format,
     )
-    result = _run(cfg, request_source, prune_missing, _PIPELINE_ID_SPACES)
-    return {"space_keys": space_keys, **result}
+    stats = yield from _run(cfg, request_source, prune_missing, _PIPELINE_ID_SPACES)
+    return {"space_keys": space_keys, **stats}
 
 
 @tool
@@ -199,10 +212,13 @@ def confluence_ingest_pages(
             ),
         ),
     ] = False,
-) -> dict[str, Any]:
+) -> Generator[ToolProgressReported, None, dict[str, Any]]:
     """Индексирует явный список страниц Confluence по page_id в KB.
 
-    Возвращает JSON `{collection, indexed, skipped_unchanged, pruned, failed}`.
+    По ходу выполнения yield-ит `ToolProgressReported` per page. Через
+    `return` отдаёт финальный dict
+    `{page_ids, collection, indexed, skipped_unchanged, pruned, failed}` —
+    `DishkaTool` оборачивает в `ToolStreamCompleted` автоматически.
     """
     request_source = ConfluencePagesRequestSource(
         base_url=cfg.confluence.base_url,
@@ -210,8 +226,8 @@ def confluence_ingest_pages(
         page_ids=page_ids,
         body_format=cfg.confluence.body_format,
     )
-    result = _run(cfg, request_source, prune_missing, _PIPELINE_ID_PAGES)
-    return {"page_ids": page_ids, **result}
+    stats = yield from _run(cfg, request_source, prune_missing, _PIPELINE_ID_PAGES)
+    return {"page_ids": page_ids, **stats}
 
 
 @tool
@@ -238,15 +254,18 @@ def confluence_ingest_cql(
             ),
         ),
     ] = False,
-) -> dict[str, Any]:
+) -> Generator[ToolProgressReported, None, dict[str, Any]]:
     """Индексирует страницы Confluence, отобранные CQL-запросом, в KB.
 
-    Возвращает JSON `{collection, indexed, skipped_unchanged, pruned, failed}`.
+    По ходу выполнения yield-ит `ToolProgressReported` per source. Через
+    `return` отдаёт финальный dict
+    `{cql, collection, indexed, skipped_unchanged, pruned, failed}` —
+    `DishkaTool` оборачивает в `ToolStreamCompleted` автоматически.
     """
     request_source = ConfluenceCqlRequestSource(
         conn=cfg.confluence,
         cql=cql,
         body_format=cfg.confluence.body_format,
     )
-    result = _run(cfg, request_source, prune_missing, _PIPELINE_ID_CQL)
-    return {"cql": cql, **result}
+    stats = yield from _run(cfg, request_source, prune_missing, _PIPELINE_ID_CQL)
+    return {"cql": cql, **stats}

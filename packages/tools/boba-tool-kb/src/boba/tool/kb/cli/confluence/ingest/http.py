@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from typing import Annotated, Any, Literal
 
 from pydantic import Field
@@ -51,10 +51,28 @@ from boba.tool.kb.confluence.tools.ingest import (
     confluence_ingest_pages,
     confluence_ingest_spaces,
 )
+from boba.tools.domain import ToolProgressReported
 
 __all__ = ["ConfluenceIngestCliConfig", "main"]
 
 logger = logging.getLogger("boba.tool.kb.cli.confluence.ingest.http")
+
+
+def _drain_ingest(
+    gen: Generator[ToolProgressReported, None, dict[str, Any]],
+) -> dict[str, Any]:
+    """Дренирует generator-tool: логирует прогресс per yield, возвращает
+    финальный stats-dict из `StopIteration.value`.
+
+    Tool возвращает результат через `return`, поэтому здесь нужен явный
+    while/next-loop (не `for ... in gen` — он не отдаёт return value).
+    """
+    while True:
+        try:
+            progress = next(gen)
+        except StopIteration as stop:
+            return stop.value
+        logger.info("progress: %s", progress.headline)
 
 
 class ConfluenceIngestCliConfig(ConfluenceIngestConfig):
@@ -129,10 +147,12 @@ def _run_page_ids_mode(cfg: ConfluenceIngestCliConfig) -> int:
 
     start = time.monotonic()
     try:
-        result: dict[str, Any] = confluence_ingest_pages(
-            cfg=cfg,
-            page_ids=list(cfg.page_ids),
-            prune_missing=cfg.prune,
+        result = _drain_ingest(
+            confluence_ingest_pages(
+                cfg=cfg,
+                page_ids=list(cfg.page_ids),
+                prune_missing=cfg.prune,
+            ),
         )
     except Exception:
         logger.exception("confluence.ingest page_ids-mode FAILED")
@@ -181,10 +201,12 @@ def _run_spaces_mode(cfg: ConfluenceIngestCliConfig) -> int:
         processed = i
         space_start = time.monotonic()
         try:
-            result: dict[str, Any] = confluence_ingest_spaces(
-                cfg=cfg,
-                space_keys=[key],
-                prune_missing=cfg.prune,
+            result = _drain_ingest(
+                confluence_ingest_spaces(
+                    cfg=cfg,
+                    space_keys=[key],
+                    prune_missing=cfg.prune,
+                ),
             )
         except Exception:
             logger.exception(

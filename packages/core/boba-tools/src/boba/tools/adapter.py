@@ -6,20 +6,32 @@ streaming-only `Tool[Args, Cfg]` ABC из `boba.tools.domain`.
 `ToolExecutor` не знают, что внутри Dishka и Annotated-маркеры.
 
 Контракт публичного API — только `Tool.stream(ctx, args) -> Iterator[ToolEvent]`.
-Внутри `DishkaTool` диспетчеризует на два внутренних режима в зависимости от
-**один-раз** определённого на этапе introspect признака `plan.is_generator`:
+Tool-author **не оборачивает** ничего вручную; framework сам определяет
+семантику каждого выхода tool'а:
 
-- **plain function** (`def f(...) -> T: return ...`) —
-  `stream` зовёт target один раз, coerce-ит результат в `ToolResult` и
-  yield-ит ровно одно `ToolStreamCompleted`.
+- **`yield X`** → `ToolProgressReported` (индикативный прогресс).
+- **`return X`** → `ToolStreamCompleted` (результат tool'а).
 
-- **generator function** (`def f(...) -> Generator[ToolEvent, None, T]: ...`) —
-  `stream` пробрасывает все yield'ы напрямую (это `ToolProgressReported`-
-  индикаторы), а финальный `return`-value (StopIteration.value) coerce-ит в
-  `ToolResult` и yield-ит как терминальный `ToolStreamCompleted`.
+Никакого lookahead — события идут в UI без задержки. Plain function без
+yield'ов (legacy-стиль `def f(...) -> X: return X`) работает так же:
+её return становится результатом, прогрессов нет.
 
-В обоих случаях ровно одно `ToolStreamCompleted` гарантированно завершает
-поток — это и есть «последнее событие = tool result».
+Поведение по `plan.is_generator`:
+
+- **plain function** (`def f(...) -> T: return ...`) — DishkaTool зовёт
+  target, coerce-ит результат в `ToolResult` и yield-ит ровно одно
+  `ToolStreamCompleted`. Прогресса нет.
+
+- **generator function** — DishkaTool iterate-ит yield'ы:
+  - Каждый yield оборачивается в `ToolProgressReported`. Если tool сам
+    yield-ил `ToolProgressReported` — passthrough; raw-значение → wrap
+    в `ToolProgressReported(headline=str(value))`.
+  - `return X` (StopIteration.value) оборачивается в `ToolStreamCompleted`.
+  - **`yield ToolStreamCompleted(...)` — контракт нарушен**: TSC должен
+    приходить через `return`, не yield. Framework бросит `ToolExecutionError`.
+
+В любом случае ровно одно `ToolStreamCompleted` гарантированно завершает
+поток.
 """
 
 from __future__ import annotations
@@ -90,7 +102,8 @@ class DishkaTool(Tool[BaseModel, None]):
         self._ctx = None
         self._source_id = source_id
         self._tool_id_value: ToolId = compose_tool_id(
-            source_id, ToolName(plan.name),
+            source_id,
+            ToolName(plan.name),
         )
 
     def tool_id(self) -> ToolId:
@@ -116,80 +129,91 @@ class DishkaTool(Tool[BaseModel, None]):
         return self._plan.args_model
 
     def stream(
-        self, ctx: ToolContext, args: BaseModel,
+        self,
+        ctx: ToolContext,
+        args: BaseModel,
     ) -> Iterator[ToolEvent]:
-        """Единственный публичный entry-point.
-
-        Резолвит DI-deps, зовёт target, и в зависимости от
-        `plan.is_generator` либо пробрасывает yield-поток generator-tool'а,
-        либо оборачивает результат plain-функции в один `ToolStreamCompleted`.
+        """
+        Единственный публичный entry-point
         """
         del ctx
-        llm_kwargs = {
-            name: getattr(args, name)
-            for name in self._plan.args_model.model_fields
-        }
-        # Открываем request-scope: APP-scope deps идут через parent,
-        # REQUEST-scope создаются здесь и закрываются на __exit__.
-        # `component=` — параметр `get()`, не `container()`. Для каждого
-        # резолва указываем component плагина — Dishka вернёт его версию,
-        # либо (через alias() в Provider'е) свалится в default component.
+        # резолвим llm аргументы
+        llm_kwargs = self._plan.get_llm_kwargs(args)
+
         with self._container() as request_container:
+            # резолвим di аргументы
             di_kwargs = {
                 dep.param_name: request_container.get(
-                    dep.target_type, component=self._component,
+                    dep.target_type, component=self._component
                 )
                 for dep in self._plan.di_deps
             }
+
+            # если функция это генератор то запускаем ее как генератор событий
             if self._plan.is_generator:
                 yield from self._stream_from_generator(
                     self._target(**llm_kwargs, **di_kwargs),
                 )
+            # если функция делает return то запускаем ее, ждем выполнения и отправляем
+            # как одно единственное сгенерированное событие
             else:
-                raw_result = self._target(**llm_kwargs, **di_kwargs)
                 yield ToolStreamCompleted(
                     result=_coerce_to_tool_result(
-                        self._tool_id_value, raw_result,
+                        self._tool_id_value,
+                        self._target(**llm_kwargs, **di_kwargs),
                     ),
                 )
 
     def _stream_from_generator(
-        self, gen: Generator[Any, None, Any],
+        self,
+        gen: Generator[Any, None, Any],
     ) -> Iterator[ToolEvent]:
-        """Пробросить yield'ы generator-target'а + терминальный `ToolStreamCompleted`.
+        """yield → TPR, StopIteration.value → TSC. Без lookahead.
 
-        Convention generator-tool'а:
-        - `yield ToolProgressReported(...)` — индикативный прогресс.
-        - `return final_result` — финальный результат (StopIteration.value),
-          который framework coerce-ит в `ToolResult` и заворачивает в
-          `ToolStreamCompleted`.
-
-        Любой yield не-`ToolEvent`-типа — `ToolExecutionError`: контракт
-        нарушен. Это даёт автору ясную ошибку, если он по ошибке yield-ит
-        результат вместо return.
+        Каждый yield немедленно проходит наружу обёрнутый в
+        `ToolProgressReported` — UI получает события без задержки.
+        Результат tool'а приходит **только** через `return X`, что
+        framework ловит как `StopIteration.value` и заворачивает в
+        `ToolStreamCompleted`.
         """
+        return_value: Any = None
         try:
             while True:
                 try:
                     item = next(gen)
                 except StopIteration as stop:
-                    yield ToolStreamCompleted(
-                        result=_coerce_to_tool_result(
-                            self._tool_id_value, stop.value,
-                        ),
-                    )
-                    return
-                if isinstance(item, ToolProgressReported | ToolStreamCompleted):
-                    yield item
-                    continue
-                msg = (
-                    f"streaming tool {self._tool_id_value!r} yielded "
-                    f"{type(item).__name__}; ожидается ToolEvent. "
-                    f"Финальный результат возвращай через `return ...`."
-                )
-                raise ToolExecutionError(self._tool_id_value, msg)
+                    return_value = stop.value
+                    break
+                yield self._wrap_progress(item)
         finally:
             gen.close()
+
+        yield ToolStreamCompleted(
+            result=_coerce_to_tool_result(
+                self._tool_id_value,
+                return_value,
+            ),
+        )
+
+    def _wrap_progress(self, item: Any) -> ToolEvent:
+        """Каждый yield → `ToolProgressReported`.
+
+        - Tool yielded `ToolProgressReported` явно → passthrough (для richer
+          details/severity).
+        - Tool yielded `ToolStreamCompleted` → контракт нарушен: TSC должен
+          приходить через `return`, не yield. `ToolExecutionError`.
+        - raw-значение → `ToolProgressReported(headline=str(value))`.
+        """
+        if isinstance(item, ToolProgressReported):
+            return item
+        if isinstance(item, ToolStreamCompleted):
+            msg = (
+                f"streaming tool {self._tool_id_value!r} yielded "
+                f"ToolStreamCompleted; результат tool'а должен приходить "
+                f"через `return X`, а не `yield ToolStreamCompleted(X)`."
+            )
+            raise ToolExecutionError(self._tool_id_value, msg)
+        return ToolProgressReported(headline=_format_progress_headline(item))
 
     def _parse_args(self, raw: dict[str, Any]) -> BaseModel:
         try:
@@ -207,8 +231,19 @@ class DishkaTool(Tool[BaseModel, None]):
             ) from e
 
 
+def _format_progress_headline(item: Any) -> str:
+    """Привести raw-значение к строке-headline для `ToolProgressReported`.
+
+    Простое `str(item)`. Для dict'ов это `{'key': 'value'}` — читаемо;
+    для primitives — само значение. Если нужен richer detail/severity,
+    tool-author yield-ит `ToolProgressReported(...)` явно.
+    """
+    return str(item)
+
+
 def _coerce_to_tool_result(  # noqa: PLR0911
-    tool_id: ToolId, value: Any,
+    tool_id: ToolId,
+    value: Any,
 ) -> ToolResult:
     """Привести возврат callable'а к `ToolResult` или бросить."""
     match value:
