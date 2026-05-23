@@ -88,15 +88,7 @@ def _as_submodel(annotation: Any) -> type[BaseModel] | None:
 def _build_flat_key_paths(
     cls: type[BaseModel],
 ) -> dict[str, tuple[str, ...]]:
-    """Собрать map `terminal-имя → путь` для всех листовых полей дерева.
-
-    Терминальное поле — поле, чья аннотация **не** является `BaseModel`-под-моделью.
-    Имена submodels'ов (промежуточные ноды) в map не попадают — они доступны
-    как ключи в values только через явные nested-секции.
-
-    Конфликт (одинаковое имя в разных submodel-ветках) → `ValueError`. Это
-    проверка целостности схемы; вызывается один раз при первой нужде и
-    кешируется в `cls.__dict__["_flat_key_paths"]`.
+    """Собрать map terminal-имя → путь для всех листовых полей дерева
     """
     result: dict[str, tuple[str, ...]] = {}
     conflicts: dict[str, list[tuple[str, ...]]] = {}
@@ -136,12 +128,8 @@ def _set_nested(
     path: tuple[str, ...],
     value: Any,
 ) -> None:
-    """Записать value в target по path, создавая промежуточные dict'ы.
-
-    Если на пути встречается non-dict (например, оператор передал готовый
-    объект под этим ключом), он перезаписывается — flat-ключи имеют
-    более низкий приоритет, чем явные nested-секции (см. `_deep_merge`
-    в pass 2), поэтому перезапись здесь безопасна.
+    """
+    Записать value в target по path, создавая промежуточные dict
     """
     *parents, leaf = path
     cur = target
@@ -186,18 +174,11 @@ class BobaFlatSettings(BaseSettings):
     `model_fields`. Конфликты имён ловятся в `__init_subclass__`.
     """
 
-    # Кэш map `flat-name → path`, строится один раз на класс через
-    # `__pydantic_init_subclass__` — pydantic-hook, который вызывается
-    # ПОСЛЕ того как метакласс заполнил `model_fields`. Обычный
-    # `__init_subclass__` не годится: к моменту его вызова `model_fields`
-    # ещё не построен.
     _flat_key_paths: ClassVar[dict[str, tuple[str, ...]]] = {}
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
         super().__pydantic_init_subclass__(**kwargs)
-        # Fail-fast: конфликт имён ловится при импорте модуля,
-        # а не при первом запуске.
         cls._flat_key_paths = _build_flat_key_paths(cls)
 
     @classmethod

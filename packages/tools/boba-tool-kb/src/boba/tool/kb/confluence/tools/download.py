@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from typing import Annotated, Any
 
 from pydantic import Field
@@ -30,6 +31,7 @@ from boba.tool.kb.confluence.request_sources import (
     ConfluencePagesRequestSource,
 )
 from boba.tools import FromConfig, tool
+from boba.tools.domain import ToolProgressReported
 
 __all__ = ["ConfluenceDownloadConfig", "confluence_download"]
 
@@ -112,12 +114,15 @@ def confluence_download(
             ),
         ),
     ] = False,
-) -> dict[str, Any]:
+) -> Generator[ToolProgressReported, None, dict[str, Any]]:
     """Confluence-download: spaces / page_ids по выбору LLM.
 
-    LLM заполняет ровно один из (`space_keys`, `page_ids`)
+    LLM заполняет ровно один из (`space_keys`, `page_ids`).
 
-    Возвращает JSON `{mode, <discriminator>, dest_dir, saved, total}`.
+    По ходу выполнения yield-ит `ToolProgressReported` per saved-record
+    (page / attachment). Через `return` отдаёт финальный JSON
+    `{mode, <discriminator>, dest_dir, saved, total}` —
+    `DishkaTool` оборачивает в `ToolStreamCompleted` автоматически.
     """
     modes = [
         ("space_keys", space_keys),
@@ -151,7 +156,7 @@ def confluence_download(
         media_types=cfg.attachment_media_types,
         titles=cfg.attachment_titles,
     )
-    result = download_pages(
+    stats = yield from download_pages(
         request_source=request_source,
         conn=cfg.confluence,
         dest_dir=cfg.dest_dir,
@@ -159,4 +164,4 @@ def confluence_download(
         pipeline_id=_PIPELINE_ID,
         attachment_filter=att_filter,
     )
-    return {"mode": mode_name, mode_name: mode_value, **result}
+    return {"mode": mode_name, mode_name: mode_value, **stats}

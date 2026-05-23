@@ -30,7 +30,7 @@ Caller (tool-обёртка) собирает `RequestSource` (Pages|Space|Cql) 
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Generator, Iterable, Iterator
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -51,6 +51,7 @@ from boba.tool.kb.confluence._pipeline_common import iter_confluence_documents
 from boba.tool.kb.confluence.attachments import AttachmentFilter, AttachmentInfo
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.keys import ConfluenceKeys
+from boba.tools.domain import ToolProgressReported
 from boba.transport.http import HttpRequest
 
 __all__ = ["download_pages"]
@@ -88,12 +89,15 @@ def download_pages(  # noqa: PLR0913 — keyword-only helper, явный наб�
     as_markdown: bool,
     pipeline_id: PipelineId,
     attachment_filter: AttachmentFilter | None = None,
-) -> dict[str, Any]:
+) -> Generator[ToolProgressReported, None, dict[str, Any]]:
     """
     Скачивает страницы (HTML/Markdown) и их вложения (бинарь) в `dest_dir`.
 
-    Возвращает `{dest_dir, saved, total}`, где `saved` — список записей вида
-    `{kind, page_id, ..., path, bytes}`. `kind` ∈ {`"page"`, `"attachment"`}.
+    Generator: yield-ит `ToolProgressReported` после каждой записи на диск
+    (per page / per attachment) — UI получает live-индикацию.
+    Через `return` отдаёт финальный stats: `{dest_dir, saved, total}`,
+    где `saved` — список записей вида `{kind, page_id, ..., path, bytes}`.
+    `kind` ∈ {`"page"`, `"attachment"`}.
 
     `attachment_filter` (если задан) сужает скачиваемые вложения по
     `media_type`/`title` fnmatch-globs — отсеянные не запрашиваются по HTTP
@@ -109,8 +113,11 @@ def download_pages(  # noqa: PLR0913 — keyword-only helper, явный наб�
         pctx=pctx,
         attachment_filter=attachment_filter,
     )
+    saved: list[dict[str, str]] = []
     try:
-        saved = list(_stream_records(docs, dest_path, as_markdown=as_markdown))
+        for record in _stream_records(docs, dest_path, as_markdown=as_markdown):
+            saved.append(record)
+            yield _record_to_progress(record)
     except httpx.HTTPError as e:
         raise RuntimeError(
             f"Confluence download failed: {type(e).__name__}: {e}",
@@ -121,6 +128,24 @@ def download_pages(  # noqa: PLR0913 — keyword-only helper, явный наб�
         "saved": saved,
         "total": len(saved),
     }
+
+
+def _record_to_progress(record: dict[str, str]) -> ToolProgressReported:
+    """`{kind, page_id, title?, filename?, bytes, path}` → `ToolProgressReported`.
+
+    Headline отличается для page и attachment, чтобы в UI было видно что
+    именно скачано. `details` дублируют запись для diagnostic-режима.
+    """
+    kind = record.get("kind", "?")
+    page_id = record.get("page_id", "?")
+    n_bytes = record.get("bytes", "0")
+    if kind == "attachment":
+        filename = record.get("filename", "?")
+        headline = f"attachment {page_id}/{filename} → {n_bytes}B"
+    else:
+        title = record.get("title", "?")
+        headline = f"page {page_id} ({title!r}) → {n_bytes}B"
+    return ToolProgressReported(headline=headline, details=dict(record))
 
 
 def _stream_records(
