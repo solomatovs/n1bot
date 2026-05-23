@@ -354,10 +354,18 @@ class AgentEventDispatcher:
 
 
 def _result_text(result: ToolResult) -> str:
+    # Chainlit Step рендерит output как markdown. Tools часто кладут
+    # markdown-таблицы / форматированный текст внутрь TextResult и
+    # JsonResult.payload — поэтому здесь возвращаем markdown-friendly
+    # представление, а не raw json.dumps (который ломал переносы строк
+    # на \n и не давал таблицам отрисоваться).
     match result:
         case TextResult(text=t):
             return t
         case JsonResult(payload=p):
-            return json.dumps(p, ensure_ascii=False)
+            pretty = json.dumps(p, ensure_ascii=False, indent=2)
+            return f"```json\n{pretty}\n```"
         case ErrorResult(message=m):
-            return m
+            if "\n" in m:
+                return f"**Error:**\n\n{m}"
+            return f"**Error:** {m}"
