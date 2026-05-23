@@ -24,16 +24,29 @@ from __future__ import annotations
 import chainlit as cl
 from chainlit.utils import utc_now
 
+from boba.agent.events import DiagnosticEvent
 from boba.chainlit.agent.rendering.dispatcher import EventRenderTarget
 
 __all__ = ["ChainlitLiveTarget"]
 
 
 class ChainlitLiveTarget(EventRenderTarget):
-    """Реализует `EventRenderTarget` для текущей chainlit-сессии."""
+    """Реализует `EventRenderTarget` для текущей chainlit-сессии.
 
-    def __init__(self, parent_id: str | None) -> None:
+    Параметр `diagnostic` управляет показом `DiagnosticEvent`-ов:
+    False - тихо игнорируем (классический чистый чат);
+    True  - рендерим как сворачиваемый cl.Step `diag: {topic}`.
+    Toggle прокидывается из callbacks.py (берётся из user_session).
+    """
+
+    def __init__(
+        self,
+        parent_id: str | None,
+        *,
+        diagnostic: bool = False,
+    ) -> None:
         self._parent_id = parent_id
+        self._diagnostic = diagnostic
         self._answer_msg: cl.Message | None = None
         self._thinking_step: cl.Step | None = None
         # Status — cl.Step(type="run"), не cl.Message: статус не должен
@@ -217,6 +230,33 @@ class ChainlitLiveTarget(EventRenderTarget):
             content=f"**{headline}**\n\n{body}",
             author="system",
         ).send()
+
+    # --- диагностика -------------------------------------------------
+
+    async def diagnostic(self, event: DiagnosticEvent) -> None:
+        """Рендерит диагностику как сворачиваемый Step - только если включено.
+
+        Структура step:
+            name   - "diag: {topic}" (краткий заголовок для свёрнутого вида)
+            input  - key=value по `details` (структурные данные)
+            output - `body` если есть, иначе пусто
+        """
+        if not self._diagnostic:
+            return
+        step = cl.Step(
+            name=f"diag: {event.topic}" if event.topic else "diag",
+            type="run",
+            parent_id=self._parent_id,
+        )
+        await step.send()
+        if event.details:
+            details_text = "\n".join(
+                f"{k}={v}" for k, v in event.details.items() if v
+            )
+            if details_text:
+                await step.stream_token(details_text, is_input=True)
+        if event.body:
+            await _finalize_step(step, event.body)
 
     # --- internals ---------------------------------------------------
 

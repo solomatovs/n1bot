@@ -32,6 +32,7 @@ from boba.agent.events import (
     AnswerToken,
     ContentDeltaEvent,
     ContentSnapshotEvent,
+    DiagnosticEvent,
     FeedbackToLLMAdded,
     GenerationDone,
     GenerationResult,
@@ -66,14 +67,14 @@ __all__ = ["AgentEventDispatcher", "EventRenderTarget"]
 class EventRenderTarget(Protocol):
     """Адаптер UI-операций. Реализация — chainlit-live или replay-StepDict."""
 
-    # --- streaming (живой токен-стрим, replay no-op) -------------------
+    # streaming (живой токен-стрим, replay no-op)
 
     async def answer_chunk(self, text: str) -> None: ...
     async def thinking_chunk(self, text: str) -> None: ...
     async def refusal_chunk(self, text: str) -> None: ...
     async def tool_args_chunk(self, call_id: str, text: str) -> None: ...
 
-    # --- завершения content-снапшотов ----------------------------------
+    # завершения content-снапшотов
 
     async def user_query(self, text: str) -> None: ...
     async def answer_complete(self, text: str) -> None: ...
@@ -94,7 +95,7 @@ class EventRenderTarget(Protocol):
     ) -> None: ...
     async def feedback(self, text: str) -> None: ...
 
-    # --- phase-маркеры (live UX, replay no-op) -------------------------
+    # phase-маркеры (live UX, replay no-op)
 
     async def iteration_started(self) -> None: ...
     async def tool_call_started(self, call_id: str, name: str) -> None: ...
@@ -102,7 +103,7 @@ class EventRenderTarget(Protocol):
     async def generation_milestone(self) -> None: ...
     async def status(self, text: str) -> None: ...
 
-    # --- ошибки и фатальные события ------------------------------------
+    # ошибки и фатальные события
 
     async def invalid_tool_call(
         self,
@@ -118,6 +119,10 @@ class EventRenderTarget(Protocol):
     ) -> None: ...
     async def advisory(self, headline: str, body: str) -> None: ...
     async def terminal(self, headline: str, body: str) -> None: ...
+
+    # диагностика (telemetry; видна только при diagnostic-mode)
+
+    async def diagnostic(self, event: DiagnosticEvent) -> None: ...
 
 
 class AgentEventDispatcher:
@@ -135,6 +140,8 @@ class AgentEventDispatcher:
         AdvisoryEvent      — нефатальные ошибки (`invalid_tool_call`,
                                `tool_execution_failed`, `advisory`)
         TerminalEvent      — фатальное завершение (`terminal`)
+        DiagnosticEvent    — телеметрия (`diagnostic`); решение «показывать
+                               или нет» принимает target по своему toggle
     """
 
     _NS_PER_US: ClassVar[int] = 1_000
@@ -219,6 +226,13 @@ class AgentEventDispatcher:
                     failure.error_kind,
                     failure.message,
                 )
+
+            # --- DiagnosticEvent --------------------------------------
+            case DiagnosticEvent() as diagnostic_evt:
+                # Target сам решает, показывать ли (по своему toggle).
+                # Дополнительной специализации по type не делаем -
+                # target фильтрует по `topic`.
+                await self._target.diagnostic(diagnostic_evt)
 
             # --- Generic fall-throughs --------------------------------
             case ContentSnapshotEvent() as snapshot:

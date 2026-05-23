@@ -1,7 +1,7 @@
 """Tool `confluence_list_spaces` + `ConfluenceListSpacesConfig`.
 
 LLM-callable read-only tool: возвращает markdown-таблицу спейсов,
-доступных текущей роли. Используется перед `confluence_ingest`/
+доступных текущей роли. Используется перед `confluence_ingest_spaces`/
 `confluence_download`, чтобы LLM мог увидеть существующие space-ключи
 и выбрать релевантные.
 
@@ -73,12 +73,10 @@ def confluence_list_spaces(
         ),
     ] = 200,
 ) -> dict[str, Any]:
-    """Список spaces, доступных роли DSN-а (anonymous/PAT/basic).
+    """Список spaces confluence
 
-    Возвращает markdown с колонками `key, name, type, description`. LLM
-    использует это, чтобы решить, какой space передать в
-    `confluence_ingest(space_keys=[...])` или
-    `confluence_download(space_keys=[...])`.
+    Возвращает markdown с колонками `key, name, type, description`.
+
     """
     auth = cfg.confluence.make_auth()
 

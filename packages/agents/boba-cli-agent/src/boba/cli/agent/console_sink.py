@@ -11,6 +11,7 @@ from boba.agent.events import (
     AgentEvent,
     ContentDeltaEvent,
     ContentSnapshotEvent,
+    DiagnosticEvent,
     PhaseEvent,
     Severity,
     StreamKind,
@@ -20,7 +21,15 @@ from boba.agent.events import (
 
 
 class ConsoleSink:
-    """AgentEvent → stdout/stderr; use_color=None — авто по TTY/NO_COLOR."""
+    """AgentEvent → stdout/stderr; use_color=None — авто по TTY/NO_COLOR.
+
+    Флаги:
+        `verbose`     - печатать `body` PhaseEvent'ов (раньше у
+                        ToolExecutionStarted там лежал JSON args; сейчас
+                        этим занимается diagnostic-режим).
+        `diagnostic`  - показывать `DiagnosticEvent`-события (телеметрию).
+                        По умолчанию False - «чистый» классический вывод.
+    """
 
     _RESET = "\x1b[0m"
     _DIM = "\x1b[2m"
@@ -47,11 +56,13 @@ class ConsoleSink:
         stderr: TextIO,
         use_color: bool | None = None,
         verbose: bool = False,
+        diagnostic: bool = False,
     ) -> None:
         self._stdout = stdout
         self._stderr = stderr
         self._color = self._resolve_color(stdout, stderr, use_color)
         self._verbose = verbose
+        self._diagnostic = diagnostic
 
     @staticmethod
     def _resolve_color(stdout: TextIO, stderr: TextIO, use_color: bool | None) -> bool:
@@ -80,6 +91,8 @@ class ConsoleSink:
                 self._on_advisory(event)
             case TerminalEvent():
                 self._on_terminal(event)
+            case DiagnosticEvent():
+                self._on_diagnostic(event)
 
 
     def _on_delta(self, e: ContentDeltaEvent) -> None:
@@ -135,6 +148,16 @@ class ConsoleSink:
         color = self._color_for_severity(e.severity)
         details_str = self._fmt_details(e.details)
         self._err(self._paint(f"[FATAL] {e.headline}{details_str}", color))
+        if e.body:
+            self._err(self._paint(self._truncate(e.body), self._DIM))
+
+    def _on_diagnostic(self, e: DiagnosticEvent) -> None:
+        if not self._diagnostic:
+            return
+        details_str = self._fmt_details(e.details)
+        topic = e.topic or "diag"
+        head = f"[diag:{topic}] {e.headline}{details_str}".rstrip()
+        self._err(self._paint(head, self._DIM))
         if e.body:
             self._err(self._paint(self._truncate(e.body), self._DIM))
 

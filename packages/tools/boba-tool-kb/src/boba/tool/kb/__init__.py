@@ -26,9 +26,11 @@ file-system иерархию подкаталогов.
 
 Tools (что LLM реально вызывает) — каждый со своей TOML-секцией:
 
-**Ingest** (наполнение `kb_chunks`):
-- `confluence_ingest`       → `[tool.kb.confluence.ingest]`
-   unified: LLM выбирает режим через `space_keys` / `page_ids` / `cql`.
+**Ingest** (наполнение `kb_chunks`) — три tool'а, общая секция
+`[tool.kb.confluence.ingest]`:
+- `confluence_ingest_spaces`  → индексировать все страницы spaces.
+- `confluence_ingest_pages`   → индексировать явный список page_id.
+- `confluence_ingest_cql`     → индексировать страницы по CQL-запросу.
 
 **Search**:
 - `kb_search_hybrid`        → `[tool.kb.search.hybrid]`
@@ -84,7 +86,9 @@ from boba.tool.kb.confluence.tools.download import (
 )
 from boba.tool.kb.confluence.tools.ingest import (
     ConfluenceIngestConfig,
-    confluence_ingest,
+    confluence_ingest_cql,
+    confluence_ingest_pages,
+    confluence_ingest_spaces,
 )
 from boba.tool.kb.confluence.tools.list.spaces import (
     ConfluenceListSpacesConfig,
@@ -135,7 +139,9 @@ __all__ = [
     "PostgresStoreConfig",
     "PostgresStoreSchema",
     "confluence_download",
-    "confluence_ingest",
+    "confluence_ingest_cql",
+    "confluence_ingest_pages",
+    "confluence_ingest_spaces",
     "confluence_list_spaces",
     "confluence_search_cql",
     "kb_search_fts",

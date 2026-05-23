@@ -1,6 +1,6 @@
-"""Общая сборка Confluence-ingest pipeline для unified-tool `confluence_ingest`.
+"""Общая сборка Confluence-ingest pipeline для tools `confluence_ingest_*`.
 
-Три режима tool'а (`space_keys` / `page_ids` / `cql`) делают одно и то же:
+Все три режима (`spaces` / `pages` / `cql`) делают одно и то же:
 берут `RequestSource` (по выбранному режиму), гонят через
 `ConfluenceContentTransport` (HTTP + JSON-decode + attachment fan-out) →
 `DispatchReader` по `CONTENT_TYPE` → `StructuralChunker` →
@@ -10,8 +10,8 @@
 произвольные attachment'ы); индексируем только то, для чего знаем Reader.
 PDF/картинки/прочие бинари молча пропускаются — это not-an-error.
 
-Эта функция инкапсулирует общий хвост — `confluence_ingest` сам выбирает
-конкретный `RequestSource` по дискриминатору и зовёт `run_confluence_ingest`.
+Эта функция инкапсулирует общий хвост — каждый из `confluence_ingest_*`
+сам собирает свой `RequestSource` и зовёт `run_confluence_ingest`.
 """
 
 from __future__ import annotations

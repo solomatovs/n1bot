@@ -112,7 +112,11 @@ def _run() -> int:
         .use_turn(turn)
         .build()
     )
-    sink = ConsoleSink(sys.stdout, sys.stderr)
+    sink = ConsoleSink(
+        sys.stdout,
+        sys.stderr,
+        diagnostic=run_cfg.diagnostic,
+    )
 
     if run_cfg.query is not None:
         _run_turn(agent, sink, run_cfg.query)

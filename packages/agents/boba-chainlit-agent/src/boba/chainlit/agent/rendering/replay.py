@@ -20,6 +20,7 @@ from typing import cast
 
 from chainlit.step import StepDict
 
+from boba.agent.events import DiagnosticEvent
 from boba.agent.history import HistoryReader
 from boba.chainlit.agent.models import ThreadId
 from boba.chainlit.agent.rendering.dispatcher import (
@@ -207,6 +208,14 @@ class StepDictTarget(EventRenderTarget):
             name="system",
             output=f"**{headline}**\n\n{body}",
         )
+
+    # --- диагностика (no-op: history не пишет DiagnosticEvent) -------
+
+    async def diagnostic(self, event: DiagnosticEvent) -> None:
+        # Defensive no-op: HistoryService отфильтровывает категорию
+        # DIAGNOSTIC, поэтому replay их физически не увидит. Метод
+        # остаётся ради совместимости с EventRenderTarget-протоколом.
+        del event
 
     # --- internals ---------------------------------------------------
 
