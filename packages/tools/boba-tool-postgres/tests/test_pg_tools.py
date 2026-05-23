@@ -12,6 +12,20 @@ from boba.tool.pg.query import QueryConfig, query
 pytestmark = pytest.mark.integration
 
 
+def _count_data_rows(md: str) -> int:
+    """Сколько data-строк в markdown-таблице.
+
+    Считает только `|`-строки после header'а + separator'а, исключая
+    `_(no rows)_`-заглушку. Truncated-маркер не `|`-строка, не учитывается.
+    """
+    lines = md.splitlines()
+    return sum(
+        1
+        for line in lines[2:]
+        if line.startswith("|") and "_(no rows)_" not in line
+    )
+
+
 # --------------------------------------------------------------------------- #
 # list_tables
 # --------------------------------------------------------------------------- #
@@ -50,15 +64,13 @@ def test_describe_table_kb_chunks(
     describe_table_cfg: DescribeTableConfig,
 ) -> None:
     """Схема `kb_chunks` — ожидаемые системные колонки."""
-    result = describe_table(
+    md = describe_table(
         cfg=describe_table_cfg,
         table="kb_chunks",
         schema="public",
     )
-    assert result["schema"] == "public"
-    assert result["table"] == "kb_chunks"
-    assert result["column_count"] >= 5
-    md = result["columns_table"]
+    assert isinstance(md, str)
+    assert _count_data_rows(md) >= 5
     for col in ("chunk_id", "collection", "source_id", "embedding"):
         assert col in md
 
@@ -66,14 +78,14 @@ def test_describe_table_kb_chunks(
 def test_describe_unknown_table_empty(
     describe_table_cfg: DescribeTableConfig,
 ) -> None:
-    """Неизвестная таблица → пустой columns_table."""
-    result = describe_table(
+    """Неизвестная таблица → markdown с `_(no rows)_`-заглушкой."""
+    md = describe_table(
         cfg=describe_table_cfg,
         table="this_table_does_not_exist",
         schema="public",
     )
-    assert result["column_count"] == 0
-    assert "_(no rows)_" in result["columns_table"]
+    assert _count_data_rows(md) == 0
+    assert "_(no rows)_" in md
 
 
 # --------------------------------------------------------------------------- #
@@ -83,40 +95,38 @@ def test_describe_unknown_table_empty(
 
 def test_query_simple_select(query_cfg: QueryConfig) -> None:
     """Простой `SELECT 1, 'hello'` → markdown с одной строкой."""
-    result = query(
+    md = query(
         cfg=query_cfg,
         sql="SELECT 1 AS n, 'hello' AS greeting",
         row_limit=5,
     )
-    assert result["columns"] == ["n", "greeting"]
-    assert result["row_count"] == 1
-    assert not result["truncated"]
-    md = result["table"]
+    assert isinstance(md, str)
     assert "| n | greeting |" in md
     assert "| 1 | hello |" in md
+    assert _count_data_rows(md) == 1
+    assert "more rows omitted" not in md
 
 
 def test_query_count_kb_chunks(query_cfg: QueryConfig) -> None:
     """`SELECT count(*) FROM kb_chunks` — exploratory-запрос."""
-    result = query(
+    md = query(
         cfg=query_cfg,
         sql="SELECT count(*) AS chunks FROM kb_chunks",
         row_limit=1,
     )
-    assert result["columns"] == ["chunks"]
-    assert result["row_count"] == 1
+    assert "| chunks |" in md
+    assert _count_data_rows(md) == 1
 
 
 def test_query_auto_limit_truncated(query_cfg: QueryConfig) -> None:
-    """Много строк + малый row_limit → truncated=true."""
-    result = query(
+    """Много строк + малый row_limit → truncated-маркер в markdown."""
+    md = query(
         cfg=query_cfg,
         sql="SELECT generate_series(1, 1000) AS n",
         row_limit=5,
     )
-    assert result["row_count"] == 5
-    assert result["truncated"] is True
-    assert result["limit_applied"] == 5
+    assert _count_data_rows(md) == 5
+    assert "more rows omitted" in md
 
 
 # --------------------------------------------------------------------------- #

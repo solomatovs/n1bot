@@ -72,7 +72,7 @@ def confluence_list_spaces(
             ),
         ),
     ] = 200,
-) -> dict[str, Any]:
+) -> str:
     """Список spaces confluence
 
     Возвращает markdown с колонками `key, name, type, description`.
@@ -108,8 +108,4 @@ def confluence_list_spaces(
         truncated=truncated,
         truncated_msg=f"more spaces omitted (увеличьте limit, текущий {limit})",
     )
-    return {
-        "table": table_md,
-        "row_count": len(rows),
-        "truncated": truncated,
-    }
+    return table_md

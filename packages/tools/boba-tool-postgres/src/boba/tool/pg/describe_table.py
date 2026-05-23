@@ -7,7 +7,7 @@ LLM зовёт после `list_tables`, чтобы узнать структу�
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated
 
 from pydantic import Field
 
@@ -56,13 +56,14 @@ def describe_table(
             description="PG schema таблицы. По умолчанию `public`.",
         ),
     ] = "public",
-) -> dict[str, Any]:
+) -> str:
     """Схема одной таблицы: колонки, типы, nullable, default.
 
     Список колонок берётся из `information_schema.columns`. Поля:
     `column_name, data_type, is_nullable, column_default`. Если таблицы
     с таким именем нет (или у роли DSN'а нет прав на её view'у) —
-    результат будет пустым.
+    результат будет markdown-таблицей с одной строкой-заглушкой
+    `_(no rows)_`.
     """
     executor = SqlExecutor(cfg=cfg.executor)
     sql = (
@@ -80,15 +81,9 @@ def describe_table(
     except SqlQueryError as e:
         raise RuntimeError(str(e)) from e
 
-    table_md = format_markdown_table(
+    return format_markdown_table(
         columns=result.columns,
         rows=result.rows,
         max_cell_chars=executor.max_cell_chars,
         truncated=result.truncated,
     )
-    return {
-        "schema": schema,
-        "table": table,
-        "columns_table": table_md,
-        "column_count": result.row_count,
-    }
