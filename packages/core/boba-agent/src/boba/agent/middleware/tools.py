@@ -8,6 +8,7 @@ from boba.agent.agent import AgentContext
 from boba.agent.events import (
     AgentEvent,
     FeedbackToLLMAdded,
+    ToolArgsResolved,
     ToolCallComplete,
     ToolExecutionFailed,
     ToolExecutionStarted,
@@ -60,6 +61,11 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
         call = tc.call
 
         yield ToolExecutionStarted(
+            request_id=tc.request_id,
+            tool_call_id=call.id,
+            tool_name=call.name,
+        )
+        yield ToolArgsResolved(
             request_id=tc.request_id,
             call=call,
         )

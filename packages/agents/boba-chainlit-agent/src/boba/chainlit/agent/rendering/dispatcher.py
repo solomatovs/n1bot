@@ -199,8 +199,8 @@ class AgentEventDispatcher:
                 tool_name=name,
             ):
                 await self._target.tool_call_started(tid, name)
-            case ToolExecutionStarted(call=call):
-                await self._target.tool_execution_started(call.id)
+            case ToolExecutionStarted(tool_call_id=tid):
+                await self._target.tool_execution_started(tid)
             case AnswerStarted() | ThinkingStarted() | GenerationDone():
                 await self._target.generation_milestone()
             case GenerationResult():

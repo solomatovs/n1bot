@@ -102,8 +102,15 @@ class HistoryService(HistoryReader, HistoryWriter, StateChannel, ABC):
         return ChannelId("history")
 
     def record(self, event: AgentEvent) -> None:
-        """Фильтрует ContentDeltaEvent сообщения."""
-        if event.category == EventCategory.CONTENT_DELTA:
+        """Фильтрует ContentDeltaEvent и DiagnosticEvent сообщения.
+
+        ContentDelta - инкрементальные чанки, журнал хранит только агрегаты.
+        Diagnostic - эфемерная телеметрия, в журнал не идёт по дизайну.
+        """
+        if event.category in (
+            EventCategory.CONTENT_DELTA,
+            EventCategory.DIAGNOSTIC,
+        ):
             return
 
         self._persist(event)

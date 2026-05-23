@@ -50,6 +50,13 @@
    конкретных реализаций и фиксирует **минимальный контракт** полей,
    достаточный для отображения / обработки без знания конкретного типа события.
 
+   Пять «доменных» категорий (`PhaseEvent`, `ContentDeltaEvent`,
+   `ContentSnapshotEvent`, `AdvisoryEvent`, `TerminalEvent`) несут информацию,
+   которая является частью диалога / истории и должна быть показана
+   пользователю. Шестая категория `DiagnosticEvent` несёт нефункциональную
+   телеметрию (метрики, тайминги, трейсы), которая по умолчанию **скрыта**
+   и существует исключительно для отладки.
+
     `PhaseEvent`
         граница фазы агентского цикла -
             - новая итерация
@@ -138,6 +145,35 @@
             `body`          - полный текст ошибки
             `error_kind`    - имя класса исходной ошибки, для классификации в UI
 
+    `DiagnosticEvent`
+        нефункциональное уведомление - метрики, тайминги, трейсы middleware,
+        результаты внутренних шагов агента и т.п. Не несёт информации,
+        без которой основной поток теряет смысл - sink имеет право
+        полностью игнорировать категорию, и диалог останется консистентным.
+
+        Используется для скрытых-по-умолчанию деталей работы агента:
+        - длительность выполнения tool'ов и retry-цепочка
+        - usage-токены и тайминги LLM-генерации
+        - аргументы tool-вызовов в развёрнутом виде
+        - трейс прохождения события через middleware
+
+        Sink фильтрует события по `topic` (dot-separated namespace,
+        например "tool.timing", "llm.usage", "retry") - allow/deny-list
+        задаётся пользователем через UI-toggle или CLI-флаг.
+
+        События этой категории **не пишутся** в `HistoryService` -
+        они эфемерны и существуют только в стриме.
+
+        Поля:
+            `topic`     - dot-separated namespace для фильтрации
+            `headline`  - короткое описание для шапки
+            `severity`  - info по умолчанию
+            `details`   - key→value структурных данных
+            `body`      - расширенный payload (json-dump, stacktrace и т.п.)
+            `related`   - ссылки на доменные события для группировки в UI
+                          (например {"tool_call_id": "..."} - фронт привязывает
+                          диагностику к конкретному tool-step'у)
+
     Добавление нового event не требует переписывания (де)сериализализации.
     Так как все события это pydentic-модели с самоописанием.
     Все что необходимо sink уже должно лежать в событии
@@ -215,6 +251,7 @@ class EventCategory(StrEnum):
     CONTENT_SNAPSHOT = "content_snapshot"
     ADVISORY = "advisory"
     TERMINAL = "terminal"
+    DIAGNOSTIC = "diagnostic"
 
 
 class StreamKind(StrEnum):
@@ -354,6 +391,32 @@ class TerminalEvent(AgentEventBase):
     cause_chain: tuple[str, ...] = ()
 
 
+class DiagnosticEvent(AgentEventBase):
+    """
+    Нефункциональное событие - метрики, тайминги, трейсы.
+
+    Существует исключительно для отладки и наблюдаемости. Sink имеет право
+    полностью игнорировать категорию: основной диалоговый поток останется
+    консистентным и без этих событий. По умолчанию скрыто в UI; включается
+    пользователем через фильтр по `topic`.
+
+    Не пишется в `HistoryService` - события эфемерны и живут только в стриме.
+
+    Producer'ы (middleware, tool-runner, llm-слой) эмитят `DiagnosticEvent`
+    рядом со своими доменными событиями; связь с доменным событием передаётся
+    через `related` (например, `tool_call_id` для привязки к tool-step'у).
+    """
+
+    category: Literal[EventCategory.DIAGNOSTIC] = EventCategory.DIAGNOSTIC
+
+    topic: str = ""
+    headline: str = ""
+    severity: Severity = Severity.INFO
+    details: Mapping[str, str] = Field(default_factory=dict)
+    body: str | None = None
+    related: Mapping[str, str] = Field(default_factory=dict)
+
+
 def _error_details(error_kind: str, status_code: int | None) -> dict[str, str]:
     """Стандартный `details` для error-событий: kind + status_code если есть."""
     out: dict[str, str] = {"kind": error_kind}
@@ -422,13 +485,15 @@ class IterationStarted(PhaseEvent):
 
 class RequestStart(PhaseEvent):
     """
-    Отправили запрос в LLM
+    Отправили запрос в LLM.
+
+    Тайминговый якорь (`monotonic_ns`) вынесен в `LLMTimingAnchor`
+    (DiagnosticEvent) - продьюсер эмитит его рядом с `RequestStart`.
     """
 
     type: Literal["LLMRequestSent"] = "LLMRequestSent"
     model: str
     has_tools: bool
-    monotonic_ns: int
 
     @model_validator(mode="after")
     def _derive(self) -> Self:
@@ -438,22 +503,6 @@ class RequestStart(PhaseEvent):
             "model": self.model,
             "has_tools": str(self.has_tools),
         }
-        return self
-
-
-class ResponseStarted(PhaseEvent):
-    """
-    Получаен http-response от llm но еще не начато чтение этого response
-    Чанки будут генерироваться после события
-    """
-
-    type: Literal["LLMResponseStreamOpened"] = "LLMResponseStreamOpened"
-    label: str = "llm response started"
-    monotonic_ns: int
-
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.details = {"monotonic_ns": str(self.monotonic_ns)}
         return self
 
 
@@ -509,17 +558,19 @@ class ToolCallStreamStarted(PhaseEvent):
 
 class ToolExecutionStarted(PhaseEvent):
     """
-    Tool готов к исполнению
+    Tool готов к исполнению - PhaseEvent несёт только `tool_call_id` и
+    `tool_name`. Полный `ToolCall` (с args) уносится в `ToolArgsResolved`
+    (DiagnosticEvent) - продьюсер эмитит его рядом.
     """
 
     type: Literal["ToolExecutionStarted"] = "ToolExecutionStarted"
-    call: ToolCall
+    tool_call_id: str
+    tool_name: str
 
     @model_validator(mode="after")
     def _derive(self) -> Self:
-        self.label = f"tool exec: {self.call.name}"
-        self.details = {"id": self.call.id, "name": self.call.name}
-        self.body = self.call.args_json()
+        self.label = f"tool exec: {self.tool_name}"
+        self.details = {"id": self.tool_call_id, "name": self.tool_name}
         return self
 
 
@@ -929,6 +980,78 @@ class PersistenceFailed(TerminalEvent):
 
 
 # --------------------------------------------------------------------- #
+# DiagnosticEvent — конкретные события
+# --------------------------------------------------------------------- #
+
+
+class LLMTimingAnchor(DiagnosticEvent):
+    """Тайминговый якорь LLM-фазы для измерения latency.
+
+    Эмитится рядом с доменными PhaseEvent'ами LLM-цикла как замена
+    встроенного в них поля `monotonic_ns`. Разность между двумя анкерами
+    одного `request_id` (например, `request_sent` → `stream_opened`)
+    даёт TTFB. Поле `phase` — короткий идентификатор фазы; `topic`
+    деривируется как `"llm.timing.{phase}"`.
+    """
+
+    type: Literal["LLMTimingAnchor"] = "LLMTimingAnchor"
+    phase: str
+    monotonic_ns: int
+
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.topic = f"llm.timing.{self.phase}"
+        self.headline = f"llm timing: {self.phase}"
+        self.details = {
+            "phase": self.phase,
+            "monotonic_ns": str(self.monotonic_ns),
+        }
+        return self
+
+
+class LLMResponseStreamOpened(DiagnosticEvent):
+    """HTTP-stream от LLM открыт - до получения первого чанка.
+
+    Бывший PhaseEvent `ResponseStarted` - реклассифицирован как
+    диагностика, т.к. UX-консьюмера у события нет, а `monotonic_ns`
+    нужен только для тайминговых измерений (TTFB через разность с
+    `LLMTimingAnchor(phase="request_sent")`).
+    """
+
+    type: Literal["LLMResponseStreamOpened"] = "LLMResponseStreamOpened"
+    monotonic_ns: int
+
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.topic = "llm.timing.stream_opened"
+        self.headline = "llm response stream opened"
+        self.details = {"monotonic_ns": str(self.monotonic_ns)}
+        return self
+
+
+class ToolArgsResolved(DiagnosticEvent):
+    """Полный `ToolCall` с args - готов к исполнению.
+
+    Бремя args вынесено из `ToolExecutionStarted` (PhaseEvent): args
+    уже есть в `ToolCallComplete` (ContentSnapshotEvent), и PhaseEvent
+    их дублировал в `body`. Здесь они доступны для diagnostic-режима
+    - привязка к tool-step'у через `related["tool_call_id"]`.
+    """
+
+    type: Literal["ToolArgsResolved"] = "ToolArgsResolved"
+    call: ToolCall
+
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.topic = "tool.args_resolved"
+        self.headline = f"tool args: {self.call.name}"
+        self.details = {"id": self.call.id, "name": self.call.name}
+        self.body = self.call.args_json()
+        self.related = {"tool_call_id": self.call.id}
+        return self
+
+
+# --------------------------------------------------------------------- #
 # Fallback для неизвестных type'ов (extension-модули)
 # --------------------------------------------------------------------- #
 
@@ -955,7 +1078,6 @@ AgentEvent = (
     # PhaseEvent
     IterationStarted
     | RequestStart
-    | ResponseStarted
     | GenerationStarted
     | ThinkingStarted
     | AnswerStarted
@@ -985,13 +1107,16 @@ AgentEvent = (
     | PromptFailed
     | MaxIterationsReached
     | PersistenceFailed
+    # DiagnosticEvent
+    | LLMTimingAnchor
+    | LLMResponseStreamOpened
+    | ToolArgsResolved
 )
 
 
 AgentEventName: TypeAlias = Literal[
     "IterationStarted",
     "LLMRequestSent",
-    "LLMResponseStreamOpened",
     "GenerationStarted",
     "ThinkingStarted",
     "AnswerStarted",
@@ -1017,6 +1142,9 @@ AgentEventName: TypeAlias = Literal[
     "PromptFailed",
     "MaxIterationsReached",
     "PersistenceFailed",
+    "LLMTimingAnchor",
+    "LLMResponseStreamOpened",
+    "ToolArgsResolved",
 ]
 
 
@@ -1129,7 +1257,6 @@ def _register_core_events() -> None:
     for cls in (
         IterationStarted,
         RequestStart,
-        ResponseStarted,
         GenerationStarted,
         ThinkingStarted,
         AnswerStarted,
@@ -1155,6 +1282,9 @@ def _register_core_events() -> None:
         PromptFailed,
         MaxIterationsReached,
         PersistenceFailed,
+        LLMTimingAnchor,
+        LLMResponseStreamOpened,
+        ToolArgsResolved,
     ):
         AgentEventRegistry.register(cls)
 
