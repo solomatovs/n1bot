@@ -24,12 +24,16 @@ _CHUNK_ID_PREFIX_LENGTH: int = 16
 
 
 def build_chunker(params: ChunkerParams) -> StructuralChunker:
-    """Heading-aware Chunker с `OverlapCharSplitter` для size-cap.
+    """
+    Собирает чанкер: режет документ по заголовкам,
+    длинные секции добивает разбиением с перекрытием по символам
+    до заданного размера (overlap)
 
-    `key_encoder=Sha256TextEncoder()` хэширует `format_content` каждого
-    чанка в `content_hash` — это то по чему `IndexSink.reconcile` решает
-    skip vs upsert. Отдельный от `id_strategy.encoder` инстанс (тот хэширует
-    `source_id` для `chunk_id`), хотя оба используют SHA-256.
+    content_hasher считает SHA-256 по содержимому чанка
+        хэш позволяет IndexSink решить, нужно ли повторно индексировать чанкт
+
+    chunk_id_generator считает SHA-256 по хэш по source_id с префиксом
+        chunk_id уникален в рамках всей таблицы kb
     """
     return StructuralChunker(
         chunker_id=_CHUNKER_ID,

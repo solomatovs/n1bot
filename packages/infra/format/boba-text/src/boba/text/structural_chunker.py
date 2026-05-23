@@ -46,7 +46,17 @@ budget уменьшен на размер prefix + repeat_header + repeat_footer
 
 
 class StructuralChunker(Chunker[str]):
-    """Heading-aware `Chunker[str]` с replicate-header и breadcrumbs."""
+    """
+    Собирает чанкер: режет документ по заголовкам,
+    длинные секции добивает разбиением с перекрытием по символам
+    до заданного размера (overlap)
+
+    content_hasher считает SHA-256 по содержимому чанка
+        хэш позволяет IndexSink решить, нужно ли повторно индексировать чанкт
+
+    chunk_id_generator считает SHA-256 по хэш по source_id с префиксом
+        chunk_id уникален в рамках всей таблицы kb
+    """
 
     DEFAULT_BREADCRUMB_SEPARATOR: Final[str] = " › "
 
