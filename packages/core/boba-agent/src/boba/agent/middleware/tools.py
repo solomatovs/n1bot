@@ -1,33 +1,127 @@
-"""Middleware для tools: исполнение + защита от лупов."""
+"""Middleware для tools: исполнение + защита от лупов.
+
+Tool вызывается через единственный публичный API tool-слоя —
+`ToolExecutor.stream(ctx, req) -> Iterator[ToolEvent]`. По ходу
+выполнения tool yield-ит `ToolProgressReported`-индикаторы (опционально)
+и завершает поток одним терминальным `ToolStreamCompleted` с результатом.
+`ToolToAgentConverter` маппит первое в `ToolProgress` PhaseEvent, второе
+— в `ToolResultReady` ContentSnapshotEvent.
+
+Tool'ы, написанные как обычные функции (`def f(...) -> X`), снаружи
+ничем не отличаются от generator-tools: `DishkaTool` оборачивает их
+результат в один `ToolStreamCompleted` — middleware видит унифицированный
+поток.
+
+Граница слоёв: tool-слой эмитит `ToolEvent` (`boba.tools.domain.events`)
+и не знает про `AgentEvent`. Маппинг — задача `ToolToAgentConverter`
+здесь, по аналогии с `LLMToAgentConverter` в `llm.py`.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from typing import assert_never
 
 from boba.agent.agent import AgentContext
 from boba.agent.events import (
     AgentEvent,
     FeedbackToLLMAdded,
+    Severity,
     ToolArgsResolved,
     ToolCallComplete,
     ToolExecutionFailed,
     ToolExecutionStarted,
+    ToolProgress,
     ToolResultReady,
 )
 from boba.agent.models import ToolCallFailure, ToolCallResult
+from boba.llm.models import RequestId
+from boba.llm.models import ToolCall as LLMToolCall
 from boba.patterns import StreamSource
 from boba.tools.domain import (
     ErrorResult,
     ToolContext,
+    ToolEvent,
     ToolExecutionError,
     ToolId,
+    ToolProgressReported,
+    ToolSeverity,
+    ToolStreamCompleted,
 )
 from boba.tools.domain import ToolCall as DomainToolCall
 from boba.tools.framework import ToolExecutor
 
+__all__ = [
+    "RepeatedToolCallGuardMiddleware",
+    "ToolExecutionMiddleware",
+    "ToolToAgentConverter",
+]
+
+
+def _map_severity(severity: ToolSeverity) -> Severity:
+    """ToolSeverity → agent Severity 1-к-1."""
+    match severity:
+        case ToolSeverity.INFO:
+            return Severity.INFO
+        case ToolSeverity.WARN:
+            return Severity.WARN
+        case ToolSeverity.ERROR:
+            return Severity.ERROR
+        case _:
+            assert_never(severity)
+
+
+class ToolToAgentConverter:
+    """Stateless конвертер ToolEvent → AgentEvent.
+
+    Симметрично к `LLMToAgentConverter`: одна точка маппинга tool-слоя
+    в agent-слой. Tool-слой не знает про `AgentEvent`; agent-middleware
+    не знает про детали tool-слоя, кроме контракта `ToolEvent`.
+
+    `request_id` и `call` приходят извне (из `ToolCallComplete`), потому что
+    tool-domain про них не знает (tool ничего не должен знать про
+    request_id агента).
+    """
+
+    def convert(
+        self,
+        event: ToolEvent,
+        *,
+        request_id: RequestId,
+        call: LLMToolCall,
+    ) -> Iterator[AgentEvent]:
+        match event:
+            case ToolProgressReported(
+                headline=headline,
+                details=details,
+                severity=severity,
+            ):
+                yield ToolProgress(
+                    request_id=request_id,
+                    tool_call_id=call.id,
+                    tool_name=call.name,
+                    headline=headline,
+                    details=dict(details),
+                    severity=_map_severity(severity),
+                )
+            case ToolStreamCompleted(result=result):
+                yield ToolResultReady(
+                    request_id=request_id,
+                    call=call,
+                    result=ToolCallResult(result=result),
+                )
+            case _:
+                assert_never(event)
+
 
 class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Исполняет tool_calls после завершения inner-стрима."""
+    """Исполняет tool_calls после завершения inner-стрима.
+
+    Сам tool вызывается через `ToolExecutor.stream(...)`, что даёт
+    `ToolProgressReported`-события по ходу выполнения long-running
+    операций (например, индексация большого confluence-space'а).
+    `ToolToAgentConverter` транслирует их в `ToolProgress` AgentEvent'ы.
+    """
 
     def __init__(
         self,
@@ -36,6 +130,7 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
     ) -> None:
         self._inner = inner
         self._tool_executor = tool_executor
+        self._converter = ToolToAgentConverter()
 
     def name(self) -> str:
         return "ToolExecution"
@@ -70,14 +165,17 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
             call=call,
         )
 
+        domain_call = DomainToolCall(
+            tool_id=ToolId(call.name),
+            arguments=dict(call.args),
+        )
         try:
-            result = self._tool_executor.execute(
-                ToolContext(),
-                DomainToolCall(
-                    tool_id=ToolId(call.name),
-                    arguments=dict(call.args),
-                ),
-            )
+            for tool_event in self._tool_executor.stream(
+                ToolContext(), domain_call,
+            ):
+                yield from self._converter.convert(
+                    tool_event, request_id=tc.request_id, call=call,
+                )
         except ToolExecutionError as e:
             error = ErrorResult(message=e.message, error_kind=type(e).__name__)
             yield ToolExecutionFailed(
@@ -88,13 +186,6 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
                     message=error.message,
                 ),
             )
-            return
-
-        yield ToolResultReady(
-            request_id=tc.request_id,
-            call=call,
-            result=ToolCallResult(result=result),
-        )
 
 
 class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):

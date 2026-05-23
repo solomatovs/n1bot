@@ -14,7 +14,7 @@ Tool автор пишет:
 
 - `FromDI(scope)` — параметр резолвится из DI как уже зарегистрированная
   служба. Scope задаётся явно: APP — синглтон на lifetime агента;
-  REQUEST — свежий инстанс на каждый `tool.invoke()`.
+  REQUEST — свежий инстанс на каждый `tool.stream()`.
 
 - `FromConfig` — параметр является Pydantic-settings DTO. Framework на
   этапе сборки контейнера сам зовёт `cfg_type()`, инжектит результат

@@ -6,7 +6,7 @@ Container строится `AgentBuilder.build()` и передаётся сюд
 
 - `Scope.APP` инстансы создаются лениво при первом резолве и живут до
   `Agent.close()` (тогда `Container.close()` запускает их teardown'ы).
-- `Scope.REQUEST` инстансы создаются при `tool.invoke()` (внутри
+- `Scope.REQUEST` инстансы создаются при `tool.stream()` (внутри
   `with container(): ...`), уничтожаются по выходу из request-scope.
 
 `Agent` поддерживает context manager protocol — используй `with`:

@@ -1,22 +1,31 @@
 """
 `DishkaTool` — bridge между декларативным callable-стилем (`@tool`) и
-существующим `Tool[Args, Cfg]` ABC из `boba.tools.domain`.
+streaming-only `Tool[Args, Cfg]` ABC из `boba.tools.domain`.
 
 Снаружи неотличим от обычных tools — `ToolRegistry`/`ToolCatalog`/
 `ToolExecutor` не знают, что внутри Dishka и Annotated-маркеры.
 
-В invoke:
-1. Валидируем LLM-args через `args_model.model_validate(raw)`.
-2. Открываем request-scope от root container'а.
-3. Резолвим DI-deps через `request_container.get(T, component=...)`.
-4. Зовём callable с (llm_kwargs + di_kwargs).
-5. Закрываем request-scope (gen-providers с teardown отрабатывают).
-6. Coerce результата в `ToolResult` (str/int/dict/BaseModel/dataclass).
+Контракт публичного API — только `Tool.stream(ctx, args) -> Iterator[ToolEvent]`.
+Внутри `DishkaTool` диспетчеризует на два внутренних режима в зависимости от
+**один-раз** определённого на этапе introspect признака `plan.is_generator`:
+
+- **plain function** (`def f(...) -> T: return ...`) —
+  `stream` зовёт target один раз, coerce-ит результат в `ToolResult` и
+  yield-ит ровно одно `ToolStreamCompleted`.
+
+- **generator function** (`def f(...) -> Generator[ToolEvent, None, T]: ...`) —
+  `stream` пробрасывает все yield'ы напрямую (это `ToolProgressReported`-
+  индикаторы), а финальный `return`-value (StopIteration.value) coerce-ит в
+  `ToolResult` и yield-ит как терминальный `ToolStreamCompleted`.
+
+В обоих случаях ровно одно `ToolStreamCompleted` гарантированно завершает
+поток — это и есть «последнее событие = tool result».
 """
 
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Generator, Iterator
 from typing import Any
 
 from dishka import Container
@@ -26,6 +35,11 @@ from pydantic import BaseModel, ValidationError
 from boba.tools.domain.errors import (
     InvalidToolArgumentError,
     ToolExecutionError,
+)
+from boba.tools.domain.events import (
+    ToolEvent,
+    ToolProgressReported,
+    ToolStreamCompleted,
 )
 from boba.tools.domain.ids import (
     ToolId,
@@ -47,11 +61,12 @@ __all__ = ["DishkaTool"]
 
 
 class DishkaTool(Tool[BaseModel, None]):
-    """Bridge: Annotated-callable + Dishka Container → `Tool[BaseModel, None]`.
+    """Bridge: Annotated-callable + Dishka Container → streaming `Tool`.
 
     Состояние:
     - `_target` — собственно callable, который надо вызвать.
-    - `_plan` — cached pydantic args model + DI plan.
+    - `_plan` — кеш pydantic args model + DI plan + `is_generator`-флаг,
+      собранный один раз на этапе registration.
     - `_container` — root Dishka Container.
     - `_component` — Dishka component, в котором tool живёт (=plugin name).
 
@@ -100,14 +115,16 @@ class DishkaTool(Tool[BaseModel, None]):
     def _args_model_class(self) -> type[BaseModel]:
         return self._plan.args_model
 
-    def invoke(self, ctx: ToolContext, raw: dict[str, Any]) -> ToolResult:
-        """Полный invoke: validate → open request → resolve DI → call → close."""
-        args = self._parse_args(raw)
-        return self.execute(ctx, args)
+    def stream(
+        self, ctx: ToolContext, args: BaseModel,
+    ) -> Iterator[ToolEvent]:
+        """Единственный публичный entry-point.
 
-    def execute(self, ctx: ToolContext, args: BaseModel) -> ToolResult:
+        Резолвит DI-deps, зовёт target, и в зависимости от
+        `plan.is_generator` либо пробрасывает yield-поток generator-tool'а,
+        либо оборачивает результат plain-функции в один `ToolStreamCompleted`.
+        """
         del ctx
-        # getattr вместо model_dump(): не разворачиваем BaseModel-поля в dict
         llm_kwargs = {
             name: getattr(args, name)
             for name in self._plan.args_model.model_fields
@@ -124,8 +141,55 @@ class DishkaTool(Tool[BaseModel, None]):
                 )
                 for dep in self._plan.di_deps
             }
-            raw_result = self._target(**llm_kwargs, **di_kwargs)
-        return _coerce_to_tool_result(self._tool_id_value, raw_result)
+            if self._plan.is_generator:
+                yield from self._stream_from_generator(
+                    self._target(**llm_kwargs, **di_kwargs),
+                )
+            else:
+                raw_result = self._target(**llm_kwargs, **di_kwargs)
+                yield ToolStreamCompleted(
+                    result=_coerce_to_tool_result(
+                        self._tool_id_value, raw_result,
+                    ),
+                )
+
+    def _stream_from_generator(
+        self, gen: Generator[Any, None, Any],
+    ) -> Iterator[ToolEvent]:
+        """Пробросить yield'ы generator-target'а + терминальный `ToolStreamCompleted`.
+
+        Convention generator-tool'а:
+        - `yield ToolProgressReported(...)` — индикативный прогресс.
+        - `return final_result` — финальный результат (StopIteration.value),
+          который framework coerce-ит в `ToolResult` и заворачивает в
+          `ToolStreamCompleted`.
+
+        Любой yield не-`ToolEvent`-типа — `ToolExecutionError`: контракт
+        нарушен. Это даёт автору ясную ошибку, если он по ошибке yield-ит
+        результат вместо return.
+        """
+        try:
+            while True:
+                try:
+                    item = next(gen)
+                except StopIteration as stop:
+                    yield ToolStreamCompleted(
+                        result=_coerce_to_tool_result(
+                            self._tool_id_value, stop.value,
+                        ),
+                    )
+                    return
+                if isinstance(item, ToolProgressReported | ToolStreamCompleted):
+                    yield item
+                    continue
+                msg = (
+                    f"streaming tool {self._tool_id_value!r} yielded "
+                    f"{type(item).__name__}; ожидается ToolEvent. "
+                    f"Финальный результат возвращай через `return ...`."
+                )
+                raise ToolExecutionError(self._tool_id_value, msg)
+        finally:
+            gen.close()
 
     def _parse_args(self, raw: dict[str, Any]) -> BaseModel:
         try:

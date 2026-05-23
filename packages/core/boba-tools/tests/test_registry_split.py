@@ -77,14 +77,19 @@ def test_catalog_and_executor_share_state():
 
     assert expected in catalog_ids
 
-    from boba.tools.domain import ToolCall
+    from boba.tools.domain import ToolCall, ToolStreamCompleted
 
-    result = registry.executor().execute(
-        ToolContext(),
-        ToolCall(tool_id=expected, arguments={"text": "hi"}),
+    events = list(
+        registry.executor().stream(
+            ToolContext(),
+            ToolCall(tool_id=expected, arguments={"text": "hi"}),
+        ),
     )
-    assert isinstance(result, TextResult)
-    assert result.text == "hi"
+    # Plain-function tool: один `ToolStreamCompleted` с результатом.
+    assert len(events) == 1
+    assert isinstance(events[0], ToolStreamCompleted)
+    assert isinstance(events[0].result, TextResult)
+    assert events[0].result.text == "hi"
 
 
 def test_executor_unknown_tool_lists_available():
@@ -94,9 +99,11 @@ def test_executor_unknown_tool_lists_available():
     from boba.tools.domain import ToolCall, ToolExecutionError
 
     with pytest.raises(ToolExecutionError) as ei:
-        executor.execute(
-            ToolContext(),
-            ToolCall(tool_id=ToolId("src__missing"), arguments={}),
+        list(
+            executor.stream(
+                ToolContext(),
+                ToolCall(tool_id=ToolId("src__missing"), arguments={}),
+            ),
         )
     assert "not found" in str(ei.value)
     assert "src__echo" in str(ei.value)

@@ -25,12 +25,12 @@ from abc import abstractmethod
 from collections.abc import Iterable, Iterator, Mapping
 from typing import Any, Self
 
-from boba.patterns import Executor
 from boba.tools.domain.errors import (
     ToolExecutionError,
     ToolIdCollisionError,
     ToolSourceCollisionError,
 )
+from boba.tools.domain.events import ToolEvent
 from boba.tools.domain.ids import (
     ToolId,
     ToolName,
@@ -41,7 +41,6 @@ from boba.tools.domain.tool import (
     Tool,
     ToolCall,
     ToolContext,
-    ToolResult,
     ToolSchema,
 )
 
@@ -178,32 +177,31 @@ class ToolCatalog:
                 yield tool.definition()
 
 
-class ToolExecutor(Executor[ToolContext, ToolCall, ToolResult]):
-    """Execute-view над набором source'ов: парсит wire-id и диспетчеризует.
+class ToolExecutor:
+    """Stream-view над набором source'ов: парсит wire-id и диспетчеризует.
 
     Lifecycle принадлежит `ToolRegistry`. Executor хранит reference на тот же
     словарь source'ов, без owning-семантики (close — на registry).
+
+    Единственный публичный метод — `stream(ctx, req) -> Iterator[ToolEvent]`.
+    Контракт tool-слоя — всегда stream: tool, у которого нет промежуточного
+    прогресса, всё равно yield-ит ровно одно `ToolStreamCompleted` с
+    результатом (этим занимается адаптер, например `DishkaTool`). Caller
+    (middleware) распознаёт terminal-событие и эмитит `ToolResultReady`.
     """
 
     def __init__(self, sources: Mapping[ToolSourceId, ToolSource]) -> None:
         self._sources = sources
 
-    def execute(self, ctx: ToolContext, req: ToolCall) -> ToolResult:
+    def stream(self, ctx: ToolContext, req: ToolCall) -> Iterator[ToolEvent]:
+        """Yield-ит `ToolEvent`'ы от tool'а (включая терминальный).
+
+        Exception'ы заворачиваются в `ToolExecutionError`, чтобы middleware
+        видел единый error-канал.
+        """
+        tool = self._resolve(req.tool_id)
         try:
-            source_id, name = parse_tool_id(req.tool_id)
-        except ValueError as e:
-            raise self._unknown_tool(req.tool_id) from e
-
-        source = self._sources.get(source_id)
-        if source is None:
-            raise self._unknown_tool(req.tool_id)
-
-        tool = source.find(name)
-        if tool is None:
-            raise self._unknown_tool(req.tool_id)
-
-        try:
-            return tool.invoke(ctx, req.arguments)
+            yield from tool.invoke_stream(ctx, req.arguments)
         except ToolExecutionError:
             raise
         except Exception as e:
@@ -211,6 +209,22 @@ class ToolExecutor(Executor[ToolContext, ToolCall, ToolResult]):
                 tool.tool_id(),
                 f"{type(e).__name__}: {e}",
             ) from e
+
+    def _resolve(self, tool_id: ToolId) -> Tool[Any, Any]:
+        """Найти tool по `tool_id` или бросить `ToolExecutionError`."""
+        try:
+            source_id, name = parse_tool_id(tool_id)
+        except ValueError as e:
+            raise self._unknown_tool(tool_id) from e
+
+        source = self._sources.get(source_id)
+        if source is None:
+            raise self._unknown_tool(tool_id)
+
+        tool = source.find(name)
+        if tool is None:
+            raise self._unknown_tool(tool_id)
+        return tool
 
     def _unknown_tool(self, tool_id: ToolId) -> ToolExecutionError:
         available = sorted(
