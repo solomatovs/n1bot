@@ -84,8 +84,8 @@ def confluence_search_cql(
     Возвращает плоский список hits: `[{page_id, title, space_key, url,
     snippet, last_modified}, ...]`. Совместимо по shape с `kb_search_hybrid`
     и `fts_search` (тоже `list[dict]`). Для последующей работы:
-    `confluence_download_page` (HTML/Markdown → workspace) или
-    `confluence_ingest_page` (страницы → KB-коллекцию для kb_search_*).
+    `confluence_download(page_ids=[...])` (HTML/Markdown → workspace) или
+    `confluence_ingest(page_ids=[...])` (страницы → KB-коллекцию для kb_search_*).
     """
     if limit > cfg.max_limit:
         raise RuntimeError(

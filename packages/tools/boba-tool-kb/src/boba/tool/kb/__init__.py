@@ -27,9 +27,8 @@ file-system иерархию подкаталогов.
 Tools (что LLM реально вызывает) — каждый со своей TOML-секцией:
 
 **Ingest** (наполнение `kb_chunks`):
-- `confluence_ingest_space` → `[tool.kb.confluence.ingest.space]`
-- `confluence_ingest_page`  → `[tool.kb.confluence.ingest.page]`
-- `confluence_ingest_cql`   → `[tool.kb.confluence.ingest.cql]`
+- `confluence_ingest`       → `[tool.kb.confluence.ingest]`
+   unified: LLM выбирает режим через `space_keys` / `page_ids` / `cql`.
 
 **Search**:
 - `kb_search_hybrid`        → `[tool.kb.search.hybrid]`
@@ -40,8 +39,8 @@ Tools (что LLM реально вызывает) — каждый со сво�
 - `confluence_list_spaces`  → `[tool.kb.confluence.list.spaces]`
 
 **Download** (Confluence → workspace):
-- `confluence_download_page`  → `[tool.kb.confluence.download.page]`
-- `confluence_download_space` → `[tool.kb.confluence.download.space]`
+- `confluence_download`     → `[tool.kb.confluence.download]`
+   unified: LLM выбирает режим через `space_keys` / `page_ids`.
 
 SQL- и FTS-tools переехали в отдельный плагин `boba-tool-postgres` (секции
 `[tool.pg.query]` / `[tool.pg.list_tables]` / `[tool.pg.describe_table]` /
@@ -60,10 +59,10 @@ SQL- и FTS-tools переехали в отдельный плагин `boba-to
                                         (`[cli.kb.confluence.ingest.folder]`).
 - `cli/confluence/ingest/http`        — unified HTTP-ingest: bulk-discovery /
                                         `only`-spaces / явный `page_ids`
-                                        (`[cli.kb.confluence.ingest.http]`).
+                                        (`[cli.kb.confluence.ingest]`).
 - `cli/confluence/download/http`      — unified HTTP-download: те же три
                                         режима, что и у ingest
-                                        (`[cli.kb.confluence.download.http]`).
+                                        (`[cli.kb.confluence.download]`).
 
 CLI-runner'ы не используют DI: каждый инстанцирует свой `BobaFlatSettings`-
 конфиг напрямую (`cfg = Config()`) и зовёт factory-helpers/tool-функции
@@ -75,25 +74,13 @@ from __future__ import annotations
 
 from boba.db.postgres import PostgresConnection
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.tools.download.page import (
-    ConfluenceDownloadPageConfig,
-    confluence_download_page,
+from boba.tool.kb.confluence.tools.download import (
+    ConfluenceDownloadConfig,
+    confluence_download,
 )
-from boba.tool.kb.confluence.tools.download.space import (
-    ConfluenceDownloadSpaceConfig,
-    confluence_download_space,
-)
-from boba.tool.kb.confluence.tools.ingest.cql import (
-    ConfluenceIngestCqlConfig,
-    confluence_ingest_cql,
-)
-from boba.tool.kb.confluence.tools.ingest.page import (
-    ConfluenceIngestPageConfig,
-    confluence_ingest_page,
-)
-from boba.tool.kb.confluence.tools.ingest.space import (
-    ConfluenceIngestSpaceConfig,
-    confluence_ingest_space,
+from boba.tool.kb.confluence.tools.ingest import (
+    ConfluenceIngestConfig,
+    confluence_ingest,
 )
 from boba.tool.kb.confluence.tools.list.spaces import (
     ConfluenceListSpacesConfig,
@@ -124,11 +111,8 @@ from boba.tool.kb.core.tools.search.vector import (
 __all__ = [
     "ChunkerParams",
     "ConfluenceConnection",
-    "ConfluenceDownloadPageConfig",
-    "ConfluenceDownloadSpaceConfig",
-    "ConfluenceIngestCqlConfig",
-    "ConfluenceIngestPageConfig",
-    "ConfluenceIngestSpaceConfig",
+    "ConfluenceDownloadConfig",
+    "ConfluenceIngestConfig",
     "ConfluenceListSpacesConfig",
     "ConfluenceSearchCqlConfig",
     "EmbeddingModel",
@@ -141,11 +125,8 @@ __all__ = [
     "PostgresKnowledgeBaseConfig",
     "PostgresStoreConfig",
     "PostgresStoreSchema",
-    "confluence_download_page",
-    "confluence_download_space",
-    "confluence_ingest_cql",
-    "confluence_ingest_page",
-    "confluence_ingest_space",
+    "confluence_download",
+    "confluence_ingest",
     "confluence_list_spaces",
     "confluence_search_cql",
     "kb_search_hybrid",

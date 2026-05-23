@@ -16,7 +16,7 @@
         [--page-ids 123,456 | --only KEY1,KEY2 | --type global]
 
 Все параметры (confluence/dest_dir + runner-флаги) лежат в секции
-`[cli.kb.confluence.download.http]`.
+`[cli.kb.confluence.download]`.
 """
 
 from __future__ import annotations
@@ -40,31 +40,31 @@ from boba.tool.kb.confluence.request_sources.pages import (
 from boba.tool.kb.confluence.request_sources.space import (
     ConfluenceSpaceRequestSource,
 )
-from boba.tool.kb.confluence.tools.download.space import (
-    ConfluenceDownloadSpaceConfig,
+from boba.tool.kb.confluence.tools.download import (
+    ConfluenceDownloadConfig,
 )
 
-__all__ = ["ConfluenceDownloadHttpCliConfig", "main"]
+__all__ = ["ConfluenceDownloadCliConfig", "main"]
 
 logger = logging.getLogger("boba.tool.kb.cli.confluence.download.http")
 
-_PIPELINE_ID: PipelineId = PipelineId("cli.confluence.download.http")
+_PIPELINE_ID: PipelineId = PipelineId("cli.confluence.download")
 
 
-class ConfluenceDownloadHttpCliConfig(ConfluenceDownloadSpaceConfig):
+class ConfluenceDownloadCliConfig(ConfluenceDownloadConfig):
     """Self-contained CLI-конфиг unified HTTP-download runner'а.
 
-    Наследует поля `ConfluenceDownloadSpaceConfig` (`confluence`, `dest_dir`)
+    Наследует поля `ConfluenceDownloadConfig` (`confluence`, `dest_dir`)
     — runner делает то же тело через `download_pages`, переключая
     `RequestSource` по входным фильтрам.
 
-    Config-секция: `[cli.kb.confluence.download.http]`.
+    Config-секция: `[cli.kb.confluence.download]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="cli.kb.confluence.download.http",
+        config_path="cli.kb.confluence.download",
         defaults_from=("confluence",),
         use_cli=True,
     )
@@ -111,7 +111,7 @@ class ConfluenceDownloadHttpCliConfig(ConfluenceDownloadSpaceConfig):
     ] = False
 
 
-def _run_page_ids_mode(cfg: ConfluenceDownloadHttpCliConfig) -> int:
+def _run_page_ids_mode(cfg: ConfluenceDownloadCliConfig) -> int:
     if cfg.only or cfg.skip:
         logger.warning(
             "page_ids задан — игнорирую only=%s, skip=%s, space_type=%s",
@@ -143,7 +143,7 @@ def _run_page_ids_mode(cfg: ConfluenceDownloadHttpCliConfig) -> int:
             pipeline_id=_PIPELINE_ID,
         )
     except Exception:
-        logger.exception("confluence.download.http page_ids-mode FAILED")
+        logger.exception("confluence.download page_ids-mode FAILED")
         return 1
     elapsed = time.monotonic() - start
 
@@ -157,7 +157,7 @@ def _run_page_ids_mode(cfg: ConfluenceDownloadHttpCliConfig) -> int:
     return 0
 
 
-def _run_spaces_mode(cfg: ConfluenceDownloadHttpCliConfig) -> int:
+def _run_spaces_mode(cfg: ConfluenceDownloadCliConfig) -> int:
     if cfg.only:
         logger.info("using only=%d space-keys (skip discovery)", len(cfg.only))
         keys: Iterator[str] = iter(cfg.only)
@@ -239,7 +239,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    cfg = ConfluenceDownloadHttpCliConfig()  # pyright: ignore[reportCallIssue]
+    cfg = ConfluenceDownloadCliConfig()  # pyright: ignore[reportCallIssue]
 
     if cfg.page_ids:
         return _run_page_ids_mode(cfg)

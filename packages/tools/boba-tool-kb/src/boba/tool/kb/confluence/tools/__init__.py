@@ -1,12 +1,13 @@
 """Confluence-tools: tool-функции, регистрируемые в фреймворке.
 
-Каждая подпапка отражает `<verb>` из конфиг-иерархии
-`[tool.kb.confluence.<verb>.<target>]`:
+Структура по `<verb>` из конфиг-иерархии `[tool.kb.confluence.<verb>]`:
 
-- `ingest/`   — `confluence_ingest_{space,page,cql}` (HTTP → KB chunks).
-- `search/`   — `confluence_search_cql` (online CQL).
-- `download/` — `confluence_download_{page,space}` (HTTP → workspace).
-- `list/`     — `confluence_list_spaces` (discovery markdown-таблица).
+- `ingest.py`   — `confluence_ingest` (unified: space_keys / page_ids / cql,
+                  HTTP → KB chunks).
+- `download.py` — `confluence_download` (unified: space_keys / page_ids,
+                  HTTP → workspace).
+- `search/`     — `confluence_search_cql` (online CQL).
+- `list/`       — `confluence_list_spaces` (discovery markdown-таблица).
 
 Операторские CLI-runner'ы — в `boba.tool.kb.cli.confluence.*`.
 """
