@@ -9,13 +9,23 @@
   sandbox-вызова в качестве `env` обычно передаётся `os.environ` (bwrap
   внутри сделает `--clearenv` и поставит свой набор через `--setenv`).
 - stdout/stderr читаются параллельно через select, обрезаются по байтам
-  на каждый поток отдельно (см. `_pump`).
+  на каждый поток отдельно (см. `_pump_stream`).
 - При таймауте: `Popen.kill()`. Для sandbox-варианта
   `bwrap --die-with-parent` гарантирует, что всё дерево потомков внутри
   песочницы умирает.
 - Результат — простой dataclass, без зависимости от ToolResult/JsonResult.
-  Обёртывание в `JsonResult` делает caller (`BashSandboxTool.execute` /
-  `BashTool.execute`).
+  Обёртывание в `JsonResult` делает caller (`bash_sandbox` / `BashTool.execute`).
+
+Два API:
+- `run_subprocess(...)` — синхронный, возвращает `RunResult` целиком.
+  Используется bash_local и тестами `_runner`.
+- `run_subprocess_stream(...)` — generator, yield-ит `(tag, line)` для
+  каждой полной строки stdout/stderr live и через `return` отдаёт
+  финальный `RunResult`. Используется `bash_sandbox` для streaming-
+  индикации прогресса в UI.
+
+`run_subprocess` реализован как drain `run_subprocess_stream` — единый
+путь, никакой дубликат Popen/pump логики.
 """
 
 from __future__ import annotations
@@ -24,10 +34,15 @@ import os
 import select
 import subprocess
 import time
-from collections.abc import Mapping
+from collections.abc import Generator, Iterator, Mapping
 from dataclasses import dataclass
 
-__all__ = ["RunResult", "ShellRunnerInvariantError", "run_subprocess"]
+__all__ = [
+    "RunResult",
+    "ShellRunnerInvariantError",
+    "run_subprocess",
+    "run_subprocess_stream",
+]
 
 
 class ShellRunnerInvariantError(Exception):
@@ -51,7 +66,7 @@ class RunResult:
     timed_out: bool
 
 
-def run_subprocess(
+def run_subprocess_stream(  # noqa: PLR0913 — keyword-only API, явный набор runtime-параметров
     argv: list[str],
     *,
     stdin_data: bytes,
@@ -59,27 +74,25 @@ def run_subprocess(
     max_output_bytes: int,
     cwd: str,
     env: Mapping[str, str],
-) -> RunResult:
-    """Запустить `argv` дочерним процессом и собрать его stdout/stderr.
+) -> Generator[tuple[str, str], None, RunResult]:
+    """Запустить `argv` как generator: yield-ит `(tag, line)` per полная строка
+    stdout/stderr live; через `return` отдаёт финальный `RunResult`.
 
-    Все параметры обязательны и валидируются на входе:
-    - `argv` — non-empty list, первый элемент — абсолютный путь к бинарю;
-    - `stdin_data=b""` означает «нет stdin» (пайп закрывается без записи);
-    - `cwd` — non-empty абсолютный путь к существующей директории;
-    - `env` — финальный dict env для дочернего процесса.
+    `tag` ∈ {`"out"`, `"err"`}. Строки — без trailing newline. Декодинг
+    utf-8 c `errors='replace'`. Незавершённый tail в конце потока (если
+    процесс не закрыл вывод newline'ом) тоже yield-ится одной финальной
+    строкой.
 
-    Контракт:
-    - возвращает `RunResult` даже на таймаут (`exit_code=-9`,
-      `timed_out=True`);
-    - не бросает `CalledProcessError`: non-zero exit — это валидный
-      результат;
-    - `stdout`/`stderr` декодируются как utf-8 с `errors='replace'`.
+    Параметры — те же, что у `run_subprocess`. Truncation/timeout
+    обрабатываются идентично: при превышении `max_output_bytes` дальнейшие
+    байты этого потока игнорируются (но yield-и продолжаются для другого
+    потока); при таймауте процесс убивается, `timed_out=True` в RunResult.
     """
     if not argv:
-        msg = "run_subprocess: argv не может быть пустым"
+        msg = "run_subprocess_stream: argv не может быть пустым"
         raise ValueError(msg)
     if not cwd:
-        msg = "run_subprocess: cwd должен быть непустой строкой"
+        msg = "run_subprocess_stream: cwd должен быть непустой строкой"
         raise ValueError(msg)
 
     started = time.monotonic()
@@ -94,7 +107,7 @@ def run_subprocess(
         env=dict(env),
     )
     _feed_stdin(proc, stdin_data)
-    out_bytes, err_bytes, trunc_out, trunc_err, timed_out = _pump(
+    out_bytes, err_bytes, trunc_out, trunc_err, timed_out = yield from _pump_stream(
         proc, timeout_sec, max_output_bytes,
     )
     duration_ms = int((time.monotonic() - started) * 1000)
@@ -108,6 +121,40 @@ def run_subprocess(
         duration_ms=duration_ms,
         timed_out=timed_out,
     )
+
+
+def run_subprocess(  # noqa: PLR0913 — keyword-only API, явный набор runtime-параметров
+    argv: list[str],
+    *,
+    stdin_data: bytes,
+    timeout_sec: int,
+    max_output_bytes: int,
+    cwd: str,
+    env: Mapping[str, str],
+) -> RunResult:
+    """Sync-обёртка над `run_subprocess_stream`: дренирует поток line-yield'ов
+    и возвращает финальный `RunResult` из `StopIteration.value`.
+
+    Контракт идентичен предыдущей не-streaming реализации:
+    - возвращает `RunResult` даже на таймаут (`exit_code=-9`,
+      `timed_out=True`);
+    - не бросает `CalledProcessError`: non-zero exit — это валидный
+      результат;
+    - `stdout`/`stderr` декодируются как utf-8 с `errors='replace'`.
+    """
+    gen = run_subprocess_stream(
+        argv,
+        stdin_data=stdin_data,
+        timeout_sec=timeout_sec,
+        max_output_bytes=max_output_bytes,
+        cwd=cwd,
+        env=env,
+    )
+    while True:
+        try:
+            next(gen)
+        except StopIteration as stop:
+            return stop.value
 
 
 def _feed_stdin(proc: subprocess.Popen[bytes], data: bytes) -> None:
@@ -129,23 +176,29 @@ def _feed_stdin(proc: subprocess.Popen[bytes], data: bytes) -> None:
         proc.stdin.close()
 
 
-def _pump(
+def _pump_stream(  # noqa: C901 — select/timeout/truncation в одном месте, разносить хуже
     proc: subprocess.Popen[bytes],
     timeout_sec: int,
     max_output_bytes: int,
-) -> tuple[bytes, bytes, bool, bool, bool]:
-    """Параллельное чтение stdout/stderr с лимитами и общим дедлайном.
+) -> Generator[tuple[str, str], None, tuple[bytes, bytes, bool, bool, bool]]:
+    """Параллельное чтение stdout/stderr с лимитами и общим дедлайном;
+    yield-ит `(tag, line)` per полная строка.
 
-    Возвращает `(stdout, stderr, trunc_out, trunc_err, timed_out)`.
+    Возвращает `(stdout_bytes, stderr_bytes, trunc_out, trunc_err, timed_out)`.
+    Незавершённый tail в pending-буфере (без trailing newline) yield-ится
+    одной финальной строкой по EOF/таймауту.
     """
     if proc.stdout is None or proc.stderr is None:
         raise ShellRunnerInvariantError(
-            "_pump: ожидались proc.stdout и proc.stderr (Popen запущен с PIPE)"
+            "_pump_stream: ожидались proc.stdout и proc.stderr (Popen запущен с PIPE)"
         )
 
     deadline = time.monotonic() + timeout_sec
     fds = {proc.stdout.fileno(): "out", proc.stderr.fileno(): "err"}
+    # Полные собранные байты — для финального RunResult.stdout/stderr.
     buffers = {"out": bytearray(), "err": bytearray()}
+    # Незакрытый "current line" — копит байты между newline'ами для yield.
+    pending = {"out": bytearray(), "err": bytearray()}
     truncated = {"out": False, "err": False}
     open_fds = set(fds.keys())
     timed_out = False
@@ -160,8 +213,19 @@ def _pump(
             continue
         for fd in ready:
             tag = fds[fd]
-            if not _read_chunk(fd, buffers[tag], truncated, tag, max_output_bytes):
+            chunk = os.read(fd, 65536)
+            if not chunk:
                 open_fds.discard(fd)
+                continue
+            _accumulate(chunk, buffers[tag], truncated, tag, max_output_bytes)
+            pending[tag].extend(chunk)
+            yield from _drain_lines(pending[tag], tag)
+
+    # Хвост (последняя строка без \n) — тоже yield, чтобы UI её увидел.
+    for tag in ("out", "err"):
+        if pending[tag]:
+            yield (tag, pending[tag].decode("utf-8", errors="replace"))
+            pending[tag].clear()
 
     if timed_out:
         proc.kill()
@@ -182,19 +246,17 @@ def _pump(
     )
 
 
-def _read_chunk(
-    fd: int,
+def _accumulate(
+    chunk: bytes,
     buf: bytearray,
     truncated: dict[str, bool],
     tag: str,
     max_output_bytes: int,
-) -> bool:
-    """Прочитать порцию из fd, обрезать по лимиту. Возврат: True если fd жив."""
-    chunk = os.read(fd, 65536)
-    if not chunk:
-        return False
+) -> None:
+    """Дописать `chunk` в `buf` с учётом cap'а. После переполнения tag
+    помечается truncated; дальнейшие байты этого потока игнорируются."""
     if truncated[tag]:
-        return True
+        return
     room = max_output_bytes - len(buf)
     if len(chunk) <= room:
         buf.extend(chunk)
@@ -202,4 +264,18 @@ def _read_chunk(
         if room > 0:
             buf.extend(chunk[:room])
         truncated[tag] = True
-    return True
+
+
+def _drain_lines(
+    pending: bytearray, tag: str,
+) -> Iterator[tuple[str, str]]:
+    """Yield-ит `(tag, line)` для каждой полной строки в `pending`; хвост
+    после последнего `\\n` остаётся в `pending` (накопится со следующим chunk'ом).
+    """
+    while True:
+        idx = pending.find(b"\n")
+        if idx == -1:
+            return
+        line_bytes = bytes(pending[:idx])
+        del pending[: idx + 1]
+        yield (tag, line_bytes.decode("utf-8", errors="replace"))

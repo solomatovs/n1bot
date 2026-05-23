@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Generator
 from typing import Annotated, Any
 
 from pydantic import Field
 
-from boba.tool.shell._runner import RunResult, run_subprocess
+from boba.tool.shell._runner import RunResult, run_subprocess_stream
 from boba.tool.shell._sandbox import build_bwrap_argv
 from boba.tool.shell.config import BashSandboxConfig
 from boba.tools import FromConfig, tool
@@ -68,12 +69,17 @@ def bash_sandbox(
             ),
         ),
     ] = "",
-) -> dict[str, Any]:
+) -> Generator[str, None, dict[str, Any]]:
     """Выполнить shell-команду через `bash -c` в bubblewrap-песочнице.
 
     Команда выполняется в bwrap: пользователь, PID, IPC, UTS, сеть (если
     выключена в профиле) — всё в отдельных namespace'ах. Доступ к файловой
     системе ограничен выбранным профилем.
+
+    По ходу выполнения yield-ит `"[out] <line>"` / `"[err] <line>"` per
+    полная строка stdout/stderr — UI видит вывод live. Через `return`
+    отдаёт финальный payload-dict с агрегированными stdout/stderr,
+    exit_code, duration_ms и т.п.
     """
     profile_name = profile or cfg.default_profile
     profile_dto = cfg.profiles.get(profile_name)
@@ -87,7 +93,7 @@ def bash_sandbox(
         workspace_root=workspace_root,
         env=profile_dto.env_set,
     )
-    result = run_subprocess(
+    gen = run_subprocess_stream(
         argv,
         stdin_data=stdin.encode("utf-8"),
         timeout_sec=profile_dto.timeout_sec,
@@ -97,6 +103,14 @@ def bash_sandbox(
         cwd=workspace_root,
         env=os.environ,
     )
+    result: RunResult
+    while True:
+        try:
+            tag, line = next(gen)
+        except StopIteration as stop:
+            result = stop.value
+            break
+        yield f"[{tag}] {line}"
     return _result_to_payload(result, profile_name)
 
 

@@ -574,39 +574,6 @@ class ToolExecutionStarted(PhaseEvent):
         return self
 
 
-class ToolProgress(PhaseEvent):
-    """Прогресс выполнения long-running tool'а (intermediate-индикация для UI).
-
-    Эмитится `ToolExecutionMiddleware`'ом из `ToolProgressReported`-событий
-    tool-слоя. Между `ToolExecutionStarted` (старт) и `ToolResultReady` /
-    `ToolExecutionFailed` (конец) может быть произвольное число
-    `ToolProgress`-событий.
-
-    `tool_call_id` / `tool_name` дублируют `ToolExecutionStarted` — фронт
-    привязывает прогресс к нужному tool-step'у; `headline` — короткая
-    строка от tool-автора (например `indexed 12/100 pages`).
-    """
-
-    type: Literal["ToolProgress"] = "ToolProgress"
-    tool_call_id: str
-    tool_name: str
-    headline: str = ""
-
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        suffix = f" — {self.headline}" if self.headline else ""
-        self.label = f"tool progress: {self.tool_name}{suffix}"
-        if not self.details:
-            base: dict[str, str] = {
-                "id": self.tool_call_id,
-                "name": self.tool_name,
-            }
-            if self.headline:
-                base["headline"] = self.headline
-            self.details = base
-        return self
-
-
 class GenerationRetried(PhaseEvent):
     """
     LLM-слой решил повторить запрос
@@ -1062,6 +1029,41 @@ class LLMResponseStreamOpened(DiagnosticEvent):
         return self
 
 
+class ToolProgress(DiagnosticEvent):
+    """Прогресс выполнения long-running tool'а — diagnostic-телеметрия.
+
+    Эмитится `ToolExecutionMiddleware`'ом из `ToolProgressReported`-событий
+    tool-слоя. Между `ToolExecutionStarted` (старт) и `ToolResultReady` /
+    `ToolExecutionFailed` (конец) может быть произвольное число
+    `ToolProgress`-событий.
+
+    Категория `DiagnosticEvent`: события эфемерны (в HistoryService не
+    пишутся — после рестарта диалог восстановится из снапшотов
+    `ToolResultReady`/`ToolExecutionFailed`, прогрессы не нужны). Sink
+    решает, как отображать (stateless-обновление одного UI-индикатора).
+
+    `topic="tool.progress"`, `related["tool_call_id"]=...` — стандартные
+    diagnostic-крючки для фильтрации и привязки к tool-step'у.
+    """
+
+    type: Literal["ToolProgress"] = "ToolProgress"
+    tool_call_id: str
+    tool_name: str
+
+    @model_validator(mode="after")
+    def _derive(self) -> Self:
+        self.topic = "tool.progress"
+        if not self.headline:
+            self.headline = f"tool progress: {self.tool_name}"
+        if not self.details:
+            self.details = {
+                "id": self.tool_call_id,
+                "name": self.tool_name,
+            }
+        self.related = {"tool_call_id": self.tool_call_id}
+        return self
+
+
 class ToolArgsResolved(DiagnosticEvent):
     """Полный `ToolCall` с args - готов к исполнению.
 
@@ -1116,7 +1118,6 @@ AgentEvent = (
     | AnswerStarted
     | ToolCallStreamStarted
     | ToolExecutionStarted
-    | ToolProgress
     | GenerationRetried
     | GenerationDone
     | GenerationResult
@@ -1145,6 +1146,7 @@ AgentEvent = (
     | LLMTimingAnchor
     | LLMResponseStreamOpened
     | ToolArgsResolved
+    | ToolProgress
 )
 
 
@@ -1156,7 +1158,6 @@ AgentEventName: TypeAlias = Literal[
     "AnswerStarted",
     "ToolCallStreamStarted",
     "ToolExecutionStarted",
-    "ToolProgress",
     "GenerationRetried",
     "GenerationDone",
     "GenerationResult",
@@ -1180,6 +1181,7 @@ AgentEventName: TypeAlias = Literal[
     "LLMTimingAnchor",
     "LLMResponseStreamOpened",
     "ToolArgsResolved",
+    "ToolProgress",
 ]
 
 
@@ -1297,7 +1299,6 @@ def _register_core_events() -> None:
         AnswerStarted,
         ToolCallStreamStarted,
         ToolExecutionStarted,
-        ToolProgress,
         GenerationRetried,
         GenerationDone,
         GenerationResult,
@@ -1321,6 +1322,7 @@ def _register_core_events() -> None:
         LLMTimingAnchor,
         LLMResponseStreamOpened,
         ToolArgsResolved,
+        ToolProgress,
     ):
         AgentEventRegistry.register(cls)
 

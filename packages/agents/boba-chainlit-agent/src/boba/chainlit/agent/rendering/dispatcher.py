@@ -151,7 +151,7 @@ class AgentEventDispatcher:
     def __init__(self, target: EventRenderTarget) -> None:
         self._target = target
 
-    async def handle(self, event: AgentEvent) -> None:  # noqa: C901, PLR0912
+    async def handle(self, event: AgentEvent) -> None:  # noqa: C901, PLR0912, PLR0915
         # Порядок case'ов: сначала конкретные delta/snapshot/phase события,
         # потом fall-through на категории. У pydantic-discriminated unions
         # тип проверяется по полю `type`, поэтому конкретный case

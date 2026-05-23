@@ -234,29 +234,19 @@ class ChainlitLiveTarget(EventRenderTarget):
     # --- диагностика -------------------------------------------------
 
     async def diagnostic(self, event: DiagnosticEvent) -> None:
-        """Рендерит диагностику как сворачиваемый Step - только если включено.
+        """Stateless обновление общего status-индикатора текстом event.headline.
 
-        Структура step:
-            name   - "diag: {topic}" (краткий заголовок для свёрнутого вида)
-            input  - key=value по `details` (структурные данные)
-            output - `body` если есть, иначе пусто
+        Все `DiagnosticEvent`-ы обрабатываются одинаково — их `headline`
+        перезаписывает текст единственного `_status_step` (тот же, что
+        используется для PhaseEvent-fallback'а). Никакой type-/topic-
+        маршрутизации, никакой привязки к конкретному tool-step'у:
+        UI просто показывает «что сейчас происходит» по последнему headline.
+
+        Пустой headline игнорируется (не сбрасываем status, чтобы не
+        мерцал на «технических» событиях без человекочитаемой строки).
         """
-        if not self._diagnostic:
-            return
-        step = cl.Step(
-            name=f"diag: {event.topic}" if event.topic else "diag",
-            type="run",
-            parent_id=self._parent_id,
-        )
-        await step.send()
-        if event.details:
-            details_text = "\n".join(
-                f"{k}={v}" for k, v in event.details.items() if v
-            )
-            if details_text:
-                await step.stream_token(details_text, is_input=True)
-        if event.body:
-            await _finalize_step(step, event.body)
+        if event.headline:
+            await self.status(event.headline)
 
     # --- internals ---------------------------------------------------
 
