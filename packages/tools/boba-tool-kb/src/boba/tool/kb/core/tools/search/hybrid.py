@@ -61,11 +61,7 @@ def kb_search_hybrid(
         str,
         Field(
             min_length=1,
-            description=(
-                "Поисковый запрос на естественном языке — будет преобразован "
-                "в embedding (для vector-канала) и в plainto_tsquery (для "
-                "FTS-канала). Гибридный результат склеивается через RRF."
-            ),
+            description="Поисковый запрос на естественном языке"
         ),
     ],
     top_k: Annotated[
@@ -73,23 +69,18 @@ def kb_search_hybrid(
         Field(
             ge=1,
             description=(
-                "Сколько hits вернуть. По умолчанию 5; жёсткий потолок — "
-                "в `cfg.max_top_k`."
+                "Сколько hits вернуть. По умолчанию 5"
             ),
         ),
     ] = 5,
 ) -> list[dict[str, Any]]:
-    """Hybrid semantic search (vector + FTS + RRF) по KB-коллекциям.
-
-    Ищет внутри коллекций, наполненных через `confluence_ingest_*` или
-    оператором (например, CLI `boba.tool.kb.cli.kbdoc.ingest`). Список
-    целевых коллекций — pre-настроенный оператором (`cfg.collections`);
-    LLM их не выбирает. SQL-уровень: `WHERE collection = ANY(...)` —
-    поиск по объединению.
+    """
+    Hybrid semantic search (vector + FTS + RRF) по KB-коллекциям
 
     Возвращает JSON-массив hits, упорядоченный по релевантности
-    (меньшее distance = ближе/релевантнее). Каждый hit — `{id, distance,
-    link, metadata, snippet}`. `distance` — отрицательный RRF-скор.
+    (меньшее distance = ближе/релевантнее).
+    Каждый hit — `{id, distance, link, metadata, snippet}`
+    `distance` — отрицательный RRF-скор.
     """
     if top_k > cfg.max_top_k:
         raise RuntimeError(

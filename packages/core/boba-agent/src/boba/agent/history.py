@@ -141,15 +141,11 @@ class JsonLinesHistoryService(HistoryService):
     только агрегированные снапшоты и переходы фаз
     """
 
-    _DEFAULT_FILENAME = "history.jsonl"
+    _FILENAME = "history.jsonl"
 
-    def __init__(
-        self,
-        workspace: HistoryWorkspaceShell,
-        filename: str = _DEFAULT_FILENAME,
-    ) -> None:
+    def __init__(self, workspace: HistoryWorkspaceShell) -> None:
         self._workspace = workspace
-        self._filename = filename
+        self._filename = self._FILENAME
         self._ensure_file()
 
     def _ensure_file(self) -> None:
