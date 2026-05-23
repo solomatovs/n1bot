@@ -19,9 +19,10 @@ from boba.agent.events import (
     GenerationRetried,
     GenerationStarted,
     InvalidToolCallReceived,
+    LLMResponseStreamOpened,
+    LLMTimingAnchor,
     RefusalComplete,
     RefusalToken,
-    ResponseStarted,
     ThinkingComplete,
     ThinkingStarted,
     ThinkingToken,
@@ -73,10 +74,17 @@ class LLMToAgentConverter:
                     request_id=rid,
                     model=model,
                     has_tools=has_tools,
+                )
+                yield LLMTimingAnchor(
+                    request_id=rid,
+                    phase="request_sent",
                     monotonic_ns=ts,
                 )
             case LLMResponseStarted(request_id=rid, monotonic_ns=ts):
-                yield ResponseStarted(request_id=rid, monotonic_ns=ts)
+                yield LLMResponseStreamOpened(
+                    request_id=rid,
+                    monotonic_ns=ts,
+                )
             case LLMGenerationStarted(request_id=rid):
                 yield GenerationStarted(request_id=rid)
             case LLMThinkingStarted(request_id=rid):
