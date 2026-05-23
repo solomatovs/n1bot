@@ -7,6 +7,12 @@
 attachment-requests) и для переписывания `<img src>` / `<a href>` в HTML
 на локальные пути при offline-сохранении.
 
+`AttachmentFilter` — allowlist по `media_type` и `title` (fnmatch-globs),
+применяется на fan-out стадии: если фильтр сконфигурирован, attachment
+обязан совпасть хотя бы с одним паттерном; иначе он не запрашивается
+вообще (никакого HTTP). Дефолтный пустой фильтр пропускает всё —
+старое поведение.
+
 JSON-кодек симметричен (`encode → decode → encode` идемпотентно); схема
 сериализации — массив объектов с теми же именами полей, что у dataclass'а.
 """
@@ -14,10 +20,13 @@ JSON-кодек симметричен (`encode → decode → encode` идем�
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
+from fnmatch import fnmatchcase
 from typing import Any
 
 __all__ = [
+    "AttachmentFilter",
     "AttachmentInfo",
     "decode_attachment",
     "decode_attachments",
@@ -28,7 +37,8 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class AttachmentInfo:
-    """Один attachment Confluence-страницы — то, что нужно download'у и rewriter'у ссылок.
+    """Один attachment Confluence-страницы —
+    то, что нужно download'у и rewriter'у ссылок.
 
     - `id`             — attachment id (`att123…`); используется как часть `source_id`
                          при fan-out'е, и в локальном имени файла как fallback.
@@ -50,8 +60,56 @@ class AttachmentInfo:
     version: int
 
 
+@dataclass(frozen=True, slots=True)
+class AttachmentFilter:
+    """Allowlist-фильтр attachment'ов по `media_type` и/или `title`.
+
+    Семантика:
+    - Оба списка пустые → `matches` всегда True (бэк-совместимость).
+    - Иначе attachment проходит, если совпадает хотя бы с одним паттерном
+      из любого непустого списка (OR между списками и внутри списка).
+    - Паттерны — `fnmatch`-globs (`*`, `?`, `[abc]`); case-insensitive,
+      сравнение по lower-case с обеих сторон.
+
+    Примеры:
+    - `media_type_patterns=("application/pdf",)` — только PDF по MIME.
+    - `title_patterns=("*.pdf", "*.docx")` — PDF и DOCX по расширению.
+    - `media_type_patterns=("image/*",), title_patterns=("*.pdf",)`
+      — любые картинки ИЛИ файлы с расширением `.pdf`.
+    """
+
+    media_type_patterns: tuple[str, ...] = ()
+    title_patterns: tuple[str, ...] = ()
+
+    @classmethod
+    def from_lists(
+        cls,
+        media_types: Iterable[str] = (),
+        titles: Iterable[str] = (),
+    ) -> AttachmentFilter:
+        """Конструктор из любых итерируемых (list/tuple) — для cfg-полей."""
+        return cls(
+            media_type_patterns=tuple(media_types),
+            title_patterns=tuple(titles),
+        )
+
+    def is_passthrough(self) -> bool:
+        """True, если фильтр пустой — fan-out пропускает все attachment'ы."""
+        return not self.media_type_patterns and not self.title_patterns
+
+    def matches(self, att: AttachmentInfo) -> bool:
+        """True, если attachment проходит фильтр (или фильтр пустой)."""
+        if self.is_passthrough():
+            return True
+        mt = att.media_type.lower()
+        if any(fnmatchcase(mt, p.lower()) for p in self.media_type_patterns):
+            return True
+        title = att.title.lower()
+        return any(fnmatchcase(title, p.lower()) for p in self.title_patterns)
+
+
 def encode_attachments(value: tuple[AttachmentInfo, ...]) -> str:
-    """`tuple[AttachmentInfo, ...]` → JSON-массив объектов (для Metadata wire-format)."""
+    """`tuple[AttachmentInfo, ...]` → JSON-массив объектов (для Metadata wire-format)"""
     return json.dumps([asdict(a) for a in value], ensure_ascii=False)
 
 

@@ -14,6 +14,12 @@
     BOBA_CONFIG_PATH=./local/config.toml \\
         .venv/bin/python -m boba.tool.kb.cli.confluence.download.http \\
         [--page-ids 123,456 | --only KEY1,KEY2 | --type global]
+        [--attachment-media-types application/pdf,image/*]
+        [--attachment-titles *.pdf,report-*]
+
+Allowlist-фильтры вложений (`--attachment-media-types`, `--attachment-titles`)
+работают по fnmatch-globs; OR-семантика между списками; пустые → старое
+поведение (качаются ВСЕ вложения). Отсеянные не запрашиваются по HTTP.
 
 Все параметры (confluence/dest_dir + runner-флаги) лежат в секции
 `[cli.kb.confluence.download]`.
@@ -31,6 +37,7 @@ from pydantic import Field
 from boba.indexing import PipelineId
 from boba.settings import BobaSettingsConfigDict, StringList
 from boba.tool.kb.confluence._download_common import download_pages
+from boba.tool.kb.confluence.attachments import AttachmentFilter
 from boba.tool.kb.confluence.request_sources._common import (
     confluence_discover_spaces,
 )
@@ -71,15 +78,14 @@ class ConfluenceDownloadCliConfig(ConfluenceDownloadConfig):
 
     space_type: Annotated[
         Literal["global", "personal", "any"],
-        Field(description="Фильтр по типу space при discovery."),
+        Field(description="Фильтр по типу space при discovery"),
     ] = "global"
 
     only: Annotated[
         StringList,
         Field(
             description=(
-                "Список space-keys: качать ТОЛЬКО их (skip discovery). "
-                'CSV в env (`A,B`), TOML-array (`["A", "B"]`).'
+                "Список space-keys: качать ТОЛЬКО их (skip discovery)"
             ),
         ),
     ] = []  # noqa: RUF012 — pydantic-side default, не shared mutable state
@@ -111,6 +117,20 @@ class ConfluenceDownloadCliConfig(ConfluenceDownloadConfig):
     ] = False
 
 
+def _build_attachment_filter(cfg: ConfluenceDownloadCliConfig) -> AttachmentFilter:
+    flt = AttachmentFilter.from_lists(
+        media_types=cfg.attachment_media_types,
+        titles=cfg.attachment_titles,
+    )
+    if not flt.is_passthrough():
+        logger.info(
+            "attachment filter: media_types=%s titles=%s",
+            list(flt.media_type_patterns),
+            list(flt.title_patterns),
+        )
+    return flt
+
+
 def _run_page_ids_mode(cfg: ConfluenceDownloadCliConfig) -> int:
     if cfg.only or cfg.skip:
         logger.warning(
@@ -133,6 +153,7 @@ def _run_page_ids_mode(cfg: ConfluenceDownloadCliConfig) -> int:
         body_format=cfg.confluence.body_format,
     )
 
+    att_filter = _build_attachment_filter(cfg)
     start = time.monotonic()
     try:
         result = download_pages(
@@ -141,6 +162,7 @@ def _run_page_ids_mode(cfg: ConfluenceDownloadCliConfig) -> int:
             dest_dir=cfg.dest_dir,
             as_markdown=cfg.as_markdown,
             pipeline_id=_PIPELINE_ID,
+            attachment_filter=att_filter,
         )
     except Exception:
         logger.exception("confluence.download page_ids-mode FAILED")
@@ -176,6 +198,7 @@ def _run_spaces_mode(cfg: ConfluenceDownloadCliConfig) -> int:
         )
         keys = (k for k in keys if k not in skip_set)
 
+    att_filter = _build_attachment_filter(cfg)
     totals = {"saved": 0, "failed": 0}
     start = time.monotonic()
     processed = 0
@@ -194,6 +217,7 @@ def _run_spaces_mode(cfg: ConfluenceDownloadCliConfig) -> int:
                 dest_dir=cfg.dest_dir,
                 as_markdown=cfg.as_markdown,
                 pipeline_id=_PIPELINE_ID,
+                attachment_filter=att_filter,
             )
         except Exception:
             logger.exception(

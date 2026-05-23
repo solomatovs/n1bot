@@ -22,6 +22,11 @@
     --only KEY1,KEY2,...          space-keys whitelist (skip discovery)
     --skip KEY1,KEY2,...          space-keys blacklist
     --prune                       prune_missing=True
+    --attachment-media-types G,…  allowlist fnmatch-globs по `attachment.media_type`
+                                  (напр. `application/pdf`, `image/*`)
+    --attachment-titles G,…       allowlist fnmatch-globs по `attachment.title`
+                                  (напр. `*.pdf`, `report-*`). OR с media-types.
+                                  Если оба пусты — индексируются ВСЕ вложения.
 
 Все параметры (store/embedding/chunker/confluence/collection + runner-флаги)
 лежат в секции `[cli.kb.confluence.ingest]`.

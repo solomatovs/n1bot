@@ -27,16 +27,20 @@ attachment-media-types).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Iterator
 
 import httpx
 
 from boba.indexing import PipelineContext, RawDocument, RequestSource, Transport
+from boba.tool.kb.confluence.attachments import AttachmentFilter
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.decoder import ConfluenceJsonDecoder
 from boba.tool.kb.confluence.keys import ConfluenceKeys
 from boba.tool.kb.confluence.request_sources._common import make_attachment_request
 from boba.transport.http import HttpRequest
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "ConfluenceContentTransport",
@@ -60,11 +64,13 @@ class ConfluenceContentTransport(Transport[HttpRequest]):
         body_format: str,
         base_url: str,
         auth: httpx.Auth | None,
+        attachment_filter: AttachmentFilter | None = None,
     ) -> None:
         self._inner = inner
         self._decoder = ConfluenceJsonDecoder(body_format=body_format)
         self._base_url = base_url
         self._auth = auth
+        self._attachment_filter = attachment_filter or AttachmentFilter()
 
     def name(self) -> str:
         return "ConfluenceContentTransport"
@@ -87,16 +93,18 @@ class ConfluenceContentTransport(Transport[HttpRequest]):
                     auth=self._auth,
                     transport=self._inner,
                     pctx=ctx,
+                    att_filter=self._attachment_filter,
                 )
 
 
-def _iter_attachments(
+def _iter_attachments(  # noqa: PLR0913 — keyword-only helper, явный набор deps
     *,
     parent: RawDocument,
     base_url: str,
     auth: httpx.Auth | None,
     transport: Transport[HttpRequest],
     pctx: PipelineContext,
+    att_filter: AttachmentFilter | None = None,
 ) -> Iterator[RawDocument]:
     """Yield бинарные `RawDocument`'ы для каждого вложения родительской страницы.
 
@@ -106,13 +114,26 @@ def _iter_attachments(
     отдаёт raw bytes с правильным `Content-Type` в response-header,
     HttpTransport кладёт его в `TransportKeys.CONTENT_TYPE`.
 
+    `att_filter` (если задан и непустой) применяется ДО HTTP-запроса —
+    не прошедшие фильтр attachment'ы не запрашиваются вовсе. Пустой
+    фильтр (или `None`) пропускает все вложения, как раньше.
+
     Free-function (а не метод): тесты из шага 2 драйвят его напрямую с
     фейк-транспортом, без необходимости поднимать весь `ConfluenceContentTransport`.
     """
     attachments = parent.metadata.get(ConfluenceKeys.ATTACHMENTS)
     if not attachments:
         return
+    flt = att_filter or AttachmentFilter()
     for att in attachments:
+        if not flt.matches(att):
+            logger.debug(
+                "attachment skipped by filter: id=%s title=%r media_type=%r",
+                att.id,
+                att.title,
+                att.media_type,
+            )
+            continue
         req = make_attachment_request(
             base_url=base_url,
             auth=auth,
@@ -122,19 +143,27 @@ def _iter_attachments(
         yield from transport.stream(pctx, [req])
 
 
-def make_confluence_transport(conn: ConfluenceConnection) -> ConfluenceContentTransport:
+def make_confluence_transport(
+    conn: ConfluenceConnection,
+    *,
+    attachment_filter: AttachmentFilter | None = None,
+) -> ConfluenceContentTransport:
     """Factory: `ConfluenceConnection` → готовый unified transport.
 
     Единственная точка, где `body_format`/`base_url`/`auth`-параметры из
     `conn` собираются в один Transport. И download, и ingest должны
     конструировать transport через эту функцию — чтобы fan-out + decode
     были общими между ними.
+
+    `attachment_filter` (опциональный) фильтрует attachment-fan-out:
+    непрошедшие даже не запрашиваются по HTTP. По умолчанию — passthrough.
     """
     return ConfluenceContentTransport(
         inner=conn.make_transport(),
         body_format=conn.body_format,
         base_url=conn.base_url,
         auth=conn.make_auth(),
+        attachment_filter=attachment_filter,
     )
 
 
@@ -143,6 +172,7 @@ def iter_confluence_documents(
     request_source: RequestSource[HttpRequest],
     conn: ConfluenceConnection,
     pctx: PipelineContext,
+    attachment_filter: AttachmentFilter | None = None,
 ) -> Iterator[RawDocument]:
     """Стрим `RawDocument` из Confluence: source → ConfluenceContentTransport.
 
@@ -154,10 +184,13 @@ def iter_confluence_documents(
     consumer должен полностью прочитать handle текущего документа до того,
     как пулить следующий.
 
+    `attachment_filter` (если задан) сужает поток вложений на fan-out
+    стадии — отсеянные attachment'ы не приходят даже как HTTP-запрос.
+
     `httpx.HTTPError` пробрасывается наверх — caller сам решает, как
     оборачивать (download → RuntimeError, ingest → StreamingIndexer
     через `IndexingError`).
     """
-    transport = make_confluence_transport(conn)
+    transport = make_confluence_transport(conn, attachment_filter=attachment_filter)
     for http_req in request_source.stream(pctx):
         yield from transport.stream(pctx, [http_req])

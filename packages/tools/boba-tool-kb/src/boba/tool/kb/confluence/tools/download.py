@@ -21,8 +21,9 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from boba.indexing import PipelineId
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
 from boba.tool.kb.confluence._download_common import download_pages
+from boba.tool.kb.confluence.attachments import AttachmentFilter
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.request_sources import (
     ConfluenceMultiSpaceRequestSource,
@@ -56,6 +57,28 @@ class ConfluenceDownloadConfig(BobaFlatSettings):
             "(создаётся, если не существует)."
         ),
     )
+    attachment_media_types: Annotated[
+        StringList,
+        Field(
+            description=(
+                "Allowlist fnmatch-globs для `attachment.media_type` "
+                "(напр. `application/pdf`, `image/*`). Если пусто И "
+                "`attachment_titles` пуст — скачиваются ВСЕ вложения "
+                "(старое поведение). Если задано — attachment проходит, "
+                "если матчит хоть один паттерн в любом из двух списков (OR). "
+                "Отсеянные вложения не запрашиваются по HTTP и не пишутся на диск."
+            ),
+        ),
+    ] = []  # noqa: RUF012
+    attachment_titles: Annotated[
+        StringList,
+        Field(
+            description=(
+                "Allowlist fnmatch-globs для `attachment.title` "
+                "(напр. `*.pdf`, `report-*.docx`). См. `attachment_media_types`."
+            ),
+        ),
+    ] = []  # noqa: RUF012
 
 
 @tool
@@ -124,11 +147,16 @@ def confluence_download(
             body_format=cfg.confluence.body_format,
         )
 
+    att_filter = AttachmentFilter.from_lists(
+        media_types=cfg.attachment_media_types,
+        titles=cfg.attachment_titles,
+    )
     result = download_pages(
         request_source=request_source,
         conn=cfg.confluence,
         dest_dir=cfg.dest_dir,
         as_markdown=as_markdown,
         pipeline_id=_PIPELINE_ID,
+        attachment_filter=att_filter,
     )
     return {"mode": mode_name, mode_name: mode_value, **result}

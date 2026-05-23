@@ -9,6 +9,7 @@ Self-contained tool-конфиг: содержит всё необходимое
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Annotated, Any
 
 from pydantic import Field
@@ -22,6 +23,8 @@ from boba.tool.kb.core.kb import (
 from boba.tools import FromConfig, tool
 
 __all__ = ["KbSearchHybridConfig", "kb_search_hybrid"]
+
+_DEFAULT_SQL_PATH = Path(__file__).parent / "sql" / "hybrid.sql"
 
 
 class KbSearchHybridConfig(BobaFlatSettings):
@@ -51,6 +54,17 @@ class KbSearchHybridConfig(BobaFlatSettings):
         default=20,
         ge=1,
         description="Жёсткий потолок параметра `top_k`.",
+    )
+    search_sql_path: Path = Field(
+        default_factory=lambda: _DEFAULT_SQL_PATH,
+        description=(
+            "Путь к файлу с hybrid-SQL (vector + FTS + RRF). По "
+            "умолчанию — packaged `core/tools/search/sql/hybrid.sql`. "
+            "Шаблон должен содержать identifier-placeholder'ы "
+            "`{dim}`/`{chunks_table}`/`{schema}` и bind-параметры "
+            "`%(collections|embedding|query|lang|rrf_k|rrf_pool|"
+            "snippet_chars|top_k)s`."
+        ),
     )
 
 
@@ -87,11 +101,13 @@ def kb_search_hybrid(
             f"top_k={top_k} превышает max_top_k={cfg.max_top_k}",
         )
     kb = PostgresKnowledgeBase(cfg=cfg.knowledge_base)
+    sql_template = cfg.search_sql_path.read_text(encoding="utf-8")
     try:
         hits = kb.search(
             collections=list(cfg.collections),
             query=query,
             top_k=top_k,
+            sql_template=sql_template,
         )
     except KnowledgeBaseError as e:
         raise RuntimeError(str(e)) from e

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from typing import Any, ClassVar
+from typing import Any, LiteralString, cast
 
 from psycopg import sql
 from pydantic import BaseModel, Field
@@ -112,6 +112,7 @@ class PostgresKnowledgeBase:
         collections: list[str],
         query: str,
         top_k: int,
+        sql_template: str,
     ) -> list[SearchHit]:
         """Гибридный hybrid retrieval с Reciprocal Rank Fusion.
 
@@ -129,10 +130,16 @@ class PostgresKnowledgeBase:
         `distance` в результате — **отрицательный RRF-скор**: семантика
         «меньше = ближе/релевантнее», как у chromadb-distance. Чистый
         cosine-distance остаётся доступен через `PostgresChunkStore`.
+
+        `sql_template` — текст SQL с identifier-placeholder'ами
+        `{dim}`/`{chunks_table}`/`{schema}` и bind-параметрами
+        `%(collections|embedding|query|lang|rrf_k|rrf_pool|snippet_chars|top_k)s`.
+        Источник — packaged-файл из `core/tools/search/sql/hybrid.sql` или
+        operator-override через `[tool.kb.search.hybrid].search_sql_path`.
         """
         embedding = list(self._embedder.embed_query(query))
 
-        query_sql = self._SEARCH_SQL.format(
+        query_sql = sql.SQL(cast(LiteralString, sql_template)).format(
             dim=sql.Literal(self._embedder.dim()),
             chunks_table=self._cfg.tables.chunks_ident(),
             schema=self._cfg.tables.schema_ident(),
@@ -175,6 +182,7 @@ class PostgresKnowledgeBase:
         collections: list[str],
         query: str,
         top_k: int,
+        sql_template: str,
     ) -> Iterable[SearchHit]:
         """Чистый vector top-K (cosine via `<=>`) без FTS-канала.
 
@@ -187,9 +195,15 @@ class PostgresKnowledgeBase:
 
         Snippet режется до `snippet_chars` (как и в `search`), метадата
         нормализуется тем же `_row_metadata`.
+
+        `sql_template` — текст SQL с identifier-placeholder'ами
+        `{dim}`/`{chunks_table}` и bind-параметрами
+        `%(collections|embedding|snippet_chars|top_k)s`. Источник —
+        packaged-файл `core/tools/search/sql/vector.sql` или operator-
+        override через `[tool.kb.search.vector].search_sql_path`.
         """
         embedding = list(self._embedder.embed_query(query))
-        query_sql = self._VECTOR_SEARCH_SQL.format(
+        query_sql = sql.SQL(cast(LiteralString, sql_template)).format(
             dim=sql.Literal(self._embedder.dim()),
             chunks_table=self._cfg.tables.chunks_ident(),
         )
@@ -235,69 +249,3 @@ class PostgresKnowledgeBase:
                 out.setdefault(key, str(value))
         return out
 
-    # SQL для поиска векторов совместно с полнотекстовым поисков
-    # возвращает единный набор. WHERE collection = ANY(%(collections)s) —
-    # psycopg сериализует list[str] в text[].
-    _SEARCH_SQL: ClassVar[sql.SQL] = sql.SQL("""
-    WITH vec AS (
-        SELECT chunk_id,
-               row_number() OVER (
-                   ORDER BY (embedding::vector({dim})) <=> %(embedding)s::vector
-               ) AS rk
-        FROM {chunks_table}
-        WHERE collection = ANY(%(collections)s) AND embedding IS NOT NULL
-        ORDER BY (embedding::vector({dim})) <=> %(embedding)s::vector
-        LIMIT %(rrf_pool)s
-    ),
-    fts AS (
-        SELECT chunk_id,
-               row_number() OVER (
-                   ORDER BY ts_rank_cd(tsv, q) DESC
-               ) AS rk
-        FROM {chunks_table},
-             plainto_tsquery(%(lang)s::regconfig,
-             {schema}.immutable_unaccent(%(query)s)) q
-        WHERE collection = ANY(%(collections)s) AND tsv @@ q
-        ORDER BY ts_rank_cd(tsv, q) DESC
-        LIMIT %(rrf_pool)s
-    ),
-    fused AS (
-        SELECT
-            COALESCE(v.chunk_id, f.chunk_id) AS chunk_id,
-            (CASE WHEN v.rk IS NULL THEN 0.0
-                  ELSE 1.0 / (%(rrf_k)s + v.rk) END)
-            + (CASE WHEN f.rk IS NULL THEN 0.0
-                    ELSE 1.0 / (%(rrf_k)s + f.rk) END) AS rrf
-        FROM vec v
-        FULL OUTER JOIN fts f USING (chunk_id)
-    )
-    SELECT c.chunk_id,
-           c.source_id,
-           c.chunk_index,
-           c.content_hash,
-           c.metadata,
-           c.tags,
-           LEFT(c.format_content, %(snippet_chars)s) AS snippet,
-           fused.rrf AS rrf
-    FROM fused
-    JOIN {chunks_table} c USING (chunk_id)
-    WHERE c.collection = ANY(%(collections)s)
-    ORDER BY fused.rrf DESC
-    LIMIT %(top_k)s
-    """)
-
-    # SQL для поиска только в векторной таблицу
-    _VECTOR_SEARCH_SQL: ClassVar[sql.SQL] = sql.SQL("""
-    SELECT c.chunk_id,
-           c.source_id,
-           c.chunk_index,
-           c.content_hash,
-           c.metadata,
-           c.tags,
-           LEFT(c.format_content, %(snippet_chars)s) AS snippet,
-           (c.embedding::vector({dim})) <=> %(embedding)s::vector AS distance
-    FROM {chunks_table} c
-    WHERE c.collection = ANY(%(collections)s) AND c.embedding IS NOT NULL
-    ORDER BY distance ASC
-    LIMIT %(top_k)s
-    """)
