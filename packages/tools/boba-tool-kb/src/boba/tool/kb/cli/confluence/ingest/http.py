@@ -3,11 +3,13 @@
 Покрывает все варианты HTTP-индексации одной командой:
 
 - `page_ids=[]` + `only=[]` + `skip=[]` → discovery всех spaces (`space_type`),
-  per-space loop через `confluence_ingest_space` с агрегированными метриками.
+  per-space loop через `confluence_ingest(space_keys=[key])` с агрегированными
+  метриками (per-key для операторской видимости и continue-on-failure).
 - `page_ids=[]` + `only=[A, B]` → ингест только указанных space-ключей
   (skip discovery), `skip` всё ещё применяется как blacklist.
-- `page_ids=[ID1, ID2]` → ингест явных страниц через `confluence_ingest_page`.
-  `only`/`skip`/`space_type` игнорируются (warn в лог если заданы).
+- `page_ids=[ID1, ID2]` → ингест явных страниц через
+  `confluence_ingest(page_ids=[...])`. `only`/`skip`/`space_type` игнорируются
+  (warn в лог если заданы).
 
 Применение:
     BOBA_CONFIG_PATH=./local/config.toml \\
@@ -22,7 +24,7 @@
     --prune                       prune_missing=True
 
 Все параметры (store/embedding/chunker/confluence/collection + runner-флаги)
-лежат в секции `[cli.kb.confluence.ingest.http]`.
+лежат в секции `[cli.kb.confluence.ingest]`.
 """
 
 from __future__ import annotations
@@ -38,33 +40,32 @@ from boba.settings import BobaSettingsConfigDict, StringList
 from boba.tool.kb.confluence.request_sources._common import (
     confluence_discover_spaces,
 )
-from boba.tool.kb.confluence.tools.ingest.page import confluence_ingest_page
-from boba.tool.kb.confluence.tools.ingest.space import (
-    ConfluenceIngestSpaceConfig,
-    confluence_ingest_space,
+from boba.tool.kb.confluence.tools.ingest import (
+    ConfluenceIngestConfig,
+    confluence_ingest,
 )
 
-__all__ = ["ConfluenceIngestHttpCliConfig", "main"]
+__all__ = ["ConfluenceIngestCliConfig", "main"]
 
 logger = logging.getLogger("boba.tool.kb.cli.confluence.ingest.http")
 
 
-class ConfluenceIngestHttpCliConfig(ConfluenceIngestSpaceConfig):
+class ConfluenceIngestCliConfig(ConfluenceIngestConfig):
     """Self-contained CLI-конфиг unified HTTP-ingest runner'а.
 
-    Наследует поля `ConfluenceIngestSpaceConfig`
+    Наследует поля `ConfluenceIngestConfig`
     (store/embedding/chunker/confluence/collection). `@tool` — лишь маркер,
-    не wrapper: прямой вызов tool-функций (`confluence_ingest_space` и
-    `confluence_ingest_page`) с `cfg=self` работает по duck-typing'у —
-    поля идентичны у обоих tool-конфигов.
+    не wrapper: прямой вызов `confluence_ingest(cfg=self, ...)` работает
+    напрямую. CLI добавляет своими полями `only`/`skip`/`space_type`/`prune`
+    бизнес-логику discovery + per-space loop поверх unified tool'а.
 
-    Config-секция: `[cli.kb.confluence.ingest.http]`.
+    Config-секция: `[cli.kb.confluence.ingest]`.
     """
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="cli.kb.confluence.ingest.http",
+        config_path="cli.kb.confluence.ingest",
         defaults_from=("postgres", "kb.storage", "embedding", "confluence"),
         use_cli=True,
     )
@@ -78,8 +79,7 @@ class ConfluenceIngestHttpCliConfig(ConfluenceIngestSpaceConfig):
         StringList,
         Field(
             description=(
-                "Список space-keys: ингестить ТОЛЬКО их (skip discovery). "
-                'CSV в env (`A,B`), TOML-array (`["A", "B"]`).'
+                "Список space-keys: индексировать ТОЛЬКО их (skip discovery). "
             ),
         ),
     ] = []  # noqa: RUF012 — pydantic-side default, не shared mutable state
@@ -93,10 +93,8 @@ class ConfluenceIngestHttpCliConfig(ConfluenceIngestSpaceConfig):
         StringList,
         Field(
             description=(
-                "Список page_id: ингестить ТОЛЬКО эти страницы. "
-                "Перекрывает `only`/`skip`/`space_type` (warn в лог если "
-                "заданы вместе). CSV в env (`123,456`), TOML-array "
-                '(`["123", "456"]`).'
+                "Список page_id: индексировать только эти страницы. "
+                "Перекрывает `only`/`skip`/`space_type`"
             ),
         ),
     ] = []  # noqa: RUF012
@@ -107,7 +105,7 @@ class ConfluenceIngestHttpCliConfig(ConfluenceIngestSpaceConfig):
     ] = False
 
 
-def _run_page_ids_mode(cfg: ConfluenceIngestHttpCliConfig) -> int:
+def _run_page_ids_mode(cfg: ConfluenceIngestCliConfig) -> int:
     if cfg.only or cfg.skip:
         logger.warning(
             "page_ids задан — игнорирую only=%s, skip=%s, space_type=%s",
@@ -124,13 +122,13 @@ def _run_page_ids_mode(cfg: ConfluenceIngestHttpCliConfig) -> int:
 
     start = time.monotonic()
     try:
-        result: dict[str, Any] = confluence_ingest_page(
+        result: dict[str, Any] = confluence_ingest(
             cfg=cfg,
             page_ids=list(cfg.page_ids),
             prune_missing=cfg.prune,
         )
     except Exception:
-        logger.exception("confluence.ingest.http page_ids-mode FAILED")
+        logger.exception("confluence.ingest page_ids-mode FAILED")
         return 1
     elapsed = time.monotonic() - start
 
@@ -145,7 +143,7 @@ def _run_page_ids_mode(cfg: ConfluenceIngestHttpCliConfig) -> int:
     return 0 if result.get("failed", 0) == 0 else 1
 
 
-def _run_spaces_mode(cfg: ConfluenceIngestHttpCliConfig) -> int:
+def _run_spaces_mode(cfg: ConfluenceIngestCliConfig) -> int:
     if cfg.only:
         logger.info("using only=%d space-keys (skip discovery)", len(cfg.only))
         keys: Iterator[str] = iter(cfg.only)
@@ -176,7 +174,7 @@ def _run_spaces_mode(cfg: ConfluenceIngestHttpCliConfig) -> int:
         processed = i
         space_start = time.monotonic()
         try:
-            result: dict[str, Any] = confluence_ingest_space(
+            result: dict[str, Any] = confluence_ingest(
                 cfg=cfg,
                 space_keys=[key],
                 prune_missing=cfg.prune,
@@ -231,7 +229,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    cfg = ConfluenceIngestHttpCliConfig()  # pyright: ignore[reportCallIssue]
+    cfg = ConfluenceIngestCliConfig()  # pyright: ignore[reportCallIssue]
 
     if cfg.page_ids:
         return _run_page_ids_mode(cfg)
