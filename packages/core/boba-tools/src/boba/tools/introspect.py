@@ -83,6 +83,20 @@ class CallPlan:
     return_type: Any
     is_generator: bool
 
+    def get_llm_kwargs(self, args: BaseModel) -> dict[str, Any]:
+        """LLM-аргументы (распарсенный `args`) → kwargs для вызова target'а.
+
+        Используется `getattr` (не `model_dump()`) — не разворачиваем
+        nested-BaseModel-поля в dict'ы. Tool получит args как написано в
+        сигнатуре (например, `XConfig`-инстанс через `FromConfig`, который
+        обычно резолвится по DI, но в редких случаях может попасть и в
+        args_model — pydantic-формы).
+        """
+        return {
+            name: getattr(args, name)
+            for name in self.args_model.model_fields
+        }
+
 
 def introspect_callable(obj: Any) -> CallPlan:
     """Разобрать callable (функцию или callable-инстанс/класс) в `CallPlan`.

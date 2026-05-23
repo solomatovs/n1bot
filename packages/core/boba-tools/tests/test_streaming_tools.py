@@ -1,22 +1,22 @@
-"""DishkaTool.stream — единственный публичный API, два внутренних режима.
+"""DishkaTool.stream — контракт `yield = progress, return = result`.
 
-Покрывает дуальную семантику адаптера: plan.is_generator определяет, как
-именно DishkaTool превратит target в поток `ToolEvent`'ов. Снаружи —
-один и тот же контракт `Iterator[ToolEvent]`, заканчивающийся ровно одним
-`ToolStreamCompleted` (этот терминальный yield — и есть «tool result»).
+Покрывает три стиля tool-авторства, которые поддерживает инфраструктура:
 
-Режимы:
+1. **Plain function** (`def f -> X: return X`) — старый стиль. Framework
+   зовёт функцию, оборачивает результат в `ToolStreamCompleted`. Прогресса нет.
 
-- **plain function** (`@tool def f(...) -> T: return ...`): `stream()`
-  возвращает один-единственный `ToolStreamCompleted` с обёрнутым результатом.
+2. **Generator (raw yields)** — tool yield-ит любые значения, framework
+   оборачивает каждый в `ToolProgressReported`. Результат — через
+   `return X` (StopIteration.value → `ToolStreamCompleted`).
+   Tool-author **ничего не оборачивает руками**.
 
-- **generator function**
-  (`@tool def f(...) -> Generator[ToolEvent, None, T]: ...`):
-  `stream()` пробрасывает все yield'ы как `ToolProgressReported` и завершает
-  поток `ToolStreamCompleted` со значением, переданным через `return`.
+3. **Generator (explicit TPR)** — tool yield-ит `ToolProgressReported`
+   явно (для richer details/severity). Framework пропускает их без
+   изменений. Результат всё равно через `return`.
 
-Error-кейсы:
-- generator yield-нувший НЕ-ToolEvent → ToolExecutionError из stream().
+Error-кейс:
+- Tool yield-нул `ToolStreamCompleted` — контракт нарушен (TSC должен
+  приходить через `return`) → `ToolExecutionError`.
 """
 
 from __future__ import annotations
@@ -44,18 +44,37 @@ from boba.tools.domain import (
 from boba.tools.framework import StaticToolSource, ToolRegistry
 from boba.tools.introspect import introspect_callable
 
+# --------------------------------------------------------------------------- #
+# Tool fixtures: три стиля авторства
+# --------------------------------------------------------------------------- #
+
 
 @tool
 class ExecuteEcho:
-    """Plain-function tool: returns TextResult immediately."""
+    """Plain-function tool: returns TextResult напрямую (без yield-ов)."""
 
     def __call__(self, text: str) -> ToolResult:
         return TextResult(text=text)
 
 
 @tool
-def streaming_counter(count: int) -> Generator[ToolEvent, None, dict]:
-    """Generator tool: yields N progress events, returns summary dict."""
+def idiomatic_counter(count: int) -> Generator[str, None, dict]:
+    """Идиоматический generator: yield-ит raw values для прогресса,
+    `return` для результата. Framework сам обернёт каждое.
+    """
+    for i in range(count):
+        yield f"step {i + 1}/{count}"
+    return {"total": count}
+
+
+@tool
+def explicit_event_counter(
+    count: int,
+) -> Generator[ToolProgressReported, None, dict]:
+    """Generator с явными `ToolProgressReported` для richer details.
+
+    Framework пропускает их без изменений, результат всё равно через `return`.
+    """
     for i in range(count):
         yield ToolProgressReported(
             headline=f"step {i + 1}/{count}",
@@ -65,11 +84,9 @@ def streaming_counter(count: int) -> Generator[ToolEvent, None, dict]:
     return {"total": count}
 
 
-@tool
-def streaming_bad_yield(dummy: int) -> Generator[object, None, dict]:
-    """Generator tool с нарушением контракта: yield'ит мусор."""
-    yield "not a ToolEvent"  # type: ignore[misc]
-    return {"total": 1}
+# --------------------------------------------------------------------------- #
+# Test infra
+# --------------------------------------------------------------------------- #
 
 
 def _make_dishka_tool(target: object, source: ToolSourceId) -> DishkaTool:
@@ -97,12 +114,12 @@ def _executor_with(*targets: object) -> tuple[ToolRegistry, list[str]]:
 
 
 # --------------------------------------------------------------------------- #
-# Plain-function tool
+# Plain function (no yields, just return)
 # --------------------------------------------------------------------------- #
 
 
 def test_plain_function_stream_yields_single_completed():
-    """`@tool def f(...) -> X`: stream() → один ToolStreamCompleted."""
+    """`@tool def f(...) -> X`: stream() → один ToolStreamCompleted без прогрессов."""
     registry, [tool_id] = _executor_with(ExecuteEcho)
     executor = registry.executor()
 
@@ -120,13 +137,13 @@ def test_plain_function_stream_yields_single_completed():
 
 
 # --------------------------------------------------------------------------- #
-# Generator tool
+# Generator: raw yields = progress, return = result
 # --------------------------------------------------------------------------- #
 
 
-def test_generator_tool_yields_progress_then_completed():
-    """Generator-tool: N ToolProgressReported + 1 ToolStreamCompleted в конце."""
-    registry, [tool_id] = _executor_with(streaming_counter)
+def test_generator_raw_yields_wrapped_as_progress():
+    """Каждый yield → ToolProgressReported, `return X` → ToolStreamCompleted."""
+    registry, [tool_id] = _executor_with(idiomatic_counter)
     executor = registry.executor()
 
     events = list(
@@ -136,6 +153,7 @@ def test_generator_tool_yields_progress_then_completed():
         ),
     )
 
+    # 3 yields → 3 TPR + 1 TSC из return.
     progress = [e for e in events if isinstance(e, ToolProgressReported)]
     completed = [e for e in events if isinstance(e, ToolStreamCompleted)]
     assert len(progress) == 3
@@ -144,29 +162,85 @@ def test_generator_tool_yields_progress_then_completed():
     assert len(completed) == 1
     assert isinstance(completed[0].result, JsonResult)
     assert completed[0].result.payload == {"total": 3}
-    # Терминальное событие — всегда последнее в потоке.
+    # TSC — всегда последний в потоке.
     assert events[-1] is completed[0]
 
 
-def test_generator_tool_return_value_coerced_to_tool_result():
-    """`return final_value` (StopIteration.value) coerce-ится в ToolResult.
+def test_generator_no_yields_only_return():
+    """Generator без yield-ов (только return) → один TSC, прогресса нет."""
 
-    Здесь target возвращает dict → DishkaTool оборачивает его в JsonResult
-    внутри `ToolStreamCompleted`.
-    """
-    registry, [tool_id] = _executor_with(streaming_counter)
+    @tool
+    def no_progress() -> Generator[ToolEvent, None, str]:
+        if False:
+            yield ToolProgressReported(headline="never")
+        return "done"
+
+    registry, [tool_id] = _executor_with(no_progress)
+    executor = registry.executor()
+    events = list(
+        executor.stream(
+            ToolContext(),
+            ToolCall(tool_id=tool_id, arguments={}),  # type: ignore[arg-type]
+        ),
+    )
+
+    assert len(events) == 1
+    assert isinstance(events[0], ToolStreamCompleted)
+    assert isinstance(events[0].result, TextResult)
+    assert events[0].result.text == "done"
+
+
+def test_generator_with_no_return_yields_null_result():
+    """Generator без `return` → result = None (TextResult("null"))."""
+
+    @tool
+    def progress_only(count: int):
+        for i in range(count):
+            yield f"step {i + 1}"
+
+    registry, [tool_id] = _executor_with(progress_only)
+    executor = registry.executor()
+    events = list(
+        executor.stream(
+            ToolContext(),
+            ToolCall(tool_id=tool_id, arguments={"count": 2}),  # type: ignore[arg-type]
+        ),
+    )
+
+    progress = [e for e in events if isinstance(e, ToolProgressReported)]
+    completed = [e for e in events if isinstance(e, ToolStreamCompleted)]
+    assert len(progress) == 2
+    assert len(completed) == 1
+    # Нет `return` — result = None → coerce в TextResult("null").
+    assert isinstance(completed[0].result, TextResult)
+    assert completed[0].result.text == "null"
+
+
+# --------------------------------------------------------------------------- #
+# Explicit ToolProgressReported (passthrough)
+# --------------------------------------------------------------------------- #
+
+
+def test_explicit_progress_events_passthrough():
+    """Tool yield-ит ToolProgressReported явно — framework не пересоздаёт."""
+    registry, [tool_id] = _executor_with(explicit_event_counter)
     executor = registry.executor()
 
-    completed = next(
-        e
-        for e in executor.stream(
+    events = list(
+        executor.stream(
             ToolContext(),
-            ToolCall(tool_id=tool_id, arguments={"count": 1}),  # type: ignore[arg-type]
-        )
-        if isinstance(e, ToolStreamCompleted)
+            ToolCall(tool_id=tool_id, arguments={"count": 2}),  # type: ignore[arg-type]
+        ),
     )
-    assert isinstance(completed.result, JsonResult)
-    assert completed.result.payload == {"total": 1}
+
+    progress = [e for e in events if isinstance(e, ToolProgressReported)]
+    completed = [e for e in events if isinstance(e, ToolStreamCompleted)]
+    assert len(progress) == 2
+    # Структурные поля (details) сохранились.
+    assert progress[0].details == {"i": "0"}
+    assert progress[0].severity == ToolSeverity.INFO
+    assert len(completed) == 1
+    assert completed[0].result.payload == {"total": 2}  # type: ignore[attr-defined]
 
 
 # --------------------------------------------------------------------------- #
@@ -174,16 +248,24 @@ def test_generator_tool_return_value_coerced_to_tool_result():
 # --------------------------------------------------------------------------- #
 
 
-def test_generator_bad_yield_raises_tool_execution_error():
-    """Generator, yield-нувший НЕ-ToolEvent — wire-контракт нарушен."""
-    registry, [tool_id] = _executor_with(streaming_bad_yield)
+def test_yielded_tsc_is_contract_violation():
+    """Tool yield-нул ToolStreamCompleted — контракт нарушен (TSC через return)."""
+
+    @tool
+    def yields_tsc() -> Generator[ToolEvent, None, None]:
+        yield ToolStreamCompleted(result=TextResult(text="wrong"))
+
+    registry, [tool_id] = _executor_with(yields_tsc)
     executor = registry.executor()
 
-    with pytest.raises(ToolExecutionError, match=r"streaming tool .* yielded str"):
+    with pytest.raises(
+        ToolExecutionError,
+        match=r"yielded ToolStreamCompleted",
+    ):
         list(
             executor.stream(
                 ToolContext(),
-                ToolCall(tool_id=tool_id, arguments={"dummy": 1}),  # type: ignore[arg-type]
+                ToolCall(tool_id=tool_id, arguments={}),  # type: ignore[arg-type]
             ),
         )
 
@@ -196,4 +278,5 @@ def test_generator_bad_yield_raises_tool_execution_error():
 def test_plan_is_generator_flag_is_set_at_introspect():
     """`introspect_callable` ставит `is_generator` один раз на этапе сборки."""
     assert introspect_callable(ExecuteEcho).is_generator is False
-    assert introspect_callable(streaming_counter).is_generator is True
+    assert introspect_callable(idiomatic_counter).is_generator is True
+    assert introspect_callable(explicit_event_counter).is_generator is True

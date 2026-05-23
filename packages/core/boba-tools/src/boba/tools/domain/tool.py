@@ -216,8 +216,9 @@ class Tool(
     ) -> Iterator[ToolEvent]:
         """Subclass-hook: yield-ит `ToolEvent`'ы выполнения tool'а.
 
-        Реализация обязана yield-нуть в конце ровно один `ToolStreamCompleted`
-        с финальным результатом. До этого может yield-ить любое число
+        Идиоматический контракт: реализация yield-ит **последним** событием
+        `ToolStreamCompleted(result=...)` — это и есть результат tool'а.
+        До этого может yield-ить любое число
         `ToolProgressReported` для индикации прогресса в UI.
 
         Базовый класс не предоставляет дефолт — каждый subclass решает сам,
