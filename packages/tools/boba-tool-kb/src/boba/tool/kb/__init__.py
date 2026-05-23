@@ -64,6 +64,9 @@ SQL- и FTS-tools переехали в отдельный плагин `boba-to
 - `cli/confluence/download/http`      — unified HTTP-download: те же три
                                         режима, что и у ingest
                                         (`[cli.kb.confluence.download]`).
+- `cli/search/render`                 — рендер kb_search_* SQL-шаблона со
+                                        всеми bind'ами инлайнено для ad-hoc
+                                        прогона в psql (`[cli.kb.search.render]`).
 
 CLI-runner'ы не используют DI: каждый инстанцирует свой `BobaFlatSettings`-
 конфиг напрямую (`cfg = Config()`) и зовёт factory-helpers/tool-функции

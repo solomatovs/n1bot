@@ -79,6 +79,17 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
+            "name": "KB CLI: search.render",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "boba.tool.kb.cli.search.render",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
             "name": "Pytest: current file",
             "type": "debugpy",
             "request": "launch",

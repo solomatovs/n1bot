@@ -5,7 +5,7 @@
 --   {dim}          — размерность embedding
 --   {chunks_table} — fully-qualified имя таблицы chunks
 --
--- Bind-параметры (%(name)s):
+-- Bind-параметры (psycopg named-style):
 --   collections, embedding, snippet_chars, top_k
 select
     c.chunk_id,

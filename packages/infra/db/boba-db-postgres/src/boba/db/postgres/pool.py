@@ -5,22 +5,20 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import Any, ClassVar
 
+import psycopg
 from psycopg.rows import DictRow, dict_row
 
 from boba.db.postgres.config import PostgresConfig
 from boba.db.postgres.errors import PostgresPoolClosedError
-
-if TYPE_CHECKING:
-    import psycopg
 
 __all__ = ["PostgresPool"]
 
 logger = logging.getLogger(__name__)
 
 
-ConfigureConnection = Callable[["psycopg.Connection[Any]"], None]
+ConfigureConnection = Callable[[psycopg.Connection[Any]], None]
 """Hook на каждое новое соединение pool'а (pgvector/hstore type registration)."""
 
 
@@ -83,6 +81,23 @@ class PostgresPool:
         conn.transaction(); ...` — там pool.cursor() не подходит.
         """
         with self._pool.connection() as conn, conn.cursor() as cur:
+            yield cur
+
+    @contextmanager
+    def client_cursor(self) -> Iterator[psycopg.ClientCursor[Any]]:
+        """Connection + ClientCursor — psycopg3 client-side parameter binding.
+
+        Используется там, где нужен `cur.mogrify(query, params) → str` без
+        реального исполнения (рендер шаблона в литерально-параметризованный
+        SQL для копи-пейста / pgbench / EXPLAIN-сессии). Серверный
+        `psycopg.Cursor` не имеет `mogrify`-а — только `ClientCursor`.
+
+        Короткая запись частого паттерна:
+
+            with pool.client_cursor() as cur:
+                rendered = cur.mogrify(query, params)
+        """
+        with self._pool.connection() as conn, psycopg.ClientCursor(conn) as cur:
             yield cur
 
     @contextmanager
