@@ -35,10 +35,7 @@ def test_list_tables_returns_markdown(
     list_tables_cfg: ListTablesConfig,
 ) -> None:
     """`list_tables` без schema-фильтра возвращает таблицы user-schema'ов."""
-    result = list_tables(cfg=list_tables_cfg, schema=None)
-
-    assert {"table", "row_count", "truncated"} <= result.keys()
-    md = result["table"]
+    md = list_tables(cfg=list_tables_cfg, schema=None)
     assert isinstance(md, str)
     lines = md.splitlines()
     assert lines[0].startswith("|")
@@ -51,8 +48,8 @@ def test_list_tables_kb_chunks_visible(
     list_tables_cfg: ListTablesConfig,
 ) -> None:
     """В KB-БД должна быть `kb_chunks` (созданная bootstrap-миграцией)."""
-    result = list_tables(cfg=list_tables_cfg, schema="public")
-    assert "kb_chunks" in result["table"]
+    md = list_tables(cfg=list_tables_cfg, schema="public")
+    assert "kb_chunks" in md
 
 
 # --------------------------------------------------------------------------- #
