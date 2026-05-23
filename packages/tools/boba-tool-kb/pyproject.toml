@@ -27,6 +27,7 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
     "markdownify>=0.11,<1.0",
+    "fastembed>=0.4",
 ]
 
 [project.entry-points."boba.plugins"]
