@@ -56,17 +56,14 @@ SQL- и FTS-tools переехали в отдельный плагин `boba-to
                                         confluence-файлов (.html →
                                         ConfluenceReader, .md →
                                         MarkdownReader); two-step workflow
-                                        после `confluence/download/*`
+                                        после `confluence/download/http`
                                         (`[cli.kb.confluence.ingest.folder]`).
-- `cli/confluence/ingest/spaces`      — bulk-discovery + per-space ingest
-                                        через HTTP
-                                        (`[cli.kb.confluence.ingest.spaces]`).
-- `cli/confluence/download/page`      — скачать список page_ids
-                                        (`[cli.kb.confluence.download.page]`).
-- `cli/confluence/download/space`     — скачать весь space
-                                        (`[cli.kb.confluence.download.space]`).
-- `cli/confluence/download/spaces`    — bulk-download всех spaces
-                                        (`[cli.kb.confluence.download.spaces]`).
+- `cli/confluence/ingest/http`        — unified HTTP-ingest: bulk-discovery /
+                                        `only`-spaces / явный `page_ids`
+                                        (`[cli.kb.confluence.ingest.http]`).
+- `cli/confluence/download/http`      — unified HTTP-download: те же три
+                                        режима, что и у ingest
+                                        (`[cli.kb.confluence.download.http]`).
 
 CLI-runner'ы не используют DI: каждый инстанцирует свой `BobaFlatSettings`-
 конфиг напрямую (`cfg = Config()`) и зовёт factory-helpers/tool-функции
