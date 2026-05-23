@@ -251,8 +251,17 @@ def _current_run_step_id() -> str | None:
 
 
 async def _render_events(queue: asyncio.Queue[AgentEvent | None]) -> None:
-    """Потребитель очереди live-событий; маппит через общий диспатчер."""
-    target = ChainlitLiveTarget(parent_id=_current_run_step_id())
+    """Потребитель очереди live-событий; маппит через общий диспатчер.
+
+    Toggle `diagnostic_mode` берётся из `cl.user_session` - переключить
+    можно из UI через ChatSettings или slash-command (вне scope этого
+    файла). По умолчанию False -> диагностика не рендерится.
+    """
+    diagnostic = bool(cl.user_session.get("diagnostic_mode", False))
+    target = ChainlitLiveTarget(
+        parent_id=_current_run_step_id(),
+        diagnostic=diagnostic,
+    )
     dispatcher = AgentEventDispatcher(target)
     while True:
         event = await queue.get()

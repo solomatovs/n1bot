@@ -63,6 +63,13 @@ class AgentRunConfig(BobaFlatSettings):
         default=None,
         description="Presence penalty (-2.0–2.0).",
     )
+    diagnostic: bool = Field(
+        default=False,
+        description=(
+            "Показывать DiagnosticEvent-события (LLM-timings, "
+            "resolved tool args, прочая телеметрия). По умолчанию выкл."
+        ),
+    )
 
     def to_sampling_params(self) -> SamplingParams | None:
         """SamplingParams из опциональных полей; None если все None."""

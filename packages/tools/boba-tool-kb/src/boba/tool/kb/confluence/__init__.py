@@ -2,10 +2,11 @@
 
 Tools (каждый — self-contained tool-конфиг в своей TOML-секции):
 
-Ingest (Confluence → kb_chunks):
-- `confluence_ingest`         — unified: space_keys / page_ids / cql
-                                (LLM выбирает режим). Секция
-                                `[tool.kb.confluence.ingest]`.
+Ingest (Confluence → kb_chunks) — три отдельных tool'а, одна общая секция
+`[tool.kb.confluence.ingest]`:
+- `confluence_ingest_spaces`  — индексировать все страницы spaces.
+- `confluence_ingest_pages`   — индексировать явный список page_id.
+- `confluence_ingest_cql`     — индексировать страницы по CQL-запросу.
 
 Search (online):
 - `confluence_search_cql`     — CQL-search по реальному Confluence.
@@ -34,7 +35,9 @@ from boba.tool.kb.confluence.tools.download import (
 )
 from boba.tool.kb.confluence.tools.ingest import (
     ConfluenceIngestConfig,
-    confluence_ingest,
+    confluence_ingest_cql,
+    confluence_ingest_pages,
+    confluence_ingest_spaces,
 )
 from boba.tool.kb.confluence.tools.list.spaces import (
     ConfluenceListSpacesConfig,
@@ -52,7 +55,9 @@ __all__ = [
     "ConfluenceListSpacesConfig",
     "ConfluenceSearchCqlConfig",
     "confluence_download",
-    "confluence_ingest",
+    "confluence_ingest_cql",
+    "confluence_ingest_pages",
+    "confluence_ingest_spaces",
     "confluence_list_spaces",
     "confluence_search_cql",
 ]

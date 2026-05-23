@@ -1,15 +1,16 @@
-"""CLI-runner: unified Confluence HTTP-ingest в KB.
+"""CLI-runner: Confluence HTTP-ingest в KB.
 
 Покрывает все варианты HTTP-индексации одной командой:
 
 - `page_ids=[]` + `only=[]` + `skip=[]` → discovery всех spaces (`space_type`),
-  per-space loop через `confluence_ingest(space_keys=[key])` с агрегированными
-  метриками (per-key для операторской видимости и continue-on-failure).
+  per-space loop через `confluence_ingest_spaces(space_keys=[key])` с
+  агрегированными метриками (per-key для операторской видимости и
+  continue-on-failure).
 - `page_ids=[]` + `only=[A, B]` → ингест только указанных space-ключей
   (skip discovery), `skip` всё ещё применяется как blacklist.
 - `page_ids=[ID1, ID2]` → ингест явных страниц через
-  `confluence_ingest(page_ids=[...])`. `only`/`skip`/`space_type` игнорируются
-  (warn в лог если заданы).
+  `confluence_ingest_pages(page_ids=[...])`. `only`/`skip`/`space_type`
+  игнорируются (warn в лог если заданы).
 
 Применение:
     BOBA_CONFIG_PATH=./local/config.toml \\
@@ -47,7 +48,8 @@ from boba.tool.kb.confluence.request_sources._common import (
 )
 from boba.tool.kb.confluence.tools.ingest import (
     ConfluenceIngestConfig,
-    confluence_ingest,
+    confluence_ingest_pages,
+    confluence_ingest_spaces,
 )
 
 __all__ = ["ConfluenceIngestCliConfig", "main"]
@@ -56,13 +58,13 @@ logger = logging.getLogger("boba.tool.kb.cli.confluence.ingest.http")
 
 
 class ConfluenceIngestCliConfig(ConfluenceIngestConfig):
-    """Self-contained CLI-конфиг unified HTTP-ingest runner'а.
+    """Self-contained CLI-конфиг HTTP-ingest runner'а.
 
     Наследует поля `ConfluenceIngestConfig`
     (store/embedding/chunker/confluence/collection). `@tool` — лишь маркер,
-    не wrapper: прямой вызов `confluence_ingest(cfg=self, ...)` работает
-    напрямую. CLI добавляет своими полями `only`/`skip`/`space_type`/`prune`
-    бизнес-логику discovery + per-space loop поверх unified tool'а.
+    не wrapper: прямой вызов `confluence_ingest_{spaces,pages}(cfg=self, ...)`
+    работает напрямую. CLI добавляет своими полями `only`/`skip`/`space_type`/
+    `prune` бизнес-логику discovery + per-space loop поверх tool-функций.
 
     Config-секция: `[cli.kb.confluence.ingest]`.
     """
@@ -127,7 +129,7 @@ def _run_page_ids_mode(cfg: ConfluenceIngestCliConfig) -> int:
 
     start = time.monotonic()
     try:
-        result: dict[str, Any] = confluence_ingest(
+        result: dict[str, Any] = confluence_ingest_pages(
             cfg=cfg,
             page_ids=list(cfg.page_ids),
             prune_missing=cfg.prune,
@@ -179,7 +181,7 @@ def _run_spaces_mode(cfg: ConfluenceIngestCliConfig) -> int:
         processed = i
         space_start = time.monotonic()
         try:
-            result: dict[str, Any] = confluence_ingest(
+            result: dict[str, Any] = confluence_ingest_spaces(
                 cfg=cfg,
                 space_keys=[key],
                 prune_missing=cfg.prune,

@@ -2,8 +2,9 @@
 
 Структура по `<verb>` из конфиг-иерархии `[tool.kb.confluence.<verb>]`:
 
-- `ingest.py`   — `confluence_ingest` (unified: space_keys / page_ids / cql,
-                  HTTP → KB chunks).
+- `ingest.py`   — `confluence_ingest_spaces` / `confluence_ingest_pages` /
+                  `confluence_ingest_cql` (HTTP → KB chunks; общая секция
+                  `[tool.kb.confluence.ingest]`).
 - `download.py` — `confluence_download` (unified: space_keys / page_ids,
                   HTTP → workspace).
 - `search/`     — `confluence_search_cql` (online CQL).
