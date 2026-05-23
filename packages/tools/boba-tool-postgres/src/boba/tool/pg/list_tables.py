@@ -51,7 +51,7 @@ def list_tables(
             ),
         ),
     ] = None,
-) -> dict[str, Any]:
+) -> str:
     """
     Список таблиц/view
 
@@ -90,14 +90,9 @@ def list_tables(
     except SqlQueryError as e:
         raise RuntimeError(str(e)) from e
 
-    table_md = format_markdown_table(
+    return format_markdown_table(
         columns=result.columns,
         rows=result.rows,
         max_cell_chars=executor.max_cell_chars,
         truncated=result.truncated,
     )
-    return {
-        "table": table_md,
-        "row_count": result.row_count,
-        "truncated": result.truncated,
-    }
