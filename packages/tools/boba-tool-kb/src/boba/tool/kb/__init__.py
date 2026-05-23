@@ -45,6 +45,10 @@ Tools (что LLM реально вызывает) — каждый со сво�
 - `confluence_download`     → `[tool.kb.confluence.download]`
    unified: LLM выбирает режим через `space_keys` / `page_ids`.
 
+**Fetch** (Confluence → строка-контент прямо LLM, без ФС):
+- `confluence_fetch_page`   → `[tool.kb.confluence.fetch]`
+   одна страница по `page_id`, без attachment'ов.
+
 SQL- и FTS-tools переехали в отдельный плагин `boba-tool-postgres` (секции
 `[tool.pg.query]` / `[tool.pg.list_tables]` / `[tool.pg.describe_table]` /
 `[tool.pg.fts_search]`).
@@ -83,6 +87,10 @@ from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.tools.download import (
     ConfluenceDownloadConfig,
     confluence_download,
+)
+from boba.tool.kb.confluence.tools.fetch import (
+    ConfluenceFetchPageConfig,
+    confluence_fetch_page,
 )
 from boba.tool.kb.confluence.tools.ingest import (
     ConfluenceIngestConfig,
@@ -124,6 +132,7 @@ __all__ = [
     "ChunkerParams",
     "ConfluenceConnection",
     "ConfluenceDownloadConfig",
+    "ConfluenceFetchPageConfig",
     "ConfluenceIngestConfig",
     "ConfluenceListSpacesConfig",
     "ConfluenceSearchCqlConfig",
@@ -139,6 +148,7 @@ __all__ = [
     "PostgresStoreConfig",
     "PostgresStoreSchema",
     "confluence_download",
+    "confluence_fetch_page",
     "confluence_ingest_cql",
     "confluence_ingest_pages",
     "confluence_ingest_spaces",
