@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from typing import Annotated, Any, Literal
 
 from pydantic import Field
@@ -50,12 +50,27 @@ from boba.tool.kb.confluence.request_sources.space import (
 from boba.tool.kb.confluence.tools.download import (
     ConfluenceDownloadConfig,
 )
+from boba.tools.domain import ToolProgressReported
 
 __all__ = ["ConfluenceDownloadCliConfig", "main"]
 
 logger = logging.getLogger("boba.tool.kb.cli.confluence.download.http")
 
 _PIPELINE_ID: PipelineId = PipelineId("cli.confluence.download")
+
+
+def _drain_download(
+    gen: Generator[ToolProgressReported, None, dict[str, Any]],
+) -> dict[str, Any]:
+    """Дренирует generator-helper `download_pages`: логирует прогресс per
+    yield, возвращает финальный stats-dict из `StopIteration.value`.
+    """
+    while True:
+        try:
+            progress = next(gen)
+        except StopIteration as stop:
+            return stop.value
+        logger.info("progress: %s", progress.headline)
 
 
 class ConfluenceDownloadCliConfig(ConfluenceDownloadConfig):
@@ -156,13 +171,15 @@ def _run_page_ids_mode(cfg: ConfluenceDownloadCliConfig) -> int:
     att_filter = _build_attachment_filter(cfg)
     start = time.monotonic()
     try:
-        result = download_pages(
-            request_source=source,
-            conn=cfg.confluence,
-            dest_dir=cfg.dest_dir,
-            as_markdown=cfg.as_markdown,
-            pipeline_id=_PIPELINE_ID,
-            attachment_filter=att_filter,
+        result = _drain_download(
+            download_pages(
+                request_source=source,
+                conn=cfg.confluence,
+                dest_dir=cfg.dest_dir,
+                as_markdown=cfg.as_markdown,
+                pipeline_id=_PIPELINE_ID,
+                attachment_filter=att_filter,
+            ),
         )
     except Exception:
         logger.exception("confluence.download page_ids-mode FAILED")
@@ -211,13 +228,15 @@ def _run_spaces_mode(cfg: ConfluenceDownloadCliConfig) -> int:
             body_format=cfg.confluence.body_format,
         )
         try:
-            result: dict[str, Any] = download_pages(
-                request_source=source,
-                conn=cfg.confluence,
-                dest_dir=cfg.dest_dir,
-                as_markdown=cfg.as_markdown,
-                pipeline_id=_PIPELINE_ID,
-                attachment_filter=att_filter,
+            result = _drain_download(
+                download_pages(
+                    request_source=source,
+                    conn=cfg.confluence,
+                    dest_dir=cfg.dest_dir,
+                    as_markdown=cfg.as_markdown,
+                    pipeline_id=_PIPELINE_ID,
+                    attachment_filter=att_filter,
+                ),
             )
         except Exception:
             logger.exception(
