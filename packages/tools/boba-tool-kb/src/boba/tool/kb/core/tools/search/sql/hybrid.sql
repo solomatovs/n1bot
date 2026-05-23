@@ -7,7 +7,12 @@
 --   {schema}         — имя schema (для immutable_unaccent)
 --
 -- Bind-параметры (%(name)s):
---   collections, embedding, query, lang, rrf_k, rrf_pool, snippet_chars, top_k
+--   collections, embedding, query, rrf_k, rrf_pool, snippet_chars, top_k
+--
+-- Multilang FTS: tsquery строится как `russian || english` — совпадает с
+-- хранимым tsv из миграции 002_multilang_tsv.sql. Если оператор хочет
+-- другой набор языков, нужно: (a) новая миграция, переписывающая `tsv`,
+-- (b) форк этого файла под `[tool.kb.search.hybrid].search_sql_path`.
 with vec as (
     select
         chunk_id,
@@ -28,8 +33,10 @@ fts as (
         row_number() over (order by ts_rank_cd(tsv, q) desc) as rk
     from
         {chunks_table},
-        plainto_tsquery(%(lang)s::regconfig,
-        {schema}.immutable_unaccent(%(query)s)) q
+        (
+            plainto_tsquery('russian', {schema}.immutable_unaccent(%(query)s))
+            || plainto_tsquery('english', {schema}.immutable_unaccent(%(query)s))
+        ) q
     where 1=1
         and collection = ANY(%(collections)s)
         and tsv @@ q

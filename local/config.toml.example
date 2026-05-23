@@ -104,8 +104,9 @@ collection = "knowledge_base"
 collection_description = ""
 # Папка для files_ingest. LLM не выбирает.
 files_folder = "./local/docs"
-# Search params.
-fts_language = "russian"
+# Search params. Языки FTS зашиты в SQL-шаблон и DDL `tsv`-колонки
+# (russian||english) — см. migrations/002_multilang_tsv.sql и
+# core/tools/search/sql/hybrid.sql.
 snippet_chars = 300
 max_top_k = 20
 # RRF: k=60 стандарт; pool=40 — сколько top-K брать из каждого канала

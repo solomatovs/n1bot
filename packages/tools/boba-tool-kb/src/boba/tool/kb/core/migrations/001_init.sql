@@ -64,9 +64,8 @@ CREATE TABLE IF NOT EXISTS {chunks_table} (
 
 -- FTS-вектор хранимым GENERATED-полем: пересчитывается только при изменении
 -- format_content. `unaccent` снимает диакритику до tsvector'а — иначе
--- `café` и `cafe` не сматчатся. Конфигурация `russian` нанесена жёстко
--- (как в config.toml — fts_language); для смены требуется DROP COLUMN +
--- ADD COLUMN (новая миграция).
+-- `café` и `cafe` не сматчатся. Здесь `russian`-only — multilang (russian
+-- || english) накатывается отдельно в `002_multilang_tsv.sql`.
 DO $$
 BEGIN
     IF NOT EXISTS (
