@@ -31,8 +31,8 @@
 
 # tools (boba.plugins entry-point)
 -e ./packages/tools/boba-tool-files
--e ./packages/tools/boba-tool-html
 -e ./packages/tools/boba-tool-kb
+-e ./packages/tools/boba-tool-postgres
 -e ./packages/tools/boba-tool-shell
 
 # entry-point apps
