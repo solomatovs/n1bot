@@ -1,7 +1,7 @@
 """Read-only KB-обёртка над postgres+pgvector — для search-tools'ов.
 
 `PostgresKnowledgeBase` — тонкий wrapper над connection pool + embedder,
-с двумя операциями tool-уровня:
+с тремя операциями tool-уровня:
 
 - `search(...)`         — **гибридный** retrieval: top-K от pgvector +
                           top-K от FTS, склейка через Reciprocal Rank
@@ -11,6 +11,10 @@
                           via `<=>`). Используется `kb_search_vector`-tool'ом.
                           Полезен, когда FTS-канал шумит/мешает (короткие
                           запросы, эмбеддинг лучше ловит синонимы).
+- `fts_search(...)`     — **чистый** lexical top-K от Postgres FTS
+                          (`ts_rank_cd`). Используется `kb_search_fts`-
+                          tool'ом. Полезен для точных лексических
+                          совпадений (имена, идентификаторы, фразы).
 
 Snippet обрезан по `snippet_chars`, метадата нормализована под формат
 tool'ов (тот же shape, что и у `search`).
@@ -44,7 +48,10 @@ __all__ = [
 class PostgresKnowledgeBaseConfig(BaseModel):
     """Composite-конфиг для read-side KB.
 
-    Поля: connection + tables + embedding + RRF/FTS-params.
+    Поля: connection + tables + embedding + RRF-params. Язык(и) FTS зашиты
+    в SQL-шаблон (см. `core/tools/search/sql/hybrid.sql`) и в DDL
+    `tsv`-колонки (см. `migrations/002_multilang_tsv.sql`) — оба места
+    должны быть синхронны.
     """
 
     connection: PostgresConnection
@@ -54,15 +61,6 @@ class PostgresKnowledgeBaseConfig(BaseModel):
         default=300,
         ge=1,
         description="Максимальная длина сниппета документа в search-результатах.",
-    )
-    fts_language: str = Field(
-        default="russian",
-        description=(
-            "PostgreSQL text search configuration для tsvector колонки. "
-            "Должен быть установленным `pg_ts_config` именем (`russian`, "
-            "`english`, `simple`, ...). Меняется только пересозданием "
-            "kb_chunks (см. `migrations/001_init.sql`)."
-        ),
     )
     rrf_k: int = Field(
         default=60,
@@ -97,9 +95,8 @@ class PostgresKnowledgeBase:
         self._pool = open_kb_pool(cfg.connection)
         self._embedder = build_embedder(cfg.embedding)
         logger.info(
-            "PostgresKnowledgeBase opened dim=%d fts=%s rrf_k=%d pool=%d chunks=%s.%s",
+            "PostgresKnowledgeBase opened dim=%d rrf_k=%d pool=%d chunks=%s.%s",
             self._embedder.dim(),
-            cfg.fts_language,
             cfg.rrf_k,
             cfg.rrf_pool,
             cfg.tables.schema,
@@ -133,9 +130,10 @@ class PostgresKnowledgeBase:
 
         `sql_template` — текст SQL с identifier-placeholder'ами
         `{dim}`/`{chunks_table}`/`{schema}` и bind-параметрами
-        `%(collections|embedding|query|lang|rrf_k|rrf_pool|snippet_chars|top_k)s`.
+        `%(collections|embedding|query|rrf_k|rrf_pool|snippet_chars|top_k)s`.
         Источник — packaged-файл из `core/tools/search/sql/hybrid.sql` или
         operator-override через `[tool.kb.search.hybrid].search_sql_path`.
+        Конфиг FTS-языков зашит в самом шаблоне (default — `russian||english`).
         """
         embedding = list(self._embedder.embed_query(query))
 
@@ -152,7 +150,6 @@ class PostgresKnowledgeBase:
                         "collections": list(collections),
                         "embedding": embedding,
                         "query": query,
-                        "lang": self._cfg.fts_language,
                         "rrf_k": self._cfg.rrf_k,
                         "rrf_pool": self._cfg.rrf_pool,
                         "snippet_chars": self._cfg.snippet_chars,
@@ -229,6 +226,46 @@ class PostgresKnowledgeBase:
         except Exception as e:
             raise KnowledgeBaseError(
                 f"postgres vector search failed for collections "
+                f"{list(collections)!r}: {type(e).__name__}: {e}",
+            ) from e
+
+    def fts_search(
+        self,
+        *,
+        collections: list[str],
+        query: str,
+        top_k: int,
+        sql_template: str,
+    ) -> Iterable[SearchHit]:
+        """
+        FTS serarch top-k
+        """
+        query_sql = sql.SQL(cast(LiteralString, sql_template)).format(
+            chunks_table=self._cfg.tables.chunks_ident(),
+            schema=self._cfg.tables.schema_ident(),
+        )
+        try:
+            with self._pool.dict_cursor() as cur:
+                cur.execute(
+                    query_sql,
+                    {
+                        "collections": list(collections),
+                        "query": query,
+                        "snippet_chars": self._cfg.snippet_chars,
+                        "top_k": top_k,
+                    },
+                )
+
+                for row in cur.fetchall():
+                    yield SearchHit(
+                        id=row["chunk_id"],
+                        distance=-float(row["rank"]),
+                        metadata=self._row_metadata(row),
+                        snippet=row["snippet"] or "",
+                    )
+        except Exception as e:
+            raise KnowledgeBaseError(
+                f"postgres fts search failed for collections "
                 f"{list(collections)!r}: {type(e).__name__}: {e}",
             ) from e
 

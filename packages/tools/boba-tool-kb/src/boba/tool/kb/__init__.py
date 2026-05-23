@@ -33,6 +33,7 @@ Tools (что LLM реально вызывает) — каждый со сво�
 **Search**:
 - `kb_search_hybrid`        → `[tool.kb.search.hybrid]`
 - `kb_search_vector`        → `[tool.kb.search.vector]`
+- `kb_search_fts`           → `[tool.kb.search.fts]`
 - `confluence_search_cql`   → `[tool.kb.confluence.search.cql]`
 
 **List/Discovery**:
@@ -99,6 +100,10 @@ from boba.tool.kb.core.postgres_store import (
     PostgresStoreConfig,
 )
 from boba.tool.kb.core.postgres_store_schema import PostgresStoreSchema
+from boba.tool.kb.core.tools.search.fts import (
+    KbSearchFtsConfig,
+    kb_search_fts,
+)
 from boba.tool.kb.core.tools.search.hybrid import (
     KbSearchHybridConfig,
     kb_search_hybrid,
@@ -116,6 +121,7 @@ __all__ = [
     "ConfluenceListSpacesConfig",
     "ConfluenceSearchCqlConfig",
     "EmbeddingModel",
+    "KbSearchFtsConfig",
     "KbSearchHybridConfig",
     "KbSearchVectorConfig",
     "PostgresChunkStore",
@@ -129,6 +135,7 @@ __all__ = [
     "confluence_ingest",
     "confluence_list_spaces",
     "confluence_search_cql",
+    "kb_search_fts",
     "kb_search_hybrid",
     "kb_search_vector",
 ]
