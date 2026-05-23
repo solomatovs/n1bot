@@ -6,14 +6,19 @@
 --   {chunks_table}   — fully-qualified имя таблицы chunks
 --   {schema}         — имя schema (для immutable_unaccent)
 --
--- Bind-параметры (%(name)s):
+-- Bind-параметры (psycopg named-style):
 --   collections, embedding, query, rrf_k, rrf_pool, snippet_chars, top_k
 --
 -- Multilang FTS: tsquery строится как `russian || english` — совпадает с
 -- хранимым tsv из миграции 002_multilang_tsv.sql. Если оператор хочет
 -- другой набор языков, нужно: (a) новая миграция, переписывающая `tsv`,
 -- (b) форк этого файла под `[tool.kb.search.hybrid].search_sql_path`.
-with vec as (
+with q as (
+    select plainto_tsquery('russian', {schema}.immutable_unaccent(%(query)s))
+        || plainto_tsquery('english', {schema}.immutable_unaccent(%(query)s))
+        as tsq
+),
+vec as (
     select
         chunk_id,
         row_number() over (order by (embedding::vector({dim})) <=> %(embedding)s::vector) as rk
@@ -29,19 +34,16 @@ with vec as (
 ),
 fts as (
     select
-        chunk_id,
-        row_number() over (order by ts_rank_cd(tsv, q) desc) as rk
+        c.chunk_id,
+        row_number() over (order by ts_rank_cd(c.tsv, q.tsq) desc) as rk
     from
-        {chunks_table},
-        (
-            plainto_tsquery('russian', {schema}.immutable_unaccent(%(query)s))
-            || plainto_tsquery('english', {schema}.immutable_unaccent(%(query)s))
-        ) q
+        {chunks_table} c,
+        q
     where 1=1
-        and collection = ANY(%(collections)s)
-        and tsv @@ q
+        and c.collection = ANY(%(collections)s)
+        and c.tsv @@ q.tsq
     order by
-        ts_rank_cd(tsv, q) desc
+        ts_rank_cd(c.tsv, q.tsq) desc
     limit
         %(rrf_pool)s
 ),

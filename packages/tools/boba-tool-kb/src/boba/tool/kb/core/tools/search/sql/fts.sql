@@ -5,15 +5,14 @@
 --   {chunks_table} — fully-qualified имя таблицы chunks
 --   {schema}       — имя schema (для immutable_unaccent)
 --
--- Bind-параметры (%(name)s):
+-- Bind-параметры (psycopg named-style):
 --   collections, query, snippet_chars, top_k
 --
 -- Multilang FTS: tsquery строится как `russian || english` — совпадает с
 -- хранимым tsv из миграции 002_multilang_tsv.sql. Для смены набора языков
 -- см. комментарий в `hybrid.sql`.
 with q as (
-    select
-        plainto_tsquery('russian', {schema}.immutable_unaccent(%(query)s))
+    select plainto_tsquery('russian', {schema}.immutable_unaccent(%(query)s))
         || plainto_tsquery('english', {schema}.immutable_unaccent(%(query)s))
             as tsq
 )
