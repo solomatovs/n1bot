@@ -8,48 +8,68 @@
 --
 -- Bind-параметры (%(name)s):
 --   collections, embedding, query, lang, rrf_k, rrf_pool, snippet_chars, top_k
-WITH vec AS (
-    SELECT chunk_id,
-           row_number() OVER (
-               ORDER BY (embedding::vector({dim})) <=> %(embedding)s::vector
-           ) AS rk
-    FROM {chunks_table}
-    WHERE collection = ANY(%(collections)s) AND embedding IS NOT NULL
-    ORDER BY (embedding::vector({dim})) <=> %(embedding)s::vector
-    LIMIT %(rrf_pool)s
+with vec as (
+    select
+        chunk_id,
+        row_number() over (order by (embedding::vector({dim})) <=> %(embedding)s::vector) as rk
+    from
+        {chunks_table}
+    where 1=1
+        and collection = any(%(collections)s)
+        and embedding is not null
+    order by
+        (embedding::vector({dim})) <=> %(embedding)s::vector
+    limit
+        %(rrf_pool)s
 ),
-fts AS (
-    SELECT chunk_id,
-           row_number() OVER (
-               ORDER BY ts_rank_cd(tsv, q) DESC
-           ) AS rk
-    FROM {chunks_table},
-         plainto_tsquery(%(lang)s::regconfig,
-         {schema}.immutable_unaccent(%(query)s)) q
-    WHERE collection = ANY(%(collections)s) AND tsv @@ q
-    ORDER BY ts_rank_cd(tsv, q) DESC
-    LIMIT %(rrf_pool)s
+fts as (
+    select
+        chunk_id,
+        row_number() over (order by ts_rank_cd(tsv, q) desc) as rk
+    from
+        {chunks_table},
+        plainto_tsquery(%(lang)s::regconfig,
+        {schema}.immutable_unaccent(%(query)s)) q
+    where 1=1
+        and collection = ANY(%(collections)s)
+        and tsv @@ q
+    order by
+        ts_rank_cd(tsv, q) desc
+    limit
+        %(rrf_pool)s
 ),
-fused AS (
-    SELECT
-        COALESCE(v.chunk_id, f.chunk_id) AS chunk_id,
-        (CASE WHEN v.rk IS NULL THEN 0.0
-              ELSE 1.0 / (%(rrf_k)s + v.rk) END)
-        + (CASE WHEN f.rk IS NULL THEN 0.0
-                ELSE 1.0 / (%(rrf_k)s + f.rk) END) AS rrf
-    FROM vec v
-    FULL OUTER JOIN fts f USING (chunk_id)
+fused as (
+    select
+        coalesce(v.chunk_id, f.chunk_id) as chunk_id,
+        (
+            case when v.rk is null then 0.0
+            else 1.0 / (%(rrf_k)s + v.rk)
+            end
+        )
+        + (
+            case when f.rk is null then 0.0
+            else 1.0 / (%(rrf_k)s + f.rk)
+            end
+        ) as rrf
+    from
+        vec v
+        full join fts f using (chunk_id)
 )
-SELECT c.chunk_id,
-       c.source_id,
-       c.chunk_index,
-       c.content_hash,
-       c.metadata,
-       c.tags,
-       LEFT(c.format_content, %(snippet_chars)s) AS snippet,
-       fused.rrf AS rrf
-FROM fused
-JOIN {chunks_table} c USING (chunk_id)
-WHERE c.collection = ANY(%(collections)s)
-ORDER BY fused.rrf DESC
-LIMIT %(top_k)s
+select
+    c.chunk_id,
+    c.source_id,
+    c.chunk_index,
+    c.content_hash,
+    c.metadata,
+    c.tags,
+    left(c.format_content, %(snippet_chars)s) as snippet,
+    fused.rrf as rrf
+from
+    fused
+    join {chunks_table} c using (chunk_id)
+where
+    c.collection = any(%(collections)s)
+order by
+    fused.rrf desc
+limit
+    %(top_k)s
