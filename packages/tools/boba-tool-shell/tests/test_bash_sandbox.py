@@ -36,8 +36,17 @@ def _make_cfg(
 
 
 def _exec(cfg: BashSandboxConfig, **kwargs) -> dict:
-    """Tool как обычный callable. Возвращает payload (dict)."""
-    return bash_sandbox(cfg=cfg, **kwargs)
+    """Дренируем generator-tool и возвращаем финальный payload (StopIteration.value).
+
+    `bash_sandbox` — generator: yield-ит `[out]/[err]`-строки, через `return`
+    отдаёт итоговый dict. Тесты проверяют именно итог.
+    """
+    gen = bash_sandbox(cfg=cfg, **kwargs)
+    while True:
+        try:
+            next(gen)
+        except StopIteration as stop:
+            return stop.value
 
 
 def test_echo_inside_sandbox(tmp_path: Path):

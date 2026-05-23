@@ -140,9 +140,9 @@ def test_converter_maps_progress_to_tool_progress():
     assert ev.headline == "indexed 12/100 pages"
     assert ev.severity == Severity.WARN
     assert ev.details == {"space": "DOCS", "page_id": "950276"}
-    # label дериватся из tool_name + headline
-    assert "kb_ingest" in ev.label
-    assert "indexed 12/100 pages" in ev.label
+    # DiagnosticEvent-крючки: topic + related для UI-маршрутизации.
+    assert ev.topic == "tool.progress"
+    assert ev.related == {"tool_call_id": "tc-1"}
 
 
 def test_converter_maps_completed_to_tool_result_ready():
