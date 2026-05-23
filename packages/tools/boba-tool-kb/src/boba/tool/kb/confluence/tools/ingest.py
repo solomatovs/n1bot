@@ -19,8 +19,9 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from boba.indexing.context import PipelineId
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
 from boba.tool.kb.confluence._ingest_common import run_confluence_ingest
+from boba.tool.kb.confluence.attachments import AttachmentFilter
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.request_sources import (
     ConfluenceCqlRequestSource,
@@ -66,6 +67,27 @@ class ConfluenceIngestConfig(BobaFlatSettings):
         max_length=255,
         description="Target-коллекция в `kb_chunks`.",
     )
+    attachment_media_types: Annotated[
+        StringList,
+        Field(
+            description=(
+                "Allowlist fnmatch-globs для `attachment.media_type` "
+                "(напр. `application/pdf`, `image/*`). Если пусто И "
+                "`attachment_titles` пуст — пропускаются ВСЕ вложения "
+                "(старое поведение). Если задано — attachment проходит, "
+                "если матчит хоть один паттерн в любом из двух списков (OR)."
+            ),
+        ),
+    ] = []  # noqa: RUF012
+    attachment_titles: Annotated[
+        StringList,
+        Field(
+            description=(
+                "Allowlist fnmatch-globs для `attachment.title` "
+                "(напр. `*.pdf`, `report-*.docx`). См. `attachment_media_types`."
+            ),
+        ),
+    ] = []  # noqa: RUF012
 
 
 @tool
@@ -157,6 +179,10 @@ def confluence_ingest(
     collections_store = PostgresCollectionsStore(cfg=cfg.store)
     embedder = build_embedder(cfg.embedding)
     chunker = build_chunker(cfg.chunker)
+    att_filter = AttachmentFilter.from_lists(
+        media_types=cfg.attachment_media_types,
+        titles=cfg.attachment_titles,
+    )
     result = run_confluence_ingest(
         request_source=request_source,
         conn=cfg.confluence,
@@ -167,5 +193,6 @@ def confluence_ingest(
         collection=cfg.collection,
         prune_missing=prune_missing,
         pipeline_id=_PIPELINE_ID,
+        attachment_filter=att_filter,
     )
     return {"mode": mode_name, mode_name: mode_value, **result}

@@ -34,6 +34,7 @@ from boba.indexing.embedder import Embedder
 from boba.indexing.reader import ReaderId
 from boba.text import StructuralChunker
 from boba.tool.kb.confluence._pipeline_common import make_confluence_transport
+from boba.tool.kb.confluence.attachments import AttachmentFilter
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.reader import ConfluenceReader
 from boba.tool.kb.core.postgres_store import (
@@ -61,6 +62,7 @@ def run_confluence_ingest(  # noqa: PLR0913 — keyword-only helper, явный 
     collection: str,
     prune_missing: bool,
     pipeline_id: PipelineId,
+    attachment_filter: AttachmentFilter | None = None,
 ) -> dict[str, Any]:
     """Полный Confluence → kb_chunks pipeline для уже-собранного `RequestSource`.
 
@@ -90,7 +92,9 @@ def run_confluence_ingest(  # noqa: PLR0913 — keyword-only helper, явный 
     )
     indexer: StreamingIndexer[HttpRequest, str] = StreamingIndexer(
         request_source=request_source,
-        transport=make_confluence_transport(conn),
+        transport=make_confluence_transport(
+            conn, attachment_filter=attachment_filter,
+        ),
         decoders=(),
         reader=reader,
         chunker=chunker,

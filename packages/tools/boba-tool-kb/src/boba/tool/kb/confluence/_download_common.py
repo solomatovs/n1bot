@@ -1,4 +1,6 @@
-"""Общая запись Confluence-страниц и их вложений на ФС для unified-tool `confluence_download`.
+"""
+Общая запись Confluence-страниц и их вложений на ФС
+для unified-tool `confluence_download`
 
 Два режима tool'а (`space_keys` / `page_ids`) делают одно и то же тело:
 для каждого `HttpRequest` из переданного `RequestSource`
@@ -46,7 +48,7 @@ from boba.indexing import (
     RequestSource,
 )
 from boba.tool.kb.confluence._pipeline_common import iter_confluence_documents
-from boba.tool.kb.confluence.attachments import AttachmentInfo
+from boba.tool.kb.confluence.attachments import AttachmentFilter, AttachmentInfo
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.keys import ConfluenceKeys
 from boba.transport.http import HttpRequest
@@ -78,26 +80,34 @@ def _sanitize_component(name: str) -> str:
     return cleaned or "_"
 
 
-def download_pages(
+def download_pages(  # noqa: PLR0913 — keyword-only helper, явный набор deps
     *,
     request_source: RequestSource[HttpRequest],
     conn: ConfluenceConnection,
     dest_dir: str,
     as_markdown: bool,
     pipeline_id: PipelineId,
+    attachment_filter: AttachmentFilter | None = None,
 ) -> dict[str, Any]:
     """
     Скачивает страницы (HTML/Markdown) и их вложения (бинарь) в `dest_dir`.
 
     Возвращает `{dest_dir, saved, total}`, где `saved` — список записей вида
     `{kind, page_id, ..., path, bytes}`. `kind` ∈ {`"page"`, `"attachment"`}.
+
+    `attachment_filter` (если задан) сужает скачиваемые вложения по
+    `media_type`/`title` fnmatch-globs — отсеянные не запрашиваются по HTTP
+    и не пишутся на диск. Сами страницы фильтр не трогает.
     """
     dest_path = Path(dest_dir.rstrip("/"))
     _ensure_dir(dest_path)
 
     pctx = PipelineContext(pipeline_id=pipeline_id)
     docs = iter_confluence_documents(
-        request_source=request_source, conn=conn, pctx=pctx,
+        request_source=request_source,
+        conn=conn,
+        pctx=pctx,
+        attachment_filter=attachment_filter,
     )
     try:
         saved = list(_stream_records(docs, dest_path, as_markdown=as_markdown))
@@ -208,7 +218,9 @@ def _write_attachment(decoded: RawDocument, dest_path: Path) -> dict[str, str]:
 
 
 def _compute_page_dir(dest_path: Path, decoded: RawDocument) -> Path:
-    """`{dest}/{space?}/{ancestor1}/.../{ancestorN}/` — общее место для page и её attachments.
+    """
+    `{dest}/{space?}/{ancestor1}/.../{ancestorN}/`
+    общее место для page и её attachments.
 
     Для attachment-документа эти ключи получены от родителя через
     `make_attachment_request` (см. `_pipeline_common`), так что file_path
