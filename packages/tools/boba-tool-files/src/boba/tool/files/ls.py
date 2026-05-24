@@ -28,25 +28,26 @@ def ls(
         Field(ge=1, description="Максимум элементов в ответе. По умолчанию 200."),
     ] = 200,
 ) -> dict[str, Any]:
-    """Плоский список элементов workspace (без рекурсии).
+    """
+    Плоский список элементов workspace (без рекурсии).
 
-    При переполнении limit ответ обрезается с маркером.
-    Для рекурсии — tree.
+    Включает файлы и директории; каждый item — {path, kind}
+    Для рекурсивного обхода поддиректорий используй tree
     """
     try:
         iterator = shell.ls(path)
-        items = list(islice(iterator, limit + 1))
+        entries = list(islice(iterator, limit + 1))
     except WorkspaceError as e:
         raise RuntimeError(f"Ошибка обхода: {e}") from e
 
-    truncated = len(items) > limit
+    truncated = len(entries) > limit
     if truncated:
-        items = items[:limit]
+        entries = entries[:limit]
 
     return {
         "location": path or "/",
-        "items": items,
-        "count": len(items),
+        "items": [{"path": e.path, "kind": e.kind} for e in entries],
+        "count": len(entries),
         "truncated": truncated,
         "limit": limit,
     }

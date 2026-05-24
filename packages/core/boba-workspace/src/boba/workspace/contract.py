@@ -10,16 +10,20 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from io import BufferedIOBase, TextIOBase
-from typing import Generic, NewType, Protocol, TypeVar
+from typing import Generic, Literal, NewType, Protocol, TypeVar
 
 from boba.patterns import Specification
 
 __all__ = [
     "BinaryReadable",
+    "DirectoryEntry",
     "EntryMeta",
+    "FileEntry",
     "GrepMatch",
     "HistoryWorkspaceRegistry",
     "HistoryWorkspaceShell",
+    "LsEntry",
+    "OtherEntry",
     "ProjectWorkspaceRegistry",
     "ProjectWorkspaceShell",
     "PromptWorkspaceId",
@@ -89,6 +93,34 @@ class EntryMeta:
     size: int
     modified: datetime
     kind: str
+
+
+@dataclass(frozen=True)
+class FileEntry:
+    """Элемент ls/tree — обычный файл. Дискриминатор: `kind == "file"`."""
+
+    path: str
+    kind: Literal["file"] = "file"
+
+
+@dataclass(frozen=True)
+class DirectoryEntry:
+    """Элемент ls/tree — директория. Дискриминатор: `kind == "directory"`."""
+
+    path: str
+    kind: Literal["directory"] = "directory"
+
+
+@dataclass(frozen=True)
+class OtherEntry:
+    """Элемент ls/tree — спец-файл (symlink/socket/fifo). `kind == "other"`."""
+
+    path: str
+    kind: Literal["other"] = "other"
+
+
+LsEntry = FileEntry | DirectoryEntry | OtherEntry
+"""Discriminated union элементов ls/tree по полю `kind`."""
 
 
 class WorkspaceError(Exception):
@@ -174,15 +206,21 @@ class WorkspaceShell(ABC, Generic[TWsId]):
     @abstractmethod
     def ls(
         self, path: str | None = None, spec: Specification[str] | None = None
-    ) -> Iterator[str]:
-        """Список элементов в указанном пути (без вложенности)."""
+    ) -> Iterator[LsEntry]:
+        """Список элементов в указанном пути (без вложенности).
+
+        Включает файлы и директории; дискриминатор — поле `kind`.
+        """
         ...
 
     @abstractmethod
     def tree(
         self, path: str | None = None, spec: Specification[str] | None = None
-    ) -> Iterator[str]:
-        """Рекурсивный обход всех элементов начиная с пути."""
+    ) -> Iterator[LsEntry]:
+        """Рекурсивный обход всех элементов начиная с пути.
+
+        Включает файлы и директории; дискриминатор — поле `kind`.
+        """
         ...
 
     @abstractmethod

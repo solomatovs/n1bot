@@ -22,9 +22,13 @@ from boba.agent.workspace_fs.growbuffer import GrowBuffer
 from boba.patterns import Specification
 from boba.workspace.contract import (
     BinaryReadable,
+    DirectoryEntry,
     EntryMeta,
+    FileEntry,
     GrepMatch,
     HistoryWorkspaceShell,
+    LsEntry,
+    OtherEntry,
     ProjectWorkspaceShell,
     PromptWorkspaceId,
     PromptWorkspaceShell,
@@ -388,7 +392,11 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
 
     @contextmanager
     def _atomic_open(
-        self, path: str, mode: str, *, encoding: str | None = None,
+        self,
+        path: str,
+        mode: str,
+        *,
+        encoding: str | None = None,
     ) -> Iterator[IO[Any]]:
         """Yield открытый tmp-fd в той же директории; commit'ит fsync+`os.replace`.
 
@@ -495,9 +503,11 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
         if start.absolute.is_file():
             files: Iterator[str] = iter([start.relative])
         elif recursive:
-            files = self.tree(start.source or None)
+            files = (
+                e.path for e in self.tree(start.source or None) if e.kind == "file"
+            )
         else:
-            files = self.ls(start.source or None)
+            files = (e.path for e in self.ls(start.source or None) if e.kind == "file")
 
         found = 0
         for rel in files:
@@ -776,9 +786,9 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
             else:
                 shutil.copyfile(src_resolved.absolute, final_dst)
 
-    def _iter_files(
+    def _iter_entries(
         self, path: str | None, spec: Specification[str] | None, recursive: bool
-    ) -> Iterator[str]:
+    ) -> Iterator[LsEntry]:
         resolved = self._resolve(path or "")
         with self._map_errors(resolved):
             base = self._ensure_created(resolved)
@@ -786,23 +796,23 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
             if base.is_file():
                 rel = str(base.relative_to(self._root))
                 if spec is None or spec.check(rel):
-                    yield rel
+                    yield FileEntry(path=rel)
             elif base.is_dir():
                 for p in base.rglob("*") if recursive else base.iterdir():
-                    if p.is_file():
-                        rel = str(p.relative_to(self._root))
-                        if spec is None or spec.check(rel):
-                            yield rel
+                    rel = str(p.relative_to(self._root))
+                    if spec is not None and not spec.check(rel):
+                        continue
+                    yield self._classify(p, rel)
 
     def ls(
         self, path: str | None = None, spec: Specification[str] | None = None
-    ) -> Iterator[str]:
-        return self._iter_files(path, spec, recursive=False)
+    ) -> Iterator[LsEntry]:
+        return self._iter_entries(path, spec, recursive=False)
 
     def tree(
         self, path: str | None = None, spec: Specification[str] | None = None
-    ) -> Iterator[str]:
-        return self._iter_files(path, spec, recursive=True)
+    ) -> Iterator[LsEntry]:
+        return self._iter_entries(path, spec, recursive=True)
 
     def meta(self, path: str) -> EntryMeta:
         resolved = self._resolve(path)
@@ -821,6 +831,15 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
                 modified=datetime.fromtimestamp(st.st_mtime, tz=None),
                 kind=kind,
             )
+
+    @staticmethod
+    def _classify(p: Path, rel: str) -> LsEntry:
+        """Соотносит Path с FileEntry/DirectoryEntry/OtherEntry по типу узла ФС."""
+        if p.is_dir():
+            return DirectoryEntry(path=rel)
+        if p.is_file():
+            return FileEntry(path=rel)
+        return OtherEntry(path=rel)
 
     def _resolve(self, source: str) -> WorkspacePath:
         """Сборка физического пути; защита от symlink-escape."""
