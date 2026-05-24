@@ -29,7 +29,8 @@ from boba.tool.kb.confluence.request_sources import (
     ConfluenceMultiSpaceRequestSource,
     ConfluencePagesRequestSource,
 )
-from boba.tools import FromConfig, tool
+from boba.tools import FromConfig, FromDI, Scope, tool
+from boba.workspace.contract import ProjectWorkspaceShell
 
 __all__ = ["ConfluenceDownloadConfig", "confluence_download"]
 
@@ -79,11 +80,23 @@ class ConfluenceDownloadConfig(BobaFlatSettings):
             ),
         ),
     ] = []  # noqa: RUF012
+    max_returned_files: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Сколько путей скачанных файлов возвращать LLM в ответе. "
+            "Если задано и `total > max_returned_files` — список путей "
+            "обрезается, в ответе появляется `truncated: true` и LLM "
+            "должна получить полный список через `ls`/`tree`. "
+            "По умолчанию (`None`) — возвращаются все."
+        ),
+    )
 
 
 @tool
 def confluence_download(
     cfg: Annotated[ConfluenceDownloadConfig, FromConfig()],
+    shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
     space_keys: Annotated[
         list[str] | None,
         Field(
@@ -152,6 +165,7 @@ def confluence_download(
         titles=cfg.attachment_titles,
     )
     result = download_pages(
+        shell=shell,
         request_source=request_source,
         conn=cfg.confluence,
         dest_dir=cfg.dest_dir,
@@ -159,4 +173,17 @@ def confluence_download(
         pipeline_id=_PIPELINE_ID,
         attachment_filter=att_filter,
     )
-    return {"mode": mode_name, mode_name: mode_value, **result}
+    saved: list[dict[str, str]] = result["saved"]
+    total: int = result["total"]
+    limit = cfg.max_returned_files
+    truncated = limit is not None and total > limit
+    returned = saved[:limit] if truncated else saved
+    return {
+        "mode": mode_name,
+        mode_name: mode_value,
+        "dest_dir": result["dest_dir"],
+        "total": total,
+        "returned": len(returned),
+        "truncated": truncated,
+        "saved": returned,
+    }

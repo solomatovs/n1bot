@@ -16,11 +16,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from io import BufferedIOBase, TextIOBase
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import IO, Any, Generic, TypeVar
 
 from boba.agent.workspace_fs.growbuffer import GrowBuffer
 from boba.patterns import Specification
 from boba.workspace.contract import (
+    BinaryReadable,
     EntryMeta,
     GrepMatch,
     HistoryWorkspaceShell,
@@ -28,6 +29,7 @@ from boba.workspace.contract import (
     PromptWorkspaceId,
     PromptWorkspaceShell,
     ScratchWorkspaceShell,
+    TextReadable,
     WorkspaceDecodingError,
     WorkspaceError,
     WorkspaceId,
@@ -366,6 +368,16 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
                 resolved,
             )
 
+    def write_binary(self, path: str) -> BufferedIOBase:
+        resolved = self._resolve(path)
+        with self._map_errors(resolved):
+            try:
+                fp = open(resolved.absolute, "wb")  # noqa: SIM115
+            except FileNotFoundError:
+                resolved.absolute.parent.mkdir(parents=True, exist_ok=True)
+                fp = open(resolved.absolute, "wb")  # noqa: SIM115
+            return _WorkspaceBinaryStream(fp, resolved)  # type: ignore[arg-type]
+
     def append_text(self, path: str, encoding: str = "utf-8") -> TextIOBase:
         resolved = self._resolve(path)
         with self._map_errors(resolved):
@@ -374,10 +386,16 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
                 resolved,
             )
 
-    def atomic_write_text(
-        self, path: str, content: str, encoding: str = "utf-8",
-    ) -> None:
-        """Атомарная перезапись через tmp+fsync+`os.replace` в той же директории."""
+    @contextmanager
+    def _atomic_open(
+        self, path: str, mode: str, *, encoding: str | None = None,
+    ) -> Iterator[IO[Any]]:
+        """Yield открытый tmp-fd в той же директории; commit'ит fsync+`os.replace`.
+
+        Tmp создаётся рядом с target (`dir=target.parent`) — обходит лимиты
+        `/tmp` и гарантирует atomic rename в пределах одной FS. При любом
+        исключении внутри `with` — tmp удаляется, target не трогается.
+        """
         resolved = self._resolve(path)
         with self._map_errors(resolved):
             target = resolved.absolute
@@ -389,8 +407,8 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
             )
             tmp = Path(tmp_name)
             try:
-                with os.fdopen(fd, "w", encoding=encoding) as fh:
-                    fh.write(content)
+                with os.fdopen(fd, mode, encoding=encoding) as fh:
+                    yield fh
                     fh.flush()
                     os.fsync(fh.fileno())
                 os.replace(tmp, target)
@@ -398,15 +416,20 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
                 tmp.unlink(missing_ok=True)
                 raise
 
-    def write_binary(self, path: str) -> BufferedIOBase:
-        resolved = self._resolve(path)
-        with self._map_errors(resolved):
-            try:
-                fp = open(resolved.absolute, "wb")  # noqa: SIM115
-            except FileNotFoundError:
-                resolved.absolute.parent.mkdir(parents=True, exist_ok=True)
-                fp = open(resolved.absolute, "wb")  # noqa: SIM115
-            return _WorkspaceBinaryStream(fp, resolved)  # type: ignore[arg-type]
+    def atomic_write_text(
+        self,
+        path: str,
+        source: TextReadable,
+        encoding: str = "utf-8",
+    ) -> None:
+        """Атомарная стриминг-перезапись текста: см. `_atomic_open`."""
+        with self._atomic_open(path, "w", encoding=encoding) as fh:
+            shutil.copyfileobj(source, fh)
+
+    def atomic_write_binary(self, path: str, source: BinaryReadable) -> None:
+        """Атомарная стриминг-перезапись бинарных: см. `_atomic_open`."""
+        with self._atomic_open(path, "wb") as fh:
+            shutil.copyfileobj(source, fh)
 
     def grep(  # noqa: PLR0913 — все параметры — независимые флаги grep'а
         self,

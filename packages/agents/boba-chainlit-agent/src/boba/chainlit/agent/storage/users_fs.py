@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import uuid
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
@@ -81,4 +82,4 @@ class FsUserCatalog(UserCatalog):
             by_alias=True,
             indent=2,
         ).decode("utf-8")
-        self._shell.atomic_write_text(self._filename, payload)
+        self._shell.atomic_write_text(self._filename, io.StringIO(payload))
