@@ -7,7 +7,7 @@ from typing import Any
 
 _ALL_FILE_TOOLS = {
     "append", "cat", "cd", "cp", "edit", "grep", "ls", "mkdir",
-    "mv", "pwd", "rm", "stat", "touch", "tree", "unzip", "write",
+    "mv", "pwd", "read_bytes", "rm", "stat", "touch", "tree", "unzip", "write",
 }
 
 

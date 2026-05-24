@@ -1,8 +1,8 @@
 # boba-ext-files
 
-Builtin file-system tools для агента Boba: `cat`, `ls`, `grep`, `edit`,
-`write`, `append`, `mv`, `cp`, `rm`, `mkdir`, `touch`, `stat`, `tree`,
-`pwd`, `cd`, `unzip`. Все работают через
+Builtin file-system tools для агента Boba: `cat`, `read_bytes`, `ls`,
+`grep`, `edit`, `write`, `append`, `mv`, `cp`, `rm`, `mkdir`, `touch`,
+`stat`, `tree`, `pwd`, `cd`, `unzip`. Все работают через
 `ToolContext.project_workspace`, поэтому привязаны к
 session-workspace'у пользователя — никакого свободного доступа к
 хосту.
@@ -33,6 +33,6 @@ enable = true
 
 Без `enable = true` (или без секции вовсе) — tools пакета не
 регистрируются. `tools_allow` опционален: пустой список — все tools,
-заполненный — whitelist по именам tools (`cat`, `ls`, `grep`,
-`pwd`, `cd`, `edit`, `write`, `append`, `mv`, `cp`, `rm`, `mkdir`,
-`touch`, `stat`, `tree`, `unzip`).
+заполненный — whitelist по именам tools (`cat`, `read_bytes`, `ls`,
+`grep`, `pwd`, `cd`, `edit`, `write`, `append`, `mv`, `cp`, `rm`,
+`mkdir`, `touch`, `stat`, `tree`, `unzip`).

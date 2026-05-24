@@ -171,7 +171,8 @@ class DirectoryPromptProvider(PromptProvider):
         return self._priority
 
     def blocks(self, state: PromptState) -> Iterator[PromptBlock]:
-        for rel_path in sorted(self._workspace.ls()):
+        paths = sorted(e.path for e in self._workspace.ls() if e.kind == "file")
+        for rel_path in paths:
             if self._extensions and not rel_path.endswith(self._extensions):
                 continue
             with self._workspace.read_text(rel_path) as f:

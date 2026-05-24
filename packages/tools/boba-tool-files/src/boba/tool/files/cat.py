@@ -33,12 +33,20 @@ def cat(  # noqa: PLR0913
     ],
     encoding: Annotated[
         str,
-        Field(min_length=1, description="Кодировка файла. По умолчанию 'utf-8'."),
-    ] = "utf-8",
+        Field(
+            min_length=1,
+            description=(
+                "Кодировка файла: 'utf-8', 'cp1251', 'latin-1', и т.п. "
+                "Для бинарных файлов используй read_bytes."
+            ),
+        ),
+    ],
 ) -> dict[str, Any]:
     """Чтение содержимого файла (диапазон строк 1-based, включительно).
 
     Запрашивай окнами не шире `cat_max_lines` из конфига (default 2000).
+    Контент дополнительно ограничен `max_text_chars` (default 200_000) и
+    обрезается с `truncated=true` при превышении.
     """
     if start_line > end_line:
         raise RuntimeError(
@@ -54,29 +62,64 @@ def cat(  # noqa: PLR0913
 
     try:
         with shell.read_text(path, encoding) as f:
-            text, last = _read_range(f, start_line, end_line)
+            text, last, truncated = _read_range(
+                f, start_line, end_line, cfg.max_text_chars,
+            )
     except WorkspaceNotFoundError as e:
         raise RuntimeError(f"Файл не найден: {path}") from e
     except WorkspaceError as e:
         raise RuntimeError(f"Ошибка чтения: {e}") from e
+    except LookupError as e:
+        raise RuntimeError(
+            f"Неизвестная кодировка '{encoding}'. Используй валидную "
+            f"Python-кодировку (utf-8, cp1251, latin-1, ...).",
+        ) from e
+    except UnicodeDecodeError as e:
+        raise RuntimeError(
+            f"Не удалось декодировать {path} как '{encoding}' "
+            f"(позиция {e.start}): {e.reason}. Похоже, файл бинарный или в "
+            f"другой кодировке: для архивов (docx/xlsx/zip) используй unzip, "
+            f"для произвольных байтов — read_bytes с encoding='hex'/'base64'.",
+        ) from e
 
-    return {
+    result: dict[str, Any] = {
         "path": path,
         "start_line": start_line,
         "end_line": last,
         "content": text,
     }
+    if truncated:
+        result["truncated"] = True
+        result["max_chars"] = cfg.max_text_chars
+    return result
 
 
-def _read_range(f: TextIOBase, start: int, end: int) -> tuple[str, int]:
-    """Стримит файл построчно, возвращая только строки [start, end]."""
+def _read_range(
+    f: TextIOBase, start: int, end: int, max_chars: int,
+) -> tuple[str, int, bool]:
+    """Стримит файл, возвращая строки [start, end] с обрезкой по max_chars."""
     collected: list[str] = []
     last = start - 1
+    total = 0
+    truncated = False
     for i, line in enumerate(f, start=1):
         if i < start:
             continue
         if i > end:
             break
-        collected.append(line.rstrip("\r\n"))
+        chunk = line.rstrip("\r\n")
+        sep = 1 if collected else 0
+        remaining = max_chars - total - sep
+        if remaining <= 0:
+            truncated = True
+            break
+        if len(chunk) > remaining:
+            collected.append(chunk[:remaining])
+            total += sep + remaining
+            last = i
+            truncated = True
+            break
+        collected.append(chunk)
+        total += sep + len(chunk)
         last = i
-    return "\n".join(collected), last
+    return "\n".join(collected), last, truncated

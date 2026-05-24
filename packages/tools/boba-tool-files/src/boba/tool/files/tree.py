@@ -25,25 +25,26 @@ def tree(
         ),
     ] = None,
 ) -> dict[str, Any]:
-    """Рекурсивный обход всех файлов workspace.
+    """
+    Рекурсивный обход всех элементов папки
 
-    Плоский список путей. При переполнении limit ответ обрезается с маркером.
-    Для одного уровня — ls.
+    Включает файлы и директории; каждый item — {path, kind}
+    Для одного уровня используй ls.
     """
     try:
         iterator = shell.tree(path)
-        items = list(islice(iterator, limit + 1))
+        entries = list(islice(iterator, limit + 1))
     except WorkspaceError as e:
         raise RuntimeError(f"Ошибка обхода: {e}") from e
 
-    truncated = len(items) > limit
+    truncated = len(entries) > limit
     if truncated:
-        items = items[:limit]
+        entries = entries[:limit]
 
     return {
         "location": path or "/",
-        "items": items,
-        "count": len(items),
+        "items": [{"path": e.path, "kind": e.kind} for e in entries],
+        "count": len(entries),
         "truncated": truncated,
         "limit": limit,
     }
