@@ -99,6 +99,7 @@ def _run() -> int:
         builder.use_llm(llm)
         .register_provider(_provide_project_workspace)
         .discover_plugins()
+        .use_compact_history(max_messages=rt.max_messages)
         .use_turn(turn)
         .build()
     )

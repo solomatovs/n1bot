@@ -2,7 +2,7 @@
 
 Проверяет ключевую инвариантность миграции: после Agent.stream(query)
 журнал `HistoryService` содержит достаточно событий, чтобы
-`HistoryDialogView` восстановил полный диалог, а следующий вызов
+`AllHistoryDialogView` восстановил полный диалог, а следующий вызов
 `Agent.stream(query2)` увидел эту историю в `LLMContext.request.dialog_messages`.
 """
 
@@ -12,8 +12,8 @@ from collections.abc import Iterable
 
 from boba.agent import (
     AgentBuilder,
+    AllHistoryDialogView,
     AnswerComplete,
-    HistoryDialogView,
     TurnBuilder,
     UserQueryReceived,
 )
@@ -110,7 +110,7 @@ def test_history_journal_contains_user_query_and_assistant_snapshots():
 
 
 def test_history_view_reconstructs_full_dialog_after_run():
-    """HistoryDialogView отдаёт UserMessage + AssistantMessage из журнала одного хода"""
+    """AllHistoryDialogView отдаёт UserMessage + AssistantMessage из журнала."""
     stub = _StubLLMSource(answers=["pong"])
     llm = LLM(source=AssistantAggregator(stub))
 
@@ -123,7 +123,7 @@ def test_history_view_reconstructs_full_dialog_after_run():
 
     list(agent.stream("ping"))
 
-    view = HistoryDialogView(agent.container.get(HistoryReader))
+    view = AllHistoryDialogView(agent.container.get(HistoryReader))
     dialog = list(view.dialog_message_iter())
     assert _dialog_texts(tuple(dialog)) == [("user", "ping"), ("assistant", "pong")]
 

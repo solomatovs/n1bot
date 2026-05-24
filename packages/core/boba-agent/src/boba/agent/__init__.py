@@ -104,7 +104,11 @@ from boba.agent.prompt import (
 )
 from boba.agent.runtime_config import AgentRuntimeConfig
 from boba.agent.turn.builder import TurnBuilder, TurnReducerFactory
-from boba.agent.turn.history_view import HistoryDialogView
+from boba.agent.turn.history_view import (
+    AllHistoryDialogView,
+    CompactHistoryDialogView,
+    HistoryDialogView,
+)
 from boba.agent.turn.reducers import (
     HistoryReducer,
     ModelReducer,
@@ -131,9 +135,11 @@ __all__ = [
     "AgentEventRegistry",
     "AgentLLMFeedbackError",
     "AgentRuntimeConfig",
+    "AllHistoryDialogView",
     "AnswerComplete",
     "AnswerStarted",
     "AnswerToken",
+    "CompactHistoryDialogView",
     "ContentDeltaEvent",
     "ContentSnapshotEvent",
     "DiagnosticEvent",

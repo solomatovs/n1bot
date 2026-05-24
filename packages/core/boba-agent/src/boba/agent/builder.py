@@ -55,7 +55,11 @@ from boba.agent.middleware import (
     UserQueryRecorderMiddleware,
 )
 from boba.agent.turn.builder import TurnBuilder
-from boba.agent.turn.history_view import HistoryDialogView
+from boba.agent.turn.history_view import (
+    AllHistoryDialogView,
+    CompactHistoryDialogView,
+    HistoryDialogView,
+)
 from boba.llm.builder import LLM, LLMBuilder
 from boba.patterns import (
     Specification,
@@ -649,6 +653,7 @@ class AgentBuilder:
         self.loop = _LoopPolicy()
         self._turn: TurnBuilder | None = None
         self._error_router: AgentErrorRouter = AgentErrorRouter()
+        self._compact_max_messages: int | None = None
 
         # Дефолты:
         self.use_history(InMemoryHistoryService)
@@ -681,6 +686,17 @@ class AgentBuilder:
     def use_turn(self, turn: TurnBuilder) -> Self:
         """Описание следующего хода. Обязательно до `.build()`."""
         self._turn = turn
+        return self
+
+    def use_compact_history(self, max_messages: int) -> Self:
+        """Подключить `CompactHistoryDialogView` как дефолтный view для turn.
+
+        Прошлые `request_id` сжимаются до user+финальный text-ответ,
+        а скользящее окно оставляет последние `max_messages` сообщений.
+        Без вызова метода дефолт — `AllHistoryDialogView` (вся история).
+        Явный `TurnBuilder.with_history_view(...)` имеет приоритет.
+        """
+        self._compact_max_messages = max_messages
         return self
 
     def use_tools(self, items: Iterable[Any]) -> Self:
@@ -803,7 +819,7 @@ class AgentBuilder:
         """Собрать Agent. `terminal` — класс terminal-stage (дефолт `LLMPort`).
 
         `.use_turn(...)` обязателен. Перед сборкой Container регистрируются
-        internal-сервисы (TurnBuilder, AgentErrorRouter, HistoryDialogView,
+        internal-сервисы (TurnBuilder, AgentErrorRouter, AllHistoryDialogView,
         ToolExecutor late-binding).
         """
         if self._turn is None:
@@ -825,7 +841,7 @@ class AgentBuilder:
         registry_cell.append(registry)
 
         if not self._turn.has_history_view():
-            self._turn.with_history_view(container.get(HistoryDialogView))
+            self._turn.with_history_view(self._default_history_view(container))
         if not self._turn.has_tool_catalog():
             self._turn.with_tool_catalog(registry.catalog())
 
@@ -837,11 +853,19 @@ class AgentBuilder:
 
     def _register_internals(self) -> None:
         """
-        Зарегистрировать core-сервисы (TurnBuilder, ErrorRouter, HistoryDialogView)
+        Зарегистрировать core-сервисы (TurnBuilder, ErrorRouter, AllHistoryDialogView)
         """
         self.di.register_provider(self._provide_turn)
         self.di.register_provider(self._provide_error_router)
-        self.di.register_class(HistoryDialogView)
+        self.di.register_class(AllHistoryDialogView)
+
+    def _default_history_view(self, container: Container) -> HistoryDialogView:
+        if self._compact_max_messages is not None:
+            return CompactHistoryDialogView(
+                container.get(HistoryReader),
+                max_messages=self._compact_max_messages,
+            )
+        return container.get(AllHistoryDialogView)
 
     def _provide_turn(self) -> TurnBuilder:
         if self._turn is None:
