@@ -17,8 +17,7 @@ from typing import Literal, Self
 import httpx
 from pydantic import BaseModel, Field, model_validator
 
-from boba.tool.kb.confluence.auth import PatAuth
-from boba.transport.http import HttpTransport
+from boba.transport.http import HttpTransport, HttpxBearerAuth
 
 __all__ = ["ConfluenceConnection"]
 
@@ -103,7 +102,7 @@ class ConfluenceConnection(BaseModel):
                     password=self.auth_token,
                 )
             case "pat":
-                return PatAuth(token=self.auth_token)
+                return HttpxBearerAuth(token=self.auth_token)
             case _:
                 msg = f"Unsupported auth_method: {self.auth_method!r}"
                 raise ValueError(msg)
