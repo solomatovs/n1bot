@@ -102,6 +102,7 @@ from boba.agent.prompt import (
     PromptResult,
     PromptState,
 )
+from boba.agent.runtime_config import AgentRuntimeConfig
 from boba.agent.turn.builder import TurnBuilder, TurnReducerFactory
 from boba.agent.turn.history_view import HistoryDialogView
 from boba.agent.turn.reducers import (
@@ -129,6 +130,7 @@ __all__ = [
     "AgentEventName",
     "AgentEventRegistry",
     "AgentLLMFeedbackError",
+    "AgentRuntimeConfig",
     "AnswerComplete",
     "AnswerStarted",
     "AnswerToken",

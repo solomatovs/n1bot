@@ -177,8 +177,8 @@ class BobaFlatSettings(BaseSettings):
                 extra="forbid",
                 config_path="agent",
             )
-            core:       AppCoreConfig   = Field(default_factory=AppCoreConfig)
-            workspaces: WorkspaceLayout = Field(default_factory=WorkspaceLayout)
+            log_level: str          = "INFO"
+            openai:    OpenAIConfig = Field(default_factory=OpenAIConfig)
             ...
 
     Поддерживает произвольную вложенность под-моделей: TOML-секция остаётся

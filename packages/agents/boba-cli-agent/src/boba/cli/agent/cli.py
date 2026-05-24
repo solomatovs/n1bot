@@ -15,16 +15,13 @@ from boba.agent.turn.reducers import (
     RememberUserQueryReducer,
 )
 from boba.agent.workspace_fs import (
-    FsHistoryWorkspaceRegistry,
-    FsProjectWorkspaceRegistry,
+    FsHistoryWorkspaceShell,
+    FsProjectWorkspaceShell,
     FsPromptWorkspaceRegistry,
 )
 from boba.cli.agent.config import AgentRunConfig
 from boba.cli.agent.console_sink import ConsoleSink
-from boba.cli.agent.infra import (
-    AppConfig,
-    configure_logging,
-)
+from boba.cli.agent.infra import configure_logging
 from boba.llm.builder import LLMBuilder
 from boba.patterns import ConverterInputError
 from boba.provider.openai import (
@@ -54,41 +51,34 @@ def _run() -> int:
     """Собирает агента и либо прогоняет один запрос, либо запускает REPL."""
     builder = AgentBuilder()
 
-    app = AppConfig.load()
     run_cfg = AgentRunConfig.load()
-    configure_logging(app.core.log_level, app.core.log_file)
+    rt = run_cfg.runtime
+    configure_logging(rt.log_level, rt.log_file)
 
-    workspace_id = WorkspaceId("00000000-0000-0000-0000-000000000001")
+    workspace_id = WorkspaceId("cli")
 
     prompt_workspace = FsPromptWorkspaceRegistry(
-        root=Path(app.system_prompt_dir),
+        root=Path(rt.system_prompt_dir),
     ).get_or_create(PromptWorkspaceId("prompts"))
 
-    project_workspace = FsProjectWorkspaceRegistry(
-        base_dir=Path(app.workspaces.base_dir),
-        subdir=app.workspaces.user_subdir,
-    ).get_or_create(workspace_id)
-    if not isinstance(project_workspace, ProjectWorkspaceShell):
-        msg = (
-            f"FsProjectWorkspaceRegistry returned {type(project_workspace).__name__}, "
-            f"expected ProjectWorkspaceShell"
-        )
-        raise TypeError(msg)
-
-    history_workspace = FsHistoryWorkspaceRegistry(
-        base_dir=Path(app.workspaces.base_dir),
-        subdir=app.workspaces.system_subdir,
-    ).get_or_create(workspace_id)
+    project_workspace = FsProjectWorkspaceShell(
+        workspace_id=workspace_id,
+        root=Path(rt.user_workspace_dir),
+    )
+    history_workspace = FsHistoryWorkspaceShell(
+        workspace_id=workspace_id,
+        root=Path(rt.system_workspace_dir),
+    )
 
     llm = (
         LLMBuilder()
         .add_observer(CurlTraceChatCompletionObserver(history_workspace))
         .add_observer(HttpTraceChatCompletionObserver(history_workspace))
-        .build(use_openai(app.openai))
+        .build(use_openai(rt.openai))
     )
 
     turn = (
-        TurnBuilder(run_cfg.model)
+        TurnBuilder(rt.model)
         .system_prompt_from_directory(prompt_workspace)
         .use_reducer(RememberUserQueryReducer())
     )
@@ -142,7 +132,7 @@ def _run_repl(
 ) -> int:
     """Интерактивный цикл: читает запрос → прогоняет агента → повторяет."""
     banner = (
-        f"boba-cli-agent REPL — model={run_cfg.model}\n"
+        f"boba-cli-agent REPL — model={run_cfg.runtime.model}\n"
         f"  /exit, /quit, :q — выход\n"
         f"  /clear           — сбросить историю диалога\n"
     )
