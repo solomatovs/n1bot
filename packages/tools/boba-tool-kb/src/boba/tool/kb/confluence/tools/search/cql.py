@@ -1,14 +1,13 @@
 """Tool `confluence_search_cql` + `ConfluenceSearchCqlConfig`: online CQL-search.
 
 Полнотекстовый поиск страниц по реальному Confluence (не по KB). LLM
-передаёт строку запроса + опц. `space` ограничение; connection и
+передаёт строку запроса + список `spaces` для ограничения; connection и
 лимиты — из TOML-секции `[tool.kb.confluence.search.cql]`.
 """
 
 from __future__ import annotations
 
 from typing import Annotated, Any
-from urllib.parse import quote
 
 import httpx
 from pydantic import Field
@@ -27,7 +26,7 @@ from boba.tool.kb.confluence.request_sources.search import (
     ConfluenceCqlSearchRequestSource,
 )
 from boba.tool.kb.confluence.search_reader import ConfluenceSearchHitsReader
-from boba.tools import FromConfig, tool
+from boba.tools import FromConfig, LLMStringList, tool
 from boba.transport.http import HttpKeys
 
 __all__ = ["ConfluenceSearchCqlConfig", "confluence_search_cql"]
@@ -70,14 +69,19 @@ def confluence_search_cql(
         str,
         Field(min_length=1, description="Строка полнотекстового поиска в Confluence."),
     ],
+    spaces: Annotated[
+        LLMStringList,
+        Field(
+            description=(
+                "Ограничение поиска по space-ключам Confluence. "
+                "Пустой список — без фильтра по space'ам."
+            ),
+        ),
+    ],
     limit: Annotated[
         int,
         Field(ge=1, description="Максимум hits в ответе."),
     ] = 20,
-    space: Annotated[
-        str | None,
-        Field(description="Ограничение поиска по space."),
-    ] = None,
 ) -> list[dict[str, Any]]:
     """Полнотекстовый поиск страниц Confluence (online CQL).
 
@@ -93,7 +97,7 @@ def confluence_search_cql(
         request_source=ConfluenceCqlSearchRequestSource(
             base_url=cfg.confluence.base_url,
             auth=cfg.confluence.make_auth(),
-            cql=_build_cql(query=query, space=space),
+            cql=_build_cql(query=query, spaces=spaces),
             limit=limit,
         ),
         transport=cfg.confluence.make_transport(),
@@ -127,8 +131,18 @@ def _hit(section: Section[str]) -> dict[str, str]:
     }
 
 
-def _build_cql(query: str, space: str | None) -> str:
-    text_search_block = f'text ~ "{quote(query, safe="")}"'
-    if space:
-        return f"({text_search_block}) and (space = {space})"
-    return text_search_block
+def _cql_literal(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _build_cql(query: str, spaces: list[str]) -> str:
+    text_block = f"text ~ {_cql_literal(query)}"
+    if not spaces:
+        return text_block
+    if len(spaces) == 1:
+        space_block = f"space = {_cql_literal(spaces[0])}"
+    else:
+        joined = ", ".join(_cql_literal(s) for s in spaces)
+        space_block = f"space in ({joined})"
+    return f"({text_block}) and ({space_block})"

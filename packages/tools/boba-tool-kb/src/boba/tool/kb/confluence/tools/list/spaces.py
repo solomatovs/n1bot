@@ -55,8 +55,8 @@ def confluence_list_spaces(
         Field(
             description=(
                 "Фильтр по типу space'а: `global` (командные), `personal` "
-                "(личные user'ов), `any` (без фильтра, оба типа). По "
-                "умолчанию `global` — обычно LLM нужны только командные."
+                "(личные user'ов), `any` (без фильтра, оба типа). "
+                "По умолчанию `global`"
             ),
         ),
     ] = "global",
