@@ -19,6 +19,7 @@ from boba.chainlit.agent.rendering import (
     ChainlitLiveTarget,
 )
 from boba.chainlit.agent.state import app_state
+from boba.chainlit.agent.uploads import save_user_uploads
 from boba.workspace.contract import WorkspaceId, new_workspace_id
 
 logger = logging.getLogger(__name__)
@@ -215,6 +216,16 @@ async def on_message(message: cl.Message) -> None:
         return
 
     query = message.content
+    if message.elements:
+        uploaded = await save_user_uploads(
+            message.elements, session.project_workspace(),
+        )
+        if uploaded:
+            files_block = "\n".join(f"- {p}" for p in uploaded)
+            query = (
+                f"{message.content}\n\n"
+                f"[Прикреплённые файлы (workspace-relative):\n{files_block}]"
+            )
 
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue()
