@@ -16,6 +16,7 @@ from __future__ import annotations
 from io import BytesIO
 from pathlib import Path
 
+from boba.agent.workspace_fs.shell import FsProjectWorkspaceShell
 from boba.indexing import Metadata, RawDocument, SourceId, TransportKeys
 from boba.tool.kb.confluence._download_common import (
     _confluence_attachment_filename,
@@ -24,6 +25,17 @@ from boba.tool.kb.confluence._download_common import (
 )
 from boba.tool.kb.confluence.attachments import AttachmentInfo
 from boba.tool.kb.confluence.keys import ConfluenceKeys
+from boba.workspace.contract import ProjectWorkspaceShell
+
+
+def _mk_shell(root: Path) -> ProjectWorkspaceShell:
+    """`ProjectWorkspaceShell` поверх `root` для теста.
+
+    `_stream_records`/`_write_page`/`_write_attachment` ожидают именно
+    `WorkspaceShell`-абстракцию (mkdir / atomic_write_binary), а не
+    голый `pathlib.Path`.
+    """
+    return FsProjectWorkspaceShell(workspace_id="test", root=root)  # type: ignore[arg-type]
 
 # -------- _confluence_attachment_filename --------
 
@@ -151,12 +163,13 @@ def test_rewrite_uses_sanitized_local_filename() -> None:
 
 def test_rewrite_noop_on_no_attachments() -> None:
     html = '<img src="/download/attachments/42/x.png"/>'
-    assert _rewrite_attachment_urls(html=html, attachments=(), local_dir="42_files") == html
+    out = _rewrite_attachment_urls(html=html, attachments=(), local_dir="42_files")
+    assert out == html
 
 
 # -------- _stream_records --------
 
-def _page_doc(
+def _page_doc(  # noqa: PLR0913 — test fixture builder, явный набор metadata-полей
     *, page_id: str, space: str | None, ancestors: tuple[str, ...],
     title: str, html: str, attachments: tuple[AttachmentInfo, ...],
 ) -> RawDocument:
@@ -218,7 +231,8 @@ def test_stream_records_writes_page_html_with_rewritten_links(tmp_path: Path) ->
         att=_ATT,
         payload=b"\x89PNG\r\n...",
     )
-    records = list(_stream_records([page, att], tmp_path, as_markdown=False))
+    shell = _mk_shell(tmp_path)
+    records = list(_stream_records([page, att], shell, "", as_markdown=False))
 
     page_path = tmp_path / "DEMO" / "Root" / "Parent" / "42.html"
     att_path = tmp_path / "DEMO" / "Root" / "Parent" / "42_files" / "diagram.png"
@@ -247,7 +261,8 @@ def test_stream_records_markdown_keeps_local_paths(tmp_path: Path) -> None:
         html='<p><img src="/download/attachments/42/diagram.png?v=1" alt="d"/></p>',
         attachments=(_ATT,),
     )
-    list(_stream_records([page], tmp_path, as_markdown=True))
+    shell = _mk_shell(tmp_path)
+    list(_stream_records([page], shell, "", as_markdown=True))
     md = (tmp_path / "42.md").read_text(encoding="utf-8")
     assert "42_files/diagram.png" in md
     assert "/download/attachments/" not in md
@@ -272,7 +287,8 @@ def test_stream_records_attachment_without_space_falls_back_to_dest_root(
         att=_ATT,
         payload=b"img-bytes",
     )
-    list(_stream_records([page, att], tmp_path, as_markdown=False))
+    shell = _mk_shell(tmp_path)
+    list(_stream_records([page, att], shell, "", as_markdown=False))
     assert (tmp_path / "99.html").exists()
     assert (tmp_path / "99_files" / "diagram.png").exists()
 
@@ -303,7 +319,8 @@ def test_stream_records_yields_lazily(tmp_path: Path) -> None:
             )
             yield d
 
-    gen = _stream_records(trace([page, att]), tmp_path, as_markdown=False)
+    shell = _mk_shell(tmp_path)
+    gen = _stream_records(trace([page, att]), shell, "", as_markdown=False)
     next(gen)
     assert written == ["page"]
     next(gen)
