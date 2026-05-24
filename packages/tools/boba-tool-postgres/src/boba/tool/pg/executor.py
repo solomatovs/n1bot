@@ -54,12 +54,13 @@ class SqlExecutorConfig(BaseModel):
             "может попросить меньше через `row_limit`, но не больше."
         ),
     )
-    max_cell_chars: int = Field(
-        default=200,
+    max_cell_chars: int | None = Field(
+        default=None,
         ge=1,
         description=(
             "Максимальная длина одного значения cell в markdown-таблице. "
-            "Длинные строки обрезаются до `max_cell_chars` с суффиксом '…'."
+            "Если задано — длинные строки обрезаются до `max_cell_chars` с "
+            "суффиксом '…'. Если `None` (по умолчанию) — не обрезаются."
         ),
     )
 
@@ -109,12 +110,12 @@ class SqlExecutor:
             ),
         )
         logger.info(
-            "SqlExecutor opened: max_rows=%d max_cell_chars=%d",
+            "SqlExecutor opened: max_rows=%d max_cell_chars=%s",
             cfg.max_rows, cfg.max_cell_chars,
         )
 
     @property
-    def max_cell_chars(self) -> int:
+    def max_cell_chars(self) -> int | None:
         return self._cfg.max_cell_chars
 
     @property

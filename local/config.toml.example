@@ -205,7 +205,7 @@ pool_min_size = 1
 pool_max_size = 4
 connect_timeout_sec = 10.0
 max_rows = 100               # потолок строк в результате
-max_cell_chars = 200         # длина одной cell'ки (длинные обрезаются)
+# max_cell_chars = 200       # опционально: длина cell'ки (None — не обрезать)
 statement_timeout_ms = 5000  # PG statement_timeout (мс)
 
 # Integration-test параметры для пакета boba-tool-kb. Читаются классом
