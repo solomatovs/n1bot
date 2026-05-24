@@ -38,11 +38,7 @@ def query(
         Field(
             min_length=1,
             description=(
-                "Произвольный SQL-запрос. Разрешены только read-only "
-                "операции — это гарантируется правами DSN-роли и "
-                "`default_transaction_read_only=on` в DSN. Попытка "
-                "INSERT/UPDATE/DROP/etc упадёт с `permission denied` или "
-                "`cannot execute X in a read-only transaction`."
+                "Произвольный SQL-запрос. Разрешены только read-only"
             ),
         ),
     ],
@@ -51,8 +47,7 @@ def query(
         Field(
             ge=1,
             description=(
-                "Сколько строк вернуть. По умолчанию 20; жёсткий потолок — "
-                "`cfg.executor.max_rows`."
+                "Сколько строк вернуть. По умолчанию 20"
             ),
         ),
     ] = 20,
