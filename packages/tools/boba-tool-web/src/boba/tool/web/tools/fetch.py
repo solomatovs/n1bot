@@ -47,7 +47,7 @@ class WebFetchConfig(BobaFlatSettings):
         case_sensitive=False,
         extra="ignore",
         config_path="tool.web.fetch",
-        defaults_from=("web",),
+        defaults_from=("tool.web",),
     )
 
     connection: WebConnection

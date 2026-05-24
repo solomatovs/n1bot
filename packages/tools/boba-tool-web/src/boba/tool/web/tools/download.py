@@ -31,7 +31,7 @@ class WebDownloadConfig(BobaFlatSettings):
         case_sensitive=False,
         extra="ignore",
         config_path="tool.web.download",
-        defaults_from=("web",),
+        defaults_from=("tool.web",),
     )
 
     connection: WebConnection

@@ -155,58 +155,58 @@ enable = false
 # ────────────────────────────────────────────────────────────────────────
 # Web tools (web_fetch / web_download)
 #
-# `[web]` — shared WebConnection: hosts-whitelist, HTTP-параметры.
-# Hostname НЕ в `[web.hosts]` → запрос полностью запрещён (ACL+auth в одном).
-# Каждому host'у обязательно явно указать `auth.method` (включая "none").
+# Всё web-связанное под одним префиксом `[tool.web.*]`:
+#   [tool.web]                 — enable/tools (framework) + shared
+#                                WebConnection (hosts/timeout/ssl_verify).
+#   [tool.web.hosts."<host>".auth] — per-host auth (ACL+auth в одном).
+#   [tool.web.fetch]           — оверрайды для web_fetch (обычно пусто).
+#   [tool.web.download]        — оверрайды для web_download (dest_dir).
 #
-# `[tool.web]` — meta-секция плагина (enable/tools).
-# `[tool.web.fetch]`    — пустая, всё из [web] через defaults_from.
-# `[tool.web.download]` — добавляет `dest_dir` (workspace-relative).
+# Hostname НЕ в `[tool.web.hosts]` → запрос полностью запрещён.
+# Каждому host'у обязательно явно указать `auth.method` (включая "none").
 # ────────────────────────────────────────────────────────────────────────
 
 [tool.web]
 enable = false
 # tools = ["web_fetch", "web_download"]    # allowlist; пусто = оба
-
-[web]
 timeout_sec = 30.0
 ssl_verify = true
 
 # GitHub: публичные raw-файлы и страницы (anonymous).
-[web.hosts."raw.githubusercontent.com".auth]
+[tool.web.hosts."raw.githubusercontent.com".auth]
 method = "none"
 
-[web.hosts."github.com".auth]
+[tool.web.hosts."github.com".auth]
 method = "none"                           # markdown-страницы README/issues
 
 # Google: публичные docs / search-endpoints.
-[web.hosts."www.google.com".auth]
+[tool.web.hosts."www.google.com".auth]
 method = "none"
 
-[web.hosts."developers.google.com".auth]
+[tool.web.hosts."developers.google.com".auth]
 method = "none"
 
-[web.hosts."cloud.google.com".auth]
+[tool.web.hosts."cloud.google.com".auth]
 method = "none"
 
 # Авторизованные API — раскомментируй и впиши токен/пароль:
 # (BearerAuth.token имеет min_length=1, поэтому пустые значения валятся
 # на старте — храните секреты вне репозитория.)
 #
-# [web.hosts."api.github.com".auth]
+# [tool.web.hosts."api.github.com".auth]
 # method = "bearer"
 # token = "ghp_xxx"                        # GitHub PAT (https://github.com/settings/tokens)
 #
-# [web.hosts."www.googleapis.com".auth]
+# [tool.web.hosts."www.googleapis.com".auth]
 # method = "bearer"
 # token = "ya29.xxx"                       # Google Cloud OAuth access token
 #
-# [web.hosts."intra.example.com".auth]
+# [tool.web.hosts."intra.example.com".auth]
 # method = "basic"
 # user = "alice"
 # password = "secret"
 #
-# [web.hosts."docs.python.org".auth]
+# [tool.web.hosts."docs.python.org".auth]
 # method = "none"
 
 [tool.web.download]
