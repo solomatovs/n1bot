@@ -22,7 +22,7 @@ __all__ = ["format_cell", "format_markdown_table"]
 _NULL_REPR = "(null)"
 
 
-def format_cell(value: Any, *, max_chars: int) -> str:
+def format_cell(value: Any, *, max_chars: int | None) -> str:
     """Стрингифицировать одно cell-значение под markdown-таблицу.
 
     NULL → `(null)`. bytes → `<bytes:N>` (хешировать смысла нет —
@@ -31,14 +31,18 @@ def format_cell(value: Any, *, max_chars: int) -> str:
     """
     if value is None:
         return _NULL_REPR
+
     if isinstance(value, (bytes, bytearray, memoryview)):
         return f"<bytes:{len(value)}>"
+
     s = str(value)
-    # Escape pipe-символа и backslash'а (ломают markdown-таблицу),
+
+    # Escape pipe-символа и backslash'а (ломают markdown-таблицу)
     # и схлопываем newlines (multi-row cell — ломаный rendering).
     s = s.replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ⏎ ")
-    if len(s) > max_chars:
+    if max_chars and len(s) > max_chars:
         s = s[: max_chars - 1].rstrip() + "…"
+
     return s
 
 
@@ -46,15 +50,12 @@ def format_markdown_table(
     columns: list[str],
     rows: list[tuple[Any, ...]],
     *,
-    max_cell_chars: int,
+    max_cell_chars: int | None,
     truncated: bool = False,
     truncated_msg: str = "more rows omitted (увеличьте row_limit)",
 ) -> str:
-    """Markdown-таблица. Пустой результат → одна строка-заглушка.
-
-    Header → разделитель `|---|---|...|` → строки → опциональный
-    truncated-маркер. Длина строк может выйти больше payload-лимита —
-    caller отвечает за overall-cap (например, через row count).
+    """
+    Markdown-таблица. Пустой результат -> одна строка-заглушка
     """
     if not columns:
         return "_(empty result: no columns)_"
