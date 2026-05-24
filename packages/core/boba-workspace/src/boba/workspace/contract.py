@@ -10,11 +10,12 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from io import BufferedIOBase, TextIOBase
-from typing import Generic, NewType, TypeVar
+from typing import Generic, NewType, Protocol, TypeVar
 
 from boba.patterns import Specification
 
 __all__ = [
+    "BinaryReadable",
     "EntryMeta",
     "GrepMatch",
     "HistoryWorkspaceRegistry",
@@ -26,6 +27,7 @@ __all__ = [
     "PromptWorkspaceShell",
     "ScratchWorkspaceRegistry",
     "ScratchWorkspaceShell",
+    "TextReadable",
     "WorkspaceDecodingError",
     "WorkspaceError",
     "WorkspaceId",
@@ -35,6 +37,26 @@ __all__ = [
     "WorkspaceShell",
     "new_workspace_id",
 ]
+
+
+class BinaryReadable(Protocol):
+    """Минимальный read-only handle: только `read(n) -> bytes`.
+
+    Структурно совместим с `io.BufferedIOBase`, `io.BytesIO`,
+    `open(path, 'rb')`, streaming-response-обёртками поверх HTTP.
+    """
+
+    def read(self, n: int = -1, /) -> bytes: ...
+
+
+class TextReadable(Protocol):
+    """Минимальный read-only handle: только `read(n) -> str`.
+
+    Структурно совместим с `io.TextIOBase`, `io.StringIO`,
+    `open(path, 'r', encoding=...)`.
+    """
+
+    def read(self, n: int = -1, /) -> str: ...
 
 TWsId = TypeVar("TWsId")
 
@@ -207,14 +229,25 @@ class WorkspaceShell(ABC, Generic[TWsId]):
 
     @abstractmethod
     def atomic_write_text(
-        self, path: str, content: str, encoding: str = "utf-8",
+        self, path: str, source: TextReadable, encoding: str = "utf-8",
     ) -> None:
-        """Атомарная перезапись: либо новый файл целиком, либо старый.
+        """Атомарная перезапись текста: stream → tmp → fsync → `os.replace`.
 
-        Реализация: tmp в той же директории + fsync + `os.replace`.
-        Гарантия: даже при crash в середине операции читатели не увидят
-        частично записанного файла. Использовать для критичных
-        wire-моделей (JSON-индексы, manifest'ы, конфиги).
+        `source` — любой объект с `.read(n) -> str` (`io.StringIO`,
+        `open(path, 'r')`). Tmp создаётся в той же директории, что и
+        target — обходит лимиты `/tmp` и гарантирует atomic rename
+        в пределах одной FS. Использовать для критичных wire-моделей
+        (JSON-индексы, manifest'ы, конфиги).
+        """
+        ...
+
+    @abstractmethod
+    def atomic_write_binary(self, path: str, source: BinaryReadable) -> None:
+        """Атомарная перезапись бинарных: stream → tmp → fsync → `os.replace`.
+
+        `source` — любой объект с `.read(n) -> bytes` (`io.BytesIO`,
+        `open(path, 'rb')`, streaming-handle). Содержимое не загружается
+        в память целиком — `shutil.copyfileobj` копирует чанками.
         """
         ...
 

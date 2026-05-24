@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 from abc import ABC, abstractmethod
 from typing import ClassVar
 
@@ -103,4 +104,4 @@ class FsThreadRepository(ThreadRepository):
             by_alias=True,
             indent=2,
         ).decode("utf-8")
-        self._system_shell.atomic_write_text(self._index_filename, payload)
+        self._system_shell.atomic_write_text(self._index_filename, io.StringIO(payload))

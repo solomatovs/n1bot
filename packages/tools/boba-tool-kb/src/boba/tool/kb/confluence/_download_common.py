@@ -29,9 +29,10 @@ Caller (tool-обёртка) собирает `RequestSource` (Pages|Space|Cql) 
 
 from __future__ import annotations
 
+import io
+import posixpath
 import re
 from collections.abc import Iterable, Iterator
-from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
@@ -52,6 +53,7 @@ from boba.tool.kb.confluence.attachments import AttachmentFilter, AttachmentInfo
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.keys import ConfluenceKeys
 from boba.transport.http import HttpRequest
+from boba.workspace.contract import WorkspaceShell
 
 __all__ = ["download_pages"]
 
@@ -62,9 +64,6 @@ _FILES_DIR_SUFFIX = "_files"
 
 Совместимо с тем, как `Save As Webpage` в браузерах раскладывает ресурсы
 страницы — узнаваемо и для людей, и для downstream-тулов."""
-
-_STREAM_CHUNK = 64 * 1024
-
 
 def _sanitize_component(name: str) -> str:
     """Filesystem-safe имя компонента пути из произвольного title.
@@ -82,6 +81,7 @@ def _sanitize_component(name: str) -> str:
 
 def download_pages(  # noqa: PLR0913 — keyword-only helper, явный набор deps
     *,
+    shell: WorkspaceShell[Any],
     request_source: RequestSource[HttpRequest],
     conn: ConfluenceConnection,
     dest_dir: str,
@@ -90,17 +90,19 @@ def download_pages(  # noqa: PLR0913 — keyword-only helper, явный наб�
     attachment_filter: AttachmentFilter | None = None,
 ) -> dict[str, Any]:
     """
-    Скачивает страницы (HTML/Markdown) и их вложения (бинарь) в `dest_dir`.
+    Скачивает страницы (HTML/Markdown) и их вложения (бинарь) в `dest_dir`
+    внутри переданного `shell` (workspace-relative путь).
 
     Возвращает `{dest_dir, saved, total}`, где `saved` — список записей вида
-    `{kind, page_id, ..., path, bytes}`. `kind` ∈ {`"page"`, `"attachment"`}.
+    `{kind, page_id, ..., path, bytes}`. `path` — workspace-relative, тот же
+    формат принимают `cat`/`grep`/`ls` из `boba-tool-files`.
 
     `attachment_filter` (если задан) сужает скачиваемые вложения по
     `media_type`/`title` fnmatch-globs — отсеянные не запрашиваются по HTTP
     и не пишутся на диск. Сами страницы фильтр не трогает.
     """
-    dest_path = Path(dest_dir.rstrip("/"))
-    _ensure_dir(dest_path)
+    dest_rel = dest_dir.strip("/")
+    _ensure_dir(shell, dest_rel)
 
     pctx = PipelineContext(pipeline_id=pipeline_id)
     docs = iter_confluence_documents(
@@ -110,14 +112,14 @@ def download_pages(  # noqa: PLR0913 — keyword-only helper, явный наб�
         attachment_filter=attachment_filter,
     )
     try:
-        saved = list(_stream_records(docs, dest_path, as_markdown=as_markdown))
+        saved = list(_stream_records(docs, shell, dest_rel, as_markdown=as_markdown))
     except httpx.HTTPError as e:
         raise RuntimeError(
             f"Confluence download failed: {type(e).__name__}: {e}",
         ) from e
 
     return {
-        "dest_dir": str(dest_path),
+        "dest_dir": dest_rel,
         "saved": saved,
         "total": len(saved),
     }
@@ -125,7 +127,8 @@ def download_pages(  # noqa: PLR0913 — keyword-only helper, явный наб�
 
 def _stream_records(
     docs: Iterable[RawDocument],
-    dest_path: Path,
+    shell: WorkspaceShell[Any],
+    dest_rel: str,
     *,
     as_markdown: bool,
 ) -> Iterator[dict[str, str]]:
@@ -142,13 +145,17 @@ def _stream_records(
     """
     for decoded in docs:
         if decoded.metadata.has(ConfluenceKeys.ATTACHMENT_INFO):
-            yield _write_attachment(decoded, dest_path)
+            yield _write_attachment(decoded, shell, dest_rel)
         else:
-            yield _write_page(decoded, dest_path, as_markdown=as_markdown)
+            yield _write_page(decoded, shell, dest_rel, as_markdown=as_markdown)
 
 
 def _write_page(
-    decoded: RawDocument, dest_path: Path, *, as_markdown: bool,
+    decoded: RawDocument,
+    shell: WorkspaceShell[Any],
+    dest_rel: str,
+    *,
+    as_markdown: bool,
 ) -> dict[str, str]:
     page_id = decoded.metadata.get(ConfluenceKeys.PAGE_ID) or ""
     title = decoded.metadata.get(ReaderKeys.PAGE_TITLE) or ""
@@ -175,22 +182,26 @@ def _write_page(
         )
         payload = header + html.encode("utf-8")
         ext = "html"
-    page_dir = _compute_page_dir(dest_path, decoded)
-    _ensure_dir(page_dir)
-    file_path = page_dir / f"{page_id}.{ext}"
-    _write_bytes(file_path, payload)
+    page_dir = _compute_page_dir(dest_rel, decoded)
+    _ensure_dir(shell, page_dir)
+    file_path = posixpath.join(page_dir, f"{page_id}.{ext}")
+    _atomic_write_stream(shell, file_path, io.BytesIO(payload))
     return {
         "kind": "page",
         "page_id": page_id,
         "title": title,
         "url": url,
         "space_key": space_key,
-        "path": str(file_path),
+        "path": file_path,
         "bytes": str(len(payload)),
     }
 
 
-def _write_attachment(decoded: RawDocument, dest_path: Path) -> dict[str, str]:
+def _write_attachment(
+    decoded: RawDocument,
+    shell: WorkspaceShell[Any],
+    dest_rel: str,
+) -> dict[str, str]:
     att = decoded.metadata.get(ConfluenceKeys.ATTACHMENT_INFO)
     if att is None:
         msg = (
@@ -200,11 +211,13 @@ def _write_attachment(decoded: RawDocument, dest_path: Path) -> dict[str, str]:
         raise RuntimeError(msg)
     page_id = decoded.metadata.get(ConfluenceKeys.PAGE_ID) or ""
     filename = _sanitize_component(att.title or att.id)
-    page_dir = _compute_page_dir(dest_path, decoded)
-    files_dir = page_dir / f"{page_id}{_FILES_DIR_SUFFIX}"
-    _ensure_dir(files_dir)
-    file_path = files_dir / filename
-    bytes_written = _stream_to_file(decoded.handle, file_path)
+    page_dir = _compute_page_dir(dest_rel, decoded)
+    files_dir = posixpath.join(page_dir, f"{page_id}{_FILES_DIR_SUFFIX}")
+    _ensure_dir(shell, files_dir)
+    file_path = posixpath.join(files_dir, filename)
+    counter = _CountingReader(decoded.handle)
+    _atomic_write_stream(shell, file_path, counter)
+    bytes_written = counter.total
     return {
         "kind": "attachment",
         "page_id": page_id,
@@ -212,12 +225,12 @@ def _write_attachment(decoded: RawDocument, dest_path: Path) -> dict[str, str]:
         "filename": att.title,
         "media_type": att.media_type,
         "url": decoded.source_id,
-        "path": str(file_path),
+        "path": file_path,
         "bytes": str(bytes_written),
     }
 
 
-def _compute_page_dir(dest_path: Path, decoded: RawDocument) -> Path:
+def _compute_page_dir(dest_rel: str, decoded: RawDocument) -> str:
     """
     `{dest}/{space?}/{ancestor1}/.../{ancestorN}/`
     общее место для page и её attachments.
@@ -229,46 +242,46 @@ def _compute_page_dir(dest_path: Path, decoded: RawDocument) -> Path:
     """
     space_key = decoded.metadata.get(ConfluenceKeys.SPACE_KEY) or ""
     ancestors = decoded.metadata.get(ConfluenceKeys.ANCESTORS_TITLES) or ()
-    page_dir = dest_path
+    parts = [dest_rel]
     if space_key:
-        page_dir = page_dir / _sanitize_component(space_key)
+        parts.append(_sanitize_component(space_key))
     for a_title in ancestors:
-        page_dir = page_dir / _sanitize_component(a_title)
-    return page_dir
+        parts.append(_sanitize_component(a_title))
+    return posixpath.join(*parts)
 
 
-def _ensure_dir(p: Path) -> None:
+def _ensure_dir(shell: WorkspaceShell[Any], path: str) -> None:
+    if shell.exists(path):
+        return
     try:
-        p.mkdir(parents=True, exist_ok=True)
+        shell.mkdir(path)
     except OSError as e:
         raise RuntimeError(
-            f"Не удалось создать директорию {str(p)!r}: {e}",
+            f"Не удалось создать директорию {path!r}: {e}",
         ) from e
 
 
-def _write_bytes(p: Path, payload: bytes) -> None:
+def _atomic_write_stream(
+    shell: WorkspaceShell[Any], path: str, source: BinaryStream,
+) -> None:
+    """Атомарно записать поток в `path`: stream → tmp → fsync → replace."""
     try:
-        p.write_bytes(payload)
+        shell.atomic_write_binary(path, source)
     except OSError as e:
-        raise RuntimeError(f"Ошибка записи файла {str(p)!r}: {e}") from e
+        raise RuntimeError(f"Ошибка записи файла {path!r}: {e}") from e
 
 
-def _stream_to_file(handle: BinaryStream, p: Path) -> int:
-    """Чанками пишет `handle` в файл; возвращает количество записанных байт.
+class _CountingReader:
+    """`BinaryStream`-обёртка, считающая сумму прочитанных байт."""
 
-    Используем `read(chunk_size)` (а не `read()`) — для крупных вложений
-    (PDF/видео) не хотим тащить всё в память до записи. `_ResponseHandle`
-    поверх `httpx` корректно отдаёт chunked-ответ.
-    """
-    total = 0
-    try:
-        with p.open("wb") as f:
-            while chunk := handle.read(_STREAM_CHUNK):
-                f.write(chunk)
-                total += len(chunk)
-    except OSError as e:
-        raise RuntimeError(f"Ошибка записи файла {str(p)!r}: {e}") from e
-    return total
+    def __init__(self, source: BinaryStream) -> None:
+        self._source = source
+        self.total = 0
+
+    def read(self, n: int = -1, /) -> bytes:
+        chunk = self._source.read(n)
+        self.total += len(chunk)
+        return chunk
 
 
 def _confluence_attachment_filename(url: str) -> str | None:

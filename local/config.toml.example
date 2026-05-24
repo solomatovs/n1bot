@@ -159,6 +159,14 @@ timeout_sec = 30.0
 ssl_verify = false
 body_format = "view"         # view | export_view | storage
 
+# Tool confluence_download — скачивает страницы/вложения в workspace.
+# Все confluence-настройки наследуются из [tool.kb.confluence].
+[tool.kb.confluence.download]
+dest_dir = "kb/confluence"           # workspace-relative; cat/grep видят те же пути
+# attachment_media_types = []        # fnmatch-globs: "application/pdf", "image/*"
+# attachment_titles = []             # fnmatch-globs: "*.pdf", "report-*.docx"
+# max_returned_files = 50            # обрезать список путей в ответе; None — все
+
 # Подключение к embedding-провайдеру (OpenAI-совместимый endpoint:
 # LiteLLM / OpenAI / vLLM / Ollama). `model` обязателен.
 # api_key обычно из env: BOBA_TOOL__KB__EMBEDDING__API_KEY.
