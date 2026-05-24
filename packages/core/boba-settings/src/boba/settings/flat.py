@@ -88,15 +88,8 @@ def _as_submodel(annotation: Any) -> type[BaseModel] | None:
 def _build_flat_key_paths(
     cls: type[BaseModel],
 ) -> dict[str, tuple[str, ...]]:
-    """Собрать map `terminal-имя → путь` для всех листовых полей дерева.
-
-    Терминальное поле — поле, чья аннотация **не** является `BaseModel`-под-моделью.
-    Имена submodels'ов (промежуточные ноды) в map не попадают — они доступны
-    как ключи в values только через явные nested-секции.
-
-    Конфликт (одинаковое имя в разных submodel-ветках) → `ValueError`. Это
-    проверка целостности схемы; вызывается один раз при первой нужде и
-    кешируется в `cls.__dict__["_flat_key_paths"]`.
+    """
+    Собрать map terminal -> путь для всех листовых полей дерева
     """
     result: dict[str, tuple[str, ...]] = {}
     conflicts: dict[str, list[tuple[str, ...]]] = {}

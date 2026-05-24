@@ -152,6 +152,67 @@ enable = false
 [tool.html]
 enable = false
 
+# ────────────────────────────────────────────────────────────────────────
+# Web tools (web_fetch / web_download)
+#
+# `[web]` — shared WebConnection: hosts-whitelist, HTTP-параметры.
+# Hostname НЕ в `[web.hosts]` → запрос полностью запрещён (ACL+auth в одном).
+# Каждому host'у обязательно явно указать `auth.method` (включая "none").
+#
+# `[tool.web]` — meta-секция плагина (enable/tools).
+# `[tool.web.fetch]`    — пустая, всё из [web] через defaults_from.
+# `[tool.web.download]` — добавляет `dest_dir` (workspace-relative).
+# ────────────────────────────────────────────────────────────────────────
+
+[tool.web]
+enable = false
+# tools = ["web_fetch", "web_download"]    # allowlist; пусто = оба
+
+[web]
+timeout_sec = 30.0
+ssl_verify = true
+
+# GitHub: публичные raw-файлы и страницы (anonymous).
+[web.hosts."raw.githubusercontent.com".auth]
+method = "none"
+
+[web.hosts."github.com".auth]
+method = "none"                           # markdown-страницы README/issues
+
+# Google: публичные docs / search-endpoints.
+[web.hosts."www.google.com".auth]
+method = "none"
+
+[web.hosts."developers.google.com".auth]
+method = "none"
+
+[web.hosts."cloud.google.com".auth]
+method = "none"
+
+# Авторизованные API — раскомментируй и впиши токен/пароль:
+# (BearerAuth.token имеет min_length=1, поэтому пустые значения валятся
+# на старте — храните секреты вне репозитория.)
+#
+# [web.hosts."api.github.com".auth]
+# method = "bearer"
+# token = "ghp_xxx"                        # GitHub PAT (https://github.com/settings/tokens)
+#
+# [web.hosts."www.googleapis.com".auth]
+# method = "bearer"
+# token = "ya29.xxx"                       # Google Cloud OAuth access token
+#
+# [web.hosts."intra.example.com".auth]
+# method = "basic"
+# user = "alice"
+# password = "secret"
+#
+# [web.hosts."docs.python.org".auth]
+# method = "none"
+
+[tool.web.download]
+dest_dir = "web/downloads"                # workspace-relative
+# max_returned_files = 50
+
 # bash_local: subprocess без изоляции; bash_sandbox: bubblewrap.
 # Регистрируется только если есть `bwrap` на хосте.
 [tool.shell]
