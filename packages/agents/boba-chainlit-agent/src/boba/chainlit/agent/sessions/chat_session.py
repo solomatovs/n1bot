@@ -97,6 +97,7 @@ class ChatSession:
             .register_provider(_provide_history_workspace)
             .use_history(JsonLinesHistoryService)
             .use_llm(llm)
+            .use_compact_history(max_messages=rt.max_messages)
             .use_turn(turn)
             .build()
         )

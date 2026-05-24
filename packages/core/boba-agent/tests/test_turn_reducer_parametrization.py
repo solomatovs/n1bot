@@ -8,7 +8,7 @@ from boba.agent.agent import AgentContext
 from boba.agent.history import InMemoryHistoryService
 from boba.agent.middleware.llm import LLMPort
 from boba.agent.turn.builder import TurnBuilder
-from boba.agent.turn.history_view import HistoryDialogView
+from boba.agent.turn.history_view import AllHistoryDialogView, HistoryDialogView
 from boba.agent.turn.reducers import (
     HistoryReducer,
     ModelReducer,
@@ -29,7 +29,7 @@ from boba.workspace.contract import PromptWorkspaceId, PromptWorkspaceShell
 
 
 def _empty_history_view() -> HistoryDialogView:
-    return HistoryDialogView(InMemoryHistoryService())
+    return AllHistoryDialogView(InMemoryHistoryService())
 
 
 class _MarkerReducer(PrioritySource[str, TurnState]):

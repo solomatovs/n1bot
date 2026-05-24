@@ -50,3 +50,14 @@ class AgentRuntimeConfig(BaseModel):
     model: str = Field(
         description="LLM-модель по умолчанию (напр. qwen3.5-35b). Обязательно.",
     )
+    max_messages: int = Field(
+        default=50,
+        ge=1,
+        description=(
+            "Размер скользящего окна диалога для CompactHistoryDialogView. "
+            "Сжимает прошлые request_id до user+финальный текст-ответ "
+            "и оставляет последние N сообщений в LLMRequest. "
+            "Подходящее значение зависит от длины ответов модели — "
+            "50 покрывает ~25 ходов чата с компактным контекстом."
+        ),
+    )

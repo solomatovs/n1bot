@@ -1,11 +1,26 @@
 """View поверх HistoryService: AgentEvent → DialogMessage.
 
 HistoryService хранит сырые `AgentEvent` (phase / snapshot / advisory /
-terminal). `HistoryDialogView` фильтрует этот поток и восстанавливает
-сообщения диалога между пользователем и ассистентом — то, что нужно
+terminal). `HistoryDialogView` — абстрактный контракт восстановления
+сообщений диалога между пользователем и ассистентом, то, что нужно
 `HistoryReducer` для сборки `dialog_messages` в `LLMRequest`.
 
-Маппинг:
+Реализации:
+    `AllHistoryDialogView`
+        Возвращает диалог целиком, без фильтрации по request_id.
+
+    `CompactHistoryDialogView`
+        Для текущего (последнего) `request_id` — полная цепочка
+        выполнения (как `AllHistoryDialogView`). Для всех предыдущих
+        `request_id` — только `UserMessage` и финальный
+        `AssistantMessage`, очищенный до text-блоков. Промежуточные
+        thinking/tool_calls/tool_results прошлых запросов в окно не
+        попадают. Дополнительно применяется sliding-window
+        `max_messages`: оставляет только последние сообщения, при этом
+        сдвигает начало вправо до ближайшего `UserMessage`, чтобы
+        контекст оставался валидным для LLM-провайдера.
+
+Маппинг событий (общая логика):
     UserQueryReceived            → UserMessage
     {Thinking,Answer,Refusal}Complete
     + ToolCallComplete
@@ -18,19 +33,17 @@ terminal). `HistoryDialogView` фильтрует этот поток и вос�
 FeedbackToLLMAdded пока пропускается — событие неоднозначно (может быть
 UserMessage от LLMCritique или ToolResultMessage от ToolCallRejection);
 семантику нужно расщеплять отдельным шагом.
-
-Группировка блоков AssistantMessage идёт по `(request_id, iteration)`:
-снапшоты ассистента эмитятся `AssistantAggregator` в LLM-слое в фиксированном
-порядке (thinking → answer → refusal → tool_calls → invalid), а
-`GenerationDone` закрывает генерацию.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from abc import ABC, abstractmethod
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 from boba.agent.events import (
+    AgentEvent,
     AnswerComplete,
     GenerationDone,
     InvalidToolCallReceived,
@@ -49,6 +62,7 @@ from boba.llm.models import (
     DialogMessage,
     InvalidToolCallBlock,
     RefusalBlock,
+    RequestId,
     TextBlock,
     ThinkingBlock,
     ToolCallBlock,
@@ -58,7 +72,11 @@ from boba.llm.models import (
 from boba.llm.tool_result_render import tool_result_to_message
 from boba.tools.domain import ErrorResult
 
-__all__ = ["HistoryDialogView"]
+__all__ = [
+    "AllHistoryDialogView",
+    "CompactHistoryDialogView",
+    "HistoryDialogView",
+]
 
 
 @dataclass
@@ -74,19 +92,17 @@ class _AssistantAccumulator:
         return AssistantMessage(id=new_message_id(), blocks=tuple(self.blocks))
 
 
-class HistoryDialogView:
-    """Восстанавливает поток `DialogMessage` из журнала `HistoryReader`."""
+class _DialogEventDecoder:
+    """Конечный автомат events → DialogMessage. Общий для всех view."""
 
-    def __init__(self, history_reader: HistoryReader) -> None:
-        self._history_reader = history_reader
-
-    def dialog_message_iter(self) -> Iterator[DialogMessage]:  # noqa: C901
+    @classmethod
+    def decode(cls, events: Iterable[AgentEvent]) -> Iterator[DialogMessage]:  # noqa: C901
         accumulator = _AssistantAccumulator()
 
-        for event in self._history_reader.events():
+        for event in events:
             match event:
                 case UserQueryReceived(query=q):
-                    yield from self._flush_assistant(accumulator)
+                    yield from cls._flush_assistant(accumulator)
                     yield UserMessage.from_text(q)
 
                 case ThinkingComplete(content=c):
@@ -105,26 +121,26 @@ class HistoryDialogView:
                     accumulator.blocks.append(InvalidToolCallBlock(invalid=invalid))
 
                 case GenerationDone():
-                    yield from self._flush_assistant(accumulator)
+                    yield from cls._flush_assistant(accumulator)
 
                 case ToolResultReady(call=call, result=result):
-                    yield from self._flush_assistant(accumulator)
+                    yield from cls._flush_assistant(accumulator)
                     yield tool_result_to_message(
                         tool_call_id=call.id,
                         result=result.result,
                     )
 
                 case ToolExecutionFailed(call=call, failure=failure):
-                    yield from self._flush_assistant(accumulator)
+                    yield from cls._flush_assistant(accumulator)
                     yield tool_result_to_message(
                         tool_call_id=call.id,
-                        result=_failure_to_error(failure),
+                        result=cls._failure_to_error(failure),
                     )
 
                 case _:
                     continue
 
-        yield from self._flush_assistant(accumulator)
+        yield from cls._flush_assistant(accumulator)
 
     @staticmethod
     def _flush_assistant(
@@ -135,6 +151,109 @@ class HistoryDialogView:
         yield accumulator.flush()
         accumulator.blocks.clear()
 
+    @staticmethod
+    def _failure_to_error(failure: ToolCallFailure) -> ErrorResult:
+        return ErrorResult(message=failure.message, error_kind=failure.error_kind)
 
-def _failure_to_error(failure: ToolCallFailure) -> ErrorResult:
-    return ErrorResult(message=failure.message, error_kind=failure.error_kind)
+
+class HistoryDialogView(ABC):
+    """Контракт восстановления `DialogMessage` из журнала событий."""
+
+    @abstractmethod
+    def dialog_message_iter(self) -> Iterator[DialogMessage]:
+        """Последовательность сообщений диалога в порядке регистрации."""
+        ...
+
+
+class AllHistoryDialogView(HistoryDialogView):
+    """Полный диалог из журнала `HistoryReader` без фильтрации."""
+
+    def __init__(self, history_reader: HistoryReader) -> None:
+        self._history_reader = history_reader
+
+    def dialog_message_iter(self) -> Iterator[DialogMessage]:
+        yield from _DialogEventDecoder.decode(self._history_reader.events())
+
+
+class CompactHistoryDialogView(HistoryDialogView):
+    """Компактный диалог: полный текущий request_id + сжатые прошлые + окно.
+
+    Для последнего по порядку появления `request_id` отдаёт цепочку
+    выполнения без сокращений. Для каждого предыдущего `request_id`
+    оставляет только `UserMessage` и финальный `AssistantMessage`,
+    оставив в нём только text-блоки (thinking/refusal/tool_calls
+    выбрасываются). Если у прошлого `request_id` text-блоков не было
+    (упал, оборвался на tool_calls) — assistant-ответ опускается,
+    остаётся только `UserMessage`.
+
+    После сборки применяется sliding-window: оставляется не более
+    `max_messages` сообщений с хвоста. Если граница окна попала в
+    середину диалога — начало сдвигается вправо до ближайшего
+    `UserMessage`, чтобы не передавать в LLM осиротевший
+    `ToolResultMessage`.
+    """
+
+    _CONTRIBUTING_TYPES: ClassVar[tuple[type[AgentEvent], ...]] = (
+        UserQueryReceived,
+        ThinkingComplete,
+        AnswerComplete,
+        RefusalComplete,
+        ToolCallComplete,
+        InvalidToolCallReceived,
+        GenerationDone,
+        ToolResultReady,
+        ToolExecutionFailed,
+    )
+
+    def __init__(self, history_reader: HistoryReader, max_messages: int) -> None:
+        self._history_reader = history_reader
+        self._max_messages = max_messages
+
+    def dialog_message_iter(self) -> Iterator[DialogMessage]:
+        messages = list(self._build_messages())
+        yield from self._apply_window(messages)
+
+    def _build_messages(self) -> Iterator[DialogMessage]:
+        groups = self._group_by_request_id()
+        if not groups:
+            return
+        last_request_id = next(reversed(groups))
+        for request_id, events in groups.items():
+            if request_id == last_request_id:
+                yield from _DialogEventDecoder.decode(events)
+            else:
+                yield from self._compact_request(events)
+
+    def _group_by_request_id(self) -> dict[RequestId, list[AgentEvent]]:
+        groups: dict[RequestId, list[AgentEvent]] = {}
+        for event in self._history_reader.events():
+            if not isinstance(event, self._CONTRIBUTING_TYPES):
+                continue
+            groups.setdefault(event.request_id, []).append(event)
+        return groups
+
+    @staticmethod
+    def _compact_request(events: list[AgentEvent]) -> Iterator[DialogMessage]:
+        full = list(_DialogEventDecoder.decode(events))
+        users = [m for m in full if isinstance(m, UserMessage)]
+        assistants = [m for m in full if isinstance(m, AssistantMessage)]
+        yield from users
+        if not assistants:
+            return
+        text_blocks = tuple(
+            b for b in assistants[-1].blocks if isinstance(b, TextBlock)
+        )
+        if text_blocks:
+            yield AssistantMessage(id=new_message_id(), blocks=text_blocks)
+
+    def _apply_window(
+        self, messages: list[DialogMessage],
+    ) -> Iterator[DialogMessage]:
+        if len(messages) <= self._max_messages:
+            yield from messages
+            return
+        windowed = messages[-self._max_messages :]
+        for index, message in enumerate(windowed):
+            if isinstance(message, UserMessage):
+                yield from windowed[index:]
+                return
