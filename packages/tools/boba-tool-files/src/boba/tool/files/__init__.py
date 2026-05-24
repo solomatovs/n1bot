@@ -1,9 +1,9 @@
-"""boba-tool-files — плагин с 15 builtin file-system tools.
+"""boba-tool-files — плагин с 16 builtin file-system tools.
 
 Entry-point модуль для `AgentBuilder.use_plugin(boba.tool.files)` или
 discovery через `[project.entry-points."boba.plugins"]`.
 
-Все 15 tools шарят `FilesPluginConfig` (`[tool.files]`,
+Все 16 tools шарят `FilesPluginConfig` (`[tool.files]`,
 `BOBA_TOOL__FILES__*`). Включаются вместе через `enable=true`; allowlist
 `tools` в конфиге выбирает подмножество. `ProjectWorkspaceShell`
 инжектится в каждый tool через `FromDI(Scope.APP)` — приложение
@@ -27,6 +27,7 @@ from boba.tool.files.rm import rm
 from boba.tool.files.stat import stat
 from boba.tool.files.touch import touch
 from boba.tool.files.tree import tree
+from boba.tool.files.unzip import unzip
 from boba.tool.files.write import write
 
 __all__ = [
@@ -45,5 +46,6 @@ __all__ = [
     "stat",
     "touch",
     "tree",
+    "unzip",
     "write",
 ]
