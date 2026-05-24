@@ -13,7 +13,7 @@ from boba.agent.workspace_fs import (
     FsProjectWorkspaceRegistry,
 )
 from boba.chainlit.agent.auth import AuthenticateUser, StaticUserRepository
-from boba.chainlit.agent.config import AppConfig, ChainlitConfig
+from boba.chainlit.agent.config import ChainlitConfig
 from boba.chainlit.agent.data_layer import BobaDataLayer
 from boba.chainlit.agent.logging import configure_logging
 from boba.chainlit.agent.sessions import (
@@ -85,20 +85,19 @@ def _make_chat_session_builder(
 
 def main() -> int:
     chainlit_cfg = ChainlitConfig.load()
-    app = AppConfig.load()
+    rt = chainlit_cfg.runtime
 
-    configure_logging(app.core.log_level, app.core.log_file)
+    configure_logging(rt.log_level, rt.log_file)
 
     _bridge_chainlit_env(chainlit_cfg)
 
-    workspaces_base = Path(app.workspaces.base_dir)
     project_workspaces = FsProjectWorkspaceRegistry(
-        base_dir=workspaces_base,
-        subdir=app.workspaces.user_subdir,
+        base_dir=Path(rt.user_workspace_dir),
+        subdir="",
     )
     history_workspaces = FsHistoryWorkspaceRegistry(
-        base_dir=workspaces_base,
-        subdir=app.workspaces.system_subdir,
+        base_dir=Path(rt.system_workspace_dir),
+        subdir="",
     )
 
     def make_history_service(workspace_id: WorkspaceId) -> HistoryService:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pydantic import Field
 
+from boba.agent import AgentRuntimeConfig
 from boba.llm.models import SamplingParams
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
 
@@ -18,9 +19,11 @@ __all__ = ["AgentRunConfig"]
 
 
 class AgentRunConfig(BobaFlatSettings):
-    """Параметры одного запуска CLI-агента: model + sampling.
+    """Параметры одного запуска CLI-агента: runtime + cli-specific sampling.
 
     Config-секция: `[cli.agent]` (+ CLI-флаги через `use_cli=True`).
+    Общие runtime-настройки (логи, workspace, LLM, model) — в nested
+    `runtime`; оператор задаёт их плоско в TOML-секции/env.
     """
 
     model_config = BobaSettingsConfigDict(
@@ -30,7 +33,7 @@ class AgentRunConfig(BobaFlatSettings):
         use_cli=True,
     )
 
-    model: str = Field(description="LLM-модель (напр. qwen3.5-35b). Обязательно.")
+    runtime: AgentRuntimeConfig = Field(default_factory=AgentRuntimeConfig)  # pyright: ignore[reportArgumentType]
     query: str | None = Field(
         default=None,
         description="Запрос к агенту; если не задан — запускается REPL.",

@@ -1,26 +1,27 @@
-"""Конфиги chainlit-приложения.
+"""Конфиг chainlit-приложения: транспорт (chainlit-сервер) + runtime.
 
-`ChainlitConfig` — параметры самого chainlit-сервера (host/port, auth,
-UI-overrides). Источник: env `BOBA_CHAINLIT__*` / TOML `[chainlit]`.
+`ChainlitConfig` — единый конфиг chainlit-агента:
+- chainlit-specific поля (host, port, auth_secret, app_root, …);
+- nested `runtime: AgentRuntimeConfig` — общие настройки агента
+  (логи, workspace, LLM, system prompt, model).
 
-`AppConfig` (+ `AppCoreConfig`) — кросс-слойный конфиг агента
-(workspaces, openai, system prompt, логирование). Источник:
-env `BOBA_AGENT__*` / TOML `[agent]`. Идентичен boba-cli-agent.
+Источник: env `BOBA_CHAINLIT__*` / TOML `[chainlit]`. Оператор задаёт
+runtime-поля плоско в той же секции — `BobaFlatSettings`-валидатор
+распределит их по дереву.
 """
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
-from boba.agent.workspace_fs import WorkspaceLayout
-from boba.provider.openai import OpenAIConfig
+from boba.agent import AgentRuntimeConfig
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 
-__all__ = ["AppConfig", "AppCoreConfig", "ChainlitConfig"]
+__all__ = ["ChainlitConfig"]
 
 
 class ChainlitConfig(BobaFlatSettings):
-    """Параметры chainlit-приложения: server, runtime-root, LLM-модель, auth.
+    """Параметры chainlit-приложения: server + runtime агента.
 
     Config-секция: `[chainlit]`.
     """
@@ -31,9 +32,8 @@ class ChainlitConfig(BobaFlatSettings):
         config_path="chainlit",
     )
 
-    model: str = Field(
-        description="Конкретная LLM-модель для всех запросов из UI.",
-    )
+    runtime: AgentRuntimeConfig = Field(default_factory=AgentRuntimeConfig)  # pyright: ignore[reportArgumentType]
+
     host: str = Field(
         default="127.0.0.1",
         description="Адрес, на котором слушает chainlit-сервер.",
@@ -45,18 +45,13 @@ class ChainlitConfig(BobaFlatSettings):
     url_prefix: str = Field(
         default="",
         description=(
-            "URL-prefix для HTTP-роутинга под reverse-proxy "
-            "(например, `/chat` если chainlit доступен по "
-            "`https://example.com/chat/`). Пусто — chainlit на корне домена. "
-            "Это сетевой path, к файловой системе отношения не имеет — "
-            "не путать с `app_root` (директория на диске)."
+            "URL-prefix для HTTP-роутинга под reverse-proxy"
         ),
     )
     auth_secret: str = Field(
         description=(
             "Секрет для подписи user-session cookie. Обязателен. "
-            "Сгенерировать: `openssl rand -hex 32`. Задаётся через "
-            "`BOBA_CHAINLIT__AUTH_SECRET` или TOML `[chainlit] auth_secret`."
+            "Сгенерировать: `openssl rand -hex 32`"
         ),
         min_length=1,
     )
@@ -75,43 +70,4 @@ class ChainlitConfig(BobaFlatSettings):
     chat_session_pool_capacity: int = Field(
         default=32,
         description="Сколько ChatSession держать в RAM одновременно (LRU eviction).",
-    )
-
-
-class AppCoreConfig(BaseModel):
-    """Кросс-слойные настройки приложения: SSL/логирование."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    ssl_verify: bool = Field(
-        default=False,
-        description="Проверять ли TLS-сертификат у HTTPS-запросов.",
-    )
-    log_level: str = Field(
-        default="INFO",
-        description="Уровень корневого логгера.",
-    )
-    log_file: str | None = Field(
-        default=None,
-        description="Путь к log-файлу. Пусто — логи в stderr.",
-    )
-
-
-class AppConfig(BobaFlatSettings):
-    """Конфиг агента: core/workspaces/openai/prompts.
-
-    Config-секция: `[agent]`.
-    """
-
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="forbid",
-        config_path="agent",
-    )
-
-    core: AppCoreConfig = Field(default_factory=AppCoreConfig)
-    workspaces: WorkspaceLayout = Field(default_factory=WorkspaceLayout)
-    openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
-    system_prompt_dir: str = Field(
-        description="Корневая директория .md/.txt-файлов с system-prompt",
     )

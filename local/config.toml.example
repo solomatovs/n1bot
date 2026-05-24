@@ -1,41 +1,17 @@
-# Шаблон local/config.toml. Скопируйте в local/config.toml и подставьте значения.
-#
-# Секции:
-#   [agent]       — AppConfig (cli + chainlit) — плоская: поля распределяются
-#                   валидатором по sub-моделям core/workspaces/openai.
-#   [cli]         — AgentRunConfig (boba-cli-agent).
-#   [chainlit]    — ChainlitConfig (boba-chainlit-agent).
-#   [tool.<name>] — конфиги tool-плагинов (discovery + enable-флаг).
-#
+# Шаблон local/config.toml.
+# Секции: [cli.agent], [chainlit], [tool.<name>]. Каждое приложение
+# читает свою TOML-секцию; общая [agent] упразднена.
 # Источник: $BOBA_CONFIG_PATH (по умолчанию ./local/config.toml).
-# Env override:
-#   BOBA_AGENT__BASE_URL=...      → openai.base_url
-#   BOBA_AGENT__LOG_LEVEL=DEBUG   → core.log_level
-#   BOBA_CLI__MODEL=...           → AgentRunConfig.model
-#   BOBA_CHAINLIT__MODEL=...      → ChainlitConfig.model
 
-# --- AppConfig: плоский [agent] (поля собираются в core/workspaces/openai) -----
-[agent]
-# system_prompt_dir — обязательное поле верхнего уровня.
-system_prompt_dir = "./local/prompts"
-# core
-log_level = "INFO"
-ssl_verify = false
-log_file = "./local/logs/boba.log"
-# workspaces
-base_dir = "./local/workspaces"
-user_subdir = "user"
-system_subdir = "system"
-tmp_subdir = "tmp"
-# openai (base_url/api_key обычно перекрываются env'ом)
-base_url = "http://localhost:4000"
-api_key = "ollama"
-
-# --- boba-cli-agent ---
-# model обязателен; query пусто → REPL, query задан → single-shot.
-# Эти же поля можно перебить через CLI argv: boba-cli-agent --model X --query "..."
-[cli]
+[cli.agent]
 model = ""
+system_prompt_dir = "./local/prompts"
+log_level = "INFO"
+log_file = "./local/logs/cli.log"
+user_workspace_dir = "./local/workspaces/user"
+system_workspace_dir = "./local/workspaces/system"
+base_url = "http://localhost:4000"     # → runtime.openai.base_url
+api_key = "ollama"                     # → runtime.openai.api_key
 # query = ""
 # temperature = 0.7
 # top_p = 0.9
@@ -45,45 +21,26 @@ model = ""
 # frequency_penalty = 0.0
 # presence_penalty = 0.0
 
-# --- boba-chainlit-agent ---
-# model и auth_secret обязательны.
 [chainlit]
 model = ""
+system_prompt_dir = "./local/prompts"
+log_level = "INFO"
+log_file = "./local/logs/chainlit.log"
+user_workspace_dir = "./local/workspaces/user"
+system_workspace_dir = "./local/workspaces/system"
+base_url = "http://localhost:4000"
+api_key = "ollama"
 host = "0.0.0.0"
 port = 8502
-root_path = ""
-# Секрет для подписи user-session cookie. Обязателен.
-# Сгенерировать: `openssl rand -hex 32`. В проде задавать через env
-# BOBA_CHAINLIT__AUTH_SECRET, чтобы не коммитить в TOML.
-auth_secret = ""
-# Единственный user — для multi-user будет отдельная [auth.users].
+url_prefix = ""
+auth_secret = ""                       # openssl rand -hex 32
 headless = true
 app_root = "./local/chainlit"
-# Сколько ChatSession держать в RAM одновременно (LRU eviction).
 chat_session_pool_capacity = 32
 
-# --- tool-плагины (entry_points discovery; enable=false => плагин пропускается) ---
-# env-конвенции:
-#   BOBA_TOOL__<PLUGIN_NAME>__<FIELD>=...
-# Например: BOBA_TOOL__KB__CONFLUENCE__BASE_URL=https://confluence.example.com
-
-# KB-плагин (13 tools, см. boba.tool.kb.__init__ для деталей):
-#  - files_ingest                  — FS-папка → kb_chunks.
-#  - confluence_space_ingest       — один или несколько spaces → kb_chunks.
-#  - confluence_page_ingest        — Confluence pages → kb_chunks.
-#  - kb_search                     — hybrid vector+FTS+RRF по kb_chunks.
-#  - vector_search                 — pure vector (cosine) по kb_chunks.
-#  - confluence_search             — online CQL по Confluence.
-#  - confluence_list_spaces        — список spaces на сервере (markdown).
-#  - fts_search                    — pure FTS по pre-настроенной таблице.
-#  - confluence_page_download      — pages → workspace (HTML/Markdown).
-#  - confluence_space_download     — все страницы space → workspace.
-#  - sql_list_tables               — таблицы/view (read-only).
-#  - sql_describe_table            — колонки/типы.
-#  - sql_query                     — произвольный SELECT → markdown table.
+# KB-плагин — 13 tools, allowlist через `tools=[...]`.
 [tool.kb]
 enable = false
-# Allowlist по wire-имени tool'а. Если опущен — регистрируются все 13.
 tools = [
     "files_ingest",
     "confluence_space_ingest",
@@ -99,93 +56,61 @@ tools = [
     "sql_describe_table",
     "sql_query",
 ]
-# Pinned collection в kb_chunks: target для ingest, source для kb_search.
 collection = "knowledge_base"
 collection_description = ""
-# Папка для files_ingest. LLM не выбирает.
 files_folder = "./local/docs"
-# Search params. Языки FTS зашиты в SQL-шаблон и DDL `tsv`-колонки
-# (russian||english) — см. migrations/002_multilang_tsv.sql и
-# core/tools/search/sql/hybrid.sql.
 snippet_chars = 300
 max_top_k = 20
-# RRF: k=60 стандарт; pool=40 — сколько top-K брать из каждого канала
-# (vector + FTS) перед склейкой.
 rrf_k = 60
 rrf_pool = 40
-# Chunker.
 chunk_size = 4000
 chunk_overlap = 0
 
-# Схема + имена таблиц KB-хранилища. Один и тот же конфиг получают и
-# bootstrap-CLI (`python -m boba.tool.kb.core.cli.bootstrap` — создаёт
-# таблицы), и runtime-сторона (PostgresVectorStore, PostgresKnowledgeBase
-# — пишут/читают). Если разъедутся — bootstrap создаст одни таблицы,
-# store будет ходить в другие, и запросы упадут на `relation does not
-# exist`. Значения — валидные postgres-идентификаторы (без кавычек,
-# точек, пробелов; ≤ 63 символа).
 [tool.kb.chunk_store]
-schema = "public"               # схема, в которой живут таблицы и функция immutable_unaccent
-chunks_table = "kb_chunks"      # таблица чанков (embedding + metadata + tsvector)
-collections_table = "kb_collections"  # каталог коллекций (one row per collection)
+schema = "public"
+chunks_table = "kb_chunks"
+collections_table = "kb_collections"
 
-# Подключение к Postgres структурированными полями. DSN собирается через
-# `psycopg.conninfo.make_conninfo` — спецсимволы в password не требуют
-# URL-encoding. Пароль обычно из env: BOBA_TOOL__KB__POSTGRES__PASSWORD.
 [tool.kb.postgres]
-host = ""                    # обязателен (можно через env)
+host = ""
 port = 5432
-user = ""                    # обязателен
-password = ""                # обычно из env
-database = ""                # обязателен
-sslmode = "prefer"           # disable | allow | prefer | require | verify-ca | verify-full
+user = ""
+password = ""
+database = ""
+sslmode = "prefer"
 application_name = "boba-tool-kb"
 pool_min_size = 1
 pool_max_size = 8
 connect_timeout_sec = 10.0
 
-# Подключение к Confluence (общий блок для всех confluence-tools).
-#
-# auth_method:
-#   - "pat"   — Bearer-токен (Atlassian Personal Access Token); auth_token обязателен.
-#   - "basic" — login+password; auth_user + auth_token обязательны.
-#   - "none"  — anonymous read (для публичных Confluence — cwiki.apache.org и т.п.).
+# auth_method: pat | basic | none
 [tool.kb.confluence]
 base_url = ""
-auth_method = "pat"          # pat | basic | none
-auth_token = ""              # требуется при pat/basic
-auth_user = ""               # требуется при basic
+auth_method = "pat"
+auth_token = ""
+auth_user = ""
 timeout_sec = 30.0
 ssl_verify = false
-body_format = "view"         # view | export_view | storage
+body_format = "view"
 
-# Tool confluence_download — скачивает страницы/вложения в workspace.
-# Все confluence-настройки наследуются из [tool.kb.confluence].
 [tool.kb.confluence.download]
-dest_dir = "kb/confluence"           # workspace-relative; cat/grep видят те же пути
-# attachment_media_types = []        # fnmatch-globs: "application/pdf", "image/*"
-# attachment_titles = []             # fnmatch-globs: "*.pdf", "report-*.docx"
-# max_returned_files = 50            # обрезать список путей в ответе; None — все
+dest_dir = "kb/confluence"             # workspace-relative
+# attachment_media_types = []
+# attachment_titles = []
+# max_returned_files = 50
 
-# Подключение к embedding-провайдеру (OpenAI-совместимый endpoint:
-# LiteLLM / OpenAI / vLLM / Ollama). `model` обязателен.
-# api_key обычно из env: BOBA_TOOL__KB__EMBEDDING__API_KEY.
 [tool.kb.embedding]
-model = ""                   # обязателен
-base_url = ""                # пусто → дефолт OpenAI SDK
-api_key = ""                 # для локального Ollama/vLLM можно пусто
+model = ""
+base_url = ""
+api_key = ""
 
-# FTS-поиск по одной чужой таблице оператора (`fts_search`). LLM таблицу
-# не выбирает — она pinned оператором. DSN пуст = fallback на
-# [tool.kb.postgres] (тот же PostgresPool).
 [tool.kb.fts]
-# dsn = ""                  # отдельная БД (опц.); ?default_transaction_read_only=on
+# dsn = ""
 snippet_options = "MaxFragments=2,MaxWords=35,MinWords=15"
 max_top_k = 20
-# Один IndexSpec — оператор закрепляет таблицу:
 # [tool.kb.fts.index]
 # name = "docs"
-# description = "Документация продукта; для подсказок по фичам."
+# description = ""
 # schema = "public"
 # table = "documents"
 # id_column = "id"
@@ -194,113 +119,64 @@ max_top_k = 20
 # language = "russian"
 # metadata_columns = ["title", "source_url"]
 
-# Ad-hoc SQL-tools (sql_query / sql_list_tables / sql_describe_table) —
-# read-only exploratory-аналитика. Отдельный DSN от [tool.kb.postgres]:
-# рекомендуется LLM-only роль с `GRANT SELECT ON ...`. Защита делегирована
-# Postgres: права роли + libpq `options='-c default_transaction_read_only=on
-# -c statement_timeout=<ms>'`, зашитый в DSN при коннекте. Нет tool-side
-# keyword-валидатора и LIMIT-injection. DDL/DML отклоняются PG-side как
-# `permission denied` / `cannot execute X in a read-only transaction`.
+# Ad-hoc SQL: read-only DSN (рекомендуется отдельная роль с GRANT SELECT).
 [tool.kb.sql]
-host = ""                    # обязателен
+host = ""
 port = 5432
-user = ""                    # обязателен — рекомендуется read-only роль
-password = ""                # из env: BOBA_TOOL__KB__SQL__PASSWORD
-database = ""                # обязателен
+user = ""
+password = ""
+database = ""
 sslmode = "prefer"
 application_name = "boba-tool-kb-sql"
 pool_min_size = 1
 pool_max_size = 4
 connect_timeout_sec = 10.0
-max_rows = 100               # потолок строк в результате
-# max_cell_chars = 200       # опционально: длина cell'ки (None — не обрезать)
-statement_timeout_ms = 5000  # PG statement_timeout (мс)
+max_rows = 100
+# max_cell_chars = 200                 # None — не обрезать
+statement_timeout_ms = 5000
 
-# Integration-test параметры для пакета boba-tool-kb. Читаются классом
-# KbIntegrationTestConfig из tests/conftest.py. Все поля опциональны:
-# конкретный тест скипается, если нужное поле пусто. Запуск:
-#   pytest packages/tools/boba-tool-kb -m integration -s
+# Integration-test параметры для пакета boba-tool-kb (все поля опциональны).
 [test.kb]
 # kb_search_query = "как оформить возврат?"
 # kb_search_top_k = 5
 # confluence_page_ids = ["123456", "654321"]
 # confluence_space_key = "DOCS"
 # confluence_cql = "space = DOCS AND label = api"
-# confluence_search_query = "consumer"      # plain-text query (внутри обернётся в CQL)
-# confluence_search_space = "DOCS"          # optional space filter
+# confluence_search_query = "consumer"
+# confluence_search_space = "DOCS"
 # fts_query = "auth"
 
-# per-tool PromptOverlay (опционально, описание/fields LLM'у):
-#   [tool.kb.kb_search]
-#   description = ""
-#   fields = {}
-#   [tool.kb.confluence_space_ingest]
-#   description = ""
-#   fields = {}
-#   [tool.kb.fts_search]
-#   description = ""
-#   fields = {}
-
-# 15 файловых tools под общим enable-флагом
 [tool.files]
 enable = false
-# [tool.files.cat]
-# max_lines = 2000
-# [tool.files.cat.prompt]
-# description = ""
-# fields = {}
-# PromptOverlay по остальным tools: append/cd/cp/edit/grep/ls/mkdir/mv/pwd/rm/stat/touch/tree/write
 
-# html_outline + html_section (работают по workspace)
 [tool.html]
 enable = false
-# [tool.html.html_outline]
-# description = ""
-# fields = {}
-# [tool.html.html_section]
-# description = ""
-# fields = {}
 
-# shell-плагин — два независимых @tool:
-#   - bash_local:   прямой subprocess.Popen без изоляции (под доверенный dev).
-#   - bash_sandbox: bubblewrap-песочница с явным реестром профилей.
-#                   Регистрируется только если на хосте есть `bwrap`.
-#
-# Селекция — через `tools=[...]` allowlist (стандартный PluginConfigBase).
-# Конфиги обоих tool'ов живут отдельными секциями [tool.bash_local] и
-# [tool.bash_sandbox]; при отсутствии в TOML — берутся дефолты (для
-# bash_sandbox пустые profiles означают: tool зарегистрирован, но при
-# вызове вернёт unknown_profile-payload).
+# bash_local: subprocess без изоляции; bash_sandbox: bubblewrap.
+# Регистрируется только если есть `bwrap` на хосте.
 [tool.shell]
 enable = false
-# Allowlist по wire-имени tool'а. Если опущен — регистрируются оба.
 # tools = ["bash_local"]
 
-# --- bash_local: subprocess без изоляции (dev-only) --------------------------
 # [tool.bash_local]
-# workspace_root = "."         # cwd по умолчанию для subprocess
-# cwd = ""                     # пусто → workspace_root
+# workspace_root = "."
+# cwd = ""
 # env_passthrough = ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM"]
-# env_set = {}                 # перекрывает env_passthrough при коллизии имён
-# timeout_sec = 30             # 1..3600
-# max_output_bytes = 262144    # ≥1024; отдельно для stdout/stderr
+# env_set = {}
+# timeout_sec = 30
+# max_output_bytes = 262144
 
-# --- bash_sandbox: bubblewrap (требует `bwrap` на хосте) ---------------------
 # [tool.bash_sandbox]
-# workspace_root = "."         # RW-bind в песочнице + cwd для запуска bwrap
-# default_profile = "default"  # имя default-профиля из profiles ниже
+# workspace_root = "."
+# default_profile = "default"
 #
 # [tool.bash_sandbox.profiles.default]
 # ro_binds = ["/usr", "/bin", "/sbin", "/lib", "/lib64",
 #             "/etc/alternatives", "/etc/resolv.conf"]
-# rw_binds = []                # workspace_root добавляется автоматически
+# rw_binds = []
 # tmpfs = ["/tmp"]
-# network = false              # false → --unshare-net (нет сети)
-# env_set = { PATH = "/usr/bin:/bin" }  # host-env НЕ наследуется
-# timeout_sec = 30             # 1..3600
-# max_output_bytes = 262144    # ≥1024; отдельно для stdout/stderr
-# cwd = ""                     # пусто → workspace_root
-
-# Все KB-каналы (наша KB + Confluence + External-FTS) живут под зонтиком
-# [tool.kb]. См. секции [tool.kb] / [tool.kb.confluence] /
-# [tool.kb.confluence_ingest] / [tool.kb.external_fts] выше.
+# network = false
+# env_set = { PATH = "/usr/bin:/bin" }
+# timeout_sec = 30
+# max_output_bytes = 262144
+# cwd = ""

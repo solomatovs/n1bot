@@ -35,9 +35,9 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
-from boba.agent.workspace_fs import FsProjectWorkspaceRegistry, WorkspaceLayout
+from boba.agent.workspace_fs import FsProjectWorkspaceShell
 from boba.indexing import PipelineId
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
+from boba.settings import BobaSettingsConfigDict, StringList
 from boba.tool.kb.confluence._download_common import download_pages
 from boba.tool.kb.confluence.attachments import AttachmentFilter
 from boba.tool.kb.confluence.request_sources._common import (
@@ -59,28 +59,6 @@ __all__ = ["ConfluenceDownloadCliConfig", "main"]
 logger = logging.getLogger("boba.tool.kb.cli.confluence.download.http")
 
 _PIPELINE_ID: PipelineId = PipelineId("cli.confluence.download")
-
-_CLI_WORKSPACE_ID: WorkspaceId = WorkspaceId("00000000-0000-0000-0000-000000000001")
-"""Тот же фиксированный CLI-workspace, что у `boba-cli-agent` — оба CLI
-пишут/читают в одном `local/workspaces/<id>/user/`, чтобы агент REPL
-видел только что скачанные confluence-файлы."""
-
-
-class _AgentWorkspacesView(BobaFlatSettings):
-    """Минимальный proxy на `[agent].workspaces` (base_dir/user_subdir).
-
-    Полный `AppConfig` из `boba-cli-agent` не импортируем — не хотим
-    cross-package coupling ради двух полей. Грузится из того же TOML
-    (`$BOBA_CONFIG_PATH`, секция `[agent]`).
-    """
-
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="agent",
-    )
-
-    workspaces: WorkspaceLayout = Field(default_factory=WorkspaceLayout)
 
 
 class ConfluenceDownloadCliConfig(ConfluenceDownloadConfig):
@@ -140,6 +118,16 @@ class ConfluenceDownloadCliConfig(ConfluenceDownloadConfig):
             ),
         ),
     ] = False
+
+    workspace_root: str = Field(
+        default="./workspaces/user",
+        description=(
+            "Корневая директория workspace'а, в который пишутся скачанные "
+            "файлы (внутри неё применяется `dest_dir`). Дефолт совпадает с "
+            "`[agent].user_workspace_dir`, чтобы `boba-cli-agent` REPL и "
+            "kb-cli делили один workspace без uuid-сабпапок."
+        ),
+    )
 
 
 def _build_attachment_filter(cfg: ConfluenceDownloadCliConfig) -> AttachmentFilter:
@@ -295,28 +283,16 @@ def main() -> int:
     )
 
     cfg = ConfluenceDownloadCliConfig()  # pyright: ignore[reportCallIssue]
-    ws_view = _AgentWorkspacesView()  # pyright: ignore[reportCallIssue]
 
-    shell = FsProjectWorkspaceRegistry(
-        base_dir=Path(ws_view.workspaces.base_dir),
-        subdir=ws_view.workspaces.user_subdir,
-    ).get_or_create(_CLI_WORKSPACE_ID)
-    if not isinstance(shell, ProjectWorkspaceShell):
-        msg = (
-            f"FsProjectWorkspaceRegistry returned {type(shell).__name__}, "
-            f"expected ProjectWorkspaceShell"
-        )
-        raise TypeError(msg)
-    logger.info(
-        "using CLI workspace=%s root=%s/%s/%s",
-        _CLI_WORKSPACE_ID,
-        ws_view.workspaces.base_dir,
-        _CLI_WORKSPACE_ID,
-        ws_view.workspaces.user_subdir,
+    shell: ProjectWorkspaceShell = FsProjectWorkspaceShell(
+        workspace_id=WorkspaceId("cli-confluence-download"),
+        root=Path(cfg.workspace_root),
     )
+    logger.info("using workspace root=%s", cfg.workspace_root)
 
     if cfg.page_ids:
         return _run_page_ids_mode(cfg, shell)
+
     return _run_spaces_mode(cfg, shell)
 
 

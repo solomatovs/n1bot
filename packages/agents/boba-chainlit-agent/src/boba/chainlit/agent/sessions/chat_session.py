@@ -8,7 +8,7 @@ from boba.agent import AgentBuilder, TurnBuilder
 from boba.agent.agent import Agent
 from boba.agent.history import JsonLinesHistoryService
 from boba.agent.workspace_fs import FsPromptWorkspaceRegistry
-from boba.chainlit.agent.config import AppConfig, ChainlitConfig
+from boba.chainlit.agent.config import ChainlitConfig
 from boba.chainlit.agent.logging import log_context
 from boba.chainlit.agent.rendering.bridge import ChainlitBridgeSink
 from boba.llm.builder import LLMBuilder
@@ -39,10 +39,9 @@ class ChatSession:
         project_workspaces: ProjectWorkspaceRegistry,
         history_workspaces: HistoryWorkspaceRegistry,
     ) -> None:
-        app = AppConfig.load()
-
         self._workspace_id = workspace_id
         self._chainlit_config = ChainlitConfig.load()
+        rt = self._chainlit_config.runtime
 
         project_shell = project_workspaces.get_or_create(workspace_id)
         if not isinstance(project_shell, ProjectWorkspaceShell):
@@ -64,14 +63,14 @@ class ChatSession:
             LLMBuilder()
             .add_observer(CurlTraceChatCompletionObserver(history_shell))
             .add_observer(HttpTraceChatCompletionObserver(history_shell))
-            .build(use_openai(app.openai))
+            .build(use_openai(rt.openai))
         )
 
         system_prompt_workspace = FsPromptWorkspaceRegistry(
-            root=Path(app.system_prompt_dir),
+            root=Path(rt.system_prompt_dir),
         ).get_or_create(PromptWorkspaceId("prompts"))
 
-        turn = TurnBuilder(self._chainlit_config.model).system_prompt_from_directory(
+        turn = TurnBuilder(rt.model).system_prompt_from_directory(
             system_prompt_workspace
         )
 
