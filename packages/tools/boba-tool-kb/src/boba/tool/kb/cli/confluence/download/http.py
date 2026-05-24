@@ -30,12 +30,14 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
+from boba.agent.workspace_fs import FsProjectWorkspaceRegistry, WorkspaceLayout
 from boba.indexing import PipelineId
-from boba.settings import BobaSettingsConfigDict, StringList
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
 from boba.tool.kb.confluence._download_common import download_pages
 from boba.tool.kb.confluence.attachments import AttachmentFilter
 from boba.tool.kb.confluence.request_sources._common import (
@@ -50,12 +52,35 @@ from boba.tool.kb.confluence.request_sources.space import (
 from boba.tool.kb.confluence.tools.download import (
     ConfluenceDownloadConfig,
 )
+from boba.workspace.contract import ProjectWorkspaceShell, WorkspaceId
 
 __all__ = ["ConfluenceDownloadCliConfig", "main"]
 
 logger = logging.getLogger("boba.tool.kb.cli.confluence.download.http")
 
 _PIPELINE_ID: PipelineId = PipelineId("cli.confluence.download")
+
+_CLI_WORKSPACE_ID: WorkspaceId = WorkspaceId("00000000-0000-0000-0000-000000000001")
+"""Тот же фиксированный CLI-workspace, что у `boba-cli-agent` — оба CLI
+пишут/читают в одном `local/workspaces/<id>/user/`, чтобы агент REPL
+видел только что скачанные confluence-файлы."""
+
+
+class _AgentWorkspacesView(BobaFlatSettings):
+    """Минимальный proxy на `[agent].workspaces` (base_dir/user_subdir).
+
+    Полный `AppConfig` из `boba-cli-agent` не импортируем — не хотим
+    cross-package coupling ради двух полей. Грузится из того же TOML
+    (`$BOBA_CONFIG_PATH`, секция `[agent]`).
+    """
+
+    model_config = BobaSettingsConfigDict(
+        case_sensitive=False,
+        extra="ignore",
+        config_path="agent",
+    )
+
+    workspaces: WorkspaceLayout = Field(default_factory=WorkspaceLayout)
 
 
 class ConfluenceDownloadCliConfig(ConfluenceDownloadConfig):
@@ -131,7 +156,9 @@ def _build_attachment_filter(cfg: ConfluenceDownloadCliConfig) -> AttachmentFilt
     return flt
 
 
-def _run_page_ids_mode(cfg: ConfluenceDownloadCliConfig) -> int:
+def _run_page_ids_mode(
+    cfg: ConfluenceDownloadCliConfig, shell: ProjectWorkspaceShell,
+) -> int:
     if cfg.only or cfg.skip:
         logger.warning(
             "page_ids задан — игнорирую only=%s, skip=%s, space_type=%s",
@@ -157,6 +184,7 @@ def _run_page_ids_mode(cfg: ConfluenceDownloadCliConfig) -> int:
     start = time.monotonic()
     try:
         result = download_pages(
+            shell=shell,
             request_source=source,
             conn=cfg.confluence,
             dest_dir=cfg.dest_dir,
@@ -179,7 +207,9 @@ def _run_page_ids_mode(cfg: ConfluenceDownloadCliConfig) -> int:
     return 0
 
 
-def _run_spaces_mode(cfg: ConfluenceDownloadCliConfig) -> int:
+def _run_spaces_mode(
+    cfg: ConfluenceDownloadCliConfig, shell: ProjectWorkspaceShell,
+) -> int:
     if cfg.only:
         logger.info("using only=%d space-keys (skip discovery)", len(cfg.only))
         keys: Iterator[str] = iter(cfg.only)
@@ -212,6 +242,7 @@ def _run_spaces_mode(cfg: ConfluenceDownloadCliConfig) -> int:
         )
         try:
             result: dict[str, Any] = download_pages(
+                shell=shell,
                 request_source=source,
                 conn=cfg.confluence,
                 dest_dir=cfg.dest_dir,
@@ -264,10 +295,29 @@ def main() -> int:
     )
 
     cfg = ConfluenceDownloadCliConfig()  # pyright: ignore[reportCallIssue]
+    ws_view = _AgentWorkspacesView()  # pyright: ignore[reportCallIssue]
+
+    shell = FsProjectWorkspaceRegistry(
+        base_dir=Path(ws_view.workspaces.base_dir),
+        subdir=ws_view.workspaces.user_subdir,
+    ).get_or_create(_CLI_WORKSPACE_ID)
+    if not isinstance(shell, ProjectWorkspaceShell):
+        msg = (
+            f"FsProjectWorkspaceRegistry returned {type(shell).__name__}, "
+            f"expected ProjectWorkspaceShell"
+        )
+        raise TypeError(msg)
+    logger.info(
+        "using CLI workspace=%s root=%s/%s/%s",
+        _CLI_WORKSPACE_ID,
+        ws_view.workspaces.base_dir,
+        _CLI_WORKSPACE_ID,
+        ws_view.workspaces.user_subdir,
+    )
 
     if cfg.page_ids:
-        return _run_page_ids_mode(cfg)
-    return _run_spaces_mode(cfg)
+        return _run_page_ids_mode(cfg, shell)
+    return _run_spaces_mode(cfg, shell)
 
 
 if __name__ == "__main__":
