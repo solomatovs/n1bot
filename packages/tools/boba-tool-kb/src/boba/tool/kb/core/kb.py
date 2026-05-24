@@ -110,7 +110,7 @@ class PostgresKnowledgeBase:
         query: str,
         top_k: int,
         sql_template: str,
-    ) -> list[SearchHit]:
+    ) -> Iterable[SearchHit]:
         """Гибридный hybrid retrieval с Reciprocal Rank Fusion.
 
         Ищет по объединению переданных коллекций: SQL-фильтр
@@ -156,22 +156,19 @@ class PostgresKnowledgeBase:
                         "top_k": top_k,
                     },
                 )
-                rows = cur.fetchall()
+
+                for row in cur.fetchall():
+                    yield SearchHit(
+                        id=row["chunk_id"],
+                        distance=-float(row["rrf"]),
+                        metadata=self._row_metadata(row),
+                        snippet=row["snippet"] or "",
+                    )
         except Exception as e:
             raise KnowledgeBaseError(
                 f"postgres hybrid search failed for collections "
                 f"{list(collections)!r}: {type(e).__name__}: {e}",
             ) from e
-
-        return [
-            SearchHit(
-                id=row["chunk_id"],
-                distance=-float(row["rrf"]),
-                metadata=self._row_metadata(row),
-                snippet=row["snippet"] or "",
-            )
-            for row in rows
-        ]
 
     def vector_search(
         self,
