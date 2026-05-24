@@ -30,13 +30,13 @@ __all__ = [
 ]
 
 
-TOOL_MARKER = "__boba_tools_tool__"
+TOOL_MARKER = "__tool__"
 """Атрибут-маркер: класс/функция помечена как tool."""
 
-TOOL_NAME_MARKER = "__boba_tools_tool_name__"
+TOOL_NAME_MARKER = "__tool_name__"
 """Атрибут-маркер: явное wire-имя tool'а, заданное через `@tool(name=...)`."""
 
-PROVIDES_SCOPE_MARKER = "__boba_tools_provides_scope__"
+PROVIDES_SCOPE_MARKER = "__provides_scope__"
 """Атрибут-маркер: функция помечена как service provider; значение — Scope."""
 
 

@@ -26,6 +26,7 @@ from boba.tools.errors import (
     ToolDeclarationError,
     ToolsFrameworkError,
 )
+from boba.tools.llm_types import LLMStringList
 from boba.tools.markers import FromConfig, FromDI
 from boba.tools.scope import Scope
 
@@ -34,6 +35,7 @@ __all__ = [
     "DuplicateProviderError",
     "FromConfig",
     "FromDI",
+    "LLMStringList",
     "Scope",
     "ToolDeclarationError",
     "ToolsFrameworkError",

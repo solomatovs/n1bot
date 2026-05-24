@@ -102,9 +102,8 @@ class ConfluenceDownloadCliConfig(ConfluenceDownloadConfig):
         StringList,
         Field(
             description=(
-                "Список page_id: качать ТОЛЬКО эти страницы. Перекрывает "
-                "`only`/`skip`/`space_type` (warn в лог если заданы вместе). "
-                'CSV в env (`123,456`), TOML-array (`["123", "456"]`).'
+                "Список page_id: индексировать только эти страницы. "
+                "Перекрывает `only`/`skip`/`space_type`"
             ),
         ),
     ] = []  # noqa: RUF012
