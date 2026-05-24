@@ -79,8 +79,10 @@ class _WebDownloader:
         saved: list[dict[str, str]] = []
         try:
             for raw in transport.stream(pctx, source.stream(pctx)):
-                saved.append(self._write_one(raw_source_id=str(raw.source_id),
-                                             body=raw.handle))
+                saved.append(self._write_one(
+                    raw_source_id=str(raw.source_id),
+                    body=raw.handle)
+                )
         except httpx.HTTPError as e:
             raise RuntimeError(
                 f"web_download failed: {type(e).__name__}: {e}",
