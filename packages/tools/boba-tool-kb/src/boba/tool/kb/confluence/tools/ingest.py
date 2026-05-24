@@ -45,7 +45,7 @@ from boba.tool.kb.core.postgres_store import (
     PostgresCollectionsStore,
     PostgresStoreConfig,
 )
-from boba.tools import FromConfig, tool
+from boba.tools import FromConfig, LLMStringList, tool
 from boba.transport.http import HttpRequest
 
 __all__ = [
@@ -139,13 +139,13 @@ def _run(
 def confluence_ingest_spaces(
     cfg: Annotated[ConfluenceIngestConfig, FromConfig()],
     space_keys: Annotated[
-        list[str],
+        LLMStringList,
         Field(
             min_length=1,
             description=(
                 "Список space-ключей Confluence для индексации. "
-                'Пример: `["DOCS", "ENG"]`. Discovery через '
-                "`/rest/api/space/{key}/content` — индексируются все "
+                'Передавай JSON-массив строк: `["DOCS", "ENG"]`. Discovery '
+                "через `/rest/api/space/{key}/content` — индексируются все "
                 "страницы каждого space. Используй, когда нужен полный "
                 "охват space'а."
             ),
@@ -178,15 +178,15 @@ def confluence_ingest_spaces(
 def confluence_ingest_pages(
     cfg: Annotated[ConfluenceIngestConfig, FromConfig()],
     page_ids: Annotated[
-        list[str],
+        LLMStringList,
         Field(
             min_length=1,
             description=(
                 "Список page_id страниц Confluence для индексации. "
-                'Пример: `["950276", "950278"]`. Каждый id — строка из URL '
-                "`viewpage.action?pageId=<id>`. Используй, когда уже знаешь "
-                "конкретные страницы (например, из результатов "
-                "`confluence_search_cql`)."
+                'Передавай JSON-массив строк: `["950276", "950278"]`. '
+                "Каждый id — строка из URL `viewpage.action?pageId=<id>`. "
+                "Используй, когда уже знаешь конкретные страницы (например, "
+                "из результатов `confluence_search_cql`)."
             ),
         ),
     ],

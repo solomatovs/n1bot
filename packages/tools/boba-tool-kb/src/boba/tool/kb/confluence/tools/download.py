@@ -29,7 +29,7 @@ from boba.tool.kb.confluence.request_sources import (
     ConfluenceMultiSpaceRequestSource,
     ConfluencePagesRequestSource,
 )
-from boba.tools import FromConfig, FromDI, Scope, tool
+from boba.tools import FromConfig, FromDI, LLMStringList, Scope, tool
 from boba.workspace.contract import ProjectWorkspaceShell
 
 __all__ = ["ConfluenceDownloadConfig", "confluence_download"]
@@ -98,20 +98,22 @@ def confluence_download(
     cfg: Annotated[ConfluenceDownloadConfig, FromConfig()],
     shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
     space_keys: Annotated[
-        list[str] | None,
+        LLMStringList | None,
         Field(
             description=(
-                "Mode A: скачать все страницы перечисленных Confluence-spaces."
+                "Mode A: скачать все страницы перечисленных Confluence-spaces. "
+                'Передавай JSON-массив строк: `["DOCS", "ENG"]`.'
             ),
         ),
     ] = None,
     page_ids: Annotated[
-        list[str] | None,
+        LLMStringList | None,
         Field(
             description=(
                 "Mode B: скачать список page_id. Каждый id — строка из "
                 "URL `viewpage.action?pageId=<id>`. Используй, если уже знаешь "
-                "конкретные страницы. Взаимоисключающий с `space_keys`."
+                "конкретные страницы. Взаимоисключающий с `space_keys`. "
+                'Передавай JSON-массив строк: `["950276", "950278"]`.'
             ),
         ),
     ] = None,
