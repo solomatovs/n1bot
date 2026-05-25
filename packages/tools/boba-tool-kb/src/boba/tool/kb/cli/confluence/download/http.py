@@ -118,13 +118,11 @@ class ConfluenceDownloadCliConfig(ConfluenceDownloadConfig):
         ),
     ] = False
 
-    workspace_root: str = Field(
-        default="./workspaces/user",
+    dest_dir: str = Field(
+        default="./local/downloads",
+        min_length=1,
         description=(
-            "Корневая директория workspace'а, в который пишутся скачанные "
-            "файлы (внутри неё применяется `dest_dir`). Дефолт совпадает с "
-            "`[agent].user_workspace_dir`, чтобы `boba-cli-agent` REPL и "
-            "kb-cli делили один workspace без uuid-сабпапок."
+            "FS-путь куда писать (создаётся, если не существует)"
         ),
     )
 
@@ -283,11 +281,13 @@ def main() -> int:
 
     cfg = ConfluenceDownloadCliConfig()  # pyright: ignore[reportCallIssue]
 
+    # CWD как корень — `dest_dir` интерпретируется shell'ом как обычный
+    # FS-путь (без обёртки workspace_root).
     shell: ProjectWorkspaceShell = FsProjectWorkspaceShell(
         workspace_id=WorkspaceId("cli-confluence-download"),
-        root=Path(cfg.workspace_root),
+        root=Path("."),
     )
-    logger.info("using workspace root=%s", cfg.workspace_root)
+    logger.info("writing to dest_dir=%s (relative to CWD)", cfg.dest_dir)
 
     if cfg.page_ids:
         return _run_page_ids_mode(cfg, shell)
