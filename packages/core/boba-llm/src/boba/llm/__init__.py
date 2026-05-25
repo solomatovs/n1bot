@@ -45,7 +45,11 @@ from boba.llm.events import (
     LLMToolCallBegin,
     LLMToolCallComplete,
 )
-from boba.llm.middleware import AssistantAggregator, RetryMiddleware
+from boba.llm.middleware import (
+    AssistantAggregator,
+    JsonContentToolCallMiddleware,
+    RetryMiddleware,
+)
 from boba.llm.models import (
     AssistantMessage,
     AssistantMessageChunk,
@@ -81,6 +85,7 @@ __all__ = [
     "DialogMessage",
     "FinishReason",
     "InvalidToolCall",
+    "JsonContentToolCallMiddleware",
     "LLMAnswerComplete",
     "LLMAnswerStarted",
     "LLMAnswerToken",

@@ -56,10 +56,23 @@ class LLM:
 class LLMBuilder(Generic[TRequest, TChunk, TApiError, THttpError]):
     """
     Fluent-фасад LLM-слоя: middleware + observers + provider-terminal
-    - `.use_middleware(...)` — добавление конкретного middleware в цепочку
-    - `.add_observer(...)`   — добавление наблюдателя запросов/ответов llm
-                                 например метрика, логирование, подсчеты
-    - `.build(factory)`      — собрать LLM, terminal-фабрика обязательна
+
+    Цепочка собирается так (сверху вниз; верхний видит события первым):
+
+        user middlewares           ← `.use_middleware(...)`
+        AssistantAggregator
+        provider middlewares       ← `.use_provider_middleware(...)`
+        terminal (OpenAI/Ollama)
+
+    - `.use_middleware(...)`          — middleware **поверх** агрегатора:
+      видит уже агрегированные *Complete + LLMGenerationResult.
+    - `.use_provider_middleware(...)` — middleware **под** агрегатором:
+      сидит на сыром provider-стриме до агрегации. Полезно когда нужно
+      пере-эмитнуть/переписать delta-события так, чтобы агрегатор сам
+      собрал из них корректный AssistantMessage (например: модели,
+      возвращающие tool-call как JSON в content, → синтез ToolCall-deltas).
+    - `.add_observer(...)`            — наблюдатель wire-уровня.
+    - `.build(factory)`               — собрать LLM, terminal-фабрика обязательна.
     """
 
     def __init__(self) -> None:
@@ -67,6 +80,7 @@ class LLMBuilder(Generic[TRequest, TChunk, TApiError, THttpError]):
             LLMRequestObserver[TRequest, TChunk, TApiError, THttpError]
         ] = []
         self._middlewares: list[MiddlewareFactory] = []
+        self._provider_middlewares: list[MiddlewareFactory] = []
 
     def add_observer(
         self,
@@ -77,10 +91,18 @@ class LLMBuilder(Generic[TRequest, TChunk, TApiError, THttpError]):
         return self
 
     def use_middleware(self, factory: MiddlewareFactory) -> Self:
-        """
-        Зарегистрировать middleware
-        """
+        """Зарегистрировать middleware **поверх** AssistantAggregator."""
         self._middlewares.append(factory)
+        return self
+
+    def use_provider_middleware(self, factory: MiddlewareFactory) -> Self:
+        """Зарегистрировать middleware **под** AssistantAggregator.
+
+        Порядок регистрации = порядок «сверху вниз» в цепочке: первый
+        зарегистрированный сидит ближе к агрегатору, последний — ближе
+        к provider-terminal.
+        """
+        self._provider_middlewares.append(factory)
         return self
 
     def build(self, factory: TerminalFactory) -> LLM:
@@ -89,13 +111,17 @@ class LLMBuilder(Generic[TRequest, TChunk, TApiError, THttpError]):
         получает composite-observer и возвращает provider-terminal
         (см. `use_openai` и аналоги в provider-пакетах).
         """
-        chain_builder = StreamSourceChainBuilder[LLMContext, LLMEvent]()
-
-        for mw in self._middlewares:
-            chain_builder.use(mw)
-
         terminal = factory(
             CompositeLLMRequestObserver(self._observers),
         )
 
-        return LLM(chain_builder.terminal(AssistantAggregator(terminal)))
+        provider_chain_builder = StreamSourceChainBuilder[LLMContext, LLMEvent]()
+        for mw in self._provider_middlewares:
+            provider_chain_builder.use(mw)
+        below_aggregator = provider_chain_builder.terminal(terminal)
+
+        chain_builder = StreamSourceChainBuilder[LLMContext, LLMEvent]()
+        for mw in self._middlewares:
+            chain_builder.use(mw)
+
+        return LLM(chain_builder.terminal(AssistantAggregator(below_aggregator)))
