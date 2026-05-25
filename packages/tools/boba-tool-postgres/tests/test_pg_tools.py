@@ -11,6 +11,8 @@ from boba.tool.pg.query import QueryConfig, query
 
 pytestmark = pytest.mark.integration
 
+TARGET = "main"
+
 
 def _count_data_rows(md: str) -> int:
     """Сколько data-строк в markdown-таблице.
@@ -35,7 +37,7 @@ def test_list_tables_returns_markdown(
     list_tables_cfg: ListTablesConfig,
 ) -> None:
     """`list_tables` без schema-фильтра возвращает таблицы user-schema'ов."""
-    md = list_tables(cfg=list_tables_cfg, schema=None)
+    md = list_tables(cfg=list_tables_cfg, target=TARGET, schema=None)
     assert isinstance(md, str)
     lines = md.splitlines()
     assert lines[0].startswith("|")
@@ -48,7 +50,7 @@ def test_list_tables_kb_chunks_visible(
     list_tables_cfg: ListTablesConfig,
 ) -> None:
     """В KB-БД должна быть `kb_chunks` (созданная bootstrap-миграцией)."""
-    md = list_tables(cfg=list_tables_cfg, schema="public")
+    md = list_tables(cfg=list_tables_cfg, target=TARGET, schema="public")
     assert "kb_chunks" in md
 
 
@@ -63,6 +65,7 @@ def test_describe_table_kb_chunks(
     """Схема `kb_chunks` — ожидаемые системные колонки."""
     md = describe_table(
         cfg=describe_table_cfg,
+        target=TARGET,
         table="kb_chunks",
         schema="public",
     )
@@ -78,6 +81,7 @@ def test_describe_unknown_table_empty(
     """Неизвестная таблица → markdown с `_(no rows)_`-заглушкой."""
     md = describe_table(
         cfg=describe_table_cfg,
+        target=TARGET,
         table="this_table_does_not_exist",
         schema="public",
     )
@@ -94,6 +98,7 @@ def test_query_simple_select(query_cfg: QueryConfig) -> None:
     """Простой `SELECT 1, 'hello'` → markdown с одной строкой."""
     md = query(
         cfg=query_cfg,
+        target=TARGET,
         sql="SELECT 1 AS n, 'hello' AS greeting",
         row_limit=5,
     )
@@ -108,6 +113,7 @@ def test_query_count_kb_chunks(query_cfg: QueryConfig) -> None:
     """`SELECT count(*) FROM kb_chunks` — exploratory-запрос."""
     md = query(
         cfg=query_cfg,
+        target=TARGET,
         sql="SELECT count(*) AS chunks FROM kb_chunks",
         row_limit=1,
     )
@@ -119,6 +125,7 @@ def test_query_auto_limit_truncated(query_cfg: QueryConfig) -> None:
     """Много строк + малый row_limit → truncated-маркер в markdown."""
     md = query(
         cfg=query_cfg,
+        target=TARGET,
         sql="SELECT generate_series(1, 1000) AS n",
         row_limit=5,
     )
@@ -136,6 +143,7 @@ def test_query_readonly_blocks_insert(query_cfg: QueryConfig) -> None:
     with pytest.raises(RuntimeError, match=r"read-only|permission"):
         query(
             cfg=query_cfg,
+            target=TARGET,
             sql="INSERT INTO kb_chunks (chunk_id) VALUES ('x')",
             row_limit=1,
         )
@@ -146,6 +154,7 @@ def test_query_readonly_blocks_update(query_cfg: QueryConfig) -> None:
     with pytest.raises(RuntimeError, match=r"read-only|permission"):
         query(
             cfg=query_cfg,
+            target=TARGET,
             sql="UPDATE kb_chunks SET chunk_id = chunk_id",
             row_limit=1,
         )
@@ -156,6 +165,7 @@ def test_query_readonly_blocks_drop(query_cfg: QueryConfig) -> None:
     with pytest.raises(RuntimeError, match=r"read-only|permission"):
         query(
             cfg=query_cfg,
+            target=TARGET,
             sql="DROP TABLE kb_chunks",
             row_limit=1,
         )
