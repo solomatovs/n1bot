@@ -1,4 +1,4 @@
-"""Tool `query` + `QueryConfig`: произвольный SQL → markdown-таблица."""
+"""Tool query: произвольный SQL в markdown-таблицу."""
 
 from __future__ import annotations
 
@@ -15,16 +15,13 @@ __all__ = ["QueryConfig", "query"]
 
 
 class QueryConfig(BobaFlatSettings):
-    """Self-contained конфиг tool'а `query`.
-
-    Config-секция: `[tool.pg.query]`.
-    """
+    """Конфиг tool query (секция [tool.pg.query])."""
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
         config_path="tool.pg.query",
-        defaults_from=("postgres",),
+        defaults_from=("tool.pg",),
     )
 
     executor: SqlExecutorConfig
@@ -42,6 +39,15 @@ def query(
             ),
         ),
     ],
+    target: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Имя подключения"
+            ),
+        ),
+    ],
     row_limit: Annotated[
         int,
         Field(
@@ -52,18 +58,14 @@ def query(
         ),
     ] = 20,
 ) -> str:
-    """Выполнить произвольный SQL-запрос; результат — markdown-таблица.
+    """Выполнить SQL на профиле target и вернуть markdown-таблицу.
 
-    Подходит для exploratory-аналитики и ad-hoc отчётов. Перед вызовом
-    стоит позвать `list_tables` (что доступно) и `describe_table`
-    (схема нужной таблицы).
-
-    Если в таблице есть footer `_... more rows omitted (увеличьте row_limit)_`,
-    значит есть ещё строки сверх `row_limit` — увеличь его и повтори запрос.
+    Перед вызовом стоит позвать list_tables и describe_table.
+    Footer "more rows omitted (увеличьте row_limit)" — есть ещё строки сверх row_limit.
     """
     executor = SqlExecutor(cfg=cfg.executor)
     try:
-        result = executor.execute(sql, row_limit=row_limit)
+        result = executor.execute(sql, target=target, row_limit=row_limit)
     except SqlQueryError as e:
         raise RuntimeError(str(e)) from e
 

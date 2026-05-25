@@ -1,9 +1,4 @@
-"""Tool `describe_table` + `DescribeTableConfig`: схема одной таблицы.
-
-LLM зовёт после `list_tables`, чтобы узнать структуру конкретной
-таблицы перед написанием SQL. Возвращает markdown с колонками
-`{column_name, data_type, is_nullable, default}`.
-"""
+"""Tool describe_table: схема одной таблицы."""
 
 from __future__ import annotations
 
@@ -20,16 +15,13 @@ __all__ = ["DescribeTableConfig", "describe_table"]
 
 
 class DescribeTableConfig(BobaFlatSettings):
-    """Self-contained конфиг tool'а `describe_table`.
-
-    Config-секция: `[tool.pg.describe_table]`.
-    """
+    """Конфиг tool describe_table (секция [tool.pg.describe_table])."""
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
         config_path="tool.pg.describe_table",
-        defaults_from=("postgres",),
+        defaults_from=("tool.pg",),
     )
 
     executor: SqlExecutorConfig
@@ -38,14 +30,21 @@ class DescribeTableConfig(BobaFlatSettings):
 @tool
 def describe_table(
     cfg: Annotated[DescribeTableConfig, FromConfig()],
+    target: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Имя профиля БД"
+            ),
+        ),
+    ],
     table: Annotated[
         str,
         Field(
             min_length=1,
             description=(
-                "Имя таблицы (без схемы). Например, `kb_chunks`. Чтобы "
-                "посмотреть колонки таблицы в нестандартной схеме, передай "
-                "имя схемы через параметр `schema`."
+                "Имя таблицы (без схемы)"
             ),
         ),
     ],
@@ -53,17 +52,13 @@ def describe_table(
         str,
         Field(
             min_length=1,
-            description="PG schema таблицы. По умолчанию `public`.",
+            description="PG schema таблицы. По умолчанию public",
         ),
     ] = "public",
 ) -> str:
-    """Схема одной таблицы: колонки, типы, nullable, default.
+    """Схема таблицы на профиле target: колонки, типы, nullable, default.
 
-    Список колонок берётся из `information_schema.columns`. Поля:
-    `column_name, data_type, is_nullable, column_default`. Если таблицы
-    с таким именем нет (или у роли DSN'а нет прав на её view'у) —
-    результат будет markdown-таблицей с одной строкой-заглушкой
-    `_(no rows)_`.
+    Если таблицы нет, вернётся markdown с заглушкой (no rows).
     """
     executor = SqlExecutor(cfg=cfg.executor)
     sql = (
@@ -75,6 +70,7 @@ def describe_table(
     try:
         result = executor.execute(
             sql,
+            target=target,
             row_limit=executor.max_rows_cap,
             params=(schema, table),
         )

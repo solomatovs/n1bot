@@ -1,10 +1,4 @@
-"""Tool `fts_search` + `FtsSearchConfig`: FTS-поиск по whitelist-таблице.
-
-Read-only websearch (`websearch_to_tsquery`) по одной фиксированной
-таблице оператора (`IndexSpec`). LLM передаёт только `query` + опц.
-`top_k`; таблица/колонки/язык приходят из конфига и подставляются через
-`psycopg.sql.Identifier`.
-"""
+"""Tool fts_search: FTS-поиск по whitelist-таблице."""
 
 from __future__ import annotations
 
@@ -24,16 +18,13 @@ __all__ = ["FtsSearchConfig", "fts_search"]
 
 
 class FtsSearchConfig(BobaFlatSettings):
-    """Self-contained конфиг tool'а `fts_search`.
-
-    Config-секция: `[tool.pg.fts_search]`.
-    """
+    """Конфиг tool fts_search (секция [tool.pg.fts_search])."""
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
         config_path="tool.pg.fts_search",
-        defaults_from=("postgres",),
+        defaults_from=("tool.pg",),
     )
 
     executor: FtsExecutorConfig
@@ -47,6 +38,15 @@ class FtsSearchConfig(BobaFlatSettings):
 @tool
 def fts_search(
     cfg: Annotated[FtsSearchConfig, FromConfig()],
+    target: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Имя подключения"
+            ),
+        ),
+    ],
     query: Annotated[
         str,
         Field(
@@ -63,25 +63,19 @@ def fts_search(
         Field(
             ge=1,
             description=(
-                "Сколько hits вернуть. По умолчанию 5; жёсткий потолок — "
-                "в `cfg.max_top_k`."
+                "Сколько hits вернуть. По умолчанию 5"
             ),
         ),
     ] = 5,
 ) -> list[dict[str, Any]]:
-    """
-    FTS-поиск
-
-    Возвращает JSON-массив hits `{id, score, metadata, snippet}`,
-    упорядоченный по релевантности (score = `ts_rank_cd`, больше = ближе)
-    """
+    """FTS-поиск на профиле target. Возвращает hits {id, score, metadata, snippet}."""
     if top_k > cfg.max_top_k:
         raise RuntimeError(
             f"top_k={top_k} превышает max_top_k={cfg.max_top_k}",
         )
     executor = PgFtsExecutor(cfg=cfg.executor)
     try:
-        hits = executor.search(query=query, top_k=top_k)
+        hits = executor.search(query=query, target=target, top_k=top_k)
     except FtsQueryError as e:
         raise RuntimeError(str(e)) from e
 

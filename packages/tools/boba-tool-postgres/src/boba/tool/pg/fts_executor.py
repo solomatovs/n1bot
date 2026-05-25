@@ -1,29 +1,14 @@
-"""`PgFtsExecutor` — read-only FTS-сервис по одной whitelist-таблице.
-
-Tool `fts_search` принимает `FtsExecutorConfig` (composite-BaseModel:
-connection + whitelist + snippet_options) как nested-поле в своём
-tool-конфиге и строит `PgFtsExecutor` inline.
-
-Безопасность аналогична остальным `boba-tool-postgres`-тулзам:
-- DSN-роль должна быть read-only (`GRANT SELECT ON ...`). PG отклоняет
-  любые INSERT/UPDATE/DDL с `permission denied`.
-- `default_transaction_read_only=on` (libpq `options=-c ...`) — двойная
-  защита поверх прав роли.
-- `statement_timeout=<ms>` (тоже через libpq `options=`) — runtime-cap.
-- Identifier'ы (schema/table/column) приходят из конфига (TOML), не от
-  LLM, и подставляются через `psycopg.sql.Identifier`. Параметры запроса
-  (`query`, `top_k`) — всегда через placeholder'ы, без склейки.
-"""
+"""FTS-executor для tool fts_search."""
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Self
 
 from psycopg.sql import Composable, Composed
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.db.postgres import PostgresConnection, PostgresPool
 
@@ -39,16 +24,8 @@ __all__ = [
 
 
 class IndexSpec(BaseModel):
-    """Декларация одной FTS-таблицы оператора (`FtsExecutorConfig.whitelist`).
+    """Декларация одной FTS-таблицы оператора."""
 
-    Имена колонок/таблицы приходят из конфига (TOML), не от LLM, и
-    подставляются в SQL через `psycopg.sql.Identifier`. Параметры запроса
-    (`query`, `top_k`) — всегда через placeholder'ы, без склейки.
-    """
-
-    # protected_namespaces=() — гасим предупреждение про field "schema",
-    # которое shadow'ит deprecated v1-метод BaseModel.schema(); сам метод
-    # в pydantic v2 заменён на model_json_schema().
     model_config = ConfigDict(
         frozen=True,
         extra="forbid",
@@ -58,9 +35,7 @@ class IndexSpec(BaseModel):
     schema: str = Field(default="public", description="PG schema таблицы.")
     table: str = Field(description="Имя таблицы (без schema).")
     id_column: str = Field(description="Колонка-PK; её значение возвращается в hit.id.")
-    tsv_column: str = Field(
-        description="Колонка типа tsvector (обычно GENERATED + GIN-индекс).",
-    )
+    tsv_column: str = Field(description="Колонка типа tsvector")
     snippet_column: str = Field(
         description="Текстовая колонка для ts_headline (обычно body/content).",
     )
@@ -87,38 +62,66 @@ class FtsHit:
 
 
 class FtsExecutorConfig(BaseModel):
-    """Composite-конфиг для `PgFtsExecutor`: connection + whitelist + опции.
+    """Конфиг для PgFtsExecutor."""
 
-    Не settings (нет `config_path`) — встраивается как nested-поле в
-    tool-конфиг `FtsSearchConfig`. Благодаря рекурсивному flatten'у поля
-    whitelist'а (schema/table/columns/language) и snippet_options лежат
-    плоско в корневой TOML-секции tool'а.
-    """
-
-    connection: PostgresConnection
-    whitelist: IndexSpec
+    databases: dict[str, PostgresConnection] = Field(
+        description="Shared whitelist подключений — тот же, что у SQL-tool'ов.",
+    )
+    whitelists: dict[str, IndexSpec] = Field(
+        description="FTS-IndexSpec на каждый target. Ключи подмножество databases.",
+    )
     snippet_options: str = Field(
         default="MaxFragments=2,MaxWords=35,MinWords=15",
         description=(
-            "Опции `ts_headline`: MaxFragments,MaxWords,MinWords,"
-            "StartSel,StopSel,..."
+            "Опции ts_headline: MaxFragments,MaxWords,MinWords,StartSel,StopSel,..."
         ),
     )
 
-    def session_options(self) -> dict[str, str]:
-        """Session-level GUC, зашиваемые в `options=`-параметр DSN."""
+    @model_validator(mode="after")
+    def _validate(self) -> Self:
+        if not self.databases:
+            msg = "tool.pg.fts_search: пустой databases"
+            raise ValueError(msg)
+        if not self.whitelists:
+            msg = "tool.pg.fts_search.whitelists: пусто"
+            raise ValueError(msg)
+        stray = sorted(set(self.whitelists) - set(self.databases))
+        if stray:
+            msg = (
+                f"tool.pg.fts_search.whitelists: target(ы) {stray!r} нет "
+                f"в shared databases ({sorted(self.databases)!r})"
+            )
+            raise ValueError(msg)
+        return self
+
+    def resolve(self, target: str) -> tuple[PostgresConnection, IndexSpec]:
+        """Вернуть (connection, IndexSpec); ValueError если target не задан."""
+        conn = self.databases.get(target)
+        spec = self.whitelists.get(target)
+        if conn is None or spec is None:
+            searchable = sorted(set(self.databases) & set(self.whitelists))
+            msg = (
+                f"fts_search: target {target!r} нет в whitelist "
+                f"(searchable={searchable})"
+            )
+            raise ValueError(msg)
+        return conn, spec
+
+    @staticmethod
+    def session_options(conn: PostgresConnection) -> dict[str, str]:
+        """Session-level GUC, зашиваемые в options DSN."""
         return {
             "default_transaction_read_only": "on",
-            "statement_timeout": str(self.connection.statement_timeout_ms),
+            "statement_timeout": str(conn.statement_timeout_ms),
         }
 
 
 class FtsQueryError(RuntimeError):
-    """Ошибка выполнения FTS-запроса (psycopg-side)."""
+    """Ошибка выполнения FTS-запроса."""
 
 
 class PgFtsExecutor:
-    """FTS-поиск по одной whitelist-таблице (`IndexSpec`)."""
+    """FTS-поиск по профилю из whitelist."""
 
     def __init__(
         self,
@@ -126,28 +129,33 @@ class PgFtsExecutor:
         cfg: FtsExecutorConfig,
     ) -> None:
         self._cfg = cfg
-        self._pool = PostgresPool.get(
-            cfg.connection.to_pool_config(
-                session_options=cfg.session_options(),
-            ),
-        )
         logger.info(
-            "PgFtsExecutor opened: whitelist=%s.%s",
-            cfg.whitelist.schema,
-            cfg.whitelist.table,
+            "PgFtsExecutor opened: targets=%s",
+            sorted(cfg.databases),
         )
 
-    def search(self, query: str, top_k: int) -> list[FtsHit]:
-        stmt, params = self._build_query(query, top_k)
+    def allowed_targets(self) -> list[str]:
+        """Searchable targets: пересечение databases и whitelists."""
+        return sorted(set(self._cfg.databases) & set(self._cfg.whitelists))
+
+    def search(self, query: str, *, target: str, top_k: int) -> list[FtsHit]:
+        conn, spec = self._cfg.resolve(target)
+        pool = PostgresPool.get(
+            conn.to_pool_config(
+                session_options=self._cfg.session_options(conn),
+            ),
+        )
+
+        stmt, params = self._build_query(spec, query, top_k)
         try:
-            with self._pool.cursor() as cur:
+            with pool.cursor() as cur:
                 cur.execute(stmt, params)
                 rows = cur.fetchall()
                 column_names = [d.name for d in (cur.description or [])]
         except Exception as e:
-            spec = self._cfg.whitelist
             raise FtsQueryError(
-                f"fts query failed for whitelist {spec.schema}.{spec.table}: "
+                f"fts query failed for target={target!r} "
+                f"whitelist={spec.schema}.{spec.table}: "
                 f"{type(e).__name__}: {e}",
             ) from e
 
@@ -155,12 +163,12 @@ class PgFtsExecutor:
 
     def _build_query(
         self,
+        spec: IndexSpec,
         query: str,
         top_k: int,
     ) -> tuple[Composed, tuple[Any, ...]]:
         from psycopg import sql  # noqa: PLC0415
 
-        spec = self._cfg.whitelist
         meta_select: Composable = sql.SQL("")
         if spec.metadata_columns:
             meta_select = sql.SQL(", ") + sql.SQL(", ").join(

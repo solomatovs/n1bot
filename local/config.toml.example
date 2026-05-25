@@ -1,19 +1,15 @@
-# Шаблон local/config.toml.
-# Секции: [cli.agent], [chainlit], [tool.<name>]. Каждое приложение
-# читает свою TOML-секцию; общая [agent] упразднена.
-# Источник: $BOBA_CONFIG_PATH (по умолчанию ./local/config.toml).
-
+# boba-cli-agent
 [cli.agent]
-model = ""
+model = "qwen/qwen3.7-max"
+max_messages = 30
 system_prompt_dir = "./local/prompts"
 log_level = "INFO"
 log_file = "./local/logs/cli.log"
 user_workspace_dir = "./local/workspaces/user"
 system_workspace_dir = "./local/workspaces/system"
-base_url = "http://localhost:4000"     # → runtime.openai.base_url
-api_key = "ollama"                     # → runtime.openai.api_key
-# max_messages = 50                    # окно CompactHistoryDialogView, >= 1
-# query = ""
+base_url = ""
+api_key = ""
+# query = "О чем говориться в контексте?"
 # temperature = 0.7
 # top_p = 0.9
 # max_tokens = 4096
@@ -22,157 +18,342 @@ api_key = "ollama"                     # → runtime.openai.api_key
 # frequency_penalty = 0.0
 # presence_penalty = 0.0
 
+
 [chainlit]
-model = ""
+# model = "qwen/qwen3.7-max"
+# model = "qwen/qwen3-32b"
+# model = "qwen/qwen3-8b"
+# model = "qwen/qwen3-max"
+# model = "qwen/qwen3-max-thinking"
+# model = "qwen/qwen3-next-80b-a3b-thinking"
+model = "nvidia/nemotron-3-nano-30b-a3b:free"
+max_messages = 30
 system_prompt_dir = "./local/prompts"
 log_level = "INFO"
 log_file = "./local/logs/chainlit.log"
 user_workspace_dir = "./local/workspaces/user"
 system_workspace_dir = "./local/workspaces/system"
-base_url = "http://localhost:4000"
-api_key = "ollama"
-# max_messages = 50                    # окно CompactHistoryDialogView, >= 1
+base_url = "https://localhost:4000"
+api_key = ""
 host = "0.0.0.0"
 port = 8502
-url_prefix = ""
-auth_secret = ""                       # openssl rand -hex 32
+url_prefix = "/boba-debug"
+
+# Сгенерировать: openssl rand -hex 32
+auth_secret = ""
 headless = true
 app_root = "./local/chainlit"
 chat_session_pool_capacity = 32
 
-# KB-плагин — 13 tools, allowlist через `tools=[...]`.
-[tool.kb]
-enable = false
-tools = [
-    "files_ingest",
-    "confluence_space_ingest",
-    "confluence_page_ingest",
-    "kb_search",
-    "vector_search",
-    "confluence_search",
-    "confluence_list_spaces",
-    "fts_search",
-    "confluence_page_download",
-    "confluence_space_download",
-    "sql_list_tables",
-    "sql_describe_table",
-    "sql_query",
-]
-collection = "knowledge_base"
-collection_description = ""
-files_folder = "./local/docs"
-snippet_chars = 300
-max_top_k = 20
-rrf_k = 60
-rrf_pool = 40
-chunk_size = 4000
-chunk_overlap = 0
 
-[tool.kb.chunk_store]
-schema = "public"
-chunks_table = "kb_chunks"
-collections_table = "kb_collections"
-
-[tool.kb.postgres]
-host = ""
+# Подключение «до базы» + общие pool/timeout defaults. `application_name`
+[postgres]
+host = "127.0.0.1"
 port = 5432
-user = ""
-password = ""
-database = ""
-sslmode = "prefer"
-application_name = "boba-tool-kb"
+user = "postgres"
+password = "postgres"
+database = "postgres"
+sslmode = "disable"
+application_name = "boba"
 pool_min_size = 1
 pool_max_size = 8
 connect_timeout_sec = 10.0
 
-# auth_method: pat | basic | none
-[tool.kb.confluence]
-base_url = ""
-auth_method = "pat"
-auth_token = ""
+# Подключение для embedding
+[embedding]
+# provider = "openai-compat"
+# endpoint = "https://localhost:4000"
+# api_key = ""
+# model = "intfloat/multilingual-e5-large"
+provider = "local"
+model = "intfloat/multilingual-e5-large"
+cache_dir = "./local/cache/fastembed"
+
+
+# Общее подключение до confluence
+[confluence]
+# base_url = "https://cwiki.apache.org/confluence"
+# pat, none, basic
+# auth_method = "none"
+# auth_token = ""
 auth_user = ""
 timeout_sec = 30.0
-ssl_verify = false
+ssl_verify = true
 body_format = "view"
 
+
+# KB-storage: имена postgres-таблиц и schema
+# Используется везде в tool.kb
+[kb.storage]
+schema = "public"
+chunks_table = "kb_chunks"
+collections_table = "kb_collections"
+batch_size = 100
+
+
+# KB-плагин
+[tool.kb]
+enable = false
+tools = [
+    # --- ingest (Confluence → kb_chunks) ---
+    "confluence_ingest_spaces",   # все страницы перечисленных spaces
+    "confluence_ingest_pages",    # явный список page_id
+    "confluence_ingest_cql",      # discovery через CQL-запрос
+    # --- search (KB / online) ---
+    "kb_search_hybrid",
+    "kb_search_vector",
+    "kb_search_fts",
+    "confluence_search_cql",
+    "confluence_list_spaces",
+    # --- download (Confluence → workspace) ---
+    "confluence_download",        # unified: space_keys / page_ids
+]
+
+# bootstrap CLI (миграции + HNSW-индекс)
+# `python -m boba.tool.kb.cli.kb_bootstrap`.
+# defaults_from = (postgres, kb.storage, embedding).
+[cli.kb.bootstrap]
+application_name = "boba-tool-kb-bootstrap"
+
+# kbdoc.ingest CLI: KbDoc-папка (.md по конвенции `**key:** value` header
+# + `---` + body — одна карточка = один чанк) → KB-коллекция.
+# `python -m boba.tool.kb.cli.kbdoc.ingest`.
+# defaults_from = (postgres, kb.storage, embedding).
+[cli.kb.kbdoc.ingest]
+application_name = "boba-tool-kb-kbdoc-ingest"
+chunk_size = 4000
+chunk_overlap = 0
+folder = "./local/docs"
+collection = "kb_kbdoc"
+prune = false
+
+# confluence.ingest.folder CLI: индексация уже-скачанной папки confluence-download
+# `python -m boba.tool.kb.cli.confluence.ingest.folder`.
+# defaults_from = (postgres, kb.storage, embedding).
+[cli.kb.confluence.ingest.folder]
+application_name = "boba-tool-kb-confluence-folder-ingest"
+chunk_size = 4000
+chunk_overlap = 0
+folder = "./local/downloads"
+collection = "kb_confluence"
+prune = false
+
+# confluence.ingest CLI: unified HTTP-ingest в KB
+# `python -m boba.tool.kb.cli.confluence.ingest.http \
+#     [--page-ids 123,456 | --only KEY1,KEY2 | --type global]`
+# Режимы:
+#   page_ids непустой → ингест явных страниц (only/skip игнорируются, warn)
+#   only непустой     → ингест указанных spaces (skip discovery)
+#   иначе             → discovery всех spaces (space_type), минус skip
+[cli.kb.confluence.ingest]
+application_name = "boba-tool-kb-confluence-ingest"
+chunk_size = 4000
+chunk_overlap = 0
+collection = "kb_confluence"
+# Runner-specific (можно переопределить через CLI --page-ids/--type/--only/--skip/--prune)
+space_type = "global"
+only = []
+skip = []
+page_ids = []
+prune = false
+# Allowlist-фильтры вложений (fnmatch-globs; OR между списками; пустые → все вложения).
+# Примеры: ["application/pdf", "image/*"] или ["*.pdf", "report-*.docx"].
+attachment_media_types = ["image/*"]
+attachment_titles = []
+
+# search.render CLI: рендер kb_search_* SQL-шаблона со всеми параметрами
+# `python -m boba.tool.kb.cli.search.render \
+#     --template {hybrid|vector|fts} --query "<text>" [--top-k N]`
+# Все search-параметры (collections, RRF, snippet_chars, search_sql_path)
+# тянутся из соответствующего [tool.kb.search.<template>].
+# Stdout — готовый SQL (пайпай в `psql "$DSN"`). Логи — stderr.
+[cli.kb.search.render]
+# Дефолты для запуска без CLI-флагов; --template/--query/--top-k override'ят.
+template = "fts"
+query = "как оформить возврат?"
+top_k = 5
+
+# confluence.download CLI: unified HTTP-download на ФС
+# `python -m boba.tool.kb.cli.confluence.download.http \
+#     [--page-ids 123,456 | --only KEY1,KEY2 | --type global]`
+# Режимы — те же, что и у ingest.
+[cli.kb.confluence.download]
+dest_dir = "kb/confluence"
+as_markdown = true
+space_type = "global"
+only = []
+skip = []
+page_ids = []
+# Allowlist-фильтры вложений (fnmatch-globs; OR между списками; пустые → все вложения).
+# Отсеянные не запрашиваются по HTTP и не пишутся на диск.
+attachment_media_types = []
+attachment_titles = []
+
+# confluence_ingest (unified): LLM выбирает режим — space_keys / page_ids / cql.
+# defaults_from = (postgres, kb.storage, embedding, confluence).
+[tool.kb.confluence.ingest]
+application_name = "boba-tool-kb-confluence-ingest"
+chunk_size = 4000
+chunk_overlap = 0
+collection = "kb_confluence"
+# Allowlist-фильтры вложений (fnmatch-globs; OR между списками; пустые → все вложения).
+attachment_media_types = []
+attachment_titles = []
+
+# confluence_download (unified): LLM выбирает режим — space_keys / page_ids.
+# defaults_from = (confluence,). connection — из shared; локально — dest_dir.
 [tool.kb.confluence.download]
-dest_dir = "kb/confluence"             # workspace-relative
-# attachment_media_types = []
-# attachment_titles = []
-# max_returned_files = 50
+dest_dir = "./local/downloads"
+# Allowlist-фильтры вложений (fnmatch-globs; OR между списками; пустые → все вложения).
+attachment_media_types = []
+attachment_titles = []
 
-[tool.kb.embedding]
-model = ""
-base_url = ""
-api_key = ""
+# confluence_list_spaces: список доступных spaces
+# defaults_from = (confluence,). Полностью из shared — локальных knob'ов нет.
+[tool.kb.confluence.list.spaces]
 
-[tool.kb.fts]
-# dsn = ""
-snippet_options = "MaxFragments=2,MaxWords=35,MinWords=15"
+# confluence_search_cql: online CQL по реальному Confluence
+# defaults_from = (confluence,).
+[tool.kb.confluence.search.cql]
+snippet_chars = 300
+max_limit = 50
+
+# kb_search_hybrid: hybrid (vector + FTS + RRF)
+# defaults_from = (postgres, kb.storage, embedding).
+[tool.kb.search.hybrid]
+application_name = "boba-tool-kb-search-hybrid"
+# RRF params (внутри PostgresKnowledgeBaseConfig).
+# Языки FTS зашиты в SQL-шаблоне (default — russian||english,
+# см. core/tools/search/sql/hybrid.sql) и должны быть синхронны с DDL
+# `tsv`-колонки (см. migrations/002_multilang_tsv.sql).
+snippet_chars = 300
+rrf_k = 60
+rrf_pool = 40
+# Tool-specific
+collections = ["kb_kbdoc", "kb_confluence"]
 max_top_k = 20
-# [tool.kb.fts.index]
-# name = "docs"
-# description = ""
-# schema = "public"
-# table = "documents"
-# id_column = "id"
-# tsv_column = "tsv"
-# snippet_column = "body"
-# language = "russian"
-# metadata_columns = ["title", "source_url"]
+# search_sql_path = "/path/to/custom/hybrid.sql"  # override default packaged SQL
 
-# Ad-hoc SQL: read-only DSN (рекомендуется отдельная роль с GRANT SELECT).
-[tool.kb.sql]
+# kb_search_vector: pure vector (cosine)
+# defaults_from = (postgres, kb.storage, embedding).
+[tool.kb.search.vector]
+application_name = "boba-tool-kb-search-vector"
+# RRF params (KnowledgeBase'у нужны, даже если RRF тут не используется)
+snippet_chars = 300
+rrf_k = 60
+rrf_pool = 40
+# Tool-specific
+collections = ["kb_kbdoc", "kb_confluence"]
+max_top_k = 20
+# search_sql_path = "/path/to/custom/vector.sql"  # override default packaged SQL
+
+# kb_search_fts: pure lexical FTS (ts_rank_cd)
+# defaults_from = (postgres, kb.storage, embedding).
+[tool.kb.search.fts]
+application_name = "boba-tool-kb-search-fts"
+# RRF params (внутри PostgresKnowledgeBaseConfig — RRF здесь не используется)
+snippet_chars = 300
+rrf_k = 60
+rrf_pool = 40
+# Tool-specific
+collections = ["kb_kbdoc", "kb_confluence"]
+max_top_k = 20
+# search_sql_path = "/path/to/custom/fts.sql"  # override default packaged SQL
+
+
+# Postgres-tools. Один shared набор профилей [tool.pg.databases.<target>]
+# для query/list_tables/describe_table/fts_search.
+[tool.pg]
+enable = false
+tools = [
+    "list_targets",
+    "query",
+    "list_tables",
+    "describe_table",
+    "fts_search"
+]
+max_rows = 100
+max_cell_chars = 2000
+
+[tool.pg.databases.main]
 host = ""
 port = 5432
 user = ""
 password = ""
 database = ""
 sslmode = "prefer"
-application_name = "boba-tool-kb-sql"
-pool_min_size = 1
+application_name = "[tool.pg:main]"
 pool_max_size = 4
-connect_timeout_sec = 10.0
-max_rows = 100
-# max_cell_chars = 200                 # None — не обрезать
 statement_timeout_ms = 5000
 
-# Integration-test параметры для пакета boba-tool-kb (все поля опциональны).
-[test.kb]
-# kb_search_query = "как оформить возврат?"
-# kb_search_top_k = 5
-# confluence_page_ids = ["123456", "654321"]
-# confluence_space_key = "DOCS"
-# confluence_cql = "space = DOCS AND label = api"
-# confluence_search_query = "consumer"
-# confluence_search_space = "DOCS"
-# fts_query = "auth"
+[tool.pg.databases.analytics]
+host = ""
+port = 5432
+user = ""
+password = ""
+database = ""
+sslmode = "prefer"
+application_name = "[tool.pg:analytics]"
+pool_max_size = 4
+statement_timeout_ms = 5000
+
+[tool.pg.fts_search]
+snippet_options = "MaxFragments=2,MaxWords=35,MinWords=15"
+max_top_k = 20
+
+# IndexSpec на target. Ключи whitelists подмножество [tool.pg.databases].
+[tool.pg.fts_search.whitelists.main]
+schema = "public"
+table = "documents"
+id_column = "id"
+tsv_column = "tsv"
+snippet_column = "body"
+language = "russian"
+metadata_columns = ["title", "source_url"]
+
+
 
 [tool.files]
 enable = false
+tools = [
+    "append",
+    "cat",
+    "read_bytes",
+    # "cd",
+    # "cp",
+    # "edit",
+    "grep",
+    "ls",
+    # "mkdir",
+    # "mv",
+    # "pwd",
+    # "rm",
+    "stat",
+    # "touch",
+    "tree",
+    # "write",
+    "unzip",
+]
+cat_max_chars = 50000
 
-[tool.html]
+
+[tool.shell]
 enable = false
+tools = [
+    "bash_local",
+    "bash_sandbox",
+]
 
-# ────────────────────────────────────────────────────────────────────────
-# Web tools (web_fetch / web_download)
-#
-# Всё web-связанное под одним префиксом `[tool.web.*]`:
-#   [tool.web]                 — enable/tools (framework) + shared
-#                                WebConnection (hosts/timeout/ssl_verify).
-#   [tool.web.hosts."<host>".auth] — per-host auth (ACL+auth в одном).
-#   [tool.web.fetch]           — оверрайды для web_fetch (обычно пусто).
-#   [tool.web.download]        — оверрайды для web_download (dest_dir).
-#
-# Hostname НЕ в `[tool.web.hosts]` → запрос полностью запрещён.
-# Каждому host'у обязательно явно указать `auth.method` (включая "none").
-# ────────────────────────────────────────────────────────────────────────
 
 [tool.web]
 enable = false
-# tools = ["web_fetch", "web_download"]    # allowlist; пусто = оба
+tools = [
+    "web_fetch",
+    "web_download"
+]
 timeout_sec = 30.0
 ssl_verify = true
+
 
 # GitHub: публичные raw-файлы и страницы (anonymous).
 [tool.web.hosts."raw.githubusercontent.com".auth]
@@ -191,55 +372,9 @@ method = "none"
 [tool.web.hosts."cloud.google.com".auth]
 method = "none"
 
-# Авторизованные API — раскомментируй и впиши токен/пароль:
-# (BearerAuth.token имеет min_length=1, поэтому пустые значения валятся
-# на старте — храните секреты вне репозитория.)
-#
-# [tool.web.hosts."api.github.com".auth]
-# method = "bearer"
-# token = "ghp_xxx"                        # GitHub PAT (https://github.com/settings/tokens)
-#
-# [tool.web.hosts."www.googleapis.com".auth]
-# method = "bearer"
-# token = "ya29.xxx"                       # Google Cloud OAuth access token
-#
-# [tool.web.hosts."intra.example.com".auth]
-# method = "basic"
-# user = "alice"
-# password = "secret"
-#
 # [tool.web.hosts."docs.python.org".auth]
 # method = "none"
 
 [tool.web.download]
 dest_dir = "web/downloads"                # workspace-relative
 # max_returned_files = 50
-
-# bash_local: subprocess без изоляции; bash_sandbox: bubblewrap.
-# Регистрируется только если есть `bwrap` на хосте.
-[tool.shell]
-enable = false
-# tools = ["bash_local"]
-
-# [tool.bash_local]
-# workspace_root = "."
-# cwd = ""
-# env_passthrough = ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM"]
-# env_set = {}
-# timeout_sec = 30
-# max_output_bytes = 262144
-
-# [tool.bash_sandbox]
-# workspace_root = "."
-# default_profile = "default"
-#
-# [tool.bash_sandbox.profiles.default]
-# ro_binds = ["/usr", "/bin", "/sbin", "/lib", "/lib64",
-#             "/etc/alternatives", "/etc/resolv.conf"]
-# rw_binds = []
-# tmpfs = ["/tmp"]
-# network = false
-# env_set = { PATH = "/usr/bin:/bin" }
-# timeout_sec = 30
-# max_output_bytes = 262144
-# cwd = ""

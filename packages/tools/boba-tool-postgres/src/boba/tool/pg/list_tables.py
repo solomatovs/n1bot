@@ -1,13 +1,4 @@
-"""Tool `list_tables` + `ListTablesConfig`: список таблиц/view.
-
-Помогает LLM понять, что лежит в БД, прежде чем писать SQL. Возвращает
-markdown-таблицу `{schema, table, kind}` для всех таблиц/view, к которым
-у DSN-роли есть права (PG отфильтрует автоматически).
-
-Системные схемы `pg_catalog` / `information_schema` исключаются по
-умолчанию (LLM редко полезно туда ходить). LLM может явно указать
-`schema` для фильтрации по одной.
-"""
+"""Tool list_tables: список таблиц/view."""
 
 from __future__ import annotations
 
@@ -24,16 +15,13 @@ __all__ = ["ListTablesConfig", "list_tables"]
 
 
 class ListTablesConfig(BobaFlatSettings):
-    """Self-contained конфиг tool'а `list_tables`.
-
-    Config-секция: `[tool.pg.list_tables]`.
-    """
+    """Конфиг tool list_tables (секция [tool.pg.list_tables])."""
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
         config_path="tool.pg.list_tables",
-        defaults_from=("postgres",),
+        defaults_from=("tool.pg",),
     )
 
     executor: SqlExecutorConfig
@@ -42,6 +30,15 @@ class ListTablesConfig(BobaFlatSettings):
 @tool
 def list_tables(
     cfg: Annotated[ListTablesConfig, FromConfig()],
+    target: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Имя подключения"
+            ),
+        ),
+    ],
     schema: Annotated[
         str | None,
         Field(
@@ -52,12 +49,7 @@ def list_tables(
         ),
     ] = None,
 ) -> str:
-    """
-    Список таблиц/view
-
-    Возвращает markdown с колонками:
-    `schema, table, kind` (BASE TABLE / VIEW / MATERIALIZED VIEW)
-    """
+    """Список таблиц/view на профиле target. Колонки: schema, table, kind."""
     executor = SqlExecutor(cfg=cfg.executor)
     if schema:
         sql = (
@@ -69,8 +61,6 @@ def list_tables(
         )
         params: tuple[Any, ...] = (schema,)
     else:
-        # `'pg_%'`-LIKE передаём параметром (psycopg иначе ловит `%'`
-        # как несуществующий placeholder).
         sql = (
             "SELECT table_schema AS schema, table_name AS table, "
             "table_type AS kind "
@@ -81,11 +71,9 @@ def list_tables(
         )
         params = ("pg_%",)
 
-    # row_limit здесь = max_rows: introspection-tool обычно показывает «всё»
-    # в пределах общего safety-капа.
     try:
         result = executor.execute(
-            sql, row_limit=executor.max_rows_cap, params=params,
+            sql, target=target, row_limit=executor.max_rows_cap, params=params,
         )
     except SqlQueryError as e:
         raise RuntimeError(str(e)) from e
