@@ -34,6 +34,7 @@
 -e ./packages/tools/boba-tool-kb
 -e ./packages/tools/boba-tool-postgres
 -e ./packages/tools/boba-tool-shell
+-e ./packages/tools/boba-tool-web
 
 # entry-point apps
 -e ./packages/agents/boba-cli-agent
