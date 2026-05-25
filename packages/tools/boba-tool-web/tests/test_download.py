@@ -31,7 +31,12 @@ def _patch_client(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
 
 def _conn() -> WebConnection:
     return WebConnection(
-        hosts={"docs.python.org": WebHostProfile(auth=NoneAuth(method="none"))},
+        hosts={
+            "docs.python.org": WebHostProfile(
+                hostname="docs.python.org",
+                auth=NoneAuth(method="none"),
+            ),
+        },
     )
 
 

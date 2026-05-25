@@ -1,8 +1,7 @@
-"""Tool `web_fetch` + `WebFetchConfig`.
+"""
+Tool `web_fetch` + `WebFetchConfig`.
 
-Скачивает одну web-страницу и возвращает окно строк `[line_offset :
-line_offset+line_count]` напрямую из HTTP-response без записи на диск
-и без буферизации всей страницы (для raw HTML).
+Скачивает одну web-страницу и возвращает строки [line_offset : line_offset+line_count]
 
 Возвращаемый dict:
 
@@ -12,14 +11,6 @@ line_offset+line_count]` напрямую из HTTP-response без записи
       "total_lines":    int,   # сколько всего строк в материализованном контенте
       "returned_lines": int,   # len(window)
     }
-
-Два режима:
-
-- `as_markdown=False` — построчное чтение HTML-байтов из response stream;
-  пиковая память O(window) для окна + O(1) счётчик строк, сам контент
-  страницы НЕ материализуется целиком.
-- `as_markdown=True` — markdownify не потоковый, поэтому страница читается
-  в RAM, конвертируется, затем построчное окно из markdown-строки.
 """
 
 from __future__ import annotations

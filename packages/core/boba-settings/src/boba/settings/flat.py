@@ -37,6 +37,7 @@ TOML:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any, ClassVar, Self
 
@@ -49,6 +50,7 @@ from pydantic_settings import (
 )
 
 from boba.settings.source import (
+    ConfigPath,
     ConfigSourcePydanticAdapter,
     TomlEnvConfigSource,
     to_config_path,
@@ -59,17 +61,45 @@ __all__ = [
     "BobaSettingsConfigDict",
 ]
 
+# `{field}` в шаблоне defaults_from-пути. Подставляется значением одноимённого
+# поля из секции config_path (TOML+env) либо field-default.
+_PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
+
 
 class BobaSettingsConfigDict(SettingsConfigDict, total=False):
     """
-    config_path   - путь к секции конфига (канонический путь).
-    use_cli       - подключить `CliSettingsSource` (argparse интеграция).
-    defaults_from - кортеж TOML-путей, из которых брать fallback-значения,
-                    если ключ отсутствует в основной секции `config_path`.
-                    Порядок задаёт приоритет fallback'ов (раньше — выше).
-                    Локальная секция `config_path` всегда override'нёт shared.
-                    Пример: `defaults_from=("postgres", "embedding")` для
-                    KB-tool/CLI, чьи поля берутся из этих shared-секций.
+    config_path
+        путь к секции конфига (канонический путь).
+    use_cli
+        подключить `CliSettingsSource` (argparse интеграция).
+    defaults_from
+        кортеж TOML-путей, из которых брать fallback-значения,
+        если ключ отсутствует в основной секции `config_path`.
+        Порядок задаёт приоритет fallback'ов (раньше — выше).
+        Локальная секция `config_path` всегда override'нёт shared.
+        Пример: `defaults_from=("kb.storage", "embedding")` —
+        KB-tool подтягивает schema/table_names и embedding-
+        параметры из shared-секций.
+
+        Поддерживаются два вида плейсхолдеров:
+
+        - `{field}` — значение из одноимённого поля собственной
+            секции `config_path` (TOML+env; default —
+            `model_fields[field].default`).
+        - `{section:field}` — значение из произвольной TOML-
+            секции `<section>` (dotted path), без default'а.
+
+        Примеры:
+            `defaults_from=("postgres.{profile}", "kb.storage")` —
+            `profile` берётся из собственной секции.
+            `defaults_from=("kb.storage",
+            "postgres.{kb.storage:profile}", "embedding")` —
+            `profile` лежит в shared-секции `[kb.storage]`,
+            все KB-tool'ы используют общее значение.
+
+        CLI-override для resolver не учитывается (резолв
+        выполняется до сборки CLI-source); используйте env
+        или TOML.
     """
 
     config_path: str | tuple[str, ...]
@@ -158,6 +188,69 @@ def _deep_merge(target: dict[str, Any], source: Mapping[str, Any]) -> None:
             _deep_merge(target[k], v)
         else:
             target[k] = v
+
+
+def _resolve_path_template(
+    template: str | tuple[str, ...],
+    own_section: Mapping[str, Any],
+    settings_cls: type[BaseSettings],
+    toml_source: TomlEnvConfigSource,
+) -> ConfigPath:
+    """Резолвить плейсхолдеры в `template`.
+
+    Поддерживаемые формы плейсхолдеров:
+      - `{field}`           — значение поля `<field>` из собственной
+                              секции `config_path` (TOML+env). При
+                              отсутствии — `model_fields[field].default`.
+      - `{section:field}`   — значение поля `<field>` из произвольной
+                              TOML-секции `<section>` (dotted path,
+                              читается через `TomlEnvConfigSource.for_path`).
+                              Default'а тут нет — пустое значение → `ValueError`.
+
+    `tuple` возвращается как есть (уже сегментированный путь, без шаблонов).
+    `str` без плейсхолдеров — обычный TOML-путь.
+    """
+    if isinstance(template, tuple):
+        return to_config_path(template)
+
+    placeholders = _PLACEHOLDER_RE.findall(template)
+    if not placeholders:
+        return to_config_path(template)
+
+    def _resolve_one(ph: str) -> str:
+        if ":" in ph:
+            section, field = ph.split(":", 1)
+            section_path = to_config_path(section)
+            section_data = (
+                toml_source.for_path(section_path) if section_path else {}
+            )
+            raw = section_data.get(field)
+            origin = f"секции [{section}]"
+        else:
+            raw = own_section.get(ph)
+            if raw is None or raw == "":
+                field_info = settings_cls.model_fields.get(ph)
+                if (
+                    field_info is not None
+                    and field_info.default not in (None, "")
+                    and field_info.default is not Ellipsis
+                ):
+                    raw = field_info.default
+            origin = "собственной секции config_path / default'а"
+        if raw is None or raw == "":
+            msg = (
+                f"{settings_cls.__name__}.defaults_from: "
+                f"placeholder '{{{ph}}}' в шаблоне {template!r} "
+                f"не резолвится — нет значения в {origin}"
+            )
+            raise ValueError(msg)
+        return str(raw)
+
+    # str.format(**kwargs) не принимает ключи с точкой/двоеточием —
+    # подставляем через re.sub.
+    return to_config_path(
+        _PLACEHOLDER_RE.sub(lambda m: _resolve_one(m.group(1)), template),
+    )
 
 
 class BobaFlatSettings(BaseSettings):
@@ -271,11 +364,20 @@ class BobaFlatSettings(BaseSettings):
                 ),
             )
 
+        # Pre-read собственной секции для резолва `{field}`-плейсхолдеров
+        # в `defaults_from`. CLI-source ещё не построен, поэтому CLI-override
+        # для полей-указателей не учитывается — только TOML+env.
+        own_section: Mapping[str, Any] = (
+            toml_source.for_path(path) if path else {}
+        )
+
         # Fallback-секции: каждая дочитывает только те ключи, которых нет
         # в более приоритетных source'ах. Pydantic-settings мержит state'ы
         # через deep_update — early-source-wins.
         for base in defaults_from:
-            base_path = to_config_path(base)
+            base_path = _resolve_path_template(
+                base, own_section, settings_cls, toml_source,
+            )
             if not base_path:
                 continue
             sources.append(

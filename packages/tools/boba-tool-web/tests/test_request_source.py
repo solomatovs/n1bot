@@ -24,8 +24,12 @@ def _ctx() -> PipelineContext:
 def _conn() -> WebConnection:
     return WebConnection(
         hosts={
-            "docs.python.org": WebHostProfile(auth=NoneAuth(method="none")),
+            "docs.python.org": WebHostProfile(
+                hostname="docs.python.org",
+                auth=NoneAuth(method="none"),
+            ),
             "api.github.com": WebHostProfile(
+                hostname="api.github.com",
                 auth=BearerAuth(method="bearer", token="tok"),
             ),
         },

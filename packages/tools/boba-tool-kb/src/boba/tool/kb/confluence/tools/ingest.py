@@ -71,7 +71,12 @@ class ConfluenceIngestConfig(BobaFlatSettings):
         case_sensitive=False,
         extra="ignore",
         config_path="tool.kb.confluence.ingest",
-        defaults_from=("postgres", "kb.storage", "embedding", "confluence"),
+        defaults_from=(
+            "kb.storage",
+            "postgres.{kb.storage:profile}",
+            "embedding",
+            "confluence",
+        ),
     )
 
     store: PostgresStoreConfig

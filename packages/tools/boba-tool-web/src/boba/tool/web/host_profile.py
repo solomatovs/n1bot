@@ -1,13 +1,10 @@
-"""WebHostProfile: per-host настройки (только auth в первой итерации).
-
-Профиль хранится как значение в `WebConnection.hosts: dict[host, profile]`.
-Ключ словаря — точный hostname (без схемы/порта). Без профиля host
-запрещён к запросу полностью — это и whitelist, и контракт авторизации.
+"""
+WebHostProfile: host профиль
 """
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from boba.tool.web.auth import WebAuth
 
@@ -15,13 +12,27 @@ __all__ = ["WebHostProfile"]
 
 
 class WebHostProfile(BaseModel):
-    """Per-host профиль: discriminated `auth` обязателен и без default'а."""
+    """Per-host профиль: hostname + discriminated `auth`."""
 
     model_config = ConfigDict(extra="forbid")
 
-    auth: WebAuth = Field(
+    hostname: str = Field(
+        min_length=1,
         description=(
-            "Auth-метод для этого host'а: {method='none'|'basic'|'bearer'|'digest'}. "
-            "Обязателен — даже anonymous должен быть указан явно как method='none'."
+            "Hostname (без схемы/порта), которому принадлежит профиль. "
+            "Нормализуется в lower-case. Tool ищет первый профиль "
+            "в `[tool.web].profiles` с матчащим hostname URL'а."
         ),
     )
+    auth: WebAuth = Field(
+        description=(
+            "Auth-метод: {method='none'|'basic'|'bearer'|'digest'}. "
+            "Обязателен — даже anonymous должен быть указан явно как "
+            "method='none'."
+        ),
+    )
+
+    @field_validator("hostname")
+    @classmethod
+    def _lowercase(cls, v: str) -> str:
+        return v.lower()

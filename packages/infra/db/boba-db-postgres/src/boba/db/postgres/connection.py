@@ -23,7 +23,16 @@ __all__ = ["PostgresConnection"]
 
 
 class PostgresConnection(BaseModel):
-    """Структурированное Postgres-подключение."""
+    """Структурированное Postgres-подключение.
+
+    `profile` как поле здесь не объявлено: оно бы конфликтовало во
+    flat-redistribute с одноимённым полем-указателем `profile` на верхнем
+    уровне tool-конфигов (`KbSearchHybridConfig`, ...). Resolve именованного
+    профиля делает потребитель (`SqlExecutorConfig._resolve_profiles`,
+    `BobaFlatSettings.settings_customise_sources` через
+    `defaults_from=("postgres.{profile}",...)`) на raw-dict до создания
+    `PostgresConnection`, после чего ключ `profile` отбрасывается.
+    """
 
     host: str = Field(
         default="",

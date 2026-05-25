@@ -73,7 +73,12 @@ class ConfluenceIngestCliConfig(ConfluenceIngestConfig):
         case_sensitive=False,
         extra="ignore",
         config_path="cli.kb.confluence.ingest",
-        defaults_from=("postgres", "kb.storage", "embedding", "confluence"),
+        defaults_from=(
+            "kb.storage",
+            "postgres.{kb.storage:profile}",
+            "embedding",
+            "confluence",
+        ),
         use_cli=True,
     )
 

@@ -38,7 +38,11 @@ class KbSearchFtsConfig(BobaFlatSettings):
         case_sensitive=False,
         extra="ignore",
         config_path="tool.kb.search.fts",
-        defaults_from=("postgres", "kb.storage", "embedding"),
+        defaults_from=(
+            "kb.storage",
+            "postgres.{kb.storage:profile}",
+            "embedding",
+        ),
     )
 
     knowledge_base: PostgresKnowledgeBaseConfig
@@ -57,10 +61,7 @@ class KbSearchFtsConfig(BobaFlatSettings):
     search_sql_path: Path = Field(
         default_factory=lambda: _DEFAULT_SQL_PATH,
         description=(
-            "Путь к файлу с pure FTS-SQL (`ts_rank_cd`). По умолчанию — "
-            "packaged `core/tools/search/sql/fts.sql`. Шаблон должен "
-            "содержать identifier-placeholder'ы `{chunks_table}`/`{schema}` "
-            "и bind-параметры `%(collections|query|snippet_chars|top_k)s`."
+            "Путь к файлу-шаблону sql запроса"
         ),
     )
 
