@@ -1,23 +1,5 @@
-"""Единый источник правды для маппинга `AgentEvent` → UI-операции.
-
-Цель — устранить дублирование интерпретации событий между live-рендером
-(во время `on_message`) и replay'ем (в `get_thread`). Раньше каждая
-ветка имела свой `match` по типам событий, что неминуемо вело к
-расхождению семантики при изменениях.
-
-Теперь маппинг живёт здесь в одном `AgentEventDispatcher`. Live и
-replay различаются только реализацией `EventRenderTarget` — first
-дёргает chainlit-API в реальном времени, второй накапливает
-`StepDict`'ы для отдачи в `data_layer.get_thread`.
-
-Большинство методов протокола имеют смысл и для live, и для replay,
-но некоторые применимы только к одной ветке:
-- *_chunk и tool_call_started / tool_execution_started / iteration_started /
-  generation_milestone / status — приходят только в live (delta-события
-  отфильтрованы из journal'а, phase-события дают только визуальный
-  индикатор статуса); replay-таргет их no-op'ит.
-- user_query — в live no-op (chainlit уже отрисовал ввод пользователя),
-  в replay создаёт user_message-step.
+"""
+Единый источник правды для маппинга `AgentEvent` -> UI-операции
 """
 
 from __future__ import annotations
@@ -151,13 +133,13 @@ class AgentEventDispatcher:
     def __init__(self, target: EventRenderTarget) -> None:
         self._target = target
 
-    async def handle(self, event: AgentEvent) -> None:  # noqa: C901, PLR0912
+    async def handle(self, event: AgentEvent) -> None:  # noqa: C901, PLR0912, PLR0915
         # Порядок case'ов: сначала конкретные delta/snapshot/phase события,
         # потом fall-through на категории. У pydantic-discriminated unions
         # тип проверяется по полю `type`, поэтому конкретный case
         # сматчится раньше базового.
         match event:
-            # --- ContentDelta -----------------------------------------
+            # ContentDelta
             case AnswerToken():
                 if event.chunk:
                     await self._target.answer_chunk(event.chunk)
@@ -198,7 +180,7 @@ class AgentEventDispatcher:
             case FeedbackToLLMAdded(content=c):
                 await self._target.feedback(c)
 
-            # --- PhaseEvent -------------------------------------------
+            # PhaseEvent
             case IterationStarted():
                 await self._target.iteration_started()
             case ToolCallStreamStarted(
@@ -213,7 +195,7 @@ class AgentEventDispatcher:
             case GenerationResult():
                 await self._handle_generation_result(event)
 
-            # --- AdvisoryEvent ----------------------------------------
+            # AdvisoryEvent
             case InvalidToolCallReceived(invalid=invalid):
                 await self._target.invalid_tool_call(
                     invalid.name,
@@ -227,14 +209,14 @@ class AgentEventDispatcher:
                     failure.message,
                 )
 
-            # --- DiagnosticEvent --------------------------------------
+            # DiagnosticEvent
             case DiagnosticEvent() as diagnostic_evt:
                 # Target сам решает, показывать ли (по своему toggle).
                 # Дополнительной специализации по type не делаем -
                 # target фильтрует по `topic`.
                 await self._target.diagnostic(diagnostic_evt)
 
-            # --- Generic fall-throughs --------------------------------
+            # Generic fall-throughs
             case ContentSnapshotEvent() as snapshot:
                 # Прочие snapshot'ы (например, USER_QUERY с не-UserQueryReceived
                 # или TOOL_INVOCATION/RESULT без ToolResultReady) — оставляем
