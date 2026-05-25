@@ -52,10 +52,11 @@ class ConfluenceDownloadConfig(BobaFlatSettings):
 
     confluence: ConfluenceConnection
     dest_dir: str = Field(
+        default="kb/confluence",
         min_length=1,
         description=(
-            "Директория внутри workspace для сохранения "
-            "(создаётся, если не существует)."
+            "relative path для папки, в user сессии chainlit "
+            "куда будут записаны скачанные файлы"
         ),
     )
     attachment_media_types: Annotated[

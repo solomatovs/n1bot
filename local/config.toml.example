@@ -121,9 +121,10 @@ attachment_media_types = []
 attachment_titles = []
 
 
-# tool для скачивания confluence страниц
+# tool для скачивания confluence страниц.
+# dest_dir — workspace-relative (внутри session-workspace, не FS-путь).
 [tool.kb.confluence.download]
-dest_dir = "./local/downloads"
+dest_dir = "kb/confluence"
 attachment_media_types = []
 attachment_titles = []
 
@@ -218,9 +219,11 @@ query = "как оформить возврат?"
 top_k = 5
 
 
-# cli для скачивания confluence страниц на файловую систему
+# cli для скачивания confluence страниц на файловую систему.
+# dest_dir — FS-путь относительно CWD; симметрично
+# [cli.kb.confluence.ingest.folder].folder — пишем и читаем оттуда же.
 [cli.kb.confluence.download]
-dest_dir = "kb/confluence"
+dest_dir = "./local/downloads"
 as_markdown = true
 space_type = "global"
 only = []
