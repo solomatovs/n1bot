@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-tool-postgres"
 version = "0.1.0"
-description = "Boba PG-tools: ad-hoc read-only SQL/FTS для LLM (query / list_tables / describe_table / fts_search) поверх boba-db-postgres."
+description = "Boba PG-tools: ad-hoc read-only SQL для LLM (query / list_tables / describe_table / list_targets) поверх boba-db-postgres."
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-tools",

@@ -51,7 +51,11 @@ class KbBootstrapConfig(BobaFlatSettings):
         case_sensitive=False,
         extra="ignore",
         config_path="cli.kb.bootstrap",
-        defaults_from=("postgres", "kb.storage", "embedding"),
+        defaults_from=(
+            "kb.storage",
+            "postgres.{kb.storage:profile}",
+            "embedding",
+        ),
     )
 
     connection: PostgresConnection

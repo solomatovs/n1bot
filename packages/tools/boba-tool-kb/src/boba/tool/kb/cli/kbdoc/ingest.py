@@ -54,7 +54,11 @@ class KbdocIngestCliConfig(BobaFlatSettings):
         case_sensitive=False,
         extra="ignore",
         config_path="cli.kb.kbdoc.ingest",
-        defaults_from=("postgres", "kb.storage", "embedding"),
+        defaults_from=(
+            "kb.storage",
+            "postgres.{kb.storage:profile}",
+            "embedding",
+        ),
     )
 
     store: PostgresStoreConfig

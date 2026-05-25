@@ -26,7 +26,12 @@ def _patch_client(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
 def _cfg() -> WebFetchConfig:
     return WebFetchConfig.model_construct(
         connection=WebConnection(
-            hosts={"docs.python.org": WebHostProfile(auth=NoneAuth(method="none"))},
+            hosts={
+                "docs.python.org": WebHostProfile(
+                    hostname="docs.python.org",
+                    auth=NoneAuth(method="none"),
+                ),
+            },
         ),
     )
 

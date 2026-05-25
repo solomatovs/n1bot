@@ -5,13 +5,14 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Self
 
 from pydantic import BaseModel, Field, model_validator
 
 from boba.db.postgres import PostgresConnection, PostgresPool
+from boba.settings.source import TomlEnvConfigSource
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +25,20 @@ CELL_CHARS_HARDLIMIT = 2000
 class SqlExecutorConfig(BaseModel):
     """Конфиг для SqlExecutor."""
 
-    databases: dict[str, PostgresConnection] = Field(
+    profiles: list[str] = Field(
+        default_factory=list,
         description=(
-            "Whitelist профилей БД: ключ — имя (LLM указывает в target), "
-            "значение — параметры подключения."
+            "Whitelist имён postgres-профилей (`[postgres.<name>]`), "
+            "доступных LLM. Имя из списка передаётся в tool-arg `target`. "
+            "Все connection-поля (host/auth/application_name/timeout/…) "
+            "живут в самой секции `[postgres.<name>]`."
+        ),
+    )
+    databases: dict[str, PostgresConnection] = Field(
+        default_factory=dict,
+        description=(
+            "Computed: profiles → dict; заполняется `_resolve_profiles`. "
+            "Оператор это поле не задаёт."
         ),
     )
     max_rows: int = Field(
@@ -43,10 +54,43 @@ class SqlExecutorConfig(BaseModel):
         ),
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_profiles(cls, values: Any) -> Any:
+        """`profiles: list[str]` → `databases: dict[name, PostgresConnection]`.
+
+        Для каждого имени читает `[postgres.<name>]` через
+        `TomlEnvConfigSource.for_path`. Отсутствующая или пустая
+        секция → `ValueError`. Поле `databases` в input игнорируется
+        и заменяется на computed; cмешивать недопустимо.
+        """
+        if not isinstance(values, Mapping):
+            return values
+        profiles = values.get("profiles")
+        if not profiles:
+            return values
+
+        toml_source = TomlEnvConfigSource()
+        resolved: dict[str, Any] = {}
+        for name in profiles:
+            name_s = str(name)
+            shared = toml_source.for_path(("postgres", name_s))
+            if not shared:
+                msg = (
+                    f"tool.pg.profiles: профиль {name_s!r} — "
+                    f"секция [postgres.{name_s}] не найдена или пуста"
+                )
+                raise ValueError(msg)
+            resolved[name_s] = dict(shared)
+
+        new_values = dict(values)
+        new_values["databases"] = resolved
+        return new_values
+
     @model_validator(mode="after")
     def _validate(self) -> Self:
         if not self.databases:
-            msg = "tool.pg.<tool>.databases: список профилей пуст"
+            msg = "tool.pg.profiles: список профилей пуст"
             raise ValueError(msg)
         return self
 
