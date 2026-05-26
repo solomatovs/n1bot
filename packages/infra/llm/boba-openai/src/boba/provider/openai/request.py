@@ -126,13 +126,17 @@ class ToOpenAIRequestConverter(Converter[LLMRequest, dict[str, Any]]):
         self._to_tool = ToOpenAIToolConverter()
 
     def convert(self, value: LLMRequest) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {"stream": True}
+        kwargs: dict[str, Any] = {}
+        self._apply_stream(kwargs, value.stream)
         self._apply_model(kwargs, value)
         self._apply_messages(kwargs, value)
         self._apply_sampling(kwargs, value)
         self._apply_tools(kwargs, value)
         self._apply_response_format(kwargs, value)
         return kwargs
+
+    def _apply_stream(self, kwargs: dict[str, Any], stream: bool):
+        kwargs["stream"] = stream
 
     def _apply_model(self, kwargs: dict[str, Any], r: LLMRequest) -> None:
         kwargs["model"] = r.model

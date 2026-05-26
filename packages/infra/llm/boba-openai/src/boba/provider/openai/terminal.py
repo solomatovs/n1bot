@@ -22,8 +22,12 @@ from boba.patterns import StreamSource
 from boba.provider.openai.dto import OpenAIConfig
 from boba.provider.openai.errors import OpenAIErrorConverter
 from boba.provider.openai.request import ToOpenAIRequestConverter
-from boba.provider.openai.response import FromOpenAIChunkConverter
+from boba.provider.openai.response import (
+    FromOpenAIChunkConverter,
+    NonStreamChatCompletionAdapter,
+)
 from openai import OpenAI
+from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 
@@ -50,6 +54,7 @@ def build_openai_client(
 
     http_client = httpx.Client(
         event_hooks={"request": [_on_request], "response": [_on_response]},
+        verify=False,
     )
     return OpenAI(
         base_url=config.base_url,
@@ -132,11 +137,13 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
                 monotonic_ns=time.monotonic_ns(),
             )
 
+            chunks = self._to_chunks(ctx.request.stream, response)
+
             try:
                 # стримим чанки из ответа, конвертируя их в LLM-события на лету
                 yield from FromOpenAIChunkConverter(
                     ctx.request.request_id,
-                ).stream(ctx, self._observe_chunks(response))
+                ).stream(ctx, self._observe_chunks(chunks))
             except LLMError:
                 raise
             except openai.APIError as e:
@@ -145,6 +152,25 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
             except httpx.HTTPError as e:
                 self._observer.on_http_exception(e)
                 raise self._error_converter.convert(e) from e
+
+    def _to_chunks(
+        self,
+        stream: bool,
+        response: Any,
+    ) -> Iterable[ChatCompletionChunk]:
+        """Нормализует ответ OpenAI-клиента к Iterable[ChatCompletionChunk].
+
+        stream=True даёт поток chunks как есть; stream=False оборачивает
+        одиночный ChatCompletion в один fake-chunk через адаптер.
+        """
+        if stream:
+            return response
+        if not isinstance(response, ChatCompletion):
+            raise LLMError(
+                f"OpenAITerminal: stream=False, но ответ не ChatCompletion: "
+                f"{type(response).__name__}"
+            )
+        return [NonStreamChatCompletionAdapter().convert(response)]
 
     def _observe_chunks(
         self, chunks: Iterable[ChatCompletionChunk]

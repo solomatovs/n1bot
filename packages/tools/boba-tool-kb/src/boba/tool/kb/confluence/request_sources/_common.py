@@ -186,16 +186,12 @@ def make_attachment_request(
 
 
 class ConfluencePaginator:
-    def __init__(
-        self,
-        base_url: str,
-        auth: httpx.Auth | None,
-        timeout_sec: float,
-    ):
+    def __init__(self, conn: ConfluenceConnection):
         self._client = httpx.Client(
-            base_url=base_url.rstrip("/"),
-            timeout=timeout_sec,
-            auth=auth,
+            base_url=conn.base_url.rstrip("/"),
+            timeout=conn.timeout_sec,
+            auth=conn.make_auth(),
+            verify=conn.ssl_verify,
         )
 
     def __call__(self, path: str, item: type[T]) -> Iterator[T]:
@@ -246,11 +242,7 @@ def confluence_discover_spaces(
     """Yield space-keys через `/rest/api/space`."""
     path = space_list_path(space_type)
 
-    with ConfluencePaginator(
-        conn.base_url,
-        conn.make_auth(),
-        conn.timeout_sec,
-    ) as x:
+    with ConfluencePaginator(conn) as x:
         for item in x(path, ConfluenceSpaceItem):
             if item.key:
                 yield item.key
@@ -262,11 +254,7 @@ def confluence_discover_space_pages(
     """Yield page-id всех страниц в space через `/rest/api/space/{key}/content`."""
     path = space_pages_path(space_key)
 
-    with ConfluencePaginator(
-        conn.base_url,
-        conn.make_auth(),
-        conn.timeout_sec,
-    ) as x:
+    with ConfluencePaginator(conn) as x:
         for item in x(path, ConfluencePageItem):
             page_id = item.id.strip()
             if page_id:
@@ -279,11 +267,7 @@ def confluence_discover_pages_by_cql(
     """Yield page-id страниц по CQL-запросу через `/rest/api/content/search`."""
     path = cql_search_path(cql)
 
-    with ConfluencePaginator(
-        conn.base_url,
-        conn.make_auth(),
-        conn.timeout_sec,
-    ) as x:
+    with ConfluencePaginator(conn) as x:
         for item in x(path, ConfluencePageItem):
             page_id = item.id.strip()
             if page_id:
