@@ -1,5 +1,12 @@
 {
     "version": "0.2.0",
+    "inputs": [
+        {
+            "id": "langgraphRagQuery",
+            "type": "promptString",
+            "description": "Запрос для langgraph-rag ask"
+        }
+    ],
     "configurations": [
         {
             "name": "Chainlit: agent",
@@ -121,6 +128,50 @@
                 "${file}"
             ],
             "envFile": "${workspaceFolder}/local/.env"
+        },
+        {
+            "name": "LangGraph RAG: ingest",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "langgraph_rag.cli",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/experiments/langgraph-rag",
+            "python": "${workspaceFolder}/experiments/langgraph-rag/.venv/bin/python",
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/experiments/langgraph-rag/.env",
+            "args": [
+                "ingest"
+            ]
+        },
+        {
+            "name": "LangGraph RAG: ingest --recreate",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "langgraph_rag.cli",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/experiments/langgraph-rag",
+            "python": "${workspaceFolder}/experiments/langgraph-rag/.venv/bin/python",
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/experiments/langgraph-rag/.env",
+            "args": [
+                "ingest",
+                "--recreate"
+            ]
+        },
+        {
+            "name": "LangGraph RAG: ask",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "langgraph_rag.cli",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/experiments/langgraph-rag",
+            "python": "${workspaceFolder}/experiments/langgraph-rag/.venv/bin/python",
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/experiments/langgraph-rag/.env",
+            "args": [
+                "ask",
+                "${input:langgraphRagQuery}"
+            ]
         },
         {
             "name": "Python: current file",
