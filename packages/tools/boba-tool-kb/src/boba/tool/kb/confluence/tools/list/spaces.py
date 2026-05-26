@@ -78,15 +78,9 @@ def confluence_list_spaces(
     Возвращает markdown с колонками `key, name, type, description`.
 
     """
-    auth = cfg.confluence.make_auth()
-
     rows: list[tuple[Any, ...]] = []
     truncated = False
-    with ConfluencePaginator(
-        cfg.confluence.base_url,
-        auth,
-        cfg.confluence.timeout_sec,
-    ) as x:
+    with ConfluencePaginator(cfg.confluence) as x:
         for item in x(
             space_list_path(space_type, expand="description.plain"),
             item=ConfluenceSpaceItem,

@@ -590,6 +590,7 @@ class LLMRequest:
     tools_definition: LLMToolDefinition = field(default_factory=LLMToolDefinition)
     sampling: SamplingParams = field(default_factory=SamplingParams)
     response_format: Mapping[str, Any] | None = None
+    stream: bool = True
 
     def has_tools(self) -> bool:
         return bool(self.tools_definition.tools)
