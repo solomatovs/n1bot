@@ -22,12 +22,12 @@ terminal). `HistoryDialogView` — абстрактный контракт во�
 
 Маппинг событий (общая логика):
     UserQueryReceived   → UserMessage
-    GenerationCompleted    → AssistantMessage (источник истины: собранный message)
+    TotalMessage    → AssistantMessage (источник истины: собранный message)
     ToolResultReady     → ToolResultMessage (успех)
     ToolExecutionFailed → ToolResultMessage (ошибка)
 
 Per-field `*Complete` для реконструкции НЕ используются — message берётся
-целиком из `GenerationCompleted` (порядко-независимо). Всё остальное (PhaseEvent /
+целиком из `TotalMessage` (порядко-независимо). Всё остальное (PhaseEvent /
 FeedbackToLLMAdded / Terminal) игнорируется. FeedbackToLLMAdded пока
 пропускается — событие неоднозначно (может быть UserMessage от LLMCritique или
 ToolResultMessage от ToolCallRejection); семантику нужно расщеплять отдельно.
@@ -41,9 +41,9 @@ from typing import ClassVar
 
 from boba.agent.events import (
     AgentEvent,
-    GenerationCompleted,
     ToolExecutionFailed,
     ToolResultReady,
+    TotalMessage,
     UserQueryReceived,
 )
 from boba.agent.history import HistoryReader
@@ -65,7 +65,7 @@ __all__ = [
 
 
 class _DialogEventDecoder:
-    """events → DialogMessage. Источник истины ассистента — GenerationCompleted."""
+    """events → DialogMessage. Источник истины ассистента — TotalMessage."""
 
     @classmethod
     def decode(cls, events: Iterable[AgentEvent]) -> Iterator[DialogMessage]:
@@ -74,7 +74,7 @@ class _DialogEventDecoder:
                 case UserQueryReceived(query=q):
                     yield UserMessage.from_text(q)
 
-                case GenerationCompleted(message=msg):
+                case TotalMessage(message=msg):
                     # message собран консьюмером целиком — берём как есть.
                     if not msg.is_empty():
                         yield msg
@@ -138,7 +138,7 @@ class CompactHistoryDialogView(HistoryDialogView):
 
     _CONTRIBUTING_TYPES: ClassVar[tuple[type[AgentEvent], ...]] = (
         UserQueryReceived,
-        GenerationCompleted,
+        TotalMessage,
         ToolResultReady,
         ToolExecutionFailed,
     )
@@ -184,7 +184,8 @@ class CompactHistoryDialogView(HistoryDialogView):
             yield AssistantMessage(content=content)
 
     def _apply_window(
-        self, messages: list[DialogMessage],
+        self,
+        messages: list[DialogMessage],
     ) -> Iterator[DialogMessage]:
         if len(messages) <= self._max_messages:
             yield from messages

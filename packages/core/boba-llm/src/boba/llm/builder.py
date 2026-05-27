@@ -62,7 +62,7 @@ class LLMBuilder(Generic[TRequest, TChunk, TResponse, TApiError, THttpError]):
         user middlewares           ← `.use_middleware(...)`
         terminal (OpenAI/Ollama)
 
-    Итоговые события (`*Complete` + `LLMGenerationResult`) формирует сам
+    Итоговые события (`*Complete` + `LLMTotalMessage`) формирует сам
     provider-terminal (консьюмер ответа) — отдельного агрегатора в цепочке нет.
 
     - `.use_middleware(...)`  — middleware над terminal'ом (видит весь поток

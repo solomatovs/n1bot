@@ -13,7 +13,6 @@ from boba.agent.events import (
     AgentEvent,
     AnswerDelta,
     AnswerMessage,
-    GenerationCompleted,
     RefusalDelta,
     RefusalMessage,
     ThinkingDelta,
@@ -21,6 +20,7 @@ from boba.agent.events import (
     ToolCallDecodeFailedMessage,
     ToolCallDelta,
     ToolCallMessage,
+    TotalMessage,
 )
 from boba.agent.turn.builder import TurnBuilder
 from boba.llm.builder import LLM
@@ -29,7 +29,6 @@ from boba.llm.events import (
     LLMAnswerDelta,
     LLMAnswerMessage,
     LLMEvent,
-    LLMGenerationResult,
     LLMRefusalDelta,
     LLMRefusalMessage,
     LLMThinkingDelta,
@@ -37,6 +36,7 @@ from boba.llm.events import (
     LLMToolCallDecodeFailedMessage,
     LLMToolCallDelta,
     LLMToolCallMessage,
+    LLMTotalMessage,
 )
 from boba.llm.models import LLMContext
 from boba.patterns import StreamSource
@@ -77,12 +77,12 @@ class LLMToAgentConverter:
                 yield ToolCallMessage(request_id=rid, call=call)
             case LLMToolCallDecodeFailedMessage(request_id=rid, failure=failure):
                 yield ToolCallDecodeFailedMessage(request_id=rid, failure=failure)
-            case LLMGenerationResult(
+            case LLMTotalMessage(
                 request_id=rid,
                 message=msg,
                 finish_reason=fr,
             ):
-                yield GenerationCompleted(
+                yield TotalMessage(
                     request_id=rid,
                     message=msg,
                     finish_reason=fr,

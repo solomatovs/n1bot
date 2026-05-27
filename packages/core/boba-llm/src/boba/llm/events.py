@@ -16,7 +16,6 @@ __all__ = [
     "LLMAnswerMessage",
     "LLMEvent",
     "LLMEventName",
-    "LLMGenerationResult",
     "LLMRefusalDelta",
     "LLMRefusalMessage",
     "LLMSnapshot",
@@ -26,6 +25,7 @@ __all__ = [
     "LLMToolCallDecodeFailedMessage",
     "LLMToolCallDelta",
     "LLMToolCallMessage",
+    "LLMTotalMessage",
 ]
 
 
@@ -210,7 +210,7 @@ class LLMToolCallDecodeFailedMessage(LLMSnapshot):
 
 
 @dataclass(frozen=True)
-class LLMGenerationResult(LLMSnapshot):
+class LLMTotalMessage(LLMSnapshot):
     """
     Итог одной генерации LLM — собранный AssistantMessage и raw finish_reason.
 
@@ -237,8 +237,8 @@ class LLMGenerationResult(LLMSnapshot):
             object.__setattr__(self, "finish_reason", FinishReason(self.finish_reason))
 
     @classmethod
-    def name(cls) -> Literal["LLMGenerationResult"]:
-        return "LLMGenerationResult"
+    def name(cls) -> Literal["LLMTotalMessage"]:
+        return "LLMTotalMessage"
 
 
 LLMEvent = (
@@ -251,7 +251,7 @@ LLMEvent = (
     | LLMRefusalMessage
     | LLMToolCallMessage
     | LLMToolCallDecodeFailedMessage
-    | LLMGenerationResult
+    | LLMTotalMessage
 )
 
 
@@ -265,7 +265,7 @@ LLMEventName: TypeAlias = Literal[
     "LLMRefusalMessage",
     "LLMToolCallMessage",
     "LLMToolCallDecodeFailedMessage",
-    "LLMGenerationResult",
+    "LLMTotalMessage",
 ]
 
 

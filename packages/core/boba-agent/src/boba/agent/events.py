@@ -501,7 +501,7 @@ class ToolExecutionStarted(PhaseEvent):
         return self
 
 
-class GenerationCompleted(PhaseEvent):
+class TotalMessage(PhaseEvent):
     """
     Граница «генерация LLM завершена»: исход (`finish_reason`) + канонический
     `AssistantMessage` для истории.
@@ -525,7 +525,7 @@ class GenerationCompleted(PhaseEvent):
     `StopIfContentFilter`.
     """
 
-    type: Literal["GenerationCompleted"] = "GenerationCompleted"
+    type: Literal["TotalMessage"] = "TotalMessage"
     message: AssistantMessage
     finish_reason: FinishReason
 
@@ -802,7 +802,9 @@ class GenerationFailed(TerminalEvent):
         self.headline = f"generation failed: {self.error_kind}"
         self.details = _error_details(self.error_kind, self.status_code)
         self.body = compose_error_body(
-            self.message, self.status_code, self.cause_chain,
+            self.message,
+            self.status_code,
+            self.cause_chain,
         )
         return self
 
@@ -821,7 +823,9 @@ class PromptFailed(TerminalEvent):
         details["provider"] = self.provider or ""
         self.details = details
         self.body = compose_error_body(
-            self.message, self.status_code, self.cause_chain,
+            self.message,
+            self.status_code,
+            self.cause_chain,
         )
         return self
 
@@ -842,7 +846,9 @@ class MaxIterationsReached(TerminalEvent):
         details["iteration"] = str(self.iteration_count)
         self.details = details
         self.body = compose_error_body(
-            self.message, self.status_code, self.cause_chain,
+            self.message,
+            self.status_code,
+            self.cause_chain,
         )
         return self
 
@@ -858,7 +864,9 @@ class PersistenceFailed(TerminalEvent):
         self.headline = f"persistence failed: {self.error_kind}"
         self.details = _error_details(self.error_kind, self.status_code)
         self.body = compose_error_body(
-            self.message, self.status_code, self.cause_chain,
+            self.message,
+            self.status_code,
+            self.cause_chain,
         )
         return self
 
@@ -890,7 +898,7 @@ AgentEvent = (
     # PhaseEvent
     IterationStarted
     | ToolExecutionStarted
-    | GenerationCompleted
+    | TotalMessage
     # ContentDeltaEvent
     | ThinkingDelta
     | AnswerDelta
@@ -918,7 +926,7 @@ AgentEvent = (
 AgentEventName: TypeAlias = Literal[
     "IterationStarted",
     "ToolExecutionStarted",
-    "GenerationCompleted",
+    "TotalMessage",
     "ThinkingDelta",
     "AnswerDelta",
     "RefusalDelta",
@@ -1048,7 +1056,7 @@ def _register_core_events() -> None:
     for cls in (
         IterationStarted,
         ToolExecutionStarted,
-        GenerationCompleted,
+        TotalMessage,
         ThinkingDelta,
         AnswerDelta,
         RefusalDelta,

@@ -15,7 +15,6 @@ from boba.agent.events import (
     ContentSnapshotEvent,
     DiagnosticEvent,
     FeedbackToLLMAdded,
-    GenerationCompleted,
     IterationStarted,
     PhaseEvent,
     RefusalDelta,
@@ -31,6 +30,7 @@ from boba.agent.events import (
     ToolExecutionStarted,
     ToolPart,
     ToolResultReady,
+    TotalMessage,
     UserQueryReceived,
 )
 from boba.llm.events import FinishReason
@@ -179,7 +179,7 @@ class AgentEventDispatcher:
                 await self._target.iteration_started()
             case ToolExecutionStarted(tool_call_id=tid):
                 await self._target.tool_execution_started(tid)
-            case GenerationCompleted():
+            case TotalMessage():
                 # терминатор генерации: гасим статус + подсвечиваем исход
                 await self._target.generation_milestone()
                 await self._handle_generation_completed(event)
@@ -228,11 +228,11 @@ class AgentEventDispatcher:
                 # не выделили выше) — игнорируем.
                 return
 
-    async def _handle_generation_completed(self, event: GenerationCompleted) -> None:
+    async def _handle_generation_completed(self, event: TotalMessage) -> None:
         """Подсветить «не-нормальный» исход генерации в UI.
 
         Для STOP / TOOL_CALLS — тихий no-op: per-field *Message события
-        уже отрисовали контент, и `GenerationCompleted` несёт лишь агрегат,
+        уже отрисовали контент, и `TotalMessage` несёт лишь агрегат,
         который без аномалии не нуждается в отдельной отрисовке.
 
         Для LENGTH — system-advisory: ответ обрезан, пользователь должен
@@ -261,7 +261,7 @@ class AgentEventDispatcher:
                 return
 
     @staticmethod
-    def _fmt_outcome_body(event: GenerationCompleted) -> str:
+    def _fmt_outcome_body(event: TotalMessage) -> str:
         msg = event.message
         parts: list[str] = [f"finish_reason: {event.finish_reason.value}"]
         if msg.content:
