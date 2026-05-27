@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 from boba.agent.events import (
-    AnswerComplete,
-    GenerationDone,
-    ThinkingComplete,
-    ToolCallComplete,
+    GenerationResult,
     ToolResultReady,
     UserQueryReceived,
 )
@@ -15,12 +12,16 @@ from boba.agent.models import ToolCallResult
 from boba.agent.turn.history_view import CompactHistoryDialogView
 from boba.llm.events import FinishReason
 from boba.llm.models import (
+    AssistantBlock,
     AssistantMessage,
     DialogMessage,
     TextBlock,
+    ThinkingBlock,
     ToolCall,
+    ToolCallBlock,
     ToolResultMessage,
     UserMessage,
+    new_message_id,
     new_request_id,
 )
 from boba.tools.domain import TextResult
@@ -42,16 +43,18 @@ class _TurnRecorder:
         finish_reason: FinishReason = FinishReason.STOP,
     ) -> None:
         history.record(UserQueryReceived(request_id=request_id, query=query))
+        blocks: list[AssistantBlock] = []
         if thinking is not None:
-            history.record(
-                ThinkingComplete(request_id=request_id, content=thinking),
-            )
+            blocks.append(ThinkingBlock(content=thinking))
         if answer is not None:
-            history.record(AnswerComplete(request_id=request_id, content=answer))
-        for call in tool_calls:
-            history.record(ToolCallComplete(request_id=request_id, call=call))
+            blocks.append(TextBlock(content=answer))
+        blocks.extend(ToolCallBlock(call=call) for call in tool_calls)
         history.record(
-            GenerationDone(request_id=request_id, finish_reason=finish_reason),
+            GenerationResult(
+                request_id=request_id,
+                message=AssistantMessage(id=new_message_id(), blocks=tuple(blocks)),
+                finish_reason=finish_reason,
+            ),
         )
         for call, text in tool_results:
             history.record(
@@ -163,9 +166,15 @@ def test_old_request_id_without_answer_keeps_only_user_message():
     call = ToolCall(id="c1", name="echo", args={"x": 1})
     # старый turn оборвался: были только тулы, ответа не пришло
     history.record(UserQueryReceived(request_id=rid_old, query="q-old"))
-    history.record(ToolCallComplete(request_id=rid_old, call=call))
     history.record(
-        GenerationDone(request_id=rid_old, finish_reason=FinishReason.TOOL_CALLS),
+        GenerationResult(
+            request_id=rid_old,
+            message=AssistantMessage(
+                id=new_message_id(),
+                blocks=(ToolCallBlock(call=call),),
+            ),
+            finish_reason=FinishReason.TOOL_CALLS,
+        ),
     )
     history.record(
         ToolResultReady(

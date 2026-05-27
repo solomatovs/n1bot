@@ -20,6 +20,7 @@ import httpx
 import openai
 from boba.llm.observer import LLMRequestObserver
 from boba.workspace.contract import WorkspaceShell
+from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 
@@ -27,6 +28,7 @@ class CurlTraceChatCompletionObserver(
     LLMRequestObserver[
         dict[str, Any],
         ChatCompletionChunk,
+        ChatCompletion,
         openai.APIError,
         httpx.HTTPError,
     ]
@@ -90,6 +92,26 @@ class CurlTraceChatCompletionObserver(
 
         if chunk.usage is not None and self._usage is None:
             u = chunk.usage
+            self._usage = (u.prompt_tokens, u.completion_tokens, u.total_tokens)
+
+    def on_response(self, response: ChatCompletion) -> None:
+        # stream=False: реконструируем секции из готового message (без дельт).
+        for choice in response.choices:
+            message = choice.message
+            r = (message.model_extra or {}).get("reasoning_content")
+            if r:
+                self._emit_section("Thinking", str(r))
+            if message.content:
+                self._emit_section("Answer", message.content)
+            if message.refusal:
+                self._emit_section("Refusal", message.refusal)
+            if message.tool_calls:
+                self._absorb_message_tool_calls(message.tool_calls)
+            if choice.finish_reason and self._finish_reason is None:
+                self._finish_reason = choice.finish_reason
+
+        if response.usage is not None and self._usage is None:
+            u = response.usage
             self._usage = (u.prompt_tokens, u.completion_tokens, u.total_tokens)
 
     def on_request_end(self) -> None:
@@ -189,6 +211,22 @@ class CurlTraceChatCompletionObserver(
                     entry["name"] = tc.function.name
                 if tc.function.arguments:
                     entry["args"].append(tc.function.arguments)
+
+    def _absorb_message_tool_calls(self, tool_calls: Iterable[Any]) -> None:
+        # tool_calls готового message не несут index — берём порядковый.
+        for index, tc in enumerate(tool_calls):
+            entry = self._tool_calls.setdefault(
+                index,
+                {"name": None, "id": None, "args": []},
+            )
+            if tc.id:
+                entry["id"] = tc.id
+            function = getattr(tc, "function", None)
+            if function is not None:
+                if function.name:
+                    entry["name"] = function.name
+                if function.arguments:
+                    entry["args"].append(function.arguments)
 
     def _append(self, text: str) -> None:
         with self._workspace.append_text(self._path) as f:

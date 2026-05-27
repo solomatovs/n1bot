@@ -156,9 +156,9 @@ class ChainlitLiveTarget(EventRenderTarget):
             await _finalize_step(step, "⏳ выполняется…")
 
     async def generation_milestone(self) -> None:
-        # GenerationDone — UI-сущности (answer cl.Message, thinking cl.Step)
-        # создаём ЛЕНИВО в *_chunk при первом реальном токене, а не на
-        # фазовом событии: pre-emptive send() ломает порядок в timeline.
+        # UI-сущности (answer cl.Message, thinking cl.Step) создаём ЛЕНИВО
+        # в *_chunk при первом реальном токене, а не на терминаторе генерации:
+        # pre-emptive send() ломает порядок в timeline.
         await self._clear_status()
 
     async def status(self, text: str) -> None:

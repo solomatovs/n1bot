@@ -72,13 +72,16 @@ class ToOpenAIMessageConverter(Converter[Message, ChatCompletionMessageParam]):
         self._to_tool_call = ToOpenAIToolCallConverter()
 
     def convert(self, value: Message) -> ChatCompletionMessageParam:
-        """Flatten доменных блоков в OpenAI Chat Completions wire-shape.
+        """
+        Message -> ChatCompletionMessageParam
 
-        OpenAI Chat не interleav'ит блоки — `content` это одна строка, а
-        tool_calls — поле параллельное content. Поэтому: для system/user
-        склеиваем все TextBlock; для assistant — текст в content, tool_calls
-        в одноимённое поле. Thinking/refusal/invalid_tool_call живут в домене
-        для replay/audit, в OpenAI Chat не отправляются.
+        в OpenAI `content` это одна строка, а
+        tool_calls — поле параллельное content.
+        Поэтому:
+            для system/user склеиваем все TextBlock.
+            для assistant — текст в content, tool_calls в одно поле.
+            Thinking/refusal/invalid_tool_call живут в домене.
+            для replay/audit, в OpenAI Chat не отправляются.
         """
         match value:
             case SystemMessage():

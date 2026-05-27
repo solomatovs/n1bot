@@ -63,6 +63,26 @@ class ModelReducer(TurnReducer):
         return state
 
 
+class StreamReducer(TurnReducer):
+    """Флаг stream в state: True=поток дельт, False=один итоговый ответ."""
+
+    ID: ClassVar[str] = "stream"
+
+    def __init__(self, stream: bool, priority: int = 15) -> None:
+        self._stream = stream
+        self._priority = priority
+
+    def id(self) -> str:
+        return self.ID
+
+    def priority(self) -> int:
+        return self._priority
+
+    def apply(self, state: TurnState) -> TurnState:
+        state.stream = self._stream
+        return state
+
+
 class SystemPromptReducer(TurnReducer):
     """Собирает system-сообщения через PromptFactory каждую итерацию."""
 

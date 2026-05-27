@@ -25,10 +25,8 @@ from boba.llm.events import (
     LLMAnswerDelta,
     LLMEvent,
     LLMEventName,
-    LLMGenerationDone,
     LLMGenerationResult,
     LLMInvalidToolCallReceived,
-    LLMLifecycleMarker,
     LLMRefusalComplete,
     LLMRefusalDelta,
     LLMSnapshot,
@@ -39,7 +37,6 @@ from boba.llm.events import (
     LLMToolCallDelta,
 )
 from boba.llm.middleware import (
-    AssistantAggregator,
     RetryMiddleware,
 )
 from boba.llm.models import (
@@ -66,10 +63,10 @@ from boba.llm.observer import (
     CompositeLLMRequestObserver,
     LLMRequestObserver,
 )
+from boba.llm.snapshot import SnapshotEmitter
 
 __all__ = [
     "LLM",
-    "AssistantAggregator",
     "AssistantMessage",
     "AssistantMessageChunk",
     "BaseLLMEvent",
@@ -87,11 +84,9 @@ __all__ = [
     "LLMError",
     "LLMEvent",
     "LLMEventName",
-    "LLMGenerationDone",
     "LLMGenerationResult",
     "LLMInvalidRequestError",
     "LLMInvalidToolCallReceived",
-    "LLMLifecycleMarker",
     "LLMProtocolError",
     "LLMProviderInternalError",
     "LLMRateLimitError",
@@ -119,6 +114,7 @@ __all__ = [
     "RetryMiddleware",
     "RetryableLLMError",
     "SamplingParams",
+    "SnapshotEmitter",
     "SystemMessage",
     "ToolCall",
     "ToolResultMessage",

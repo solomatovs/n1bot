@@ -14,6 +14,7 @@ from boba.llm.observer import LLMRequestObserver
 from boba.patterns import StreamSource
 from boba.provider.openai.dto import OpenAIConfig
 from boba.provider.openai.terminal import OpenAITerminal, build_openai_client
+from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 __all__ = ["use_openai"]
@@ -29,6 +30,7 @@ def use_openai(config: OpenAIConfig) -> TerminalFactory:
         observer: LLMRequestObserver[
             dict[str, Any],
             ChatCompletionChunk,
+            ChatCompletion,
             openai.APIError,
             httpx.HTTPError,
         ],

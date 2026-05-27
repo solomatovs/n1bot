@@ -39,6 +39,7 @@ from boba.agent.turn.reducers import (
     ModelReducer,
     RequestIdReducer,
     SamplingReducer,
+    StreamReducer,
     SystemPromptReducer,
     ToolsDefinitionReducer,
     TurnReducer,
@@ -69,6 +70,7 @@ class TurnBuilder:
         self._tool_catalog: ToolCatalog | None = None
         self._model: str = model
         self._sampling: SamplingParams | None = None
+        self._stream: bool = True
         self._factories[RequestIdReducer.ID] = self._make_request_id
         self._factories[ModelReducer.ID] = self._make_model
 
@@ -82,6 +84,12 @@ class TurnBuilder:
         """`SamplingParams` → `SamplingReducer`. Повторный вызов обновляет."""
         self._sampling = sampling
         self._factories[SamplingReducer.ID] = self._make_sampling
+        return self
+
+    def with_stream(self, stream: bool) -> Self:
+        """Режим ответа LLM: True=стриминг дельт, False=один итоговый ответ."""
+        self._stream = stream
+        self._factories[StreamReducer.ID] = self._make_stream
         return self
 
     def with_history_view(self, view: HistoryDialogView) -> Self:
@@ -215,6 +223,9 @@ class TurnBuilder:
 
     def _make_sampling(self, _ctx: AgentContext) -> SamplingReducer:
         return SamplingReducer(self._sampling)
+
+    def _make_stream(self, _ctx: AgentContext) -> StreamReducer:
+        return StreamReducer(self._stream)
 
     def _make_history(self, _ctx: AgentContext) -> HistoryReducer:
         return HistoryReducer(cast("HistoryDialogView", self._history_view))

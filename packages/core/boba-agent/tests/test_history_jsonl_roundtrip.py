@@ -1,7 +1,7 @@
 """Round-trip + golden JSONL для AgentEvent + JsonLinesHistoryService.
 
 Гарантирует:
-1. Каждое из 21 финального события round-trip'ится через AgentEventAdapter.
+1. Каждое из 20 финальных событий round-trip'ится через AgentEventAdapter.
 2. Discriminator `type` проставляется и читается корректно.
 3. Backward-compat: старые JSONL-строки (поле type первое или последнее)
    парсятся неизменно.
@@ -32,7 +32,6 @@ from boba.agent.events import (
     AnswerComplete,
     AnswerDelta,
     FeedbackToLLMAdded,
-    GenerationDone,
     GenerationFailed,
     InvalidToolCallReceived,
     IterationStarted,
@@ -53,7 +52,6 @@ from boba.agent.events import (
 )
 from boba.agent.models import ToolCallFailure, ToolCallResult
 from boba.agent.workspace_fs.shell import FsHistoryWorkspaceShell
-from boba.llm.events import FinishReason
 from boba.llm.models import InvalidToolCall, RequestId, ToolCall
 from boba.tools.domain import ErrorResult, JsonResult, TextResult
 
@@ -69,14 +67,13 @@ _ITC = InvalidToolCall(
 
 def _all_events() -> list[Any]:
     return [
-        # PhaseEvent (3)
+        # PhaseEvent (2)
         IterationStarted(request_id=_RID, iteration_count=1, max_iterations=5),
         ToolExecutionStarted(
             request_id=_RID,
             tool_call_id="call_1",
             tool_name="search",
         ),
-        GenerationDone(request_id=_RID, finish_reason=FinishReason.STOP),
         # ContentDeltaEvent (4)
         ThinkingDelta(request_id=_RID, token="t"),
         AnswerDelta(request_id=_RID, token="a"),

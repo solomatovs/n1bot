@@ -1,81 +1,87 @@
-"""Декодер потока OpenAI chunks в поток LLMEvent."""
+"""Консьюмеры ответа OpenAI: ChatCompletionChunk (stream) и ChatCompletion."""
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+
+from pydantic import BaseModel
 
 from boba.llm.errors import LLMProtocolError
 from boba.llm.events import (
     FinishReason,
     LLMAnswerDelta,
     LLMEvent,
-    LLMGenerationDone,
     LLMRefusalDelta,
     LLMThinkingDelta,
     LLMToolCallDelta,
 )
-from boba.llm.models import LLMContext, RequestId
+from boba.llm.models import AssistantMessageChunk, LLMContext, RequestId
+from boba.llm.snapshot import SnapshotEmitter
 from boba.patterns import Converter, StreamTransformer
+from openai.types.chat import ChatCompletion, ChatCompletionMessageFunctionToolCall
 from openai.types.chat.chat_completion_chunk import (
     ChatCompletionChunk,
     Choice,
-    ChoiceDelta,
     ChoiceDeltaToolCall,
 )
 
 logger = logging.getLogger(__name__)
 
 
-class FromOpenAIChunkConverter(
+class ChatCompletionChunkConsumer(
     StreamTransformer[LLMContext, ChatCompletionChunk, LLMEvent]
 ):
     """
-    Обрабатывает openai response в stream=True режиме
-    Преобразует поток ChatCompletionChunk доменные события LLMEvent
+    Консьюмер ответа OpenAI в режиме stream=True.
+
+    Преобразует поток ChatCompletionChunk в доменные LLMEvent: на лету эмитит
+    delta-события (thinking/answer/refusal/tool_call) и параллельно копит их в
+    AssistantMessageChunk. На finish_reason — через SnapshotEmitter — итоговые
+    *Complete + LLMGenerationResult (терминатор генерации).
     """
 
     def __init__(self, request_id: RequestId) -> None:
         self._request_id = request_id
         self._reasoning = MultiKeyReasoningExtractor()
+        self._finish = FinishReasonDecoder()
         # Чинит коллизии index у параллельных tool_calls до их сборки.
         self._reindexer = DuplicateToolCallIndexReindexer()
         # index -> (id, name); заполняется на первой дельте каждого tool call.
         self._tool_calls: dict[int, tuple[str, str]] = {}
+        self._message = AssistantMessageChunk.empty()
 
     def name(self) -> str:
-        return "FromOpenAIChunkConverter"
+        return "ChatCompletionChunkConsumer"
 
     def reset(self) -> None:
         self._reindexer.reset()
         self._tool_calls.clear()
+        self._message = AssistantMessageChunk.empty()
 
     def stream(
         self, ctx: LLMContext, stream: Iterable[ChatCompletionChunk]
     ) -> Iterable[LLMEvent]:
         for chunk in stream:
             # Reindexer исправляет index у tool call
-            # при парралельном вызове нескольких tool
+            # при параллельном вызове нескольких tool.
             for choice in self._reindexer.stream(ctx, chunk.choices):
-                # генерируем дельты в логическом порядке:
-                    # 1. thinking ->
-                    # 2. answer ->
-                    # 3. refusal ->
-                    # 4. tool_calls ->
-                    # 5. finish_reason
-
+                # Порядок: thinking -> answer -> refusal -> tool_calls -> finish.
                 delta = choice.delta
 
                 thinking = self._reasoning.convert(delta)
                 if thinking:
+                    self._message.append_thinking(thinking)
                     yield LLMThinkingDelta(request_id=self._request_id, token=thinking)
 
                 if delta.content:
+                    self._message.append_text(delta.content)
                     yield LLMAnswerDelta(
                         request_id=self._request_id, token=delta.content
                     )
 
                 if delta.refusal:
+                    self._message.append_refusal(delta.refusal)
                     yield LLMRefusalDelta(
                         request_id=self._request_id, token=delta.refusal
                     )
@@ -84,11 +90,11 @@ class FromOpenAIChunkConverter(
                     yield from self._tool_call_deltas(delta.tool_calls)
 
                 if choice.finish_reason:
-                    yield self._finish(choice.finish_reason)
+                    yield from self._finalize(choice.finish_reason)
 
     def _tool_call_deltas(
         self, tool_calls: Iterable[ChoiceDeltaToolCall]
-    ) -> Iterable[LLMEvent]:
+    ) -> Iterator[LLMEvent]:
         for tc in tool_calls:
             first = tc.index not in self._tool_calls
             if first:
@@ -99,10 +105,17 @@ class FromOpenAIChunkConverter(
                 self._tool_calls[tc.index] = (tc.id, tc.function.name)
 
             arguments = (tc.function.arguments if tc.function else None) or ""
-            # Первая дельта эмитится всегда (регистрирует слот, даже с пустыми args)
-            # последующие — только при непустом фрагменте.
+
+            # Первая дельта эмитится всегда (регистрирует слот, даже с пустыми
+            # args); последующие — только при непустом фрагменте.
             if first or arguments:
                 tool_call_id, tool_name = self._tool_calls[tc.index]
+                self._message.append_tool_call(
+                    index=tc.index,
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    args_chunk=arguments,
+                )
                 yield LLMToolCallDelta(
                     request_id=self._request_id,
                     index=tc.index,
@@ -111,17 +124,79 @@ class FromOpenAIChunkConverter(
                     arguments=arguments,
                 )
 
-    def _finish(self, finish_reason: str) -> LLMGenerationDone:
+    def _finalize(self, finish_reason: str) -> Iterator[LLMEvent]:
+        reason = self._finish.convert(finish_reason)
+        yield from SnapshotEmitter.emit(
+            self._request_id, self._message.finalize(), reason
+        )
+
+
+class ChatCompletionConsumer:
+    """
+    Консьюмер ответа OpenAI в режиме stream=False.
+
+    Собирает готовый ChatCompletion в AssistantMessage и эмитит только итоговые
+    события (*Complete + LLMGenerationResult) — без delta-событий.
+    """
+
+    def __init__(self, request_id: RequestId) -> None:
+        self._request_id = request_id
+        self._reasoning = MultiKeyReasoningExtractor()
+        self._finish = FinishReasonDecoder()
+
+    def consume(self, response: ChatCompletion) -> Iterator[LLMEvent]:
+        if not response.choices:
+            raise LLMProtocolError("ChatCompletion without choices")
+
+        choice = response.choices[0]
+        message = choice.message
+        chunk = AssistantMessageChunk.empty()
+
+        thinking = self._reasoning.convert(message)
+        if thinking:
+            chunk.append_thinking(thinking)
+
+        if message.content:
+            chunk.append_text(message.content)
+
+        if message.refusal:
+            chunk.append_refusal(message.refusal)
+
+        for index, tc in enumerate(message.tool_calls or ()):
+            if not isinstance(tc, ChatCompletionMessageFunctionToolCall):
+                raise LLMProtocolError(
+                    f"tool_call {tc.id}: ожидался function-tool, пришёл {tc.type}"
+                )
+
+            chunk.append_tool_call(
+                index=index,
+                tool_call_id=tc.id,
+                tool_name=tc.function.name,
+                args_chunk=tc.function.arguments or "",
+            )
+
+        reason = self._finish.convert(choice.finish_reason)
+
+        yield from SnapshotEmitter.emit(
+            self._request_id,
+            chunk.finalize(),
+            reason,
+        )
+
+
+class FinishReasonDecoder(Converter[str, FinishReason]):
+    """Разбирает raw finish_reason провайдера в доменный FinishReason."""
+
+    def convert(self, value: str) -> FinishReason:
         try:
-            reason = FinishReason(finish_reason)
+            return FinishReason(value)
         except ValueError as e:
             raise LLMProtocolError(
-                f"unknown finish_reason from provider: {finish_reason!r}"
+                f"unknown finish_reason from provider: {value!r}"
             ) from e
-        return LLMGenerationDone(request_id=self._request_id, finish_reason=reason)
 
 
-class MultiKeyReasoningExtractor(Converter[ChoiceDelta, str | None]):
+class MultiKeyReasoningExtractor(Converter[BaseModel, str | None]):
     """
     Этот класс позволяет обойти проблему того, что
     разные модели эмитят thinking в разные поля
@@ -129,6 +204,9 @@ class MultiKeyReasoningExtractor(Converter[ChoiceDelta, str | None]):
     - reasoning_content
     - thinking
     - reasoning
+
+    Работает и над ChoiceDelta (stream), и над ChatCompletionMessage (non-stream)
+    — обоим достаточно доступа к model_extra.
     """
 
     DEFAULT_KEYS: tuple[str, ...] = (
@@ -140,7 +218,7 @@ class MultiKeyReasoningExtractor(Converter[ChoiceDelta, str | None]):
     def __init__(self, keys: tuple[str, ...] | None = None) -> None:
         self._keys = keys if keys is not None else self.DEFAULT_KEYS
 
-    def convert(self, value: ChoiceDelta) -> str | None:
+    def convert(self, value: BaseModel) -> str | None:
         extra = value.model_extra or {}
         for k in self._keys:
             v = extra.get(k)
@@ -156,6 +234,10 @@ class DuplicateToolCallIndexReindexer(StreamTransformer[LLMContext, Choice, Choi
     Мы внучную исправляем index и далее все компоненты системы думают,
     что index пришел корректный. Далее при ответе в llm отправляются эти индексы
     как будто бы она вызвала этот набор toolcall'ов с этими индексами
+
+    Пример. Провайдер шлёт два вызова, оба index=0:
+        {index:0, id:A, name:…} -> слот 0 свободен → A index=0
+        {index:0, id:B, name:…} -> слот 0 занят A, B проставляется index=1
     """
 
     def __init__(self) -> None:

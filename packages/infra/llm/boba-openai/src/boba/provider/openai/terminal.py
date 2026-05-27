@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
 import openai
-from boba.llm.errors import LLMError
+from boba.llm.errors import LLMError, LLMProtocolError
 from boba.llm.events import LLMEvent
 from boba.llm.models import LLMContext
 from boba.llm.observer import LLMRequestObserver
@@ -18,17 +18,24 @@ from boba.provider.openai.dto import OpenAIConfig
 from boba.provider.openai.errors import OpenAIErrorConverter
 from boba.provider.openai.request import ToOpenAIRequestConverter
 from boba.provider.openai.response import (
-    FromOpenAIChunkConverter,
+    ChatCompletionChunkConsumer,
+    ChatCompletionConsumer,
 )
 from openai import OpenAI
+from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 
 def build_openai_client(
     config: OpenAIConfig,
     observer: LLMRequestObserver[
-        dict[str, Any], ChatCompletionChunk, openai.APIError, httpx.HTTPError
-    ] | None = None,
+        dict[str, Any],
+        ChatCompletionChunk,
+        ChatCompletion,
+        openai.APIError,
+        httpx.HTTPError,
+    ]
+    | None = None,
 ) -> OpenAI:
     """Строит OpenAI-клиент из конфига; observer получает сырые HTTP req/resp."""
     if observer is None:
@@ -59,7 +66,11 @@ def build_openai_client(
 @contextmanager
 def _observe_request(
     observer: LLMRequestObserver[
-        dict[str, Any], ChatCompletionChunk, openai.APIError, httpx.HTTPError
+        dict[str, Any],
+        ChatCompletionChunk,
+        ChatCompletion,
+        openai.APIError,
+        httpx.HTTPError,
     ],
     kwargs: dict[str, Any],
 ) -> Iterator[None]:
@@ -87,6 +98,7 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
         observer: LLMRequestObserver[
             dict[str, Any],
             ChatCompletionChunk,
+            ChatCompletion,
             openai.APIError,
             httpx.HTTPError,
         ],
@@ -115,10 +127,27 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
                 raise self._error_converter.convert(e) from e
 
             try:
-                # стримим чанки из ответа, конвертируя их в LLM-события на лету
-                yield from FromOpenAIChunkConverter(
-                    ctx.request.request_id,
-                ).stream(ctx, self._observe_chunks(response))
+                request_id = ctx.request.request_id
+                if ctx.request.stream:
+                    # stream=True:
+                    # ожидается Iterable[ChatCompletionChunk], если это не так
+                    # значит ошибка декодирования потока
+                    if not isinstance(response, Iterable):
+                        raise LLMProtocolError(
+                            "stream=True return not Iterable[ChatCompletionChunk]"
+                        )
+
+                    yield from ChatCompletionChunkConsumer(request_id).stream(
+                        ctx, self._observe_chunks(response)
+                    )
+                else:
+                    # stream=False:
+                    #   один готовый ответ -> преобразуем в отдельные LLM-события
+                    #   без Delta, но с Complited
+                    completion = cast("ChatCompletion", response)
+                    yield from ChatCompletionConsumer(request_id).consume(
+                        self._observe_response(completion)
+                    )
             except LLMError:
                 raise
             except openai.APIError as e:
@@ -131,7 +160,12 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
     def _observe_chunks(
         self, chunks: Iterable[ChatCompletionChunk]
     ) -> Iterable[ChatCompletionChunk]:
-        # перехват чанка для записи потока
+        # перехват чанка для записи потока (stream=True)
         for chunk in chunks:
             self._observer.on_response_chunk(chunk)
             yield chunk
+
+    def _observe_response(self, response: ChatCompletion) -> ChatCompletion:
+        # перехват готового ответа для записи/метрик (stream=False)
+        self._observer.on_response(response)
+        return response

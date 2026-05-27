@@ -501,33 +501,13 @@ class ToolExecutionStarted(PhaseEvent):
         return self
 
 
-class GenerationDone(PhaseEvent):
-    """
-    Прогон завершён — пришёл finish_reason
-
-    Поле `finish_reason` — то, что реально прислал провайдер на wire,
-    без подмен. Решения о терминальности агентского цикла принимаются
-    выше — на отдельных `StopIf*` спецификациях, читающих агрегированный
-    `GenerationResult`.
-    """
-
-    type: Literal["GenerationDone"] = "GenerationDone"
-    finish_reason: FinishReason = FinishReason.STOP
-
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.label = f"generation done ({self.finish_reason.value})"
-        self.details = {"finish_reason": self.finish_reason.value}
-        return self
-
-
 class GenerationResult(PhaseEvent):
     """
     Итог одной генерации LLM — собранный AssistantMessage и raw finish_reason.
 
-    Эмитится строго после `GenerationDone` и после всех per-field
-    `*Complete`/`InvalidToolCallReceived` событий. Несёт всё, что пришло
-    от провайдера в режиме streaming, в форме обычного `stream=False` ответа:
+    Эмитится последним — после всех per-field `*Complete`/`InvalidToolCallReceived`
+    событий; терминатор генерации и источник истины для истории. Несёт всё, что
+    пришло от провайдера в режиме streaming, в форме обычного `stream=False`:
 
     - `message` — собранный AssistantMessage со всеми блоками
       (thinking / text / refusal / tool_calls / invalid_tool_calls).
@@ -936,7 +916,6 @@ AgentEvent = (
     # PhaseEvent
     IterationStarted
     | ToolExecutionStarted
-    | GenerationDone
     | GenerationResult
     # ContentDeltaEvent
     | ThinkingDelta
@@ -967,7 +946,6 @@ AgentEvent = (
 AgentEventName: TypeAlias = Literal[
     "IterationStarted",
     "ToolExecutionStarted",
-    "GenerationDone",
     "GenerationResult",
     "ThinkingDelta",
     "AnswerDelta",
@@ -1099,7 +1077,6 @@ def _register_core_events() -> None:
     for cls in (
         IterationStarted,
         ToolExecutionStarted,
-        GenerationDone,
         GenerationResult,
         ThinkingDelta,
         AnswerDelta,
