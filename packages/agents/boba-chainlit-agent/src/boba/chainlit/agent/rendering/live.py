@@ -162,11 +162,9 @@ class ChainlitLiveTarget(EventRenderTarget):
             await _finalize_step(step, "⏳ выполняется…")
 
     async def generation_milestone(self) -> None:
-        # AnswerStarted / ThinkingStarted / GenerationDone — UI-сущности
-        # (answer cl.Message, thinking cl.Step) создаём ЛЕНИВО в *_chunk
-        # при первом реальном токене: phase может прилетать без контента
-        # (LLM ушёл в tool_calls после пустого AnswerStarted), а
-        # pre-emptive send() ломает порядок в timeline.
+        # GenerationDone — UI-сущности (answer cl.Message, thinking cl.Step)
+        # создаём ЛЕНИВО в *_chunk при первом реальном токене, а не на
+        # фазовом событии: pre-emptive send() ломает порядок в timeline.
         await self._clear_status()
 
     async def status(self, text: str) -> None:
@@ -289,7 +287,7 @@ class ChainlitLiveTarget(EventRenderTarget):
     async def _drop_pending_answer(self) -> None:
         """Сбрасывает ссылку на не-завершённый answer; пустой удаляем.
 
-        Why: AnswerStarted эмитится на ЛЮБОЙ первый delta.content, даже
+        Why: AnswerToken прилетает на ЛЮБОЙ первый delta.content, даже
         если итерация в итоге ушла в tool_calls без финального
         ContentSnapshotEvent. Без сброса между итерациями новый
         ContentDeltaEvent(ANSWER) будет писать в старое сообщение из

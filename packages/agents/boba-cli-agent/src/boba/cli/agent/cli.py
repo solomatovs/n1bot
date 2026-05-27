@@ -23,7 +23,6 @@ from boba.cli.agent.config import AgentRunConfig
 from boba.cli.agent.console_sink import ConsoleSink
 from boba.cli.agent.infra import configure_logging
 from boba.llm.builder import LLMBuilder
-from boba.llm.middleware import JsonContentToolCallMiddleware
 from boba.patterns import ConverterInputError
 from boba.provider.openai import (
     CurlTraceChatCompletionObserver,
@@ -75,7 +74,6 @@ def _run() -> int:
         LLMBuilder()
         .add_observer(CurlTraceChatCompletionObserver(history_workspace))
         .add_observer(HttpTraceChatCompletionObserver(history_workspace))
-        .use_provider_middleware(JsonContentToolCallMiddleware)
         .build(use_openai(rt.openai))
     )
 

@@ -12,7 +12,6 @@ from boba.chainlit.agent.config import ChainlitConfig
 from boba.chainlit.agent.logging import log_context
 from boba.chainlit.agent.rendering.bridge import ChainlitBridgeSink
 from boba.llm.builder import LLMBuilder
-from boba.llm.middleware import JsonContentToolCallMiddleware
 from boba.provider.openai import (
     CurlTraceChatCompletionObserver,
     HttpTraceChatCompletionObserver,
@@ -64,7 +63,6 @@ class ChatSession:
             LLMBuilder()
             .add_observer(CurlTraceChatCompletionObserver(history_shell))
             .add_observer(HttpTraceChatCompletionObserver(history_shell))
-            .use_provider_middleware(JsonContentToolCallMiddleware)
             .build(use_openai(rt.openai))
         )
 

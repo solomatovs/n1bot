@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -11,11 +10,7 @@ import httpx
 
 import openai
 from boba.llm.errors import LLMError
-from boba.llm.events import (
-    LLMEvent,
-    LLMRequestStarted,
-    LLMResponseStarted,
-)
+from boba.llm.events import LLMEvent
 from boba.llm.models import LLMContext
 from boba.llm.observer import LLMRequestObserver
 from boba.patterns import StreamSource
@@ -108,16 +103,6 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
         kwargs = self._to_request.convert(ctx.request)
 
         with _observe_request(self._observer, kwargs):
-            # event перед запросом
-            yield LLMRequestStarted(
-                request_id=ctx.request.request_id,
-                model=ctx.request.model,
-                messages_count=len(ctx.request.system_messages)
-                + len(ctx.request.dialog_messages),
-                has_tools=ctx.request.has_tools(),
-                monotonic_ns=time.monotonic_ns(),
-            )
-
             try:
                 response = self._client.chat.completions.create(**kwargs)
             except LLMError:
@@ -128,12 +113,6 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
             except httpx.HTTPError as e:
                 self._observer.on_http_exception(e)
                 raise self._error_converter.convert(e) from e
-
-            # event после запроса и перед получением ответа
-            yield LLMResponseStarted(
-                request_id=ctx.request.request_id,
-                monotonic_ns=time.monotonic_ns(),
-            )
 
             try:
                 # стримим чанки из ответа, конвертируя их в LLM-события на лету
@@ -152,6 +131,7 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
     def _observe_chunks(
         self, chunks: Iterable[ChatCompletionChunk]
     ) -> Iterable[ChatCompletionChunk]:
+        # перехват чанка для записи потока
         for chunk in chunks:
             self._observer.on_response_chunk(chunk)
             yield chunk

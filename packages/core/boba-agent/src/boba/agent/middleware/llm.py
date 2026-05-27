@@ -12,44 +12,31 @@ from boba.agent.errors import LLMGenerationFailedError
 from boba.agent.events import (
     AgentEvent,
     AnswerComplete,
-    AnswerStarted,
     AnswerToken,
     GenerationDone,
     GenerationResult,
-    GenerationRetried,
-    GenerationStarted,
     InvalidToolCallReceived,
-    LLMResponseStreamOpened,
-    LLMTimingAnchor,
     RefusalComplete,
     RefusalToken,
     ThinkingComplete,
-    ThinkingStarted,
     ThinkingToken,
     ToolCallArgumentDelta,
     ToolCallComplete,
     ToolCallStreamStarted,
 )
-from boba.agent.events import RequestStart as AgentLLMRequestSent
 from boba.agent.turn.builder import TurnBuilder
 from boba.llm.builder import LLM
 from boba.llm.errors import LLMError
 from boba.llm.events import (
     LLMAnswerComplete,
-    LLMAnswerStarted,
     LLMAnswerToken,
     LLMEvent,
     LLMGenerationDone,
     LLMGenerationResult,
-    LLMGenerationStarted,
     LLMInvalidToolCallReceived,
     LLMRefusalComplete,
     LLMRefusalToken,
-    LLMRequestStarted,
-    LLMResponseStarted,
-    LLMRetryAttempt,
     LLMThinkingComplete,
-    LLMThinkingStarted,
     LLMThinkingToken,
     LLMToolCallArgumentDelta,
     LLMToolCallBegin,
@@ -64,35 +51,8 @@ class LLMToAgentConverter:
 
     def convert(self, event: LLMEvent) -> Iterator[AgentEvent]:  # noqa: C901, PLR0912
         match event:
-            case LLMRequestStarted(
-                request_id=rid,
-                model=model,
-                has_tools=has_tools,
-                monotonic_ns=ts,
-            ):
-                yield AgentLLMRequestSent(
-                    request_id=rid,
-                    model=model,
-                    has_tools=has_tools,
-                )
-                yield LLMTimingAnchor(
-                    request_id=rid,
-                    phase="request_sent",
-                    monotonic_ns=ts,
-                )
-            case LLMResponseStarted(request_id=rid, monotonic_ns=ts):
-                yield LLMResponseStreamOpened(
-                    request_id=rid,
-                    monotonic_ns=ts,
-                )
-            case LLMGenerationStarted(request_id=rid):
-                yield GenerationStarted(request_id=rid)
-            case LLMThinkingStarted(request_id=rid):
-                yield ThinkingStarted(request_id=rid)
             case LLMThinkingToken(request_id=rid, token=t):
                 yield ThinkingToken(request_id=rid, token=t)
-            case LLMAnswerStarted(request_id=rid):
-                yield AnswerStarted(request_id=rid)
             case LLMAnswerToken(request_id=rid, token=t):
                 yield AnswerToken(request_id=rid, token=t)
             case LLMRefusalToken(request_id=rid, token=t):
@@ -122,18 +82,6 @@ class LLMToAgentConverter:
                     tool_call_id=tid,
                     tool_name=tn,
                     arguments_chunk=a,
-                )
-            case LLMRetryAttempt(
-                request_id=rid,
-                attempt=att,
-                reason=rsn,
-                status_code=sc,
-            ):
-                yield GenerationRetried(
-                    request_id=rid,
-                    attempt=att,
-                    reason=rsn,
-                    status_code=sc,
                 )
             case LLMGenerationDone(request_id=rid, finish_reason=fr):
                 yield GenerationDone(request_id=rid, finish_reason=fr)

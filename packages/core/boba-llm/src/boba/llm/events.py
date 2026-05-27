@@ -13,24 +13,18 @@ __all__ = [
     "BaseLLMEvent",
     "FinishReason",
     "LLMAnswerComplete",
-    "LLMAnswerStarted",
     "LLMAnswerToken",
     "LLMEvent",
     "LLMEventName",
     "LLMGenerationDone",
     "LLMGenerationResult",
-    "LLMGenerationStarted",
     "LLMInvalidToolCallReceived",
     "LLMLifecycleMarker",
     "LLMRefusalComplete",
     "LLMRefusalToken",
-    "LLMRequestStarted",
-    "LLMResponseStarted",
-    "LLMRetryAttempt",
     "LLMSnapshot",
     "LLMStreamingDelta",
     "LLMThinkingComplete",
-    "LLMThinkingStarted",
     "LLMThinkingToken",
     "LLMToolCallArgumentDelta",
     "LLMToolCallBegin",
@@ -118,58 +112,6 @@ class LLMSnapshot(BaseLLMEvent, ABC):
 
 
 @dataclass(frozen=True)
-class LLMRequestStarted(LLMLifecycleMarker):
-    """
-    Событие возникает непосредственно перед отправкой HTTP-запрос к llm
-    """
-
-    model: str
-    messages_count: int
-    has_tools: bool
-    monotonic_ns: int
-
-    @classmethod
-    def name(cls) -> Literal["LLMRequestStarted"]:
-        return "LLMRequestStarted"
-
-
-@dataclass(frozen=True)
-class LLMResponseStarted(LLMLifecycleMarker):
-    """
-    Событие возникает непосредственно после получения HTTP-ответа от llm
-    Данные еще не прочитаны
-    Разница по времени между
-    `LLMResponseStarted.monotonic_ns` - `LLMRequestStarted.monotonic_ns`
-    Позволяет замерить скорость обработки запроса самой llm
-    Либо самим провайдером предоставляющим доступ к llm
-    """
-
-    monotonic_ns: int
-
-    @classmethod
-    def name(cls) -> Literal["LLMRequestSent"]:
-        return "LLMRequestSent"
-
-
-@dataclass(frozen=True)
-class LLMGenerationStarted(LLMLifecycleMarker):
-    """Первый chunk получен."""
-
-    @classmethod
-    def name(cls) -> Literal["LLMGenerationStarted"]:
-        return "LLMGenerationStarted"
-
-
-@dataclass(frozen=True)
-class LLMThinkingStarted(LLMLifecycleMarker):
-    """Модель начала reasoning."""
-
-    @classmethod
-    def name(cls) -> Literal["LLMThinkingStarted"]:
-        return "LLMThinkingStarted"
-
-
-@dataclass(frozen=True)
 class LLMThinkingToken(LLMStreamingDelta):
     """Chunk reasoning-токена."""
 
@@ -178,15 +120,6 @@ class LLMThinkingToken(LLMStreamingDelta):
     @classmethod
     def name(cls) -> Literal["LLMThinkingToken"]:
         return "LLMThinkingToken"
-
-
-@dataclass(frozen=True)
-class LLMAnswerStarted(LLMLifecycleMarker):
-    """Модель начала отдавать ответ."""
-
-    @classmethod
-    def name(cls) -> Literal["LLMAnswerStarted"]:
-        return "LLMAnswerStarted"
 
 
 @dataclass(frozen=True)
@@ -236,19 +169,6 @@ class LLMToolCallArgumentDelta(LLMStreamingDelta):
     @classmethod
     def name(cls) -> Literal["LLMToolCallArgumentDelta"]:
         return "LLMToolCallArgumentDelta"
-
-
-@dataclass(frozen=True)
-class LLMRetryAttempt(LLMLifecycleMarker):
-    """Попытка запроса к LLM будет повторена."""
-
-    attempt: int
-    reason: str
-    status_code: int | None = None
-
-    @classmethod
-    def name(cls) -> Literal["LLMRetryAttempt"]:
-        return "LLMRetryAttempt"
 
 
 @dataclass(frozen=True)
@@ -358,17 +278,11 @@ class LLMGenerationResult(LLMSnapshot):
 
 
 LLMEvent = (
-    LLMRequestStarted
-    | LLMResponseStarted
-    | LLMGenerationStarted
-    | LLMThinkingStarted
-    | LLMThinkingToken
-    | LLMAnswerStarted
+    LLMThinkingToken
     | LLMAnswerToken
     | LLMRefusalToken
     | LLMToolCallBegin
     | LLMToolCallArgumentDelta
-    | LLMRetryAttempt
     | LLMGenerationDone
     | LLMThinkingComplete
     | LLMAnswerComplete
@@ -380,17 +294,11 @@ LLMEvent = (
 
 
 LLMEventName: TypeAlias = Literal[
-    "LLMRequestStarted",
-    "LLMRequestSent",
-    "LLMGenerationStarted",
-    "LLMThinkingStarted",
     "LLMThinkingToken",
-    "LLMAnswerStarted",
     "LLMAnswerToken",
     "LLMRefusalToken",
     "LLMToolCallBegin",
     "LLMToolCallArgumentDelta",
-    "LLMRetryAttempt",
     "LLMGenerationDone",
     "LLMThinkingComplete",
     "LLMAnswerComplete",

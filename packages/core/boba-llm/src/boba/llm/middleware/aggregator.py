@@ -33,7 +33,6 @@ from boba.llm.events import (
     LLMEvent,
     LLMGenerationDone,
     LLMGenerationResult,
-    LLMGenerationStarted,
     LLMInvalidToolCallReceived,
     LLMRefusalComplete,
     LLMRefusalToken,
@@ -68,9 +67,6 @@ class AssistantAggregator(StreamSource[LLMContext, LLMEvent]):
     def stream(self, ctx: LLMContext) -> Iterable[LLMEvent]:
         for event in self._inner.stream(ctx):
             match event:
-                case LLMGenerationStarted(request_id=rid):
-                    self._chunks.pop(rid, None)
-                    yield event
                 case LLMThinkingToken(request_id=rid, token=t):
                     self._chunks[rid].append_thinking(t)
                     yield event

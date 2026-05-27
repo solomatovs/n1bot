@@ -7,13 +7,10 @@ from collections.abc import Iterable
 from boba.llm.errors import LLMProtocolError
 from boba.llm.events import (
     FinishReason,
-    LLMAnswerStarted,
     LLMAnswerToken,
     LLMEvent,
     LLMGenerationDone,
-    LLMGenerationStarted,
     LLMRefusalToken,
-    LLMThinkingStarted,
     LLMThinkingToken,
     LLMToolCallArgumentDelta,
     LLMToolCallBegin,
@@ -34,7 +31,7 @@ from openai.types.chat.chat_completion_chunk import (
 
 
 class ThinkingSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
-    """Эмитит LLMThinkingStarted / LLMThinkingToken."""
+    """Эмитит LLMThinkingToken."""
 
     def __init__(
         self,
@@ -43,66 +40,29 @@ class ThinkingSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
     ) -> None:
         self._request_id = request_id
         self._extractor = extractor
-        self._started = False
 
     def name(self) -> str:
         return "Thinking"
-
-    def reset(self) -> None:
-        self._started = False
 
     def stream(self, ctx: LLMContext, stream: Iterable[Choice]) -> Iterable[LLMEvent]:
         for choice in stream:
             thinking = self._extractor.convert(choice.delta)
             if thinking:
-                if not self._started:
-                    self._started = True
-                    yield LLMThinkingStarted(request_id=self._request_id)
                 yield LLMThinkingToken(request_id=self._request_id, token=thinking)
 
 
-class RoleSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
-    """Эмитит LLMGenerationStarted при первом появлении роли."""
-
-    def __init__(self, request_id: RequestId) -> None:
-        self._request_id = request_id
-        self._started = False
-
-    def name(self) -> str:
-        return "Role"
-
-    def reset(self) -> None:
-        self._started = False
-
-    def stream(self, ctx: LLMContext, stream: Iterable[Choice]) -> Iterable[LLMEvent]:
-        # Роль проверяем только при первом проходе.
-        if not self._started:
-            # TODO: несколько choice'ов сейчас обрабатываются последовательно.
-            for choice in stream:
-                if choice.delta.role and not self._started:
-                    self._started = True
-                    yield LLMGenerationStarted(request_id=self._request_id)
-
-
 class AnswerSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
-    """Эмитит LLMAnswerStarted / LLMAnswerToken из content."""
+    """Эмитит LLMAnswerToken из content."""
 
     def __init__(self, request_id: RequestId) -> None:
         self._request_id = request_id
-        self._started = False
 
     def name(self) -> str:
         return "Answer"
 
-    def reset(self) -> None:
-        self._started = False
-
     def stream(self, ctx: LLMContext, stream: Iterable[Choice]) -> Iterable[LLMEvent]:
         for choice in stream:
             if choice.delta.content:
-                if not self._started:
-                    self._started = True
-                    yield LLMAnswerStarted(request_id=self._request_id)
                 yield LLMAnswerToken(
                     request_id=self._request_id, token=choice.delta.content
                 )
@@ -220,7 +180,6 @@ class FromOpenAIChunkConverter(
         # Строгая последовательность вызова.
         self._pipeline = StreamTransformerPipeline[LLMContext, Choice, LLMEvent](
             [
-                RoleSource(request_id),
                 ThinkingSource(request_id, MultiKeyReasoningExtractor()),
                 AnswerSource(request_id),
                 RefusalSource(request_id),
