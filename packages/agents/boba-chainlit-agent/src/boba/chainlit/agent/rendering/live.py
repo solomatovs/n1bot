@@ -175,16 +175,16 @@ class ChainlitLiveTarget(EventRenderTarget):
 
     # --- ошибки / фатальные ------------------------------------------
 
-    async def invalid_tool_call(
+    async def tool_call_decode_failed(
         self,
         name: str,
-        raw_args: str,
+        raw: str,
         error: str,
     ) -> None:
         await self._clear_status()
         step = cl.Step(name=name, type="tool", parent_id=self._parent_id)
         await step.send()
-        await step.stream_token(raw_args, is_input=True)
+        await step.stream_token(raw, is_input=True)
         await _finalize_step(step, error, is_error=True)
 
     async def tool_execution_failed(

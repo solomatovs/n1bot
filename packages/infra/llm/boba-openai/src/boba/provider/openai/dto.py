@@ -20,3 +20,7 @@ class OpenAIConfig(BaseModel):
         default="ollama",
         description="API-ключ LLM-сервера. Для локального Ollama — любой непустой.",
     )
+    ssl_verify: bool = Field(
+        default=False,
+        description="Проверять TLS-сертификат LLM-сервера.",
+    )

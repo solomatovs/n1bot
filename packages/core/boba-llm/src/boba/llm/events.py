@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal, TypeAlias, assert_never
 
-from boba.llm.models import AssistantMessage, InvalidToolCall, RequestId, ToolCall
+from boba.llm.models import AssistantMessage, RequestId, ToolCall, ToolCallDecodeFailure
 
 __all__ = [
     "BaseLLMEvent",
@@ -17,13 +17,13 @@ __all__ = [
     "LLMEvent",
     "LLMEventName",
     "LLMGenerationResult",
-    "LLMInvalidToolCallMessage",
     "LLMRefusalDelta",
     "LLMRefusalMessage",
     "LLMSnapshot",
     "LLMStreamingDelta",
     "LLMThinkingDelta",
     "LLMThinkingMessage",
+    "LLMToolCallDecodeFailedMessage",
     "LLMToolCallDelta",
     "LLMToolCallMessage",
 ]
@@ -199,14 +199,14 @@ class LLMToolCallMessage(LLMSnapshot):
 
 
 @dataclass(frozen=True)
-class LLMInvalidToolCallMessage(LLMSnapshot):
-    """LLM выдала tool-call с невалидным JSON в args."""
+class LLMToolCallDecodeFailedMessage(LLMSnapshot):
+    """Tool-call, чьи args не удалось декодировать (битый JSON / не объект)."""
 
-    invalid: InvalidToolCall
+    failure: ToolCallDecodeFailure
 
     @classmethod
-    def name(cls) -> Literal["LLMInvalidToolCallMessage"]:
-        return "LLMInvalidToolCallMessage"
+    def name(cls) -> Literal["LLMToolCallDecodeFailedMessage"]:
+        return "LLMToolCallDecodeFailedMessage"
 
 
 @dataclass(frozen=True)
@@ -219,7 +219,7 @@ class LLMGenerationResult(LLMSnapshot):
     от провайдера в режиме streaming, как если бы это был `stream=False` ответ:
 
     - `message` — собранный AssistantMessage с плоскими полями
-      (thinking / content / refusal / tool_calls / invalid_tool_calls).
+      (thinking / content / refusal / tool_calls / tool_call_decode_failures).
       Пустой message — валидное состояние, когда модель
       завершилась без контента (например, `finish_reason=stop` без deltas).
     - `finish_reason` — то, что реально прислал провайдер; без подмен.
@@ -250,7 +250,7 @@ LLMEvent = (
     | LLMAnswerMessage
     | LLMRefusalMessage
     | LLMToolCallMessage
-    | LLMInvalidToolCallMessage
+    | LLMToolCallDecodeFailedMessage
     | LLMGenerationResult
 )
 
@@ -264,7 +264,7 @@ LLMEventName: TypeAlias = Literal[
     "LLMAnswerMessage",
     "LLMRefusalMessage",
     "LLMToolCallMessage",
-    "LLMInvalidToolCallMessage",
+    "LLMToolCallDecodeFailedMessage",
     "LLMGenerationResult",
 ]
 

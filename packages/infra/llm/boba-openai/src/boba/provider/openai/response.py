@@ -16,21 +16,21 @@ from boba.llm.events import (
     LLMAnswerMessage,
     LLMEvent,
     LLMGenerationResult,
-    LLMInvalidToolCallMessage,
     LLMRefusalDelta,
     LLMRefusalMessage,
     LLMThinkingDelta,
     LLMThinkingMessage,
+    LLMToolCallDecodeFailedMessage,
     LLMToolCallDelta,
     LLMToolCallMessage,
 )
 from boba.llm.models import (
     AssistantMessage,
     AssistantMessageChunk,
-    InvalidToolCall,
     LLMContext,
     RequestId,
     ToolCall,
+    ToolCallDecodeFailure,
 )
 from boba.patterns import Converter, StreamTransformer
 from openai.types.chat import ChatCompletion, ChatCompletionMessageFunctionToolCall
@@ -193,8 +193,8 @@ class ChatCompletionChunkConsumer(
             if isinstance(call, ToolCall):
                 yield LLMToolCallMessage(request_id=self._request_id, call=call)
             else:
-                yield LLMInvalidToolCallMessage(
-                    request_id=self._request_id, invalid=call
+                yield LLMToolCallDecodeFailedMessage(
+                    request_id=self._request_id, failure=call
                 )
         # Терминатор генерации + источник истины для реконструкции истории.
         yield LLMGenerationResult(
@@ -267,9 +267,9 @@ class ChatCompletionConsumer:
             )
         for call in message.tool_calls:
             yield LLMToolCallMessage(request_id=self._request_id, call=call)
-        for invalid in message.invalid_tool_calls:
-            yield LLMInvalidToolCallMessage(
-                request_id=self._request_id, invalid=invalid
+        for failure in message.tool_call_decode_failures:
+            yield LLMToolCallDecodeFailedMessage(
+                request_id=self._request_id, failure=failure
             )
         yield LLMGenerationResult(
             request_id=self._request_id, message=message, finish_reason=reason
@@ -281,7 +281,7 @@ class _PartialToolCall:
 
     id+name приходят на первой дельте; фрагменты args — строкой. `decode()`
     парсит args в dict → `ToolCall`, либо при битом JSON / не-объекте возвращает
-    `InvalidToolCall` с сырьём и причиной (ошибка как значение, не исключение).
+    `ToolCallDecodeFailure` с сырьём и причиной (ошибка как значение, не исключение).
     Декод args — провайдерская работа: OpenAI отдаёт args строкой, поэтому парс
     живёт здесь, а домен хранит уже готовое значение.
     """
@@ -294,22 +294,22 @@ class _PartialToolCall:
     def append_args(self, fragment: str) -> None:
         self._args.write(fragment)
 
-    def decode(self) -> ToolCall | InvalidToolCall:
+    def decode(self) -> ToolCall | ToolCallDecodeFailure:
         raw = self._args.getvalue()
         try:
             parsed = json.loads(raw) if raw else {}
         except json.JSONDecodeError as e:
-            return InvalidToolCall(
+            return ToolCallDecodeFailure(
                 id=self.id,
                 name=self.name,
-                raw_args=raw,
+                raw=raw,
                 error=f"invalid JSON arguments: {e}",
             )
         if not isinstance(parsed, dict):
-            return InvalidToolCall(
+            return ToolCallDecodeFailure(
                 id=self.id,
                 name=self.name,
-                raw_args=raw,
+                raw=raw,
                 error=f"args must be JSON object, got {type(parsed).__name__}",
             )
         return ToolCall(id=self.id, name=self.name, args=parsed)

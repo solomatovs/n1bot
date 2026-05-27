@@ -158,17 +158,17 @@ class StepDictTarget(EventRenderTarget):
 
     # --- ошибки / фатальные -----------------------------------------
 
-    async def invalid_tool_call(
+    async def tool_call_decode_failed(
         self,
         name: str,
-        raw_args: str,
+        raw: str,
         error: str,
     ) -> None:
         self._append(
             type_="tool",
             name=name,
             output=error,
-            input_=raw_args,
+            input_=raw,
             is_error=True,
         )
 

@@ -8,7 +8,6 @@ from boba.agent.agent import AgentContext
 from boba.agent.events import (
     AgentEvent,
     FeedbackToLLMAdded,
-    ToolArgsResolved,
     ToolCallMessage,
     ToolExecutionFailed,
     ToolExecutionStarted,
@@ -48,9 +47,13 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
 
         for event in self._inner.stream(ctx):
             yield event
+
+            # накапливаем ToolCall сообщения
+            # что бы следующим шагом выполнить их
             if isinstance(event, ToolCallMessage):
                 pending.append(event)
 
+        # выполняем ToolCal's
         for tc in pending:
             yield from self._run_tool(tc)
 
@@ -65,10 +68,6 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
             tool_call_id=call.id,
             tool_name=call.name,
         )
-        yield ToolArgsResolved(
-            request_id=tc.request_id,
-            call=call,
-        )
 
         try:
             result = self._tool_executor.execute(
@@ -78,23 +77,21 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
                     arguments=dict(call.args),
                 ),
             )
+
+            yield ToolResultReady(
+                request_id=tc.request_id,
+                call=call,
+                result=ToolCallResult(result=result),
+            )
         except ToolExecutionError as e:
-            error = ErrorResult(message=e.message, error_kind=type(e).__name__)
             yield ToolExecutionFailed(
                 request_id=tc.request_id,
                 call=call,
                 failure=ToolCallFailure(
-                    error_kind=error.error_kind,
-                    message=error.message,
+                    error_kind=type(e).__name__,
+                    message=e.message,
                 ),
             )
-            return
-
-        yield ToolResultReady(
-            request_id=tc.request_id,
-            call=call,
-            result=ToolCallResult(result=result),
-        )
 
 
 class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):

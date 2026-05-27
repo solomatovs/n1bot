@@ -14,11 +14,11 @@ from boba.agent.events import (
     AnswerDelta,
     AnswerMessage,
     GenerationCompleted,
-    InvalidToolCallMessage,
     RefusalDelta,
     RefusalMessage,
     ThinkingDelta,
     ThinkingMessage,
+    ToolCallDecodeFailedMessage,
     ToolCallDelta,
     ToolCallMessage,
 )
@@ -30,11 +30,11 @@ from boba.llm.events import (
     LLMAnswerMessage,
     LLMEvent,
     LLMGenerationResult,
-    LLMInvalidToolCallMessage,
     LLMRefusalDelta,
     LLMRefusalMessage,
     LLMThinkingDelta,
     LLMThinkingMessage,
+    LLMToolCallDecodeFailedMessage,
     LLMToolCallDelta,
     LLMToolCallMessage,
 )
@@ -75,8 +75,8 @@ class LLMToAgentConverter:
                 yield RefusalMessage(request_id=rid, content=c)
             case LLMToolCallMessage(request_id=rid, call=call):
                 yield ToolCallMessage(request_id=rid, call=call)
-            case LLMInvalidToolCallMessage(request_id=rid, invalid=invalid):
-                yield InvalidToolCallMessage(request_id=rid, invalid=invalid)
+            case LLMToolCallDecodeFailedMessage(request_id=rid, failure=failure):
+                yield ToolCallDecodeFailedMessage(request_id=rid, failure=failure)
             case LLMGenerationResult(
                 request_id=rid,
                 message=msg,

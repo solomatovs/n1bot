@@ -77,7 +77,7 @@ class ToOpenAIMessageConverter(Converter[Message, ChatCompletionMessageParam]):
         content. Поэтому:
             для system/user — берём content как есть.
             для assistant — текст в content, tool_calls в одно поле;
-                thinking/refusal/invalid_tool_calls живут в домене
+                thinking/refusal/tool_call_decode_failures живут в домене
                 (для replay/audit) и в OpenAI Chat не отправляются.
         """
         match value:
