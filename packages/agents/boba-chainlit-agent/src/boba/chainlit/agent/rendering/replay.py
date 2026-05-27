@@ -147,9 +147,6 @@ class StepDictTarget(EventRenderTarget):
     async def iteration_started(self) -> None:
         return
 
-    async def tool_call_started(self, call_id: str, name: str) -> None:
-        del call_id, name
-
     async def tool_execution_started(self, call_id: str) -> None:
         del call_id
 

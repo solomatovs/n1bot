@@ -29,18 +29,17 @@ from collections.abc import Iterable, Iterator
 
 from boba.llm.events import (
     LLMAnswerComplete,
-    LLMAnswerToken,
+    LLMAnswerDelta,
     LLMEvent,
     LLMGenerationDone,
     LLMGenerationResult,
     LLMInvalidToolCallReceived,
     LLMRefusalComplete,
-    LLMRefusalToken,
+    LLMRefusalDelta,
     LLMThinkingComplete,
-    LLMThinkingToken,
-    LLMToolCallArgumentDelta,
-    LLMToolCallBegin,
+    LLMThinkingDelta,
     LLMToolCallComplete,
+    LLMToolCallDelta,
 )
 from boba.llm.models import AssistantMessageChunk, LLMContext, RequestId
 from boba.patterns import StreamSource
@@ -67,34 +66,26 @@ class AssistantAggregator(StreamSource[LLMContext, LLMEvent]):
     def stream(self, ctx: LLMContext) -> Iterable[LLMEvent]:
         for event in self._inner.stream(ctx):
             match event:
-                case LLMThinkingToken(request_id=rid, token=t):
+                case LLMThinkingDelta(request_id=rid, token=t):
                     self._chunks[rid].append_thinking(t)
                     yield event
-                case LLMAnswerToken(request_id=rid, token=t):
+                case LLMAnswerDelta(request_id=rid, token=t):
                     self._chunks[rid].append_text(t)
                     yield event
-                case LLMRefusalToken(request_id=rid, token=t):
+                case LLMRefusalDelta(request_id=rid, token=t):
                     self._chunks[rid].append_refusal(t)
                     yield event
-                case LLMToolCallBegin(
+                case LLMToolCallDelta(
                     request_id=rid,
                     index=i,
                     tool_call_id=tid,
                     tool_name=tn,
+                    arguments=a,
                 ):
-                    self._chunks[rid].start_tool_call(
+                    self._chunks[rid].append_tool_call(
                         index=i,
                         tool_call_id=tid,
                         tool_name=tn,
-                    )
-                    yield event
-                case LLMToolCallArgumentDelta(
-                    request_id=rid,
-                    index=i,
-                    arguments=a,
-                ):
-                    self._chunks[rid].append_tool_call_args(
-                        index=i,
                         args_chunk=a,
                     )
                     yield event

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, ClassVar, Protocol
 from boba.agent.events import (
     AdvisoryEvent,
     AnswerComplete,
-    AnswerToken,
+    AnswerDelta,
     ContentDeltaEvent,
     ContentSnapshotEvent,
     DiagnosticEvent,
@@ -21,14 +21,13 @@ from boba.agent.events import (
     IterationStarted,
     PhaseEvent,
     RefusalComplete,
-    RefusalToken,
+    RefusalDelta,
     StreamKind,
     TerminalEvent,
     ThinkingComplete,
-    ThinkingToken,
-    ToolCallArgumentDelta,
+    ThinkingDelta,
     ToolCallComplete,
-    ToolCallStreamStarted,
+    ToolCallDelta,
     ToolExecutionFailed,
     ToolExecutionStarted,
     ToolPart,
@@ -78,7 +77,6 @@ class EventRenderTarget(Protocol):
     # phase-маркеры (live UX, replay no-op)
 
     async def iteration_started(self) -> None: ...
-    async def tool_call_started(self, call_id: str, name: str) -> None: ...
     async def tool_execution_started(self, call_id: str) -> None: ...
     async def generation_milestone(self) -> None: ...
     async def status(self, text: str) -> None: ...
@@ -114,7 +112,6 @@ class AgentEventDispatcher:
                                `user_query`, `tool_call_complete`,
                                `tool_result`, `feedback`)
         PhaseEvent         — состояния процесса (`iteration_started`,
-                               `tool_call_started`,
                                `tool_execution_started`,
                                `generation_milestone`, `status`)
         AdvisoryEvent      — нефатальные ошибки (`invalid_tool_call`,
@@ -131,23 +128,23 @@ class AgentEventDispatcher:
     def __init__(self, target: EventRenderTarget) -> None:
         self._target = target
 
-    async def handle(self, event: AgentEvent) -> None:  # noqa: C901, PLR0912, PLR0915
+    async def handle(self, event: AgentEvent) -> None:  # noqa: C901, PLR0912
         # Порядок case'ов: сначала конкретные delta/snapshot/phase события,
         # потом fall-through на категории. У pydantic-discriminated unions
         # тип проверяется по полю `type`, поэтому конкретный case
         # сматчится раньше базового.
         match event:
             # ContentDelta
-            case AnswerToken():
+            case AnswerDelta():
                 if event.chunk:
                     await self._target.answer_chunk(event.chunk)
-            case ThinkingToken():
+            case ThinkingDelta():
                 if event.chunk:
                     await self._target.thinking_chunk(event.chunk)
-            case RefusalToken():
+            case RefusalDelta():
                 if event.chunk:
                     await self._target.refusal_chunk(event.chunk)
-            case ToolCallArgumentDelta():
+            case ToolCallDelta():
                 if event.chunk:
                     await self._target.tool_args_chunk(
                         event.stream_id,
@@ -181,11 +178,6 @@ class AgentEventDispatcher:
             # PhaseEvent
             case IterationStarted():
                 await self._target.iteration_started()
-            case ToolCallStreamStarted(
-                tool_call_id=tid,
-                tool_name=name,
-            ):
-                await self._target.tool_call_started(tid, name)
             case ToolExecutionStarted(tool_call_id=tid):
                 await self._target.tool_execution_started(tid)
             case GenerationDone():

@@ -95,7 +95,7 @@
     `ContentSnapshotEvent`
         завершённое сообщение в диалоге.
         Финальная форма того, что собиралось из delta:
-        - `AnswerComplete` после серии `AnswerToken`
+        - `AnswerComplete` после серии `AnswerDelta`
 
         либо самостоятельное снапшот-событие, у
         которого стриминга не было
@@ -483,29 +483,6 @@ class IterationStarted(PhaseEvent):
         return self
 
 
-class ToolCallStreamStarted(PhaseEvent):
-    """
-    Tool call объявлен
-        id и имя пришли
-        args ещё стримятся
-    """
-
-    type: Literal["ToolCallStreamStarted"] = "ToolCallStreamStarted"
-    index: int
-    tool_call_id: str
-    tool_name: str
-
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.label = f"tool#{self.index} stream: {self.tool_name}"
-        self.details = {
-            "id": self.tool_call_id,
-            "name": self.tool_name,
-            "index": str(self.index),
-        }
-        return self
-
-
 class ToolExecutionStarted(PhaseEvent):
     """
     Tool готов к исполнению - PhaseEvent несёт только `tool_call_id` и
@@ -596,12 +573,12 @@ class GenerationResult(PhaseEvent):
 # --------------------------------------------------------------------- #
 
 
-class ThinkingToken(ContentDeltaEvent):
+class ThinkingDelta(ContentDeltaEvent):
     """
     Chunk reasoning-токена
     """
 
-    type: Literal["ThinkingToken"] = "ThinkingToken"
+    type: Literal["ThinkingDelta"] = "ThinkingDelta"
     stream_kind: Literal[StreamKind.THINKING] = StreamKind.THINKING
     token: str
 
@@ -612,12 +589,12 @@ class ThinkingToken(ContentDeltaEvent):
         return self
 
 
-class AnswerToken(ContentDeltaEvent):
+class AnswerDelta(ContentDeltaEvent):
     """
     Chunk текстового ответа для отображения пользователю
     """
 
-    type: Literal["AnswerToken"] = "AnswerToken"
+    type: Literal["AnswerDelta"] = "AnswerDelta"
     stream_kind: Literal[StreamKind.ANSWER] = StreamKind.ANSWER
     token: str
 
@@ -628,12 +605,12 @@ class AnswerToken(ContentDeltaEvent):
         return self
 
 
-class RefusalToken(ContentDeltaEvent):
+class RefusalDelta(ContentDeltaEvent):
     """
     Chunk отказа модели отвечать
     """
 
-    type: Literal["RefusalToken"] = "RefusalToken"
+    type: Literal["RefusalDelta"] = "RefusalDelta"
     stream_kind: Literal[StreamKind.REFUSAL] = StreamKind.REFUSAL
     token: str
 
@@ -644,13 +621,13 @@ class RefusalToken(ContentDeltaEvent):
         return self
 
 
-class ToolCallArgumentDelta(ContentDeltaEvent):
+class ToolCallDelta(ContentDeltaEvent):
     """
     Chunk аргументов tool call
     tool call тоже приходит частами
     """
 
-    type: Literal["ToolCallArgumentDelta"] = "ToolCallArgumentDelta"
+    type: Literal["ToolCallDelta"] = "ToolCallDelta"
     stream_kind: Literal[StreamKind.TOOL_INVOCATION] = StreamKind.TOOL_INVOCATION
     part: Literal[ToolPart.ARGS] = ToolPart.ARGS
     index: int
@@ -958,15 +935,14 @@ class UnknownAgentEvent(AgentEventBase):
 AgentEvent = (
     # PhaseEvent
     IterationStarted
-    | ToolCallStreamStarted
     | ToolExecutionStarted
     | GenerationDone
     | GenerationResult
     # ContentDeltaEvent
-    | ThinkingToken
-    | AnswerToken
-    | RefusalToken
-    | ToolCallArgumentDelta
+    | ThinkingDelta
+    | AnswerDelta
+    | RefusalDelta
+    | ToolCallDelta
     # ContentSnapshotEvent
     | UserQueryReceived
     | ThinkingComplete
@@ -990,14 +966,13 @@ AgentEvent = (
 
 AgentEventName: TypeAlias = Literal[
     "IterationStarted",
-    "ToolCallStreamStarted",
     "ToolExecutionStarted",
     "GenerationDone",
     "GenerationResult",
-    "ThinkingToken",
-    "AnswerToken",
-    "RefusalToken",
-    "ToolCallArgumentDelta",
+    "ThinkingDelta",
+    "AnswerDelta",
+    "RefusalDelta",
+    "ToolCallDelta",
     "UserQueryReceived",
     "ThinkingComplete",
     "AnswerComplete",
@@ -1123,14 +1098,13 @@ class AgentEventRegistry:
 def _register_core_events() -> None:
     for cls in (
         IterationStarted,
-        ToolCallStreamStarted,
         ToolExecutionStarted,
         GenerationDone,
         GenerationResult,
-        ThinkingToken,
-        AnswerToken,
-        RefusalToken,
-        ToolCallArgumentDelta,
+        ThinkingDelta,
+        AnswerDelta,
+        RefusalDelta,
+        ToolCallDelta,
         UserQueryReceived,
         ThinkingComplete,
         AnswerComplete,

@@ -12,35 +12,33 @@ from boba.agent.errors import LLMGenerationFailedError
 from boba.agent.events import (
     AgentEvent,
     AnswerComplete,
-    AnswerToken,
+    AnswerDelta,
     GenerationDone,
     GenerationResult,
     InvalidToolCallReceived,
     RefusalComplete,
-    RefusalToken,
+    RefusalDelta,
     ThinkingComplete,
-    ThinkingToken,
-    ToolCallArgumentDelta,
+    ThinkingDelta,
     ToolCallComplete,
-    ToolCallStreamStarted,
+    ToolCallDelta,
 )
 from boba.agent.turn.builder import TurnBuilder
 from boba.llm.builder import LLM
 from boba.llm.errors import LLMError
 from boba.llm.events import (
     LLMAnswerComplete,
-    LLMAnswerToken,
+    LLMAnswerDelta,
     LLMEvent,
     LLMGenerationDone,
     LLMGenerationResult,
     LLMInvalidToolCallReceived,
     LLMRefusalComplete,
-    LLMRefusalToken,
+    LLMRefusalDelta,
     LLMThinkingComplete,
-    LLMThinkingToken,
-    LLMToolCallArgumentDelta,
-    LLMToolCallBegin,
+    LLMThinkingDelta,
     LLMToolCallComplete,
+    LLMToolCallDelta,
 )
 from boba.llm.models import LLMContext
 from boba.patterns import StreamSource
@@ -49,34 +47,22 @@ from boba.patterns import StreamSource
 class LLMToAgentConverter:
     """Stateless конвертер LLM → Agent."""
 
-    def convert(self, event: LLMEvent) -> Iterator[AgentEvent]:  # noqa: C901, PLR0912
+    def convert(self, event: LLMEvent) -> Iterator[AgentEvent]:  # noqa: C901
         match event:
-            case LLMThinkingToken(request_id=rid, token=t):
-                yield ThinkingToken(request_id=rid, token=t)
-            case LLMAnswerToken(request_id=rid, token=t):
-                yield AnswerToken(request_id=rid, token=t)
-            case LLMRefusalToken(request_id=rid, token=t):
-                yield RefusalToken(request_id=rid, token=t)
-            case LLMToolCallBegin(
-                request_id=rid,
-                index=i,
-                tool_call_id=tid,
-                tool_name=tn,
-            ):
-                yield ToolCallStreamStarted(
-                    request_id=rid,
-                    index=i,
-                    tool_call_id=tid,
-                    tool_name=tn,
-                )
-            case LLMToolCallArgumentDelta(
+            case LLMThinkingDelta(request_id=rid, token=t):
+                yield ThinkingDelta(request_id=rid, token=t)
+            case LLMAnswerDelta(request_id=rid, token=t):
+                yield AnswerDelta(request_id=rid, token=t)
+            case LLMRefusalDelta(request_id=rid, token=t):
+                yield RefusalDelta(request_id=rid, token=t)
+            case LLMToolCallDelta(
                 request_id=rid,
                 index=i,
                 tool_call_id=tid,
                 tool_name=tn,
                 arguments=a,
             ):
-                yield ToolCallArgumentDelta(
+                yield ToolCallDelta(
                     request_id=rid,
                     index=i,
                     tool_call_id=tid,

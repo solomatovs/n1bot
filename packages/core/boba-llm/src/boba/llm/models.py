@@ -12,7 +12,6 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from boba.llm.errors import LLMProtocolError
 from boba.tools.domain import ToolSchema
 
 __all__ = [
@@ -519,34 +518,26 @@ class AssistantMessageChunk:
         block.append_token(token)
         self.blocks.append(block)
 
-    def start_tool_call(
+    def append_tool_call(
         self,
         *,
         index: int,
         tool_call_id: str,
         tool_name: str,
+        args_chunk: str,
     ) -> None:
-        """Зарегистрировать новый tool-call slot (из ToolCallStreamStarted)."""
-        for b in self.blocks:
-            if isinstance(b, PartialToolCallBlock) and b.index == index:
-                raise LLMProtocolError(
-                    f"start_tool_call: дубликат index={index} "
-                    f"(уже зарегистрирован id={b.id!r}, name={b.name!r})"
-                )
-        self.blocks.append(
-            PartialToolCallBlock(index=index, id=tool_call_id, name=tool_name),
-        )
+        """Upsert tool-call slot по index (из LLMToolCallDelta).
 
-    def append_tool_call_args(self, *, index: int, args_chunk: str) -> None:
-        """Дописать args в зарегистрированный tool-call (из ToolCallArgumentDelta)."""
+        Регистрирует слот на первом появлении index (id+name), затем
+        дописывает фрагмент args. args_chunk может быть пустым (первая
+        дельта несёт id+name без аргументов)."""
         for b in self.blocks:
             if isinstance(b, PartialToolCallBlock) and b.index == index:
                 b.append_args(args_chunk)
                 return
-        raise LLMProtocolError(
-            f"append_tool_call_args: index={index} не зарегистрирован — "
-            f"ToolCallArgumentDelta пришла без предшествующего ToolCallStreamStarted"
-        )
+        block = PartialToolCallBlock(index=index, id=tool_call_id, name=tool_name)
+        block.append_args(args_chunk)
+        self.blocks.append(block)
 
     def finalize(self) -> AssistantMessage:
         """Замкнуть чанк в финальный AssistantMessage со свежим id.

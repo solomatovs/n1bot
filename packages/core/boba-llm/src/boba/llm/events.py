@@ -13,7 +13,7 @@ __all__ = [
     "BaseLLMEvent",
     "FinishReason",
     "LLMAnswerComplete",
-    "LLMAnswerToken",
+    "LLMAnswerDelta",
     "LLMEvent",
     "LLMEventName",
     "LLMGenerationDone",
@@ -21,14 +21,13 @@ __all__ = [
     "LLMInvalidToolCallReceived",
     "LLMLifecycleMarker",
     "LLMRefusalComplete",
-    "LLMRefusalToken",
+    "LLMRefusalDelta",
     "LLMSnapshot",
     "LLMStreamingDelta",
     "LLMThinkingComplete",
-    "LLMThinkingToken",
-    "LLMToolCallArgumentDelta",
-    "LLMToolCallBegin",
+    "LLMThinkingDelta",
     "LLMToolCallComplete",
+    "LLMToolCallDelta",
 ]
 
 
@@ -112,54 +111,45 @@ class LLMSnapshot(BaseLLMEvent, ABC):
 
 
 @dataclass(frozen=True)
-class LLMThinkingToken(LLMStreamingDelta):
+class LLMThinkingDelta(LLMStreamingDelta):
     """Chunk reasoning-токена."""
 
     token: str
 
     @classmethod
-    def name(cls) -> Literal["LLMThinkingToken"]:
-        return "LLMThinkingToken"
+    def name(cls) -> Literal["LLMThinkingDelta"]:
+        return "LLMThinkingDelta"
 
 
 @dataclass(frozen=True)
-class LLMAnswerToken(LLMStreamingDelta):
+class LLMAnswerDelta(LLMStreamingDelta):
     """Chunk текстового ответа."""
 
     token: str
 
     @classmethod
-    def name(cls) -> Literal["LLMAnswerToken"]:
-        return "LLMAnswerToken"
+    def name(cls) -> Literal["LLMAnswerDelta"]:
+        return "LLMAnswerDelta"
 
 
 @dataclass(frozen=True)
-class LLMRefusalToken(LLMStreamingDelta):
+class LLMRefusalDelta(LLMStreamingDelta):
     """Chunk отказа модели."""
 
     token: str
 
     @classmethod
-    def name(cls) -> Literal["LLMRefusalToken"]:
-        return "LLMRefusalToken"
+    def name(cls) -> Literal["LLMRefusalDelta"]:
+        return "LLMRefusalDelta"
 
 
 @dataclass(frozen=True)
-class LLMToolCallBegin(LLMLifecycleMarker):
-    """Начало tool call — id и имя функции пришли."""
+class LLMToolCallDelta(LLMStreamingDelta):
+    """Chunk tool call: на первом появлении index несёт id+name и регистрирует
+    слот (arguments может быть пустым), далее — фрагменты JSON args.
 
-    index: int
-    tool_call_id: str
-    tool_name: str
-
-    @classmethod
-    def name(cls) -> Literal["LLMToolCallBegin"]:
-        return "LLMToolCallBegin"
-
-
-@dataclass(frozen=True)
-class LLMToolCallArgumentDelta(LLMStreamingDelta):
-    """Chunk аргументов tool call."""
+    Несёт маршрутную метаинформацию (index/id/name), неустранимую для tool
+    call'а — потому шире текстовых *Delta, но из того же delta-семейства."""
 
     index: int
     tool_call_id: str
@@ -167,8 +157,8 @@ class LLMToolCallArgumentDelta(LLMStreamingDelta):
     arguments: str
 
     @classmethod
-    def name(cls) -> Literal["LLMToolCallArgumentDelta"]:
-        return "LLMToolCallArgumentDelta"
+    def name(cls) -> Literal["LLMToolCallDelta"]:
+        return "LLMToolCallDelta"
 
 
 @dataclass(frozen=True)
@@ -278,11 +268,10 @@ class LLMGenerationResult(LLMSnapshot):
 
 
 LLMEvent = (
-    LLMThinkingToken
-    | LLMAnswerToken
-    | LLMRefusalToken
-    | LLMToolCallBegin
-    | LLMToolCallArgumentDelta
+    LLMThinkingDelta
+    | LLMAnswerDelta
+    | LLMRefusalDelta
+    | LLMToolCallDelta
     | LLMGenerationDone
     | LLMThinkingComplete
     | LLMAnswerComplete
@@ -294,11 +283,10 @@ LLMEvent = (
 
 
 LLMEventName: TypeAlias = Literal[
-    "LLMThinkingToken",
-    "LLMAnswerToken",
-    "LLMRefusalToken",
-    "LLMToolCallBegin",
-    "LLMToolCallArgumentDelta",
+    "LLMThinkingDelta",
+    "LLMAnswerDelta",
+    "LLMRefusalDelta",
+    "LLMToolCallDelta",
     "LLMGenerationDone",
     "LLMThinkingComplete",
     "LLMAnswerComplete",
