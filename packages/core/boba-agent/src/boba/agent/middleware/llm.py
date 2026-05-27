@@ -11,32 +11,32 @@ from boba.agent.agent import AgentContext
 from boba.agent.errors import LLMGenerationFailedError
 from boba.agent.events import (
     AgentEvent,
-    AnswerComplete,
     AnswerDelta,
+    AnswerMessage,
     GenerationResult,
-    InvalidToolCallReceived,
-    RefusalComplete,
+    InvalidToolCallMessage,
     RefusalDelta,
-    ThinkingComplete,
+    RefusalMessage,
     ThinkingDelta,
-    ToolCallComplete,
+    ThinkingMessage,
     ToolCallDelta,
+    ToolCallMessage,
 )
 from boba.agent.turn.builder import TurnBuilder
 from boba.llm.builder import LLM
 from boba.llm.errors import LLMError
 from boba.llm.events import (
-    LLMAnswerComplete,
     LLMAnswerDelta,
+    LLMAnswerMessage,
     LLMEvent,
     LLMGenerationResult,
-    LLMInvalidToolCallReceived,
-    LLMRefusalComplete,
+    LLMInvalidToolCallMessage,
     LLMRefusalDelta,
-    LLMThinkingComplete,
+    LLMRefusalMessage,
     LLMThinkingDelta,
-    LLMToolCallComplete,
+    LLMThinkingMessage,
     LLMToolCallDelta,
+    LLMToolCallMessage,
 )
 from boba.llm.models import LLMContext
 from boba.patterns import StreamSource
@@ -67,16 +67,16 @@ class LLMToAgentConverter:
                     tool_name=tn,
                     arguments_chunk=a,
                 )
-            case LLMThinkingComplete(request_id=rid, content=c):
-                yield ThinkingComplete(request_id=rid, content=c)
-            case LLMAnswerComplete(request_id=rid, content=c):
-                yield AnswerComplete(request_id=rid, content=c)
-            case LLMRefusalComplete(request_id=rid, content=c):
-                yield RefusalComplete(request_id=rid, content=c)
-            case LLMToolCallComplete(request_id=rid, call=call):
-                yield ToolCallComplete(request_id=rid, call=call)
-            case LLMInvalidToolCallReceived(request_id=rid, invalid=invalid):
-                yield InvalidToolCallReceived(request_id=rid, invalid=invalid)
+            case LLMThinkingMessage(request_id=rid, content=c):
+                yield ThinkingMessage(request_id=rid, content=c)
+            case LLMAnswerMessage(request_id=rid, content=c):
+                yield AnswerMessage(request_id=rid, content=c)
+            case LLMRefusalMessage(request_id=rid, content=c):
+                yield RefusalMessage(request_id=rid, content=c)
+            case LLMToolCallMessage(request_id=rid, call=call):
+                yield ToolCallMessage(request_id=rid, call=call)
+            case LLMInvalidToolCallMessage(request_id=rid, invalid=invalid):
+                yield InvalidToolCallMessage(request_id=rid, invalid=invalid)
             case LLMGenerationResult(
                 request_id=rid,
                 message=msg,

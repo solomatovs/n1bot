@@ -13,7 +13,7 @@ from collections.abc import Iterable
 from boba.agent import (
     AgentBuilder,
     AllHistoryDialogView,
-    AnswerComplete,
+    AnswerMessage,
     TurnBuilder,
     UserQueryReceived,
 )
@@ -70,7 +70,7 @@ def _dialog_texts(messages: tuple[DialogMessage, ...]) -> list[tuple[str, str]]:
 
 
 def test_history_journal_contains_user_query_and_assistant_snapshots():
-    """Журнал должен содержать UserQueryReceived + AnswerComplete после одного хода."""
+    """Журнал должен содержать UserQueryReceived + AnswerMessage после одного хода."""
     stub = _StubLLMSource(answers=["hi back"])
     llm = LLM(source=stub)
 
@@ -85,14 +85,14 @@ def test_history_journal_contains_user_query_and_assistant_snapshots():
 
     types = [type(e).__name__ for e in events]
     assert "UserQueryReceived" in types
-    assert "AnswerComplete" in types
+    assert "AnswerMessage" in types
 
     history = agent.container.get(HistoryReader)
     user_queries = [e for e in history.events() if isinstance(e, UserQueryReceived)]
     assert len(user_queries) == 1
     assert user_queries[0].query == "hi"
 
-    answer_completes = [e for e in history.events() if isinstance(e, AnswerComplete)]
+    answer_completes = [e for e in history.events() if isinstance(e, AnswerMessage)]
     assert len(answer_completes) == 1
     assert answer_completes[0].content == "hi back"
 

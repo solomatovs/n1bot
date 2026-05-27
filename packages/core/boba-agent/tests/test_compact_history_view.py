@@ -158,7 +158,7 @@ def test_current_request_id_keeps_full_tool_chain():
 
 
 def test_old_request_id_without_answer_keeps_only_user_message():
-    """Прошлый request_id без AnswerComplete → assistant не добавляется."""
+    """Прошлый request_id без AnswerMessage → assistant не добавляется."""
     history = InMemoryHistoryService()
     rid_old = new_request_id()
     rid_new = new_request_id()

@@ -9,11 +9,11 @@ from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 from boba.llm.events import (
     FinishReason,
-    LLMAnswerComplete,
     LLMAnswerDelta,
+    LLMAnswerMessage,
     LLMGenerationResult,
-    LLMThinkingComplete,
-    LLMToolCallComplete,
+    LLMThinkingMessage,
+    LLMToolCallMessage,
 )
 from boba.llm.models import LLMContext, LLMRequest, new_request_id
 from boba.provider.openai.response import (
@@ -63,10 +63,10 @@ def test_non_stream_emits_only_snapshots() -> None:
 
     # никаких delta-событий — только итоговые
     assert not any(isinstance(e, LLMAnswerDelta) for e in events)
-    assert [type(e) for e in events] == [LLMAnswerComplete, LLMGenerationResult]
+    assert [type(e) for e in events] == [LLMAnswerMessage, LLMGenerationResult]
 
     answer, result = events
-    assert isinstance(answer, LLMAnswerComplete)
+    assert isinstance(answer, LLMAnswerMessage)
     assert answer.content == "hello"
     assert isinstance(result, LLMGenerationResult)
     assert result.finish_reason is FinishReason.STOP
@@ -92,7 +92,7 @@ def test_non_stream_tool_call_parsed() -> None:
 
     events = list(ChatCompletionConsumer(rid).consume(response))
 
-    tool_completes = [e for e in events if isinstance(e, LLMToolCallComplete)]
+    tool_completes = [e for e in events if isinstance(e, LLMToolCallMessage)]
     assert len(tool_completes) == 1
     call = tool_completes[0].call
     assert call.name == "search"
@@ -111,7 +111,7 @@ def test_non_stream_reasoning_from_model_extra() -> None:
 
     events = list(ChatCompletionConsumer(rid).consume(response))
 
-    thinking = [e for e in events if isinstance(e, LLMThinkingComplete)]
+    thinking = [e for e in events if isinstance(e, LLMThinkingMessage)]
     assert len(thinking) == 1
     assert thinking[0].content == "because"
 
@@ -133,7 +133,7 @@ def test_stream_emits_deltas_and_snapshots() -> None:
     deltas = [e for e in events if isinstance(e, LLMAnswerDelta)]
     assert [d.token for d in deltas] == ["he", "llo"]
 
-    completes = [e for e in events if isinstance(e, LLMAnswerComplete)]
+    completes = [e for e in events if isinstance(e, LLMAnswerMessage)]
     assert len(completes) == 1
     assert completes[0].content == "hello"
 

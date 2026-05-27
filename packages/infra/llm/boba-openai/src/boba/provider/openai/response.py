@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import json
 import logging
 from collections.abc import Iterable, Iterator
 
@@ -16,7 +18,13 @@ from boba.llm.events import (
     LLMThinkingDelta,
     LLMToolCallDelta,
 )
-from boba.llm.models import AssistantMessageChunk, LLMContext, RequestId
+from boba.llm.models import (
+    AssistantMessageChunk,
+    InvalidToolCall,
+    LLMContext,
+    RequestId,
+    ToolCall,
+)
 from boba.llm.snapshot import SnapshotEmitter
 from boba.patterns import Converter, StreamTransformer
 from openai.types.chat import ChatCompletion, ChatCompletionMessageFunctionToolCall
@@ -47,8 +55,8 @@ class ChatCompletionChunkConsumer(
         self._finish = FinishReasonDecoder()
         # Чинит коллизии index у параллельных tool_calls до их сборки.
         self._reindexer = DuplicateToolCallIndexReindexer()
-        # index -> (id, name); заполняется на первой дельте каждого tool call.
-        self._tool_calls: dict[int, tuple[str, str]] = {}
+        # index -> накопитель tool-call'а (id, name, фрагменты args).
+        self._tool_calls: dict[int, _PartialToolCall] = {}
         self._message = AssistantMessageChunk.empty()
 
     def name(self) -> str:
@@ -102,30 +110,28 @@ class ChatCompletionChunkConsumer(
                     raise LLMProtocolError(
                         f"ToolCallDelta: первая дельта index={tc.index} без id/name"
                     )
-                self._tool_calls[tc.index] = (tc.id, tc.function.name)
+                self._tool_calls[tc.index] = _PartialToolCall(tc.id, tc.function.name)
 
+            partial = self._tool_calls[tc.index]
             arguments = (tc.function.arguments if tc.function else None) or ""
+            if arguments:
+                partial.append_args(arguments)
 
-            # Первая дельта эмитится всегда (регистрирует слот, даже с пустыми
-            # args); последующие — только при непустом фрагменте.
+            # Первая дельта эмитится всегда (id+name), последующие — только при
+            # непустом фрагменте args.
             if first or arguments:
-                tool_call_id, tool_name = self._tool_calls[tc.index]
-                self._message.append_tool_call(
-                    index=tc.index,
-                    tool_call_id=tool_call_id,
-                    tool_name=tool_name,
-                    args_chunk=arguments,
-                )
                 yield LLMToolCallDelta(
                     request_id=self._request_id,
                     index=tc.index,
-                    tool_call_id=tool_call_id,
-                    tool_name=tool_name,
+                    tool_call_id=partial.id,
+                    tool_name=partial.name,
                     arguments=arguments,
                 )
 
     def _finalize(self, finish_reason: str) -> Iterator[LLMEvent]:
         reason = self._finish.convert(finish_reason)
+        for index in sorted(self._tool_calls):
+            self._message.add_tool_call(self._tool_calls[index].decode())
         yield from SnapshotEmitter.emit(
             self._request_id, self._message.finalize(), reason
         )
@@ -162,18 +168,15 @@ class ChatCompletionConsumer:
         if message.refusal:
             chunk.append_refusal(message.refusal)
 
-        for index, tc in enumerate(message.tool_calls or ()):
+        for tc in message.tool_calls or ():
             if not isinstance(tc, ChatCompletionMessageFunctionToolCall):
                 raise LLMProtocolError(
                     f"tool_call {tc.id}: ожидался function-tool, пришёл {tc.type}"
                 )
 
-            chunk.append_tool_call(
-                index=index,
-                tool_call_id=tc.id,
-                tool_name=tc.function.name,
-                args_chunk=tc.function.arguments or "",
-            )
+            partial = _PartialToolCall(tc.id, tc.function.name)
+            partial.append_args(tc.function.arguments or "")
+            chunk.add_tool_call(partial.decode())
 
         reason = self._finish.convert(choice.finish_reason)
 
@@ -182,6 +185,45 @@ class ChatCompletionConsumer:
             chunk.finalize(),
             reason,
         )
+
+
+class _PartialToolCall:
+    """Накопитель одного tool-call из стрим-фрагментов + декод args.
+
+    id+name приходят на первой дельте; фрагменты args — строкой. `decode()`
+    парсит args в dict → `ToolCall`, либо при битом JSON / не-объекте возвращает
+    `InvalidToolCall` с сырьём и причиной (ошибка как значение, не исключение).
+    Декод args — провайдерская работа: OpenAI отдаёт args строкой, поэтому парс
+    живёт здесь, а домен хранит уже готовое значение.
+    """
+
+    def __init__(self, tool_call_id: str, tool_name: str) -> None:
+        self.id = tool_call_id
+        self.name = tool_name
+        self._args = io.StringIO()
+
+    def append_args(self, fragment: str) -> None:
+        self._args.write(fragment)
+
+    def decode(self) -> ToolCall | InvalidToolCall:
+        raw = self._args.getvalue()
+        try:
+            parsed = json.loads(raw) if raw else {}
+        except json.JSONDecodeError as e:
+            return InvalidToolCall(
+                id=self.id,
+                name=self.name,
+                raw_args=raw,
+                error=f"invalid JSON arguments: {e}",
+            )
+        if not isinstance(parsed, dict):
+            return InvalidToolCall(
+                id=self.id,
+                name=self.name,
+                raw_args=raw,
+                error=f"args must be JSON object, got {type(parsed).__name__}",
+            )
+        return ToolCall(id=self.id, name=self.name, args=parsed)
 
 
 class FinishReasonDecoder(Converter[str, FinishReason]):

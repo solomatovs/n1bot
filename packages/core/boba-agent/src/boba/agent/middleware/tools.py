@@ -9,7 +9,7 @@ from boba.agent.events import (
     AgentEvent,
     FeedbackToLLMAdded,
     ToolArgsResolved,
-    ToolCallComplete,
+    ToolCallMessage,
     ToolExecutionFailed,
     ToolExecutionStarted,
     ToolResultReady,
@@ -44,11 +44,11 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
         self._inner.reset()
 
     def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
-        pending: list[ToolCallComplete] = []
+        pending: list[ToolCallMessage] = []
 
         for event in self._inner.stream(ctx):
             yield event
-            if isinstance(event, ToolCallComplete):
+            if isinstance(event, ToolCallMessage):
                 pending.append(event)
 
         for tc in pending:
@@ -56,7 +56,7 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
 
     def _run_tool(
         self,
-        tc: ToolCallComplete,
+        tc: ToolCallMessage,
     ) -> Iterable[AgentEvent]:
         call = tc.call
 
@@ -98,7 +98,7 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
 
 
 class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
-    """Подавляет (N+1)-й подряд идентичный ToolCallComplete."""
+    """Подавляет (N+1)-й подряд идентичный ToolCallMessage."""
 
     def __init__(
         self,
@@ -120,7 +120,7 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
 
     def stream(self, ctx: AgentContext) -> Iterable[AgentEvent]:
         for event in self._inner.stream(ctx):
-            if not isinstance(event, ToolCallComplete):
+            if not isinstance(event, ToolCallMessage):
                 yield event
                 continue
 

@@ -24,7 +24,7 @@ from typing import Self
 
 from dishka import Container
 
-from boba.agent.events import AgentEvent, AnswerComplete
+from boba.agent.events import AgentEvent, AnswerMessage
 from boba.llm.models import RequestId, new_request_id
 from boba.patterns import StreamSource
 
@@ -80,10 +80,10 @@ class Agent:
         )
 
     def invoke(self, query: str) -> str:
-        """Прогнать агента до конца; вернуть текст последнего AnswerComplete."""
+        """Прогнать агента до конца; вернуть текст последнего AnswerMessage."""
         last_answer = ""
         for event in self.stream(query):
-            if isinstance(event, AnswerComplete):
+            if isinstance(event, AnswerMessage):
                 last_answer = event.content
         return last_answer
 
