@@ -16,10 +16,8 @@ __all__ = [
     "LLMAnswerDelta",
     "LLMEvent",
     "LLMEventName",
-    "LLMGenerationDone",
     "LLMGenerationResult",
     "LLMInvalidToolCallReceived",
-    "LLMLifecycleMarker",
     "LLMRefusalComplete",
     "LLMRefusalDelta",
     "LLMSnapshot",
@@ -96,13 +94,8 @@ class BaseLLMEvent(ABC):
 
 
 @dataclass(frozen=True)
-class LLMLifecycleMarker(BaseLLMEvent, ABC):
-    """Граница фазы (старт/конец стадии, без контента)."""
-
-
-@dataclass(frozen=True)
 class LLMStreamingDelta(BaseLLMEvent, ABC):
-    """Инкрементальный кусок контента между *Started и *Done."""
+    """Инкрементальный кусок контента в процессе генерации."""
 
 
 @dataclass(frozen=True)
@@ -162,26 +155,6 @@ class LLMToolCallDelta(LLMStreamingDelta):
 
 
 @dataclass(frozen=True)
-class LLMGenerationDone(LLMLifecycleMarker):
-    """Генерация завершена — пришёл finish_reason.
-
-    Поле `finish_reason` — то, что реально прислал провайдер на wire,
-    без подмен. Решения о терминальности цикла принимаются выше — там,
-    где есть доступ к собранному `LLMGenerationResult`.
-    """
-
-    finish_reason: FinishReason = FinishReason.STOP
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.finish_reason, FinishReason):
-            object.__setattr__(self, "finish_reason", FinishReason(self.finish_reason))
-
-    @classmethod
-    def name(cls) -> Literal["LLMGenerationDone"]:
-        return "LLMGenerationDone"
-
-
-@dataclass(frozen=True)
 class LLMThinkingComplete(LLMSnapshot):
     """Аггрегированный reasoning итерации."""
 
@@ -238,11 +211,12 @@ class LLMInvalidToolCallReceived(LLMSnapshot):
 
 @dataclass(frozen=True)
 class LLMGenerationResult(LLMSnapshot):
-    """Итог одной генерации LLM — собранный AssistantMessage и raw finish_reason.
+    """
+    Итог одной генерации LLM — собранный AssistantMessage и raw finish_reason.
 
-    Эмитится `AssistantAggregator` строго после `LLMGenerationDone` и после
-    всех per-field `*Complete` событий. Несёт всё, что пришло от провайдера
-    в режиме streaming, как если бы это был `stream=False` ответ:
+    Эмитится `SnapshotEmitter` последним — после всех per-field `*Complete`
+    событий; терминатор генерации (источник истины). Несёт всё, что пришло
+    от провайдера в режиме streaming, как если бы это был `stream=False` ответ:
 
     - `message` — собранный AssistantMessage со всеми блоками
       (thinking / text / refusal / tool_calls / invalid_tool_calls).
@@ -272,7 +246,6 @@ LLMEvent = (
     | LLMAnswerDelta
     | LLMRefusalDelta
     | LLMToolCallDelta
-    | LLMGenerationDone
     | LLMThinkingComplete
     | LLMAnswerComplete
     | LLMRefusalComplete
@@ -287,7 +260,6 @@ LLMEventName: TypeAlias = Literal[
     "LLMAnswerDelta",
     "LLMRefusalDelta",
     "LLMToolCallDelta",
-    "LLMGenerationDone",
     "LLMThinkingComplete",
     "LLMAnswerComplete",
     "LLMRefusalComplete",

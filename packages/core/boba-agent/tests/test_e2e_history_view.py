@@ -23,15 +23,15 @@ from boba.llm.events import (
     FinishReason,
     LLMAnswerDelta,
     LLMEvent,
-    LLMGenerationDone,
 )
-from boba.llm.middleware import AssistantAggregator
 from boba.llm.models import (
     AssistantMessage,
+    AssistantMessageChunk,
     DialogMessage,
     LLMContext,
     UserMessage,
 )
+from boba.llm.snapshot import SnapshotEmitter
 from boba.patterns import StreamSource
 
 
@@ -52,9 +52,11 @@ class _StubLLMSource(StreamSource[LLMContext, LLMEvent]):
         self.contexts.append(ctx)
         rid = ctx.request.request_id
         answer = self._answers.pop(0) if self._answers else ""
+        chunk = AssistantMessageChunk.empty()
         for token in answer:
+            chunk.append_text(token)
             yield LLMAnswerDelta(request_id=rid, token=token)
-        yield LLMGenerationDone(request_id=rid, finish_reason=FinishReason.STOP)
+        yield from SnapshotEmitter.emit(rid, chunk.finalize(), FinishReason.STOP)
 
 
 def _dialog_texts(messages: tuple[DialogMessage, ...]) -> list[tuple[str, str]]:
@@ -70,7 +72,7 @@ def _dialog_texts(messages: tuple[DialogMessage, ...]) -> list[tuple[str, str]]:
 def test_history_journal_contains_user_query_and_assistant_snapshots():
     """Журнал должен содержать UserQueryReceived + AnswerComplete после одного хода."""
     stub = _StubLLMSource(answers=["hi back"])
-    llm = LLM(source=AssistantAggregator(stub))
+    llm = LLM(source=stub)
 
     agent = (
         AgentBuilder()
@@ -98,7 +100,7 @@ def test_history_journal_contains_user_query_and_assistant_snapshots():
 def test_history_view_reconstructs_full_dialog_after_run():
     """AllHistoryDialogView отдаёт UserMessage + AssistantMessage из журнала."""
     stub = _StubLLMSource(answers=["pong"])
-    llm = LLM(source=AssistantAggregator(stub))
+    llm = LLM(source=stub)
 
     agent = (
         AgentBuilder()
@@ -117,7 +119,7 @@ def test_history_view_reconstructs_full_dialog_after_run():
 def test_second_turn_sees_prior_dialog_in_llm_request():
     """Второй .stream(...) должен видеть весь предыдущий диалог в LLMContext."""
     stub = _StubLLMSource(answers=["A1", "A2"])
-    llm = LLM(source=AssistantAggregator(stub))
+    llm = LLM(source=stub)
 
     agent = (
         AgentBuilder()
@@ -144,7 +146,7 @@ def test_second_turn_sees_prior_dialog_in_llm_request():
 def test_clear_history_resets_dialog_for_subsequent_turn():
     """history.clear() стирает контекст; следующий ход видит только свой query."""
     stub = _StubLLMSource(answers=["A1", "A2"])
-    llm = LLM(source=AssistantAggregator(stub))
+    llm = LLM(source=stub)
 
     agent = (
         AgentBuilder()

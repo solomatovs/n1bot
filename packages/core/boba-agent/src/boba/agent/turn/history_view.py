@@ -21,35 +21,27 @@ terminal). `HistoryDialogView` — абстрактный контракт во�
         контекст оставался валидным для LLM-провайдера.
 
 Маппинг событий (общая логика):
-    UserQueryReceived            → UserMessage
-    {Thinking,Answer,Refusal}Complete
-    + ToolCallComplete
-    + InvalidToolCallReceived    → копятся в AssistantMessage
-    GenerationDone               → flush AssistantMessage
-    ToolResultReady              → ToolResultMessage (успех)
-    ToolExecutionFailed          → ToolResultMessage (ошибка)
+    UserQueryReceived   → UserMessage
+    GenerationResult    → AssistantMessage (источник истины: собранный message)
+    ToolResultReady     → ToolResultMessage (успех)
+    ToolExecutionFailed → ToolResultMessage (ошибка)
 
-Всё остальное (PhaseEvent / FeedbackToLLMAdded / Terminal) игнорируется.
-FeedbackToLLMAdded пока пропускается — событие неоднозначно (может быть
-UserMessage от LLMCritique или ToolResultMessage от ToolCallRejection);
-семантику нужно расщеплять отдельным шагом.
+Per-field `*Complete` для реконструкции НЕ используются — message берётся
+целиком из `GenerationResult` (порядко-независимо). Всё остальное (PhaseEvent /
+FeedbackToLLMAdded / Terminal) игнорируется. FeedbackToLLMAdded пока
+пропускается — событие неоднозначно (может быть UserMessage от LLMCritique или
+ToolResultMessage от ToolCallRejection); семантику нужно расщеплять отдельно.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass, field
 from typing import ClassVar
 
 from boba.agent.events import (
     AgentEvent,
-    AnswerComplete,
-    GenerationDone,
-    InvalidToolCallReceived,
-    RefusalComplete,
-    ThinkingComplete,
-    ToolCallComplete,
+    GenerationResult,
     ToolExecutionFailed,
     ToolResultReady,
     UserQueryReceived,
@@ -57,15 +49,10 @@ from boba.agent.events import (
 from boba.agent.history import HistoryReader
 from boba.agent.models import ToolCallFailure
 from boba.llm.models import (
-    AssistantBlock,
     AssistantMessage,
     DialogMessage,
-    InvalidToolCallBlock,
-    RefusalBlock,
     RequestId,
     TextBlock,
-    ThinkingBlock,
-    ToolCallBlock,
     UserMessage,
     new_message_id,
 )
@@ -79,59 +66,29 @@ __all__ = [
 ]
 
 
-@dataclass
-class _AssistantAccumulator:
-    """Буфер блоков AssistantMessage в порядке прихода снапшотов."""
-
-    blocks: list[AssistantBlock] = field(default_factory=list)
-
-    def is_empty(self) -> bool:
-        return not self.blocks
-
-    def flush(self) -> AssistantMessage:
-        return AssistantMessage(id=new_message_id(), blocks=tuple(self.blocks))
-
-
 class _DialogEventDecoder:
-    """Конечный автомат events → DialogMessage. Общий для всех view."""
+    """events → DialogMessage. Источник истины ассистента — GenerationResult."""
 
     @classmethod
-    def decode(cls, events: Iterable[AgentEvent]) -> Iterator[DialogMessage]:  # noqa: C901
-        accumulator = _AssistantAccumulator()
-
+    def decode(cls, events: Iterable[AgentEvent]) -> Iterator[DialogMessage]:
         for event in events:
             match event:
                 case UserQueryReceived(query=q):
-                    yield from cls._flush_assistant(accumulator)
                     yield UserMessage.from_text(q)
 
-                case ThinkingComplete(content=c):
-                    accumulator.blocks.append(ThinkingBlock(content=c))
-
-                case AnswerComplete(content=c):
-                    accumulator.blocks.append(TextBlock(content=c))
-
-                case RefusalComplete(content=c):
-                    accumulator.blocks.append(RefusalBlock(content=c))
-
-                case ToolCallComplete(call=call):
-                    accumulator.blocks.append(ToolCallBlock(call=call))
-
-                case InvalidToolCallReceived(invalid=invalid):
-                    accumulator.blocks.append(InvalidToolCallBlock(invalid=invalid))
-
-                case GenerationDone():
-                    yield from cls._flush_assistant(accumulator)
+                case GenerationResult(message=msg):
+                    # message собран консьюмером целиком — берём как есть,
+                    # порядок per-field *Complete роли не играет.
+                    if msg.blocks:
+                        yield msg
 
                 case ToolResultReady(call=call, result=result):
-                    yield from cls._flush_assistant(accumulator)
                     yield tool_result_to_message(
                         tool_call_id=call.id,
                         result=result.result,
                     )
 
                 case ToolExecutionFailed(call=call, failure=failure):
-                    yield from cls._flush_assistant(accumulator)
                     yield tool_result_to_message(
                         tool_call_id=call.id,
                         result=cls._failure_to_error(failure),
@@ -139,17 +96,6 @@ class _DialogEventDecoder:
 
                 case _:
                     continue
-
-        yield from cls._flush_assistant(accumulator)
-
-    @staticmethod
-    def _flush_assistant(
-        accumulator: _AssistantAccumulator,
-    ) -> Iterator[AssistantMessage]:
-        if accumulator.is_empty():
-            return
-        yield accumulator.flush()
-        accumulator.blocks.clear()
 
     @staticmethod
     def _failure_to_error(failure: ToolCallFailure) -> ErrorResult:
@@ -195,12 +141,7 @@ class CompactHistoryDialogView(HistoryDialogView):
 
     _CONTRIBUTING_TYPES: ClassVar[tuple[type[AgentEvent], ...]] = (
         UserQueryReceived,
-        ThinkingComplete,
-        AnswerComplete,
-        RefusalComplete,
-        ToolCallComplete,
-        InvalidToolCallReceived,
-        GenerationDone,
+        GenerationResult,
         ToolResultReady,
         ToolExecutionFailed,
     )

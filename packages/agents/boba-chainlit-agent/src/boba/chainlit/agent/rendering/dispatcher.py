@@ -15,7 +15,6 @@ from boba.agent.events import (
     ContentSnapshotEvent,
     DiagnosticEvent,
     FeedbackToLLMAdded,
-    GenerationDone,
     GenerationResult,
     InvalidToolCallReceived,
     IterationStarted,
@@ -180,9 +179,9 @@ class AgentEventDispatcher:
                 await self._target.iteration_started()
             case ToolExecutionStarted(tool_call_id=tid):
                 await self._target.tool_execution_started(tid)
-            case GenerationDone():
-                await self._target.generation_milestone()
             case GenerationResult():
+                # терминатор генерации: гасим статус + подсвечиваем исход
+                await self._target.generation_milestone()
                 await self._handle_generation_result(event)
 
             # AdvisoryEvent

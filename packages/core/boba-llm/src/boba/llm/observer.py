@@ -13,18 +13,20 @@ __all__ = [
 
 TRequest = TypeVar("TRequest")
 TChunk = TypeVar("TChunk")
+TResponse = TypeVar("TResponse")
 TApiError = TypeVar("TApiError", bound=Exception)
 THttpError = TypeVar("THttpError", bound=Exception)
 
 
 class LLMRequestObserver(
-    ABC, Generic[TRequest, TChunk, TApiError, THttpError]
+    ABC, Generic[TRequest, TChunk, TResponse, TApiError, THttpError]
 ):
     """Наблюдатель сырого LLM-вызова на границе адаптера.
 
     Жизненный цикл:
         on_request →
-            [on_http_request → on_http_response → on_response_chunk*] →
+            on_http_request → on_http_response →
+            (stream=True: on_response_chunk* | stream=False: on_response) →
             терминал.
 
     Терминал — ровно один из: on_request_end (OK), on_request_cancel (отмена),
@@ -39,8 +41,11 @@ class LLMRequestObserver(
 
     @abstractmethod
     def on_response_chunk(self, chunk: TChunk) -> None:
-        """Вызывается на каждый chunk потока ответа."""
+        """Вызывается на каждый chunk потока ответа (stream=True)."""
         ...
+
+    def on_response(self, response: TResponse) -> None:
+        """Вызывается один раз на полный ответ (stream=False); по умолчанию no-op."""
 
     @abstractmethod
     def on_request_end(self) -> None:
@@ -78,14 +83,14 @@ class LLMRequestObserver(
 
 
 class CompositeLLMRequestObserver(
-    LLMRequestObserver[TRequest, TChunk, TApiError, THttpError]
+    LLMRequestObserver[TRequest, TChunk, TResponse, TApiError, THttpError]
 ):
     """Fan-out из нескольких LLMRequestObserver в порядке регистрации."""
 
     def __init__(
         self,
         observers: Sequence[
-            LLMRequestObserver[TRequest, TChunk, TApiError, THttpError]
+            LLMRequestObserver[TRequest, TChunk, TResponse, TApiError, THttpError]
         ],
     ) -> None:
         self._observers = observers
@@ -97,6 +102,10 @@ class CompositeLLMRequestObserver(
     def on_response_chunk(self, chunk: TChunk) -> None:
         for o in self._observers:
             o.on_response_chunk(chunk)
+
+    def on_response(self, response: TResponse) -> None:
+        for o in self._observers:
+            o.on_response(response)
 
     def on_request_end(self) -> None:
         for o in self._observers:

@@ -30,6 +30,7 @@ class TurnState:
     tools: LLMToolDefinition = field(default_factory=LLMToolDefinition)
     sampling: SamplingParams = field(default_factory=SamplingParams)
     response_format: Mapping[str, Any] | None = None
+    stream: bool = True
 
 
 class LLMRequestFactory(
@@ -52,4 +53,5 @@ class LLMRequestFactory(
             tools_definition=state.tools,
             sampling=state.sampling,
             response_format=state.response_format,
+            stream=state.stream,
         )

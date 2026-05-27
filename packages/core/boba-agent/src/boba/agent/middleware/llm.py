@@ -13,7 +13,6 @@ from boba.agent.events import (
     AgentEvent,
     AnswerComplete,
     AnswerDelta,
-    GenerationDone,
     GenerationResult,
     InvalidToolCallReceived,
     RefusalComplete,
@@ -30,7 +29,6 @@ from boba.llm.events import (
     LLMAnswerComplete,
     LLMAnswerDelta,
     LLMEvent,
-    LLMGenerationDone,
     LLMGenerationResult,
     LLMInvalidToolCallReceived,
     LLMRefusalComplete,
@@ -69,8 +67,6 @@ class LLMToAgentConverter:
                     tool_name=tn,
                     arguments_chunk=a,
                 )
-            case LLMGenerationDone(request_id=rid, finish_reason=fr):
-                yield GenerationDone(request_id=rid, finish_reason=fr)
             case LLMThinkingComplete(request_id=rid, content=c):
                 yield ThinkingComplete(request_id=rid, content=c)
             case LLMAnswerComplete(request_id=rid, content=c):

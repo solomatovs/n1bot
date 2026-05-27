@@ -28,6 +28,7 @@ import httpx
 import openai
 from boba.llm.observer import LLMRequestObserver
 from boba.workspace.contract import WorkspaceShell
+from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 
@@ -35,6 +36,7 @@ class HttpTraceChatCompletionObserver(
     LLMRequestObserver[
         dict[str, Any],
         ChatCompletionChunk,
+        ChatCompletion,
         openai.APIError,
         httpx.HTTPError,
     ]
@@ -80,6 +82,14 @@ class HttpTraceChatCompletionObserver(
             line = chunk.model_dump_json()
         except (TypeError, ValueError):
             line = repr(chunk)
+        self._append(line + "\n")
+
+    def on_response(self, response: ChatCompletion) -> None:
+        # stream=False: один готовый ответ — пишем целиком одной строкой JSON.
+        try:
+            line = response.model_dump_json()
+        except (TypeError, ValueError):
+            line = repr(response)
         self._append(line + "\n")
 
     def on_request_end(self) -> None:
