@@ -155,7 +155,7 @@ _INNER: tuple[_Slot, ...] = (
 """Inner envelope: эти слоты сидят между user middleware и terminal.
 
 Их инварианты:
-    ToolExecutor       — `ToolCallComplete` исполняется (passthrough если tools нет).
+    ToolExecutor       — `ToolCallMessage` исполняется (passthrough если tools нет).
     UserQueryRecorder  — `ctx.query` эмитится как `UserQueryReceived` один раз.
 """
 

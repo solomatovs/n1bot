@@ -6,13 +6,13 @@ from collections.abc import Iterator
 
 from boba.llm.events import (
     FinishReason,
-    LLMAnswerComplete,
+    LLMAnswerMessage,
     LLMEvent,
     LLMGenerationResult,
-    LLMInvalidToolCallReceived,
-    LLMRefusalComplete,
-    LLMThinkingComplete,
-    LLMToolCallComplete,
+    LLMInvalidToolCallMessage,
+    LLMRefusalMessage,
+    LLMThinkingMessage,
+    LLMToolCallMessage,
 )
 from boba.llm.models import AssistantMessage, RequestId
 
@@ -34,19 +34,19 @@ class SnapshotEmitter:
         finish_reason: FinishReason,
     ) -> Iterator[LLMEvent]:
         if message.thinking:
-            yield LLMThinkingComplete(request_id=request_id, content=message.thinking)
+            yield LLMThinkingMessage(request_id=request_id, content=message.thinking)
 
         if message.content:
-            yield LLMAnswerComplete(request_id=request_id, content=message.content)
+            yield LLMAnswerMessage(request_id=request_id, content=message.content)
 
         if message.refusal:
-            yield LLMRefusalComplete(request_id=request_id, content=message.refusal)
+            yield LLMRefusalMessage(request_id=request_id, content=message.refusal)
 
         for call in message.tool_calls:
-            yield LLMToolCallComplete(request_id=request_id, call=call)
+            yield LLMToolCallMessage(request_id=request_id, call=call)
 
         for invalid in message.invalid_tool_calls:
-            yield LLMInvalidToolCallReceived(request_id=request_id, invalid=invalid)
+            yield LLMInvalidToolCallMessage(request_id=request_id, invalid=invalid)
 
         yield LLMGenerationResult(
             request_id=request_id,

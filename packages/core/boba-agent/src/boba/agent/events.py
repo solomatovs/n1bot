@@ -95,11 +95,11 @@
     `ContentSnapshotEvent`
         завершённое сообщение в диалоге.
         Финальная форма того, что собиралось из delta:
-        - `AnswerComplete` после серии `AnswerDelta`
+        - `AnswerMessage` после серии `AnswerDelta`
 
         либо самостоятельное снапшот-событие, у
         которого стриминга не было
-            `ToolCallComplete`      - завершение вызова tool
+            `ToolCallMessage`      - завершение вызова tool
             `UserQueryReceived`     - получение запроса от пользователя
             `FeedbackToLLMAdded`    - добавление feedback для llm
 
@@ -505,7 +505,7 @@ class GenerationResult(PhaseEvent):
     """
     Итог одной генерации LLM — собранный AssistantMessage и raw finish_reason.
 
-    Эмитится последним — после всех per-field `*Complete`/`InvalidToolCallReceived`
+    Эмитится последним — после всех per-field `*Complete`/`InvalidToolCallMessage`
     событий; терминатор генерации и источник истины для истории. Несёт всё, что
     пришло от провайдера в режиме streaming, в форме обычного `stream=False`:
 
@@ -641,10 +641,10 @@ class UserQueryReceived(ContentSnapshotEvent):
         return self
 
 
-class ThinkingComplete(ContentSnapshotEvent):
+class ThinkingMessage(ContentSnapshotEvent):
     """Агрегированный reasoning итерации."""
 
-    type: Literal["ThinkingComplete"] = "ThinkingComplete"
+    type: Literal["ThinkingMessage"] = "ThinkingMessage"
     stream_kind: Literal[StreamKind.THINKING] = StreamKind.THINKING
     content: str
 
@@ -655,10 +655,10 @@ class ThinkingComplete(ContentSnapshotEvent):
         return self
 
 
-class AnswerComplete(ContentSnapshotEvent):
+class AnswerMessage(ContentSnapshotEvent):
     """Агрегированный текстовый ответ итерации"""
 
-    type: Literal["AnswerComplete"] = "AnswerComplete"
+    type: Literal["AnswerMessage"] = "AnswerMessage"
     stream_kind: Literal[StreamKind.ANSWER] = StreamKind.ANSWER
     content: str
 
@@ -669,10 +669,10 @@ class AnswerComplete(ContentSnapshotEvent):
         return self
 
 
-class RefusalComplete(ContentSnapshotEvent):
+class RefusalMessage(ContentSnapshotEvent):
     """Агрегированный отказ модели."""
 
-    type: Literal["RefusalComplete"] = "RefusalComplete"
+    type: Literal["RefusalMessage"] = "RefusalMessage"
     stream_kind: Literal[StreamKind.REFUSAL] = StreamKind.REFUSAL
     content: str
 
@@ -683,10 +683,10 @@ class RefusalComplete(ContentSnapshotEvent):
         return self
 
 
-class ToolCallComplete(ContentSnapshotEvent):
+class ToolCallMessage(ContentSnapshotEvent):
     """Завершённый tool call (id + имя + args)."""
 
-    type: Literal["ToolCallComplete"] = "ToolCallComplete"
+    type: Literal["ToolCallMessage"] = "ToolCallMessage"
     stream_kind: Literal[StreamKind.TOOL_INVOCATION] = StreamKind.TOOL_INVOCATION
     part: Literal[ToolPart.ARGS] = ToolPart.ARGS
     call: ToolCall
@@ -736,30 +736,29 @@ class FeedbackToLLMAdded(ContentSnapshotEvent):
         return self
 
 
-# --------------------------------------------------------------------- #
-# AdvisoryEvent — конкретные события
-# --------------------------------------------------------------------- #
+class InvalidToolCallMessage(ContentSnapshotEvent):
+    """Tool-call с невалидным JSON в args — часть сообщения ассистента.
 
+    Это контент (лежит в `message.blocks` как `InvalidToolCallBlock`), а не
+    advisory: «ошибочность» несёт сам payload (`invalid.error`), а не категория.
+    """
 
-class InvalidToolCallReceived(AdvisoryEvent):
-    """LLM выдала tool-call с невалидным JSON в args; цикл продолжается."""
-
-    type: Literal["InvalidToolCallReceived"] = "InvalidToolCallReceived"
+    type: Literal["InvalidToolCallMessage"] = "InvalidToolCallMessage"
+    stream_kind: Literal[StreamKind.TOOL_INVOCATION] = StreamKind.TOOL_INVOCATION
+    part: Literal[ToolPart.ARGS] = ToolPart.ARGS
     invalid: InvalidToolCall
 
     @model_validator(mode="after")
     def _derive(self) -> Self:
-        self.headline = f"invalid tool call: {self.invalid.name}"
-        details: dict[str, str] = {
-            "id": self.invalid.id,
-            "name": self.invalid.name,
-        }
-        if self.status_code is not None:
-            details["status_code"] = str(self.status_code)
-        self.details = details
-        primary = f"raw_args: {self.invalid.raw_args}\nerror: {self.invalid.error}"
-        self.body = compose_error_body(primary, self.status_code, self.cause_chain)
+        self.stream_id = self.invalid.id
+        self.headline = self.invalid.name
+        self.body = f"raw_args: {self.invalid.raw_args}\nerror: {self.invalid.error}"
         return self
+
+
+# --------------------------------------------------------------------- #
+# AdvisoryEvent — конкретные события
+# --------------------------------------------------------------------- #
 
 
 class ToolExecutionFailed(AdvisoryEvent):
@@ -871,7 +870,7 @@ class ToolArgsResolved(DiagnosticEvent):
     """Полный `ToolCall` с args - готов к исполнению.
 
     Бремя args вынесено из `ToolExecutionStarted` (PhaseEvent): args
-    уже есть в `ToolCallComplete` (ContentSnapshotEvent), и PhaseEvent
+    уже есть в `ToolCallMessage` (ContentSnapshotEvent), и PhaseEvent
     их дублировал в `body`. Здесь они доступны для diagnostic-режима
     - привязка к tool-step'у через `related["tool_call_id"]`.
     """
@@ -924,15 +923,15 @@ AgentEvent = (
     | ToolCallDelta
     # ContentSnapshotEvent
     | UserQueryReceived
-    | ThinkingComplete
-    | AnswerComplete
-    | RefusalComplete
-    | ToolCallComplete
+    | ThinkingMessage
+    | AnswerMessage
+    | RefusalMessage
+    | ToolCallMessage
+    | InvalidToolCallMessage
     | ToolResultReady
     | FeedbackToLLMAdded
     # AdvisoryEvent
     | ToolExecutionFailed
-    | InvalidToolCallReceived
     # TerminalEvent
     | GenerationFailed
     | PromptFailed
@@ -952,14 +951,14 @@ AgentEventName: TypeAlias = Literal[
     "RefusalDelta",
     "ToolCallDelta",
     "UserQueryReceived",
-    "ThinkingComplete",
-    "AnswerComplete",
-    "RefusalComplete",
-    "ToolCallComplete",
+    "ThinkingMessage",
+    "AnswerMessage",
+    "RefusalMessage",
+    "ToolCallMessage",
     "ToolResultReady",
     "FeedbackToLLMAdded",
     "ToolExecutionFailed",
-    "InvalidToolCallReceived",
+    "InvalidToolCallMessage",
     "GenerationFailed",
     "PromptFailed",
     "MaxIterationsReached",
@@ -1083,14 +1082,14 @@ def _register_core_events() -> None:
         RefusalDelta,
         ToolCallDelta,
         UserQueryReceived,
-        ThinkingComplete,
-        AnswerComplete,
-        RefusalComplete,
-        ToolCallComplete,
+        ThinkingMessage,
+        AnswerMessage,
+        RefusalMessage,
+        ToolCallMessage,
+        InvalidToolCallMessage,
         ToolResultReady,
         FeedbackToLLMAdded,
         ToolExecutionFailed,
-        InvalidToolCallReceived,
         GenerationFailed,
         PromptFailed,
         MaxIterationsReached,

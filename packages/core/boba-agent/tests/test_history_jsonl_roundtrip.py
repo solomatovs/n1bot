@@ -29,22 +29,22 @@ from boba.agent import (
 from boba.agent.event_specs import IsContentDelta
 from boba.agent.events import (
     AgentEventAdapter,
-    AnswerComplete,
     AnswerDelta,
+    AnswerMessage,
     FeedbackToLLMAdded,
     GenerationFailed,
-    InvalidToolCallReceived,
+    InvalidToolCallMessage,
     IterationStarted,
     MaxIterationsReached,
     PersistenceFailed,
     PromptFailed,
-    RefusalComplete,
     RefusalDelta,
-    ThinkingComplete,
+    RefusalMessage,
     ThinkingDelta,
+    ThinkingMessage,
     ToolArgsResolved,
-    ToolCallComplete,
     ToolCallDelta,
+    ToolCallMessage,
     ToolExecutionFailed,
     ToolExecutionStarted,
     ToolResultReady,
@@ -85,20 +85,20 @@ def _all_events() -> list[Any]:
             tool_name="search",
             arguments_chunk='{"q":',
         ),
-        # ContentSnapshotEvent (7)
+        # ContentSnapshotEvent (8)
         UserQueryReceived(request_id=_RID, query="hello"),
-        ThinkingComplete(request_id=_RID, content="thought"),
-        AnswerComplete(request_id=_RID, content="answer"),
-        RefusalComplete(request_id=_RID, content="refusal"),
-        ToolCallComplete(request_id=_RID, call=_TC),
+        ThinkingMessage(request_id=_RID, content="thought"),
+        AnswerMessage(request_id=_RID, content="answer"),
+        RefusalMessage(request_id=_RID, content="refusal"),
+        ToolCallMessage(request_id=_RID, call=_TC),
+        InvalidToolCallMessage(request_id=_RID, invalid=_ITC),
         ToolResultReady(
             request_id=_RID,
             call=_TC,
             result=ToolCallResult(result=TextResult(text="ok", metadata={"k": "v"})),
         ),
         FeedbackToLLMAdded(request_id=_RID, content="critique"),
-        # AdvisoryEvent (2)
-        InvalidToolCallReceived(request_id=_RID, invalid=_ITC),
+        # AdvisoryEvent (1)
         ToolExecutionFailed(
             request_id=_RID,
             call=_TC,
@@ -137,7 +137,11 @@ def test_event_roundtrip(event: Any) -> None:
 
 def test_optional_status_code_omitted() -> None:
     """status_code=None — поле сериализуется как null (а не пропускается)."""
-    e = InvalidToolCallReceived(request_id=_RID, invalid=_ITC)
+    e = ToolExecutionFailed(
+        request_id=_RID,
+        call=_TC,
+        failure=ToolCallFailure(error_kind="K", message="m"),
+    )
     line = AgentEventAdapter.dump_json(e).decode("utf-8")
     assert '"status_code":null' in line
     parsed = AgentEventAdapter.validate_json(line)
@@ -241,7 +245,15 @@ def test_family_isinstance() -> None:
         ContentSnapshotEvent,
     )
     assert isinstance(
-        InvalidToolCallReceived(request_id=_RID, invalid=_ITC),
+        InvalidToolCallMessage(request_id=_RID, invalid=_ITC),
+        ContentSnapshotEvent,
+    )
+    assert isinstance(
+        ToolExecutionFailed(
+            request_id=_RID,
+            call=_TC,
+            failure=ToolCallFailure(error_kind="K", message="m"),
+        ),
         AdvisoryEvent,
     )
     assert isinstance(
@@ -277,7 +289,17 @@ def test_match_statement_dispatch() -> None:
     )
     assert classify(UserQueryReceived(request_id=_RID, query="q")) == "snapshot"
     assert (
-        classify(InvalidToolCallReceived(request_id=_RID, invalid=_ITC)) == "advisory"
+        classify(InvalidToolCallMessage(request_id=_RID, invalid=_ITC)) == "snapshot"
+    )
+    assert (
+        classify(
+            ToolExecutionFailed(
+                request_id=_RID,
+                call=_TC,
+                failure=ToolCallFailure(error_kind="K", message="m"),
+            ),
+        )
+        == "advisory"
     )
     assert (
         classify(GenerationFailed(request_id=_RID, error_kind="K", message="m"))

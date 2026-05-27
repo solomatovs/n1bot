@@ -12,20 +12,20 @@ from boba.llm.models import AssistantMessage, InvalidToolCall, RequestId, ToolCa
 __all__ = [
     "BaseLLMEvent",
     "FinishReason",
-    "LLMAnswerComplete",
     "LLMAnswerDelta",
+    "LLMAnswerMessage",
     "LLMEvent",
     "LLMEventName",
     "LLMGenerationResult",
-    "LLMInvalidToolCallReceived",
-    "LLMRefusalComplete",
+    "LLMInvalidToolCallMessage",
     "LLMRefusalDelta",
+    "LLMRefusalMessage",
     "LLMSnapshot",
     "LLMStreamingDelta",
-    "LLMThinkingComplete",
     "LLMThinkingDelta",
-    "LLMToolCallComplete",
+    "LLMThinkingMessage",
     "LLMToolCallDelta",
+    "LLMToolCallMessage",
 ]
 
 
@@ -155,58 +155,58 @@ class LLMToolCallDelta(LLMStreamingDelta):
 
 
 @dataclass(frozen=True)
-class LLMThinkingComplete(LLMSnapshot):
+class LLMThinkingMessage(LLMSnapshot):
     """Аггрегированный reasoning итерации."""
 
     content: str
 
     @classmethod
-    def name(cls) -> Literal["LLMThinkingComplete"]:
-        return "LLMThinkingComplete"
+    def name(cls) -> Literal["LLMThinkingMessage"]:
+        return "LLMThinkingMessage"
 
 
 @dataclass(frozen=True)
-class LLMAnswerComplete(LLMSnapshot):
+class LLMAnswerMessage(LLMSnapshot):
     """Аггрегированный текстовый ответ итерации."""
 
     content: str
 
     @classmethod
-    def name(cls) -> Literal["LLMAnswerComplete"]:
-        return "LLMAnswerComplete"
+    def name(cls) -> Literal["LLMAnswerMessage"]:
+        return "LLMAnswerMessage"
 
 
 @dataclass(frozen=True)
-class LLMRefusalComplete(LLMSnapshot):
+class LLMRefusalMessage(LLMSnapshot):
     """Аггрегированный отказ модели."""
 
     content: str
 
     @classmethod
-    def name(cls) -> Literal["LLMRefusalComplete"]:
-        return "LLMRefusalComplete"
+    def name(cls) -> Literal["LLMRefusalMessage"]:
+        return "LLMRefusalMessage"
 
 
 @dataclass(frozen=True)
-class LLMToolCallComplete(LLMSnapshot):
+class LLMToolCallMessage(LLMSnapshot):
     """Завершённый tool call (id + имя + parsed args)."""
 
     call: ToolCall
 
     @classmethod
-    def name(cls) -> Literal["LLMToolCallComplete"]:
-        return "LLMToolCallComplete"
+    def name(cls) -> Literal["LLMToolCallMessage"]:
+        return "LLMToolCallMessage"
 
 
 @dataclass(frozen=True)
-class LLMInvalidToolCallReceived(LLMSnapshot):
+class LLMInvalidToolCallMessage(LLMSnapshot):
     """LLM выдала tool-call с невалидным JSON в args."""
 
     invalid: InvalidToolCall
 
     @classmethod
-    def name(cls) -> Literal["LLMInvalidToolCallReceived"]:
-        return "LLMInvalidToolCallReceived"
+    def name(cls) -> Literal["LLMInvalidToolCallMessage"]:
+        return "LLMInvalidToolCallMessage"
 
 
 @dataclass(frozen=True)
@@ -246,11 +246,11 @@ LLMEvent = (
     | LLMAnswerDelta
     | LLMRefusalDelta
     | LLMToolCallDelta
-    | LLMThinkingComplete
-    | LLMAnswerComplete
-    | LLMRefusalComplete
-    | LLMToolCallComplete
-    | LLMInvalidToolCallReceived
+    | LLMThinkingMessage
+    | LLMAnswerMessage
+    | LLMRefusalMessage
+    | LLMToolCallMessage
+    | LLMInvalidToolCallMessage
     | LLMGenerationResult
 )
 
@@ -260,11 +260,11 @@ LLMEventName: TypeAlias = Literal[
     "LLMAnswerDelta",
     "LLMRefusalDelta",
     "LLMToolCallDelta",
-    "LLMThinkingComplete",
-    "LLMAnswerComplete",
-    "LLMRefusalComplete",
-    "LLMToolCallComplete",
-    "LLMInvalidToolCallReceived",
+    "LLMThinkingMessage",
+    "LLMAnswerMessage",
+    "LLMRefusalMessage",
+    "LLMToolCallMessage",
+    "LLMInvalidToolCallMessage",
     "LLMGenerationResult",
 ]
 

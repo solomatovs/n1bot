@@ -9,24 +9,24 @@ from typing import TYPE_CHECKING, ClassVar, Protocol
 
 from boba.agent.events import (
     AdvisoryEvent,
-    AnswerComplete,
     AnswerDelta,
+    AnswerMessage,
     ContentDeltaEvent,
     ContentSnapshotEvent,
     DiagnosticEvent,
     FeedbackToLLMAdded,
     GenerationResult,
-    InvalidToolCallReceived,
+    InvalidToolCallMessage,
     IterationStarted,
     PhaseEvent,
-    RefusalComplete,
     RefusalDelta,
+    RefusalMessage,
     StreamKind,
     TerminalEvent,
-    ThinkingComplete,
     ThinkingDelta,
-    ToolCallComplete,
+    ThinkingMessage,
     ToolCallDelta,
+    ToolCallMessage,
     ToolExecutionFailed,
     ToolExecutionStarted,
     ToolPart,
@@ -153,13 +153,13 @@ class AgentEventDispatcher:
             # --- ContentSnapshot --------------------------------------
             case UserQueryReceived(query=q):
                 await self._target.user_query(q)
-            case AnswerComplete(content=c):
+            case AnswerMessage(content=c):
                 await self._target.answer_complete(c)
-            case ThinkingComplete(content=c):
+            case ThinkingMessage(content=c):
                 await self._target.thinking_complete(c)
-            case RefusalComplete(content=c):
+            case RefusalMessage(content=c):
                 await self._target.refusal_complete(c)
-            case ToolCallComplete(call=call):
+            case ToolCallMessage(call=call):
                 await self._target.tool_call_complete(
                     call.id,
                     call.name,
@@ -185,7 +185,7 @@ class AgentEventDispatcher:
                 await self._handle_generation_result(event)
 
             # AdvisoryEvent
-            case InvalidToolCallReceived(invalid=invalid):
+            case InvalidToolCallMessage(invalid=invalid):
                 await self._target.invalid_tool_call(
                     invalid.name,
                     invalid.raw_args,

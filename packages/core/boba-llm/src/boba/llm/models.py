@@ -33,7 +33,6 @@ __all__ = [
     "PartialRefusalBlock",
     "PartialTextBlock",
     "PartialThinkingBlock",
-    "PartialToolCallBlock",
     "RefusalBlock",
     "RequestId",
     "SamplingParams",
@@ -427,62 +426,28 @@ class PartialRefusalBlock:
         return RefusalBlock(content=self.content.getvalue())
 
 
-@dataclass
-class PartialToolCallBlock:
-    """Mutable buffer для растущего tool-call.
-
-    `args` накапливаются как сырая JSON-строка (фрагменты пишутся в StringIO).
-    """
-
-    index: int
-    id: str
-    name: str
-    args: io.StringIO = field(default_factory=io.StringIO)
-
-    def append_args(self, args_chunk: str) -> None:
-        self.args.write(args_chunk)
-
-    def finalize(self) -> ToolCallBlock | InvalidToolCallBlock:
-        """Парсить args в dict; вернуть ToolCallBlock или InvalidToolCallBlock."""
-        raw = self.args.getvalue()
-        try:
-            parsed = json.loads(raw) if raw else {}
-        except json.JSONDecodeError as e:
-            return InvalidToolCallBlock(
-                invalid=InvalidToolCall(
-                    id=self.id,
-                    name=self.name,
-                    raw_args=raw,
-                    error=f"invalid JSON arguments: {e}",
-                ),
-            )
-
-        if not isinstance(parsed, dict):
-            return InvalidToolCallBlock(
-                invalid=InvalidToolCall(
-                    id=self.id,
-                    name=self.name,
-                    raw_args=raw,
-                    error=f"args must be JSON object, got {type(parsed).__name__}",
-                ),
-            )
-
-        return ToolCallBlock(call=ToolCall(id=self.id, name=self.name, args=parsed))
-
-
 PartialAssistantBlock: TypeAlias = (
-    PartialTextBlock | PartialThinkingBlock | PartialRefusalBlock | PartialToolCallBlock
+    PartialTextBlock | PartialThinkingBlock | PartialRefusalBlock
 )
-"""Растущий-в-стриме блок ассистента."""
+"""Растущий-в-стриме текстовый блок ассистента (text/thinking/refusal).
+
+Tool-call'ы здесь не копятся: их декод из wire-формата (строка→args, валидность)
+делает провайдер и кладёт в чанк уже готовыми (`AssistantMessageChunk.add_tool_call`).
+"""
 
 @dataclass
 class AssistantMessageChunk:
-    """
-    аккумулятор AssistantMessage
-    blocks содержит список из разных типов блоков
+    """Аккумулятор AssistantMessage.
+
+    Текстовые поля (text/thinking/refusal) копятся инкрементально как
+    PartialAssistantBlock; tool-call'ы добавляются уже декодированными
+    (`add_tool_call`) — их декод из wire-формата делает провайдер.
     """
 
     blocks: list[PartialAssistantBlock] = field(default_factory=list)
+    tool_calls: list[ToolCallBlock | InvalidToolCallBlock] = field(
+        default_factory=list,
+    )
 
     @classmethod
     def empty(cls) -> AssistantMessageChunk:
@@ -518,40 +483,25 @@ class AssistantMessageChunk:
         block.append_token(token)
         self.blocks.append(block)
 
-    def append_tool_call(
-        self,
-        *,
-        index: int,
-        tool_call_id: str,
-        tool_name: str,
-        args_chunk: str,
-    ) -> None:
-        """Upsert tool-call slot по index (из LLMToolCallDelta).
-
-        Регистрирует слот на первом появлении index (id+name), затем
-        дописывает фрагмент args. args_chunk может быть пустым (первая
-        дельта несёт id+name без аргументов)."""
-        for b in self.blocks:
-            if isinstance(b, PartialToolCallBlock) and b.index == index:
-                b.append_args(args_chunk)
-                return
-        block = PartialToolCallBlock(index=index, id=tool_call_id, name=tool_name)
-        block.append_args(args_chunk)
-        self.blocks.append(block)
+    def add_tool_call(self, call: ToolCall | InvalidToolCall) -> None:
+        """Добавить уже декодированный tool-call (args распарсил провайдер)."""
+        if isinstance(call, ToolCall):
+            self.tool_calls.append(ToolCallBlock(call=call))
+        else:
+            self.tool_calls.append(InvalidToolCallBlock(invalid=call))
 
     def finalize(self) -> AssistantMessage:
         """Замкнуть чанк в финальный AssistantMessage со свежим id.
 
-        Для replay/тестов: `chunk.finalize().set_id(my_id)`.
+        Порядок блоков: text/thinking/refusal (в порядке появления), затем
+        tool-call'ы.
         """
-        return AssistantMessage(
-            id=new_message_id(),
-            blocks=tuple(b.finalize() for b in self.blocks),
-        )
+        blocks = tuple(b.finalize() for b in self.blocks) + tuple(self.tool_calls)
+        return AssistantMessage(id=new_message_id(), blocks=blocks)
 
     def is_empty(self) -> bool:
-        """True если ни одного partial-блока не накоплено."""
-        return not self.blocks
+        """True если ничего не накоплено."""
+        return not self.blocks and not self.tool_calls
 
 
 @dataclass(frozen=True)
