@@ -16,7 +16,6 @@ from boba.agent.events import (
     DiagnosticEvent,
     FeedbackToLLMAdded,
     GenerationCompleted,
-    InvalidToolCallMessage,
     IterationStarted,
     PhaseEvent,
     RefusalDelta,
@@ -25,6 +24,7 @@ from boba.agent.events import (
     TerminalEvent,
     ThinkingDelta,
     ThinkingMessage,
+    ToolCallDecodeFailedMessage,
     ToolCallDelta,
     ToolCallMessage,
     ToolExecutionFailed,
@@ -82,10 +82,10 @@ class EventRenderTarget(Protocol):
 
     # ошибки и фатальные события
 
-    async def invalid_tool_call(
+    async def tool_call_decode_failed(
         self,
         name: str,
-        raw_args: str,
+        raw: str,
         error: str,
     ) -> None: ...
     async def tool_execution_failed(
@@ -113,7 +113,7 @@ class AgentEventDispatcher:
         PhaseEvent         — состояния процесса (`iteration_started`,
                                `tool_execution_started`,
                                `generation_milestone`, `status`)
-        AdvisoryEvent      — нефатальные ошибки (`invalid_tool_call`,
+        AdvisoryEvent      — нефатальные ошибки (`tool_call_decode_failed`,
                                `tool_execution_failed`, `advisory`)
         TerminalEvent      — фатальное завершение (`terminal`)
         DiagnosticEvent    — телеметрия (`diagnostic`); решение «показывать
@@ -185,11 +185,11 @@ class AgentEventDispatcher:
                 await self._handle_generation_completed(event)
 
             # AdvisoryEvent
-            case InvalidToolCallMessage(invalid=invalid):
-                await self._target.invalid_tool_call(
-                    invalid.name,
-                    invalid.raw_args,
-                    invalid.error,
+            case ToolCallDecodeFailedMessage(failure=failure):
+                await self._target.tool_call_decode_failed(
+                    failure.name,
+                    failure.raw,
+                    failure.error,
                 )
             case ToolExecutionFailed(call=call, failure=failure):
                 await self._target.tool_execution_failed(
@@ -270,8 +270,9 @@ class AgentEventDispatcher:
             parts.append(f"thinking length: {len(msg.thinking)} chars")
         if msg.tool_calls:
             parts.append(f"tool_calls: {len(msg.tool_calls)}")
-        if msg.invalid_tool_calls:
-            parts.append(f"invalid_tool_calls: {len(msg.invalid_tool_calls)}")
+        if msg.tool_call_decode_failures:
+            n = len(msg.tool_call_decode_failures)
+            parts.append(f"tool_call_decode_failures: {n}")
         return "\n".join(parts)
 
     async def _handle_unmatched_snapshot(

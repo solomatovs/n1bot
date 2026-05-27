@@ -18,7 +18,6 @@ __all__ = [
     "AssistantMessage",
     "AssistantMessageChunk",
     "DialogMessage",
-    "InvalidToolCall",
     "LLMContext",
     "LLMRequest",
     "LLMToolDefinition",
@@ -28,6 +27,7 @@ __all__ = [
     "SamplingParams",
     "SystemMessage",
     "ToolCall",
+    "ToolCallDecodeFailure",
     "ToolResultMessage",
     "UserMessage",
     "new_message_id",
@@ -52,7 +52,7 @@ def new_message_id() -> MessageId:
 
 
 # --------------------------------------------------------------------- #
-# ToolCall / InvalidToolCall
+# ToolCall / ToolCallDecodeFailure
 # --------------------------------------------------------------------- #
 
 
@@ -70,14 +70,18 @@ class ToolCall(BaseModel):
         return json.dumps(dict(self.args), ensure_ascii=False)
 
 
-class InvalidToolCall(BaseModel):
-    """Tool-call с невалидным JSON в args; пробрасывается типом, а не исключением."""
+class ToolCallDecodeFailure(BaseModel):
+    """Tool-call, чьи args не декодировались; ошибка как значение, а не исключение.
+
+    `raw` — сырой текст args от провайдера, `error` — причина (битый JSON / не
+    объект).
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: str
     name: str
-    raw_args: str
+    raw: str
     error: str
 
 
@@ -128,7 +132,7 @@ class AssistantMessage(Message):
     """Ответ модели одной генерации: текст + reasoning + refusal + tool-call'ы.
 
     Плоские поля вместо упорядоченных блоков: OpenAI Chat всё равно flatten'ит
-    (`content` + `tool_calls`), а thinking/refusal/invalid_tool_calls живут в
+    (`content` + `tool_calls`), а thinking/refusal/tool_call_decode_failures живут в
     домене для replay/audit и провайдеру не отправляются.
     """
 
@@ -137,7 +141,7 @@ class AssistantMessage(Message):
     thinking: str = ""
     refusal: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
-    invalid_tool_calls: tuple[InvalidToolCall, ...] = ()
+    tool_call_decode_failures: tuple[ToolCallDecodeFailure, ...] = ()
 
     @classmethod
     def from_text(cls, content: str) -> AssistantMessage:
@@ -150,7 +154,7 @@ class AssistantMessage(Message):
             or self.thinking
             or self.refusal
             or self.tool_calls
-            or self.invalid_tool_calls
+            or self.tool_call_decode_failures
         )
 
 
@@ -191,7 +195,9 @@ class AssistantMessageChunk:
     _thinking: io.StringIO = field(default_factory=io.StringIO)
     _refusal: io.StringIO = field(default_factory=io.StringIO)
     _tool_calls: list[ToolCall] = field(default_factory=list)
-    _invalid_tool_calls: list[InvalidToolCall] = field(default_factory=list)
+    _tool_call_decode_failures: list[ToolCallDecodeFailure] = field(
+        default_factory=list,
+    )
 
     @classmethod
     def empty(cls) -> AssistantMessageChunk:
@@ -221,12 +227,12 @@ class AssistantMessageChunk:
         """Накопленный refusal на текущий момент."""
         return self._refusal.getvalue()
 
-    def add_tool_call(self, call: ToolCall | InvalidToolCall) -> None:
+    def add_tool_call(self, call: ToolCall | ToolCallDecodeFailure) -> None:
         """Добавить уже декодированный tool-call (args распарсил провайдер)."""
         if isinstance(call, ToolCall):
             self._tool_calls.append(call)
         else:
-            self._invalid_tool_calls.append(call)
+            self._tool_call_decode_failures.append(call)
 
     def finalize(self) -> AssistantMessage:
         """Замкнуть чанк в финальный AssistantMessage со свежим id."""
@@ -235,7 +241,7 @@ class AssistantMessageChunk:
             thinking=self._thinking.getvalue(),
             refusal=self._refusal.getvalue(),
             tool_calls=tuple(self._tool_calls),
-            invalid_tool_calls=tuple(self._invalid_tool_calls),
+            tool_call_decode_failures=tuple(self._tool_call_decode_failures),
         )
 
     def is_empty(self) -> bool:
@@ -245,7 +251,7 @@ class AssistantMessageChunk:
             or self._thinking.getvalue()
             or self._refusal.getvalue()
             or self._tool_calls
-            or self._invalid_tool_calls
+            or self._tool_call_decode_failures
         )
 
 

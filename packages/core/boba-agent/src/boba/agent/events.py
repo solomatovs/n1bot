@@ -227,7 +227,7 @@ from boba.agent.models import (
     ToolCallResult,
 )
 from boba.llm.events import FinishReason
-from boba.llm.models import AssistantMessage, InvalidToolCall, RequestId, ToolCall
+from boba.llm.models import AssistantMessage, RequestId, ToolCall, ToolCallDecodeFailure
 from boba.tools.domain import ErrorResult, JsonResult, TextResult
 
 # --------------------------------------------------------------------- #
@@ -444,7 +444,7 @@ def compose_error_body(
     """Стандартный body для error-событий: основное сообщение + status + цепочка.
 
     Любое event-конкретное `_derive` собирает свой `primary` (message,
-    args+error, raw_args+error), а добавление `status` и `Caused by:` —
+    args+error, raw+error), а добавление `status` и `Caused by:` —
     единое для всех ошибок.
     """
     lines: list[str] = [primary] if primary else []
@@ -486,8 +486,8 @@ class IterationStarted(PhaseEvent):
 class ToolExecutionStarted(PhaseEvent):
     """
     Tool готов к исполнению - PhaseEvent несёт только `tool_call_id` и
-    `tool_name`. Полный `ToolCall` (с args) уносится в `ToolArgsResolved`
-    (DiagnosticEvent) - продьюсер эмитит его рядом.
+    `tool_name`. Полный `ToolCall` (с args) уже доступен в `ToolCallMessage`
+    (ContentSnapshotEvent) с тем же `tool_call_id`.
     """
 
     type: Literal["ToolExecutionStarted"] = "ToolExecutionStarted"
@@ -511,12 +511,12 @@ class GenerationCompleted(PhaseEvent):
     а здесь — агрегат + исход. Sink не должен рисовать его как реплику диалога
     (иначе дубль); он маркирует конец round-trip и подсвечивает аномалии исхода.
 
-    Эмитится последним — после всех per-field `*Message`/`InvalidToolCallMessage`
+    Эмитится последним — после всех per-field `*Message`/`ToolCallDecodeFailedMessage`
     событий; источник истины для реконструкции истории. Несёт всё, что пришло от
     провайдера за одну генерацию:
 
     - `message` — собранный AssistantMessage с плоскими полями
-      (content / thinking / refusal / tool_calls / invalid_tool_calls).
+      (content / thinking / refusal / tool_calls / tool_call_decode_failures).
       Пустой message — валидное состояние, когда модель завершилась без контента.
     - `finish_reason` — то, что реально прислал провайдер; без подмен.
 
@@ -738,23 +738,23 @@ class FeedbackToLLMAdded(ContentSnapshotEvent):
         return self
 
 
-class InvalidToolCallMessage(ContentSnapshotEvent):
-    """Tool-call с невалидным JSON в args — часть сообщения ассистента.
+class ToolCallDecodeFailedMessage(ContentSnapshotEvent):
+    """Tool-call, чьи args не декодировались — часть сообщения ассистента.
 
-    Это контент (лежит в `message.invalid_tool_calls`), а не advisory:
-    «ошибочность» несёт сам payload (`invalid.error`), а не категория.
+    Это контент (лежит в `message.tool_call_decode_failures`), а не advisory:
+    «ошибочность» несёт сам payload (`failure.error`), а не категория.
     """
 
-    type: Literal["InvalidToolCallMessage"] = "InvalidToolCallMessage"
+    type: Literal["ToolCallDecodeFailedMessage"] = "ToolCallDecodeFailedMessage"
     stream_kind: Literal[StreamKind.TOOL_INVOCATION] = StreamKind.TOOL_INVOCATION
     part: Literal[ToolPart.ARGS] = ToolPart.ARGS
-    invalid: InvalidToolCall
+    failure: ToolCallDecodeFailure
 
     @model_validator(mode="after")
     def _derive(self) -> Self:
-        self.stream_id = self.invalid.id
-        self.headline = self.invalid.name
-        self.body = f"raw_args: {self.invalid.raw_args}\nerror: {self.invalid.error}"
+        self.stream_id = self.failure.id
+        self.headline = self.failure.name
+        self.body = f"raw: {self.failure.raw}\nerror: {self.failure.error}"
         return self
 
 
@@ -864,33 +864,6 @@ class PersistenceFailed(TerminalEvent):
 
 
 # --------------------------------------------------------------------- #
-# DiagnosticEvent — конкретные события
-# --------------------------------------------------------------------- #
-
-
-class ToolArgsResolved(DiagnosticEvent):
-    """Полный `ToolCall` с args - готов к исполнению.
-
-    Бремя args вынесено из `ToolExecutionStarted` (PhaseEvent): args
-    уже есть в `ToolCallMessage` (ContentSnapshotEvent), и PhaseEvent
-    их дублировал в `body`. Здесь они доступны для diagnostic-режима
-    - привязка к tool-step'у через `related["tool_call_id"]`.
-    """
-
-    type: Literal["ToolArgsResolved"] = "ToolArgsResolved"
-    call: ToolCall
-
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.topic = "tool.args_resolved"
-        self.headline = f"tool args: {self.call.name}"
-        self.details = {"id": self.call.id, "name": self.call.name}
-        self.body = self.call.args_json()
-        self.related = {"tool_call_id": self.call.id}
-        return self
-
-
-# --------------------------------------------------------------------- #
 # Fallback для неизвестных type'ов (extension-модули)
 # --------------------------------------------------------------------- #
 
@@ -929,7 +902,7 @@ AgentEvent = (
     | AnswerMessage
     | RefusalMessage
     | ToolCallMessage
-    | InvalidToolCallMessage
+    | ToolCallDecodeFailedMessage
     | ToolResultReady
     | FeedbackToLLMAdded
     # AdvisoryEvent
@@ -939,8 +912,6 @@ AgentEvent = (
     | PromptFailed
     | MaxIterationsReached
     | PersistenceFailed
-    # DiagnosticEvent
-    | ToolArgsResolved
 )
 
 
@@ -960,12 +931,11 @@ AgentEventName: TypeAlias = Literal[
     "ToolResultReady",
     "FeedbackToLLMAdded",
     "ToolExecutionFailed",
-    "InvalidToolCallMessage",
+    "ToolCallDecodeFailedMessage",
     "GenerationFailed",
     "PromptFailed",
     "MaxIterationsReached",
     "PersistenceFailed",
-    "ToolArgsResolved",
 ]
 
 
@@ -1088,7 +1058,7 @@ def _register_core_events() -> None:
         AnswerMessage,
         RefusalMessage,
         ToolCallMessage,
-        InvalidToolCallMessage,
+        ToolCallDecodeFailedMessage,
         ToolResultReady,
         FeedbackToLLMAdded,
         ToolExecutionFailed,
@@ -1096,7 +1066,6 @@ def _register_core_events() -> None:
         PromptFailed,
         MaxIterationsReached,
         PersistenceFailed,
-        ToolArgsResolved,
     ):
         AgentEventRegistry.register(cls)
 

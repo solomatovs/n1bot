@@ -39,7 +39,11 @@ def build_openai_client(
 ) -> OpenAI:
     """Строит OpenAI-клиент из конфига; observer получает сырые HTTP req/resp."""
     if observer is None:
-        return OpenAI(base_url=config.base_url, api_key=config.api_key)
+        return OpenAI(
+            base_url=config.base_url,
+            api_key=config.api_key,
+            http_client=httpx.Client(verify=config.ssl_verify),
+        )
 
     def _on_request(req: httpx.Request) -> None:
         observer.on_http_request(
@@ -53,9 +57,13 @@ def build_openai_client(
         observer.on_http_response(resp.status_code, dict(resp.headers))
 
     http_client = httpx.Client(
-        event_hooks={"request": [_on_request], "response": [_on_response]},
-        verify=False,
+        event_hooks={
+            "request": [_on_request],
+            "response": [_on_response],
+        },
+        verify=config.ssl_verify,
     )
+
     return OpenAI(
         base_url=config.base_url,
         api_key=config.api_key,

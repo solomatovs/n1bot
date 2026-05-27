@@ -1,7 +1,7 @@
 """Round-trip + golden JSONL для AgentEvent + JsonLinesHistoryService.
 
 Гарантирует:
-1. Каждое из 20 финальных событий round-trip'ится через AgentEventAdapter.
+1. Каждое из 19 финальных событий round-trip'ится через AgentEventAdapter.
 2. Discriminator `type` проставляется и читается корректно.
 3. Backward-compat: старые JSONL-строки (поле type первое или последнее)
    парсятся неизменно.
@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import pytest
@@ -28,12 +28,12 @@ from boba.agent import (
 )
 from boba.agent.event_specs import IsContentDelta
 from boba.agent.events import (
+    AgentEvent,
     AgentEventAdapter,
     AnswerDelta,
     AnswerMessage,
     FeedbackToLLMAdded,
     GenerationFailed,
-    InvalidToolCallMessage,
     IterationStarted,
     MaxIterationsReached,
     PersistenceFailed,
@@ -42,7 +42,7 @@ from boba.agent.events import (
     RefusalMessage,
     ThinkingDelta,
     ThinkingMessage,
-    ToolArgsResolved,
+    ToolCallDecodeFailedMessage,
     ToolCallDelta,
     ToolCallMessage,
     ToolExecutionFailed,
@@ -52,15 +52,15 @@ from boba.agent.events import (
 )
 from boba.agent.models import ToolCallFailure, ToolCallResult
 from boba.agent.workspace_fs.shell import FsHistoryWorkspaceShell
-from boba.llm.models import InvalidToolCall, RequestId, ToolCall
+from boba.llm.models import RequestId, ToolCall, ToolCallDecodeFailure
 from boba.tools.domain import ErrorResult, JsonResult, TextResult
 
 _RID = RequestId(UUID("00000000-0000-0000-0000-000000000001"))
 _TC = ToolCall(id="call_1", name="search", args={"q": "hello"})
-_ITC = InvalidToolCall(
+_TCDF = ToolCallDecodeFailure(
     id="call_x",
     name="search",
-    raw_args="{bad",
+    raw="{bad",
     error="invalid JSON",
 )
 
@@ -91,7 +91,7 @@ def _all_events() -> list[Any]:
         AnswerMessage(request_id=_RID, content="answer"),
         RefusalMessage(request_id=_RID, content="refusal"),
         ToolCallMessage(request_id=_RID, call=_TC),
-        InvalidToolCallMessage(request_id=_RID, invalid=_ITC),
+        ToolCallDecodeFailedMessage(request_id=_RID, failure=_TCDF),
         ToolResultReady(
             request_id=_RID,
             call=_TC,
@@ -120,8 +120,6 @@ def _all_events() -> list[Any]:
             iteration_count=10,
         ),
         PersistenceFailed(request_id=_RID, error_kind="K", message="m"),
-        # DiagnosticEvent (1)
-        ToolArgsResolved(request_id=_RID, call=_TC),
     ]
 
 
@@ -245,7 +243,7 @@ def test_family_isinstance() -> None:
         ContentSnapshotEvent,
     )
     assert isinstance(
-        InvalidToolCallMessage(request_id=_RID, invalid=_ITC),
+        ToolCallDecodeFailedMessage(request_id=_RID, failure=_TCDF),
         ContentSnapshotEvent,
     )
     assert isinstance(
@@ -289,7 +287,8 @@ def test_match_statement_dispatch() -> None:
     )
     assert classify(UserQueryReceived(request_id=_RID, query="q")) == "snapshot"
     assert (
-        classify(InvalidToolCallMessage(request_id=_RID, invalid=_ITC)) == "snapshot"
+        classify(ToolCallDecodeFailedMessage(request_id=_RID, failure=_TCDF))
+        == "snapshot"
     )
     assert (
         classify(
@@ -314,8 +313,11 @@ def test_in_memory_history_filters_content_delta_and_diagnostic() -> None:
     )
     # ContentDeltaEvent — фильтруется
     svc.record(ThinkingDelta(request_id=_RID, token="x"))
-    # DiagnosticEvent — фильтруется (эфемерная телеметрия)
-    svc.record(ToolArgsResolved(request_id=_RID, call=_TC))
+    # DiagnosticEvent — фильтруется (эфемерная телеметрия). Конкретных core-
+    # диагностик больше нет, поэтому фильтрацию по категории проверяем базовым
+    # DiagnosticEvent — он намеренно вне sealed-union AgentEvent.
+    diagnostic = DiagnosticEvent(request_id=_RID, type="TestDiagnostic")
+    svc.record(cast(AgentEvent, diagnostic))
     svc.record(GenerationFailed(request_id=_RID, error_kind="K", message="m"))
     recorded = list(svc.events())
     assert len(recorded) == 2
@@ -324,9 +326,9 @@ def test_in_memory_history_filters_content_delta_and_diagnostic() -> None:
 
 
 def test_diagnostic_event_is_diagnostic_family() -> None:
-    e = ToolArgsResolved(request_id=_RID, call=_TC)
+    e = DiagnosticEvent(request_id=_RID, type="TestDiagnostic", topic="t")
     assert isinstance(e, DiagnosticEvent)
-    assert e.topic == "tool.args_resolved"
+    assert e.category.value == "diagnostic"
 
 
 def test_is_content_delta_spec() -> None:
