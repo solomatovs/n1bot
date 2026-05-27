@@ -483,56 +483,6 @@ class IterationStarted(PhaseEvent):
         return self
 
 
-class RequestStart(PhaseEvent):
-    """
-    Отправили запрос в LLM.
-
-    Тайминговый якорь (`monotonic_ns`) вынесен в `LLMTimingAnchor`
-    (DiagnosticEvent) - продьюсер эмитит его рядом с `RequestStart`.
-    """
-
-    type: Literal["LLMRequestSent"] = "LLMRequestSent"
-    model: str
-    has_tools: bool
-
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        tools = " +tools" if self.has_tools else ""
-        self.label = f"llm request: {self.model}{tools}"
-        self.details = {
-            "model": self.model,
-            "has_tools": str(self.has_tools),
-        }
-        return self
-
-
-class GenerationStarted(PhaseEvent):
-    """
-    Первый chunk от LLM — генерация ответа началась
-    """
-
-    type: Literal["GenerationStarted"] = "GenerationStarted"
-    label: str = "generation"
-
-
-class ThinkingStarted(PhaseEvent):
-    """
-    Модель начала reasoning (кароче начала думать)
-    """
-
-    type: Literal["ThinkingStarted"] = "ThinkingStarted"
-    label: str = "thinking"
-
-
-class AnswerStarted(PhaseEvent):
-    """
-    Модель начала отдавать ответ
-    """
-
-    type: Literal["AnswerStarted"] = "AnswerStarted"
-    label: str = "answer"
-
-
 class ToolCallStreamStarted(PhaseEvent):
     """
     Tool call объявлен
@@ -571,30 +521,6 @@ class ToolExecutionStarted(PhaseEvent):
     def _derive(self) -> Self:
         self.label = f"tool exec: {self.tool_name}"
         self.details = {"id": self.tool_call_id, "name": self.tool_name}
-        return self
-
-
-class GenerationRetried(PhaseEvent):
-    """
-    LLM-слой решил повторить запрос
-    """
-
-    type: Literal["GenerationRetried"] = "GenerationRetried"
-    severity: Severity = Severity.WARN
-    attempt: int
-    reason: str
-    status_code: int | None = None
-
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.label = f"retry #{self.attempt}: {self.reason}"
-        self.details = {
-            "attempt": str(self.attempt),
-            "reason": self.reason,
-            "status_code": (
-                str(self.status_code) if self.status_code is not None else ""
-            ),
-        }
         return self
 
 
@@ -984,51 +910,6 @@ class PersistenceFailed(TerminalEvent):
 # --------------------------------------------------------------------- #
 
 
-class LLMTimingAnchor(DiagnosticEvent):
-    """Тайминговый якорь LLM-фазы для измерения latency.
-
-    Эмитится рядом с доменными PhaseEvent'ами LLM-цикла как замена
-    встроенного в них поля `monotonic_ns`. Разность между двумя анкерами
-    одного `request_id` (например, `request_sent` → `stream_opened`)
-    даёт TTFB. Поле `phase` — короткий идентификатор фазы; `topic`
-    деривируется как `"llm.timing.{phase}"`.
-    """
-
-    type: Literal["LLMTimingAnchor"] = "LLMTimingAnchor"
-    phase: str
-    monotonic_ns: int
-
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.topic = f"llm.timing.{self.phase}"
-        self.headline = f"llm timing: {self.phase}"
-        self.details = {
-            "phase": self.phase,
-            "monotonic_ns": str(self.monotonic_ns),
-        }
-        return self
-
-
-class LLMResponseStreamOpened(DiagnosticEvent):
-    """HTTP-stream от LLM открыт - до получения первого чанка.
-
-    Бывший PhaseEvent `ResponseStarted` - реклассифицирован как
-    диагностика, т.к. UX-консьюмера у события нет, а `monotonic_ns`
-    нужен только для тайминговых измерений (TTFB через разность с
-    `LLMTimingAnchor(phase="request_sent")`).
-    """
-
-    type: Literal["LLMResponseStreamOpened"] = "LLMResponseStreamOpened"
-    monotonic_ns: int
-
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.topic = "llm.timing.stream_opened"
-        self.headline = "llm response stream opened"
-        self.details = {"monotonic_ns": str(self.monotonic_ns)}
-        return self
-
-
 class ToolArgsResolved(DiagnosticEvent):
     """Полный `ToolCall` с args - готов к исполнению.
 
@@ -1077,13 +958,8 @@ class UnknownAgentEvent(AgentEventBase):
 AgentEvent = (
     # PhaseEvent
     IterationStarted
-    | RequestStart
-    | GenerationStarted
-    | ThinkingStarted
-    | AnswerStarted
     | ToolCallStreamStarted
     | ToolExecutionStarted
-    | GenerationRetried
     | GenerationDone
     | GenerationResult
     # ContentDeltaEvent
@@ -1108,21 +984,14 @@ AgentEvent = (
     | MaxIterationsReached
     | PersistenceFailed
     # DiagnosticEvent
-    | LLMTimingAnchor
-    | LLMResponseStreamOpened
     | ToolArgsResolved
 )
 
 
 AgentEventName: TypeAlias = Literal[
     "IterationStarted",
-    "LLMRequestSent",
-    "GenerationStarted",
-    "ThinkingStarted",
-    "AnswerStarted",
     "ToolCallStreamStarted",
     "ToolExecutionStarted",
-    "GenerationRetried",
     "GenerationDone",
     "GenerationResult",
     "ThinkingToken",
@@ -1142,8 +1011,6 @@ AgentEventName: TypeAlias = Literal[
     "PromptFailed",
     "MaxIterationsReached",
     "PersistenceFailed",
-    "LLMTimingAnchor",
-    "LLMResponseStreamOpened",
     "ToolArgsResolved",
 ]
 
@@ -1256,13 +1123,8 @@ class AgentEventRegistry:
 def _register_core_events() -> None:
     for cls in (
         IterationStarted,
-        RequestStart,
-        GenerationStarted,
-        ThinkingStarted,
-        AnswerStarted,
         ToolCallStreamStarted,
         ToolExecutionStarted,
-        GenerationRetried,
         GenerationDone,
         GenerationResult,
         ThinkingToken,
@@ -1282,8 +1144,6 @@ def _register_core_events() -> None:
         PromptFailed,
         MaxIterationsReached,
         PersistenceFailed,
-        LLMTimingAnchor,
-        LLMResponseStreamOpened,
         ToolArgsResolved,
     ):
         AgentEventRegistry.register(cls)

@@ -1,7 +1,7 @@
 """Round-trip + golden JSONL для AgentEvent + JsonLinesHistoryService.
 
 Гарантирует:
-1. Каждое из 29 финальных событий round-trip'ится через AgentEventAdapter.
+1. Каждое из 22 финальных событий round-trip'ится через AgentEventAdapter.
 2. Discriminator `type` проставляется и читается корректно.
 3. Backward-compat: старые JSONL-строки (поле type первое или последнее)
    парсятся неизменно.
@@ -30,25 +30,18 @@ from boba.agent.event_specs import IsContentDelta
 from boba.agent.events import (
     AgentEventAdapter,
     AnswerComplete,
-    AnswerStarted,
     AnswerToken,
     FeedbackToLLMAdded,
     GenerationDone,
     GenerationFailed,
-    GenerationRetried,
-    GenerationStarted,
     InvalidToolCallReceived,
     IterationStarted,
-    LLMResponseStreamOpened,
-    LLMTimingAnchor,
     MaxIterationsReached,
     PersistenceFailed,
     PromptFailed,
     RefusalComplete,
     RefusalToken,
-    RequestStart,
     ThinkingComplete,
-    ThinkingStarted,
     ThinkingToken,
     ToolArgsResolved,
     ToolCallArgumentDelta,
@@ -77,16 +70,8 @@ _ITC = InvalidToolCall(
 
 def _all_events() -> list[Any]:
     return [
-        # PhaseEvent (9)
+        # PhaseEvent (4)
         IterationStarted(request_id=_RID, iteration_count=1, max_iterations=5),
-        RequestStart(
-            request_id=_RID,
-            model="gpt-4",
-            has_tools=True,
-        ),
-        GenerationStarted(request_id=_RID),
-        ThinkingStarted(request_id=_RID),
-        AnswerStarted(request_id=_RID),
         ToolCallStreamStarted(
             request_id=_RID,
             index=0,
@@ -97,12 +82,6 @@ def _all_events() -> list[Any]:
             request_id=_RID,
             tool_call_id="call_1",
             tool_name="search",
-        ),
-        GenerationRetried(
-            request_id=_RID,
-            attempt=2,
-            reason="rate_limit",
-            status_code=429,
         ),
         GenerationDone(request_id=_RID, finish_reason=FinishReason.STOP),
         # ContentDeltaEvent (4)
@@ -151,13 +130,7 @@ def _all_events() -> list[Any]:
             iteration_count=10,
         ),
         PersistenceFailed(request_id=_RID, error_kind="K", message="m"),
-        # DiagnosticEvent (3)
-        LLMTimingAnchor(
-            request_id=_RID,
-            phase="request_sent",
-            monotonic_ns=123,
-        ),
-        LLMResponseStreamOpened(request_id=_RID, monotonic_ns=456),
+        # DiagnosticEvent (1)
         ToolArgsResolved(request_id=_RID, call=_TC),
     ]
 
@@ -174,7 +147,7 @@ def test_event_roundtrip(event: Any) -> None:
 
 def test_optional_status_code_omitted() -> None:
     """status_code=None — поле сериализуется как null (а не пропускается)."""
-    e = GenerationRetried(request_id=_RID, attempt=1, reason="rate_limit")
+    e = InvalidToolCallReceived(request_id=_RID, invalid=_ITC)
     line = AgentEventAdapter.dump_json(e).decode("utf-8")
     assert '"status_code":null' in line
     parsed = AgentEventAdapter.validate_json(line)
@@ -330,7 +303,6 @@ def test_in_memory_history_filters_content_delta_and_diagnostic() -> None:
     # ContentDeltaEvent — фильтруется
     svc.record(ThinkingToken(request_id=_RID, token="x"))
     # DiagnosticEvent — фильтруется (эфемерная телеметрия)
-    svc.record(LLMTimingAnchor(request_id=_RID, phase="x", monotonic_ns=1))
     svc.record(ToolArgsResolved(request_id=_RID, call=_TC))
     svc.record(GenerationFailed(request_id=_RID, error_kind="K", message="m"))
     recorded = list(svc.events())
@@ -340,9 +312,9 @@ def test_in_memory_history_filters_content_delta_and_diagnostic() -> None:
 
 
 def test_diagnostic_event_is_diagnostic_family() -> None:
-    e = LLMTimingAnchor(request_id=_RID, phase="request_sent", monotonic_ns=42)
+    e = ToolArgsResolved(request_id=_RID, call=_TC)
     assert isinstance(e, DiagnosticEvent)
-    assert e.topic == "llm.timing.request_sent"
+    assert e.topic == "tool.args_resolved"
 
 
 def test_is_content_delta_spec() -> None:

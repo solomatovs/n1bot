@@ -21,13 +21,9 @@ from boba.agent.history import HistoryReader, HistoryWriter
 from boba.llm.builder import LLM
 from boba.llm.events import (
     FinishReason,
-    LLMAnswerStarted,
     LLMAnswerToken,
     LLMEvent,
     LLMGenerationDone,
-    LLMGenerationStarted,
-    LLMRequestStarted,
-    LLMResponseStarted,
 )
 from boba.llm.middleware import AssistantAggregator
 from boba.llm.models import (
@@ -56,16 +52,6 @@ class _StubLLMSource(StreamSource[LLMContext, LLMEvent]):
         self.contexts.append(ctx)
         rid = ctx.request.request_id
         answer = self._answers.pop(0) if self._answers else ""
-        yield LLMRequestStarted(
-            request_id=rid,
-            model=ctx.request.model,
-            messages_count=len(ctx.request.dialog_messages),
-            has_tools=ctx.request.has_tools(),
-            monotonic_ns=0,
-        )
-        yield LLMResponseStarted(request_id=rid, monotonic_ns=1)
-        yield LLMGenerationStarted(request_id=rid)
-        yield LLMAnswerStarted(request_id=rid)
         for token in answer:
             yield LLMAnswerToken(request_id=rid, token=token)
         yield LLMGenerationDone(request_id=rid, finish_reason=FinishReason.STOP)

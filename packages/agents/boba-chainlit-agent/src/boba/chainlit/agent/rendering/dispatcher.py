@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, ClassVar, Protocol
 from boba.agent.events import (
     AdvisoryEvent,
     AnswerComplete,
-    AnswerStarted,
     AnswerToken,
     ContentDeltaEvent,
     ContentSnapshotEvent,
@@ -26,7 +25,6 @@ from boba.agent.events import (
     StreamKind,
     TerminalEvent,
     ThinkingComplete,
-    ThinkingStarted,
     ThinkingToken,
     ToolCallArgumentDelta,
     ToolCallComplete,
@@ -190,7 +188,7 @@ class AgentEventDispatcher:
                 await self._target.tool_call_started(tid, name)
             case ToolExecutionStarted(tool_call_id=tid):
                 await self._target.tool_execution_started(tid)
-            case AnswerStarted() | ThinkingStarted() | GenerationDone():
+            case GenerationDone():
                 await self._target.generation_milestone()
             case GenerationResult():
                 await self._handle_generation_result(event)
