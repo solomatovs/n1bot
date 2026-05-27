@@ -7,10 +7,10 @@ import json
 from abc import ABC
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Literal, NewType, Self, TypeAlias
+from typing import Any, Literal, NewType, Self, TypeAlias
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.tools.domain import ToolSchema
 
@@ -23,7 +23,6 @@ __all__ = [
     "LLMRequest",
     "LLMToolDefinition",
     "Message",
-    "MessageAdapter",
     "MessageId",
     "RequestId",
     "SamplingParams",
@@ -167,21 +166,6 @@ class ToolResultMessage(Message):
     tool_call_id: str
     content: str
     is_error: bool = False
-
-
-MessageAdapter: TypeAdapter[Message] = TypeAdapter(
-    Annotated[
-        SystemMessage | UserMessage | AssistantMessage | ToolResultMessage,
-        Field(discriminator="type"),
-    ],
-)
-"""
-TypeAdapter для (де)сериализации Message через discriminator='type'.
-
-Использование:
-    line: str = MessageAdapter.dump_json(message).decode("utf-8")
-    msg: Message = MessageAdapter.validate_json(line)
-"""
 
 
 DialogMessage: TypeAlias = UserMessage | AssistantMessage | ToolResultMessage
