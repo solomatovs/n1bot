@@ -26,13 +26,10 @@ from boba.patterns import (
 )
 from boba.provider.openai.observer import MultiKeyReasoningExtractor
 from boba.provider.openai.tool_call_reindexer import DuplicateToolCallIndexReindexer
-from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_chunk import (
     ChatCompletionChunk,
     Choice,
     ChoiceDelta,
-    ChoiceDeltaToolCall,
-    ChoiceDeltaToolCallFunction,
 )
 
 
@@ -206,65 +203,6 @@ class FinishSource(StreamTransformer[LLMContext, Choice, LLMEvent]):
                     request_id=self._request_id,
                     finish_reason=reason,
                 )
-
-
-class NonStreamChatCompletionAdapter(
-    Converter[ChatCompletion, ChatCompletionChunk]
-):
-    """Конвертирует non-stream ChatCompletion в одиночный ChatCompletionChunk.
-
-    Используется когда LLMRequest.stream=False: единый ответ собирается
-    как fake-chunk, чтобы тот же FromOpenAIChunkConverter-пайплайн декодировал
-    его без специальной ветки. role/content/refusal/tool_calls/finish_reason
-    переносятся 1-в-1, custom-tool_calls пропускаются (как и в request.py).
-    """
-
-    def convert(self, value: ChatCompletion) -> ChatCompletionChunk:
-        chunk_choices: list[Choice] = []
-        for c in value.choices:
-            msg = c.message
-            tool_calls: list[ChoiceDeltaToolCall] | None = None
-            if msg.tool_calls:
-                tool_calls = []
-                for idx, tc in enumerate(msg.tool_calls):
-                    if tc.type != "function":
-                        continue
-                    tool_calls.append(
-                        ChoiceDeltaToolCall(
-                            index=idx,
-                            id=tc.id,
-                            type="function",
-                            function=ChoiceDeltaToolCallFunction(
-                                name=tc.function.name,
-                                arguments=tc.function.arguments,
-                            ),
-                        )
-                    )
-
-            delta = ChoiceDelta(
-                role=msg.role,
-                content=msg.content,
-                refusal=msg.refusal,
-                tool_calls=tool_calls,
-            )
-            chunk_choices.append(
-                Choice(
-                    index=c.index,
-                    delta=delta,
-                    finish_reason=c.finish_reason,
-                )
-            )
-
-        return ChatCompletionChunk(
-            id=value.id,
-            choices=chunk_choices,
-            created=value.created,
-            model=value.model,
-            object="chat.completion.chunk",
-            system_fingerprint=value.system_fingerprint,
-            service_tier=value.service_tier,
-            usage=value.usage,
-        )
 
 
 class FromOpenAIChunkConverter(
