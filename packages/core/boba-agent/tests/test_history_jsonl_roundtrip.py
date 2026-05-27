@@ -1,7 +1,7 @@
 """Round-trip + golden JSONL для AgentEvent + JsonLinesHistoryService.
 
 Гарантирует:
-1. Каждое из 22 финальных событий round-trip'ится через AgentEventAdapter.
+1. Каждое из 21 финального события round-trip'ится через AgentEventAdapter.
 2. Discriminator `type` проставляется и читается корректно.
 3. Backward-compat: старые JSONL-строки (поле type первое или последнее)
    парсятся неизменно.
@@ -30,7 +30,7 @@ from boba.agent.event_specs import IsContentDelta
 from boba.agent.events import (
     AgentEventAdapter,
     AnswerComplete,
-    AnswerToken,
+    AnswerDelta,
     FeedbackToLLMAdded,
     GenerationDone,
     GenerationFailed,
@@ -40,13 +40,12 @@ from boba.agent.events import (
     PersistenceFailed,
     PromptFailed,
     RefusalComplete,
-    RefusalToken,
+    RefusalDelta,
     ThinkingComplete,
-    ThinkingToken,
+    ThinkingDelta,
     ToolArgsResolved,
-    ToolCallArgumentDelta,
     ToolCallComplete,
-    ToolCallStreamStarted,
+    ToolCallDelta,
     ToolExecutionFailed,
     ToolExecutionStarted,
     ToolResultReady,
@@ -70,14 +69,8 @@ _ITC = InvalidToolCall(
 
 def _all_events() -> list[Any]:
     return [
-        # PhaseEvent (4)
+        # PhaseEvent (3)
         IterationStarted(request_id=_RID, iteration_count=1, max_iterations=5),
-        ToolCallStreamStarted(
-            request_id=_RID,
-            index=0,
-            tool_call_id="call_1",
-            tool_name="search",
-        ),
         ToolExecutionStarted(
             request_id=_RID,
             tool_call_id="call_1",
@@ -85,10 +78,10 @@ def _all_events() -> list[Any]:
         ),
         GenerationDone(request_id=_RID, finish_reason=FinishReason.STOP),
         # ContentDeltaEvent (4)
-        ThinkingToken(request_id=_RID, token="t"),
-        AnswerToken(request_id=_RID, token="a"),
-        RefusalToken(request_id=_RID, token="r"),
-        ToolCallArgumentDelta(
+        ThinkingDelta(request_id=_RID, token="t"),
+        AnswerDelta(request_id=_RID, token="a"),
+        RefusalDelta(request_id=_RID, token="r"),
+        ToolCallDelta(
             request_id=_RID,
             index=0,
             tool_call_id="call_1",
@@ -245,7 +238,7 @@ def test_family_isinstance() -> None:
         IterationStarted(request_id=_RID, iteration_count=1, max_iterations=5),
         PhaseEvent,
     )
-    assert isinstance(ThinkingToken(request_id=_RID, token="t"), ContentDeltaEvent)
+    assert isinstance(ThinkingDelta(request_id=_RID, token="t"), ContentDeltaEvent)
     assert isinstance(
         UserQueryReceived(request_id=_RID, query="q"),
         ContentSnapshotEvent,
@@ -278,7 +271,7 @@ def test_match_statement_dispatch() -> None:
             case _:
                 return "?"
 
-    assert classify(ThinkingToken(request_id=_RID, token="t")) == "delta"
+    assert classify(ThinkingDelta(request_id=_RID, token="t")) == "delta"
     assert (
         classify(
             IterationStarted(request_id=_RID, iteration_count=1, max_iterations=1),
@@ -301,7 +294,7 @@ def test_in_memory_history_filters_content_delta_and_diagnostic() -> None:
         IterationStarted(request_id=_RID, iteration_count=1, max_iterations=1),
     )
     # ContentDeltaEvent — фильтруется
-    svc.record(ThinkingToken(request_id=_RID, token="x"))
+    svc.record(ThinkingDelta(request_id=_RID, token="x"))
     # DiagnosticEvent — фильтруется (эфемерная телеметрия)
     svc.record(ToolArgsResolved(request_id=_RID, call=_TC))
     svc.record(GenerationFailed(request_id=_RID, error_kind="K", message="m"))
@@ -319,7 +312,7 @@ def test_diagnostic_event_is_diagnostic_family() -> None:
 
 def test_is_content_delta_spec() -> None:
     spec = IsContentDelta()
-    assert spec.check(ThinkingToken(request_id=_RID, token="t"))
+    assert spec.check(ThinkingDelta(request_id=_RID, token="t"))
     assert not spec.check(
         IterationStarted(request_id=_RID, iteration_count=1, max_iterations=1),
     )
@@ -331,7 +324,7 @@ def test_jsonlines_history_e2e(history_workspace: FsHistoryWorkspaceShell) -> No
 
     events = [
         IterationStarted(request_id=_RID, iteration_count=1, max_iterations=5),
-        ThinkingToken(request_id=_RID, token="x"),  # фильтруется
+        ThinkingDelta(request_id=_RID, token="x"),  # фильтруется
         ToolResultReady(
             request_id=_RID,
             call=_TC,
@@ -343,7 +336,7 @@ def test_jsonlines_history_e2e(history_workspace: FsHistoryWorkspaceShell) -> No
         svc.record(e)
 
     recovered = list(svc.events())
-    assert len(recovered) == 3  # ThinkingToken отфильтрован
+    assert len(recovered) == 3  # ThinkingDelta отфильтрован
     assert recovered[0] == events[0]
     assert recovered[1] == events[2]
     assert recovered[2] == events[3]

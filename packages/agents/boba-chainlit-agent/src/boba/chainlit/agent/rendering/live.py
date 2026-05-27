@@ -149,12 +149,6 @@ class ChainlitLiveTarget(EventRenderTarget):
         await self._drop_pending_answer()
         self._thinking_step = None
 
-    async def tool_call_started(self, call_id: str, name: str) -> None:
-        await self._clear_status()
-        step = cl.Step(name=name, type="tool", parent_id=self._parent_id)
-        await step.send()
-        self._tool_steps_by_id[call_id] = step
-
     async def tool_execution_started(self, call_id: str) -> None:
         # Меняем индикацию — иначе медленные tools выглядят как зависший шаг.
         step = self._tool_steps_by_id.get(call_id)
@@ -287,7 +281,7 @@ class ChainlitLiveTarget(EventRenderTarget):
     async def _drop_pending_answer(self) -> None:
         """Сбрасывает ссылку на не-завершённый answer; пустой удаляем.
 
-        Why: AnswerToken прилетает на ЛЮБОЙ первый delta.content, даже
+        Why: AnswerDelta прилетает на ЛЮБОЙ первый delta.content, даже
         если итерация в итоге ушла в tool_calls без финального
         ContentSnapshotEvent. Без сброса между итерациями новый
         ContentDeltaEvent(ANSWER) будет писать в старое сообщение из

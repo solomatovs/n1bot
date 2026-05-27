@@ -21,7 +21,7 @@ from boba.agent.history import HistoryReader, HistoryWriter
 from boba.llm.builder import LLM
 from boba.llm.events import (
     FinishReason,
-    LLMAnswerToken,
+    LLMAnswerDelta,
     LLMEvent,
     LLMGenerationDone,
 )
@@ -53,7 +53,7 @@ class _StubLLMSource(StreamSource[LLMContext, LLMEvent]):
         rid = ctx.request.request_id
         answer = self._answers.pop(0) if self._answers else ""
         for token in answer:
-            yield LLMAnswerToken(request_id=rid, token=token)
+            yield LLMAnswerDelta(request_id=rid, token=token)
         yield LLMGenerationDone(request_id=rid, finish_reason=FinishReason.STOP)
 
 
