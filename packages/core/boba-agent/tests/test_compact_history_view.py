@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from boba.agent.events import (
-    GenerationResult,
+    GenerationCompleted,
     ToolResultReady,
     UserQueryReceived,
 )
@@ -12,16 +12,11 @@ from boba.agent.models import ToolCallResult
 from boba.agent.turn.history_view import CompactHistoryDialogView
 from boba.llm.events import FinishReason
 from boba.llm.models import (
-    AssistantBlock,
     AssistantMessage,
     DialogMessage,
-    TextBlock,
-    ThinkingBlock,
     ToolCall,
-    ToolCallBlock,
     ToolResultMessage,
     UserMessage,
-    new_message_id,
     new_request_id,
 )
 from boba.tools.domain import TextResult
@@ -43,16 +38,14 @@ class _TurnRecorder:
         finish_reason: FinishReason = FinishReason.STOP,
     ) -> None:
         history.record(UserQueryReceived(request_id=request_id, query=query))
-        blocks: list[AssistantBlock] = []
-        if thinking is not None:
-            blocks.append(ThinkingBlock(content=thinking))
-        if answer is not None:
-            blocks.append(TextBlock(content=answer))
-        blocks.extend(ToolCallBlock(call=call) for call in tool_calls)
         history.record(
-            GenerationResult(
+            GenerationCompleted(
                 request_id=request_id,
-                message=AssistantMessage(id=new_message_id(), blocks=tuple(blocks)),
+                message=AssistantMessage(
+                    content=answer or "",
+                    thinking=thinking or "",
+                    tool_calls=tuple(tool_calls),
+                ),
                 finish_reason=finish_reason,
             ),
         )
@@ -72,8 +65,7 @@ def _summarize(messages: list[DialogMessage]) -> list[tuple[str, str]]:
         if isinstance(m, UserMessage):
             out.append(("user", m.content))
         elif isinstance(m, AssistantMessage):
-            text = "".join(b.content for b in m.blocks if isinstance(b, TextBlock))
-            out.append(("assistant", text))
+            out.append(("assistant", m.content))
         elif isinstance(m, ToolResultMessage):
             out.append(("tool", m.tool_call_id))
     return out
@@ -152,9 +144,8 @@ def test_current_request_id_keeps_full_tool_chain():
     assert summary[4] == ("tool", "c1")
     last_assistant = messages[3]
     assert isinstance(last_assistant, AssistantMessage)
-    block_types = [type(b).__name__ for b in last_assistant.blocks]
-    assert "ThinkingBlock" in block_types
-    assert "ToolCallBlock" in block_types
+    assert last_assistant.thinking == "think-new"
+    assert last_assistant.tool_calls == (call,)
 
 
 def test_old_request_id_without_answer_keeps_only_user_message():
@@ -167,12 +158,9 @@ def test_old_request_id_without_answer_keeps_only_user_message():
     # старый turn оборвался: были только тулы, ответа не пришло
     history.record(UserQueryReceived(request_id=rid_old, query="q-old"))
     history.record(
-        GenerationResult(
+        GenerationCompleted(
             request_id=rid_old,
-            message=AssistantMessage(
-                id=new_message_id(),
-                blocks=(ToolCallBlock(call=call),),
-            ),
+            message=AssistantMessage(tool_calls=(call,)),
             finish_reason=FinishReason.TOOL_CALLS,
         ),
     )

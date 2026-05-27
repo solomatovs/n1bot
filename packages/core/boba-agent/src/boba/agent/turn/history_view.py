@@ -22,12 +22,12 @@ terminal). `HistoryDialogView` — абстрактный контракт во�
 
 Маппинг событий (общая логика):
     UserQueryReceived   → UserMessage
-    GenerationResult    → AssistantMessage (источник истины: собранный message)
+    GenerationCompleted    → AssistantMessage (источник истины: собранный message)
     ToolResultReady     → ToolResultMessage (успех)
     ToolExecutionFailed → ToolResultMessage (ошибка)
 
 Per-field `*Complete` для реконструкции НЕ используются — message берётся
-целиком из `GenerationResult` (порядко-независимо). Всё остальное (PhaseEvent /
+целиком из `GenerationCompleted` (порядко-независимо). Всё остальное (PhaseEvent /
 FeedbackToLLMAdded / Terminal) игнорируется. FeedbackToLLMAdded пока
 пропускается — событие неоднозначно (может быть UserMessage от LLMCritique или
 ToolResultMessage от ToolCallRejection); семантику нужно расщеплять отдельно.
@@ -41,7 +41,7 @@ from typing import ClassVar
 
 from boba.agent.events import (
     AgentEvent,
-    GenerationResult,
+    GenerationCompleted,
     ToolExecutionFailed,
     ToolResultReady,
     UserQueryReceived,
@@ -52,9 +52,7 @@ from boba.llm.models import (
     AssistantMessage,
     DialogMessage,
     RequestId,
-    TextBlock,
     UserMessage,
-    new_message_id,
 )
 from boba.llm.tool_result_render import tool_result_to_message
 from boba.tools.domain import ErrorResult
@@ -67,7 +65,7 @@ __all__ = [
 
 
 class _DialogEventDecoder:
-    """events → DialogMessage. Источник истины ассистента — GenerationResult."""
+    """events → DialogMessage. Источник истины ассистента — GenerationCompleted."""
 
     @classmethod
     def decode(cls, events: Iterable[AgentEvent]) -> Iterator[DialogMessage]:
@@ -76,10 +74,9 @@ class _DialogEventDecoder:
                 case UserQueryReceived(query=q):
                     yield UserMessage.from_text(q)
 
-                case GenerationResult(message=msg):
-                    # message собран консьюмером целиком — берём как есть,
-                    # порядок per-field *Complete роли не играет.
-                    if msg.blocks:
+                case GenerationCompleted(message=msg):
+                    # message собран консьюмером целиком — берём как есть.
+                    if not msg.is_empty():
                         yield msg
 
                 case ToolResultReady(call=call, result=result):
@@ -141,7 +138,7 @@ class CompactHistoryDialogView(HistoryDialogView):
 
     _CONTRIBUTING_TYPES: ClassVar[tuple[type[AgentEvent], ...]] = (
         UserQueryReceived,
-        GenerationResult,
+        GenerationCompleted,
         ToolResultReady,
         ToolExecutionFailed,
     )
@@ -181,11 +178,10 @@ class CompactHistoryDialogView(HistoryDialogView):
         yield from users
         if not assistants:
             return
-        text_blocks = tuple(
-            b for b in assistants[-1].blocks if isinstance(b, TextBlock)
-        )
-        if text_blocks:
-            yield AssistantMessage(id=new_message_id(), blocks=text_blocks)
+        # Прошлый turn сжимаем до текстового ответа (thinking/tool_calls — прочь).
+        content = assistants[-1].content
+        if content:
+            yield AssistantMessage(content=content)
 
     def _apply_window(
         self, messages: list[DialogMessage],

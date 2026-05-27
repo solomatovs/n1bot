@@ -214,13 +214,13 @@ class LLMGenerationResult(LLMSnapshot):
     """
     Итог одной генерации LLM — собранный AssistantMessage и raw finish_reason.
 
-    Эмитится `SnapshotEmitter` последним — после всех per-field `*Complete`
+    Консьюмер эмитит его последним — после всех per-field `*Message`
     событий; терминатор генерации (источник истины). Несёт всё, что пришло
     от провайдера в режиме streaming, как если бы это был `stream=False` ответ:
 
-    - `message` — собранный AssistantMessage со всеми блоками
-      (thinking / text / refusal / tool_calls / invalid_tool_calls).
-      Пустой message (без блоков) — валидное состояние, когда модель
+    - `message` — собранный AssistantMessage с плоскими полями
+      (thinking / content / refusal / tool_calls / invalid_tool_calls).
+      Пустой message — валидное состояние, когда модель
       завершилась без контента (например, `finish_reason=stop` без deltas).
     - `finish_reason` — то, что реально прислал провайдер; без подмен.
 

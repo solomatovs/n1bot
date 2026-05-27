@@ -501,18 +501,23 @@ class ToolExecutionStarted(PhaseEvent):
         return self
 
 
-class GenerationResult(PhaseEvent):
+class GenerationCompleted(PhaseEvent):
     """
-    Итог одной генерации LLM — собранный AssistantMessage и raw finish_reason.
+    Граница «генерация LLM завершена»: исход (`finish_reason`) + канонический
+    `AssistantMessage` для истории.
 
-    Эмитится последним — после всех per-field `*Complete`/`InvalidToolCallMessage`
-    событий; терминатор генерации и источник истины для истории. Несёт всё, что
-    пришло от провайдера в режиме streaming, в форме обычного `stream=False`:
+    Это `PhaseEvent`, а НЕ content-snapshot: контент уже отрисован per-field
+    `*Message` событиями (`AnswerMessage`, `ThinkingMessage`, `ToolCallMessage`),
+    а здесь — агрегат + исход. Sink не должен рисовать его как реплику диалога
+    (иначе дубль); он маркирует конец round-trip и подсвечивает аномалии исхода.
 
-    - `message` — собранный AssistantMessage со всеми блоками
-      (thinking / text / refusal / tool_calls / invalid_tool_calls).
-      Пустой message (без блоков) — валидное состояние, когда модель
-      завершилась без контента.
+    Эмитится последним — после всех per-field `*Message`/`InvalidToolCallMessage`
+    событий; источник истины для реконструкции истории. Несёт всё, что пришло от
+    провайдера за одну генерацию:
+
+    - `message` — собранный AssistantMessage с плоскими полями
+      (content / thinking / refusal / tool_calls / invalid_tool_calls).
+      Пустой message — валидное состояние, когда модель завершилась без контента.
     - `finish_reason` — то, что реально прислал провайдер; без подмен.
 
     Единственное событие, на котором принимается решение об остановке
@@ -520,21 +525,18 @@ class GenerationResult(PhaseEvent):
     `StopIfContentFilter`.
     """
 
-    type: Literal["GenerationResult"] = "GenerationResult"
+    type: Literal["GenerationCompleted"] = "GenerationCompleted"
     message: AssistantMessage
     finish_reason: FinishReason
 
     @model_validator(mode="after")
     def _derive(self) -> Self:
-        n_blocks = len(self.message.blocks)
         n_tools = len(self.message.tool_calls)
         self.label = (
-            f"generation result ({self.finish_reason.value}, "
-            f"blocks={n_blocks}, tool_calls={n_tools})"
+            f"generation completed ({self.finish_reason.value}, tool_calls={n_tools})"
         )
         self.details = {
             "finish_reason": self.finish_reason.value,
-            "blocks": str(n_blocks),
             "tool_calls": str(n_tools),
             "has_answer": str(bool(self.message.content)),
             "has_thinking": str(bool(self.message.thinking)),
@@ -739,8 +741,8 @@ class FeedbackToLLMAdded(ContentSnapshotEvent):
 class InvalidToolCallMessage(ContentSnapshotEvent):
     """Tool-call с невалидным JSON в args — часть сообщения ассистента.
 
-    Это контент (лежит в `message.blocks` как `InvalidToolCallBlock`), а не
-    advisory: «ошибочность» несёт сам payload (`invalid.error`), а не категория.
+    Это контент (лежит в `message.invalid_tool_calls`), а не advisory:
+    «ошибочность» несёт сам payload (`invalid.error`), а не категория.
     """
 
     type: Literal["InvalidToolCallMessage"] = "InvalidToolCallMessage"
@@ -915,7 +917,7 @@ AgentEvent = (
     # PhaseEvent
     IterationStarted
     | ToolExecutionStarted
-    | GenerationResult
+    | GenerationCompleted
     # ContentDeltaEvent
     | ThinkingDelta
     | AnswerDelta
@@ -945,7 +947,7 @@ AgentEvent = (
 AgentEventName: TypeAlias = Literal[
     "IterationStarted",
     "ToolExecutionStarted",
-    "GenerationResult",
+    "GenerationCompleted",
     "ThinkingDelta",
     "AnswerDelta",
     "RefusalDelta",
@@ -1076,7 +1078,7 @@ def _register_core_events() -> None:
     for cls in (
         IterationStarted,
         ToolExecutionStarted,
-        GenerationResult,
+        GenerationCompleted,
         ThinkingDelta,
         AnswerDelta,
         RefusalDelta,

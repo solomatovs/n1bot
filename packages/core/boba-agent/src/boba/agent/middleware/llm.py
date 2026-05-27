@@ -13,7 +13,7 @@ from boba.agent.events import (
     AgentEvent,
     AnswerDelta,
     AnswerMessage,
-    GenerationResult,
+    GenerationCompleted,
     InvalidToolCallMessage,
     RefusalDelta,
     RefusalMessage,
@@ -82,7 +82,7 @@ class LLMToAgentConverter:
                 message=msg,
                 finish_reason=fr,
             ):
-                yield GenerationResult(
+                yield GenerationCompleted(
                     request_id=rid,
                     message=msg,
                     finish_reason=fr,
