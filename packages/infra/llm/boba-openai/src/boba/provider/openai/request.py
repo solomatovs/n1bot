@@ -62,10 +62,8 @@ class ToOpenAIToolCallConverter(
 class ToOpenAIMessageConverter(Converter[Message, ChatCompletionMessageParam]):
     """Конвертация Message-иерархии → OpenAI message param.
 
-    Все Message-типы block-based; конвертер flatten'ит блоки в wire-формат
-    OpenAI Chat Completions (плоский content + tool_calls). Image/file блоки
-    в system/user/tool пока игнорируются — добавим, когда понадобится
-    мультимодальный content-array.
+    Message-модель плоская; конвертер мапит её на wire-формат OpenAI Chat
+    Completions (плоский content + параллельное поле tool_calls).
     """
 
     def __init__(self) -> None:
@@ -75,13 +73,12 @@ class ToOpenAIMessageConverter(Converter[Message, ChatCompletionMessageParam]):
         """
         Message -> ChatCompletionMessageParam
 
-        в OpenAI `content` это одна строка, а
-        tool_calls — поле параллельное content.
-        Поэтому:
-            для system/user склеиваем все TextBlock.
-            для assistant — текст в content, tool_calls в одно поле.
-            Thinking/refusal/invalid_tool_call живут в домене.
-            для replay/audit, в OpenAI Chat не отправляются.
+        в OpenAI `content` это одна строка, а tool_calls — поле параллельное
+        content. Поэтому:
+            для system/user — берём content как есть.
+            для assistant — текст в content, tool_calls в одно поле;
+                thinking/refusal/invalid_tool_calls живут в домене
+                (для replay/audit) и в OpenAI Chat не отправляются.
         """
         match value:
             case SystemMessage():
@@ -101,7 +98,7 @@ class ToOpenAIMessageConverter(Converter[Message, ChatCompletionMessageParam]):
                 )
 
                 tool_calls = [
-                    self._to_tool_call.convert(b.call) for b in value.tool_call_blocks
+                    self._to_tool_call.convert(call) for call in value.tool_calls
                 ]
                 if tool_calls:
                     param["tool_calls"] = tool_calls

@@ -22,7 +22,9 @@ from boba.llm.builder import LLM
 from boba.llm.events import (
     FinishReason,
     LLMAnswerDelta,
+    LLMAnswerMessage,
     LLMEvent,
+    LLMGenerationResult,
 )
 from boba.llm.models import (
     AssistantMessage,
@@ -31,7 +33,6 @@ from boba.llm.models import (
     LLMContext,
     UserMessage,
 )
-from boba.llm.snapshot import SnapshotEmitter
 from boba.patterns import StreamSource
 
 
@@ -56,7 +57,12 @@ class _StubLLMSource(StreamSource[LLMContext, LLMEvent]):
         for token in answer:
             chunk.append_text(token)
             yield LLMAnswerDelta(request_id=rid, token=token)
-        yield from SnapshotEmitter.emit(rid, chunk.finalize(), FinishReason.STOP)
+        message = chunk.finalize()
+        if message.content:
+            yield LLMAnswerMessage(request_id=rid, content=message.content)
+        yield LLMGenerationResult(
+            request_id=rid, message=message, finish_reason=FinishReason.STOP
+        )
 
 
 def _dialog_texts(messages: tuple[DialogMessage, ...]) -> list[tuple[str, str]]:

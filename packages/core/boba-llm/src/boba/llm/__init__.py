@@ -62,7 +62,6 @@ from boba.llm.observer import (
     CompositeLLMRequestObserver,
     LLMRequestObserver,
 )
-from boba.llm.snapshot import SnapshotEmitter
 
 __all__ = [
     "LLM",
@@ -112,7 +111,6 @@ __all__ = [
     "RetryMiddleware",
     "RetryableLLMError",
     "SamplingParams",
-    "SnapshotEmitter",
     "SystemMessage",
     "ToolCall",
     "ToolResultMessage",

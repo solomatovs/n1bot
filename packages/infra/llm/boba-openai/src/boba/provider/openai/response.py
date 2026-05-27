@@ -13,19 +13,25 @@ from boba.llm.errors import LLMProtocolError
 from boba.llm.events import (
     FinishReason,
     LLMAnswerDelta,
+    LLMAnswerMessage,
     LLMEvent,
+    LLMGenerationResult,
+    LLMInvalidToolCallMessage,
     LLMRefusalDelta,
+    LLMRefusalMessage,
     LLMThinkingDelta,
+    LLMThinkingMessage,
     LLMToolCallDelta,
+    LLMToolCallMessage,
 )
 from boba.llm.models import (
+    AssistantMessage,
     AssistantMessageChunk,
     InvalidToolCall,
     LLMContext,
     RequestId,
     ToolCall,
 )
-from boba.llm.snapshot import SnapshotEmitter
 from boba.patterns import Converter, StreamTransformer
 from openai.types.chat import ChatCompletion, ChatCompletionMessageFunctionToolCall
 from openai.types.chat.chat_completion_chunk import (
@@ -45,8 +51,13 @@ class ChatCompletionChunkConsumer(
 
     Преобразует поток ChatCompletionChunk в доменные LLMEvent: на лету эмитит
     delta-события (thinking/answer/refusal/tool_call) и параллельно копит их в
-    AssistantMessageChunk. На finish_reason — через SnapshotEmitter — итоговые
-    *Complete + LLMGenerationResult (терминатор генерации).
+    AssistantMessageChunk. Текстовые `*Message`-снапшоты закрываются инлайн, по
+    переходу к следующему виду контента (пришёл content → закрыли thinking и т.д.).
+    Тул-снапшоты и `LLMGenerationResult` (терминатор + источник истины) — на
+    finish_reason: в OpenAI args тула стримятся до самого конца.
+
+    Последовательность видов — деталь OpenAI-стрима; наружу как гарантия не
+    протекает, каждое `*Message` самодостаточно.
     """
 
     def __init__(self, request_id: RequestId) -> None:
@@ -58,6 +69,10 @@ class ChatCompletionChunkConsumer(
         # index -> накопитель tool-call'а (id, name, фрагменты args).
         self._tool_calls: dict[int, _PartialToolCall] = {}
         self._message = AssistantMessageChunk.empty()
+        # Текстовые слоты закрываются по переходу; флаги гасят повторный снапшот.
+        self._thinking_flushed = False
+        self._answer_flushed = False
+        self._refusal_flushed = False
 
     def name(self) -> str:
         return "ChatCompletionChunkConsumer"
@@ -66,6 +81,9 @@ class ChatCompletionChunkConsumer(
         self._reindexer.reset()
         self._tool_calls.clear()
         self._message = AssistantMessageChunk.empty()
+        self._thinking_flushed = False
+        self._answer_flushed = False
+        self._refusal_flushed = False
 
     def stream(
         self, ctx: LLMContext, stream: Iterable[ChatCompletionChunk]
@@ -83,18 +101,27 @@ class ChatCompletionChunkConsumer(
                     yield LLMThinkingDelta(request_id=self._request_id, token=thinking)
 
                 if delta.content:
+                    # переход thinking → answer: закрываем thinking-слот
+                    yield from self._flush_thinking()
                     self._message.append_text(delta.content)
                     yield LLMAnswerDelta(
                         request_id=self._request_id, token=delta.content
                     )
 
                 if delta.refusal:
+                    # переход → refusal: закрываем thinking/answer
+                    yield from self._flush_thinking()
+                    yield from self._flush_answer()
                     self._message.append_refusal(delta.refusal)
                     yield LLMRefusalDelta(
                         request_id=self._request_id, token=delta.refusal
                     )
 
                 if delta.tool_calls:
+                    # переход → tool_calls: закрываем все текстовые слоты
+                    yield from self._flush_thinking()
+                    yield from self._flush_answer()
+                    yield from self._flush_refusal()
                     yield from self._tool_call_deltas(delta.tool_calls)
 
                 if choice.finish_reason:
@@ -110,6 +137,7 @@ class ChatCompletionChunkConsumer(
                     raise LLMProtocolError(
                         f"ToolCallDelta: первая дельта index={tc.index} без id/name"
                     )
+
                 self._tool_calls[tc.index] = _PartialToolCall(tc.id, tc.function.name)
 
             partial = self._tool_calls[tc.index]
@@ -117,8 +145,8 @@ class ChatCompletionChunkConsumer(
             if arguments:
                 partial.append_args(arguments)
 
-            # Первая дельта эмитится всегда (id+name), последующие — только при
-            # непустом фрагменте args.
+            # Первая дельта эмитится всегда (id+name)
+            # последующие — только при непустом фрагменте args.
             if first or arguments:
                 yield LLMToolCallDelta(
                     request_id=self._request_id,
@@ -128,12 +156,51 @@ class ChatCompletionChunkConsumer(
                     arguments=arguments,
                 )
 
+    def _flush_thinking(self) -> Iterator[LLMEvent]:
+        if self._thinking_flushed:
+            return
+        self._thinking_flushed = True
+        content = self._message.thinking
+        if content:
+            yield LLMThinkingMessage(request_id=self._request_id, content=content)
+
+    def _flush_answer(self) -> Iterator[LLMEvent]:
+        if self._answer_flushed:
+            return
+        self._answer_flushed = True
+        content = self._message.text
+        if content:
+            yield LLMAnswerMessage(request_id=self._request_id, content=content)
+
+    def _flush_refusal(self) -> Iterator[LLMEvent]:
+        if self._refusal_flushed:
+            return
+        self._refusal_flushed = True
+        content = self._message.refusal
+        if content:
+            yield LLMRefusalMessage(request_id=self._request_id, content=content)
+
     def _finalize(self, finish_reason: str) -> Iterator[LLMEvent]:
         reason = self._finish.convert(finish_reason)
+        # Закрываем незакрытые текстовые слоты (если перехода к ним не было).
+        yield from self._flush_thinking()
+        yield from self._flush_answer()
+        yield from self._flush_refusal()
+        # Тул-снапшоты — пачкой на finish: в OpenAI args стримятся до конца.
         for index in sorted(self._tool_calls):
-            self._message.add_tool_call(self._tool_calls[index].decode())
-        yield from SnapshotEmitter.emit(
-            self._request_id, self._message.finalize(), reason
+            call = self._tool_calls[index].decode()
+            self._message.add_tool_call(call)
+            if isinstance(call, ToolCall):
+                yield LLMToolCallMessage(request_id=self._request_id, call=call)
+            else:
+                yield LLMInvalidToolCallMessage(
+                    request_id=self._request_id, invalid=call
+                )
+        # Терминатор генерации + источник истины для реконструкции истории.
+        yield LLMGenerationResult(
+            request_id=self._request_id,
+            message=self._message.finalize(),
+            finish_reason=reason,
         )
 
 
@@ -180,10 +247,32 @@ class ChatCompletionConsumer:
 
         reason = self._finish.convert(choice.finish_reason)
 
-        yield from SnapshotEmitter.emit(
-            self._request_id,
-            chunk.finalize(),
-            reason,
+        yield from self._emit_snapshots(chunk.finalize(), reason)
+
+    def _emit_snapshots(
+        self, message: AssistantMessage, reason: FinishReason
+    ) -> Iterator[LLMEvent]:
+        """Развернуть готовый AssistantMessage в итоговые *Message + result."""
+        if message.thinking:
+            yield LLMThinkingMessage(
+                request_id=self._request_id, content=message.thinking
+            )
+        if message.content:
+            yield LLMAnswerMessage(
+                request_id=self._request_id, content=message.content
+            )
+        if message.refusal:
+            yield LLMRefusalMessage(
+                request_id=self._request_id, content=message.refusal
+            )
+        for call in message.tool_calls:
+            yield LLMToolCallMessage(request_id=self._request_id, call=call)
+        for invalid in message.invalid_tool_calls:
+            yield LLMInvalidToolCallMessage(
+                request_id=self._request_id, invalid=invalid
+            )
+        yield LLMGenerationResult(
+            request_id=self._request_id, message=message, finish_reason=reason
         )
 
 

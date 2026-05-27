@@ -8,7 +8,7 @@ from boba.agent.agent import AgentContext
 from boba.agent.errors import MaxIterationsExceededError
 from boba.agent.events import (
     AgentEvent,
-    GenerationResult,
+    GenerationCompleted,
     IterationStarted,
     TerminalEvent,
 )
@@ -74,7 +74,7 @@ class StopIfReasonStop(Specification[tuple[AgentContext, AgentEvent]]):
     """
     Стопает цикл, если модель отдала финальный текстовый ответ.
 
-    Срабатывает на `GenerationResult`, у которого:
+    Срабатывает на `GenerationCompleted`, у которого:
         - `finish_reason == STOP` (модель сама решила, что закончила)
         - в `message.tool_calls` пусто (модель не зовёт инструменты)
 
@@ -88,7 +88,7 @@ class StopIfReasonStop(Specification[tuple[AgentContext, AgentEvent]]):
     def check(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
         _ctx, event = candidate
 
-        if not isinstance(event, GenerationResult):
+        if not isinstance(event, GenerationCompleted):
             return False
 
         # тут лайфхак!
@@ -107,7 +107,7 @@ class StopIfLengthReached(Specification[tuple[AgentContext, AgentEvent]]):
     """
     Стопает цикл, если генерация упёрлась в лимит токенов.
 
-    Срабатывает на `GenerationResult` с `finish_reason == LENGTH` независимо
+    Срабатывает на `GenerationCompleted` с `finish_reason == LENGTH` независимо
     от tool_calls. Tool-call, обрезанный по длине, выполнять опасно — args
     могут оказаться невалидным JSON или с потерей хвоста; лучше остановить
     цикл и дать вышестоящему коду решить, что делать (поднять max_tokens,
@@ -121,7 +121,7 @@ class StopIfLengthReached(Specification[tuple[AgentContext, AgentEvent]]):
     def check(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
         _ctx, event = candidate
 
-        if not isinstance(event, GenerationResult):
+        if not isinstance(event, GenerationCompleted):
             return False
 
         return event.finish_reason is FinishReason.LENGTH
@@ -131,7 +131,7 @@ class StopIfContentFilter(Specification[tuple[AgentContext, AgentEvent]]):
     """
     Стопает цикл, если провайдерский фильтр заблокировал генерацию.
 
-    Срабатывает на `GenerationResult` с `finish_reason == CONTENT_FILTER`.
+    Срабатывает на `GenerationCompleted` с `finish_reason == CONTENT_FILTER`.
     Повторять с тем же промптом смысла нет — фильтр сработает снова.
     Решение об альтернативном промпте или эскалации пользователю — за
     вышестоящим слоем.
@@ -140,7 +140,7 @@ class StopIfContentFilter(Specification[tuple[AgentContext, AgentEvent]]):
     def check(self, candidate: tuple[AgentContext, AgentEvent]) -> bool:
         _ctx, event = candidate
 
-        if not isinstance(event, GenerationResult):
+        if not isinstance(event, GenerationCompleted):
             return False
 
         return event.finish_reason is FinishReason.CONTENT_FILTER

@@ -15,7 +15,7 @@ from boba.agent.events import (
     ContentSnapshotEvent,
     DiagnosticEvent,
     FeedbackToLLMAdded,
-    GenerationResult,
+    GenerationCompleted,
     InvalidToolCallMessage,
     IterationStarted,
     PhaseEvent,
@@ -179,10 +179,10 @@ class AgentEventDispatcher:
                 await self._target.iteration_started()
             case ToolExecutionStarted(tool_call_id=tid):
                 await self._target.tool_execution_started(tid)
-            case GenerationResult():
+            case GenerationCompleted():
                 # терминатор генерации: гасим статус + подсвечиваем исход
                 await self._target.generation_milestone()
-                await self._handle_generation_result(event)
+                await self._handle_generation_completed(event)
 
             # AdvisoryEvent
             case InvalidToolCallMessage(invalid=invalid):
@@ -228,11 +228,11 @@ class AgentEventDispatcher:
                 # не выделили выше) — игнорируем.
                 return
 
-    async def _handle_generation_result(self, event: GenerationResult) -> None:
+    async def _handle_generation_completed(self, event: GenerationCompleted) -> None:
         """Подсветить «не-нормальный» исход генерации в UI.
 
-        Для STOP / TOOL_CALLS — тихий no-op: per-field *Complete события
-        уже отрисовали контент, и `GenerationResult` несёт лишь агрегат,
+        Для STOP / TOOL_CALLS — тихий no-op: per-field *Message события
+        уже отрисовали контент, и `GenerationCompleted` несёт лишь агрегат,
         который без аномалии не нуждается в отдельной отрисовке.
 
         Для LENGTH — system-advisory: ответ обрезан, пользователь должен
@@ -261,7 +261,7 @@ class AgentEventDispatcher:
                 return
 
     @staticmethod
-    def _fmt_outcome_body(event: GenerationResult) -> str:
+    def _fmt_outcome_body(event: GenerationCompleted) -> str:
         msg = event.message
         parts: list[str] = [f"finish_reason: {event.finish_reason.value}"]
         if msg.content:
