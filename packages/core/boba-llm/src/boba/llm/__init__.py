@@ -25,7 +25,6 @@ from boba.llm.events import (
     LLMAnswerMessage,
     LLMEvent,
     LLMEventName,
-    LLMGenerationResult,
     LLMRefusalDelta,
     LLMRefusalMessage,
     LLMSnapshot,
@@ -35,6 +34,7 @@ from boba.llm.events import (
     LLMToolCallDecodeFailedMessage,
     LLMToolCallDelta,
     LLMToolCallMessage,
+    LLMTotalMessage,
 )
 from boba.llm.middleware import (
     RetryMiddleware,
@@ -81,7 +81,6 @@ __all__ = [
     "LLMError",
     "LLMEvent",
     "LLMEventName",
-    "LLMGenerationResult",
     "LLMInvalidRequestError",
     "LLMProtocolError",
     "LLMProviderInternalError",
@@ -102,6 +101,7 @@ __all__ = [
     "LLMToolCallDelta",
     "LLMToolCallMessage",
     "LLMToolDefinition",
+    "LLMTotalMessage",
     "LLMUnknownError",
     "Message",
     "MessageId",

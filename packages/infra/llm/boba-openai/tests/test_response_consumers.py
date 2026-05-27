@@ -11,11 +11,11 @@ from boba.llm.events import (
     FinishReason,
     LLMAnswerDelta,
     LLMAnswerMessage,
-    LLMGenerationResult,
     LLMThinkingDelta,
     LLMThinkingMessage,
     LLMToolCallDelta,
     LLMToolCallMessage,
+    LLMTotalMessage,
 )
 from boba.llm.models import LLMContext, LLMRequest, new_request_id
 from boba.provider.openai.response import (
@@ -65,12 +65,12 @@ def test_non_stream_emits_only_snapshots() -> None:
 
     # никаких delta-событий — только итоговые
     assert not any(isinstance(e, LLMAnswerDelta) for e in events)
-    assert [type(e) for e in events] == [LLMAnswerMessage, LLMGenerationResult]
+    assert [type(e) for e in events] == [LLMAnswerMessage, LLMTotalMessage]
 
     answer, result = events
     assert isinstance(answer, LLMAnswerMessage)
     assert answer.content == "hello"
-    assert isinstance(result, LLMGenerationResult)
+    assert isinstance(result, LLMTotalMessage)
     assert result.finish_reason is FinishReason.STOP
     assert result.message.content == "hello"
 
@@ -101,7 +101,7 @@ def test_non_stream_tool_call_parsed() -> None:
     assert call.args == {"q": "x"}
 
     result = events[-1]
-    assert isinstance(result, LLMGenerationResult)
+    assert isinstance(result, LLMTotalMessage)
     assert result.finish_reason is FinishReason.TOOL_CALLS
 
 
@@ -140,7 +140,7 @@ def test_stream_emits_deltas_and_snapshots() -> None:
     assert completes[0].content == "hello"
 
     result = events[-1]
-    assert isinstance(result, LLMGenerationResult)
+    assert isinstance(result, LLMTotalMessage)
     assert result.message.content == "hello"
     assert result.finish_reason is FinishReason.STOP
 
@@ -173,7 +173,7 @@ def test_stream_flushes_thinking_snapshot_before_answer_deltas() -> None:
         LLMThinkingMessage,
         LLMAnswerDelta,
         LLMAnswerMessage,
-        LLMGenerationResult,
+        LLMTotalMessage,
     ]
 
 
@@ -214,7 +214,7 @@ def test_stream_flushes_answer_snapshot_before_tool_call_deltas() -> None:
     assert answer_snapshot < last_tool_delta
 
     # Тул-снапшот — на finish, после всех tool-дельт; result последним.
-    assert isinstance(events[-1], LLMGenerationResult)
+    assert isinstance(events[-1], LLMTotalMessage)
     assert types[-2] == LLMToolCallMessage
     tool_msg = events[-2]
     assert isinstance(tool_msg, LLMToolCallMessage)

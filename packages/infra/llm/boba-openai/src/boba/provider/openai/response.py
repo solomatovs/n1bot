@@ -15,7 +15,6 @@ from boba.llm.events import (
     LLMAnswerDelta,
     LLMAnswerMessage,
     LLMEvent,
-    LLMGenerationResult,
     LLMRefusalDelta,
     LLMRefusalMessage,
     LLMThinkingDelta,
@@ -23,6 +22,7 @@ from boba.llm.events import (
     LLMToolCallDecodeFailedMessage,
     LLMToolCallDelta,
     LLMToolCallMessage,
+    LLMTotalMessage,
 )
 from boba.llm.models import (
     AssistantMessage,
@@ -53,7 +53,7 @@ class ChatCompletionChunkConsumer(
     delta-события (thinking/answer/refusal/tool_call) и параллельно копит их в
     AssistantMessageChunk. Текстовые `*Message`-снапшоты закрываются инлайн, по
     переходу к следующему виду контента (пришёл content → закрыли thinking и т.д.).
-    Тул-снапшоты и `LLMGenerationResult` (терминатор + источник истины) — на
+    Тул-снапшоты и `LLMTotalMessage` (терминатор + источник истины) — на
     finish_reason: в OpenAI args тула стримятся до самого конца.
 
     Последовательность видов — деталь OpenAI-стрима; наружу как гарантия не
@@ -197,7 +197,7 @@ class ChatCompletionChunkConsumer(
                     request_id=self._request_id, failure=call
                 )
         # Терминатор генерации + источник истины для реконструкции истории.
-        yield LLMGenerationResult(
+        yield LLMTotalMessage(
             request_id=self._request_id,
             message=self._message.finalize(),
             finish_reason=reason,
@@ -209,7 +209,7 @@ class ChatCompletionConsumer:
     Консьюмер ответа OpenAI в режиме stream=False.
 
     Собирает готовый ChatCompletion в AssistantMessage и эмитит только итоговые
-    события (*Complete + LLMGenerationResult) — без delta-событий.
+    события (*Complete + LLMTotalMessage) — без delta-событий.
     """
 
     def __init__(self, request_id: RequestId) -> None:
@@ -258,9 +258,7 @@ class ChatCompletionConsumer:
                 request_id=self._request_id, content=message.thinking
             )
         if message.content:
-            yield LLMAnswerMessage(
-                request_id=self._request_id, content=message.content
-            )
+            yield LLMAnswerMessage(request_id=self._request_id, content=message.content)
         if message.refusal:
             yield LLMRefusalMessage(
                 request_id=self._request_id, content=message.refusal
@@ -271,7 +269,7 @@ class ChatCompletionConsumer:
             yield LLMToolCallDecodeFailedMessage(
                 request_id=self._request_id, failure=failure
             )
-        yield LLMGenerationResult(
+        yield LLMTotalMessage(
             request_id=self._request_id, message=message, finish_reason=reason
         )
 

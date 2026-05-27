@@ -24,7 +24,7 @@ from boba.llm.events import (
     LLMAnswerDelta,
     LLMAnswerMessage,
     LLMEvent,
-    LLMGenerationResult,
+    LLMTotalMessage,
 )
 from boba.llm.models import (
     AssistantMessage,
@@ -60,7 +60,7 @@ class _StubLLMSource(StreamSource[LLMContext, LLMEvent]):
         message = chunk.finalize()
         if message.content:
             yield LLMAnswerMessage(request_id=rid, content=message.content)
-        yield LLMGenerationResult(
+        yield LLMTotalMessage(
             request_id=rid, message=message, finish_reason=FinishReason.STOP
         )
 
@@ -80,12 +80,7 @@ def test_history_journal_contains_user_query_and_assistant_snapshots():
     stub = _StubLLMSource(answers=["hi back"])
     llm = LLM(source=stub)
 
-    agent = (
-        AgentBuilder()
-        .use_llm(llm)
-        .use_turn(TurnBuilder("stub-model"))
-        .build()
-    )
+    agent = AgentBuilder().use_llm(llm).use_turn(TurnBuilder("stub-model")).build()
 
     events = list(agent.stream("hi"))
 
@@ -108,12 +103,7 @@ def test_history_view_reconstructs_full_dialog_after_run():
     stub = _StubLLMSource(answers=["pong"])
     llm = LLM(source=stub)
 
-    agent = (
-        AgentBuilder()
-        .use_llm(llm)
-        .use_turn(TurnBuilder("stub-model"))
-        .build()
-    )
+    agent = AgentBuilder().use_llm(llm).use_turn(TurnBuilder("stub-model")).build()
 
     list(agent.stream("ping"))
 
@@ -127,12 +117,7 @@ def test_second_turn_sees_prior_dialog_in_llm_request():
     stub = _StubLLMSource(answers=["A1", "A2"])
     llm = LLM(source=stub)
 
-    agent = (
-        AgentBuilder()
-        .use_llm(llm)
-        .use_turn(TurnBuilder("stub-model"))
-        .build()
-    )
+    agent = AgentBuilder().use_llm(llm).use_turn(TurnBuilder("stub-model")).build()
 
     list(agent.stream("q1"))
     list(agent.stream("q2"))
@@ -154,12 +139,7 @@ def test_clear_history_resets_dialog_for_subsequent_turn():
     stub = _StubLLMSource(answers=["A1", "A2"])
     llm = LLM(source=stub)
 
-    agent = (
-        AgentBuilder()
-        .use_llm(llm)
-        .use_turn(TurnBuilder("stub-model"))
-        .build()
-    )
+    agent = AgentBuilder().use_llm(llm).use_turn(TurnBuilder("stub-model")).build()
 
     list(agent.stream("q1"))
     agent.container.get(HistoryWriter).clear()

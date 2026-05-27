@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from boba.agent.events import (
-    GenerationCompleted,
     ToolResultReady,
+    TotalMessage,
     UserQueryReceived,
 )
 from boba.agent.history import InMemoryHistoryService
@@ -39,7 +39,7 @@ class _TurnRecorder:
     ) -> None:
         history.record(UserQueryReceived(request_id=request_id, query=query))
         history.record(
-            GenerationCompleted(
+            TotalMessage(
                 request_id=request_id,
                 message=AssistantMessage(
                     content=answer or "",
@@ -158,7 +158,7 @@ def test_old_request_id_without_answer_keeps_only_user_message():
     # старый turn оборвался: были только тулы, ответа не пришло
     history.record(UserQueryReceived(request_id=rid_old, query="q-old"))
     history.record(
-        GenerationCompleted(
+        TotalMessage(
             request_id=rid_old,
             message=AssistantMessage(tool_calls=(call,)),
             finish_reason=FinishReason.TOOL_CALLS,
