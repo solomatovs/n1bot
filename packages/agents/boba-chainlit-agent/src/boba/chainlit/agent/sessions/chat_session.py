@@ -15,12 +15,15 @@ from boba.chainlit.agent.system_prompt import (
     DefaultSystemPromptSource,
     ThreadSystemPromptProvider,
 )
+from boba.chainlit.agent.tool_cache import AvailableToolsCache
+from boba.chainlit.agent.tool_filter import ThreadFilteredToolCatalog
 from boba.llm.builder import LLMBuilder
 from boba.provider.openai import (
     CurlTraceChatCompletionObserver,
     HttpTraceChatCompletionObserver,
     use_openai,
 )
+from boba.tools.framework import ToolCatalog
 from boba.workspace.contract import (
     HistoryWorkspaceRegistry,
     HistoryWorkspaceShell,
@@ -49,9 +52,12 @@ class ChatSession:
         history_workspaces: HistoryWorkspaceRegistry,
         thread_repository: ThreadRepository,
         default_prompt_source: DefaultSystemPromptSource,
+        available_tools: AvailableToolsCache,
     ) -> None:
         self._workspace_id = workspace_id
         self._thread_id = thread_id
+        self._available_tools = available_tools
+        self._thread_repository = thread_repository
         self._chainlit_config = ChainlitConfig.load()
         rt = self._chainlit_config.runtime
 
@@ -115,7 +121,20 @@ class ChatSession:
             .use_llm(llm)
             .use_compact_history(max_messages=rt.max_messages)
             .use_turn(turn)
+            .decorate_tool_catalog(self._wrap_catalog)
             .build()
+        )
+
+    def _wrap_catalog(self, inner: ToolCatalog) -> ToolCatalog:
+        """AgentBuilder-hook: кешируем discovered tools и вешаем per-thread фильтр.
+
+        Кеш заполняется один раз — первый build выигрывает гонку и фиксирует
+        набор tool-схем для UI. ThreadFilteredToolCatalog на каждом turn'е
+        читает meta.enabled_tool_ids; вне списка — tool скрыт от LLM.
+        """
+        self._available_tools.set_once(list(inner.definitions()))
+        return ThreadFilteredToolCatalog(
+            inner, self._thread_repository, self._thread_id,
         )
 
     def project_workspace(self) -> ProjectWorkspaceShell:

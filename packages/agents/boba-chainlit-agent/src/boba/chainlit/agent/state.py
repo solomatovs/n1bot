@@ -12,8 +12,10 @@ from dataclasses import dataclass
 from boba.chainlit.agent.auth import AuthenticateUser
 from boba.chainlit.agent.data_layer import BobaDataLayer
 from boba.chainlit.agent.sessions import OpenChatSession
+from boba.chainlit.agent.settings import SettingsSection
 from boba.chainlit.agent.storage import ThreadRepository
 from boba.chainlit.agent.system_prompt import DefaultSystemPromptSource
+from boba.chainlit.agent.tool_cache import AvailableToolsCache
 
 __all__ = ["AppState", "app_state", "set_app_state"]
 
@@ -27,6 +29,8 @@ class AppState:
     data_layer: BobaDataLayer
     thread_repository: ThreadRepository
     default_prompt_source: DefaultSystemPromptSource
+    available_tools: AvailableToolsCache
+    sections: tuple[SettingsSection, ...]
 
 
 @dataclass
@@ -45,6 +49,8 @@ def set_app_state(
     data_layer: BobaDataLayer,
     thread_repository: ThreadRepository,
     default_prompt_source: DefaultSystemPromptSource,
+    available_tools: AvailableToolsCache,
+    sections: tuple[SettingsSection, ...],
 ) -> None:
     """Зафиксировать deps до `run_chainlit(...)`."""
     _holder.state = AppState(
@@ -53,6 +59,8 @@ def set_app_state(
         data_layer=data_layer,
         thread_repository=thread_repository,
         default_prompt_source=default_prompt_source,
+        available_tools=available_tools,
+        sections=sections,
     )
 
 

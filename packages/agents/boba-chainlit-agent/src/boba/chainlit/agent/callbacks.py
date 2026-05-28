@@ -8,11 +8,10 @@ from typing import ClassVar, cast
 
 import chainlit as cl
 from chainlit.context import local_steps
-from chainlit.input_widget import TextInput
 from chainlit.types import ThreadDict
 
 from boba.agent.events import AgentEvent
-from boba.chainlit.agent.models import ThreadId, User, UserId
+from boba.chainlit.agent.models import ThreadId, ThreadMeta, User, UserId
 from boba.chainlit.agent.rendering import (
     AgentEventDispatcher,
     ChainlitBridgeSink,
@@ -27,9 +26,6 @@ logger = logging.getLogger(__name__)
 
 _NAME_MAX = 60
 """Max длина имени треда, выведенного из первого user-сообщения."""
-
-_SYSTEM_PROMPT_WIDGET_ID = "system_prompt"
-"""ID виджета шестерёнки для системного промпта (ChatSettings)."""
 
 
 @cl.password_auth_callback
@@ -70,7 +66,10 @@ class _WarmupTasks:
 
     @classmethod
     def spawn(
-        cls, user: User, workspace_id: WorkspaceId, thread_id: ThreadId,
+        cls,
+        user: User,
+        workspace_id: WorkspaceId,
+        thread_id: ThreadId,
     ) -> asyncio.Task:
         task = asyncio.create_task(
             app_state().open_chat_session.execute(user, workspace_id, thread_id),
@@ -147,18 +146,19 @@ def _trim(text: str) -> str:
     return cleaned
 
 
-async def _send_chat_settings(initial_prompt: str) -> None:
-    """Показать шестерёнку с текущим значением system-prompt'а."""
-    await cl.ChatSettings(
-        [
-            TextInput(
-                id=_SYSTEM_PROMPT_WIDGET_ID,
-                label="System prompt",
-                initial=initial_prompt,
-                multiline=True,
-            ),
-        ],
-    ).send()
+async def _send_chat_settings(meta: ThreadMeta | None) -> None:
+    """Собрать табы у всех зарегистрированных секций и отправить шестерёнку.
+
+    Секция, у которой сейчас «нечего показать» (например, ToolsSection до
+    того, как catalog закеширован) возвращает пустой `list[Tab]` и просто
+    выпадает из общего набора.
+    """
+    tabs = []
+    for section in app_state().sections:
+        tabs.extend(section.widgets(meta))
+    if not tabs:
+        return
+    await cl.ChatSettings(tabs).send()
 
 
 @cl.on_chat_start
@@ -169,8 +169,8 @@ async def on_chat_start() -> None:
     # приложение" не пачкают sidebar и local/workspaces/.
     workspace_id = new_workspace_id()
     cl.user_session.set("workspace_id", workspace_id)
-    # До первого on_message меты ещё нет — показываем дефолт.
-    await _send_chat_settings(app_state().default_prompt_source.read())
+    # До первого on_message меты ещё нет — секции отрисуют дефолты.
+    await _send_chat_settings(meta=None)
 
 
 @cl.on_chat_resume
@@ -202,55 +202,52 @@ async def on_chat_resume(thread: ThreadDict) -> None:
     cl.user_session.set("workspace_id", workspace_id)
     thread_id = _current_thread_id()
     meta = await app_state().thread_repository.get_meta(thread_id)
-    initial = (
-        meta.system_prompt
-        if meta is not None and meta.system_prompt
-        else app_state().default_prompt_source.read()
-    )
-    await _send_chat_settings(initial)
+    await _send_chat_settings(meta)
     _WarmupTasks.spawn(_current_user(), workspace_id, thread_id)
+
+
+async def _bootstrap_meta_if_missing(thread_id: ThreadId) -> bool:
+    """Создать пустую мету, если её ещё нет. True = создана или уже была.
+
+    Секции работают узкими методами (`set_*`), которые требуют существующей
+    меты. Если юзер сохраняет настройки до первого on_message — здесь и
+    создаём минимальный скелет (workspace + user); поля секций приедут
+    следующими узкими вызовами.
+    """
+    repo = app_state().thread_repository
+    if await repo.get_meta(thread_id) is not None:
+        return True
+    workspace_id = cast("WorkspaceId | None", cl.user_session.get("workspace_id"))
+    if workspace_id is None:
+        logger.error("on_settings_update без workspace_id в user_session")
+        return False
+    user = _current_user()
+    persisted = await app_state().data_layer.get_user(user.username)
+    user_id = UserId(persisted.id) if persisted is not None else None
+    try:
+        await repo.create(
+            thread_id,
+            workspace_id,
+            user_id,
+            user.username,
+            metadata={"workspace_id": workspace_id},
+        )
+    except ThreadAlreadyExistsError:
+        # race с _ensure_thread_registered / chainlit update_thread.
+        pass
+    return True
 
 
 @cl.on_settings_update
 async def on_settings_update(settings: dict) -> None:
-    """Сохранить новое значение system_prompt в ThreadMeta.
-
-    Меняем только мету; ChatSession не пересобираем — `ThreadSystemPromptProvider`
-    прочитает свежий промпт на следующем turn'е.
-    """
-    new_prompt = settings.get(_SYSTEM_PROMPT_WIDGET_ID)
-    if not isinstance(new_prompt, str):
-        return
+    """Делегировать секциям. ChatSession не пересобираем — провайдеры
+    прочитают свежие значения на следующем turn'е."""
     thread_id = _current_thread_id()
+    if not await _bootstrap_meta_if_missing(thread_id):
+        return
     repo = app_state().thread_repository
-    existing = await repo.get_meta(thread_id)
-    logger.info(
-        "on_settings_update thread=%s existing=%s new_prompt_head=%r",
-        thread_id, existing is not None, new_prompt[:80],
-    )
-    if existing is None:
-        # Юзер открыл вкладку, поправил промпт и ещё ничего не написал —
-        # создаём мету заранее, чтобы новый промпт пережил рестарт.
-        workspace_id = cast("WorkspaceId | None", cl.user_session.get("workspace_id"))
-        if workspace_id is None:
-            logger.error("on_settings_update без workspace_id в user_session")
-            return
-        user = _current_user()
-        persisted = await app_state().data_layer.get_user(user.username)
-        user_id = UserId(persisted.id) if persisted is not None else None
-        try:
-            await repo.create(
-                thread_id,
-                workspace_id,
-                user_id,
-                user.username,
-                metadata={"workspace_id": workspace_id},
-                system_prompt=new_prompt,
-            )
-            return
-        except ThreadAlreadyExistsError:
-            pass
-    await repo.set_system_prompt(thread_id, new_prompt)
+    for section in app_state().sections:
+        await section.apply(settings, thread_id, repo)
 
 
 @cl.on_chat_end
@@ -286,9 +283,7 @@ async def on_message(message: cl.Message) -> None:
             thread_id,
         )
     except Exception as exc:
-        logger.exception(
-            "Failed to open chat session for workspace=%s", workspace_id
-        )
+        logger.exception("Failed to open chat session for workspace=%s", workspace_id)
         await cl.Message(
             content=(
                 f"Не удалось открыть сессию: {type(exc).__name__}: {exc}\n\n"
@@ -301,7 +296,8 @@ async def on_message(message: cl.Message) -> None:
     query = message.content
     if message.elements:
         uploaded = await save_user_uploads(
-            message.elements, session.project_workspace(),
+            message.elements,
+            session.project_workspace(),
         )
         if uploaded:
             files_block = "\n".join(f"- {p}" for p in uploaded)
@@ -326,9 +322,7 @@ async def on_message(message: cl.Message) -> None:
             _render_events(queue),
         )
     except Exception as exc:
-        logger.exception(
-            "Agent run failed for workspace=%s", workspace_id
-        )
+        logger.exception("Agent run failed for workspace=%s", workspace_id)
         await cl.Message(
             content=(
                 f"Ошибка при выполнении агента: {type(exc).__name__}: {exc}\n\n"
