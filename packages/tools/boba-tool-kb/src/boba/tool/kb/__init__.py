@@ -49,6 +49,10 @@ from boba.tool.kb.core.tools.search.vector import (
     KbSearchVectorConfig,
     kb_search_vector,
 )
+from boba.tool.kb.kbdoc.tools.ingest import (
+    KbdocIngestConfig,
+    kbdoc_ingest_paths,
+)
 
 __all__ = [
     "ChunkerParams",
@@ -62,6 +66,7 @@ __all__ = [
     "KbSearchFtsConfig",
     "KbSearchHybridConfig",
     "KbSearchVectorConfig",
+    "KbdocIngestConfig",
     "PostgresChunkStore",
     "PostgresCollectionsStore",
     "PostgresConnection",
@@ -79,4 +84,5 @@ __all__ = [
     "kb_search_fts",
     "kb_search_hybrid",
     "kb_search_vector",
+    "kbdoc_ingest_paths",
 ]

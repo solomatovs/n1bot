@@ -64,8 +64,7 @@ class ToolExecutionMiddleware(StreamSource[AgentContext, AgentEvent]):
 
         yield ToolExecutionStarted(
             request_id=tc.request_id,
-            tool_call_id=call.id,
-            tool_name=call.name,
+            call=call,
         )
 
         try:

@@ -1,22 +1,5 @@
-"""Live-реализация `EventRenderTarget` поверх chainlit-API.
+"""
 
-Дёргает `cl.Message` / `cl.Step` в реальном времени. Используется sink'ом
-во время `on_message`. Реплей того же события из `history.jsonl` идёт
-через `StepDictTarget` (rendering/replay.py) — оба завязаны на один и тот
-же `AgentEventDispatcher`, так что интерпретация события гарантированно
-совпадает.
-
-Корневая причина «ответ сверху над thinking/tool»:
-`@cl.on_message` оборачивает handler в неявный run-`cl.Step`. `cl.Message`
-в `__post_init__` читает `local_steps` и автоматически получает этот run
-как parent. `cl.Step` так не делает — `parent_id=None` остаётся.
-В итоге answer оказывается ВНУТРИ run-step, а thinking/tool — top-level
-рядом, и frontend рендерит answer «выше» (он внутри parent).
-
-Фикс: захватываем id текущего run-step и пробрасываем его в parent_id
-каждого cl.Step (thinking/tool/status). Тогда все элементы turn'а
-становятся children одного run, frontend помещает их в parent.steps
-в порядке прихода — порядок гарантирован.
 """
 
 from __future__ import annotations
@@ -69,11 +52,6 @@ class ChainlitLiveTarget(EventRenderTarget):
         msg = await self._open_answer()
         await msg.stream_token(text)
 
-    async def tool_args_chunk(self, call_id: str, text: str) -> None:
-        step = self._tool_steps_by_id.get(call_id)
-        if step is not None:
-            await step.stream_token(text, is_input=True)
-
     # --- snapshot завершения ----------------------------------------
 
     async def user_query(self, text: str) -> None:
@@ -105,21 +83,6 @@ class ChainlitLiveTarget(EventRenderTarget):
             return
         self._answer_msg = None
 
-    async def tool_call_complete(
-        self,
-        call_id: str,
-        name: str,
-        args_json: str,
-    ) -> None:
-        # В live tool_step уже открыт через tool_call_started, args стримились.
-        # Если по какой-то причине шага нет — открываем сейчас с готовыми args.
-        if call_id in self._tool_steps_by_id:
-            return
-        step = cl.Step(name=name, type="tool", parent_id=self._parent_id)
-        await step.send()
-        await step.stream_token(args_json, is_input=True)
-        self._tool_steps_by_id[call_id] = step
-
     async def tool_result(
         self,
         call_id: str,
@@ -129,7 +92,8 @@ class ChainlitLiveTarget(EventRenderTarget):
     ) -> None:
         step = self._tool_steps_by_id.pop(call_id, None)
         if step is None:
-            # Orphan: result без открытого tool_step.
+            # Orphan: result без открытого tool_step (ToolExecutionStarted
+            # не пришёл) — рисуем отдельным шагом, чтобы не потерять текст.
             step = cl.Step(name="tool_result", type="tool", parent_id=self._parent_id)
             await step.send()
         await _finalize_step(step, text, is_error=is_error)
@@ -149,11 +113,21 @@ class ChainlitLiveTarget(EventRenderTarget):
         await self._drop_pending_answer()
         self._thinking_step = None
 
-    async def tool_execution_started(self, call_id: str) -> None:
-        # Меняем индикацию — иначе медленные tools выглядят как зависший шаг.
-        step = self._tool_steps_by_id.get(call_id)
-        if step is not None:
-            await _finalize_step(step, "⏳ выполняется…")
+    async def tool_started(
+        self,
+        call_id: str,
+        name: str,
+        args_json: str,
+    ) -> None:
+        # Жизненный цикл tool-step'а в UI начинается ЗДЕСЬ
+        # (не на ToolCallMessage). Финализируется по tool_result /
+        # tool_execution_failed по тому же call_id.
+        await self._clear_status()
+        step = cl.Step(name=name, type="tool", parent_id=self._parent_id)
+        await step.send()
+        await step.stream_token(args_json, is_input=True)
+        await _finalize_step(step, "⏳ выполняется…")
+        self._tool_steps_by_id[call_id] = step
 
     async def generation_milestone(self) -> None:
         # UI-сущности (answer cl.Message, thinking cl.Step) создаём ЛЕНИВО

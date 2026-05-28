@@ -17,16 +17,7 @@ from typing import Any
 
 from pydantic import Field
 
-from boba.indexing import (
-    CollectionScopedView,
-    FullCleanup,
-    IndexerConfig,
-    NoneCleanup,
-    PipelineContext,
-    StreamingIndexer,
-)
-from boba.indexing.context import CollectionId, PipelineId
-from boba.kbdoc import KbDocReader
+from boba.indexing.context import PipelineId
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.core.chunker_factory import build_chunker
 from boba.tool.kb.core.chunker_params import ChunkerParams
@@ -37,11 +28,14 @@ from boba.tool.kb.core.postgres_store import (
     PostgresCollectionsStore,
     PostgresStoreConfig,
 )
-from boba.transport.fs import FsRequest, FsTransport, FsWalkRequestSource
+from boba.tool.kb.kbdoc._ingest_common import run_kbdoc_ingest
+from boba.transport.fs import FsTransport, FsWalkRequestSource
 
 __all__ = ["KbdocIngestCliConfig", "main"]
 
 logger = logging.getLogger("boba.tool.kb.cli.kbdoc.ingest")
+
+_PIPELINE_ID: PipelineId = PipelineId("kb.kbdoc.ingest")
 
 
 class KbdocIngestCliConfig(BobaFlatSettings):
@@ -130,42 +124,21 @@ def _run_ingest(cfg: KbdocIngestCliConfig) -> dict[str, Any]:
     embedder = build_embedder(cfg.embedding)
     chunker = build_chunker(cfg.chunker)
 
-    collection = CollectionId(cfg.collection)
-    collections_store.ensure_collection(collection, description=None)
-
-    view: CollectionScopedView[str] = CollectionScopedView(
-        store=chunk_store,
-        embedder=embedder,
-        collection=collection,
-    )
-    indexer: StreamingIndexer[FsRequest, str] = StreamingIndexer(
+    result = run_kbdoc_ingest(
         request_source=FsWalkRequestSource(
             paths=[str(folder)],
             include=["*.md"],
         ),
         transport=FsTransport(),
-        reader=KbDocReader(),
+        chunk_store=chunk_store,
+        collections_store=collections_store,
+        embedder=embedder,
         chunker=chunker,
-        sink=view,
-        query=view,
+        collection=cfg.collection,
+        prune_missing=cfg.prune,
+        pipeline_id=_PIPELINE_ID,
     )
-    indexer_config: IndexerConfig[str] = IndexerConfig(
-        cleanup=FullCleanup() if cfg.prune else NoneCleanup(),
-        force_update=False,
-    )
-    stats = indexer.invoke(
-        PipelineContext(pipeline_id=PipelineId("kb.kbdoc.ingest")),
-        indexer_config,
-    )
-
-    return {
-        "folder": str(folder),
-        "collection": str(collection),
-        "indexed": stats.chunks_upserted,
-        "skipped_unchanged": stats.sources_skipped_unchanged,
-        "pruned": stats.chunks_deleted,
-        "failed": stats.sources_failed,
-    }
+    return {"folder": str(folder), **result}
 
 
 if __name__ == "__main__":

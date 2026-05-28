@@ -5,10 +5,11 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, ClassVar, Protocol
+from typing import ClassVar, Protocol
 
 from boba.agent.events import (
     AdvisoryEvent,
+    AgentEvent,
     AnswerDelta,
     AnswerMessage,
     ContentDeltaEvent,
@@ -36,9 +37,6 @@ from boba.agent.events import (
 from boba.llm.events import FinishReason
 from boba.tools.domain import ErrorResult, JsonResult, TextResult, ToolResult
 
-if TYPE_CHECKING:
-    from boba.agent.events import AgentEvent
-
 __all__ = ["AgentEventDispatcher", "EventRenderTarget"]
 
 
@@ -50,7 +48,6 @@ class EventRenderTarget(Protocol):
     async def answer_chunk(self, text: str) -> None: ...
     async def thinking_chunk(self, text: str) -> None: ...
     async def refusal_chunk(self, text: str) -> None: ...
-    async def tool_args_chunk(self, call_id: str, text: str) -> None: ...
 
     # завершения content-снапшотов
 
@@ -58,12 +55,6 @@ class EventRenderTarget(Protocol):
     async def answer_complete(self, text: str) -> None: ...
     async def thinking_complete(self, text: str) -> None: ...
     async def refusal_complete(self, text: str) -> None: ...
-    async def tool_call_complete(
-        self,
-        call_id: str,
-        name: str,
-        args_json: str,
-    ) -> None: ...
     async def tool_result(
         self,
         call_id: str,
@@ -76,7 +67,12 @@ class EventRenderTarget(Protocol):
     # phase-маркеры (live UX, replay no-op)
 
     async def iteration_started(self) -> None: ...
-    async def tool_execution_started(self, call_id: str) -> None: ...
+    async def tool_started(
+        self,
+        call_id: str,
+        name: str,
+        args_json: str,
+    ) -> None: ...
     async def generation_milestone(self) -> None: ...
     async def status(self, text: str) -> None: ...
 
@@ -106,13 +102,16 @@ class AgentEventDispatcher:
     """Маппит каждый `AgentEvent` на ровно один вызов `EventRenderTarget`.
 
     Семантика категорий событий:
-        ContentDeltaEvent  — стриминг токенов (`*_chunk`)
+        ContentDeltaEvent  — стриминг токенов (`*_chunk`); `ToolCallDelta`
+                               игнорируется (UI рисует tool-step целиком
+                               по `tool_started`, а не по чанкам args)
         ContentSnapshotEvent — завершённый блок контента (`*_complete`,
-                               `user_query`, `tool_call_complete`,
-                               `tool_result`, `feedback`)
+                               `user_query`, `tool_result`, `feedback`);
+                               `ToolCallMessage` — намерение LLM, в UI
+                               не рендерится
         PhaseEvent         — состояния процесса (`iteration_started`,
-                               `tool_execution_started`,
-                               `generation_milestone`, `status`)
+                               `tool_started` — точка открытия tool-step'а
+                               в UI, `generation_milestone`, `status`)
         AdvisoryEvent      — нефатальные ошибки (`tool_call_decode_failed`,
                                `tool_execution_failed`, `advisory`)
         TerminalEvent      — фатальное завершение (`terminal`)
@@ -144,11 +143,10 @@ class AgentEventDispatcher:
                 if event.chunk:
                     await self._target.refusal_chunk(event.chunk)
             case ToolCallDelta():
-                if event.chunk:
-                    await self._target.tool_args_chunk(
-                        event.stream_id,
-                        event.chunk,
-                    )
+                # Tool args стримятся, но UI не открывает tool-step на
+                # `ToolCallMessage` — он создаётся на `ToolExecutionStarted`,
+                # где args уже доступны целиком. Делать no-op намеренно.
+                return
 
             # --- ContentSnapshot --------------------------------------
             case UserQueryReceived(query=q):
@@ -159,12 +157,11 @@ class AgentEventDispatcher:
                 await self._target.thinking_complete(c)
             case RefusalMessage(content=c):
                 await self._target.refusal_complete(c)
-            case ToolCallMessage(call=call):
-                await self._target.tool_call_complete(
-                    call.id,
-                    call.name,
-                    call.args_json(),
-                )
+            case ToolCallMessage():
+                # Намерение LLM вызвать tool — в UI не рендерим.
+                # Видимый жизненный цикл step'а:
+                # ToolExecutionStarted → ToolResultReady|ToolExecutionFailed.
+                return
             case ToolResultReady(call=call, result=result):
                 await self._target.tool_result(
                     call.id,
@@ -177,8 +174,12 @@ class AgentEventDispatcher:
             # PhaseEvent
             case IterationStarted():
                 await self._target.iteration_started()
-            case ToolExecutionStarted(tool_call_id=tid):
-                await self._target.tool_execution_started(tid)
+            case ToolExecutionStarted(call=call):
+                await self._target.tool_started(
+                    call.id,
+                    call.name,
+                    call.args_json(),
+                )
             case TotalMessage():
                 # терминатор генерации: гасим статус + подсвечиваем исход
                 await self._target.generation_milestone()

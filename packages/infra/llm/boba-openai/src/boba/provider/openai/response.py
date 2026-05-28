@@ -73,6 +73,10 @@ class ChatCompletionChunkConsumer(
         self._thinking_flushed = False
         self._answer_flushed = False
         self._refusal_flushed = False
+        # Провайдер может прислать два чанка с finish_reason (второй несёт
+        # usage); без флага _finalize отработает дважды и продублирует
+        # ToolCallMessage + TotalMessage.
+        self._finalized = False
 
     def name(self) -> str:
         return "ChatCompletionChunkConsumer"
@@ -84,6 +88,7 @@ class ChatCompletionChunkConsumer(
         self._thinking_flushed = False
         self._answer_flushed = False
         self._refusal_flushed = False
+        self._finalized = False
 
     def stream(
         self, ctx: LLMContext, stream: Iterable[ChatCompletionChunk]
@@ -181,6 +186,9 @@ class ChatCompletionChunkConsumer(
             yield LLMRefusalMessage(request_id=self._request_id, content=content)
 
     def _finalize(self, finish_reason: str) -> Iterator[LLMEvent]:
+        if self._finalized:
+            return
+        self._finalized = True
         reason = self._finish.convert(finish_reason)
         # Закрываем незакрытые текстовые слоты (если перехода к ним не было).
         yield from self._flush_thinking()
