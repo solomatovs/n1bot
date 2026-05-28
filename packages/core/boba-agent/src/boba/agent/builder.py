@@ -85,6 +85,7 @@ from boba.tools.decorators import (
 from boba.tools.domain.ids import ToolSourceId
 from boba.tools.framework.registry import (
     StaticToolSource,
+    ToolCatalog,
     ToolExecutor,
     ToolRegistry,
     ToolSource,
@@ -654,6 +655,7 @@ class AgentBuilder:
         self._turn: TurnBuilder | None = None
         self._error_router: AgentErrorRouter = AgentErrorRouter()
         self._compact_max_messages: int | None = None
+        self._catalog_decorator: Callable[[ToolCatalog], ToolCatalog] | None = None
 
         # Дефолты:
         self.use_history(InMemoryHistoryService)
@@ -686,6 +688,18 @@ class AgentBuilder:
     def use_turn(self, turn: TurnBuilder) -> Self:
         """Описание следующего хода. Обязательно до `.build()`."""
         self._turn = turn
+        return self
+
+    def decorate_tool_catalog(
+        self, decorator: Callable[[ToolCatalog], ToolCatalog],
+    ) -> Self:
+        """Обернуть catalog после сборки registry, до передачи в turn.
+
+        Применяется только если turn ещё не имеет catalog'а явно. Полезно
+        для view-обёрток (фильтрация per-thread и т.п.) — caller возвращает
+        новый catalog, не вторгаясь в lifecycle registry.
+        """
+        self._catalog_decorator = decorator
         return self
 
     def use_compact_history(self, max_messages: int) -> Self:
@@ -842,8 +856,13 @@ class AgentBuilder:
 
         if not self._turn.has_history_view():
             self._turn.with_history_view(self._default_history_view(container))
+
         if not self._turn.has_tool_catalog():
-            self._turn.with_tool_catalog(registry.catalog())
+            catalog = registry.catalog()
+            if self._catalog_decorator is not None:
+                catalog = self._catalog_decorator(catalog)
+
+            self._turn.with_tool_catalog(catalog)
 
         chain = self.pipeline.build(terminal, container)
         source = StreamSourceLoop(source=chain, stop_if=self.loop.build_spec())

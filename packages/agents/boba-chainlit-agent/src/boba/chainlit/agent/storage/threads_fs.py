@@ -74,6 +74,7 @@ class ThreadRepository(ABC):
         tags: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
         system_prompt: str | None = None,
+        enabled_tool_ids: list[str] | None = None,
     ) -> None: ...
 
     @abstractmethod
@@ -94,6 +95,11 @@ class ThreadRepository(ABC):
 
     @abstractmethod
     async def set_tags(self, thread_id: ThreadId, tags: list[str]) -> None: ...
+
+    @abstractmethod
+    async def set_enabled_tools(
+        self, thread_id: ThreadId, tool_ids: list[str] | None,
+    ) -> None: ...
 
     @abstractmethod
     async def merge_metadata(
@@ -166,6 +172,7 @@ class FsThreadRepository(ThreadRepository):
         tags: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
         system_prompt: str | None = None,
+        enabled_tool_ids: list[str] | None = None,
     ) -> None:
         now = self._now()
         meta = ThreadMeta(
@@ -177,6 +184,9 @@ class FsThreadRepository(ThreadRepository):
             tags=list(tags) if tags is not None else [],
             metadata=dict(metadata) if metadata is not None else {},
             system_prompt=system_prompt,
+            enabled_tool_ids=(
+                list(enabled_tool_ids) if enabled_tool_ids is not None else None
+            ),
             created_at=now,
             updated_at=now,
         )
@@ -217,6 +227,15 @@ class FsThreadRepository(ThreadRepository):
     async def set_tags(self, thread_id: ThreadId, tags: list[str]) -> None:
         await self._patch_entry(
             thread_id, lambda e: e.model_copy(update={"tags": list(tags)}),
+        )
+
+    async def set_enabled_tools(
+        self, thread_id: ThreadId, tool_ids: list[str] | None,
+    ) -> None:
+        normalized = list(tool_ids) if tool_ids is not None else None
+        await self._patch_entry(
+            thread_id,
+            lambda e: e.model_copy(update={"enabled_tool_ids": normalized}),
         )
 
     async def merge_metadata(

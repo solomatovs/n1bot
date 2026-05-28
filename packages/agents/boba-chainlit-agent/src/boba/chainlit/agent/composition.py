@@ -22,6 +22,11 @@ from boba.chainlit.agent.sessions import (
     ChatSessionPool,
     OpenChatSession,
 )
+from boba.chainlit.agent.settings import (
+    PromptSection,
+    SettingsSection,
+    ToolsSection,
+)
 from boba.chainlit.agent.state import set_app_state
 from boba.chainlit.agent.storage import (
     FsThreadRepository,
@@ -29,6 +34,7 @@ from boba.chainlit.agent.storage import (
     ThreadRepository,
 )
 from boba.chainlit.agent.system_prompt import DefaultSystemPromptSource
+from boba.chainlit.agent.tool_cache import AvailableToolsCache
 from boba.workspace.contract import (
     HistoryWorkspaceRegistry,
     ProjectWorkspaceRegistry,
@@ -77,6 +83,7 @@ def _make_chat_session_builder(
     history_workspaces: HistoryWorkspaceRegistry,
     thread_repository: ThreadRepository,
     default_prompt_source: DefaultSystemPromptSource,
+    available_tools: AvailableToolsCache,
 ) -> Callable[[WorkspaceId, ThreadId], ChatSession]:
     """Замыкание над deps; возвращает фабрику ChatSession по (workspace, thread)."""
 
@@ -89,6 +96,7 @@ def _make_chat_session_builder(
             history_workspaces,
             thread_repository,
             default_prompt_source,
+            available_tools,
         )
 
     return build
@@ -123,6 +131,7 @@ def main() -> int:
     user_catalog = FsUserCatalog(system_shell)
     thread_repository = FsThreadRepository(system_shell)
     default_prompt_source = DefaultSystemPromptSource(Path(rt.system_prompt_dir))
+    available_tools = AvailableToolsCache()
 
     builder_factory = _make_builder_factory()
     chat_session_pool = ChatSessionPool(
@@ -132,6 +141,7 @@ def main() -> int:
             history_workspaces,
             thread_repository,
             default_prompt_source,
+            available_tools,
         ),
         capacity=chainlit_cfg.chat_session_pool_capacity,
     )
@@ -143,12 +153,20 @@ def main() -> int:
         make_history_service,
     )
 
+    # Реестр секций шестерёнки. Порядок = порядок табов слева направо.
+    sections: tuple[SettingsSection, ...] = (
+        PromptSection(default_prompt_source),
+        ToolsSection(available_tools),
+    )
+
     set_app_state(
         authenticate_user,
         open_chat_session,
         data_layer,
         thread_repository,
         default_prompt_source,
+        available_tools,
+        sections,
     )
 
     # chainlit импортируется только после bootstrap — он читает env при загрузке.
