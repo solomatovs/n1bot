@@ -7,7 +7,6 @@ from collections.abc import Iterable
 from boba.agent.agent import AgentContext
 from boba.agent.events import (
     AgentEvent,
-    FeedbackToLLMAdded,
     ToolCallMessage,
     ToolExecutionFailed,
     ToolExecutionStarted,
@@ -142,10 +141,6 @@ class RepeatedToolCallGuardMiddleware(StreamSource[AgentContext, AgentEvent]):
                 error = ErrorResult(
                     message=message,
                     error_kind="RepeatedToolCallError",
-                )
-                yield FeedbackToLLMAdded(
-                    request_id=event.request_id,
-                    content=message,
                 )
                 yield ToolExecutionFailed(
                     request_id=event.request_id,
