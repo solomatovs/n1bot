@@ -71,6 +71,7 @@ class ThreadMeta(BaseModel):
     name: str | None
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    system_prompt: str | None = None
     created_at: str
     updated_at: str
 
@@ -86,6 +87,7 @@ class ThreadIndexEntry(BaseModel):
     name: str | None
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    system_prompt: str | None = None
     created_at: str
     updated_at: str
 

@@ -51,7 +51,9 @@ logger = logging.getLogger(__name__)
 
 
 class BobaDataLayer(BaseDataLayer):
-    """Chainlit-adapter: users + thread-metas из репо, steps из HistoryService."""
+    """
+    Chainlit-adapter: users + thread-metas из репо, steps из HistoryService
+    """
 
     _WORKSPACE_META_KEY: ClassVar[str] = "workspace_id"
 
@@ -127,8 +129,10 @@ class BobaDataLayer(BaseDataLayer):
     ) -> None:
         existing = await self._threads.get_meta(thread_id)
         workspace_id = self._resolve_workspace(metadata)
+
         if workspace_id is None and existing is not None:
             workspace_id = existing.workspace_id
+
         if workspace_id is None:
             logger.warning(
                 "update_thread(%s) без workspace_id — пропускаем",
@@ -141,6 +145,7 @@ class BobaDataLayer(BaseDataLayer):
         merged_metadata = dict(existing.metadata) if existing else {}
         if metadata:
             merged_metadata.update(metadata)
+
         merged_metadata[self._WORKSPACE_META_KEY] = workspace_id
 
         meta = ThreadMeta(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import threading
 from abc import ABC, abstractmethod
 from typing import ClassVar
 
@@ -32,6 +33,9 @@ class ThreadRepository(ABC):
     async def get_meta(self, thread_id: ThreadId) -> ThreadMeta | None: ...
 
     @abstractmethod
+    def get_meta_sync(self, thread_id: ThreadId) -> ThreadMeta | None: ...
+
+    @abstractmethod
     async def upsert_meta(self, meta: ThreadMeta) -> None: ...
 
     @abstractmethod
@@ -54,9 +58,22 @@ class FsThreadRepository(ThreadRepository):
         self._system_shell = system_shell
         self._index_filename = index_filename
         self._index_lock = asyncio.Lock()
+        # sync-lock используется только синхронным read-путём (PromptProvider
+        # вызывается из worker-thread'а без event loop'а). Не пересекается
+        # с _index_lock — sync-read это чистый snapshot, не транзакция.
+        self._sync_lock = threading.Lock()
 
     async def get_meta(self, thread_id: ThreadId) -> ThreadMeta | None:
         entry = await self._lookup_entry(thread_id)
+        if entry is None:
+            return None
+        return entry.to_meta(thread_id)
+
+    def get_meta_sync(self, thread_id: ThreadId) -> ThreadMeta | None:
+        """Sync-вариант для PromptProvider: вызывается из turn-thread'а."""
+        with self._sync_lock:
+            index = self._load_index()
+        entry = index.get(thread_id)
         if entry is None:
             return None
         return entry.to_meta(thread_id)
