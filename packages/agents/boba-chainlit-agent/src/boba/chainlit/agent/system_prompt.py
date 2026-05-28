@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -20,6 +21,8 @@ from boba.chainlit.agent.models import ThreadId
 from boba.chainlit.agent.storage import ThreadRepository
 
 __all__ = ["DefaultSystemPromptSource", "ThreadSystemPromptProvider"]
+
+logger = logging.getLogger(__name__)
 
 
 class DefaultSystemPromptSource:
@@ -84,4 +87,11 @@ class ThreadSystemPromptProvider(PromptProvider):
     def blocks(self, state: PromptState) -> Iterable[PromptBlock]:
         meta = self._repository.get_meta_sync(self._thread_id)
         content = (meta.system_prompt if meta is not None else None) or self._fallback
+        logger.info(
+            "ThreadSystemPromptProvider thread=%s meta=%s source=%s head=%r",
+            self._thread_id,
+            meta is not None,
+            "meta" if (meta is not None and meta.system_prompt) else "fallback",
+            content[:80],
+        )
         yield PromptBlock(name=self._id, content=content)

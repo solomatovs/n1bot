@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
 from typing import Any, ClassVar, cast
 
 import chainlit as cl
@@ -38,11 +37,15 @@ from boba.agent.history import HistoryService
 from boba.chainlit.agent.models import (
     StoredUser,
     ThreadId,
-    ThreadMeta,
     UserId,
 )
 from boba.chainlit.agent.rendering.replay import replay_history_to_steps_sync
-from boba.chainlit.agent.storage import ThreadRepository, UserCatalog
+from boba.chainlit.agent.storage import (
+    ThreadAlreadyExistsError,
+    ThreadNotFoundError,
+    ThreadRepository,
+    UserCatalog,
+)
 from boba.workspace.contract import WorkspaceId
 
 __all__ = ["BobaDataLayer"]
@@ -127,12 +130,14 @@ class BobaDataLayer(BaseDataLayer):
         metadata: dict[str, Any] | None = None,
         tags: list[str] | None = None,
     ) -> None:
+        # chainlit вызывает этот метод и при первом сообщении (когда меты
+        # ещё нет), и при последующих апдейтах. Внутри — узкие операции
+        # репозитория, чтобы случайно не затереть поля, о которых chainlit
+        # не знает (например, system_prompt).
         existing = await self._threads.get_meta(thread_id)
         workspace_id = self._resolve_workspace(metadata)
-
         if workspace_id is None and existing is not None:
             workspace_id = existing.workspace_id
-
         if workspace_id is None:
             logger.warning(
                 "update_thread(%s) без workspace_id — пропускаем",
@@ -140,32 +145,41 @@ class BobaDataLayer(BaseDataLayer):
             )
             return
 
-        now = datetime.now(UTC).isoformat()
         user_identifier = self._current_user_identifier()
-        merged_metadata = dict(existing.metadata) if existing else {}
-        if metadata:
-            merged_metadata.update(metadata)
+        metadata_patch = dict(metadata) if metadata else {}
+        metadata_patch[self._WORKSPACE_META_KEY] = workspace_id
 
-        merged_metadata[self._WORKSPACE_META_KEY] = workspace_id
+        if existing is None:
+            try:
+                await self._threads.create(
+                    thread_id,
+                    workspace_id,
+                    user_id,
+                    user_identifier,
+                    name=name,
+                    tags=list(tags) if tags is not None else None,
+                    metadata=metadata_patch,
+                    system_prompt=None,
+                )
+                return
+            except ThreadAlreadyExistsError:
+                # race с _ensure_thread_registered / on_settings_update —
+                # мета только что появилась; продолжаем узкими апдейтами.
+                pass
 
-        meta = ThreadMeta(
-            id=thread_id,
-            workspace_id=workspace_id,
-            user_id=user_id
-            if user_id is not None
-            else (existing.user_id if existing else None),
-            user_identifier=(
-                user_identifier or (existing.user_identifier if existing else None)
-            ),
-            name=name if name is not None else (existing.name if existing else None),
-            tags=list(tags)
-            if tags is not None
-            else (existing.tags if existing else []),
-            metadata=merged_metadata,
-            created_at=existing.created_at if existing else now,
-            updated_at=now,
-        )
-        await self._threads.upsert_meta(meta)
+        try:
+            if name is not None:
+                await self._threads.rename(thread_id, name)
+            if user_id is not None or user_identifier is not None:
+                await self._threads.set_user(thread_id, user_id, user_identifier)
+            if tags is not None:
+                await self._threads.set_tags(thread_id, list(tags))
+            await self._threads.merge_metadata(thread_id, metadata_patch)
+        except ThreadNotFoundError:
+            logger.warning(
+                "update_thread(%s): мета исчезла между get_meta и патчем",
+                thread_id,
+            )
 
     async def delete_thread(self, thread_id: ThreadId) -> None:
         meta = await self._threads.get_meta(thread_id)

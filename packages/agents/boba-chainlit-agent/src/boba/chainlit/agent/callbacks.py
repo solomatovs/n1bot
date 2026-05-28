@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
 from typing import ClassVar, cast
 
 import chainlit as cl
@@ -13,13 +12,14 @@ from chainlit.input_widget import TextInput
 from chainlit.types import ThreadDict
 
 from boba.agent.events import AgentEvent
-from boba.chainlit.agent.models import ThreadId, ThreadMeta, User, UserId
+from boba.chainlit.agent.models import ThreadId, User, UserId
 from boba.chainlit.agent.rendering import (
     AgentEventDispatcher,
     ChainlitBridgeSink,
     ChainlitLiveTarget,
 )
 from boba.chainlit.agent.state import app_state
+from boba.chainlit.agent.storage import ThreadAlreadyExistsError
 from boba.chainlit.agent.uploads import save_user_uploads
 from boba.workspace.contract import WorkspaceId, new_workspace_id
 
@@ -103,33 +103,41 @@ async def _ensure_thread_registered(
 
     on_chat_start этого не делает: пока юзер не написал ни строки,
     в sidebar/на диске не должно появляться пустых записей и workspace'ов.
-    Здесь создаём `ThreadMeta` при первом сообщении (со «замороженным»
-    дефолтным system_prompt'ом), либо проставляем имя у уже существующей
-    меты, если оно ещё пустое (resume сценарий).
+    Здесь создаём мету при первом сообщении (со «замороженным» дефолтным
+    system_prompt'ом), либо проставляем имя у уже существующей меты, если
+    оно ещё пустое (resume сценарий, либо мета была создана on_settings_update).
     """
-    existing = await app_state().thread_repository.get_meta(thread_id)
+    repo = app_state().thread_repository
+    existing = await repo.get_meta(thread_id)
+    logger.info(
+        "ensure_thread_registered thread=%s existing=%s existing_prompt_head=%r",
+        thread_id,
+        existing is not None,
+        (existing.system_prompt or "")[:80] if existing else "",
+    )
     if existing is not None and existing.name:
         return
     name = _trim(first_message) or None
-    now = datetime.now(UTC).isoformat()
     if existing is None:
         persisted = await app_state().data_layer.get_user(user_identifier)
         user_id = UserId(persisted.id) if persisted is not None else None
-        meta = ThreadMeta(
-            id=thread_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            user_identifier=user_identifier,
-            name=name,
-            tags=[],
-            metadata={"workspace_id": workspace_id},
-            system_prompt=app_state().default_prompt_source.read(),
-            created_at=now,
-            updated_at=now,
-        )
-    else:
-        meta = existing.model_copy(update={"name": name, "updated_at": now})
-    await app_state().thread_repository.upsert_meta(meta)
+        try:
+            await repo.create(
+                thread_id,
+                workspace_id,
+                user_id,
+                user_identifier,
+                name=name,
+                metadata={"workspace_id": workspace_id},
+                system_prompt=app_state().default_prompt_source.read(),
+            )
+            return
+        except ThreadAlreadyExistsError:
+            # race с on_settings_update / chainlit update_thread — мета
+            # появилась между get_meta и create; продолжаем как с existing.
+            pass
+    if name is not None:
+        await repo.rename(thread_id, name)
 
 
 def _trim(text: str) -> str:
@@ -216,7 +224,10 @@ async def on_settings_update(settings: dict) -> None:
     thread_id = _current_thread_id()
     repo = app_state().thread_repository
     existing = await repo.get_meta(thread_id)
-    now = datetime.now(UTC).isoformat()
+    logger.info(
+        "on_settings_update thread=%s existing=%s new_prompt_head=%r",
+        thread_id, existing is not None, new_prompt[:80],
+    )
     if existing is None:
         # Юзер открыл вкладку, поправил промпт и ещё ничего не написал —
         # создаём мету заранее, чтобы новый промпт пережил рестарт.
@@ -227,23 +238,19 @@ async def on_settings_update(settings: dict) -> None:
         user = _current_user()
         persisted = await app_state().data_layer.get_user(user.username)
         user_id = UserId(persisted.id) if persisted is not None else None
-        meta = ThreadMeta(
-            id=thread_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            user_identifier=user.username,
-            name=None,
-            tags=[],
-            metadata={"workspace_id": workspace_id},
-            system_prompt=new_prompt,
-            created_at=now,
-            updated_at=now,
-        )
-    else:
-        meta = existing.model_copy(
-            update={"system_prompt": new_prompt, "updated_at": now},
-        )
-    await repo.upsert_meta(meta)
+        try:
+            await repo.create(
+                thread_id,
+                workspace_id,
+                user_id,
+                user.username,
+                metadata={"workspace_id": workspace_id},
+                system_prompt=new_prompt,
+            )
+            return
+        except ThreadAlreadyExistsError:
+            pass
+    await repo.set_system_prompt(thread_id, new_prompt)
 
 
 @cl.on_chat_end

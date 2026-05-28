@@ -1,4 +1,13 @@
-"""Порт `ThreadRepository` + FS-реализация поверх `threads-index.json`."""
+"""Порт `ThreadRepository` + FS-реализация поверх `threads-index.json`.
+
+Контракт намеренно узкий: общий `create(...)` принимает поля, нужные для
+нового треда; изменения существующей меты идут через именованные операции
+(`rename`, `set_system_prompt`, `set_user`, `set_tags`, `merge_metadata`).
+
+Это устраняет класс багов, когда вызывающий собирает полный `ThreadMeta` и
+случайно теряет поле, о котором не знал (например, `system_prompt`,
+добавленный позже). Поле `updated_at` штампуется самим репозиторием.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +15,9 @@ import asyncio
 import io
 import threading
 from abc import ABC, abstractmethod
-from typing import ClassVar
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any, ClassVar
 
 from pydantic import TypeAdapter
 
@@ -16,9 +27,14 @@ from boba.chainlit.agent.models import (
     ThreadMeta,
     UserId,
 )
-from boba.workspace.contract import HistoryWorkspaceShell
+from boba.workspace.contract import HistoryWorkspaceShell, WorkspaceId
 
-__all__ = ["FsThreadRepository", "ThreadRepository"]
+__all__ = [
+    "FsThreadRepository",
+    "ThreadAlreadyExistsError",
+    "ThreadNotFoundError",
+    "ThreadRepository",
+]
 
 
 _THREAD_INDEX_ADAPTER: TypeAdapter[dict[ThreadId, ThreadIndexEntry]] = TypeAdapter(
@@ -26,8 +42,16 @@ _THREAD_INDEX_ADAPTER: TypeAdapter[dict[ThreadId, ThreadIndexEntry]] = TypeAdapt
 )
 
 
+class ThreadNotFoundError(Exception):
+    """Узкая операция вызвана для несуществующего thread_id."""
+
+
+class ThreadAlreadyExistsError(Exception):
+    """`create` вызван для уже существующего thread_id."""
+
+
 class ThreadRepository(ABC):
-    """Хранилище мет тредов"""
+    """Хранилище мет тредов."""
 
     @abstractmethod
     async def get_meta(self, thread_id: ThreadId) -> ThreadMeta | None: ...
@@ -36,17 +60,56 @@ class ThreadRepository(ABC):
     def get_meta_sync(self, thread_id: ThreadId) -> ThreadMeta | None: ...
 
     @abstractmethod
-    async def upsert_meta(self, meta: ThreadMeta) -> None: ...
+    async def list_for_user(self, user_id: UserId) -> list[ThreadMeta]: ...
+
+    @abstractmethod
+    async def create(
+        self,
+        thread_id: ThreadId,
+        workspace_id: WorkspaceId,
+        user_id: UserId | None,
+        user_identifier: str | None,
+        *,
+        name: str | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        system_prompt: str | None = None,
+    ) -> None: ...
+
+    @abstractmethod
+    async def rename(self, thread_id: ThreadId, name: str | None) -> None: ...
+
+    @abstractmethod
+    async def set_system_prompt(
+        self, thread_id: ThreadId, system_prompt: str | None,
+    ) -> None: ...
+
+    @abstractmethod
+    async def set_user(
+        self,
+        thread_id: ThreadId,
+        user_id: UserId | None,
+        user_identifier: str | None,
+    ) -> None: ...
+
+    @abstractmethod
+    async def set_tags(self, thread_id: ThreadId, tags: list[str]) -> None: ...
+
+    @abstractmethod
+    async def merge_metadata(
+        self, thread_id: ThreadId, patch: dict[str, Any],
+    ) -> None: ...
 
     @abstractmethod
     async def delete(self, thread_id: ThreadId) -> None: ...
 
-    @abstractmethod
-    async def list_for_user(self, user_id: UserId) -> list[ThreadMeta]: ...
+
+_Index = dict[ThreadId, ThreadIndexEntry]
+_Mutator = Callable[[_Index], None]
 
 
 class FsThreadRepository(ThreadRepository):
-    """Меты тредов в `system_shell/threads-index.json`"""
+    """Меты тредов в `system_shell/threads-index.json`."""
 
     _DEFAULT_INDEX_FILENAME: ClassVar[str] = "threads-index.json"
 
@@ -63,32 +126,24 @@ class FsThreadRepository(ThreadRepository):
         # с _index_lock — sync-read это чистый snapshot, не транзакция.
         self._sync_lock = threading.Lock()
 
+    @staticmethod
+    def _now() -> str:
+        return datetime.now(UTC).isoformat()
+
     async def get_meta(self, thread_id: ThreadId) -> ThreadMeta | None:
-        entry = await self._lookup_entry(thread_id)
+        index = await self._load_index_locked()
+        entry = index.get(thread_id)
         if entry is None:
             return None
         return entry.to_meta(thread_id)
 
     def get_meta_sync(self, thread_id: ThreadId) -> ThreadMeta | None:
-        """Sync-вариант для PromptProvider: вызывается из turn-thread'а."""
         with self._sync_lock:
             index = self._load_index()
         entry = index.get(thread_id)
         if entry is None:
             return None
         return entry.to_meta(thread_id)
-
-    async def upsert_meta(self, meta: ThreadMeta) -> None:
-        async with self._index_lock:
-            index = await asyncio.to_thread(self._load_index)
-            index[meta.id] = ThreadIndexEntry.from_meta(meta)
-            await asyncio.to_thread(self._save_index, index)
-
-    async def delete(self, thread_id: ThreadId) -> None:
-        async with self._index_lock:
-            index = await asyncio.to_thread(self._load_index)
-            if index.pop(thread_id, None) is not None:
-                await asyncio.to_thread(self._save_index, index)
 
     async def list_for_user(self, user_id: UserId) -> list[ThreadMeta]:
         index = await self._load_index_locked()
@@ -100,22 +155,120 @@ class FsThreadRepository(ThreadRepository):
         metas.sort(key=lambda m: m.updated_at, reverse=True)
         return metas
 
-    async def _lookup_entry(self, thread_id: ThreadId) -> ThreadIndexEntry | None:
-        index = await self._load_index_locked()
-        return index.get(thread_id)
+    async def create(
+        self,
+        thread_id: ThreadId,
+        workspace_id: WorkspaceId,
+        user_id: UserId | None,
+        user_identifier: str | None,
+        *,
+        name: str | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        system_prompt: str | None = None,
+    ) -> None:
+        now = self._now()
+        meta = ThreadMeta(
+            id=thread_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            user_identifier=user_identifier,
+            name=name,
+            tags=list(tags) if tags is not None else [],
+            metadata=dict(metadata) if metadata is not None else {},
+            system_prompt=system_prompt,
+            created_at=now,
+            updated_at=now,
+        )
 
-    async def _load_index_locked(self) -> dict[ThreadId, ThreadIndexEntry]:
+        def mutate(index: _Index) -> None:
+            if thread_id in index:
+                raise ThreadAlreadyExistsError(thread_id)
+            index[thread_id] = ThreadIndexEntry.from_meta(meta)
+
+        await self._mutate_index(mutate)
+
+    async def rename(self, thread_id: ThreadId, name: str | None) -> None:
+        await self._patch_entry(
+            thread_id, lambda e: e.model_copy(update={"name": name}),
+        )
+
+    async def set_system_prompt(
+        self, thread_id: ThreadId, system_prompt: str | None,
+    ) -> None:
+        await self._patch_entry(
+            thread_id,
+            lambda e: e.model_copy(update={"system_prompt": system_prompt}),
+        )
+
+    async def set_user(
+        self,
+        thread_id: ThreadId,
+        user_id: UserId | None,
+        user_identifier: str | None,
+    ) -> None:
+        await self._patch_entry(
+            thread_id,
+            lambda e: e.model_copy(
+                update={"user_id": user_id, "user_identifier": user_identifier},
+            ),
+        )
+
+    async def set_tags(self, thread_id: ThreadId, tags: list[str]) -> None:
+        await self._patch_entry(
+            thread_id, lambda e: e.model_copy(update={"tags": list(tags)}),
+        )
+
+    async def merge_metadata(
+        self, thread_id: ThreadId, patch: dict[str, Any],
+    ) -> None:
+        def update(entry: ThreadIndexEntry) -> ThreadIndexEntry:
+            merged = dict(entry.metadata)
+            merged.update(patch)
+            return entry.model_copy(update={"metadata": merged})
+
+        await self._patch_entry(thread_id, update)
+
+    async def delete(self, thread_id: ThreadId) -> None:
+        def mutate(index: _Index) -> None:
+            index.pop(thread_id, None)
+
+        await self._mutate_index(mutate)
+
+    async def _patch_entry(
+        self,
+        thread_id: ThreadId,
+        update: Callable[[ThreadIndexEntry], ThreadIndexEntry],
+    ) -> None:
+        now = self._now()
+
+        def mutate(index: _Index) -> None:
+            entry = index.get(thread_id)
+            if entry is None:
+                raise ThreadNotFoundError(thread_id)
+            patched = update(entry)
+            index[thread_id] = patched.model_copy(update={"updated_at": now})
+
+        await self._mutate_index(mutate)
+
+    async def _mutate_index(self, mutator: _Mutator) -> None:
+        async with self._index_lock:
+            index = await asyncio.to_thread(self._load_index)
+            mutator(index)
+            await asyncio.to_thread(self._save_index, index)
+
+    async def _load_index_locked(self) -> _Index:
         async with self._index_lock:
             return await asyncio.to_thread(self._load_index)
 
-    def _load_index(self) -> dict[ThreadId, ThreadIndexEntry]:
+    def _load_index(self) -> _Index:
         if not self._system_shell.exists(self._index_filename):
             return {}
         with self._system_shell.read_text(self._index_filename) as fh:
             text = fh.read() or "{}"
         return _THREAD_INDEX_ADAPTER.validate_json(text)
 
-    def _save_index(self, index: dict[ThreadId, ThreadIndexEntry]) -> None:
+    def _save_index(self, index: _Index) -> None:
         payload = _THREAD_INDEX_ADAPTER.dump_json(
             index,
             by_alias=True,
