@@ -8,7 +8,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from boba.chainlit.agent.models import User
+from boba.chainlit.agent.models import ThreadId, User
 from boba.chainlit.agent.sessions.chat_session import ChatSession
 from boba.workspace.contract import WorkspaceId
 
@@ -24,11 +24,16 @@ class _SessionKey:
 
 
 class ChatSessionPool:
-    """LRU-кеш ChatSession по (user, workspace) с локом против двойного build."""
+    """LRU-кеш ChatSession по (user, workspace) с локом против двойного build.
+
+    Инвариант: workspace_id 1:1 thread_id в текущем chainlit-агенте
+    (workspace создаётся в `on_chat_start` и живёт ровно с одним thread'ом).
+    `thread_id` фиксируется в ChatSession при первом build и далее не меняется.
+    """
 
     def __init__(
         self,
-        build: Callable[[WorkspaceId], ChatSession],
+        build: Callable[[WorkspaceId, ThreadId], ChatSession],
         capacity: int = 32,
     ) -> None:
         if capacity < 1:
@@ -44,6 +49,7 @@ class ChatSessionPool:
         self,
         user: User,
         workspace_id: WorkspaceId,
+        thread_id: ThreadId,
     ) -> ChatSession:
         key = _SessionKey(user.username, workspace_id)
 
@@ -56,7 +62,9 @@ class ChatSessionPool:
                 async with self._registry_lock:
                     self._sessions.move_to_end(key)
                 return cached
-            session = await asyncio.to_thread(self._build, key.workspace_id)
+            session = await asyncio.to_thread(
+                self._build, key.workspace_id, thread_id
+            )
             await self._insert(key, session)
             return session
 
@@ -93,5 +101,6 @@ class OpenChatSession:
         self,
         user: User,
         workspace_id: WorkspaceId,
+        thread_id: ThreadId,
     ) -> ChatSession:
-        return await self._pool.get_or_create(user, workspace_id)
+        return await self._pool.get_or_create(user, workspace_id, thread_id)

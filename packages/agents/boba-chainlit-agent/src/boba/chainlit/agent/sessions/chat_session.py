@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from boba.agent import AgentBuilder, TurnBuilder
 from boba.agent.agent import Agent
 from boba.agent.history import JsonLinesHistoryService
-from boba.agent.workspace_fs import FsPromptWorkspaceRegistry
+from boba.agent.prompt import PromptId
 from boba.chainlit.agent.config import ChainlitConfig
 from boba.chainlit.agent.logging import log_context
+from boba.chainlit.agent.models import ThreadId
 from boba.chainlit.agent.rendering.bridge import ChainlitBridgeSink
+from boba.chainlit.agent.storage import ThreadRepository
+from boba.chainlit.agent.system_prompt import (
+    DefaultSystemPromptSource,
+    ThreadSystemPromptProvider,
+)
 from boba.llm.builder import LLMBuilder
 from boba.provider.openai import (
     CurlTraceChatCompletionObserver,
@@ -22,7 +26,6 @@ from boba.workspace.contract import (
     HistoryWorkspaceShell,
     ProjectWorkspaceRegistry,
     ProjectWorkspaceShell,
-    PromptWorkspaceId,
     WorkspaceId,
 )
 
@@ -30,16 +33,25 @@ __all__ = ["ChatSession"]
 
 
 class ChatSession:
-    """Per-workspace обёртка: один Agent, привязанный к конкретному workspace_id."""
+    """Per-workspace обёртка: один Agent, привязанный к конкретному workspace_id.
+
+    `thread_id` фиксируется при сборке и используется `ThreadSystemPromptProvider`
+    для чтения per-thread system-prompt на каждом turn'е без пересборки сессии.
+    Инвариант workspace 1:1 thread держится chainlit-уровнем (см. ChatSessionPool).
+    """
 
     def __init__(
         self,
         workspace_id: WorkspaceId,
+        thread_id: ThreadId,
         builder: AgentBuilder,
         project_workspaces: ProjectWorkspaceRegistry,
         history_workspaces: HistoryWorkspaceRegistry,
+        thread_repository: ThreadRepository,
+        default_prompt_source: DefaultSystemPromptSource,
     ) -> None:
         self._workspace_id = workspace_id
+        self._thread_id = thread_id
         self._chainlit_config = ChainlitConfig.load()
         rt = self._chainlit_config.runtime
 
@@ -66,12 +78,16 @@ class ChatSession:
             .build(use_openai(rt.openai))
         )
 
-        system_prompt_workspace = FsPromptWorkspaceRegistry(
-            root=Path(rt.system_prompt_dir),
-        ).get_or_create(PromptWorkspaceId("prompts"))
-
-        turn = TurnBuilder(rt.model).system_prompt_from_directory(
-            system_prompt_workspace
+        turn = TurnBuilder(rt.model).system_prompt_from_providers(
+            [
+                ThreadSystemPromptProvider(
+                    PromptId("thread_system_prompt"),
+                    priority=100,
+                    repository=thread_repository,
+                    thread_id=thread_id,
+                    fallback=default_prompt_source.read(),
+                ),
+            ]
         )
 
         def _provide_project_workspace() -> ProjectWorkspaceShell:

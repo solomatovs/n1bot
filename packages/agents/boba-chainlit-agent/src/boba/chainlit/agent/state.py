@@ -13,6 +13,7 @@ from boba.chainlit.agent.auth import AuthenticateUser
 from boba.chainlit.agent.data_layer import BobaDataLayer
 from boba.chainlit.agent.sessions import OpenChatSession
 from boba.chainlit.agent.storage import ThreadRepository
+from boba.chainlit.agent.system_prompt import DefaultSystemPromptSource
 
 __all__ = ["AppState", "app_state", "set_app_state"]
 
@@ -25,6 +26,7 @@ class AppState:
     open_chat_session: OpenChatSession
     data_layer: BobaDataLayer
     thread_repository: ThreadRepository
+    default_prompt_source: DefaultSystemPromptSource
 
 
 @dataclass
@@ -42,6 +44,7 @@ def set_app_state(
     open_chat_session: OpenChatSession,
     data_layer: BobaDataLayer,
     thread_repository: ThreadRepository,
+    default_prompt_source: DefaultSystemPromptSource,
 ) -> None:
     """Зафиксировать deps до `run_chainlit(...)`."""
     _holder.state = AppState(
@@ -49,6 +52,7 @@ def set_app_state(
         open_chat_session=open_chat_session,
         data_layer=data_layer,
         thread_repository=thread_repository,
+        default_prompt_source=default_prompt_source,
     )
 
 
