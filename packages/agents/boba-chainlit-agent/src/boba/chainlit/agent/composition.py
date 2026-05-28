@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
@@ -42,6 +44,8 @@ from boba.workspace.contract import (
 )
 
 __all__ = ["main"]
+
+_logger = logging.getLogger(__name__)
 
 _SYSTEM_WORKSPACE_ID = WorkspaceId("_chainlit_system")
 """Workspace для системных файлов chainlit (users.json, threads-index.json)."""
@@ -102,6 +106,26 @@ def _make_chat_session_builder(
     return build
 
 
+def _warm_tool_cache(
+    chat_session_builder: Callable[[WorkspaceId, ThreadId], ChatSession],
+) -> None:
+    """Сборкой одноразовой ChatSession наполняем AvailableToolsCache.
+
+    `ChatSession.__init__` → `AgentBuilder.build` → `_wrap_catalog` зовёт
+    `set_once`; повторный set_once на реальной сессии — no-op (контракт
+    set-once). Если сборка падает — лог + продолжаем: tools потом
+    подтянутся при первом on_message.
+    """
+    warm_thread = ThreadId(f"warmup-{uuid.uuid4()}")
+    try:
+        chat_session_builder(_SYSTEM_WORKSPACE_ID, warm_thread)
+    except Exception:
+        _logger.exception(
+            "warmup ChatSession failed; tool checkboxes will appear after "
+            "the first user message",
+        )
+
+
 def main() -> int:
     chainlit_cfg = ChainlitConfig.load()
     rt = chainlit_cfg.runtime
@@ -134,18 +158,28 @@ def main() -> int:
     available_tools = AvailableToolsCache()
 
     builder_factory = _make_builder_factory()
+    chat_session_builder = _make_chat_session_builder(
+        builder_factory,
+        project_workspaces,
+        history_workspaces,
+        thread_repository,
+        default_prompt_source,
+        available_tools,
+    )
     chat_session_pool = ChatSessionPool(
-        _make_chat_session_builder(
-            builder_factory,
-            project_workspaces,
-            history_workspaces,
-            thread_repository,
-            default_prompt_source,
-            available_tools,
-        ),
+        chat_session_builder,
         capacity=chainlit_cfg.chat_session_pool_capacity,
     )
     open_chat_session = OpenChatSession(chat_session_pool)
+
+    # Eager-прогрев AvailableToolsCache: до первого on_chat_start cache пуст
+    # → ToolsSection отдаёт пустой список → в шестерёнке нет таба «tools».
+    # Одноразовая ChatSession через system workspace выполняет
+    # discover_plugins + AgentBuilder.build, что внутри `_wrap_catalog`
+    # триггерит `set_once`. Сессия и её агент не используются и сразу gc'ятся;
+    # workspace dir тот же, что под users.json / threads-index.json, новых
+    # каталогов на диске не появляется.
+    _warm_tool_cache(chat_session_builder)
 
     data_layer = BobaDataLayer(
         user_catalog,

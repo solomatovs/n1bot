@@ -71,8 +71,7 @@ def _all_events() -> list[Any]:
         IterationStarted(request_id=_RID, iteration_count=1, max_iterations=5),
         ToolExecutionStarted(
             request_id=_RID,
-            tool_call_id="call_1",
-            tool_name="search",
+            call=_TC,
         ),
         # ContentDeltaEvent (4)
         ThinkingDelta(request_id=_RID, token="t"),

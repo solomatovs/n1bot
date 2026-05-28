@@ -484,20 +484,21 @@ class IterationStarted(PhaseEvent):
 
 
 class ToolExecutionStarted(PhaseEvent):
-    """
-    Tool готов к исполнению - PhaseEvent несёт только `tool_call_id` и
-    `tool_name`. Полный `ToolCall` (с args) уже доступен в `ToolCallMessage`
-    (ContentSnapshotEvent) с тем же `tool_call_id`.
+    """Tool готов к исполнению — несёт полный `ToolCall` (id, name, args).
+
+    UI рендерит жизненный цикл tool-step'а именно с этого события:
+    создаётся UI-блок с args; финализируется по `ToolResultReady`
+    или `ToolExecutionFailed` с тем же `call.id`. `ToolCallMessage`
+    (намерение LLM) в UI не отображается.
     """
 
     type: Literal["ToolExecutionStarted"] = "ToolExecutionStarted"
-    tool_call_id: str
-    tool_name: str
+    call: ToolCall
 
     @model_validator(mode="after")
     def _derive(self) -> Self:
-        self.label = f"tool exec: {self.tool_name}"
-        self.details = {"id": self.tool_call_id, "name": self.tool_name}
+        self.label = f"tool exec: {self.call.name}"
+        self.details = {"id": self.call.id, "name": self.call.name}
         return self
 
 

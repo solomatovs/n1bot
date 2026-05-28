@@ -1,14 +1,5 @@
-"""Replay `HistoryService` событий в виде chainlit `StepDict`.
-
-Источник правды для UI — сырые `AgentEvent` из `HistoryReader`. Маппинг
-события на UI-операцию делает `AgentEventDispatcher`; нижеследующий
-`StepDictTarget` реализует операции через накопление `StepDict`-ов
-вместо вызовов chainlit-API.
-
-`ContentDeltaEvent` в журнал не попадает (отфильтрован
-`HistoryService.record`), и phase-события для replay визуально не нужны
-— все streaming/phase-методы таргета no-op'ят. Replay видит только
-финальные снапшоты + advisory/terminal.
+"""
+Replay `HistoryService` событий в виде chainlit `StepDict`
 """
 
 from __future__ import annotations
@@ -82,9 +73,6 @@ class StepDictTarget(EventRenderTarget):
     async def refusal_chunk(self, text: str) -> None:
         del text
 
-    async def tool_args_chunk(self, call_id: str, text: str) -> None:
-        del call_id, text
-
     # --- snapshot завершения -----------------------------------------
 
     async def user_query(self, text: str) -> None:
@@ -103,15 +91,6 @@ class StepDictTarget(EventRenderTarget):
             return
         self._append(type_="assistant_message", name="refusal", output=text)
 
-    async def tool_call_complete(
-        self,
-        call_id: str,
-        name: str,
-        args_json: str,
-    ) -> None:
-        self._tool_index_by_call_id[call_id] = len(self._out)
-        self._append(type_="tool", name=name, output="", input_=args_json)
-
     async def tool_result(
         self,
         call_id: str,
@@ -121,7 +100,7 @@ class StepDictTarget(EventRenderTarget):
     ) -> None:
         idx = self._tool_index_by_call_id.get(call_id)
         if idx is None:
-            # Orphan: result без предшествующего tool_call_complete —
+            # Orphan: result без предшествующего tool_started —
             # отдельным tool-step'ом, чтобы не терять текст.
             self._append(
                 type_="tool",
@@ -142,13 +121,21 @@ class StepDictTarget(EventRenderTarget):
             output=f"**Feedback to LLM**:\n\n{text}",
         )
 
-    # --- phase-маркеры (no-op) ---------------------------------------
+    # --- phase-маркеры ----------------------------------------------
 
     async def iteration_started(self) -> None:
         return
 
-    async def tool_execution_started(self, call_id: str) -> None:
-        del call_id
+    async def tool_started(
+        self,
+        call_id: str,
+        name: str,
+        args_json: str,
+    ) -> None:
+        # Открываем tool-step именно здесь: ToolCallMessage в UI не рисуем,
+        # `ToolExecutionStarted` — единственный источник для создания step'а.
+        self._tool_index_by_call_id[call_id] = len(self._out)
+        self._append(type_="tool", name=name, output="", input_=args_json)
 
     async def generation_milestone(self) -> None:
         return
