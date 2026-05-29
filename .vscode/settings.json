@@ -12,5 +12,6 @@
         "${workspaceFolder}/.venv/bin/ruff"
     ],
     "python.analysis.diagnosticMode": "workspace",
-    "vectorExplorer.pythonPath": "${workspaceFolder}/.venv/bin/python"
+    "vectorExplorer.pythonPath": "${workspaceFolder}/.venv/bin/python",
+    "git.ignoreLimitWarning": true
 }
