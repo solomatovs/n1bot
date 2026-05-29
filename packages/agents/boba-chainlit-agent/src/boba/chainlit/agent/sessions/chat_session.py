@@ -134,7 +134,9 @@ class ChatSession:
         """
         self._available_tools.set_once(list(inner.definitions()))
         return ThreadFilteredToolCatalog(
-            inner, self._thread_repository, self._thread_id,
+            inner,
+            self._thread_repository,
+            self._thread_id,
         )
 
     def project_workspace(self) -> ProjectWorkspaceShell:
