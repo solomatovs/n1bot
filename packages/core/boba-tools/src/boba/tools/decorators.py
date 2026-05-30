@@ -21,9 +21,6 @@ __all__ = [
     "PROVIDES_SCOPE_MARKER",
     "TOOL_MARKER",
     "TOOL_NAME_MARKER",
-    "is_provider",
-    "is_tool",
-    "provider_scope",
     "provides",
     "tool",
     "tool_explicit_name",
@@ -120,21 +117,6 @@ def provides(
         return _decorate(fn)
 
     return _decorate
-
-
-def is_tool(obj: object) -> bool:
-    """True если объект помечен `@tool`."""
-    return getattr(obj, TOOL_MARKER, False) is True
-
-
-def is_provider(obj: object) -> bool:
-    """True если функция помечена `@provides`."""
-    return hasattr(obj, PROVIDES_SCOPE_MARKER)
-
-
-def provider_scope(obj: object) -> Scope:
-    """`Scope` provider'а. Падает `AttributeError` если объект не provider."""
-    return getattr(obj, PROVIDES_SCOPE_MARKER)
 
 
 def tool_explicit_name(obj: object) -> str | None:

@@ -17,7 +17,7 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from boba.indexing.context import PipelineId
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, LLMStringList
 from boba.tool.kb.core.chunker_factory import build_chunker
 from boba.tool.kb.core.chunker_params import ChunkerParams
 from boba.tool.kb.core.embedder_factory import build_embedder
@@ -32,7 +32,7 @@ from boba.tool.kb.kbdoc._workspace_indexing import (
     WorkspaceTransport,
     WorkspaceWalkRequestSource,
 )
-from boba.tools import FromConfig, FromDI, LLMStringList, Scope, tool
+from boba.tools import FromConfig, FromDI, Scope, tool
 from boba.workspace.contract import ProjectWorkspaceShell
 
 __all__ = ["KbdocIngestConfig", "kbdoc_ingest_paths"]

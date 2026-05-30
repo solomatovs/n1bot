@@ -14,7 +14,7 @@ from boba.agent.prompt import (
     PromptProvider,
     PromptState,
 )
-from boba.workspace.contract import PromptWorkspaceShell
+from boba.workspace.contract import WorkspaceShell
 
 
 class StaticPromptProvider(PromptProvider):
@@ -47,7 +47,7 @@ class FilePromptProvider(PromptProvider):
         self,
         prompt_id: PromptId,
         priority: int,
-        workspace: PromptWorkspaceShell,
+        workspace: WorkspaceShell,
         rel_path: str,
         default_prompt: str = "",
     ) -> None:
@@ -139,7 +139,7 @@ class DirectoryPromptProvider(PromptProvider):
     """Читает файлы верхнего уровня workspace; каждый файл — отдельный `PromptBlock`.
 
     Корень поиска — корень самого `workspace`. Если нужна другая директория,
-    создай отдельный `PromptWorkspaceShell`, указывающий на неё.
+    создай отдельный `WorkspaceShell`, указывающий на неё.
 
     После 1:1-маппинга `PromptBlock` → `SystemMessage` в SystemPromptReducer
     несколько файлов разворачиваются в несколько system-сообщений, что
@@ -155,7 +155,7 @@ class DirectoryPromptProvider(PromptProvider):
         self,
         prompt_id: PromptId,
         priority: int,
-        workspace: PromptWorkspaceShell,
+        workspace: WorkspaceShell,
         *,
         extensions: tuple[str, ...] = (".md", ".txt"),
     ) -> None:

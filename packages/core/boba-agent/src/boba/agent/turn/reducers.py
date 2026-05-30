@@ -23,7 +23,7 @@ TurnReducer: TypeAlias = PrioritySource[str, TurnState]
 """Alias для reducer'а TurnSpec — стадия сборки TurnState."""
 
 
-class RequestIdReducer(TurnReducer):
+class RequestIdFromReducer(TurnReducer):
     """Кладёт `request_id` в `TurnState` — берётся из `ctx.request_id`."""
 
     ID: ClassVar[str] = "request_id"
@@ -43,7 +43,7 @@ class RequestIdReducer(TurnReducer):
         return state
 
 
-class ModelReducer(TurnReducer):
+class ModelFromRequestReducer(TurnReducer):
     """Берёт модель из ctx.agent.agent_request.model."""
 
     ID: ClassVar[str] = "model"
@@ -63,7 +63,7 @@ class ModelReducer(TurnReducer):
         return state
 
 
-class StreamReducer(TurnReducer):
+class StreamModeReducer(TurnReducer):
     """Флаг stream в state: True=поток дельт, False=один итоговый ответ."""
 
     ID: ClassVar[str] = "stream"

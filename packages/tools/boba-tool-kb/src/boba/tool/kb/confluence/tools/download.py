@@ -21,7 +21,12 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from boba.indexing import PipelineId
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
+from boba.settings import (
+    BobaFlatSettings,
+    BobaSettingsConfigDict,
+    LLMStringList,
+    StringList,
+)
 from boba.tool.kb.confluence._download_common import download_pages
 from boba.tool.kb.confluence.attachments import AttachmentFilter
 from boba.tool.kb.confluence.connection import ConfluenceConnection
@@ -29,7 +34,7 @@ from boba.tool.kb.confluence.request_sources import (
     ConfluenceMultiSpaceRequestSource,
     ConfluencePagesRequestSource,
 )
-from boba.tools import FromConfig, FromDI, LLMStringList, Scope, tool
+from boba.tools import FromConfig, FromDI, Scope, tool
 from boba.workspace.contract import ProjectWorkspaceShell
 
 __all__ = ["ConfluenceDownloadConfig", "confluence_download"]

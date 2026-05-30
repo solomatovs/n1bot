@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-from boba.agent import AgentBuilder, TurnBuilder
+from boba.agent import (
+    AgentBuilder,
+    CompactHistoryDialogView,
+    LLMPort,
+    TurnBuilder,
+)
 from boba.agent.agent import Agent
-from boba.agent.history import JsonLinesHistoryService
+from boba.agent.history import HistoryService, JsonLinesHistoryService
 from boba.agent.prompt import PromptId
 from boba.chainlit.agent.config import ChainlitConfig
 from boba.chainlit.agent.logging import log_context
@@ -23,7 +28,8 @@ from boba.provider.openai import (
     HttpTraceChatCompletionObserver,
     use_openai,
 )
-from boba.tools.framework import ToolCatalog
+from boba.tools import ToolBuilder
+from boba.tools.framework import ToolRegistry
 from boba.workspace.contract import (
     HistoryWorkspaceRegistry,
     HistoryWorkspaceShell,
@@ -47,7 +53,7 @@ class ChatSession:
         self,
         workspace_id: WorkspaceId,
         thread_id: ThreadId,
-        builder: AgentBuilder,
+        tool_builder: ToolBuilder,
         project_workspaces: ProjectWorkspaceRegistry,
         history_workspaces: HistoryWorkspaceRegistry,
         thread_repository: ThreadRepository,
@@ -77,6 +83,7 @@ class ChatSession:
                 f" expected HistoryWorkspaceShell"
             )
             raise TypeError(msg)
+
         llm = (
             LLMBuilder()
             .add_observer(CurlTraceChatCompletionObserver(history_shell))
@@ -84,48 +91,45 @@ class ChatSession:
             .build(use_openai(rt.openai))
         )
 
-        turn = TurnBuilder(rt.model).system_prompt_from_providers(
-            [
-                ThreadSystemPromptProvider(
-                    PromptId("thread_system_prompt"),
-                    priority=100,
-                    repository=thread_repository,
-                    thread_id=thread_id,
-                    fallback=default_prompt_source.read(),
-                ),
-            ]
+        self._tool_registry: ToolRegistry = (
+            tool_builder.register_instance(
+                project_shell, provides=ProjectWorkspaceShell,
+            ).build()
         )
 
-        def _provide_project_workspace() -> ProjectWorkspaceShell:
-            """DI factory для pre-built `ProjectWorkspaceShell`.
+        catalog = self._wrap_catalog(self._tool_registry.catalog())
 
-            Замыкание над per-session shell'ом: каждый ChatSession имеет
-            свой `project_shell`, привязанный к своему workspace_id, и
-            свой `AgentBuilder` → свой DI-контейнер.
-            """
-            return project_shell
+        history: HistoryService = JsonLinesHistoryService(history_shell)
 
-        def _provide_history_workspace() -> HistoryWorkspaceShell:
-            """DI factory для per-session history workspace.
+        turn = (
+            TurnBuilder(rt.model)
+            .system_prompt_from_providers(
+                [
+                    ThreadSystemPromptProvider(
+                        PromptId("thread_system_prompt"),
+                        priority=100,
+                        repository=thread_repository,
+                        thread_id=thread_id,
+                        fallback=default_prompt_source.read(),
+                    ),
+                ]
+            )
+            .with_history_view(
+                CompactHistoryDialogView(history, max_messages=rt.max_messages),
+            )
+            .with_tool_catalog(catalog)
+        )
 
-            Используется `JsonLinesHistoryService` (через `use_history` ниже),
-            который Dishka конструирует рекурсивно — резолвит `workspace`
-            через эту factory.
-            """
-            return history_shell
+        terminal = LLMPort(llm, turn)
 
         self._agent: Agent = (
-            builder.register_provider(_provide_project_workspace)
-            .register_provider(_provide_history_workspace)
-            .use_history(JsonLinesHistoryService)
-            .use_llm(llm)
-            .use_compact_history(max_messages=rt.max_messages)
-            .use_turn(turn)
-            .decorate_tool_catalog(self._wrap_catalog)
-            .build()
+            AgentBuilder()
+            .use_history(history)
+            .use_tool_executor(self._tool_registry.executor())
+            .build(terminal)
         )
 
-    def _wrap_catalog(self, inner: ToolCatalog) -> ToolCatalog:
+    def _wrap_catalog(self, inner):
         """AgentBuilder-hook: кешируем discovered tools и вешаем per-thread фильтр.
 
         Кеш заполняется один раз — первый build выигрывает гонку и фиксирует

@@ -29,7 +29,7 @@ from boba.settings.source import (
     TomlEnvConfigSource,
     to_config_path,
 )
-from boba.settings.types import StringList
+from boba.settings.types import LLMStringList, StringList
 
 __all__ = [
     "BobaFlatSettings",
@@ -38,6 +38,8 @@ __all__ = [
     "ConfigSource",
     "ConfigSourcePydanticAdapter",
     "DictConfigSource",
+    "LLMStringList",
+    "StringList",
     "StringList",
     "TomlEnvConfigSource",
     "to_config_path",

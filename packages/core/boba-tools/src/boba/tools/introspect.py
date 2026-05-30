@@ -30,8 +30,17 @@ __all__ = [
     "CallPlan",
     "DiDep",
     "auto_tool_name",
-    "introspect_callable",
+    "build_call_plan",
+    "tool_name",
 ]
+
+
+def tool_name(obj: Any) -> str:
+    """Публичное имя tool'а: explicit `@tool(name=...)` или имя callable'а."""
+    explicit = tool_explicit_name(obj)
+    if explicit is not None:
+        return explicit
+    return getattr(obj, "__name__", None) or type(obj).__name__
 
 
 @dataclass(frozen=True)
@@ -53,20 +62,8 @@ class DiDep:
 
 @dataclass(frozen=True)
 class CallPlan:
-    """Разобранная сигнатура callable'а — план для runtime invoke.
-
-    `name` — wire-имя tool'а. Источник:
-        - `@tool(name="...")` если указан,
-        - иначе — `obj.__name__` для функций / `type(obj).__name__` для
-          классов и инстансов (без модификации: классы остаются в
-          CamelCase, функции — в snake_case по Python-конвенции).
-    `description` — docstring.
-    `args_model` — pydantic-модель LLM-args. Может быть пустой моделью,
-        если все параметры — DI.
-    `di_deps` — список DI-зависимостей в порядке появления в подписи.
-    `return_type` — для provider'ов это тип, под которым служба
-        регистрируется. Для tools — игнорируется (результат coerce'ится
-        в ToolResult).
+    """
+    Разобранная сигнатура callable'а — план для runtime invoke.
     """
 
     name: str
@@ -75,9 +72,14 @@ class CallPlan:
     di_deps: tuple[DiDep, ...]
     return_type: Any
 
+    def is_provider(self) -> bool:
+        """Это provider, если есть DI-deps или явно указан return_type."""
+        return self.return_type is inspect.Parameter.empty or self.return_type is None
 
-def introspect_callable(obj: Any) -> CallPlan:
-    """Разобрать callable (функцию или callable-инстанс/класс) в `CallPlan`.
+
+def build_call_plan(obj: Any) -> CallPlan:
+    """
+    создать план выполнения объекта
 
     Поддерживает:
     - функции: `def my_tool(...) -> T:`
@@ -129,7 +131,7 @@ def introspect_callable(obj: Any) -> CallPlan:
         **fields,
     )
     return CallPlan(
-        name=tool_explicit_name(obj) or meta.raw_name,
+        name=tool_name(obj),
         description=meta.docstring,
         args_model=args_model,
         di_deps=tuple(di_deps),
@@ -138,18 +140,25 @@ def introspect_callable(obj: Any) -> CallPlan:
 
 
 def auto_tool_name(raw: str) -> str:
-    """`KbIngestTool` → `kb_ingest`; `MySearchTool` → `my_search`.
-
-    Стрипает суффикс `Tool` (если есть) и переводит CamelCase в snake_case.
-    Для функций (`some_func`) — возвращает как есть (snake-case инвариантен).
     """
+    Автоматическое имя для tool'а по имени функции/класса
+    - Убирает суффикс "Tool"
+    - конвертирует CamelCase в snake_case
+    - Убирает спецсимволы, оставляя только буквы, цифры и нижние подчёркивания
+
+    Например:
+    - `MyTool`  -> `my_tool`
+    - `my_tool` -> `my_tool`
+    """
+
     if raw.endswith("Tool"):
         raw = raw[:-4]
+
     return re.sub(r"(?<!^)(?=[A-Z])", "_", raw).lower()
 
 
 @dataclass(frozen=True)
-class _CallableMeta:
+class CallableMeta:
     raw_name: str
     name: str
     docstring: str
@@ -158,28 +167,30 @@ class _CallableMeta:
     return_type: Any
 
 
-def _resolve_callable_meta(obj: Any) -> _CallableMeta:
-    """Унифицированный разбор callable'а в подпись + hints.
-
-    Различает три формы:
-    1. Функция: hints с `obj`, sig с `obj`.
-    2. Класс: hints с `cls.__call__`, sig с `cls.__call__`, self отбрасывается.
-    3. Инстанс: hints с `type(obj).__call__`, sig с `type(obj).__call__`,
-    self отбрасывается
-    """
+def _resolve_callable_meta(obj: Any) -> CallableMeta:
+    """Разобрать объект и извлечь метаданные для построения CallPlan."""
+    # Поддерживаем функции, классы и callable-инстансы.
+    # Для классов и инстансов используем `__call__`,
+    # но имя и докстринг берём из самого объекта, а не из `__call__`.
     if inspect.isfunction(obj) or inspect.ismethod(obj):
         raw_name = obj.__name__
         sig_target = obj
         hint_target = obj
         skip_self = False
+
+    # Если это класс, то предполагаем, что он — инструмент
     elif inspect.isclass(obj):
         raw_name = obj.__name__
+        # `__call__` говорит о том, что класс можно вызвать
         if not callable(obj):
             msg = f"{raw_name}: класс должен иметь `__call__`"
             raise ToolDeclarationError(msg)
+
         sig_target = obj.__call__
         hint_target = obj.__call__
+        # у классов первым аргументом будет self
         skip_self = True
+    # для callable-инстансов используем type(obj).__call__
     elif callable(obj):
         raw_name = type(obj).__name__
         sig_target = type(obj).__call__
@@ -195,11 +206,12 @@ def _resolve_callable_meta(obj: Any) -> _CallableMeta:
         params = params[1:]
 
     hints = get_type_hints(hint_target, include_extras=True)
+
     return_type = _unwrap_generator_return(
         hints.get("return", inspect.Parameter.empty),
     )
 
-    return _CallableMeta(
+    return CallableMeta(
         raw_name=raw_name,
         name=raw_name,
         docstring=inspect.getdoc(obj) or "",
@@ -233,45 +245,58 @@ def _unwrap_generator_return(rt: Any) -> Any:
         args = get_args(rt)
         if args:
             return args[0]
+
     return rt
 
 
 def _extract_inject_marker(annotation: Any) -> FromDI | FromConfig | None:
-    """Найти `FromDI`/`FromConfig` в Annotated-метаданных.
+    """
+    Найти `FromDI`/`FromConfig` в Annotated-метаданных.
 
-    Возвращает первый встреченный маркер. Если в метаданных два маркера
-    (например, FromDI и FromConfig одновременно) — это decl-ошибка.
+    Возвращает первый встреченный маркер
+
+    Если в метаданных два маркера - это ошибка.
     """
     if get_origin(annotation) is not Annotated:
         return None
+
     _, *metadata = get_args(annotation)
     found: list[FromDI | FromConfig] = [
         m for m in metadata if isinstance(m, (FromDI, FromConfig))
     ]
+
     if not found:
         return None
+
     if len(found) > 1:
         msg = (
             f"параметр имеет несколько inject-маркеров "
             f"({[type(m).__name__ for m in found]}); должен быть один"
         )
         raise ToolDeclarationError(msg)
+
     return found[0]
 
 
 def _strip_annotated(annotation: Any) -> type:
-    """`Annotated[T, ...]` → `T`. Для не-Annotated — возвращает как есть."""
+    """
+    `Annotated[T, ...]` -> `T`
+    Для не-Annotated — возвращает как есть
+    """
     if get_origin(annotation) is Annotated:
         return get_args(annotation)[0]
+
     return annotation
 
 
 def _build_pydantic_field(annotation: Any, default: Any) -> tuple[Any, Any]:
-    """Пара `(annotation, default|Field)` для `create_model`.
+    """
+    Пара `(annotation, default|Field)` для `create_model`.
 
-    Если в `Annotated[T, "str", ...]` есть голая строка — это shortcut для
-    `Field(description=...)`. Иначе аннотация передаётся в pydantic как есть
-    (он сам поймёт `Field(...)`-метаданные).
+    Если в `Annotated[T, "str", ...]` есть голая строка
+    это shortcut для `Field(description=...)`
+
+    Иначе аннотация передаётся в pydantic как есть
     """
     has_default = default is not inspect.Parameter.empty
     description: str | None = None

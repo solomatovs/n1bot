@@ -11,21 +11,19 @@ from boba.agent.turn.builder import TurnBuilder
 from boba.agent.turn.history_view import AllHistoryDialogView, HistoryDialogView
 from boba.agent.turn.reducers import (
     HistoryReducer,
-    ModelReducer,
+    ModelFromRequestReducer,
     RememberUserQueryReducer,
-    RequestIdReducer,
+    RequestIdFromReducer,
     SamplingReducer,
     SystemPromptReducer,
     ToolsDefinitionReducer,
     UserQueryReducer,
 )
 from boba.agent.turn.spec import TurnState
-from boba.agent.workspace_fs import FsPromptWorkspaceRegistry
 from boba.llm.models import SamplingParams
 from boba.patterns import PrioritySource
 from boba.tools.domain import ToolSourceId
 from boba.tools.framework import StaticToolSource, ToolRegistry
-from boba.workspace.contract import PromptWorkspaceId, PromptWorkspaceShell
 
 
 def _empty_history_view() -> HistoryDialogView:
@@ -51,13 +49,7 @@ class _MarkerReducer(PrioritySource[str, TurnState]):
 
 
 def _empty_catalog() -> ToolRegistry:
-    return ToolRegistry.from_sources([StaticToolSource(ToolSourceId("empty"), [])])
-
-
-def _prompt_workspace(root) -> PromptWorkspaceShell:
-    return FsPromptWorkspaceRegistry(root=root).get_or_create(
-        PromptWorkspaceId("prompts"),
-    )
+    return ToolRegistry(sources=[StaticToolSource(ToolSourceId("empty"), [])])
 
 
 # TurnBuilder (low-level): LLMPort ничего не знает про конкретные reducer'ы.
@@ -90,7 +82,10 @@ def test_middleware_delegates_spec_construction_to_builder(
 def test_turn_builder_model_required_at_construction(agent_ctx: AgentContext):
     """`model` обязателен в конструкторе — `ModelReducer` и `RequestIdReducer` сразу."""
     turn = TurnBuilder("test-model")
-    assert set(turn._factories.keys()) == {ModelReducer.ID, RequestIdReducer.ID}
+    assert set(turn._factories.keys()) == {
+        ModelFromRequestReducer.ID,
+        RequestIdFromReducer.ID,
+    }
     request = turn.build(agent_ctx)
     assert request.model == "test-model"
     assert request.request_id == agent_ctx.request_id
@@ -108,8 +103,8 @@ def test_turn_builder_full_set(agent_ctx: AgentContext):
         .system_prompt("static")
     )
     assert set(turn._factories.keys()) == {
-        RequestIdReducer.ID,
-        ModelReducer.ID,
+        RequestIdFromReducer.ID,
+        ModelFromRequestReducer.ID,
         SystemPromptReducer.ID,
         HistoryReducer.ID,
         UserQueryReducer.ID,
@@ -122,8 +117,8 @@ def test_turn_builder_minimal_only_registers_called(agent_ctx: AgentContext):
     """Только вызванные методы (+ обязательные request_id/model) — ничего лишнего."""
     turn = TurnBuilder("test-model").with_user_query()
     assert set(turn._factories.keys()) == {
-        RequestIdReducer.ID,
-        ModelReducer.ID,
+        RequestIdFromReducer.ID,
+        ModelFromRequestReducer.ID,
         UserQueryReducer.ID,
     }
 
@@ -160,7 +155,7 @@ def test_turn_builder_with_plus_use_reducer(agent_ctx: AgentContext):
         .use_reducer(RememberUserQueryReducer())
     )
     ids = set(turn._factories.keys())
-    assert ModelReducer.ID in ids
+    assert ModelFromRequestReducer.ID in ids
     assert RememberUserQueryReducer.ID in ids
 
 
@@ -180,11 +175,10 @@ def test_turn_builder_system_prompt_file(
     agent_ctx: AgentContext,
     tmp_path,
 ):
-    """`.system_prompt_from_file(workspace, rel_path)` читает блок из файла."""
+    """`.system_prompt_from_file(file_path)` читает блок из файла."""
     (tmp_path / "persona.md").write_text("Ты — Claude.", encoding="utf-8")
-    workspace = _prompt_workspace(tmp_path)
 
-    turn = TurnBuilder("test-model").system_prompt_from_file(workspace, "persona.md")
+    turn = TurnBuilder("test-model").system_prompt_from_file(tmp_path / "persona.md")
     request = turn.build(agent_ctx)
     contents = [m.content for m in request.system_messages]
     assert contents == ["Ты — Claude."]
@@ -195,11 +189,8 @@ def test_turn_builder_system_prompt_file_missing_uses_default(
     tmp_path,
 ):
     """Несуществующий файл → default_prompt."""
-    workspace = _prompt_workspace(tmp_path)
-
     turn = TurnBuilder("test-model").system_prompt_from_file(
-        workspace,
-        "missing.md",
+        tmp_path / "missing.md",
         default_prompt="(no prompt)",
     )
     request = turn.build(agent_ctx)
@@ -211,13 +202,12 @@ def test_turn_builder_system_prompt_dir(
     agent_ctx: AgentContext,
     tmp_path,
 ):
-    """`.system_prompt_from_directory(workspace)` читает файлы как отдельные блоки."""
+    """`.system_prompt_from_directory(dir_path)` читает файлы как отдельные блоки."""
     (tmp_path / "01-persona.md").write_text("Ты — Claude.", encoding="utf-8")
     (tmp_path / "02-rules.md").write_text("Отвечай по-русски.", encoding="utf-8")
     (tmp_path / "empty.md").write_text("", encoding="utf-8")
-    workspace = _prompt_workspace(tmp_path)
 
-    turn = TurnBuilder("test-model").system_prompt_from_directory(workspace)
+    turn = TurnBuilder("test-model").system_prompt_from_dir(tmp_path)
     request = turn.build(agent_ctx)
     contents = [m.content for m in request.system_messages]
     assert contents == ["Ты — Claude.", "Отвечай по-русски."]
@@ -230,9 +220,8 @@ def test_turn_builder_system_prompt_dir_extension_filter(
     """extensions оставляет только файлы с указанными расширениями."""
     (tmp_path / "keep.md").write_text("kept", encoding="utf-8")
     (tmp_path / "ignore.log").write_text("logged", encoding="utf-8")
-    workspace = _prompt_workspace(tmp_path)
 
-    turn = TurnBuilder("test-model").system_prompt_from_directory(workspace)
+    turn = TurnBuilder("test-model").system_prompt_from_dir(tmp_path)
     request = turn.build(agent_ctx)
     contents = [m.content for m in request.system_messages]
     assert contents == ["kept"]
@@ -242,9 +231,8 @@ def test_turn_builder_system_prompt_dir_empty_workspace(
     agent_ctx: AgentContext,
     tmp_path,
 ):
-    """Пустой workspace — ноль блоков, без ошибки."""
-    workspace = _prompt_workspace(tmp_path)
-    turn = TurnBuilder("test-model").system_prompt_from_directory(workspace)
+    """Пустая директория — ноль блоков, без ошибки."""
+    turn = TurnBuilder("test-model").system_prompt_from_dir(tmp_path)
     request = turn.build(agent_ctx)
     assert request.system_messages == ()
 
@@ -261,14 +249,11 @@ def test_turn_builder_system_prompt_mix_all_three(
     ws_persona_root.mkdir()
     (ws_persona_root / "persona.md").write_text("persona-from-file", encoding="utf-8")
 
-    ws_persona = _prompt_workspace(ws_persona_root)
-    ws_rules = _prompt_workspace(ws_rules_root)
-
     turn = (
         TurnBuilder("test-model")
         .system_prompt("static-block")
-        .system_prompt_from_file(ws_persona, "persona.md")
-        .system_prompt_from_directory(ws_rules)
+        .system_prompt_from_file(ws_persona_root / "persona.md")
+        .system_prompt_from_dir(ws_rules_root)
     )
     request = turn.build(agent_ctx)
     contents = [m.content for m in request.system_messages]
@@ -279,7 +264,7 @@ def test_turn_builder_extra_overrides_built_in_by_id(agent_ctx: AgentContext):
     """`use_reducer` с id встроенного reducer'а заменяет его эффект в запросе."""
 
     class _OverrideModel(PrioritySource[str, TurnState]):
-        ID: ClassVar[str] = ModelReducer.ID
+        ID: ClassVar[str] = ModelFromRequestReducer.ID
 
         def id(self) -> str:
             return self.ID
@@ -295,5 +280,3 @@ def test_turn_builder_extra_overrides_built_in_by_id(agent_ctx: AgentContext):
     turn = TurnBuilder("test-model").use_reducer(override)
     request = turn.build(agent_ctx)
     assert request.model == "overridden"
-
-

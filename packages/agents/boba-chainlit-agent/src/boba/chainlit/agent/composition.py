@@ -8,8 +8,12 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from boba.agent.builder import AgentBuilder
 from boba.agent.history import HistoryService, JsonLinesHistoryService
+from boba.agent.tool_config import (
+    ConfigSourcePluginToolFilter,
+    ConfigSourceResolver,
+    default_config_source,
+)
 from boba.agent.workspace_fs import (
     FsHistoryWorkspaceRegistry,
     FsProjectWorkspaceRegistry,
@@ -37,6 +41,8 @@ from boba.chainlit.agent.storage import (
 )
 from boba.chainlit.agent.system_prompt import DefaultSystemPromptSource
 from boba.chainlit.agent.tool_cache import AvailableToolsCache
+from boba.settings import ConfigSource
+from boba.tools import ToolBuilder
 from boba.workspace.contract import (
     HistoryWorkspaceRegistry,
     ProjectWorkspaceRegistry,
@@ -67,22 +73,33 @@ def _bridge_chainlit_env(cfg: ChainlitConfig) -> None:
     os.environ["CHAINLIT_APP_ROOT"] = str(app_root)
 
 
-def _make_builder_factory() -> Callable[[], AgentBuilder]:
-    """Свежий builder под per-session ChatSession (свои plugins).
+def _make_tool_builder_factory(
+    config_source: ConfigSource,
+) -> Callable[[], ToolBuilder]:
+    """Свежий `ToolBuilder` под per-session ChatSession (свои plugins).
+
+    `config_source` создаётся в `main()` один раз и переиспользуется всеми
+    сессиями: per-session здесь — только `ToolBuilder`, не источник конфига.
 
     `discover_plugins()` подцепляет v2-плагины через entry-points group
     `boba.plugins`. Пока v2-плагины не созданы — это no-op; будут
     появляться по мере миграции старых плагинов.
     """
 
-    def factory() -> AgentBuilder:
-        return AgentBuilder().discover_plugins()
+    def factory() -> ToolBuilder:
+        return (
+            ToolBuilder()
+            .use_config_resolver(ConfigSourceResolver(config_source))
+            .discover_plugins(
+                "boba.plugins", ConfigSourcePluginToolFilter(config_source)
+            )
+        )
 
     return factory
 
 
 def _make_chat_session_builder(
-    make_builder: Callable[[], AgentBuilder],
+    make_tool_builder: Callable[[], ToolBuilder],
     project_workspaces: ProjectWorkspaceRegistry,
     history_workspaces: HistoryWorkspaceRegistry,
     thread_repository: ThreadRepository,
@@ -95,7 +112,7 @@ def _make_chat_session_builder(
         return ChatSession(
             workspace_id,
             thread_id,
-            make_builder(),
+            make_tool_builder(),
             project_workspaces,
             history_workspaces,
             thread_repository,
@@ -111,10 +128,10 @@ def _warm_tool_cache(
 ) -> None:
     """Сборкой одноразовой ChatSession наполняем AvailableToolsCache.
 
-    `ChatSession.__init__` → `AgentBuilder.build` → `_wrap_catalog` зовёт
-    `set_once`; повторный set_once на реальной сессии — no-op (контракт
-    set-once). Если сборка падает — лог + продолжаем: tools потом
-    подтянутся при первом on_message.
+    `ChatSession.__init__` строит catalog и через `_wrap_catalog`
+    зовёт `set_once`; повторный set_once на реальной сессии — no-op
+    (контракт set-once). Если сборка падает — лог + продолжаем: tools
+    потом подтянутся при первом on_message.
     """
     warm_thread = ThreadId(f"warmup-{uuid.uuid4()}")
     try:
@@ -147,9 +164,7 @@ def main() -> int:
         """JSONL per-workspace: chainlit и агент видят один и тот же журнал."""
         return JsonLinesHistoryService(history_workspaces.get_or_create(workspace_id))
 
-    authenticate_user = AuthenticateUser(
-        StaticUserRepository({"admin": "admin"})
-    )
+    authenticate_user = AuthenticateUser(StaticUserRepository({"admin": "admin"}))
 
     system_shell = history_workspaces.get_or_create(_SYSTEM_WORKSPACE_ID)
     user_catalog = FsUserCatalog(system_shell)
@@ -157,9 +172,10 @@ def main() -> int:
     default_prompt_source = DefaultSystemPromptSource(Path(rt.system_prompt_dir))
     available_tools = AvailableToolsCache()
 
-    builder_factory = _make_builder_factory()
+    config_source = default_config_source()
+    tool_builder_factory = _make_tool_builder_factory(config_source)
     chat_session_builder = _make_chat_session_builder(
-        builder_factory,
+        tool_builder_factory,
         project_workspaces,
         history_workspaces,
         thread_repository,
@@ -175,10 +191,10 @@ def main() -> int:
     # Eager-прогрев AvailableToolsCache: до первого on_chat_start cache пуст
     # → ToolsSection отдаёт пустой список → в шестерёнке нет таба «tools».
     # Одноразовая ChatSession через system workspace выполняет
-    # discover_plugins + AgentBuilder.build, что внутри `_wrap_catalog`
-    # триггерит `set_once`. Сессия и её агент не используются и сразу gc'ятся;
-    # workspace dir тот же, что под users.json / threads-index.json, новых
-    # каталогов на диске не появляется.
+    # ToolBuilder.discover_plugins + сборку catalog'а, что через
+    # `_wrap_catalog` триггерит `set_once`. Сессия и её агент не
+    # используются и сразу gc'ятся; workspace dir тот же, что под
+    # users.json / threads-index.json, новых каталогов на диске не появляется.
     _warm_tool_cache(chat_session_builder)
 
     data_layer = BobaDataLayer(
