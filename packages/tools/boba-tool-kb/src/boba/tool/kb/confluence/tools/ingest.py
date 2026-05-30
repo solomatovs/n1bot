@@ -27,7 +27,12 @@ from pydantic import Field
 
 from boba.indexing import RequestSource
 from boba.indexing.context import PipelineId
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, StringList
+from boba.settings import (
+    BobaFlatSettings,
+    BobaSettingsConfigDict,
+    LLMStringList,
+    StringList,
+)
 from boba.tool.kb.confluence._ingest_common import run_confluence_ingest
 from boba.tool.kb.confluence.attachments import AttachmentFilter
 from boba.tool.kb.confluence.connection import ConfluenceConnection
@@ -45,7 +50,7 @@ from boba.tool.kb.core.postgres_store import (
     PostgresCollectionsStore,
     PostgresStoreConfig,
 )
-from boba.tools import FromConfig, LLMStringList, tool
+from boba.tools import FromConfig, tool
 from boba.transport.http import HttpRequest
 
 __all__ = [

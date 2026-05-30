@@ -11,15 +11,12 @@ from typing import Generic, TypeVar
 from boba.agent.workspace_fs.shell import (
     FsHistoryWorkspaceShell,
     FsProjectWorkspaceShell,
-    FsPromptWorkspaceShell,
     FsScratchWorkspaceShell,
     FsWorkspaceShell,
 )
 from boba.workspace.contract import (
     HistoryWorkspaceRegistry,
     ProjectWorkspaceRegistry,
-    PromptWorkspaceId,
-    PromptWorkspaceRegistry,
     ScratchWorkspaceRegistry,
     WorkspaceId,
     WorkspaceNotFoundError,
@@ -112,23 +109,3 @@ class FsScratchWorkspaceRegistry(
 ):
     def __init__(self, base_dir: Path, subdir: str) -> None:
         super().__init__(base_dir, FsScratchWorkspaceShell, subdir, new_workspace_id)
-
-
-class FsPromptWorkspaceRegistry(
-    FsWorkspaceRegistry[FsPromptWorkspaceShell, PromptWorkspaceId],
-    PromptWorkspaceRegistry,
-):
-    """Singleton-registry prompt-namespace; корень shell'а — сам root."""
-
-    _SINGLETON_ID = PromptWorkspaceId("prompts")
-
-    def __init__(self, root: Path) -> None:
-        super().__init__(
-            base_dir=root,
-            shell_cls=FsPromptWorkspaceShell,
-            subdir="",
-            id_factory=lambda: self._SINGLETON_ID,
-        )
-
-    def _workspace_dir(self, workspace_id: PromptWorkspaceId) -> Path:
-        return self._base_dir

@@ -27,11 +27,14 @@ __all__ = [
     "ToolSourceId",
     "compose_tool_id",
     "parse_tool_id",
+    "sanitize_source_id",
 ]
 
 _SEPARATOR = "__"
 _MAX_TOOL_ID_LENGTH = 64
-_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_COMPONENT_CHARS = r"A-Za-z0-9_-"
+_COMPONENT_RE = re.compile(rf"^[A-Za-z0-9][{_COMPONENT_CHARS}]*$")
+_NON_COMPONENT_RE = re.compile(rf"[^{_COMPONENT_CHARS}]")
 
 
 ToolName = NewType("ToolName", str)
@@ -83,11 +86,26 @@ def compose_tool_id(source_id: ToolSourceId, name: ToolName) -> ToolId:
     return ToolId(tool_id)
 
 
-def parse_tool_id(tool_id: ToolId) -> tuple[ToolSourceId, ToolName]:
-    """`plugin_html__outline` → `(ToolSourceId('plugin_html'), ToolName('outline'))`.
+def sanitize_source_id(origin: str) -> ToolSourceId:
+    """Привести произвольный `origin` (имя модуля/плагина) к валидному ToolSourceId.
 
-    Расщепляет по **первому** `__`. Поскольку `compose_tool_id` запрещает
-    `__` в обеих компонентах, разрез однозначен.
+    Заменяет недопустимые символы на `_`, схлопывает разделитель `__` (он
+    зарезервирован под compose/parse) и обрезает ведущие/хвостовые `_`/`-`,
+    чтобы id начинался и заканчивался alnum'ом — иначе соседство хвостового
+    `_` с разделителем даёт неоднозначный `___` и ломает round-trip parse.
+    Пустой результат заменяется на `plugin`. Результат всегда проходит
+    `compose_tool_id` и round-trip'ится через `parse_tool_id`.
+    """
+    sanitized = _NON_COMPONENT_RE.sub("_", origin)
+    while _SEPARATOR in sanitized:
+        sanitized = sanitized.replace(_SEPARATOR, "_")
+    sanitized = sanitized.strip("_-")
+    return ToolSourceId(sanitized or "plugin")
+
+
+def parse_tool_id(tool_id: ToolId) -> tuple[ToolSourceId, ToolName]:
+    """
+    Распарсить `ToolId` обратно в `(ToolSourceId, ToolName)`.
     """
     source_part, sep, name_part = tool_id.partition(_SEPARATOR)
     if not sep or not name_part:
@@ -96,4 +114,5 @@ def parse_tool_id(tool_id: ToolId) -> tuple[ToolSourceId, ToolName]:
             f"'<source>{_SEPARATOR}<name>'"
         )
         raise ValueError(msg)
+
     return ToolSourceId(source_part), ToolName(name_part)

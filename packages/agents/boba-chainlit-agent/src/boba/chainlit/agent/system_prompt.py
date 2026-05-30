@@ -26,11 +26,8 @@ logger = logging.getLogger(__name__)
 
 
 class DefaultSystemPromptSource:
-    """Склейка всех файлов system_prompt_dir в одну строку.
-
-    Читается каждый раз заново — правки на диске видны без рестарта.
-    Алгоритм совпадает с `DirectoryPromptProvider`: сортировка по имени,
-    фильтр расширений, склейка непустых блоков через двойной перенос.
+    """
+    Склейка всех файлов system_prompt_dir в одну строку
     """
 
     def __init__(
@@ -45,23 +42,18 @@ class DefaultSystemPromptSource:
     def read(self) -> str:
         if not self._root.is_dir():
             return ""
-        paths = sorted(
-            p for p in self._root.iterdir()
-            if p.is_file() and p.suffix in self._extensions
-        )
-        blocks: list[str] = []
-        for path in paths:
-            text = path.read_text(encoding="utf-8").rstrip("\n")
-            if text:
-                blocks.append(text)
+
+        paths = filter(lambda x: x.is_file(), self._root.iterdir())
+        paths = filter(lambda x: x.suffix in self._extensions, paths)
+        paths = sorted(paths)
+        blocks = (x.read_text(encoding="utf-8").rstrip("\n") for x in paths)
+
         return "\n\n".join(blocks)
 
 
 class ThreadSystemPromptProvider(PromptProvider):
-    """Provider, читающий system-prompt из `ThreadMeta` по `thread_id`.
-
-    Если меты ещё нет (тред не зарегистрирован) или `system_prompt` пуст —
-    возвращает `fallback` (типично — дефолт из `DefaultSystemPromptSource`).
+    """
+    Provider, читающий system-prompt из `ThreadMeta` по `thread_id`
     """
 
     def __init__(

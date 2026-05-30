@@ -16,14 +16,15 @@
 `use_reducer(...)` с reducer'ом, чей `id()` совпадает с встроенным,
 заменяет встроенный.
 
-Ресурсы `HistoryDialogView` и `ToolCatalog` задаются либо явно через
-`.with_history_view()` / `.with_tool_catalog()`, либо прокидываются
-`AgentBuilder.use_turn()` (он уважает явно заданное).
+Ресурсы `HistoryDialogView` и `ToolCatalog` задаются явно через
+`.with_history_view()` / `.with_tool_catalog()`. Caller создаёт
+view над свежим `HistoryReader` и catalog'ом из `ToolRegistry`.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from pathlib import Path
 from typing import Self, cast
 
 from boba.agent.agent import AgentContext
@@ -36,19 +37,20 @@ from boba.agent.prompt_providers import (
 from boba.agent.turn.history_view import HistoryDialogView
 from boba.agent.turn.reducers import (
     HistoryReducer,
-    ModelReducer,
-    RequestIdReducer,
+    ModelFromRequestReducer,
+    RequestIdFromReducer,
     SamplingReducer,
-    StreamReducer,
+    StreamModeReducer,
     SystemPromptReducer,
     ToolsDefinitionReducer,
     TurnReducer,
     UserQueryReducer,
 )
 from boba.agent.turn.spec import LLMRequest, LLMRequestFactory
+from boba.agent.workspace_fs import FsWorkspaceShell
 from boba.llm.models import SamplingParams
 from boba.tools.framework import ToolCatalog
-from boba.workspace.contract import PromptWorkspaceShell
+from boba.workspace.contract import PromptWorkspaceId
 
 __all__ = ["TurnBuilder", "TurnReducerFactory"]
 
@@ -71,13 +73,13 @@ class TurnBuilder:
         self._model: str = model
         self._sampling: SamplingParams | None = None
         self._stream: bool = True
-        self._factories[RequestIdReducer.ID] = self._make_request_id
-        self._factories[ModelReducer.ID] = self._make_model
+        self._factories[RequestIdFromReducer.ID] = self._make_request_id
+        self._factories[ModelFromRequestReducer.ID] = self._make_model
 
     def with_model(self, model: str) -> Self:
         """Обновить LLM-модель. Перезаписывает значение, заданное в конструкторе."""
         self._model = model
-        self._factories[ModelReducer.ID] = self._make_model
+        self._factories[ModelFromRequestReducer.ID] = self._make_model
         return self
 
     def with_sampling(self, sampling: SamplingParams) -> Self:
@@ -89,7 +91,7 @@ class TurnBuilder:
     def with_stream(self, stream: bool) -> Self:
         """Режим ответа LLM: True=стриминг дельт, False=один итоговый ответ."""
         self._stream = stream
-        self._factories[StreamReducer.ID] = self._make_stream
+        self._factories[StreamModeReducer.ID] = self._make_stream
         return self
 
     def with_history_view(self, view: HistoryDialogView) -> Self:
@@ -134,13 +136,14 @@ class TurnBuilder:
 
     def system_prompt_from_file(
         self,
-        workspace: PromptWorkspaceShell,
-        rel_path: str,
+        file_path: Path,
         *,
         priority: int = 100,
         default_prompt: str = "",
     ) -> Self:
-        """Добавить provider, читающий system-prompt из одного файла workspace."""
+        """Добавить provider, читающий system-prompt из одного файла."""
+        workspace = FsWorkspaceShell(PromptWorkspaceId("prompt"), file_path.parent)
+        rel_path = file_path.name
         self.system_prompt_from_providers(
             [
                 FilePromptProvider(
@@ -154,14 +157,15 @@ class TurnBuilder:
         )
         return self
 
-    def system_prompt_from_directory(
+    def system_prompt_from_dir(
         self,
-        workspace: PromptWorkspaceShell,
+        dir_path: Path,
         *,
         priority: int = 100,
         extensions: tuple[str, ...] = (".md", ".txt"),
     ) -> Self:
-        """Добавить provider, читающий файлы из workspace как отдельные блоки."""
+        """Добавить provider, читающий файлы из директории как отдельные блоки."""
+        workspace = FsWorkspaceShell(PromptWorkspaceId("prompt"), dir_path)
         self.system_prompt_from_providers(
             [
                 DirectoryPromptProvider(
@@ -196,14 +200,6 @@ class TurnBuilder:
         self._factories[reducer_id] = factory
         return self
 
-    def has_history_view(self) -> bool:
-        """True, если пользователь уже задал `HistoryDialogView` явно."""
-        return self._history_view is not None
-
-    def has_tool_catalog(self) -> bool:
-        """True, если пользователь уже задал `ToolCatalog` явно."""
-        return self._tool_catalog is not None
-
     def build(self, ctx: AgentContext) -> LLMRequest:
         """Прогнать все фабрики над `ctx`, заполнить spec, отдать LLMRequest."""
         spec = LLMRequestFactory()
@@ -215,17 +211,17 @@ class TurnBuilder:
 
     # --- фабрики reducer'ов (читают live state self.* и ctx) -----------
 
-    def _make_request_id(self, ctx: AgentContext) -> RequestIdReducer:
-        return RequestIdReducer(ctx.request_id)
+    def _make_request_id(self, ctx: AgentContext) -> RequestIdFromReducer:
+        return RequestIdFromReducer(ctx.request_id)
 
-    def _make_model(self, _ctx: AgentContext) -> ModelReducer:
-        return ModelReducer(self._model)
+    def _make_model(self, _ctx: AgentContext) -> ModelFromRequestReducer:
+        return ModelFromRequestReducer(self._model)
 
     def _make_sampling(self, _ctx: AgentContext) -> SamplingReducer:
         return SamplingReducer(self._sampling)
 
-    def _make_stream(self, _ctx: AgentContext) -> StreamReducer:
-        return StreamReducer(self._stream)
+    def _make_stream(self, _ctx: AgentContext) -> StreamModeReducer:
+        return StreamModeReducer(self._stream)
 
     def _make_history(self, _ctx: AgentContext) -> HistoryReducer:
         return HistoryReducer(cast("HistoryDialogView", self._history_view))

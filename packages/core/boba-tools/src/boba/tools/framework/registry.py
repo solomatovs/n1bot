@@ -1,22 +1,5 @@
-"""ToolSource + ToolRegistry + ToolCatalog + ToolExecutor.
-
-Минимальная схема:
-- `ToolSource` — владеет своими `Tool`'ами (и любыми shared-ресурсами:
-  MCP-сессией, БД-коннектом, child process'ом). На shutdown'е `close()`
-  каскадит вниз. Уникальность tool-имён — забота source'а; глобальной
-  коллизии между source'ами нет, потому что dispatch — двуступенчатый
-  (`source_id` → `name`).
-- `ToolRegistry` — owner-объект: владеет коллекцией `ToolSource`'ов и их
-  lifecycle (`close()`). Не предоставляет ни read-, ни execute-операций
-  напрямую — раздаёт узкие view через `.catalog()` / `.executor()`.
-- `ToolCatalog` — read-only view: отдаёт `definitions()` для LLM (turn).
-  Ничего не знает про `execute`.
-- `ToolExecutor` — execute-only view: парсит wire-id `<source>/<name>`,
-  диспетчеризует вызов в нужный source. Ничего не знает про definitions.
-
-Catalog и Executor — лёгкие proxy над одной и той же таблицей source'ов,
-которой владеет Registry. Один источник истины: невозможно состояние,
-когда LLM «видит» tool, который нельзя вызвать (или наоборот).
+"""
+ToolSource + ToolRegistry + ToolCatalog + ToolExecutor.
 """
 
 from __future__ import annotations
@@ -55,14 +38,17 @@ __all__ = [
 
 
 class ToolSource:
-    """Источник Tool'ов: владелец инструментов и связанных ресурсов.
+    """
+    Источник Tool'ов: владелец инструментов и связанных ресурсов.
 
-    Один source = одно пространство имён. Tool, попадающий в source,
-    обязан иметь `tool.source_id() == self.id()`. Внутри уникальность
-    `ToolName` проверяется самим source'ом при `__init__`.
+    Один ToolSource содержит много Tool'ов,
+    объединённых общими ресурсами (например, клиентом внешнего API)
 
-    `close()` — точка освобождения долгоживущих ресурсов; default no-op.
-    Идемпотентен: повторный вызов не должен ронять.
+    Например работа для работы с файлами: cat, grep, ls, wc
+
+    каждый Tool, обязан иметь:
+        `id()       - идентификатор источника, совпадающий для всех Tool'ов
+        `close()`   — точка освобождения долгоживущих ресурсов;
     """
 
     @abstractmethod
@@ -112,24 +98,24 @@ class StaticToolSource(ToolSource):
 
 
 class ToolRegistry:
-    """Owner коллекции `ToolSource`'ов; раздаёт узкие view.
-
-    Lifecycle: `close()` каскадит на все source'ы. Контекст-менеджер.
-    Catalog и Executor — non-owning view над тем же словарём source'ов,
-    живут пока живёт registry. Между ними не может быть рассинхронизации.
+    """
+    Owner коллекции `ToolSource`'ов
     """
 
-    def __init__(self, sources: Iterable[ToolSource]) -> None:
+    def __init__(
+        self,
+        sources: Iterable[ToolSource],
+    ) -> None:
         self._sources: dict[ToolSourceId, ToolSource] = {}
         for src in sources:
             sid = src.id()
+
+            # колизия по id источника — это ошибка
+            # т.к. мы не сможем понять, к какому source отнести tool_id
             if sid in self._sources:
                 raise ToolSourceCollisionError(sid)
-            self._sources[sid] = src
 
-    @classmethod
-    def from_sources(cls, sources: Iterable[ToolSource]) -> Self:
-        return cls(sources)
+            self._sources[sid] = src
 
     @property
     def sources(self) -> Mapping[ToolSourceId, ToolSource]:
@@ -144,13 +130,17 @@ class ToolRegistry:
         return ToolExecutor(self._sources)
 
     def close(self) -> None:
-        """Закрыть все source'ы. Идемпотентно: ошибки одного не блокируют остальные."""
+        """
+        для поддержки graceful shutdown: закрыть все source'ы и container
+        Ошибки одного не блокируют остальных
+        """
         errors: list[Exception] = []
         for src in self._sources.values():
             try:
                 src.close()
             except Exception as e:
                 errors.append(e)
+
         if errors:
             raise ExceptionGroup("errors during ToolRegistry.close", errors)
 
@@ -162,7 +152,8 @@ class ToolRegistry:
 
 
 class ToolCatalog:
-    """Read-only view над набором source'ов: отдаёт definitions для LLM.
+    """
+    Read-only view над набором source'ов: отдаёт definitions для LLM.
 
     Lifecycle принадлежит `ToolRegistry`. Catalog хранит reference на тот же
     словарь source'ов, без owning-семантики.
@@ -179,10 +170,9 @@ class ToolCatalog:
 
 
 class ToolExecutor(Executor[ToolContext, ToolCall, ToolResult]):
-    """Execute-view над набором source'ов: парсит wire-id и диспетчеризует.
-
-    Lifecycle принадлежит `ToolRegistry`. Executor хранит reference на тот же
-    словарь source'ов, без owning-семантики (close — на registry).
+    """
+    Execute над набором ToolSource
+    парсит ToolId и диспетчеризует его выполнение в нужный source
     """
 
     def __init__(self, sources: Mapping[ToolSourceId, ToolSource]) -> None:
@@ -214,10 +204,9 @@ class ToolExecutor(Executor[ToolContext, ToolCall, ToolResult]):
 
     def _unknown_tool(self, tool_id: ToolId) -> ToolExecutionError:
         available = sorted(
-            tool.tool_id()
-            for src in self._sources.values()
-            for tool in src.tools()
+            tool.tool_id() for src in self._sources.values() for tool in src.tools()
         )
+
         if not available:
             msg = f"tool {tool_id!r} not found; no tools are registered"
         else:
@@ -225,4 +214,5 @@ class ToolExecutor(Executor[ToolContext, ToolCall, ToolResult]):
                 f"tool {tool_id!r} not found. "
                 f"available: {', '.join(repr(a) for a in available)}"
             )
+
         return ToolExecutionError(tool_id, msg)

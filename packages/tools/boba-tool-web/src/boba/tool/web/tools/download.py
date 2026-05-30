@@ -14,11 +14,11 @@ import httpx
 from pydantic import Field
 
 from boba.indexing import PipelineContext, PipelineId
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, LLMStringList
 from boba.tool.web.connection import WebConnection
 from boba.tool.web.request_source import WebUrlsRequestSource
 from boba.tool.web.tools._artifact import WebArtifact
-from boba.tools import FromConfig, FromDI, LLMStringList, Scope, tool
+from boba.tools import FromConfig, FromDI, Scope, tool
 from boba.workspace.contract import ProjectWorkspaceShell
 
 __all__ = ["WebDownloadConfig", "web_download"]

@@ -11,13 +11,16 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from boba.agent import (
+    Agent,
     AgentBuilder,
     AllHistoryDialogView,
     AnswerMessage,
+    HistoryService,
+    InMemoryHistoryService,
+    LLMPort,
     TurnBuilder,
     UserQueryReceived,
 )
-from boba.agent.history import HistoryReader, HistoryWriter
 from boba.llm.builder import LLM
 from boba.llm.events import (
     FinishReason,
@@ -34,6 +37,7 @@ from boba.llm.models import (
     UserMessage,
 )
 from boba.patterns import StreamSource
+from boba.tools import ToolBuilder
 
 
 class _StubLLMSource(StreamSource[LLMContext, LLMEvent]):
@@ -75,12 +79,33 @@ def _dialog_texts(messages: tuple[DialogMessage, ...]) -> list[tuple[str, str]]:
     return out
 
 
-def test_history_journal_contains_user_query_and_assistant_snapshots():
-    """Журнал должен содержать UserQueryReceived + AnswerMessage после одного хода."""
-    stub = _StubLLMSource(answers=["hi back"])
+def _build_agent(answers: list[str]) -> tuple[Agent, HistoryService, _StubLLMSource]:
+    """Собрать агента с пустым tool-registry и in-memory history."""
+    stub = _StubLLMSource(answers=answers)
     llm = LLM(source=stub)
 
-    agent = AgentBuilder().use_llm(llm).use_turn(TurnBuilder("stub-model")).build()
+    history: HistoryService = InMemoryHistoryService()
+    tool_registry = ToolBuilder().build()
+
+    turn = (
+        TurnBuilder("stub-model")
+        .with_history_view(AllHistoryDialogView(history))
+        .with_tool_catalog(tool_registry.catalog())
+    )
+    terminal = LLMPort(llm, turn)
+
+    agent = (
+        AgentBuilder()
+        .use_history(history)
+        .use_tool_executor(tool_registry.executor())
+        .build(terminal)
+    )
+    return agent, history, stub
+
+
+def test_history_journal_contains_user_query_and_assistant_snapshots():
+    """Журнал должен содержать UserQueryReceived + AnswerMessage после одного хода."""
+    agent, history, _ = _build_agent(answers=["hi back"])
 
     events = list(agent.stream("hi"))
 
@@ -88,7 +113,6 @@ def test_history_journal_contains_user_query_and_assistant_snapshots():
     assert "UserQueryReceived" in types
     assert "AnswerMessage" in types
 
-    history = agent.container.get(HistoryReader)
     user_queries = [e for e in history.events() if isinstance(e, UserQueryReceived)]
     assert len(user_queries) == 1
     assert user_queries[0].query == "hi"
@@ -100,24 +124,18 @@ def test_history_journal_contains_user_query_and_assistant_snapshots():
 
 def test_history_view_reconstructs_full_dialog_after_run():
     """AllHistoryDialogView отдаёт UserMessage + AssistantMessage из журнала."""
-    stub = _StubLLMSource(answers=["pong"])
-    llm = LLM(source=stub)
-
-    agent = AgentBuilder().use_llm(llm).use_turn(TurnBuilder("stub-model")).build()
+    agent, history, _ = _build_agent(answers=["pong"])
 
     list(agent.stream("ping"))
 
-    view = AllHistoryDialogView(agent.container.get(HistoryReader))
+    view = AllHistoryDialogView(history)
     dialog = list(view.dialog_message_iter())
     assert _dialog_texts(tuple(dialog)) == [("user", "ping"), ("assistant", "pong")]
 
 
 def test_second_turn_sees_prior_dialog_in_llm_request():
     """Второй .stream(...) должен видеть весь предыдущий диалог в LLMContext."""
-    stub = _StubLLMSource(answers=["A1", "A2"])
-    llm = LLM(source=stub)
-
-    agent = AgentBuilder().use_llm(llm).use_turn(TurnBuilder("stub-model")).build()
+    agent, _, stub = _build_agent(answers=["A1", "A2"])
 
     list(agent.stream("q1"))
     list(agent.stream("q2"))
@@ -136,13 +154,10 @@ def test_second_turn_sees_prior_dialog_in_llm_request():
 
 def test_clear_history_resets_dialog_for_subsequent_turn():
     """history.clear() стирает контекст; следующий ход видит только свой query."""
-    stub = _StubLLMSource(answers=["A1", "A2"])
-    llm = LLM(source=stub)
-
-    agent = AgentBuilder().use_llm(llm).use_turn(TurnBuilder("stub-model")).build()
+    agent, history, stub = _build_agent(answers=["A1", "A2"])
 
     list(agent.stream("q1"))
-    agent.container.get(HistoryWriter).clear()
+    history.clear()
     list(agent.stream("q2"))
 
     assert _dialog_texts(stub.contexts[1].request.dialog_messages) == [("user", "q2")]

@@ -8,7 +8,7 @@
 В invoke:
 1. Валидируем LLM-args через `args_model.model_validate(raw)`.
 2. Открываем request-scope от root container'а.
-3. Резолвим DI-deps через `request_container.get(T, component=...)`.
+3. Резолвим DI-deps через `request_container.get(T)`.
 4. Зовём callable с (llm_kwargs + di_kwargs).
 5. Закрываем request-scope (gen-providers с teardown отрабатывают).
 6. Coerce результата в `ToolResult` (str/int/dict/BaseModel/dataclass).
@@ -20,7 +20,6 @@ import dataclasses
 from typing import Any
 
 from dishka import Container
-from dishka.entities.component import Component
 from pydantic import BaseModel, ValidationError
 
 from boba.tools.domain.errors import (
@@ -53,7 +52,6 @@ class DishkaTool(Tool[BaseModel, None]):
     - `_target` — собственно callable, который надо вызвать.
     - `_plan` — cached pydantic args model + DI plan.
     - `_container` — root Dishka Container.
-    - `_component` — Dishka component, в котором tool живёт (=plugin name).
 
     `_cfg` родителя у нас всегда None (cfg-параметры — через FromConfig DI).
     `_ctx` родителя у нас всегда None (контейнер — единственный resolver).
@@ -64,13 +62,11 @@ class DishkaTool(Tool[BaseModel, None]):
         target: Any,
         plan: CallPlan,
         container: Container,
-        component: str,
         source_id: ToolSourceId,
     ) -> None:
         self._target = target
         self._plan = plan
         self._container = container
-        self._component = Component(component)
         self._cfg = None  # type: ignore[assignment]
         self._ctx = None
         self._source_id = source_id
@@ -114,14 +110,9 @@ class DishkaTool(Tool[BaseModel, None]):
         }
         # Открываем request-scope: APP-scope deps идут через parent,
         # REQUEST-scope создаются здесь и закрываются на __exit__.
-        # `component=` — параметр `get()`, не `container()`. Для каждого
-        # резолва указываем component плагина — Dishka вернёт его версию,
-        # либо (через alias() в Provider'е) свалится в default component.
         with self._container() as request_container:
             di_kwargs = {
-                dep.param_name: request_container.get(
-                    dep.target_type, component=self._component,
-                )
+                dep.param_name: request_container.get(dep.target_type)
                 for dep in self._plan.di_deps
             }
             raw_result = self._target(**llm_kwargs, **di_kwargs)

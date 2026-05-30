@@ -8,16 +8,23 @@ from pathlib import Path
 from boba.agent import (
     Agent,
     AgentBuilder,
+    CompactHistoryDialogView,
+    InMemoryHistoryService,
+    LLMPort,
     TurnBuilder,
 )
-from boba.agent.history import HistoryWriter
+from boba.agent.history import HistoryService
+from boba.agent.tool_config import (
+    ConfigSourcePluginToolFilter,
+    ConfigSourceResolver,
+    default_config_source,
+)
 from boba.agent.turn.reducers import (
     RememberUserQueryReducer,
 )
 from boba.agent.workspace_fs import (
     FsHistoryWorkspaceShell,
     FsProjectWorkspaceShell,
-    FsPromptWorkspaceRegistry,
 )
 from boba.cli.agent.config import AgentRunConfig
 from boba.cli.agent.console_sink import ConsoleSink
@@ -29,9 +36,9 @@ from boba.provider.openai import (
     HttpTraceChatCompletionObserver,
     use_openai,
 )
+from boba.tools import ToolBuilder
 from boba.workspace.contract import (
     ProjectWorkspaceShell,
-    PromptWorkspaceId,
     WorkspaceId,
 )
 
@@ -49,17 +56,11 @@ def main() -> int:
 
 def _run() -> int:
     """Собирает агента и либо прогоняет один запрос, либо запускает REPL."""
-    builder = AgentBuilder()
-
     run_cfg = AgentRunConfig.load()
     rt = run_cfg.runtime
     configure_logging(rt.log_level, rt.log_file)
 
     workspace_id = WorkspaceId("cli")
-
-    prompt_workspace = FsPromptWorkspaceRegistry(
-        root=Path(rt.system_prompt_dir),
-    ).get_or_create(PromptWorkspaceId("prompts"))
 
     project_workspace = FsProjectWorkspaceShell(
         workspace_id=workspace_id,
@@ -77,43 +78,54 @@ def _run() -> int:
         .build(use_openai(rt.openai))
     )
 
+    config_source = default_config_source()
+
+    tool_registry = (
+        ToolBuilder()
+        .use_config_resolver(ConfigSourceResolver(config_source))
+        .register_instance(project_workspace, provides=ProjectWorkspaceShell)
+        .discover_plugins("boba.plugins", ConfigSourcePluginToolFilter(config_source))
+        .build()
+    )
+
+    history: HistoryService = InMemoryHistoryService()
+
     turn = (
         TurnBuilder(rt.model)
-        .system_prompt_from_directory(prompt_workspace)
+        .system_prompt_from_dir(Path(rt.system_prompt_dir))
         .use_reducer(RememberUserQueryReducer())
+        .with_history_view(
+            CompactHistoryDialogView(history, max_messages=rt.max_messages),
+        )
+        .with_tool_catalog(tool_registry.catalog())
     )
     sampling = run_cfg.to_sampling_params()
     if sampling is not None:
         turn = turn.with_sampling(sampling)
 
-    def _provide_project_workspace() -> ProjectWorkspaceShell:
-        """DI factory для pre-built `ProjectWorkspaceShell`.
-
-        Замыкание над уже-построенным инстансом: ToolKit ожидает
-        callable с типизированным return, а не готовый объект.
-        Scope.APP — singleton на lifetime агента.
-        """
-        return project_workspace
+    terminal = LLMPort(llm, turn)
 
     agent = (
-        builder.use_llm(llm)
-        .register_provider(_provide_project_workspace)
-        .discover_plugins()
-        .use_compact_history(max_messages=rt.max_messages)
-        .use_turn(turn)
-        .build()
+        AgentBuilder()
+        .use_history(history)
+        .use_tool_executor(tool_registry.executor())
+        .build(terminal)
     )
+
     sink = ConsoleSink(
         sys.stdout,
         sys.stderr,
         diagnostic=run_cfg.diagnostic,
     )
 
-    if run_cfg.query is not None:
-        _run_turn(agent, sink, run_cfg.query)
-        return 0
+    try:
+        if run_cfg.query is not None:
+            _run_turn(agent, sink, run_cfg.query)
+            return 0
 
-    return _run_repl(agent, sink, run_cfg)
+        return _run_repl(agent, sink, run_cfg, history)
+    finally:
+        tool_registry.close()
 
 
 def _run_turn(
@@ -130,6 +142,7 @@ def _run_repl(
     agent: Agent,
     sink: ConsoleSink,
     run_cfg: AgentRunConfig,
+    history: HistoryService,
 ) -> int:
     """Интерактивный цикл: читает запрос → прогоняет агента → повторяет."""
     banner = (
@@ -156,7 +169,7 @@ def _run_repl(
         if query in _REPL_EXIT_COMMANDS:
             return 0
         if query == "/clear":
-            agent.container.get(HistoryWriter).clear()
+            history.clear()
             sys.stderr.write("(история очищена)\n")
             continue
 

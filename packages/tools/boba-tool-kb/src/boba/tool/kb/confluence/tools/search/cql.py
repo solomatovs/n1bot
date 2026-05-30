@@ -19,14 +19,14 @@ from boba.indexing import (
     RuntimePipeline,
     Section,
 )
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
+from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, LLMStringList
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.keys import ConfluenceKeys
 from boba.tool.kb.confluence.request_sources.search import (
     ConfluenceCqlSearchRequestSource,
 )
 from boba.tool.kb.confluence.search_reader import ConfluenceSearchHitsReader
-from boba.tools import FromConfig, LLMStringList, tool
+from boba.tools import FromConfig, tool
 from boba.transport.http import HttpKeys
 
 __all__ = ["ConfluenceSearchCqlConfig", "confluence_search_cql"]

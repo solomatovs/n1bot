@@ -30,8 +30,6 @@ from boba.workspace.contract import (
     LsEntry,
     OtherEntry,
     ProjectWorkspaceShell,
-    PromptWorkspaceId,
-    PromptWorkspaceShell,
     ScratchWorkspaceShell,
     TextReadable,
     WorkspaceDecodingError,
@@ -878,7 +876,3 @@ class FsHistoryWorkspaceShell(FsWorkspaceShell[WorkspaceId], HistoryWorkspaceShe
 
 class FsScratchWorkspaceShell(FsWorkspaceShell[WorkspaceId], ScratchWorkspaceShell):
     """Файловый ScratchWorkspaceShell."""
-
-
-class FsPromptWorkspaceShell(FsWorkspaceShell[PromptWorkspaceId], PromptWorkspaceShell):
-    """Файловый PromptWorkspaceShell."""
