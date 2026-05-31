@@ -1,32 +1,27 @@
-"""KbDocReader — Reader для формата KB-документа.
+"""KbDocReader — строгий Reader для формата KB-документа.
 
-Формат:
+Формат (header — плоские `key: value` строки до разделителя `---`):
 
-    # Title (опционально)
-
-    **tags:** tag1, tag2, tag3
-    **source:** https://wiki.example.com/page
-    **anchor:** optional-anchor-id
-
+    source: https://wiki.example.com/pages/viewpage.action?pageId=950276
+    title: Правила именования-v6-20260318_191938
+    page_id: 950276
+    space: PAAS
+    tags: dev, process        # опционально
+    anchor: optional-id       # опционально
     ---
 
-    body content — markdown-текст оператора, индексируется
-    целиком как одна Section.
+    body content — markdown-текст оператора, индексируется целиком
+    как одна Section.
 
-Header-блок (всё до строки `---`) парсится: title, tags, source,
-anchor, и любые `**key:** value` строки → попадают в metadata.
+Обязательные header-поля: `source`, `title`, `page_id`, `space`. Их
+отсутствие (или отсутствие самого `---`) — ошибка `KbDocFormatError`:
+документ подготовлен не по формату и в KB не попадёт. Распознанные ключи
+маппятся в типизированную metadata, нераспознанные — в `reader.kbdoc.{key}`.
 
 **Body — единая `ParagraphSection`**. Это намеренный выбор: KB-документы
-оператора — это короткие атомарные карточки знаний, и оператор хочет,
-чтобы каждый файл был ровно одним чанком (а не разбивался по
-параграфам/секциям как делает MarkdownReader для длинных markdown'ов).
-Если body превышает chunk_size, splitter (`OverlapCharSplitter` с
-`DEFAULT_SEPARATORS = ("\\n\\n", "\\n", " ", "")`) сам уйдёт в
-paragraph-split в порядке убывания крупности разделителя.
-
-`---` обязателен, если в файле есть header — без разделителя весь
-файл считается body без metadata. Это сознательно простой формат:
-fail-fast на двусмысленность не нужен.
+оператора — атомарные карточки знаний, каждый файл = ровно один логический
+документ. Если body превышает chunk_size, splitter (`OverlapCharSplitter`)
+сам уйдёт в paragraph-split в `StructuralChunker`.
 """
 
 from __future__ import annotations
@@ -37,6 +32,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from boba.indexing import (
+    IndexingError,
     Metadata,
     ParagraphSection,
     RawDocument,
@@ -45,11 +41,12 @@ from boba.indexing import (
     ReaderKeys,
     Section,
     SectionKeys,
+    SourceId,
 )
 from boba.indexing.chunks import ChunkKeys
 from boba.kbdoc.keys import KbDocKeys
 
-__all__ = ["KbDocReader", "ParsedKbDocHeader"]
+__all__ = ["KbDocFormatError", "KbDocReader", "ParsedKbDocHeader"]
 
 
 _HEADER_SEPARATOR_RE: re.Pattern[str] = re.compile(
@@ -58,18 +55,40 @@ _HEADER_SEPARATOR_RE: re.Pattern[str] = re.compile(
 )
 """Разделитель header/body — строка из трёх дефисов (опц. с whitespace)."""
 
-_H1_RE: re.Pattern[str] = re.compile(r"^[ \t]*#[ \t]+(?P<title>.+?)[ \t]*$", re.MULTILINE)
-"""`# Title` на отдельной строке внутри header'а — опционально."""
-
-_INLINE_KV_RE: re.Pattern[str] = re.compile(
-    r"\*\*(?P<key>[\w][\w.\-]*?)\s*:\s*\*\*\s*(?P<value>[^\n]+)",
+_KV_RE: re.Pattern[str] = re.compile(
+    r"^[ \t]*(?P<key>[\w][\w.\-]*)[ \t]*:[ \t]*(?P<value>.+?)[ \t]*$",
 )
-"""`**key:** value` пары внутри header'а — multi-occurrence."""
+"""Плоская `key: value` строка header'а. Значение режется по первому `:`,
+так что URL (`https://...`) в value не ломает разбор."""
 
 _KEY_TAGS: str = "tags"
 _KEY_SOURCE: str = "source"
-_KEY_SOURCE_URL: str = "source_url"
+_KEY_TITLE: str = "title"
+_KEY_PAGE_ID: str = "page_id"
+_KEY_SPACE: str = "space"
 _KEY_ANCHOR: str = "anchor"
+
+_REQUIRED_KEYS: tuple[str, ...] = (
+    _KEY_SOURCE,
+    _KEY_TITLE,
+    _KEY_PAGE_ID,
+    _KEY_SPACE,
+)
+"""Header-поля, без которых документ считается невалидным."""
+
+
+class KbDocFormatError(IndexingError):
+    """KB-документ подготовлен не по формату (нет `---` или required-полей)."""
+
+    def __init__(self, source_id: SourceId, missing: Iterable[str]) -> None:
+        self.source_id = source_id
+        self.missing = tuple(missing)
+        super().__init__(
+            f"kbdoc {str(source_id)!r} не по формату: "
+            f"нет обязательных header-полей {list(self.missing)} "
+            f"(требуются {list(_REQUIRED_KEYS)}; "
+            f"header — плоские `key: value` строки до `---`)"
+        )
 
 
 @dataclass(frozen=True)
@@ -77,21 +96,33 @@ class ParsedKbDocHeader:
     """Структурированный результат парсинга header'а KB-документа."""
 
     title: str | None
-    tags: frozenset[str]
     source_url: str | None
+    page_id: str | None
+    space: str | None
+    tags: frozenset[str]
     anchor: str | None
     custom: dict[str, str]
     body: str
+
+    def missing_required(self) -> tuple[str, ...]:
+        """Список обязательных header-полей, которых нет (в порядке контракта)."""
+        present = {
+            _KEY_SOURCE: self.source_url,
+            _KEY_TITLE: self.title,
+            _KEY_PAGE_ID: self.page_id,
+            _KEY_SPACE: self.space,
+        }
+        return tuple(k for k in _REQUIRED_KEYS if not present[k])
 
 
 class KbDocReader(Reader[str]):
     """Reader[str] для KB-document формата — один файл = одна Section.
 
-    Парсит header (title, tags, source, anchor, custom `**k:** v`) в
-    metadata; body отдаёт **одной `ParagraphSection`** без дальнейшей
-    разбивки по структуре markdown. Это операторская KB-конвенция:
-    каждый документ — атомарная единица. Внутреннюю нарезку (если файл
-    > chunk_size) делает уже splitter в `StructuralChunker`.
+    Строго требует header-поля `source`/`title`/`page_id`/`space`; иначе
+    бросает `KbDocFormatError` (→ `SourceFailed` в индексаторе). Body отдаёт
+    одной `ParagraphSection` без структурной разбивки — операторская
+    KB-конвенция: каждый документ атомарен. Размерный split делает splitter
+    в `StructuralChunker`.
     """
 
     READER_ID: ClassVar[ReaderId] = ReaderId("ext.kbdoc")
@@ -111,8 +142,12 @@ class KbDocReader(Reader[str]):
         text = value.handle.read().decode(self._encoding, errors="replace")
         parsed = self.parse(text)
 
+        missing = parsed.missing_required()
+        if missing:
+            raise KbDocFormatError(value.source_id, missing)
+
         if not parsed.body:
-            return
+            raise KbDocFormatError(value.source_id, ("body",))
 
         meta = self._enrich_metadata(value.metadata, parsed).set(
             ReaderKeys.DOC_TYPE,
@@ -129,13 +164,18 @@ class KbDocReader(Reader[str]):
 
     @classmethod
     def parse(cls, text: str) -> ParsedKbDocHeader:
-        """Разбить документ на header (metadata) и body."""
+        """Разбить документ на header (плоские `key: value`) и body.
+
+        Без `---` весь текст — body, а required-поля пустые → невалидно.
+        """
         match = _HEADER_SEPARATOR_RE.search(text)
         if match is None:
             return ParsedKbDocHeader(
                 title=None,
-                tags=frozenset(),
                 source_url=None,
+                page_id=None,
+                space=None,
+                tags=frozenset(),
                 anchor=None,
                 custom={},
                 body=text,
@@ -144,50 +184,41 @@ class KbDocReader(Reader[str]):
         header_text = text[: match.start()]
         body = text[match.end():].lstrip("\n")
 
-        title = cls._extract_title(header_text)
-        tags, source_url, anchor, custom = cls._extract_kv(header_text)
+        fields = cls._extract_kv(header_text)
         return ParsedKbDocHeader(
-            title=title,
-            tags=tags,
-            source_url=source_url,
-            anchor=anchor,
-            custom=custom,
+            title=fields.get(_KEY_TITLE),
+            source_url=fields.get(_KEY_SOURCE),
+            page_id=fields.get(_KEY_PAGE_ID),
+            space=fields.get(_KEY_SPACE),
+            tags=cls._parse_tags(fields.get(_KEY_TAGS)),
+            anchor=fields.get(_KEY_ANCHOR),
+            custom={
+                k: v
+                for k, v in fields.items()
+                if k not in cls._KNOWN_KEYS
+            },
             body=body,
         )
 
-    @staticmethod
-    def _extract_title(header_text: str) -> str | None:
-        m = _H1_RE.search(header_text)
-        if m is None:
-            return None
-        title = m.group("title").strip()
-        return title or None
+    _KNOWN_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {_KEY_TAGS, _KEY_SOURCE, _KEY_TITLE, _KEY_PAGE_ID, _KEY_SPACE, _KEY_ANCHOR}
+    )
 
     @staticmethod
-    def _extract_kv(
-        header_text: str,
-    ) -> tuple[frozenset[str], str | None, str | None, dict[str, str]]:
-        tags: frozenset[str] = frozenset()
-        source_url: str | None = None
-        anchor: str | None = None
-        custom: dict[str, str] = {}
-
-        for m in _INLINE_KV_RE.finditer(header_text):
-            key = m.group("key").lower()
-            value = m.group("value").strip()
-            if not value:
+    def _extract_kv(header_text: str) -> dict[str, str]:
+        fields: dict[str, str] = {}
+        for line in header_text.splitlines():
+            m = _KV_RE.match(line)
+            if m is None:
                 continue
-            if key == _KEY_TAGS:
-                tags = frozenset(
-                    t.strip() for t in value.split(",") if t.strip()
-                )
-            elif key in (_KEY_SOURCE, _KEY_SOURCE_URL):
-                source_url = value
-            elif key == _KEY_ANCHOR:
-                anchor = value
-            else:
-                custom[key] = value
-        return tags, source_url, anchor, custom
+            fields[m.group("key").lower()] = m.group("value").strip()
+        return fields
+
+    @staticmethod
+    def _parse_tags(raw: str | None) -> frozenset[str]:
+        if not raw:
+            return frozenset()
+        return frozenset(t.strip() for t in raw.split(",") if t.strip())
 
     @staticmethod
     def _enrich_metadata(
@@ -199,6 +230,10 @@ class KbDocReader(Reader[str]):
             meta = meta.set(ReaderKeys.PAGE_TITLE, parsed.title)
         if parsed.source_url:
             meta = meta.set(KbDocKeys.SOURCE_URL, parsed.source_url)
+        if parsed.page_id:
+            meta = meta.set(KbDocKeys.PAGE_ID, parsed.page_id)
+        if parsed.space:
+            meta = meta.set(KbDocKeys.SPACE, parsed.space)
         if parsed.anchor:
             meta = meta.set(SectionKeys.ANCHOR, parsed.anchor)
             meta = meta.set(ChunkKeys.ANCHOR, parsed.anchor)

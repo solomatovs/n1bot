@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from boba.tools.framework.errors import (
     ToolIdCollisionError,
+    ToolNameCollisionError,
     ToolSourceCollisionError,
 )
 from boba.tools.framework.registry import (
@@ -22,6 +23,7 @@ __all__ = [
     "ToolCatalog",
     "ToolExecutor",
     "ToolIdCollisionError",
+    "ToolNameCollisionError",
     "ToolRegistry",
     "ToolSource",
     "ToolSourceCollisionError",

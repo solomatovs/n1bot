@@ -1,7 +1,7 @@
 """Boba tool domain: contract layer для tools framework и LLM-adapter'ов.
 
 Содержит:
-- Identity: ToolName (локальное), ToolSourceId, ToolId (qualified wire).
+- Identity: ToolName (оно же wire-имя), ToolSourceId, ToolId.
 - Tool ABC + ToolCall, ToolContext.
 - ToolResult sealed family (TextResult / JsonResult / ErrorResult).
 - доменные ошибки: ToolExecutionError, InvalidToolArgumentError, etc.
@@ -24,8 +24,7 @@ from boba.tools.domain.ids import (
     ToolId,
     ToolName,
     ToolSourceId,
-    compose_tool_id,
-    parse_tool_id,
+    to_tool_id,
 )
 from boba.tools.domain.result import (
     ErrorResult,
@@ -56,6 +55,5 @@ __all__ = [
     "ToolResult",
     "ToolSchema",
     "ToolSourceId",
-    "compose_tool_id",
-    "parse_tool_id",
+    "to_tool_id",
 ]

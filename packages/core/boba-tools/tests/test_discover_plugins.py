@@ -30,6 +30,7 @@ from boba.tools import (
     provides,
     tool,
 )
+from boba.tools.framework import ToolNameCollisionError
 
 GROUP = "boba.tools.test"
 
@@ -152,3 +153,23 @@ def test_multiple_plugins_independent_filters(
     )
 
     assert _tool_names(tb) == ["plugin_foo"]
+
+
+def test_duplicate_tool_name_across_plugins_collides(
+    install_entry_points, make_plugin_entry_point
+):
+    """Один tool-name в двух плагинах → ToolNameCollisionError на build()."""
+    attrs = {"plugin_foo": plugin_foo}
+    eps = [
+        make_plugin_entry_point("plug_a", attrs),
+        make_plugin_entry_point("plug_b", attrs),
+    ]
+    install_entry_points(GROUP, eps)
+
+    tb = ToolBuilder().discover_plugins(
+        GROUP,
+        plugin_tool_filter=PluginFilterAllowAll(),
+    )
+
+    with pytest.raises(ToolNameCollisionError):
+        tb.build()

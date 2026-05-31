@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-tool-kb"
 version = "0.1.0"
-description = "Boba KB: knowledge-base tools (KbDoc/Confluence ingest + kb_search_hybrid/vector + confluence_search_cql + downloads) поверх postgres+pgvector с гибридным RRF-поиском."
+description = "Boba KB: knowledge-base tools (KbDoc/Confluence ingest + kb_search_vector/fts + confluence_search_cql + downloads) поверх postgres+pgvector."
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-tools",

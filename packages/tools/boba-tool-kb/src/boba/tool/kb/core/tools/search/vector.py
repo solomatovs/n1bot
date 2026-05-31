@@ -1,10 +1,17 @@
 """Tool `kb_search_vector` + `KbSearchVectorConfig`: pure vector (cosine) поверх KB.
 
-Параллелен `kb_search_hybrid` (RRF) и `fts_search` (pure FTS) — четвёртый
-поисковый tool, на этот раз только vector-канал. Полезен, когда FTS-канал
-шумит/мешает (короткие запросы, эмбеддинг лучше ловит синонимы).
+Параллелен `kb_search_fts` (pure FTS) — только vector-канал. Полезен,
+когда FTS-канал шумит/мешает (короткие запросы, эмбеддинг лучше ловит
+синонимы).
 
 LLM передаёт только `query` + опц. `top_k`.
+
+Read-side `kb_chunks`: каждый hit — `{id, distance, link, metadata,
+snippet}`, где `id` = `chunk_id`, `snippet` = `format_content`, а
+`metadata` — ровно `kb_chunks.metadata` jsonb матчнутого чанка (плоский
+`dict[str, str]`; набор ключей зависит от коллекции). Пример заполнения
+ключей — в ingest-tool'ах (`...kbdoc.tools.ingest`,
+`...confluence.tools.ingest`).
 """
 
 from __future__ import annotations

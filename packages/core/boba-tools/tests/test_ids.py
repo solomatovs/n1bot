@@ -4,9 +4,8 @@ import pytest
 
 from boba.tools.domain.ids import (
     ToolName,
-    compose_tool_id,
-    parse_tool_id,
     sanitize_source_id,
+    to_tool_id,
 )
 
 
@@ -30,10 +29,23 @@ def test_sanitize_source_id(origin: str, expected: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "origin",
-    ["boba.tools.html", "inline", "__main__", "a__b", "a_", "-x-", "", "..."],
+    "name",
+    ["outline", "cat", "kb_search", "tool-1", "a__b"],
 )
-def test_sanitized_source_id_round_trips(origin: str) -> None:
-    sid = sanitize_source_id(origin)
-    tool_id = compose_tool_id(sid, ToolName("mytool"))
-    assert parse_tool_id(tool_id) == (sid, ToolName("mytool"))
+def test_to_tool_id_passes_valid_names(name: str) -> None:
+    # wire-имя = само имя tool'а, без префикса источника.
+    assert to_tool_id(ToolName(name)) == name
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["", "_leading", "-leading", "has space", "has.dot", "юникод"],
+)
+def test_to_tool_id_rejects_bad_charset(name: str) -> None:
+    with pytest.raises(ValueError):
+        to_tool_id(ToolName(name))
+
+
+def test_to_tool_id_rejects_too_long() -> None:
+    with pytest.raises(ValueError, match="max 64"):
+        to_tool_id(ToolName("a" * 65))

@@ -32,7 +32,7 @@ from boba.tools.domain.ids import (
     ToolId,
     ToolName,
     ToolSourceId,
-    compose_tool_id,
+    to_tool_id,
 )
 from boba.tools.domain.llm_schema import LLMSchemaGenerator
 from boba.tools.domain.result import (
@@ -74,7 +74,7 @@ class DishkaTool(Tool[BaseModel, None]):
         self._ctx = None
         self._source_id = source_id
         self._name = name
-        self._tool_id_value: ToolId = compose_tool_id(source_id, name)
+        self._tool_id_value: ToolId = to_tool_id(name)
 
     def tool_id(self) -> ToolId:
         return self._tool_id_value
@@ -91,6 +91,7 @@ class DishkaTool(Tool[BaseModel, None]):
         schema.pop("description", None)
         return ToolSchema(
             name=self._tool_id_value,
+            source_id=self._source_id,
             description=str(description),
             parameters_schema=schema,
         )

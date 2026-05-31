@@ -41,10 +41,6 @@ from boba.tool.kb.core.tools.search.fts import (
     KbSearchFtsConfig,
     kb_search_fts,
 )
-from boba.tool.kb.core.tools.search.hybrid import (
-    KbSearchHybridConfig,
-    kb_search_hybrid,
-)
 from boba.tool.kb.core.tools.search.vector import (
     KbSearchVectorConfig,
     kb_search_vector,
@@ -64,7 +60,6 @@ __all__ = [
     "ConfluenceSearchCqlConfig",
     "EmbeddingModel",
     "KbSearchFtsConfig",
-    "KbSearchHybridConfig",
     "KbSearchVectorConfig",
     "KbdocIngestConfig",
     "PostgresChunkStore",
@@ -82,7 +77,6 @@ __all__ = [
     "confluence_list_spaces",
     "confluence_search_cql",
     "kb_search_fts",
-    "kb_search_hybrid",
     "kb_search_vector",
     "kbdoc_ingest_paths",
 ]

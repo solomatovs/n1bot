@@ -10,11 +10,11 @@ __all__ = ["SearchHit"]
 
 @dataclass(frozen=True)
 class SearchHit:
-    """Один результат kb_search_hybrid.
+    """Один результат kb_search_* (vector/fts).
 
-    `distance` в гибридной выдаче не имеет «единого» физического смысла:
-    это **отрицательный RRF-скор** (`-rrf`), семантика «меньше = ближе/
-    релевантнее». Чистый cosine-distance — у `PostgresKnowledgeBase.vector_search`.
+    `distance` — cosine-distance (`vector_search`) либо отрицательный
+    `ts_rank_cd`-скор (`fts_search`); в обоих случаях семантика
+    «меньше = ближе/релевантнее».
     """
 
     id: str

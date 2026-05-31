@@ -25,7 +25,7 @@ from boba.tools.domain.ids import (
     ToolId,
     ToolName,
     ToolSourceId,
-    compose_tool_id,
+    to_tool_id,
 )
 from boba.tools.domain.llm_schema import LLMSchemaGenerator
 from boba.tools.domain.result import ToolResult
@@ -51,7 +51,7 @@ class ToolContext:
 
 @dataclass(frozen=True)
 class ToolCall:
-    """Запрос на вызов инструмента (qualified wire-id `<source>/<name>`)."""
+    """Запрос на вызов инструмента (wire-id `<name>`)."""
 
     tool_id: ToolId
     arguments: dict[str, Any]
@@ -67,6 +67,7 @@ class ToolSchema:
     """
 
     name: str
+    source_id: ToolSourceId
     description: str
     parameters_schema: Mapping[str, Any]
 
@@ -85,8 +86,9 @@ class Tool(
     - `name()`, `tool_id()`, `definition()` имеют дефолтные реализации
       на базе TArgs/TConfig и могут быть переопределены.
 
-    Identity: tool_id = `<source>__<name>`. По умолчанию `name()` —
-    snake_case имени класса без суффикса `Tool` (CatTool → "cat").
+    Identity: tool_id = `name()` (источник в wire-имя не входит). По
+    умолчанию `name()` — snake_case имени класса без суффикса `Tool`
+    (CatTool → "cat").
     """
 
     _cfg: TConfig
@@ -103,7 +105,7 @@ class Tool(
 
     @cached_property
     def _tool_id(self) -> ToolId:
-        return compose_tool_id(self._source_id, self.name())
+        return to_tool_id(self.name())
 
     def tool_id(self) -> ToolId:
         return self._tool_id
@@ -134,6 +136,7 @@ class Tool(
         description = str(schema.pop("description", ""))
         return ToolSchema(
             name=self.tool_id(),
+            source_id=self.source_id(),
             description=description,
             parameters_schema=schema,
         )

@@ -14,7 +14,6 @@ from boba.tools.domain.ids import (
     ToolId,
     ToolName,
     ToolSourceId,
-    parse_tool_id,
 )
 from boba.tools.domain.tool import (
     Tool,
@@ -25,6 +24,7 @@ from boba.tools.domain.tool import (
 )
 from boba.tools.framework.errors import (
     ToolIdCollisionError,
+    ToolNameCollisionError,
     ToolSourceCollisionError,
 )
 
@@ -82,17 +82,17 @@ class StaticToolSource(ToolSource):
         self._id = source_id
         self._index: dict[ToolName, Tool[Any, Any]] = {}
         for tool in tools:
-            tid_source, tid_name = parse_tool_id(tool.tool_id())
-            if tid_source != source_id:
+            if tool.source_id() != source_id:
                 msg = (
                     f"tool {tool.tool_id()!r} attached to source "
                     f"{source_id!r} but claims source "
-                    f"{tid_source!r}"
+                    f"{tool.source_id()!r}"
                 )
                 raise ValueError(msg)
-            if tid_name in self._index:
-                raise ToolIdCollisionError(source_id, tid_name)
-            self._index[tid_name] = tool
+            name = tool.name()
+            if name in self._index:
+                raise ToolIdCollisionError(source_id, name)
+            self._index[name] = tool
 
     def id(self) -> ToolSourceId:
         return self._id
@@ -120,15 +120,32 @@ class ToolRegistry:
     ) -> None:
         self._sources: dict[ToolSourceId, ToolSource] = {}
         self._container = container
+
+        # Плоский индекс wire-имя → tool: по нему идёт маршрутизация LLM-вызова.
+        # Source в имя не входит, поэтому уникальность имени проверяется
+        # глобально, между всеми source'ами.
+        self._tools: dict[ToolId, Tool[Any, Any]] = {}
+        self._tool_source: dict[ToolId, ToolSourceId] = {}
+
         for src in sources:
             sid = src.id()
 
             # колизия по id источника — это ошибка
-            # т.к. мы не сможем понять, к какому source отнести tool_id
             if sid in self._sources:
                 raise ToolSourceCollisionError(sid)
 
             self._sources[sid] = src
+
+            for tool in src.tools():
+                tid = tool.tool_id()
+                if tid in self._tools:
+                    raise ToolNameCollisionError(
+                        ToolName(tid),
+                        self._tool_source[tid],
+                        sid,
+                    )
+                self._tools[tid] = tool
+                self._tool_source[tid] = sid
 
     @property
     def sources(self) -> Mapping[ToolSourceId, ToolSource]:
@@ -136,11 +153,11 @@ class ToolRegistry:
 
     def catalog(self) -> ToolCatalog:
         """Read-only view для LLM: только `definitions()`."""
-        return ToolCatalog(self._sources)
+        return ToolCatalog(self._tools)
 
     def executor(self) -> ToolExecutor:
         """Execute-only view для middleware: только `execute(ctx, req)`."""
-        return ToolExecutor(self._sources)
+        return ToolExecutor(self._tools)
 
     def close(self) -> None:
         """Graceful shutdown: закрыть все source'ы и DI-контейнер.
@@ -174,42 +191,32 @@ class ToolRegistry:
 
 class ToolCatalog:
     """
-    Read-only view над набором source'ов: отдаёт definitions для LLM.
+    Read-only view над плоским индексом tool'ов: отдаёт definitions для LLM.
 
     Lifecycle принадлежит `ToolRegistry`. Catalog хранит reference на тот же
-    словарь source'ов, без owning-семантики.
+    словарь tool'ов, без owning-семантики.
     """
 
-    def __init__(self, sources: Mapping[ToolSourceId, ToolSource]) -> None:
-        self._sources = sources
+    def __init__(self, tools: Mapping[ToolId, Tool[Any, Any]]) -> None:
+        self._tools = tools
 
     def definitions(self) -> Iterator[ToolSchema]:
         """Описания tool'ов для LLM: упакованные `ToolSchema` (name + schema)."""
-        for src in self._sources.values():
-            for tool in src.tools():
-                yield tool.definition()
+        for tool in self._tools.values():
+            yield tool.definition()
 
 
 class ToolExecutor(Executor[ToolContext, ToolCall, ToolResult]):
     """
-    Execute над набором ToolSource
-    парсит ToolId и диспетчеризует его выполнение в нужный source
+    Execute над плоским индексом tool'ов: маршрутизирует вызов напрямую
+    по wire-имени (`ToolId`), без парсинга источника.
     """
 
-    def __init__(self, sources: Mapping[ToolSourceId, ToolSource]) -> None:
-        self._sources = sources
+    def __init__(self, tools: Mapping[ToolId, Tool[Any, Any]]) -> None:
+        self._tools = tools
 
     def execute(self, ctx: ToolContext, req: ToolCall) -> ToolResult:
-        try:
-            source_id, name = parse_tool_id(req.tool_id)
-        except ValueError as e:
-            raise self._unknown_tool(req.tool_id) from e
-
-        source = self._sources.get(source_id)
-        if source is None:
-            raise self._unknown_tool(req.tool_id)
-
-        tool = source.find(name)
+        tool = self._tools.get(req.tool_id)
         if tool is None:
             raise self._unknown_tool(req.tool_id)
 
@@ -224,9 +231,7 @@ class ToolExecutor(Executor[ToolContext, ToolCall, ToolResult]):
             ) from e
 
     def _unknown_tool(self, tool_id: ToolId) -> ToolExecutionError:
-        available = sorted(
-            tool.tool_id() for src in self._sources.values() for tool in src.tools()
-        )
+        available = sorted(self._tools)
 
         if not available:
             msg = f"tool {tool_id!r} not found; no tools are registered"

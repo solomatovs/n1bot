@@ -29,7 +29,7 @@ Embedder в Store не инжектится: store принимает `EmbeddedC
 write. Embedder живёт в pipeline-orchestrator'е выше
 (`CollectionScopedView`, `PostgresKnowledgeBase`).
 
-Vector-search (cosine `<=>`) и гибридный search (vector + FTS, RRF) живут
+Vector-search (cosine `<=>`) и FTS-search (`ts_rank_cd`) живут
 в `PostgresKnowledgeBase` — application-уровень, не часть ABC Store.
 """
 

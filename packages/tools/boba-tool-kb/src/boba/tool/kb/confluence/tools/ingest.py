@@ -17,6 +17,46 @@ constrained decoding у LLM и убирает класс ошибок вида
 
 Все три tool'а используют **одну** конфиг-секцию
 `[tool.kb.confluence.ingest]` (store/embedding/chunker/confluence/collection).
+
+Пример строки `kb_chunks`, которую пишут эти tool'ы (один чанк = одна
+строка; пишется в `PostgresChunkStore.upsert`). Страница `pageId=950276`
+из space `DOCS`, host `wiki.example.com`:
+
+    chunk_id       = "a1b2c3d4e5f6:0"   # digest(anchor)[:N] + ":" + chunk_index
+    collection     = "kb_confluence"     # cfg.collection
+    source_id      = "https://wiki.example.com/pages/viewpage.action?pageId=950276"
+    chunk_index    = 0                   # 0-based, проставляет chunker
+    content_hash   = "<hex-digest>"      # ec.content_hash.to_wire()
+    raw_content    = "<исходный HTML-фрагмент секции>"
+    format_content = "<plaintext секции>"   # идёт в tsv + embedding
+    embedding      = [0.0123, -0.0456, ...]
+    tags           = {}                  # text[]
+    updated_at     = now()
+
+`metadata` jsonb = `ec.metadata.to_wire()` (typed `Metadata` → плоский
+`dict[str, str]`). В отличие от kbdoc-ingest (`transport.fs.*`), здесь
+ключи проставляют HTTP-transport, confluence request_source и decoder:
+
+    {
+      "confluence.page_id":         "950276",            # request_source
+      "confluence.host":            "wiki.example.com",  # request_source
+      "confluence.space_key":       "DOCS",              # request_source / decoder
+      "confluence.ancestors_titles":"[\"DOCS Home\", \"Runbooks\"]",  # JSON-массив
+      "confluence.version":         "12",                # decoder (из version.number)
+      "reader.doc_type":            "confluence_html",   # ConfluenceHtmlReader
+      "reader.page_title":          "Postgres Runbook",  # decoder / reader
+      "transport.content_type":     "text/html; charset=utf-8",      # HttpTransport
+      "transport.http.last_modified":"2024-05-10T08:00:00Z",         # decoder
+      "section.heading.path":       "Backup > PITR",     # ConfluenceHtmlReader
+      "section.heading.level":      "2",
+      "section.heading.text":       "PITR",
+      "section.anchor":             "backup-pitr"
+    }
+
+Вложения (PDF/docx, прошедшие `AttachmentFilter`) индексируются как
+отдельные чанки с `source_id` = URL вложения и теми же `confluence.*`
+ключами родительской страницы (+ `confluence.attachment_info`). Набор
+metadata-ключей описан в `boba.tool.kb.confluence.keys` / `..._common`.
 """
 
 from __future__ import annotations
