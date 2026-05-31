@@ -30,7 +30,7 @@ from boba.tool.kb.confluence.search_cql import (
 )
 from boba.tool.kb.confluence_doc.ingest import (
     ConfluenceDocIngestConfig,
-    confluence_doc_ingest_paths,
+    confluence_doc_ingest,
 )
 from boba.tool.kb.core.chunking import ChunkerParams
 from boba.tool.kb.core.embedding import EmbeddingModel
@@ -43,8 +43,10 @@ from boba.tool.kb.core.postgres import (
 )
 from boba.tool.kb.core.search import (
     KbSearchConfig,
-    kb_confluence_doc_search,
-    kb_confluence_search,
+    kb_doc_fts_search,
+    kb_doc_vector_search,
+    kb_fts_search,
+    kb_vector_search,
 )
 
 __all__ = [
@@ -65,7 +67,7 @@ __all__ = [
     "PostgresKnowledgeBaseConfig",
     "PostgresStoreConfig",
     "PostgresStoreSchema",
-    "confluence_doc_ingest_paths",
+    "confluence_doc_ingest",
     "confluence_download",
     "confluence_fetch_page",
     "confluence_ingest_cql",
@@ -73,6 +75,8 @@ __all__ = [
     "confluence_ingest_spaces",
     "confluence_list_spaces",
     "confluence_search_cql",
-    "kb_confluence_doc_search",
-    "kb_confluence_search",
+    "kb_doc_fts_search",
+    "kb_doc_vector_search",
+    "kb_fts_search",
+    "kb_vector_search",
 ]

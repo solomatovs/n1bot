@@ -1,5 +1,5 @@
 """
-Tool `confluence_doc_ingest_paths` + `ConfluenceDocIngestConfig`.
+Tool `confluence_doc_ingest` + `ConfluenceDocIngestConfig`.
 """
 
 from __future__ import annotations
@@ -38,11 +38,11 @@ from boba.tools import FromConfig, FromDI, Scope, tool
 from boba.transport.fs import FsRequest
 from boba.workspace.contract import ProjectWorkspaceShell
 
-__all__ = ["ConfluenceDocIngestConfig", "confluence_doc_ingest_paths"]
+__all__ = ["ConfluenceDocIngestConfig", "confluence_doc_ingest"]
 
 
 class ConfluenceDocIngestConfig(BobaFlatSettings):
-    """Self-contained конфиг tool'а `confluence_doc_ingest_paths`.
+    """Self-contained конфиг tool'а `confluence_doc_ingest`.
 
     Config-секция: `[tool.kb.confluence_doc.ingest]`. Operator-controlled поля:
     store/embedding/chunker/collection. LLM выбирает только `paths` и
@@ -79,7 +79,7 @@ class ConfluenceDocIngest:
     + `WorkspaceTransport` поверх `ProjectWorkspaceShell`.
     """
 
-    PIPELINE_ID: ClassVar[PipelineId] = PipelineId("kb.confluence_doc_ingest_paths")
+    PIPELINE_ID: ClassVar[PipelineId] = PipelineId("kb.confluence_doc_ingest")
 
     @staticmethod
     def run(  # noqa: PLR0913 — keyword-only helper, явный набор deps
@@ -131,7 +131,7 @@ class ConfluenceDocIngest:
 
 
 @tool
-def confluence_doc_ingest_paths(
+def confluence_doc_ingest(
     shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
     cfg: Annotated[ConfluenceDocIngestConfig, FromConfig()],
     paths: Annotated[
