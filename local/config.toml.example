@@ -102,8 +102,10 @@ tools = [
     "confluence_ingest_pages",    # явный список page_id
     "confluence_ingest_cql",      # discovery через CQL-запрос
     # search (KB / online)
-    "kb_confluence_search",       # коллекция kb_confluence; method=vector|fts
-    "kb_confluence_doc_search",              # коллекция kb_confluence_doc; method=vector|fts
+    "kb_vector_search",       # kb_confluence, семантический (cosine)
+    "kb_fts_search",          # kb_confluence, лексический (ts_rank_cd)
+    "kb_doc_vector_search",   # kb_confluence_doc, семантический
+    "kb_doc_fts_search",      # kb_confluence_doc, лексический
     "confluence_search_cql",
     "confluence_list_spaces",
     # download / fetch (Confluence → workspace / напрямую LLM)
@@ -134,9 +136,9 @@ snippet_chars = 300
 max_limit = 50
 
 
-# KB search: общий конфиг для kb_confluence_search / kb_confluence_doc_search.
-# Канал vector|fts — параметр tool'а `method`; коллекция фиксирована типом
-# tool'а (kb_confluence / kb_confluence_doc), strict-фильтр по collection.
+# KB search: общий конфиг для 4 tool'ов (kb_{vector,fts}_search /
+# kb_doc_{vector,fts}_search). Канал и коллекция зашиты в сам tool;
+# strict-фильтр по collection (kb_confluence / kb_confluence_doc).
 [tool.kb.search]
 snippet_chars = 300
 max_top_k = 20

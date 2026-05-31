@@ -1,14 +1,15 @@
-"""Tools `kb_confluence_search` / `kb_confluence_doc_search` + дискриминаторы коллекций.
+"""KB search tools: 4 штуки = {vector, fts} × {confluence, kb_doc}.
 
-Единый интерфейс: параметр `method` (`vector` | `fts`) выбирает канал поиска.
-Каждый tool строго привязан к ОДНОЙ коллекции через дискриминирующий тип
-(`ConfluenceCollection` / `KbDocCollection`): строгий фильтр по `collection`
-даёт детерминированную сборку строки из `kb_chunks` (`CollectionSearch.row`),
-без `if/else`. Каждый тип ссылается на те же `MetadataKey`-константы, что
-пишет ingest этой коллекции — так search-сторона ↔ ingest-сторона не расходятся.
+Канал (`vector`/`fts`) и коллекция зашиты в сам tool — параметра `method` нет:
+- `kb_vector_search` / `kb_fts_search`         — коллекция `kb_confluence`;
+- `kb_doc_vector_search` / `kb_doc_fts_search` — коллекция `kb_confluence_doc`.
 
-Общая конфиг-секция: `[tool.kb.search]` (knowledge_base / max_top_k / пути к
-SQL-шаблонам vector|fts).
+Коллекция фиксируется дискриминирующим типом (`ConfluenceCollection` /
+`KbDocCollection`): строгий фильтр по `collection` даёт детерминированную
+сборку строки из `kb_chunks` (`CollectionSearch.row`). Каждый тип ссылается
+на те же `MetadataKey`-константы, что пишет ingest этой коллекции — так
+search-сторона ↔ ingest-сторона не расходятся. Все 4 tool'а делят
+конфиг-секцию `[tool.kb.search]` (knowledge_base / max_top_k).
 """
 
 from __future__ import annotations
@@ -34,8 +35,10 @@ __all__ = [
     "KbDocCollection",
     "KbSearchConfig",
     "MetaField",
-    "kb_confluence_doc_search",
-    "kb_confluence_search",
+    "kb_doc_fts_search",
+    "kb_doc_vector_search",
+    "kb_fts_search",
+    "kb_vector_search",
 ]
 
 SearchMethod = Literal["vector", "fts"]
@@ -197,15 +200,15 @@ limit
     тотальна — экранировать ничего не нужно.
     """
 
-    QUERY_DESC: ClassVar[str] = (
-        "Поисковый запрос. Для `method=vector` — естественный язык (семантика). "
-        'Для `method=fts` — websearch-синтаксис: пробел = AND, `OR` = альтернативы, '
-        '`"фраза"` = фраза целиком, `-слово` = исключить.'
+    QUERY_DESC_VECTOR: ClassVar[str] = (
+        "Поисковый запрос на естественном языке — семантический поиск "
+        "(cosine-эмбеддинги: ловит синонимы и перефразировки, хорош для "
+        "длинных/размытых формулировок)."
     )
-    METHOD_DESC: ClassVar[str] = (
-        "Канал поиска: `vector` — семантический (cosine-эмбеддинги, синонимы, "
-        "длинные запросы); `fts` — лексический (`ts_rank_cd`, точные слова/имена/"
-        "идентификаторы). По умолчанию `vector`."
+    QUERY_DESC_FTS: ClassVar[str] = (
+        "Поисковый запрос в websearch-синтаксисе — лексический поиск "
+        "(`ts_rank_cd`, точные слова/имена/идентификаторы): пробел = AND, "
+        '`OR` = альтернативы, `"фраза"` = фраза целиком, `-слово` = исключить.'
     )
     TOPK_DESC: ClassVar[str] = "Сколько hits вернуть. По умолчанию 5."
 
@@ -265,32 +268,54 @@ class KbSearchConfig(BobaFlatSettings):
 
 
 @tool
-def kb_confluence_search(
+def kb_vector_search(
     cfg: Annotated[KbSearchConfig, FromConfig()],
-    query: Annotated[str, Field(min_length=1, description=KbSearch.QUERY_DESC)],
-    method: Annotated[SearchMethod, Field(description=KbSearch.METHOD_DESC)] = "vector",
+    query: Annotated[str, Field(min_length=1, description=KbSearch.QUERY_DESC_VECTOR)],
     top_k: Annotated[int, Field(ge=1, description=KbSearch.TOPK_DESC)] = 5,
 ) -> TableResult:
-    """Поиск по коллекции Confluence-страниц (`kb_confluence`).
+    """Семантический (vector) поиск по коллекции Confluence-страниц (`kb_confluence`).
 
-    Канал выбирается параметром `method` (`vector`|`fts`). Возвращает
-    `TableResult` — плоскую таблицу hits с колонками `id`/`distance`/`link`/
-    `snippet` + `page_title`/`source_url`/`anchor`/`page_id`/`heading_path`/
-    `space`/`tags`, по релевантности (меньше `distance` = ближе).
+    Возвращает `TableResult` — плоскую таблицу hits с колонками `id`/`distance`/
+    `link`/`snippet` + `page_title`/`source_url`/`anchor`/`page_id`/
+    `heading_path`/`space`/`tags`, по релевантности (меньше `distance` = ближе).
     """
-    return KbSearch.run(cfg, ConfluenceCollection, query, method, top_k)
+    return KbSearch.run(cfg, ConfluenceCollection, query, "vector", top_k)
 
 
 @tool
-def kb_confluence_doc_search(
+def kb_fts_search(
     cfg: Annotated[KbSearchConfig, FromConfig()],
-    query: Annotated[str, Field(min_length=1, description=KbSearch.QUERY_DESC)],
-    method: Annotated[SearchMethod, Field(description=KbSearch.METHOD_DESC)] = "vector",
+    query: Annotated[str, Field(min_length=1, description=KbSearch.QUERY_DESC_FTS)],
     top_k: Annotated[int, Field(ge=1, description=KbSearch.TOPK_DESC)] = 5,
 ) -> TableResult:
-    """Поиск по коллекции загруженных KbDoc-выгрузок Confluence (`kb_confluence_doc`).
+    """Лексический (FTS) поиск по коллекции Confluence-страниц (`kb_confluence`).
 
-    Канал выбирается параметром `method` (`vector`|`fts`). Тот же формат
-    `TableResult`, что и у `kb_confluence_search`.
+    Тот же формат `TableResult`, что и у `kb_vector_search`.
     """
-    return KbSearch.run(cfg, KbDocCollection, query, method, top_k)
+    return KbSearch.run(cfg, ConfluenceCollection, query, "fts", top_k)
+
+
+@tool
+def kb_doc_vector_search(
+    cfg: Annotated[KbSearchConfig, FromConfig()],
+    query: Annotated[str, Field(min_length=1, description=KbSearch.QUERY_DESC_VECTOR)],
+    top_k: Annotated[int, Field(ge=1, description=KbSearch.TOPK_DESC)] = 5,
+) -> TableResult:
+    """Семантический (vector) поиск по KbDoc-выгрузкам Confluence (`kb_confluence_doc`).
+
+    Тот же формат `TableResult`, что и у `kb_vector_search`.
+    """
+    return KbSearch.run(cfg, KbDocCollection, query, "vector", top_k)
+
+
+@tool
+def kb_doc_fts_search(
+    cfg: Annotated[KbSearchConfig, FromConfig()],
+    query: Annotated[str, Field(min_length=1, description=KbSearch.QUERY_DESC_FTS)],
+    top_k: Annotated[int, Field(ge=1, description=KbSearch.TOPK_DESC)] = 5,
+) -> TableResult:
+    """Лексический (FTS) поиск по KbDoc-выгрузкам Confluence (`kb_confluence_doc`).
+
+    Тот же формат `TableResult`, что и у `kb_vector_search`.
+    """
+    return KbSearch.run(cfg, KbDocCollection, query, "fts", top_k)
