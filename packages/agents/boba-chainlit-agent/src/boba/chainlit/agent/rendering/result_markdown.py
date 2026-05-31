@@ -102,6 +102,20 @@ class ToolResultMarkdown:
             cell.replace("\r\n", " ⏎ ").replace("\n", " ⏎ ").replace("\r", " ⏎ ")
         )
 
+    @classmethod
+    def _cell(cls, value: Any) -> str:
+        """Любое значение → одностроковая ячейка для GFM-таблицы.
+
+        Не-строки (list/dict/число/bool) сериализуем в JSON/str, затем
+        схлопываем переносы — иначе `\\n` внутри ячейки рвёт GFM-строку
+        таблицы и она показывается «через строку».
+        """
+        if value is None or isinstance(value, str):
+            return cls._flatten_cell(value)
+        if isinstance(value, (list, tuple, dict)):
+            return cls._flatten_cell(json.dumps(value, ensure_ascii=False))
+        return cls._flatten_cell(str(value))
+
     def _render_rows(self, rows: Sequence[Mapping[str, Any]]) -> str:
         # TableResult: всегда пытаемся github-markdown через tabulate (колонки
         # из ключей dict). На любой сбой (не-tabular структура, не-сериализуемое
@@ -110,10 +124,14 @@ class ToolResultMarkdown:
             return "_(no rows)_"
 
         try:
-            # disable_numparse: не даём tabulate переформатировать значения
-            # ("10.50"→10.5, "007"→7) — рендерим ячейки дословно.
+            # Каждую ячейку схлопываем в одну строку (см. `_cell`); иначе
+            # перенос внутри ячейки ломает GFM-таблицу. disable_numparse: не
+            # даём tabulate переформатировать значения ("007"→7) — дословно.
+            flat = [
+                {k: self._cell(v) for k, v in row.items()} for row in rows
+            ]
             return tabulate(
-                rows, headers="keys", tablefmt="github", disable_numparse=True,
+                flat, headers="keys", tablefmt="github", disable_numparse=True,
             )
         except Exception:
             # Любой сбой → json-fallback (payload оказался не-tabular).
