@@ -17,11 +17,13 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from typing import Any
 
 from dishka import Container
 from pydantic import BaseModel, ValidationError
 
+from boba.tools.declarative.introspect import CallPlan
 from boba.tools.domain.errors import (
     InvalidToolArgumentError,
     ToolExecutionError,
@@ -40,7 +42,6 @@ from boba.tools.domain.result import (
     ToolResult,
 )
 from boba.tools.domain.tool import Tool, ToolContext, ToolSchema
-from boba.tools.introspect import CallPlan
 
 __all__ = ["DishkaTool"]
 
@@ -50,7 +51,8 @@ class DishkaTool(Tool[BaseModel, None]):
 
     Состояние:
     - `_target` — собственно callable, который надо вызвать.
-    - `_plan` — cached pydantic args model + DI plan.
+    - `_plan` — cached pydantic args model + DI plan (только сигнатура).
+    - `_name` — wire-имя tool'а (identity, приходит снаружи от builder'а).
     - `_container` — root Dishka Container.
 
     `_cfg` родителя у нас всегда None (cfg-параметры — через FromConfig DI).
@@ -59,10 +61,11 @@ class DishkaTool(Tool[BaseModel, None]):
 
     def __init__(
         self,
-        target: Any,
+        target: Callable[..., Any],
         plan: CallPlan,
         container: Container,
         source_id: ToolSourceId,
+        name: ToolName,
     ) -> None:
         self._target = target
         self._plan = plan
@@ -70,15 +73,14 @@ class DishkaTool(Tool[BaseModel, None]):
         self._cfg = None  # type: ignore[assignment]
         self._ctx = None
         self._source_id = source_id
-        self._tool_id_value: ToolId = compose_tool_id(
-            source_id, ToolName(plan.name),
-        )
+        self._name = name
+        self._tool_id_value: ToolId = compose_tool_id(source_id, name)
 
     def tool_id(self) -> ToolId:
         return self._tool_id_value
 
     def name(self) -> ToolName:
-        return ToolName(self._plan.name)
+        return self._name
 
     def definition(self) -> ToolSchema:
         """JSON-schema для LLM. Описание — из docstring callable'а."""
@@ -103,13 +105,11 @@ class DishkaTool(Tool[BaseModel, None]):
 
     def execute(self, ctx: ToolContext, args: BaseModel) -> ToolResult:
         del ctx
-        # getattr вместо model_dump(): не разворачиваем BaseModel-поля в dict
+
         llm_kwargs = {
-            name: getattr(args, name)
-            for name in self._plan.args_model.model_fields
+            name: getattr(args, name) for name in self._plan.args_model.model_fields
         }
-        # Открываем request-scope: APP-scope deps идут через parent,
-        # REQUEST-scope создаются здесь и закрываются на __exit__.
+
         with self._container() as request_container:
             di_kwargs = {
                 dep.param_name: request_container.get(dep.target_type)
@@ -135,7 +135,8 @@ class DishkaTool(Tool[BaseModel, None]):
 
 
 def _coerce_to_tool_result(  # noqa: PLR0911
-    tool_id: ToolId, value: Any,
+    tool_id: ToolId,
+    value: Any,
 ) -> ToolResult:
     """Привести возврат callable'а к `ToolResult` или бросить."""
     match value:

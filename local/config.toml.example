@@ -87,7 +87,7 @@ body_format = "view"
 [kb.storage]
 profile = "main"
 application_name = "boba-kb"
-schema = "public"
+pg_schema = "public"
 chunks_table = "kb_chunks"
 collections_table = "kb_collections"
 batch_size = 100

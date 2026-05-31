@@ -48,7 +48,7 @@ def describe_table(
             ),
         ),
     ],
-    schema: Annotated[
+    pg_schema: Annotated[
         str,
         Field(
             min_length=1,
@@ -72,7 +72,7 @@ def describe_table(
             sql,
             target=target,
             row_limit=executor.max_rows_cap,
-            params=(schema, table),
+            params=(pg_schema, table),
         )
     except SqlQueryError as e:
         raise RuntimeError(str(e)) from e

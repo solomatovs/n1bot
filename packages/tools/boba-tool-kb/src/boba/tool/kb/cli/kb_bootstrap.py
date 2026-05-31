@@ -75,7 +75,7 @@ def main() -> int:
     embedder = build_embedder(cfg.embedding)
     logger.info(
         "postgres_store schema=%s chunks=%s collections=%s host=%s db=%s",
-        cfg.tables.schema,
+        cfg.tables.pg_schema,
         cfg.tables.chunks_table,
         cfg.tables.collections_table,
         cfg.connection.host,

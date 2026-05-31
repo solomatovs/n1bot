@@ -39,7 +39,7 @@ def list_tables(
             ),
         ),
     ],
-    schema: Annotated[
+    pg_schema: Annotated[
         str | None,
         Field(
             description=(
@@ -51,7 +51,7 @@ def list_tables(
 ) -> str:
     """Список таблиц/view на профиле target. Колонки: schema, table, kind."""
     executor = SqlExecutor(cfg=cfg.executor)
-    if schema:
+    if pg_schema:
         sql = (
             "SELECT table_schema AS schema, table_name AS table, "
             "table_type AS kind "
@@ -59,7 +59,7 @@ def list_tables(
             "WHERE table_schema = %s "
             "ORDER BY table_schema, table_name"
         )
-        params: tuple[Any, ...] = (schema,)
+        params: tuple[Any, ...] = (pg_schema,)
     else:
         sql = (
             "SELECT table_schema AS schema, table_name AS table, "

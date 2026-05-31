@@ -4,16 +4,12 @@ ToolSource + ToolRegistry + ToolCatalog + ToolExecutor.
 
 from __future__ import annotations
 
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator, Mapping
-from typing import Any, Self
+from typing import Any, Protocol, Self, runtime_checkable
 
 from boba.patterns import Executor
-from boba.tools.domain.errors import (
-    ToolExecutionError,
-    ToolIdCollisionError,
-    ToolSourceCollisionError,
-)
+from boba.tools.domain.errors import ToolExecutionError
 from boba.tools.domain.ids import (
     ToolId,
     ToolName,
@@ -27,6 +23,10 @@ from boba.tools.domain.tool import (
     ToolResult,
     ToolSchema,
 )
+from boba.tools.framework.errors import (
+    ToolIdCollisionError,
+    ToolSourceCollisionError,
+)
 
 __all__ = [
     "StaticToolSource",
@@ -37,7 +37,14 @@ __all__ = [
 ]
 
 
-class ToolSource:
+@runtime_checkable
+class Closeable(Protocol):
+    """Что угодно с `close()` — DI-контейнер, клиент, пул."""
+
+    def close(self) -> None: ...
+
+
+class ToolSource(ABC):
     """
     Источник Tool'ов: владелец инструментов и связанных ресурсов.
 
@@ -60,8 +67,8 @@ class ToolSource:
     @abstractmethod
     def find(self, name: ToolName) -> Tool[Any, Any] | None: ...
 
-    def close(self) -> None:
-        """Освободить долгоживущие ресурсы. Default no-op."""
+    @abstractmethod
+    def close(self) -> None: ...
 
 
 class StaticToolSource(ToolSource):
@@ -96,6 +103,9 @@ class StaticToolSource(ToolSource):
     def find(self, name: ToolName) -> Tool[Any, Any] | None:
         return self._index.get(name)
 
+    def close(self) -> None:
+        pass  # нет ресурсов, которые нужно освобождать
+
 
 class ToolRegistry:
     """
@@ -105,8 +115,11 @@ class ToolRegistry:
     def __init__(
         self,
         sources: Iterable[ToolSource],
+        *,
+        container: Closeable | None = None,
     ) -> None:
         self._sources: dict[ToolSourceId, ToolSource] = {}
+        self._container = container
         for src in sources:
             sid = src.id()
 
@@ -130,14 +143,22 @@ class ToolRegistry:
         return ToolExecutor(self._sources)
 
     def close(self) -> None:
-        """
-        для поддержки graceful shutdown: закрыть все source'ы и container
-        Ошибки одного не блокируют остальных
+        """Graceful shutdown: закрыть все source'ы и DI-контейнер.
+
+        Ошибки одного не блокируют остальных — собираются в `ExceptionGroup`.
+        Контейнер закрывается последним: его teardown (APP-scope провайдеры)
+        не должен опережать освобождение ресурсов source'ов.
         """
         errors: list[Exception] = []
         for src in self._sources.values():
             try:
                 src.close()
+            except Exception as e:
+                errors.append(e)
+
+        if self._container is not None:
+            try:
+                self._container.close()
             except Exception as e:
                 errors.append(e)
 

@@ -18,9 +18,7 @@ from boba.tools.domain.errors import (
     InvalidSchemaInvariantError,
     InvalidToolArgumentError,
     ToolExecutionError,
-    ToolIdCollisionError,
     ToolOutputTooLargeError,
-    ToolSourceCollisionError,
 )
 from boba.tools.domain.ids import (
     ToolId,
@@ -53,12 +51,10 @@ __all__ = [
     "ToolContext",
     "ToolExecutionError",
     "ToolId",
-    "ToolIdCollisionError",
     "ToolName",
     "ToolOutputTooLargeError",
     "ToolResult",
     "ToolSchema",
-    "ToolSourceCollisionError",
     "ToolSourceId",
     "compose_tool_id",
     "parse_tool_id",

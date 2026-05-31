@@ -9,15 +9,13 @@ from __future__ import annotations
 import json
 from typing import Any, ClassVar
 
-from boba.tools.domain.ids import ToolId, ToolName, ToolSourceId
+from boba.tools.domain.ids import ToolId
 
 __all__ = [
     "InvalidSchemaInvariantError",
     "InvalidToolArgumentError",
     "ToolExecutionError",
-    "ToolIdCollisionError",
     "ToolOutputTooLargeError",
-    "ToolSourceCollisionError",
 ]
 
 
@@ -106,25 +104,3 @@ class InvalidSchemaInvariantError(ToolExecutionError):
     def __init__(self, tool_id: ToolId, reason: str) -> None:
         super().__init__(tool_id, f"нарушен инвариант схемы: {reason}")
         self.reason = reason
-
-
-class ToolIdCollisionError(Exception):
-    """Внутри одного source — два tool'а с одинаковым `ToolName`."""
-
-    def __init__(self, source_id: ToolSourceId, name: ToolName) -> None:
-        super().__init__(
-            f"source {source_id!r} declares tool "
-            f"{name!r} more than once"
-        )
-        self.source_id = source_id
-        self.name = name
-
-
-class ToolSourceCollisionError(Exception):
-    """Два source'а с одинаковым `ToolSourceId` в одном `ToolRegistry`."""
-
-    def __init__(self, source_id: ToolSourceId) -> None:
-        super().__init__(
-            f"duplicate tool source {source_id!r}",
-        )
-        self.source_id = source_id

@@ -24,30 +24,32 @@ from typing import Annotated, Any, Self
 
 from dishka import Container, Provider, make_container
 
-from boba.tools.adapter import DishkaTool
-from boba.tools.config import (
+from boba.tools.declarative.adapter import DishkaTool
+from boba.tools.declarative.config import (
     ConfigResolver,
     PluginFilterAllowAll,
     PluginToolFilter,
 )
-from boba.tools.decorators import (
-    PROVIDES_SCOPE_MARKER,
-    TOOL_MARKER,
+from boba.tools.declarative.decorators import (
+    is_provider,
+    is_tool,
+    provider_scope,
+    tool_name,
 )
-from boba.tools.domain.ids import sanitize_source_id
-from boba.tools.errors import (
+from boba.tools.declarative.errors import (
     DuplicateProviderError,
     ToolDeclarationError,
     UnresolvedDependencyError,
 )
+from boba.tools.declarative.inject import FromConfig, FromDI
+from boba.tools.declarative.introspect import CallPlan, build_call_plan
+from boba.tools.declarative.scope import Scope, to_dishka_scope
+from boba.tools.domain.ids import ToolName, sanitize_source_id
 from boba.tools.framework.registry import (
     StaticToolSource,
     ToolRegistry,
     ToolSource,
 )
-from boba.tools.introspect import CallPlan, build_call_plan, tool_name
-from boba.tools.markers import FromConfig, FromDI
-from boba.tools.scope import Scope, to_dishka_scope
 
 __all__ = ["ToolBuilder"]
 
@@ -60,28 +62,36 @@ class ProviderEntry:
     scope: Scope
     plan: CallPlan
 
+    @property
+    def label(self) -> str:
+        """Имя для диагностики; provider идентифицируется return-типом."""
+        return getattr(self.fn, "__name__", repr(self.fn))
+
 
 @dataclass(frozen=True)
 class ToolEntry:
     obj: Any
     origin: str
     plan: CallPlan
+    name: str
+
+    @property
+    def label(self) -> str:
+        """Имя для диагностики; совпадает с wire-именем tool'а."""
+        return self.name
 
 
-class DeclKind(Enum):
+class _DeclKind(Enum):
     """Чем помечен объект декоратором."""
 
     TOOL = auto()
     PROVIDER = auto()
 
 
-class Declared:
-    """Объект, классифицированный по декоратору единожды.
+class _Declared:
+    """Объект, классифицированный по декоратору единожды."""
 
-    Единственное место вызова is_tool/is_provider в слое — `_classify`.
-    """
-
-    def __init__(self, obj: Any, kind: DeclKind) -> None:
+    def __init__(self, obj: Any, kind: _DeclKind) -> None:
         self._obj = obj
         self._kind = kind
 
@@ -90,11 +100,11 @@ class Declared:
         return self._obj
 
     @property
-    def kind(self) -> DeclKind:
+    def kind(self) -> _DeclKind:
         return self._kind
 
 
-class ModuleScanner:
+class _ModuleScanner:
     """Инкапсулирует обход плагин-модуля: origin + выборка @tool/@provides."""
 
     def __init__(self, module: object) -> None:
@@ -105,33 +115,21 @@ class ModuleScanner:
         """Имя модуля → origin tool'ов (становится ToolSourceId)."""
         return getattr(self._module, "__name__", repr(self._module))
 
-    @staticmethod
-    def is_tool(obj: object) -> bool:
-        """True если объект помечен `@tool`."""
-        return getattr(obj, TOOL_MARKER, False) is True
-
-    @staticmethod
-    def is_provider(obj: object) -> bool:
-        """True если функция помечена `@provides`."""
-        return hasattr(obj, PROVIDES_SCOPE_MARKER)
-
     def iter_registrable(
         self,
         plugin_name: str,
         plugin_tool_filter: PluginToolFilter,
-    ) -> Iterator[Declared]:
-        """
-        Классифицированные объекты модуля, прошедшие фильтр.
-        """
+    ) -> Iterator[_Declared]:
+        """Классифицированные объекты модуля, прошедшие фильтр."""
         for obj in self._iter_public_objects():
-            if self.is_tool(obj):
+            if is_tool(obj):
                 if not plugin_tool_filter.check_tool(plugin_name, tool_name(obj)):
                     continue
 
-                yield Declared(obj, DeclKind.TOOL)
+                yield _Declared(obj, _DeclKind.TOOL)
 
-            if self.is_provider(obj):
-                yield Declared(obj, DeclKind.PROVIDER)
+            if is_provider(obj):
+                yield _Declared(obj, _DeclKind.PROVIDER)
 
     def _iter_public_objects(self) -> Iterator[Any]:
         """Публичные (не начинающиеся с '_') атрибуты модуля, кроме None."""
@@ -165,7 +163,7 @@ class ToolBuilder:
         Return type функции = провайдимый тип
         """
         plan = build_call_plan(fn)
-        if plan.is_provider():
+        if plan.lacks_return_type():
             msg = (
                 f"@provides function {getattr(fn, '__name__', repr(fn))!r}: "
                 f"return type обязателен — это тип, под которым служба "
@@ -204,7 +202,7 @@ class ToolBuilder:
         Добавить tool'ы / провайдеры напрямую (без плагин-модуля)
         """
         for item in items:
-            self._register(Declared(item, DeclKind.TOOL), "inline")
+            self._register(_Declared(item, _DeclKind.TOOL), "inline")
 
         return self
 
@@ -265,6 +263,7 @@ class ToolBuilder:
 
         return ToolRegistry(
             sources=self._build_sources(di),
+            container=di,
         )
 
     def _register_module(
@@ -274,23 +273,25 @@ class ToolBuilder:
         plugin_tool_filter: PluginToolFilter,
     ) -> None:
         """Просканировать модуль и зарегистрировать отобранные объекты."""
-        scanner = ModuleScanner(module)
+        scanner = _ModuleScanner(module)
         for decl in scanner.iter_registrable(plugin_name, plugin_tool_filter):
             self._register(decl, scanner.origin)
 
-    @staticmethod
-    def provider_scope(obj: object) -> Scope:
-        """`Scope` provider'а. Падает `AttributeError` если объект не provider."""
-        return getattr(obj, PROVIDES_SCOPE_MARKER)
-
-    def _register(self, decl: Declared, origin: str) -> None:
+    def _register(self, decl: _Declared, origin: str) -> None:
         """Регистрирует уже классифицированный объект как tool или provider."""
-        if decl.kind is DeclKind.PROVIDER:
-            self.register_provider(decl.obj, scope=self.provider_scope(decl.obj))
+        if decl.kind is _DeclKind.PROVIDER:
+            self.register_provider(decl.obj, scope=provider_scope(decl.obj))
 
-        elif decl.kind is DeclKind.TOOL:
+        elif decl.kind is _DeclKind.TOOL:
             plan = build_call_plan(decl.obj)
-            self._tools.append(ToolEntry(obj=decl.obj, origin=origin, plan=plan))
+            self._tools.append(
+                ToolEntry(
+                    obj=decl.obj,
+                    origin=origin,
+                    plan=plan,
+                    name=tool_name(decl.obj),
+                ),
+            )
 
         else:
             raise ToolDeclarationError(
@@ -345,7 +346,7 @@ class ToolBuilder:
         for entry in (*self._providers, *self._tools):
             for dep in entry.plan.di_deps:
                 if isinstance(dep.marker, FromDI) and dep.target_type not in provided:
-                    missing.append(f"{entry.plan.name} -> {dep.target_type.__name__}")
+                    missing.append(f"{entry.label} -> {dep.target_type.__name__}")
 
         if missing:
             joined = ", ".join(sorted(set(missing)))
@@ -375,10 +376,11 @@ class ToolBuilder:
             sid = sanitize_source_id(origin)
             dishka_tools = [
                 DishkaTool(
-                    target=self._resolve_target(t.obj),
+                    target=self._callable_resolve(t.obj),
                     plan=t.plan,
                     container=container,
                     source_id=sid,
+                    name=ToolName(t.name),
                 )
                 for t in tool_entries
             ]
@@ -406,7 +408,7 @@ class ToolBuilder:
         return _factory
 
     @staticmethod
-    def _resolve_target(obj: Any) -> Any:
+    def _callable_resolve(obj: Any) -> Callable[..., Any]:
         if inspect.isclass(obj):
             return obj()
 

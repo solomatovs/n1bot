@@ -61,7 +61,7 @@ def install_entry_points(
             return eps if group == served_group else []
 
         monkeypatch.setattr(
-            "boba.tools.builder.importlib.metadata.entry_points",
+            "boba.tools.declarative.builder.importlib.metadata.entry_points",
             _entry_points,
         )
 

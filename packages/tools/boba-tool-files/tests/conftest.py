@@ -87,7 +87,7 @@ def make_files_tool_names(
         )
         registry = tb.build()
         try:
-            return sorted(t.plan.name for t in tb.tools)
+            return sorted(t.name for t in tb.tools)
         finally:
             registry.close()
 

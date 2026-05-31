@@ -37,7 +37,7 @@ def test_list_tables_returns_markdown(
     list_tables_cfg: ListTablesConfig,
 ) -> None:
     """`list_tables` без schema-фильтра возвращает таблицы user-schema'ов."""
-    md = list_tables(cfg=list_tables_cfg, target=TARGET, schema=None)
+    md = list_tables(cfg=list_tables_cfg, target=TARGET, pg_schema=None)
     assert isinstance(md, str)
     lines = md.splitlines()
     assert lines[0].startswith("|")
@@ -50,7 +50,7 @@ def test_list_tables_kb_chunks_visible(
     list_tables_cfg: ListTablesConfig,
 ) -> None:
     """В KB-БД должна быть `kb_chunks` (созданная bootstrap-миграцией)."""
-    md = list_tables(cfg=list_tables_cfg, target=TARGET, schema="public")
+    md = list_tables(cfg=list_tables_cfg, target=TARGET, pg_schema="public")
     assert "kb_chunks" in md
 
 
@@ -67,7 +67,7 @@ def test_describe_table_kb_chunks(
         cfg=describe_table_cfg,
         target=TARGET,
         table="kb_chunks",
-        schema="public",
+        pg_schema="public",
     )
     assert isinstance(md, str)
     assert _count_data_rows(md) >= 5
@@ -83,7 +83,7 @@ def test_describe_unknown_table_empty(
         cfg=describe_table_cfg,
         target=TARGET,
         table="this_table_does_not_exist",
-        schema="public",
+        pg_schema="public",
     )
     assert _count_data_rows(md) == 0
     assert "_(no rows)_" in md

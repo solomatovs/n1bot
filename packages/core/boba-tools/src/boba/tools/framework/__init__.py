@@ -5,6 +5,10 @@ Application-слой над `boba.tools.domain` (Tool ABC, ToolResult, etc).
 
 from __future__ import annotations
 
+from boba.tools.framework.errors import (
+    ToolIdCollisionError,
+    ToolSourceCollisionError,
+)
 from boba.tools.framework.registry import (
     StaticToolSource,
     ToolCatalog,
@@ -17,6 +21,8 @@ __all__ = [
     "StaticToolSource",
     "ToolCatalog",
     "ToolExecutor",
+    "ToolIdCollisionError",
     "ToolRegistry",
     "ToolSource",
+    "ToolSourceCollisionError",
 ]
