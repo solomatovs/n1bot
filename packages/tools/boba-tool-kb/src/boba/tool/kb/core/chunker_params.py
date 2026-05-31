@@ -1,7 +1,7 @@
 """`ChunkerParams` — переиспользуемые параметры структурного чанкера.
 
 `BaseModel` (не settings), встраивается как nested-поле в ingest-tool-конфиги
-(`confluence_ingest_*`) и CLI-конфиги (`cli.kb.kbdoc.ingest`). Передаётся в
+(`confluence_ingest_*`) и CLI-конфиги (`cli.kb.confluence_doc.ingest`). Передаётся в
 `StructuralChunker` через `OverlapCharSplitter(chunk_size, chunk_overlap)` factory.
 """
 

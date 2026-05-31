@@ -102,9 +102,8 @@ tools = [
     "confluence_ingest_pages",    # явный список page_id
     "confluence_ingest_cql",      # discovery через CQL-запрос
     # search (KB / online)
-    "kb_search_hybrid",
-    "kb_search_vector",
-    "kb_search_fts",
+    "kb_confluence_search",       # коллекция kb_confluence; method=vector|fts
+    "kb_confluence_doc_search",              # коллекция kb_confluence_doc; method=vector|fts
     "confluence_search_cql",
     "confluence_list_spaces",
     # download (Confluence → workspace)
@@ -134,37 +133,15 @@ snippet_chars = 300
 max_limit = 50
 
 
-# Поиск в kb через vector/fts поиск
-[tool.kb.search.hybrid]
+# KB search: общий конфиг для kb_confluence_search / kb_confluence_doc_search.
+# Канал vector|fts — параметр tool'а `method`; коллекция фиксирована типом
+# tool'а (kb_confluence / kb_confluence_doc), strict-фильтр по collection.
+[tool.kb.search]
 snippet_chars = 300
-rrf_k = 60
-rrf_pool = 40
-collections = ["kb_kbdoc", "kb_confluence"]
 max_top_k = 20
-# шаблон sql запроса
-# search_sql_path = "/path/to/custom/hybrid.sql"
-
-
-# Векторный поиск
-[tool.kb.search.vector]
-snippet_chars = 300
-rrf_k = 60
-rrf_pool = 40
-collections = ["kb_kbdoc", "kb_confluence"]
-max_top_k = 20
-# шаблон sql запроса
-# search_sql_path = "/path/to/custom/vector.sql"
-
-
-# Full text search
-[tool.kb.search.fts]
-snippet_chars = 300
-rrf_k = 60
-rrf_pool = 40
-collections = ["kb_kbdoc", "kb_confluence"]
-max_top_k = 20
-# шаблон sql запроса
-# search_sql_path = "/path/to/custom/fts.sql"
+# кастомные SQL-шаблоны (по умолчанию — packaged):
+# vector_sql_path = "/path/to/custom/vector.sql"
+# fts_sql_path = "/path/to/custom/fts.sql"
 
 
 # cli для накатырвания миграции в postgres
@@ -175,20 +152,11 @@ max_top_k = 20
 # cli для индексации чанков, подготовленных оператором
 # документы должны быть подготовлены в формате:
 # 1 .md файл = 1 чанк
-[cli.kb.kbdoc.ingest]
+[cli.kb.confluence_doc.ingest]
 chunk_size = 4000
 chunk_overlap = 0
 folder = "./local/docs"
-collection = "kb_kbdoc"
-prune = false
-
-
-# cli для запуска индексации confluence скачанных файлов из папки
-[cli.kb.confluence.ingest.folder]
-chunk_size = 4000
-chunk_overlap = 0
-folder = "./local/downloads"
-collection = "kb_confluence"
+collection = "kb_confluence_doc"
 prune = false
 
 
@@ -220,8 +188,7 @@ top_k = 5
 
 
 # cli для скачивания confluence страниц на файловую систему.
-# dest_dir — FS-путь относительно CWD; симметрично
-# [cli.kb.confluence.ingest.folder].folder — пишем и читаем оттуда же.
+# dest_dir — FS-путь относительно CWD.
 [cli.kb.confluence.download]
 dest_dir = "./local/downloads"
 as_markdown = true

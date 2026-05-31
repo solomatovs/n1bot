@@ -1,23 +1,24 @@
-"""Tool `kbdoc_ingest_paths` + `KbdocIngestConfig`.
+"""Tool `confluence_doc_ingest_paths` + `ConfluenceDocIngestConfig`.
 
 Индексация загруженных пользователем `.md`-файлов KbDoc-формата
-(плоский `key: value`-хедер до `---` + body) из текущего workspace'а в KB.
-Хедер строгий: обязательны `source` / `title` / `page_id` / `space` —
-файл без них считается невалидным (`KbDocFormatError` → попадает в `failed`,
-не индексируется). Принимает
+(плоский `key: value`-хедер до `---` + body) из текущего workspace'а в KB-
+коллекцию `kb_confluence_doc`. Хедер строгий: обязательны `source` / `title`
+/ `page_id` / `space` — файл без них считается невалидным (`KbDocFormatError`
+→ попадает в `failed`, не индексируется). Принимает
 workspace-relative пути файлов и/или папок (chainlit upload-attachment'ы
 лежат под `upload/<name>`) и гонит через тот же pipeline, что и operator
-CLI `boba.tool.kb.cli.kbdoc.ingest`. Чтение файлов идёт через
+CLI `boba.tool.kb.cli.confluence_doc.ingest`. Чтение файлов идёт через
 `ProjectWorkspaceShell.read_binary` — host-путь наружу не уходит.
 
-Конфиг-секция: `[tool.kb.kbdoc.ingest]` (store/embedding/chunker/collection).
+Конфиг-секция: `[tool.kb.confluence_doc.ingest]` (store/embedding/chunker/
+collection).
 
 Пример строки `kb_chunks`, которую пишет этот tool (один чанк = одна
 строка; пишется в `PostgresChunkStore.upsert`). Файл `upload/runbook.md`,
 `workspace_id=sess-7f3a`, KbDoc-хедер с `**title:**` и `**source_url:**`:
 
     chunk_id       = "a1b2c3d4e5f6:0"   # digest(anchor)[:N] + ":" + chunk_index
-    collection     = "kb_kbdoc"          # cfg.collection
+    collection     = "kb_confluence_doc" # cfg.collection
     source_id      = "ws:sess-7f3a:upload/runbook.md"   # WorkspaceWalkRequestSource
     chunk_index    = 0                   # 0-based, проставляет chunker
     content_hash   = "<hex-digest>"      # ec.content_hash.to_wire()
@@ -46,14 +47,15 @@ CLI `boba.tool.kb.cli.kbdoc.ingest`. Чтение файлов идёт чере
       "section.anchor":       "backup-pitr"          # если у секции есть anchor
     }
 
-KB-документы оператора — выгрузки Confluence, поэтому kbdoc сохраняет header'ы
-под ТЕМИ ЖЕ wire-ключами, что и прямая confluence-индексация (`source_url`,
-`confluence.page_id`, `confluence.space_key`; title→`reader.page_title`,
-anchor→`section.anchor`). За счёт этого search читает оба источника 1:1 без
-сведе́ния: tools `kb_search_vector` / `kb_search_fts` возвращают `TableResult`
-— плоскую таблицу с колонками `page_title` / `source_url` / `anchor` /
-`page_id` / `heading_path` / `space` + `tags` + служебные
-`id`/`distance`/`link`/`snippet`.
+KB-документы оператора — выгрузки Confluence, поэтому этот ingest сохраняет
+header'ы под ТЕМИ ЖЕ wire-ключами, что и прямая confluence-индексация
+(`source_url`, `confluence.page_id`, `confluence.space_key`;
+title→`reader.page_title`, anchor→`section.anchor`). За счёт этого search
+читает оба источника 1:1 без сведе́ния: tool `kb_confluence_doc_search` (как и
+`kb_confluence_search`, единый интерфейс с параметром `method`=`vector`|`fts`)
+возвращает `TableResult` — плоскую таблицу с колонками `page_title` /
+`source_url` / `anchor` / `page_id` / `heading_path` / `space` + `tags` +
+служебные `id`/`distance`/`link`/`snippet`.
 
 Системные поля (`source_id`, `chunk_index`, `content_hash`) и `tags`
 живут отдельными колонками; остальное — внутри `metadata` jsonb. Набор
@@ -70,6 +72,11 @@ from pydantic import Field
 
 from boba.indexing.context import PipelineId
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, LLMStringList
+from boba.tool.kb.confluence_doc._ingest_common import run_confluence_doc_ingest
+from boba.tool.kb.confluence_doc._workspace_indexing import (
+    WorkspaceTransport,
+    WorkspaceWalkRequestSource,
+)
 from boba.tool.kb.core.chunker_factory import build_chunker
 from boba.tool.kb.core.chunker_params import ChunkerParams
 from boba.tool.kb.core.embedder_factory import build_embedder
@@ -79,23 +86,18 @@ from boba.tool.kb.core.postgres_store import (
     PostgresCollectionsStore,
     PostgresStoreConfig,
 )
-from boba.tool.kb.kbdoc._ingest_common import run_kbdoc_ingest
-from boba.tool.kb.kbdoc._workspace_indexing import (
-    WorkspaceTransport,
-    WorkspaceWalkRequestSource,
-)
 from boba.tools import FromConfig, FromDI, Scope, tool
 from boba.workspace.contract import ProjectWorkspaceShell
 
-__all__ = ["KbdocIngestConfig", "kbdoc_ingest_paths"]
+__all__ = ["ConfluenceDocIngestConfig", "confluence_doc_ingest_paths"]
 
-_PIPELINE_ID: PipelineId = PipelineId("kb.kbdoc_ingest_paths")
+_PIPELINE_ID: PipelineId = PipelineId("kb.confluence_doc_ingest_paths")
 
 
-class KbdocIngestConfig(BobaFlatSettings):
-    """Self-contained конфиг tool'а `kbdoc_ingest_paths`.
+class ConfluenceDocIngestConfig(BobaFlatSettings):
+    """Self-contained конфиг tool'а `confluence_doc_ingest_paths`.
 
-    Config-секция: `[tool.kb.kbdoc.ingest]`. Operator-controlled поля:
+    Config-секция: `[tool.kb.confluence_doc.ingest]`. Operator-controlled поля:
     store/embedding/chunker/collection. LLM выбирает только `paths` и
     `prune_missing` в tool-вызове.
     """
@@ -103,7 +105,7 @@ class KbdocIngestConfig(BobaFlatSettings):
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
         extra="ignore",
-        config_path="tool.kb.kbdoc.ingest",
+        config_path="tool.kb.confluence_doc.ingest",
         defaults_from=(
             "kb.storage",
             "postgres.{kb.storage:profile}",
@@ -115,7 +117,7 @@ class KbdocIngestConfig(BobaFlatSettings):
     embedding: EmbeddingModel
     chunker: ChunkerParams
     collection: str = Field(
-        default="kb_kbdoc",
+        default="kb_confluence_doc",
         min_length=1,
         max_length=255,
         description="Target-коллекция в `kb_chunks`.",
@@ -123,9 +125,9 @@ class KbdocIngestConfig(BobaFlatSettings):
 
 
 @tool
-def kbdoc_ingest_paths(
+def confluence_doc_ingest_paths(
     shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
-    cfg: Annotated[KbdocIngestConfig, FromConfig()],
+    cfg: Annotated[ConfluenceDocIngestConfig, FromConfig()],
     paths: Annotated[
         LLMStringList,
         Field(
@@ -161,7 +163,7 @@ def kbdoc_ingest_paths(
     embedder = build_embedder(cfg.embedding)
     chunker = build_chunker(cfg.chunker)
 
-    result = run_kbdoc_ingest(
+    result = run_confluence_doc_ingest(
         request_source=WorkspaceWalkRequestSource(
             shell=shell,
             paths=list(paths),

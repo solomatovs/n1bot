@@ -77,7 +77,7 @@ def run_confluence_ingest(  # noqa: PLR0913 — keyword-only helper, явный 
     confluence_reader = ConfluenceReader()
     reader: DispatchReader[str] = DispatchReader(
         by=TransportKeys.CONTENT_TYPE,
-        routes={ct: confluence_reader for ct in _CONFLUENCE_HTML_CONTENT_TYPES},
+        routes=dict.fromkeys(_CONFLUENCE_HTML_CONTENT_TYPES, confluence_reader),
         reader_id=ReaderId("ext.confluence_dispatch"),
         on_unknown="skip",
     )

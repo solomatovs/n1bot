@@ -2,9 +2,8 @@
 
 Что делает:
 
-1. По полю `template` загружает соответствующий tool-конфиг:
-   `vector` → `KbSearchVectorConfig` (`[tool.kb.search.vector]`),
-   `fts`    → `KbSearchFtsConfig`    (`[tool.kb.search.fts]`).
+1. Загружает общий `KbSearchConfig` (`[tool.kb.search]`); по полю `template`
+   (`vector`|`fts`) выбирает SQL-шаблон (`vector_sql_path`/`fts_sql_path`).
 2. Для `vector` строит embedder (`build_embedder(cfg.embedding)`)
    и считает `embed_query(query)` — N-мерный вектор для cosine-поиска.
 3. Подставляет identifier-placeholder'ы (`{dim}`/`{chunks_table}`/`{schema}`)
@@ -59,17 +58,17 @@ from pydantic import Field
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.core.embedder_factory import build_embedder
 from boba.tool.kb.core.postgres_pool import open_kb_pool
-from boba.tool.kb.core.tools.search.fts import KbSearchFtsConfig
-from boba.tool.kb.core.tools.search.vector import KbSearchVectorConfig
+from boba.tool.kb.core.tools.search.kb_search import KbSearchConfig
+from boba.tool.kb.core.tools.search.schema import (
+    ConfluenceCollection,
+    KbDocCollection,
+)
 
 __all__ = ["SearchRenderCliConfig", "main"]
 
 logger = logging.getLogger("boba.tool.kb.cli.search.render")
 
-_CONFIGS = {
-    "vector": KbSearchVectorConfig,
-    "fts": KbSearchFtsConfig,
-}
+_COLLECTIONS = [ConfluenceCollection.COLLECTION, KbDocCollection.COLLECTION]
 
 
 class SearchRenderCliConfig(BobaFlatSettings):
@@ -111,7 +110,7 @@ def main() -> int:
     )
 
     cfg = SearchRenderCliConfig()  # pyright: ignore[reportCallIssue]
-    tool_cfg = _CONFIGS[cfg.template]()  # pyright: ignore[reportCallIssue]
+    tool_cfg = KbSearchConfig()  # pyright: ignore[reportCallIssue]
     kb_cfg = tool_cfg.knowledge_base
 
     logger.info(
@@ -119,16 +118,15 @@ def main() -> int:
         cfg.template,
         cfg.query,
         cfg.top_k,
-        list(tool_cfg.collections),
+        _COLLECTIONS,
     )
 
     if cfg.top_k > tool_cfg.max_top_k:
         logger.warning(
-            "top_k=%d превышает max_top_k=%d из [tool.kb.search.%s]; "
+            "top_k=%d превышает max_top_k=%d из [tool.kb.search]; "
             "runtime-tool откажется, но рендеру это не мешает.",
             cfg.top_k,
             tool_cfg.max_top_k,
-            cfg.template,
         )
 
     # FTS не нуждается в embedding'е — экономим embedder.embed_query().
@@ -143,7 +141,7 @@ def main() -> int:
         identifiers["dim"] = sql.Literal(embedder.dim())
 
     params: dict[str, object] = {
-        "collections": list(tool_cfg.collections),
+        "collections": _COLLECTIONS,
         "query": cfg.query,
         "snippet_chars": kb_cfg.snippet_chars,
         "top_k": cfg.top_k,
@@ -151,7 +149,15 @@ def main() -> int:
     if embedder is not None:
         params["embedding"] = list(embedder.embed_query(cfg.query))
 
-    template_text = tool_cfg.search_sql_path.read_text(encoding="utf-8")
+    match cfg.template:
+        case "fts":
+            template_text = tool_cfg.fts_sql_path.read_text(encoding="utf-8")
+        case "vector":
+            template_text = tool_cfg.vector_sql_path.read_text(encoding="utf-8")
+        case _:
+            logger.error("unsupported template %r", cfg.template)
+            return 1
+
     composed = sql.SQL(cast(LiteralString, template_text)).format(**identifiers)
 
     # `pool.client_cursor()` отдаёт psycopg3 ClientCursor — `cur.mogrify()`
