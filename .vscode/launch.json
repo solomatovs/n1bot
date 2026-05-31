@@ -35,21 +35,10 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
-            "name": "KB CLI: kbdoc.ingest",
+            "name": "KB CLI: confluence_doc.ingest",
             "type": "debugpy",
             "request": "launch",
-            "module": "boba.tool.kb.cli.kbdoc.ingest",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "justMyCode": false,
-            "envFile": "${workspaceFolder}/local/.env"
-        },
-        {
-            "name": "KB CLI: confluence.ingest.folder",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.tool.kb.cli.confluence.ingest.folder",
+            "module": "boba.tool.kb.cli.confluence_doc.ingest",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
