@@ -29,12 +29,12 @@
 Применение:
 
     BOBA_CONFIG_PATH=./local/config.toml \\
-        .venv/bin/python -m boba.tool.kb.cli.search.render \\
+        .venv/bin/python -m boba.tool.kb.cli.search \\
         --template vector --query "как оформить возврат" --top-k 5
 
     # пайп в psql:
     BOBA_CONFIG_PATH=./local/config.toml \\
-        .venv/bin/python -m boba.tool.kb.cli.search.render \\
+        .venv/bin/python -m boba.tool.kb.cli.search \\
             --template fts --query "auth middleware" \\
         | psql "$PG_DSN"
 
@@ -67,7 +67,7 @@ from boba.tool.kb.core.search import (
 
 __all__ = ["SearchRenderCliConfig", "main"]
 
-logger = logging.getLogger("boba.tool.kb.cli.search.render")
+logger = logging.getLogger("boba.tool.kb.cli.search")
 
 
 class SearchRenderCliConfig(BobaFlatSettings):

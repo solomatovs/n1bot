@@ -35,10 +35,10 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
-            "name": "KB CLI: confluence_doc.ingest",
+            "name": "KB CLI: confluence_doc",
             "type": "debugpy",
             "request": "launch",
-            "module": "boba.tool.kb.cli.confluence_doc.ingest",
+            "module": "boba.tool.kb.cli.confluence_doc",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
@@ -46,10 +46,10 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
-            "name": "KB CLI: confluence.ingest.http",
+            "name": "KB CLI: confluence.ingest",
             "type": "debugpy",
             "request": "launch",
-            "module": "boba.tool.kb.cli.confluence.ingest.http",
+            "module": "boba.tool.kb.cli.confluence.ingest",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
@@ -57,10 +57,10 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
-            "name": "KB CLI: confluence.download.http",
+            "name": "KB CLI: confluence.download",
             "type": "debugpy",
             "request": "launch",
-            "module": "boba.tool.kb.cli.confluence.download.http",
+            "module": "boba.tool.kb.cli.confluence.download",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
@@ -68,10 +68,10 @@
             "envFile": "${workspaceFolder}/local/.env"
         },
         {
-            "name": "KB CLI: search.render",
+            "name": "KB CLI: search",
             "type": "debugpy",
             "request": "launch",
-            "module": "boba.tool.kb.cli.search.render",
+            "module": "boba.tool.kb.cli.search",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
