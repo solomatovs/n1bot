@@ -9,52 +9,51 @@ from boba.tool.kb.confluence.list_spaces import (
     ConfluenceListSpacesConfig,
     confluence_list_spaces,
 )
+from boba.tools.domain import TableResult
 
 pytestmark = pytest.mark.integration
 
 
-def _count_data_rows(table: str) -> int:
-    """Сколько data-строк в markdown-таблице (без header'а, separator'а
-    и truncated-маркера)."""
-    return sum(
-        1
-        for line in table.splitlines()
-        if line.startswith("|")
-        and not line.startswith("| key |")
-        and not line.startswith("| --- |")
-    )
-
-
-def test_returns_markdown_table_with_global_spaces(
+def test_returns_table_with_global_spaces(
     confluence_list_spaces_cfg: ConfluenceListSpacesConfig,
 ) -> None:
-    """Реальный list spaces → markdown с header'ом и ≥1 data-строкой."""
-    table = confluence_list_spaces(
+    """Реальный list spaces → `TableResult` со строками `{key, name, type}`."""
+    res = confluence_list_spaces(
         cfg=confluence_list_spaces_cfg, space_type="global", limit=50,
     )
-    assert isinstance(table, str)
-    assert table.startswith("| key | name | type | description |")
-    assert "| --- | --- | --- | --- |" in table
-    assert _count_data_rows(table) >= 1
-    assert "AIRFLOW" in table
+    assert isinstance(res, TableResult)
+    assert len(res.rows) >= 1
+    assert set(res.rows[0]) == {"key", "name", "type"}
 
 
-def test_limit_caps_rows_and_marks_truncated(
+def test_pattern_filters_by_glob(
     confluence_list_spaces_cfg: ConfluenceListSpacesConfig,
 ) -> None:
-    """`limit=N` обрезает до N data-строк и добавляет truncated-маркер."""
-    table = confluence_list_spaces(
+    """`pattern="airflow*"` находит space AIRFLOW по key/name (glob-фильтр)."""
+    res = confluence_list_spaces(
+        cfg=confluence_list_spaces_cfg, pattern="airflow*", space_type="global",
+        limit=50,
+    )
+    keys = {row["key"] for row in res.rows}
+    assert "AIRFLOW" in keys
+
+
+def test_limit_caps_rows_and_sets_note(
+    confluence_list_spaces_cfg: ConfluenceListSpacesConfig,
+) -> None:
+    """`limit=N` обрезает до N строк и проставляет truncated-`note`."""
+    res = confluence_list_spaces(
         cfg=confluence_list_spaces_cfg, space_type="global", limit=2,
     )
-    assert _count_data_rows(table) == 2
-    assert "more spaces omitted" in table
+    assert len(res.rows) == 2
+    assert res.note is not None
 
 
 def test_type_any_returns_global_and_or_personal(
     confluence_list_spaces_cfg: ConfluenceListSpacesConfig,
 ) -> None:
-    """`space_type="any"` снимает фильтр — должна вернуться ≥1 data-строка."""
-    table = confluence_list_spaces(
+    """`space_type="any"` снимает фильтр — должна вернуться ≥1 строка."""
+    res = confluence_list_spaces(
         cfg=confluence_list_spaces_cfg, space_type="any", limit=10,
     )
-    assert _count_data_rows(table) >= 1
+    assert len(res.rows) >= 1

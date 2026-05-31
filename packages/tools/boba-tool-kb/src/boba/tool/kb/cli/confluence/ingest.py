@@ -32,11 +32,9 @@ from typing import Annotated, Any, Literal
 from pydantic import Field
 
 from boba.settings import BobaSettingsConfigDict, StringList
-from boba.tool.kb.confluence.ingest import (
-    ConfluenceIngestConfig,
-    confluence_ingest_pages,
-    confluence_ingest_spaces,
-)
+from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
+from boba.tool.kb.confluence.ingest_pages import confluence_ingest_pages
+from boba.tool.kb.confluence.ingest_spaces import confluence_ingest_spaces
 from boba.tool.kb.confluence.request_sources import ConfluencePaginator
 
 __all__ = ["ConfluenceIngestCliConfig", "main"]
@@ -124,10 +122,12 @@ class ConfluenceIngestCli:
 
         start = time.monotonic()
         try:
-            result: dict[str, Any] = confluence_ingest_pages(
-                cfg=cfg,
-                page_ids=list(cfg.page_ids),
-                prune_missing=cfg.prune,
+            result: dict[str, Any] = dict(
+                confluence_ingest_pages(
+                    cfg=cfg,
+                    page_ids=list(cfg.page_ids),
+                    prune_missing=cfg.prune,
+                ).rows[0],
             )
         except Exception:
             logger.exception("confluence.ingest page_ids-mode FAILED")
@@ -176,10 +176,12 @@ class ConfluenceIngestCli:
             processed = i
             space_start = time.monotonic()
             try:
-                result: dict[str, Any] = confluence_ingest_spaces(
-                    cfg=cfg,
-                    space_keys=[key],
-                    prune_missing=cfg.prune,
+                row: dict[str, Any] = dict(
+                    confluence_ingest_spaces(
+                        cfg=cfg,
+                        space_keys=[key],
+                        prune_missing=cfg.prune,
+                    ).rows[0],
                 )
             except Exception:
                 logger.exception(
@@ -191,16 +193,16 @@ class ConfluenceIngestCli:
                 continue
 
             for k in ("indexed", "skipped_unchanged", "pruned", "failed"):
-                totals[k] += int(result.get(k, 0))
+                totals[k] += int(row.get(k, 0))
             logger.info(
                 "[%d] space=%s indexed=%d skipped=%d pruned=%d failed=%d "
                 "(%.1fs; cum indexed=%d skipped=%d failed=%d)",
                 i,
                 key,
-                result.get("indexed", 0),
-                result.get("skipped_unchanged", 0),
-                result.get("pruned", 0),
-                result.get("failed", 0),
+                row.get("indexed", 0),
+                row.get("skipped_unchanged", 0),
+                row.get("pruned", 0),
+                row.get("failed", 0),
                 time.monotonic() - space_start,
                 totals["indexed"],
                 totals["skipped_unchanged"],

@@ -16,7 +16,6 @@ dependencies = [
     "boba-transport-fs",
     "boba-transport-http",
     "boba-text",
-    "boba-markdown",
     "boba-html",
     "boba-kbdoc",
     "boba-openai",

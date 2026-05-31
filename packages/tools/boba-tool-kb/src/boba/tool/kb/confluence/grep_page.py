@@ -30,6 +30,7 @@ from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.parsing import ConfluenceJsonDecoder
 from boba.tool.kb.confluence.request_sources import ConfluencePagesRequestSource
 from boba.tools import FromConfig, tool
+from boba.tools.domain import TableResult
 
 __all__ = ["ConfluenceGrepPageConfig", "confluence_grep_page"]
 
@@ -104,6 +105,20 @@ class PageGrep:
         yield from pending
 
     @staticmethod
+    def note(
+        page_id: str, items: list[dict[str, Any]], *, truncated: bool, max_chars: int
+    ) -> str:
+        """Footer-контекст под таблицей: page_id, число совпадений, усечения."""
+        if not items:
+            return f"page_id={page_id}: совпадений не найдено"
+        parts = [f"page_id={page_id}", f"совпадений: {len(items)}"]
+        if truncated:
+            parts.append(f"показаны первые {len(items)} (найдено больше)")
+        if any(it.get("truncated_lines") for it in items):
+            parts.append(f"строки усечены до {max_chars} символов")
+        return "; ".join(parts)
+
+    @staticmethod
     def clip(s: str, limit: int) -> tuple[str, bool]:
         """Обрезает строку до `limit` символов; возвращает (строка, был_ли_обрезан)."""
         if len(s) <= limit:
@@ -164,13 +179,13 @@ def confluence_grep_page(  # noqa: PLR0913 — независимые флаги
         bool,
         Field(description="Литеральный поиск без regex. По умолчанию false."),
     ] = False,
-) -> dict[str, Any]:
+) -> TableResult:
     """Скачивает Confluence-страницу и ищет в её контенте совпадения pattern.
 
-    Формат результата — как у file-tool `grep`: список matches со
-    `line`/`content`/`before`/`after`. При переполнении limit ответ обрезается
-    с `truncated=true`. Длинные строки режутся по `max_text_chars`; на
-    затронутом match ставится `truncated_lines=true`.
+    Возвращает `TableResult` — таблицу matches с колонками `line`/`content`/
+    `before`/`after` (+`truncated_lines` на усечённых). Контекст усечения,
+    page_id и переполнение limit — в `note`/`metadata`. Длинные строки режутся
+    по `max_text_chars`.
     """
     compiled = PageGrep.compile_pattern(
         pattern,
@@ -235,12 +250,5 @@ def confluence_grep_page(  # noqa: PLR0913 — независимые флаги
             item["truncated_lines"] = True
         items.append(item)
 
-    return {
-        "page_id": page_id,
-        "matches": items,
-        "count": len(items),
-        "total": total,
-        "truncated": truncated,
-        "limit": limit,
-        "max_text_chars": max_chars,
-    }
+    note = PageGrep.note(page_id, items, truncated=truncated, max_chars=max_chars)
+    return TableResult(rows=items, note=note, metadata={"page_id": page_id})

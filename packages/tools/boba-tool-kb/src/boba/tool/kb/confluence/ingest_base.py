@@ -1,20 +1,12 @@
-"""Tools `confluence_ingest_{spaces,pages,cql}` + `ConfluenceIngestConfig`.
+"""Общая база Confluence-ingest: `ConfluenceIngestConfig` + `ConfluenceIngest`.
 
-Три отдельных tool'а (по одному на режим discovery) поверх общего pipeline'а
-(`ConfluenceIngest`):
+Сами tool'ы физически разнесены по файлам (по одному на режим discovery) —
+`ingest_spaces.py` / `ingest_pages.py` / `ingest_cql.py`. Здесь — то, что у них
+пока общее: конфиг-секция `[tool.kb.confluence.ingest]` и сборка pipeline'а.
 
-- `confluence_ingest_spaces(space_keys=[A, B])`
-    → все страницы перечисленных Confluence-spaces
-      (discovery `/rest/api/space/{key}/content`).
-- `confluence_ingest_pages(page_ids=[123, 456])`
-    → явный список страниц по ID.
-- `confluence_ingest_cql(cql="space = DOCS AND ...")`
-    → discovery страниц через CQL.
-
-Один tool = одно намерение: каждая функция принимает РОВНО ОДИН
-discovery-параметр (без `anyOf`/`Optional`), что упрощает grammar
-constrained decoding у LLM. Все три используют **одну** конфиг-секцию
-`[tool.kb.confluence.ingest]` (store/embedding/chunker/confluence/collection).
+Каждый tool-файл — самостоятельная точка дивергенции: когда режим начнёт
+собирать таблицу/коллекцию иначе, он форкает свой кусок (свой `RequestSource`
+уже там; при необходимости — свой `run`/конфиг), не задевая остальные.
 
 Pipeline: `RequestSource` → `ConfluenceContentTransport` (HTTP + JSON-decode +
 attachment fan-out) → `DispatchReader` по `CONTENT_TYPE` (HTML →
@@ -48,7 +40,6 @@ from boba.indexing.reader import ReaderId
 from boba.settings import (
     BobaFlatSettings,
     BobaSettingsConfigDict,
-    LLMStringList,
     StringList,
 )
 from boba.text import StructuralChunker
@@ -56,11 +47,6 @@ from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.models import AttachmentFilter
 from boba.tool.kb.confluence.pipeline import ConfluenceContentTransport
 from boba.tool.kb.confluence.reading import ConfluenceReader
-from boba.tool.kb.confluence.request_sources import (
-    ConfluenceCqlRequestSource,
-    ConfluenceMultiSpaceRequestSource,
-    ConfluencePagesRequestSource,
-)
 from boba.tool.kb.core.chunking import ChunkerParams
 from boba.tool.kb.core.embedding import EmbeddingModel
 from boba.tool.kb.core.postgres import (
@@ -68,22 +54,16 @@ from boba.tool.kb.core.postgres import (
     PostgresCollectionsStore,
     PostgresStoreConfig,
 )
-from boba.tools import FromConfig, tool
 from boba.transport.http import HttpRequest
 
-__all__ = [
-    "ConfluenceIngestConfig",
-    "confluence_ingest_cql",
-    "confluence_ingest_pages",
-    "confluence_ingest_spaces",
-]
+__all__ = ["ConfluenceIngest", "ConfluenceIngestConfig"]
 
 
 class ConfluenceIngestConfig(BobaFlatSettings):
     """Self-contained конфиг семейства tool'ов `confluence_ingest_*`.
 
-    Config-секция: `[tool.kb.confluence.ingest]`. Делится между всеми тремя
-    режимами (spaces / pages / cql).
+    Config-секция: `[tool.kb.confluence.ingest]`. Пока делится между всеми
+    тремя режимами (spaces / pages / cql); при дивергенции режим заводит свою.
     """
 
     model_config = BobaSettingsConfigDict(
@@ -210,7 +190,7 @@ class ConfluenceIngest:
         }
 
     @staticmethod
-    def _run(
+    def ingest(
         cfg: ConfluenceIngestConfig,
         request_source: RequestSource[HttpRequest],
         prune_missing: bool,
@@ -237,126 +217,3 @@ class ConfluenceIngest:
             pipeline_id=pipeline_id,
             attachment_filter=att_filter,
         )
-
-
-@tool
-def confluence_ingest_spaces(
-    cfg: Annotated[ConfluenceIngestConfig, FromConfig()],
-    space_keys: Annotated[
-        LLMStringList,
-        Field(
-            min_length=1,
-            description=(
-                "Список space-ключей Confluence для индексации. "
-                'Передавай JSON-массив строк: `["DOCS", "ENG"]`. Discovery '
-                "через `/rest/api/space/{key}/content` — индексируются все "
-                "страницы каждого space. Используй, когда нужен полный "
-                "охват space'а."
-            ),
-        ),
-    ],
-    prune_missing: Annotated[
-        bool,
-        Field(
-            description=(
-                "Если true, удалить из коллекции чанки, чьих source_id нет "
-                "среди страниц, попавших в discovery текущего run'а."
-            ),
-        ),
-    ] = False,
-) -> dict[str, Any]:
-    """Индексирует ВСЕ страницы перечисленных Confluence-spaces в KB.
-
-    Возвращает JSON `{collection, indexed, skipped_unchanged, pruned, failed}`.
-    """
-    request_source = ConfluenceMultiSpaceRequestSource(
-        conn=cfg.confluence,
-        space_keys=space_keys,
-        body_format=cfg.confluence.body_format,
-    )
-    result = ConfluenceIngest._run(
-        cfg, request_source, prune_missing, ConfluenceIngest.PIPELINE_ID_SPACES,
-    )
-    return {"space_keys": space_keys, **result}
-
-
-@tool
-def confluence_ingest_pages(
-    cfg: Annotated[ConfluenceIngestConfig, FromConfig()],
-    page_ids: Annotated[
-        LLMStringList,
-        Field(
-            min_length=1,
-            description=(
-                "Список page_id страниц Confluence для индексации. "
-                'Передавай JSON-массив строк: `["950276", "950278"]`. '
-                "Каждый id — строка из URL `viewpage.action?pageId=<id>`. "
-                "Используй, когда уже знаешь конкретные страницы (например, "
-                "из результатов `confluence_search_cql`)."
-            ),
-        ),
-    ],
-    prune_missing: Annotated[
-        bool,
-        Field(
-            description=(
-                "Если true, удалить из коллекции чанки, чьих source_id нет "
-                "среди страниц, попавших в discovery текущего run'а."
-            ),
-        ),
-    ] = False,
-) -> dict[str, Any]:
-    """Индексирует явный список страниц Confluence по page_id в KB.
-
-    Возвращает JSON `{collection, indexed, skipped_unchanged, pruned, failed}`.
-    """
-    request_source = ConfluencePagesRequestSource(
-        base_url=cfg.confluence.base_url,
-        auth=cfg.confluence.make_auth(),
-        page_ids=page_ids,
-        body_format=cfg.confluence.body_format,
-    )
-    result = ConfluenceIngest._run(
-        cfg, request_source, prune_missing, ConfluenceIngest.PIPELINE_ID_PAGES,
-    )
-    return {"page_ids": page_ids, **result}
-
-
-@tool
-def confluence_ingest_cql(
-    cfg: Annotated[ConfluenceIngestConfig, FromConfig()],
-    cql: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description=(
-                "CQL-запрос для discovery страниц. Пример: "
-                '`space = DOCS AND lastModified > "2024-01-01"`. '
-                "Используй для тонких фильтров (по дате, метке, автору) — "
-                "когда не нужен весь space, но и конкретных page_id нет."
-            ),
-        ),
-    ],
-    prune_missing: Annotated[
-        bool,
-        Field(
-            description=(
-                "Если true, удалить из коллекции чанки, чьих source_id нет "
-                "среди страниц, попавших в discovery текущего run'а."
-            ),
-        ),
-    ] = False,
-) -> dict[str, Any]:
-    """Индексирует страницы Confluence, отобранные CQL-запросом, в KB.
-
-    Возвращает JSON `{collection, indexed, skipped_unchanged, pruned, failed}`.
-    """
-    request_source = ConfluenceCqlRequestSource(
-        conn=cfg.confluence,
-        cql=cql,
-        body_format=cfg.confluence.body_format,
-    )
-    result = ConfluenceIngest._run(
-        cfg, request_source, prune_missing, ConfluenceIngest.PIPELINE_ID_CQL,
-    )
-    return {"cql": cql, **result}

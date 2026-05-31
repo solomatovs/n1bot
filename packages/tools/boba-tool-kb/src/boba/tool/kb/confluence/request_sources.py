@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Iterable, Iterator, Sequence
 from typing import Any, ClassVar, TypeVar
 from urllib.parse import quote, urlparse
@@ -41,6 +43,8 @@ __all__ = [
     "ConfluenceRest",
     "ConfluenceSpaceRequestSource",
 ]
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -203,7 +207,17 @@ class ConfluenceRest:
 
 
 class ConfluencePaginator:
-    """httpx-клиент для пагинированных Confluence REST discovery-запросов."""
+    """httpx-клиент для пагинированных Confluence REST discovery-запросов.
+
+    Каждый постраничный GET повторяется до `MAX_ATTEMPTS` раз на 5xx и
+    transport-ошибках (timeout/connect) с линейным backoff'ом — большие
+    Confluence (напр. Apache cwiki) отдают нестабильные 500 на глубокой
+    пагинации. 4xx (клиентские) не ретраятся. После исчерпания попыток
+    исключение пробрасывается наверх (caller решает: fail или degrade).
+    """
+
+    MAX_ATTEMPTS: ClassVar[int] = 3
+    RETRY_BACKOFF_SEC: ClassVar[float] = 1.0
 
     def __init__(self, conn: ConfluenceConnection):
         self._client = httpx.Client(
@@ -219,13 +233,41 @@ class ConfluencePaginator:
         """
         next_path: str | None = path
         while next_path:
-            resp = self._client.get(next_path)
-            resp.raise_for_status()
-            data = resp.json()
+            data = self._get_json(next_path)
             for raw in self._extract_results(data):
                 yield item.model_validate(raw)
 
             next_path = self._next_link(data)
+
+    def _get_json(self, path: str) -> dict[str, Any]:
+        """GET `path` → JSON c retry до `MAX_ATTEMPTS` на 5xx/transport-ошибках."""
+        last_exc: httpx.HTTPError | None = None
+        for attempt in range(1, self.MAX_ATTEMPTS + 1):
+            try:
+                resp = self._client.get(path)
+                resp.raise_for_status()
+                return resp.json()
+            except httpx.HTTPStatusError as e:
+                if not e.response.is_server_error:  # 4xx — не ретраим
+                    raise
+                last_exc = e
+            except httpx.TransportError as e:  # timeout / connect — transient
+                last_exc = e
+            if attempt < self.MAX_ATTEMPTS:
+                delay = self.RETRY_BACKOFF_SEC * attempt
+                logger.warning(
+                    "Confluence GET %s неудачно (%s); retry %d/%d через %.1fs",
+                    path,
+                    type(last_exc).__name__,
+                    attempt,
+                    self.MAX_ATTEMPTS,
+                    delay,
+                )
+                time.sleep(delay)
+        if last_exc is None:  # недостижимо: цикл либо вернул, либо выставил last_exc
+            msg = f"Confluence GET {path}: неизвестная ошибка"
+            raise httpx.HTTPError(msg)
+        raise last_exc
 
     @staticmethod
     def _extract_results(data: dict[str, Any]) -> list[dict[str, Any]]:

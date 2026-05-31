@@ -41,12 +41,10 @@ from boba.tool.kb.confluence.grep_page import (
     ConfluenceGrepPageConfig,
     confluence_grep_page,
 )
-from boba.tool.kb.confluence.ingest import (
-    ConfluenceIngestConfig,
-    confluence_ingest_cql,
-    confluence_ingest_pages,
-    confluence_ingest_spaces,
-)
+from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
+from boba.tool.kb.confluence.ingest_cql import confluence_ingest_cql
+from boba.tool.kb.confluence.ingest_pages import confluence_ingest_pages
+from boba.tool.kb.confluence.ingest_spaces import confluence_ingest_spaces
 from boba.tool.kb.confluence.list_spaces import (
     ConfluenceListSpacesConfig,
     confluence_list_spaces,

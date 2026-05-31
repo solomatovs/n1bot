@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, ClassVar
 
 import httpx
 from pydantic import Field
@@ -25,6 +25,7 @@ from boba.tool.kb.confluence.models import ConfluenceKeys
 from boba.tool.kb.confluence.reading import ConfluenceSearchHitsReader
 from boba.tool.kb.confluence.request_sources import ConfluenceCqlSearchRequestSource
 from boba.tools import FromConfig, tool
+from boba.tools.domain import TableResult
 from boba.transport.http import HttpKeys
 
 __all__ = ["ConfluenceSearchCqlConfig", "confluence_search_cql"]
@@ -112,11 +113,11 @@ def confluence_search_cql(
         int,
         Field(ge=1, description="Максимум hits в ответе."),
     ] = 20,
-) -> list[dict[str, Any]]:
+) -> TableResult:
     """Полнотекстовый поиск страниц Confluence (online CQL).
 
-    Возвращает плоский список hits: `[{page_id, title, space_key, url,
-    snippet, last_modified}, ...]`
+    Возвращает `TableResult` — таблицу hits с колонками `page_id`/`title`/
+    `space_key`/`url`/`snippet`/`last_modified`.
     """
     if limit > cfg.max_limit:
         raise RuntimeError(
@@ -146,4 +147,5 @@ def confluence_search_cql(
             f"Confluence search failed: {type(e).__name__}: {e}",
         ) from e
 
-    return [CqlSearch.hit(s) for s in sections]
+    rows = [CqlSearch.hit(s) for s in sections]
+    return TableResult(rows=rows, note=None if rows else "ничего не найдено")
