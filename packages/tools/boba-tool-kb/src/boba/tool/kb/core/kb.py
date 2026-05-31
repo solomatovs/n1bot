@@ -26,12 +26,9 @@ from psycopg import sql
 from pydantic import BaseModel, Field
 
 from boba.db.postgres import PostgresConnection
-from boba.tool.kb.core.embedder_factory import build_embedder
-from boba.tool.kb.core.embedding_model import EmbeddingModel
-from boba.tool.kb.core.errors import KnowledgeBaseError
-from boba.tool.kb.core.models import SearchHit
-from boba.tool.kb.core.postgres_pool import open_kb_pool
-from boba.tool.kb.core.postgres_store_schema import PostgresStoreSchema
+from boba.tool.kb.core.embedding import EmbeddingModel
+from boba.tool.kb.core.models import KnowledgeBaseError, SearchHit
+from boba.tool.kb.core.postgres import KbPool, PostgresStoreSchema
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +42,7 @@ class PostgresKnowledgeBaseConfig(BaseModel):
     """Composite-конфиг для read-side KB.
 
     Поля: connection + tables + embedding. Язык(и) FTS зашиты в SQL-шаблоны
-    (см. `core/tools/search/sql/`) и в DDL `tsv`-колонки
+    (`KbSearch.VECTOR_SQL`/`FTS_SQL` в `core/search.py`) и в DDL `tsv`-колонки
     (см. `migrations/002_multilang_tsv.sql`) — оба места должны быть синхронны.
     """
 
@@ -70,8 +67,8 @@ class PostgresKnowledgeBase:
         cfg: PostgresKnowledgeBaseConfig,
     ) -> None:
         self._cfg = cfg
-        self._pool = open_kb_pool(cfg.connection)
-        self._embedder = build_embedder(cfg.embedding)
+        self._pool = KbPool.open(cfg.connection)
+        self._embedder = cfg.embedding.build()
         logger.info(
             "PostgresKnowledgeBase opened dim=%d chunks=%s.%s",
             self._embedder.dim(),
@@ -101,8 +98,7 @@ class PostgresKnowledgeBase:
         `sql_template` — текст SQL с identifier-placeholder'ами
         `{dim}`/`{chunks_table}` и bind-параметрами
         `%(collections|embedding|snippet_chars|top_k)s`. Источник —
-        packaged-файл `core/tools/search/sql/vector.sql` или operator-
-        override через `[tool.kb.search].vector_sql_path`.
+        константа `KbSearch.VECTOR_SQL` (`core/search.py`).
         """
         embedding = list(self._embedder.embed_query(query))
         query_sql = sql.SQL(cast(LiteralString, sql_template)).format(

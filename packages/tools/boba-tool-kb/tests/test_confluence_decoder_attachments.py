@@ -13,9 +13,8 @@ from io import BytesIO
 from typing import Any
 
 from boba.indexing import Metadata, RawDocument, SourceId, TransportKeys
-from boba.tool.kb.confluence.attachments import AttachmentInfo
-from boba.tool.kb.confluence.decoder import ConfluenceJsonDecoder
-from boba.tool.kb.confluence.keys import ConfluenceKeys
+from boba.tool.kb.confluence.models import AttachmentInfo, ConfluenceKeys
+from boba.tool.kb.confluence.parsing import ConfluenceJsonDecoder
 
 
 def _raw(payload: dict[str, Any]) -> RawDocument:

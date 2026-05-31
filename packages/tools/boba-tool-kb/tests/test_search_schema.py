@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from boba.indexing import ReaderKeys, SectionKeys
 from boba.kbdoc import KbDocKeys
-from boba.tool.kb.confluence.keys import ConfluenceKeys
+from boba.tool.kb.confluence.models import ConfluenceKeys
 from boba.tool.kb.core.models import SearchHit
-from boba.tool.kb.core.tools.search.schema import (
+from boba.tool.kb.core.search import (
     ConfluenceCollection,
     KbDocCollection,
 )

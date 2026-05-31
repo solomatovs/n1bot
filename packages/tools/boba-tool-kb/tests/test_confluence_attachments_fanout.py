@@ -20,10 +20,9 @@ from boba.indexing import (
     SourceId,
     Transport,
 )
-from boba.tool.kb.confluence._pipeline_common import _iter_attachments
-from boba.tool.kb.confluence.attachments import AttachmentInfo
-from boba.tool.kb.confluence.keys import ConfluenceKeys
-from boba.tool.kb.confluence.request_sources._common import make_attachment_request
+from boba.tool.kb.confluence.models import AttachmentInfo, ConfluenceKeys
+from boba.tool.kb.confluence.pipeline import ConfluenceContentTransport
+from boba.tool.kb.confluence.request_sources import ConfluenceRest
 from boba.transport.http import HttpRequest
 
 _ATT1 = AttachmentInfo(
@@ -86,7 +85,7 @@ class _FakeTransport(Transport[HttpRequest]):
 
 
 def test_make_attachment_request_url_combines_base_and_download_path() -> None:
-    req = make_attachment_request(
+    req = ConfluenceRest.make_attachment_request(
         base_url="https://confl.example.com/wiki",
         auth=None,
         parent_metadata=_parent_meta(),
@@ -99,7 +98,7 @@ def test_make_attachment_request_url_combines_base_and_download_path() -> None:
 
 
 def test_make_attachment_request_trims_trailing_slash_in_base_url() -> None:
-    req = make_attachment_request(
+    req = ConfluenceRest.make_attachment_request(
         base_url="https://confl.example.com/wiki/",
         auth=None,
         parent_metadata=_parent_meta(),
@@ -109,7 +108,7 @@ def test_make_attachment_request_trims_trailing_slash_in_base_url() -> None:
 
 
 def test_make_attachment_request_propagates_parent_metadata() -> None:
-    req = make_attachment_request(
+    req = ConfluenceRest.make_attachment_request(
         base_url="https://confl.example.com/wiki",
         auth=None,
         parent_metadata=_parent_meta(),
@@ -125,7 +124,7 @@ def test_make_attachment_request_propagates_parent_metadata() -> None:
 def test_make_attachment_request_handles_missing_parent_fields() -> None:
     """Если у родителя нет SPACE_KEY/ANCESTORS — на дочернем их тоже нет."""
     parent = Metadata.empty().set(ConfluenceKeys.PAGE_ID, "42")
-    req = make_attachment_request(
+    req = ConfluenceRest.make_attachment_request(
         base_url="https://confl.example.com/wiki",
         auth=None,
         parent_metadata=parent,
@@ -157,7 +156,7 @@ def test_iter_attachments_yields_nothing_when_key_absent() -> None:
     """Page без `ATTACHMENTS` в метадате — fan-out не делает HTTP-вызовов."""
     transport = _FakeTransport()
     out = list(
-        _iter_attachments(
+        ConfluenceContentTransport._iter_attachments(
             parent=_parent_with(None),
             base_url="https://confl.example.com/wiki",
             auth=None,
@@ -172,7 +171,7 @@ def test_iter_attachments_yields_nothing_when_key_absent() -> None:
 def test_iter_attachments_yields_nothing_when_empty_tuple() -> None:
     transport = _FakeTransport()
     out = list(
-        _iter_attachments(
+        ConfluenceContentTransport._iter_attachments(
             parent=_parent_with(()),
             base_url="https://confl.example.com/wiki",
             auth=None,
@@ -188,7 +187,7 @@ def test_iter_attachments_streams_in_order() -> None:
     """Yield-порядок совпадает с порядком в `ATTACHMENTS`."""
     transport = _FakeTransport()
     out = list(
-        _iter_attachments(
+        ConfluenceContentTransport._iter_attachments(
             parent=_parent_with((_ATT1, _ATT2)),
             base_url="https://confl.example.com/wiki",
             auth=None,
@@ -213,7 +212,7 @@ def test_iter_attachments_does_not_materialize_full_list() -> None:
     если у страницы 50+ вложений.
     """
     transport = _FakeTransport()
-    gen = _iter_attachments(
+    gen = ConfluenceContentTransport._iter_attachments(
         parent=_parent_with((_ATT1, _ATT2)),
         base_url="https://confl.example.com/wiki",
         auth=None,
@@ -231,7 +230,7 @@ def test_iter_attachments_does_not_materialize_full_list() -> None:
 def test_iter_attachments_propagates_parent_keys() -> None:
     transport = _FakeTransport()
     out = list(
-        _iter_attachments(
+        ConfluenceContentTransport._iter_attachments(
             parent=_parent_with((_ATT1,)),
             base_url="https://confl.example.com/wiki",
             auth=None,

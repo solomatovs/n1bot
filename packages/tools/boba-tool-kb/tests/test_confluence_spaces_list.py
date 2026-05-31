@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from boba.tool.kb.confluence.tools.list.spaces import (
+from boba.tool.kb.confluence.list_spaces import (
     ConfluenceListSpacesConfig,
     confluence_list_spaces,
 )

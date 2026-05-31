@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, ClassVar
 
 import httpx
 from pydantic import Field
@@ -21,18 +21,13 @@ from boba.indexing import (
 )
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, LLMStringList
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.keys import ConfluenceKeys
-from boba.tool.kb.confluence.request_sources.search import (
-    ConfluenceCqlSearchRequestSource,
-)
-from boba.tool.kb.confluence.search_reader import ConfluenceSearchHitsReader
+from boba.tool.kb.confluence.models import ConfluenceKeys
+from boba.tool.kb.confluence.reading import ConfluenceSearchHitsReader
+from boba.tool.kb.confluence.request_sources import ConfluenceCqlSearchRequestSource
 from boba.tools import FromConfig, tool
 from boba.transport.http import HttpKeys
 
 __all__ = ["ConfluenceSearchCqlConfig", "confluence_search_cql"]
-
-
-_PIPELINE_ID: PipelineId = PipelineId("confluence.search_cql")
 
 
 class ConfluenceSearchCqlConfig(BobaFlatSettings):
@@ -60,6 +55,41 @@ class ConfluenceSearchCqlConfig(BobaFlatSettings):
         le=200,
         description="Жёсткий потолок параметра `limit` от LLM.",
     )
+
+
+class CqlSearch:
+    """Сборка CQL и распаковка search-`Section` в плоский hit-dict."""
+
+    PIPELINE_ID: ClassVar[PipelineId] = PipelineId("confluence.search_cql")
+
+    @staticmethod
+    def hit(section: Section[str]) -> dict[str, str]:
+        m = section.metadata
+        return {
+            "page_id": m.get(ConfluenceKeys.PAGE_ID) or "",
+            "title": m.get(ReaderKeys.PAGE_TITLE) or "",
+            "space_key": m.get(ConfluenceKeys.SPACE_KEY) or "",
+            "url": str(section.source_id),
+            "snippet": section.content,
+            "last_modified": m.get(HttpKeys.LAST_MODIFIED) or "",
+        }
+
+    @staticmethod
+    def cql_literal(value: str) -> str:
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+
+    @staticmethod
+    def build_cql(query: str, spaces: list[str] | None) -> str:
+        text_block = f"text ~ {CqlSearch.cql_literal(query)}"
+        if not spaces:
+            return text_block
+        if len(spaces) == 1:
+            space_block = f"space = {CqlSearch.cql_literal(spaces[0])}"
+        else:
+            joined = ", ".join(CqlSearch.cql_literal(s) for s in spaces)
+            space_block = f"space in ({joined})"
+        return f"({text_block}) and ({space_block})"
 
 
 @tool
@@ -97,7 +127,7 @@ def confluence_search_cql(
         request_source=ConfluenceCqlSearchRequestSource(
             base_url=cfg.confluence.base_url,
             auth=cfg.confluence.make_auth(),
-            cql=_build_cql(query=query, spaces=spaces),
+            cql=CqlSearch.build_cql(query=query, spaces=spaces),
             limit=limit,
         ),
         transport=cfg.confluence.make_transport(),
@@ -109,40 +139,11 @@ def confluence_search_cql(
 
     try:
         sections = list(
-            pipeline.stream(PipelineContext(pipeline_id=_PIPELINE_ID)),
+            pipeline.stream(PipelineContext(pipeline_id=CqlSearch.PIPELINE_ID)),
         )
     except httpx.HTTPError as e:
         raise RuntimeError(
             f"Confluence search failed: {type(e).__name__}: {e}",
         ) from e
 
-    return [_hit(s) for s in sections]
-
-
-def _hit(section: Section[str]) -> dict[str, str]:
-    m = section.metadata
-    return {
-        "page_id": m.get(ConfluenceKeys.PAGE_ID) or "",
-        "title": m.get(ReaderKeys.PAGE_TITLE) or "",
-        "space_key": m.get(ConfluenceKeys.SPACE_KEY) or "",
-        "url": str(section.source_id),
-        "snippet": section.content,
-        "last_modified": m.get(HttpKeys.LAST_MODIFIED) or "",
-    }
-
-
-def _cql_literal(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
-
-
-def _build_cql(query: str, spaces: list[str] | None) -> str:
-    text_block = f"text ~ {_cql_literal(query)}"
-    if not spaces:
-        return text_block
-    if len(spaces) == 1:
-        space_block = f"space = {_cql_literal(spaces[0])}"
-    else:
-        joined = ", ".join(_cql_literal(s) for s in spaces)
-        space_block = f"space in ({joined})"
-    return f"({text_block}) and ({space_block})"
+    return [CqlSearch.hit(s) for s in sections]

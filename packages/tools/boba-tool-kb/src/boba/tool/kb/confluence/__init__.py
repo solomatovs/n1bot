@@ -29,21 +29,25 @@ tool полностью изолирован.
 from __future__ import annotations
 
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.tools.download import (
+from boba.tool.kb.confluence.download import (
     ConfluenceDownloadConfig,
     confluence_download,
 )
-from boba.tool.kb.confluence.tools.ingest import (
+from boba.tool.kb.confluence.fetch import (
+    ConfluenceFetchPageConfig,
+    confluence_fetch_page,
+)
+from boba.tool.kb.confluence.ingest import (
     ConfluenceIngestConfig,
     confluence_ingest_cql,
     confluence_ingest_pages,
     confluence_ingest_spaces,
 )
-from boba.tool.kb.confluence.tools.list.spaces import (
+from boba.tool.kb.confluence.list_spaces import (
     ConfluenceListSpacesConfig,
     confluence_list_spaces,
 )
-from boba.tool.kb.confluence.tools.search.cql import (
+from boba.tool.kb.confluence.search_cql import (
     ConfluenceSearchCqlConfig,
     confluence_search_cql,
 )
@@ -51,10 +55,12 @@ from boba.tool.kb.confluence.tools.search.cql import (
 __all__ = [
     "ConfluenceConnection",
     "ConfluenceDownloadConfig",
+    "ConfluenceFetchPageConfig",
     "ConfluenceIngestConfig",
     "ConfluenceListSpacesConfig",
     "ConfluenceSearchCqlConfig",
     "confluence_download",
+    "confluence_fetch_page",
     "confluence_ingest_cql",
     "confluence_ingest_pages",
     "confluence_ingest_spaces",

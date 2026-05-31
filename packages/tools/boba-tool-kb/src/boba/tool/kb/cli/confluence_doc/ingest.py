@@ -13,18 +13,16 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import Field
 
 from boba.indexing.context import PipelineId
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
-from boba.tool.kb.confluence_doc._ingest_common import run_confluence_doc_ingest
-from boba.tool.kb.core.chunker_factory import build_chunker
-from boba.tool.kb.core.chunker_params import ChunkerParams
-from boba.tool.kb.core.embedder_factory import build_embedder
-from boba.tool.kb.core.embedding_model import EmbeddingModel
-from boba.tool.kb.core.postgres_store import (
+from boba.tool.kb.confluence_doc.ingest import ConfluenceDocIngest
+from boba.tool.kb.core.chunking import ChunkerParams
+from boba.tool.kb.core.embedding import EmbeddingModel
+from boba.tool.kb.core.postgres import (
     PostgresChunkStore,
     PostgresCollectionsStore,
     PostgresStoreConfig,
@@ -34,8 +32,6 @@ from boba.transport.fs import FsTransport, FsWalkRequestSource
 __all__ = ["ConfluenceDocIngestCliConfig", "main"]
 
 logger = logging.getLogger("boba.tool.kb.cli.confluence_doc.ingest")
-
-_PIPELINE_ID: PipelineId = PipelineId("kb.confluence_doc.ingest")
 
 
 class ConfluenceDocIngestCliConfig(BobaFlatSettings):
@@ -76,6 +72,43 @@ class ConfluenceDocIngestCliConfig(BobaFlatSettings):
     )
 
 
+class ConfluenceDocIngestCli:
+    """Operator-сборка KbDoc-ingest по абсолютной папке (`FsWalkRequestSource`)."""
+
+    PIPELINE_ID: ClassVar[PipelineId] = PipelineId("kb.confluence_doc.ingest")
+
+    @staticmethod
+    def run_ingest(cfg: ConfluenceDocIngestCliConfig) -> dict[str, Any]:
+        folder = Path(cfg.folder)
+        if not folder.exists():
+            msg = f"folder_not_found: {folder}"
+            raise RuntimeError(msg)
+        if not folder.is_dir():
+            msg = f"folder_not_a_directory: {folder}"
+            raise RuntimeError(msg)
+
+        chunk_store = PostgresChunkStore(cfg=cfg.store)
+        collections_store = PostgresCollectionsStore(cfg=cfg.store)
+        embedder = cfg.embedding.build()
+        chunker = cfg.chunker.build_chunker()
+
+        result = ConfluenceDocIngest.run(
+            request_source=FsWalkRequestSource(
+                paths=[str(folder)],
+                include=["*.md"],
+            ),
+            transport=FsTransport(),
+            chunk_store=chunk_store,
+            collections_store=collections_store,
+            embedder=embedder,
+            chunker=chunker,
+            collection=cfg.collection,
+            prune_missing=cfg.prune,
+            pipeline_id=ConfluenceDocIngestCli.PIPELINE_ID,
+        )
+        return {"folder": str(folder), **result}
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -93,7 +126,7 @@ def main() -> int:
 
     start = time.monotonic()
     try:
-        result = _run_ingest(cfg)
+        result = ConfluenceDocIngestCli.run_ingest(cfg)
     except Exception:
         logger.exception("confluence_doc.ingest FAILED")
         return 1
@@ -108,37 +141,6 @@ def main() -> int:
         result["failed"],
     )
     return 0 if result["failed"] == 0 else 1
-
-
-def _run_ingest(cfg: ConfluenceDocIngestCliConfig) -> dict[str, Any]:
-    folder = Path(cfg.folder)
-    if not folder.exists():
-        msg = f"folder_not_found: {folder}"
-        raise RuntimeError(msg)
-    if not folder.is_dir():
-        msg = f"folder_not_a_directory: {folder}"
-        raise RuntimeError(msg)
-
-    chunk_store = PostgresChunkStore(cfg=cfg.store)
-    collections_store = PostgresCollectionsStore(cfg=cfg.store)
-    embedder = build_embedder(cfg.embedding)
-    chunker = build_chunker(cfg.chunker)
-
-    result = run_confluence_doc_ingest(
-        request_source=FsWalkRequestSource(
-            paths=[str(folder)],
-            include=["*.md"],
-        ),
-        transport=FsTransport(),
-        chunk_store=chunk_store,
-        collections_store=collections_store,
-        embedder=embedder,
-        chunker=chunker,
-        collection=cfg.collection,
-        prune_missing=cfg.prune,
-        pipeline_id=_PIPELINE_ID,
-    )
-    return {"folder": str(folder), **result}
 
 
 if __name__ == "__main__":

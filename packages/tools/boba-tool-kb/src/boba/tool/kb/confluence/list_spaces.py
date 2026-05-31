@@ -12,23 +12,18 @@ cursor-based пагинация через `_links.next`.
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import Field
 
 from boba.markdown import format_markdown_table
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
-from boba.tool.kb.confluence.api_models import ConfluenceSpaceItem
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.request_sources._common import (
-    ConfluencePaginator,
-    space_list_path,
-)
+from boba.tool.kb.confluence.models import ConfluenceSpaceItem
+from boba.tool.kb.confluence.request_sources import ConfluencePaginator, ConfluenceRest
 from boba.tools import FromConfig, tool
 
 __all__ = ["ConfluenceListSpacesConfig", "confluence_list_spaces"]
-
-_MAX_CELL_CHARS = 200
 
 
 class ConfluenceListSpacesConfig(BobaFlatSettings):
@@ -36,6 +31,8 @@ class ConfluenceListSpacesConfig(BobaFlatSettings):
 
     Config-секция: `[tool.kb.confluence.list.spaces]`.
     """
+
+    MAX_CELL_CHARS: ClassVar[int] = 200
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
@@ -82,7 +79,7 @@ def confluence_list_spaces(
     truncated = False
     with ConfluencePaginator(cfg.confluence) as x:
         for item in x(
-            space_list_path(space_type, expand="description.plain"),
+            ConfluenceRest.space_list_path(space_type, expand="description.plain"),
             item=ConfluenceSpaceItem,
         ):
             if len(rows) >= limit:
@@ -98,7 +95,7 @@ def confluence_list_spaces(
     table_md = format_markdown_table(
         columns=["key", "name", "type", "description"],
         rows=rows,
-        max_cell_chars=_MAX_CELL_CHARS,
+        max_cell_chars=ConfluenceListSpacesConfig.MAX_CELL_CHARS,
         truncated=truncated,
         truncated_msg=f"more spaces omitted (увеличьте limit, текущий {limit})",
     )
