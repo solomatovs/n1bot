@@ -70,14 +70,14 @@ def confluence_search_cql(
         Field(min_length=1, description="Строка полнотекстового поиска в Confluence."),
     ],
     spaces: Annotated[
-        LLMStringList,
+        LLMStringList | None,
         Field(
             description=(
                 "Ограничение поиска по space-ключам Confluence. "
-                "Пустой список — без фильтра по space'ам."
+                "Не передавай (или `null`) — поиск по всем space'ам."
             ),
         ),
-    ],
+    ] = None,
     limit: Annotated[
         int,
         Field(ge=1, description="Максимум hits в ответе."),
@@ -136,7 +136,7 @@ def _cql_literal(value: str) -> str:
     return f'"{escaped}"'
 
 
-def _build_cql(query: str, spaces: list[str]) -> str:
+def _build_cql(query: str, spaces: list[str] | None) -> str:
     text_block = f"text ~ {_cql_literal(query)}"
     if not spaces:
         return text_block
