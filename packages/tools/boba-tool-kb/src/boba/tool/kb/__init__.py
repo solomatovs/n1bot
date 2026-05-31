@@ -14,6 +14,10 @@ from boba.tool.kb.confluence.fetch import (
     ConfluenceFetchPageConfig,
     confluence_fetch_page,
 )
+from boba.tool.kb.confluence.grep_page import (
+    ConfluenceGrepPageConfig,
+    confluence_grep_page,
+)
 from boba.tool.kb.confluence.ingest import (
     ConfluenceIngestConfig,
     confluence_ingest_cql,
@@ -55,6 +59,7 @@ __all__ = [
     "ConfluenceDocIngestConfig",
     "ConfluenceDownloadConfig",
     "ConfluenceFetchPageConfig",
+    "ConfluenceGrepPageConfig",
     "ConfluenceIngestConfig",
     "ConfluenceListSpacesConfig",
     "ConfluenceSearchCqlConfig",
@@ -70,6 +75,7 @@ __all__ = [
     "confluence_doc_ingest",
     "confluence_download",
     "confluence_fetch_page",
+    "confluence_grep_page",
     "confluence_ingest_cql",
     "confluence_ingest_pages",
     "confluence_ingest_spaces",

@@ -111,6 +111,7 @@ tools = [
     # download / fetch (Confluence → workspace / напрямую LLM)
     "confluence_download",        # unified: space_keys / page_ids
     "confluence_fetch_page",      # одна страница строкой, без записи на диск
+    "confluence_grep_page",       # grep по одной странице, только совпадения
 ]
 
 # Индексирует confluence страницы
@@ -134,6 +135,11 @@ attachment_titles = []
 [tool.kb.confluence.search.cql]
 snippet_chars = 300
 max_limit = 50
+
+# tool для grep'а по одной confluence странице (потоковый fetch + regex-поиск).
+# Возвращает только совпадения с номерами строк, а не весь контент.
+[tool.kb.confluence.grep]
+max_text_chars = 2000   # потолок длины content/before/after на каждый match
 
 
 # KB search: общий конфиг для 4 tool'ов (kb_{vector,fts}_search /
