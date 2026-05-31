@@ -66,9 +66,13 @@ class ToolResultMarkdown:
         self, rows: Sequence[Mapping[str, Any]], note: str | None,
     ) -> str:
         body = self._render_rows(rows)
+        # Ведущий '\n' обязателен: без пустой строки перед GFM-таблицей
+        # markdown-рендерер Chainlit склеивает `|...|`-строки в один абзац
+        # (одиночные переносы → пробелы) и таблица показывается ОДНОЙ строкой.
+        # Тот же приём, что и у `_json_block` для code-fence.
         if note:
-            return f"{body}\n\n_{note}_"
-        return body
+            return f"\n{body}\n\n_{note}_"
+        return f"\n{body}"
 
     def _copy_text_block(self, result: PgCopyTextResult) -> str:
         # PgCopyTextResult: парсинг COPY TEXT-формата инкапсулирован в
@@ -81,7 +85,9 @@ class ToolResultMarkdown:
         # (display-only, в LLM уходит исходный COPY TEXT-дамп). NULL → "".
         header = [self._flatten_cell(cell) for cell in rows[0]]
         data = [[self._flatten_cell(cell) for cell in row] for row in rows[1:]]
-        return tabulate(
+        # Ведущий '\n' — чтобы GFM-таблица отрисовалась блоком, а не одной
+        # строкой (см. `_table_block`).
+        return "\n" + tabulate(
             data, headers=header, tablefmt="github", disable_numparse=True,
         )
 
