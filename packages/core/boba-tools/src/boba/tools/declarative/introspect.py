@@ -16,31 +16,19 @@
 from __future__ import annotations
 
 import inspect
-import re
 from dataclasses import dataclass
 from typing import Annotated, Any, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
-from boba.tools.decorators import tool_explicit_name
-from boba.tools.errors import ToolDeclarationError
-from boba.tools.markers import FromConfig, FromDI
+from boba.tools.declarative.errors import ToolDeclarationError
+from boba.tools.declarative.inject import FromConfig, FromDI
 
 __all__ = [
     "CallPlan",
     "DiDep",
-    "auto_tool_name",
     "build_call_plan",
-    "tool_name",
 ]
-
-
-def tool_name(obj: Any) -> str:
-    """Публичное имя tool'а: explicit `@tool(name=...)` или имя callable'а."""
-    explicit = tool_explicit_name(obj)
-    if explicit is not None:
-        return explicit
-    return getattr(obj, "__name__", None) or type(obj).__name__
 
 
 @dataclass(frozen=True)
@@ -66,20 +54,24 @@ class CallPlan:
     Разобранная сигнатура callable'а — план для runtime invoke.
     """
 
-    name: str
     description: str
     args_model: type[BaseModel]
     di_deps: tuple[DiDep, ...]
     return_type: Any
 
-    def is_provider(self) -> bool:
-        """Это provider, если есть DI-deps или явно указан return_type."""
+    def lacks_return_type(self) -> bool:
+        """True если return-аннотация отсутствует (empty/None).
+
+        Для provider'а return-тип обязателен — это тип, под которым служба
+        регистрируется в DI; `ToolBuilder.register_provider` использует это
+        для отказа в регистрации.
+        """
         return self.return_type is inspect.Parameter.empty or self.return_type is None
 
 
 def build_call_plan(obj: Any) -> CallPlan:
     """
-    создать план выполнения объекта
+    создать план выполнения объекта (только разбор сигнатуры, без имени)
 
     Поддерживает:
     - функции: `def my_tool(...) -> T:`
@@ -131,30 +123,11 @@ def build_call_plan(obj: Any) -> CallPlan:
         **fields,
     )
     return CallPlan(
-        name=tool_name(obj),
         description=meta.docstring,
         args_model=args_model,
         di_deps=tuple(di_deps),
         return_type=meta.return_type,
     )
-
-
-def auto_tool_name(raw: str) -> str:
-    """
-    Автоматическое имя для tool'а по имени функции/класса
-    - Убирает суффикс "Tool"
-    - конвертирует CamelCase в snake_case
-    - Убирает спецсимволы, оставляя только буквы, цифры и нижние подчёркивания
-
-    Например:
-    - `MyTool`  -> `my_tool`
-    - `my_tool` -> `my_tool`
-    """
-
-    if raw.endswith("Tool"):
-        raw = raw[:-4]
-
-    return re.sub(r"(?<!^)(?=[A-Z])", "_", raw).lower()
 
 
 @dataclass(frozen=True)

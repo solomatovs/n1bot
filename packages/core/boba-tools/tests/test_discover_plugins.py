@@ -72,7 +72,7 @@ def plugin_ep(make_plugin_entry_point):
 
 
 def _tool_names(tb: ToolBuilder) -> list[str]:
-    return sorted(t.plan.name for t in tb.tools)
+    return sorted(t.name for t in tb.tools)
 
 
 def _provider_return_types(tb: ToolBuilder) -> list[type]:

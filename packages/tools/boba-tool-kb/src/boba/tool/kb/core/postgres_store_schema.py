@@ -27,7 +27,7 @@ class PostgresStoreSchema(BaseModel):
         default=100,
         description="batch_size",
     )
-    schema: str = Field(
+    pg_schema: str = Field(
         default="public",
         description=(
             "Postgres schema, в которой живут таблицы KB (`chunks_table` и "
@@ -63,15 +63,15 @@ class PostgresStoreSchema(BaseModel):
 
     def chunks_ident(self) -> sql.Identifier:
         """Schema-qualified Identifier для таблицы чанков."""
-        return sql.Identifier(self.schema, self.chunks_table)
+        return sql.Identifier(self.pg_schema, self.chunks_table)
 
     def collections_ident(self) -> sql.Identifier:
         """Schema-qualified Identifier для таблицы коллекций."""
-        return sql.Identifier(self.schema, self.collections_table)
+        return sql.Identifier(self.pg_schema, self.collections_table)
 
     def schema_ident(self) -> sql.Identifier:
         """Schema-only Identifier — для квалифицированных функций."""
-        return sql.Identifier(self.schema)
+        return sql.Identifier(self.pg_schema)
 
     def chunks_name_literal(self) -> sql.Literal:
         """Unqualified имя таблицы как SQL-литерал — для information_schema."""
@@ -79,4 +79,4 @@ class PostgresStoreSchema(BaseModel):
 
     def schema_name_literal(self) -> sql.Literal:
         """Имя схемы как SQL-литерал — для information_schema.table_schema."""
-        return sql.Literal(self.schema)
+        return sql.Literal(self.pg_schema)

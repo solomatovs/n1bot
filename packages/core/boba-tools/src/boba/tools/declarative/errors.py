@@ -1,8 +1,9 @@
-"""Ошибки framework-слоя tools (declaration / DI registration).
+"""Ошибки декларативного слоя tools (declaration / DI registration).
 
 Это плагин-объявления и DI-регистрация, не runtime-выполнение tool'ов.
 Ошибки runtime-вызова tool'а живут в `boba.tools.domain.errors`
-(`ToolExecutionError`, `InvalidToolArgumentError`, ...).
+(`ToolExecutionError`, `InvalidToolArgumentError`, ...), а коллизии
+имён/источников при сборке — в `boba.tools.framework.errors`.
 """
 
 from __future__ import annotations

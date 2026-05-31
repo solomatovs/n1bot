@@ -68,11 +68,8 @@ def _validate_component(value: str, *, kind: str) -> None:
 
 
 def compose_tool_id(source_id: ToolSourceId, name: ToolName) -> ToolId:
-    """Скомпоновать qualified `<source>__<name>` ToolId.
-
-    Валидирует обе компоненты на `[A-Za-z0-9][A-Za-z0-9_-]*` и
-    отсутствие `__`, а также общую длину ≤64 символа — иначе LLM
-    провайдеры (OpenAI/Ollama через LiteLLM) ругаются.
+    """
+    Скомпоновать qualified `<source>__<name>` ToolId.
     """
     _validate_component(source_id, kind="source_id")
     _validate_component(name, kind="tool name")
@@ -87,14 +84,8 @@ def compose_tool_id(source_id: ToolSourceId, name: ToolName) -> ToolId:
 
 
 def sanitize_source_id(origin: str) -> ToolSourceId:
-    """Привести произвольный `origin` (имя модуля/плагина) к валидному ToolSourceId.
-
-    Заменяет недопустимые символы на `_`, схлопывает разделитель `__` (он
-    зарезервирован под compose/parse) и обрезает ведущие/хвостовые `_`/`-`,
-    чтобы id начинался и заканчивался alnum'ом — иначе соседство хвостового
-    `_` с разделителем даёт неоднозначный `___` и ломает round-trip parse.
-    Пустой результат заменяется на `plugin`. Результат всегда проходит
-    `compose_tool_id` и round-trip'ится через `parse_tool_id`.
+    """
+    Привести произвольный `origin` (имя модуля/плагина) к валидному ToolSourceId.
     """
     sanitized = _NON_COMPONENT_RE.sub("_", origin)
     while _SEPARATOR in sanitized:

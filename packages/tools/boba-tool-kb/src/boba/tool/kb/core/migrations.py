@@ -110,7 +110,7 @@ def apply_bootstrap(
         logger.info(
             "applying migration %s (schema=%s, chunks=%s, collections=%s)",
             f.name,
-            schema_cfg.schema,
+            schema_cfg.pg_schema,
             schema_cfg.chunks_table,
             schema_cfg.collections_table,
         )

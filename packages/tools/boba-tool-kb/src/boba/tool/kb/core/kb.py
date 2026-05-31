@@ -99,7 +99,7 @@ class PostgresKnowledgeBase:
             self._embedder.dim(),
             cfg.rrf_k,
             cfg.rrf_pool,
-            cfg.tables.schema,
+            cfg.tables.pg_schema,
             cfg.tables.chunks_table,
         )
 

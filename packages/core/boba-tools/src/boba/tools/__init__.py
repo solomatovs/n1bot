@@ -1,25 +1,33 @@
-"""
-boba-tools — декларативный framework tools на Dishka DI.
+"""boba-tools — декларативный framework tools на Dishka DI.
+
+Три слоя:
+- `boba.tools.domain` — контракт (Tool ABC, ToolResult, ToolSchema, identity);
+- `boba.tools.framework` — application (ToolRegistry/Catalog/Executor/Source);
+- `boba.tools.declarative` — `@tool`/`@provides` + сборка DI в `ToolRegistry`.
+
+Этот модуль-фасад поднимает наверх только декларативный слой — то, что
+нужно автору плагина и composition-root'у агента. Контракт и application-слой
+импортируются из своих подпакетов напрямую.
 """
 
 from __future__ import annotations
 
-from boba.tools.builder import ToolBuilder
-from boba.tools.config import (
+from boba.tools.declarative import (
     ConfigResolver,
+    DuplicateProviderError,
+    FromConfig,
+    FromDI,
     PluginFilterAllowAll,
     PluginToolAllowListFilter,
     PluginToolFilter,
-)
-from boba.tools.decorators import provides, tool
-from boba.tools.errors import (
-    DuplicateProviderError,
+    Scope,
+    ToolBuilder,
     ToolDeclarationError,
     ToolsFrameworkError,
     UnresolvedDependencyError,
+    provides,
+    tool,
 )
-from boba.tools.markers import FromConfig, FromDI
-from boba.tools.scope import Scope
 
 __all__ = [
     "ConfigResolver",
