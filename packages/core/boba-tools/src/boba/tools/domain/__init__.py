@@ -29,6 +29,8 @@ from boba.tools.domain.ids import (
 from boba.tools.domain.result import (
     ErrorResult,
     JsonResult,
+    PgCopyTextResult,
+    TableResult,
     TextResult,
     ToolResult,
 )
@@ -44,6 +46,8 @@ __all__ = [
     "InvalidSchemaInvariantError",
     "InvalidToolArgumentError",
     "JsonResult",
+    "PgCopyTextResult",
+    "TableResult",
     "TextResult",
     "Tool",
     "ToolCall",

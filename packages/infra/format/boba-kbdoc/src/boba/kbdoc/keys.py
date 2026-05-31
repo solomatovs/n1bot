@@ -1,8 +1,10 @@
 """KbDocKeys — типизированные MetadataKey'и формата KB-документа.
 
-`source_url` пишется без namespace-префикса намеренно: kb_search_* tools и UI
-ожидают его как top-level ключ для построения deep-link'ов в выдаче.
-Остальные header-ключи живут под `reader.kbdoc.*`.
+KB-документы оператора — это выгрузки из Confluence, поэтому header-поля
+сохраняются под ТЕМИ ЖЕ wire-ключами, что и при прямой confluence-индексации
+(`source_url`, `confluence.page_id`, `confluence.space_key`) — так search
+читает оба источника одинаково, без сведе́ния. Нераспознанные header-ключи
+живут под `reader.kbdoc.*`.
 """
 
 from __future__ import annotations
@@ -25,18 +27,18 @@ class KbDocKeys:
     """Canonical URL источника — для citation/deep-link в search."""
 
     PAGE_ID: ClassVar[MetadataKey[str]] = MetadataKey(
-        name="reader.kbdoc.page_id",
+        name="confluence.page_id",
         decode=str,
         encode=str,
     )
-    """ID исходной страницы (например Confluence pageId) — для re-fetch."""
+    """Confluence pageId исходной страницы — тот же wire-ключ, что у confluence."""
 
     SPACE: ClassVar[MetadataKey[str]] = MetadataKey(
-        name="reader.kbdoc.space",
+        name="confluence.space_key",
         decode=str,
         encode=str,
     )
-    """Space/namespace источника — для группировки и llm.space."""
+    """Confluence space — тот же wire-ключ, что у confluence-индексации."""
 
     CUSTOM_PREFIX: ClassVar[str] = "reader.kbdoc."
     """Префикс для нераспознанных header-ключей: `reader.kbdoc.{name}`."""

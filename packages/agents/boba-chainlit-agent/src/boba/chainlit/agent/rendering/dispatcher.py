@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import ClassVar, Protocol
 
 from boba.agent.events import (
@@ -34,8 +33,8 @@ from boba.agent.events import (
     TotalMessage,
     UserQueryReceived,
 )
+from boba.chainlit.agent.rendering.result_markdown import ToolResultMarkdown
 from boba.llm.events import FinishReason
-from boba.tools.domain import ErrorResult, JsonResult, TextResult, ToolResult
 
 __all__ = ["AgentEventDispatcher", "EventRenderTarget"]
 
@@ -165,7 +164,7 @@ class AgentEventDispatcher:
             case ToolResultReady(call=call, result=result):
                 await self._target.tool_result(
                     call.id,
-                    _result_text(result.result),
+                    ToolResultMarkdown(result.result).render(),
                     is_error=False,
                 )
             case FeedbackToLLMAdded(content=c):
@@ -326,25 +325,3 @@ class AgentEventDispatcher:
         return f"+{ns / cls._NS_PER_S:.2f}s"
 
 
-def _result_text(result: ToolResult) -> str:
-    # Chainlit Step рендерит output как markdown. Tools часто кладут
-    # markdown-таблицы / форматированный текст внутрь TextResult и
-    # JsonResult.payload — поэтому здесь возвращаем markdown-friendly
-    # представление, а не raw json.dumps (который ломал переносы строк
-    # на \n и не давал таблицам отрисоваться).
-    match result:
-        case TextResult(text=t):
-            return t
-        case JsonResult(payload=p):
-            pretty = json.dumps(p, ensure_ascii=False, indent=2)
-
-            if "\n" not in pretty:
-                return f"`{pretty}`"
-
-            res = f"\n```json\n{pretty}\n```"
-
-            return res
-        case ErrorResult(message=m):
-            if "\n" in m:
-                return f"**Error:**\n\n{m}"
-            return f"**Error:** {m}"

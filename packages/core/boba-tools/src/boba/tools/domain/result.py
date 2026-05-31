@@ -13,14 +13,16 @@ pyright принудит дописать ветку.
 from __future__ import annotations
 
 from abc import ABC
-from collections.abc import Mapping
-from typing import Annotated, Any, Literal, TypeAlias
+from collections.abc import Iterator, Mapping, Sequence
+from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
     "ErrorResult",
     "JsonResult",
+    "PgCopyTextResult",
+    "TableResult",
     "TextResult",
     "ToolResult",
     "ToolResultBase",
@@ -54,6 +56,68 @@ class JsonResult(ToolResultBase):
     metadata: Mapping[str, str] = Field(default_factory=dict)
 
 
+class TableResult(ToolResultBase):
+    """Табличный payload: список записей-строк (`headers` берутся из ключей).
+
+    Tool декларирует «отрисуй меня таблицей»; UI рендерит markdown-таблицу,
+    LLM получает тот же payload как JSON (структура важнее форматирования).
+    """
+
+    kind: Literal["table"] = "table"
+    rows: Sequence[Mapping[str, Any]]
+    note: str | None = None
+    """Footer-контекст под таблицей: усечение, предупреждения и т.п."""
+    metadata: Mapping[str, str] = Field(default_factory=dict)
+
+
+class PgCopyTextResult(ToolResultBase):
+    """Дамп `COPY ... TO STDOUT (FORMAT TEXT, HEADER)` (tab-delimited).
+
+    Executor копит COPY-поток без парсинга ячеек. LLM получает текст как
+    есть. UI парсит через `iter_rows` (формат фиксирован Postgres: `\\t`-
+    делимитер, `\\n`-разделитель строк, спецсимволы backslash-эскейпнуты,
+    NULL = `\\N`) → markdown-таблица. Первая строка — header.
+    """
+
+    kind: Literal["pg_copy_text"] = "pg_copy_text"
+    text: str
+    metadata: Mapping[str, str] = Field(default_factory=dict)
+
+    _UNESCAPE: ClassVar[Mapping[str, str]] = {
+        "n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "v": "\v",
+        "\\": "\\",
+    }
+
+    def iter_rows(self) -> Iterator[list[str | None]]:
+        """Yield строки (header первой) как list ячеек; NULL (`\\N`) → None."""
+        if not self.text:
+            return
+        lines = self.text.split("\n")
+        if lines and lines[-1] == "":  # COPY терминирует каждую строку \n
+            lines.pop()
+        for line in lines:
+            yield [self._unescape(field) for field in line.split("\t")]
+
+    @classmethod
+    def _unescape(cls, field: str) -> str | None:
+        """Развернуть COPY TEXT-эскейпы одной ячейки; `\\N` → None (NULL)."""
+        if field == "\\N":
+            return None
+        if "\\" not in field:
+            return field
+        out: list[str] = []
+        i, n = 0, len(field)
+        while i < n:
+            c = field[i]
+            if c == "\\" and i + 1 < n:
+                out.append(cls._UNESCAPE.get(field[i + 1], field[i + 1]))
+                i += 2
+            else:
+                out.append(c)
+                i += 1
+        return "".join(out)
+
+
 class ErrorResult(ToolResultBase):
     """Tool не выполнен: ошибка домена, отклонение guard'а, невалидные args.
 
@@ -68,9 +132,11 @@ class ErrorResult(ToolResultBase):
 
 
 ToolResult: TypeAlias = Annotated[
-    TextResult | JsonResult | ErrorResult, Field(discriminator="kind"),
+    TextResult | JsonResult | TableResult | PgCopyTextResult | ErrorResult,
+    Field(discriminator="kind"),
 ]
-"""Тип значения tool-результата: discriminated union по полю `kind`.
+"""
+Тип значения tool-результата: discriminated union по полю `kind`.
 
 Используй для типизации полей моделей, возвращаемых значений функций и
 параметров. Pydantic генерирует `oneOf` JSON Schema из коробки.

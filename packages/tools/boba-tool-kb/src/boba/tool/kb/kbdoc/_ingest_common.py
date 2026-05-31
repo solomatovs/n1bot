@@ -29,7 +29,6 @@ from boba.indexing.context import CollectionId, PipelineId
 from boba.indexing.embedder import Embedder
 from boba.kbdoc import KbDocReader
 from boba.text import StructuralChunker
-from boba.tool.kb.core.llm_metadata_chunker import LlmMetadataChunker
 from boba.tool.kb.core.postgres_store import (
     PostgresChunkStore,
     PostgresCollectionsStore,
@@ -68,7 +67,7 @@ def run_kbdoc_ingest(  # noqa: PLR0913 — keyword-only helper, явный на�
         request_source=request_source,
         transport=transport,
         reader=KbDocReader(),
-        chunker=LlmMetadataChunker(chunker),
+        chunker=chunker,
         sink=view,
         query=view,
     )

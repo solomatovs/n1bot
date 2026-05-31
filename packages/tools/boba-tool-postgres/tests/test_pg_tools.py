@@ -8,24 +8,20 @@ import pytest
 from boba.tool.pg.describe_table import DescribeTableConfig, describe_table
 from boba.tool.pg.list_tables import ListTablesConfig, list_tables
 from boba.tool.pg.query import QueryConfig, query
+from boba.tools.domain import ErrorResult, PgCopyTextResult, TableResult
 
 pytestmark = pytest.mark.integration
 
 TARGET = "main"
 
 
-def _count_data_rows(md: str) -> int:
-    """Сколько data-строк в markdown-таблице.
+def _header(result: PgCopyTextResult) -> list[str | None]:
+    return next(iter(result.iter_rows()), [])
 
-    Считает только `|`-строки после header'а + separator'а, исключая
-    `_(no rows)_`-заглушку. Truncated-маркер не `|`-строка, не учитывается.
-    """
-    lines = md.splitlines()
-    return sum(
-        1
-        for line in lines[2:]
-        if line.startswith("|") and "_(no rows)_" not in line
-    )
+
+def _data_rows(result: PgCopyTextResult) -> list[list[str | None]]:
+    """data-строки (без header) через доменный TEXT-парсер."""
+    return list(result.iter_rows())[1:]
 
 
 # --------------------------------------------------------------------------- #
@@ -33,25 +29,23 @@ def _count_data_rows(md: str) -> int:
 # --------------------------------------------------------------------------- #
 
 
-def test_list_tables_returns_markdown(
+def test_list_tables_returns_table(
     list_tables_cfg: ListTablesConfig,
 ) -> None:
-    """`list_tables` без schema-фильтра возвращает таблицы user-schema'ов."""
-    md = list_tables(cfg=list_tables_cfg, target=TARGET, pg_schema=None)
-    assert isinstance(md, str)
-    lines = md.splitlines()
-    assert lines[0].startswith("|")
-    assert "schema" in lines[0]
-    assert lines[1].startswith("|")
-    assert "---" in lines[1]
+    """`list_tables` без schema-фильтра → TableResult с колонками schema/…."""
+    res = list_tables(cfg=list_tables_cfg, target=TARGET, pg_schema=None)
+    assert isinstance(res, TableResult)
+    assert res.rows
+    assert "schema" in res.rows[0]
 
 
 def test_list_tables_kb_chunks_visible(
     list_tables_cfg: ListTablesConfig,
 ) -> None:
     """В KB-БД должна быть `kb_chunks` (созданная bootstrap-миграцией)."""
-    md = list_tables(cfg=list_tables_cfg, target=TARGET, pg_schema="public")
-    assert "kb_chunks" in md
+    res = list_tables(cfg=list_tables_cfg, target=TARGET, pg_schema="public")
+    assert isinstance(res, TableResult)
+    assert any("kb_chunks" in str(v) for row in res.rows for v in row.values())
 
 
 # --------------------------------------------------------------------------- #
@@ -63,30 +57,30 @@ def test_describe_table_kb_chunks(
     describe_table_cfg: DescribeTableConfig,
 ) -> None:
     """Схема `kb_chunks` — ожидаемые системные колонки."""
-    md = describe_table(
+    res = describe_table(
         cfg=describe_table_cfg,
         target=TARGET,
         table="kb_chunks",
         pg_schema="public",
     )
-    assert isinstance(md, str)
-    assert _count_data_rows(md) >= 5
-    for col in ("chunk_id", "collection", "source_id", "embedding"):
-        assert col in md
+    assert isinstance(res, TableResult)
+    assert len(res.rows) >= 5
+    names = {row["column_name"] for row in res.rows}
+    assert {"chunk_id", "collection", "source_id", "embedding"} <= names
 
 
 def test_describe_unknown_table_empty(
     describe_table_cfg: DescribeTableConfig,
 ) -> None:
-    """Неизвестная таблица → markdown с `_(no rows)_`-заглушкой."""
-    md = describe_table(
+    """Неизвестная таблица → TableResult без строк."""
+    res = describe_table(
         cfg=describe_table_cfg,
         target=TARGET,
         table="this_table_does_not_exist",
         pg_schema="public",
     )
-    assert _count_data_rows(md) == 0
-    assert "_(no rows)_" in md
+    assert isinstance(res, TableResult)
+    assert res.rows == []
 
 
 # --------------------------------------------------------------------------- #
@@ -95,77 +89,86 @@ def test_describe_unknown_table_empty(
 
 
 def test_query_simple_select(query_cfg: QueryConfig) -> None:
-    """Простой `SELECT 1, 'hello'` → markdown с одной строкой."""
-    md = query(
+    """Простой `SELECT 1, 'hello'` → PgCopyTextResult с одной data-строкой."""
+    res = query(
         cfg=query_cfg,
         target=TARGET,
         sql="SELECT 1 AS n, 'hello' AS greeting",
-        row_limit=5,
     )
-    assert isinstance(md, str)
-    assert "| n | greeting |" in md
-    assert "| 1 | hello |" in md
-    assert _count_data_rows(md) == 1
-    assert "more rows omitted" not in md
+    assert isinstance(res, PgCopyTextResult)
+    assert _header(res) == ["n", "greeting"]
+    assert _data_rows(res) == [["1", "hello"]]
 
 
 def test_query_count_kb_chunks(query_cfg: QueryConfig) -> None:
     """`SELECT count(*) FROM kb_chunks` — exploratory-запрос."""
-    md = query(
+    res = query(
         cfg=query_cfg,
         target=TARGET,
         sql="SELECT count(*) AS chunks FROM kb_chunks",
-        row_limit=1,
     )
-    assert "| chunks |" in md
-    assert _count_data_rows(md) == 1
+    assert isinstance(res, PgCopyTextResult)
+    assert _header(res) == ["chunks"]
+    assert len(_data_rows(res)) == 1
 
 
-def test_query_auto_limit_truncated(query_cfg: QueryConfig) -> None:
-    """Много строк + малый row_limit → truncated-маркер в markdown."""
-    md = query(
+def test_query_too_many_rows(query_cfg: QueryConfig) -> None:
+    """Строк больше max_rows → ErrorResult «добавьте LIMIT» (запрос не трогаем)."""
+    res = query(
         cfg=query_cfg,
         target=TARGET,
         sql="SELECT generate_series(1, 1000) AS n",
-        row_limit=5,
     )
-    assert _count_data_rows(md) == 5
-    assert "more rows omitted" in md
+    assert isinstance(res, ErrorResult)
+    assert res.error_kind == "too_many_rows"
+
+
+def test_query_with_limit_ok(query_cfg: QueryConfig) -> None:
+    """С LIMIT в самом запросе — успешный PgCopyTextResult."""
+    res = query(
+        cfg=query_cfg,
+        target=TARGET,
+        sql="SELECT generate_series(1, 5) AS n",
+    )
+    assert isinstance(res, PgCopyTextResult)
+    assert len(_data_rows(res)) == 5
 
 
 # --------------------------------------------------------------------------- #
-# Read-only guard (PG-side)
+# DML/DDL guard (PG-side)
 # --------------------------------------------------------------------------- #
+#
+# Через COPY (<query>) TO STDOUT не-SELECT отбивается PG: либо read-only
+# transaction, либо «COPY query must have a RETURNING clause» — порядок
+# проверок PG-зависим, поэтому фиксируем сам факт ошибки (RuntimeError),
+# а не текст.
 
 
-def test_query_readonly_blocks_insert(query_cfg: QueryConfig) -> None:
-    """INSERT ловится PG-side."""
-    with pytest.raises(RuntimeError, match=r"read-only|permission"):
+def test_query_blocks_insert(query_cfg: QueryConfig) -> None:
+    """INSERT не проходит через query."""
+    with pytest.raises(RuntimeError):
         query(
             cfg=query_cfg,
             target=TARGET,
             sql="INSERT INTO kb_chunks (chunk_id) VALUES ('x')",
-            row_limit=1,
         )
 
 
-def test_query_readonly_blocks_update(query_cfg: QueryConfig) -> None:
-    """UPDATE — PG-side reject."""
-    with pytest.raises(RuntimeError, match=r"read-only|permission"):
+def test_query_blocks_update(query_cfg: QueryConfig) -> None:
+    """UPDATE не проходит через query."""
+    with pytest.raises(RuntimeError):
         query(
             cfg=query_cfg,
             target=TARGET,
             sql="UPDATE kb_chunks SET chunk_id = chunk_id",
-            row_limit=1,
         )
 
 
-def test_query_readonly_blocks_drop(query_cfg: QueryConfig) -> None:
-    """DROP — PG-side reject."""
-    with pytest.raises(RuntimeError, match=r"read-only|permission"):
+def test_query_blocks_drop(query_cfg: QueryConfig) -> None:
+    """DROP не проходит через query."""
+    with pytest.raises(RuntimeError):
         query(
             cfg=query_cfg,
             target=TARGET,
             sql="DROP TABLE kb_chunks",
-            row_limit=1,
         )

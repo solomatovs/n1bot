@@ -127,6 +127,7 @@ class PostgresKnowledgeBase:
                         distance=float(row["distance"]),
                         metadata=self._row_metadata(row),
                         snippet=row["snippet"] or "",
+                        tags=tuple(row.get("tags") or ()),
                     )
         except Exception as e:
             raise KnowledgeBaseError(
@@ -167,6 +168,7 @@ class PostgresKnowledgeBase:
                         distance=-float(row["rank"]),
                         metadata=self._row_metadata(row),
                         snippet=row["snippet"] or "",
+                        tags=tuple(row.get("tags") or ()),
                     )
         except Exception as e:
             raise KnowledgeBaseError(
@@ -177,8 +179,8 @@ class PostgresKnowledgeBase:
     @staticmethod
     def _row_metadata(row: dict[str, Any]) -> dict[str, str]:
         # `metadata` хранится jsonb; psycopg возвращает dict. Системные
-        # колонки добавляем поверх (без удаления tags) — UI/citation
-        # ожидают source_url/anchor в metadata-mapping'е.
+        # колонки добавляем поверх (без удаления tags) — проекция в llm.*
+        # делается выше (llm_view), здесь отдаём сырой набор ключей.
         raw = row.get("metadata") or {}
         out: dict[str, str] = (
             {str(k): str(v) for k, v in raw.items() if v is not None}

@@ -30,6 +30,13 @@ def _encode_titles(v: tuple[str, ...]) -> str:
 class ConfluenceKeys:
     """Confluence-специфичные ключи metadata."""
 
+    SOURCE_URL: ClassVar[MetadataKey[str]] = MetadataKey(
+        name="source_url",
+        decode=str,
+        encode=str,
+    )
+    """Canonical URL страницы — тот же wire-ключ `source_url`, что и у kbdoc."""
+
     PAGE_ID: ClassVar[MetadataKey[str]] = MetadataKey(
         name="confluence.page_id",
         decode=str,
