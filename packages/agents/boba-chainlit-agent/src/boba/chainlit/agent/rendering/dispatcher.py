@@ -337,12 +337,13 @@ def _result_text(result: ToolResult) -> str:
             return t
         case JsonResult(payload=p):
             pretty = json.dumps(p, ensure_ascii=False, indent=2)
-            # Однострочный JSON (пустые [], {}, null, скаляры) Chainlit/markdown
-            # ломает в fenced-блоке: верхняя пара ``` "съедается", видна только
-            # нижняя. Inline-code рендерится корректно.
+
             if "\n" not in pretty:
                 return f"`{pretty}`"
-            return f"```json\n{pretty}\n```"
+
+            res = f"\n```json\n{pretty}\n```"
+
+            return res
         case ErrorResult(message=m):
             if "\n" in m:
                 return f"**Error:**\n\n{m}"

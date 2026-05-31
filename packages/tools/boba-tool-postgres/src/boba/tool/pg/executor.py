@@ -171,7 +171,11 @@ class SqlExecutor:
 
         try:
             with pool.cursor() as cur:
-                cur.execute(query, params or ())  # type: ignore[arg-type]
+                # params=None (а не пустой кортеж) — это сигнал psycopg3
+                # НЕ парсить query как placeholder-шаблон. Иначе `%` в
+                # тексте запроса от LLM (LIKE '%h%', to_char и т.п.) ловит
+                # "only '%s','%b','%t' are allowed as placeholders".
+                cur.execute(query, params)  # type: ignore[arg-type]
                 fetched = cur.fetchmany(fetch_limit)
                 columns = [d.name for d in (cur.description or [])]
         except Exception as e:
