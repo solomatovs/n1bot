@@ -12,7 +12,7 @@
 
 Применение:
     BOBA_CONFIG_PATH=./local/config.toml \\
-        .venv/bin/python -m boba.tool.kb.cli.confluence.download.http \\
+        .venv/bin/python -m boba.tool.kb.cli.confluence.download \\
         [--page-ids 123,456 | --only KEY1,KEY2 | --type global]
         [--attachment-media-types application/pdf,image/*]
         [--attachment-titles *.pdf,report-*]
@@ -52,7 +52,7 @@ from boba.workspace.contract import ProjectWorkspaceShell, WorkspaceId
 
 __all__ = ["ConfluenceDownloadCliConfig", "main"]
 
-logger = logging.getLogger("boba.tool.kb.cli.confluence.download.http")
+logger = logging.getLogger("boba.tool.kb.cli.confluence.download")
 
 
 class ConfluenceDownloadCliConfig(ConfluenceDownloadConfig):

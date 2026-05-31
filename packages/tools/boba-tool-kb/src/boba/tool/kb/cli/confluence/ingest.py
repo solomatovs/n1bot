@@ -14,7 +14,7 @@
 
 Применение:
     BOBA_CONFIG_PATH=./local/config.toml \\
-        .venv/bin/python -m boba.tool.kb.cli.confluence.ingest.http \\
+        .venv/bin/python -m boba.tool.kb.cli.confluence.ingest \\
         [--page-ids 123,456 | --only KEY1,KEY2 | --type global]
 
 В `kb_chunks` сам не пишет — делегирует в `confluence_ingest_pages` /
@@ -41,7 +41,7 @@ from boba.tool.kb.confluence.request_sources import ConfluencePaginator
 
 __all__ = ["ConfluenceIngestCliConfig", "main"]
 
-logger = logging.getLogger("boba.tool.kb.cli.confluence.ingest.http")
+logger = logging.getLogger("boba.tool.kb.cli.confluence.ingest")
 
 
 class ConfluenceIngestCliConfig(ConfluenceIngestConfig):

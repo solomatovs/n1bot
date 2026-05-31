@@ -5,7 +5,7 @@
 
 Применение:
     BOBA_CONFIG_PATH=./local/config.toml \\
-        .venv/bin/python -m boba.tool.kb.cli.confluence_doc.ingest
+        .venv/bin/python -m boba.tool.kb.cli.confluence_doc
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from boba.transport.fs import FsTransport, FsWalkRequestSource
 
 __all__ = ["ConfluenceDocIngestCliConfig", "main"]
 
-logger = logging.getLogger("boba.tool.kb.cli.confluence_doc.ingest")
+logger = logging.getLogger("boba.tool.kb.cli.confluence_doc")
 
 
 class ConfluenceDocIngestCliConfig(BobaFlatSettings):
