@@ -60,7 +60,10 @@ class ToolResultMarkdown:
         pretty = json.dumps(payload, ensure_ascii=False, indent=2)
         if "\n" not in pretty:
             return f"`{pretty}`"
-        return f"\n```json\n{pretty}\n```"
+        # Завершающий '\n' обязателен: без него закрывающий ``` упирается в EOF
+        # строки и react-markdown Chainlit не финализирует fence — три бэктика
+        # протекают в UI как литеральный текст. Парный приём к ведущему '\n'.
+        return f"\n```json\n{pretty}\n```\n"
 
     def _table_block(
         self, rows: Sequence[Mapping[str, Any]], note: str | None,

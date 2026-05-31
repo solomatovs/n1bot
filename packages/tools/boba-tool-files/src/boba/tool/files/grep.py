@@ -9,6 +9,7 @@ from pydantic import Field
 
 from boba.tool.files.config import FilesPluginConfig
 from boba.tools import FromConfig, FromDI, Scope, tool
+from boba.tools.domain import TableResult
 from boba.workspace.contract import (
     ProjectWorkspaceShell,
     WorkspaceError,
@@ -67,13 +68,13 @@ def grep(  # noqa: PLR0913
         bool,
         Field(description="Литеральный поиск без regex. По умолчанию false."),
     ] = False,
-) -> dict[str, Any]:
+) -> TableResult:
     """Найти совпадения pattern в текстовых файлах.
 
-    Формат результата: 'path:line: content'. Бинарные и недекодируемые файлы
-    пропускаются. При переполнении limit ответ обрезается с `truncated=true`.
-    Длинные строки (content, элементы before/after) обрезаются по
-    `max_text_chars`; на затронутом match ставится `truncated_lines=true`.
+    Возвращает `TableResult` — таблицу matches с колонками `path`/`line`/
+    `content`/`before`/`after` (+`truncated_lines` на усечённых). Бинарные и
+    недекодируемые файлы пропускаются. Переполнение limit и обрезка длинных
+    строк по `max_text_chars` — в `note`.
     """
     try:
         iterator = shell.grep(
@@ -120,14 +121,16 @@ def grep(  # noqa: PLR0913
             item["truncated_lines"] = True
         items.append(item)
 
-    return {
-        "matches": items,
-        "count": len(items),
-        "total": total,
-        "truncated": truncated,
-        "limit": limit,
-        "max_text_chars": max_chars,
-    }
+    if not items:
+        note = "совпадений не найдено"
+    else:
+        parts = [f"совпадений: {len(items)}"]
+        if truncated:
+            parts.append(f"показаны первые {limit} (найдено больше)")
+        if any(it.get("truncated_lines") for it in items):
+            parts.append(f"строки усечены до {max_chars} символов")
+        note = "; ".join(parts)
+    return TableResult(rows=items, note=note)
 
 
 def _clip(s: str, limit: int) -> tuple[str, bool]:

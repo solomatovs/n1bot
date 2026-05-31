@@ -24,16 +24,20 @@ from boba.tool.web.host_profile import WebHostProfile
 from boba.tool.web.tools import (
     WebDownloadConfig,
     WebFetchConfig,
+    WebGrepConfig,
     web_download,
     web_fetch,
+    web_grep,
 )
 
 __all__ = [
     "WebConnection",
     "WebDownloadConfig",
     "WebFetchConfig",
+    "WebGrepConfig",
     "WebHostProfile",
     "WebPluginConfig",
     "web_download",
     "web_fetch",
+    "web_grep",
 ]

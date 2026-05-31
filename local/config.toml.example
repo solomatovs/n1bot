@@ -283,7 +283,8 @@ method = "none"
 enable = true
 tools = [
     "web_fetch",
-    "web_download"
+    "web_download",
+    "web_grep"
 ]
 # профили доступные для работы tool.web
 profiles = [
@@ -298,3 +299,6 @@ ssl_verify = true
 [tool.web.download]
 dest_dir = "web/downloads"                # workspace-relative
 # max_returned_files = 50
+
+[tool.web.grep]
+# max_text_chars = 2000                   # потолок длины content/before/after на match

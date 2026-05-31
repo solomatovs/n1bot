@@ -9,6 +9,7 @@ from pydantic import Field
 
 from boba.tool.files.config import FilesPluginConfig
 from boba.tools import FromConfig, FromDI, Scope, tool
+from boba.tools.domain import TableResult
 from boba.workspace.contract import (
     ProjectWorkspaceShell,
     WorkspaceError,
@@ -41,12 +42,13 @@ def cat(  # noqa: PLR0913
             ),
         ),
     ],
-) -> dict[str, Any]:
+) -> TableResult:
     """Чтение содержимого файла (диапазон строк 1-based, включительно).
 
-    Запрашивай окнами не шире `cat_max_lines` из конфига (default 2000).
-    Контент дополнительно ограничен `max_text_chars` (default 200_000) и
-    обрезается с `truncated=true` при превышении.
+    Возвращает `TableResult` — таблицу строк с колонками `line`/`content`.
+    Путь, фактический диапазон и обрезка — в `note`/`metadata`. Запрашивай
+    окнами не шире `cat_max_lines` из конфига (default 2000); контент
+    дополнительно ограничен `max_text_chars` (default 200_000).
     """
     if start_line > end_line:
         raise RuntimeError(
@@ -62,7 +64,7 @@ def cat(  # noqa: PLR0913
 
     try:
         with shell.read_text(path, encoding) as f:
-            text, last, truncated = _read_range(
+            rows, last, truncated = _read_range(
                 f, start_line, end_line, cfg.max_text_chars,
             )
     except WorkspaceNotFoundError as e:
@@ -82,23 +84,21 @@ def cat(  # noqa: PLR0913
             f"для произвольных байтов — read_bytes с encoding='hex'/'base64'.",
         ) from e
 
-    result: dict[str, Any] = {
-        "path": path,
-        "start_line": start_line,
-        "end_line": last,
-        "content": text,
-    }
+    parts = [f"{path}:{start_line}-{last}"]
     if truncated:
-        result["truncated"] = True
-        result["max_chars"] = cfg.max_text_chars
-    return result
+        parts.append(f"обрезано до {cfg.max_text_chars} символов")
+    return TableResult(
+        rows=rows,
+        note="; ".join(parts),
+        metadata={"path": path},
+    )
 
 
 def _read_range(
     f: TextIOBase, start: int, end: int, max_chars: int,
-) -> tuple[str, int, bool]:
-    """Стримит файл, возвращая строки [start, end] с обрезкой по max_chars."""
-    collected: list[str] = []
+) -> tuple[list[dict[str, Any]], int, bool]:
+    """Стримит файл, возвращая строки [start, end] (`{line, content}`) с обрезкой."""
+    rows: list[dict[str, Any]] = []
     last = start - 1
     total = 0
     truncated = False
@@ -108,18 +108,18 @@ def _read_range(
         if i > end:
             break
         chunk = line.rstrip("\r\n")
-        sep = 1 if collected else 0
+        sep = 1 if rows else 0
         remaining = max_chars - total - sep
         if remaining <= 0:
             truncated = True
             break
         if len(chunk) > remaining:
-            collected.append(chunk[:remaining])
+            rows.append({"line": i, "content": chunk[:remaining]})
             total += sep + remaining
             last = i
             truncated = True
             break
-        collected.append(chunk)
+        rows.append({"line": i, "content": chunk})
         total += sep + len(chunk)
         last = i
-    return "\n".join(collected), last, truncated
+    return rows, last, truncated
