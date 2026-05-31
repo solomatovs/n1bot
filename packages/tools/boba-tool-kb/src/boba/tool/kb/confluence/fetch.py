@@ -15,7 +15,7 @@ Config-секция: `[tool.kb.confluence.fetch]`.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, ClassVar
 
 import httpx
 import markdownify
@@ -24,17 +24,17 @@ from pydantic import Field
 from boba.indexing import PipelineContext, PipelineId
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.decoder import ConfluenceJsonDecoder
+from boba.tool.kb.confluence.parsing import ConfluenceJsonDecoder
 from boba.tool.kb.confluence.request_sources import ConfluencePagesRequestSource
 from boba.tools import FromConfig, tool
 
 __all__ = ["ConfluenceFetchPageConfig", "confluence_fetch_page"]
 
-_PIPELINE_ID: PipelineId = PipelineId("confluence.fetch_page")
-
 
 class ConfluenceFetchPageConfig(BobaFlatSettings):
     """Self-contained конфиг tool'а `confluence_fetch_page`."""
+
+    PIPELINE_ID: ClassVar[PipelineId] = PipelineId("confluence.fetch_page")
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
@@ -78,7 +78,7 @@ def confluence_fetch_page(
     )
     transport = cfg.confluence.make_transport()
     decoder = ConfluenceJsonDecoder(body_format=cfg.confluence.body_format)
-    pctx = PipelineContext(pipeline_id=_PIPELINE_ID)
+    pctx = PipelineContext(pipeline_id=ConfluenceFetchPageConfig.PIPELINE_ID)
 
     try:
         for http_req in request_source.stream(pctx):

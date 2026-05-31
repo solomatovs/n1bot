@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from boba.tool.kb.confluence.tools.list.spaces import ConfluenceListSpacesConfig
+from boba.tool.kb.confluence.list_spaces import ConfluenceListSpacesConfig
 
 
 @pytest.fixture

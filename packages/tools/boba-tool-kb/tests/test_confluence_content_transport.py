@@ -27,9 +27,8 @@ from boba.indexing import (
     Transport,
     TransportKeys,
 )
-from boba.tool.kb.confluence._pipeline_common import ConfluenceContentTransport
-from boba.tool.kb.confluence.attachments import AttachmentInfo
-from boba.tool.kb.confluence.keys import ConfluenceKeys
+from boba.tool.kb.confluence.models import AttachmentInfo, ConfluenceKeys
+from boba.tool.kb.confluence.pipeline import ConfluenceContentTransport
 from boba.transport.http import HttpRequest
 
 

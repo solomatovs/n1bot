@@ -31,11 +31,9 @@ import time
 
 from boba.db.postgres import PostgresConnection
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
-from boba.tool.kb.core.embedder_factory import build_embedder
-from boba.tool.kb.core.embedding_model import EmbeddingModel
-from boba.tool.kb.core.migrations import apply_bootstrap, ensure_vector_index
-from boba.tool.kb.core.postgres_pool import open_kb_pool
-from boba.tool.kb.core.postgres_store_schema import PostgresStoreSchema
+from boba.tool.kb.core.embedding import EmbeddingModel
+from boba.tool.kb.core.migrations import Migrations
+from boba.tool.kb.core.postgres import KbPool, PostgresStoreSchema
 
 __all__ = ["KbBootstrapConfig", "main"]
 
@@ -71,8 +69,8 @@ def main() -> int:
 
     cfg = KbBootstrapConfig()  # pyright: ignore[reportCallIssue]
 
-    pool = open_kb_pool(cfg.connection)
-    embedder = build_embedder(cfg.embedding)
+    pool = KbPool.open(cfg.connection)
+    embedder = cfg.embedding.build()
     logger.info(
         "postgres_store schema=%s chunks=%s collections=%s host=%s db=%s",
         cfg.tables.pg_schema,
@@ -86,12 +84,12 @@ def main() -> int:
     try:
         logger.info("step 1/2: applying migrations…")
         with pool.connection() as conn:
-            apply_bootstrap(conn, schema_cfg=cfg.tables)
+            Migrations.apply_bootstrap(conn, schema_cfg=cfg.tables)
 
         dim = embedder.dim()
         logger.info("step 2/2: ensuring HNSW index for dim=%d…", dim)
         with pool.connection() as conn:
-            ensure_vector_index(conn, dim=dim, schema_cfg=cfg.tables)
+            Migrations.ensure_vector_index(conn, dim=dim, schema_cfg=cfg.tables)
     except Exception:
         logger.exception("bootstrap FAILED")
         return 1

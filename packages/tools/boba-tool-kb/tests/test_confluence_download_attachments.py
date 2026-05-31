@@ -18,14 +18,14 @@ from pathlib import Path
 
 from boba.agent.workspace_fs.shell import FsProjectWorkspaceShell
 from boba.indexing import Metadata, RawDocument, SourceId, TransportKeys
-from boba.tool.kb.confluence._download_common import (
-    _confluence_attachment_filename,
-    _rewrite_attachment_urls,
-    _stream_records,
-)
-from boba.tool.kb.confluence.attachments import AttachmentInfo
-from boba.tool.kb.confluence.keys import ConfluenceKeys
+from boba.tool.kb.confluence.download import ConfluenceDownloader
+from boba.tool.kb.confluence.models import AttachmentInfo, ConfluenceKeys
 from boba.workspace.contract import ProjectWorkspaceShell
+
+# Короткие алиасы на staticmethod'ы downloader'а — драйвим их напрямую.
+_confluence_attachment_filename = ConfluenceDownloader._confluence_attachment_filename
+_rewrite_attachment_urls = ConfluenceDownloader._rewrite_attachment_urls
+_stream_records = ConfluenceDownloader._stream_records
 
 
 def _mk_shell(root: Path) -> ProjectWorkspaceShell:

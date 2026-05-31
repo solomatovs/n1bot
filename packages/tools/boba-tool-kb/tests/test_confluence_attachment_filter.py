@@ -25,12 +25,14 @@ from boba.indexing import (
     Transport,
     TransportKeys,
 )
-from boba.tool.kb.confluence._pipeline_common import (
-    ConfluenceContentTransport,
-    _iter_attachments,
+from boba.tool.kb.confluence.models import (
+    AttachmentFilter,
+    AttachmentInfo,
+    ConfluenceKeys,
 )
-from boba.tool.kb.confluence.attachments import AttachmentFilter, AttachmentInfo
-from boba.tool.kb.confluence.keys import ConfluenceKeys
+from boba.tool.kb.confluence.pipeline import (
+    ConfluenceContentTransport,
+)
 from boba.transport.http import HttpRequest
 
 _ATT_PNG = AttachmentInfo(
@@ -160,7 +162,7 @@ def test_iter_attachments_skips_filtered_without_http() -> None:
     transport = _FakeTransport()
     flt = AttachmentFilter.from_lists(media_types=["application/pdf"])
     out = list(
-        _iter_attachments(
+        ConfluenceContentTransport._iter_attachments(
             parent=_parent_with((_ATT_PNG, _ATT_PDF, _ATT_DOCX)),
             base_url="https://confl.example.com/wiki",
             auth=None,
@@ -179,7 +181,7 @@ def test_iter_attachments_skips_filtered_without_http() -> None:
 def test_iter_attachments_passthrough_default_keeps_all() -> None:
     transport = _FakeTransport()
     out = list(
-        _iter_attachments(
+        ConfluenceContentTransport._iter_attachments(
             parent=_parent_with((_ATT_PNG, _ATT_PDF)),
             base_url="https://confl.example.com/wiki",
             auth=None,

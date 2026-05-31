@@ -6,7 +6,7 @@
 - `PostgresCollectionsStore` — `CollectionsStore`: коллекции (CRUD).
 
 Оба сервиса принимают `cfg: PostgresStoreConfig` (composite-модель с
-`connection` + `tables`). Pool открывают сами через `open_kb_pool(cfg.connection)`
+`connection` + `tables`). Pool открывают сами через `KbPool.open(cfg.connection)`
 (singleton по DSN — store'ы с одним и тем же connection делят один pool).
 Никакого корневого settings-класса — composite-cfg встраивается как
 nested-поле в tool-конфиги (`SearchInKbConfig`, `ConfluenceSpaceIngestConfig`, ...).
@@ -39,12 +39,13 @@ import json
 import logging
 from collections.abc import Iterable, Mapping
 from itertools import islice
-from typing import Any, ClassVar, TypeVar
+from typing import Any, ClassVar, Self, TypeVar
 
+from pgvector.psycopg import register_vector
 from psycopg import sql
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
-from boba.db.postgres import PostgresConnection
+from boba.db.postgres import PostgresConnection, PostgresPool
 from boba.indexing.chunk_store import (
     ChunkStore,
     CollectionInfo,
@@ -74,18 +75,106 @@ from boba.indexing.filter import (
 )
 from boba.indexing.metadata import Metadata
 from boba.indexing.sections import SourceId
-from boba.tool.kb.core.postgres_pool import open_kb_pool
-from boba.tool.kb.core.postgres_store_schema import PostgresStoreSchema
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "KbPool",
     "PostgresChunkStore",
     "PostgresCollectionsStore",
     "PostgresStoreConfig",
+    "PostgresStoreSchema",
 ]
 
 _E = TypeVar("_E")
+
+
+class KbPool:
+    """Factory `PostgresPool` для KB-store (с `register_vector`).
+
+    `PostgresPool.get(...)` — singleton по DSN, поэтому повторные вызовы с
+    тем же `PostgresConnection` возвращают тот же объект pool'а. Configure-
+    hook `register_vector` регистрирует pgvector-типы на каждом fresh-коннекте
+    (без этого `embedding`-колонка приходит как plain str и `INSERT vector`
+    падает на cast).
+    """
+
+    @staticmethod
+    def open(connection: PostgresConnection) -> PostgresPool:
+        """Открыть (или взять из кэша) `PostgresPool` под `connection`."""
+        return PostgresPool.get(
+            connection.to_pool_config(),
+            configure=register_vector,
+        )
+
+
+class PostgresStoreSchema(BaseModel):
+    """Schema + имена таблиц KB-хранилища.
+
+    `BaseModel` (не settings), встраивается как nested-поле в tool-конфиги.
+    Один и тот же `PostgresStoreSchema` идёт и в bootstrap-CLI (создаёт
+    таблицы), и в ingest/search-tools (читают/пишут эти же таблицы). Все
+    идентификаторы — валидные postgres-идентификаторы без кавычек/точек/
+    пробелов; `psycopg.sql.Identifier` квотирует их при подстановке.
+    """
+
+    batch_size: int = Field(
+        default=100,
+        description="batch_size",
+    )
+    pg_schema: str = Field(
+        default="public",
+        description=(
+            "Postgres schema, в которой живут таблицы KB (`chunks_table` и "
+            "`collections_table`) + функция `immutable_unaccent`. Должна "
+            "существовать к моменту запуска bootstrap-CLI (или быть `public`)."
+        ),
+    )
+    chunks_table: str = Field(
+        default="kb_chunks",
+        description=(
+            "Имя таблицы чанков (хранит embedding + metadata + tsvector). "
+            "По дефолту `kb_chunks`; bootstrap-CLI создаёт её именно с этим "
+            "именем в указанной `schema`."
+        ),
+    )
+    collections_table: str = Field(
+        default="kb_collections",
+        description=(
+            "Имя таблицы-каталога коллекций (one row per collection). "
+            "По дефолту `kb_collections`."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate(self) -> Self:
+        if self.chunks_table == self.collections_table:
+            msg = (
+                "PostgresStoreSchema.chunks_table == collections_table "
+                f"({self.chunks_table!r}) — должны различаться"
+            )
+            raise ValueError(msg)
+        return self
+
+    def chunks_ident(self) -> sql.Identifier:
+        """Schema-qualified Identifier для таблицы чанков."""
+        return sql.Identifier(self.pg_schema, self.chunks_table)
+
+    def collections_ident(self) -> sql.Identifier:
+        """Schema-qualified Identifier для таблицы коллекций."""
+        return sql.Identifier(self.pg_schema, self.collections_table)
+
+    def schema_ident(self) -> sql.Identifier:
+        """Schema-only Identifier — для квалифицированных функций."""
+        return sql.Identifier(self.pg_schema)
+
+    def chunks_name_literal(self) -> sql.Literal:
+        """Unqualified имя таблицы как SQL-литерал — для information_schema."""
+        return sql.Literal(self.chunks_table)
+
+    def schema_name_literal(self) -> sql.Literal:
+        """Имя схемы как SQL-литерал — для information_schema.table_schema."""
+        return sql.Literal(self.pg_schema)
 
 
 class PostgresStoreConfig(BaseModel):
@@ -111,7 +200,7 @@ class PostgresChunkStore(ChunkStore[str]):
     ) -> None:
         self._cfg = cfg
         self._tables = cfg.tables
-        self._pool = open_kb_pool(cfg.connection)
+        self._pool = KbPool.open(cfg.connection)
 
     def get_by_ids(
         self,
@@ -557,7 +646,7 @@ class PostgresCollectionsStore(CollectionsStore):
     ) -> None:
         self._cfg = cfg
         self._tables = cfg.tables
-        self._pool = open_kb_pool(cfg.connection)
+        self._pool = KbPool.open(cfg.connection)
 
     def list_collections(self) -> Iterable[CollectionInfo]:
         query = sql.SQL(

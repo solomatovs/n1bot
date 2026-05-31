@@ -3,8 +3,9 @@
 Что делает:
 
 1. Загружает общий `KbSearchConfig` (`[tool.kb.search]`); по полю `template`
-   (`vector`|`fts`) выбирает SQL-шаблон (`vector_sql_path`/`fts_sql_path`).
-2. Для `vector` строит embedder (`build_embedder(cfg.embedding)`)
+   (`vector`|`fts`) выбирает встроенный SQL-шаблон
+   (`KbSearch.VECTOR_SQL`/`FTS_SQL`).
+2. Для `vector` строит embedder (`cfg.embedding.build()`)
    и считает `embed_query(query)` — N-мерный вектор для cosine-поиска.
 3. Подставляет identifier-placeholder'ы (`{dim}`/`{chunks_table}`/`{schema}`)
    через `psycopg.sql.SQL.format` — те же значения, что и runtime в
@@ -50,25 +51,23 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Annotated, Literal, LiteralString, cast
+from typing import Annotated, ClassVar, Literal, LiteralString, cast
 
 from psycopg import sql
 from pydantic import Field
 
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
-from boba.tool.kb.core.embedder_factory import build_embedder
-from boba.tool.kb.core.postgres_pool import open_kb_pool
-from boba.tool.kb.core.tools.search.kb_search import KbSearchConfig
-from boba.tool.kb.core.tools.search.schema import (
+from boba.tool.kb.core.postgres import KbPool
+from boba.tool.kb.core.search import (
     ConfluenceCollection,
     KbDocCollection,
+    KbSearch,
+    KbSearchConfig,
 )
 
 __all__ = ["SearchRenderCliConfig", "main"]
 
 logger = logging.getLogger("boba.tool.kb.cli.search.render")
-
-_COLLECTIONS = [ConfluenceCollection.COLLECTION, KbDocCollection.COLLECTION]
 
 
 class SearchRenderCliConfig(BobaFlatSettings):
@@ -79,6 +78,11 @@ class SearchRenderCliConfig(BobaFlatSettings):
     `[tool.kb.search.<template>]` через одноимённый tool-конфиг при
     instantiation в `main()`.
     """
+
+    COLLECTIONS: ClassVar[list[str]] = [
+        ConfluenceCollection.COLLECTION,
+        KbDocCollection.COLLECTION,
+    ]
 
     model_config = BobaSettingsConfigDict(
         case_sensitive=False,
@@ -118,7 +122,7 @@ def main() -> int:
         cfg.template,
         cfg.query,
         cfg.top_k,
-        _COLLECTIONS,
+        SearchRenderCliConfig.COLLECTIONS,
     )
 
     if cfg.top_k > tool_cfg.max_top_k:
@@ -131,7 +135,7 @@ def main() -> int:
 
     # FTS не нуждается в embedding'е — экономим embedder.embed_query().
     needs_embedding = cfg.template != "fts"
-    embedder = build_embedder(kb_cfg.embedding) if needs_embedding else None
+    embedder = kb_cfg.embedding.build() if needs_embedding else None
 
     identifiers: dict[str, sql.Composable] = {
         "chunks_table": kb_cfg.tables.chunks_ident(),
@@ -141,7 +145,7 @@ def main() -> int:
         identifiers["dim"] = sql.Literal(embedder.dim())
 
     params: dict[str, object] = {
-        "collections": _COLLECTIONS,
+        "collections": SearchRenderCliConfig.COLLECTIONS,
         "query": cfg.query,
         "snippet_chars": kb_cfg.snippet_chars,
         "top_k": cfg.top_k,
@@ -151,9 +155,9 @@ def main() -> int:
 
     match cfg.template:
         case "fts":
-            template_text = tool_cfg.fts_sql_path.read_text(encoding="utf-8")
+            template_text = KbSearch.FTS_SQL
         case "vector":
-            template_text = tool_cfg.vector_sql_path.read_text(encoding="utf-8")
+            template_text = KbSearch.VECTOR_SQL
         case _:
             logger.error("unsupported template %r", cfg.template)
             return 1
@@ -164,7 +168,7 @@ def main() -> int:
     # инлайнит bind'ы (list[float]/list[str]/int/...) с правильным
     # квотингом через psycopg type-адаптеры, ничего не выполняя на сервере.
     # Коннект берётся из process-singleton pool'а (тот же, что runtime).
-    pool = open_kb_pool(kb_cfg.connection)
+    pool = KbPool.open(kb_cfg.connection)
     with pool.client_cursor() as cur:
         rendered = cur.mogrify(composed, params)
 

@@ -106,8 +106,9 @@ tools = [
     "kb_confluence_doc_search",              # коллекция kb_confluence_doc; method=vector|fts
     "confluence_search_cql",
     "confluence_list_spaces",
-    # download (Confluence → workspace)
+    # download / fetch (Confluence → workspace / напрямую LLM)
     "confluence_download",        # unified: space_keys / page_ids
+    "confluence_fetch_page",      # одна страница строкой, без записи на диск
 ]
 
 # Индексирует confluence страницы
@@ -139,9 +140,7 @@ max_limit = 50
 [tool.kb.search]
 snippet_chars = 300
 max_top_k = 20
-# кастомные SQL-шаблоны (по умолчанию — packaged):
-# vector_sql_path = "/path/to/custom/vector.sql"
-# fts_sql_path = "/path/to/custom/fts.sql"
+# SQL-шаблоны vector/fts встроены в код (KbSearch.VECTOR_SQL / FTS_SQL).
 
 
 # cli для накатырвания миграции в postgres
