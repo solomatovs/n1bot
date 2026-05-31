@@ -37,6 +37,7 @@ from boba.tool.kb.confluence._pipeline_common import make_confluence_transport
 from boba.tool.kb.confluence.attachments import AttachmentFilter
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.reader import ConfluenceReader
+from boba.tool.kb.core.llm_metadata_chunker import LlmMetadataChunker
 from boba.tool.kb.core.postgres_store import (
     PostgresChunkStore,
     PostgresCollectionsStore,
@@ -97,7 +98,7 @@ def run_confluence_ingest(  # noqa: PLR0913 — keyword-only helper, явный 
         ),
         decoders=(),
         reader=reader,
-        chunker=chunker,
+        chunker=LlmMetadataChunker(chunker),
         sink=view,
         query=view,
     )

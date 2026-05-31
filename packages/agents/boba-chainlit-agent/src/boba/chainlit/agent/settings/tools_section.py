@@ -10,7 +10,6 @@ from chainlit.input_widget import Checkbox, InputWidget, Tab
 from boba.chainlit.agent.models import ThreadId, ThreadMeta
 from boba.chainlit.agent.storage import ThreadRepository
 from boba.chainlit.agent.tool_cache import AvailableToolsCache
-from boba.tools.domain.ids import ToolId, parse_tool_id
 from boba.tools.domain.tool import ToolSchema
 
 __all__ = ["ToolsSection"]
@@ -38,8 +37,7 @@ class ToolsSection:
         enabled = self._enabled_set(meta, schemas)
         by_source: dict[str, list[ToolSchema]] = defaultdict(list)
         for schema in schemas:
-            source_id, _ = parse_tool_id(ToolId(schema.name))
-            by_source[source_id].append(schema)
+            by_source[schema.source_id].append(schema)
         tabs: list[Tab] = []
         for source_id in sorted(by_source):
             # Явный `list[InputWidget]`: chainlit.Tab.inputs инвариантен,

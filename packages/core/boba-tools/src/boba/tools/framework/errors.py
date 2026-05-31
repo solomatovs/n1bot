@@ -11,6 +11,7 @@ from boba.tools.domain.ids import ToolName, ToolSourceId
 
 __all__ = [
     "ToolIdCollisionError",
+    "ToolNameCollisionError",
     "ToolSourceCollisionError",
 ]
 
@@ -24,6 +25,28 @@ class ToolIdCollisionError(Exception):
         )
         self.source_id = source_id
         self.name = name
+
+
+class ToolNameCollisionError(Exception):
+    """Два source'а объявляют tool с одинаковым wire-именем `ToolName`.
+
+    Wire-имя = идентификатор маршрутизации; глобальный дубль сделал бы вызов
+    неоднозначным, поэтому реестр падает на сборке.
+    """
+
+    def __init__(
+        self,
+        name: ToolName,
+        existing_source: ToolSourceId,
+        new_source: ToolSourceId,
+    ) -> None:
+        super().__init__(
+            f"tool name {name!r} declared by both source "
+            f"{existing_source!r} and {new_source!r}",
+        )
+        self.name = name
+        self.existing_source = existing_source
+        self.new_source = new_source
 
 
 class ToolSourceCollisionError(Exception):

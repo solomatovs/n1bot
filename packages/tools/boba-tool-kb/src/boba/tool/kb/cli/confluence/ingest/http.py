@@ -31,6 +31,10 @@
 
 Все параметры (store/embedding/chunker/confluence/collection + runner-флаги)
 лежат в секции `[cli.kb.confluence.ingest]`.
+
+В `kb_chunks` сам не пишет — делегирует в `confluence_ingest_pages` /
+`confluence_ingest_spaces`. Пример заполняемой строки chunk-таблицы
+(колонки + `metadata` jsonb) — в `boba.tool.kb.confluence.tools.ingest`.
 """
 
 from __future__ import annotations

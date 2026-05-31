@@ -2,18 +2,15 @@
 
 Имя tool'а живёт в **двух пространствах**:
 
-- `ToolName` — локальное имя в пределах своего `ToolSource` (например,
-  `outline` внутри `plugin_html`). Уникальность гарантируется самим
-  source'ом — глобальной коллизии нет.
-- `ToolId` — wire-формат, по которому tool вызывается LLM-ом:
-  `<source_id>__<name>`. Единственная точка композиции/парсинга —
-  `compose_tool_id`/`parse_tool_id`.
+- `ToolName` — имя tool'а внутри своего `ToolSource`.
+- `ToolId` — wire-формат, по которому tool вызывается LLM-ом. Равен самому
+  `ToolName`: источник в имя не входит, LLM видит ровно `<name>` и по нему же
+  маршрутизируется вызов. Глобальная уникальность `ToolName` гарантируется
+  реестром (`ToolNameCollisionError` при дубле между source'ами).
 
 Wire-имя ограничено `^[A-Za-z0-9_-]{1,64}$` — это пересечение OpenAI
 function-name spec и того, что без сюрпризов проходит через
-LiteLLM/Ollama. Разделитель — двойное подчёркивание `__`; чтобы
-парсинг был однозначным, ни `source_id`, ни `name` не должны
-содержать `__` сами по себе.
+LiteLLM/Ollama.
 """
 
 from __future__ import annotations
@@ -25,20 +22,19 @@ __all__ = [
     "ToolId",
     "ToolName",
     "ToolSourceId",
-    "compose_tool_id",
-    "parse_tool_id",
     "sanitize_source_id",
+    "to_tool_id",
 ]
 
 _SEPARATOR = "__"
 _MAX_TOOL_ID_LENGTH = 64
 _COMPONENT_CHARS = r"A-Za-z0-9_-"
-_COMPONENT_RE = re.compile(rf"^[A-Za-z0-9][{_COMPONENT_CHARS}]*$")
+_TOOL_NAME_RE = re.compile(rf"^[A-Za-z0-9][{_COMPONENT_CHARS}]*$")
 _NON_COMPONENT_RE = re.compile(rf"[^{_COMPONENT_CHARS}]")
 
 
 ToolName = NewType("ToolName", str)
-"""Локальное имя инструмента внутри своего source'а."""
+"""Имя инструмента внутри своего source'а; оно же — wire-имя."""
 
 
 ToolSourceId = NewType("ToolSourceId", str)
@@ -46,41 +42,27 @@ ToolSourceId = NewType("ToolSourceId", str)
 
 
 ToolId = NewType("ToolId", str)
-"""Wire-формат: `<source_id>__<tool_name>`. Композируется из пары."""
+"""Wire-формат: совпадает с `ToolName`. То, что видит и зовёт LLM."""
 
 
-def _validate_component(value: str, *, kind: str) -> None:
-    if not value:
-        msg = f"{kind} must be non-empty"
+def to_tool_id(name: ToolName) -> ToolId:
+    """Привести `ToolName` к wire-формату `ToolId` (валидация charset/длины)."""
+    if not name:
+        msg = "tool name must be non-empty"
         raise ValueError(msg)
-    if not _COMPONENT_RE.match(value):
+    if not _TOOL_NAME_RE.match(name):
         msg = (
-            f"invalid {kind} {value!r}: must match [A-Za-z0-9][A-Za-z0-9_-]* "
+            f"invalid tool name {name!r}: must match [A-Za-z0-9][A-Za-z0-9_-]* "
             f"(letters/digits/_/-, leading char alphanumeric)"
         )
         raise ValueError(msg)
-    if _SEPARATOR in value:
+    if len(name) > _MAX_TOOL_ID_LENGTH:
         msg = (
-            f"invalid {kind} {value!r}: must not contain separator "
-            f"{_SEPARATOR!r} — это сломает round-trip parse"
-        )
-        raise ValueError(msg)
-
-
-def compose_tool_id(source_id: ToolSourceId, name: ToolName) -> ToolId:
-    """
-    Скомпоновать qualified `<source>__<name>` ToolId.
-    """
-    _validate_component(source_id, kind="source_id")
-    _validate_component(name, kind="tool name")
-    tool_id = f"{source_id}{_SEPARATOR}{name}"
-    if len(tool_id) > _MAX_TOOL_ID_LENGTH:
-        msg = (
-            f"composed tool id {tool_id!r} is {len(tool_id)} chars, "
+            f"tool name {name!r} is {len(name)} chars, "
             f"max {_MAX_TOOL_ID_LENGTH} (OpenAI function-name limit)"
         )
         raise ValueError(msg)
-    return ToolId(tool_id)
+    return ToolId(name)
 
 
 def sanitize_source_id(origin: str) -> ToolSourceId:
@@ -92,18 +74,3 @@ def sanitize_source_id(origin: str) -> ToolSourceId:
         sanitized = sanitized.replace(_SEPARATOR, "_")
     sanitized = sanitized.strip("_-")
     return ToolSourceId(sanitized or "plugin")
-
-
-def parse_tool_id(tool_id: ToolId) -> tuple[ToolSourceId, ToolName]:
-    """
-    Распарсить `ToolId` обратно в `(ToolSourceId, ToolName)`.
-    """
-    source_part, sep, name_part = tool_id.partition(_SEPARATOR)
-    if not sep or not name_part:
-        msg = (
-            f"invalid qualified tool id {tool_id!r}: expected "
-            f"'<source>{_SEPARATOR}<name>'"
-        )
-        raise ValueError(msg)
-
-    return ToolSourceId(source_part), ToolName(name_part)

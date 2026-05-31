@@ -1,10 +1,16 @@
 """Tool `kb_search_fts` + `KbSearchFtsConfig`: pure FTS (ts_rank_cd) поверх KB.
 
-Параллелен `kb_search_hybrid` (RRF) и `kb_search_vector` (cosine) —
-третий поисковый tool, на этот раз только FTS-канал. Полезен для точных
+Параллелен `kb_search_vector` (cosine) — только FTS-канал. Полезен для точных
 лексических совпадений (имена, идентификаторы, фразы) и для коротких
 ключевых запросов, где embedding-канал шумит. LLM передаёт только
 `query` + опц. `top_k`.
+
+Read-side `kb_chunks`: каждый hit — `{id, distance, link, metadata,
+snippet}`, где `id` = `chunk_id`, `snippet` = `format_content`, а
+`metadata` — ровно `kb_chunks.metadata` jsonb матчнутого чанка (плоский
+`dict[str, str]`; набор ключей зависит от коллекции). Пример заполнения
+ключей — в ingest-tool'ах (`...kbdoc.tools.ingest`,
+`...confluence.tools.ingest`).
 """
 
 from __future__ import annotations
@@ -73,7 +79,13 @@ def kb_search_fts(
         str,
         Field(
             min_length=1,
-            description="Поисковый запрос на естественном языке"
+            description=(
+                "Поисковый запрос. По умолчанию пробел = AND (все слова должны "
+                'встретиться). Операторы: `OR` — альтернативы, `"точная фраза"` — '
+                "фраза целиком, `-слово` — исключить. Многословный запрос лучше "
+                "разбавлять `OR` (`pix OR adqm OR учётка`), иначе AND по всем "
+                "словам часто даёт ноль."
+            ),
         ),
     ],
     top_k: Annotated[
@@ -88,9 +100,10 @@ def kb_search_fts(
 ) -> list[dict[str, Any]]:
     """Lexical full-text search по KB-коллекциям (`ts_rank_cd`).
 
-    Возвращает JSON-массив hits `{id, distance, link, metadata, snippet}`,
-    упорядоченный по релевантности (меньше distance = ближе).
-    `distance` — отрицательный `ts_rank_cd`.
+    Запрос разбирается как websearch: пробел = AND, `OR` = альтернативы,
+    `"фраза"` = точная фраза, `-слово` = исключение. Возвращает JSON-массив hits
+    `{id, distance, link, metadata, snippet}`, упорядоченный по релевантности
+    (меньше distance = ближе). `distance` — отрицательный `ts_rank_cd`.
     """
     if top_k > cfg.max_top_k:
         raise RuntimeError(
