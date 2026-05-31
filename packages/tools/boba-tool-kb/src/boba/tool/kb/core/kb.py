@@ -4,13 +4,13 @@
 с двумя операциями tool-уровня:
 
 - `vector_search(...)`  — **чистый** semantic top-K от pgvector (cosine
-                          via `<=>`). Используется `kb_search_vector`-tool'ом.
+                          via `<=>`). Канал `method=vector` search-tool'ов.
                           Полезен, когда FTS-канал шумит/мешает (короткие
                           запросы, эмбеддинг лучше ловит синонимы).
 - `fts_search(...)`     — **чистый** lexical top-K от Postgres FTS
-                          (`ts_rank_cd`). Используется `kb_search_fts`-
-                          tool'ом. Полезен для точных лексических
-                          совпадений (имена, идентификаторы, фразы).
+                          (`ts_rank_cd`). Канал `method=fts` search-tool'ов.
+                          Полезен для точных лексических совпадений
+                          (имена, идентификаторы, фразы).
 
 Snippet обрезан по `snippet_chars`, метадата нормализована под формат
 tool'ов.
@@ -102,7 +102,7 @@ class PostgresKnowledgeBase:
         `{dim}`/`{chunks_table}` и bind-параметрами
         `%(collections|embedding|snippet_chars|top_k)s`. Источник —
         packaged-файл `core/tools/search/sql/vector.sql` или operator-
-        override через `[tool.kb.search.vector].search_sql_path`.
+        override через `[tool.kb.search].vector_sql_path`.
         """
         embedding = list(self._embedder.embed_query(query))
         query_sql = sql.SQL(cast(LiteralString, sql_template)).format(
@@ -180,7 +180,7 @@ class PostgresKnowledgeBase:
     def _row_metadata(row: dict[str, Any]) -> dict[str, str]:
         # `metadata` хранится jsonb; psycopg возвращает dict. Системные
         # колонки добавляем поверх (без удаления tags) — проекция в llm.*
-        # делается выше (llm_view), здесь отдаём сырой набор ключей.
+        # делается выше (search.schema), здесь отдаём сырой набор ключей.
         raw = row.get("metadata") or {}
         out: dict[str, str] = (
             {str(k): str(v) for k, v in raw.items() if v is not None}

@@ -18,7 +18,7 @@ class SearchHit:
 
     `metadata` — сырой набор ключей чанка (все слои pipeline'а), `tags` —
     колонка `kb_chunks.tags`. Сборка llm-facing полей из этого делается в
-    `search.llm_view` (индексатор `llm.*` не пишет).
+    `search.schema` (дискриминатор по коллекции собирает строку выдачи).
     """
 
     id: str

@@ -28,6 +28,10 @@ from boba.tool.kb.confluence.tools.search.cql import (
     ConfluenceSearchCqlConfig,
     confluence_search_cql,
 )
+from boba.tool.kb.confluence_doc.tools.ingest import (
+    ConfluenceDocIngestConfig,
+    confluence_doc_ingest_paths,
+)
 from boba.tool.kb.core.chunker_params import ChunkerParams
 from boba.tool.kb.core.embedding_model import EmbeddingModel
 from boba.tool.kb.core.kb import PostgresKnowledgeBase, PostgresKnowledgeBaseConfig
@@ -37,31 +41,23 @@ from boba.tool.kb.core.postgres_store import (
     PostgresStoreConfig,
 )
 from boba.tool.kb.core.postgres_store_schema import PostgresStoreSchema
-from boba.tool.kb.core.tools.search.fts import (
-    KbSearchFtsConfig,
-    kb_search_fts,
-)
-from boba.tool.kb.core.tools.search.vector import (
-    KbSearchVectorConfig,
-    kb_search_vector,
-)
-from boba.tool.kb.kbdoc.tools.ingest import (
-    KbdocIngestConfig,
-    kbdoc_ingest_paths,
+from boba.tool.kb.core.tools.search.kb_search import (
+    KbSearchConfig,
+    kb_confluence_doc_search,
+    kb_confluence_search,
 )
 
 __all__ = [
     "ChunkerParams",
     "ConfluenceConnection",
+    "ConfluenceDocIngestConfig",
     "ConfluenceDownloadConfig",
     "ConfluenceFetchPageConfig",
     "ConfluenceIngestConfig",
     "ConfluenceListSpacesConfig",
     "ConfluenceSearchCqlConfig",
     "EmbeddingModel",
-    "KbSearchFtsConfig",
-    "KbSearchVectorConfig",
-    "KbdocIngestConfig",
+    "KbSearchConfig",
     "PostgresChunkStore",
     "PostgresCollectionsStore",
     "PostgresConnection",
@@ -69,6 +65,7 @@ __all__ = [
     "PostgresKnowledgeBaseConfig",
     "PostgresStoreConfig",
     "PostgresStoreSchema",
+    "confluence_doc_ingest_paths",
     "confluence_download",
     "confluence_fetch_page",
     "confluence_ingest_cql",
@@ -76,7 +73,6 @@ __all__ = [
     "confluence_ingest_spaces",
     "confluence_list_spaces",
     "confluence_search_cql",
-    "kb_search_fts",
-    "kb_search_vector",
-    "kbdoc_ingest_paths",
+    "kb_confluence_doc_search",
+    "kb_confluence_search",
 ]

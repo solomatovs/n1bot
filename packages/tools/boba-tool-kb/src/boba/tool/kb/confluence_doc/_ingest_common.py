@@ -4,9 +4,9 @@ Pipeline: переданный `RequestSource[FsRequest]` → `Transport[FsReque
 `KbDocReader` → operator-configured `chunker` → `CollectionScopedView` →
 `PostgresChunkStore`. Источник и транспорт каждый caller собирает сам:
 
-- CLI ([cli.kb.kbdoc.ingest]) — `FsWalkRequestSource` + `FsTransport` по
-  абсолютному `folder` из конфига.
-- Tool ([tool.kb.kbdoc.ingest]) — `WorkspaceWalkRequestSource` +
+- CLI ([cli.kb.confluence_doc.ingest]) — `FsWalkRequestSource` + `FsTransport`
+  по абсолютному `folder` из конфига.
+- Tool ([tool.kb.confluence_doc.ingest]) — `WorkspaceWalkRequestSource` +
   `WorkspaceTransport` поверх `ProjectWorkspaceShell` (workspace-rel пути,
   host-путь наружу не уходит).
 """
@@ -35,10 +35,10 @@ from boba.tool.kb.core.postgres_store import (
 )
 from boba.transport.fs import FsRequest
 
-__all__ = ["run_kbdoc_ingest"]
+__all__ = ["run_confluence_doc_ingest"]
 
 
-def run_kbdoc_ingest(  # noqa: PLR0913 — keyword-only helper, явный набор deps
+def run_confluence_doc_ingest(  # noqa: PLR0913 — keyword-only helper, явный набор deps
     *,
     request_source: RequestSource[FsRequest],
     transport: Transport[FsRequest],

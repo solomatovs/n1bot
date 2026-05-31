@@ -1,7 +1,6 @@
 """Core-tools: tool-функции, не привязанные к одному внешнему домену.
 
-- `search/vector` — `kb_search_vector` (pure vector, cosine) по
-                    `[tool.kb.search.vector].collections`.
-- `search/fts`    — `kb_search_fts` (pure FTS, `ts_rank_cd`) по
-                    `[tool.kb.search.fts].collections`.
+- `search/kb_search` — `kb_confluence_search` / `kb_confluence_doc_search`: единый
+  интерфейс поиска (параметр `method` = `vector`|`fts`), каждый строго по
+  своей коллекции через дискриминирующий тип (`search/schema`).
 """
