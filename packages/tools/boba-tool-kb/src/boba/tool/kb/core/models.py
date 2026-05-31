@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 
 __all__ = ["SearchHit"]
 
@@ -15,9 +15,14 @@ class SearchHit:
     `distance` — cosine-distance (`vector_search`) либо отрицательный
     `ts_rank_cd`-скор (`fts_search`); в обоих случаях семантика
     «меньше = ближе/релевантнее».
+
+    `metadata` — сырой набор ключей чанка (все слои pipeline'а), `tags` —
+    колонка `kb_chunks.tags`. Сборка llm-facing полей из этого делается в
+    `search.llm_view` (индексатор `llm.*` не пишет).
     """
 
     id: str
     distance: float
     metadata: Mapping[str, str]
     snippet: str
+    tags: Sequence[str] = field(default_factory=tuple)

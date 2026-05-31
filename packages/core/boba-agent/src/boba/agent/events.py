@@ -228,7 +228,13 @@ from boba.agent.models import (
 )
 from boba.llm.events import FinishReason
 from boba.llm.models import AssistantMessage, RequestId, ToolCall, ToolCallDecodeFailure
-from boba.tools.domain import ErrorResult, JsonResult, TextResult
+from boba.tools.domain import (
+    ErrorResult,
+    JsonResult,
+    PgCopyTextResult,
+    TableResult,
+    TextResult,
+)
 
 # --------------------------------------------------------------------- #
 # Enums
@@ -720,6 +726,11 @@ class ToolResultReady(ContentSnapshotEvent):
                 self.body = t
             case JsonResult(payload=p):
                 self.body = json.dumps(p, ensure_ascii=False)
+            case TableResult(rows=r, note=n):
+                body = json.dumps(r, ensure_ascii=False)
+                self.body = body if n is None else f"{body}\n\n{n}"
+            case PgCopyTextResult(text=t):
+                self.body = t
             case ErrorResult(message=m):
                 self.body = m
         return self

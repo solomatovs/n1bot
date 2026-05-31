@@ -6,10 +6,10 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from boba.markdown import format_markdown_table
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.pg.executor import SqlExecutor, SqlExecutorConfig, SqlQueryError
 from boba.tools import FromConfig, tool
+from boba.tools.domain import TableResult
 
 __all__ = ["ListTablesConfig", "list_tables"]
 
@@ -48,7 +48,7 @@ def list_tables(
             ),
         ),
     ] = None,
-) -> str:
+) -> TableResult:
     """Список таблиц/view на профиле target. Колонки: schema, table, kind."""
     executor = SqlExecutor(cfg=cfg.executor)
     if pg_schema:
@@ -78,9 +78,12 @@ def list_tables(
     except SqlQueryError as e:
         raise RuntimeError(str(e)) from e
 
-    return format_markdown_table(
-        columns=result.columns,
+    note = (
+        f"список усечён до max_rows ({executor.max_rows_cap})"
+        if result.truncated
+        else None
+    )
+    return TableResult(
         rows=result.rows,
-        max_cell_chars=executor.max_cell_chars,
-        truncated=result.truncated,
+        note=note,
     )

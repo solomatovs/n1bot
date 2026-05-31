@@ -5,19 +5,17 @@
 ключевых запросов, где embedding-канал шумит. LLM передаёт только
 `query` + опц. `top_k`.
 
-Read-side `kb_chunks`: каждый hit — `{id, distance, link, metadata,
-snippet}`, где `id` = `chunk_id`, `snippet` = `format_content`, а
-`metadata` — ровно `kb_chunks.metadata` jsonb матчнутого чанка (плоский
-`dict[str, str]`; набор ключей зависит от коллекции). Пример заполнения
-ключей — в ingest-tool'ах (`...kbdoc.tools.ingest`,
-`...confluence.tools.ingest`).
+Возвращает `TableResult` — плоскую таблицу, по строке на hit. Колонки:
+служебные `id` / `distance` / `link` / `snippet` + `page_title` / `source_url`
+/ `anchor` / `page_id` / `heading_path` / `space` + `tags`. Оба loader'а
+(confluence и kbdoc) пишут эти поля под одинаковыми wire-ключами, поэтому
+`search.llm_view` читает их 1:1 без сведе́ния источников.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
 from pydantic import Field
 
@@ -27,7 +25,9 @@ from boba.tool.kb.core.kb import (
     PostgresKnowledgeBase,
     PostgresKnowledgeBaseConfig,
 )
+from boba.tool.kb.core.tools.search.llm_view import flat_row
 from boba.tools import FromConfig, tool
+from boba.tools.domain import TableResult
 
 __all__ = ["KbSearchFtsConfig", "kb_search_fts"]
 
@@ -97,13 +97,14 @@ def kb_search_fts(
             ),
         ),
     ] = 5,
-) -> list[dict[str, Any]]:
+) -> TableResult:
     """Lexical full-text search по KB-коллекциям (`ts_rank_cd`).
 
     Запрос разбирается как websearch: пробел = AND, `OR` = альтернативы,
-    `"фраза"` = точная фраза, `-слово` = исключение. Возвращает JSON-массив hits
-    `{id, distance, link, metadata, snippet}`, упорядоченный по релевантности
-    (меньше distance = ближе). `distance` — отрицательный `ts_rank_cd`.
+    `"фраза"` = точная фраза, `-слово` = исключение. Возвращает `TableResult` —
+    плоскую таблицу hits с колонками `id`/`distance`/`link`/`snippet` +
+    `llm.*`-ключи, упорядоченную по релевантности (меньше distance = ближе).
+    `distance` — отрицательный `ts_rank_cd`.
     """
     if top_k > cfg.max_top_k:
         raise RuntimeError(
@@ -112,14 +113,8 @@ def kb_search_fts(
     kb = PostgresKnowledgeBase(cfg=cfg.knowledge_base)
     sql_template = cfg.search_sql_path.read_text(encoding="utf-8")
     try:
-        return [
-            {
-                "id": h.id,
-                "distance": h.distance,
-                "link": _build_link(h.metadata),
-                "metadata": dict(h.metadata),
-                "snippet": h.snippet,
-            }
+        rows = [
+            flat_row(h)
             for h in kb.fts_search(
                 collections=list(cfg.collections),
                 query=query,
@@ -129,12 +124,5 @@ def kb_search_fts(
         ]
     except KnowledgeBaseError as e:
         raise RuntimeError(str(e)) from e
-
-
-def _build_link(metadata: Mapping[str, str]) -> str:
-    """source_url[#anchor] — готовый deep-link, чтобы агент не склеивал сам."""
-    url = str(metadata.get("source_url") or "")
-    if not url:
-        return ""
-    anchor = str(metadata.get("anchor") or "")
-    return f"{url}#{anchor}" if anchor else url
+    note = None if rows else "ничего не найдено"
+    return TableResult(rows=rows, note=note)

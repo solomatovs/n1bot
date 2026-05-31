@@ -38,6 +38,8 @@ from boba.tools.domain.llm_schema import LLMSchemaGenerator
 from boba.tools.domain.result import (
     ErrorResult,
     JsonResult,
+    PgCopyTextResult,
+    TableResult,
     TextResult,
     ToolResult,
 )
@@ -143,7 +145,13 @@ def _coerce_to_tool_result(  # noqa: PLR0911
     match value:
         case None:
             return TextResult(text="null")
-        case TextResult() | JsonResult() | ErrorResult():
+        case (
+            TextResult()
+            | JsonResult()
+            | TableResult()
+            | PgCopyTextResult()
+            | ErrorResult()
+        ):
             return value
         case str():
             return TextResult(text=value)

@@ -40,21 +40,20 @@ CLI `boba.tool.kb.cli.kbdoc.ingest`. Чтение файлов идёт чере
       "reader.doc_type":      "kbdoc",               # KbDocReader (DOC_TYPE)
       "reader.page_title":    "Postgres Runbook",    # KbDocReader (из title:)
       "source_url":           "https://wiki/runbook",# KbDocReader (из source:)
-      "reader.kbdoc.page_id": "950276",              # KbDocReader (из page_id:)
-      "reader.kbdoc.space":   "PAAS",                # KbDocReader (из space:)
+      "confluence.page_id":   "950276",              # KbDocReader (из page_id:)
+      "confluence.space_key": "PAAS",                # KbDocReader (из space:)
       "section.heading.path": "Backup > PITR",       # StructuralChunker
-      "section.anchor":       "backup-pitr",         # если у секции есть anchor
-      "llm.page_title":       "Postgres Runbook",          # LlmMetadataChunker
-      "llm.source":           "https://wiki/runbook#backup-pitr",  # +anchor если есть
-      "llm.page_id":          "950276",                    # LlmMetadataChunker
-      "llm.location":         "Backup > PITR",             # LlmMetadataChunker
-      "llm.tags":             "backup, postgres",          # LlmMetadataChunker
-      "llm.space":            "PAAS"                       # LlmMetadataChunker
+      "section.anchor":       "backup-pitr"          # если у секции есть anchor
     }
 
-`llm.*` — унифицированный source-агностичный набор для выдачи LLM (см.
-`boba.tool.kb.core.llm_keys.LlmKeys`): его одинаково проставляет
-`LlmMetadataChunker` и для kbdoc, и для confluence, проецируя native-ключи.
+KB-документы оператора — выгрузки Confluence, поэтому kbdoc сохраняет header'ы
+под ТЕМИ ЖЕ wire-ключами, что и прямая confluence-индексация (`source_url`,
+`confluence.page_id`, `confluence.space_key`; title→`reader.page_title`,
+anchor→`section.anchor`). За счёт этого search читает оба источника 1:1 без
+сведе́ния: tools `kb_search_vector` / `kb_search_fts` возвращают `TableResult`
+— плоскую таблицу с колонками `page_title` / `source_url` / `anchor` /
+`page_id` / `heading_path` / `space` + `tags` + служебные
+`id`/`distance`/`link`/`snippet`.
 
 Системные поля (`source_id`, `chunk_index`, `content_hash`) и `tags`
 живут отдельными колонками; остальное — внутри `metadata` jsonb. Набор

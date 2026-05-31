@@ -137,6 +137,7 @@ def make_page_request(
         source_id=SourceId(viewpage_url(base_url, page_id)),
         metadata=(
             Metadata.empty()
+            .set(ConfluenceKeys.SOURCE_URL, viewpage_url(base_url, page_id))
             .set(ConfluenceKeys.PAGE_ID, page_id)
             .set(ConfluenceKeys.HOST, host)
         ),
@@ -176,6 +177,7 @@ def make_attachment_request(
     if (ancestors := parent_metadata.get(ConfluenceKeys.ANCESTORS_TITLES)) is not None:
         meta = meta.set(ConfluenceKeys.ANCESTORS_TITLES, ancestors)
     url = f"{base_url.rstrip('/')}{attachment.download_path}"
+    meta = meta.set(ConfluenceKeys.SOURCE_URL, url)
     return HttpRequest(
         url=url,
         method="GET",

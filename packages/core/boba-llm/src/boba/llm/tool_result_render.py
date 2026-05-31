@@ -13,7 +13,14 @@ import json
 from typing import assert_never
 
 from boba.llm.models import ToolResultMessage
-from boba.tools.domain import ErrorResult, JsonResult, TextResult, ToolResult
+from boba.tools.domain import (
+    ErrorResult,
+    JsonResult,
+    PgCopyTextResult,
+    TableResult,
+    TextResult,
+    ToolResult,
+)
 
 __all__ = ["tool_result_to_message"]
 
@@ -37,6 +44,13 @@ def tool_result_to_message(
             is_error = False
         case JsonResult(payload=p):
             content = json.dumps(p, ensure_ascii=False)
+            is_error = False
+        case TableResult(rows=r, note=n):
+            body = json.dumps(r, ensure_ascii=False)
+            content = body if n is None else f"{body}\n\n{n}"
+            is_error = False
+        case PgCopyTextResult(text=t):
+            content = t
             is_error = False
         case ErrorResult(message=m):
             content = m

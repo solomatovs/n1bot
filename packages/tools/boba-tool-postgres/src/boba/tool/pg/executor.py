@@ -10,16 +10,27 @@ from dataclasses import dataclass
 from typing import Any, Self
 
 from pydantic import BaseModel, Field, model_validator
+from pydantic_core import to_jsonable_python
 
 from boba.db.postgres import PostgresConnection, PostgresPool
 from boba.settings.source import TomlEnvConfigSource
+from boba.tool.pg.copy_buffer import (
+    BufferCapacityError,
+    CopyBuffer,
+    RowLimitExceededError,
+)
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["SqlExecutor", "SqlExecutorConfig", "SqlQueryError", "SqlResult"]
+__all__ = [
+    "SqlExecutor",
+    "SqlExecutorConfig",
+    "SqlQueryError",
+    "SqlResult",
+]
 
 
-CELL_CHARS_HARDLIMIT = 2000
+RESULT_BYTES_HARDLIMIT = 1_000_000
 
 
 class SqlExecutorConfig(BaseModel):
@@ -46,11 +57,13 @@ class SqlExecutorConfig(BaseModel):
         ge=1,
         description="Ограничение по кол-ву строк.",
     )
-    max_cell_chars: int = Field(
-        default=CELL_CHARS_HARDLIMIT,
+    max_bytes: int = Field(
+        default=RESULT_BYTES_HARDLIMIT,
         ge=1,
         description=(
-            f"Hardlimit на длину одного cell-значения. Default {CELL_CHARS_HARDLIMIT}."
+            "Hardlimit на суммарный размер CSV-результата COPY (байт). "
+            f"Default {RESULT_BYTES_HARDLIMIT}. Превышение → ошибка LLM "
+            "«добавьте LIMIT»."
         ),
     )
 
@@ -118,12 +131,14 @@ class SqlQueryError(RuntimeError):
 
 @dataclass(frozen=True)
 class SqlResult:
-    """Результат SqlExecutor.execute."""
+    """Результат SqlExecutor.execute: JSON-safe строки-словари + флаг усечения.
 
-    columns: list[str]
-    rows: list[tuple[Any, ...]]
-    row_count: int
-    limit_applied: int
+    `rows` — это уже `list[dict]` (dict_row курсора), значения приведены к
+    JSON-safe через `pydantic_core.to_jsonable_python` (Decimal/UUID/datetime
+    → строки, jsonb/array остаются вложенной структурой).
+    """
+
+    rows: list[dict[str, Any]]
     truncated: bool
 
 
@@ -137,20 +152,51 @@ class SqlExecutor:
     ) -> None:
         self._cfg = cfg
         logger.info(
-            "SqlExecutor opened: targets=%s max_rows=%d max_cell_chars=%d",
-            sorted(cfg.databases), cfg.max_rows, cfg.max_cell_chars,
+            "SqlExecutor opened: targets=%s max_rows=%d max_bytes=%d",
+            sorted(cfg.databases),
+            cfg.max_rows,
+            cfg.max_bytes,
         )
-
-    @property
-    def max_cell_chars(self) -> int:
-        return self._cfg.max_cell_chars
 
     @property
     def max_rows_cap(self) -> int:
         return self._cfg.max_rows
 
+    @property
+    def max_bytes(self) -> int:
+        return self._cfg.max_bytes
+
     def allowed_targets(self) -> list[str]:
         return sorted(self._cfg.databases)
+
+    def execute_copy(self, query: str, *, target: str) -> CopyBuffer:
+        """
+        Выполнить `COPY (<query>) TO STDOUT (FORMAT TEXT, HEADER)`
+        """
+        conn = self._cfg.resolve(target)
+        pool = PostgresPool.get(
+            conn.to_pool_config(session_options=self._cfg.session_options(conn)),
+        )
+
+        stmt = f"COPY ({query}) TO STDOUT WITH (FORMAT TEXT, HEADER)"
+
+        buf = CopyBuffer(
+            max_capacity=self._cfg.max_bytes,
+            limit_rows=self._cfg.max_rows,
+        )
+        try:
+            with pool.cursor() as cur, cur.copy(stmt) as cp:  # type: ignore[arg-type]
+                for block in cp:
+                    buf.write(block)
+        except (BufferCapacityError, RowLimitExceededError):
+            # гард-сигналы — наружу, трактует вызывающий
+            raise
+        except Exception as e:
+            raise SqlQueryError(
+                f"SQL copy failed (target={target!r}): {type(e).__name__}: {e}",
+            ) from e
+
+        return buf
 
     def execute(
         self,
@@ -160,7 +206,7 @@ class SqlExecutor:
         row_limit: int,
         params: Sequence[Any] | None = None,
     ) -> SqlResult:
-        """Выполнить SQL на профиле target; вернуть rows + meta."""
+        """Выполнить SQL на профиле target; вернуть JSON-safe dict-строки."""
         conn = self._cfg.resolve(target)
         pool = PostgresPool.get(
             conn.to_pool_config(session_options=self._cfg.session_options(conn)),
@@ -170,25 +216,19 @@ class SqlExecutor:
         fetch_limit = effective_limit + 1
 
         try:
-            with pool.cursor() as cur:
+            with pool.dict_cursor() as cur:
                 # params=None (а не пустой кортеж) — это сигнал psycopg3
                 # НЕ парсить query как placeholder-шаблон. Иначе `%` в
                 # тексте запроса от LLM (LIKE '%h%', to_char и т.п.) ловит
                 # "only '%s','%b','%t' are allowed as placeholders".
                 cur.execute(query, params)  # type: ignore[arg-type]
                 fetched = cur.fetchmany(fetch_limit)
-                columns = [d.name for d in (cur.description or [])]
         except Exception as e:
             raise SqlQueryError(
                 f"SQL execute failed (target={target!r}): {type(e).__name__}: {e}",
             ) from e
 
         truncated = len(fetched) > effective_limit
-        rows = [tuple(row) for row in fetched[:effective_limit]]
-        return SqlResult(
-            columns=columns,
-            rows=rows,
-            row_count=len(rows),
-            limit_applied=effective_limit,
-            truncated=truncated,
-        )
+        # dict_row → list[dict]; значения → JSON-safe (Decimal/UUID/datetime/…)
+        rows = to_jsonable_python(fetched[:effective_limit])
+        return SqlResult(rows=rows, truncated=truncated)

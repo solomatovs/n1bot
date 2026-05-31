@@ -6,10 +6,10 @@ from typing import Annotated
 
 from pydantic import Field
 
-from boba.markdown import format_markdown_table
 from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.pg.executor import SqlExecutor, SqlExecutorConfig, SqlQueryError
 from boba.tools import FromConfig, tool
+from boba.tools.domain import TableResult
 
 __all__ = ["DescribeTableConfig", "describe_table"]
 
@@ -55,10 +55,10 @@ def describe_table(
             description="PG schema таблицы. По умолчанию public",
         ),
     ] = "public",
-) -> str:
+) -> TableResult:
     """Схема таблицы на профиле target: колонки, типы, nullable, default.
 
-    Если таблицы нет, вернётся markdown с заглушкой (no rows).
+    Если таблицы нет, вернётся таблица с заглушкой (no rows).
     """
     executor = SqlExecutor(cfg=cfg.executor)
     sql = (
@@ -77,9 +77,12 @@ def describe_table(
     except SqlQueryError as e:
         raise RuntimeError(str(e)) from e
 
-    return format_markdown_table(
-        columns=result.columns,
+    note = (
+        f"список усечён до max_rows ({executor.max_rows_cap})"
+        if result.truncated
+        else None
+    )
+    return TableResult(
         rows=result.rows,
-        max_cell_chars=executor.max_cell_chars,
-        truncated=result.truncated,
+        note=note,
     )
