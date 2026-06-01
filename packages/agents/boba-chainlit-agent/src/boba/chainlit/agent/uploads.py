@@ -11,6 +11,7 @@ import asyncio
 import io
 import logging
 import re
+import unicodedata
 from collections.abc import Iterable
 from typing import Any
 
@@ -27,8 +28,15 @@ _NAME_MAX = 120
 
 
 def _sanitize_filename(name: str) -> str:
-    """Заменить запрещённые символы на `_`, обрезать длину, защита от traversal."""
-    cleaned = _FS_FORBIDDEN.sub("_", name).strip(" .")
+    """Привести к Unicode-NFC, заменить запрещённые символы на `_`, обрезать длину.
+
+    NFC обязателен: клиенты на macOS/iOS присылают имена в разложенной форме
+    (NFD, например `й` = `и` + комбинирующая бреве), а LLM и остальная система
+    оперируют NFC. Без канонизации lookup файла по имени (read_binary/cat/...)
+    не совпадает с записью на диске.
+    """
+    normalized = unicodedata.normalize("NFC", name)
+    cleaned = _FS_FORBIDDEN.sub("_", normalized).strip(" .")
     if len(cleaned) > _NAME_MAX:
         cleaned = cleaned[:_NAME_MAX].rstrip(" .")
     return cleaned or "_"
