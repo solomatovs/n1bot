@@ -51,7 +51,7 @@
    достаточный для отображения / обработки без знания конкретного типа события.
 
    Пять «доменных» категорий (`PhaseEvent`, `DeltaEvent`,
-   `CompleteEvent`, `AdvisoryEvent`, `TerminalEvent`) несут информацию,
+   `MessageEvent`, `AdvisoryEvent`, `TerminalEvent`) несут информацию,
    которая является частью диалога / истории и должна быть показана
    пользователю. Шестая категория `DiagnosticEvent` несёт нефункциональную
    телеметрию (метрики, тайминги, трейсы), которая по умолчанию **скрыта**
@@ -76,7 +76,7 @@
 
     `DeltaEvent`
         инкрементальный кусок контента, который стримится в открытый «слот» UI.
-        Соединяется с `CompleteEvent` через общий `stream_id`:
+        Соединяется с `MessageEvent` через общий `stream_id`:
         фронт открывает поток на первой delta и закрывает на снапшоте.
 
         Поля:
@@ -90,9 +90,8 @@
                 TOOL_INVOCATION
                 ...
             `chunk`         - текстовый кусок, который надо доскролировать в UI
-            `part`          - для TOOL_INVOCATION — args | result
 
-    `CompleteEvent`
+    `MessageEvent`
         завершённое сообщение в диалоге.
         Финальная форма того, что собиралось из delta:
         - `AnswerMessage` после серии `AnswerDelta`
@@ -112,11 +111,11 @@
                 ANSWER
                 THINKING
                 REFUSAL
-                TOOL_INVOCATION
+                TOOL_INVOCATION  - вызов tool (args)
+                TOOL_RESULT      - результат выполнения tool
                 ...
             `body`          - агрегированный контент
             `headline`      - опциональный заголовок — для tool это имя инструмента
-            `part`          - для TOOL_INVOCATION — args | result
 
     `AdvisoryEvent`
         нефатальное уведомление. что-то пошло не так, но цикл агента продолжает работать
@@ -268,14 +267,11 @@ class StreamKind(StrEnum):
     ANSWER = "answer"
     REFUSAL = "refusal"
     FEEDBACK = "feedback"
+    # Жизненный цикл tool-вызова разнесён по двум каналам:
+    # TOOL_INVOCATION — вызов (args от LLM, может стримиться);
+    # TOOL_RESULT — результат выполнения tool-runner'ом (только snapshot).
     TOOL_INVOCATION = "tool_invocation"
-
-
-class ToolPart(StrEnum):
-    """Часть жизненного цикла tool-вызова в рамках одной сущности."""
-
-    ARGS = "args"
-    RESULT = "result"
+    TOOL_RESULT = "tool_result"
 
 
 # --------------------------------------------------------------------- #
@@ -341,10 +337,9 @@ class DeltaEvent(AgentEventBase):
     stream_id: str = ""
     stream_kind: StreamKind = StreamKind.ANSWER
     chunk: str = ""
-    part: ToolPart | None = None
 
 
-class CompleteEvent(AgentEventBase):
+class MessageEvent(AgentEventBase):
     """
     Завершённое сообщение — `stream_id` + `stream_kind` + `body`
     """
@@ -355,7 +350,6 @@ class CompleteEvent(AgentEventBase):
     stream_kind: StreamKind = StreamKind.ANSWER
     headline: str | None = None
     body: str = ""
-    part: ToolPart | None = None
 
 
 class AdvisoryEvent(AgentEventBase):
@@ -618,7 +612,6 @@ class ToolCallDelta(DeltaEvent):
 
     type: Literal["ToolCallDelta"] = "ToolCallDelta"
     stream_kind: Literal[StreamKind.TOOL_INVOCATION] = StreamKind.TOOL_INVOCATION
-    part: Literal[ToolPart.ARGS] = ToolPart.ARGS
     index: int
     tool_call_id: str
     tool_name: str
@@ -632,11 +625,11 @@ class ToolCallDelta(DeltaEvent):
 
 
 # --------------------------------------------------------------------- #
-# CompleteEvent — конкретные события
+# MessageEvent — конкретные события
 # --------------------------------------------------------------------- #
 
 
-class UserQueryReceived(CompleteEvent):
+class UserQueryReceived(MessageEvent):
     """Запрос пользователя принят агентом и записан в историю."""
 
     type: Literal["UserQueryReceived"] = "UserQueryReceived"
@@ -650,7 +643,7 @@ class UserQueryReceived(CompleteEvent):
         return self
 
 
-class ThinkingMessage(CompleteEvent):
+class ThinkingMessage(MessageEvent):
     """Агрегированный reasoning итерации."""
 
     type: Literal["ThinkingMessage"] = "ThinkingMessage"
@@ -664,7 +657,7 @@ class ThinkingMessage(CompleteEvent):
         return self
 
 
-class AnswerMessage(CompleteEvent):
+class AnswerMessage(MessageEvent):
     """Агрегированный текстовый ответ итерации"""
 
     type: Literal["AnswerMessage"] = "AnswerMessage"
@@ -678,7 +671,7 @@ class AnswerMessage(CompleteEvent):
         return self
 
 
-class RefusalMessage(CompleteEvent):
+class RefusalMessage(MessageEvent):
     """Агрегированный отказ модели."""
 
     type: Literal["RefusalMessage"] = "RefusalMessage"
@@ -692,12 +685,11 @@ class RefusalMessage(CompleteEvent):
         return self
 
 
-class ToolCallMessage(CompleteEvent):
+class ToolCallMessage(MessageEvent):
     """Завершённый tool call (id + имя + args)."""
 
     type: Literal["ToolCallMessage"] = "ToolCallMessage"
     stream_kind: Literal[StreamKind.TOOL_INVOCATION] = StreamKind.TOOL_INVOCATION
-    part: Literal[ToolPart.ARGS] = ToolPart.ARGS
     call: ToolCall
 
     @model_validator(mode="after")
@@ -708,12 +700,11 @@ class ToolCallMessage(CompleteEvent):
         return self
 
 
-class ToolResultReady(CompleteEvent):
+class ToolResultReady(MessageEvent):
     """Результат выполнения tool — вызов и результат."""
 
     type: Literal["ToolResultReady"] = "ToolResultReady"
-    stream_kind: Literal[StreamKind.TOOL_INVOCATION] = StreamKind.TOOL_INVOCATION
-    part: Literal[ToolPart.RESULT] = ToolPart.RESULT
+    stream_kind: Literal[StreamKind.TOOL_RESULT] = StreamKind.TOOL_RESULT
     call: ToolCall
     result: ToolCallResult
 
@@ -736,7 +727,7 @@ class ToolResultReady(CompleteEvent):
         return self
 
 
-class FeedbackToLLMAdded(CompleteEvent):
+class FeedbackToLLMAdded(MessageEvent):
     """Feedback от агента к LLM зарегистрирован в журнале HistoryService."""
 
     type: Literal["FeedbackToLLMAdded"] = "FeedbackToLLMAdded"
@@ -750,7 +741,7 @@ class FeedbackToLLMAdded(CompleteEvent):
         return self
 
 
-class ToolCallDecodeFailedMessage(CompleteEvent):
+class ToolCallDecodeFailedMessage(MessageEvent):
     """Tool-call, чьи args не декодировались — часть сообщения ассистента.
 
     Это контент (лежит в `message.tool_call_decode_failures`), а не advisory:
@@ -759,7 +750,6 @@ class ToolCallDecodeFailedMessage(CompleteEvent):
 
     type: Literal["ToolCallDecodeFailedMessage"] = "ToolCallDecodeFailedMessage"
     stream_kind: Literal[StreamKind.TOOL_INVOCATION] = StreamKind.TOOL_INVOCATION
-    part: Literal[ToolPart.ARGS] = ToolPart.ARGS
     failure: ToolCallDecodeFailure
 
     @model_validator(mode="after")
@@ -916,7 +906,7 @@ AgentEvent = (
     | AnswerDelta
     | RefusalDelta
     | ToolCallDelta
-    # CompleteEvent
+    # MessageEvent
     | UserQueryReceived
     | ThinkingMessage
     | AnswerMessage

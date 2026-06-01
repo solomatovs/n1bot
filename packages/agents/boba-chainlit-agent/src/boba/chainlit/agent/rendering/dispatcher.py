@@ -11,11 +11,11 @@ from boba.agent.events import (
     AgentEvent,
     AnswerDelta,
     AnswerMessage,
-    CompleteEvent,
     DeltaEvent,
     DiagnosticEvent,
     FeedbackToLLMAdded,
     IterationStarted,
+    MessageEvent,
     PhaseEvent,
     RefusalDelta,
     RefusalMessage,
@@ -28,7 +28,6 @@ from boba.agent.events import (
     ToolCallMessage,
     ToolExecutionFailed,
     ToolExecutionStarted,
-    ToolPart,
     ToolResultReady,
     TotalMessage,
     UserQueryReceived,
@@ -104,7 +103,7 @@ class AgentEventDispatcher:
         DeltaEvent  — стриминг токенов (`*_chunk`); `ToolCallDelta`
                                игнорируется (UI рисует tool-step целиком
                                по `tool_started`, а не по чанкам args)
-        CompleteEvent — завершённый блок контента (`*_complete`,
+        MessageEvent — завершённый блок контента (`*_complete`,
                                `user_query`, `tool_result`, `feedback`);
                                `ToolCallMessage` — намерение LLM, в UI
                                не рендерится
@@ -206,9 +205,9 @@ class AgentEventDispatcher:
                 await self._target.diagnostic(diagnostic_evt)
 
             # Generic fall-throughs
-            case CompleteEvent() as snapshot:
+            case MessageEvent() as snapshot:
                 # Прочие snapshot'ы (например, USER_QUERY с не-UserQueryReceived
-                # или TOOL_INVOCATION/RESULT без ToolResultReady) — оставляем
+                # или TOOL_RESULT без ToolResultReady) — оставляем
                 # последним fallback'ом, чтобы не потерять текст.
                 await self._handle_unmatched_snapshot(snapshot)
             case PhaseEvent() as phase:
@@ -277,12 +276,12 @@ class AgentEventDispatcher:
 
     async def _handle_unmatched_snapshot(
         self,
-        event: CompleteEvent,
+        event: MessageEvent,
     ) -> None:
-        # На случай новых CompleteEvent'ов, добавленных позже —
-        # маршрутизируем по stream_kind / part, чтобы не молчать.
-        if event.stream_kind == StreamKind.TOOL_INVOCATION:
-            if event.part == ToolPart.RESULT and event.stream_id:
+        # На случай новых MessageEvent'ов, добавленных позже —
+        # маршрутизируем по stream_kind, чтобы не молчать.
+        if event.stream_kind == StreamKind.TOOL_RESULT:
+            if event.stream_id:
                 await self._target.tool_result(
                     event.stream_id,
                     event.body,
