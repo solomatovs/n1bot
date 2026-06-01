@@ -251,6 +251,23 @@ tools = [
 cat_max_chars = 50000
 
 
+# Чтение и поиск по загруженным документам (liteparse)
+[tool.doc]
+enable = true
+tools = [
+    "read_document",
+    "read_pages",
+    "document_outline",
+    "search_document",
+]
+# OCR выключен по умолчанию: для текстовых PDF не нужен, требует tesseract.
+ocr_enabled = false
+ocr_language = "rus+eng"
+max_pages = 0
+max_text_chars = 200000
+search_context_chars = 80
+search_max_matches = 50
+
 # tool для запуска bash скриптов
 # опасный tool, используем только для тестов
 [tool.shell]
