@@ -32,9 +32,7 @@ def test_yields_raw_document_propagates_source_id_and_metadata(monkeypatch):
     requests = [
         HttpRequest(
             url="https://x.test/rest/api/content/12345?expand=...",
-            source_id=SourceId(
-                "https://x.test/pages/viewpage.action?pageId=12345"
-            ),
+            source_id=SourceId("https://x.test/pages/viewpage.action?pageId=12345"),
             metadata=Metadata.from_wire({"page_id": "12345"}),
         )
     ]
@@ -95,9 +93,7 @@ def test_retry_recovers_after_5xx(monkeypatch):
     seen = list(
         HttpTransport(max_attempts=3, retry_backoff_sec=0).stream(
             _ctx(),
-            iter(
-                [HttpRequest(url="https://x.test/y", source_id=SourceId("y"))]
-            ),
+            iter([HttpRequest(url="https://x.test/y", source_id=SourceId("y"))]),
         )
     )
     assert calls["n"] == 3
@@ -122,7 +118,7 @@ def test_retry_exhausted_raises_last_5xx(monkeypatch):
             )
         )
     except httpx.HTTPStatusError as e:
-        assert e.response.status_code == 500
+        assert e.response.status_code == 500  # noqa: PT017
     else:
         raise AssertionError("ожидался HTTPStatusError")
     assert calls["n"] == 2
@@ -146,7 +142,7 @@ def test_4xx_not_retried(monkeypatch):
             )
         )
     except httpx.HTTPStatusError as e:
-        assert e.response.status_code == 404
+        assert e.response.status_code == 404  # noqa: PT017
     else:
         raise AssertionError("ожидался HTTPStatusError")
     assert calls["n"] == 1
