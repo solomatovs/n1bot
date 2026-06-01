@@ -16,7 +16,7 @@ from boba.tool.web.auth import NoneAuth
 from boba.tool.web.connection import WebConnection
 from boba.tool.web.host_profile import WebHostProfile
 from boba.tool.web.tools.download import _WebDownloader, web_download
-from boba.workspace.contract import WorkspaceShell
+from boba.workspace.contract import ProjectWorkspaceShell, WorkspaceShell
 
 
 def _patch_client(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
@@ -129,7 +129,7 @@ def test_download_blocks_unwhitelisted_host_before_any_http(
 
 def test_web_download_truncates_returned_list(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_workspace: WorkspaceShell,
+    tmp_workspace: ProjectWorkspaceShell,
 ) -> None:
     def handler(req: httpx.Request) -> httpx.Response:
         del req
@@ -162,7 +162,7 @@ def test_web_download_truncates_returned_list(
 
 
 def test_web_download_empty_urls_raises(
-    tmp_workspace: WorkspaceShell,
+    tmp_workspace: ProjectWorkspaceShell,
 ) -> None:
     from boba.tool.web.tools.download import WebDownloadConfig
 
