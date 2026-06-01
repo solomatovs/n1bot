@@ -18,11 +18,11 @@ import pytest
 
 from boba.agent import (
     AdvisoryEvent,
-    CompleteEvent,
     DeltaEvent,
     DiagnosticEvent,
     InMemoryHistoryService,
     JsonLinesHistoryService,
+    MessageEvent,
     PhaseEvent,
     TerminalEvent,
 )
@@ -84,7 +84,7 @@ def _all_events() -> list[Any]:
             tool_name="search",
             arguments_chunk='{"q":',
         ),
-        # CompleteEvent (8)
+        # MessageEvent (8)
         UserQueryReceived(request_id=_RID, query="hello"),
         ThinkingMessage(request_id=_RID, content="thought"),
         AnswerMessage(request_id=_RID, content="answer"),
@@ -239,11 +239,11 @@ def test_family_isinstance() -> None:
     assert isinstance(ThinkingDelta(request_id=_RID, token="t"), DeltaEvent)
     assert isinstance(
         UserQueryReceived(request_id=_RID, query="q"),
-        CompleteEvent,
+        MessageEvent,
     )
     assert isinstance(
         ToolCallDecodeFailedMessage(request_id=_RID, failure=_TCDF),
-        CompleteEvent,
+        MessageEvent,
     )
     assert isinstance(
         ToolExecutionFailed(
@@ -270,7 +270,7 @@ def test_match_statement_dispatch() -> None:
                 return "terminal"
             case PhaseEvent():
                 return "phase"
-            case CompleteEvent():
+            case MessageEvent():
                 return "snapshot"
             case AdvisoryEvent():
                 return "advisory"

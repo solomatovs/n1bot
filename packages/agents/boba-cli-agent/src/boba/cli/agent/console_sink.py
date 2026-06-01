@@ -9,14 +9,13 @@ from typing import TextIO
 from boba.agent.events import (
     AdvisoryEvent,
     AgentEvent,
-    CompleteEvent,
     DeltaEvent,
     DiagnosticEvent,
+    MessageEvent,
     PhaseEvent,
     Severity,
     StreamKind,
     TerminalEvent,
-    ToolPart,
 )
 
 
@@ -84,7 +83,7 @@ class ConsoleSink:
         match event:
             case DeltaEvent():
                 self._on_delta(event)
-            case CompleteEvent():
+            case MessageEvent():
                 self._on_snapshot(event)
             case PhaseEvent():
                 self._on_phase(event)
@@ -98,17 +97,15 @@ class ConsoleSink:
     def _on_delta(self, e: DeltaEvent) -> None:
         if not e.chunk:
             return
-        color = self._color_for_stream(e.stream_kind, e.part)
+        color = self._color_for_stream(e.stream_kind)
         self._inline(self._paint(e.chunk, color))
 
-    def _on_snapshot(self, e: CompleteEvent) -> None:
+    def _on_snapshot(self, e: MessageEvent) -> None:
         if e.stream_kind in self._STREAMING_KINDS:
             self._line("")
             return
-        color = self._color_for_stream(e.stream_kind, e.part)
+        color = self._color_for_stream(e.stream_kind)
         head_label = e.stream_kind.value
-        if e.part is not None:
-            head_label = f"{head_label}:{e.part.value}"
         if e.headline:
             head_label = f"{head_label}:{e.headline}"
         head = f"[{head_label}]"
@@ -161,19 +158,15 @@ class ConsoleSink:
         if e.body:
             self._err(self._paint(self._truncate(e.body), self._DIM))
 
-    def _color_for_stream(
-        self,
-        kind: StreamKind,
-        part: ToolPart | None,
-    ) -> str:
-        if kind == StreamKind.TOOL_INVOCATION:
-            return self._GREEN if part == ToolPart.RESULT else self._MAGENTA
+    def _color_for_stream(self, kind: StreamKind) -> str:
         return {
             StreamKind.ANSWER: "",
             StreamKind.THINKING: self._DIM,
             StreamKind.REFUSAL: self._YELLOW,
             StreamKind.USER_QUERY: self._BOLD_GREEN,
             StreamKind.FEEDBACK: self._BLUE,
+            StreamKind.TOOL_INVOCATION: self._MAGENTA,
+            StreamKind.TOOL_RESULT: self._GREEN,
         }[kind]
 
     def _color_for_severity(self, severity: Severity) -> str:

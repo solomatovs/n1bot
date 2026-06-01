@@ -253,7 +253,7 @@ class ChainlitLiveTarget(EventRenderTarget):
 
         Why: AnswerDelta прилетает на ЛЮБОЙ первый delta.content, даже
         если итерация в итоге ушла в tool_calls без финального
-        CompleteEvent. Без сброса между итерациями новый
+        MessageEvent. Без сброса между итерациями новый
         DeltaEvent(ANSWER) будет писать в старое сообщение из
         прошлой итерации — оно остаётся выше последующих thinking/tool.
         How to apply: на IterationStarted; если answer_msg пустой —

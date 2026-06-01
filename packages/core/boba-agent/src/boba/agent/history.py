@@ -142,7 +142,7 @@ class JsonLinesHistoryService(HistoryService):
     Journaling-реализация HistoryService поверх workspace
 
     Записывает все завершённые события:
-        PhaseEvent / CompleteEvent / AdvisoryEvent / TerminalEvent
+        PhaseEvent / MessageEvent / AdvisoryEvent / TerminalEvent
 
     Чанки (DeltaEvent) пропускаются — журнал хранит
     только агрегированные снапшоты и переходы фаз
