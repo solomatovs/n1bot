@@ -19,7 +19,7 @@ from boba.tool.web.connection import WebConnection
 from boba.tool.web.request_source import WebUrlsRequestSource
 from boba.tool.web.tools._artifact import WebArtifact
 from boba.tools import FromConfig, FromDI, Scope, tool
-from boba.workspace.contract import ProjectWorkspaceShell
+from boba.workspace.contract import ProjectWorkspaceShell, WorkspaceShell
 
 __all__ = ["WebDownloadConfig", "web_download"]
 
@@ -61,7 +61,7 @@ class _WebDownloader:
     def __init__(
         self,
         *,
-        shell: ProjectWorkspaceShell,
+        shell: WorkspaceShell,
         connection: WebConnection,
         dest_dir: str,
         as_markdown: bool,

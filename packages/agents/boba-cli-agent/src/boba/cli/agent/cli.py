@@ -22,10 +22,7 @@ from boba.agent.tool_config import (
 from boba.agent.turn.reducers import (
     RememberUserQueryReducer,
 )
-from boba.agent.workspace_fs import (
-    FsHistoryWorkspaceShell,
-    FsProjectWorkspaceShell,
-)
+from boba.agent.workspace_fs import FsWorkspaceShell
 from boba.cli.agent.config import AgentRunConfig
 from boba.cli.agent.console_sink import ConsoleSink
 from boba.cli.agent.infra import configure_logging
@@ -62,19 +59,20 @@ def _run() -> int:
 
     workspace_id = WorkspaceId("cli")
 
-    project_workspace = FsProjectWorkspaceShell(
+    project_workspace = FsWorkspaceShell(
         workspace_id=workspace_id,
         root=Path(rt.user_workspace_dir),
     )
-    history_workspace = FsHistoryWorkspaceShell(
-        workspace_id=workspace_id,
-        root=Path(rt.system_workspace_dir),
-    )
+    history_root = Path(rt.system_workspace_dir)
+
+    def history_workspace() -> FsWorkspaceShell[WorkspaceId]:
+        # Свежий shell на каждый observer: общий root, изолированный cwd.
+        return FsWorkspaceShell(workspace_id=workspace_id, root=history_root)
 
     llm = (
         LLMBuilder()
-        .add_observer(CurlTraceChatCompletionObserver(history_workspace))
-        .add_observer(HttpTraceChatCompletionObserver(history_workspace))
+        .add_observer(CurlTraceChatCompletionObserver(history_workspace()))
+        .add_observer(HttpTraceChatCompletionObserver(history_workspace()))
         .build(use_openai(rt.openai))
     )
 

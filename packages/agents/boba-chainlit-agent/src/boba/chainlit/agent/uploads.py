@@ -1,4 +1,4 @@
-"""Сохранение user-uploaded файлов из Chainlit в `ProjectWorkspaceShell`.
+"""Сохранение user-uploaded файлов из Chainlit в project-`WorkspaceShell`.
 
 Файлы складываются в фиксированную поддиректорию `upload/` внутри workspace
 сессии — туда же, куда смотрят tool'ы `cat`/`grep`/`ls` из `boba-tool-files`.
@@ -14,7 +14,7 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
-from boba.workspace.contract import ProjectWorkspaceShell
+from boba.workspace.contract import WorkspaceShell
 
 __all__ = ["UPLOAD_DIR", "save_user_uploads"]
 
@@ -36,7 +36,7 @@ def _sanitize_filename(name: str) -> str:
 
 async def save_user_uploads(
     elements: Iterable[Any],
-    shell: ProjectWorkspaceShell,
+    shell: WorkspaceShell,
 ) -> list[str]:
     """Сохранить attachment'ы `cl.Message.elements` в `upload/` workspace'а.
 
@@ -71,7 +71,7 @@ async def save_user_uploads(
 
 
 def _save_from_disk(
-    shell: ProjectWorkspaceShell, rel: str, src_path: str,
+    shell: WorkspaceShell, rel: str, src_path: str,
 ) -> None:
     """Stream tmp-файл Chainlit'а в workspace — без чтения в память."""
     with open(src_path, "rb") as fh:
@@ -79,7 +79,7 @@ def _save_from_disk(
 
 
 def _save_from_memory(
-    shell: ProjectWorkspaceShell, rel: str, content: Any,
+    shell: WorkspaceShell, rel: str, content: Any,
 ) -> None:
     """Принять `bytes`/`bytearray`/`memoryview`/`str` → atomic_write_binary."""
     if isinstance(content, (bytes, bytearray, memoryview)):

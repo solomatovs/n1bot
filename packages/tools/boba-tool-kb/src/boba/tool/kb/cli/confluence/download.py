@@ -35,7 +35,7 @@ from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import Field
 
-from boba.agent.workspace_fs import FsProjectWorkspaceShell
+from boba.agent.workspace_fs import FsWorkspaceShell
 from boba.indexing import PipelineId
 from boba.settings import BobaSettingsConfigDict, StringList
 from boba.tool.kb.confluence.download import (
@@ -48,7 +48,7 @@ from boba.tool.kb.confluence.request_sources import (
     ConfluencePaginator,
     ConfluenceSpaceRequestSource,
 )
-from boba.workspace.contract import ProjectWorkspaceShell, WorkspaceId
+from boba.workspace.contract import WorkspaceId, WorkspaceShell
 
 __all__ = ["ConfluenceDownloadCliConfig", "main"]
 
@@ -142,7 +142,7 @@ class ConfluenceDownloadCli:
 
     @staticmethod
     def run_page_ids_mode(
-        cfg: ConfluenceDownloadCliConfig, shell: ProjectWorkspaceShell,
+        cfg: ConfluenceDownloadCliConfig, shell: WorkspaceShell,
     ) -> int:
         if cfg.only or cfg.skip:
             logger.warning(
@@ -193,7 +193,7 @@ class ConfluenceDownloadCli:
 
     @staticmethod
     def run_spaces_mode(
-        cfg: ConfluenceDownloadCliConfig, shell: ProjectWorkspaceShell,
+        cfg: ConfluenceDownloadCliConfig, shell: WorkspaceShell,
     ) -> int:
         if cfg.only:
             logger.info("using only=%d space-keys (skip discovery)", len(cfg.only))
@@ -283,7 +283,7 @@ def main() -> int:
 
     # CWD как корень — `dest_dir` интерпретируется shell'ом как обычный
     # FS-путь (без обёртки workspace_root).
-    shell: ProjectWorkspaceShell = FsProjectWorkspaceShell(
+    shell: WorkspaceShell = FsWorkspaceShell(
         workspace_id=WorkspaceId("cli-confluence-download"),
         root=Path("."),
     )

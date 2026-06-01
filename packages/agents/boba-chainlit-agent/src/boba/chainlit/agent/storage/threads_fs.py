@@ -27,7 +27,7 @@ from boba.chainlit.agent.models import (
     ThreadMeta,
     UserId,
 )
-from boba.workspace.contract import HistoryWorkspaceShell, WorkspaceId
+from boba.workspace.contract import WorkspaceId, WorkspaceShell
 
 __all__ = [
     "FsThreadRepository",
@@ -121,7 +121,7 @@ class FsThreadRepository(ThreadRepository):
 
     def __init__(
         self,
-        system_shell: HistoryWorkspaceShell,
+        system_shell: WorkspaceShell,
         index_filename: str = _DEFAULT_INDEX_FILENAME,
     ) -> None:
         self._system_shell = system_shell

@@ -5,7 +5,7 @@
 2. Discriminator `type` проставляется и читается корректно.
 3. Backward-compat: старые JSONL-строки (поле type первое или последнее)
    парсятся неизменно.
-4. JsonLinesHistoryService end-to-end через FsHistoryWorkspaceShell.
+4. JsonLinesHistoryService end-to-end через FsWorkspaceShell.
 5. InMemoryHistoryService фильтрует ContentDeltaEvent и DiagnosticEvent.
 """
 
@@ -51,7 +51,7 @@ from boba.agent.events import (
     UserQueryReceived,
 )
 from boba.agent.models import ToolCallFailure, ToolCallResult
-from boba.agent.workspace_fs.shell import FsHistoryWorkspaceShell
+from boba.agent.workspace_fs.shell import FsWorkspaceShell
 from boba.llm.models import RequestId, ToolCall, ToolCallDecodeFailure
 from boba.tools.domain import ErrorResult, JsonResult, TextResult
 
@@ -338,7 +338,7 @@ def test_is_content_delta_spec() -> None:
     )
 
 
-def test_jsonlines_history_e2e(history_workspace: FsHistoryWorkspaceShell) -> None:
+def test_jsonlines_history_e2e(history_workspace: FsWorkspaceShell) -> None:
     """Полный e2e: запись в файл, чтение, фильтрация ContentDeltaEvent."""
     svc = JsonLinesHistoryService(history_workspace)
 
@@ -362,7 +362,7 @@ def test_jsonlines_history_e2e(history_workspace: FsHistoryWorkspaceShell) -> No
     assert recovered[2] == events[3]
 
 
-def test_jsonlines_clear(history_workspace: FsHistoryWorkspaceShell) -> None:
+def test_jsonlines_clear(history_workspace: FsWorkspaceShell) -> None:
     svc = JsonLinesHistoryService(history_workspace)
     svc.record(
         IterationStarted(request_id=_RID, iteration_count=1, max_iterations=1),

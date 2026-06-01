@@ -26,15 +26,11 @@ from boba.workspace.contract import (
     EntryMeta,
     FileEntry,
     GrepMatch,
-    HistoryWorkspaceShell,
     LsEntry,
     OtherEntry,
-    ProjectWorkspaceShell,
-    ScratchWorkspaceShell,
     TextReadable,
     WorkspaceDecodingError,
     WorkspaceError,
-    WorkspaceId,
     WorkspaceNotFoundError,
     WorkspacePermissionError,
     WorkspaceShell,
@@ -242,6 +238,11 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
         self._root = root.resolve()
         self._separator = b"\n"
         self._cwd_parts: tuple[str, ...] = ()
+
+    @classmethod
+    def under(cls, base_dir: Path, workspace_id: TWsId) -> FsWorkspaceShell[TWsId]:
+        """Shell с корнем `base_dir/<workspace_id>` — per-id namespace на ФС."""
+        return cls(workspace_id, base_dir / str(workspace_id))
 
     @property
     def workspace_id(self) -> TWsId:
@@ -861,18 +862,3 @@ class FsWorkspaceShell(WorkspaceShell[TWsId], Generic[TWsId]):
             absolute,
         )
         return WorkspacePath(source=source, relative=relative, absolute=absolute)
-
-
-TWs = TypeVar("TWs", bound=FsWorkspaceShell)
-
-
-class FsProjectWorkspaceShell(FsWorkspaceShell[WorkspaceId], ProjectWorkspaceShell):
-    """Файловый ProjectWorkspaceShell."""
-
-
-class FsHistoryWorkspaceShell(FsWorkspaceShell[WorkspaceId], HistoryWorkspaceShell):
-    """Файловый HistoryWorkspaceShell."""
-
-
-class FsScratchWorkspaceShell(FsWorkspaceShell[WorkspaceId], ScratchWorkspaceShell):
-    """Файловый ScratchWorkspaceShell."""

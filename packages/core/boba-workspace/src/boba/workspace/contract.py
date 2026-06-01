@@ -1,5 +1,9 @@
-"""WorkspaceShell + WorkspaceRegistry: изолированные shell-сессии над файловыми
-namespace'ами + DI-маркеры конкретных видов (Project/History/Scratch/Prompt).
+"""WorkspaceShell: изолированная shell-сессия над файловым namespace'ом.
+
+`ProjectWorkspaceShell` — единственный тонкий маркер: DI-токен, по которому
+file-tools авто-резолвят свой workspace. Остальные потребители (history,
+storage, observers) принимают `WorkspaceShell` напрямую и конструируют
+`FsWorkspaceShell` на месте из пути — без DI и без маркеров.
 """
 
 from __future__ import annotations
@@ -20,24 +24,15 @@ __all__ = [
     "EntryMeta",
     "FileEntry",
     "GrepMatch",
-    "HistoryWorkspaceRegistry",
-    "HistoryWorkspaceShell",
     "LsEntry",
     "OtherEntry",
-    "ProjectWorkspaceRegistry",
     "ProjectWorkspaceShell",
-    "PromptWorkspaceId",
-    "PromptWorkspaceRegistry",
-    "PromptWorkspaceShell",
-    "ScratchWorkspaceRegistry",
-    "ScratchWorkspaceShell",
     "TextReadable",
     "WorkspaceDecodingError",
     "WorkspaceError",
     "WorkspaceId",
     "WorkspaceNotFoundError",
     "WorkspacePermissionError",
-    "WorkspaceRegistry",
     "WorkspaceShell",
     "new_workspace_id",
 ]
@@ -320,61 +315,10 @@ class WorkspaceShell(ABC, Generic[TWsId]):
         ...
 
 
-class WorkspaceRegistry(ABC, Generic[TWsId]):
-    """Реестр workspace'ов одного namespace."""
-
-    @abstractmethod
-    def create(self) -> WorkspaceShell[TWsId]:
-        """Создать новый workspace с автосгенерированным id."""
-        ...
-
-    @abstractmethod
-    def get(self, workspace_id: TWsId) -> WorkspaceShell[TWsId]:
-        """Получить существующий workspace; WorkspaceNotFoundError если нет."""
-        ...
-
-    @abstractmethod
-    def get_or_create(self, workspace_id: TWsId) -> WorkspaceShell[TWsId]:
-        """Вернуть существующий или создать новый по заданному id."""
-        ...
-
-    @abstractmethod
-    def delete(self, workspace_id: TWsId) -> None:
-        """Удалить workspace и все его данные."""
-        ...
-
-
 class ProjectWorkspaceShell(WorkspaceShell[WorkspaceId]):
-    """DI-маркер: workspace проекта — код/документы пользователя, доступен tools."""
+    """DI-маркер: workspace проекта — код/документы пользователя, доступен tools.
 
-
-class HistoryWorkspaceShell(WorkspaceShell[WorkspaceId]):
-    """DI-маркер: системный workspace — history, debug-артефакты."""
-
-
-class ScratchWorkspaceShell(WorkspaceShell[WorkspaceId]):
-    """DI-маркер: эфемерный workspace, чистится на выходе из request scope."""
-
-
-class ProjectWorkspaceRegistry(WorkspaceRegistry[WorkspaceId]):
-    """DI-маркер реестра ProjectWorkspaceShell."""
-
-
-class HistoryWorkspaceRegistry(WorkspaceRegistry[WorkspaceId]):
-    """DI-маркер реестра HistoryWorkspaceShell."""
-
-
-class ScratchWorkspaceRegistry(WorkspaceRegistry[WorkspaceId]):
-    """DI-маркер реестра ScratchWorkspaceShell."""
-
-
-PromptWorkspaceId = NewType("PromptWorkspaceId", str)
-"""Строковый id prompt-namespace (application-singleton)."""
-
-
-class PromptWorkspaceShell(WorkspaceShell[PromptWorkspaceId]):
-    """DI-маркер: workspace со статическими *.md/*.txt-промптами."""
-
-
-class PromptWorkspaceRegistry(WorkspaceRegistry[PromptWorkspaceId]):
-    """DI-маркер реестра PromptWorkspaceShell."""
+    Единственный оставшийся маркер: служит DI-токеном, по которому file-tools
+    авто-резолвят свой workspace. Все прочие виды (history, prompt, scratch) —
+    это просто `FsWorkspaceShell`, сконструированный из нужного пути на месте.
+    """

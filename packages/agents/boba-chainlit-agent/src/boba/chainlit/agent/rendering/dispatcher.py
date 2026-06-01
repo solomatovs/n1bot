@@ -323,5 +323,3 @@ class AgentEventDispatcher:
         if ns < cls._NS_PER_S:
             return f"+{ns / cls._NS_PER_MS:.0f}ms"
         return f"+{ns / cls._NS_PER_S:.2f}s"
-
-

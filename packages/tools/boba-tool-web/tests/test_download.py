@@ -1,6 +1,6 @@
 """web_download end-to-end: реальный HttpTransport + httpx.MockTransport.
 
-`tmp_workspace` — реальная FS-реализация `ProjectWorkspaceShell`. Mock'аем
+`tmp_workspace` — реальная FS-реализация `WorkspaceShell`. Mock'аем
 только сетевой слой через `httpx.MockTransport`, остальное идёт по
 настоящему pipeline'у `WebUrlsRequestSource → HttpTransport → WebArtifact`.
 """
@@ -16,7 +16,7 @@ from boba.tool.web.auth import NoneAuth
 from boba.tool.web.connection import WebConnection
 from boba.tool.web.host_profile import WebHostProfile
 from boba.tool.web.tools.download import _WebDownloader, web_download
-from boba.workspace.contract import ProjectWorkspaceShell
+from boba.workspace.contract import WorkspaceShell
 
 
 def _patch_client(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
@@ -42,7 +42,7 @@ def _conn() -> WebConnection:
 
 def test_download_writes_raw_html_with_header(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_workspace: ProjectWorkspaceShell,
+    tmp_workspace: WorkspaceShell,
 ) -> None:
     body = b"<html><body><h1>Hello</h1></body></html>"
 
@@ -75,7 +75,7 @@ def test_download_writes_raw_html_with_header(
 
 def test_download_writes_markdown_converted(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_workspace: ProjectWorkspaceShell,
+    tmp_workspace: WorkspaceShell,
 ) -> None:
     html = b"<html><body><h1>Title</h1><p>Para</p></body></html>"
 
@@ -105,7 +105,7 @@ def test_download_writes_markdown_converted(
 
 def test_download_blocks_unwhitelisted_host_before_any_http(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_workspace: ProjectWorkspaceShell,
+    tmp_workspace: WorkspaceShell,
 ) -> None:
     called: list[httpx.Request] = []
 
@@ -129,7 +129,7 @@ def test_download_blocks_unwhitelisted_host_before_any_http(
 
 def test_web_download_truncates_returned_list(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_workspace: ProjectWorkspaceShell,
+    tmp_workspace: WorkspaceShell,
 ) -> None:
     def handler(req: httpx.Request) -> httpx.Response:
         del req
@@ -162,7 +162,7 @@ def test_web_download_truncates_returned_list(
 
 
 def test_web_download_empty_urls_raises(
-    tmp_workspace: ProjectWorkspaceShell,
+    tmp_workspace: WorkspaceShell,
 ) -> None:
     from boba.tool.web.tools.download import WebDownloadConfig
 
