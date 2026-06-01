@@ -6,7 +6,7 @@
 3. Backward-compat: старые JSONL-строки (поле type первое или последнее)
    парсятся неизменно.
 4. JsonLinesHistoryService end-to-end через FsWorkspaceShell.
-5. InMemoryHistoryService фильтрует ContentDeltaEvent и DiagnosticEvent.
+5. InMemoryHistoryService фильтрует DeltaEvent и DiagnosticEvent.
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ import pytest
 
 from boba.agent import (
     AdvisoryEvent,
-    ContentDeltaEvent,
-    ContentSnapshotEvent,
+    CompleteEvent,
+    DeltaEvent,
     DiagnosticEvent,
     InMemoryHistoryService,
     JsonLinesHistoryService,
@@ -73,7 +73,7 @@ def _all_events() -> list[Any]:
             request_id=_RID,
             call=_TC,
         ),
-        # ContentDeltaEvent (4)
+        # DeltaEvent (4)
         ThinkingDelta(request_id=_RID, token="t"),
         AnswerDelta(request_id=_RID, token="a"),
         RefusalDelta(request_id=_RID, token="r"),
@@ -84,7 +84,7 @@ def _all_events() -> list[Any]:
             tool_name="search",
             arguments_chunk='{"q":',
         ),
-        # ContentSnapshotEvent (8)
+        # CompleteEvent (8)
         UserQueryReceived(request_id=_RID, query="hello"),
         ThinkingMessage(request_id=_RID, content="thought"),
         AnswerMessage(request_id=_RID, content="answer"),
@@ -236,14 +236,14 @@ def test_family_isinstance() -> None:
         IterationStarted(request_id=_RID, iteration_count=1, max_iterations=5),
         PhaseEvent,
     )
-    assert isinstance(ThinkingDelta(request_id=_RID, token="t"), ContentDeltaEvent)
+    assert isinstance(ThinkingDelta(request_id=_RID, token="t"), DeltaEvent)
     assert isinstance(
         UserQueryReceived(request_id=_RID, query="q"),
-        ContentSnapshotEvent,
+        CompleteEvent,
     )
     assert isinstance(
         ToolCallDecodeFailedMessage(request_id=_RID, failure=_TCDF),
-        ContentSnapshotEvent,
+        CompleteEvent,
     )
     assert isinstance(
         ToolExecutionFailed(
@@ -264,13 +264,13 @@ def test_match_statement_dispatch() -> None:
 
     def classify(e: Any) -> str:
         match e:
-            case ContentDeltaEvent():
+            case DeltaEvent():
                 return "delta"
             case TerminalEvent():
                 return "terminal"
             case PhaseEvent():
                 return "phase"
-            case ContentSnapshotEvent():
+            case CompleteEvent():
                 return "snapshot"
             case AdvisoryEvent():
                 return "advisory"
@@ -310,7 +310,7 @@ def test_in_memory_history_filters_content_delta_and_diagnostic() -> None:
     svc.record(
         IterationStarted(request_id=_RID, iteration_count=1, max_iterations=1),
     )
-    # ContentDeltaEvent — фильтруется
+    # DeltaEvent — фильтруется
     svc.record(ThinkingDelta(request_id=_RID, token="x"))
     # DiagnosticEvent — фильтруется (эфемерная телеметрия). Конкретных core-
     # диагностик больше нет, поэтому фильтрацию по категории проверяем базовым
@@ -339,7 +339,7 @@ def test_is_content_delta_spec() -> None:
 
 
 def test_jsonlines_history_e2e(history_workspace: FsWorkspaceShell) -> None:
-    """Полный e2e: запись в файл, чтение, фильтрация ContentDeltaEvent."""
+    """Полный e2e: запись в файл, чтение, фильтрация DeltaEvent."""
     svc = JsonLinesHistoryService(history_workspace)
 
     events = [

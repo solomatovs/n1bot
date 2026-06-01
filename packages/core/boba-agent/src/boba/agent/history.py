@@ -102,7 +102,7 @@ class HistoryService(HistoryReader, HistoryWriter, StateChannel, ABC):
         return ChannelId("history")
 
     def record(self, event: AgentEvent) -> None:
-        """Фильтрует ContentDeltaEvent и DiagnosticEvent сообщения.
+        """Фильтрует DeltaEvent и DiagnosticEvent сообщения.
 
         ContentDelta - инкрементальные чанки, журнал хранит только агрегаты.
         Diagnostic - эфемерная телеметрия, в журнал не идёт по дизайну.
@@ -142,9 +142,9 @@ class JsonLinesHistoryService(HistoryService):
     Journaling-реализация HistoryService поверх workspace
 
     Записывает все завершённые события:
-        PhaseEvent / ContentSnapshotEvent / AdvisoryEvent / TerminalEvent
+        PhaseEvent / CompleteEvent / AdvisoryEvent / TerminalEvent
 
-    Чанки (ContentDeltaEvent) пропускаются — журнал хранит
+    Чанки (DeltaEvent) пропускаются — журнал хранит
     только агрегированные снапшоты и переходы фаз
     """
 
@@ -184,7 +184,8 @@ class JsonLinesHistoryService(HistoryService):
                     yield AgentEventAdapter.validate_json(stripped)
                 except (json.JSONDecodeError, ValidationError) as exc:
                     raise HistoryStoreReadError(
-                        exc, ctx=f"path={self._filename}: {stripped!r}",
+                        exc,
+                        ctx=f"path={self._filename}: {stripped!r}",
                     ) from exc
         except WorkspaceError as exc:
             raise HistoryStoreReadError(exc, ctx=f"path={self._filename}") from exc
