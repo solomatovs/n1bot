@@ -9,7 +9,7 @@ import pytest
 
 from boba.agent.agent import AgentContext
 from boba.agent.turn.spec import TurnState
-from boba.agent.workspace_fs.shell import FsHistoryWorkspaceShell
+from boba.agent.workspace_fs.shell import FsWorkspaceShell
 from boba.llm.models import DialogMessage, ToolResultMessage, new_request_id
 from boba.llm.tool_result_render import tool_result_to_message
 from boba.tools.domain import TextResult
@@ -49,6 +49,6 @@ def make_tool_result_message() -> Callable[..., ToolResultMessage]:
 
 
 @pytest.fixture
-def history_workspace(tmp_path: Path) -> FsHistoryWorkspaceShell:
-    """`FsHistoryWorkspaceShell` с детерминированным `WorkspaceId('test')`."""
-    return FsHistoryWorkspaceShell(WorkspaceId("test"), tmp_path)
+def history_workspace(tmp_path: Path) -> FsWorkspaceShell[WorkspaceId]:
+    """`FsWorkspaceShell` с детерминированным `WorkspaceId('test')`."""
+    return FsWorkspaceShell(WorkspaceId("test"), tmp_path)

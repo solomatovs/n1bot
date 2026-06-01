@@ -50,7 +50,7 @@ from boba.agent.turn.spec import LLMRequest, LLMRequestFactory
 from boba.agent.workspace_fs import FsWorkspaceShell
 from boba.llm.models import SamplingParams
 from boba.tools.framework import ToolCatalog
-from boba.workspace.contract import PromptWorkspaceId
+from boba.workspace.contract import WorkspaceId
 
 __all__ = ["TurnBuilder", "TurnReducerFactory"]
 
@@ -142,7 +142,7 @@ class TurnBuilder:
         default_prompt: str = "",
     ) -> Self:
         """Добавить provider, читающий system-prompt из одного файла."""
-        workspace = FsWorkspaceShell(PromptWorkspaceId("prompt"), file_path.parent)
+        workspace = FsWorkspaceShell(WorkspaceId("prompt"), file_path.parent)
         rel_path = file_path.name
         self.system_prompt_from_providers(
             [
@@ -165,7 +165,7 @@ class TurnBuilder:
         extensions: tuple[str, ...] = (".md", ".txt"),
     ) -> Self:
         """Добавить provider, читающий файлы из директории как отдельные блоки."""
-        workspace = FsWorkspaceShell(PromptWorkspaceId("prompt"), dir_path)
+        workspace = FsWorkspaceShell(WorkspaceId("prompt"), dir_path)
         self.system_prompt_from_providers(
             [
                 DirectoryPromptProvider(

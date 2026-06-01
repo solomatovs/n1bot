@@ -18,7 +18,7 @@ from boba.agent.events import (
 )
 from boba.agent.state import ChannelId, StateChannel
 from boba.llm.models import RequestId
-from boba.workspace.contract import HistoryWorkspaceShell, WorkspaceError
+from boba.workspace.contract import WorkspaceError, WorkspaceShell
 
 __all__ = [
     "HistoryReader",
@@ -150,7 +150,7 @@ class JsonLinesHistoryService(HistoryService):
 
     _FILENAME = "history.jsonl"
 
-    def __init__(self, workspace: HistoryWorkspaceShell) -> None:
+    def __init__(self, workspace: WorkspaceShell) -> None:
         self._workspace = workspace
         self._filename = self._FILENAME
         self._ensure_file()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from boba.agent import (
     AgentBuilder,
     CompactHistoryDialogView,
@@ -11,6 +13,7 @@ from boba.agent import (
 from boba.agent.agent import Agent
 from boba.agent.history import HistoryService, JsonLinesHistoryService
 from boba.agent.prompt import PromptId
+from boba.agent.workspace_fs import FsWorkspaceShell
 from boba.chainlit.agent.config import ChainlitConfig
 from boba.chainlit.agent.logging import log_context
 from boba.chainlit.agent.models import ThreadId
@@ -31,11 +34,9 @@ from boba.provider.openai import (
 from boba.tools import ToolBuilder
 from boba.tools.framework import ToolRegistry
 from boba.workspace.contract import (
-    HistoryWorkspaceRegistry,
-    HistoryWorkspaceShell,
-    ProjectWorkspaceRegistry,
     ProjectWorkspaceShell,
     WorkspaceId,
+    WorkspaceShell,
 )
 
 __all__ = ["ChatSession"]
@@ -54,8 +55,8 @@ class ChatSession:
         workspace_id: WorkspaceId,
         thread_id: ThreadId,
         tool_builder: ToolBuilder,
-        project_workspaces: ProjectWorkspaceRegistry,
-        history_workspaces: HistoryWorkspaceRegistry,
+        project_base_dir: Path,
+        history_base_dir: Path,
         thread_repository: ThreadRepository,
         default_prompt_source: DefaultSystemPromptSource,
         available_tools: AvailableToolsCache,
@@ -67,39 +68,29 @@ class ChatSession:
         self._chainlit_config = ChainlitConfig.load()
         rt = self._chainlit_config.runtime
 
-        project_shell = project_workspaces.get_or_create(workspace_id)
-        if not isinstance(project_shell, ProjectWorkspaceShell):
-            msg = (
-                f"FsProjectWorkspaceRegistry returned {type(project_shell).__name__},"
-                f" expected ProjectWorkspaceShell"
-            )
-            raise TypeError(msg)
-        self._project_shell = project_shell
+        # Свежий shell на сессию (project) и на каждую history-службу:
+        # общий root, но изолированное состояние (cwd) у каждого потребителя.
+        self._project_shell = FsWorkspaceShell.under(project_base_dir, workspace_id)
 
-        history_shell = history_workspaces.get_or_create(workspace_id)
-        if not isinstance(history_shell, HistoryWorkspaceShell):
-            msg = (
-                f"FsHistoryWorkspaceRegistry returned {type(history_shell).__name__},"
-                f" expected HistoryWorkspaceShell"
-            )
-            raise TypeError(msg)
+        def history_shell() -> FsWorkspaceShell[WorkspaceId]:
+            return FsWorkspaceShell.under(history_base_dir, workspace_id)
 
         llm = (
             LLMBuilder()
-            .add_observer(CurlTraceChatCompletionObserver(history_shell))
-            .add_observer(HttpTraceChatCompletionObserver(history_shell))
+            .add_observer(CurlTraceChatCompletionObserver(history_shell()))
+            .add_observer(HttpTraceChatCompletionObserver(history_shell()))
             .build(use_openai(rt.openai))
         )
 
         self._tool_registry: ToolRegistry = (
             tool_builder.register_instance(
-                project_shell, provides=ProjectWorkspaceShell,
+                self._project_shell, provides=ProjectWorkspaceShell,
             ).build()
         )
 
         catalog = self._wrap_catalog(self._tool_registry.catalog())
 
-        history: HistoryService = JsonLinesHistoryService(history_shell)
+        history: HistoryService = JsonLinesHistoryService(history_shell())
 
         turn = (
             TurnBuilder(rt.model)
@@ -143,7 +134,7 @@ class ChatSession:
             self._thread_id,
         )
 
-    def project_workspace(self) -> ProjectWorkspaceShell:
+    def project_workspace(self) -> WorkspaceShell:
         """Project-workspace сессии — тот же, куда смотрят file-tools агента."""
         return self._project_shell
 

@@ -1,4 +1,4 @@
-"""Порт `UserCatalog` + FS-реализация поверх `users.json` в HistoryWorkspaceShell."""
+"""Порт `UserCatalog` + FS-реализация поверх `users.json` в WorkspaceShell."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Any, ClassVar
 from pydantic import TypeAdapter
 
 from boba.chainlit.agent.models import StoredUser, UserId
-from boba.workspace.contract import HistoryWorkspaceShell
+from boba.workspace.contract import WorkspaceShell
 
 __all__ = ["FsUserCatalog", "UserCatalog"]
 
@@ -35,13 +35,13 @@ class UserCatalog(ABC):
 
 
 class FsUserCatalog(UserCatalog):
-    """JSON-файл `{identifier -> StoredUser}` внутри `HistoryWorkspaceShell`."""
+    """JSON-файл `{identifier -> StoredUser}` внутри `WorkspaceShell`."""
 
     _DEFAULT_FILENAME: ClassVar[str] = "users.json"
 
     def __init__(
         self,
-        shell: HistoryWorkspaceShell,
+        shell: WorkspaceShell,
         filename: str = _DEFAULT_FILENAME,
     ) -> None:
         self._shell = shell

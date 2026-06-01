@@ -14,10 +14,7 @@ from boba.agent.tool_config import (
     ConfigSourceResolver,
     default_config_source,
 )
-from boba.agent.workspace_fs import (
-    FsHistoryWorkspaceRegistry,
-    FsProjectWorkspaceRegistry,
-)
+from boba.agent.workspace_fs import FsWorkspaceShell
 from boba.chainlit.agent.auth import AuthenticateUser, StaticUserRepository
 from boba.chainlit.agent.config import ChainlitConfig
 from boba.chainlit.agent.data_layer import BobaDataLayer
@@ -43,11 +40,7 @@ from boba.chainlit.agent.system_prompt import DefaultSystemPromptSource
 from boba.chainlit.agent.tool_cache import AvailableToolsCache
 from boba.settings import ConfigSource
 from boba.tools import ToolBuilder
-from boba.workspace.contract import (
-    HistoryWorkspaceRegistry,
-    ProjectWorkspaceRegistry,
-    WorkspaceId,
-)
+from boba.workspace.contract import WorkspaceId
 
 __all__ = ["main"]
 
@@ -100,8 +93,8 @@ def _make_tool_builder_factory(
 
 def _make_chat_session_builder(
     make_tool_builder: Callable[[], ToolBuilder],
-    project_workspaces: ProjectWorkspaceRegistry,
-    history_workspaces: HistoryWorkspaceRegistry,
+    project_base_dir: Path,
+    history_base_dir: Path,
     thread_repository: ThreadRepository,
     default_prompt_source: DefaultSystemPromptSource,
     available_tools: AvailableToolsCache,
@@ -113,8 +106,8 @@ def _make_chat_session_builder(
             workspace_id,
             thread_id,
             make_tool_builder(),
-            project_workspaces,
-            history_workspaces,
+            project_base_dir,
+            history_base_dir,
             thread_repository,
             default_prompt_source,
             available_tools,
@@ -151,24 +144,24 @@ def main() -> int:
 
     _bridge_chainlit_env(chainlit_cfg)
 
-    project_workspaces = FsProjectWorkspaceRegistry(
-        base_dir=Path(rt.user_workspace_dir),
-        subdir="",
-    )
-    history_workspaces = FsHistoryWorkspaceRegistry(
-        base_dir=Path(rt.system_workspace_dir),
-        subdir="",
-    )
+    project_base_dir = Path(rt.user_workspace_dir)
+    history_base_dir = Path(rt.system_workspace_dir)
 
     def make_history_service(workspace_id: WorkspaceId) -> HistoryService:
         """JSONL per-workspace: chainlit и агент видят один и тот же журнал."""
-        return JsonLinesHistoryService(history_workspaces.get_or_create(workspace_id))
+        return JsonLinesHistoryService(
+            FsWorkspaceShell.under(history_base_dir, workspace_id)
+        )
 
     authenticate_user = AuthenticateUser(StaticUserRepository({"admin": "admin"}))
 
-    system_shell = history_workspaces.get_or_create(_SYSTEM_WORKSPACE_ID)
-    user_catalog = FsUserCatalog(system_shell)
-    thread_repository = FsThreadRepository(system_shell)
+    # Свежий shell на каждую службу: общий root, но изолированное состояние.
+    user_catalog = FsUserCatalog(
+        FsWorkspaceShell.under(history_base_dir, _SYSTEM_WORKSPACE_ID)
+    )
+    thread_repository = FsThreadRepository(
+        FsWorkspaceShell.under(history_base_dir, _SYSTEM_WORKSPACE_ID)
+    )
     default_prompt_source = DefaultSystemPromptSource(Path(rt.system_prompt_dir))
     available_tools = AvailableToolsCache()
 
@@ -176,8 +169,8 @@ def main() -> int:
     tool_builder_factory = _make_tool_builder_factory(config_source)
     chat_session_builder = _make_chat_session_builder(
         tool_builder_factory,
-        project_workspaces,
-        history_workspaces,
+        project_base_dir,
+        history_base_dir,
         thread_repository,
         default_prompt_source,
         available_tools,

@@ -16,11 +16,11 @@ from __future__ import annotations
 from io import BytesIO
 from pathlib import Path
 
-from boba.agent.workspace_fs.shell import FsProjectWorkspaceShell
+from boba.agent.workspace_fs.shell import FsWorkspaceShell
 from boba.indexing import Metadata, RawDocument, SourceId, TransportKeys
 from boba.tool.kb.confluence.download import ConfluenceDownloader
 from boba.tool.kb.confluence.models import AttachmentInfo, ConfluenceKeys
-from boba.workspace.contract import ProjectWorkspaceShell
+from boba.workspace.contract import WorkspaceShell
 
 # Короткие алиасы на staticmethod'ы downloader'а — драйвим их напрямую.
 _confluence_attachment_filename = ConfluenceDownloader._confluence_attachment_filename
@@ -28,14 +28,14 @@ _rewrite_attachment_urls = ConfluenceDownloader._rewrite_attachment_urls
 _stream_records = ConfluenceDownloader._stream_records
 
 
-def _mk_shell(root: Path) -> ProjectWorkspaceShell:
-    """`ProjectWorkspaceShell` поверх `root` для теста.
+def _mk_shell(root: Path) -> WorkspaceShell:
+    """`WorkspaceShell` поверх `root` для теста.
 
     `_stream_records`/`_write_page`/`_write_attachment` ожидают именно
     `WorkspaceShell`-абстракцию (mkdir / atomic_write_binary), а не
     голый `pathlib.Path`.
     """
-    return FsProjectWorkspaceShell(workspace_id="test", root=root)  # type: ignore[arg-type]
+    return FsWorkspaceShell(workspace_id="test", root=root)  # type: ignore[arg-type]
 
 # -------- _confluence_attachment_filename --------
 
