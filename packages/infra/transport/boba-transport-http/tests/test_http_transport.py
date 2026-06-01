@@ -80,6 +80,78 @@ def test_handle_streams_in_chunks(monkeypatch):
     assert chunk1 + chunk2 + rest == payload
 
 
+def test_retry_recovers_after_5xx(monkeypatch):
+    """5xx ретраится; запрос проходит, когда сервер перестаёт падать."""
+    calls = {"n": 0}
+
+    def handler(_req):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return httpx.Response(503, content=b"unavailable")
+        return httpx.Response(200, content=b"ok")
+
+    _patch(monkeypatch, handler)
+
+    seen = list(
+        HttpTransport(max_attempts=3, retry_backoff_sec=0).stream(
+            _ctx(),
+            iter(
+                [HttpRequest(url="https://x.test/y", source_id=SourceId("y"))]
+            ),
+        )
+    )
+    assert calls["n"] == 3
+    assert seen[0].handle.read() == b"ok"
+
+
+def test_retry_exhausted_raises_last_5xx(monkeypatch):
+    """Все попытки 5xx исчерпаны → пробрасывается HTTPStatusError."""
+    calls = {"n": 0}
+
+    def handler(_req):
+        calls["n"] += 1
+        return httpx.Response(500, content=b"boom")
+
+    _patch(monkeypatch, handler)
+
+    try:
+        list(
+            HttpTransport(max_attempts=2, retry_backoff_sec=0).stream(
+                _ctx(),
+                iter([HttpRequest(url="https://x.test/y", source_id=SourceId("y"))]),
+            )
+        )
+    except httpx.HTTPStatusError as e:
+        assert e.response.status_code == 500
+    else:
+        raise AssertionError("ожидался HTTPStatusError")
+    assert calls["n"] == 2
+
+
+def test_4xx_not_retried(monkeypatch):
+    """4xx — клиентская ошибка, ретраев нет."""
+    calls = {"n": 0}
+
+    def handler(_req):
+        calls["n"] += 1
+        return httpx.Response(404, content=b"nope")
+
+    _patch(monkeypatch, handler)
+
+    try:
+        list(
+            HttpTransport(max_attempts=3, retry_backoff_sec=0).stream(
+                _ctx(),
+                iter([HttpRequest(url="https://x.test/y", source_id=SourceId("y"))]),
+            )
+        )
+    except httpx.HTTPStatusError as e:
+        assert e.response.status_code == 404
+    else:
+        raise AssertionError("ожидался HTTPStatusError")
+    assert calls["n"] == 1
+
+
 def test_auth_passed_to_client(monkeypatch):
     """HttpTransport пробрасывает `httpx.Auth` напрямую в `httpx.Client(auth=...)`."""
     seen_headers = {}
