@@ -58,6 +58,18 @@ class ConfluenceConnection(BaseModel):
         default=False,
         description="Проверять ли TLS-сертификат.",
     )
+    retry_attempts: int = Field(
+        default=3,
+        description=(
+            "Сколько раз пытаться выполнить HTTP-запрос (page/attachment fetch). "
+            "Ретраятся 5xx и transport-ошибки (timeout/connect); 4xx — нет. "
+            "1 — без retry."
+        ),
+    )
+    retry_backoff_sec: float = Field(
+        default=1.0,
+        description="Базовый линейный backoff между попытками (сек) × номер попытки.",
+    )
     body_format: Literal["view", "export_view", "storage"] = Field(
         default="view",
         description=(
@@ -111,4 +123,6 @@ class ConfluenceConnection(BaseModel):
         return HttpTransport(
             timeout_sec=self.timeout_sec,
             verify=self.ssl_verify,
+            max_attempts=self.retry_attempts,
+            retry_backoff_sec=self.retry_backoff_sec,
         )

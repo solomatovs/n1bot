@@ -15,6 +15,8 @@ with-блок закрывает response — ровно как и должно 
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Iterable
 from typing import ClassVar
 
@@ -30,6 +32,8 @@ from boba.transport.http.keys import HttpKeys
 from boba.transport.http.request import HttpRequest
 
 __all__ = ["HttpTransport"]
+
+logger = logging.getLogger(__name__)
 
 
 class HttpTransport(Transport[HttpRequest]):
@@ -60,6 +64,13 @@ class HttpTransport(Transport[HttpRequest]):
     **Поведение на ошибки**:
     - 4xx/5xx → `httpx.HTTPStatusError` через `raise_for_status()` (не глушится).
     - timeout/connection — стандартные `httpx`-исключения.
+
+    **Retry** (`max_attempts > 1`): запрос повторяется на 5xx и transport-
+    ошибках (timeout/connect) с линейным backoff'ом; 4xx (клиентские) не
+    ретраятся. Retry покрывает фазу установки соединения + получения
+    заголовков + `raise_for_status()`. Обрыв ВО ВРЕМЯ чтения тела
+    (`_ResponseHandle.read()` после yield) не ретраится — это плата за
+    streaming-контракт. `max_attempts=1` (дефолт) — поведение без retry.
 
     `auth: AuthApplier` — callback на client kwargs; Transport не знает,
     что внутри (PAT, Basic, Bearer, OAuth), просто применяет.
@@ -94,15 +105,21 @@ class HttpTransport(Transport[HttpRequest]):
     """  # noqa: E501
 
     DEFAULT_TIMEOUT_SEC: ClassVar[float] = 30.0
+    DEFAULT_MAX_ATTEMPTS: ClassVar[int] = 1
+    DEFAULT_RETRY_BACKOFF_SEC: ClassVar[float] = 1.0
 
     def __init__(
         self,
         *,
         timeout_sec: float = DEFAULT_TIMEOUT_SEC,
         verify: bool = False,
+        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        retry_backoff_sec: float = DEFAULT_RETRY_BACKOFF_SEC,
     ) -> None:
         self._timeout = timeout_sec
         self._verify = verify
+        self._max_attempts = max(1, max_attempts)
+        self._retry_backoff_sec = retry_backoff_sec
 
     def name(self) -> str:
         return "HttpTransport"
@@ -117,6 +134,40 @@ class HttpTransport(Transport[HttpRequest]):
             yield from self._fetch_one(req)
 
     def _fetch_one(self, req: HttpRequest) -> Iterable[RawDocument]:
+        last_exc: httpx.HTTPError | None = None
+        for attempt in range(1, self._max_attempts + 1):
+            try:
+                yield from self._open_once(req)
+                return
+            except httpx.HTTPStatusError as e:
+                if not e.response.is_server_error:  # 4xx — не ретраим
+                    raise
+                last_exc = e
+            except httpx.TransportError as e:  # timeout / connect — transient
+                last_exc = e
+            if attempt < self._max_attempts:
+                delay = self._retry_backoff_sec * attempt
+                logger.warning(
+                    "HTTP %s %s неудачно (%s); retry %d/%d через %.1fs",
+                    req.method,
+                    req.url,
+                    type(last_exc).__name__,
+                    attempt,
+                    self._max_attempts,
+                    delay,
+                )
+                time.sleep(delay)
+        if last_exc is None:  # недостижимо: цикл либо вернул, либо выставил last_exc
+            msg = f"HTTP {req.method} {req.url}: неизвестная ошибка"
+            raise httpx.HTTPError(msg)
+        raise last_exc
+
+    def _open_once(self, req: HttpRequest) -> Iterable[RawDocument]:
+        """Один прогон: open client+stream → raise_for_status → yield RawDocument.
+
+        Тело читается лениво из `_ResponseHandle` уже после yield — обрыв на
+        этой стадии в retry-loop `_fetch_one` не попадает (другой стек-фрейм).
+        """
         with (
             httpx.Client(
                 timeout=self._timeout,

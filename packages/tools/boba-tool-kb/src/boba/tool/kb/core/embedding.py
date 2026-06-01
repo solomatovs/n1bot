@@ -133,6 +133,22 @@ class EmbeddingModel(BaseModel):
             "Пусто → дефолт fastembed (~/.cache/fastembed)."
         ),
     )
+    max_retries: int = Field(
+        default=3,
+        description=(
+            "Только для provider='openai-compat': сколько раз OpenAI-SDK "
+            "повторяет запрос на 429/5xx/connection-ошибках (экспоненциальный "
+            "backoff + Retry-After). 0 — без retry."
+        ),
+    )
+    request_timeout_sec: float = Field(
+        default=60.0,
+        description=(
+            "Только для provider='openai-compat': HTTP-таймаут запроса (сек). "
+            "Имя `request_timeout_sec` (а не `timeout_sec`) — чтобы не "
+            "конфликтовать с `confluence.timeout_sec` при flat-резолве."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate(self) -> Self:
@@ -160,6 +176,8 @@ class EmbeddingModel(BaseModel):
         client = OpenAI(
             base_url=self.endpoint or None,
             api_key=self.api_key or "unused",
+            max_retries=self.max_retries,
+            timeout=self.request_timeout_sec,
         )
         return OpenAICompatEmbedder(
             client=client,
