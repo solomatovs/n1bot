@@ -9,8 +9,8 @@ from typing import TextIO
 from boba.agent.events import (
     AdvisoryEvent,
     AgentEvent,
-    ContentDeltaEvent,
-    ContentSnapshotEvent,
+    CompleteEvent,
+    DeltaEvent,
     DiagnosticEvent,
     PhaseEvent,
     Severity,
@@ -42,11 +42,13 @@ class ConsoleSink:
     _BOLD_CYAN = "\x1b[1;36m"
     _BOLD_GREEN = "\x1b[1;32m"
 
-    _STREAMING_KINDS = frozenset({
-        StreamKind.ANSWER,
-        StreamKind.THINKING,
-        StreamKind.REFUSAL,
-    })
+    _STREAMING_KINDS = frozenset(
+        {
+            StreamKind.ANSWER,
+            StreamKind.THINKING,
+            StreamKind.REFUSAL,
+        }
+    )
 
     _MAX_PREVIEW = 200
 
@@ -78,12 +80,11 @@ class ConsoleSink:
     def name(self) -> str:
         return "ConsoleSink"
 
-
     def handle(self, event: AgentEvent) -> None:
         match event:
-            case ContentDeltaEvent():
+            case DeltaEvent():
                 self._on_delta(event)
-            case ContentSnapshotEvent():
+            case CompleteEvent():
                 self._on_snapshot(event)
             case PhaseEvent():
                 self._on_phase(event)
@@ -94,14 +95,13 @@ class ConsoleSink:
             case DiagnosticEvent():
                 self._on_diagnostic(event)
 
-
-    def _on_delta(self, e: ContentDeltaEvent) -> None:
+    def _on_delta(self, e: DeltaEvent) -> None:
         if not e.chunk:
             return
         color = self._color_for_stream(e.stream_kind, e.part)
         self._inline(self._paint(e.chunk, color))
 
-    def _on_snapshot(self, e: ContentSnapshotEvent) -> None:
+    def _on_snapshot(self, e: CompleteEvent) -> None:
         if e.stream_kind in self._STREAMING_KINDS:
             self._line("")
             return
@@ -160,7 +160,6 @@ class ConsoleSink:
         self._err(self._paint(head, self._DIM))
         if e.body:
             self._err(self._paint(self._truncate(e.body), self._DIM))
-
 
     def _color_for_stream(
         self,

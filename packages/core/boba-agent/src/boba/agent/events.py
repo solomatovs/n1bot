@@ -50,8 +50,8 @@
    конкретных реализаций и фиксирует **минимальный контракт** полей,
    достаточный для отображения / обработки без знания конкретного типа события.
 
-   Пять «доменных» категорий (`PhaseEvent`, `ContentDeltaEvent`,
-   `ContentSnapshotEvent`, `AdvisoryEvent`, `TerminalEvent`) несут информацию,
+   Пять «доменных» категорий (`PhaseEvent`, `DeltaEvent`,
+   `CompleteEvent`, `AdvisoryEvent`, `TerminalEvent`) несут информацию,
    которая является частью диалога / истории и должна быть показана
    пользователю. Шестая категория `DiagnosticEvent` несёт нефункциональную
    телеметрию (метрики, тайминги, трейсы), которая по умолчанию **скрыта**
@@ -74,9 +74,9 @@
             `details`   - key→value для отображения деталей
             `body`      - опциональное расширенное описание
 
-    `ContentDeltaEvent`
+    `DeltaEvent`
         инкрементальный кусок контента, который стримится в открытый «слот» UI.
-        Соединяется с `ContentSnapshotEvent` через общий `stream_id`:
+        Соединяется с `CompleteEvent` через общий `stream_id`:
         фронт открывает поток на первой delta и закрывает на снапшоте.
 
         Поля:
@@ -92,7 +92,7 @@
             `chunk`         - текстовый кусок, который надо доскролировать в UI
             `part`          - для TOOL_INVOCATION — args | result
 
-    `ContentSnapshotEvent`
+    `CompleteEvent`
         завершённое сообщение в диалоге.
         Финальная форма того, что собиралось из delta:
         - `AnswerMessage` после серии `AnswerDelta`
@@ -331,7 +331,7 @@ class PhaseEvent(AgentEventBase):
     duration_ns: int = 0
 
 
-class ContentDeltaEvent(AgentEventBase):
+class DeltaEvent(AgentEventBase):
     """
     Инкрементальный кусок в поток — `stream_id` + `stream_kind` + `chunk`
     """
@@ -344,7 +344,7 @@ class ContentDeltaEvent(AgentEventBase):
     part: ToolPart | None = None
 
 
-class ContentSnapshotEvent(AgentEventBase):
+class CompleteEvent(AgentEventBase):
     """
     Завершённое сообщение — `stream_id` + `stream_kind` + `body`
     """
@@ -558,11 +558,11 @@ class TotalMessage(PhaseEvent):
 
 
 # --------------------------------------------------------------------- #
-# ContentDeltaEvent — конкретные события
+# DeltaEvent — конкретные события
 # --------------------------------------------------------------------- #
 
 
-class ThinkingDelta(ContentDeltaEvent):
+class ThinkingDelta(DeltaEvent):
     """
     Chunk reasoning-токена
     """
@@ -578,7 +578,7 @@ class ThinkingDelta(ContentDeltaEvent):
         return self
 
 
-class AnswerDelta(ContentDeltaEvent):
+class AnswerDelta(DeltaEvent):
     """
     Chunk текстового ответа для отображения пользователю
     """
@@ -594,7 +594,7 @@ class AnswerDelta(ContentDeltaEvent):
         return self
 
 
-class RefusalDelta(ContentDeltaEvent):
+class RefusalDelta(DeltaEvent):
     """
     Chunk отказа модели отвечать
     """
@@ -610,7 +610,7 @@ class RefusalDelta(ContentDeltaEvent):
         return self
 
 
-class ToolCallDelta(ContentDeltaEvent):
+class ToolCallDelta(DeltaEvent):
     """
     Chunk аргументов tool call
     tool call тоже приходит частами
@@ -632,11 +632,11 @@ class ToolCallDelta(ContentDeltaEvent):
 
 
 # --------------------------------------------------------------------- #
-# ContentSnapshotEvent — конкретные события
+# CompleteEvent — конкретные события
 # --------------------------------------------------------------------- #
 
 
-class UserQueryReceived(ContentSnapshotEvent):
+class UserQueryReceived(CompleteEvent):
     """Запрос пользователя принят агентом и записан в историю."""
 
     type: Literal["UserQueryReceived"] = "UserQueryReceived"
@@ -650,7 +650,7 @@ class UserQueryReceived(ContentSnapshotEvent):
         return self
 
 
-class ThinkingMessage(ContentSnapshotEvent):
+class ThinkingMessage(CompleteEvent):
     """Агрегированный reasoning итерации."""
 
     type: Literal["ThinkingMessage"] = "ThinkingMessage"
@@ -664,7 +664,7 @@ class ThinkingMessage(ContentSnapshotEvent):
         return self
 
 
-class AnswerMessage(ContentSnapshotEvent):
+class AnswerMessage(CompleteEvent):
     """Агрегированный текстовый ответ итерации"""
 
     type: Literal["AnswerMessage"] = "AnswerMessage"
@@ -678,7 +678,7 @@ class AnswerMessage(ContentSnapshotEvent):
         return self
 
 
-class RefusalMessage(ContentSnapshotEvent):
+class RefusalMessage(CompleteEvent):
     """Агрегированный отказ модели."""
 
     type: Literal["RefusalMessage"] = "RefusalMessage"
@@ -692,7 +692,7 @@ class RefusalMessage(ContentSnapshotEvent):
         return self
 
 
-class ToolCallMessage(ContentSnapshotEvent):
+class ToolCallMessage(CompleteEvent):
     """Завершённый tool call (id + имя + args)."""
 
     type: Literal["ToolCallMessage"] = "ToolCallMessage"
@@ -708,7 +708,7 @@ class ToolCallMessage(ContentSnapshotEvent):
         return self
 
 
-class ToolResultReady(ContentSnapshotEvent):
+class ToolResultReady(CompleteEvent):
     """Результат выполнения tool — вызов и результат."""
 
     type: Literal["ToolResultReady"] = "ToolResultReady"
@@ -736,7 +736,7 @@ class ToolResultReady(ContentSnapshotEvent):
         return self
 
 
-class FeedbackToLLMAdded(ContentSnapshotEvent):
+class FeedbackToLLMAdded(CompleteEvent):
     """Feedback от агента к LLM зарегистрирован в журнале HistoryService."""
 
     type: Literal["FeedbackToLLMAdded"] = "FeedbackToLLMAdded"
@@ -750,7 +750,7 @@ class FeedbackToLLMAdded(ContentSnapshotEvent):
         return self
 
 
-class ToolCallDecodeFailedMessage(ContentSnapshotEvent):
+class ToolCallDecodeFailedMessage(CompleteEvent):
     """Tool-call, чьи args не декодировались — часть сообщения ассистента.
 
     Это контент (лежит в `message.tool_call_decode_failures`), а не advisory:
@@ -911,12 +911,12 @@ AgentEvent = (
     IterationStarted
     | ToolExecutionStarted
     | TotalMessage
-    # ContentDeltaEvent
+    # DeltaEvent
     | ThinkingDelta
     | AnswerDelta
     | RefusalDelta
     | ToolCallDelta
-    # ContentSnapshotEvent
+    # CompleteEvent
     | UserQueryReceived
     | ThinkingMessage
     | AnswerMessage

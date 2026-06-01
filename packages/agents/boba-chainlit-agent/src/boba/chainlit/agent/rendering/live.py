@@ -1,6 +1,4 @@
-"""
-
-"""
+""" """
 
 from __future__ import annotations
 
@@ -216,9 +214,7 @@ class ChainlitLiveTarget(EventRenderTarget):
         )
         await step.send()
         if event.details:
-            details_text = "\n".join(
-                f"{k}={v}" for k, v in event.details.items() if v
-            )
+            details_text = "\n".join(f"{k}={v}" for k, v in event.details.items() if v)
             if details_text:
                 await step.stream_token(details_text, is_input=True)
         if event.body:
@@ -257,8 +253,8 @@ class ChainlitLiveTarget(EventRenderTarget):
 
         Why: AnswerDelta прилетает на ЛЮБОЙ первый delta.content, даже
         если итерация в итоге ушла в tool_calls без финального
-        ContentSnapshotEvent. Без сброса между итерациями новый
-        ContentDeltaEvent(ANSWER) будет писать в старое сообщение из
+        CompleteEvent. Без сброса между итерациями новый
+        DeltaEvent(ANSWER) будет писать в старое сообщение из
         прошлой итерации — оно остаётся выше последующих thinking/tool.
         How to apply: на IterationStarted; если answer_msg пустой —
         удаляем, чтобы фантомное сообщение не висело в чате.

@@ -11,8 +11,8 @@ from boba.agent.events import (
     AgentEvent,
     AnswerDelta,
     AnswerMessage,
-    ContentDeltaEvent,
-    ContentSnapshotEvent,
+    CompleteEvent,
+    DeltaEvent,
     DiagnosticEvent,
     FeedbackToLLMAdded,
     IterationStarted,
@@ -101,10 +101,10 @@ class AgentEventDispatcher:
     """Маппит каждый `AgentEvent` на ровно один вызов `EventRenderTarget`.
 
     Семантика категорий событий:
-        ContentDeltaEvent  — стриминг токенов (`*_chunk`); `ToolCallDelta`
+        DeltaEvent  — стриминг токенов (`*_chunk`); `ToolCallDelta`
                                игнорируется (UI рисует tool-step целиком
                                по `tool_started`, а не по чанкам args)
-        ContentSnapshotEvent — завершённый блок контента (`*_complete`,
+        CompleteEvent — завершённый блок контента (`*_complete`,
                                `user_query`, `tool_result`, `feedback`);
                                `ToolCallMessage` — намерение LLM, в UI
                                не рендерится
@@ -206,7 +206,7 @@ class AgentEventDispatcher:
                 await self._target.diagnostic(diagnostic_evt)
 
             # Generic fall-throughs
-            case ContentSnapshotEvent() as snapshot:
+            case CompleteEvent() as snapshot:
                 # Прочие snapshot'ы (например, USER_QUERY с не-UserQueryReceived
                 # или TOOL_INVOCATION/RESULT без ToolResultReady) — оставляем
                 # последним fallback'ом, чтобы не потерять текст.
@@ -223,7 +223,7 @@ class AgentEventDispatcher:
                     terminal.headline,
                     terminal.body or "",
                 )
-            case ContentDeltaEvent():
+            case DeltaEvent():
                 # ContentDelta без специализации (StreamKind, который мы
                 # не выделили выше) — игнорируем.
                 return
@@ -277,9 +277,9 @@ class AgentEventDispatcher:
 
     async def _handle_unmatched_snapshot(
         self,
-        event: ContentSnapshotEvent,
+        event: CompleteEvent,
     ) -> None:
-        # На случай новых ContentSnapshotEvent'ов, добавленных позже —
+        # На случай новых CompleteEvent'ов, добавленных позже —
         # маршрутизируем по stream_kind / part, чтобы не молчать.
         if event.stream_kind == StreamKind.TOOL_INVOCATION:
             if event.part == ToolPart.RESULT and event.stream_id:
