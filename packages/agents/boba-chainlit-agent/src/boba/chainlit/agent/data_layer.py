@@ -37,6 +37,7 @@ from boba.agent.history import HistoryService
 from boba.chainlit.agent.models import (
     StoredUser,
     ThreadId,
+    ThreadMeta,
     UserId,
 )
 from boba.chainlit.agent.rendering.replay import replay_history_to_steps_sync
@@ -146,6 +147,17 @@ class BobaDataLayer(BaseDataLayer):
             return
 
         user_identifier = self._current_user_identifier()
+        # chainlit зовёт update_thread и для rename/metadata-апдейтов
+        # (persist_user_session, share, …), где user_id=None. Прямой
+        # set_user(None, ...) затёр бы сохранённый user_id в null — и тред
+        # выпал бы из list_threads, который фильтрует по userId. Резолвим
+        # стабильный id из каталога по identifier'у, в крайнем случае
+        # сохраняем уже записанный.
+        resolved_user_id = await self._resolve_user_id(
+            user_id,
+            user_identifier,
+            existing,
+        )
         metadata_patch = dict(metadata) if metadata else {}
         metadata_patch[self._WORKSPACE_META_KEY] = workspace_id
 
@@ -154,7 +166,7 @@ class BobaDataLayer(BaseDataLayer):
                 await self._threads.create(
                     thread_id,
                     workspace_id,
-                    user_id,
+                    resolved_user_id,
                     user_identifier,
                     name=name,
                     tags=list(tags) if tags is not None else None,
@@ -170,8 +182,12 @@ class BobaDataLayer(BaseDataLayer):
         try:
             if name is not None:
                 await self._threads.rename(thread_id, name)
-            if user_id is not None or user_identifier is not None:
-                await self._threads.set_user(thread_id, user_id, user_identifier)
+            if resolved_user_id is not None or user_identifier is not None:
+                await self._threads.set_user(
+                    thread_id,
+                    resolved_user_id,
+                    user_identifier,
+                )
             if tags is not None:
                 await self._threads.set_tags(thread_id, list(tags))
             await self._threads.merge_metadata(thread_id, metadata_patch)
@@ -283,6 +299,21 @@ class BobaDataLayer(BaseDataLayer):
 
     async def close(self) -> None:
         return
+
+    async def _resolve_user_id(
+        self,
+        user_id: UserId | None,
+        user_identifier: str | None,
+        existing: ThreadMeta | None,
+    ) -> UserId | None:
+        """Стабильный user_id: переданный → из каталога по identifier → текущий."""
+        if user_id is not None:
+            return user_id
+        if user_identifier is not None:
+            record = await self._users.get(user_identifier)
+            if record is not None:
+                return record.id
+        return existing.user_id if existing is not None else None
 
     def _resolve_workspace(
         self,
