@@ -9,7 +9,6 @@ description = "Chainlit web UI app for the Boba agent."
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-agent",
-    "boba-patterns",
     "boba-workspace",
     "boba-settings",
     "boba-llm",
