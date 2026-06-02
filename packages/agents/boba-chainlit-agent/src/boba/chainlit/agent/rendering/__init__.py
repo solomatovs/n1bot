@@ -8,8 +8,9 @@ from boba.chainlit.agent.rendering.dispatcher import (
 from boba.chainlit.agent.rendering.live import ChainlitLiveTarget
 from boba.chainlit.agent.rendering.replay import (
     StepDictTarget,
-    replay_history_to_steps,
-    replay_history_to_steps_sync,
+    ThreadContent,
+    replay_history_to_thread,
+    replay_history_to_thread_sync,
 )
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "ChainlitLiveTarget",
     "EventRenderTarget",
     "StepDictTarget",
-    "replay_history_to_steps",
-    "replay_history_to_steps_sync",
+    "ThreadContent",
+    "replay_history_to_thread",
+    "replay_history_to_thread_sync",
 ]

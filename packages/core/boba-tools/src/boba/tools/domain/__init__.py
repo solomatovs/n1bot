@@ -27,6 +27,7 @@ from boba.tools.domain.ids import (
     to_tool_id,
 )
 from boba.tools.domain.result import (
+    ChartResult,
     ErrorResult,
     JsonResult,
     PgCopyTextResult,
@@ -42,6 +43,7 @@ from boba.tools.domain.tool import (
 )
 
 __all__ = [
+    "ChartResult",
     "ErrorResult",
     "InvalidSchemaInvariantError",
     "InvalidToolArgumentError",

@@ -5,45 +5,63 @@ Replay `HistoryService` событий в виде chainlit `StepDict`
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, NamedTuple, cast
 
+from chainlit.element import ElementDict
 from chainlit.step import StepDict
 
 from boba.agent.events import DiagnosticEvent
 from boba.agent.history import HistoryReader
 from boba.chainlit.agent.models import ThreadId
+from boba.chainlit.agent.rendering.chart_figure import build_plotly_data_uri
 from boba.chainlit.agent.rendering.dispatcher import (
     AgentEventDispatcher,
     EventRenderTarget,
 )
 
-__all__ = ["StepDictTarget", "replay_history_to_steps", "replay_history_to_steps_sync"]
+__all__ = [
+    "StepDictTarget",
+    "ThreadContent",
+    "replay_history_to_thread",
+    "replay_history_to_thread_sync",
+]
+
+_logger = logging.getLogger(__name__)
 
 
-async def replay_history_to_steps(
+class ThreadContent(NamedTuple):
+    """Восстановленная из журнала лента треда: шаги + элементы (графики)."""
+
+    steps: list[StepDict]
+    elements: list[ElementDict]
+
+
+async def replay_history_to_thread(
     history: HistoryReader,
     thread_id: ThreadId,
-) -> list[StepDict]:
-    """Прогнать журнал и вернуть chainlit-steps в порядке появления."""
+) -> ThreadContent:
+    """Прогнать журнал и вернуть chainlit steps + elements в порядке появления."""
     target = StepDictTarget(thread_id)
     dispatcher = AgentEventDispatcher(target)
     for event in history.events():
         await dispatcher.handle(event)
-    return target.steps()
+    return ThreadContent(target.steps(), target.elements())
 
 
-def replay_history_to_steps_sync(
+def replay_history_to_thread_sync(
     history: HistoryReader,
     thread_id: ThreadId,
-) -> list[StepDict]:
+) -> ThreadContent:
     """Sync-обёртка для вызова из синхронного контекста (data_layer).
 
     Внутри dispatcher async, но реальных await'ов в `StepDictTarget` нет —
     `asyncio.run` тут безопасен и быстр.
     """
-    return asyncio.run(replay_history_to_steps(history, thread_id))
+    return asyncio.run(replay_history_to_thread(history, thread_id))
 
 
 class StepDictTarget(EventRenderTarget):
@@ -56,11 +74,15 @@ class StepDictTarget(EventRenderTarget):
     def __init__(self, thread_id: ThreadId) -> None:
         self._thread_id = thread_id
         self._out: list[StepDict] = []
+        self._elements_out: list[ElementDict] = []
         # tool_call.id → индекс в _out для дозаписи output'а из tool_result.
         self._tool_index_by_call_id: dict[str, int] = {}
 
     def steps(self) -> list[StepDict]:
         return self._out
+
+    def elements(self) -> list[ElementDict]:
+        return self._elements_out
 
     # --- streaming (no-op: replay не видит delta'ов) -----------------
 
@@ -113,6 +135,49 @@ class StepDictTarget(EventRenderTarget):
         step["output"] = text
         if is_error:
             step["isError"] = True
+
+    async def tool_chart(
+        self,
+        call_id: str,
+        spec: Mapping[str, Any],
+        title: str | None,
+    ) -> None:
+        # Симметрично live: tool-step закрываем текстом, а сам график рисуем
+        # видимым сообщением-контейнером с plotly-элементом. Содержимое графика
+        # восстанавливается из журнала (spec) и встраивается в `url` как
+        # data:-URI — постоянного файлового хранилища у нас нет.
+        text = f"график отрисован: {title}" if title else "график отрисован"
+        idx = self._tool_index_by_call_id.get(call_id)
+        if idx is None:
+            self._append(type_="tool", name="chart", output=text)
+        else:
+            self._out[idx]["output"] = text
+
+        try:
+            url = build_plotly_data_uri(spec)
+        except Exception:
+            # Битый spec в истории не должен ронять загрузку всего треда.
+            _logger.exception("replay: не удалось восстановить график из истории")
+            return
+        container_id = self._append(
+            type_="assistant_message", name="chart", output=title or "",
+        )
+        self._elements_out.append(
+            cast(
+                "ElementDict",
+                {
+                    "id": _sid(),
+                    "threadId": self._thread_id,
+                    "type": "plotly",
+                    "name": title or "chart",
+                    "display": "inline",
+                    "size": "medium",
+                    "url": url,
+                    "mime": "application/json",
+                    "forId": container_id,
+                },
+            ),
+        )
 
     async def feedback(self, text: str) -> None:
         self._append(
@@ -211,9 +276,11 @@ class StepDictTarget(EventRenderTarget):
         output: str,
         input_: str = "",
         is_error: bool = False,
-    ) -> None:
+    ) -> str:
+        """Добавить StepDict; вернуть его id (для привязки `ElementDict.forId`)."""
+        step_id = _sid()
         step: dict[str, object] = {
-            "id": _sid(),
+            "id": step_id,
             "threadId": self._thread_id,
             "parentId": None,
             "type": type_,
@@ -225,6 +292,7 @@ class StepDictTarget(EventRenderTarget):
         if is_error:
             step["isError"] = True
         self._out.append(cast("StepDict", step))
+        return step_id
 
 
 def _now() -> str:

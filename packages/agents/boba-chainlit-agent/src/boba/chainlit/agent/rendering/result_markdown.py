@@ -15,6 +15,7 @@ from typing import Any, assert_never
 from tabulate import tabulate
 
 from boba.tools.domain import (
+    ChartResult,
     ErrorResult,
     JsonResult,
     PgCopyTextResult,
@@ -37,7 +38,7 @@ class ToolResultMarkdown:
     def __init__(self, result: ToolResult) -> None:
         self._result = result
 
-    def render(self) -> str:
+    def render(self) -> str:  # noqa: PLR0911 — по ветке на каждый ToolResult-вариант
         """Отрендерить обёрнутый `ToolResult` в markdown-строку."""
         match self._result:
             case TextResult(text=t):
@@ -48,6 +49,12 @@ class ToolResultMarkdown:
                 return self._table_block(rows, note)
             case PgCopyTextResult() as pg_text:
                 return self._copy_text_block(pg_text)
+            case ChartResult(title=title):
+                # График не рисуется markdown'ом — он уходит отдельным каналом
+                # (`tool_chart` → `cl.Plotly`). Сюда ChartResult попадает лишь
+                # как fallback (например orphan tool_result без chart-канала);
+                # отдаём текстовую заглушку, чтобы не потерять факт графика.
+                return f"_(график: {title})_" if title else "_(график)_"
             case ErrorResult(message=m):
                 if "\n" in m:
                     return f"**Error:**\n\n{m}"

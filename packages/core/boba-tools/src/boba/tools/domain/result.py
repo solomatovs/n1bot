@@ -19,6 +19,7 @@ from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
+    "ChartResult",
     "ErrorResult",
     "JsonResult",
     "PgCopyTextResult",
@@ -118,6 +119,28 @@ class PgCopyTextResult(ToolResultBase):
         return "".join(out)
 
 
+class ChartResult(ToolResultBase):
+    """
+    Интерактивный график: Plotly figure spec как чистый dict.
+
+    Tool декларирует «отрисуй меня графиком»; UI строит `plotly.Figure` из
+    `spec` и рендерит интерактивный `cl.Plotly`-элемент.
+    LLM получает не сырой spec (он громоздкий и бесполезен для рассуждения),
+    а краткую сводку — что именно нарисовано
+    (см. `tool_result_to_message` / `ToolResultReady.body`).
+
+    `spec` — Plotly figure JSON (`{"data": [...], "layout": {...}}`).
+    Домен не зависит от plotly: хранит и валидирует только структуру dict,
+    рендер живёт в presentation-слое.
+    """
+
+    kind: Literal["chart"] = "chart"
+    spec: Mapping[str, Any]
+    title: str | None = None
+    """Человекочитаемый заголовок графика — для сводки в LLM и подписи в UI."""
+    metadata: Mapping[str, str] = Field(default_factory=dict)
+
+
 class ErrorResult(ToolResultBase):
     """Tool не выполнен: ошибка домена, отклонение guard'а, невалидные args.
 
@@ -132,7 +155,12 @@ class ErrorResult(ToolResultBase):
 
 
 ToolResult: TypeAlias = Annotated[
-    TextResult | JsonResult | TableResult | PgCopyTextResult | ErrorResult,
+    TextResult
+    | JsonResult
+    | TableResult
+    | PgCopyTextResult
+    | ChartResult
+    | ErrorResult,
     Field(discriminator="kind"),
 ]
 """

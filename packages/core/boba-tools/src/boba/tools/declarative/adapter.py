@@ -36,6 +36,7 @@ from boba.tools.domain.ids import (
 )
 from boba.tools.domain.llm_schema import LLMSchemaGenerator
 from boba.tools.domain.result import (
+    ChartResult,
     ErrorResult,
     JsonResult,
     PgCopyTextResult,
@@ -150,6 +151,7 @@ def _coerce_to_tool_result(  # noqa: PLR0911
             | JsonResult()
             | TableResult()
             | PgCopyTextResult()
+            | ChartResult()
             | ErrorResult()
         ):
             return value

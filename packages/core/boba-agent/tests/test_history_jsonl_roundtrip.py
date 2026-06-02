@@ -53,7 +53,7 @@ from boba.agent.events import (
 from boba.agent.models import ToolCallFailure, ToolCallResult
 from boba.agent.workspace_fs.shell import FsWorkspaceShell
 from boba.llm.models import RequestId, ToolCall, ToolCallDecodeFailure
-from boba.tools.domain import ErrorResult, JsonResult, TextResult
+from boba.tools.domain import ChartResult, ErrorResult, JsonResult, TextResult
 
 _RID = RequestId(UUID("00000000-0000-0000-0000-000000000001"))
 _TC = ToolCall(id="call_1", name="search", args={"q": "hello"})
@@ -178,6 +178,28 @@ def test_tool_result_json_variant() -> None:
     assert isinstance(parsed, ToolResultReady)
     assert isinstance(parsed.result.result, JsonResult)
     assert parsed.result.result.payload == {"a": [1, 2]}
+
+
+def test_tool_result_chart_variant() -> None:
+    e = ToolResultReady(
+        request_id=_RID,
+        call=_TC,
+        result=ToolCallResult(
+            result=ChartResult(
+                spec={"data": [{"type": "bar", "x": ["a"], "y": [1]}], "layout": {}},
+                title="Продажи",
+            ),
+        ),
+    )
+    line = AgentEventAdapter.dump_json(e).decode("utf-8")
+    assert '"kind":"chart"' in line
+    parsed = AgentEventAdapter.validate_json(line)
+    assert isinstance(parsed, ToolResultReady)
+    assert isinstance(parsed.result.result, ChartResult)
+    assert parsed.result.result.title == "Продажи"
+    assert parsed.result.result.spec["data"][0]["type"] == "bar"
+    # В историю/LLM проецируется сводка, а не сырой spec.
+    assert parsed.body == "[chart rendered: Продажи]"
 
 
 def test_tool_result_error_variant() -> None:

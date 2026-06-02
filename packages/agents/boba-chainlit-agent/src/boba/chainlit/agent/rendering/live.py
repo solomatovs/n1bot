@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 import chainlit as cl
 from chainlit.utils import utc_now
 
 from boba.agent.events import DiagnosticEvent
+from boba.chainlit.agent.rendering.chart_figure import build_plotly_element
 from boba.chainlit.agent.rendering.dispatcher import EventRenderTarget
 
 __all__ = ["ChainlitLiveTarget"]
@@ -95,6 +99,40 @@ class ChainlitLiveTarget(EventRenderTarget):
             step = cl.Step(name="tool_result", type="tool", parent_id=self._parent_id)
             await step.send()
         await _finalize_step(step, text, is_error=is_error)
+
+    async def tool_chart(
+        self,
+        call_id: str,
+        spec: Mapping[str, Any],
+        title: str | None,
+    ) -> None:
+        # tool-step закрываем коротким текстом, а сам график показываем
+        # отдельным сообщением с inline-элементом — иначе он спрятался бы
+        # в сворачиваемом tool-step и пользователь его не увидел бы.
+        step = self._tool_steps_by_id.pop(call_id, None)
+        try:
+            element = build_plotly_element(title or "chart", dict(spec))
+        except Exception as e:  # невалидный spec — не роняем рендер
+            msg = f"не удалось отрисовать график: {e}"
+            if step is not None:
+                await _finalize_step(step, msg, is_error=True)
+            else:
+                await cl.Message(
+                    content=f"**chart failed**\n\n{msg}",
+                    author="system",
+                    created_at=utc_now(),
+                ).send()
+            return
+        if step is not None:
+            await _finalize_step(
+                step,
+                f"график отрисован: {title}" if title else "график отрисован",
+            )
+        await cl.Message(
+            content=title or "",
+            elements=[element],
+            created_at=utc_now(),
+        ).send()
 
     async def feedback(self, text: str) -> None:
         await cl.Message(

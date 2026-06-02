@@ -251,6 +251,14 @@ tools = [
 cat_max_chars = 50000
 
 
+# Визуализация: интерактивный Plotly-график из figure-spec (рендерится в UI)
+[tool.chart]
+enable = true
+tools = [
+    "visualize",
+]
+
+
 # Чтение и поиск по загруженным документам (liteparse)
 [tool.doc]
 enable = true

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-tool-chart"
+version = "0.1.0"
+description = "Boba chart tool: рисует интерактивный Plotly-график из figure-spec; возвращает ChartResult для рендера в UI."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-tools",
+    "pydantic",
+    "plotly>=5.24,<6",
+]
+
+[project.entry-points."boba.plugins"]
+chart = "boba.tool.chart"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
