@@ -109,6 +109,7 @@ class ChatSession:
                 CompactHistoryDialogView(history, max_messages=rt.max_messages),
             )
             .with_tool_catalog(catalog)
+            .with_stream(rt.stream)
         )
 
         terminal = LLMPort(llm, turn)

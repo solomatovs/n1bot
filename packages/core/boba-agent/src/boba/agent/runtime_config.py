@@ -50,6 +50,13 @@ class AgentRuntimeConfig(BaseModel):
     model: str = Field(
         description="LLM-модель по умолчанию (напр. qwen3.5-35b). Обязательно.",
     )
+    stream: bool = Field(
+        default=True,
+        description=(
+            "Режим ответа LLM: True — стриминг дельт, False — один итоговый "
+            "ответ без дельт."
+        ),
+    )
     max_messages: int = Field(
         default=50,
         ge=1,
