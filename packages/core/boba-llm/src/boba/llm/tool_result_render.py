@@ -14,6 +14,7 @@ from typing import assert_never
 
 from boba.llm.models import ToolResultMessage
 from boba.tools.domain import (
+    ChartResult,
     ErrorResult,
     JsonResult,
     PgCopyTextResult,
@@ -51,6 +52,11 @@ def tool_result_to_message(
             is_error = False
         case PgCopyTextResult(text=t):
             content = t
+            is_error = False
+        case ChartResult(title=title):
+            # LLM не должна перечитывать собственный громоздкий Plotly-spec —
+            # отдаём только подтверждение, что график отрисован.
+            content = f"[chart rendered: {title}]" if title else "[chart rendered]"
             is_error = False
         case ErrorResult(message=m):
             content = m

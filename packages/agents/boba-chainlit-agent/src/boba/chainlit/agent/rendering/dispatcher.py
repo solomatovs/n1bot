@@ -4,7 +4,8 @@
 
 from __future__ import annotations
 
-from typing import ClassVar, Protocol
+from collections.abc import Mapping
+from typing import Any, ClassVar, Protocol, assert_never
 
 from boba.agent.events import (
     AdvisoryEvent,
@@ -32,8 +33,13 @@ from boba.agent.events import (
     TotalMessage,
     UserQueryReceived,
 )
-from boba.chainlit.agent.rendering.result_markdown import ToolResultMarkdown
+from boba.chainlit.agent.rendering.tool_result_view import (
+    ChartRendering,
+    MarkdownRendering,
+    ToolResultView,
+)
 from boba.llm.events import FinishReason
+from boba.tools.domain import ToolResult
 
 __all__ = ["AgentEventDispatcher", "EventRenderTarget"]
 
@@ -59,6 +65,12 @@ class EventRenderTarget(Protocol):
         text: str,
         *,
         is_error: bool,
+    ) -> None: ...
+    async def tool_chart(
+        self,
+        call_id: str,
+        spec: Mapping[str, Any],
+        title: str | None,
     ) -> None: ...
     async def feedback(self, text: str) -> None: ...
 
@@ -161,11 +173,7 @@ class AgentEventDispatcher:
                 # ToolExecutionStarted → ToolResultReady|ToolExecutionFailed.
                 return
             case ToolResultReady(call=call, result=result):
-                await self._target.tool_result(
-                    call.id,
-                    ToolResultMarkdown(result.result).render(),
-                    is_error=False,
-                )
+                await self._present_tool_result(call.id, result.result)
             case FeedbackToLLMAdded(content=c):
                 await self._target.feedback(c)
 
@@ -226,6 +234,23 @@ class AgentEventDispatcher:
                 # ContentDelta без специализации (StreamKind, который мы
                 # не выделили выше) — игнорируем.
                 return
+
+    async def _present_tool_result(
+        self,
+        call_id: str,
+        result: ToolResult,
+    ) -> None:
+        # Форму представления выбирает `ToolResultView`; здесь — только
+        # диспетчеризация по `ToolResultRendering` (exhaustive, новый вид
+        # представления потребует ветку). is_error=False: провал tool'а идёт
+        # отдельным каналом (`tool_execution_failed`), не через `ToolResultReady`.
+        match ToolResultView(result).render():
+            case MarkdownRendering(markdown=markdown):
+                await self._target.tool_result(call_id, markdown, is_error=False)
+            case ChartRendering(spec=spec, title=title):
+                await self._target.tool_chart(call_id, spec, title)
+            case _ as never:
+                assert_never(never)
 
     async def _handle_generation_completed(self, event: TotalMessage) -> None:
         """Подсветить «не-нормальный» исход генерации в UI.

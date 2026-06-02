@@ -229,6 +229,7 @@ from boba.agent.models import (
 from boba.llm.events import FinishReason
 from boba.llm.models import AssistantMessage, RequestId, ToolCall, ToolCallDecodeFailure
 from boba.tools.domain import (
+    ChartResult,
     ErrorResult,
     JsonResult,
     PgCopyTextResult,
@@ -869,6 +870,10 @@ class ToolResultReady(MessageEvent):
                 return body if n is None else f"{body}\n\n{n}"
             case PgCopyTextResult(text=t):
                 return t
+            case ChartResult(title=title):
+                # В историю/LLM уходит сводка, а не сырой Plotly-spec
+                # (симметрично `tool_result_to_message`).
+                return f"[chart rendered: {title}]" if title else "[chart rendered]"
             case ErrorResult(message=m):
                 return m
 

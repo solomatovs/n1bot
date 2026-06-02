@@ -40,7 +40,10 @@ from boba.chainlit.agent.models import (
     ThreadMeta,
     UserId,
 )
-from boba.chainlit.agent.rendering.replay import replay_history_to_steps_sync
+from boba.chainlit.agent.rendering.replay import (
+    ThreadContent,
+    replay_history_to_thread_sync,
+)
 from boba.chainlit.agent.storage import (
     ThreadAlreadyExistsError,
     ThreadNotFoundError,
@@ -90,8 +93,8 @@ class BobaDataLayer(BaseDataLayer):
         if meta is None:
             return None
 
-        steps = await asyncio.to_thread(
-            self._replay_steps,
+        content = await asyncio.to_thread(
+            self._replay_content,
             meta.workspace_id,
             thread_id,
         )
@@ -106,18 +109,20 @@ class BobaDataLayer(BaseDataLayer):
                 "userIdentifier": meta.user_identifier,
                 "tags": meta.tags,
                 "metadata": meta.metadata,
-                "steps": steps,
-                "elements": [],
+                "steps": content.steps,
+                # elements восстанавливаются из журнала так же, как steps
+                # (графики: spec → data:-URI). Источник истины — история.
+                "elements": content.elements,
             },
         )
 
-    def _replay_steps(
+    def _replay_content(
         self,
         workspace_id: WorkspaceId,
         thread_id: ThreadId,
-    ) -> list[StepDict]:
+    ) -> ThreadContent:
         history = self._make_history_service(workspace_id)
-        return replay_history_to_steps_sync(history, thread_id)
+        return replay_history_to_thread_sync(history, thread_id)
 
     async def get_thread_author(self, thread_id: ThreadId) -> str:
         meta = await self._threads.get_meta(thread_id)
