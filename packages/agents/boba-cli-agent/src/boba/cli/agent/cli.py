@@ -96,6 +96,7 @@ def _run() -> int:
             CompactHistoryDialogView(history, max_messages=rt.max_messages),
         )
         .with_tool_catalog(tool_registry.catalog())
+        .with_stream(rt.stream)
     )
     sampling = run_cfg.to_sampling_params()
     if sampling is not None:
