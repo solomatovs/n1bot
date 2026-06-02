@@ -84,7 +84,7 @@ class ConsoleSink:
             case DeltaEvent():
                 self._on_delta(event)
             case MessageEvent():
-                self._on_snapshot(event)
+                self._on_message(event)
             case PhaseEvent():
                 self._on_phase(event)
             case AdvisoryEvent():
@@ -100,7 +100,7 @@ class ConsoleSink:
         color = self._color_for_stream(e.stream_kind)
         self._inline(self._paint(e.chunk, color))
 
-    def _on_snapshot(self, e: MessageEvent) -> None:
+    def _on_message(self, e: MessageEvent) -> None:
         if e.stream_kind in self._STREAMING_KINDS:
             self._line("")
             return
