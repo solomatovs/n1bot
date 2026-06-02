@@ -387,7 +387,16 @@ class DeltaEvent(AgentEventBase):
     @property
     @abstractmethod
     def stream_id(self) -> str:
-        """Идентификатор потока, к которому относится chunk."""
+        """
+        stream_id — это идентификатор «слота» в UI,
+        к которому привязывается стримящийся контент.
+        Его задача — склеить два потока событий в одну визуальную сущность:
+
+        - DeltaEvent (инкрементальные чанки) открывают слот и дописывают в него текст
+        - MessageEvent (снапшот) с тем же stream_id закрывает слот готовым агрегатом
+
+        Таким образом event'ы связаны в ui по stream_id, а не по type
+        """
 
     @property
     @abstractmethod
