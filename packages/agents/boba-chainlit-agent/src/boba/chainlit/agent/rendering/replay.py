@@ -132,7 +132,7 @@ class StepDictTarget(EventRenderTarget):
             )
             return
         step = self._out[idx]
-        step["output"] = text
+        step["output"] = _close_fence(text)
         if is_error:
             step["isError"] = True
 
@@ -286,13 +286,22 @@ class StepDictTarget(EventRenderTarget):
             "type": type_,
             "name": name,
             "input": input_,
-            "output": output,
+            "output": _close_fence(output),
             "createdAt": _now(),
         }
         if is_error:
             step["isError"] = True
         self._out.append(cast("StepDict", step))
         return step_id
+
+
+def _close_fence(text: str) -> str:
+    """Добивает завершающий '\\n': без него последний code-fence упирается в
+    EOF и react-markdown Chainlit не финализирует fence — три бэктика
+    протекают в UI как текст."""
+    if text and not text.endswith("\n"):
+        return f"{text}\n"
+    return text
 
 
 def _now() -> str:

@@ -61,13 +61,16 @@ class ChainlitLiveTarget(EventRenderTarget):
         del text
 
     async def answer_complete(self, text: str) -> None:
-        if self._answer_msg is None and text:
-            # Snapshot пришёл без предшествующих delta'ов (теоретически
-            # возможно, если адаптер LLM эмитит только финальный текст).
-            msg = cl.Message(content=text, created_at=utc_now())
-            await msg.send()
+        if self._answer_msg is None:
+            if text:
+                # Snapshot пришёл без предшествующих delta'ов (теоретически
+                # возможно, если адаптер LLM эмитит только финальный текст).
+                msg = cl.Message(content=_close_fence(text), created_at=utc_now())
+                await msg.send()
             return
-        # Токены уже отрисованы потоково — просто закрываем сообщение.
+        # Токены уже отрисованы потоково — добиваем закрывающий '\n' и
+        # закрываем сообщение (см. `_close_streamed`).
+        await _close_streamed(self._answer_msg)
         self._answer_msg = None
 
     async def thinking_complete(self, text: str) -> None:
@@ -79,10 +82,12 @@ class ChainlitLiveTarget(EventRenderTarget):
         self._thinking_step = None
 
     async def refusal_complete(self, text: str) -> None:
-        if self._answer_msg is None and text:
-            msg = cl.Message(content=text, created_at=utc_now())
-            await msg.send()
+        if self._answer_msg is None:
+            if text:
+                msg = cl.Message(content=_close_fence(text), created_at=utc_now())
+                await msg.send()
             return
+        await _close_streamed(self._answer_msg)
         self._answer_msg = None
 
     async def tool_result(
@@ -313,4 +318,20 @@ async def _finalize_step(
     """Финальный output step через streaming API: stream_token заменяет содержимое."""
     if is_error:
         step.is_error = True
-    await step.stream_token(content, is_sequence=True)
+    await step.stream_token(_close_fence(content), is_sequence=True)
+
+
+def _close_fence(text: str) -> str:
+    """Добивает завершающий '\\n': без него последний code-fence упирается в
+    EOF и react-markdown Chainlit не финализирует fence — три бэктика
+    протекают в UI как текст."""
+    if text and not text.endswith("\n"):
+        return f"{text}\n"
+    return text
+
+
+async def _close_streamed(msg: cl.Message) -> None:
+    """Добивает '\\n' в потоково собранное сообщение (см. `_close_fence`)."""
+    content = msg.content or ""
+    if content and not content.endswith("\n"):
+        await msg.stream_token("\n")
