@@ -19,6 +19,7 @@ metadata-ключей — `boba.tool.kb.confluence.models`.
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Any, ClassVar
 
 from pydantic import Field
@@ -49,6 +50,7 @@ from boba.tool.kb.confluence.pipeline import ConfluenceContentTransport
 from boba.tool.kb.confluence.reading import ConfluenceReader
 from boba.tool.kb.core.chunking import ChunkerParams
 from boba.tool.kb.core.embedding import EmbeddingModel
+from boba.tool.kb.core.indexing_log import LoggedIndexRun
 from boba.tool.kb.core.postgres import (
     PostgresChunkStore,
     PostgresCollectionsStore,
@@ -57,6 +59,8 @@ from boba.tool.kb.core.postgres import (
 from boba.transport.http import HttpRequest
 
 __all__ = ["ConfluenceIngest", "ConfluenceIngestConfig"]
+
+logger = logging.getLogger("boba.tool.kb.confluence.ingest")
 
 
 class ConfluenceIngestConfig(BobaFlatSettings):
@@ -179,7 +183,9 @@ class ConfluenceIngest:
             cleanup=FullCleanup() if prune_missing else NoneCleanup(),
             force_update=False,
         )
-        stats = indexer.invoke(PipelineContext(pipeline_id=pipeline_id), config)
+        stats = LoggedIndexRun.invoke(
+            indexer, PipelineContext(pipeline_id=pipeline_id), config, logger,
+        )
 
         return {
             "collection": str(collection_id),
