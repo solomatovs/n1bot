@@ -9,7 +9,7 @@ __all__ = ["IsContentDelta"]
 
 
 class IsContentDelta(Specification[AgentEventBase]):
-    """Истинно для инкрементальных чанков (`category == content_delta`).
+    """Истинно для инкрементальных чанков (`category == delta`).
 
     Комбинируется через `and_/or_/not_` стандартными средствами Specification.
     Используется журналом истории, чтобы пропускать chunk-события и хранить
@@ -17,4 +17,4 @@ class IsContentDelta(Specification[AgentEventBase]):
     """
 
     def check(self, candidate: AgentEventBase) -> bool:
-        return candidate.category == EventCategory.CONTENT_DELTA
+        return candidate.category == EventCategory.DELTA

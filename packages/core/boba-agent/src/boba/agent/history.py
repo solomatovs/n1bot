@@ -108,7 +108,7 @@ class HistoryService(HistoryReader, HistoryWriter, StateChannel, ABC):
         Diagnostic - эфемерная телеметрия, в журнал не идёт по дизайну.
         """
         if event.category in (
-            EventCategory.CONTENT_DELTA,
+            EventCategory.DELTA,
             EventCategory.DIAGNOSTIC,
         ):
             return

@@ -207,6 +207,7 @@
 from __future__ import annotations
 
 import json
+from abc import abstractmethod
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -252,26 +253,48 @@ class EventCategory(StrEnum):
     """Маркер семейства события — sink диспатчит именно на это поле"""
 
     PHASE = "phase"
-    CONTENT_DELTA = "content_delta"
-    CONTENT_SNAPSHOT = "content_snapshot"
+    DELTA = "delta"
+    MESSAGE = "message"
     ADVISORY = "advisory"
     TERMINAL = "terminal"
     DIAGNOSTIC = "diagnostic"
 
 
 class StreamKind(StrEnum):
-    """Тип потока контента — куда стримятся delta и snapshot"""
+    """Тип потока контента — канал, по которому идут delta и/или snapshot.
 
-    USER_QUERY = "user_query"
+    Делится на два класса (см. `DeltaStreamKind`):
+
+    - streamable — инкрементальный вывод LLM, есть и `DeltaEvent`, и
+      `MessageEvent`: ANSWER, THINKING, REFUSAL, TOOL_INVOCATION;
+    - snapshot-only — контент рождается целиком (от пользователя,
+      tool-runner'а, агента), `DeltaEvent` нет: USER_QUERY, TOOL_RESULT,
+      FEEDBACK.
+    """
+
+    # --- streamable (delta + snapshot) --------------------------------
     THINKING = "thinking"
     ANSWER = "answer"
     REFUSAL = "refusal"
-    FEEDBACK = "feedback"
-    # Жизненный цикл tool-вызова разнесён по двум каналам:
-    # TOOL_INVOCATION — вызов (args от LLM, может стримиться);
-    # TOOL_RESULT — результат выполнения tool-runner'ом (только snapshot).
+    # TOOL_INVOCATION — вызов tool: args от LLM, стримятся по чанкам.
     TOOL_INVOCATION = "tool_invocation"
+
+    # --- snapshot-only (только MessageEvent) --------------------------
+    USER_QUERY = "user_query"
+    FEEDBACK = "feedback"
+    # TOOL_RESULT — результат выполнения tool-runner'ом, приходит целиком.
     TOOL_RESULT = "tool_result"
+
+
+# Подмножество `StreamKind`, допустимое для `DeltaEvent`: только каналы,
+# по которым контент стримится инкрементально. Снапшот-онли каналы
+# (USER_QUERY / TOOL_RESULT / FEEDBACK) дельты не имеют — тип это запрещает.
+DeltaStreamKind = Literal[
+    StreamKind.THINKING,
+    StreamKind.ANSWER,
+    StreamKind.REFUSAL,
+    StreamKind.TOOL_INVOCATION,
+]
 
 
 # --------------------------------------------------------------------- #
@@ -302,12 +325,25 @@ class AgentEventBase(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # Имена производных `@property` подкласса — это вычисляемые ВЫХОДЫ, а не
+    # входные поля. Старый журнал мог сериализовать их как поля; на входе
+    # выкидываем, чтобы `extra="forbid"` не падал. Настоящие лишние ключи
+    # при этом всё равно отлавливаются. Каждая база-категория переопределяет.
+    _derived_keys: ClassVar[frozenset[str]] = frozenset()
+
     type: str
     category: EventCategory
     request_id: RequestId
     seq: int = _UNSTAMPED_SEQ
     emitted_at: datetime = Field(default_factory=_epoch_utc)
     iteration: int = _UNSTAMPED_ITERATION
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_derived_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict) and cls._derived_keys:
+            return {k: v for k, v in data.items() if k not in cls._derived_keys}
+        return data
 
 
 class PhaseEvent(AgentEventBase):
@@ -317,14 +353,24 @@ class PhaseEvent(AgentEventBase):
 
     category: Literal[EventCategory.PHASE] = EventCategory.PHASE
 
-    label: str = ""
+    _derived_keys: ClassVar[frozenset[str]] = frozenset({"label", "details"})
+
     severity: Severity = Severity.INFO
-    details: Mapping[str, str] = Field(default_factory=dict)
     body: str | None = None
     # Наносекунды с момента предыдущего PhaseEvent того же request_id.
     # Стампится `EventStamperMiddleware` через `time.monotonic_ns()`.
     # Для первого PhaseEvent в request — 0.
     duration_ns: int = 0
+
+    @property
+    @abstractmethod
+    def label(self) -> str:
+        """Короткий заголовок фазы для UI."""
+
+    @property
+    @abstractmethod
+    def details(self) -> Mapping[str, str]:
+        """key→value детали фазы для отображения."""
 
 
 class DeltaEvent(AgentEventBase):
@@ -332,11 +378,21 @@ class DeltaEvent(AgentEventBase):
     Инкрементальный кусок в поток — `stream_id` + `stream_kind` + `chunk`
     """
 
-    category: Literal[EventCategory.CONTENT_DELTA] = EventCategory.CONTENT_DELTA
+    category: Literal[EventCategory.DELTA] = EventCategory.DELTA
 
-    stream_id: str = ""
-    stream_kind: StreamKind = StreamKind.ANSWER
-    chunk: str = ""
+    _derived_keys: ClassVar[frozenset[str]] = frozenset({"stream_id", "chunk"})
+
+    stream_kind: DeltaStreamKind = StreamKind.ANSWER
+
+    @property
+    @abstractmethod
+    def stream_id(self) -> str:
+        """Идентификатор потока, к которому относится chunk."""
+
+    @property
+    @abstractmethod
+    def chunk(self) -> str:
+        """Текстовый инкремент для дозаписи в UI."""
 
 
 class MessageEvent(AgentEventBase):
@@ -344,12 +400,28 @@ class MessageEvent(AgentEventBase):
     Завершённое сообщение — `stream_id` + `stream_kind` + `body`
     """
 
-    category: Literal[EventCategory.CONTENT_SNAPSHOT] = EventCategory.CONTENT_SNAPSHOT
+    category: Literal[EventCategory.MESSAGE] = EventCategory.MESSAGE
 
-    stream_id: str = ""
+    _derived_keys: ClassVar[frozenset[str]] = frozenset(
+        {"stream_id", "body", "headline"}
+    )
+
     stream_kind: StreamKind = StreamKind.ANSWER
-    headline: str | None = None
-    body: str = ""
+
+    @property
+    @abstractmethod
+    def stream_id(self) -> str:
+        """Идентификатор сущности (request_id / tool_call_id)."""
+
+    @property
+    @abstractmethod
+    def body(self) -> str:
+        """Агрегированный контент сообщения."""
+
+    @property
+    def headline(self) -> str | None:
+        """Опциональный заголовок — для tool это имя инструмента, иначе None."""
+        return None
 
 
 class AdvisoryEvent(AgentEventBase):
@@ -363,12 +435,28 @@ class AdvisoryEvent(AgentEventBase):
 
     category: Literal[EventCategory.ADVISORY] = EventCategory.ADVISORY
 
-    headline: str = ""
+    _derived_keys: ClassVar[frozenset[str]] = frozenset(
+        {"headline", "details", "body"}
+    )
+
     severity: Severity = Severity.WARN
-    details: Mapping[str, str] = Field(default_factory=dict)
-    body: str | None = None
     status_code: int | None = None
     cause_chain: tuple[str, ...] = ()
+
+    @property
+    @abstractmethod
+    def headline(self) -> str:
+        """Короткое описание ошибки для шапки."""
+
+    @property
+    @abstractmethod
+    def details(self) -> Mapping[str, str]:
+        """key→value детали ошибки."""
+
+    @property
+    @abstractmethod
+    def body(self) -> str | None:
+        """Полный текст ошибки."""
 
 
 class TerminalEvent(AgentEventBase):
@@ -382,13 +470,29 @@ class TerminalEvent(AgentEventBase):
 
     category: Literal[EventCategory.TERMINAL] = EventCategory.TERMINAL
 
-    headline: str = ""
+    _derived_keys: ClassVar[frozenset[str]] = frozenset(
+        {"headline", "details", "body"}
+    )
+
     severity: Severity = Severity.ERROR
-    details: Mapping[str, str] = Field(default_factory=dict)
-    body: str | None = None
     error_kind: str = ""
     status_code: int | None = None
     cause_chain: tuple[str, ...] = ()
+
+    @property
+    @abstractmethod
+    def headline(self) -> str:
+        """Короткое описание ошибки для шапки."""
+
+    @property
+    @abstractmethod
+    def details(self) -> Mapping[str, str]:
+        """key→value детали ошибки."""
+
+    @property
+    @abstractmethod
+    def body(self) -> str | None:
+        """Полный текст ошибки."""
 
 
 class DiagnosticEvent(AgentEventBase):
@@ -472,15 +576,16 @@ class IterationStarted(PhaseEvent):
     iteration_count: int
     max_iterations: int
 
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.label = f"iteration {self.iteration_count}/{self.max_iterations}"
-        self.details = {
+    @property
+    def label(self) -> str:
+        return f"iteration {self.iteration_count}/{self.max_iterations}"
+
+    @property
+    def details(self) -> Mapping[str, str]:
+        return {
             "iteration": str(self.iteration_count),
             "max": str(self.max_iterations),
         }
-
-        return self
 
 
 class ToolExecutionStarted(PhaseEvent):
@@ -495,11 +600,13 @@ class ToolExecutionStarted(PhaseEvent):
     type: Literal["ToolExecutionStarted"] = "ToolExecutionStarted"
     call: ToolCall
 
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.label = f"tool exec: {self.call.name}"
-        self.details = {"id": self.call.id, "name": self.call.name}
-        return self
+    @property
+    def label(self) -> str:
+        return f"tool exec: {self.call.name}"
+
+    @property
+    def details(self) -> Mapping[str, str]:
+        return {"id": self.call.id, "name": self.call.name}
 
 
 class TotalMessage(PhaseEvent):
@@ -530,23 +637,27 @@ class TotalMessage(PhaseEvent):
     message: AssistantMessage
     finish_reason: FinishReason
 
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        n_tools = len(self.message.tool_calls)
-        self.label = (
-            f"generation completed ({self.finish_reason.value}, tool_calls={n_tools})"
-        )
-        self.details = {
+    @property
+    def label(self) -> str:
+        n = len(self.message.tool_calls)
+        return f"generation completed ({self.finish_reason.value}, tool_calls={n})"
+
+    @property
+    def details(self) -> Mapping[str, str]:
+        return {
             "finish_reason": self.finish_reason.value,
-            "tool_calls": str(n_tools),
+            "tool_calls": str(len(self.message.tool_calls)),
             "has_answer": str(bool(self.message.content)),
             "has_thinking": str(bool(self.message.thinking)),
             "has_refusal": str(bool(self.message.refusal)),
         }
-        # Severity подсказывает sink'ам визуальный приоритет:
-        # LENGTH — ответ обрезан, есть смысл показать предупреждение;
-        # CONTENT_FILTER — провайдер заблокировал, ошибка для пользователя;
-        # STOP / TOOL_CALLS — обычный финал, INFO.
+
+    @model_validator(mode="after")
+    def _set_severity(self) -> Self:
+        # severity — настоящее (сериализуемое) поле, но его значение выводится
+        # из finish_reason; это не плоская проекция, поэтому остаётся полем.
+        # LENGTH — ответ обрезан (warn); CONTENT_FILTER — заблокирован (error);
+        # STOP / TOOL_CALLS — обычный финал (info).
         self.severity = _severity_for_finish_reason(self.finish_reason)
         return self
 
@@ -565,11 +676,13 @@ class ThinkingDelta(DeltaEvent):
     stream_kind: Literal[StreamKind.THINKING] = StreamKind.THINKING
     token: str
 
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.stream_id = str(self.request_id)
-        self.chunk = self.token
-        return self
+    @property
+    def stream_id(self) -> str:
+        return str(self.request_id)
+
+    @property
+    def chunk(self) -> str:
+        return self.token
 
 
 class AnswerDelta(DeltaEvent):
@@ -581,11 +694,13 @@ class AnswerDelta(DeltaEvent):
     stream_kind: Literal[StreamKind.ANSWER] = StreamKind.ANSWER
     token: str
 
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.stream_id = str(self.request_id)
-        self.chunk = self.token
-        return self
+    @property
+    def stream_id(self) -> str:
+        return str(self.request_id)
+
+    @property
+    def chunk(self) -> str:
+        return self.token
 
 
 class RefusalDelta(DeltaEvent):
@@ -597,11 +712,13 @@ class RefusalDelta(DeltaEvent):
     stream_kind: Literal[StreamKind.REFUSAL] = StreamKind.REFUSAL
     token: str
 
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.stream_id = str(self.request_id)
-        self.chunk = self.token
-        return self
+    @property
+    def stream_id(self) -> str:
+        return str(self.request_id)
+
+    @property
+    def chunk(self) -> str:
+        return self.token
 
 
 class ToolCallDelta(DeltaEvent):
@@ -617,11 +734,13 @@ class ToolCallDelta(DeltaEvent):
     tool_name: str
     arguments_chunk: str
 
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.stream_id = self.tool_call_id
-        self.chunk = self.arguments_chunk
-        return self
+    @property
+    def stream_id(self) -> str:
+        return self.tool_call_id
+
+    @property
+    def chunk(self) -> str:
+        return self.arguments_chunk
 
 
 # --------------------------------------------------------------------- #
@@ -636,11 +755,13 @@ class UserQueryReceived(MessageEvent):
     stream_kind: Literal[StreamKind.USER_QUERY] = StreamKind.USER_QUERY
     query: str
 
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.stream_id = str(self.request_id)
-        self.body = self.query
-        return self
+    @property
+    def stream_id(self) -> str:
+        return str(self.request_id)
+
+    @property
+    def body(self) -> str:
+        return self.query
 
 
 class ThinkingMessage(MessageEvent):
@@ -650,11 +771,13 @@ class ThinkingMessage(MessageEvent):
     stream_kind: Literal[StreamKind.THINKING] = StreamKind.THINKING
     content: str
 
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.stream_id = str(self.request_id)
-        self.body = self.content
-        return self
+    @property
+    def stream_id(self) -> str:
+        return str(self.request_id)
+
+    @property
+    def body(self) -> str:
+        return self.content
 
 
 class AnswerMessage(MessageEvent):
@@ -664,11 +787,13 @@ class AnswerMessage(MessageEvent):
     stream_kind: Literal[StreamKind.ANSWER] = StreamKind.ANSWER
     content: str
 
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.stream_id = str(self.request_id)
-        self.body = self.content
-        return self
+    @property
+    def stream_id(self) -> str:
+        return str(self.request_id)
+
+    @property
+    def body(self) -> str:
+        return self.content
 
 
 class RefusalMessage(MessageEvent):
@@ -678,11 +803,13 @@ class RefusalMessage(MessageEvent):
     stream_kind: Literal[StreamKind.REFUSAL] = StreamKind.REFUSAL
     content: str
 
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.stream_id = str(self.request_id)
-        self.body = self.content
-        return self
+    @property
+    def stream_id(self) -> str:
+        return str(self.request_id)
+
+    @property
+    def body(self) -> str:
+        return self.content
 
 
 class ToolCallMessage(MessageEvent):
@@ -692,12 +819,17 @@ class ToolCallMessage(MessageEvent):
     stream_kind: Literal[StreamKind.TOOL_INVOCATION] = StreamKind.TOOL_INVOCATION
     call: ToolCall
 
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.stream_id = self.call.id
-        self.headline = self.call.name
-        self.body = self.call.args_json()
-        return self
+    @property
+    def stream_id(self) -> str:
+        return self.call.id
+
+    @property
+    def headline(self) -> str | None:
+        return self.call.name
+
+    @property
+    def body(self) -> str:
+        return self.call.args_json()
 
 
 class ToolResultReady(MessageEvent):
@@ -708,23 +840,28 @@ class ToolResultReady(MessageEvent):
     call: ToolCall
     result: ToolCallResult
 
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.stream_id = self.call.id
-        self.headline = self.call.name
+    @property
+    def stream_id(self) -> str:
+        return self.call.id
+
+    @property
+    def headline(self) -> str | None:
+        return self.call.name
+
+    @property
+    def body(self) -> str:
         match self.result.result:
             case TextResult(text=t):
-                self.body = t
+                return t
             case JsonResult(payload=p):
-                self.body = json.dumps(p, ensure_ascii=False)
+                return json.dumps(p, ensure_ascii=False)
             case TableResult(rows=r, note=n):
                 body = json.dumps(r, ensure_ascii=False)
-                self.body = body if n is None else f"{body}\n\n{n}"
+                return body if n is None else f"{body}\n\n{n}"
             case PgCopyTextResult(text=t):
-                self.body = t
+                return t
             case ErrorResult(message=m):
-                self.body = m
-        return self
+                return m
 
 
 class FeedbackToLLMAdded(MessageEvent):
@@ -734,11 +871,13 @@ class FeedbackToLLMAdded(MessageEvent):
     stream_kind: Literal[StreamKind.FEEDBACK] = StreamKind.FEEDBACK
     content: str
 
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.stream_id = str(self.request_id)
-        self.body = self.content
-        return self
+    @property
+    def stream_id(self) -> str:
+        return str(self.request_id)
+
+    @property
+    def body(self) -> str:
+        return self.content
 
 
 class ToolCallDecodeFailedMessage(MessageEvent):
@@ -752,12 +891,17 @@ class ToolCallDecodeFailedMessage(MessageEvent):
     stream_kind: Literal[StreamKind.TOOL_INVOCATION] = StreamKind.TOOL_INVOCATION
     failure: ToolCallDecodeFailure
 
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.stream_id = self.failure.id
-        self.headline = self.failure.name
-        self.body = f"raw: {self.failure.raw}\nerror: {self.failure.error}"
-        return self
+    @property
+    def stream_id(self) -> str:
+        return self.failure.id
+
+    @property
+    def headline(self) -> str | None:
+        return self.failure.name
+
+    @property
+    def body(self) -> str:
+        return f"raw: {self.failure.raw}\nerror: {self.failure.error}"
 
 
 # --------------------------------------------------------------------- #
@@ -772,20 +916,25 @@ class ToolExecutionFailed(AdvisoryEvent):
     call: ToolCall
     failure: ToolCallFailure
 
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.headline = f"tool failed: {self.call.name}"
-        details: dict[str, str] = {
+    @property
+    def headline(self) -> str:
+        return f"tool failed: {self.call.name}"
+
+    @property
+    def details(self) -> Mapping[str, str]:
+        out: dict[str, str] = {
             "id": self.call.id,
             "name": self.call.name,
             "kind": self.failure.error_kind,
         }
         if self.status_code is not None:
-            details["status_code"] = str(self.status_code)
-        self.details = details
+            out["status_code"] = str(self.status_code)
+        return out
+
+    @property
+    def body(self) -> str | None:
         primary = f"args: {self.call.args_json()}\nerror: {self.failure.message}"
-        self.body = compose_error_body(primary, self.status_code, self.cause_chain)
-        return self
+        return compose_error_body(primary, self.status_code, self.cause_chain)
 
 
 # --------------------------------------------------------------------- #
@@ -799,16 +948,17 @@ class GenerationFailed(TerminalEvent):
     type: Literal["GenerationFailed"] = "GenerationFailed"
     message: str
 
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.headline = f"generation failed: {self.error_kind}"
-        self.details = _error_details(self.error_kind, self.status_code)
-        self.body = compose_error_body(
-            self.message,
-            self.status_code,
-            self.cause_chain,
-        )
-        return self
+    @property
+    def headline(self) -> str:
+        return f"generation failed: {self.error_kind}"
+
+    @property
+    def details(self) -> Mapping[str, str]:
+        return _error_details(self.error_kind, self.status_code)
+
+    @property
+    def body(self) -> str | None:
+        return compose_error_body(self.message, self.status_code, self.cause_chain)
 
 
 class PromptFailed(TerminalEvent):
@@ -818,18 +968,19 @@ class PromptFailed(TerminalEvent):
     message: str
     provider: str | None = None
 
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.headline = f"prompt failed: {self.provider or 'unknown'}"
-        details = _error_details(self.error_kind, self.status_code)
-        details["provider"] = self.provider or ""
-        self.details = details
-        self.body = compose_error_body(
-            self.message,
-            self.status_code,
-            self.cause_chain,
-        )
-        return self
+    @property
+    def headline(self) -> str:
+        return f"prompt failed: {self.provider or 'unknown'}"
+
+    @property
+    def details(self) -> Mapping[str, str]:
+        out = _error_details(self.error_kind, self.status_code)
+        out["provider"] = self.provider or ""
+        return out
+
+    @property
+    def body(self) -> str | None:
+        return compose_error_body(self.message, self.status_code, self.cause_chain)
 
 
 class MaxIterationsReached(TerminalEvent):
@@ -840,19 +991,20 @@ class MaxIterationsReached(TerminalEvent):
     limit: int
     iteration_count: int
 
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.headline = f"max iterations: {self.iteration_count}/{self.limit}"
-        details = _error_details(self.error_kind, self.status_code)
-        details["limit"] = str(self.limit)
-        details["iteration"] = str(self.iteration_count)
-        self.details = details
-        self.body = compose_error_body(
-            self.message,
-            self.status_code,
-            self.cause_chain,
-        )
-        return self
+    @property
+    def headline(self) -> str:
+        return f"max iterations: {self.iteration_count}/{self.limit}"
+
+    @property
+    def details(self) -> Mapping[str, str]:
+        out = _error_details(self.error_kind, self.status_code)
+        out["limit"] = str(self.limit)
+        out["iteration"] = str(self.iteration_count)
+        return out
+
+    @property
+    def body(self) -> str | None:
+        return compose_error_body(self.message, self.status_code, self.cause_chain)
 
 
 class PersistenceFailed(TerminalEvent):
@@ -861,16 +1013,17 @@ class PersistenceFailed(TerminalEvent):
     type: Literal["PersistenceFailed"] = "PersistenceFailed"
     message: str
 
-    @model_validator(mode="after")
-    def _derive(self) -> Self:
-        self.headline = f"persistence failed: {self.error_kind}"
-        self.details = _error_details(self.error_kind, self.status_code)
-        self.body = compose_error_body(
-            self.message,
-            self.status_code,
-            self.cause_chain,
-        )
-        return self
+    @property
+    def headline(self) -> str:
+        return f"persistence failed: {self.error_kind}"
+
+    @property
+    def details(self) -> Mapping[str, str]:
+        return _error_details(self.error_kind, self.status_code)
+
+    @property
+    def body(self) -> str | None:
+        return compose_error_body(self.message, self.status_code, self.cause_chain)
 
 
 # --------------------------------------------------------------------- #
