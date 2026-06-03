@@ -6,6 +6,7 @@ import io
 import json
 import logging
 from collections.abc import Iterable, Iterator
+from uuid import uuid4
 
 from pydantic import BaseModel
 
@@ -40,7 +41,83 @@ from openai.types.chat.chat_completion_chunk import (
     ChoiceDeltaToolCall,
 )
 
+__all__ = ["ToolCallFromContentFallback"]
+
+
 logger = logging.getLogger(__name__)
+
+
+class ToolCallFromContentFallback:
+    """
+    Перемапивает tool-call из `content` в `tool_calls` итогового сообщения.
+
+    Чинит проблему когда в поле content приходит JSON по протоколу (`function` + `args`)
+    """
+
+    def decode(self, message: AssistantMessage, *, model: str) -> AssistantMessage:
+        """Исправленное сообщение, либо тот же объект если это не tool-call."""
+        if (
+            message.tool_calls
+            or message.tool_call_decode_failures
+            or not message.content
+        ):
+            # если поля уже заполнены, или content пустой, то не трогаем сообщение
+            return message
+
+        calls = self._parse(message.content)
+        if calls is None:
+            return message
+
+        logger.warning(
+            "provider returned tool call(s) in content; remapped %d call(s) "
+            "[%s] model=%s",
+            len(calls),
+            ", ".join(c.name for c in calls),
+            model,
+        )
+        return message.model_copy(update={"content": "", "tool_calls": tuple(calls)})
+
+    @classmethod
+    def _parse(cls, content: str) -> list[ToolCall] | None:
+        """Распарсить content по протоколу; None если это не tool-call."""
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            return None
+
+        items = parsed if isinstance(parsed, list) else [parsed]
+        if not items:
+            return None
+
+        calls: list[ToolCall] = []
+        for item in items:
+            call = cls._to_call(item)
+            if call is None:
+                # Хотя бы один элемент не по протоколу — это не tool-call.
+                return None
+            calls.append(call)
+        return calls
+
+    @classmethod
+    def _to_call(cls, item: object) -> ToolCall | None:
+        """Один элемент {function, args} → ToolCall; None если не по протоколу."""
+        if not isinstance(item, dict):
+            return None
+
+        function = item.get("function")
+        args = item.get("args")
+        if not isinstance(function, str):
+            return None
+
+        if not isinstance(args, dict):
+            return None
+
+        return ToolCall(id=cls._new_call_id(), name=function, args=args)
+
+    @staticmethod
+    def _new_call_id() -> str:
+        """Свежий tool_call_id — провайдер его не прислал."""
+        return f"call_{uuid4().hex}"
 
 
 class ChatCompletionChunkConsumer(
@@ -60,8 +137,13 @@ class ChatCompletionChunkConsumer(
     протекает, каждое `*Message` самодостаточно.
     """
 
-    def __init__(self, request_id: RequestId) -> None:
+    def __init__(
+        self,
+        request_id: RequestId,
+        fallback: ToolCallFromContentFallback | None = None,
+    ) -> None:
         self._request_id = request_id
+        self._fallback = fallback
         self._reasoning = MultiKeyReasoningExtractor()
         self._finish = FinishReasonDecoder()
         # Чинит коллизии index у параллельных tool_calls до их сборки.
@@ -69,6 +151,8 @@ class ChatCompletionChunkConsumer(
         # index -> накопитель tool-call'а (id, name, фрагменты args).
         self._tool_calls: dict[int, _PartialToolCall] = {}
         self._message = AssistantMessageChunk.empty()
+        # Имя модели из чанков — только для лога fallback'а.
+        self._model = ""
         # Текстовые слоты закрываются по переходу; флаги гасят повторный снапшот.
         self._thinking_flushed = False
         self._answer_flushed = False
@@ -85,6 +169,7 @@ class ChatCompletionChunkConsumer(
         self._reindexer.reset()
         self._tool_calls.clear()
         self._message = AssistantMessageChunk.empty()
+        self._model = ""
         self._thinking_flushed = False
         self._answer_flushed = False
         self._refusal_flushed = False
@@ -94,6 +179,7 @@ class ChatCompletionChunkConsumer(
         self, ctx: LLMContext, stream: Iterable[ChatCompletionChunk]
     ) -> Iterable[LLMEvent]:
         for chunk in stream:
+            self._model = chunk.model
             # Reindexer исправляет index у tool call
             # при параллельном вызове нескольких tool.
             for choice in self._reindexer.stream(ctx, chunk.choices):
@@ -190,6 +276,22 @@ class ChatCompletionChunkConsumer(
             return
         self._finalized = True
         reason = self._finish.convert(finish_reason)
+
+        # Fallback: провайдер вернул вызов текстом в content, нативный
+        # tool_calls пуст — перемапим и закроем без текстового answer.
+        remapped = self._try_fallback()
+        if remapped is not None:
+            yield from self._flush_thinking()
+            yield from self._flush_refusal()
+            for call in remapped.tool_calls:
+                yield LLMToolCallMessage(request_id=self._request_id, call=call)
+            yield LLMTotalMessage(
+                request_id=self._request_id,
+                message=remapped,
+                finish_reason=reason,
+            )
+            return
+
         # Закрываем незакрытые текстовые слоты (если перехода к ним не было).
         yield from self._flush_thinking()
         yield from self._flush_answer()
@@ -211,6 +313,18 @@ class ChatCompletionChunkConsumer(
             finish_reason=reason,
         )
 
+    def _try_fallback(self) -> AssistantMessage | None:
+        """Исправленное сообщение, если content оказался tool-call'ом; иначе None.
+
+        Только при пустом нативном tool_calls (`self._tool_calls`): иначе
+        провайдер вызов прислал штатно и content трогать нельзя.
+        """
+        if self._fallback is None or self._tool_calls:
+            return None
+        message = self._message.finalize()
+        remapped = self._fallback.decode(message, model=self._model)
+        return remapped if remapped is not message else None
+
 
 class ChatCompletionConsumer:
     """
@@ -220,8 +334,13 @@ class ChatCompletionConsumer:
     события (*Complete + LLMTotalMessage) — без delta-событий.
     """
 
-    def __init__(self, request_id: RequestId) -> None:
+    def __init__(
+        self,
+        request_id: RequestId,
+        fallback: ToolCallFromContentFallback | None = None,
+    ) -> None:
         self._request_id = request_id
+        self._fallback = fallback
         self._reasoning = MultiKeyReasoningExtractor()
         self._finish = FinishReasonDecoder()
 
@@ -255,7 +374,11 @@ class ChatCompletionConsumer:
 
         reason = self._finish.convert(choice.finish_reason)
 
-        yield from self._emit_snapshots(chunk.finalize(), reason)
+        message = chunk.finalize()
+        if self._fallback is not None:
+            message = self._fallback.decode(message, model=response.model)
+
+        yield from self._emit_snapshots(message, reason)
 
     def _emit_snapshots(
         self, message: AssistantMessage, reason: FinishReason

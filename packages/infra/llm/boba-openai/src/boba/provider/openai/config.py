@@ -13,6 +13,7 @@ from boba.llm.models import LLMContext
 from boba.llm.observer import LLMRequestObserver
 from boba.patterns import StreamSource
 from boba.provider.openai.dto import OpenAIConfig
+from boba.provider.openai.response import ToolCallFromContentFallback
 from boba.provider.openai.terminal import OpenAITerminal, build_openai_client
 from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
@@ -35,9 +36,14 @@ def use_openai(config: OpenAIConfig) -> TerminalFactory:
             httpx.HTTPError,
         ],
     ) -> StreamSource[LLMContext, LLMEvent]:
+        fallback = None
+        if config.tool_calls_fallback:
+            fallback = ToolCallFromContentFallback()
+
         return OpenAITerminal(
             build_openai_client(config, observer),
             observer=observer,
+            fallback=fallback,
         )
 
     return terminal_factory

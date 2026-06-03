@@ -15,10 +15,7 @@ from boba.agent.middleware.loop_control import (
     StopOnAnyFailure,
 )
 from boba.agent.middleware.stamper import EventStamperMiddleware
-from boba.agent.middleware.tools import (
-    RepeatedToolCallGuardMiddleware,
-    ToolExecutionMiddleware,
-)
+from boba.agent.middleware.tools import ToolExecutionMiddleware
 from boba.agent.middleware.user_query import UserQueryRecorderMiddleware
 
 __all__ = [
@@ -29,7 +26,6 @@ __all__ = [
     "IterationCounterConfig",
     "IterationCounterMiddleware",
     "LLMPort",
-    "RepeatedToolCallGuardMiddleware",
     "StopIfContentFilter",
     "StopIfLengthReached",
     "StopIfReasonStop",
