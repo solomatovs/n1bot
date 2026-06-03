@@ -21,6 +21,7 @@ from boba.llm.models import LLMContext, LLMRequest, new_request_id
 from boba.provider.openai.response import (
     ChatCompletionChunkConsumer,
     ChatCompletionConsumer,
+    ToolCallFromContentFallback,
 )
 
 
@@ -219,3 +220,110 @@ def test_stream_flushes_answer_snapshot_before_tool_call_deltas() -> None:
     tool_msg = events[-2]
     assert isinstance(tool_msg, LLMToolCallMessage)
     assert tool_msg.call.args == {"q": "x"}
+
+
+# --- fallback: tool-call в content --------------------------------------- #
+
+
+def test_non_stream_fallback_remaps_tool_call_from_content() -> None:
+    """content с JSON-вызовом → tool_calls в итоге; текстового answer нет."""
+    rid = new_request_id()
+    response = _completion(
+        {
+            "role": "assistant",
+            "content": '{"function": "search", "args": {"q": "x"}}',
+        },
+    )
+
+    events = list(
+        ChatCompletionConsumer(rid, ToolCallFromContentFallback()).consume(response)
+    )
+
+    assert not any(isinstance(e, LLMAnswerMessage) for e in events)
+    tool_msgs = [e for e in events if isinstance(e, LLMToolCallMessage)]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].call.name == "search"
+    assert tool_msgs[0].call.args == {"q": "x"}
+
+    result = events[-1]
+    assert isinstance(result, LLMTotalMessage)
+    assert result.message.content == ""
+    assert [c.name for c in result.message.tool_calls] == ["search"]
+
+
+def test_non_stream_without_fallback_keeps_content_as_answer() -> None:
+    """Без декодера тот же content остаётся обычным текстовым ответом."""
+    rid = new_request_id()
+    response = _completion(
+        {
+            "role": "assistant",
+            "content": '{"function": "search", "args": {"q": "x"}}',
+        },
+    )
+
+    events = list(ChatCompletionConsumer(rid).consume(response))
+
+    assert any(isinstance(e, LLMAnswerMessage) for e in events)
+    assert not any(isinstance(e, LLMToolCallMessage) for e in events)
+
+
+def test_stream_fallback_remaps_tool_call_from_content() -> None:
+    """В стриме content собирается дельтами, затем перемапится в tool_calls."""
+    rid = new_request_id()
+    ctx = LLMContext(request=LLMRequest(request_id=rid, model="test-model"))
+    chunks = [
+        _chunk({"role": "assistant", "content": '{"function": "search", '}),
+        _chunk({"content": '"args": {"q": "x"}}'}),
+        _chunk({}, finish_reason="stop"),
+    ]
+
+    events = list(
+        ChatCompletionChunkConsumer(rid, ToolCallFromContentFallback()).stream(
+            ctx, chunks
+        )
+    )
+
+    # текстовый answer-снапшот подавлен, вместо него tool-call
+    assert not any(isinstance(e, LLMAnswerMessage) for e in events)
+    tool_msgs = [e for e in events if isinstance(e, LLMToolCallMessage)]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].call.name == "search"
+    assert tool_msgs[0].call.args == {"q": "x"}
+
+    result = events[-1]
+    assert isinstance(result, LLMTotalMessage)
+    assert result.message.content == ""
+    assert [c.name for c in result.message.tool_calls] == ["search"]
+
+
+def test_stream_fallback_skips_when_native_tool_calls_present() -> None:
+    """Если провайдер прислал нативный tool_calls — content не трогаем."""
+    rid = new_request_id()
+    ctx = LLMContext(request=LLMRequest(request_id=rid, model="test-model"))
+    chunks = [
+        _chunk({"role": "assistant", "content": "hi"}),
+        _chunk(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "native", "arguments": "{}"},
+                    },
+                ],
+            },
+        ),
+        _chunk({}, finish_reason="tool_calls"),
+    ]
+
+    events = list(
+        ChatCompletionChunkConsumer(rid, ToolCallFromContentFallback()).stream(
+            ctx, chunks
+        )
+    )
+
+    result = events[-1]
+    assert isinstance(result, LLMTotalMessage)
+    assert [c.name for c in result.message.tool_calls] == ["native"]
+    assert result.message.content == "hi"

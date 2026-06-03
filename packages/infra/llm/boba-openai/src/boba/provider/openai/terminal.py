@@ -20,6 +20,7 @@ from boba.provider.openai.request import ToOpenAIRequestConverter
 from boba.provider.openai.response import (
     ChatCompletionChunkConsumer,
     ChatCompletionConsumer,
+    ToolCallFromContentFallback,
 )
 from openai import OpenAI
 from openai.types.chat import ChatCompletion
@@ -110,11 +111,13 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
             openai.APIError,
             httpx.HTTPError,
         ],
+        fallback: ToolCallFromContentFallback | None = None,
     ) -> None:
         self._client = client
         self._to_request = ToOpenAIRequestConverter()
         self._error_converter = OpenAIErrorConverter()
         self._observer = observer
+        self._fallback = fallback
 
     def name(self) -> str:
         return "OpenAITerminal"
@@ -145,17 +148,17 @@ class OpenAITerminal(StreamSource[LLMContext, LLMEvent]):
                             "stream=True return not Iterable[ChatCompletionChunk]"
                         )
 
-                    yield from ChatCompletionChunkConsumer(request_id).stream(
-                        ctx, self._observe_chunks(response)
-                    )
+                    yield from ChatCompletionChunkConsumer(
+                        request_id, self._fallback
+                    ).stream(ctx, self._observe_chunks(response))
                 else:
                     # stream=False:
                     #   один готовый ответ -> преобразуем в отдельные LLM-события
                     #   без Delta, но с Complited
                     completion = cast("ChatCompletion", response)
-                    yield from ChatCompletionConsumer(request_id).consume(
-                        self._observe_response(completion)
-                    )
+                    yield from ChatCompletionConsumer(
+                        request_id, self._fallback
+                    ).consume(self._observe_response(completion))
             except LLMError:
                 raise
             except openai.APIError as e:

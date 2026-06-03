@@ -24,3 +24,12 @@ class OpenAIConfig(BaseModel):
         default=False,
         description="Проверять TLS-сертификат LLM-сервера.",
     )
+    tool_calls_fallback: bool = Field(
+        default=False,
+        description=(
+            "Опциональный fallback: если провайдер вернул tool-call текстом в "
+            "content (а не в нативном tool_calls), распарсить его и перемапить "
+            "в tool_calls итогового сообщения. Чинит конкретную ошибку "
+            "провайдера; по умолчанию выкл."
+        ),
+    )

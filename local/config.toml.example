@@ -17,6 +17,9 @@ api_key = ""
 # stop = []
 # frequency_penalty = 0.0
 # presence_penalty = 0.0
+stream=false
+tool_calls_fallback=true
+
 
 # boba-chainlit-agent
 [chainlit]
@@ -43,6 +46,9 @@ auth_secret = ""
 headless = true
 app_root = "./local/chainlit"
 chat_session_pool_capacity = 32
+stream=false
+tool_calls_fallback=true
+
 
 # На каждый postgres connection — отдельная секция [postgres.<name>].
 # connection-параметры
