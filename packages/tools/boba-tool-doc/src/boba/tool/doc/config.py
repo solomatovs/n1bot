@@ -8,24 +8,18 @@ FromConfig. Поля `enable` / `tools` читает framework через
 
 from __future__ import annotations
 
-from pydantic import Field
-
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = ["DocPluginConfig"]
 
 
-class DocPluginConfig(BobaFlatSettings):
+class DocPluginConfig(BaseModel):
     """Парсинг документов в текст (liteparse).
 
     Config-секция: `[tool.doc]`.
     """
 
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="tool.doc",
-    )
+    model_config = ConfigDict(extra="ignore")
 
     ocr_enabled: bool = Field(
         default=False,

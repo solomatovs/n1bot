@@ -15,10 +15,10 @@ import time
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from boba.indexing.context import PipelineId
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
+from boba.settings import bind, build_app_config
 from boba.tool.kb.confluence_doc.ingest import ConfluenceDocIngest
 from boba.tool.kb.core.chunking import ChunkerParams
 from boba.tool.kb.core.embedding import EmbeddingModel
@@ -34,26 +34,17 @@ __all__ = ["ConfluenceDocIngestCliConfig", "main"]
 logger = logging.getLogger("boba.tool.kb.cli.confluence_doc")
 
 
-class ConfluenceDocIngestCliConfig(BobaFlatSettings):
+class ConfluenceDocIngestCliConfig(PostgresStoreConfig, ChunkerParams):
     """Self-contained CLI-конфиг индексатора папки KbDoc-файлов.
 
-    Config-секция: `[cli.kb.confluence_doc.ingest]`.
+    Наследует `PostgresStoreConfig` (connection/tables — плоско) и `ChunkerParams`
+    (chunk_size/chunk_overlap/build_chunker — плоско). Config-секция:
+    `[cli.kb.confluence_doc.ingest]`.
     """
 
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="cli.kb.confluence_doc.ingest",
-        defaults_from=(
-            "kb.storage",
-            "postgres.{kb.storage:profile}",
-            "embedding",
-        ),
-    )
+    model_config = ConfigDict(extra="ignore")
 
-    store: PostgresStoreConfig
     embedding: EmbeddingModel
-    chunker: ChunkerParams
     folder: str = Field(
         description="Папка с KbDoc-файлами (`.md`) для индексации.",
     )
@@ -87,10 +78,10 @@ class ConfluenceDocIngestCli:
             msg = f"folder_not_a_directory: {folder}"
             raise RuntimeError(msg)
 
-        chunk_store = PostgresChunkStore(cfg=cfg.store)
-        collections_store = PostgresCollectionsStore(cfg=cfg.store)
+        chunk_store = PostgresChunkStore(cfg=cfg)
+        collections_store = PostgresCollectionsStore(cfg=cfg)
         embedder = cfg.embedding.build()
-        chunker = cfg.chunker.build_chunker()
+        chunker = cfg.build_chunker()
 
         result = ConfluenceDocIngest.run(
             request_source=FsWalkRequestSource(
@@ -115,7 +106,8 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    cfg = ConfluenceDocIngestCliConfig()  # pyright: ignore[reportCallIssue]
+    config = build_app_config()
+    cfg = bind(config, "cli.kb.confluence_doc.ingest", ConfluenceDocIngestCliConfig)
 
     logger.info(
         "ingesting folder=%s → collection=%s (prune=%s)",

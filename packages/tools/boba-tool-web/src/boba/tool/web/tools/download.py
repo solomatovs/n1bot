@@ -14,27 +14,20 @@ import httpx
 from pydantic import Field
 
 from boba.indexing import PipelineContext, PipelineId
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, LLMStringList
+from boba.settings import LLMStringList
 from boba.tool.web.connection import WebConnection
 from boba.tool.web.request_source import WebUrlsRequestSource
 from boba.tool.web.tools._artifact import WebArtifact
 from boba.tools import FromConfig, FromDI, Scope, tool
+from boba.transport.http import HttpTransport
 from boba.workspace.contract import ProjectWorkspaceShell, WorkspaceShell
 
 __all__ = ["WebDownloadConfig", "web_download"]
 
 
-class WebDownloadConfig(BobaFlatSettings):
-    """Config tool'а `web_download` (`[tool.web.download]`)."""
+class WebDownloadConfig(WebConnection):
+    """Config tool'а `web_download`: web-профили (`WebConnection`) + dest_dir."""
 
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="tool.web.download",
-        defaults_from=("tool.web",),
-    )
-
-    connection: WebConnection
     dest_dir: str = Field(
         min_length=1,
         description=(
@@ -73,16 +66,19 @@ class _WebDownloader:
 
     def run(self, urls: list[str]) -> list[dict[str, str]]:
         WebArtifact.ensure_parent(self._shell, posixpath.join(self._dest_rel, "_"))
-        source = WebUrlsRequestSource(urls=urls, connection=self._connection)
-        transport = self._connection.make_transport()
         pctx = PipelineContext(pipeline_id=self.PIPELINE_ID)
         saved: list[dict[str, str]] = []
         try:
-            for raw in transport.stream(pctx, source.stream(pctx)):
-                saved.append(self._write_one(
-                    raw_source_id=str(raw.source_id),
-                    body=raw.handle)
-                )
+            for url in urls:
+                # per-host транспорт: timeout/ssl/auth берутся из профиля хоста
+                transport = HttpTransport(self._connection.resolve_profile(url))
+                source = WebUrlsRequestSource(urls=(url,), connection=self._connection)
+                for raw in transport.stream(pctx, source.stream(pctx)):
+                    to_save = self._write_one(
+                        raw_source_id=str(raw.source_id),
+                        body=raw.handle,
+                    )
+                    saved.append(to_save)
         except httpx.HTTPError as e:
             raise RuntimeError(
                 f"web_download failed: {type(e).__name__}: {e}",
@@ -90,7 +86,10 @@ class _WebDownloader:
         return saved
 
     def _write_one(
-        self, *, raw_source_id: str, body: Any,
+        self,
+        *,
+        raw_source_id: str,
+        body: Any,
     ) -> dict[str, str]:
         rel = WebArtifact.relative_path(raw_source_id, as_markdown=self._as_markdown)
         path = posixpath.join(self._dest_rel, rel) if self._dest_rel else rel
@@ -116,17 +115,13 @@ def web_download(
     urls: Annotated[
         LLMStringList,
         Field(
-            description=(
-                "Список URL для скачивания"
-            ),
+            description=("Список URL для скачивания"),
         ),
     ],
     as_markdown: Annotated[
         bool,
         Field(
-            description=(
-                "true — конвертирует HTML→Markdown"
-            ),
+            description=("true — конвертирует HTML→Markdown"),
         ),
     ],
 ) -> dict[str, Any]:
@@ -140,7 +135,7 @@ def web_download(
         raise ValueError(msg)
     downloader = _WebDownloader(
         shell=shell,
-        connection=cfg.connection,
+        connection=cfg,
         dest_dir=cfg.dest_dir,
         as_markdown=as_markdown,
     )

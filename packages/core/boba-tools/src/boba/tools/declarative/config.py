@@ -25,10 +25,14 @@ __all__ = [
 
 @runtime_checkable
 class ConfigResolver(Protocol):
-    """Резолвит `FromConfig`-тип в готовый инстанс конфига."""
+    """Резолвит `FromConfig`-тип в готовый инстанс конфига.
 
-    def resolve(self, cfg_type: type) -> object:
-        """Вернуть инстанс `cfg_type`, наполненный из источника."""
+    `plugin_name` — плагин, в котором объявлен tool/provider; секция конфига
+    выводится из него (`tool.<plugin_name>`), модель про путь не знает.
+    """
+
+    def resolve(self, cfg_type: type, plugin_name: str) -> object:
+        """Вернуть инстанс `cfg_type`, наполненный из секции плагина."""
         ...
 
 

@@ -25,13 +25,14 @@ collection + runner-флаги) лежат в секции `[cli.kb.confluence.i
 from __future__ import annotations
 
 import logging
+import sys
 import time
 from collections.abc import Iterator
 from typing import Annotated, Any, Literal
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
-from boba.settings import BobaSettingsConfigDict, StringList
+from boba.settings import StringList, bind, build_app_config
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.confluence.ingest_pages import confluence_ingest_pages
 from boba.tool.kb.confluence.ingest_spaces import confluence_ingest_spaces
@@ -46,25 +47,14 @@ class ConfluenceIngestCliConfig(ConfluenceIngestConfig):
     """Self-contained CLI-конфиг HTTP-ingest runner'а.
 
     Наследует поля `ConfluenceIngestConfig`
-    (store/embedding/chunker/confluence/collection). CLI добавляет своими
-    полями `only`/`skip`/`space_type`/`prune` бизнес-логику discovery +
+    (connection/tables/embedding/chunker/confluence/collection). CLI добавляет
+    своими полями `only`/`skip`/`space_type`/`prune` бизнес-логику discovery +
     per-space loop поверх tool-функций.
 
     Config-секция: `[cli.kb.confluence.ingest]`.
     """
 
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="cli.kb.confluence.ingest",
-        defaults_from=(
-            "kb.storage",
-            "postgres.{kb.storage:profile}",
-            "embedding",
-            "confluence",
-        ),
-        use_cli=True,
-    )
+    model_config = ConfigDict(extra="ignore")
 
     space_type: Annotated[
         Literal["global", "personal", "any"],
@@ -233,7 +223,8 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    cfg = ConfluenceIngestCliConfig()  # pyright: ignore[reportCallIssue]
+    config = build_app_config(sys.argv[1:])
+    cfg = bind(config, "cli.kb.confluence.ingest", ConfluenceIngestCliConfig)
 
     if cfg.page_ids:
         return ConfluenceIngestCli.run_page_ids_mode(cfg)

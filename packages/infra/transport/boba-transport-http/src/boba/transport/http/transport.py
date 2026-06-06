@@ -18,7 +18,6 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Iterable
-from typing import ClassVar
 
 import httpx
 
@@ -28,6 +27,7 @@ from boba.indexing import (
     Transport,
     TransportKeys,
 )
+from boba.transport.http.connection import HttpConnection
 from boba.transport.http.keys import HttpKeys
 from boba.transport.http.request import HttpRequest
 
@@ -104,22 +104,8 @@ class HttpTransport(Transport[HttpRequest]):
     ```
     """  # noqa: E501
 
-    DEFAULT_TIMEOUT_SEC: ClassVar[float] = 30.0
-    DEFAULT_MAX_ATTEMPTS: ClassVar[int] = 1
-    DEFAULT_RETRY_BACKOFF_SEC: ClassVar[float] = 1.0
-
-    def __init__(
-        self,
-        *,
-        timeout_sec: float = DEFAULT_TIMEOUT_SEC,
-        verify: bool = False,
-        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
-        retry_backoff_sec: float = DEFAULT_RETRY_BACKOFF_SEC,
-    ) -> None:
-        self._timeout = timeout_sec
-        self._verify = verify
-        self._max_attempts = max(1, max_attempts)
-        self._retry_backoff_sec = retry_backoff_sec
+    def __init__(self, profile: HttpConnection) -> None:
+        self._profile = profile
 
     def name(self) -> str:
         return "HttpTransport"
@@ -135,7 +121,7 @@ class HttpTransport(Transport[HttpRequest]):
 
     def _fetch_one(self, req: HttpRequest) -> Iterable[RawDocument]:
         last_exc: httpx.HTTPError | None = None
-        for attempt in range(1, self._max_attempts + 1):
+        for attempt in range(1, self._profile.retry_attempts + 1):
             try:
                 yield from self._open_once(req)
                 return
@@ -145,15 +131,15 @@ class HttpTransport(Transport[HttpRequest]):
                 last_exc = e
             except httpx.TransportError as e:  # timeout / connect — transient
                 last_exc = e
-            if attempt < self._max_attempts:
-                delay = self._retry_backoff_sec * attempt
+            if attempt < self._profile.retry_attempts:
+                delay = self._profile.retry_backoff_sec * attempt
                 logger.warning(
                     "HTTP %s %s неудачно (%s); retry %d/%d через %.1fs",
                     req.method,
                     req.url,
                     type(last_exc).__name__,
                     attempt,
-                    self._max_attempts,
+                    self._profile.retry_attempts,
                     delay,
                 )
                 time.sleep(delay)
@@ -169,12 +155,7 @@ class HttpTransport(Transport[HttpRequest]):
         этой стадии в retry-loop `_fetch_one` не попадает (другой стек-фрейм).
         """
         with (
-            httpx.Client(
-                timeout=self._timeout,
-                verify=self._verify,
-                headers=dict(req.headers) if req.headers else {},
-                auth=req.auth,
-            ) as client,
+            self._profile.make_client(headers=req.headers) as client,
             client.stream(req.method, req.url) as resp,
         ):
             resp.raise_for_status()

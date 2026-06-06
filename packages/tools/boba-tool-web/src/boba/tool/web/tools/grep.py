@@ -24,26 +24,18 @@ import markdownify
 from pydantic import Field
 
 from boba.indexing import BinaryStream, PipelineContext, PipelineId
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.web.connection import WebConnection
 from boba.tool.web.request_source import WebUrlsRequestSource
 from boba.tools import FromConfig, tool
+from boba.transport.http import HttpTransport
 from boba.tools.domain import TableResult
 
 __all__ = ["WebGrepConfig", "web_grep"]
 
 
-class WebGrepConfig(BobaFlatSettings):
-    """Config tool'а `web_grep` (`[tool.web.grep]`)."""
+class WebGrepConfig(WebConnection):
+    """Config tool'а `web_grep`: web-профили (`WebConnection`) + max_text_chars."""
 
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="tool.web.grep",
-        defaults_from=("tool.web",),
-    )
-
-    connection: WebConnection
     max_text_chars: int = Field(
         default=2000,
         ge=1,
@@ -63,7 +55,7 @@ class _WebGrep:
     def load_text(self, *, url: str, as_markdown: bool) -> str:
         """Скачать URL и вернуть его контент целиком (markdown или HTML)."""
         source = WebUrlsRequestSource(urls=(url,), connection=self._connection)
-        transport = self._connection.make_transport()
+        transport = HttpTransport(self._connection.resolve_profile(url))
         pctx = PipelineContext(pipeline_id=self.PIPELINE_ID)
         try:
             for raw in transport.stream(pctx, source.stream(pctx)):
@@ -199,7 +191,7 @@ def web_grep(  # noqa: PLR0913 — независимые флаги grep'а
     `before`/`after` (+`truncated_lines` на усечённых). Url и переполнение
     limit — в `note`/`metadata`. Длинные строки режутся по `max_text_chars`.
     """
-    engine = _WebGrep(connection=cfg.connection)
+    engine = _WebGrep(connection=cfg)
     compiled = _WebGrep.compile_pattern(
         pattern,
         fixed_string=fixed_string,

@@ -4,6 +4,7 @@ from boba.agent.agent import (
     Agent,
     AgentContext,
 )
+from boba.agent.agent_profile import AgentProfile
 from boba.agent.builder import AgentBuilder
 from boba.agent.errors import (
     AgentLLMFeedbackError,
@@ -91,7 +92,6 @@ from boba.agent.prompt import (
     PromptResult,
     PromptState,
 )
-from boba.agent.runtime_config import AgentRuntimeConfig
 from boba.agent.turn.builder import TurnBuilder, TurnReducerFactory
 from boba.agent.turn.history_view import (
     AllHistoryDialogView,
@@ -124,7 +124,7 @@ __all__ = [
     "AgentEventName",
     "AgentEventRegistry",
     "AgentLLMFeedbackError",
-    "AgentRuntimeConfig",
+    "AgentProfile",
     "AllHistoryDialogView",
     "AnswerDelta",
     "AnswerMessage",

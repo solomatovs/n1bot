@@ -61,6 +61,7 @@ class ProviderEntry:
     fn: Callable[..., Any]
     scope: Scope
     plan: CallPlan
+    plugin: str = ""
 
     @property
     def label(self) -> str:
@@ -74,6 +75,7 @@ class ToolEntry:
     origin: str
     plan: CallPlan
     name: str
+    plugin: str = ""
 
     @property
     def label(self) -> str:
@@ -156,6 +158,7 @@ class ToolBuilder:
         fn: Callable[..., Any],
         *,
         scope: Scope = Scope.APP,
+        plugin: str = "",
     ) -> Self:
         """
         Зарегистрировать DI-фабрику.
@@ -171,7 +174,9 @@ class ToolBuilder:
             )
             raise ToolDeclarationError(msg)
         self._raise_if_taken(plan.return_type)
-        self._providers.append(ProviderEntry(fn=fn, scope=scope, plan=plan))
+        self._providers.append(
+            ProviderEntry(fn=fn, scope=scope, plan=plan, plugin=plugin)
+        )
         return self
 
     def register_instance(
@@ -202,7 +207,7 @@ class ToolBuilder:
         Добавить tool'ы / провайдеры напрямую (без плагин-модуля)
         """
         for item in items:
-            self._register(_Declared(item, _DeclKind.TOOL), "inline")
+            self._register(_Declared(item, _DeclKind.TOOL), "inline", "")
 
         return self
 
@@ -275,12 +280,14 @@ class ToolBuilder:
         """Просканировать модуль и зарегистрировать отобранные объекты."""
         scanner = _ModuleScanner(module)
         for decl in scanner.iter_registrable(plugin_name, plugin_tool_filter):
-            self._register(decl, scanner.origin)
+            self._register(decl, scanner.origin, plugin_name)
 
-    def _register(self, decl: _Declared, origin: str) -> None:
+    def _register(self, decl: _Declared, origin: str, plugin: str = "") -> None:
         """Регистрирует уже классифицированный объект как tool или provider."""
         if decl.kind is _DeclKind.PROVIDER:
-            self.register_provider(decl.obj, scope=provider_scope(decl.obj))
+            self.register_provider(
+                decl.obj, scope=provider_scope(decl.obj), plugin=plugin
+            )
 
         elif decl.kind is _DeclKind.TOOL:
             plan = build_call_plan(decl.obj)
@@ -290,6 +297,7 @@ class ToolBuilder:
                     origin=origin,
                     plan=plan,
                     name=tool_name(decl.obj),
+                    plugin=plugin,
                 ),
             )
 
@@ -323,17 +331,23 @@ class ToolBuilder:
             )
             raise UnresolvedDependencyError(msg)
 
-        for cfg_type in cfg_types:
+        for cfg_type, plugin in cfg_types.items():
             if cfg_type not in provided:
-                self.register_provider(self._config_provider_factory(cfg_type))
+                self.register_provider(
+                    self._config_provider_factory(cfg_type, plugin)
+                )
 
-    def _collect_config_types(self) -> set[type]:
-        """Собрать типы, помеченные `FromConfig`, из провайдеров и tool'ов."""
-        cfg_types: set[type] = set()
+    def _collect_config_types(self) -> dict[type, str]:
+        """Собрать `FromConfig`-типы с их плагином (секция = `tool.<plugin>`).
+
+        Тип резолвится из секции плагина, в котором объявлен tool/provider.
+        Один тип обычно принадлежит одному плагину; при коллизии остаётся первый.
+        """
+        cfg_types: dict[type, str] = {}
         for entry in (*self._providers, *self._tools):
             for dep in entry.plan.di_deps:
                 if isinstance(dep.marker, FromConfig):
-                    cfg_types.add(dep.target_type)
+                    cfg_types.setdefault(dep.target_type, entry.plugin)
         return cfg_types
 
     def _validate_from_di(self) -> None:
@@ -389,16 +403,20 @@ class ToolBuilder:
         return sources
 
     @staticmethod
-    def _config_provider_factory(cfg_type: type) -> Callable[..., Any]:
+    def _config_provider_factory(
+        cfg_type: type,
+        plugin: str,
+    ) -> Callable[..., Any]:
         """Фабрика provider'а конфига: берёт `ConfigResolver` из DI → `resolve`.
 
         Возвращает `@provides`-совместимый callable с подписью
         `(resolver: Annotated[ConfigResolver, FromDI(APP)]) -> cfg_type`, чтобы
-        Dishka инжектил resolver и кешировал конфиг как APP-singleton.
+        Dishka инжектил resolver и кешировал конфиг как APP-singleton. Секцию
+        задаёт `plugin` (резолвится из `tool.<plugin>`).
         """
 
         def _factory(resolver: Any) -> Any:
-            return resolver.resolve(cfg_type)
+            return resolver.resolve(cfg_type, plugin)
 
         _factory.__annotations__ = {
             "resolver": Annotated[ConfigResolver, FromDI(Scope.APP)],

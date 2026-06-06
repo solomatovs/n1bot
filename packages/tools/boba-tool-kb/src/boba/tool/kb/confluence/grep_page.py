@@ -22,28 +22,23 @@ from typing import Annotated, Any, ClassVar
 
 import httpx
 import markdownify
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.indexing import PipelineContext, PipelineId
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.parsing import ConfluenceJsonDecoder
 from boba.tool.kb.confluence.request_sources import ConfluencePagesRequestSource
 from boba.tools import FromConfig, tool
 from boba.tools.domain import TableResult
+from boba.transport.http import HttpTransport
 
 __all__ = ["ConfluenceGrepPageConfig", "confluence_grep_page"]
 
 
-class ConfluenceGrepPageConfig(BobaFlatSettings):
+class ConfluenceGrepPageConfig(BaseModel):
     """Self-contained конфиг tool'а `confluence_grep_page`."""
 
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="tool.kb.confluence.grep",
-        defaults_from=("confluence",),
-    )
+    model_config = ConfigDict(extra="ignore")
 
     confluence: ConfluenceConnection
     max_text_chars: int = Field(
@@ -195,11 +190,11 @@ def confluence_grep_page(  # noqa: PLR0913 — независимые флаги
 
     request_source = ConfluencePagesRequestSource(
         base_url=cfg.confluence.base_url,
-        auth=cfg.confluence.make_auth(),
+        auth=cfg.confluence.profile.auth.httpx_auth(),
         page_ids=[page_id],
         body_format=cfg.confluence.body_format,
     )
-    transport = cfg.confluence.make_transport()
+    transport = HttpTransport(cfg.confluence.profile)
     decoder = ConfluenceJsonDecoder(body_format=cfg.confluence.body_format)
     pctx = PipelineContext(pipeline_id=PageGrep.PIPELINE_ID)
 

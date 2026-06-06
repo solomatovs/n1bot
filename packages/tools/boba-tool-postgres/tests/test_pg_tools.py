@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import pytest
 
-from boba.tool.pg.describe_table import DescribeTableConfig, describe_table
-from boba.tool.pg.list_tables import ListTablesConfig, list_tables
-from boba.tool.pg.query import QueryConfig, query
+from boba.tool.pg.describe_table import describe_table
+from boba.tool.pg.executor import SqlExecutorConfig
+from boba.tool.pg.list_tables import list_tables
+from boba.tool.pg.query import query
 from boba.tools.domain import ErrorResult, PgCopyTextResult, TableResult
 
 pytestmark = pytest.mark.integration
@@ -30,7 +31,7 @@ def _data_rows(result: PgCopyTextResult) -> list[list[str | None]]:
 
 
 def test_list_tables_returns_table(
-    list_tables_cfg: ListTablesConfig,
+    list_tables_cfg: SqlExecutorConfig,
 ) -> None:
     """`list_tables` без schema-фильтра → TableResult с колонками schema/…."""
     res = list_tables(cfg=list_tables_cfg, target=TARGET, pg_schema=None)
@@ -40,7 +41,7 @@ def test_list_tables_returns_table(
 
 
 def test_list_tables_kb_chunks_visible(
-    list_tables_cfg: ListTablesConfig,
+    list_tables_cfg: SqlExecutorConfig,
 ) -> None:
     """В KB-БД должна быть `kb_chunks` (созданная bootstrap-миграцией)."""
     res = list_tables(cfg=list_tables_cfg, target=TARGET, pg_schema="public")
@@ -54,7 +55,7 @@ def test_list_tables_kb_chunks_visible(
 
 
 def test_describe_table_kb_chunks(
-    describe_table_cfg: DescribeTableConfig,
+    describe_table_cfg: SqlExecutorConfig,
 ) -> None:
     """Схема `kb_chunks` — ожидаемые системные колонки."""
     res = describe_table(
@@ -70,7 +71,7 @@ def test_describe_table_kb_chunks(
 
 
 def test_describe_unknown_table_empty(
-    describe_table_cfg: DescribeTableConfig,
+    describe_table_cfg: SqlExecutorConfig,
 ) -> None:
     """Неизвестная таблица → TableResult без строк."""
     res = describe_table(
@@ -88,7 +89,7 @@ def test_describe_unknown_table_empty(
 # --------------------------------------------------------------------------- #
 
 
-def test_query_simple_select(query_cfg: QueryConfig) -> None:
+def test_query_simple_select(query_cfg: SqlExecutorConfig) -> None:
     """Простой `SELECT 1, 'hello'` → PgCopyTextResult с одной data-строкой."""
     res = query(
         cfg=query_cfg,
@@ -100,7 +101,7 @@ def test_query_simple_select(query_cfg: QueryConfig) -> None:
     assert _data_rows(res) == [["1", "hello"]]
 
 
-def test_query_count_kb_chunks(query_cfg: QueryConfig) -> None:
+def test_query_count_kb_chunks(query_cfg: SqlExecutorConfig) -> None:
     """`SELECT count(*) FROM kb_chunks` — exploratory-запрос."""
     res = query(
         cfg=query_cfg,
@@ -112,7 +113,7 @@ def test_query_count_kb_chunks(query_cfg: QueryConfig) -> None:
     assert len(_data_rows(res)) == 1
 
 
-def test_query_too_many_rows(query_cfg: QueryConfig) -> None:
+def test_query_too_many_rows(query_cfg: SqlExecutorConfig) -> None:
     """Строк больше max_rows → ErrorResult «добавьте LIMIT» (запрос не трогаем)."""
     res = query(
         cfg=query_cfg,
@@ -123,7 +124,7 @@ def test_query_too_many_rows(query_cfg: QueryConfig) -> None:
     assert res.error_kind == "too_many_rows"
 
 
-def test_query_with_limit_ok(query_cfg: QueryConfig) -> None:
+def test_query_with_limit_ok(query_cfg: SqlExecutorConfig) -> None:
     """С LIMIT в самом запросе — успешный PgCopyTextResult."""
     res = query(
         cfg=query_cfg,
@@ -144,7 +145,7 @@ def test_query_with_limit_ok(query_cfg: QueryConfig) -> None:
 # а не текст.
 
 
-def test_query_blocks_insert(query_cfg: QueryConfig) -> None:
+def test_query_blocks_insert(query_cfg: SqlExecutorConfig) -> None:
     """INSERT не проходит через query."""
     with pytest.raises(RuntimeError):
         query(
@@ -154,7 +155,7 @@ def test_query_blocks_insert(query_cfg: QueryConfig) -> None:
         )
 
 
-def test_query_blocks_update(query_cfg: QueryConfig) -> None:
+def test_query_blocks_update(query_cfg: SqlExecutorConfig) -> None:
     """UPDATE не проходит через query."""
     with pytest.raises(RuntimeError):
         query(
@@ -164,7 +165,7 @@ def test_query_blocks_update(query_cfg: QueryConfig) -> None:
         )
 
 
-def test_query_blocks_drop(query_cfg: QueryConfig) -> None:
+def test_query_blocks_drop(query_cfg: SqlExecutorConfig) -> None:
     """DROP не проходит через query."""
     with pytest.raises(RuntimeError):
         query(

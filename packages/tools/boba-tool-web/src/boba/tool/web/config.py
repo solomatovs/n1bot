@@ -7,16 +7,12 @@
 
 from __future__ import annotations
 
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
+from pydantic import BaseModel, ConfigDict
 
 __all__ = ["WebPluginConfig"]
 
 
-class WebPluginConfig(BobaFlatSettings):
+class WebPluginConfig(BaseModel):
     """Web-tools plugin config (`[tool.web]`)."""
 
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="tool.web",
-    )
+    model_config = ConfigDict(extra="ignore")

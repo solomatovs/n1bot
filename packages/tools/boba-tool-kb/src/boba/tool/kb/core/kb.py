@@ -23,7 +23,7 @@ from collections.abc import Iterable
 from typing import Any, LiteralString, cast
 
 from psycopg import sql
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from boba.db.postgres import PostgresConnection
 from boba.tool.kb.core.embedding import EmbeddingModel
@@ -49,11 +49,6 @@ class PostgresKnowledgeBaseConfig(BaseModel):
     connection: PostgresConnection
     tables: PostgresStoreSchema
     embedding: EmbeddingModel
-    snippet_chars: int = Field(
-        default=300,
-        ge=1,
-        description="Максимальная длина сниппета документа в search-результатах.",
-    )
 
 
 class PostgresKnowledgeBase:
@@ -82,6 +77,7 @@ class PostgresKnowledgeBase:
         collections: list[str],
         query: str,
         top_k: int,
+        snippet_chars: int,
         sql_template: str,
     ) -> Iterable[SearchHit]:
         """Чистый vector top-K (cosine via `<=>`) без FTS-канала.
@@ -112,7 +108,7 @@ class PostgresKnowledgeBase:
                     {
                         "collections": list(collections),
                         "embedding": embedding,
-                        "snippet_chars": self._cfg.snippet_chars,
+                        "snippet_chars": snippet_chars,
                         "top_k": top_k,
                     },
                 )
@@ -137,6 +133,7 @@ class PostgresKnowledgeBase:
         collections: list[str],
         query: str,
         top_k: int,
+        snippet_chars: int,
         sql_template: str,
     ) -> Iterable[SearchHit]:
         """
@@ -153,7 +150,7 @@ class PostgresKnowledgeBase:
                     {
                         "collections": list(collections),
                         "query": query,
-                        "snippet_chars": self._cfg.snippet_chars,
+                        "snippet_chars": snippet_chars,
                         "top_k": top_k,
                     },
                 )

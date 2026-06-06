@@ -7,10 +7,9 @@ from typing import Any
 import httpx
 import pytest
 
-from boba.tool.web.auth import NoneAuth
 from boba.tool.web.connection import WebConnection
-from boba.tool.web.host_profile import WebHostProfile
-from boba.tool.web.tools.fetch import WebFetchConfig, web_fetch
+from boba.transport.http import HttpConnection
+from boba.tool.web.tools.fetch import web_fetch
 
 
 def _patch_client(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
@@ -23,17 +22,8 @@ def _patch_client(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
     monkeypatch.setattr("boba.transport.http.transport.httpx.Client", mock_client)
 
 
-def _cfg() -> WebFetchConfig:
-    return WebFetchConfig.model_construct(
-        connection=WebConnection(
-            hosts={
-                "docs.python.org": WebHostProfile(
-                    hostname="docs.python.org",
-                    auth=NoneAuth(method="none"),
-                ),
-            },
-        ),
-    )
+def _cfg() -> WebConnection:
+    return WebConnection(profiles={"docs.python.org": HttpConnection()})
 
 
 def test_fetch_returns_dict_with_first_window_of_raw_html(

@@ -6,7 +6,13 @@ import httpx
 
 from boba.indexing import Metadata, SourceId, TransportKeys
 from boba.indexing.context import PipelineContext, PipelineId
-from boba.transport.http import HttpKeys, HttpRequest, HttpTransport
+from boba.transport.http import (
+    BasicAuth,
+    HttpConnection,
+    HttpKeys,
+    HttpRequest,
+    HttpTransport,
+)
 
 
 def _ctx() -> PipelineContext:
@@ -37,7 +43,7 @@ def test_yields_raw_document_propagates_source_id_and_metadata(monkeypatch):
         )
     ]
     seen = []
-    for doc in HttpTransport().stream(_ctx(), iter(requests)):
+    for doc in HttpTransport(HttpConnection()).stream(_ctx(), iter(requests)):
         seen.append((doc.source_id, doc.metadata, doc.handle.read()))
     sid, md, payload = seen[0]
     # source_id берётся ИЗ Request'а, не из response.url
@@ -57,7 +63,7 @@ def test_handle_streams_in_chunks(monkeypatch):
     _patch(monkeypatch, handler)
 
     chunks = []
-    for doc in HttpTransport().stream(
+    for doc in HttpTransport(HttpConnection()).stream(
         _ctx(),
         iter(
             [
@@ -91,7 +97,9 @@ def test_retry_recovers_after_5xx(monkeypatch):
     _patch(monkeypatch, handler)
 
     seen = list(
-        HttpTransport(max_attempts=3, retry_backoff_sec=0).stream(
+        HttpTransport(
+            HttpConnection(retry_attempts=3, retry_backoff_sec=0),
+        ).stream(
             _ctx(),
             iter([HttpRequest(url="https://x.test/y", source_id=SourceId("y"))]),
         )
@@ -112,7 +120,9 @@ def test_retry_exhausted_raises_last_5xx(monkeypatch):
 
     try:
         list(
-            HttpTransport(max_attempts=2, retry_backoff_sec=0).stream(
+            HttpTransport(
+                HttpConnection(retry_attempts=2, retry_backoff_sec=0),
+            ).stream(
                 _ctx(),
                 iter([HttpRequest(url="https://x.test/y", source_id=SourceId("y"))]),
             )
@@ -136,7 +146,9 @@ def test_4xx_not_retried(monkeypatch):
 
     try:
         list(
-            HttpTransport(max_attempts=3, retry_backoff_sec=0).stream(
+            HttpTransport(
+                HttpConnection(retry_attempts=3, retry_backoff_sec=0),
+            ).stream(
                 _ctx(),
                 iter([HttpRequest(url="https://x.test/y", source_id=SourceId("y"))]),
             )
@@ -148,8 +160,8 @@ def test_4xx_not_retried(monkeypatch):
     assert calls["n"] == 1
 
 
-def test_auth_passed_to_client(monkeypatch):
-    """HttpTransport пробрасывает `httpx.Auth` напрямую в `httpx.Client(auth=...)`."""
+def test_auth_from_profile_applied_to_client(monkeypatch):
+    """HttpTransport применяет auth из профиля (`make_client`) к httpx.Client."""
     seen_headers = {}
 
     def handler(req):
@@ -158,15 +170,15 @@ def test_auth_passed_to_client(monkeypatch):
 
     _patch(monkeypatch, handler)
 
+    profile = HttpConnection(auth=BasicAuth(method="basic", user="u", password="p"))
     list(
-        HttpTransport().stream(
+        HttpTransport(profile).stream(
             _ctx(),
             iter(
                 [
                     HttpRequest(
                         url="https://x.test/y",
                         source_id=SourceId("https://x.test/y"),
-                        auth=httpx.BasicAuth(username="u", password="p"),
                     )
                 ]
             ),

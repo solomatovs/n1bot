@@ -51,7 +51,7 @@ def confluence_ingest_pages(
     """
     request_source = ConfluencePagesRequestSource(
         base_url=cfg.confluence.base_url,
-        auth=cfg.confluence.make_auth(),
+        auth=cfg.confluence.profile.auth.httpx_auth(),
         page_ids=page_ids,
         body_format=cfg.confluence.body_format,
     )

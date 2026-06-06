@@ -28,8 +28,8 @@ StringList = Annotated[list[str], BeforeValidator(_csv_to_list)]
 
 Применение:
 
-    class MyConfig(BobaFlatSettings):
-        tags: StringList = []                  # env "a,b,c" → ["a","b","c"]
+    class MyConfig(BaseModel):
+        tags: StringList = []                  # "a,b,c" → ["a","b","c"]
         accept: StringList | None = None       # nullable-вариант
 """
 

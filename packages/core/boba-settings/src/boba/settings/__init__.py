@@ -1,46 +1,36 @@
-"""boba.settings: единый ConfigSource + pydantic-schema с flat→nested.
+"""boba.settings: OmegaConf-источники + чистые pydantic-модели.
 
-Чёткое разделение ответственности:
+Разделение ответственности:
 
-- `boba.settings.source` — ИСТОЧНИК конфиг-данных:
-    * `ConfigPath` — каноническое представление ключа конфиг-секции.
-    * `ConfigSource` Protocol — единый контракт `for_path(path) -> dict`.
-    * `TomlEnvConfigSource` — default-реализация (`$BOBA_CONFIG_PATH` + `os.environ`).
-    * `DictConfigSource` — in-memory, для тестов.
-    * `ConfigSourcePydanticAdapter` — мост к pydantic-settings.
-    * `to_config_path` — utility для нормализации ключа.
+- `boba.settings.builder` — явная сборка источников в инстанс (`ConfigBuilder`,
+  `build_app_config`). Не глобал: приложение держит инстанс и передаёт дальше.
+- `boba.settings.bind` — единственная точка `OmegaConf → pydantic` (`bind`).
+- `boba.settings.resolver` — реализации портов `boba.tools` поверх конфиг-инстанса;
+  секция плагина = `tool.<plugin_name>` (`plugin_section`), путь даёт сборщик.
+- `boba.settings.types` — переиспользуемые pydantic-типы (`StringList`).
 
-- `boba.settings.flat` — SCHEMA:
-    * `BobaFlatSettings` — `BaseSettings`-наследник с flat→nested redistribute.
-       Source-чтение делегирует через `ConfigSourcePydanticAdapter`.
-    * `BobaSettingsConfigDict` — расширение `SettingsConfigDict` с
-       schema-уровневыми полями `config_path` и `boba_cli`.
+Модель про своё место в конфиге не знает; OmegaConf скрыт внутри пакета —
+потребители работают с pydantic-моделями через `bind`/`ConfigResolver`.
 """
 
-from boba.settings.flat import (
-    BobaFlatSettings,
-    BobaSettingsConfigDict,
-)
-from boba.settings.source import (
-    ConfigPath,
-    ConfigSource,
-    ConfigSourcePydanticAdapter,
-    DictConfigSource,
-    TomlEnvConfigSource,
-    to_config_path,
+from boba.settings.bind import bind
+from boba.settings.builder import ConfigBuilder, build_app_config
+from boba.settings.resolver import (
+    OmegaConfPluginToolFilter,
+    OmegaConfResolver,
+    PluginConfigBase,
+    plugin_section,
 )
 from boba.settings.types import LLMStringList, StringList
 
 __all__ = [
-    "BobaFlatSettings",
-    "BobaSettingsConfigDict",
-    "ConfigPath",
-    "ConfigSource",
-    "ConfigSourcePydanticAdapter",
-    "DictConfigSource",
+    "ConfigBuilder",
     "LLMStringList",
+    "OmegaConfPluginToolFilter",
+    "OmegaConfResolver",
+    "PluginConfigBase",
     "StringList",
-    "StringList",
-    "TomlEnvConfigSource",
-    "to_config_path",
+    "bind",
+    "build_app_config",
+    "plugin_section",
 ]

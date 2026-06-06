@@ -31,7 +31,7 @@ from urllib.parse import unquote, urlparse
 import httpx
 import markdownify
 from bs4 import BeautifulSoup
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.indexing import (
     BinaryStream,
@@ -42,8 +42,6 @@ from boba.indexing import (
     RequestSource,
 )
 from boba.settings import (
-    BobaFlatSettings,
-    BobaSettingsConfigDict,
     LLMStringList,
     StringList,
 )
@@ -78,18 +76,13 @@ class _CountingReader:
         return chunk
 
 
-class ConfluenceDownloadConfig(BobaFlatSettings):
+class ConfluenceDownloadConfig(BaseModel):
     """Self-contained конфиг tool'а `confluence_download`.
 
     Config-секция: `[tool.kb.confluence.download]`.
     """
 
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="tool.kb.confluence.download",
-        defaults_from=("confluence",),
-    )
+    model_config = ConfigDict(extra="ignore")
 
     confluence: ConfluenceConnection
     dest_dir: str = Field(
@@ -112,7 +105,7 @@ class ConfluenceDownloadConfig(BobaFlatSettings):
                 "Отсеянные вложения не запрашиваются по HTTP и не пишутся на диск."
             ),
         ),
-    ] = []  # noqa: RUF012
+    ] = []
     attachment_titles: Annotated[
         StringList,
         Field(
@@ -121,7 +114,7 @@ class ConfluenceDownloadConfig(BobaFlatSettings):
                 "(напр. `*.pdf`, `report-*.docx`). См. `attachment_media_types`."
             ),
         ),
-    ] = []  # noqa: RUF012
+    ] = []
     max_returned_files: int | None = Field(
         default=None,
         ge=1,
@@ -511,7 +504,7 @@ def confluence_download(
     else:  # page_ids
         request_source = ConfluencePagesRequestSource(
             base_url=cfg.confluence.base_url,
-            auth=cfg.confluence.make_auth(),
+            auth=cfg.confluence.profile.auth.httpx_auth(),
             page_ids=mode_value,
             body_format=cfg.confluence.body_format,
         )

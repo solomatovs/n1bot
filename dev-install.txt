@@ -39,5 +39,5 @@
 -e ./packages/tools/boba-tool-web
 
 # entry-point apps
--e ./packages/agents/boba-cli-agent
--e ./packages/agents/boba-chainlit-agent
+-e ./packages/agents/boba-cli
+-e ./packages/agents/boba-chainlit

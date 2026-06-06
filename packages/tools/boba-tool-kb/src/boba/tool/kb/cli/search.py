@@ -2,7 +2,7 @@
 
 Что делает:
 
-1. Загружает общий `KbSearchConfig` (`[tool.kb.search]`); по полю `template`
+1. Загружает `PostgresKnowledgeBaseConfig` (`[tool.kb]`); по полю `template`
    (`vector`|`fts`) выбирает встроенный SQL-шаблон
    (`KbSearch.VECTOR_SQL`/`FTS_SQL`).
 2. Для `vector` строит embedder (`cfg.embedding.build()`)
@@ -26,25 +26,26 @@
 - Документация: получить точный SQL для config-снапшота — приложить к
   RCA или changelog'у.
 
-Применение:
+Применение (CLI-override — `key=value`, section-relative):
 
     BOBA_CONFIG_PATH=./local/config.toml \\
         .venv/bin/python -m boba.tool.kb.cli.search \\
-        --template vector --query "как оформить возврат" --top-k 5
+        template=vector query="как оформить возврат" top_k=5
 
     # пайп в psql:
     BOBA_CONFIG_PATH=./local/config.toml \\
         .venv/bin/python -m boba.tool.kb.cli.search \\
-            --template fts --query "auth middleware" \\
+            template=fts query="auth middleware" \\
         | psql "$PG_DSN"
 
-Опции (CLI-флаги через `use_cli=True`):
-    --template {vector|fts}          какой шаблон рендерить
-    --query <text>                   текст поискового запроса
-    --top-k <int>                    сколько hits (default 5)
+Опции (поля секции `[cli.kb.search.render]`):
+    template={vector|fts}            какой шаблон рендерить
+    query=<text>                     текст поискового запроса
+    top_k=<int>                      сколько hits (default 5)
+    snippet_chars=<int>              длина сниппета (default 3000)
 
-Все остальные параметры (collections, snippet_chars, путь
-к SQL-шаблону) берутся из секций `[tool.kb.search.<template>]`.
+`collections` фиксированы (обе KB-коллекции), connection/tables/embedding
+берутся из секции `[tool.kb]` (`PostgresKnowledgeBaseConfig`).
 """
 
 from __future__ import annotations
@@ -54,15 +55,15 @@ import sys
 from typing import Annotated, ClassVar, Literal, LiteralString, cast
 
 from psycopg import sql
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
+from boba.settings import bind, build_app_config
+from boba.tool.kb.core.kb import PostgresKnowledgeBaseConfig
 from boba.tool.kb.core.postgres import KbPool
 from boba.tool.kb.core.search import (
     ConfluenceCollection,
     KbDocCollection,
     KbSearch,
-    KbSearchConfig,
 )
 
 __all__ = ["SearchRenderCliConfig", "main"]
@@ -70,13 +71,13 @@ __all__ = ["SearchRenderCliConfig", "main"]
 logger = logging.getLogger("boba.tool.kb.cli.search")
 
 
-class SearchRenderCliConfig(BobaFlatSettings):
+class SearchRenderCliConfig(BaseModel):
     """Self-contained CLI-конфиг рендерера SQL-шаблонов.
 
     Config-секция: `[cli.kb.search.render]`. Только runner-specific поля
     (template/query/top_k) — все search-параметры тянутся из
     `[tool.kb.search.<template>]` через одноимённый tool-конфиг при
-    instantiation в `main()`.
+    instantiation в `main()`. CLI-override — `key=value` (section-relative).
     """
 
     COLLECTIONS: ClassVar[list[str]] = [
@@ -84,12 +85,7 @@ class SearchRenderCliConfig(BobaFlatSettings):
         KbDocCollection.COLLECTION,
     ]
 
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="cli.kb.search.render",
-        use_cli=True,
-    )
+    model_config = ConfigDict(extra="ignore")
 
     template: Annotated[
         Literal["vector", "fts"],
@@ -103,6 +99,10 @@ class SearchRenderCliConfig(BobaFlatSettings):
         int,
         Field(ge=1, description="Сколько hits вернуть."),
     ] = 5
+    snippet_chars: Annotated[
+        int,
+        Field(ge=1, description="Максимальная длина сниппета (символов)."),
+    ] = KbSearch.SNIPPET_DEFAULT
 
 
 def main() -> int:
@@ -113,9 +113,9 @@ def main() -> int:
         stream=sys.stderr,
     )
 
-    cfg = SearchRenderCliConfig()  # pyright: ignore[reportCallIssue]
-    tool_cfg = KbSearchConfig()  # pyright: ignore[reportCallIssue]
-    kb_cfg = tool_cfg.knowledge_base
+    config = build_app_config(sys.argv[1:])
+    cfg = bind(config, "cli.kb.search.render", SearchRenderCliConfig)
+    kb_cfg = bind(config, "tool.kb", PostgresKnowledgeBaseConfig)
 
     logger.info(
         "rendering template=%s query=%r top_k=%d collections=%s",
@@ -124,14 +124,6 @@ def main() -> int:
         cfg.top_k,
         SearchRenderCliConfig.COLLECTIONS,
     )
-
-    if cfg.top_k > tool_cfg.max_top_k:
-        logger.warning(
-            "top_k=%d превышает max_top_k=%d из [tool.kb.search]; "
-            "runtime-tool откажется, но рендеру это не мешает.",
-            cfg.top_k,
-            tool_cfg.max_top_k,
-        )
 
     # FTS не нуждается в embedding'е — экономим embedder.embed_query().
     needs_embedding = cfg.template != "fts"
@@ -147,7 +139,7 @@ def main() -> int:
     params: dict[str, object] = {
         "collections": SearchRenderCliConfig.COLLECTIONS,
         "query": cfg.query,
-        "snippet_chars": kb_cfg.snippet_chars,
+        "snippet_chars": cfg.snippet_chars,
         "top_k": cfg.top_k,
     }
     if embedder is not None:
