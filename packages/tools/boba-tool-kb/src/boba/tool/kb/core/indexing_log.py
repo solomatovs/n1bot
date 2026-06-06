@@ -1,24 +1,23 @@
-"""Логирование IndexEvent-потока индексатора в стандартный logger.
+"""Логирование IndexEvent-потока в стандартный logger.
 
-`Indexer.invoke()` молча проглатывает поток событий и отдаёт только финальный
-`IndexStats`. `LoggedIndexRun.invoke()` — drop-in замена: прогоняет тот же
-`Indexer.stream()`, но пишет каждое событие (per-source indexed/skipped/failed,
-cleanup, итоговый run) в переданный logger, и так же возвращает `IndexStats`.
+`Pipeline.run()` молча проглатывает поток событий и отдаёт только финальный
+`IndexStats`. `LoggedIndexRun.drain()` — drop-in замена: потребляет тот же
+поток `Pipeline.index(...)`, но пишет каждое событие (per-source
+indexed/skipped/failed, cleanup, итоговый run) в переданный logger, и так же
+возвращает `IndexStats`.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, ClassVar
+from collections.abc import Iterable
+from typing import ClassVar
 
 from boba.indexing import (
     CompletedItem,
-    Indexer,
-    IndexerConfig,
     IndexEvent,
     IndexStats,
     IndexStatsBuilder,
-    PipelineContext,
     RunFinished,
     Severity,
 )
@@ -27,7 +26,7 @@ __all__ = ["LoggedIndexRun"]
 
 
 class LoggedIndexRun:
-    """Прогон `Indexer.stream()` с per-event логированием; возвращает `IndexStats`."""
+    """Слив `IndexEvent`-потока с per-event логированием; возвращает `IndexStats`."""
 
     _LEVELS: ClassVar[dict[Severity, int]] = {
         Severity.INFO: logging.INFO,
@@ -36,15 +35,13 @@ class LoggedIndexRun:
     }
 
     @staticmethod
-    def invoke(
-        indexer: Indexer[Any, Any],
-        ctx: PipelineContext,
-        config: IndexerConfig[Any],
+    def drain(
+        events: Iterable[IndexEvent],
         logger: logging.Logger,
     ) -> IndexStats:
-        """Аналог `indexer.invoke(ctx, config)`, но каждое событие пишется в logger."""
+        """Потребить поток `Pipeline.index(...)`, пишет каждое событие в logger."""
         stats = IndexStatsBuilder().build()
-        for event in indexer.stream(ctx, config):
+        for event in events:
             LoggedIndexRun._emit(logger, event)
             if isinstance(event, RunFinished):
                 stats = event.stats

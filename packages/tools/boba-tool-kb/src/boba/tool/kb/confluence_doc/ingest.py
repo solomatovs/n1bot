@@ -14,9 +14,9 @@ from boba.indexing import (
     FullCleanup,
     IndexerConfig,
     NoneCleanup,
+    Pipeline,
     PipelineContext,
     RequestSource,
-    StreamingIndexer,
     Transport,
 )
 from boba.indexing.context import CollectionId, PipelineId
@@ -101,20 +101,24 @@ class ConfluenceDocIngest:
             embedder=embedder,
             collection=collection_id,
         )
-        indexer: StreamingIndexer[FsRequest, str] = StreamingIndexer(
-            request_source=request_source,
+        pipeline: Pipeline[FsRequest, str] = Pipeline(
+            source=request_source,
             transport=transport,
             reader=KbDocReader(),
-            chunker=chunker,
-            sink=view,
-            query=view,
         )
         config: IndexerConfig[str] = IndexerConfig(
             cleanup=FullCleanup() if prune_missing else NoneCleanup(),
             force_update=False,
         )
-        stats = LoggedIndexRun.invoke(
-            indexer, PipelineContext(pipeline_id=pipeline_id), config, logger,
+        stats = LoggedIndexRun.drain(
+            pipeline.index(
+                PipelineContext(pipeline_id=pipeline_id),
+                chunker=chunker,
+                sink=view,
+                query=view,
+                config=config,
+            ),
+            logger,
         )
 
         return {

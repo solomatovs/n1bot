@@ -10,12 +10,8 @@
 Использование:
     src = FsWalkRequestSource(paths=["/data/docs"], include=["*.md", "*.txt"])
     transport = FsTransport()
-    indexer = StreamingIndexer(
-        request_source=src,
-        transport=transport,
-        reader=MarkdownReader(),
-        ...
-    )
+    pipeline = Pipeline(source=src, transport=transport, reader=MarkdownReader())
+    stats = pipeline.run(ctx, chunker=chunker, sink=view, query=view, config=config)
 """
 
 from __future__ import annotations

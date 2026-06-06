@@ -25,7 +25,7 @@ from typing import NewType
 from boba.indexing.raw_document import RawDocument
 from boba.patterns import Converter, StateFull
 
-__all__ = ["Decoder", "DecoderId", "PassThroughDecoder"]
+__all__ = ["Decoder", "DecoderId"]
 
 
 DecoderId = NewType("DecoderId", str)
@@ -46,22 +46,3 @@ class Decoder(
         self,
         value: RawDocument,
     ) -> RawDocument: ...
-
-
-class PassThroughDecoder(Decoder):
-    """Passthrough: payload и metadata передаются как есть."""
-
-    def name(self) -> str:
-        return "PassThroughDecoder"
-
-    def decoder_id(self) -> DecoderId:
-        return DecoderId("pass_through")
-
-    def convert(
-        self,
-        value: RawDocument,
-    ) -> RawDocument:
-        return value
-
-    def reset(self) -> None:
-        pass
