@@ -10,7 +10,7 @@
 Применение:
     src = WorkspaceWalkRequestSource(shell=shell, paths=["upload"], include=["*.md"])
     tr  = WorkspaceTransport(shell=shell)
-    indexer = StreamingIndexer(request_source=src, transport=tr, ...)
+    pipeline = Pipeline(source=src, transport=tr, reader=KbDocReader())
 """
 
 from __future__ import annotations

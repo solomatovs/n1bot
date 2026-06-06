@@ -13,10 +13,10 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.indexing import (
+    Pipeline,
     PipelineContext,
     PipelineId,
     ReaderKeys,
-    RuntimePipeline,
     Section,
 )
 from boba.settings import LLMStringList
@@ -112,8 +112,8 @@ def confluence_search_cql(
     Возвращает `TableResult` — таблицу hits с колонками `page_id`/`title`/
     `space_key`/`url`/`snippet`/`last_modified`.
     """
-    pipeline = RuntimePipeline(
-        request_source=ConfluenceCqlSearchRequestSource(
+    pipeline = Pipeline(
+        source=ConfluenceCqlSearchRequestSource(
             base_url=cfg.confluence.base_url,
             auth=cfg.confluence.profile.auth.httpx_auth(),
             cql=CqlSearch.build_cql(query=query, spaces=spaces),
@@ -128,7 +128,7 @@ def confluence_search_cql(
 
     try:
         sections = list(
-            pipeline.stream(PipelineContext(pipeline_id=CqlSearch.PIPELINE_ID)),
+            pipeline.sections(PipelineContext(pipeline_id=CqlSearch.PIPELINE_ID)),
         )
     except httpx.HTTPError as e:
         raise RuntimeError(

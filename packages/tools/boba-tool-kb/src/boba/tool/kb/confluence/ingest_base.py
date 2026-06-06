@@ -30,9 +30,9 @@ from boba.indexing import (
     FullCleanup,
     IndexerConfig,
     NoneCleanup,
+    Pipeline,
     PipelineContext,
     RequestSource,
-    StreamingIndexer,
     TransportKeys,
 )
 from boba.indexing.context import CollectionId, PipelineId
@@ -154,23 +154,26 @@ class ConfluenceIngest:
             embedder=embedder,
             collection=collection_id,
         )
-        indexer: StreamingIndexer[HttpRequest, str] = StreamingIndexer(
-            request_source=request_source,
+        pipeline: Pipeline[HttpRequest, str] = Pipeline(
+            source=request_source,
             transport=ConfluenceContentTransport.from_connection(
                 conn, attachment_filter=attachment_filter,
             ),
-            decoders=(),
             reader=reader,
-            chunker=chunker,
-            sink=view,
-            query=view,
         )
         config: IndexerConfig[str] = IndexerConfig(
             cleanup=FullCleanup() if prune_missing else NoneCleanup(),
             force_update=False,
         )
-        stats = LoggedIndexRun.invoke(
-            indexer, PipelineContext(pipeline_id=pipeline_id), config, logger,
+        stats = LoggedIndexRun.drain(
+            pipeline.index(
+                PipelineContext(pipeline_id=pipeline_id),
+                chunker=chunker,
+                sink=view,
+                query=view,
+                config=config,
+            ),
+            logger,
         )
 
         return {

@@ -10,7 +10,6 @@ from boba.indexing.chunk_id import (
     FixedDigestPrefix,
     SourceBasedChunkId,
 )
-from boba.indexing.chunk_sink import ChunkSink, VectorStoreChunkSink
 from boba.indexing.chunk_store import (
     ChunkStore,
     CollectionInfo,
@@ -46,7 +45,7 @@ from boba.indexing.context import (
     PipelineContext,
     PipelineId,
 )
-from boba.indexing.decoder import Decoder, DecoderId, PassThroughDecoder
+from boba.indexing.decoder import Decoder, DecoderId
 from boba.indexing.dispatch_reader import DispatchReader
 from boba.indexing.embedder import Embedder
 from boba.indexing.errors import (
@@ -95,7 +94,6 @@ from boba.indexing.index_views import (
     ReconcileSummary,
     TrackingKeys,
 )
-from boba.indexing.indexer import Indexer, IndexerConfig
 from boba.indexing.key_encoder import KeyEncoder, Sha256TextEncoder
 from boba.indexing.metadata import (
     ChunkerKeys,
@@ -104,11 +102,10 @@ from boba.indexing.metadata import (
     ReaderKeys,
     TransportKeys,
 )
-from boba.indexing.namespaced_view import NamespacedView
+from boba.indexing.pipeline import IndexerConfig, Pipeline
 from boba.indexing.raw_document import BinaryStream, RawDocument
 from boba.indexing.reader import Reader, ReaderId
 from boba.indexing.request import Request, RequestSource
-from boba.indexing.runtime_pipeline import RuntimePipeline
 from boba.indexing.sections import (
     HeadingSection,
     ParagraphSection,
@@ -122,7 +119,6 @@ from boba.indexing.splitter import (
     Splitter,
 )
 from boba.indexing.stats import IndexStats, IndexStatsBuilder
-from boba.indexing.streaming_indexer import StreamingIndexer
 from boba.indexing.transport import Transport
 
 __all__ = [
@@ -137,7 +133,6 @@ __all__ = [
     "ChunkIdGenerator",
     "ChunkKeys",
     "ChunkLocation",
-    "ChunkSink",
     "ChunkStore",
     "ChunkSummary",
     "Chunker",
@@ -180,7 +175,6 @@ __all__ = [
     "IndexSink",
     "IndexStats",
     "IndexStatsBuilder",
-    "Indexer",
     "IndexerConfig",
     "IndexingError",
     "IntContentHash",
@@ -191,15 +185,14 @@ __all__ = [
     "Metadata",
     "MetadataKey",
     "NamespaceId",
-    "NamespacedView",
     "Ne",
     "NoneCleanup",
     "Not",
     "NotIn",
     "Or",
     "ParagraphSection",
-    "PassThroughDecoder",
     "PhaseTransition",
+    "Pipeline",
     "PipelineContext",
     "PipelineId",
     "RawDocument",
@@ -212,7 +205,6 @@ __all__ = [
     "RunFinished",
     "RunId",
     "RunStarted",
-    "RuntimePipeline",
     "Section",
     "SectionKeys",
     "Severity",
@@ -224,11 +216,9 @@ __all__ = [
     "SourceSkippedUnchanged",
     "SplitPiece",
     "Splitter",
-    "StreamingIndexer",
     "StringContentHash",
     "TrackingKeys",
     "Transport",
     "TransportKeys",
     "UnsupportedFilterError",
-    "VectorStoreChunkSink",
 ]
