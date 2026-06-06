@@ -29,8 +29,10 @@ from __future__ import annotations
 import logging
 import time
 
+from pydantic import BaseModel, ConfigDict
+
 from boba.db.postgres import PostgresConnection
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
+from boba.settings import bind, build_app_config
 from boba.tool.kb.core.embedding import EmbeddingModel
 from boba.tool.kb.core.migrations import Migrations
 from boba.tool.kb.core.postgres import KbPool, PostgresStoreSchema
@@ -40,21 +42,12 @@ __all__ = ["KbBootstrapConfig", "main"]
 logger = logging.getLogger("boba.tool.kb.cli.kb_bootstrap")
 
 
-class KbBootstrapConfig(BobaFlatSettings):
+class KbBootstrapConfig(BaseModel):
     """
     Self-contained конфиг bootstrap-CLI
     """
 
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="cli.kb.bootstrap",
-        defaults_from=(
-            "kb.storage",
-            "postgres.{kb.storage:profile}",
-            "embedding",
-        ),
-    )
+    model_config = ConfigDict(extra="ignore")
 
     connection: PostgresConnection
     tables: PostgresStoreSchema
@@ -67,7 +60,8 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    cfg = KbBootstrapConfig()  # pyright: ignore[reportCallIssue]
+    config = build_app_config()
+    cfg = bind(config, "cli.kb.bootstrap", KbBootstrapConfig)
 
     pool = KbPool.open(cfg.connection)
     embedder = cfg.embedding.build()

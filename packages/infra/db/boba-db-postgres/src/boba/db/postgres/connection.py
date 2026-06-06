@@ -1,9 +1,8 @@
 """`PostgresConnection` — переиспользуемая базовая модель Postgres-подключения.
 
-`BaseModel` (не settings), без `config_path` — встраивается как nested-поле
-в tool-конфиги, которым нужно соединение с Postgres (ingest, search, sql).
-Рекурсивный flatten в `BobaFlatSettings` поднимает host/port/... на уровень
-корневой TOML-секции tool'а.
+`BaseModel`, без `config_path` — встраивается как nested-поле в tool-конфиги,
+которым нужно соединение с Postgres (ingest, search, sql). Заполняется ссылкой
+`${postgres.<name>}` из секции `[postgres.<name>]` в config.toml.
 
 Связанные helpers:
 - `to_dsn(session_options=...)` — libpq DSN через `psycopg.conninfo.make_conninfo`.
@@ -23,15 +22,8 @@ __all__ = ["PostgresConnection"]
 
 
 class PostgresConnection(BaseModel):
-    """Структурированное Postgres-подключение.
-
-    `profile` как поле здесь не объявлено: оно бы конфликтовало во
-    flat-redistribute с одноимённым полем-указателем `profile` на верхнем
-    уровне tool-конфигов (`KbSearchConfig`, ...). Resolve именованного
-    профиля делает потребитель (`SqlExecutorConfig._resolve_profiles`,
-    `BobaFlatSettings.settings_customise_sources` через
-    `defaults_from=("postgres.{profile}",...)`) на raw-dict до создания
-    `PostgresConnection`, после чего ключ `profile` отбрасывается.
+    """
+    Структурированное Postgres-подключение.
     """
 
     host: str = Field(

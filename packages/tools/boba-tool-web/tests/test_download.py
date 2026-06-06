@@ -12,9 +12,8 @@ from typing import Any
 import httpx
 import pytest
 
-from boba.tool.web.auth import NoneAuth
 from boba.tool.web.connection import WebConnection
-from boba.tool.web.host_profile import WebHostProfile
+from boba.transport.http import HttpConnection
 from boba.tool.web.tools.download import _WebDownloader, web_download
 from boba.workspace.contract import ProjectWorkspaceShell, WorkspaceShell
 
@@ -30,14 +29,7 @@ def _patch_client(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
 
 
 def _conn() -> WebConnection:
-    return WebConnection(
-        hosts={
-            "docs.python.org": WebHostProfile(
-                hostname="docs.python.org",
-                auth=NoneAuth(method="none"),
-            ),
-        },
-    )
+    return WebConnection(profiles={"docs.python.org": HttpConnection()})
 
 
 def test_download_writes_raw_html_with_header(
@@ -141,7 +133,7 @@ def test_web_download_truncates_returned_list(
     from boba.tool.web.tools.download import WebDownloadConfig
 
     cfg = WebDownloadConfig.model_construct(
-        connection=_conn(),
+        profiles=_conn().profiles,
         dest_dir="bulk",
         max_returned_files=2,
     )
@@ -167,7 +159,7 @@ def test_web_download_empty_urls_raises(
     from boba.tool.web.tools.download import WebDownloadConfig
 
     cfg = WebDownloadConfig.model_construct(
-        connection=_conn(), dest_dir="d", max_returned_files=None,
+        profiles=_conn().profiles, dest_dir="d", max_returned_files=None,
     )
     with pytest.raises(ValueError, match="urls пуст") as exc_info:
         web_download(

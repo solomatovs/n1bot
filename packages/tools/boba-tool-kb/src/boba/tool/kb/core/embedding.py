@@ -1,23 +1,21 @@
-"""Embedder KB-плагина: конфиг `EmbeddingModel` + бэкенды.
+"""Embedder KB-плагина: конфиг `EmbeddingModel` + бэкенд.
 
 - `LocalFastEmbedEmbedder` — in-process `Embedder[str]` поверх fastembed
   (ONNX runtime, без сети).
-- `EmbeddingModel`         — `BaseModel`-конфиг (OpenAI-compat HTTP или local),
+- `EmbeddingModel`         — `BaseModel`-конфиг (профиль local fastembed),
   встраивается как nested-поле в tool-конфиги. `EmbeddingModel.build()` —
-  factory нужного `Embedder[str]` по `provider`.
+  factory `Embedder[str]`.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from typing import ClassVar, Literal, Self
+from typing import ClassVar
 
 from fastembed import TextEmbedding
-from openai import OpenAI
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from boba.indexing.embedder import Embedder
-from boba.provider.openai import OpenAICompatEmbedder
 
 __all__ = ["EmbeddingModel", "LocalFastEmbedEmbedder"]
 
@@ -80,16 +78,12 @@ class LocalFastEmbedEmbedder(Embedder[str]):
 
 
 class EmbeddingModel(BaseModel):
-    """Embedder-конфиг: HTTP OpenAI-compat либо in-process fastembed.
+    """Профиль embedding: in-process fastembed (ONNX, local, без сети).
 
-    `BaseModel` (не settings), встраивается как nested-поле в tool-конфиги,
-    которым нужно строить embeddings (ingest tools для write-side; search
-    tools для query-side).
-
-    Поле `endpoint` (а не `base_url`) — намеренно: при встраивании рядом с
-    `ConfluenceConnection` (где `base_url` — это URL Confluence) на одном
-    уровне корневой `BobaFlatSettings`-секции flat-резолв нашёл бы конфликт
-    двух `base_url`.
+    `BaseModel`, встраивается как nested-поле в tool-конфиги, которым нужно
+    строить embeddings (ingest — write-side; search — query-side). В config
+    задаётся как профиль `[embedding.<name>]` и подключается ссылкой
+    `embedding = "${embedding.<name>}"`.
 
     Семантический инвариант (НЕ enforced конфигом): `model` ДОЛЖНА совпадать
     между ingest-tools и search-tools, которые пишут/читают одну и ту же
@@ -97,89 +91,23 @@ class EmbeddingModel(BaseModel):
     M-мерным → silent break.
     """
 
-    provider: Literal["openai-compat", "local"] = Field(
-        default="openai-compat",
-        description=(
-            "Бэкенд: 'openai-compat' — HTTP в LiteLLM/OpenAI/vLLM/Ollama; "
-            "'local' — in-process fastembed (ONNX) без сети."
-        ),
-    )
-    endpoint: str = Field(
-        default="",
-        description=(
-            "URL OpenAI-совместимого embeddings-endpoint'а (LiteLLM / OpenAI / "
-            "vLLM / Ollama). Обязателен для provider='openai-compat'. Для "
-            "provider='local' игнорируется."
-        ),
-    )
-    api_key: str = Field(
-        default="",
-        description=(
-            "API-ключ. Для локальных Ollama/vLLM может быть пустым (передаётся "
-            "как `unused` в OpenAI-клиент). Для provider='local' игнорируется."
-        ),
-    )
     model: str = Field(
-        default="",
         description=(
-            "Имя embedding-модели. Должно совпадать между ingest- и search-"
-            "сервисами, ходящими в одни и те же чанки kb_chunks."
+            "Имя fastembed-модели (HF). Обязательно. Должно совпадать между "
+            "ingest- и search-сервисами, ходящими в одни и те же чанки kb_chunks."
         ),
     )
     cache_dir: str = Field(
         default="",
         description=(
-            "Только для provider='local': каталог для HF/ONNX-весов fastembed. "
+            "Каталог для HF/ONNX-весов fastembed. "
             "Пусто → дефолт fastembed (~/.cache/fastembed)."
         ),
     )
-    max_retries: int = Field(
-        default=3,
-        description=(
-            "Только для provider='openai-compat': сколько раз OpenAI-SDK "
-            "повторяет запрос на 429/5xx/connection-ошибках (экспоненциальный "
-            "backoff + Retry-After). 0 — без retry."
-        ),
-    )
-    request_timeout_sec: float = Field(
-        default=60.0,
-        description=(
-            "Только для provider='openai-compat': HTTP-таймаут запроса (сек). "
-            "Имя `request_timeout_sec` (а не `timeout_sec`) — чтобы не "
-            "конфликтовать с `confluence.timeout_sec` при flat-резолве."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _validate(self) -> Self:
-        if not self.model:
-            msg = "embedding: model обязателен"
-            raise ValueError(msg)
-        if self.provider == "openai-compat" and not self.endpoint:
-            msg = "embedding: endpoint обязателен для provider='openai-compat'"
-            raise ValueError(msg)
-        return self
 
     def build(self) -> Embedder[str]:
-        """Factory `Embedder[str]` по `provider`.
-
-        `openai-compat` — `OpenAICompatEmbedder` поверх OpenAI-SDK (без
-        `dimensions=`, размерность — lazy probe в `dim()`); `local` —
-        `LocalFastEmbedEmbedder` (fastembed/ONNX, in-process, без сети).
-        """
-        if self.provider == "local":
-            return LocalFastEmbedEmbedder(
-                model_name=self.model,
-                cache_dir=self.cache_dir or None,
-            )
-
-        client = OpenAI(
-            base_url=self.endpoint or None,
-            api_key=self.api_key or "unused",
-            max_retries=self.max_retries,
-            timeout=self.request_timeout_sec,
-        )
-        return OpenAICompatEmbedder(
-            client=client,
-            model=self.model,
+        """Factory `LocalFastEmbedEmbedder` (fastembed/ONNX, in-process)."""
+        return LocalFastEmbedEmbedder(
+            model_name=self.model,
+            cache_dir=self.cache_dir or None,
         )

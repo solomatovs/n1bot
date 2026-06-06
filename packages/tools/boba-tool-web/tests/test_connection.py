@@ -1,180 +1,80 @@
-"""WebConnection: ACL + resolve по hostname + resolve_profiles из TOML."""
+"""WebConnection: whitelist (dict hostname→HttpConnection) + resolve → профиль."""
 
 from __future__ import annotations
-
-import textwrap
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from boba.tool.web.auth import BasicAuth, BearerAuth, NoneAuth
 from boba.tool.web.connection import WebConnection
-from boba.tool.web.host_profile import WebHostProfile
+from boba.transport.http import BearerAuth, HttpConnection, HttpxBearerAuth
 
 
-def _profile(hostname: str, auth: object) -> WebHostProfile:
-    return WebHostProfile(hostname=hostname, auth=auth)  # type: ignore[arg-type]
+def test_empty_whitelist_rejected() -> None:
+    with pytest.raises(ValidationError, match="whitelist"):
+        WebConnection()
 
 
-def _conn(**hosts: WebHostProfile) -> WebConnection:
-    return WebConnection(hosts=hosts)
+def test_resolve_returns_profile() -> None:
+    conn = WebConnection(profiles={"github.com": HttpConnection(timeout_sec=7.0)})
+    p = conn.resolve_profile("https://github.com/x?q=1")
+    assert isinstance(p, HttpConnection)
+    assert p.timeout_sec == 7.0
 
 
-def test_empty_hosts_rejected() -> None:
-    with pytest.raises(ValidationError) as exc_info:
-        WebConnection(hosts={})
-    assert "профил" in str(exc_info.value).lower()
-
-
-def test_resolve_known_host_returns_profile() -> None:
-    profile = _profile("api.example.com", BearerAuth(method="bearer", token="tok"))
-    conn = _conn(**{"api.example.com": profile})
-    got = conn.resolve("https://api.example.com/path?q=1")
-    assert got is profile
-
-
-def test_resolve_unknown_host_raises_with_allowlist() -> None:
-    conn = _conn(
-        **{"a.example.com": _profile("a.example.com", NoneAuth(method="none"))},
+def test_resolve_auth_from_profile() -> None:
+    conn = WebConnection(
+        profiles={
+            "api.example.com": HttpConnection(
+                auth=BearerAuth(method="bearer", token="tok"),
+            ),
+        },
     )
+    p = conn.resolve_profile("https://api.example.com/path")
+    assert isinstance(p.auth.httpx_auth(), HttpxBearerAuth)
+
+
+def test_unknown_host_raises_with_allowlist() -> None:
+    conn = WebConnection(profiles={"a.example.com": HttpConnection()})
     with pytest.raises(ValueError, match="не в whitelist") as exc_info:
-        conn.resolve("https://evil.example.com/x")
+        conn.resolve_profile("https://evil.example.com/x")
     msg = str(exc_info.value)
     assert "evil.example.com" in msg
     assert "a.example.com" in msg
 
 
-def test_resolve_case_insensitive_host() -> None:
-    conn = _conn(
-        **{
-            "docs.python.org": _profile(
-                "docs.python.org", NoneAuth(method="none"),
-            ),
-        },
+def test_case_insensitive_hostname() -> None:
+    conn = WebConnection(profiles={"Docs.Python.ORG": HttpConnection()})
+    assert isinstance(
+        conn.resolve_profile("https://docs.python.org/3/"), HttpConnection
     )
-    profile = conn.resolve("https://Docs.Python.ORG/3/")
-    assert isinstance(profile.auth, NoneAuth)
 
 
-def test_make_transport_uses_connection_params() -> None:
-    conn = _conn(
-        **{"x.example.com": _profile("x.example.com", NoneAuth(method="none"))},
+def test_per_host_transport_params() -> None:
+    conn = WebConnection(
+        profiles={"x.example.com": HttpConnection(timeout_sec=7.0, ssl_verify=False)},
     )
-    conn = conn.model_copy(update={"timeout_sec": 7.0, "ssl_verify": False})
-    tr = conn.make_transport()
-    assert tr._timeout == 7.0
-    assert tr._verify is False
+    p = conn.resolve_profile("https://x.example.com/")
+    assert p.timeout_sec == 7.0
+    assert p.ssl_verify is False
 
 
 def test_url_without_host_is_blocked() -> None:
-    conn = _conn(
-        **{
-            "docs.python.org": _profile(
-                "docs.python.org", NoneAuth(method="none"),
+    conn = WebConnection(profiles={"docs.python.org": HttpConnection()})
+    with pytest.raises(ValueError, match="не в whitelist"):
+        conn.resolve_profile("/relative/path")
+
+
+def test_multiple_hosts_each_keeps_own_profile() -> None:
+    conn = WebConnection(
+        profiles={
+            "pub.example.com": HttpConnection(),
+            "api.example.com": HttpConnection(
+                auth=BearerAuth(method="bearer", token="t"),
             ),
         },
     )
-    with pytest.raises(ValueError, match="не в whitelist"):
-        conn.resolve("/relative/path")
-
-
-def test_multiple_hosts_each_keeps_own_auth() -> None:
-    a = _profile("a.example.com", BasicAuth(method="basic", user="u", password="p"))
-    b = _profile("b.example.com", BearerAuth(method="bearer", token="tok"))
-    conn = _conn(**{"a.example.com": a, "b.example.com": b})
-    assert isinstance(conn.resolve("https://a.example.com/").auth, BasicAuth)
-    assert isinstance(conn.resolve("https://b.example.com/").auth, BearerAuth)
-
-
-def test_hostname_lowercased_in_profile() -> None:
-    p = _profile("API.Example.COM", NoneAuth(method="none"))
-    assert p.hostname == "api.example.com"
-
-
-# --------------------------------------------------------------------------- #
-# profiles → hosts через [web.<name>] секции TOML
-# --------------------------------------------------------------------------- #
-
-
-def _write_toml(tmp_path: Path, content: str) -> Path:
-    f = tmp_path / "config.toml"
-    f.write_text(textwrap.dedent(content), encoding="utf-8")
-    return f
-
-
-def test_profiles_resolved_from_toml(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    toml = _write_toml(
-        tmp_path,
-        """
-        [web.github_public]
-        hostname = "github.com"
-        [web.github_public.auth]
-        method = "none"
-
-        [web.confluence_pat]
-        hostname = "confl.example.com"
-        [web.confluence_pat.auth]
-        method = "bearer"
-        token = "TOK"
-        """,
+    assert conn.resolve_profile("https://pub.example.com/").auth.httpx_auth() is None
+    assert isinstance(
+        conn.resolve_profile("https://api.example.com/").auth.httpx_auth(),
+        HttpxBearerAuth,
     )
-    monkeypatch.setenv("BOBA_CONFIG_PATH", str(toml))
-    conn = WebConnection(profiles=["github_public", "confluence_pat"])
-    assert set(conn.hosts) == {"github.com", "confl.example.com"}
-    assert isinstance(conn.resolve("https://github.com/x").auth, NoneAuth)
-    assert isinstance(conn.resolve("https://confl.example.com/y").auth, BearerAuth)
-
-
-def test_missing_profile_section_raises(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    toml = _write_toml(tmp_path, "")
-    monkeypatch.setenv("BOBA_CONFIG_PATH", str(toml))
-    with pytest.raises(ValueError, match="не найдена или пуста"):
-        WebConnection(profiles=["nonexistent"])
-
-
-def test_profile_without_hostname_raises(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    toml = _write_toml(
-        tmp_path,
-        """
-        [web.bad]
-        [web.bad.auth]
-        method = "none"
-        """,
-    )
-    monkeypatch.setenv("BOBA_CONFIG_PATH", str(toml))
-    with pytest.raises(ValueError, match="отсутствует hostname"):
-        WebConnection(profiles=["bad"])
-
-
-def test_duplicate_hostname_across_profiles_raises(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    toml = _write_toml(
-        tmp_path,
-        """
-        [web.a]
-        hostname = "dup.example.com"
-        [web.a.auth]
-        method = "none"
-
-        [web.b]
-        hostname = "dup.example.com"
-        [web.b.auth]
-        method = "bearer"
-        token = "T"
-        """,
-    )
-    monkeypatch.setenv("BOBA_CONFIG_PATH", str(toml))
-    with pytest.raises(ValueError, match="нескольких профилях"):
-        WebConnection(profiles=["a", "b"])

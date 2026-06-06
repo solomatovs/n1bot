@@ -28,16 +28,17 @@ Allowlist-фильтры вложений (`--attachment-media-types`, `--attach
 from __future__ import annotations
 
 import logging
+import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from boba.agent.workspace_fs import FsWorkspaceShell
 from boba.indexing import PipelineId
-from boba.settings import BobaSettingsConfigDict, StringList
+from boba.settings import StringList, bind, build_app_config
 from boba.tool.kb.confluence.download import (
     ConfluenceDownloadConfig,
     ConfluenceDownloader,
@@ -65,13 +66,7 @@ class ConfluenceDownloadCliConfig(ConfluenceDownloadConfig):
     Config-секция: `[cli.kb.confluence.download]`.
     """
 
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="cli.kb.confluence.download",
-        defaults_from=("confluence",),
-        use_cli=True,
-    )
+    model_config = ConfigDict(extra="ignore")
 
     space_type: Annotated[
         Literal["global", "personal", "any"],
@@ -160,7 +155,7 @@ class ConfluenceDownloadCli:
 
         source = ConfluencePagesRequestSource(
             base_url=cfg.confluence.base_url,
-            auth=cfg.confluence.make_auth(),
+            auth=cfg.confluence.profile.auth.httpx_auth(),
             page_ids=list(cfg.page_ids),
             body_format=cfg.confluence.body_format,
         )
@@ -279,7 +274,8 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    cfg = ConfluenceDownloadCliConfig()  # pyright: ignore[reportCallIssue]
+    config = build_app_config(sys.argv[1:])
+    cfg = bind(config, "cli.kb.confluence.download", ConfluenceDownloadCliConfig)
 
     # CWD как корень — `dest_dir` интерпретируется shell'ом как обычный
     # FS-путь (без обёртки workspace_root).

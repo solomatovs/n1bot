@@ -47,13 +47,15 @@ class FromDI:
 
 @dataclass(frozen=True)
 class FromConfig:
-    """Маркер: параметр — Pydantic-settings, framework авто-загружает
+    """Маркер: параметр — pydantic-конфиг, framework авто-загружает
     и регистрирует в DI с APP-scope на этапе сборки контейнера.
 
-    Target-тип должен быть наследником `BobaFlatSettings` (или просто
-    Pydantic `BaseSettings`) — framework на сборке Container'а:
-    1. Соберёт все `FromConfig`-типы из подписей всех tools и provider'ов.
-    2. Для каждого вызовет `cfg_type()` (Pydantic-settings подтянет env+TOML).
+    Target-тип — чистый pydantic `BaseModel` (про своё место в конфиге не знает).
+    На сборке Container'а framework:
+    1. Соберёт все `FromConfig`-типы из подписей tools/provider'ов вместе с их
+       плагином (`tool.<plugin>` — секция, в которой объявлен tool).
+    2. Для каждого вызовет `ConfigResolver.resolve(cfg_type, plugin_name)` —
+       резолвер забиндит секцию плагина в модель.
     3. Зарегистрирует инстанс в Dishka-context'е → доступен как обычная
        APP-scope DI-зависимость.
     """

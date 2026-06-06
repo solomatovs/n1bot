@@ -24,14 +24,28 @@
 
 from __future__ import annotations
 
-from boba.transport.http.auth import HttpxBearerAuth
+from boba.transport.http.auth import (
+    BasicAuth,
+    BearerAuth,
+    DigestAuth,
+    HttpxBearerAuth,
+    NoneAuth,
+    WebAuth,
+)
+from boba.transport.http.connection import HttpConnection
 from boba.transport.http.keys import HttpKeys
 from boba.transport.http.request import HttpRequest
 from boba.transport.http.transport import HttpTransport
 
 __all__ = [
+    "BasicAuth",
+    "BearerAuth",
+    "DigestAuth",
+    "HttpConnection",
     "HttpKeys",
     "HttpRequest",
     "HttpTransport",
     "HttpxBearerAuth",
+    "NoneAuth",
+    "WebAuth",
 ]

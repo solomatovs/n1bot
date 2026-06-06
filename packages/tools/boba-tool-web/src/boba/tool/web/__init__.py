@@ -2,15 +2,12 @@
 
 Entry-point модуль для `AgentBuilder.discover_plugins("boba.plugins")`.
 
-Конфиг (всё под одним префиксом `[tool.web.*]`):
-- `[tool.web]`           — `enable`/`tools` (framework) + shared
-                           `WebConnection` поля (`timeout_sec`, `ssl_verify`).
-- `[tool.web.hosts."<host>".auth]` — per-host whitelist+auth-профиль.
-                           Hostname не в этом словаре → запрос запрещён.
-- `[tool.web.fetch]`     — `WebFetchConfig` (обычно пуст; всё через
-                           `defaults_from=("tool.web",)`).
-- `[tool.web.download]`  — `WebDownloadConfig` (`dest_dir` обязателен,
-                           остальное через `defaults_from`).
+Конфиг (всё в секции плагина `[tool.web]`):
+- `[tool.web]`           — `enable`/`tools` (framework) + `connection`
+                           (`WebConnection`) + `dest_dir` (download).
+- `[tool.web.connection].profiles` — `{ "<hostname>" = "${web.<name>}" }`:
+                           whitelist хостов → web-профиль (`HttpConnection`:
+                           timeout/ssl/auth). Hostname не в dict → запрещён.
 
 `ProjectWorkspaceShell` инжектится через `FromDI(Scope.APP)` — приложение
 обязано зарегистрировать provider'а в `AgentBuilder`.
@@ -20,10 +17,8 @@ from __future__ import annotations
 
 from boba.tool.web.config import WebPluginConfig
 from boba.tool.web.connection import WebConnection
-from boba.tool.web.host_profile import WebHostProfile
 from boba.tool.web.tools import (
     WebDownloadConfig,
-    WebFetchConfig,
     WebGrepConfig,
     web_download,
     web_fetch,
@@ -33,9 +28,7 @@ from boba.tool.web.tools import (
 __all__ = [
     "WebConnection",
     "WebDownloadConfig",
-    "WebFetchConfig",
     "WebGrepConfig",
-    "WebHostProfile",
     "WebPluginConfig",
     "web_download",
     "web_fetch",

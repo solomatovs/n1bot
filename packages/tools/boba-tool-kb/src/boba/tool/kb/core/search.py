@@ -8,8 +8,9 @@
 `KbDocCollection`): строгий фильтр по `collection` даёт детерминированную
 сборку строки из `kb_chunks` (`CollectionSearch.row`). Каждый тип ссылается
 на те же `MetadataKey`-константы, что пишет ingest этой коллекции — так
-search-сторона ↔ ingest-сторона не расходятся. Все 4 tool'а делят
-конфиг-секцию `[tool.kb.search]` (knowledge_base / max_top_k).
+search-сторона ↔ ingest-сторона не расходятся. Все 4 tool'а читают
+конфиг-секцию `[tool.kb]` напрямую как `PostgresKnowledgeBaseConfig`
+(connection/tables/embedding). `top_k`/`snippet_chars` — tool-аргументы LLM.
 """
 
 from __future__ import annotations
@@ -22,7 +23,6 @@ from pydantic import Field
 
 from boba.indexing import MetadataKey, ReaderKeys, SectionKeys
 from boba.kbdoc import KbDocKeys
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.confluence.models import ConfluenceKeys
 from boba.tool.kb.core.kb import PostgresKnowledgeBase, PostgresKnowledgeBaseConfig
 from boba.tool.kb.core.models import KnowledgeBaseError, SearchHit
@@ -33,7 +33,6 @@ __all__ = [
     "CollectionSearch",
     "ConfluenceCollection",
     "KbDocCollection",
-    "KbSearchConfig",
     "MetaField",
     "kb_doc_fts_search",
     "kb_doc_vector_search",
@@ -67,10 +66,10 @@ class CollectionSearch:
         """Плоская строка результата: прямые колонки kb_chunks + поля metadata."""
         row: dict[str, Any] = {
             # --- прямые колонки kb_chunks ---
-            "id": hit.id,                          # kb_chunks.chunk_id
-            "distance": hit.distance,              # cosine / -ts_rank_cd
-            "snippet": hit.snippet,                # kb_chunks.format_content (срез)
-            "tags": ", ".join(sorted(hit.tags)),   # kb_chunks.tags (text[])
+            "id": hit.id,  # kb_chunks.chunk_id
+            "distance": hit.distance,  # cosine / -ts_rank_cd
+            "snippet": hit.snippet,  # kb_chunks.format_content (срез)
+            "tags": ", ".join(sorted(hit.tags)),  # kb_chunks.tags (text[])
         }
         # --- поля из kb_chunks.metadata (jsonb), по META_FIELDS ---
         for field in cls.META_FIELDS:
@@ -103,12 +102,12 @@ class ConfluenceCollection(CollectionSearch):
     COLLECTION = "kb_confluence"
 
     META_FIELDS = (
-        MetaField("page_title", ReaderKeys.PAGE_TITLE),       # decoder
-        MetaField("source_url", ConfluenceKeys.SOURCE_URL),   # request_source
-        MetaField("anchor", SectionKeys.ANCHOR),              # reader
-        MetaField("page_id", ConfluenceKeys.PAGE_ID),         # request_source
+        MetaField("page_title", ReaderKeys.PAGE_TITLE),  # decoder
+        MetaField("source_url", ConfluenceKeys.SOURCE_URL),  # request_source
+        MetaField("anchor", SectionKeys.ANCHOR),  # reader
+        MetaField("page_id", ConfluenceKeys.PAGE_ID),  # request_source
         MetaField("heading_path", SectionKeys.HEADING_PATH),  # reader
-        MetaField("space", ConfluenceKeys.SPACE_KEY),         # decoder
+        MetaField("space", ConfluenceKeys.SPACE_KEY),  # decoder
     )
 
 
@@ -124,12 +123,12 @@ class KbDocCollection(CollectionSearch):
     COLLECTION = "kb_confluence_doc"
 
     META_FIELDS = (
-        MetaField("page_title", ReaderKeys.PAGE_TITLE),       # KbDocReader (title:)
-        MetaField("source_url", KbDocKeys.SOURCE_URL),        # KbDocReader (source:)
-        MetaField("anchor", SectionKeys.ANCHOR),              # KbDocReader (anchor:)
-        MetaField("page_id", KbDocKeys.PAGE_ID),              # KbDocReader (page_id:)
+        MetaField("page_title", ReaderKeys.PAGE_TITLE),  # KbDocReader (title:)
+        MetaField("source_url", KbDocKeys.SOURCE_URL),  # KbDocReader (source:)
+        MetaField("anchor", SectionKeys.ANCHOR),  # KbDocReader (anchor:)
+        MetaField("page_id", KbDocKeys.PAGE_ID),  # KbDocReader (page_id:)
         MetaField("heading_path", SectionKeys.HEADING_PATH),  # StructuralChunker
-        MetaField("space", KbDocKeys.SPACE),                  # KbDocReader (space:)
+        MetaField("space", KbDocKeys.SPACE),  # KbDocReader (space:)
     )
 
 
@@ -211,25 +210,29 @@ limit
         '`OR` = альтернативы, `"фраза"` = фраза целиком, `-слово` = исключить.'
     )
     TOPK_DESC: ClassVar[str] = "Сколько hits вернуть. По умолчанию 5."
+    SNIPPET_DEFAULT: ClassVar[int] = 3000
+    SNIPPET_DESC: ClassVar[str] = (
+        "Максимальная длина сниппета документа в hits (символов). По умолчанию 3000."
+    )
 
     @staticmethod
-    def run(
-        cfg: KbSearchConfig,
+    def run(  # noqa: PLR0913 — явный набор search-параметров
+        cfg: PostgresKnowledgeBaseConfig,
         collection: type[CollectionSearch],
         query: str,
         method: SearchMethod,
         top_k: int,
+        snippet_chars: int,
     ) -> TableResult:
         """`method` выбирает канал, `collection` — scope и сборку строк."""
-        if top_k > cfg.max_top_k:
-            raise RuntimeError(f"top_k={top_k} превышает max_top_k={cfg.max_top_k}")
-        kb = PostgresKnowledgeBase(cfg=cfg.knowledge_base)
+        kb = PostgresKnowledgeBase(cfg=cfg)
         try:
             if method == "vector":
                 hits = kb.vector_search(
                     collections=[collection.COLLECTION],
                     query=query,
                     top_k=top_k,
+                    snippet_chars=snippet_chars,
                     sql_template=KbSearch.VECTOR_SQL,
                 )
             else:
@@ -237,6 +240,7 @@ limit
                     collections=[collection.COLLECTION],
                     query=query,
                     top_k=top_k,
+                    snippet_chars=snippet_chars,
                     sql_template=KbSearch.FTS_SQL,
                 )
             rows = [collection.row(h) for h in hits]
@@ -245,33 +249,15 @@ limit
         return TableResult(rows=rows, note=None if rows else "ничего не найдено")
 
 
-class KbSearchConfig(BobaFlatSettings):
-    """Общий конфиг search-tool'ов. Секция `[tool.kb.search]`."""
-
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="tool.kb.search",
-        defaults_from=(
-            "kb.storage",
-            "postgres.{kb.storage:profile}",
-            "embedding",
-        ),
-    )
-
-    knowledge_base: PostgresKnowledgeBaseConfig
-    max_top_k: int = Field(
-        default=20,
-        ge=1,
-        description="Жёсткий потолок параметра `top_k`.",
-    )
-
-
 @tool
 def kb_vector_search(
-    cfg: Annotated[KbSearchConfig, FromConfig()],
+    cfg: Annotated[PostgresKnowledgeBaseConfig, FromConfig()],
     query: Annotated[str, Field(min_length=1, description=KbSearch.QUERY_DESC_VECTOR)],
     top_k: Annotated[int, Field(ge=1, description=KbSearch.TOPK_DESC)] = 5,
+    snippet_chars: Annotated[
+        int,
+        Field(ge=1, description=KbSearch.SNIPPET_DESC),
+    ] = KbSearch.SNIPPET_DEFAULT,
 ) -> TableResult:
     """Семантический (vector) поиск по коллекции Confluence-страниц (`kb_confluence`).
 
@@ -279,43 +265,62 @@ def kb_vector_search(
     `link`/`snippet` + `page_title`/`source_url`/`anchor`/`page_id`/
     `heading_path`/`space`/`tags`, по релевантности (меньше `distance` = ближе).
     """
-    return KbSearch.run(cfg, ConfluenceCollection, query, "vector", top_k)
+    return KbSearch.run(
+        cfg,
+        ConfluenceCollection,
+        query,
+        "vector",
+        top_k,
+        snippet_chars,
+    )
 
 
 @tool
 def kb_fts_search(
-    cfg: Annotated[KbSearchConfig, FromConfig()],
+    cfg: Annotated[PostgresKnowledgeBaseConfig, FromConfig()],
     query: Annotated[str, Field(min_length=1, description=KbSearch.QUERY_DESC_FTS)],
     top_k: Annotated[int, Field(ge=1, description=KbSearch.TOPK_DESC)] = 5,
+    snippet_chars: Annotated[
+        int,
+        Field(ge=1, description=KbSearch.SNIPPET_DESC),
+    ] = KbSearch.SNIPPET_DEFAULT,
 ) -> TableResult:
     """Лексический (FTS) поиск по коллекции Confluence-страниц (`kb_confluence`).
 
     Тот же формат `TableResult`, что и у `kb_vector_search`.
     """
-    return KbSearch.run(cfg, ConfluenceCollection, query, "fts", top_k)
+    return KbSearch.run(cfg, ConfluenceCollection, query, "fts", top_k, snippet_chars)
 
 
 @tool
 def kb_doc_vector_search(
-    cfg: Annotated[KbSearchConfig, FromConfig()],
+    cfg: Annotated[PostgresKnowledgeBaseConfig, FromConfig()],
     query: Annotated[str, Field(min_length=1, description=KbSearch.QUERY_DESC_VECTOR)],
     top_k: Annotated[int, Field(ge=1, description=KbSearch.TOPK_DESC)] = 5,
+    snippet_chars: Annotated[
+        int,
+        Field(ge=1, description=KbSearch.SNIPPET_DESC),
+    ] = KbSearch.SNIPPET_DEFAULT,
 ) -> TableResult:
     """Семантический (vector) поиск по KbDoc-выгрузкам Confluence (`kb_confluence_doc`).
 
     Тот же формат `TableResult`, что и у `kb_vector_search`.
     """
-    return KbSearch.run(cfg, KbDocCollection, query, "vector", top_k)
+    return KbSearch.run(cfg, KbDocCollection, query, "vector", top_k, snippet_chars)
 
 
 @tool
 def kb_doc_fts_search(
-    cfg: Annotated[KbSearchConfig, FromConfig()],
+    cfg: Annotated[PostgresKnowledgeBaseConfig, FromConfig()],
     query: Annotated[str, Field(min_length=1, description=KbSearch.QUERY_DESC_FTS)],
     top_k: Annotated[int, Field(ge=1, description=KbSearch.TOPK_DESC)] = 5,
+    snippet_chars: Annotated[
+        int,
+        Field(ge=1, description=KbSearch.SNIPPET_DESC),
+    ] = KbSearch.SNIPPET_DEFAULT,
 ) -> TableResult:
     """Лексический (FTS) поиск по KbDoc-выгрузкам Confluence (`kb_confluence_doc`).
 
     Тот же формат `TableResult`, что и у `kb_vector_search`.
     """
-    return KbSearch.run(cfg, KbDocCollection, query, "fts", top_k)
+    return KbSearch.run(cfg, KbDocCollection, query, "fts", top_k, snippet_chars)

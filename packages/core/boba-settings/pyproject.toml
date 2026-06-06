@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-settings"
 version = "0.1.0"
-description = "Общая база для pydantic-settings: flat-input redistribute + boba env/TOML sources."
+description = "OmegaConf-источники + чистые pydantic-модели: load → bind → validate."
 requires-python = ">=3.11,<4"
 dependencies = [
     # 2.11+ ломает ForwardRef-резолв (см. boba-agent/boba-llm/boba-tools).
     "pydantic>=2.10,<2.11",
-    "pydantic-settings>=2.13,<3",
+    "omegaconf>=2.3,<3",
 ]
 
 [tool.setuptools.packages.find]

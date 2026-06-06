@@ -37,7 +37,7 @@ from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.models import AttachmentFilter, ConfluenceKeys
 from boba.tool.kb.confluence.parsing import ConfluenceJsonDecoder
 from boba.tool.kb.confluence.request_sources import ConfluenceRest
-from boba.transport.http import HttpRequest
+from boba.transport.http import HttpRequest, HttpTransport
 
 logger = logging.getLogger(__name__)
 
@@ -155,10 +155,10 @@ class ConfluenceContentTransport(Transport[HttpRequest]):
         непрошедшие даже не запрашиваются по HTTP. По умолчанию — passthrough.
         """
         return cls(
-            inner=conn.make_transport(),
+            inner=HttpTransport(conn.profile),
             body_format=conn.body_format,
             base_url=conn.base_url,
-            auth=conn.make_auth(),
+            auth=conn.profile.auth.httpx_auth(),
             attachment_filter=attachment_filter,
         )
 

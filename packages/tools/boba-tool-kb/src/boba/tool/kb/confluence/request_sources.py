@@ -209,23 +209,20 @@ class ConfluenceRest:
 class ConfluencePaginator:
     """httpx-клиент для пагинированных Confluence REST discovery-запросов.
 
-    Каждый постраничный GET повторяется до `MAX_ATTEMPTS` раз на 5xx и
-    transport-ошибках (timeout/connect) с линейным backoff'ом — большие
+    Каждый постраничный GET повторяется до `retry_attempts` раз (из web-профиля)
+    на 5xx и transport-ошибках (timeout/connect) с линейным backoff'ом — большие
     Confluence (напр. Apache cwiki) отдают нестабильные 500 на глубокой
     пагинации. 4xx (клиентские) не ретраятся. После исчерпания попыток
     исключение пробрасывается наверх (caller решает: fail или degrade).
+
+    Клиент собирается единым `conn.profile.make_client()` (timeout/ssl/auth),
+    retry-параметры — тоже из профиля; хардкода нет.
     """
 
-    MAX_ATTEMPTS: ClassVar[int] = 3
-    RETRY_BACKOFF_SEC: ClassVar[float] = 1.0
-
     def __init__(self, conn: ConfluenceConnection):
-        self._client = httpx.Client(
-            base_url=conn.base_url.rstrip("/"),
-            timeout=conn.timeout_sec,
-            auth=conn.make_auth(),
-            verify=conn.ssl_verify,
-        )
+        self._client = conn.profile.make_client(base_url=conn.base_url.rstrip("/"))
+        self._max_attempts = max(1, conn.profile.retry_attempts)
+        self._retry_backoff_sec = conn.profile.retry_backoff_sec
 
     def __call__(self, path: str, item: type[T]) -> Iterator[T]:
         """
@@ -240,9 +237,9 @@ class ConfluencePaginator:
             next_path = self._next_link(data)
 
     def _get_json(self, path: str) -> dict[str, Any]:
-        """GET `path` → JSON c retry до `MAX_ATTEMPTS` на 5xx/transport-ошибках."""
+        """GET `path` → JSON c retry до `retry_attempts` на 5xx/transport-ошибках."""
         last_exc: httpx.HTTPError | None = None
-        for attempt in range(1, self.MAX_ATTEMPTS + 1):
+        for attempt in range(1, self._max_attempts + 1):
             try:
                 resp = self._client.get(path)
                 resp.raise_for_status()
@@ -253,14 +250,14 @@ class ConfluencePaginator:
                 last_exc = e
             except httpx.TransportError as e:  # timeout / connect — transient
                 last_exc = e
-            if attempt < self.MAX_ATTEMPTS:
-                delay = self.RETRY_BACKOFF_SEC * attempt
+            if attempt < self._max_attempts:
+                delay = self._retry_backoff_sec * attempt
                 logger.warning(
                     "Confluence GET %s неудачно (%s); retry %d/%d через %.1fs",
                     path,
                     type(last_exc).__name__,
                     attempt,
-                    self.MAX_ATTEMPTS,
+                    self._max_attempts,
                     delay,
                 )
                 time.sleep(delay)
@@ -358,12 +355,12 @@ class ConfluenceCqlRequestSource(RequestSource[HttpRequest]):
 
     def stream(self, ctx: PipelineContext) -> Iterable[HttpRequest]:
         del ctx
-        auth = self._conn.make_auth()
+
         for page_id in ConfluencePaginator.discover_pages_by_cql(self._conn, self._cql):
             yield ConfluenceRest.make_page_request(
                 base_url=self._conn.base_url,
                 host=self._host,
-                auth=auth,
+                auth=self._conn.profile.auth.httpx_auth(),
                 page_id=page_id,
                 body_format=self._body_format,
             )
@@ -421,14 +418,14 @@ class ConfluenceSpaceRequestSource(RequestSource[HttpRequest]):
 
     def stream(self, ctx: PipelineContext) -> Iterable[HttpRequest]:
         del ctx
-        auth = self._conn.make_auth()
+
         for page_id in ConfluencePaginator.discover_space_pages(
             self._conn, self._space_key,
         ):
             yield ConfluenceRest.make_page_request(
                 base_url=self._conn.base_url,
                 host=self._host,
-                auth=auth,
+                auth=self._conn.profile.auth.httpx_auth(),
                 page_id=page_id,
                 body_format=self._body_format,
             )

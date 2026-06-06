@@ -1,7 +1,7 @@
 """Конфиги bash-tool'ов: `BashLocalConfig` и `BashSandboxConfig`.
 
-Каждый — самостоятельный `BobaFlatSettings` со своей TOML-секцией
-(`[tool.bash_local]` / `[tool.bash_sandbox]`).
+Оба — чистые pydantic-конфиги; резолвятся из секции плагина `[tool.shell]`
+(`bash_local`/`bash_sandbox`-поля в ней), путь даёт сборщик.
 
 Плагин-уровневое включение/allowlist — забота framework'а через
 `[tool.shell] enable=true, tools=["bash_local"]` (см.
@@ -14,16 +14,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Self
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.shell._profile import SandboxProfile
 from boba.tool.shell._profile_local import DEFAULT_PASSTHROUGH
 
 __all__ = ["BashLocalConfig", "BashSandboxConfig"]
 
 
-class BashLocalConfig(BobaFlatSettings):
+class BashLocalConfig(BaseModel):
     """Конфиг `bash_local`: subprocess без bwrap-изоляции.
 
     Config-секция: `[tool.bash_local]`.
@@ -31,11 +30,7 @@ class BashLocalConfig(BobaFlatSettings):
     остальное задано здесь.
     """
 
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="tool.bash_local",
-    )
+    model_config = ConfigDict(extra="ignore")
 
     workspace_root: Path = Field(
         default=Path(),
@@ -93,7 +88,7 @@ class BashLocalConfig(BobaFlatSettings):
         return self
 
 
-class BashSandboxConfig(BobaFlatSettings):
+class BashSandboxConfig(BaseModel):
     """Конфиг `bash_sandbox`: subprocess внутри bubblewrap.
 
     Config-секция: `[tool.bash_sandbox]`.
@@ -102,11 +97,7 @@ class BashSandboxConfig(BobaFlatSettings):
     реестра, поля профиля менять не может.
     """
 
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="tool.bash_sandbox",
-    )
+    model_config = ConfigDict(extra="ignore")
 
     workspace_root: Path = Field(
         default=Path(),

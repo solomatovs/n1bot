@@ -1,8 +1,9 @@
 """WebUrlsRequestSource: список URL'ов → `HttpRequest` поток.
 
-Single source: URL'ы проверяются против `WebConnection.hosts`-whitelist'а
+Single source: URL'ы проверяются против `WebConnection.profiles`-whitelist'а
 **до** HTTP — запрещённый host бросает `ValueError` ещё на стадии stream'а
-(никаких сетевых попыток).
+(никаких сетевых попыток). Auth для запроса берётся из профиля хоста
+(`resolve_profile(url).auth.httpx_auth()`).
 
 `source_id = SourceId(url)` — каноничный id документа (тот же URL,
 который LLM просил). Дальше по pipeline'у этот id пробрасывается без
@@ -21,7 +22,7 @@ __all__ = ["WebUrlsRequestSource"]
 
 
 class WebUrlsRequestSource(RequestSource[HttpRequest]):
-    """Явный список URL'ов; auth подбирается по hostname из `connection.hosts`."""
+    """Явный список URL'ов; auth берётся из профиля хоста (`connection.profiles`)."""
 
     def __init__(
         self,
@@ -38,7 +39,7 @@ class WebUrlsRequestSource(RequestSource[HttpRequest]):
     def stream(self, ctx: PipelineContext) -> Iterable[HttpRequest]:
         del ctx
         for url in self._urls:
-            profile = self._connection.resolve(url)
+            profile = self._connection.resolve_profile(url)
             yield HttpRequest(
                 url=url,
                 source_id=SourceId(url),

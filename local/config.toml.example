@@ -1,4 +1,4 @@
-# boba-cli-agent
+# boba-cli
 [cli.agent]
 model = "qwen/qwen3.7-max"
 max_messages = 30
@@ -21,7 +21,7 @@ stream=false
 tool_calls_fallback=true
 
 
-# boba-chainlit-agent
+# boba-chainlit
 [chainlit]
 model = "qwen/qwen3.7-max"
 # model = "qwen/qwen3-32b"

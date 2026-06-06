@@ -1,5 +1,5 @@
 """
-Tool `web_fetch` + `WebFetchConfig`.
+Tool `web_fetch`.
 
 Скачивает одну web-страницу и возвращает строки [line_offset : line_offset+line_count]
 
@@ -23,25 +23,12 @@ import markdownify
 from pydantic import Field
 
 from boba.indexing import BinaryStream, PipelineContext, PipelineId
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.web.connection import WebConnection
 from boba.tool.web.request_source import WebUrlsRequestSource
 from boba.tools import FromConfig, tool
+from boba.transport.http import HttpTransport
 
-__all__ = ["WebFetchConfig", "web_fetch"]
-
-
-class WebFetchConfig(BobaFlatSettings):
-    """Config tool'а `web_fetch` (`[tool.web.fetch]`)."""
-
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="tool.web.fetch",
-        defaults_from=("tool.web",),
-    )
-
-    connection: WebConnection
+__all__ = ["web_fetch"]
 
 
 class _WebFetcher:
@@ -63,7 +50,7 @@ class _WebFetcher:
         line_count: int,
     ) -> dict[str, Any]:
         source = WebUrlsRequestSource(urls=(url,), connection=self._connection)
-        transport = self._connection.make_transport()
+        transport = HttpTransport(self._connection.resolve_profile(url))
         pctx = PipelineContext(pipeline_id=self.PIPELINE_ID)
         try:
             for raw in transport.stream(pctx, source.stream(pctx)):
@@ -132,7 +119,7 @@ class _WebFetcher:
 
 @tool
 def web_fetch(
-    cfg: Annotated[WebFetchConfig, FromConfig()],
+    cfg: Annotated[WebConnection, FromConfig()],
     url: Annotated[
         str,
         Field(
@@ -168,7 +155,7 @@ def web_fetch(
     `path` — URL источника (canonical id запроса).
     `total_lines` позволяет выбрать корректный следующий `line_offset`.
     """
-    fetcher = _WebFetcher(connection=cfg.connection)
+    fetcher = _WebFetcher(connection=cfg)
     return fetcher.run(
         url=url,
         as_markdown=as_markdown,

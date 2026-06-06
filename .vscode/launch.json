@@ -16,7 +16,7 @@
             "name": "Agent CLI: agent",
             "type": "debugpy",
             "request": "launch",
-            "module": "boba.cli.agent",
+            "module": "boba.agent",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",

@@ -44,7 +44,6 @@ from boba.tool.kb.core.postgres import (
     PostgresStoreSchema,
 )
 from boba.tool.kb.core.search import (
-    KbSearchConfig,
     kb_doc_fts_search,
     kb_doc_vector_search,
     kb_fts_search,
@@ -62,7 +61,6 @@ __all__ = [
     "ConfluenceListSpacesConfig",
     "ConfluenceSearchCqlConfig",
     "EmbeddingModel",
-    "KbSearchConfig",
     "PostgresChunkStore",
     "PostgresCollectionsStore",
     "PostgresConnection",

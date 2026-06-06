@@ -19,9 +19,8 @@ from fnmatch import fnmatchcase
 from typing import Annotated, ClassVar, Literal
 
 import httpx
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.models import ConfluenceSpaceItem
 from boba.tool.kb.confluence.request_sources import ConfluencePaginator, ConfluenceRest
@@ -33,7 +32,7 @@ __all__ = ["ConfluenceListSpacesConfig", "confluence_list_spaces"]
 logger = logging.getLogger("boba.tool.kb.confluence.list_spaces")
 
 
-class ConfluenceListSpacesConfig(BobaFlatSettings):
+class ConfluenceListSpacesConfig(BaseModel):
     """Self-contained конфиг tool'а `confluence_list_spaces`.
 
     Config-секция: `[tool.kb.confluence.list.spaces]`.
@@ -45,12 +44,7 @@ class ConfluenceListSpacesConfig(BobaFlatSettings):
     доходим до глубоких offset'ов, на которых сервер падает. Если сервер
     зажимает `limit` своим максимумом — всё равно сильно меньше прыжков."""
 
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="tool.kb.confluence.list.spaces",
-        defaults_from=("confluence",),
-    )
+    model_config = ConfigDict(extra="ignore")
 
     confluence: ConfluenceConnection
 

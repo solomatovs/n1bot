@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any, ClassVar
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from boba.indexing import (
     CollectionScopedView,
@@ -22,7 +22,7 @@ from boba.indexing import (
 from boba.indexing.context import CollectionId, PipelineId
 from boba.indexing.embedder import Embedder
 from boba.kbdoc import KbDocReader
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, LLMStringList
+from boba.settings import LLMStringList
 from boba.text import StructuralChunker
 from boba.tool.kb.confluence_doc.workspace_indexing import (
     WorkspaceTransport,
@@ -45,28 +45,18 @@ __all__ = ["ConfluenceDocIngestConfig", "confluence_doc_ingest"]
 logger = logging.getLogger("boba.tool.kb.confluence_doc.ingest")
 
 
-class ConfluenceDocIngestConfig(BobaFlatSettings):
+class ConfluenceDocIngestConfig(PostgresStoreConfig, ChunkerParams):
     """Self-contained конфиг tool'а `confluence_doc_ingest`.
 
-    Config-секция: `[tool.kb.confluence_doc.ingest]`. Operator-controlled поля:
-    store/embedding/chunker/collection. LLM выбирает только `paths` и
-    `prune_missing` в tool-вызове.
+    Наследует `PostgresStoreConfig` (connection/tables — плоско) и `ChunkerParams`
+    (chunk_size/chunk_overlap/build_chunker — плоско). Config-секция: `[tool.kb]`.
+    Operator-controlled поля: connection/tables/embedding/collection. LLM выбирает
+    только `paths` и `prune_missing`.
     """
 
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="tool.kb.confluence_doc.ingest",
-        defaults_from=(
-            "kb.storage",
-            "postgres.{kb.storage:profile}",
-            "embedding",
-        ),
-    )
+    model_config = ConfigDict(extra="ignore")
 
-    store: PostgresStoreConfig
     embedding: EmbeddingModel
-    chunker: ChunkerParams
     collection: str = Field(
         default="kb_confluence_doc",
         min_length=1,
@@ -170,10 +160,10 @@ def confluence_doc_ingest(
     paths}`. Не-`.md` файлы игнорируются. Несуществующие пути логируются
     warning'ом и пропускаются.
     """
-    chunk_store = PostgresChunkStore(cfg=cfg.store)
-    collections_store = PostgresCollectionsStore(cfg=cfg.store)
+    chunk_store = PostgresChunkStore(cfg=cfg)
+    collections_store = PostgresCollectionsStore(cfg=cfg)
     embedder = cfg.embedding.build()
-    chunker = cfg.chunker.build_chunker()
+    chunker = cfg.build_chunker()
 
     result = ConfluenceDocIngest.run(
         request_source=WorkspaceWalkRequestSource(

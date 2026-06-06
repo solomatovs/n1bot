@@ -1,113 +1,61 @@
-"""WebConnection: tool-level HTTP + whitelist профилей."""
+"""WebConnection: whitelist хостов — dict[hostname → HttpConnection-профиль]."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any, Self
+from typing import Self
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from boba.settings.source import TomlEnvConfigSource
-from boba.tool.web.host_profile import WebHostProfile
-from boba.transport.http import HttpTransport
+from boba.transport.http import HttpConnection
 
 __all__ = ["WebConnection"]
 
 
 class WebConnection(BaseModel):
-    """HTTP-настройки + profiles → hosts (resolved)."""
+    """Whitelist хостов: hostname → транспортный профиль (`HttpConnection`).
 
-    timeout_sec: float = Field(
-        default=30.0,
-        gt=0,
-        description="HTTP-таймаут (сек).",
-    )
-    ssl_verify: bool = Field(
-        default=True,
-        description="Проверять ли TLS-сертификат.",
-    )
-    profiles: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Whitelist имён shared-секций `[web.<name>]` (hostname + auth). "
-            "Tool по hostname URL'а ищет первый матчащий профиль в этом "
-            "списке; не найден — запрос запрещён."
-        ),
-    )
-    hosts: dict[str, WebHostProfile] = Field(
+    Оператор задаёт ссылками на web-профили:
+    `[tool.web] profiles = { "github.com" = "${web.public}" }`.
+    `resolve(url)` по hostname URL'а находит профиль (timeout/ssl/auth);
+    хост не в whitelist'е — запрос запрещён.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    profiles: dict[str, HttpConnection] = Field(
         default_factory=dict,
         description=(
-            "Computed: profiles → dict[hostname, WebHostProfile]; "
-            "заполняется `_resolve_profiles`. Оператор это поле не задаёт."
+            "dict[hostname, web-профиль ссылкой]. Ключ — hostname (по нему "
+            "resolve выбирает профиль для входящего URL)."
         ),
     )
 
-    @model_validator(mode="before")
+    @field_validator("profiles", mode="before")
     @classmethod
-    def _resolve_profiles(cls, values: Any) -> Any:
-        """profiles[name] → hosts[hostname] через [web.<name>]."""
-        if not isinstance(values, Mapping):
-            return values
-        profiles = values.get("profiles") or []
-        if not profiles:
-            return values
-
-        toml_source = TomlEnvConfigSource()
-        hosts: dict[str, dict[str, Any]] = {}
-        for name in profiles:
-            name_s = str(name)
-            shared = toml_source.for_path(("web", name_s))
-            if not shared:
-                msg = (
-                    f"tool.web.profiles: профиль {name_s!r} — "
-                    f"секция [web.{name_s}] не найдена или пуста"
-                )
-                raise ValueError(msg)
-            hostname = str(shared.get("hostname") or "").lower()
-            if not hostname:
-                msg = (
-                    f"tool.web.profiles: профиль {name_s!r} — "
-                    f"в [web.{name_s}] отсутствует hostname"
-                )
-                raise ValueError(msg)
-            if hostname in hosts:
-                msg = (
-                    f"tool.web.profiles: hostname {hostname!r} встречается "
-                    f"в нескольких профилях — оставьте один на hostname"
-                )
-                raise ValueError(msg)
-            hosts[hostname] = dict(shared)
-
-        new_values = dict(values)
-        new_values["hosts"] = hosts
-        return new_values
+    def _lower_keys(cls, v: object) -> object:
+        if isinstance(v, dict):
+            return {str(k).lower(): val for k, val in v.items()}
+        return v
 
     @model_validator(mode="after")
     def _validate(self) -> Self:
-        if not self.hosts:
+        if not self.profiles:
             msg = (
-                "tool.web: ни одного профиля. Заведите [web.<name>] и "
-                "пропишите имя в [tool.web].profiles = [...]."
+                "tool.web: пустой whitelist — задайте profiles = "
+                '{ "<hostname>" = "${web.<name>}" }.'
             )
             raise ValueError(msg)
         return self
 
-    def resolve(self, url: str) -> WebHostProfile:
-        """hostname URL → профиль; ValueError если не в whitelist."""
+    def resolve_profile(self, url: str) -> HttpConnection:
+        """hostname URL → транспортный профиль; ValueError если не в whitelist."""
         host = (urlparse(url).hostname or "").lower()
-        profile = self.hosts.get(host)
+        profile = self.profiles.get(host)
         if profile is None:
-            allowed = sorted(self.hosts)
+            allowed = sorted(self.profiles)
             msg = (
-                f"web: host {host!r} не в whitelist'е (allowed={allowed}). "
-                f"URL={url!r}"
+                f"web: host {host!r} не в whitelist'е (allowed={allowed}). URL={url!r}"
             )
             raise ValueError(msg)
         return profile
-
-    def make_transport(self) -> HttpTransport:
-        return HttpTransport(
-            timeout_sec=self.timeout_sec,
-            verify=self.ssl_verify,
-        )

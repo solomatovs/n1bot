@@ -6,31 +6,17 @@ from typing import Annotated
 
 from pydantic import Field
 
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.pg.copy_buffer import BufferCapacityError, RowLimitExceededError
 from boba.tool.pg.executor import SqlExecutor, SqlExecutorConfig, SqlQueryError
 from boba.tools import FromConfig, tool
 from boba.tools.domain import ErrorResult, PgCopyTextResult
 
-__all__ = ["QueryConfig", "query"]
-
-
-class QueryConfig(BobaFlatSettings):
-    """Конфиг tool query (секция [tool.pg.query])."""
-
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="tool.pg.query",
-        defaults_from=("tool.pg",),
-    )
-
-    executor: SqlExecutorConfig
+__all__ = ["query"]
 
 
 @tool
 def query(
-    cfg: Annotated[QueryConfig, FromConfig()],
+    cfg: Annotated[SqlExecutorConfig, FromConfig()],
     sql: Annotated[
         str,
         Field(
@@ -56,7 +42,7 @@ def query(
     Запрос исполняется как есть (COPY-обёртка); ошибки SQL уходят дословно.
     Слишком много строк / большой объём → ошибка с просьбой добавить LIMIT.
     """
-    executor = SqlExecutor(cfg=cfg.executor)
+    executor = SqlExecutor(cfg=cfg)
     try:
         buf = executor.execute_copy(sql, target=target)
     except BufferCapacityError:

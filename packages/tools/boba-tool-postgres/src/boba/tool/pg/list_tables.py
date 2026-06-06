@@ -6,30 +6,16 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.pg.executor import SqlExecutor, SqlExecutorConfig, SqlQueryError
 from boba.tools import FromConfig, tool
 from boba.tools.domain import TableResult
 
-__all__ = ["ListTablesConfig", "list_tables"]
-
-
-class ListTablesConfig(BobaFlatSettings):
-    """Конфиг tool list_tables (секция [tool.pg.list_tables])."""
-
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="tool.pg.list_tables",
-        defaults_from=("tool.pg",),
-    )
-
-    executor: SqlExecutorConfig
+__all__ = ["list_tables"]
 
 
 @tool
 def list_tables(
-    cfg: Annotated[ListTablesConfig, FromConfig()],
+    cfg: Annotated[SqlExecutorConfig, FromConfig()],
     target: Annotated[
         str,
         Field(
@@ -50,7 +36,7 @@ def list_tables(
     ] = None,
 ) -> TableResult:
     """Список таблиц/view на профиле target. Колонки: schema, table, kind."""
-    executor = SqlExecutor(cfg=cfg.executor)
+    executor = SqlExecutor(cfg=cfg)
     if pg_schema:
         sql = (
             "SELECT table_schema AS schema, table_name AS table, "

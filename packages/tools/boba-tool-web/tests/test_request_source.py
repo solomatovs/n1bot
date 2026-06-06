@@ -10,10 +10,9 @@ import httpx
 import pytest
 
 from boba.indexing import PipelineContext, PipelineId, SourceId
-from boba.tool.web.auth import BearerAuth, NoneAuth
 from boba.tool.web.connection import WebConnection
-from boba.tool.web.host_profile import WebHostProfile
 from boba.tool.web.request_source import WebUrlsRequestSource
+from boba.transport.http import BearerAuth, HttpConnection
 from boba.transport.http.auth import HttpxBearerAuth
 
 
@@ -23,13 +22,9 @@ def _ctx() -> PipelineContext:
 
 def _conn() -> WebConnection:
     return WebConnection(
-        hosts={
-            "docs.python.org": WebHostProfile(
-                hostname="docs.python.org",
-                auth=NoneAuth(method="none"),
-            ),
-            "api.github.com": WebHostProfile(
-                hostname="api.github.com",
+        profiles={
+            "docs.python.org": HttpConnection(),
+            "api.github.com": HttpConnection(
                 auth=BearerAuth(method="bearer", token="tok"),
             ),
         },

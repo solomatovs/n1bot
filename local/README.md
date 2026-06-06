@@ -41,7 +41,7 @@ pip install -r dev-install.txt
 
 В `local/.env` подставьте `BOBA_AGENT__API_KEY` и (опционально)
 `BOBA_AGENT__BASE_URL`. В `local/config.toml` укажите `model` для
-`[cli.agent]` и `[chainlit]`.
+`[cli]` и `[chainlit]`.
 
 ## Запуск
 
@@ -54,23 +54,23 @@ set -a && . local/.env && set +a
 
 или через `direnv` (`echo 'dotenv local/.env' >> .envrc && direnv allow`).
 
-### boba-cli-agent — REPL/single-shot
+### boba-cli — REPL/single-shot
 
 ```bash
-# REPL (если в [cli.agent].query пусто):
-.venv/bin/boba-cli-agent
+# REPL (если в [cli].query пусто):
+.venv/bin/boba-cli
 
-# Single-shot (через argv, перекрывает [cli.agent].query):
-.venv/bin/boba-cli-agent --model qwen3.5-35b --query "hello"
+# Single-shot (через argv, перекрывает [cli].query):
+.venv/bin/boba-cli --model qwen3.5-35b --query "hello"
 ```
 
-CLI argv > env (`BOBA_CLI__AGENT__…`) > TOML `[cli.agent]`. REPL-команды: `/exit`,
+CLI argv > env (`BOBA_CLI__AGENT__…`) > TOML `[cli]`. REPL-команды: `/exit`,
 `/quit`, `:q`, `/clear` (сбросить in-memory историю).
 
-### boba-chainlit-agent — UI
+### boba-chainlit — UI
 
 ```bash
-.venv/bin/boba-chainlit-agent
+.venv/bin/boba-chainlit
 ```
 
 Откроется на `http://<host>:<port>` из `[chainlit]` (по умолчанию

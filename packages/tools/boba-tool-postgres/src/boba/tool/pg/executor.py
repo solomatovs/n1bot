@@ -5,15 +5,14 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import to_jsonable_python
 
 from boba.db.postgres import PostgresConnection, PostgresPool
-from boba.settings.source import TomlEnvConfigSource
 from boba.tool.pg.copy_buffer import (
     BufferCapacityError,
     CopyBuffer,
@@ -36,20 +35,14 @@ RESULT_BYTES_HARDLIMIT = 1_000_000
 class SqlExecutorConfig(BaseModel):
     """Конфиг для SqlExecutor."""
 
-    profiles: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Whitelist имён postgres-профилей (`[postgres.<name>]`), "
-            "доступных LLM. Имя из списка передаётся в tool-arg `target`. "
-            "Все connection-поля (host/auth/application_name/timeout/…) "
-            "живут в самой секции `[postgres.<name>]`."
-        ),
-    )
-    databases: dict[str, PostgresConnection] = Field(
+    model_config = ConfigDict(extra="ignore")
+
+    profiles: dict[str, PostgresConnection] = Field(
         default_factory=dict,
         description=(
-            "Computed: profiles → dict; заполняется `_resolve_profiles`. "
-            "Оператор это поле не задаёт."
+            "dict[target, postgres-профиль ссылкой]: "
+            '`[tool.pg.profiles] main = "${postgres.main}"`. '
+            "Ключ — значение tool-arg `target` (LLM выбирает БД по нему)."
         ),
     )
     max_rows: int = Field(
@@ -67,52 +60,25 @@ class SqlExecutorConfig(BaseModel):
         ),
     )
 
-    @model_validator(mode="before")
-    @classmethod
-    def _resolve_profiles(cls, values: Any) -> Any:
-        """`profiles: list[str]` → `databases: dict[name, PostgresConnection]`.
-
-        Для каждого имени читает `[postgres.<name>]` через
-        `TomlEnvConfigSource.for_path`. Отсутствующая или пустая
-        секция → `ValueError`. Поле `databases` в input игнорируется
-        и заменяется на computed; cмешивать недопустимо.
-        """
-        if not isinstance(values, Mapping):
-            return values
-        profiles = values.get("profiles")
-        if not profiles:
-            return values
-
-        toml_source = TomlEnvConfigSource()
-        resolved: dict[str, Any] = {}
-        for name in profiles:
-            name_s = str(name)
-            shared = toml_source.for_path(("postgres", name_s))
-            if not shared:
-                msg = (
-                    f"tool.pg.profiles: профиль {name_s!r} — "
-                    f"секция [postgres.{name_s}] не найдена или пуста"
-                )
-                raise ValueError(msg)
-            resolved[name_s] = dict(shared)
-
-        new_values = dict(values)
-        new_values["databases"] = resolved
-        return new_values
-
     @model_validator(mode="after")
     def _validate(self) -> Self:
-        if not self.databases:
-            msg = "tool.pg.profiles: список профилей пуст"
+        if not self.profiles:
+            msg = (
+                "tool.pg: ни одного профиля. Заведите [postgres.<name>] и "
+                'сошлитесь: [tool.pg.profiles] <name> = "${postgres.<name>}".'
+            )
             raise ValueError(msg)
         return self
 
+    def targets(self) -> list[str]:
+        """Имена доступных профилей (значения tool-arg `target`)."""
+        return sorted(self.profiles)
+
     def resolve(self, target: str) -> PostgresConnection:
         """Вернуть PostgresConnection для target; ValueError если не в whitelist."""
-        conn = self.databases.get(target)
+        conn = self.profiles.get(target)
         if conn is None:
-            allowed = sorted(self.databases)
-            msg = f"pg: target {target!r} не в whitelist (allowed={allowed})"
+            msg = f"pg: target {target!r} не в whitelist (allowed={self.targets()})"
             raise ValueError(msg)
         return conn
 
@@ -153,7 +119,7 @@ class SqlExecutor:
         self._cfg = cfg
         logger.info(
             "SqlExecutor opened: targets=%s max_rows=%d max_bytes=%d",
-            sorted(cfg.databases),
+            cfg.targets(),
             cfg.max_rows,
             cfg.max_bytes,
         )
@@ -167,7 +133,7 @@ class SqlExecutor:
         return self._cfg.max_bytes
 
     def allowed_targets(self) -> list[str]:
-        return sorted(self._cfg.databases)
+        return self._cfg.targets()
 
     def execute_copy(self, query: str, *, target: str) -> CopyBuffer:
         """

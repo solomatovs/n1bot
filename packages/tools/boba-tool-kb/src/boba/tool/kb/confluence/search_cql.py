@@ -1,8 +1,8 @@
 """Tool `confluence_search_cql` + `ConfluenceSearchCqlConfig`: online CQL-search.
 
 Полнотекстовый поиск страниц по реальному Confluence (не по KB). LLM
-передаёт строку запроса + список `spaces` для ограничения; connection и
-лимиты — из TOML-секции `[tool.kb.confluence.search.cql]`.
+передаёт строку запроса + список `spaces` + `limit`/`snippet_chars`;
+connection (`confluence`) — из секции `[tool.kb]`.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Annotated, ClassVar
 
 import httpx
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.indexing import (
     PipelineContext,
@@ -19,49 +19,38 @@ from boba.indexing import (
     RuntimePipeline,
     Section,
 )
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict, LLMStringList
+from boba.settings import LLMStringList
 from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.models import ConfluenceKeys
 from boba.tool.kb.confluence.reading import ConfluenceSearchHitsReader
 from boba.tool.kb.confluence.request_sources import ConfluenceCqlSearchRequestSource
 from boba.tools import FromConfig, tool
 from boba.tools.domain import TableResult
-from boba.transport.http import HttpKeys
+from boba.transport.http import HttpKeys, HttpTransport
 
 __all__ = ["ConfluenceSearchCqlConfig", "confluence_search_cql"]
 
 
-class ConfluenceSearchCqlConfig(BobaFlatSettings):
+class ConfluenceSearchCqlConfig(BaseModel):
     """Self-contained конфиг tool'а `confluence_search_cql`.
 
-    Config-секция: `[tool.kb.confluence.search.cql]`.
+    Config-секция: `[tool.kb]` (читает только `confluence`). `limit`/
+    `snippet_chars` — tool-аргументы LLM.
     """
 
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="tool.kb.confluence.search.cql",
-        defaults_from=("confluence",),
-    )
+    model_config = ConfigDict(extra="ignore")
 
     confluence: ConfluenceConnection
-    snippet_chars: int = Field(
-        default=300,
-        ge=1,
-        description="Максимальная длина сниппета на каждый hit.",
-    )
-    max_limit: int = Field(
-        default=50,
-        ge=1,
-        le=200,
-        description="Жёсткий потолок параметра `limit` от LLM.",
-    )
 
 
 class CqlSearch:
     """Сборка CQL и распаковка search-`Section` в плоский hit-dict."""
 
     PIPELINE_ID: ClassVar[PipelineId] = PipelineId("confluence.search_cql")
+    SNIPPET_DEFAULT: ClassVar[int] = 300
+    SNIPPET_DESC: ClassVar[str] = (
+        "Максимальная длина сниппета на каждый hit (символов). По умолчанию 300."
+    )
 
     @staticmethod
     def hit(section: Section[str]) -> dict[str, str]:
@@ -113,28 +102,27 @@ def confluence_search_cql(
         int,
         Field(ge=1, description="Максимум hits в ответе."),
     ] = 20,
+    snippet_chars: Annotated[
+        int,
+        Field(ge=1, description=CqlSearch.SNIPPET_DESC),
+    ] = CqlSearch.SNIPPET_DEFAULT,
 ) -> TableResult:
     """Полнотекстовый поиск страниц Confluence (online CQL).
 
     Возвращает `TableResult` — таблицу hits с колонками `page_id`/`title`/
     `space_key`/`url`/`snippet`/`last_modified`.
     """
-    if limit > cfg.max_limit:
-        raise RuntimeError(
-            f"limit={limit} превышает max_limit={cfg.max_limit}",
-        )
-
     pipeline = RuntimePipeline(
         request_source=ConfluenceCqlSearchRequestSource(
             base_url=cfg.confluence.base_url,
-            auth=cfg.confluence.make_auth(),
+            auth=cfg.confluence.profile.auth.httpx_auth(),
             cql=CqlSearch.build_cql(query=query, spaces=spaces),
             limit=limit,
         ),
-        transport=cfg.confluence.make_transport(),
+        transport=HttpTransport(cfg.confluence.profile),
         reader=ConfluenceSearchHitsReader(
             base_url=cfg.confluence.base_url,
-            snippet_chars=cfg.snippet_chars,
+            snippet_chars=snippet_chars,
         ),
     )
 

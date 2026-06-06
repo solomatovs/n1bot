@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any, ClassVar
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from boba.indexing import (
     CollectionScopedView,
@@ -39,8 +39,6 @@ from boba.indexing.context import CollectionId, PipelineId
 from boba.indexing.embedder import Embedder
 from boba.indexing.reader import ReaderId
 from boba.settings import (
-    BobaFlatSettings,
-    BobaSettingsConfigDict,
     StringList,
 )
 from boba.text import StructuralChunker
@@ -63,28 +61,16 @@ __all__ = ["ConfluenceIngest", "ConfluenceIngestConfig"]
 logger = logging.getLogger("boba.tool.kb.confluence.ingest")
 
 
-class ConfluenceIngestConfig(BobaFlatSettings):
+class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams):
     """Self-contained конфиг семейства tool'ов `confluence_ingest_*`.
 
-    Config-секция: `[tool.kb.confluence.ingest]`. Пока делится между всеми
-    тремя режимами (spaces / pages / cql); при дивергенции режим заводит свою.
+    Наследует `PostgresStoreConfig` (connection/tables — плоско) и `ChunkerParams`
+    (chunk_size/chunk_overlap/build_chunker — плоско). Config-секция: `[tool.kb]`.
     """
 
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="tool.kb.confluence.ingest",
-        defaults_from=(
-            "kb.storage",
-            "postgres.{kb.storage:profile}",
-            "embedding",
-            "confluence",
-        ),
-    )
+    model_config = ConfigDict(extra="ignore")
 
-    store: PostgresStoreConfig
     embedding: EmbeddingModel
-    chunker: ChunkerParams
     confluence: ConfluenceConnection
     collection: str = Field(
         default="kb_confluence",
@@ -203,10 +189,10 @@ class ConfluenceIngest:
         pipeline_id: PipelineId,
     ) -> dict[str, Any]:
         """Собрать stores/embedder/chunker/filter из cfg и вызвать `run`."""
-        chunk_store = PostgresChunkStore(cfg=cfg.store)
-        collections_store = PostgresCollectionsStore(cfg=cfg.store)
+        chunk_store = PostgresChunkStore(cfg=cfg)
+        collections_store = PostgresCollectionsStore(cfg=cfg)
         embedder = cfg.embedding.build()
-        chunker = cfg.chunker.build_chunker()
+        chunker = cfg.build_chunker()
         att_filter = AttachmentFilter.from_lists(
             media_types=cfg.attachment_media_types,
             titles=cfg.attachment_titles,

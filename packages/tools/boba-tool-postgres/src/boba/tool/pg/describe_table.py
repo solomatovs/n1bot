@@ -6,30 +6,16 @@ from typing import Annotated
 
 from pydantic import Field
 
-from boba.settings import BobaFlatSettings, BobaSettingsConfigDict
 from boba.tool.pg.executor import SqlExecutor, SqlExecutorConfig, SqlQueryError
 from boba.tools import FromConfig, tool
 from boba.tools.domain import TableResult
 
-__all__ = ["DescribeTableConfig", "describe_table"]
-
-
-class DescribeTableConfig(BobaFlatSettings):
-    """Конфиг tool describe_table (секция [tool.pg.describe_table])."""
-
-    model_config = BobaSettingsConfigDict(
-        case_sensitive=False,
-        extra="ignore",
-        config_path="tool.pg.describe_table",
-        defaults_from=("tool.pg",),
-    )
-
-    executor: SqlExecutorConfig
+__all__ = ["describe_table"]
 
 
 @tool
 def describe_table(
-    cfg: Annotated[DescribeTableConfig, FromConfig()],
+    cfg: Annotated[SqlExecutorConfig, FromConfig()],
     target: Annotated[
         str,
         Field(
@@ -60,7 +46,7 @@ def describe_table(
 
     Если таблицы нет, вернётся таблица с заглушкой (no rows).
     """
-    executor = SqlExecutor(cfg=cfg.executor)
+    executor = SqlExecutor(cfg=cfg)
     sql = (
         "SELECT column_name, data_type, is_nullable, column_default "
         "FROM information_schema.columns "
