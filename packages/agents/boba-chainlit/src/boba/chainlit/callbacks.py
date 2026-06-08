@@ -18,7 +18,6 @@ from boba.chainlit.state import app_state
 from boba.chainlit.storage import ThreadAlreadyExistsError
 from boba.chainlit.uploads import save_user_uploads
 from boba.workspace.contract import WorkspaceId, new_workspace_id
-from chainlit.context import local_steps
 from chainlit.types import ThreadDict
 
 logger = logging.getLogger(__name__)
@@ -331,12 +330,6 @@ async def on_message(message: cl.Message) -> None:
         ).send()
 
 
-def _current_run_step_id() -> str | None:
-    """id текущего run-step (обёртка @cl.on_message вокруг handler'а)."""
-    stack = local_steps.get() or []
-    return stack[-1].id if stack else None
-
-
 async def _render_events(queue: asyncio.Queue[AgentEvent | None]) -> None:
     """Потребитель очереди live-событий; маппит через общий диспатчер.
 
@@ -345,10 +338,7 @@ async def _render_events(queue: asyncio.Queue[AgentEvent | None]) -> None:
     файла). По умолчанию False -> диагностика не рендерится.
     """
     diagnostic = bool(cl.user_session.get("diagnostic_mode", False))
-    target = ChainlitLiveTarget(
-        parent_id=_current_run_step_id(),
-        diagnostic=diagnostic,
-    )
+    target = ChainlitLiveTarget(diagnostic=diagnostic)
     dispatcher = AgentEventDispatcher(target)
     while True:
         event = await queue.get()

@@ -17,6 +17,15 @@ __all__ = ["ChainlitLiveTarget"]
 class ChainlitLiveTarget(EventRenderTarget):
     """Реализует EventRenderTarget для текущей chainlit-сессии.
 
+    Все UI-сущности (answer, tool, thinking, status) создаём на ВЕРХНЕМ
+    уровне ленты (parent_id=None), а не детьми run-step'а @cl.on_message.
+    Иначе с cot="full" frontend разносит их по типу: assistant_message
+    всплывают отдельными бабблами, а tool/run-шаги схлопываются в CoT-блок
+    run-step'а (он привязан к началу turn'а). Из-за этого финальный ответ
+    печатается рядом с предыдущим answer, а не после последнего tool_call.
+    Плоская структура повторяет replay (StepDictTarget, parentId=None) —
+    сортировка идёт строго по created_at, события идут хронологически.
+
     Параметр diagnostic управляет показом DiagnosticEvent-ов:
     False - тихо игнорируем (классический чистый чат);
     True  - рендерим как сворачиваемый cl.Step diag: {topic}.
@@ -25,11 +34,9 @@ class ChainlitLiveTarget(EventRenderTarget):
 
     def __init__(
         self,
-        parent_id: str | None,
         *,
         diagnostic: bool = False,
     ) -> None:
-        self._parent_id = parent_id
         self._diagnostic = diagnostic
         self._answer_msg: cl.Message | None = None
         self._thinking_step: cl.Step | None = None
@@ -64,8 +71,9 @@ class ChainlitLiveTarget(EventRenderTarget):
             if text:
                 # Snapshot пришёл без предшествующих delta'ов (теоретически
                 # возможно, если адаптер LLM эмитит только финальный текст).
-                msg = cl.Message(content=_close_fence(text), created_at=utc_now())
-                await msg.send()
+                await self._send_top_level(
+                    cl.Message(content=_close_fence(text), created_at=utc_now()),
+                )
             return
         # Токены уже отрисованы потоково — добиваем закрывающий '\n' и
         # закрываем сообщение (см. _close_streamed).
@@ -74,7 +82,7 @@ class ChainlitLiveTarget(EventRenderTarget):
 
     async def thinking_complete(self, text: str) -> None:
         if self._thinking_step is None and text:
-            step = cl.Step(name="thinking", type="run", parent_id=self._parent_id)
+            step = cl.Step(name="thinking", type="run", parent_id=None)
             await step.send()
             await _finalize_step(step, text)
             return
@@ -83,8 +91,9 @@ class ChainlitLiveTarget(EventRenderTarget):
     async def refusal_complete(self, text: str) -> None:
         if self._answer_msg is None:
             if text:
-                msg = cl.Message(content=_close_fence(text), created_at=utc_now())
-                await msg.send()
+                await self._send_top_level(
+                    cl.Message(content=_close_fence(text), created_at=utc_now()),
+                )
             return
         await _close_streamed(self._answer_msg)
         self._answer_msg = None
@@ -100,7 +109,7 @@ class ChainlitLiveTarget(EventRenderTarget):
         if step is None:
             # Orphan: result без открытого tool_step (ToolExecutionStarted
             # не пришёл) — рисуем отдельным шагом, чтобы не потерять текст.
-            step = cl.Step(name="tool_result", type="tool", parent_id=self._parent_id)
+            step = cl.Step(name="tool_result", type="tool", parent_id=None)
             await step.send()
         await _finalize_step(step, text, is_error=is_error)
 
@@ -121,29 +130,35 @@ class ChainlitLiveTarget(EventRenderTarget):
             if step is not None:
                 await _finalize_step(step, msg, is_error=True)
             else:
-                await cl.Message(
-                    content=f"**chart failed**\n\n{msg}",
-                    author="system",
-                    created_at=utc_now(),
-                ).send()
+                await self._send_top_level(
+                    cl.Message(
+                        content=f"**chart failed**\n\n{msg}",
+                        author="system",
+                        created_at=utc_now(),
+                    ),
+                )
             return
         if step is not None:
             await _finalize_step(
                 step,
                 f"график отрисован: {title}" if title else "график отрисован",
             )
-        await cl.Message(
-            content=title or "",
-            elements=[element],
-            created_at=utc_now(),
-        ).send()
+        await self._send_top_level(
+            cl.Message(
+                content=title or "",
+                elements=[element],
+                created_at=utc_now(),
+            ),
+        )
 
     async def feedback(self, text: str) -> None:
-        await cl.Message(
-            content=f"**Feedback to LLM**:\n\n{text}",
-            author="system",
-            created_at=utc_now(),
-        ).send()
+        await self._send_top_level(
+            cl.Message(
+                content=f"**Feedback to LLM**:\n\n{text}",
+                author="system",
+                created_at=utc_now(),
+            ),
+        )
 
     # --- phase-маркеры ------------------------------------------------
 
@@ -163,7 +178,7 @@ class ChainlitLiveTarget(EventRenderTarget):
         # (не на ToolCallMessage). Финализируется по tool_result /
         # tool_execution_failed по тому же call_id.
         await self._clear_status()
-        step = cl.Step(name=name, type="tool", parent_id=self._parent_id)
+        step = cl.Step(name=name, type="tool", parent_id=None)
         await step.send()
         await step.stream_token(args_json, is_input=True)
         await _finalize_step(step, "⏳ выполняется…")
@@ -180,7 +195,7 @@ class ChainlitLiveTarget(EventRenderTarget):
             self._status_step = cl.Step(
                 name=text,
                 type="run",
-                parent_id=self._parent_id,
+                parent_id=None,
             )
             await self._status_step.send()
         else:
@@ -196,7 +211,7 @@ class ChainlitLiveTarget(EventRenderTarget):
         error: str,
     ) -> None:
         await self._clear_status()
-        step = cl.Step(name=name, type="tool", parent_id=self._parent_id)
+        step = cl.Step(name=name, type="tool", parent_id=None)
         await step.send()
         await step.stream_token(raw, is_input=True)
         await _finalize_step(step, error, is_error=True)
@@ -216,26 +231,32 @@ class ChainlitLiveTarget(EventRenderTarget):
                 is_error=True,
             )
             return
-        await cl.Message(
-            content=f"**tool failed** [{error_kind}]\n\n{message}",
-            author="system",
-            created_at=utc_now(),
-        ).send()
+        await self._send_top_level(
+            cl.Message(
+                content=f"**tool failed** [{error_kind}]\n\n{message}",
+                author="system",
+                created_at=utc_now(),
+            ),
+        )
 
     async def advisory(self, headline: str, body: str) -> None:
         await self._clear_status()
-        await cl.Message(
-            content=f"**{headline}**\n\n{body}",
-            author="system",
-            created_at=utc_now(),
-        ).send()
+        await self._send_top_level(
+            cl.Message(
+                content=f"**{headline}**\n\n{body}",
+                author="system",
+                created_at=utc_now(),
+            ),
+        )
 
     async def terminal(self, headline: str, body: str) -> None:
         await self._clear_status()
-        await cl.Message(
-            content=f"**{headline}**\n\n{body}",
-            author="system",
-        ).send()
+        await self._send_top_level(
+            cl.Message(
+                content=f"**{headline}**\n\n{body}",
+                author="system",
+            ),
+        )
 
     # --- диагностика -------------------------------------------------
 
@@ -252,7 +273,7 @@ class ChainlitLiveTarget(EventRenderTarget):
         step = cl.Step(
             name=f"diag: {event.topic}" if event.topic else "diag",
             type="run",
-            parent_id=self._parent_id,
+            parent_id=None,
         )
         await step.send()
         if event.details:
@@ -264,14 +285,25 @@ class ChainlitLiveTarget(EventRenderTarget):
 
     # --- internals ---------------------------------------------------
 
+    @staticmethod
+    async def _send_top_level(message: cl.Message) -> cl.Message:
+        # cl.Message в __post_init__ берёт parent_id из local_steps
+        # (run-step @cl.on_message); обнуляем — сообщение должно жить на
+        # верхнем уровне ленты и сортироваться по created_at вместе с
+        # tool-step'ами (см. docstring класса).
+        message.parent_id = None
+        await message.send()
+        return message
+
     async def _open_answer(self) -> cl.Message:
         await self._clear_status()
         if self._answer_msg is None:
             # created_at фиксируем в момент Python-создания, чтобы chainlit
             # frontend сортировал answer строго ПОСЛЕ ранее созданных
             # cl.Step (которые ставят created_at в __init__).
-            self._answer_msg = cl.Message(content="", created_at=utc_now())
-            await self._answer_msg.send()
+            self._answer_msg = await self._send_top_level(
+                cl.Message(content="", created_at=utc_now()),
+            )
         return self._answer_msg
 
     async def _open_thinking(self) -> cl.Step:
@@ -280,7 +312,7 @@ class ChainlitLiveTarget(EventRenderTarget):
             self._thinking_step = cl.Step(
                 name="thinking",
                 type="run",
-                parent_id=self._parent_id,
+                parent_id=None,
             )
             await self._thinking_step.send()
         return self._thinking_step
