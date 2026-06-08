@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-liteparse"
+version = "0.1.0"
+description = "Boba liteparse toolchain: единый движок поверх liteparse (parse / parse_native / search_items) + LiteParseParams. Без знания о домене и I/O."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "pydantic",
+    "liteparse>=2,<3",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

@@ -4,16 +4,22 @@
 FromConfig. Поля enable / tools читает framework через
 AgentBuilder.discover_plugins; extra="ignore" позволяет им жить в
 той же TOML-секции без ValidationError.
+
+Настройки самого парсера (ocr_enabled/ocr_language/max_pages) наследуются
+из LiteParseParams — общего миксина движка liteparse; здесь добавляются
+только doc-tool-специфичные presentation-лимиты.
 """
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
+
+from boba.liteparse import LiteParseParams
 
 __all__ = ["DocPluginConfig"]
 
 
-class DocPluginConfig(BaseModel):
+class DocPluginConfig(LiteParseParams):
     """Парсинг документов в текст (liteparse).
 
     Config-секция: [tool.doc].
@@ -21,23 +27,6 @@ class DocPluginConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    ocr_enabled: bool = Field(
-        default=False,
-        description=(
-            "Включить OCR (Tesseract) для сканов и изображений. "
-            "Требует tesseract в образе; для текстовых PDF не нужен."
-        ),
-    )
-    ocr_language: str = Field(
-        default="eng",
-        min_length=1,
-        description="Язык OCR в формате Tesseract: 'eng', 'rus', 'rus+eng'.",
-    )
-    max_pages: int = Field(
-        default=0,
-        ge=0,
-        description="Лимит числа парсируемых страниц. 0 = без лимита.",
-    )
     max_text_chars: int = Field(
         default=200_000,
         ge=1,
@@ -47,8 +36,7 @@ class DocPluginConfig(BaseModel):
         default=80,
         ge=0,
         description=(
-            "Сколько символов контекста показывать вокруг совпадения "
-            "в search_document."
+            "Сколько символов контекста показывать вокруг совпадения в search_document."
         ),
     )
     search_max_matches: int = Field(
