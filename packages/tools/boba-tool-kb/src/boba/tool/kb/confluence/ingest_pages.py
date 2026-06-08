@@ -44,6 +44,16 @@ def confluence_ingest_pages(
             ),
         ),
     ] = False,
+    force_update: Annotated[
+        bool,
+        Field(
+            description=(
+                "Если true, переиндексировать указанные страницы целиком: "
+                "переэмбеддить все чанки (минуя skip-by-hash) и удалить "
+                "устаревшие чанки этих страниц, включая снятые с них вложения."
+            ),
+        ),
+    ] = False,
 ) -> TableResult:
     """Индексирует явный список страниц Confluence по page_id в KB.
 
@@ -56,7 +66,7 @@ def confluence_ingest_pages(
         page_ids=page_ids,
         body_format=conn.body_format,
     )
-    result = ConfluenceIngest.ingest(cfg, request_source, prune_missing)
+    result = ConfluenceIngest.ingest(cfg, request_source, prune_missing, force_update)
     return TableResult(
         rows=[result],
         note=f"page_ids ({len(page_ids)}): {', '.join(page_ids)}",

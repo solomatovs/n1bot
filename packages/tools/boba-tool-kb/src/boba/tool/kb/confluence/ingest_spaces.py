@@ -45,6 +45,16 @@ def confluence_ingest_spaces(
             ),
         ),
     ] = False,
+    force_update: Annotated[
+        bool,
+        Field(
+            description=(
+                "Если true, переиндексировать страницы space'ов целиком: "
+                "переэмбеддить все чанки (минуя skip-by-hash) и удалить "
+                "устаревшие чанки этих страниц, включая снятые с них вложения."
+            ),
+        ),
+    ] = False,
 ) -> TableResult:
     """Индексирует ВСЕ страницы перечисленных Confluence-spaces в KB.
 
@@ -57,5 +67,5 @@ def confluence_ingest_spaces(
         space_keys=space_keys,
         body_format=conn.body_format,
     )
-    result = ConfluenceIngest.ingest(cfg, request_source, prune_missing)
+    result = ConfluenceIngest.ingest(cfg, request_source, prune_missing, force_update)
     return TableResult(rows=[{"space_keys": space_keys, **result}])
