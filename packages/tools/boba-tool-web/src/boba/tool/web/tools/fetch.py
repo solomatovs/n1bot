@@ -7,7 +7,7 @@ Tool web_fetch.
 
     {
       "content":        str,   # окно строк, склеенное через "\\n"
-      "path":           str,   # URL источника (canonical id запроса)
+      "source_url":     str,   # URL источника (canonical id запроса)
       "total_lines":    int,   # сколько всего строк в материализованном контенте
       "returned_lines": int,   # len(window)
     }
@@ -65,7 +65,7 @@ class _WebFetcher:
                 )
                 return {
                     "content": "\n".join(window),
-                    "path": url,
+                    "source_url": url,
                     "total_lines": total,
                     "returned_lines": len(window),
                 }
@@ -148,8 +148,8 @@ def web_fetch(
     """
     Скачивает URL и возвращает окно строк как dict
 
-    Формат: {content, path, total_lines, returned_lines}.
-    path — URL источника (canonical id запроса).
+    Формат: {content, source_url, total_lines, returned_lines}.
+    source_url — URL источника (canonical id запроса).
     total_lines позволяет выбрать корректный следующий line_offset.
     """
     fetcher = _WebFetcher(connection=cfg)

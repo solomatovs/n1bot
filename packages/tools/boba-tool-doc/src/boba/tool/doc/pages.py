@@ -19,7 +19,13 @@ __all__ = ["read_pages"]
 def read_pages(
     path: Annotated[
         str,
-        Field(min_length=1, description="Путь к документу в workspace."),
+        Field(
+            min_length=1,
+            description=(
+                "Путь к локальному файлу в workspace, например "
+                "'docs/report.pdf'. НЕ URL: для web-страниц используй web_fetch."
+            ),
+        ),
     ],
     pages: Annotated[
         str,
@@ -34,8 +40,9 @@ def read_pages(
     shell: Annotated[ProjectWorkspaceShell, FromDI(Scope.APP)],
     cfg: Annotated[DocPluginConfig, FromConfig()],
 ) -> TextResult:
-    """Распарсить только указанные страницы и вернуть их текст.
+    """Распарсить только указанные страницы локального документа и вернуть текст.
 
+    Только файлы из workspace; для http(s)-URL — web_fetch / web_download.
     Дешевле read_document для больших PDF: парсятся лишь нужные страницы.
     Фактически разобранные номера страниц и факт обрезки — в metadata.
     """
