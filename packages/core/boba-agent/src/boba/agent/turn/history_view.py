@@ -129,10 +129,14 @@ class CompactHistoryDialogView(HistoryDialogView):
     (упал, оборвался на tool_calls) — assistant-ответ опускается,
     остаётся только UserMessage.
 
-    После сборки применяется sliding-window: оставляется не более
-    max_messages сообщений с хвоста. Если граница окна попала в
-    середину диалога — начало сдвигается вправо до ближайшего
-    UserMessage, чтобы не передавать в LLM осиротевший
+    Sliding-window применяется ТОЛЬКО к сжатым прошлым request_id —
+    текущий ход не режется никогда, иначе при длинной собственной
+    tool-цепочке окно может отрезать его единственный UserMessage и
+    отдать пустой диалог (LLM получит один system и поздоровается).
+    Бюджет окна для прошлого = max_messages минус длина текущего хода:
+    оставляется не более этого числа прошлых сообщений с хвоста. Если
+    граница окна попала в середину диалога — начало сдвигается вправо
+    до ближайшего UserMessage, чтобы не передавать в LLM осиротевший
     ToolResultMessage.
     """
 
@@ -148,19 +152,27 @@ class CompactHistoryDialogView(HistoryDialogView):
         self._max_messages = max_messages
 
     def dialog_message_iter(self) -> Iterator[DialogMessage]:
-        messages = list(self._build_messages())
-        yield from self._apply_window(messages)
+        past, current = self._split_past_current()
+        budget = max(0, self._max_messages - len(current))
+        yield from self._apply_window(past, budget)
+        yield from current
 
-    def _build_messages(self) -> Iterator[DialogMessage]:
+    def _split_past_current(
+        self,
+    ) -> tuple[list[DialogMessage], list[DialogMessage]]:
+        """Сжатые прошлые ходы и полный текущий (последний) request_id."""
         groups = self._group_by_request_id()
+        past: list[DialogMessage] = []
+        current: list[DialogMessage] = []
         if not groups:
-            return
+            return past, current
         last_request_id = next(reversed(groups))
         for request_id, events in groups.items():
             if request_id == last_request_id:
-                yield from _DialogEventDecoder.decode(events)
+                current.extend(_DialogEventDecoder.decode(events))
             else:
-                yield from self._compact_request(events)
+                past.extend(self._compact_request(events))
+        return past, current
 
     def _group_by_request_id(self) -> dict[RequestId, list[AgentEvent]]:
         groups: dict[RequestId, list[AgentEvent]] = {}
@@ -183,14 +195,17 @@ class CompactHistoryDialogView(HistoryDialogView):
         if content:
             yield AssistantMessage(content=content)
 
+    @staticmethod
     def _apply_window(
-        self,
         messages: list[DialogMessage],
+        budget: int,
     ) -> Iterator[DialogMessage]:
-        if len(messages) <= self._max_messages:
+        if len(messages) <= budget:
             yield from messages
             return
-        windowed = messages[-self._max_messages :]
+        if budget <= 0:
+            return
+        windowed = messages[-budget:]
         for index, message in enumerate(windowed):
             if isinstance(message, UserMessage):
                 yield from windowed[index:]
